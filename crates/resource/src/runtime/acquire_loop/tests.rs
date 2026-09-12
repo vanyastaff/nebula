@@ -432,7 +432,11 @@ impl Provider for Mock {
     }
 
     fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::from_key(Self::key())
+        ResourceMetadataDraft::new(
+            Self::key(),
+            crate::metadata_name!("acquire-loop-guard-mock"),
+            "",
+        )
     }
 }
 
@@ -476,7 +480,11 @@ impl Provider for RetainedHookMock {
     }
 
     fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::from_key(Self::key())
+        ResourceMetadataDraft::new(
+            Self::key(),
+            crate::metadata_name!("retained-hook-settlement-mock"),
+            "",
+        )
     }
 }
 

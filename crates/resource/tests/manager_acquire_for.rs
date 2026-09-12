@@ -86,7 +86,11 @@ impl Provider for PoolRes {
     }
 
     fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::from_key(Self::key())
+        ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("acquire-for-pool"),
+            "",
+        )
     }
 }
 
@@ -260,7 +264,11 @@ impl Provider for ResRes {
     }
 
     fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::from_key(Self::key())
+        ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("acquire-for-resident"),
+            "",
+        )
     }
 }
 

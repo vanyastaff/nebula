@@ -95,16 +95,11 @@ fn manifest_errors_preserve_typed_sources() {
         .build()
         .expect_err("invalid key");
     assert_eq!(key_error.code().as_str(), "MANIFEST:INVALID_KEY");
-    let expected = "bad!key"
-        .parse::<nebula_core::PluginKey>()
-        .expect_err("invalid key");
-    assert_eq!(
-        key_error
-            .source()
-            .expect("key parser cause")
-            .downcast_ref::<nebula_core::PluginKeyParseError>(),
-        Some(&expected),
+    assert!(
+        key_error.source().is_none(),
+        "raw key parser sources are not public diagnostics"
     );
+    assert!(!format!("{key_error}: {key_error:?}").contains("bad!key"));
 }
 
 #[test]
@@ -133,12 +128,14 @@ fn construction_and_revision_traces_exclude_submitted_payloads() {
             SUBMITTED,
         )
         .expect("valid metadata")
-        .bind_schema(ValidSchema::empty());
+        .bind_schema(ValidSchema::empty())
+        .expect("valid bounded metadata");
         let deprecated = MetadataDraft::try_new(SUBMITTED, SUBMITTED, SUBMITTED)
             .expect("valid metadata")
-            .with_deprecation(DeprecationNotice::new(Version::new(1, 0, 0)).reason(SUBMITTED))
+            .with_deprecation(DeprecationNotice::new(Version::new(1, 0, 0)).with_reason(SUBMITTED))
             .mark_stable()
-            .bind_schema(ValidSchema::empty());
+            .bind_schema(ValidSchema::empty())
+            .expect("valid bounded metadata");
         assert_eq!(deprecated.maturity(), MaturityLevel::Deprecated);
 
         let name_error = MetadataDraft::try_new(SUBMITTED, " ", SUBMITTED).expect_err("blank name");
@@ -154,7 +151,8 @@ fn construction_and_revision_traces_exclude_submitted_payloads() {
         )
         .expect("valid metadata")
         .with_version(Version::new(2, 0, 0))
-        .bind_schema(ValidSchema::empty());
+        .bind_schema(ValidSchema::empty())
+        .expect("valid bounded metadata");
         let recorded: RecordedBaseMetadata<ActionKey> =
             serde_json::from_value(serde_json::to_value(&metadata).expect("metadata serializes"))
                 .expect("recorded metadata validates");
@@ -168,18 +166,48 @@ fn construction_and_revision_traces_exclude_submitted_payloads() {
             SUBMITTED,
         )
         .expect("valid metadata")
-        .bind_schema(ValidSchema::empty());
+        .bind_schema(ValidSchema::empty())
+        .expect("valid bounded metadata");
         validate_base_compat(&renamed, &metadata).expect_err("identity change");
 
         PluginManifest::builder(SUBMITTED, SUBMITTED)
             .description(SUBMITTED)
-            .deprecation(DeprecationNotice::new(Version::new(1, 0, 0)).reason(SUBMITTED))
+            .deprecation(DeprecationNotice::new(Version::new(1, 0, 0)).with_reason(SUBMITTED))
             .build()
             .expect("valid manifest");
         let key_error = PluginManifest::builder(format!("{SUBMITTED}!"), SUBMITTED)
             .build()
             .expect_err("invalid key");
         assert!(!format!("{key_error:?}: {key_error}").contains(SUBMITTED));
+        for hostile in [
+            serde_json::json!({"metadata_wire_version": 2, SUBMITTED: SUBMITTED}),
+            serde_json::json!({"metadata_wire_version": 2, "key": {SUBMITTED: SUBMITTED}}),
+            serde_json::json!({"metadata_wire_version": 2, "maturity": SUBMITTED}),
+        ] {
+            serde_json::from_value::<RecordedBaseMetadata<ActionKey>>(hostile.clone())
+                .expect_err("hostile recorded fields");
+            serde_json::from_value::<PluginManifest>(hostile).expect_err("hostile manifest fields");
+        }
+        serde_json::from_value::<DeprecationNotice>(serde_json::json!({
+            "since": "1.0.0", "removal": {"kind": SUBMITTED, "value": SUBMITTED}
+        }))
+        .expect_err("unknown removal kind");
+        serde_json::from_value::<DeprecationNotice>(serde_json::json!([SUBMITTED]))
+            .expect_err("positional notice rejected");
+        let mut deep_record = serde_json::json!({SUBMITTED: SUBMITTED});
+        for _ in 0..128 {
+            deep_record = serde_json::json!({"nested": deep_record});
+        }
+        let depth_error = nebula_metadata::check_json_record(&deep_record)
+            .expect_err("complete record depth is bounded");
+        assert_eq!(depth_error, MetadataError::RecordNotDecodable);
+        assert!(!format!("{depth_error:?}: {depth_error}").contains(SUBMITTED));
+        let field_error = MetadataDraft::try_new(SUBMITTED, "Example", "")
+            .unwrap()
+            .with_tags(["x".repeat(65)])
+            .bind_schema(ValidSchema::empty())
+            .unwrap_err();
+        assert!(!format!("{field_error}: {field_error:?}").contains(SUBMITTED));
     });
 
     let output = String::from_utf8(capture.0.lock().expect("test capture lock").clone())
@@ -197,6 +225,11 @@ fn construction_and_revision_traces_exclude_submitted_payloads() {
     assert!(output.contains("METADATA:VERSION_REGRESSED"), "{output}");
     assert!(output.contains("METADATA:KEY_CHANGED"), "{output}");
     assert!(output.contains("MANIFEST:INVALID_KEY"), "{output}");
+    assert!(output.contains("metadata.deserialize_recorded"), "{output}");
+    assert!(
+        output.contains("metadata.deserialize_deprecation"),
+        "{output}"
+    );
     assert!(
         !output.contains(SUBMITTED),
         "submitted definition leaked: {output}"

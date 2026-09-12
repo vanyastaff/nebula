@@ -98,7 +98,11 @@ impl Provider for CountingResource {
     }
 
     fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::from_key(Self::key())
+        ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("dedup-slot-ident"),
+            "",
+        )
     }
 }
 
@@ -454,7 +458,11 @@ impl Provider for SiblingResidentResource {
     }
 
     fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::from_key(Self::key())
+        ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("dedup-slot-ident"),
+            "",
+        )
     }
 }
 

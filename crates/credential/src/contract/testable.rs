@@ -42,7 +42,7 @@ use crate::{Credential, CredentialContext, error::CredentialError, resolve::Test
 ///
 /// ```
 /// use nebula_credential::{
-///     AuthPattern, Credential, CredentialContext, CredentialMetadataDraft, Testable,
+///     Credential, CredentialContext, CredentialMetadataDraft, Testable,
 ///     SecretString, scheme::SecretToken,
 /// };
 /// use nebula_credential::error::CredentialError;
@@ -59,7 +59,6 @@ use crate::{Credential, CredentialContext, error::CredentialError, resolve::Test
 /// #     fn metadata() -> CredentialMetadataDraft {
 /// #         CredentialMetadataDraft::new(
 /// #             credential_key!("oauth2_cred"), nebula_credential::metadata_name!("OAuth2"), "demo",
-/// #             AuthPattern::SecretToken,
 /// #         )
 /// #     }
 /// #     fn project(state: &SecretToken) -> SecretToken { state.clone() }

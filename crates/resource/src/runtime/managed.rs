@@ -584,7 +584,7 @@ mod tests {
         }
 
         fn metadata() -> ResourceMetadataDraft {
-            ResourceMetadataDraft::from_key(Self::key())
+            ResourceMetadataDraft::new(Self::key(), crate::metadata_name!("managed-loop-mock"), "")
         }
     }
 
@@ -1085,7 +1085,7 @@ mod tests {
         }
 
         fn metadata() -> ResourceMetadataDraft {
-            ResourceMetadataDraft::from_key(Self::key())
+            ResourceMetadataDraft::new(Self::key(), crate::metadata_name!("slow-teardown-mock"), "")
         }
     }
 

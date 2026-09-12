@@ -60,7 +60,11 @@ impl Provider for KeepPool {
     }
 
     fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::from_key(Self::key())
+        ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("bench-pool-keep"),
+            "",
+        )
     }
 }
 
@@ -88,7 +92,11 @@ impl Provider for DiscardPool {
     }
 
     fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::from_key(Self::key())
+        ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("bench-pool-discard"),
+            "",
+        )
     }
 }
 
@@ -123,7 +131,11 @@ impl Provider for SharedResident {
     }
 
     fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::from_key(Self::key())
+        ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("bench-resident"),
+            "",
+        )
     }
 }
 

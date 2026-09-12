@@ -14,6 +14,26 @@ changes are expected between minor releases — call them out here.
 - **The workspace moves from 0.5 to 0.6 in lockstep.** This is the
   pre-1.0 breaking release; exact-version SDK consumers and renamed leaf
   fixtures must update all Nebula pins together.
+- **Shared metadata admission and wire v2 require a subsequent 0.7 release.**
+  Package versions are not bumped by this change. `MetadataDraft::bind_schema`
+  now returns `Result<BaseMetadata<K>, MetadataBuildError>` and requires
+  `K: Serialize`; recorded decoding requires `K: FromStr + Serialize`.
+  Categories, tags, links, deprecation chronology, canonical bytes, and complete
+  record depth are checked at admission. Deprecation fields become private,
+  with typed removal/replacement setters; independent `documentation_url` and
+  free-form `sunset` storage are removed. `PluginManifestBuilder` no longer
+  implements `Deserialize`, and `ManifestError::InvalidKey` loses its parser
+  payload/source. New metadata errors carry closed field locations.
+  Shared records and manifests require `metadata_wire_version: 2`; leaf records
+  nest `base` and reject legacy flat, unversioned, positional, and unknown-field
+  evidence. Use bounded slice/reader ingress and fresh-definition readmission.
+  Historical plugin compiler/plan records and their hashes remain unchanged.
+  Credential service `TypeCapabilities` adds public `interactive` and `dynamic`
+  booleans, which Rust struct literals must now supply; discovery projects all
+  five registry capabilities, while this Serialize-only type adds no first-party
+  decode incompatibility.
+  See the [metadata breaking migration](crates/metadata/README.md#breaking) and
+  [SDK migration guidance](crates/sdk/README.md).
 - **Catalog-leaf metadata now has one-way admission.** Action, Credential, and
   Resource authors return schema-free `*MetadataDraft` values. The owning
   action factory, credential registry, or resource factory derives the schema

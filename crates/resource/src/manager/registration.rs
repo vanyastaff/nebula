@@ -85,7 +85,8 @@ impl Manager {
     /// use nebula_core::{ResourceKey, ScopeLevel, resource_key};
     /// use nebula_resource::{
     ///     AcquireOptions, Error, Manager, PoolConfig, PoolProvider, Pooled, Provider,
-    ///     RegistrationSpec, Resource, ResourceContext, SlotIdentity,
+    ///     RegistrationSpec, Resource, ResourceContext, ResourceMetadataDraft, SlotIdentity,
+    ///     metadata_name,
     /// };
     ///
     /// // `Resource` emits the (here-empty) credential-slot plumbing; the
@@ -101,6 +102,10 @@ impl Manager {
     ///
     ///     fn key() -> ResourceKey {
     ///         resource_key!("doctest.http_client")
+    ///     }
+    ///
+    ///     fn metadata() -> ResourceMetadataDraft {
+    ///         ResourceMetadataDraft::new(Self::key(), metadata_name!("HTTP client"), "")
     ///     }
     ///
     ///     async fn create(&self, _config: &(), _ctx: &ResourceContext) -> Result<(), Error> {

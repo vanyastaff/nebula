@@ -71,6 +71,10 @@ fn synthesized_metadata_uses_curated_inline_icon() {
 
     assert_eq!(metadata.icon(), &nebula_credential::Icon::inline("key"));
     assert_eq!(
+        metadata.pattern(),
+        nebula_credential::AuthPattern::SecretToken
+    );
+    assert_eq!(
         metadata.documentation_url(),
         Some("https://example.test/credentials/metadata-only")
     );
@@ -133,8 +137,14 @@ fn erased_credential_exposes_exact_computed_capabilities() {
 #[test]
 fn refresh_only_synthesizes_metadata_from_args() {
     assert_eq!(
-        RefreshOnly::metadata().pattern(),
-        nebula_credential::AuthPattern::SecretToken
+        RefreshOnly::metadata(),
+        nebula_credential::CredentialMetadataDraft::new(
+            nebula_core::credential_key!("test_refresh_only"),
+            nebula_credential::metadata_name!("Refresh Only"),
+            "fixture",
+        )
+        .with_icon(nebula_credential::Icon::inline("sync"))
+        .with_documentation_url("https://example.test/credentials/refresh-only")
     );
 }
 

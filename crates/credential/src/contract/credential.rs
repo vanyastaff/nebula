@@ -77,7 +77,7 @@ use crate::{
 ///
 /// ```
 /// use nebula_credential::{
-///     AuthPattern, Credential, CredentialContext, CredentialMetadataDraft, SecretString,
+///     Credential, CredentialContext, CredentialMetadataDraft, SecretString,
 ///     scheme::SecretToken,
 /// };
 /// use nebula_credential::error::CredentialError;
@@ -108,7 +108,6 @@ use crate::{
 ///             credential_key!("slack_bot_token"),
 ///             nebula_credential::metadata_name!("Slack Bot Token"),
 ///             "Slack bot OAuth token",
-///             AuthPattern::SecretToken,
 ///         )
 ///     }
 ///

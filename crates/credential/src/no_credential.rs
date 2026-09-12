@@ -17,8 +17,8 @@ use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::{
-    AuthPattern, Credential, CredentialContext, CredentialError, CredentialMetadataDraft,
-    CredentialState, StaticResolveResult,
+    Credential, CredentialContext, CredentialError, CredentialMetadataDraft, CredentialState,
+    StaticResolveResult,
 };
 
 /// State for [`NoCredential`]. Carries no data — it is the type-level marker
@@ -72,7 +72,6 @@ impl Credential for NoCredential {
             nebula_core::credential_key!("no_credential"),
             crate::metadata_name!("No credential"),
             "Opt-out marker for resources without an authenticated binding.",
-            AuthPattern::NoAuth,
         )
     }
 

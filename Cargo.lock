@@ -3428,6 +3428,8 @@ dependencies = [
 name = "nebula-metadata"
 version = "0.6.0"
 dependencies = [
+ "chrono",
+ "domain-key",
  "insta",
  "nebula-core",
  "nebula-error",
@@ -3441,6 +3443,7 @@ dependencies = [
  "thiserror",
  "tracing",
  "tracing-subscriber",
+ "url",
 ]
 
 [[package]]

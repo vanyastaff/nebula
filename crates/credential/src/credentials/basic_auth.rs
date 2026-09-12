@@ -57,7 +57,6 @@ impl BasicAuthCredential {
             nebula_core::credential_key!("basic_auth"),
             crate::metadata_name!("Basic Auth"),
             "HTTP Basic authentication (username + password).",
-            crate::AuthPattern::IdentityPassword,
         )
         .with_icon(nebula_metadata::Icon::inline("lock"))
     }

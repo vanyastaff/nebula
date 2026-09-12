@@ -120,6 +120,10 @@ impl fmt::Debug for Acquisition {
 /// membership at registration), not self-attested metadata.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct TypeCapabilities {
+    /// Type implements `Interactive`.
+    pub interactive: bool,
+    /// Type implements `Dynamic`.
+    pub dynamic: bool,
     /// Type implements `Refreshable`.
     pub refreshable: bool,
     /// Type implements `Testable`.

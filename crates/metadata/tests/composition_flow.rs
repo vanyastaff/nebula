@@ -8,14 +8,9 @@
 //! multi-field-with-collection shape (mirrors
 //! `nebula-action::ActionMetadata`'s `category`/`isolation_level`/`inputs`).
 //!
-//! The flatten-placement assertion (`value.get("base").is_none()`) is not
-//! new coverage on its own — `nebula-credential`
-//! (`crates/credential/src/metadata.rs`) and `nebula-resource`
-//! (`crates/resource/src/resource.rs`) already assert it on their real
-//! composed types. What's missing everywhere, and what this file adds, is
-//! exercising the same contract generically across representative shapes,
-//! and direct `serde_json` coverage of `BaseMetadata` — `base.rs` has zero
-//! `serde_json` calls in its own unit tests today.
+//! Nested `base` placement keeps strict shared-field decoding independent of
+//! leaf-specific fields. These fixtures exercise that contract across shapes
+//! and retain direct coverage of shared default-field omission.
 
 use nebula_metadata::{
     BaseMetadata, DeprecationNotice, MaturityLevel, Metadata, MetadataDraft, RecordedBaseMetadata,
@@ -45,7 +40,9 @@ fn empty_schema() -> ValidSchema {
 }
 
 fn base(name: &str) -> BaseMetadata<LocalKey> {
-    draft(name).bind_schema(empty_schema())
+    draft(name)
+        .bind_schema(empty_schema())
+        .expect("valid bounded metadata")
 }
 
 fn draft(name: &str) -> MetadataDraft<LocalKey> {
@@ -56,13 +53,11 @@ fn draft(name: &str) -> MetadataDraft<LocalKey> {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 struct ZeroExtraMetadata {
-    #[serde(flatten)]
     base: BaseMetadata<LocalKey>,
 }
 
 #[derive(Debug, Deserialize)]
 struct RecordedZeroExtraMetadata {
-    #[serde(flatten)]
     base: RecordedBaseMetadata<LocalKey>,
 }
 
@@ -77,14 +72,12 @@ impl Metadata for ZeroExtraMetadata {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 struct ScalarExtraMetadata {
-    #[serde(flatten)]
     base: BaseMetadata<LocalKey>,
     pattern: String,
 }
 
 #[derive(Debug, Deserialize)]
 struct RecordedScalarExtraMetadata {
-    #[serde(flatten)]
     base: RecordedBaseMetadata<LocalKey>,
     pattern: String,
 }
@@ -100,7 +93,6 @@ impl Metadata for ScalarExtraMetadata {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 struct MultiFieldMetadata {
-    #[serde(flatten)]
     base: BaseMetadata<LocalKey>,
     category: String,
     priority: u32,
@@ -109,7 +101,6 @@ struct MultiFieldMetadata {
 
 #[derive(Debug, Deserialize)]
 struct RecordedMultiFieldMetadata {
-    #[serde(flatten)]
     base: RecordedBaseMetadata<LocalKey>,
     category: String,
     priority: u32,
@@ -124,17 +115,17 @@ impl Metadata for MultiFieldMetadata {
 }
 
 #[test]
-fn zero_extra_fields_flattens_and_round_trips() {
+fn zero_extra_fields_nests_and_round_trips() {
     let original = ZeroExtraMetadata { base: base("noop") };
 
     let json = serde_json::to_string(&original).expect("serializes");
     let value: serde_json::Value = serde_json::from_str(&json).expect("valid json");
     assert!(
-        value.get("base").is_none(),
-        "shared metadata must stay flattened, not nested under `base`"
+        value.get("base").is_some(),
+        "shared metadata must be nested under `base`"
     );
     assert_eq!(
-        value.get("key").and_then(serde_json::Value::as_str),
+        value["base"].get("key").and_then(serde_json::Value::as_str),
         Some("noop")
     );
 
@@ -150,7 +141,7 @@ fn zero_extra_fields_flattens_and_round_trips() {
 }
 
 #[test]
-fn scalar_extra_field_flattens_alongside_base() {
+fn scalar_extra_field_nests_alongside_base() {
     let original = ScalarExtraMetadata {
         base: base("token_auth"),
         pattern: "secret_token".to_owned(),
@@ -159,11 +150,11 @@ fn scalar_extra_field_flattens_alongside_base() {
     let json = serde_json::to_string(&original).expect("serializes");
     let value: serde_json::Value = serde_json::from_str(&json).expect("valid json");
     assert!(
-        value.get("base").is_none(),
-        "shared metadata must stay flattened, not nested under `base`"
+        value.get("base").is_some(),
+        "shared metadata must be nested under `base`"
     );
     assert_eq!(
-        value.get("key").and_then(serde_json::Value::as_str),
+        value["base"].get("key").and_then(serde_json::Value::as_str),
         Some("token_auth")
     );
     assert_eq!(
@@ -184,11 +175,12 @@ fn scalar_extra_field_flattens_alongside_base() {
 }
 
 #[test]
-fn multi_field_with_collection_flattens_alongside_base() {
+fn multi_field_with_collection_nests_alongside_base() {
     let original = MultiFieldMetadata {
         base: draft("http.request")
             .with_tags(["network"])
-            .bind_schema(empty_schema()),
+            .bind_schema(empty_schema())
+            .expect("valid bounded metadata"),
         category: "integration".to_owned(),
         priority: 3,
         capabilities: vec!["http".to_owned(), "retryable".to_owned()],
@@ -197,11 +189,11 @@ fn multi_field_with_collection_flattens_alongside_base() {
     let json = serde_json::to_string(&original).expect("serializes");
     let value: serde_json::Value = serde_json::from_str(&json).expect("valid json");
     assert!(
-        value.get("base").is_none(),
-        "shared metadata must stay flattened, not nested under `base`"
+        value.get("base").is_some(),
+        "shared metadata must be nested under `base`"
     );
     assert_eq!(
-        value.get("key").and_then(serde_json::Value::as_str),
+        value["base"].get("key").and_then(serde_json::Value::as_str),
         Some("http.request")
     );
     assert_eq!(
@@ -237,7 +229,10 @@ fn multi_field_with_collection_flattens_alongside_base() {
 #[test]
 fn metadata_trait_delegates_through_a_composed_shape() {
     let metadata = ScalarExtraMetadata {
-        base: draft("token_auth").mark_beta().bind_schema(empty_schema()),
+        base: draft("token_auth")
+            .mark_beta()
+            .bind_schema(empty_schema())
+            .expect("valid bounded metadata"),
         pattern: "secret_token".to_owned(),
     };
 
@@ -255,7 +250,8 @@ fn default_version_is_omitted_and_explicit_version_is_present() {
 
     let explicit = draft("k")
         .with_version(Version::new(2, 0, 0))
-        .bind_schema(empty_schema());
+        .bind_schema(empty_schema())
+        .expect("valid bounded metadata");
     let explicit_value = serde_json::to_value(&explicit).expect("serializes");
     assert_eq!(
         explicit_value
@@ -272,7 +268,8 @@ fn icon_none_is_omitted_and_set_icon_is_present() {
 
     let with_icon = draft("k")
         .with_inline_icon("github")
-        .bind_schema(empty_schema());
+        .bind_schema(empty_schema())
+        .expect("valid bounded metadata");
     let value = serde_json::to_value(&with_icon).expect("serializes");
     assert_eq!(
         value.get("icon").and_then(serde_json::Value::as_str),
@@ -285,7 +282,10 @@ fn empty_tags_is_omitted_and_nonempty_tags_is_present() {
     let default_value = serde_json::to_value(base("k")).expect("serializes");
     assert!(default_value.get("tags").is_none());
 
-    let with_tags = draft("k").with_tags(["a", "b"]).bind_schema(empty_schema());
+    let with_tags = draft("k")
+        .with_tags(["a", "b"])
+        .bind_schema(empty_schema())
+        .expect("valid bounded metadata");
     let value = serde_json::to_value(&with_tags).expect("serializes");
     assert_eq!(
         value
@@ -301,7 +301,10 @@ fn default_maturity_is_omitted_and_nondefault_maturity_is_present() {
     let default_value = serde_json::to_value(base("k")).expect("serializes");
     assert!(default_value.get("maturity").is_none());
 
-    let experimental = draft("k").mark_experimental().bind_schema(empty_schema());
+    let experimental = draft("k")
+        .mark_experimental()
+        .bind_schema(empty_schema())
+        .expect("valid bounded metadata");
     let value = serde_json::to_value(&experimental).expect("serializes");
     assert_eq!(
         value.get("maturity").and_then(serde_json::Value::as_str),
@@ -312,15 +315,16 @@ fn default_maturity_is_omitted_and_nondefault_maturity_is_present() {
 #[test]
 fn documentation_url_none_is_omitted_and_set_url_is_present() {
     let default_value = serde_json::to_value(base("k")).expect("serializes");
-    assert!(default_value.get("documentation_url").is_none());
+    assert!(default_value.get("links").is_none());
 
     let with_url = draft("k")
         .with_documentation_url("https://example.com/docs")
-        .bind_schema(empty_schema());
+        .bind_schema(empty_schema())
+        .expect("valid bounded metadata");
     let value = serde_json::to_value(&with_url).expect("serializes");
     assert_eq!(
         value
-            .get("documentation_url")
+            .pointer("/links/0/target")
             .and_then(serde_json::Value::as_str),
         Some("https://example.com/docs")
     );
@@ -333,7 +337,8 @@ fn deprecation_none_is_omitted_and_set_notice_is_present() {
 
     let deprecated = draft("k")
         .with_deprecation(DeprecationNotice::new(Version::new(1, 0, 0)))
-        .bind_schema(empty_schema());
+        .bind_schema(empty_schema())
+        .expect("valid bounded metadata");
     let value = serde_json::to_value(&deprecated).expect("serializes");
     assert_eq!(
         value

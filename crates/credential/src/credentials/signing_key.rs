@@ -8,9 +8,8 @@ use nebula_schema::Schema;
 use serde::Deserialize;
 
 use crate::{
-    AuthPattern, Credential, CredentialContext, CredentialError, CredentialMetadataDraft,
-    SecretString, contract::plugin_capability_report, contract::resolve::StaticResolveResult,
-    scheme::SigningKey,
+    Credential, CredentialContext, CredentialError, CredentialMetadataDraft, SecretString,
+    contract::plugin_capability_report, contract::resolve::StaticResolveResult, scheme::SigningKey,
 };
 
 /// Setup-form shape for the `signing_key` credential.
@@ -42,7 +41,6 @@ impl Credential for SigningKeyCredential {
             nebula_core::credential_key!("signing_key"),
             crate::metadata_name!("Signing Key"),
             "Request-signing secret (HMAC, SigV4, webhook signatures).",
-            AuthPattern::RequestSigning,
         )
         .with_icon(nebula_metadata::Icon::inline("key"))
     }

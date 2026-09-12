@@ -185,7 +185,11 @@ impl Provider for SecretRes {
     }
 
     fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::from_key(Self::key())
+        ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("wired-redaction-res"),
+            "",
+        )
     }
 }
 

@@ -40,7 +40,6 @@ impl Credential for StaticProbe {
             nebula_core::credential_key!("probe.static"),
             nebula_credential::metadata_name!("StaticProbe"),
             "zero-capability probe credential",
-            AuthPattern::SecretToken,
         )
     }
 
@@ -126,7 +125,6 @@ impl Credential for RefreshableProbe {
             nebula_core::credential_key!("probe.refreshable"),
             nebula_credential::metadata_name!("RefreshableProbe"),
             "refreshable + revocable probe credential",
-            AuthPattern::OAuth2,
         )
     }
 

@@ -247,7 +247,6 @@ fn expand_inner(args: TokenStream2, input: TokenStream) -> syn::Result<TokenStre
             )
         })?;
         let description = description.as_deref().unwrap_or(name);
-        let scheme_ty = assoc_type(scheme)?;
         if icon.is_none() && doc_url.is_none() {
             quote! {
                 fn metadata() -> ::nebula_credential::CredentialMetadataDraft
@@ -258,7 +257,6 @@ fn expand_inner(args: TokenStream2, input: TokenStream) -> syn::Result<TokenStre
                         ::nebula_credential::credential_key!(#key),
                         ::nebula_credential::metadata_name!(#name),
                         #description,
-                        <#scheme_ty as ::nebula_credential::AuthScheme>::pattern(),
                     )
                 }
             }
@@ -270,7 +268,6 @@ fn expand_inner(args: TokenStream2, input: TokenStream) -> syn::Result<TokenStre
                     ::nebula_credential::credential_key!(#key),
                     ::nebula_credential::metadata_name!(#name),
                     #description,
-                    <#scheme_ty as ::nebula_credential::AuthScheme>::pattern(),
                 )
             };
             if let Some(icon) = &icon {
@@ -581,21 +578,4 @@ fn trait_item(mut it: ImplItem) -> ImplItem {
         _ => {},
     }
     it
-}
-
-/// Extract the right-hand-side type of an `ImplItem::Type` (the `X` in
-/// `type Scheme = X;`) for use in generated metadata bounds.
-///
-/// `classify_items` only ever routes `type Scheme` here, so the non-type case
-/// is a macro-internal invariant violation — surfaced as a normal `syn::Error`
-/// (a proper diagnostic) rather than a proc-macro panic.
-fn assoc_type(it: &ImplItem) -> syn::Result<&syn::Type> {
-    match it {
-        ImplItem::Type(t) => Ok(&t.ty),
-        other => Err(diag::error_spanned(
-            other,
-            "internal error: `type Scheme` was not classified as an associated type — \
-             please report this as a `#[credential]` macro bug",
-        )),
-    }
 }

@@ -250,7 +250,11 @@ impl Provider for FailingResidentResource {
     }
 
     fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::from_key(Self::key())
+        ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("test-failing-resident"),
+            "",
+        )
     }
 }
 
@@ -309,7 +313,11 @@ impl Provider for BlockingResidentResource {
     }
 
     fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::from_key(Self::key())
+        ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("test-blocking-resident"),
+            "",
+        )
     }
 }
 
@@ -364,7 +372,11 @@ impl Provider for PermanentFailResource {
     }
 
     fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::from_key(Self::key())
+        ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("test-permanent-fail"),
+            "",
+        )
     }
 }
 

@@ -158,7 +158,7 @@ impl Provider for PoolResource {
     }
 
     fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::from_key(Self::key())
+        ResourceMetadataDraft::new(Self::key(), nebula_resource::metadata_name!("r16-pool"), "")
     }
 }
 

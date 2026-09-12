@@ -30,8 +30,8 @@ use std::{
 
 use nebula_core::{ResourceKey, ScopeLevel, resource_key, scope::Scope};
 use nebula_credential::{
-    AuthPattern, Credential, CredentialContext, CredentialError, CredentialGuard,
-    CredentialMetadataDraft, SecretString, SecretToken, StaticResolveResult,
+    Credential, CredentialContext, CredentialError, CredentialGuard, CredentialMetadataDraft,
+    SecretString, SecretToken, StaticResolveResult,
 };
 use nebula_resource::Resident;
 use nebula_resource::{
@@ -67,7 +67,6 @@ impl Credential for FakeCred {
             nebula_core::credential_key!("epochfold.fake"),
             nebula_credential::metadata_name!("FakeCred"),
             "slot-epoch fold fixture",
-            AuthPattern::SecretToken,
         )
     }
 
@@ -117,6 +116,14 @@ impl Provider for TwoSlotDerived {
     type Config = TwoSlotCfg;
     type Instance = ();
     type Topology = Resident<Self>;
+
+    fn metadata() -> nebula_resource::ResourceMetadataDraft {
+        nebula_resource::ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("TwoSlotDerived"),
+            "",
+        )
+    }
 
     fn key() -> ResourceKey {
         nebula_resource::resource_key!("epochfold-derived")
@@ -258,6 +265,14 @@ impl Provider for TwoSlotResident {
     type Config = RaceCfg;
     type Instance = TwoSlotRuntime;
     type Topology = Resident<Self>;
+
+    fn metadata() -> nebula_resource::ResourceMetadataDraft {
+        nebula_resource::ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("TwoSlotResident"),
+            "",
+        )
+    }
 
     fn key() -> ResourceKey {
         resource_key!("epochfold-resident")
@@ -520,6 +535,14 @@ impl Provider for NoSlotDerived {
     type Instance = ();
     type Topology = Resident<Self>;
 
+    fn metadata() -> nebula_resource::ResourceMetadataDraft {
+        nebula_resource::ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("NoSlotDerived"),
+            "",
+        )
+    }
+
     fn key() -> ResourceKey {
         nebula_resource::resource_key!("epochfold-noslot")
     }
@@ -576,6 +599,14 @@ impl Provider for PooledCredResource {
     type Config = RaceCfg;
     type Instance = ();
     type Topology = nebula_resource::Pooled<Self>;
+
+    fn metadata() -> nebula_resource::ResourceMetadataDraft {
+        nebula_resource::ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("PooledCredResource"),
+            "",
+        )
+    }
 
     fn key() -> ResourceKey {
         resource_key!("epochfold-pooled-cred")

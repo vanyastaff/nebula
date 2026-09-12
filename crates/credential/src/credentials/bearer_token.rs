@@ -8,8 +8,8 @@ use nebula_schema::Schema;
 use serde::Deserialize;
 
 use crate::{
-    AuthPattern, Credential, CredentialContext, CredentialError, CredentialMetadataDraft,
-    SecretString, contract::plugin_capability_report, contract::resolve::StaticResolveResult,
+    Credential, CredentialContext, CredentialError, CredentialMetadataDraft, SecretString,
+    contract::plugin_capability_report, contract::resolve::StaticResolveResult,
     scheme::SecretToken,
 };
 
@@ -38,7 +38,6 @@ impl Credential for BearerTokenCredential {
             nebula_core::credential_key!("bearer_token"),
             crate::metadata_name!("Bearer Token"),
             "Opaque bearer token (API key, PAT, session token).",
-            AuthPattern::SecretToken,
         )
         .with_icon(nebula_metadata::Icon::inline("key"))
     }

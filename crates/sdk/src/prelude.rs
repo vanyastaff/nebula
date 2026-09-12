@@ -39,6 +39,10 @@
 //!         resource_key!("http.client.sdk_prelude")
 //!     }
 //!
+//!     fn metadata() -> ResourceMetadataDraft {
+//!         ResourceMetadataDraft::new(Self::key(), metadata_name!("HTTP client"), "Pooled HTTP client")
+//!     }
+//!
 //!     async fn create(&self, _config: &(), _ctx: &ResourceContext) -> Result<HttpClient, Error> {
 //!         Ok(HttpClient {
 //!             base_url: "https://api.example.com".to_owned(),
@@ -124,9 +128,12 @@ pub use nebula_credential::{AuthScheme, credential};
 pub use nebula_credential::{CredentialContext, CredentialId};
 // Shared authoring vocabulary used by action, credential, and resource drafts.
 pub use nebula_metadata::{
-    DeprecationNotice, Icon, MaturityLevel, MetadataError, MetadataName, MetadataVersion,
+    CatalogCategoryKey, CatalogLink, CatalogLinkRelation, CatalogLinkTarget, CatalogReference,
+    CatalogValueError, DeprecationNotice, DocumentationOrigin, Icon, MaturityLevel, MetadataError,
+    MetadataField, MetadataName, MetadataVersion, RemovalDate, RemovalMilestone, RemovalSchedule,
     metadata_name,
 };
+pub use semver::VersionReq;
 // Plugin types. `ManifestError`/`PluginDependency`/`PluginManifestBuilder`
 // join `Plugin`/`PluginManifest`: `PluginManifestBuilder` is already named as
 // a parameter type by a consumer (`crates/plugin/tests/frozen_registry.rs`),

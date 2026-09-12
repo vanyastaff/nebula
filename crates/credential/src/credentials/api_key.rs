@@ -72,7 +72,6 @@ impl ApiKeyCredential {
             nebula_core::credential_key!("api_key"),
             crate::metadata_name!("API Key"),
             "Static API key or bearer token for HTTP APIs.",
-            crate::AuthPattern::SecretToken,
         )
         .with_icon(nebula_metadata::Icon::inline("key"))
     }

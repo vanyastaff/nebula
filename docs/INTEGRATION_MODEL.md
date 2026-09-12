@@ -43,6 +43,51 @@ recorded DTOs deserialize, and readmission returns the fresh definition rather
 than promoting recorded fields. `PluginManifest` remains the bundle descriptor
 and uses its own checked builder; it is not a catalog-leaf admission bypass.
 
+#### Catalog construction and wire migration
+
+The three concrete drafts each provide `new(key, MetadataName, description)` and
+`try_new(key, name, description)`. Resource authors must implement
+`Provider::metadata`; `ResourceMetadataDraft::from_key` and inferred display names
+are removed. Credential drafts no longer take or expose an auth pattern:
+admission derives it from `<C::Scheme as AuthScheme>::pattern()`. Action macros
+preserve the full SemVer, including prerelease and build metadata.
+
+Categories are `CatalogCategoryKey` values; documentation uses `CatalogLink` with
+a closed relation and checked HTTPS or root-relative target. Tags are trimmed,
+and tags, categories, and links are sorted and deduplicated during admission.
+`with_documentation_url` replaces the Overview link; `documentation_url()` reads
+that projection. `CatalogReference` and its optional `VersionReq` provide catalog
+guidance only, never dependency registration or runtime authority.
+`DeprecationNotice` has private fields and typed removal/replacement setters.
+Its `since` version cannot exceed the current metadata version; version-based
+removal must follow `since`. A removal date or milestone is guidance, not an
+automatic runtime shutdown schedule.
+
+Shared authored fields have an exact canonical JSON budget of 32 KiB, including
+escaping and excluding schema bytes. The bound input schema has a separate
+2 MiB budget. Field and collection limits also apply. Same-version changes to
+categories, links, notices, or leaf extras invalidate old recorded evidence.
+Admission also meters the complete canonical leaf record against the 4 MiB
+default decoder ceiling, including the action output schema and all leaf extras,
+before factory success or registry insertion. Admitted canonical wire fits the
+default limit; a deliberately lower host limit may reject it.
+
+Catalog wire v2 nests shared metadata under `base`, whose
+`metadata_wire_version: 2` is required. Shared and leaf record fields are closed;
+legacy flat or unversioned records are rejected, not upgraded implicitly. Hosts
+must obtain fresh definitions and emit new records instead of repairing old
+evidence. Internal `Recorded*Metadata::from_slice`/`from_reader` entrypoints bound
+the complete raw JSON envelope to 4 MiB by default, including schemas, whitespace,
+and leaf extras. Host limits may only lower that ceiling. Generic serde performs
+structural validation only and does not guarantee bounded parser allocation;
+direct serde callers must bound their transport before parsing. Reader framing
+and deadlines belong to the host. Decoder failures discard raw parser/I/O causes.
+
+These records are not the plugin compiler's durable execution records. The
+compiler projects selected identity, schema, dependency, and execution fields;
+it does not serialize `BaseMetadata` or `DeprecationNotice`. This catalog migration
+does not change compiler epochs, durable hashes, or historical frozen plan bytes.
+
 The **schema subsystem** (`nebula-schema` crate) is the **fifth concept**, shared across integration kinds. `HasSchema::schema()` / `schema_of` and metadata admission are fallible: invalid definitions do not become catalog entries. Runtime data then moves through four distinct phases:
 
 | Phase | Representation | Guarantee |

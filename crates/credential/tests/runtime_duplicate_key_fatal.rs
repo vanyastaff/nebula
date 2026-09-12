@@ -41,7 +41,6 @@ impl Credential for CredA {
             nebula_core::credential_key!("shared.duplicate"),
             nebula_credential::metadata_name!("CredA"),
             "first credential — wins on collision",
-            nebula_credential::AuthPattern::SecretToken,
         )
     }
 
@@ -93,7 +92,6 @@ impl Credential for CredB {
             nebula_core::credential_key!("shared.duplicate"),
             nebula_credential::metadata_name!("CredB"),
             "second credential — rejected on collision",
-            nebula_credential::AuthPattern::SecretToken,
         )
     }
 

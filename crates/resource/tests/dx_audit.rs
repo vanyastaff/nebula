@@ -127,7 +127,11 @@ impl Provider for HttpClientResource {
     }
 
     fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::from_key(Self::key())
+        ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("http.client"),
+            "",
+        )
     }
 }
 
@@ -267,6 +271,14 @@ impl Provider for ConfigStoreResource {
     type Config = ConfigStoreConfig;
     type Instance = ConfigStore;
     type Topology = Resident<Self>;
+
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("ConfigStoreResource"),
+            "",
+        )
+    }
 
     fn key() -> ResourceKey {
         resource_key!("config.store")
@@ -423,7 +435,11 @@ impl Provider for DbResource {
     }
 
     fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::from_key(Self::key())
+        ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("db.connection"),
+            "",
+        )
     }
 }
 

@@ -134,7 +134,6 @@ impl TestLifecycleCred {
             nebula_core::credential_key!("test_lifecycle"),
             nebula_credential::metadata_name!("Test Lifecycle Credential"),
             "non-interactive refreshable+revocable credential for facade E2E tests",
-            AuthPattern::OAuth2,
         )
     }
 

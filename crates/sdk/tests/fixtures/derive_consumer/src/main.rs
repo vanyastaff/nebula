@@ -35,6 +35,7 @@ struct ValidatedPayload {
 #[action(
     key = "contract.action",
     name = "Contract action",
+    version = "2.5.0-rc.7+build.009",
     input = Value,
     output = Value
 )]
@@ -113,7 +114,10 @@ fn main() {
     payload.validate_fields().expect("payload is valid");
     let schema = schema_of::<SchemaPayload>().expect("valid test catalog definition");
     let authored = nebula::params! { data; "name" => "{{ literal }}" }.unwrap();
-    assert_eq!(authored.get("name").and_then(AuthoredValue::as_str), Some("{{ literal }}"));
+    assert_eq!(
+        authored.get("name").and_then(AuthoredValue::as_str),
+        Some("{{ literal }}")
+    );
     assert!(schema.find(&field_key!("name")).is_some());
     let _: CredentialMetadataDraft = ContractCredential::metadata();
     let _: ActionMetadataDraft = <ContractAction as Action>::metadata();

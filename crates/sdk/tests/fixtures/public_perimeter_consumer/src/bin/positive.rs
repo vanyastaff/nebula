@@ -7,8 +7,8 @@ use nebula_sdk::{
     prelude::{
         Action, ActionMetadataDraft, ActionResult, AuthoredValue, Deserialize, Error, Expression,
         PoolProvider, Pooled, ProgramSyntax, Provider, ReleaseOutcome, RemoteDestinationGuarantee,
-        RemoteEffectPolicy, Resource, ResourceContext, ResourceKey, Schema, Serialize,
-        TeardownCx, TeardownReason, TriggerHealthSnapshot, Value, WorkflowBuilder, metadata_name,
+        RemoteEffectPolicy, Resource, ResourceContext, ResourceKey, Schema, Serialize, TeardownCx,
+        TeardownReason, TriggerHealthSnapshot, Value, WorkflowBuilder, metadata_name,
         no_credential_slots, resource_key,
     },
     simple_action,
@@ -49,6 +49,14 @@ impl Provider for ManualProvider {
     type Instance = OwnedClient;
     type Topology = Pooled<Self>;
 
+    fn metadata() -> nebula_sdk::integration::resource::ResourceMetadataDraft {
+        nebula_sdk::integration::resource::ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_sdk::prelude::metadata_name!("ManualProvider"),
+            "",
+        )
+    }
+
     fn key() -> ResourceKey {
         resource_key!("example.manual-provider")
     }
@@ -82,6 +90,14 @@ impl Provider for CatalogProvider {
     type Instance = ();
     type Topology = Pooled<Self>;
 
+    fn metadata() -> nebula_sdk::integration::resource::ResourceMetadataDraft {
+        nebula_sdk::integration::resource::ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_sdk::prelude::metadata_name!("CatalogProvider"),
+            "",
+        )
+    }
+
     fn key() -> ResourceKey {
         resource_key!("example.catalog-provider")
     }
@@ -110,6 +126,7 @@ where
 }
 
 fn main() {
+    catalog_constructor_parity();
     assert_typed_action_contract::<EchoAction>();
     let metadata: ActionMetadataDraft = EchoAction::metadata();
     let authored = nebula_sdk::params! { data; "message" => "hello" }
@@ -174,4 +191,111 @@ fn main() {
     );
     let _: Option<Value> = None;
     let _: Option<TriggerHealthSnapshot> = None;
+}
+
+fn catalog_constructor_parity() {
+    use nebula_sdk::integration::{
+        CatalogCategoryKey, CatalogLink, CatalogLinkRelation, CatalogLinkTarget, CatalogReference,
+        CatalogValueError, DeprecationNotice, DocumentationOrigin, MetadataError, MetadataField,
+        MetadataVersion, RemovalDate, RemovalMilestone, RemovalSchedule, VersionReq,
+    };
+    use nebula_sdk::integration::{
+        action::ActionMetadataDraft, credential::CredentialMetadataDraft,
+        resource::ResourceMetadataDraft,
+    };
+    use nebula_sdk::prelude::{action_key, credential_key};
+
+    let category: CatalogCategoryKey = "network.http".parse().expect("valid category");
+    let target: CatalogLinkTarget = "/integrations/http/setup".parse().expect("valid target");
+    let origin: DocumentationOrigin = "https://docs.example.test/".parse().expect("origin");
+    assert_eq!(
+        target.resolve(&origin).expect("resolved link").as_str(),
+        "https://docs.example.test/integrations/http/setup"
+    );
+    let link = CatalogLink::new(CatalogLinkRelation::Setup, target);
+    let requirement: VersionReq = "^2.1".parse().expect("version requirement");
+    let replacement = CatalogReference::action(action_key!("example.next"))
+        .with_version_requirement(requirement.clone());
+    let version: MetadataVersion = "1.2.3-rc.4+build.9".parse().expect("full SemVer");
+    let date: RemovalDate = "2028-02-29".parse().expect("leap day");
+    assert_eq!(
+        date,
+        RemovalDate::new(2028, 2, 29).expect("valid calendar date")
+    );
+    assert_eq!((date.year(), date.month(), date.day()), (2028, 2, 29));
+    assert_eq!(
+        nebula_sdk::prelude::RemovalDate::new(2027, 2, 29),
+        Err(CatalogValueError::InvalidRemovalDate)
+    );
+    let milestone: RemovalMilestone = "Next major release".parse().expect("milestone");
+    let notice = DeprecationNotice::new(version.clone())
+        .with_removal(RemovalSchedule::OnDate(date))
+        .with_replacement(replacement)
+        .with_reason("Use the next integration");
+    assert_eq!(notice.since(), &version);
+    assert_eq!(
+        notice
+            .replacement()
+            .expect("replacement")
+            .version_requirement(),
+        Some(&requirement)
+    );
+    assert_eq!(notice.reason(), Some("Use the next integration"));
+    let _: RemovalSchedule = RemovalSchedule::Milestone(milestone);
+    let _: MetadataError = MetadataError::FieldTooLarge(MetadataField::Description);
+    let _: Result<CatalogCategoryKey, CatalogValueError> = "INVALID".parse();
+
+    let action = ActionMetadataDraft::new(
+        action_key!("example.echo"),
+        metadata_name!("Echo"),
+        "HTTP echo",
+    )
+    .with_version(version.clone())
+    .with_categories([category.clone()])
+    .add_link(link.clone())
+    .with_deprecation(notice.clone());
+    let action_dynamic =
+        ActionMetadataDraft::try_new(action_key!("example.echo"), "Echo", "HTTP echo")
+            .expect("valid name")
+            .with_version(version.clone())
+            .with_categories([category.clone()])
+            .add_link(link.clone())
+            .with_deprecation(notice.clone());
+    assert_eq!(action, action_dynamic);
+    let credential = CredentialMetadataDraft::new(
+        credential_key!("example.token"),
+        metadata_name!("Token"),
+        "",
+    )
+    .with_version(version.clone())
+    .with_categories([category.clone()])
+    .add_link(link.clone())
+    .with_deprecation(notice.clone());
+    let credential_dynamic =
+        CredentialMetadataDraft::try_new(credential_key!("example.token"), "Token", "")
+            .expect("valid name")
+            .with_version(version.clone())
+            .with_categories([category.clone()])
+            .add_link(link.clone())
+            .with_deprecation(notice.clone());
+    assert_eq!(credential, credential_dynamic);
+    let resource =
+        ResourceMetadataDraft::new(resource_key!("example.http"), metadata_name!("HTTP"), "")
+            .with_version(version.clone())
+            .with_categories([category.clone()])
+            .add_link(link.clone())
+            .with_deprecation(notice.clone());
+    let resource_dynamic =
+        ResourceMetadataDraft::try_new(resource_key!("example.http"), "HTTP", "")
+            .expect("valid name")
+            .with_version(version)
+            .with_categories([category])
+            .add_link(link)
+            .with_deprecation(notice);
+    assert_eq!(resource, resource_dynamic);
+    let _: nebula_sdk::prelude::VersionReq = requirement;
+    let _: nebula_sdk::prelude::MetadataField = MetadataField::Links;
+    assert!(ActionMetadataDraft::try_new(action_key!("example.echo"), " ", "").is_err());
+    assert!(CredentialMetadataDraft::try_new(credential_key!("example.token"), " ", "").is_err());
+    assert!(ResourceMetadataDraft::try_new(resource_key!("example.http"), " ", "").is_err());
 }

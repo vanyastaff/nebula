@@ -108,7 +108,11 @@ impl Provider for PoolTestResource {
     }
 
     fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::from_key(Self::key())
+        ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("test-pool"),
+            "",
+        )
     }
 }
 
@@ -171,7 +175,11 @@ impl Provider for ResidentTestResource {
     }
 
     fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::from_key(Self::key())
+        ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("test-resident"),
+            "",
+        )
     }
 }
 

@@ -72,9 +72,7 @@ pub trait Provider: HasCredentialSlots + Send + Sync + Sized + 'static {
 
     /// Schema-free author intent. The factory derives and binds `Config`'s
     /// canonical schema exactly once.
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::from_key(Self::key())
-    }
+    fn metadata() -> ResourceMetadataDraft;
 }
 ```
 
@@ -92,6 +90,11 @@ therefore share one concrete `Provider` type instead of being caller attestation
 Metadata names are checked
 `MetadataName` values (`metadata_name!("HTTP client")` for static definitions),
 and invariant-bearing base fields are read through accessors.
+`Provider::metadata` is required. Replace removed `ResourceMetadataDraft::from_key`
+calls with `new(key, metadata_name!("Display name"), description)` or checked
+`try_new(key, name, description)`; names are never inferred from keys. Typed
+categories and links use `with_categories` and `add_link`; the documentation URL
+convenience authors the Overview link. Tags are trimmed, sorted, and deduplicated.
 
 `ResourceFactory::validate` treats JSON strictly as data, consumes validation
 against the admitted schema and `resolve_data()`, then decodes the resulting
@@ -108,6 +111,12 @@ resource config.
 Admitted `ResourceMetadata` has private fields, getters, and `Serialize` only.
 Persisted catalog bytes deserialize as `RecordedResourceMetadata`; callers must
 explicitly call `readmit_against` with a freshly admitted factory definition.
+The catalog record nests shared fields under `base` with required
+`metadata_wire_version: 2`. Flat/unversioned legacy records are rejected. Use
+bounded `from_slice`/`from_reader` for raw input; direct generic serde validates
+structure but does not bound parser allocation. Same-version category, link, or
+typed-notice changes require fresh evidence. See
+[catalog migration and limits](../../docs/INTEGRATION_MODEL.md#catalog-construction-and-wire-migration).
 
 Root schemas follow the configuration's serde wire shape: `()` and derived unit
 structs use scalar `null`, empty-braced records use `{}`, and primitives declare
@@ -151,6 +160,9 @@ impl Provider for Postgres {
     type Topology  = Pooled<Self>;
 
     fn key() -> ResourceKey { resource_key!("postgres") }
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::new(Self::key(), metadata_name!("Postgres"), "Database pool")
+    }
 
     async fn create(&self, config: &PostgresConfig, _ctx: &ResourceContext)
         -> Result<PgPool, Error>

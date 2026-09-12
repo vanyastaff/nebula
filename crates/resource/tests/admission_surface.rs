@@ -61,7 +61,11 @@ impl Provider for TinyPool {
     }
 
     fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::from_key(Self::key())
+        ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("test.admission.tiny_pool"),
+            "",
+        )
     }
 }
 
@@ -89,7 +93,11 @@ impl Provider for SimpleResident {
     }
 
     fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::from_key(Self::key())
+        ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("test.admission.simple_resident"),
+            "",
+        )
     }
 }
 

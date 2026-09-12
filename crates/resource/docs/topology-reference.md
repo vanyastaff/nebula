@@ -57,7 +57,7 @@ impl Provider for Postgres {
     async fn destroy(&self, instance: Self::Instance, cx: TeardownCx)
         -> Result<(), Error> { /* flush/close before drop; cx.deadline bounds it */ }
 
-    fn metadata() -> ResourceMetadataDraft { ResourceMetadataDraft::from_key(Self::key()) }
+    fn metadata() -> ResourceMetadataDraft { ResourceMetadataDraft::new(Self::key(), nebula_resource::metadata_name!("Postgres"), "") }
 }
 
 impl PoolProvider for Postgres {
@@ -130,7 +130,7 @@ impl Provider for GoogleSheets {
     async fn destroy(&self, instance: Self::Instance, cx: TeardownCx)
         -> Result<(), Error> { Ok(()) }
 
-    fn metadata() -> ResourceMetadataDraft { ResourceMetadataDraft::from_key(Self::key()) }
+    fn metadata() -> ResourceMetadataDraft { ResourceMetadataDraft::new(Self::key(), nebula_resource::metadata_name!("GoogleSheets"), "") }
 }
 
 impl ResidentProvider for GoogleSheets {
@@ -221,7 +221,7 @@ impl Provider for SerialPort {
     async fn destroy(&self, instance: Self::Instance, cx: TeardownCx)
         -> Result<(), Error> { /* close */ }
 
-    fn metadata() -> ResourceMetadataDraft { ResourceMetadataDraft::from_key(Self::key()) }
+    fn metadata() -> ResourceMetadataDraft { ResourceMetadataDraft::new(Self::key(), nebula_resource::metadata_name!("SerialPort"), "") }
 }
 
 // Only Exclusive reuses its instance and therefore resets; Capped / Unbounded

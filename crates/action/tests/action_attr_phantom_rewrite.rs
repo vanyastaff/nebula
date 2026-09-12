@@ -107,7 +107,6 @@ impl Credential for LocalCredential {
             nebula_core::credential_key!("local"),
             nebula_action::metadata_name!("Local credential"),
             "Local bearer capability fixture",
-            AuthPattern::SecretToken,
         )
     }
 

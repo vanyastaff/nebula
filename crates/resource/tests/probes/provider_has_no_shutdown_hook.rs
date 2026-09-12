@@ -9,7 +9,6 @@ nebula_resource::no_credential_slots!(LegacyProvider);
 #[derive(Clone, Default, nebula_schema::Schema)]
 struct Config;
 
-
 impl ResourceConfig for Config {
     fn fingerprint(&self) -> u64 {
         0
@@ -32,6 +31,14 @@ impl Provider for LegacyProvider {
 
     async fn shutdown(&self, _instance: &()) -> Result<(), Error> {
         Ok(())
+    }
+
+    fn metadata() -> nebula_resource::ResourceMetadataDraft {
+        nebula_resource::ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("LegacyProvider"),
+            "",
+        )
     }
 }
 

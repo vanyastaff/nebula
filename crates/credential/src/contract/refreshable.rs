@@ -57,7 +57,7 @@ pub enum RefreshExecutionMode {
 ///
 /// ```
 /// use nebula_credential::{
-///     AuthPattern, Credential, CredentialContext, CredentialMetadataDraft, RefreshAttempt,
+///     Credential, CredentialContext, CredentialMetadataDraft, RefreshAttempt,
 ///     RefreshExecutionMode, RefreshReport, Refreshable, SecretString, scheme::SecretToken,
 /// };
 /// use nebula_credential::error::CredentialError;
@@ -74,7 +74,6 @@ pub enum RefreshExecutionMode {
 /// #     fn metadata() -> CredentialMetadataDraft {
 /// #         CredentialMetadataDraft::new(
 /// #             credential_key!("oauth2_cred"), nebula_credential::metadata_name!("OAuth2"), "demo",
-/// #             AuthPattern::SecretToken,
 /// #         )
 /// #     }
 /// #     fn project(state: &SecretToken) -> SecretToken { state.clone() }

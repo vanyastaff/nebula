@@ -537,6 +537,14 @@ mod tests {
         type Instance = Payload;
         type Topology = Pooled<Self>;
 
+        fn metadata() -> crate::ResourceMetadataDraft {
+            crate::ResourceMetadataDraft::new(
+                Self::key(),
+                crate::metadata_name!("DummyResource"),
+                "",
+            )
+        }
+
         fn key() -> ResourceKey {
             nebula_core::resource_key!("guard-test")
         }

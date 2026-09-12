@@ -8,8 +8,8 @@ use nebula_action::{
 };
 use nebula_core::{ActionKey, CredentialKey, Dependencies, ResourceKey};
 use nebula_credential::{
-    AnyCredential, AuthPattern, Credential, CredentialContext, CredentialMetadataDraft,
-    SecretString, SecretToken, contract::plugin_capability_report, error::CredentialError,
+    AnyCredential, Credential, CredentialContext, CredentialMetadataDraft, SecretString,
+    SecretToken, contract::plugin_capability_report, error::CredentialError,
     resolve::StaticResolveResult,
 };
 use nebula_metadata::{Metadata, PluginManifest};
@@ -39,6 +39,14 @@ impl<const INDEX: usize> Provider for MetadataFixture<INDEX> {
     type Instance = ();
     type Topology = Resident<Self>;
 
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("MetadataFixture"),
+            "",
+        )
+    }
+
     fn key() -> ResourceKey {
         let key = match INDEX {
             0 => "slack.http_client",
@@ -67,7 +75,11 @@ impl<const INDEX: usize> nebula_resource::ResidentProvider for MetadataFixture<I
 
 fn resource_factory_at<const INDEX: usize>() -> Arc<dyn ResourceFactory> {
     let factory = KindActivator::<MetadataFixture<INDEX>, _, _>::with_metadata(
-        ResourceMetadataDraft::from_key(MetadataFixture::<INDEX>::key()),
+        ResourceMetadataDraft::new(
+            MetadataFixture::<INDEX>::key(),
+            nebula_resource::metadata_name!("Metadata fixture"),
+            "",
+        ),
         || MetadataFixture,
         || Resident::new(ResidentConfig::default()),
     );
@@ -149,7 +161,6 @@ macro_rules! credential_fixture {
                     nebula_core::credential_key!($metadata_key),
                     nebula_credential::metadata_name!("Stub"),
                     "stub credential",
-                    AuthPattern::SecretToken,
                 )
             }
 

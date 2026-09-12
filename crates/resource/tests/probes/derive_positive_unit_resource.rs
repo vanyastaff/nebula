@@ -30,6 +30,14 @@ impl Provider for UnitResource {
     type Instance = ();
     type Topology = Resident<Self>;
 
+    fn metadata() -> nebula_resource::ResourceMetadataDraft {
+        nebula_resource::ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("UnitResource"),
+            "",
+        )
+    }
+
     fn key() -> ResourceKey {
         resource_key!("positive.unit")
     }

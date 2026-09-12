@@ -13,7 +13,7 @@
 //!      listing every declared slot key (used by
 //!      `Manager::refresh_slot`/`taint_slot`'s unknown-slot validation).
 //!
-//! 2. Hand-written `impl Provider` — the implementor supplies `key()`, the three
+//! 2. Hand-written `impl Provider` — the implementor supplies `key()`, `metadata()`, the three
 //!    associated types (`Config`, `Instance`, `Topology`), and lifecycle methods
 //!    (`create`, optionally `check`, consuming `destroy`, hooks).
 //!

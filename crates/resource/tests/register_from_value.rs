@@ -138,7 +138,11 @@ impl Provider for Postgres {
     }
 
     fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::from_key(Self::key())
+        ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("phase9-pg"),
+            "",
+        )
     }
 }
 
@@ -168,6 +172,14 @@ impl<const CREDENTIALS: bool> Provider for AdmissionResource<CREDENTIALS> {
     type Config = PgConfig;
     type Instance = ();
     type Topology = AdmissionTopology;
+
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("AdmissionResource"),
+            "",
+        )
+    }
 
     fn key() -> ResourceKey {
         resource_key!("test.revoke-admission")
@@ -485,7 +497,11 @@ impl Provider for DriftedSlotSignals {
     }
 
     fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::from_key(Self::key())
+        ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("phase9-drifted-slot-signals"),
+            "",
+        )
     }
 }
 
@@ -570,7 +586,11 @@ impl Provider for DriftedSlotNames {
     }
 
     fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::from_key(Self::key())
+        ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("phase9-drifted-slot-names"),
+            "",
+        )
     }
 }
 
@@ -740,7 +760,11 @@ impl Provider for CacheBackend {
     }
 
     fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::from_key(Self::key())
+        ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("union-cache"),
+            "",
+        )
     }
 }
 

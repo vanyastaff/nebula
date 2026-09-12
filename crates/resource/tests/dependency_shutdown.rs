@@ -52,7 +52,11 @@ impl<const ID: usize> Provider for ResidentNode<ID> {
         ResourceKey::try_from(format!("dependency-node-{ID}")).unwrap()
     }
     fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::from_key(Self::key())
+        ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("ResidentNode"),
+            "",
+        )
     }
     async fn create(&self, _: &Config, _: &ResourceContext) -> Result<Instance, Error> {
         Ok(Instance {
@@ -96,7 +100,11 @@ impl Provider for PooledParent {
         nebula_core::resource_key!("dependency-pooled-parent")
     }
     fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::from_key(Self::key())
+        ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("dependency-pooled-parent"),
+            "",
+        )
     }
     async fn create(&self, _: &Config, _: &ResourceContext) -> Result<Instance, Error> {
         Ok(Instance {

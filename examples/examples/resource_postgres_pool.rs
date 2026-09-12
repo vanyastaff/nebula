@@ -223,7 +223,11 @@ impl Provider for Postgres {
     }
 
     fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::from_key(Self::key())
+        ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("demo.postgres"),
+            "",
+        )
     }
 }
 

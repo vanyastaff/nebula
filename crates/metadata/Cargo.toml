@@ -12,16 +12,19 @@ homepage.workspace = true
 documentation.workspace = true
 
 [dependencies]
+chrono = { workspace = true }
+domain-key = { workspace = true }
 nebula-core = { path = "../core" }
 nebula-error = { workspace = true, features = ["derive"] }
 nebula-schema = { path = "../schema" }
 semver = { workspace = true, features = ["serde"] }
 serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+url = { workspace = true }
 
 [dev-dependencies]
-serde_json = { workspace = true }
 insta = { workspace = true }
 pretty_assertions = { workspace = true }
 proptest = { workspace = true }
