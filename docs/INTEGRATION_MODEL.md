@@ -69,6 +69,14 @@ and no derive requires an associated type to be `Self`.
 | Credential slot | `#[slot(credential, ...)]` on an action or resource | no | no | `slot_bindings` |
 | Resource slot | `#[slot(resource, ...)]` on an action | no | no | `slot_bindings` |
 
+Target `#[schema_type(input)]`, `#[schema_type(output)]` or `#[schema_type(input, output)]`
+owns real library Serde derives plus Schema on the same DTO and generates recursive
+InputCodec/OutputCodec evidence. Inputs/properties require input evidence; action
+outputs require output evidence; resource configs require both as a new target
+round-trip authoring contract, independent of fingerprinting. Schema-only derive
+remains valid but supplies no codec witness. Custom codecs require explicit reviewed
+adapter newtypes; SDK hidden paths are not a native-code security boundary.
+
 `#[derive(Schema)]` describes value fields, not dependency declarations. Slots and
 their bindings remain outside parameters, credential properties, and persisted
 config values. Catalog export may describe slots beside the value schema; that
@@ -83,6 +91,12 @@ contracts. The existing `#[credential]` macro on an impl block continues to infe
 capability membership from methods. A struct derive cannot inspect a separate
 impl block and must not claim to infer those capabilities. No new behavior
 family or hidden companion data type is introduced by this proposal.
+
+**Target output boundary, unshipped:** every action family rejects protected output
+domains recursively at admission before handlers/serializers, including absent or
+inactive nested/external branches. Validate actual ordinary output against the
+outbound schema before publish/persist, without inbound transforms/defaults;
+serializer and validation errors are payload-free. Codec evidence is not admission.
 
 **Presentation boundary, target only:** `display(...)` must not change value
 requiredness, suppress validation, or grant slot authority. Value validity belongs

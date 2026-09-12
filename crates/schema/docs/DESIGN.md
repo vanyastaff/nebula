@@ -247,8 +247,13 @@ execution stays centralized at `validate_rules_with_ctx` and
 
 - [PHASE5_PROPERTY.md](PHASE5_PROPERTY.md): revised target design; implementation
   pending. Value-only `#[property(display(...), input(...), validate(...), options(...))]`
-  describes explicit `Input` / `Properties` / `Config` data types; separate `#[slot(...)]`
-  dependencies stay outside `HasSchema` and persisted values. Current `#[field(...)]` /
+  describes explicit `Input` / `Output` / `Properties` / `Config` data types.
+  `schema_type(input)`, `schema_type(output)` or `schema_type(input, output)` owns
+  real Serde derives plus Schema and recursive InputCodec/OutputCodec evidence;
+  raw Schema remains descriptive without codec evidence. Custom codecs use reviewed
+  adapters; defaults additionally require their field's encoding direction.
+  Separate `#[slot(...)]` dependencies stay outside `HasSchema` and persisted values.
+  Current `#[field(...)]` /
   `#[validate(...)]` helpers remain the implementation baseline. Target presentation
   must not affect value requiredness or grant slot authority; semantic decoupling
   requires a future versioned migration. Full schema equality remains conservative
