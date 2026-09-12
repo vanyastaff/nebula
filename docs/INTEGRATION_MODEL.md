@@ -43,6 +43,26 @@ recorded DTOs deserialize, and readmission returns the fresh definition rather
 than promoting recorded fields. `PluginManifest` remains the bundle descriptor
 and uses its own checked builder; it is not a catalog-leaf admission bypass.
 
+### Unified declarative authoring
+
+The accepted declarative authoring grammar is specified in
+[`crates/schema/docs/PHASE5_PROPERTY.md`](../crates/schema/docs/PHASE5_PROPERTY.md).
+It gives schema-only structs, Actions, Credentials, and Resources one
+field-level `#[property(...)]` grammar while preserving the separation between
+value schemas and dependency slots.
+
+| Field kind | Attribute mode | Included in `HasSchema` | Persisted as values | Binding source |
+|---|---|---:|---:|---|
+| Parameter / config / credential property | `#[property(...)]` | yes | yes | authored values |
+| Credential slot | `#[property(credential, ...)]` | no | no | `slot_bindings` |
+| Resource slot | `#[property(resource, ...)]` | no | no | `slot_bindings` |
+
+Slots are catalog and activation declarations, not schema fields. JSON Schema
+export for `ValidSchema` remains value-only; catalog export may attach slot
+metadata as `x-nebula-slots` beside the value schema. Programmatic
+`ActionMetadataDraft` / `CredentialMetadataDraft` / `ResourceMetadataDraft`
+builders remain a separate surface and are made symmetric by issue 1018.
+
 The **schema subsystem** (`nebula-schema` crate) is the **fifth concept**, shared across integration kinds. `HasSchema::schema()` / `schema_of` and metadata admission are fallible: invalid definitions do not become catalog entries. Runtime data then moves through four distinct phases:
 
 | Phase | Representation | Guarantee |

@@ -245,6 +245,9 @@ execution stays centralized at `validate_rules_with_ctx` and
 
 ## Module map and checks
 
+- `PHASE5_PROPERTY.md`: accepted unified `#[property(...)]` authoring grammar
+  for schema-only structs and integration crates. It keeps slots outside
+  `HasSchema`, so the proof-token pipeline below remains value-only.
 - `schema.rs`, `field.rs`, `builder/`, and `lint.rs`: definitions, construction,
   checked keys, aliases, and bounded structural lint.
 - `value/mod.rs`, `tree.rs`, `wire.rs`, `tree_canonical.rs`, and `canonical.rs`
