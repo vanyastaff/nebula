@@ -168,7 +168,8 @@ Dev: `nebula-credential-macros`, `nebula-expression`, `trybuild`, `insta`, `rste
   упрощение re-export-блока в `lib.rs`. **Что остаётся:** сама форма слотов (`#[credential]`/`#[resource]`,
   `CredentialGuard<Scheme>`, `ResourceGuard<R>`), `FromWorkflowNode`-seam, webhook «секрет не через dyn»-инвариант,
   routing-по-трейту. Lease — first-class на стороне credential; action видит его опосредованно через guard, не как
-  собственный примитив. Unified `#[property]`-авторинг — Phase-5, NOT-YET-BUILT; текущий derive остаётся актуальным.
+  собственный примитив. [Phase-5 authoring](../../schema/docs/PHASE5_PROPERTY.md) — target design,
+  implementation pending; текущие field-атрибуты слотов остаются implementation baseline.
 
 ## 8. Forward design / открытые вопросы
 
@@ -186,5 +187,45 @@ Dev: `nebula-credential-macros`, `nebula-expression`, `trybuild`, `insta`, `rste
 - **Риск bind-population:** `FromWorkflowNode` готов как consumer-конец, но producer (прод-резолвер
   credential→slot) — frontier на стороне `nebula-resource`/`nebula-credential`. Пока producer не зрелый,
   end-to-end slot-binding нельзя считать закрытым со стороны action.
-- **Phase-5 unified `#[property]`-authoring** — следить за решением; если введут, derive-поверхность и slots-only-инвариант
-  придётся пересмотреть синхронно, но это NOT-YET-BUILT.
+- **Phase-5 revised proposal, implementation pending** —
+  [контракт](../../schema/docs/PHASE5_PROPERTY.md) сохраняет явные `Input` / `Output`,
+  `execute(&self, input, ...)`, `FromWorkflowNode` и существующие behavior families.
+  Value-only `#[property(...)]` живёт на data-типе; отдельные `#[slot(credential, ...)]` /
+  `#[slot(resource, ...)]` — на action. Slots остаются вне `HasSchema` и persisted parameters.
+  Target `schema_type(input)` / `schema_type(output)` owns real Serde and Schema
+  derives on the associated DTO; require recursive InputCodec / OutputCodec bounds.
+  Schema-only supplies no codec witness. Every behavior family rejects protected
+  output domains at admission before handlers/serializers, even absent/inactive
+  nested or external branches. Serialize actual ordinary output once and validate
+  literal payloads under the exact admitted outbound schema before publish/persist,
+  without inbound aliases/transforms/defaults; codec errors are payload-free.
+  Target trigger output is also `Action::Output: OutputCodec` (including HasSchema):
+  remove independent `PollAction::Event`, return `PollResult<Self::Output>`, and use
+  public `TriggerEventOutcome<Self::Output>` with `Skip`, `Emit(T)`, `EmitMany(Vec<T>)`.
+  Propagate this through `WebhookResponse<Self::Output>`; raw inbound `TriggerEvent`
+  and `TriggerSource::Event` remain independent transport inputs. Reject protected
+  output before activation, poll setup/poll, event callbacks or serialization.
+  Only checked serialization and outbound validation may construct the runtime
+  erased Value output boundary; no raw `Emit(Value)` adapter bypass is permitted.
+  Validate all EmitMany and poll Ready/Partial elements before any workflow
+  publication from that call/batch. Staging state is per handler call/batch; a bad
+  item yields zero publications. Runtime policy owns explicit item-count and
+  aggregate encoded-byte caps: enforce them before unbounded staging allocation/work
+  with bounded serialization and checked size accounting. Limit/accounting overflow
+  is payload-free with zero publications; acceptance asserts serializer/encoder-work
+  and publication counters. These are not author metadata limits.
+  Existing runtime/trigger orchestration retains
+  transaction, delivery and cursor ownership, without a new batch-atomicity claim.
+  Retain an independent pre-poll `Cursor: Clone` snapshot through staging. For
+  Ready/Partial serialization, validation or budget/accounting failure, restore it
+  and discard all cycle cursor/checkpoint changes before retry/stop/persist; staging
+  cancellation also commits no progress. `PollCursor::rollback()` only restores the
+  latest checkpoint. Existing dispatch/Partial cursor rules resume only after all
+  output passes; failure policy cannot advance checkpoints for this zero-publication failure.
+  Every ingress/dispatch path, including direct public `TriggerHandler` calls,
+  factory handles, webhook/poll adapters, harnesses, event sources and lifecycle/
+  context emission, must use the checked adapter or an explicit trusted adapter
+  enforcing the same gate. The proposal includes trigger compile/admission/runtime
+  acceptance and coordinated migration tasks; these are unshipped targets.
+  `ActionMetadataDraft` сохраняет schema-free lifecycle и `with_*`; factory выводит обе схемы и kind.
+  Constructor/SDK parity issue 1018 описана в [integration model](../../../docs/INTEGRATION_MODEL.md#shared-metadata-authoring-current-foundation-target-parity).

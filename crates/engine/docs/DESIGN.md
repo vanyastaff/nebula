@@ -167,7 +167,13 @@ projection-registry не нужен (`StateProjectionRegistry` был vestigial,
 capability + metadata теперь живут только на `nebula_credential::CredentialRegistry`). Conference-
 коррекции (которые движутся **внутри** `nebula-credential`, не здесь): `policy(&State)` должна
 определять routing; `CredentialSelector` для owner-изоляции; узкий типизированный `RefreshTransport`
-seam; lease как first-class; `#[property]`/unified authoring — Phase-5, **ещё не построено**.
+seam; lease как first-class. **Phase-5 target design, implementation pending:**
+[контракт](../../schema/docs/PHASE5_PROPERTY.md) сохраняет явные `Input` / `Properties` / `Config`
+и существующие behavior families. Value-only `#[property(...)]` и отдельный `#[slot(...)]`
+не меняют engine consumer `slot_bindings`, `FromWorkflowNode`, root-shape и exact-schema proof boundaries.
+Slots остаются вне `HasSchema` и persisted parameter/config values. Target presentation не выдаёт
+slot/tenant authority; semantic decoupling требует будущей versioned migration, при сохранении
+консервативного полного schema equality, включая UI.
 
 **Resource.** Per-slot rotation **fan-out** уехал в `nebula-resource`
 (`credential_fanout/`, ex-engine). Engine остаётся:
