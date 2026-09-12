@@ -216,6 +216,12 @@ Dev: `nebula-credential-macros`, `nebula-expression`, `trybuild`, `insta`, `rste
   and publication counters. These are not author metadata limits.
   Existing runtime/trigger orchestration retains
   transaction, delivery and cursor ownership, without a new batch-atomicity claim.
+  Retain an independent pre-poll `Cursor: Clone` snapshot through staging. For
+  Ready/Partial serialization, validation or budget/accounting failure, restore it
+  and discard all cycle cursor/checkpoint changes before retry/stop/persist; staging
+  cancellation also commits no progress. `PollCursor::rollback()` only restores the
+  latest checkpoint. Existing dispatch/Partial cursor rules resume only after all
+  output passes; failure policy cannot advance checkpoints for this zero-publication failure.
   Every ingress/dispatch path, including direct public `TriggerHandler` calls,
   factory handles, webhook/poll adapters, harnesses, event sources and lifecycle/
   context emission, must use the checked adapter or an explicit trusted adapter

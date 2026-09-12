@@ -359,6 +359,20 @@ cursor progress, retries and
 cancellation remain with their existing runtime/trigger orchestration owners;
 this gate does not promise an atomic transaction across all emitted workflows.
 
+For polls, retain an independent pre-poll snapshot, captured before `poll()` using
+the existing `PollAction::Cursor: Clone` contract, until all staging/validation
+succeeds. Clone must preserve exact pre-poll state independently of poll mutations;
+shared mutable state that changes the snapshot cannot satisfy rollback semantics.
+For Ready or Partial, serialization, validation or budget/accounting failure must
+restore that exact snapshot and discard every cursor advance and checkpoint from
+this cycle before retry, stop or persistence. `PollCursor::rollback()` restores
+the latest checkpoint only; discard the cycle's `PollCursor` and restore `pre_poll`
+instead. Existing failure policy may choose retry/stop but cannot advance a
+checkpoint for this zero-publication failure. Cancellation during staging must
+likewise restore pre-poll state, never commit progress before payload validation.
+Only after all output passes may existing dispatch-success, dispatch-failure and
+Partial checkpoint rules resume; rollback for this new failure class stays runtime-owned.
+
 The public erased `TriggerHandler` is an independently callable ingress surface,
 even though its implementations are sealed. All supported ingress and dispatch
 paths, including factory handles, direct dyn calls, webhook callbacks, poll loops,
@@ -1093,6 +1107,7 @@ schemas and runtime provider behavior are not visible to a proc macro.
 | Trigger protected admission | Base, poll and webhook triggers with direct/nested/external/newtype/list/optional/inactive protected outputs fail with zero activation, poll setup/poll, event callback and serializer calls, including manual adapters. Skip/Idle intent grants no exemption. |
 | Trigger literal output | Valid renamed output serializes once per item and publishes the exact checked value; wrong outbound keys/domains fail without inbound repair, and expression-looking strings remain literal. Serializer/validation diagnostics expose no payload or upstream source text. |
 | Trigger batch validation | An invalid or serialization-failing later item in EmitMany or poll Ready/Partial yields zero publications for that call/batch; all-valid batches publish only after every item passes, with no reserialization. Skip/empty batches publish nothing. |
+| Poll staging rollback | For both Ready and Partial, poll mutates cursor and checkpoints after a valid first event, then a later item fails validation, serialization or budget/accounting: assert zero emissions, exact pre-poll restoration and both events fetchable on the next poll. Cancellation during staging also commits no progress. A fully validated Partial with successful dispatch still resumes at its checkpoint under the existing dispatch policy. |
 | Trigger batch budgets | At-cap valid batches succeed; over-item-count batches invoke zero serializers. Aggregate encoded-byte or accounting overflow stops bounded encoding without later-item serializer calls and yields zero publications. Assert serializer/encoder-work and publication counters, including overflow after a valid earlier item, through checked and trusted adapters; diagnostics remain payload-free. |
 | Trigger ingress coverage | Factory handles, direct public TriggerHandler calls, webhook callbacks, poll loops, SDK harnesses, event sources and lifecycle/context emitters use checked or explicit trusted adapters with the same gate. Raw Emit(Value) bypass and stale/mismatched output-schema evidence are rejected. |
 | Actual outbound validation | Invalid branch/partial/stream/deferred ordinary output cannot publish/persist; no inbound repair; malicious serializer error text stays out of public diagnostics. |
@@ -1150,10 +1165,11 @@ default drift, guard lifetime and lazy/conditional ambiguities, visibility polic
 coupling, and P2 alias/newtype/generic gaps. The sections above address those
 objections as design decisions; no implementation fix or passing test is claimed.
 The former attributed approvals are withdrawn, not carried forward as sign-off.
-Coordinator focused document-review verdict: COMPLETE for the trigger-output
+Prior coordinator focused document-review verdict: COMPLETE for the trigger-output
 contract, including checked public TriggerHandler routing and bounded batch
 staging. This is design review only; runtime targets remain unshipped and
 implementation acceptance is outstanding.
+Coordinator focused amendment-review verdict: COMPLETE for this pre-poll rollback amendment.
 Previously reported existing-code checks passed fmt, clippy, 8542 nextest tests
 (3 skipped), doctests and deny with configuration warnings. These runtime checks
 were not rerun for this amendment and do not exercise its targets.

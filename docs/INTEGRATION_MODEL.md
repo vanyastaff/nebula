@@ -122,6 +122,12 @@ public `TriggerHandler` calls, webhook/poll adapters, harnesses, event sources a
 lifecycle/context emission, must use a checked adapter or an explicit trusted
 adapter with the same admission and output gate. The linked proposal specifies
 the breaking migration and compile/admission/runtime acceptance; none is shipped.
+Poll adapters retain an independent pre-poll `Cursor: Clone` snapshot through staging.
+For Ready/Partial serialization, validation or budget/accounting failure, restore it
+and discard all cycle cursor/checkpoint changes before retry/stop/persist; cancellation
+during staging likewise commits no progress. `PollCursor::rollback()` only restores
+the latest checkpoint. Existing dispatch/Partial cursor rules resume only after all
+output passes; failure policy cannot advance checkpoints for this zero-publication failure.
 
 **Presentation boundary, target only:** `display(...)` must not change value
 requiredness, suppress validation, or grant slot authority. Value validity belongs
