@@ -196,7 +196,30 @@ Dev: `nebula-credential-macros`, `nebula-expression`, `trybuild`, `insta`, `rste
   derives on the associated DTO; require recursive InputCodec / OutputCodec bounds.
   Schema-only supplies no codec witness. Every behavior family rejects protected
   output domains at admission before handlers/serializers, even absent/inactive
-  nested or external branches. Validate actual ordinary outbound payloads before
-  publish/persist without inbound transforms/defaults; codec errors are payload-free.
+  nested or external branches. Serialize actual ordinary output once and validate
+  literal payloads under the exact admitted outbound schema before publish/persist,
+  without inbound aliases/transforms/defaults; codec errors are payload-free.
+  Target trigger output is also `Action::Output: OutputCodec` (including HasSchema):
+  remove independent `PollAction::Event`, return `PollResult<Self::Output>`, and use
+  public `TriggerEventOutcome<Self::Output>` with `Skip`, `Emit(T)`, `EmitMany(Vec<T>)`.
+  Propagate this through `WebhookResponse<Self::Output>`; raw inbound `TriggerEvent`
+  and `TriggerSource::Event` remain independent transport inputs. Reject protected
+  output before activation, poll setup/poll, event callbacks or serialization.
+  Only checked serialization and outbound validation may construct the runtime
+  erased Value output boundary; no raw `Emit(Value)` adapter bypass is permitted.
+  Validate all EmitMany and poll Ready/Partial elements before any workflow
+  publication from that call/batch. Staging state is per handler call/batch; a bad
+  item yields zero publications. Runtime policy owns explicit item-count and
+  aggregate encoded-byte caps: enforce them before unbounded staging allocation/work
+  with bounded serialization and checked size accounting. Limit/accounting overflow
+  is payload-free with zero publications; acceptance asserts serializer/encoder-work
+  and publication counters. These are not author metadata limits.
+  Existing runtime/trigger orchestration retains
+  transaction, delivery and cursor ownership, without a new batch-atomicity claim.
+  Every ingress/dispatch path, including direct public `TriggerHandler` calls,
+  factory handles, webhook/poll adapters, harnesses, event sources and lifecycle/
+  context emission, must use the checked adapter or an explicit trusted adapter
+  enforcing the same gate. The proposal includes trigger compile/admission/runtime
+  acceptance and coordinated migration tasks; these are unshipped targets.
   `ActionMetadataDraft` сохраняет schema-free lifecycle и `with_*`; factory выводит обе схемы и kind.
   Constructor/SDK parity issue 1018 описана в [integration model](../../../docs/INTEGRATION_MODEL.md#shared-metadata-authoring-current-foundation-target-parity).

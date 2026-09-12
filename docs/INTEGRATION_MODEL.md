@@ -94,9 +94,34 @@ family or hidden companion data type is introduced by this proposal.
 
 **Target output boundary, unshipped:** every action family rejects protected output
 domains recursively at admission before handlers/serializers, including absent or
-inactive nested/external branches. Validate actual ordinary output against the
-outbound schema before publish/persist, without inbound transforms/defaults;
+inactive nested/external branches. Serialize actual ordinary output once and
+validate it as literal data against the exact admitted outbound schema before
+publish/persist, without inbound aliases/transforms/defaults;
 serializer and validation errors are payload-free. Codec evidence is not admission.
+
+Outgoing trigger payloads use `Action::Output` with the same HasSchema/OutputCodec
+contract: remove independent `PollAction::Event`, return `PollResult<Self::Output>`,
+and make the public author `TriggerEventOutcome<T>` hold `Skip`, `Emit(T)` or
+`EmitMany(Vec<T>)`, used as `TriggerEventOutcome<Self::Output>`. Webhook author
+responses propagate that type through `WebhookResponse<Self::Output>`. Raw inbound
+`TriggerEvent` and `TriggerSource::Event` remain separate transport input contracts.
+Reject protected output before activation, poll setup/poll, event callbacks or
+serialization. Create the runtime erased Value output boundary only after the
+checked adapter serializes once and validates under its exact admitted schema;
+no raw `Emit(Value)` compatibility adapter may bypass it.
+
+For EmitMany and poll Ready/Partial, validate every item before any workflow
+publication from that handler call/batch. Staging state is scoped to that call/batch;
+one invalid item means zero publications. Enforce runtime-owned item-count and
+aggregate encoded-byte caps before unbounded staging allocation/work, using bounded
+serialization and checked size accounting. Limit/accounting overflow is payload-free
+and publishes nothing; author metadata does not own these limits. Existing runtime/trigger orchestration
+retains transaction, delivery and cursor ownership; this is not a promise of one
+atomic transaction for all workflows. All ingress/dispatch paths, including direct
+public `TriggerHandler` calls, webhook/poll adapters, harnesses, event sources and
+lifecycle/context emission, must use a checked adapter or an explicit trusted
+adapter with the same admission and output gate. The linked proposal specifies
+the breaking migration and compile/admission/runtime acceptance; none is shipped.
 
 **Presentation boundary, target only:** `display(...)` must not change value
 requiredness, suppress validation, or grant slot authority. Value validity belongs
