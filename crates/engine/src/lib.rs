@@ -60,6 +60,7 @@
 //! See `crates/engine/README.md` for known open debts (budget ephemerality,
 //! edge-gate narrowness).
 
+pub mod binding_resolver;
 pub mod control_consumer;
 pub mod control_dispatch;
 mod control_trace;
@@ -91,6 +92,9 @@ pub mod workflow_activation;
 // Re-export the absorbed `nebula-runtime` public surface at the crate root so
 // every downstream caller can migrate `use crate::runtime::X` → `use
 // nebula_engine::X` without path adjustments deeper than the crate name.
+pub use binding_resolver::{
+    BindingResolutionError, BindingResolutionFuture, ExecutionBindingResolver,
+};
 pub use control_consumer::{
     ClaimedControlDispatchOutcome, ControlConsumer, ControlDispatch, ControlDispatchError,
     DEFAULT_BATCH_SIZE, DEFAULT_POLL_INTERVAL, MAX_CLAIM_ERROR_BACKOFF,
@@ -119,6 +123,7 @@ pub use plugin_wiring::PluginWiringError;
 // Re-export plugin types for convenience.
 pub use nebula_plugin::{Plugin, PluginKey, PluginManifest, PluginRegistry, ResolvedPlugin};
 pub use node_output::NodeOutput;
+pub use recorded_contract::CheckedExecutionContract;
 pub use resource::{
     KindActivator, RegisterRequest, RegistrarError, ResourceActivatorRegistry, ResourceFactory,
     ResourceRegistrationOutcome, SlotBinding,

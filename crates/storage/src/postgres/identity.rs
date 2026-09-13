@@ -583,6 +583,10 @@ fn resource_from_row(r: &sqlx::postgres::PgRow) -> Result<ResourceRow, StorageEr
             .try_get::<Json<serde_json::Value>, _>("config")
             .map(|j| j.0)
             .map_err(conn_err)?,
+        credential_bindings: r
+            .try_get::<Json<std::collections::BTreeMap<String, String>>, _>("credential_bindings")
+            .map(|json| json.0)
+            .map_err(conn_err)?,
         created_at: r.try_get("created_at").map_err(conn_err)?,
         created_by: r.try_get("created_by").map_err(conn_err)?,
         version: r.try_get::<i64, _>("version").map_err(conn_err)? as u64,
@@ -595,8 +599,9 @@ impl ResourceStore for PgResourceStore {
     async fn create(&self, scope: &Scope, row: ResourceRow) -> Result<(), StorageError> {
         let res = sqlx::query(
             "INSERT INTO port_resources (id, workspace_id, org_id, slug, \
-             display_name, kind, config, created_at, created_by, version, \
-             deleted_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+             display_name, kind, config, credential_bindings, created_at, \
+             created_by, version, deleted_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
         )
         .bind(&row.id)
         .bind(&scope.workspace_id)
@@ -605,6 +610,7 @@ impl ResourceStore for PgResourceStore {
         .bind(&row.display_name)
         .bind(&row.kind)
         .bind(Json(&row.config))
+        .bind(Json(&row.credential_bindings))
         .bind(&row.created_at)
         .bind(&row.created_by)
         .bind(row.version as i64)
@@ -660,13 +666,15 @@ impl ResourceStore for PgResourceStore {
     ) -> Result<(), StorageError> {
         let res = sqlx::query(
             "UPDATE port_resources SET slug = $1, display_name = $2, kind = $3, \
-             config = $4, version = $5 WHERE workspace_id = $6 AND org_id = $7 \
-             AND id = $8 AND deleted_at IS NULL AND version = $9",
+             config = $4, credential_bindings = $5, version = $6 \
+             WHERE workspace_id = $7 AND org_id = $8 AND id = $9 \
+             AND deleted_at IS NULL AND version = $10",
         )
         .bind(&row.slug)
         .bind(&row.display_name)
         .bind(&row.kind)
         .bind(Json(&row.config))
+        .bind(Json(&row.credential_bindings))
         .bind(row.version as i64)
         .bind(&scope.workspace_id)
         .bind(&scope.org_id)

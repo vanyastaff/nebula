@@ -355,7 +355,8 @@ pub use options::{
     DrainTimeoutPolicy, ManagerConfig, RegisterOptions, RegistrationSpec, ShutdownConfig,
 };
 pub use rotation::{
-    RevokeTail, SlotDeferralReason, SlotDispatchOutcome, SlotDrainOutcome, TaintedSlot,
+    EpochRefreshOutcome, EpochRevokeOutcome, RevokeTail, SlotDeferralReason, SlotDispatchOutcome,
+    SlotDrainOutcome, TaintedSlot,
 };
 pub use shutdown::{ShutdownError, ShutdownReport};
 

@@ -2,7 +2,7 @@
 > Local guide for `crates/credential/`. Read [root AGENTS.md](../../AGENTS.md) first;
 > this guide adds crate-specific rules. Design and status: [README.md](README.md).
 
-**Purpose:** The typed Credential Contract — declares the split between stored `State` (encrypted at rest) and projected auth `Scheme` (what action code receives). Runtime resolve/refresh/rotation **orchestration** lives in `src/runtime/` and `CredentialService` (ADR-0092). `apps/server` is the first-party composition root and owns production key, storage, catalog, refresh, and authority adapters. `nebula-api` retains only unsupported `test-util` fixtures; `nebula-engine` consumes typed runtime seams, and neither duplicates resolver logic.
+**Purpose:** The typed Credential Contract — declares the split between stored `State` (encrypted at rest) and projected auth `Scheme` (what action code receives). Runtime resolve/refresh/rotation **orchestration** lives in `src/runtime/` and `CredentialService` (ADR-0092). `apps/server` owns production management, key, catalog, refresh, lease, and authority adapters; worker composition may build the read/project-only `CredentialProjectionRuntime` over the same secure persistence boundary. `nebula-api` retains only unsupported `test-util` fixtures; `nebula-engine` consumes typed runtime seams, and neither duplicates resolver logic.
 **Layer:** Shared-infra (credential contract) — importable by Exec/API/Business per the `deny.toml` `[bans].deny` `wrappers` allowlist; depends only on Core + cross-cutting (root AGENTS.md → Layered Dependency Map).
 
 ## Common Tasks
@@ -37,7 +37,7 @@
 - **Capabilities are sub-trait membership, never const flags** — duplicate-KEY `register` is fatal in debug AND release; a declared-but-unimplemented capability is a compile error. Don't reintroduce capability bools or per-trait `*_schema` (schema = `Properties: HasSchema`, read via `schema_of`).
 - `CredentialState` requires `ZeroizeOnDrop`; `Debug` redacts secrets; `SchemeGuard` is `!Clone` and drop-zeroizes.
 - Refresh authority is the backend-authored material epoch, not serialized-byte equality or the general row version. Display/gate transitions preserve it; explicit material/reconnect, every durable reauthentication decision, and every successful refresh advance it even for byte-identical data and clear the old gate. Exact local finalization failures remain distinct from `OutcomeUnknown` for both winners and payload-free L1 waiters, and both retain the claim fail-closed.
-- First-party deployment wiring belongs in `apps/server`; `nebula-api::ports::credential_service_factory` is an unsupported `test-util` fixture and must never acquire production or provider policy.
+- First-party management/refresh wiring belongs in `apps/server`; worker wiring is limited to `CredentialProjectionRuntime` and must not construct refresh, lease, reclaim, or management authority. `nebula-api::ports::credential_service_factory` is an unsupported `test-util` fixture and must never acquire production or provider policy.
 - Supported authenticated HTTP management calls enter through `CredentialController`: one injected `CredentialTenantAuthority` decision, then one privately minted owner-bound command. Port-local owner/selector constructors and `CredentialPersistence` are public technical data/contracts, not authority and not supported SDK/API surfaces. Never add `None == admin`, expose those handles to handlers/integrations, or describe K1 as the K3 sole-writer/ledger closure.
 
 ## Change checks

@@ -100,7 +100,6 @@ handler/port adapter boundary, and public errors are always `application/problem
   factory/builder exists only behind unsupported `test-util` for hermetic integration tests.
 - Google ID-token claim checks are live, but local rotating-JWKS signature verification remains an
   explicit security follow-up.
-- Some legacy resource repository/error mapping remains to be moved onto the canonical port model.
 - Production workspace-directory and membership wiring remains incomplete: lower-level storage is
   not a substitute for the API policy port's one-snapshot authorization and atomic lockout guards;
   an apps-owned durable directory/policy bridge and supported operator configuration are K4 work.

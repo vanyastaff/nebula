@@ -245,6 +245,7 @@ impl RuntimeRepairHarness {
             Arc::clone(&metrics_registry),
             execution_bundle,
             registry,
+            None,
         )
         .map_err(ProfileErrorKind::Composition)?;
         state = compose_closed_identity(state, &api_config).await?;

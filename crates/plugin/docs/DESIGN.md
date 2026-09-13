@@ -172,6 +172,10 @@ in-memory, durability — в `nebula-storage`); не отвечает за threa
   (values-only persistence, schema из зарегистрированных типов через `HasSchema` →
   `nebula-metadata` → API-каталог). Façade-уровня credential (policy(&State)-routing,
   CredentialSelector, RefreshTransport, lease) plugin не видит и видеть не должен.
+- **Selector provenance.** Current compiler records defaults as owner-local slot-key names and
+  explicit node overrides as credential-ID or resource-ID selectors. Prefixes do not determine
+  meaning. Older wire records remain decodable and surface `Legacy` provenance; the new provenance
+  participates in the `nebula.executable-plan.graph.v3` content identity.
 
 ## 8. Forward design / открытые вопросы
 

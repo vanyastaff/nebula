@@ -102,9 +102,6 @@ pub enum WorkflowActivationError {
     /// Compilation rejected the definition; typed diagnostics remain available.
     #[error("workflow compilation failed")]
     Compilation(#[source] PlanCompilationError),
-    /// The compiled graph still contains bindings this runtime cannot resolve.
-    #[error("workflow contains unresolved runtime bindings")]
-    UnresolvedBindings,
     /// The compiled graph requests semantics the recorded runtime cannot preserve.
     #[error("workflow contains unsupported recorded runtime semantics")]
     UnsupportedRecordedSemantics,
@@ -208,9 +205,6 @@ impl WorkflowActivationService {
                         "WORKFLOW_ACTIVATION:INVALID_DEFINITION"
                     },
                     WorkflowActivationError::Compilation(_) => "WORKFLOW_ACTIVATION:COMPILATION",
-                    WorkflowActivationError::UnresolvedBindings => {
-                        "WORKFLOW_ACTIVATION:UNRESOLVED_BINDINGS"
-                    },
                     WorkflowActivationError::UnsupportedRecordedSemantics => {
                         "WORKFLOW_ACTIVATION:UNSUPPORTED_RECORDED_SEMANTICS"
                     },
@@ -266,16 +260,8 @@ impl WorkflowActivationService {
         let graph = plan
             .execution_graph()
             .map_err(|_| WorkflowActivationError::UnsupportedRecordedSemantics)?;
-        crate::recorded_graph::validate_recorded_graph(&graph).map_err(
-            |rejection| match rejection {
-                crate::recorded_graph::RecordedGraphRejection::UnresolvedBindings => {
-                    WorkflowActivationError::UnresolvedBindings
-                },
-                crate::recorded_graph::RecordedGraphRejection::UnsupportedSemantics => {
-                    WorkflowActivationError::UnsupportedRecordedSemantics
-                },
-            },
-        )?;
+        crate::recorded_graph::validate_recorded_graph(&graph)
+            .map_err(|_| WorkflowActivationError::UnsupportedRecordedSemantics)?;
         let activation = WorkflowActivation::new(
             workflow_revision,
             PlanFlavorRevisionIds::new(plan.id(), plan.worker_flavor_revision_id()),

@@ -23,7 +23,7 @@ use nebula_action::{
     ActionError, ActionResult, capability::default_resource_accessor, result::WaitCondition,
 };
 use nebula_core::{
-    ActionKey, CredentialKey, NodeKey, PortKey, ResourceKey,
+    NodeKey, PortKey, ResourceKey,
     accessor::{Clock, CredentialAccessor, ResourceAccessor, SystemClock},
     id::{ExecutionId, InstanceId, WorkflowId},
     node_key,
@@ -177,23 +177,6 @@ type CredentialRefreshFn = Arc<
     dyn Fn(&str) -> Pin<Box<dyn Future<Output = Result<(), ActionError>> + Send>> + Send + Sync,
 >;
 
-/// Type alias for the boxed async credential-resolution function stored on the engine.
-type CredentialResolveFn = Arc<
-    dyn Fn(
-            &str,
-        ) -> Pin<
-            Box<
-                dyn Future<
-                        Output = Result<
-                            nebula_credential::CredentialSnapshot,
-                            nebula_credential::CredentialAccessError,
-                        >,
-                    > + Send,
-            >,
-        > + Send
-        + Sync,
->;
-
 struct PlanFlavorRuntime {
     loader: Arc<crate::revision_catalog::PlanFlavorRevisionLoader>,
     registry: Arc<FrozenPluginRegistry>,
@@ -306,6 +289,11 @@ pub struct WorkflowEngine {
     /// Frozen slot-identity map per execution (snapshot at run start).
     resource_slot_identities_by_execution:
         DashMap<ExecutionId, Arc<HashMap<ResourceKey, nebula_resource::SlotIdentity>>>,
+    /// Exact credential binding closure installed only while a durable execution is driven.
+    credential_bindings_by_execution:
+        DashMap<ExecutionId, Arc<nebula_execution::ExecutionBindingManifestV2>>,
+    /// Owner partition paired with the exact credential binding closure.
+    credential_scopes_by_execution: DashMap<ExecutionId, nebula_credential::TenantScope>,
     /// Optional storage-port bundle (execution-state / lease / journal /
     /// node-result / idempotency / checkpoint). `None` puts the engine in
     /// single-process library mode (no coordination seam, no lease).
@@ -313,21 +301,13 @@ pub struct WorkflowEngine {
     /// Exact catalog and immutable factory snapshot are configured together.
     plan_flavor_runtime: Option<PlanFlavorRuntime>,
     /// Optional credential resolver function for providing credentials to actions.
-    credential_resolver: Option<CredentialResolveFn>,
+    credential_resolver: Option<Arc<dyn nebula_credential::CredentialSlotResolver>>,
     /// Optional proactive credential refresh hook.
     ///
     /// When set, the engine calls this before dispatching any node that uses
     /// credentials. The callee is responsible for refreshing the credential so
     /// the resolver returns a fresh snapshot when the action requests it.
     credential_refresh: Option<CredentialRefreshFn>,
-    /// Per-[`ActionKey`] credential allowlist (deny-by-default).
-    ///
-    /// Actions may only acquire credential IDs listed for their `ActionKey`.
-    /// Missing entry or empty set → every `acquire_credential` request for
-    /// that action is denied with [`nebula_credential::CredentialAccessError::AccessDenied`].
-    /// See product canon (operational honesty — no false capabilities; secrets and auth).
-    /// Populated via [`WorkflowEngine::with_action_credentials`].
-    action_credentials: HashMap<ActionKey, HashSet<String>>,
     /// Optional event sender for real-time execution monitoring (TUI, logging).
     event_bus: Option<EventBus>,
     /// Injectable clock for deterministic durable-timing paths (retry
@@ -595,11 +575,12 @@ impl WorkflowEngine {
             execution_acquire_scopes: DashMap::new(),
             resource_slot_identities: RwLock::new(HashMap::new()),
             resource_slot_identities_by_execution: DashMap::new(),
+            credential_bindings_by_execution: DashMap::new(),
+            credential_scopes_by_execution: DashMap::new(),
             stores: None,
             plan_flavor_runtime: None,
             credential_resolver: None,
             credential_refresh: None,
-            action_credentials: HashMap::new(),
             event_bus: None,
             clock: Arc::new(SystemClock),
             instance_id,
@@ -1222,71 +1203,15 @@ impl WorkflowEngine {
 
     /// Attach a credential resolver for providing credentials to actions.
     ///
-    /// The resolver is a type-erased async function that maps a credential ID
-    /// to a [`nebula_credential::CredentialSnapshot`]. When not set, actions
-    /// receive the default no-op accessor (which denies all credential access).
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// use nebula_engine::WorkflowEngine;
-    /// use nebula_credential::{CredentialAccessError, CredentialSnapshot};
-    /// # use std::sync::Arc;
-    /// # use nebula_engine::{
-    /// #     ActionExecutor, ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner,
-    /// # };
-    /// # use nebula_action::result::ActionResult;
-    /// # use nebula_metrics::MetricsRegistry;
-    /// # let registry = Arc::new(ActionRegistry::new());
-    /// # let executor: ActionExecutor =
-    /// #     Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
-    /// # let runner = Arc::new(InProcessRunner::new(executor));
-    /// # let metrics = MetricsRegistry::new();
-    /// # let runtime = Arc::new(
-    /// #     ActionRuntime::try_new(registry, runner, DataPassingPolicy::default(), metrics.clone())
-    /// #         .unwrap(),
-    /// # );
-    /// let engine = WorkflowEngine::new(runtime, metrics)?;
-    /// let engine_id = engine.instance_id();
-    ///
-    /// // A real resolver returns the credential's current `CredentialSnapshot`
-    /// // (e.g. by delegating to `nebula_credential::runtime::CredentialResolver`).
-    /// let engine = engine.with_credential_resolver(|id: &str| {
-    ///     let id = id.to_owned();
-    ///     async move {
-    ///         Err::<CredentialSnapshot, _>(CredentialAccessError::NotFound(id))
-    ///     }
-    /// });
-    ///
-    /// // The builder consumes and returns the same engine instance.
-    /// assert_eq!(engine.instance_id(), engine_id);
-    /// # Ok::<(), Box<dyn std::error::Error>>(())
-    /// ```
+    /// The resolver receives only tenant-scoped, manifest-authorized requests
+    /// and returns an opaque projected guard. When not set, actions receive the
+    /// default no-op accessor, which denies all credential access.
     #[must_use = "builder methods must be chained or built"]
-    pub fn with_credential_resolver<F, Fut>(mut self, resolver: F) -> Self
-    where
-        F: Fn(&str) -> Fut + Send + Sync + 'static,
-        Fut: Future<
-                Output = Result<
-                    nebula_credential::CredentialSnapshot,
-                    nebula_credential::CredentialAccessError,
-                >,
-            > + Send
-            + 'static,
-    {
-        self.credential_resolver = Some(Arc::new(move |id: &str| {
-            Box::pin(resolver(id))
-                as Pin<
-                    Box<
-                        dyn Future<
-                                Output = Result<
-                                    nebula_credential::CredentialSnapshot,
-                                    nebula_credential::CredentialAccessError,
-                                >,
-                            > + Send,
-                    >,
-                >
-        }));
+    pub fn with_credential_resolver(
+        mut self,
+        resolver: Arc<dyn nebula_credential::CredentialSlotResolver>,
+    ) -> Self {
+        self.credential_resolver = Some(resolver);
         self
     }
 
@@ -1369,59 +1294,6 @@ impl WorkflowEngine {
         handle: nebula_credential::runtime::ReclaimSweepHandle,
     ) -> Self {
         self.credential_reclaim_sweep = Some(handle);
-        self
-    }
-
-    /// Declare the credential IDs an action is permitted to acquire.
-    ///
-    /// The engine enforces a **deny-by-default** allowlist (see `PRODUCT_CANON` /// and ). When a node whose `action_key == action` runs, only the
-    /// credential IDs supplied here may be resolved — every other request fails
-    /// with [`nebula_credential::CredentialAccessError::AccessDenied`]. Actions
-    /// that are never declared here cannot acquire any credential at all.
-    ///
-    /// Multiple calls for the same `action` **merge** — the new entries are added
-    /// to the existing set rather than replacing it, so that composable fixtures
-    /// and plugin wiring can contribute independently.
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// use nebula_core::action_key;
-    /// use nebula_engine::WorkflowEngine;
-    /// # use std::sync::Arc;
-    /// # use nebula_engine::{
-    /// #     ActionExecutor, ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner,
-    /// # };
-    /// # use nebula_action::result::ActionResult;
-    /// # use nebula_metrics::MetricsRegistry;
-    /// # let registry = Arc::new(ActionRegistry::new());
-    /// # let executor: ActionExecutor =
-    /// #     Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
-    /// # let runner = Arc::new(InProcessRunner::new(executor));
-    /// # let metrics = MetricsRegistry::new();
-    /// # let runtime = Arc::new(
-    /// #     ActionRuntime::try_new(registry, runner, DataPassingPolicy::default(), metrics.clone())
-    /// #         .unwrap(),
-    /// # );
-    /// let engine = WorkflowEngine::new(runtime, metrics)?;
-    /// let engine_id = engine.instance_id();
-    ///
-    /// // Allow the `http.request` action to acquire only `github_token`.
-    /// let engine =
-    ///     engine.with_action_credentials(action_key!("http.request"), ["github_token"]);
-    ///
-    /// // The builder consumes and returns the same engine instance.
-    /// assert_eq!(engine.instance_id(), engine_id);
-    /// # Ok::<(), Box<dyn std::error::Error>>(())
-    /// ```
-    #[must_use = "builder methods must be chained or built"]
-    pub fn with_action_credentials<I, S>(mut self, action: ActionKey, credential_ids: I) -> Self
-    where
-        I: IntoIterator<Item = S>,
-        S: Into<String>,
-    {
-        let entry = self.action_credentials.entry(action).or_default();
-        entry.extend(credential_ids.into_iter().map(Into::into));
         self
     }
 

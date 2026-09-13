@@ -128,10 +128,15 @@ impl StartAcceptanceStore for SqliteStartAcceptanceStore {
         sqlx::query("INSERT INTO port_control_queue (id, execution_id, workspace_id, org_id, command, status, w3c_traceparent, reclaim_count, resume_target) VALUES (?, ?, ?, ?, 'Start', 'Pending', ?, 0, NULL)")
             .bind(start.command().id.as_slice()).bind(start.execution_id()).bind(&start.scope().workspace_id).bind(&start.scope().org_id)
             .bind(start.command().w3c_traceparent.as_deref()).execute(&mut *transaction).await.map_err(sql_error)?;
-        sqlx::query("INSERT INTO port_execution_contract_bundles (execution_id, workspace_id, org_id, bundle_id, executable_plan_id, worker_flavor_id, record_format, record_bytes, commitment_format, commitment) VALUES (?, ?, ?, ?, ?, ?, 'v1_json', ?, 'v1_sha256', ?)")
+        let record_format = match start.bundle().format() {
+            nebula_storage_port::dto::ContractBundleFormat::V1Json => "v1_json",
+            nebula_storage_port::dto::ContractBundleFormat::V2Json => "v2_json",
+            _ => return Err(StartMaterializationError::InvalidEnvelope),
+        };
+        sqlx::query("INSERT INTO port_execution_contract_bundles (execution_id, workspace_id, org_id, bundle_id, executable_plan_id, worker_flavor_id, record_format, record_bytes, commitment_format, commitment) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'v1_sha256', ?)")
             .bind(start.execution_id()).bind(&start.scope().workspace_id).bind(&start.scope().org_id)
             .bind(start.bundle().identity().bundle_id().as_bytes().as_slice()).bind(ids.plan().as_bytes().as_slice()).bind(ids.worker_flavor().as_bytes().as_slice())
-            .bind(start.bundle().bytes()).bind(commitment.as_slice()).execute(&mut *transaction).await.map_err(sql_error)?;
+            .bind(record_format).bind(start.bundle().bytes()).bind(commitment.as_slice()).execute(&mut *transaction).await.map_err(sql_error)?;
         sqlx::query("INSERT INTO port_execution_revision_refs (execution_id, execution_contract_bundle_id, executable_plan_id, worker_flavor_id, reference_state) VALUES (?, ?, ?, ?, 'live')")
             .bind(start.execution_id()).bind(start.bundle().identity().bundle_id().as_bytes().as_slice())
             .bind(ids.plan().as_bytes().as_slice()).bind(ids.worker_flavor().as_bytes().as_slice())
@@ -186,9 +191,6 @@ impl StartAcceptanceStore for SqliteStartAcceptanceStore {
             let invalid =
                 || StorageError::Internal("invalid stored execution contract bundle".into());
             let format: String = row.try_get("record_format").map_err(conn_err)?;
-            if format != "v1_json" {
-                return Err(invalid());
-            }
             let bundle: [u8; 16] = row
                 .try_get::<Vec<u8>, _>("bundle_id")
                 .map_err(conn_err)?
@@ -212,8 +214,16 @@ impl StartAcceptanceStore for SqliteStartAcceptanceStore {
                     nebula_core::WorkerFlavorRevisionId::from_bytes(flavor),
                 ),
             );
-            let record = nebula_storage_port::dto::ContractBundleRecord::v1_json(identity, bytes)
-                .map_err(|_| invalid())?;
+            let record = match format.as_str() {
+                "v1_json" => {
+                    nebula_storage_port::dto::ContractBundleRecord::v1_json(identity, bytes)
+                },
+                "v2_json" => {
+                    nebula_storage_port::dto::ContractBundleRecord::v2_json(identity, bytes)
+                },
+                _ => return Err(invalid()),
+            }
+            .map_err(|_| invalid())?;
             Ok(nebula_storage_port::dto::StoredContractBundle::new(
                 scope.clone(),
                 execution_id.to_owned(),

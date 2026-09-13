@@ -51,6 +51,10 @@ Patterns:
 - `RecordedExecutionContractBundleV1` and `ExecutionContractBundleIntegrityError` — untrusted
   durable/wire input plus typed validation failures for unsupported versions/profile,
   noncanonical credentials, unknown fields, and forged fingerprints.
+- `ExecutionContractBundleV2` and `ExecutionBindingManifestV2` — a separate versioned envelope
+  mapping each exact node/trigger slot to a typed credential or resource ID and its expected
+  contract. Its fingerprint covers tenant IDs, plan/plugin/workflow/flavor revisions, and the full
+  canonical site/slot mapping. It contains no secret material or credential material epoch.
 - `ExecutionPlan` — pre-computed parallel execution schedule derived from `DependencyGraph`.
   Feeds the engine scheduler.
 - `ReplayPlan` — resume plan for restarting from a checkpoint.
@@ -117,11 +121,11 @@ Patterns:
   `PluginSetId` is an independent plugin-set pin; the ID alone does not prove schemas, runtime
   behavior, artifact authenticity, authorization, or a complete frozen registry.
 
-- **Credential closure.** The exact loaded executable plan must carry
-  slot-to-selected-`CredentialId` mappings and the corresponding credential contract revisions.
-  Admission must compare the plan's unique selected credential IDs exactly with the bundle's
-  sorted, deduplicated set. If the plan contains only abstract credential requirements, the v1
-  bundle shape is insufficient to establish this closure.
+- **Binding closure.** V2 records exact site/slot selections separately from the authority-free
+  executable plan. Credential entries carry a typed `CredentialId`, contract key/version, and a
+  canonical capability set; resource entries carry a typed `ResourceId` and contract key/version.
+  Reconstruction proves structural integrity only. Worker admission must still derive tenant
+  authority independently and revalidate every selected object.
 
 ## Non-goals
 

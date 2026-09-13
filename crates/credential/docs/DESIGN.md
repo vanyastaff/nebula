@@ -147,6 +147,23 @@ handler.
 
 ## Integration boundary
 
+Execution-time slot resolution crosses one object-safe `CredentialSlotResolver` boundary. The
+resolver first performs an owner-qualified `get_head`, so missing and cross-tenant identifiers are
+indistinguishable and key/capability rejection occurs before the encryption layer decrypts state.
+Only after those checks pass does it load material, re-check the id, key, revision, material epoch,
+state kind/version, and reauthentication bit against the validated head, then dispatch the
+monomorphized projection registered in `DispatchOps`. Callers receive an opaque
+`ErasedCredentialGuard`, never `CredentialSnapshot` or raw `Any`; checked typed extraction is the
+only way to recover `CredentialGuard<S>`. Its secret-free metadata carries both material epoch and
+aggregate revision so resource slots can reject stale replacement attempts.
+
+`CredentialProjectionRuntime::from_secure_parts` is the worker composition surface for that
+boundary. It accepts only an already-secured `CredentialPersistence`, `CredentialRegistry`,
+`DispatchOps`, and `StateSource`. Construction proves every registered key has a base projector and
+that every advertised capability has a matching operation closure. It deliberately cannot own or
+construct refresh coordination, lease lifecycle, reclaim tasks, pending acquisition state, or
+management command authority; those remain in the server management runtime.
+
 `nebula-sdk` is the sole supported Rust surface. The external perimeter fixture compiles the
 currently verified manual/builder subset (`ActionBuilder`, `WorkflowBuilder`, and credential
 `TestResult`) with only `nebula-sdk` and separately proves forbidden authority, owner, writer,

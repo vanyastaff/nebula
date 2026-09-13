@@ -29,6 +29,9 @@ use std::sync::{
 
 use arc_swap::ArcSwapOption;
 
+/// Internal authority marker for a terminal credential revoke.
+const REVOKED_AUTHORITY: u64 = u64::MAX;
+
 /// An immutable (generation, value) pair published as one unit.
 ///
 /// Storing the generation *inside* the swapped `Arc` (rather than in a
@@ -40,6 +43,8 @@ use arc_swap::ArcSwapOption;
 struct SlotEntry<S> {
     /// Strictly monotonically increasing; `>= 1` for any published value.
     generation: u64,
+    /// Authoritative credential-material epoch supplied by the resolver.
+    material_epoch: u64,
     /// The resolved slot value (`CredentialGuard<C>` in production).
     value: Arc<S>,
 }
@@ -63,6 +68,10 @@ pub struct SlotCell<S> {
     /// entry it then publishes cannot be reordered against another
     /// writer's.
     next_generation: AtomicU64,
+    /// Highest authoritative material epoch accepted by this slot, including
+    /// a revoke tombstone. Read and written only while `write_lock` is held
+    /// for mutation; the atomic supports lock-free diagnostics.
+    material_epoch: AtomicU64,
     /// Serializes writers (`store` / `take`).
     ///
     /// `bump_generation()` and the entry swap are two steps. If they could
@@ -94,6 +103,7 @@ impl<S> SlotCell<S> {
         Self {
             inner: ArcSwapOption::empty(),
             next_generation: AtomicU64::new(0),
+            material_epoch: AtomicU64::new(0),
             write_lock: Mutex::new(()),
         }
     }
@@ -147,9 +157,54 @@ impl<S> SlotCell<S> {
     /// credential is never resurrected on the live slot.
     pub fn store(&self, value: Arc<S>) {
         self.with_write(|generation| {
-            self.inner
-                .store(Some(Arc::new(SlotEntry { generation, value })));
+            let material_epoch = self.material_epoch.load(Ordering::Relaxed);
+            self.inner.store(Some(Arc::new(SlotEntry {
+                generation,
+                material_epoch,
+                value,
+            })));
         });
+    }
+
+    /// Installs credential material when `material_epoch` is newer than every
+    /// material or revoke transition already observed by this slot.
+    ///
+    /// The comparison and publication are serialized with revoke, so a delayed
+    /// refresh cannot overwrite newer material or resurrect a revoked value.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SlotInstallError::InvalidMaterialEpoch`] when passed an
+    /// epoch reserved for internal unresolved or revoked authority.
+    pub fn install_at_material_epoch(
+        &self,
+        material_epoch: u64,
+        value: Arc<S>,
+    ) -> Result<SlotUpdate, SlotInstallError> {
+        if material_epoch == 0 || material_epoch == REVOKED_AUTHORITY {
+            return Err(SlotInstallError::InvalidMaterialEpoch);
+        }
+        let _guard = self
+            .write_lock
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let current = self.material_epoch.load(Ordering::Relaxed);
+        if current == REVOKED_AUTHORITY {
+            return Ok(SlotUpdate::Revoked);
+        }
+        if material_epoch <= current {
+            return Ok(SlotUpdate::Stale {
+                current_material_epoch: current,
+            });
+        }
+        let generation = self.bump_generation();
+        self.material_epoch.store(material_epoch, Ordering::Relaxed);
+        self.inner.store(Some(Arc::new(SlotEntry {
+            generation,
+            material_epoch,
+            value,
+        })));
+        Ok(SlotUpdate::Installed)
     }
 
     /// Snapshot the current value, if resolved.
@@ -167,6 +222,25 @@ impl<S> SlotCell<S> {
         self.inner
             .load_full()
             .map(|entry| (entry.generation, Arc::clone(&entry.value)))
+    }
+
+    /// Snapshot the authoritative material epoch and value from one published
+    /// entry. Returns `None` when the slot is unresolved or revoked.
+    pub fn load_material_versioned(&self) -> Option<(u64, Arc<S>)> {
+        self.inner
+            .load_full()
+            .map(|entry| (entry.material_epoch, Arc::clone(&entry.value)))
+    }
+
+    /// Highest authoritative material epoch accepted by this slot, if live.
+    ///
+    /// Returns `None` for both unresolved and terminally revoked slots because
+    /// a revoke tombstone does not carry a material epoch.
+    pub fn material_epoch(&self) -> Option<u64> {
+        match self.material_epoch.load(Ordering::Relaxed) {
+            0 | REVOKED_AUTHORITY => None,
+            material_epoch => Some(material_epoch),
+        }
     }
 
     /// The current generation: `0` if never bound, otherwise the
@@ -223,6 +297,26 @@ impl<S> SlotCell<S> {
         self.with_write(|_generation| self.inner.swap(None).map(|entry| Arc::clone(&entry.value)))
     }
 
+    /// Revokes this slot with terminal authority.
+    ///
+    /// Once applied, no later or delayed refresh can repopulate the slot.
+    /// Repeating revoke is an idempotent terminal no-op.
+    pub fn revoke(&self) -> SlotUpdate {
+        let _guard = self
+            .write_lock
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let current = self.material_epoch.load(Ordering::Relaxed);
+        if current == REVOKED_AUTHORITY {
+            return SlotUpdate::AlreadyRevoked;
+        }
+        let _generation = self.bump_generation();
+        self.material_epoch
+            .store(REVOKED_AUTHORITY, Ordering::Relaxed);
+        self.inner.store(None);
+        SlotUpdate::Revoked
+    }
+
     /// Returns `true` if the slot currently holds a resolved value.
     pub fn is_some(&self) -> bool {
         self.inner.load().is_some()
@@ -248,22 +342,58 @@ impl<S> SlotCell<S> {
     fn store_stamped(&self, mk: impl FnOnce(u64) -> Arc<S>) -> u64 {
         self.with_write(|generation| {
             let value = mk(generation);
-            self.inner
-                .store(Some(Arc::new(SlotEntry { generation, value })));
+            self.inner.store(Some(Arc::new(SlotEntry {
+                generation,
+                material_epoch: self.material_epoch.load(Ordering::Relaxed),
+                value,
+            })));
             generation
         })
     }
 }
 
+/// Result of an authoritative credential-slot transition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use = "slot update outcomes must be observed"]
+pub enum SlotUpdate {
+    /// A newer projected guard was installed.
+    Installed,
+    /// The slot was cleared and fenced against stale refresh.
+    Revoked,
+    /// The slot was already terminally revoked.
+    AlreadyRevoked,
+    /// The requested transition was older than existing slot authority.
+    Stale {
+        /// Highest authoritative material epoch already observed.
+        current_material_epoch: u64,
+    },
+}
+
+/// Typed failure to route or install an erased credential guard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum SlotInstallError {
+    /// The resource does not declare the requested slot.
+    #[error("resource does not declare the requested credential slot")]
+    UnknownSlot,
+    /// The projected guard type differs from the slot's declared type.
+    #[error("projected credential guard type does not match the declared slot type")]
+    CredentialTypeMismatch,
+    /// The epoch collides with a resource-internal authority marker.
+    #[error("credential material epoch is reserved for resource slot authority")]
+    InvalidMaterialEpoch,
+}
+
 /// Convenience alias for the standard credential slot field type.
 ///
-/// `CredentialSlot<C>` is exactly `SlotCell<nebula_credential::CredentialGuard<C>>`.
+/// `CredentialSlot<C>` stores `CredentialGuard<C::Scheme>` for credential
+/// definition `C`.
 /// Use this alias in your resource struct's `#[credential]` fields to reduce
 /// field-type noise — e.g. a `#[credential(key = "db")] iam: CredentialSlot<IamToken>`
 /// field. Both syntactic shapes — `SlotCell<CredentialGuard<C>>` and
 /// `CredentialSlot<C>` — are accepted by `#[derive(Resource)]`.
 ///
-/// A `CredentialSlot<C>` is exactly a [`SlotCell`] over the credential guard, so
+/// A `CredentialSlot<C>` is a [`SlotCell`] over the projected scheme guard, so
 /// it carries the same generation-stamped, lock-free cell mechanics:
 ///
 /// ```
@@ -281,7 +411,8 @@ impl<S> SlotCell<S> {
 /// assert_eq!(cell.load().as_deref(), Some(&7));
 /// assert_eq!(cell.generation(), 1, "the first store lands at generation 1");
 /// ```
-pub type CredentialSlot<C> = SlotCell<nebula_credential::CredentialGuard<C>>;
+pub type CredentialSlot<C> =
+    SlotCell<nebula_credential::CredentialGuard<<C as nebula_credential::Credential>::Scheme>>;
 
 impl<S> Default for SlotCell<S> {
     fn default() -> Self {
@@ -376,6 +507,71 @@ mod tests {
         // Storing again after a clear keeps advancing.
         cell.store(Arc::new(FakeGuard(2)));
         assert!(cell.generation() > g_after_take);
+    }
+
+    #[test]
+    fn authoritative_install_rejects_out_of_order_refresh() {
+        let cell = SlotCell::empty();
+        assert_eq!(
+            cell.install_at_material_epoch(7, Arc::new(FakeGuard(7))),
+            Ok(SlotUpdate::Installed)
+        );
+
+        assert_eq!(
+            cell.install_at_material_epoch(6, Arc::new(FakeGuard(6))),
+            Ok(SlotUpdate::Stale {
+                current_material_epoch: 7,
+            })
+        );
+        let (epoch, guard) = cell
+            .load_material_versioned()
+            .expect("epoch 7 remains live");
+        assert_eq!(epoch, 7);
+        assert_eq!(guard.0, 7);
+    }
+
+    #[test]
+    fn revoke_wins_over_same_epoch_and_stale_refresh() {
+        let cell = SlotCell::empty();
+        assert_eq!(
+            cell.install_at_material_epoch(4, Arc::new(FakeGuard(4))),
+            Ok(SlotUpdate::Installed)
+        );
+        assert_eq!(cell.revoke(), SlotUpdate::Revoked);
+        assert_eq!(cell.material_epoch(), None);
+        assert!(cell.load().is_none());
+
+        assert_eq!(
+            cell.install_at_material_epoch(4, Arc::new(FakeGuard(40))),
+            Ok(SlotUpdate::Revoked)
+        );
+        assert!(
+            cell.load().is_none(),
+            "same-epoch refresh must not resurrect"
+        );
+    }
+
+    #[test]
+    fn terminal_revoke_is_idempotent() {
+        let cell = SlotCell::empty();
+        assert_eq!(
+            cell.install_at_material_epoch(9, Arc::new(FakeGuard(9))),
+            Ok(SlotUpdate::Installed)
+        );
+
+        assert_eq!(cell.revoke(), SlotUpdate::Revoked);
+        assert_eq!(cell.revoke(), SlotUpdate::AlreadyRevoked);
+        assert!(cell.load().is_none());
+    }
+
+    #[test]
+    fn reserved_revoke_authority_cannot_be_installed_as_material() {
+        let cell = SlotCell::empty();
+        assert_eq!(
+            cell.install_at_material_epoch(REVOKED_AUTHORITY, Arc::new(FakeGuard(1))),
+            Err(SlotInstallError::InvalidMaterialEpoch)
+        );
+        assert!(cell.load().is_none());
     }
 
     #[test]

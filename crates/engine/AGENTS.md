@@ -39,7 +39,10 @@
 - **Persist execution changes through their owning storage ports.** Ordinary transitions use `ExecutionStore::commit(TransitionBatch)` with CAS/fencing; start materialization and turn handoff have dedicated atomic ports. Never replace durable mutation with a local-only state change or split an owner transaction across independent writes.
 - **Engine owns the control-queue consumer** — a handler that only logs/discards rows violates canon (L2-§12.2). `Cancel` reaches the live loop via `WorkflowEngine::cancel_execution`; dispatch must be idempotent per `(execution_id, command)`.
 - Accepted Start claims recover through execution-owned durable markers. Do not acknowledge the queue a second time after acceptance or uncertain commit acknowledgement; verify the combined handoff in storage and worker tests.
-- **Credential accessor is deny-by-default**: empty allowlist denies all; populate via `with_action_credentials`. No fail-open. (Resources have no allowlist — scoping is the topology layer's job.)
+- **Credential accessor is deny-by-default**: only the current node's exact, site-qualified
+  entries from the persisted V2 execution binding manifest are resolvable. A missing manifest,
+  slot, tenant match, or capability denies access; there is no process-local population or
+  fail-open path. (Resources have no allowlist — scoping is the topology layer's job.)
 - Not a storage impl or expression evaluator — those are `nebula-storage` / `nebula-expression`. Action dispatch is in-process (`InProcessRunner`); plugins register in-process through `nebula-plugin` (ADR-0091).
 - Two disjoint retry surfaces (ADR-0042): in-action `nebula-resilience::retry_with` (Layer 1, opaque to engine) vs operator-declared `retry_policy` (Layer 2, engine parks node in `WaitingRetry`).
 

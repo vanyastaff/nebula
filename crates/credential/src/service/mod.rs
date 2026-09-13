@@ -4,10 +4,10 @@
 //! technical runtime/service paths remain direct until K3 closes the sole
 //! semantic writer and operation-ledger boundary.
 //!
-//! All invariant-bearing composition is crate-private so the secure
-//! construction path is the only path; the composition root
-//! (`nebula-api`'s credential builder) is the only place that calls
-//! `CredentialService::from_secure_parts`.
+//! Management-runtime composition remains trusted application wiring through
+//! `CredentialService::from_secure_parts`. Execution workers use the narrower
+//! public `CredentialProjectionRuntime::from_secure_parts`, which accepts only
+//! read/project collaborators and cannot construct lifecycle or authority.
 /// Acquisition (`resolve` / `continue_resolve`) methods of
 /// `CredentialService` (split from `facade` for size; behaviour-preserving
 /// `impl` block).
@@ -30,6 +30,7 @@ pub(crate) mod facade;
 pub(crate) mod head;
 pub(crate) mod observer;
 pub(crate) mod ops;
+mod projection;
 pub(crate) mod scope;
 /// Slot / binding resolution methods of `CredentialService` (split from
 /// `facade` for size; behaviour-preserving `impl` block).
@@ -52,7 +53,12 @@ pub use ops::{
     DispatchError, DispatchOps, register_all_builtin_ops, register_interactive_ops,
     register_refreshable_ops, register_revocable_ops, register_runtime_ops, register_testable_ops,
 };
+pub use projection::{CredentialProjectionRuntime, CredentialProjectionRuntimeBuildError};
 pub use scope::{
     CredentialAuthenticationBinding, CredentialAuthenticationBindingError, TenantScope,
+};
+pub use slot::{
+    CredentialGuardMetadata, CredentialSlotResolveError, CredentialSlotResolver,
+    ErasedCredentialGuard, ErasedCredentialGuardTypeError,
 };
 pub use state_source::StateSource;

@@ -23,12 +23,15 @@ use sha2::{Digest, Sha256};
 pub(crate) const RECORD_VERSION_V1: u16 = 1;
 pub(crate) const COMPILER_VERSION_GRAPH_V1: u16 = 1;
 pub(crate) const COMPILER_VERSION_GRAPH_V3: u16 = 3;
+pub(crate) const COMPILER_VERSION_GRAPH_V4: u16 = 4;
 pub(crate) const CANONICAL_HASH_VERSION_V1: u16 = 1;
 pub(crate) const CANONICAL_HASH_VERSION_V2: u16 = 2;
+pub(crate) const CANONICAL_HASH_VERSION_V3: u16 = 3;
 pub(crate) const DEFAULT_OUTPUT_PORT: &str = "out";
 pub(crate) const INTRINSIC_ERROR_PORT: &str = "error";
 const EXECUTABLE_PLAN_GRAPH_V1_DOMAIN: &[u8] = b"nebula.executable-plan.graph.v1";
 const EXECUTABLE_PLAN_GRAPH_V2_DOMAIN: &[u8] = b"nebula.executable-plan.graph.v2";
+const EXECUTABLE_PLAN_GRAPH_V3_DOMAIN: &[u8] = b"nebula.executable-plan.graph.v3";
 const VALUE_CANON_VERSION_GRAPH_V1: u16 = 1;
 pub(crate) const SCHEMA_WIRE_VERSION_GRAPH_V1: u16 = 1;
 const _: () = assert!(nebula_schema::VALUE_CANON_VERSION == VALUE_CANON_VERSION_GRAPH_V1);
@@ -38,15 +41,17 @@ const _: () = assert!(nebula_schema::SCHEMA_WIRE_VERSION == SCHEMA_WIRE_VERSION_
 pub(crate) enum PlanEpoch {
     GraphV1,
     GraphV3,
+    GraphV4,
 }
 
 impl PlanEpoch {
-    pub(crate) const CURRENT: Self = Self::GraphV3;
+    pub(crate) const CURRENT: Self = Self::GraphV4;
 
     const fn from_record(compiler_version: u16, canonical_hash_version: u16) -> Option<Self> {
         match (compiler_version, canonical_hash_version) {
             (COMPILER_VERSION_GRAPH_V1, CANONICAL_HASH_VERSION_V1) => Some(Self::GraphV1),
             (COMPILER_VERSION_GRAPH_V3, CANONICAL_HASH_VERSION_V2) => Some(Self::GraphV3),
+            (COMPILER_VERSION_GRAPH_V4, CANONICAL_HASH_VERSION_V3) => Some(Self::GraphV4),
             _ => None,
         }
     }
@@ -55,6 +60,7 @@ impl PlanEpoch {
         match self {
             Self::GraphV1 => COMPILER_VERSION_GRAPH_V1,
             Self::GraphV3 => COMPILER_VERSION_GRAPH_V3,
+            Self::GraphV4 => COMPILER_VERSION_GRAPH_V4,
         }
     }
 
@@ -62,15 +68,20 @@ impl PlanEpoch {
         match self {
             Self::GraphV1 => CANONICAL_HASH_VERSION_V1,
             Self::GraphV3 => CANONICAL_HASH_VERSION_V2,
+            Self::GraphV4 => CANONICAL_HASH_VERSION_V3,
         }
     }
 
     const fn records_effect_contract(self) -> bool {
-        matches!(self, Self::GraphV3)
+        matches!(self, Self::GraphV3 | Self::GraphV4)
     }
 
     const fn supports_intrinsic_error_port(self) -> bool {
-        matches!(self, Self::GraphV3)
+        matches!(self, Self::GraphV3 | Self::GraphV4)
+    }
+
+    const fn records_binding_selector_provenance(self) -> bool {
+        matches!(self, Self::GraphV4)
     }
 }
 
@@ -163,6 +174,23 @@ pub enum PlanBindingContract {
     },
 }
 
+/// How an authority-free binding selector entered the compiled plan.
+///
+/// This is syntax provenance, not tenant authority. Activation must resolve defaults as
+/// owner-local names and parse overrides as typed identifiers without guessing from prefixes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum PlanBindingSelectorProvenance {
+    /// A legacy recorded plan did not preserve selector provenance.
+    Legacy,
+    /// The slot used its owner-local slot-key name.
+    DefaultName,
+    /// A workflow node explicitly selected a credential identifier.
+    CredentialIdOverride,
+    /// A workflow node explicitly selected a resource identifier.
+    ResourceIdOverride,
+}
+
 /// One authority-free binding requirement compiled from workflow intent.
 ///
 /// The selector remains an untrusted abstract author selector. It is not a
@@ -172,6 +200,7 @@ pub struct PlanBindingRequirement {
     site: PlanBindingSite,
     slot_key: String,
     selector: String,
+    selector_provenance: PlanBindingSelectorProvenance,
     contract: PlanBindingContract,
     required: bool,
     lazy: bool,
@@ -194,6 +223,12 @@ impl PlanBindingRequirement {
     #[must_use]
     pub fn selector(&self) -> &str {
         &self.selector
+    }
+
+    /// Returns the selector's authoring provenance without interpreting its text.
+    #[must_use]
+    pub const fn selector_provenance(&self) -> PlanBindingSelectorProvenance {
+        self.selector_provenance
     }
 
     /// Exact resource or credential contract required by the slot.
@@ -221,6 +256,7 @@ impl fmt::Debug for PlanBindingRequirement {
             .debug_struct("PlanBindingRequirement")
             .field("site", &self.site)
             .field("slot_key", &self.slot_key)
+            .field("selector_provenance", &self.selector_provenance)
             .field("contract", &self.contract)
             .field("required", &self.required)
             .field("lazy", &self.lazy)
@@ -646,12 +682,22 @@ pub(crate) enum RecordedBindingContractV1 {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum RecordedBindingSelectorProvenanceV1 {
+    DefaultName,
+    CredentialIdOverride,
+    ResourceIdOverride,
+}
+
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RecordedBindingV1 {
     pub(crate) site: RecordedBindingSiteV1,
     pub(crate) slot_key: String,
     pub(crate) selector: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) selector_provenance: Option<RecordedBindingSelectorProvenanceV1>,
     pub(crate) contract: RecordedBindingContractV1,
     pub(crate) required: bool,
     pub(crate) lazy: bool,
@@ -731,6 +777,7 @@ impl RecordedExecutablePlanRevisionV1 {
         let domain = match self.canonical_hash_version {
             CANONICAL_HASH_VERSION_V1 => EXECUTABLE_PLAN_GRAPH_V1_DOMAIN,
             CANONICAL_HASH_VERSION_V2 => EXECUTABLE_PLAN_GRAPH_V2_DOMAIN,
+            CANONICAL_HASH_VERSION_V3 => EXECUTABLE_PLAN_GRAPH_V3_DOMAIN,
             _ => return Err(ExecutablePlanIntegrityError::UnsupportedFormat),
         };
         hash_field(&mut hasher, 1, domain);
@@ -1090,6 +1137,18 @@ impl TryFrom<&RecordedBindingV1> for PlanBindingRequirement {
             site,
             slot_key: binding.slot_key.clone(),
             selector: binding.selector.clone(),
+            selector_provenance: match binding.selector_provenance {
+                None => PlanBindingSelectorProvenance::Legacy,
+                Some(RecordedBindingSelectorProvenanceV1::DefaultName) => {
+                    PlanBindingSelectorProvenance::DefaultName
+                },
+                Some(RecordedBindingSelectorProvenanceV1::CredentialIdOverride) => {
+                    PlanBindingSelectorProvenance::CredentialIdOverride
+                },
+                Some(RecordedBindingSelectorProvenanceV1::ResourceIdOverride) => {
+                    PlanBindingSelectorProvenance::ResourceIdOverride
+                },
+            },
             contract,
             required: binding.required,
             lazy: binding.lazy,
@@ -1182,6 +1241,7 @@ fn validate_record(
         &actions,
         &resources,
         &credentials,
+        epoch,
     )?;
     Ok(())
 }
@@ -2554,6 +2614,7 @@ fn validate_bindings(
     actions: &HashMap<&str, &RecordedActionV1>,
     resources: &HashMap<&str, &RecordedResourceV1>,
     credentials: &HashMap<&str, &RecordedCredentialV1>,
+    epoch: PlanEpoch,
 ) -> Result<(), ExecutablePlanIntegrityError> {
     for binding in bindings {
         if binding.slot_key.trim().is_empty()
@@ -2561,6 +2622,22 @@ fn validate_bindings(
             || binding.selector.trim() != binding.selector
         {
             return Err(noncanonical("bindings"));
+        }
+        match (
+            epoch.records_binding_selector_provenance(),
+            binding.selector_provenance,
+        ) {
+            (false, None) => {},
+            (true, Some(RecordedBindingSelectorProvenanceV1::DefaultName))
+                if binding.selector == binding.slot_key => {},
+            (true, Some(RecordedBindingSelectorProvenanceV1::CredentialIdOverride))
+                if matches!(
+                    binding.contract,
+                    RecordedBindingContractV1::Credential { .. }
+                ) => {},
+            (true, Some(RecordedBindingSelectorProvenanceV1::ResourceIdOverride))
+                if matches!(binding.contract, RecordedBindingContractV1::Resource { .. }) => {},
+            _ => return Err(noncanonical("bindings.selector_provenance")),
         }
         let _validated = PlanBindingRequirement::try_from(binding)?;
         let action = match &binding.site {

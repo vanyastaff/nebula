@@ -41,10 +41,10 @@ plugin-registry — и рискует разойтись с canon §12.2 control
 
 | Item | Where |
 |------|-------|
-| `WorkflowEngine` (`new`, `cancel_execution`, `with_action_credentials`, `execute_workflow`, `resume_execution`) | `engine.rs:125 / 348 / 416 / 887 / 1388 / 1719` |
+| `WorkflowEngine` (`new`, `cancel_execution`, `with_credential_resolver`, `execute_workflow`, `resume_execution`) | `engine.rs`, `engine/resume/` |
 | `ControlConsumer` / `ControlDispatch` / `ControlDispatchError` (polling + claim/ack очереди управления) | `control_consumer.rs:281 / 125 / 94` |
 | `EngineControlDispatch` (канонический impl Start/Resume/Restart/Cancel/Terminate, идемпотентность по `(execution_id, command)`, ADR-0008/0016) | `control_dispatch.rs:72` |
-| `EngineCredentialAccessor` (deny-by-default allowlist кредов на экшен) | `credential_accessor.rs:91` |
+| `EngineCredentialAccessor` (deny-by-default доступ по node-scoped V2 manifest) | `credential_accessor.rs` |
 | `EngineResourceAccessor` (без allowlist; скоупинг — дело topology-слоя) + `slot_identities_for_key` | `resource_accessor.rs:24 / 148` |
 | `credential::*` — почти целиком re-export из `nebula_credential::runtime` (ADR-0092): `CredentialResolver`, `RefreshCoordinator`, `LeaseLifecycle`, `execute_resolve` / `execute_continue`; своё — только `default_in_memory_coordinator()` | `credential/mod.rs:19-30 / 43` |
 | `credential::rotation` (feature `rotation`) — чистый re-export shim (state-machine из credential, fan-out `ResourceFanoutDriver` из resource) | `rotation.rs:9-34` |
@@ -108,10 +108,10 @@ broadcast через eventbus. Control-plane (`ControlConsumer`) идёт пар
   логирует и отбрасывает строки, нарушает инвариант.
 - **Идемпотентность control-команд.** Дисптач идемпотентен по паре `(execution_id, command)`
   (ADR-0008 §5); `Cancel`/`Terminate` идемпотентны через лежащий ниже `CancellationToken`.
-- **Deny-by-default credential allowlist** (`credential_accessor.rs:91`). Пустой allowlist отклоняет
-  любой запрос (canon §12.5, §4.5). Per-action allowlists заполняются через
-  `with_action_credentials`; экшен, чьи креды не объявлены engine, проваливается в deny-baseline.
-  **Fail-open escape hatch отсутствует by-construction.**
+- **Deny-by-default credential manifest** (`credential_accessor.rs`). Доступ разрешён только по
+  точной site-qualified записи текущего узла в persisted V2 execution contract (canon §12.5,
+  §4.5). Отсутствие manifest/slot, несовпадение tenant или capability приводит к deny-baseline.
+  Process-local population и fail-open escape hatch отсутствуют by-construction.
 - **No resource allowlist** (`resource_accessor.rs:24`). В отличие от кредов, allowlist для ресурсов
   нет: скоупинг намеренно принадлежит topology-слою (pool scope, daemon scope), не engine.
 - **Два retry-слоя, непересекающиеся по границе триггера** (ADR-0042): Layer 1 (in-call,
@@ -160,7 +160,8 @@ broadcast через eventbus. Control-plane (`ControlConsumer`) идёт пар
   продолжали резолвиться у единственного потребителя `nebula-api`;
 - `default_in_memory_coordinator()` (`credential/mod.rs:43`) — единственный собственный код модуля;
   конструирует `InMemoryRefreshClaimRepo` из `nebula-storage` для тестов / single-replica desktop;
-- `EngineCredentialAccessor` (`credential_accessor.rs:91`) — deny-by-default allowlist-мост.
+- `EngineCredentialAccessor` (`credential_accessor.rs`) — deny-by-default мост от node-scoped
+  durable binding manifest к opaque credential guard.
 
 Резолвер generic по конкретному типу `C` и вызывает `C::project(&state)` напрямую — type-erased
 projection-registry не нужен (`StateProjectionRegistry` был vestigial, удалён в ADR-0088 D3;

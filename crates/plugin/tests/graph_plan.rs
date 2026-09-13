@@ -350,8 +350,8 @@ fn newly_compiled_plan_records_explicit_effect_protocol() {
         .compile_graph_v1(WorkflowVersionId::new(), &workflow)
         .unwrap();
     let record = serde_json::to_value(RecordedExecutablePlanRevisionV1::from(&plan)).unwrap();
-    assert_eq!(record["compiler_version"], 3);
-    assert_eq!(record["canonical_hash_version"], 2);
+    assert_eq!(record["compiler_version"], 4);
+    assert_eq!(record["canonical_hash_version"], 3);
     assert_eq!(
         record["content"]["actions"][0]["effect_contract"],
         "NoExternalEffects"

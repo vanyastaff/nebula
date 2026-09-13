@@ -14,8 +14,8 @@ use nebula_storage_port::Scope;
 use nebula_storage_port::dto::WorkflowVersionRecord;
 use nebula_storage_port::store::{
     ControlQueue, ExecutionJournalReader, ExecutionStore, ExecutionTurnHandoff, NodeResultStore,
-    StartAcceptanceStore, StartReservationMaintenance, TriggerStore, WebhookActivationStore,
-    WorkflowStore, WorkflowVersionStore,
+    ResourceStore, StartAcceptanceStore, StartReservationMaintenance, TriggerStore,
+    WebhookActivationStore, WorkflowStore, WorkflowVersionStore,
 };
 use nebula_tenancy::{
     ScopedControlQueue, ScopedExecutionJournalReader, ScopedExecutionStore,
@@ -478,11 +478,11 @@ pub struct AppState {
     /// Spec-16 scoped journal-reader port handle (execution log reads).
     pub journal_reader: Arc<dyn ExecutionJournalReader>,
 
-    /// Optional resource repository for the resource catalog endpoints.
+    /// Optional scoped resource store for the resource catalog endpoints.
     ///
     /// When `None`, the resource catalog endpoints report `503 Service
-    /// Unavailable`. Set via [`AppState::with_resource_repo`].
-    pub resource_repo: Option<Arc<dyn nebula_storage::repos::ResourceRepo>>,
+    /// Unavailable`. Set via [`AppState::with_resource_store`].
+    pub resource_store: Option<Arc<dyn ResourceStore>>,
 
     /// Optional closed `kind → registrar` allowlist used to **validate**
     /// a resource config before it is persisted (`POST .../resources`).
@@ -659,7 +659,7 @@ impl AppState {
             workflow_start: None,
             node_result_store,
             journal_reader,
-            resource_repo: None,
+            resource_store: None,
             resource_registrars: None,
             resource_status: None,
             resume_token_store: None,
@@ -1316,18 +1316,15 @@ impl AppState {
         self
     }
 
-    /// Attach a resource repository for the resource catalog endpoints.
+    /// Attach a scoped resource store for the resource catalog endpoints.
     ///
     /// When `None`, the resource catalog endpoints report `503 Service
     /// Unavailable`. Compose this in production with the Postgres-backed
     /// implementation; leave `None` in tests that exercise unrelated
     /// routes.
     #[must_use = "builder methods must be chained or built"]
-    pub fn with_resource_repo(
-        mut self,
-        repo: Arc<dyn nebula_storage::repos::ResourceRepo>,
-    ) -> Self {
-        self.resource_repo = Some(repo);
+    pub fn with_resource_store(mut self, store: Arc<dyn ResourceStore>) -> Self {
+        self.resource_store = Some(store);
         self
     }
 
@@ -1447,58 +1444,53 @@ pub(crate) fn test_state_with_in_memory_stores() -> AppState {
 mod tests {
     use super::*;
 
-    /// Minimal fake that satisfies `Arc<dyn ResourceRepo>` inside the test module.
+    /// Minimal fake that satisfies `Arc<dyn ResourceStore>` inside the test module.
     /// Production code never touches this; it only proves the builder slot is wired.
-    struct FakeResourceRepo;
+    #[derive(Debug)]
+    struct FakeResourceStore;
 
     #[async_trait::async_trait]
-    impl nebula_storage::repos::ResourceRepo for FakeResourceRepo {
+    impl ResourceStore for FakeResourceStore {
         async fn create(
             &self,
-            _resource: &nebula_storage::repos::ResourceEntry,
-        ) -> Result<(), nebula_storage::StorageError> {
+            _scope: &Scope,
+            _resource: nebula_storage_port::dto::ResourceRow,
+        ) -> Result<(), nebula_storage_port::StorageError> {
             Ok(())
         }
 
         async fn get(
             &self,
-            _id: &[u8],
-        ) -> Result<Option<nebula_storage::repos::ResourceEntry>, nebula_storage::StorageError>
+            _scope: &Scope,
+            _id: &str,
+        ) -> Result<Option<nebula_storage_port::dto::ResourceRow>, nebula_storage_port::StorageError>
         {
             Ok(None)
-        }
-
-        async fn get_by_slug(
-            &self,
-            _workspace_id: &[u8],
-            _slug: &str,
-        ) -> Result<Option<nebula_storage::repos::ResourceEntry>, nebula_storage::StorageError>
-        {
-            Ok(None)
-        }
-
-        async fn update(
-            &self,
-            _resource: &nebula_storage::repos::ResourceEntry,
-            expected_version: i64,
-        ) -> Result<i64, nebula_storage::StorageError> {
-            // The store owns the post-CAS increment; the fake mirrors the
-            // contract by returning `expected_version + 1`.
-            Ok(expected_version + 1)
-        }
-
-        async fn soft_delete(&self, _id: &[u8]) -> Result<(), nebula_storage::StorageError> {
-            Ok(())
         }
 
         async fn list(
             &self,
-            _workspace_id: &[u8],
-            _offset: u64,
-            _limit: u64,
-        ) -> Result<Vec<nebula_storage::repos::ResourceEntry>, nebula_storage::StorageError>
+            _scope: &Scope,
+        ) -> Result<Vec<nebula_storage_port::dto::ResourceRow>, nebula_storage_port::StorageError>
         {
             Ok(vec![])
+        }
+
+        async fn update(
+            &self,
+            _scope: &Scope,
+            _resource: nebula_storage_port::dto::ResourceRow,
+            _expected_version: u64,
+        ) -> Result<(), nebula_storage_port::StorageError> {
+            Ok(())
+        }
+
+        async fn soft_delete(
+            &self,
+            _scope: &Scope,
+            _id: &str,
+        ) -> Result<(), nebula_storage_port::StorageError> {
+            Ok(())
         }
     }
 
@@ -1507,21 +1499,21 @@ mod tests {
     }
 
     #[test]
-    fn with_resource_repo_sets_field() {
-        let repo: Arc<dyn nebula_storage::repos::ResourceRepo> = Arc::new(FakeResourceRepo);
-        let st = base_state().with_resource_repo(Arc::clone(&repo));
+    fn with_resource_store_sets_field() {
+        let store: Arc<dyn ResourceStore> = Arc::new(FakeResourceStore);
+        let st = base_state().with_resource_store(Arc::clone(&store));
         assert!(
-            st.resource_repo.is_some(),
-            "resource_repo must be Some after with_resource_repo"
+            st.resource_store.is_some(),
+            "resource_store must be Some after with_resource_store"
         );
     }
 
     #[test]
-    fn resource_repo_defaults_to_none() {
+    fn resource_store_defaults_to_none() {
         let st = base_state();
         assert!(
-            st.resource_repo.is_none(),
-            "resource_repo must default to None"
+            st.resource_store.is_none(),
+            "resource_store must default to None"
         );
     }
 

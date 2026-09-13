@@ -200,6 +200,7 @@ fn resource_binding(slot_key: &str, selector: &str) -> RecordedBindingV1 {
         site: RecordedBindingSiteV1::Node("fetch".into()),
         slot_key: slot_key.into(),
         selector: selector.into(),
+        selector_provenance: None,
         contract: RecordedBindingContractV1::Resource {
             key: "demo.client".into(),
             version: recorded_semver(1, 0, 0),
@@ -214,6 +215,7 @@ fn credential_binding(slot_key: &str, selector: &str, capability_bits: u8) -> Re
         site: RecordedBindingSiteV1::Node("fetch".into()),
         slot_key: slot_key.into(),
         selector: selector.into(),
+        selector_provenance: None,
         contract: RecordedBindingContractV1::Credential {
             key: "demo.oauth".into(),
             version: recorded_semver(2, 1, 0),
@@ -639,7 +641,7 @@ fn unsupported_versions_and_profile_fail_closed() {
     for mutate in [
         |record: &mut RecordedExecutablePlanRevisionV1| record.record_version += 1,
         |record: &mut RecordedExecutablePlanRevisionV1| {
-            record.compiler_version = COMPILER_VERSION_GRAPH_V3 + 1;
+            record.compiler_version = COMPILER_VERSION_GRAPH_V4 + 1;
         },
         |record: &mut RecordedExecutablePlanRevisionV1| record.canonical_hash_version += 1,
     ] {
@@ -1186,4 +1188,70 @@ fn checked_plan_roundtrips_record_and_redacts_debug_surfaces() {
         reloaded.worker_flavor_revision_id(),
         plan.worker_flavor_revision_id()
     );
+}
+
+#[test]
+fn legacy_binding_records_decode_without_inventing_selector_provenance() {
+    let record = credential_binding_record("cred_legacy-looking", Capabilities::REFRESHABLE.bits());
+    let plan = ExecutablePlanRevision::try_from(record).expect("legacy record remains readable");
+
+    assert_eq!(
+        plan.bindings()[0].selector_provenance(),
+        PlanBindingSelectorProvenance::Legacy
+    );
+}
+
+#[test]
+fn current_binding_records_distinguish_defaults_from_overrides_without_prefix_inference() {
+    let mut default_record = credential_binding_record("auth", Capabilities::REFRESHABLE.bits());
+    default_record.compiler_version = COMPILER_VERSION_GRAPH_V4;
+    default_record.canonical_hash_version = CANONICAL_HASH_VERSION_V3;
+    default_record.content.actions[0].effect_contract =
+        Some(crate::plan_effect::RecordedActionEffectV1::NoExternalEffects);
+    default_record.bindings[0].slot_key = "auth".into();
+    default_record.bindings[0].selector = "auth".into();
+    default_record.bindings[0].selector_provenance =
+        Some(RecordedBindingSelectorProvenanceV1::DefaultName);
+    reseal(&mut default_record);
+
+    let mut override_record =
+        credential_binding_record("primary", Capabilities::REFRESHABLE.bits());
+    override_record.compiler_version = COMPILER_VERSION_GRAPH_V4;
+    override_record.canonical_hash_version = CANONICAL_HASH_VERSION_V3;
+    override_record.content.actions[0].effect_contract =
+        Some(crate::plan_effect::RecordedActionEffectV1::NoExternalEffects);
+    override_record.bindings[0].selector_provenance =
+        Some(RecordedBindingSelectorProvenanceV1::CredentialIdOverride);
+    reseal(&mut override_record);
+
+    let default_plan = ExecutablePlanRevision::try_from(default_record).unwrap();
+    let override_plan = ExecutablePlanRevision::try_from(override_record).unwrap();
+    assert_eq!(
+        default_plan.bindings()[0].selector_provenance(),
+        PlanBindingSelectorProvenance::DefaultName
+    );
+    assert_eq!(
+        override_plan.bindings()[0].selector_provenance(),
+        PlanBindingSelectorProvenance::CredentialIdOverride
+    );
+    assert_eq!(override_plan.bindings()[0].selector(), "primary");
+}
+
+#[test]
+fn current_binding_record_rejects_cross_kind_selector_provenance() {
+    let mut record = credential_binding_record("primary", Capabilities::REFRESHABLE.bits());
+    record.compiler_version = COMPILER_VERSION_GRAPH_V4;
+    record.canonical_hash_version = CANONICAL_HASH_VERSION_V3;
+    record.content.actions[0].effect_contract =
+        Some(crate::plan_effect::RecordedActionEffectV1::NoExternalEffects);
+    record.bindings[0].selector_provenance =
+        Some(RecordedBindingSelectorProvenanceV1::ResourceIdOverride);
+    reseal(&mut record);
+
+    assert!(matches!(
+        ExecutablePlanRevision::try_from(record),
+        Err(ExecutablePlanIntegrityError::NonCanonical {
+            section: "bindings.selector_provenance"
+        })
+    ));
 }

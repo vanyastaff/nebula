@@ -4,7 +4,9 @@ use nebula_core::{
     ExecutablePlanRevisionId, ExecutionContractBundleId, ExecutionId, OrgId, PluginSetId,
     WorkerFlavorRevisionId, WorkflowId, WorkflowVersionId, WorkspaceId,
 };
-use nebula_storage_port::dto::{ControlCommand, MaterializedStart, StoredContractBundle};
+use nebula_storage_port::dto::{
+    ContractBundleFormat, ControlCommand, MaterializedStart, StoredContractBundle,
+};
 use nebula_storage_port::store::StartMaterializationError;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -168,7 +170,11 @@ pub(crate) fn commitment(
         start.execution().initial_state,
         start.command(),
         key,
-        "v1_json",
+        match start.bundle().format() {
+            ContractBundleFormat::V1Json => "v1_json",
+            ContractBundleFormat::V2Json => "v2_json",
+            _ => return Err(StartMaterializationError::InvalidEnvelope),
+        },
         start.bundle().identity().bundle_id(),
         start.bundle().identity().revisions().plan(),
         start.bundle().identity().revisions().worker_flavor(),

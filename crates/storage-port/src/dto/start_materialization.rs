@@ -14,6 +14,8 @@ pub const MAX_CONTRACT_BUNDLE_BYTES: usize = 1024 * 1024;
 pub enum ContractBundleFormat {
     /// Version-one JSON execution contract envelope.
     V1Json,
+    /// Version-two JSON execution contract envelope with an exact binding manifest.
+    V2Json,
 }
 
 /// Bounded opaque bundle plus explicit exact relational identities.
@@ -21,6 +23,7 @@ pub enum ContractBundleFormat {
 #[derive(Clone, PartialEq, Eq)]
 pub struct ContractBundleRecord {
     identity: StartContractIdentity,
+    format: ContractBundleFormat,
     bytes: Vec<u8>,
 }
 impl ContractBundleRecord {
@@ -35,7 +38,29 @@ impl ContractBundleRecord {
         if bytes.is_empty() || bytes.len() > MAX_CONTRACT_BUNDLE_BYTES {
             return Err(StartMaterializationError::InvalidEnvelope);
         }
-        Ok(Self { identity, bytes })
+        Ok(Self {
+            identity,
+            format: ContractBundleFormat::V1Json,
+            bytes,
+        })
+    }
+
+    /// Record bounded v2 bytes without interpreting the domain envelope.
+    ///
+    /// # Errors
+    /// Rejects empty or oversized records.
+    pub fn v2_json(
+        identity: StartContractIdentity,
+        bytes: Vec<u8>,
+    ) -> Result<Self, StartMaterializationError> {
+        if bytes.is_empty() || bytes.len() > MAX_CONTRACT_BUNDLE_BYTES {
+            return Err(StartMaterializationError::InvalidEnvelope);
+        }
+        Ok(Self {
+            identity,
+            format: ContractBundleFormat::V2Json,
+            bytes,
+        })
     }
     /// Exact bundle/plan/flavor identities.
     #[must_use]
@@ -45,7 +70,7 @@ impl ContractBundleRecord {
     /// Explicit supported wire format.
     #[must_use]
     pub const fn format(&self) -> ContractBundleFormat {
-        ContractBundleFormat::V1Json
+        self.format
     }
     /// Sensitive recorded payload, available only by explicit access.
     #[must_use]

@@ -44,6 +44,7 @@
 
 pub mod attempt;
 pub mod bundle;
+pub mod bundle_v2;
 pub mod checkpoint;
 pub mod context;
 pub mod error;
@@ -62,6 +63,12 @@ pub use attempt::NodeAttempt;
 pub use bundle::{
     ExecutionContractBundle, ExecutionContractBundleIntegrityError, ExecutionProfile,
     RecordedExecutionContractBundleV1,
+};
+pub use bundle_v2::{
+    BindingContractVersion, BindingManifestError, CredentialBindingContractV2,
+    CredentialCapability, ExecutionBindingEntryV2, ExecutionBindingManifestV2,
+    ExecutionBindingSiteV2, ExecutionBindingTargetV2, ExecutionContractBundleIntegrityErrorV2,
+    ExecutionContractBundleV2, RecordedExecutionContractBundleV2, ResourceBindingContractV2,
 };
 pub use checkpoint::{ExecutionCheckpoint, NodeCheckpoint};
 pub use context::{ExecutionBudget, ExecutionContext};

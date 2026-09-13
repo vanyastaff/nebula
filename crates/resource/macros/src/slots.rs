@@ -101,6 +101,8 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     let slot_registrations = field_slots::emit_slot_field_registrations_with_purpose(&slots);
     let slot_accessors = field_slots::emit_slot_accessors(&slots);
     let credential_slot_epoch_body = field_slots::emit_credential_slot_epoch_body(&slots);
+    let slot_install_body = field_slots::emit_slot_install_body(&slots);
+    let slot_revoke_body = field_slots::emit_slot_revoke_body(&slots);
     // Type-level signal: `true` iff the struct declared at least one
     // `#[credential]` field. Emitted explicitly (rather than relying on the
     // trait default) so the slot-less case reads `false` at the impl site.
@@ -125,6 +127,27 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
 
             fn credential_slot_names() -> &'static [&'static str] {
                 &[#(#slot_key_literals),*]
+            }
+
+            fn install_credential_slot(
+                &self,
+                slot: &str,
+                guard: ::nebula_credential::ErasedCredentialGuard,
+            ) -> ::core::result::Result<
+                ::nebula_resource::SlotUpdate,
+                ::nebula_resource::SlotInstallError,
+            > {
+                #slot_install_body
+            }
+
+            fn revoke_credential_slot(
+                &self,
+                slot: &str,
+            ) -> ::core::result::Result<
+                ::nebula_resource::SlotUpdate,
+                ::nebula_resource::SlotInstallError,
+            > {
+                #slot_revoke_body
             }
         }
     };

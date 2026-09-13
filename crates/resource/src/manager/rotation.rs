@@ -104,6 +104,31 @@ pub enum SlotDispatchOutcome {
     },
 }
 
+/// Result of an epoch-ordered guard installation and refresh-hook dispatch.
+#[derive(Debug)]
+#[must_use = "refresh installation and hook outcomes must be observed"]
+#[non_exhaustive]
+pub enum EpochRefreshOutcome {
+    /// A newer guard was installed before the hook was dispatched.
+    Applied(SlotDispatchOutcome),
+    /// The refresh was stale; neither the slot nor the hook was changed.
+    Stale {
+        /// Highest material epoch already accepted by the slot.
+        current_material_epoch: u64,
+    },
+}
+
+/// Result of an epoch-ordered slot revoke and its drain/hook tail.
+#[derive(Debug)]
+#[must_use = "revoke installation and hook outcomes must be observed"]
+#[non_exhaustive]
+pub enum EpochRevokeOutcome {
+    /// The slot was cleared before the resource was tainted and drained.
+    Applied(RevokeTail),
+    /// The slot was already terminally revoked; no duplicate hook ran.
+    AlreadyRevoked,
+}
+
 /// Why an admitted credential hook returned [`SlotDispatchOutcome::Deferred`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[must_use = "deferral reason determines whether the observation budget elapsed"]
@@ -240,6 +265,95 @@ pub enum RevokeTail {
 }
 
 impl Manager {
+    /// Installs a projected guard into one identity-pinned row, then dispatches
+    /// the refresh hook. The install completes synchronously before the first
+    /// await, so author code cannot observe the old guard after dispatch.
+    ///
+    /// A stale epoch is a successful no-op and does not invoke the hook.
+    /// Type mismatch or unknown slot leaves the previous guard untouched.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the identity-pinned resource cannot be resolved,
+    /// the slot rejects the guard, or refresh dispatch fails.
+    pub async fn install_and_refresh_slot_for_identity(
+        &self,
+        key: &ResourceKey,
+        scope: ScopeLevel,
+        slot: &str,
+        slot_identity: &crate::dedup::SlotIdentity,
+        guard: nebula_credential::ErasedCredentialGuard,
+    ) -> Result<EpochRefreshOutcome, Error> {
+        let managed = self.lookup_any_for_slot_identity_structural(key, &scope, slot_identity)?;
+        let update = managed
+            .install_credential_slot(slot, guard)
+            .map_err(|source| {
+                Error::permanent("credential slot installation failed")
+                    .with_source(source)
+                    .with_resource_key(key.clone())
+            })?;
+        match update {
+            crate::SlotUpdate::Installed => self
+                .refresh_resolved(
+                    key,
+                    slot,
+                    managed,
+                    crate::hook_guard::MAX_ROTATION_DISPATCH_CEILING,
+                    crate::hook_guard::MAX_ROTATION_DISPATCH_CEILING,
+                )
+                .await
+                .map(EpochRefreshOutcome::Applied),
+            crate::SlotUpdate::Stale {
+                current_material_epoch,
+            } => Ok(EpochRefreshOutcome::Stale {
+                current_material_epoch,
+            }),
+            crate::SlotUpdate::Revoked | crate::SlotUpdate::AlreadyRevoked => Err(
+                Error::permanent("credential slot install returned an invalid revoke outcome")
+                    .with_resource_key(key.clone()),
+            ),
+        }
+    }
+
+    /// Terminally clears an identity-pinned slot, then synchronously taints
+    /// the row before running the bounded drain and revoke hook.
+    ///
+    /// Revoke wins over every in-flight or delayed refresh without requiring
+    /// the caller to synthesize a material epoch.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the identity-pinned resource cannot be resolved,
+    /// the slot cannot be revoked, or synchronous tainting fails.
+    pub async fn revoke_credential_slot_for_identity(
+        &self,
+        key: &ResourceKey,
+        scope: ScopeLevel,
+        slot: &str,
+        slot_identity: &crate::dedup::SlotIdentity,
+    ) -> Result<EpochRevokeOutcome, Error> {
+        let managed = self.lookup_any_for_slot_identity_structural(key, &scope, slot_identity)?;
+        let update = managed.revoke_credential_slot(slot).map_err(|source| {
+            Error::permanent("credential slot revoke failed")
+                .with_source(source)
+                .with_resource_key(key.clone())
+        })?;
+        match update {
+            crate::SlotUpdate::Revoked => {
+                let tainted = self.taint_now(key, slot, managed)?;
+                Ok(EpochRevokeOutcome::Applied(
+                    self.drain_and_revoke(tainted, Self::DEFAULT_REVOKE_DRAIN_TIMEOUT)
+                        .await,
+                ))
+            },
+            crate::SlotUpdate::AlreadyRevoked => Ok(EpochRevokeOutcome::AlreadyRevoked),
+            crate::SlotUpdate::Installed | crate::SlotUpdate::Stale { .. } => Err(
+                Error::permanent("credential slot revoke returned an invalid install outcome")
+                    .with_resource_key(key.clone()),
+            ),
+        }
+    }
+
     fn slot_hook_settlement(
         &self,
         key: ResourceKey,

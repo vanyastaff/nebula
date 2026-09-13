@@ -284,13 +284,15 @@ pub use service::{
     Acquisition, AuthorizationDecision, CredentialActor, CredentialAuthenticationBinding,
     CredentialAuthenticationBindingError, CredentialAuthorizationError, CredentialCommand,
     CredentialCommandResult, CredentialController, CredentialControllerError,
-    CredentialDisplayPatch, CredentialHead, CredentialObserver, CredentialOperation,
-    CredentialService, CredentialServiceError, CredentialTenantAuthority, CredentialTypeInfo,
-    CredentialValidationIssue, CredentialValidationReport, DispatchError, DispatchOps,
-    EventMetricObserver, ManagementRefreshReport, NoopObserver, StateSource, TenantFingerprint,
-    TenantScope, TypeCapabilities, ValidatedCredentialBinding, ValidatedCredentialBindingError,
-    register_all_builtin_ops, register_interactive_ops, register_refreshable_ops,
-    register_revocable_ops, register_runtime_ops, register_testable_ops,
+    CredentialDisplayPatch, CredentialGuardMetadata, CredentialHead, CredentialObserver,
+    CredentialOperation, CredentialProjectionRuntime, CredentialProjectionRuntimeBuildError,
+    CredentialService, CredentialServiceError, CredentialSlotResolveError, CredentialSlotResolver,
+    CredentialTenantAuthority, CredentialTypeInfo, CredentialValidationIssue,
+    CredentialValidationReport, DispatchError, DispatchOps, ErasedCredentialGuard,
+    ErasedCredentialGuardTypeError, EventMetricObserver, ManagementRefreshReport, NoopObserver,
+    StateSource, TenantFingerprint, TenantScope, TypeCapabilities, ValidatedCredentialBinding,
+    ValidatedCredentialBindingError, register_all_builtin_ops, register_interactive_ops,
+    register_refreshable_ops, register_revocable_ops, register_runtime_ops, register_testable_ops,
 };
 
 // ── Prelude ───────────────────────────────────────────────────────────────────

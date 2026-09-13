@@ -9,7 +9,7 @@ use nebula_credential::{
     AuthPattern, Credential, CredentialContext, CredentialError, CredentialGuard,
     CredentialMetadata, ResolveResult, SecretString, SecretToken,
 };
-use nebula_resource::{Resource, SlotCell};
+use nebula_resource::{CredentialSlot, HasCredentialSlots, Resource, SlotCell};
 use nebula_schema::FieldValues;
 use zeroize::Zeroize;
 
@@ -17,6 +17,12 @@ use zeroize::Zeroize;
 struct Demo {
     #[credential(key = "db")]
     db: SlotCell<CredentialGuard<FakeCred>>,
+}
+
+#[derive(Resource)]
+struct AliasDemo {
+    #[credential(key = "api")]
+    api: CredentialSlot<FakeCred>,
 }
 
 struct FakeCred;
@@ -65,4 +71,18 @@ fn main() {
     // `None` while the slot is unresolved.
     let _maybe: Option<Arc<CredentialGuard<FakeCred>>> = d.db_slot();
     assert!(_maybe.is_none());
+
+    let alias = AliasDemo {
+        api: CredentialSlot::<FakeCred>::empty(),
+    };
+    let _projected: Option<Arc<CredentialGuard<SecretToken>>> = alias.api_slot();
+    assert!(_projected.is_none());
+
+    fn install_from_resolver(
+        resource: &AliasDemo,
+        guard: nebula_credential::ErasedCredentialGuard,
+    ) -> Result<nebula_resource::SlotUpdate, nebula_resource::SlotInstallError> {
+        resource.install_credential_slot("api", guard)
+    }
+    let _object_safe_bridge_contract = install_from_resolver;
 }

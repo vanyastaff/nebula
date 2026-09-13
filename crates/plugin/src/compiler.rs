@@ -22,15 +22,15 @@ use semver::{BuildMetadata, Version};
 use crate::plan::{
     DEFAULT_OUTPUT_PORT, ExecutablePlanRevision, INTRINSIC_ERROR_PORT, PlanCompilationError,
     PlanEpoch, RECORD_VERSION_V1, RecordedActionKindV1, RecordedActionV1, RecordedAuthPatternV1,
-    RecordedBindingContractV1, RecordedBindingSiteV1, RecordedBindingV1,
-    RecordedCheckpointPolicyV1, RecordedCheckpointingV1, RecordedConnectionV1, RecordedConverterV1,
-    RecordedCredentialV1, RecordedDependenciesV1, RecordedDependencyV1, RecordedDurationV1,
-    RecordedErrorStrategyV1, RecordedExecutablePlanRevisionV1, RecordedFlowKindV1,
-    RecordedGraphContentV1, RecordedInputPortV1, RecordedIsolationV1, RecordedNodeV1,
-    RecordedOutputPortV1, RecordedParameterV1, RecordedParameterValueV1, RecordedPlanManifestV1,
-    RecordedPlanProfileV1, RecordedPluginV1, RecordedRateLimitV1, RecordedResourceV1,
-    RecordedRetryV1, RecordedSchemaV1, RecordedSemverV1, RecordedSlotV1, RecordedTriggerV1,
-    RecordedVariableV1, RecordedWorkflowConfigV1, RecordedWorkflowVersionV1,
+    RecordedBindingContractV1, RecordedBindingSelectorProvenanceV1, RecordedBindingSiteV1,
+    RecordedBindingV1, RecordedCheckpointPolicyV1, RecordedCheckpointingV1, RecordedConnectionV1,
+    RecordedConverterV1, RecordedCredentialV1, RecordedDependenciesV1, RecordedDependencyV1,
+    RecordedDurationV1, RecordedErrorStrategyV1, RecordedExecutablePlanRevisionV1,
+    RecordedFlowKindV1, RecordedGraphContentV1, RecordedInputPortV1, RecordedIsolationV1,
+    RecordedNodeV1, RecordedOutputPortV1, RecordedParameterV1, RecordedParameterValueV1,
+    RecordedPlanManifestV1, RecordedPlanProfileV1, RecordedPluginV1, RecordedRateLimitV1,
+    RecordedResourceV1, RecordedRetryV1, RecordedSchemaV1, RecordedSemverV1, RecordedSlotV1,
+    RecordedTriggerV1, RecordedVariableV1, RecordedWorkflowConfigV1, RecordedWorkflowVersionV1,
     SCHEMA_WIRE_VERSION_GRAPH_V1, validate_node_parameters, validate_parameter,
     validate_parameter_contract, validate_trigger_configuration,
 };
@@ -1390,11 +1390,15 @@ impl<'a> GraphCompiler<'a> {
         }
         for slot in dependencies.slot_fields() {
             let override_value = node.slot_bindings.get(slot.slot_key);
-            let selector = match (&slot.kind, override_value) {
-                (SlotKind::Resource { .. }, Some(SlotBinding::ResourceId(value)))
-                | (SlotKind::Credential { .. }, Some(SlotBinding::CredentialId(value))) => {
-                    value.as_str()
-                },
+            let (selector, selector_provenance) = match (&slot.kind, override_value) {
+                (SlotKind::Resource { .. }, Some(SlotBinding::ResourceId(value))) => (
+                    value.as_str(),
+                    RecordedBindingSelectorProvenanceV1::ResourceIdOverride,
+                ),
+                (SlotKind::Credential { .. }, Some(SlotBinding::CredentialId(value))) => (
+                    value.as_str(),
+                    RecordedBindingSelectorProvenanceV1::CredentialIdOverride,
+                ),
                 (SlotKind::Resource { .. }, Some(SlotBinding::CredentialId(_))) => {
                     self.diagnostics.push(
                         DiagnosticCode::SlotKindMismatch,
@@ -1421,13 +1425,17 @@ impl<'a> GraphCompiler<'a> {
                     );
                     continue;
                 },
-                (_, None) => slot.default_id,
+                (_, None) => (
+                    slot.slot_key,
+                    RecordedBindingSelectorProvenanceV1::DefaultName,
+                ),
             };
             self.compile_binding(
                 RecordedBindingSiteV1::Node(node.id.to_string()),
                 node.plugin_key.clone(),
                 slot,
                 selector,
+                selector_provenance,
                 JsonPointer::root("nodes")
                     .child(node.id.as_str())
                     .child("slot_bindings")
@@ -1446,7 +1454,8 @@ impl<'a> GraphCompiler<'a> {
                 RecordedBindingSiteV1::Trigger(trigger.id.to_string()),
                 trigger.plugin_key.clone(),
                 slot,
-                slot.default_id,
+                slot.slot_key,
+                RecordedBindingSelectorProvenanceV1::DefaultName,
                 JsonPointer::root("trigger_bindings")
                     .child(trigger.id.as_str())
                     .child("bindings")
@@ -1461,6 +1470,7 @@ impl<'a> GraphCompiler<'a> {
         owner_plugin: PluginKey,
         slot: &nebula_core::SlotField,
         selector: &str,
+        selector_provenance: RecordedBindingSelectorProvenanceV1,
         path: JsonPointer,
     ) {
         if selector.trim().is_empty() {
@@ -1532,6 +1542,7 @@ impl<'a> GraphCompiler<'a> {
             site,
             slot_key: slot.slot_key.to_owned(),
             selector: selector.to_owned(),
+            selector_provenance: Some(selector_provenance),
             contract,
             required: slot.required,
             lazy: slot.lazy,

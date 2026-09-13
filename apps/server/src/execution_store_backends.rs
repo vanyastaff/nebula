@@ -38,8 +38,8 @@ fn build_memory_execution_stores(
     };
     use nebula_storage::inmem::{
         InMemoryControlQueue, InMemoryExecutionStore, InMemoryJournalReader,
-        InMemoryNodeResultStore, InMemoryStartAcceptanceStore, InMemoryWorkflowStore,
-        InMemoryWorkflowVersionStore,
+        InMemoryNodeResultStore, InMemoryResourceStore, InMemoryStartAcceptanceStore,
+        InMemoryWorkflowStore, InMemoryWorkflowVersionStore,
     };
 
     let execution_store = InMemoryExecutionStore::new();
@@ -108,6 +108,7 @@ fn build_memory_execution_stores(
         revision_installer: revision_catalog,
         workflow_store: Arc::new(workflow_store),
         workflow_version_store: Arc::new(workflow_versions),
+        resource_store: Arc::new(InMemoryResourceStore::new()),
         execution_store: Arc::new(execution_store),
         node_result_store: Arc::new(node_results),
         journal_reader: Arc::new(journal),
@@ -145,9 +146,9 @@ async fn build_sqlite_execution_stores(
 ) -> Result<ExecutionStoreBundle, TransportInitError> {
     use nebula_storage::InMemoryNodeResultStore;
     use nebula_storage::sqlite::{
-        SqliteControlQueue, SqliteExecutionStore, SqliteJournalReader, SqliteResumeProducer,
-        SqliteResumeTokenStore, SqliteStartAcceptanceStore, SqliteTurnHandoff, SqliteWorkflowStore,
-        SqliteWorkflowVersionStore, init_schema,
+        SqliteControlQueue, SqliteExecutionStore, SqliteJournalReader, SqliteResourceStore,
+        SqliteResumeProducer, SqliteResumeTokenStore, SqliteStartAcceptanceStore,
+        SqliteTurnHandoff, SqliteWorkflowStore, SqliteWorkflowVersionStore, init_schema,
     };
     #[cfg(feature = "runtime-repair-red")]
     use nebula_storage::sqlite::{SqliteIdempotencyGuard, SqliteOperationLedger};
@@ -245,6 +246,7 @@ async fn build_sqlite_execution_stores(
         revision_installer: revision_catalog,
         workflow_store,
         workflow_version_store,
+        resource_store: Arc::new(SqliteResourceStore::new(pool.clone())),
         execution_store,
         node_result_store: node_results,
         journal_reader,
@@ -268,9 +270,9 @@ async fn build_postgres_execution_stores(
 ) -> Result<ExecutionStoreBundle, TransportInitError> {
     use nebula_storage::InMemoryNodeResultStore;
     use nebula_storage::postgres::{
-        PgControlQueue, PgExecutionStore, PgJournalReader, PgResumeProducer, PgResumeTokenStore,
-        PgStartAcceptanceStore, PgTurnHandoff, PgWorkflowStore, PgWorkflowVersionStore,
-        init_schema,
+        PgControlQueue, PgExecutionStore, PgJournalReader, PgResourceStore, PgResumeProducer,
+        PgResumeTokenStore, PgStartAcceptanceStore, PgTurnHandoff, PgWorkflowStore,
+        PgWorkflowVersionStore, init_schema,
     };
     #[cfg(feature = "runtime-repair-red")]
     use nebula_storage::postgres::{PgIdempotencyGuard, PgOperationLedger};
@@ -375,6 +377,7 @@ async fn build_postgres_execution_stores(
         revision_installer: revision_catalog,
         workflow_store,
         workflow_version_store,
+        resource_store: Arc::new(PgResourceStore::new(pool.clone())),
         execution_store,
         node_result_store,
         journal_reader,

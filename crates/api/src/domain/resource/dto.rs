@@ -2,8 +2,10 @@
 //!
 //! `GET /api/v1/orgs/{org}/workspaces/{ws}/resources` returns the
 //! persisted resource definitions for a workspace. These DTOs are the
-//! non-secret summary projection of `nebula_storage`'s `ResourceEntry`
-//! — the raw `config` blob is deliberately not exposed (no secret echo).
+//! non-secret summary projection of [`nebula_storage_port::dto::ResourceRow`].
+//! Raw config and credential bindings are deliberately not exposed.
+
+use std::{collections::BTreeMap, fmt};
 
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -51,7 +53,7 @@ pub struct ListResourcesResponse {
 /// `R::Config` schema (and rejected if it carries an undeclared,
 /// secret-shaped field — no secret echo / product credential boundary) *before* the
 /// row is persisted.
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Serialize, Deserialize, ToSchema)]
 pub struct CreateResourceRequest {
     /// Workspace-unique slug for the new resource.
     pub slug: String,
@@ -65,6 +67,22 @@ pub struct CreateResourceRequest {
     /// they are bound through typed credential slots.
     #[schema(value_type = Object)]
     pub config: serde_json::Value,
+    /// Credential selectors keyed by the resource kind's declared slot name.
+    /// Values are persisted for credential-runtime resolution and are never
+    /// included in resource read responses or debug output.
+    #[serde(default)]
+    pub credential_bindings: BTreeMap<String, String>,
+}
+
+impl fmt::Debug for CreateResourceRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CreateResourceRequest")
+            .field("slug", &self.slug)
+            .field("display_name", &self.display_name)
+            .field("kind", &self.kind)
+            .finish()
+    }
 }
 
 /// `POST /api/v1/orgs/{org}/workspaces/{ws}/resources` response.
@@ -91,7 +109,7 @@ pub struct CreateResourceResponse {
 /// carries an undeclared, secret-shaped field — no secret echo /
 /// product credential boundary) *before* the row is persisted, so a PUT can never
 /// be a path to persist a config that a create would have rejected.
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Serialize, Deserialize, ToSchema)]
 pub struct UpdateResourceRequest {
     /// New human-readable display name.
     pub display_name: String,
@@ -103,10 +121,26 @@ pub struct UpdateResourceRequest {
     /// they are bound through typed credential slots.
     #[schema(value_type = Object)]
     pub config: serde_json::Value,
+    /// Replacement credential selectors keyed by declared slot name.
+    /// Omission clears all bindings, matching full-replacement `PUT`
+    /// semantics. Values never appear in resource responses or debug output.
+    #[serde(default)]
+    pub credential_bindings: BTreeMap<String, String>,
     /// Version the caller expects the stored row to be at (read from a
     /// prior GET). The update is applied with a CAS on this counter; a
     /// mismatch is **409 Conflict**.
     pub expected_version: i64,
+}
+
+impl fmt::Debug for UpdateResourceRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("UpdateResourceRequest")
+            .field("display_name", &self.display_name)
+            .field("kind", &self.kind)
+            .field("expected_version", &self.expected_version)
+            .finish()
+    }
 }
 
 /// `PUT /api/v1/orgs/{org}/workspaces/{ws}/resources/{res}` response.
@@ -116,9 +150,7 @@ pub struct UpdateResourceResponse {
     pub id: String,
     /// The row's new CAS version after the successful update.
     ///
-    /// Authoritative: this is the store-assigned post-CAS counter
-    /// returned by `ResourceRepo::update`, not a handler-side
-    /// prediction.
+    /// The successful store CAS advances this counter by one.
     pub version: i64,
 }
 
@@ -178,4 +210,51 @@ pub struct ResourceStatusDto {
     /// `true` iff the resource can currently accept new acquire requests
     /// (`ready` / `reloading`). Surfaced read-only — it does not acquire.
     pub accepting: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CreateResourceRequest, UpdateResourceRequest};
+
+    #[test]
+    fn create_request_defaults_credential_bindings_and_redacts_debug() {
+        let request: CreateResourceRequest = serde_json::from_value(serde_json::json!({
+            "slug": "primary-http",
+            "display_name": "Primary HTTP",
+            "kind": "http_pool",
+            "config": { "api_token": "config-secret" }
+        }))
+        .expect("create request without bindings must deserialize");
+
+        assert!(request.credential_bindings.is_empty());
+        let debug = format!("{request:?}");
+        assert!(!debug.contains("config-secret"));
+        assert!(!debug.contains("config"));
+        assert!(!debug.contains("credential_bindings"));
+    }
+
+    #[test]
+    fn update_request_debug_does_not_expose_binding_selectors() {
+        let request: UpdateResourceRequest = serde_json::from_value(serde_json::json!({
+            "display_name": "Primary HTTP",
+            "kind": "http_pool",
+            "config": { "api_token": "config-secret" },
+            "credential_bindings": { "api_token": "credential-selector" },
+            "expected_version": 4
+        }))
+        .expect("update request with bindings must deserialize");
+
+        assert_eq!(
+            request
+                .credential_bindings
+                .get("api_token")
+                .map(String::as_str),
+            Some("credential-selector")
+        );
+        let debug = format!("{request:?}");
+        assert!(!debug.contains("config-secret"));
+        assert!(!debug.contains("credential-selector"));
+        assert!(!debug.contains("config"));
+        assert!(!debug.contains("credential_bindings"));
+    }
 }

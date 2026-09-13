@@ -16,7 +16,7 @@
 
 #[cfg(feature = "runtime-repair-red")]
 use std::time::Instant;
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc, time::Duration};
 
 use chrono::Utc;
 #[cfg(feature = "runtime-repair-red")]
@@ -41,6 +41,32 @@ use tokio_util::sync::CancellationToken;
 use nebula_worker_bin::compose::build_core_flavor_runtime;
 #[cfg(feature = "runtime-repair-red")]
 use nebula_worker_bin::compose::build_core_flavor_runtime_for_runtime_repair_red;
+
+#[derive(Debug)]
+struct UnavailableCredentialResolver;
+
+impl nebula_credential::CredentialSlotResolver for UnavailableCredentialResolver {
+    fn resolve_slot<'a>(
+        &'a self,
+        _scope: &'a nebula_credential::TenantScope,
+        _credential_id: nebula_credential::CredentialId,
+        _expected_key: nebula_credential::CredentialKey,
+        _required_capabilities: nebula_credential::Capabilities,
+        _cancel: CancellationToken,
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        nebula_credential::ErasedCredentialGuard,
+                        nebula_credential::CredentialSlotResolveError,
+                    >,
+                > + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async { Err(nebula_credential::CredentialSlotResolveError::Unavailable) })
+    }
+}
 
 #[cfg(feature = "runtime-repair-red")]
 #[derive(Debug)]
@@ -81,6 +107,7 @@ struct TestStores {
     versions: Arc<InMemoryWorkflowVersionStore>,
     workflows: Arc<InMemoryWorkflowStore>,
     resource_runtime: Arc<nebula_storage::inmem::InMemoryResourceRuntime>,
+    credential_resolver: Arc<UnavailableCredentialResolver>,
 }
 
 impl TestStores {
@@ -94,6 +121,7 @@ impl TestStores {
             bundles: Arc::new(nebula_storage::inmem::InMemoryStartAcceptanceStore::new(
                 &self.execution,
             )),
+            credential_resolver: self.credential_resolver.clone(),
         }
     }
 
@@ -111,6 +139,7 @@ impl TestStores {
             versions: Arc::new(versions),
             workflows: Arc::new(workflows),
             resource_runtime: Arc::new(nebula_storage::inmem::InMemoryResourceRuntime::new()),
+            credential_resolver: Arc::new(UnavailableCredentialResolver),
         }
     }
 
@@ -465,9 +494,10 @@ fn runtime_repair_builder_seals_exact_clock_and_event_bus() {
 }
 
 #[test]
-fn core_flavor_builder_owns_the_concrete_resource_runtime() {
+fn core_flavor_builder_owns_resource_runtime_and_credential_resolver() {
     let stores = TestStores::new();
     let resource_runtime = Arc::downgrade(&stores.resource_runtime);
+    let credential_resolver = Arc::downgrade(&stores.credential_resolver);
     let (builder, _, _) = build_core_flavor_runtime(
         stores.execution_stores(),
         stores.turn_handoff(),
@@ -483,9 +513,17 @@ fn core_flavor_builder_owns_the_concrete_resource_runtime() {
         resource_runtime.upgrade().is_some(),
         "worker builder must retain the concrete resource runtime through its coordinator"
     );
+    assert!(
+        credential_resolver.upgrade().is_some(),
+        "worker builder must retain the credential resolver through its sealed engine"
+    );
     drop(builder);
     assert!(
         resource_runtime.upgrade().is_none(),
         "resource runtime ownership must end with the worker builder"
+    );
+    assert!(
+        credential_resolver.upgrade().is_none(),
+        "credential resolver ownership must end with the worker builder"
     );
 }

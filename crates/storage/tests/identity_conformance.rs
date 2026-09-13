@@ -482,6 +482,8 @@ fn membership_row(scope_id: &str, principal_id: &str) -> MembershipRow {
 }
 
 fn resource_row(id: &str, workspace_id: &str, slug: &str) -> ResourceRow {
+    let credential_bindings =
+        std::collections::BTreeMap::from([("auth".to_owned(), "cred_test".to_owned())]);
     ResourceRow {
         id: id.into(),
         workspace_id: workspace_id.into(),
@@ -489,6 +491,7 @@ fn resource_row(id: &str, workspace_id: &str, slug: &str) -> ResourceRow {
         display_name: "Test Resource".into(),
         kind: "http".into(),
         config: serde_json::json!({}),
+        credential_bindings,
         created_at: "2026-01-01T00:00:00Z".into(),
         created_by: "usr_1".into(),
         version: 0,
@@ -702,7 +705,16 @@ async fn assert_resource_contract(b: &dyn IdentityBackend) {
     );
     // cross-scope get is a miss
     assert!(s.get(&other, "res_1").await.unwrap().is_none());
-    assert_eq!(s.list(&a).await.unwrap().len(), 1);
+    let listed = s.list(&a).await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(
+        listed[0]
+            .credential_bindings
+            .get("auth")
+            .map(String::as_str),
+        Some("cred_test"),
+        "credential bindings must round-trip separately from resource config"
+    );
     assert!(
         s.update(&a, resource_row("res_1", "ws_a", "db"), 42)
             .await

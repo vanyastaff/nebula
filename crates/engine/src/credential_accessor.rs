@@ -3,17 +3,15 @@
 //! [`EngineCredentialAccessor`] bridges the engine's credential resolution
 //! infrastructure to the `CredentialAccessor` capability trait consumed by
 //! actions. It enforces an allowlist of declared credential keys so that
-//! actions can only access credentials they have explicitly declared as
-//! dependencies.
+//! actions can only access slot keys present in that node's checked durable
+//! binding manifest.
 //!
 //! # Design
 //!
-//! [`CredentialResolver<S>`](nebula_credential::runtime::CredentialResolver) is generic
-//! over a store type, which would infect the engine with an unbounded type
-//! parameter. Instead, the resolution function is captured once as a
+//! The credential runtime is kept behind a node-scoped closure captured as a
 //! type-erased `Arc<dyn Fn + Send + Sync>` returning a pinned future. This
-//! keeps `WorkflowEngine` concrete while still delegating to any store
-//! implementation.
+//! keeps the core accessor independent of credential persistence while the
+//! closure retains the exact selected ID, tenant scope, contract, and capabilities.
 //!
 //! # Allowlist semantics (deny-by-default)
 //!
@@ -26,13 +24,9 @@
 //! - A **non-empty** allowlist only permits the keys in the set. Requests for any key not in the
 //!   set are rejected with [`CoreError::CredentialAccessDenied`].
 //!
-//! The engine populates the allowlist from per-action credential declarations
-//! supplied through [`WorkflowEngine::with_action_credentials`]
-//! (see [`crate::engine`]). An action that never had its credentials declared
-//! to the engine therefore falls through to the deny baseline — there is no
-//! "fail-open" escape hatch.
-//!
-//! [`WorkflowEngine::with_action_credentials`]: crate::WorkflowEngine::with_action_credentials
+//! The engine populates the allowlist only from the checked V2 manifest for
+//! the current node. Missing durable authority falls through to the deny
+//! baseline; there is no process-local grant or fail-open escape hatch.
 
 use std::{collections::HashSet, fmt, future::Future, pin::Pin, sync::Arc};
 
@@ -43,8 +37,8 @@ type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// Type alias for the boxed async credential-resolution function.
 ///
-/// The function takes a credential key string and returns a boxed
-/// `CredentialSnapshot` (as `Box<dyn Any>`) or a `CoreError`.
+/// The function takes a manifest slot key and returns a boxed opaque projected
+/// guard or a `CoreError`.
 type ResolveFn = Arc<
     dyn Fn(
             &str,
@@ -58,7 +52,7 @@ type ResolveFn = Arc<
 
 /// Engine-side implementation of [`CredentialAccessor`](nebula_core::accessor::CredentialAccessor).
 ///
-/// Validates that the requested credential key is in the declared allowlist
+/// Validates that the requested credential slot is in the manifest allowlist
 /// before delegating resolution to the underlying resolver function.
 ///
 /// # Examples
@@ -89,8 +83,7 @@ pub struct EngineCredentialAccessor {
     /// Set of credential keys this accessor is permitted to resolve.
     ///
     /// An empty set means **no** credentials are accessible (deny-by-default).
-    /// Populated from per-action credential declarations supplied through
-    /// [`WorkflowEngine::with_action_credentials`](crate::WorkflowEngine::with_action_credentials).
+    /// Populated from the current node's checked durable manifest.
     allowed_keys: HashSet<String>,
     /// Type-erased async resolution function.
     resolve_fn: ResolveFn,
@@ -103,11 +96,10 @@ impl EngineCredentialAccessor {
     ///
     /// # Parameters
     ///
-    /// - `allowed_keys` — the set of credential IDs this accessor may resolve. An **empty** set
+    /// - `allowed_keys` — the set of credential slot keys this accessor may resolve. An **empty** set
     ///   denies every request (deny-by-default). A non-empty set
     ///   permits only the listed keys.
-    /// - `resolve_fn` — async closure that resolves a credential ID to a boxed `Any` (typically a
-    ///   `CredentialSnapshot`) or a `CoreError`.
+    /// - `resolve_fn` — async closure that resolves a slot to a boxed opaque guard or a `CoreError`.
     /// - `action_id` — the action key or node identifier for security attribution in
     ///   `CoreError::CredentialAccessDenied` events.
     pub fn new<F, Fut>(allowed_keys: HashSet<String>, resolve_fn: F, action_id: String) -> Self

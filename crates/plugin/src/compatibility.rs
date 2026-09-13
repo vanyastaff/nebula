@@ -117,12 +117,14 @@ fn validate_recorded_contracts(
     record: &RecordedExecutablePlanRevisionV1,
     registry: &FrozenPluginRegistry,
 ) -> Result<(), PlanRegistryCompatibilityError> {
-    if record.compiler_version != crate::plan::COMPILER_VERSION_GRAPH_V3
-        || record
-            .content
-            .actions
-            .iter()
-            .any(|action| action.effect_contract.is_none())
+    if !matches!(
+        record.compiler_version,
+        crate::plan::COMPILER_VERSION_GRAPH_V3 | crate::plan::COMPILER_VERSION_GRAPH_V4
+    ) || record
+        .content
+        .actions
+        .iter()
+        .any(|action| action.effect_contract.is_none())
     {
         return Err(PlanRegistryCompatibilityError::UnsupportedEffectProtocol);
     }

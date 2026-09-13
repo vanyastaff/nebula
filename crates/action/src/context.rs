@@ -24,7 +24,7 @@ use nebula_core::{
     obs::{SpanId, TraceId},
     scope::{Principal, Scope},
 };
-use nebula_credential::{AuthScheme, CredentialGuard, CredentialSnapshot};
+use nebula_credential::{AuthScheme, CredentialGuard, CredentialSnapshot, ErasedCredentialGuard};
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
@@ -796,28 +796,133 @@ pub trait ActionContextExt: HasResources + HasCredentials {
         Self: Sync,
     {
         Box::pin(async move {
-            let key = CredentialKey::new(id)
-                .map_err(|e| ActionError::fatal(format!("invalid credential id `{id}`: {e}")))?;
+            let key =
+                CredentialKey::new(id).map_err(|_| ActionError::fatal("invalid credential id"))?;
             let boxed = self
                 .credentials()
                 .resolve_any(&key)
                 .await
-                .map_err(ActionError::from)?;
-            let snapshot = boxed
-                .downcast::<CredentialSnapshot>()
+                .map_err(|_| ActionError::fatal("credential resolution failed"))?;
+            let erased = boxed
+                .downcast::<ErasedCredentialGuard>()
                 .map(|b| *b)
                 .map_err(|_| {
-                    ActionError::fatal(format!(
-                        "credential `{id}`: resolve_any returned unexpected type"
-                    ))
+                    ActionError::fatal("credential resolver returned an unexpected value type")
                 })?;
-            let scheme = snapshot
-                .into_project::<C::Scheme>()
-                .map_err(|e| ActionError::fatal(format!("credential `{id}`: {e}")))?;
-            Ok(CredentialGuard::new(scheme))
+            erased
+                .into_typed::<C::Scheme>()
+                .map_err(ActionError::fatal_from)
         })
     }
 }
 
 /// Blanket impl — any type with both `HasResources` and `HasCredentials` gets the helpers.
 impl<T: ?Sized + HasResources + HasCredentials> ActionContextExt for T {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testing::TestContextBuilder;
+    use nebula_core::CoreError;
+    use nebula_credential::BearerTokenCredential;
+
+    const CREDENTIAL_ID_CANARY: &str = "opaque_canary_id_994";
+    const CREDENTIAL_MATERIAL_CANARY: &str = "credential-material-NEVER-DEBUG-994";
+
+    enum CredentialResponse {
+        UnexpectedType,
+        Failure,
+    }
+
+    struct StubCredentialAccessor {
+        response: CredentialResponse,
+    }
+
+    impl CredentialAccessor for StubCredentialAccessor {
+        fn has(&self, _key: &CredentialKey) -> bool {
+            true
+        }
+
+        fn resolve_any(
+            &self,
+            key: &CredentialKey,
+        ) -> Pin<Box<dyn Future<Output = Result<Box<dyn Any + Send + Sync>, CoreError>> + Send + '_>>
+        {
+            match self.response {
+                CredentialResponse::UnexpectedType => {
+                    Box::pin(async { Ok(Box::new(()) as Box<dyn Any + Send + Sync>) })
+                },
+                CredentialResponse::Failure => {
+                    let source = format!(
+                        "failed to resolve {} using {CREDENTIAL_MATERIAL_CANARY}",
+                        key.as_str()
+                    );
+                    Box::pin(async move { Err(CoreError::CredentialNotConfigured(source)) })
+                },
+            }
+        }
+
+        fn try_resolve_any(
+            &self,
+            _key: &CredentialKey,
+        ) -> Pin<
+            Box<
+                dyn Future<Output = Result<Option<Box<dyn Any + Send + Sync>>, CoreError>>
+                    + Send
+                    + '_,
+            >,
+        > {
+            Box::pin(async { Ok(None) })
+        }
+    }
+
+    fn context_with(response: CredentialResponse) -> ActionRuntimeContext {
+        TestContextBuilder::new()
+            .build()
+            .with_credentials(Arc::new(StubCredentialAccessor { response }))
+    }
+
+    fn assert_error_is_fatal_and_redacted(error: &ActionError) {
+        std::assert_matches!(error, ActionError::Fatal { .. });
+        let rendered = format!("{error:?}\n{error}");
+        assert!(!rendered.contains(CREDENTIAL_ID_CANARY));
+        assert!(!rendered.contains(CREDENTIAL_MATERIAL_CANARY));
+    }
+
+    #[tokio::test]
+    async fn credential_slot_rejects_unexpected_accessor_type_without_exposing_id() {
+        let context = context_with(CredentialResponse::UnexpectedType);
+
+        let error = context
+            .resolve_credential_by_id::<BearerTokenCredential>(CREDENTIAL_ID_CANARY)
+            .await
+            .expect_err("an accessor value other than ErasedCredentialGuard must fail");
+
+        assert_error_is_fatal_and_redacted(&error);
+    }
+
+    #[tokio::test]
+    async fn credential_slot_redacts_accessor_error_context() {
+        let context = context_with(CredentialResponse::Failure);
+
+        let error = context
+            .resolve_credential_by_id::<BearerTokenCredential>(CREDENTIAL_ID_CANARY)
+            .await
+            .expect_err("credential accessor failures must remain fatal");
+
+        assert_error_is_fatal_and_redacted(&error);
+    }
+
+    #[tokio::test]
+    async fn credential_slot_rejects_invalid_id_without_echoing_it() {
+        let context = context_with(CredentialResponse::UnexpectedType);
+        let invalid_id = format!("{CREDENTIAL_ID_CANARY} invalid");
+
+        let error = context
+            .resolve_credential_by_id::<BearerTokenCredential>(&invalid_id)
+            .await
+            .expect_err("invalid credential ids must fail before accessor dispatch");
+
+        assert_error_is_fatal_and_redacted(&error);
+    }
+}
