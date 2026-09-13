@@ -175,12 +175,22 @@ handler.
 ## Integration boundary
 
 `nebula-sdk` is the sole supported Rust surface. Its credential authoring contract exposes
-`Credential`, `CredentialMetadataDraft`, typed `Properties`, the `Credential`/`AuthScheme`
-derives, the shared `Icon`/maturity/deprecation vocabulary, built-in credential types, typed
+`Credential`, `CredentialMetadataDraft`, typed `Properties`, the `#[credential]` impl
+macro and `AuthScheme` derive, the shared `Icon`/maturity/deprecation vocabulary, built-in credential types, typed
 snapshots/context, and universal OAuth types through the SDK prelude. `integration::credential`
 exposes resolve and credential-test outcomes. SDK-only external fixtures compile and execute
 representative credential derives, while perimeter fixtures prove that owner authority, raw
 persistence, runtime constructors, credential records, and unscoped resolvers remain unavailable.
+
+**Phase-5 target design, implementation pending:** the
+[revised proposal](../../schema/docs/PHASE5_PROPERTY.md) keeps explicit
+`Credential::Properties` canonical, with value-only `#[property(...)]` fields.
+Consumer `#[slot(credential, ...)]` dependencies stay outside properties. Static
+resolve/project and existing capability traits remain unchanged. The current
+`#[credential]` impl macro infers capabilities from methods; a struct derive cannot
+inspect a separate impl block. Schema-free drafts and typed `Icon` / `with_*` stay;
+the target three-argument constructors and registry-derived `C::Scheme` pattern
+are remaining issue 1018 work in the [shared metadata contract](../../../docs/INTEGRATION_MODEL.md#shared-metadata-authoring-current-foundation-target-parity).
 
 ## Non-goals
 

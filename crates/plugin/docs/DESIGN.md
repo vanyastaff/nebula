@@ -95,6 +95,13 @@ in-memory, durability — в `nebula-storage`); не отвечает за threa
 
 ## 5. Инварианты и контракты
 
+- **Phase-5 target, implementation pending.** The
+  [revised authoring contract](../../schema/docs/PHASE5_PROPERTY.md#durable-compilation)
+  requires a new compiler epoch for scheme-based slot requirements, binding conditions
+  and policy-v2 schema records. Plugin compilation owns frozen provider candidate sets,
+  dependency-closure checks, producer-outbound/consumer-inbound connection checks and
+  exact recorded-plan comparison. It remains pure and grants no tenant authority.
+  Existing epochs, schema envelopes and hash goldens keep their original interpretation.
 - **Checked definitions.** Component metadata and `HasSchema` construction return typed
   failures. Registry snapshots and intrinsic compiler schemas propagate these errors instead
   of substituting empty definitions; subsequent validation consumes owned `AuthoredValue` trees.
