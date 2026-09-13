@@ -265,6 +265,58 @@ output. Serialization and output validation failures carry typed payload-free
 errors, without raw values or
 upstream messages/source chains; a redacting Serialize impl is no secret exemption.
 
+### Deferred Output Resolution Contract (Target, Unshipped)
+
+Action admission derives the exact outbound schema and directional codec evidence
+from `Action::Output`; neither the action author nor a resolver supplies that
+authority. When an admitted invocation returns `ActionOutput::Deferred`, runtime
+control must persist a versioned deferred-output evidence envelope with the durable
+operation/ledger record before parking the execution. The envelope binds the exact
+action key and revision, admission/compiler epoch, schema policy and wire versions,
+outbound projection identity and codec contract. It contains either the exact
+admitted schema snapshot or a content-addressed reference to an immutable retained
+catalog/plan definition plus its canonical commitment; a mutable name or lookup of
+the latest action/schema is insufficient.
+
+`DeferredOutput::expected` may remain as informational scheduling or display
+metadata, but it is never schema or codec evidence. In particular,
+`ExpectedOutput::Value { schema: None }`, an author-supplied schema value and
+`ExpectedOutput::Dynamic` neither select nor relax the retained `Action::Output`
+contract. A resolver cannot use `Dynamic` to waive validation or replace the exact
+evidence with a shape inferred from the returned payload.
+
+All final-result ingress routes through one runtime-owned deferred-resolution
+admission boundary: `Poll`, `Await` notification, `Callback`, `SubWorkflow`, and
+both the await and fallback-poll branches of `AwaitOrPoll`. Resolver adapters only
+transport a candidate result and correlation evidence; they cannot persist a
+resolved payload, publish it, complete the operation or release it downstream.
+The boundary first verifies the candidate's operation identity and exact retained
+evidence, then applies the admitted outbound codec once and validates the result as
+literal outbound data against that retained schema. It never interprets expression-
+looking strings or applies inbound aliases, transforms or defaults. Serialization,
+codec, evidence and validation failures are typed and payload-free, with no raw
+candidate or upstream error text/source chain.
+
+Only a successfully admitted result may be committed as the resolved node output,
+operation completion and downstream publication. On failure, runtime control may
+record only the existing typed payload-free rejection state; it persists no
+candidate/result payload or success fact and emits no result publication, outbox
+entry or downstream-ready signal. Runtime control performs that commit under its
+existing execution aggregate, journal, queue, outbox/inbox and operation-ledger
+authority. Catalog/compiler code owns immutable versioned contract evidence;
+resolution adapters and storage backends do not acquire durable write authority.
+
+Restart, replay and plan readmission load the persisted envelope and require an
+exact match with the execution's already admitted contract. Missing evidence,
+unsupported envelope/schema/codec versions, an unavailable immutable reference,
+a stale admission epoch, or any action revision, schema commitment, outbound
+projection or codec-contract mismatch is a payload-free rejection before resolver
+work or result ingress. Recovery never fetches the latest definition, reconstructs
+authority from `ExpectedOutput`, upgrades an old envelope in place or reinterprets
+old-epoch bytes under current semantics. Migration creates freshly versioned
+evidence and a newly admitted execution contract; it does not bless an existing
+deferred operation retroactively.
+
 Workflow assignability compares the producer's outbound projection with the
 consumer's inbound projection, not their two inbound field sets. Preserve domain,
 requiredness, aliases and secret boundaries in that directional comparison.
@@ -1091,6 +1143,8 @@ schemas and runtime provider behavior are not visible to a proc macro.
 | Metadata authoring/admission | Invalid category/link/reference/schedule, conflicting Overview or exceeded byte/count budgets; typed payload-free errors across manual and macro paths. |
 | Metadata recorded ingress | Unknown catalog/protocol versions, missing obligations or changed authored/derived evidence rejected; only fresh definitions returned. |
 | Runtime | Default/condition/loader failures, incomplete proof, explicit binding errors, cancellation, rotation/reload, decode errors and invalid actual outbound payloads; payload-free codec errors. |
+| Deferred recovery/readmission | Missing, stale, unsupported-version or mismatched action revision/schema/codec evidence is rejected before resolver work or result ingress; old epochs are never reinterpreted. |
+| Deferred resolution runtime | Poll, await notification, callback, subworkflow and both AwaitOrPoll branches cross one runtime-owned exact-evidence and literal-output admission boundary before result persistence, completion, publication or downstream use. |
 | Trigger runtime | Serialize once and validate all outputs under the exact admitted outbound schema before creating the erased boundary or publishing any workflow from that call/batch; no raw Value bypass. |
 | Trigger runtime limits | Runtime-owned item-count and aggregate encoded-byte caps bound staging, serialization and validation work; limit/accounting overflow is payload-free and publishes nothing. |
 | Review | Manual adapter semantic fidelity, arbitrary unsafe Debug/secret handling and nondeterministic defaults cannot be proved by markers, round trips or compile-fail tests. |
@@ -1111,6 +1165,9 @@ schemas and runtime provider behavior are not visible to a proc macro.
 | Trigger batch budgets | At-cap valid batches succeed; over-item-count batches invoke zero serializers. Aggregate encoded-byte or accounting overflow stops bounded encoding without later-item serializer calls and yields zero publications. Assert serializer/encoder-work and publication counters, including overflow after a valid earlier item, through checked and trusted adapters; diagnostics remain payload-free. |
 | Trigger ingress coverage | Factory handles, direct public TriggerHandler calls, webhook callbacks, poll loops, SDK harnesses, event sources and lifecycle/context emitters use checked or explicit trusted adapters with the same gate. Raw Emit(Value) bypass and stale/mismatched output-schema evidence are rejected. |
 | Actual outbound validation | Invalid branch/partial/stream/deferred ordinary output cannot publish/persist; no inbound repair; malicious serializer error text stays out of public diagnostics. |
+| Deferred ingress variants | Poll, Await notification, Callback, SubWorkflow, AwaitOrPoll-await and AwaitOrPoll-fallback-poll each reject an invalid resolved payload through the same boundary; `ExpectedOutput::Dynamic` and optional/incorrect author schema hints grant no exemption. |
+| Deferred evidence and atomic rejection | Missing/unsupported/stale envelopes plus mismatched operation, action revision, schema commitment, outbound projection or codec contract fail on initial ingress, restart, replay and readmission with typed payload-free errors and zero resolved-payload/success persistence, publication, outbox or downstream-ready signals. |
+| Deferred valid resume | Every resolution variant with exact retained evidence and a valid literal result commits the checked result once under runtime-control fencing, resumes downstream execution and replays idempotently without reserialization or reinterpretation. |
 | Directional workflow edge | Producer outbound checked against consumer inbound; equal inbound-only keys cannot hide incompatible output. |
 | Skipped data fallback | Derived data with serde(skip/default) fails explicitly; no hidden default runs after proof. |
 | Recursive data definitions | Direct, mutual and generic recursion rejected by bounded construction/compiler diagnostics without hanging or overflowing. |
@@ -1147,9 +1204,9 @@ Each issue must update its original scope to this contract before implementation
 3. **Validator prerequisite:** Condition refinement, presence semantics, budgets and policy-v2 contract; independent of metadata/schema imports.
 4. **995:** schema-codegen package and gates, schema_type ownership, recursive directional codec contracts and reviewed adapter path, grammar, descriptors, projections, defaults, conditions/options and versioned admission; consumes the validator prerequisite.
 5. **994, contract subtask:** leaf slot declarations and prepared-input port signatures over core; consumes 995, keeps a single projected declaration source. Separate this from 994's later end-to-end production wiring.
-6. **997 / 998 and a resource follow-up:** action, credential and resource implementation after the declaration/codec contracts, including all-family protected-output admission and actual outbound validation. The action task removes PollAction::Event, types trigger/webhook outcomes with Self::Output and implements per-call/batch validation before erasure/publication across checked and explicit trusted adapters, with runtime-owned item/encoded-byte caps, bounded serialization and overflow counter tests. Issue 999 is already closed; scope a new resource task instead of treating it as unfinished. No dependency on final SDK exports.
-7. **Plugin prerequisite:** versioned durable slot/schema records, compiler epoch, directional connection checks and readmission after leaf contracts; coordinate with 1014 without waiting for its unrelated freeze work.
-8. **994, wiring subtask:** production resolution and engine sequencing after leaf implementations and the plugin prerequisite; prove exact input/binding provenance end to end. Route every trigger ingress and lifecycle/context emission through the output gate before the existing publication/transaction owner; prove batch failure publishes nothing and preserve owner-scoped delivery/cursor contracts.
+6. **997 / 998 and a resource follow-up:** action, credential and resource implementation after the declaration/codec contracts, including all-family protected-output admission and actual outbound validation. The action task derives exact `Action::Output` schema/codec evidence, treats `ExpectedOutput` as informational, removes PollAction::Event, types trigger/webhook outcomes with Self::Output and implements per-call/batch validation before erasure/publication across checked and explicit trusted adapters, with runtime-owned item/encoded-byte caps, bounded serialization and overflow counter tests. Issue 999 is already closed; scope a new resource task instead of treating it as unfinished. No dependency on final SDK exports.
+7. **Plugin prerequisite:** versioned durable slot/schema records and immutable exact output-schema/codec references, compiler epoch, directional connection checks and readmission after leaf contracts; coordinate with 1014 without waiting for its unrelated freeze work.
+8. **994, wiring subtask:** production resolution and engine sequencing after leaf implementations and the plugin prerequisite; prove exact input/binding provenance end to end. Runtime control persists deferred evidence with its operation/ledger state and owns one admission boundary for Poll, Await, Callback, SubWorkflow and both AwaitOrPoll result paths before its existing fenced result/journal/outbox commit. Route every trigger ingress and lifecycle/context emission through the output gate before the existing publication/transaction owner; prove all output failures persist no result or success fact and publish nothing while preserving owner-scoped delivery/cursor contracts. Resolver adapters remain transport-only, storage remains the port implementation, and neither gains execution-aggregate authority.
 9. **1000:** SDK exports and isolated renamed-dependency consumer proofs after leaf contracts; macro hygiene uses existing narrow support paths.
 10. **1001:** examples and one SDK-only end-to-end workflow release gate after 1000 and production wiring, including typed poll/pushed-event outputs, protected-trigger admission and invalid-later-item batch rejection.
 
@@ -1166,13 +1223,13 @@ coupling, and P2 alias/newtype/generic gaps. The sections above address those
 objections as design decisions; no implementation fix or passing test is claimed.
 The former attributed approvals are withdrawn, not carried forward as sign-off.
 Prior coordinator focused document-review verdict: COMPLETE for the trigger-output
-contract, including checked public TriggerHandler routing and bounded batch
-staging. This is design review only; runtime targets remain unshipped and
-implementation acceptance is outstanding.
-Coordinator focused amendment-review verdict: COMPLETE for this pre-poll rollback amendment.
-Previously reported existing-code checks passed fmt, clippy, 8542 nextest tests
-(3 skipped), doctests and deny with configuration warnings. These runtime checks
-were not rerun for this amendment and do not exercise its targets.
+contract, including checked public TriggerHandler routing, bounded batch staging
+and pre-poll rollback. The deferred-resolution amendment is pending independent
+review; no approval or implementation is claimed for it. Previously reported
+existing-code checks passed fmt, clippy, 8542 nextest tests (3 skipped), doctests
+and deny with configuration warnings. Those checks were not rerun for this
+design-only amendment, and the existing tests do not implement or exercise its
+deferred evidence, unified ingress, recovery or atomic rejection requirements.
 Implementation acceptance and the outer workflow remain release requirements,
 not behavior proved by those existing-code checks.
 
