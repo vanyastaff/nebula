@@ -14,6 +14,15 @@ use crate::{
 
 const ARRAY_ITEM_KEY: &str = "_prototype_item";
 
+#[path = "property_prototype/admission.rs"]
+mod admission;
+#[path = "property_prototype/canonical.rs"]
+mod canonical;
+#[path = "property_prototype/graph.rs"]
+mod graph;
+#[path = "property_prototype/rust_types.rs"]
+mod rust_types;
+
 // Retains CURRENT RequiredMode semantics: required rejects missing, null,
 // empty strings, and empty arrays. Optional permits omission but still checks
 // the type of a present null. This is not orthogonal presence/nullability.
@@ -387,6 +396,9 @@ fn unsupported(code: &'static str, path: &ValuePath) -> ValidationReport {
         .build()
         .into()
 }
+
+#[path = "property_prototype/graph_tests.rs"]
+mod graph_tests;
 
 #[path = "property_prototype/tests.rs"]
 mod tests;
