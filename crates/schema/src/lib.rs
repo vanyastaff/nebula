@@ -222,8 +222,6 @@ pub mod path;
 /// Common imports for schema-definition code.
 pub mod prelude;
 
-#[cfg(test)]
-mod property_prototype;
 /// Pure schema-path / rule-reference parsing for lints and error merging.
 pub(crate) mod rule_ref;
 /// Top-level schema aggregate.
