@@ -10,6 +10,8 @@
 
 use std::{borrow::Cow, time::Duration};
 
+use zeroize::{Zeroize, ZeroizeOnDrop};
+
 use crate::SecretString;
 
 /// Outcome of a successful [`ExternalProvider::resolve`](super::ExternalProvider::resolve).
@@ -117,7 +119,7 @@ impl ProviderResolution {
 /// Construction via [`LeaseHandle::new`] is the canonical public path;
 /// `#[non_exhaustive]` reserves additive fields (e.g. backend-specific
 /// metadata) without further break.
-#[derive(Debug, Clone)]
+#[derive(Clone, Zeroize, ZeroizeOnDrop)]
 #[non_exhaustive]
 pub struct LeaseHandle {
     /// Name of the provider that issued this lease — matches
@@ -125,13 +127,28 @@ pub struct LeaseHandle {
     /// of the issuer. Used by
     /// [`LeasedProvider::handles_lease`](super::LeasedProvider::handles_lease)
     /// for routing inside composed providers.
+    #[zeroize(skip)]
     pub provider: Cow<'static, str>,
     /// Provider-specific lease identifier (e.g. Vault lease id).
     pub lease_id: String,
     /// When the provider issued this lease.
+    #[zeroize(skip)]
     pub issued_at: chrono::DateTime<chrono::Utc>,
     /// Time-to-live communicated by the provider at issue time.
+    #[zeroize(skip)]
     pub ttl: Duration,
+}
+
+impl std::fmt::Debug for LeaseHandle {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("LeaseHandle")
+            .field("provider", &self.provider)
+            .field("lease_id", &"[REDACTED]")
+            .field("issued_at", &self.issued_at)
+            .field("ttl", &self.ttl)
+            .finish()
+    }
 }
 
 impl LeaseHandle {
@@ -168,6 +185,34 @@ mod tests {
         assert!(r.lease.is_none());
         assert!(r.ttl.is_none());
         assert_eq!(r.secret.expose_secret(), "sk-test");
+    }
+
+    #[test]
+    fn lease_handle_debug_redacts_lease_identifier() {
+        let lease = LeaseHandle::new(
+            "provider",
+            "lease-secret-diagnostic-canary",
+            chrono::Utc::now(),
+            Duration::from_mins(1),
+        );
+
+        let diagnostic = format!("{lease:?}");
+        assert!(!diagnostic.contains("lease-secret-diagnostic-canary"));
+        assert!(diagnostic.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn lease_handle_zeroize_scrubs_lease_identifier() {
+        let mut lease = LeaseHandle::new(
+            "provider",
+            "lease-secret-diagnostic-canary",
+            chrono::Utc::now(),
+            Duration::from_mins(1),
+        );
+
+        lease.zeroize();
+
+        assert!(lease.lease_id.is_empty());
     }
 
     #[test]

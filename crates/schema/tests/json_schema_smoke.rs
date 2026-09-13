@@ -27,7 +27,7 @@ fn valid_schema_json_schema_includes_draft_2020_12_and_typed_property() {
             .pointer("/properties/name")
             .is_some_and(|n| n.get("type") == Some(&Value::String("string".to_owned())))
     );
-    assert_eq!(value.get("additionalProperties"), Some(&Value::Bool(false)));
+    assert_eq!(value.get("additionalProperties"), Some(&Value::Bool(true)));
 }
 
 #[test]

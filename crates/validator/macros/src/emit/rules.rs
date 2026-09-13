@@ -223,7 +223,7 @@ fn emit_size_range(field: &FieldDef, min: usize, max: usize) -> TokenStream2 {
     let element_type = vec_inner_type_from_field(field);
 
     let inner = quote! {
-        match ::nebula_validator::validators::try_size_range::<#element_type>(#min, #max) {
+        match ::nebula_validator::validators::size_range::<#element_type>(#min, #max) {
             Ok(v) => {
                 if let Err(e) = ::nebula_validator::foundation::Validate::validate(
                     &v,
@@ -233,7 +233,13 @@ fn emit_size_range(field: &FieldDef, min: usize, max: usize) -> TokenStream2 {
                 }
             }
             Err(e) => {
-                errors.add(e.with_field(#field_key));
+                errors.add(
+                    ::nebula_validator::foundation::ValidationError::new(
+                        "invalid_range",
+                        e.to_string(),
+                    )
+                    .with_field(#field_key),
+                );
             }
         }
     };

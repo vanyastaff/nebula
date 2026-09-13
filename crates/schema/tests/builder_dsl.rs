@@ -1,13 +1,13 @@
 //! Integration tests for the typed-closure builder DSL.
 
 use nebula_schema::{
-    Field, FieldCollector, FieldValues, GroupBuilder, InputHint, RequiredMode, Schema,
+    AuthoredValue, Field, FieldCollector, GroupBuilder, InputHint, RequiredMode, Schema,
     StringWidget, VisibilityMode, field_key,
 };
 use nebula_validator::{Predicate, Rule};
 
 fn eq_rule(path: &str, value: impl Into<serde_json::Value>) -> Rule {
-    Rule::predicate(Predicate::eq(path, value).expect("valid path"))
+    Rule::predicate(Predicate::eq(path, value).expect("test path is valid")).unwrap()
 }
 use serde_json::json;
 
@@ -138,10 +138,11 @@ fn builder_full_example_from_spec() {
         .unwrap();
 
     assert_eq!(schema.fields().len(), 3);
-    let values =
-        FieldValues::from_json(json!({ "url": "https://x.test/", "timeout": 5, "verbose": false }))
-            .unwrap();
-    assert!(schema.validate(&values).is_ok());
+    let values = AuthoredValue::from_template_json(
+        json!({ "url": "https://x.test/", "timeout": 5, "verbose": false }),
+    )
+    .unwrap();
+    assert!(schema.validate(values).is_ok());
 }
 
 #[test]
@@ -154,6 +155,7 @@ fn group_propagates_visible_when_to_children() {
                 .string(field_key!("body"), |s| s.widget(StringWidget::Multiline))
                 .integer(field_key!("content_length"), |n| n)
         })
+        .unwrap()
         .build()
         .unwrap();
 
@@ -189,6 +191,7 @@ fn group_propagates_required_when_to_children() {
                 .string(field_key!("detail_a"), |s| s)
                 .string(field_key!("detail_b"), |s| s)
         })
+        .unwrap()
         .build()
         .unwrap();
 
@@ -214,6 +217,7 @@ fn group_composes_existing_child_visible_when() {
             g.visible_when(group_rule.clone())
                 .string(field_key!("x"), |s| s.visible_when(child_rule.clone()))
         })
+        .unwrap()
         .build()
         .unwrap();
 
@@ -222,9 +226,10 @@ fn group_composes_existing_child_visible_when() {
         Field::String(s) => match &s.visible {
             VisibilityMode::When(rule) => {
                 // The composed rule must mention both field paths.
-                let debug = format!("{rule:?}");
-                assert!(debug.contains("section"));
-                assert!(debug.contains("mode"));
+                let mut references = Vec::new();
+                rule.field_references(&mut references);
+                assert!(references.contains(&"/section"), "{references:?}");
+                assert!(references.contains(&"/mode"), "{references:?}");
             },
             other => panic!("expected composed visible_when, got {other:?}"),
         },
@@ -251,6 +256,7 @@ fn group_required_when_composes_with_always_and_never_children() {
                 .string(field_key!("always_required"), nebula_schema::StringBuilder::required)
                 .string(field_key!("optional_by_default"), |s| s)
         })
+        .unwrap()
         .build()
         .unwrap();
 
@@ -281,6 +287,7 @@ fn group_preserves_explicit_child_group_label() {
             g.string(field_key!("inherits"), |s| s)
                 .string(field_key!("overrides"), |s| s.group("inner"))
         })
+        .unwrap()
         .build()
         .unwrap();
 

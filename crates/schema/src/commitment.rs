@@ -1,11 +1,11 @@
 //! Opt-in **keyed commitment** of secret material for content-addressing.
 //!
-//! By default [`FieldValue::canonical_bytes`](crate::FieldValue::canonical_bytes)
+//! By default [`AuthoredValue::canonical_bytes`](crate::AuthoredValue::canonical_bytes)
 //! *rejects* a secret-bearing value (`secret.not_hashable`): a deterministic,
 //! unkeyed hash of a low-entropy secret is a brute-forceable confirmation oracle.
 //! When a caller genuinely needs a dedup / content key for a structure that
 //! contains a secret, the committing variants
-//! ([`FieldValue::canonical_bytes_committing`](crate::FieldValue::canonical_bytes_committing))
+//! ([`AuthoredValue::canonical_bytes_committing`](crate::AuthoredValue::canonical_bytes_committing))
 //! emit a **keyed** commitment instead — `blake3::keyed_hash` under a
 //! [`CommitmentKey`] the attacker does not have, so the digest is a PRF output,
 //! not an invertible hash of the secret.
@@ -180,7 +180,7 @@ pub(crate) fn write_secret_commitment(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::FieldValue;
+    use crate::AuthoredValue;
 
     fn fixed_key() -> CommitmentKey {
         CommitmentKey::for_testing([7u8; 32])
@@ -189,7 +189,7 @@ mod tests {
     #[test]
     fn ephemeral_keys_differ() {
         // Two freshly minted keys must commit the same secret differently.
-        let secret = FieldValue::SecretLiteral(SecretValue::string("hunter2".to_owned()));
+        let secret = AuthoredValue::Secret(SecretValue::string("hunter2".to_owned()));
         let a = secret
             .canonical_bytes_committing(&CommitmentKey::ephemeral())
             .expect("commit");
@@ -210,10 +210,10 @@ mod tests {
     #[test]
     fn string_and_bytes_with_same_raw_commit_differently() {
         let key = fixed_key();
-        let as_string = FieldValue::SecretLiteral(SecretValue::string("abc".to_owned()))
+        let as_string = AuthoredValue::Secret(SecretValue::string("abc".to_owned()))
             .canonical_bytes_committing(&key)
             .expect("commit");
-        let as_bytes = FieldValue::SecretLiteral(SecretValue::bytes(b"abc".to_vec()))
+        let as_bytes = AuthoredValue::Secret(SecretValue::bytes(b"abc".to_vec()))
             .canonical_bytes_committing(&key)
             .expect("commit");
         assert_ne!(
@@ -225,7 +225,7 @@ mod tests {
     #[test]
     fn same_key_same_secret_is_deterministic() {
         let key = fixed_key();
-        let secret = FieldValue::SecretLiteral(SecretValue::string("s".to_owned()));
+        let secret = AuthoredValue::Secret(SecretValue::string("s".to_owned()));
         assert_eq!(
             secret.canonical_bytes_committing(&key).expect("commit"),
             secret.canonical_bytes_committing(&key).expect("commit"),
@@ -236,13 +236,13 @@ mod tests {
     fn commitment_frame_shape_and_golden_hash() {
         // Freeze the exact frame so any preimage/format drift is caught.
         let key = CommitmentKey::for_testing([0u8; 32]);
-        let bytes = FieldValue::SecretLiteral(SecretValue::string("x".to_owned()))
+        let bytes = AuthoredValue::Secret(SecretValue::string("x".to_owned()))
             .canonical_bytes_committing(&key)
             .expect("commit");
         // outer canon: domain(16) + version(2) + TAG(1) + kind(1) + digest(32) = 52
         assert_eq!(bytes.len(), 52, "frame size");
         assert_eq!(&bytes[0..16], b"nbschema-value-v", "outer canon domain");
-        assert_eq!(&bytes[16..18], &[0x00, 0x01], "VALUE_CANON_VERSION = 1");
+        assert_eq!(&bytes[16..18], &[0x00, 0x02], "VALUE_CANON_VERSION = 2");
         assert_eq!(bytes[18], TAG_SECRET_COMMITMENT, "tag 0x0A");
         assert_eq!(bytes[19], COMMIT_KIND_STRING, "kind = string");
 
@@ -258,7 +258,7 @@ mod tests {
     #[test]
     fn plaintext_never_appears_in_commitment() {
         let key = fixed_key();
-        let bytes = FieldValue::SecretLiteral(SecretValue::string("hunter2".to_owned()))
+        let bytes = AuthoredValue::Secret(SecretValue::string("hunter2".to_owned()))
             .canonical_bytes_committing(&key)
             .expect("commit");
         assert!(
@@ -270,7 +270,7 @@ mod tests {
     #[test]
     fn empty_secret_commits_to_full_width_frame() {
         let key = fixed_key();
-        let bytes = FieldValue::SecretLiteral(SecretValue::string(String::new()))
+        let bytes = AuthoredValue::Secret(SecretValue::string(String::new()))
             .canonical_bytes_committing(&key)
             .expect("commit");
         // No special-case: an empty secret still yields a 52-byte frame (no

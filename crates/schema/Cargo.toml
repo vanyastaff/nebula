@@ -26,7 +26,7 @@ nebula-expression = { path = "../expression" }
 nebula-schema-macros = { path = "macros" }
 thiserror = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
-serde_json = { workspace = true }
+serde_json = { workspace = true, features = ["float_roundtrip"] }
 indexmap = { workspace = true }
 blake3 = { workspace = true }
 rand = { workspace = true }
@@ -40,6 +40,7 @@ subtle = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
+jsonschema = { workspace = true }
 # Derive in tests so `#[derive(Schema, Serialize/Deserialize)]` + `#[serde(...)]`
 # exercises the schema↔wire key-alignment invariant (the `serde` helper attribute
 # is only registered when a serde derive is present).

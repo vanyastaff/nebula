@@ -1,5 +1,5 @@
 use nebula_schema::{
-    Field, FieldPath, FieldValues, LoaderContext, LoaderRegistry, LoaderResult, Schema,
+    AuthoredValue, Field, FieldPath, LoaderContext, LoaderRegistry, LoaderResult, Schema,
     ValidationReport, field_key,
 };
 use serde_json::json;
@@ -10,15 +10,17 @@ fn raw_schema(fields: impl IntoIterator<Item = Field>) -> Schema {
 }
 
 fn has_error(report: &ValidationReport, code: &str, path_prefix: &str) -> bool {
+    let path_prefix = FieldPath::parse(path_prefix).unwrap().to_json_pointer();
     report
         .errors()
-        .any(|e| e.code == code && e.path.to_string().starts_with(path_prefix))
+        .any(|e| e.code() == code && e.path().to_string().starts_with(&path_prefix))
 }
 
 fn has_warning(report: &ValidationReport, code: &str, path_prefix: &str) -> bool {
+    let path_prefix = FieldPath::parse(path_prefix).unwrap().to_json_pointer();
     report
         .warnings()
-        .any(|e| e.code == code && e.path.to_string().starts_with(path_prefix))
+        .any(|e| e.code() == code && e.path().to_string().starts_with(&path_prefix))
 }
 
 #[test]
@@ -26,9 +28,12 @@ fn lint_schema_reports_dangling_refs_and_structural_issues() {
     let schema = raw_schema(vec![
         Field::string(field_key!("toggle")).into(),
         Field::string(field_key!("name"))
-            .visible_when(nebula_validator::Rule::predicate(
-                nebula_validator::Predicate::eq("missing", json!(true)).unwrap(),
-            ))
+            .visible_when(
+                nebula_validator::Rule::predicate(
+                    nebula_validator::Predicate::eq("missing", json!(true)).unwrap(),
+                )
+                .expect("bounded dangling-reference rule"),
+            )
             .with_rule(nebula_validator::Rule::min_length(5))
             .with_rule(nebula_validator::Rule::max_length(2))
             .into(),
@@ -50,7 +55,7 @@ fn lint_schema_reports_dangling_refs_and_structural_issues() {
         "expected dangling_reference at name, got: {:?}",
         report
             .errors()
-            .map(|e| (&e.code, e.path.to_string()))
+            .map(|e| (e.code(), e.path().to_string()))
             .collect::<Vec<_>>()
     );
     assert!(
@@ -95,7 +100,8 @@ async fn loader_registry_resolves_select_and_dynamic_loaders() {
         .register_record("resource_loader", |ctx| async move {
             let workspace = ctx
                 .values
-                .get_string_by_str("workspace")
+                .get("workspace")
+                .and_then(nebula_schema::ValueTree::as_str)
                 .unwrap_or("none")
                 .to_owned();
             Ok(LoaderResult::done(vec![json!({
@@ -104,14 +110,14 @@ async fn loader_registry_resolves_select_and_dynamic_loaders() {
             })]))
         });
 
-    let mut values = FieldValues::new();
+    let mut values = AuthoredValue::object();
     values
-        .try_set_raw("workspace", json!("ws_1"))
+        .insert_data("workspace", json!("ws_1"))
         .expect("test-only known-good key");
     values
-        .try_set_raw("team_id", json!("team_1"))
+        .insert_data("team_id", json!("team_1"))
         .expect("test-only known-good key");
-    let context = LoaderContext::new("workspace", values.clone()).with_filter("prod");
+    let context = LoaderContext::new("workspace", values).with_filter("prod");
 
     let options = schema
         .load_select_options("workspace", &registry, context.clone())
@@ -156,7 +162,7 @@ async fn valid_schema_loader_apis_resolve_loaders() {
             Ok(LoaderResult::done(vec![json!({"id": "res_1"})]))
         });
 
-    let context = LoaderContext::new("workspace", FieldValues::new());
+    let context = LoaderContext::new("workspace", AuthoredValue::object());
     let options = schema
         .load_select_options("workspace", &registry, context.clone())
         .await
@@ -203,7 +209,7 @@ async fn nested_schema_loader_apis_resolve_object_paths() {
         .load_select_options_at(
             &workspace_path,
             &registry,
-            LoaderContext::new("config.workspace", FieldValues::new()),
+            LoaderContext::new("config.workspace", AuthoredValue::object()),
         )
         .await
         .expect("nested workspace options should load");
@@ -214,7 +220,7 @@ async fn nested_schema_loader_apis_resolve_object_paths() {
         .load_dynamic_records_at(
             &resource_path,
             &registry,
-            LoaderContext::new("config.resource", FieldValues::new()),
+            LoaderContext::new("config.resource", AuthoredValue::object()),
         )
         .await
         .expect("nested resource records should load");
@@ -248,7 +254,7 @@ async fn nested_schema_loader_apis_resolve_list_item_paths() {
         .load_select_options_at(
             &indexed_path,
             &registry,
-            LoaderContext::new("rows[0].workspace", FieldValues::new()),
+            LoaderContext::new("rows[0].workspace", AuthoredValue::object()),
         )
         .await
         .expect("indexed list path should resolve");
@@ -260,7 +266,7 @@ async fn nested_schema_loader_apis_resolve_list_item_paths() {
         .load_select_options_at(
             &schema_path,
             &registry,
-            LoaderContext::new("rows.workspace", FieldValues::new()),
+            LoaderContext::new("rows.workspace", AuthoredValue::object()),
         )
         .await
         .expect("schema-level list path should resolve");
@@ -292,7 +298,7 @@ async fn nested_valid_schema_loader_api_resolves_mode_variant_paths() {
         .load_dynamic_records_at(
             &path,
             &registry,
-            LoaderContext::new("auth.oauth.resource", FieldValues::new()),
+            LoaderContext::new("auth.oauth.resource", AuthoredValue::object()),
         )
         .await
         .expect("mode-variant resource records should load");
@@ -319,13 +325,13 @@ async fn nested_loader_errors_anchor_to_nested_path() {
         .load_select_options_at(
             &path,
             &registry,
-            LoaderContext::new("config.workspace", FieldValues::new()),
+            LoaderContext::new("config.workspace", AuthoredValue::object()),
         )
         .await
         .expect_err("missing nested loader must fail");
 
-    assert_eq!(error.code, "loader.not_registered");
-    assert_eq!(error.path.to_string(), "config.workspace");
+    assert_eq!(error.code(), "loader.not_registered");
+    assert_eq!(error.path().to_string(), "/config/workspace");
 }
 
 #[tokio::test]
@@ -344,13 +350,13 @@ async fn top_level_loader_string_api_rejects_nested_paths() {
         .load_select_options(
             "config.workspace",
             &registry,
-            LoaderContext::new("config.workspace", FieldValues::new()),
+            LoaderContext::new("config.workspace", AuthoredValue::object()),
         )
         .await
         .expect_err("top-level string API should reject nested paths");
 
-    assert_eq!(error.code, "invalid_key");
-    assert_eq!(error.path.to_string(), "");
+    assert_eq!(error.code(), "invalid_key");
+    assert_eq!(error.path().to_string(), "");
 }
 
 #[tokio::test]
@@ -362,7 +368,7 @@ async fn loader_registry_reports_missing_loader_registration() {
             .into(),
     ]);
     let registry = LoaderRegistry::new();
-    let context = LoaderContext::new("region", FieldValues::new());
+    let context = LoaderContext::new("region", AuthoredValue::object());
     let error = schema
         .load_select_options("region", &registry, context)
         .await
@@ -379,41 +385,41 @@ async fn load_select_options_unknown_key_emits_field_not_found() {
             .into(),
     ]);
     let registry = LoaderRegistry::new();
-    let context = LoaderContext::new("ghost", FieldValues::new());
+    let context = LoaderContext::new("ghost", AuthoredValue::object());
     let error = schema
         .load_select_options("ghost", &registry, context)
         .await
         .expect_err("unknown key must fail");
-    assert_eq!(error.code, "field.not_found");
-    assert_eq!(error.path.to_string(), "ghost");
+    assert_eq!(error.code(), "field.not_found");
+    assert_eq!(error.path().to_string(), "/ghost");
 }
 
 #[tokio::test]
 async fn load_select_options_wrong_field_type_emits_type_mismatch() {
     let schema = raw_schema(vec![Field::string(field_key!("email")).into()]);
     let registry = LoaderRegistry::new();
-    let context = LoaderContext::new("email", FieldValues::new());
+    let context = LoaderContext::new("email", AuthoredValue::object());
     let error = schema
         .load_select_options("email", &registry, context)
         .await
         .expect_err("wrong field type must fail");
-    assert_eq!(error.code, "field.type_mismatch");
-    assert_eq!(error.path.to_string(), "email");
+    assert_eq!(error.code(), "field.type_mismatch");
+    assert_eq!(error.path().to_string(), "/email");
     assert!(
         error
-            .params
+            .params()
             .iter()
             .any(|(k, v)| k == "expected" && v == "select"),
         "expected param missing: {:?}",
-        error.params
+        error.params()
     );
     assert!(
         error
-            .params
+            .params()
             .iter()
             .any(|(k, v)| k == "actual" && v == "string"),
         "actual param missing: {:?}",
-        error.params
+        error.params()
     );
 }
 
@@ -425,32 +431,32 @@ async fn load_select_options_without_loader_emits_missing_config() {
             .into(),
     ]);
     let registry = LoaderRegistry::new();
-    let context = LoaderContext::new("region", FieldValues::new());
+    let context = LoaderContext::new("region", AuthoredValue::object());
     let error = schema
         .load_select_options("region", &registry, context)
         .await
         .expect_err("missing loader config must fail");
-    assert_eq!(error.code, "loader.missing_config");
-    assert_eq!(error.path.to_string(), "region");
+    assert_eq!(error.code(), "loader.missing_config");
+    assert_eq!(error.path().to_string(), "/region");
 }
 
 #[tokio::test]
 async fn load_dynamic_records_wrong_field_type_emits_type_mismatch() {
     let schema = raw_schema(vec![Field::number(field_key!("count")).into()]);
     let registry = LoaderRegistry::new();
-    let context = LoaderContext::new("count", FieldValues::new());
+    let context = LoaderContext::new("count", AuthoredValue::object());
     let error = schema
         .load_dynamic_records("count", &registry, context)
         .await
         .expect_err("wrong field type must fail");
-    assert_eq!(error.code, "field.type_mismatch");
+    assert_eq!(error.code(), "field.type_mismatch");
     assert!(
         error
-            .params
+            .params()
             .iter()
             .any(|(k, v)| k == "expected" && v == "dynamic"),
         "expected param missing: {:?}",
-        error.params
+        error.params()
     );
 }
 
@@ -462,51 +468,57 @@ async fn load_dynamic_records_unknown_key_emits_field_not_found() {
             .into(),
     ]);
     let registry = LoaderRegistry::new();
-    let context = LoaderContext::new("ghost", FieldValues::new());
+    let context = LoaderContext::new("ghost", AuthoredValue::object());
     let error = schema
         .load_dynamic_records("ghost", &registry, context)
         .await
         .expect_err("unknown key must fail");
-    assert_eq!(error.code, "field.not_found");
-    assert_eq!(error.path.to_string(), "ghost");
+    assert_eq!(error.code(), "field.not_found");
+    assert_eq!(error.path().to_string(), "/ghost");
 }
 
 #[tokio::test]
 async fn load_dynamic_records_without_loader_emits_missing_config() {
     let schema = raw_schema(vec![Field::dynamic(field_key!("resource")).into()]);
     let registry = LoaderRegistry::new();
-    let context = LoaderContext::new("resource", FieldValues::new());
+    let context = LoaderContext::new("resource", AuthoredValue::object());
     let error = schema
         .load_dynamic_records("resource", &registry, context)
         .await
         .expect_err("missing loader config must fail");
-    assert_eq!(error.code, "loader.missing_config");
-    assert_eq!(error.path.to_string(), "resource");
+    assert_eq!(error.code(), "loader.missing_config");
+    assert_eq!(error.path().to_string(), "/resource");
 }
 
 #[test]
 fn lint_schema_detects_visibility_cycles() {
     let schema = raw_schema(vec![
         Field::string(field_key!("a"))
-            .visible_when(nebula_validator::Rule::predicate(
-                nebula_validator::Predicate::eq("b", json!(true)).unwrap(),
-            ))
+            .visible_when(
+                nebula_validator::Rule::predicate(
+                    nebula_validator::Predicate::eq("b", json!(true)).unwrap(),
+                )
+                .expect("bounded visibility rule"),
+            )
             .into(),
         Field::string(field_key!("b"))
-            .visible_when(nebula_validator::Rule::predicate(
-                nebula_validator::Predicate::eq("a", json!(true)).unwrap(),
-            ))
+            .visible_when(
+                nebula_validator::Rule::predicate(
+                    nebula_validator::Predicate::eq("a", json!(true)).unwrap(),
+                )
+                .expect("bounded visibility rule"),
+            )
             .into(),
     ]);
 
     let report = schema.lint();
     let cycle_paths: Vec<String> = report
         .errors()
-        .filter(|e| e.code == "visibility_cycle")
-        .map(|e| e.path.to_string())
+        .filter(|e| e.code() == "visibility_cycle")
+        .map(|e| e.path().to_string())
         .collect();
     assert!(
-        cycle_paths.iter().any(|p| p == "a" || p == "b"),
+        cycle_paths.iter().any(|p| p == "/a" || p == "/b"),
         "expected visibility_cycle anchored at field `a` or `b`, got {cycle_paths:?}"
     );
 }
@@ -517,23 +529,26 @@ fn runtime_validation_still_works_with_linted_schema() {
         .add(Field::boolean(field_key!("enabled")).required())
         .add(
             Field::string(field_key!("name"))
-                .required_when(nebula_validator::Rule::predicate(
-                    nebula_validator::Predicate::eq("enabled", json!(true)).unwrap(),
-                ))
+                .required_when(
+                    nebula_validator::Rule::predicate(
+                        nebula_validator::Predicate::eq("enabled", json!(true)).unwrap(),
+                    )
+                    .expect("bounded requiredness rule"),
+                )
                 .min_length(3),
         )
         .build()
         .expect("valid schema");
 
-    let mut values = FieldValues::new();
+    let mut values = AuthoredValue::object();
     values
-        .try_set_raw("enabled", json!(true))
+        .insert_data("enabled", json!(true))
         .expect("test-only known-good key");
     values
-        .try_set_raw("name", json!("ab"))
+        .insert_data("name", json!("ab"))
         .expect("test-only known-good key");
 
-    let report = schema.validate(&values).unwrap_err();
+    let report = schema.validate(values).unwrap_err();
     assert!(report.has_errors());
 }
 
@@ -541,19 +556,26 @@ fn runtime_validation_still_works_with_linted_schema() {
 fn lint_schema_reports_rule_incompatible_warnings() {
     let schema = raw_schema(vec![
         Field::number(field_key!("retries"))
-            .with_rule(nebula_validator::Rule::pattern("^\\d+$"))
+            .with_rule(nebula_validator::Rule::pattern("^\\d+$").unwrap())
             .with_rule(nebula_validator::Rule::email())
             .into(),
         Field::string(field_key!("name"))
-            .with_rule(nebula_validator::Rule::Value(
-                nebula_validator::ValueRule::Min(serde_json::Number::from(1)),
-            ))
+            .with_rule(
+                nebula_validator::Rule::value(nebula_validator::ValueRule::Min(
+                    serde_json::Number::from(1),
+                ))
+                .expect("bounded incompatible value rule"),
+            )
             .into(),
         Field::boolean(field_key!("flag"))
-            .with_rule(nebula_validator::Rule::all([
-                nebula_validator::Rule::max_length(10),
-                nebula_validator::Rule::not(nebula_validator::Rule::min_items(1)),
-            ]))
+            .with_rule(
+                nebula_validator::Rule::all([
+                    nebula_validator::Rule::max_length(10),
+                    nebula_validator::Rule::not(nebula_validator::Rule::min_items(1))
+                        .expect("bounded negated item rule"),
+                ])
+                .expect("bounded composite rule"),
+            )
             .into(),
     ]);
 
@@ -580,9 +602,12 @@ fn lint_schema_accepts_compatible_rule_types() {
             .with_rule(nebula_validator::Rule::url())
             .into(),
         Field::number(field_key!("timeout"))
-            .with_rule(nebula_validator::Rule::Value(
-                nebula_validator::ValueRule::Min(serde_json::Number::from(1)),
-            ))
+            .with_rule(
+                nebula_validator::Rule::value(nebula_validator::ValueRule::Min(
+                    serde_json::Number::from(1),
+                ))
+                .expect("bounded numeric rule"),
+            )
             .into(),
         Field::list(field_key!("tags"))
             .item(Field::string(field_key!("tag")))
@@ -600,7 +625,7 @@ fn lint_schema_accepts_compatible_rule_types() {
         "compatible string rules should not be flagged: {:?}",
         report
             .warnings()
-            .map(|e| (&e.code, e.path.to_string()))
+            .map(|e| (e.code(), e.path().to_string()))
             .collect::<Vec<_>>()
     );
     assert!(
@@ -652,7 +677,7 @@ fn lint_reports_duplicate_depends_on_entries() {
         "expected duplicate_dependency warning, got: {:?}",
         report
             .warnings()
-            .map(|e| (&e.code, e.path.to_string()))
+            .map(|e| (e.code(), e.path().to_string()))
             .collect::<Vec<_>>()
     );
 }
@@ -666,12 +691,12 @@ async fn load_select_options_blank_loader_emits_missing_config() {
             .into(),
     ]);
     let registry = LoaderRegistry::new();
-    let context = LoaderContext::new("region", FieldValues::new());
+    let context = LoaderContext::new("region", AuthoredValue::object());
     let error = schema
         .load_select_options("region", &registry, context)
         .await
         .expect_err("blank loader config must fail");
-    assert_eq!(error.code, "loader.missing_config");
+    assert_eq!(error.code(), "loader.missing_config");
 }
 
 #[tokio::test]
@@ -680,12 +705,12 @@ async fn load_dynamic_records_blank_loader_emits_missing_config() {
         Field::dynamic(field_key!("resource")).loader(" ").into(),
     ]);
     let registry = LoaderRegistry::new();
-    let context = LoaderContext::new("resource", FieldValues::new());
+    let context = LoaderContext::new("resource", AuthoredValue::object());
     let error = schema
         .load_dynamic_records("resource", &registry, context)
         .await
         .expect_err("blank loader config must fail");
-    assert_eq!(error.code, "loader.missing_config");
+    assert_eq!(error.code(), "loader.missing_config");
 }
 
 #[test]
@@ -708,11 +733,13 @@ fn loader_dependency_cycle_detected() {
         .expect_err("circular dependency must fail build");
 
     assert!(
-        schema.errors().any(|e| e.code == "loader_dependency_cycle"),
+        schema
+            .errors()
+            .any(|e| e.code() == "loader_dependency_cycle"),
         "expected loader_dependency_cycle error, got: {:?}",
         schema
             .errors()
-            .map(|e| (&e.code, e.path.to_string()))
+            .map(|e| (e.code(), e.path().to_string()))
             .collect::<Vec<_>>()
     );
 }
@@ -740,7 +767,7 @@ fn loader_dependency_no_cycle() {
         "acyclic loader graph should build successfully, got: {:?}",
         result.as_ref().err().map(|r| r
             .errors()
-            .map(|e| (&e.code, e.path.to_string()))
+            .map(|e| (e.code(), e.path().to_string()))
             .collect::<Vec<_>>())
     );
 }
@@ -771,11 +798,13 @@ fn loader_dependency_transitive_cycle() {
         .expect_err("transitive circular dependency must fail build");
 
     assert!(
-        schema.errors().any(|e| e.code == "loader_dependency_cycle"),
+        schema
+            .errors()
+            .any(|e| e.code() == "loader_dependency_cycle"),
         "expected loader_dependency_cycle error for transitive cycle, got: {:?}",
         schema
             .errors()
-            .map(|e| (&e.code, e.path.to_string()))
+            .map(|e| (e.code(), e.path().to_string()))
             .collect::<Vec<_>>()
     );
 }
@@ -797,7 +826,7 @@ fn select_options_consistent_types_ok() {
         "consistent string options should not produce a warning, got: {:?}",
         report
             .warnings()
-            .map(|e| (&e.code, e.path.to_string()))
+            .map(|e| (e.code(), e.path().to_string()))
             .collect::<Vec<_>>()
     );
 }
@@ -818,7 +847,7 @@ fn select_options_mixed_types_warns() {
         "mixed-type options should produce option.type_inconsistent warning, got: {:?}",
         report
             .warnings()
-            .map(|e| (&e.code, e.path.to_string()))
+            .map(|e| (e.code(), e.path().to_string()))
             .collect::<Vec<_>>()
     );
 }
@@ -839,7 +868,7 @@ fn select_options_complex_value_without_multiple_warns() {
         "non-multiple select with array option value should warn, got: {:?}",
         report
             .warnings()
-            .map(|e| (&e.code, e.path.to_string()))
+            .map(|e| (e.code(), e.path().to_string()))
             .collect::<Vec<_>>()
     );
 }
@@ -861,7 +890,7 @@ fn select_options_multiple_with_array_values_ok() {
         "multiple select with array option values should not produce option.type_inconsistent warning, got: {:?}",
         report
             .warnings()
-            .map(|e| (&e.code, e.path.to_string()))
+            .map(|e| (e.code(), e.path().to_string()))
             .collect::<Vec<_>>()
     );
 }
@@ -881,7 +910,7 @@ fn select_single_option_complex_type_warns() {
         "non-multiple select with single complex option value should warn, got: {:?}",
         report
             .warnings()
-            .map(|e| (&e.code, e.path.to_string()))
+            .map(|e| (e.code(), e.path().to_string()))
             .collect::<Vec<_>>()
     );
 }
@@ -890,26 +919,28 @@ fn select_single_option_complex_type_warns() {
 fn value_predicate_targeting_secret_is_rejected() {
     // A value-comparing predicate (`Eq`) that reads a secret's plaintext as a
     // visibility discriminant must be rejected at schema-build time.
-    let report =
-        Schema::builder()
-            .add(Field::secret(field_key!("api_key")))
-            .add(Field::string(field_key!("region")).visible_when(
-                nebula_validator::Rule::Predicate(nebula_validator::Predicate::Eq(
+    let report = Schema::builder()
+        .add(Field::secret(field_key!("api_key")))
+        .add(
+            Field::string(field_key!("region")).visible_when(
+                nebula_validator::Rule::predicate(nebula_validator::Predicate::Eq(
                     nebula_validator::foundation::FieldPath::parse("api_key").unwrap(),
                     json!("prod-key"),
-                )),
-            ))
-            .build()
-            .expect_err("value predicate on a secret must fail the build");
+                ))
+                .expect("bounded secret predicate"),
+            ),
+        )
+        .build()
+        .expect_err("value predicate on a secret must fail the build");
 
     assert!(
         report
             .errors()
-            .any(|e| e.code == "secret.predicate_on_value"),
+            .any(|e| e.code() == "secret.predicate_on_value"),
         "expected secret.predicate_on_value, got {:?}",
         report
             .errors()
-            .map(|e| (&e.code, e.path.to_string()))
+            .map(|e| (e.code(), e.path().to_string()))
             .collect::<Vec<_>>()
     );
 }
@@ -921,11 +952,12 @@ fn presence_predicate_on_secret_is_allowed() {
     Schema::builder()
         .add(Field::secret(field_key!("api_key")))
         .add(
-            Field::string(field_key!("region")).visible_when(nebula_validator::Rule::Predicate(
-                nebula_validator::Predicate::Set(
+            Field::string(field_key!("region")).visible_when(
+                nebula_validator::Rule::predicate(nebula_validator::Predicate::Set(
                     nebula_validator::foundation::FieldPath::parse("api_key").unwrap(),
-                ),
-            )),
+                ))
+                .expect("bounded secret presence predicate"),
+            ),
         )
         .build()
         .expect("presence predicate on secret is allowed");
@@ -935,26 +967,28 @@ fn presence_predicate_on_secret_is_allowed() {
 fn nested_value_predicate_targeting_secret_is_rejected() {
     // The secret-key collection recurses `Field::Object`, so a value predicate
     // targeting a *nested* secret (`/auth/api_key`) is also flagged.
-    let report =
-        Schema::builder()
-            .add(Field::object(field_key!("auth")).add(Field::secret(field_key!("api_key"))))
-            .add(Field::string(field_key!("region")).visible_when(
-                nebula_validator::Rule::Predicate(nebula_validator::Predicate::Eq(
+    let report = Schema::builder()
+        .add(Field::object(field_key!("auth")).add(Field::secret(field_key!("api_key"))))
+        .add(
+            Field::string(field_key!("region")).visible_when(
+                nebula_validator::Rule::predicate(nebula_validator::Predicate::Eq(
                     nebula_validator::foundation::FieldPath::parse("/auth/api_key").unwrap(),
                     json!("x"),
-                )),
-            ))
-            .build()
-            .expect_err("value predicate on a nested secret must fail the build");
+                ))
+                .expect("bounded nested secret predicate"),
+            ),
+        )
+        .build()
+        .expect_err("value predicate on a nested secret must fail the build");
 
     assert!(
         report
             .errors()
-            .any(|e| e.code == "secret.predicate_on_value"),
+            .any(|e| e.code() == "secret.predicate_on_value"),
         "expected secret.predicate_on_value for nested secret, got {:?}",
         report
             .errors()
-            .map(|e| (&e.code, e.path.to_string()))
+            .map(|e| (e.code(), e.path().to_string()))
             .collect::<Vec<_>>()
     );
 }
@@ -970,12 +1004,13 @@ fn value_predicate_targeting_list_item_secret_is_rejected() {
                 .item(Field::object(field_key!("row")).add(Field::secret(field_key!("api_key")))),
         )
         .add(
-            Field::string(field_key!("region")).visible_when(nebula_validator::Rule::Predicate(
-                nebula_validator::Predicate::Eq(
+            Field::string(field_key!("region")).visible_when(
+                nebula_validator::Rule::predicate(nebula_validator::Predicate::Eq(
                     nebula_validator::foundation::FieldPath::parse("/items/api_key").unwrap(),
                     json!("x"),
-                ),
-            )),
+                ))
+                .expect("bounded list-item secret predicate"),
+            ),
         )
         .build()
         .expect_err("value predicate on a list-item secret must fail the build");
@@ -983,11 +1018,11 @@ fn value_predicate_targeting_list_item_secret_is_rejected() {
     assert!(
         report
             .errors()
-            .any(|e| e.code == "secret.predicate_on_value"),
+            .any(|e| e.code() == "secret.predicate_on_value"),
         "expected secret.predicate_on_value for list-item secret, got {:?}",
         report
             .errors()
-            .map(|e| (&e.code, e.path.to_string()))
+            .map(|e| (e.code(), e.path().to_string()))
             .collect::<Vec<_>>()
     );
 }
@@ -996,30 +1031,32 @@ fn value_predicate_targeting_list_item_secret_is_rejected() {
 fn value_predicate_targeting_mode_variant_secret_is_rejected() {
     // A mode variant payload is addressable under `mode.variant`. A secret
     // payload (`/auth/token`) targeted by a value predicate must be flagged.
-    let report =
-        Schema::builder()
-            .add(Field::mode(field_key!("auth")).variant(
-                "token",
-                "Token",
-                Field::secret(field_key!("token")),
-            ))
-            .add(Field::string(field_key!("region")).visible_when(
-                nebula_validator::Rule::Predicate(nebula_validator::Predicate::Eq(
+    let report = Schema::builder()
+        .add(Field::mode(field_key!("auth")).variant(
+            "token",
+            "Token",
+            Field::secret(field_key!("token")),
+        ))
+        .add(
+            Field::string(field_key!("region")).visible_when(
+                nebula_validator::Rule::predicate(nebula_validator::Predicate::Eq(
                     nebula_validator::foundation::FieldPath::parse("/auth/token").unwrap(),
                     json!("x"),
-                )),
-            ))
-            .build()
-            .expect_err("value predicate on a mode-variant secret must fail the build");
+                ))
+                .expect("bounded mode secret predicate"),
+            ),
+        )
+        .build()
+        .expect_err("value predicate on a mode-variant secret must fail the build");
 
     assert!(
         report
             .errors()
-            .any(|e| e.code == "secret.predicate_on_value"),
+            .any(|e| e.code() == "secret.predicate_on_value"),
         "expected secret.predicate_on_value for mode-variant secret, got {:?}",
         report
             .errors()
-            .map(|e| (&e.code, e.path.to_string()))
+            .map(|e| (e.code(), e.path().to_string()))
             .collect::<Vec<_>>()
     );
 }
@@ -1030,23 +1067,24 @@ fn root_value_predicate_targeting_secret_is_rejected() {
     // that applies to field-level visibility/required rules applies here.
     let report = Schema::builder()
         .add(Field::secret(field_key!("api_key")))
-        .root_rule(nebula_validator::Rule::Predicate(
-            nebula_validator::Predicate::Eq(
+        .root_rule(
+            nebula_validator::Rule::predicate(nebula_validator::Predicate::Eq(
                 nebula_validator::foundation::FieldPath::parse("api_key").unwrap(),
                 json!("prod-key"),
-            ),
-        ))
+            ))
+            .expect("bounded root secret predicate"),
+        )
         .build()
         .expect_err("root value predicate on a secret must fail the build");
 
     assert!(
         report
             .errors()
-            .any(|e| e.code == "secret.predicate_on_value"),
+            .any(|e| e.code() == "secret.predicate_on_value"),
         "expected secret.predicate_on_value for root rule, got {:?}",
         report
             .errors()
-            .map(|e| (&e.code, e.path.to_string()))
+            .map(|e| (e.code(), e.path().to_string()))
             .collect::<Vec<_>>()
     );
 }
@@ -1057,11 +1095,12 @@ fn root_presence_predicate_on_secret_is_allowed() {
     // so it stays legal exactly as at field level.
     Schema::builder()
         .add(Field::secret(field_key!("api_key")))
-        .root_rule(nebula_validator::Rule::Predicate(
-            nebula_validator::Predicate::Set(
+        .root_rule(
+            nebula_validator::Rule::predicate(nebula_validator::Predicate::Set(
                 nebula_validator::foundation::FieldPath::parse("api_key").unwrap(),
-            ),
-        ))
+            ))
+            .expect("bounded root secret presence predicate"),
+        )
         .build()
         .expect("presence predicate on secret in a root rule is allowed");
 }
@@ -1079,23 +1118,24 @@ fn root_value_predicate_on_list_indexed_secret_is_rejected() {
             Field::list(field_key!("items"))
                 .item(Field::object(field_key!("row")).add(Field::secret(field_key!("token")))),
         )
-        .root_rule(nebula_validator::Rule::Predicate(
-            nebula_validator::Predicate::Eq(
+        .root_rule(
+            nebula_validator::Rule::predicate(nebula_validator::Predicate::Eq(
                 nebula_validator::foundation::FieldPath::parse("/items/0/token").unwrap(),
                 json!("prod-token"),
-            ),
-        ))
+            ))
+            .expect("bounded indexed secret predicate"),
+        )
         .build()
         .expect_err("root value predicate on a list-indexed secret must fail the build");
 
     assert!(
         report
             .errors()
-            .any(|e| e.code == "secret.predicate_on_value"),
+            .any(|e| e.code() == "secret.predicate_on_value"),
         "expected secret.predicate_on_value for list-indexed root secret, got {:?}",
         report
             .errors()
-            .map(|e| (&e.code, e.path.to_string()))
+            .map(|e| (e.code(), e.path().to_string()))
             .collect::<Vec<_>>()
     );
 }
@@ -1119,23 +1159,24 @@ fn root_value_predicate_on_mode_secret_under_list_is_rejected() {
                 ),
             )),
         )
-        .root_rule(nebula_validator::Rule::Predicate(
-            nebula_validator::Predicate::Eq(
+        .root_rule(
+            nebula_validator::Rule::predicate(nebula_validator::Predicate::Eq(
                 nebula_validator::foundation::FieldPath::parse("/items/0/auth/token").unwrap(),
                 json!("prod-creds"),
-            ),
-        ))
+            ))
+            .expect("bounded nested indexed secret predicate"),
+        )
         .build()
         .expect_err("root value predicate on a mode-under-list secret must fail the build");
 
     assert!(
         report
             .errors()
-            .any(|e| e.code == "secret.predicate_on_value"),
+            .any(|e| e.code() == "secret.predicate_on_value"),
         "expected secret.predicate_on_value for mode-under-list root secret, got {:?}",
         report
             .errors()
-            .map(|e| (&e.code, e.path.to_string()))
+            .map(|e| (e.code(), e.path().to_string()))
             .collect::<Vec<_>>()
     );
 }
@@ -1150,11 +1191,12 @@ fn root_presence_predicate_on_list_indexed_secret_is_allowed() {
             Field::list(field_key!("items"))
                 .item(Field::object(field_key!("row")).add(Field::secret(field_key!("token")))),
         )
-        .root_rule(nebula_validator::Rule::Predicate(
-            nebula_validator::Predicate::Set(
+        .root_rule(
+            nebula_validator::Rule::predicate(nebula_validator::Predicate::Set(
                 nebula_validator::foundation::FieldPath::parse("/items/0/token").unwrap(),
-            ),
-        ))
+            ))
+            .expect("bounded indexed secret presence predicate"),
+        )
         .build()
         .expect("presence predicate on a list-indexed secret in a root rule is allowed");
 }
@@ -1179,9 +1221,11 @@ fn no_payload_mode_variant_without_forbidden_expression_is_rejected() {
 
     assert!(
         err.errors()
-            .any(|e| e.code == "mode.no_payload_variant_must_forbid_expression"),
+            .any(|e| e.code() == "mode.no_payload_variant_must_forbid_expression"),
         "got: {:?}",
-        err.errors().map(|e| e.code.to_string()).collect::<Vec<_>>()
+        err.errors()
+            .map(|e| e.code().to_string())
+            .collect::<Vec<_>>()
     );
 }
 
@@ -1198,6 +1242,6 @@ fn variant_empty_builds_clean() {
         schema
             .as_ref()
             .err()
-            .map(|r| r.errors().map(|e| e.code.to_string()).collect::<Vec<_>>())
+            .map(|r| r.errors().map(|e| e.code().to_string()).collect::<Vec<_>>())
     );
 }

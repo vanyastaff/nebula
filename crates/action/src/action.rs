@@ -7,7 +7,7 @@ use nebula_core::Dependencies;
 use nebula_schema::HasSchema;
 use serde::{Serialize, de::DeserializeOwned};
 
-use crate::metadata::ActionMetadata;
+use crate::metadata::ActionMetadataDraft;
 
 /// Base trait for all action types.
 ///
@@ -29,7 +29,7 @@ use crate::metadata::ActionMetadata;
 ///
 /// ```rust
 /// use std::sync::OnceLock;
-/// use nebula_action::{Action, ActionMetadata};
+/// use nebula_action::{Action, ActionMetadataDraft};
 /// use nebula_core::{Dependencies, action_key};
 ///
 /// struct Echo;
@@ -38,8 +38,12 @@ use crate::metadata::ActionMetadata;
 ///     type Input = serde_json::Value;
 ///     type Output = serde_json::Value;
 ///
-///     fn metadata() -> ActionMetadata {
-///         ActionMetadata::new(action_key!("echo"), "Echo", "Echoes input")
+///     fn metadata() -> ActionMetadataDraft {
+///         ActionMetadataDraft::new(
+///             action_key!("echo"),
+///             nebula_action::metadata_name!("Echo"),
+///             "Echoes input",
+///         )
 ///     }
 ///     fn dependencies() -> &'static Dependencies {
 ///         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -48,11 +52,11 @@ use crate::metadata::ActionMetadata;
 /// }
 ///
 /// // Identity is carried by metadata, not a per-trait schema method...
-/// assert_eq!(Echo::metadata().base.key, action_key!("echo"));
-/// assert_eq!(Echo::metadata().base.name, "Echo");
+/// let draft = Echo::metadata();
+/// let _ = draft;
 /// // ...and the schema is reached through the associated type's `HasSchema`
 /// // bound, not a method on the trait itself.
-/// let _input_schema = nebula_schema::schema_of::<<Echo as Action>::Input>();
+/// let _input_schema = nebula_schema::schema_of::<<Echo as Action>::Input>().expect("valid schema");
 /// ```
 ///
 /// The input/output schema is obtained from the associated type, e.g.
@@ -71,15 +75,17 @@ pub trait Action: Sized + Send + Sync + 'static {
     /// What this action produces; serialized to JSON for downstream nodes.
     type Output: HasSchema + Serialize + Send + Sync;
 
-    /// Metadata describing this action type (key, version, ports, etc.).
+    /// Author-owned metadata intent for this action type.
     ///
     /// Returned by value, symmetric with
     /// [`Credential::metadata`](nebula_credential) and
     /// `Resource::metadata`. Authors build it fresh — no `static`/`OnceLock`
     /// boilerplate. The engine caches the result once per registered factory
     /// (see `ActionFactory`), so the cold per-call cost is paid only at
-    /// registration, not per dispatch.
-    fn metadata() -> ActionMetadata;
+    /// registration, not per dispatch. The receiving factory derives schemas
+    /// from the associated types, stamps the structural kind, and performs the
+    /// only admission pass.
+    fn metadata() -> ActionMetadataDraft;
 
     /// Slot-binding declarations (`#[resource]` / `#[credential]` fields, Phase 3 / S3+).
     fn dependencies() -> &'static Dependencies;

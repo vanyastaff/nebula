@@ -16,15 +16,17 @@
 //! The engine produces an `ActionHandle` per execution via
 //! [`ActionFactory::instantiate`](crate::ActionFactory::instantiate).
 
-use std::{any::Any, fmt};
+use std::{any::Any, fmt, sync::Arc};
 
 use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::{
+    ActionInput,
     context::{ActionContext, TriggerContext},
     error::ActionError,
-    metadata::ActionMetadata,
+    input::PreparedActionInput,
+    metadata::{ActionKind, ActionMetadata},
     result::ActionResult,
     trigger::{TriggerEvent, TriggerEventOutcome},
 };
@@ -34,35 +36,48 @@ use crate::{
 // via `crate::handle::AgentHandle`, consistent with the other XxxHandle types.
 pub use crate::agent::AgentHandle;
 
+pub(crate) mod sealed {
+    pub trait Stateless {}
+    pub trait Stateful {}
+    pub trait Trigger {}
+    pub trait Resource {}
+    pub trait Stream {}
+    pub trait Control {}
+    pub trait Agent {}
+}
+
 // ── Sub-traits ──────────────────────────────────────────────────────────────
 
 /// Object-safe stateless dispatch surface.
 ///
 /// Mirrors the typed [`StatelessAction`](crate::StatelessAction) but works
-/// on `Value` to/from for engine erasure. Implementors are typically
+/// on [`ActionInput`] and JSON output for engine erasure. Implementors are typically
 /// generic wrappers produced by an [`ActionFactory`](crate::ActionFactory).
 #[async_trait]
-pub trait StatelessHandle: Send + Sync + 'static {
+pub trait StatelessHandle: sealed::Stateless + Send + Sync + 'static {
     /// Action metadata (key, version, ports, schemas).
-    fn metadata(&self) -> &ActionMetadata;
+    fn metadata(&self) -> &Arc<ActionMetadata>;
 
-    /// Execute one-shot with JSON input.
+    /// Admit erased ingress against this handle's complete typed contract.
+    fn prepare_input(&self, input: ActionInput) -> Result<PreparedActionInput, ActionError>;
+
+    /// Execute one-shot with input prepared by this handle's adapter.
     ///
     /// # Errors
     ///
     /// Returns [`ActionError`] on validation, retryable, or fatal failure.
     async fn dispatch(
         &self,
-        input: Value,
+        input: PreparedActionInput,
         ctx: &dyn ActionContext,
     ) -> Result<ActionResult<Value>, ActionError>;
 }
 
 /// Object-safe stateful dispatch surface.
 #[async_trait]
-pub trait StatefulHandle: Send + Sync + 'static {
+pub trait StatefulHandle: sealed::Stateful + Send + Sync + 'static {
     /// Action metadata.
-    fn metadata(&self) -> &ActionMetadata;
+    fn metadata(&self) -> &Arc<ActionMetadata>;
 
     /// Build initial state as JSON.
     ///
@@ -77,14 +92,25 @@ pub trait StatefulHandle: Send + Sync + 'static {
         None
     }
 
+    /// Validates and deserializes input once for the complete iteration loop.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ActionError`] when input does not satisfy the action schema or
+    /// cannot be deserialized into its declared input type.
+    fn prepare_input(&self, input: ActionInput) -> Result<PreparedActionInput, ActionError>;
+
     /// Execute one iteration with mutable JSON state.
+    ///
+    /// Reuse a matching resolved input across iterations to avoid preparing raw
+    /// data again. The proof retains its complete declared schema.
     ///
     /// # Errors
     ///
     /// Returns [`ActionError`] on validation, retryable, or fatal failure.
     async fn dispatch(
         &self,
-        input: &Value,
+        input: &PreparedActionInput,
         state: &mut Value,
         ctx: &dyn ActionContext,
     ) -> Result<ActionResult<Value>, ActionError>;
@@ -92,9 +118,9 @@ pub trait StatefulHandle: Send + Sync + 'static {
 
 /// Object-safe trigger dispatch surface (start / stop / handle_event).
 #[async_trait]
-pub trait TriggerHandle: Send + Sync + 'static {
+pub trait TriggerHandle: sealed::Trigger + Send + Sync + 'static {
     /// Action metadata.
-    fn metadata(&self) -> &ActionMetadata;
+    fn metadata(&self) -> &Arc<ActionMetadata>;
 
     /// Start the trigger.
     ///
@@ -135,9 +161,9 @@ pub trait TriggerHandle: Send + Sync + 'static {
 
 /// Object-safe resource dispatch surface (configure/cleanup lifecycle).
 #[async_trait]
-pub trait ResourceHandle: Send + Sync + 'static {
+pub trait ResourceHandle: sealed::Resource + Send + Sync + 'static {
     /// Action metadata.
-    fn metadata(&self) -> &ActionMetadata;
+    fn metadata(&self) -> &Arc<ActionMetadata>;
 
     /// Configure the resource for this scope.
     ///
@@ -177,9 +203,12 @@ pub trait ResourceHandle: Send + Sync + 'static {
 /// Returns [`ActionError`] on validation, retryable, or fatal failure. A chunk
 /// `Err` short-circuits without emitting partial output.
 #[async_trait]
-pub trait StreamHandle: Send + Sync + 'static {
+pub trait StreamHandle: sealed::Stream + Send + Sync + 'static {
     /// Action metadata (key, version, ports, schemas), with `ActionKind::Stream` stamped.
-    fn metadata(&self) -> &ActionMetadata;
+    fn metadata(&self) -> &Arc<ActionMetadata>;
+
+    /// Admit erased ingress against this handle's complete typed contract.
+    fn prepare_input(&self, input: ActionInput) -> Result<PreparedActionInput, ActionError>;
 
     /// Drive the chunk stream to completion and return the folded value.
     ///
@@ -189,16 +218,19 @@ pub trait StreamHandle: Send + Sync + 'static {
     /// out, or output serialization fails.
     async fn dispatch(
         &self,
-        input: Value,
+        input: PreparedActionInput,
         ctx: &dyn ActionContext,
     ) -> Result<ActionResult<Value>, ActionError>;
 }
 
 /// Object-safe control dispatch surface (flow-control desugared to stateless).
 #[async_trait]
-pub trait ControlHandle: Send + Sync + 'static {
+pub trait ControlHandle: sealed::Control + Send + Sync + 'static {
     /// Action metadata (with `ActionKind::Control` stamped).
-    fn metadata(&self) -> &ActionMetadata;
+    fn metadata(&self) -> &Arc<ActionMetadata>;
+
+    /// Admit erased ingress against this handle's complete typed contract.
+    fn prepare_input(&self, input: ActionInput) -> Result<PreparedActionInput, ActionError>;
 
     /// Evaluate the control decision and emit an [`ActionResult<Value>`].
     ///
@@ -207,7 +239,7 @@ pub trait ControlHandle: Send + Sync + 'static {
     /// Returns [`ActionError`] on validation or fatal failure.
     async fn dispatch(
         &self,
-        input: Value,
+        input: PreparedActionInput,
         ctx: &dyn ActionContext,
     ) -> Result<ActionResult<Value>, ActionError>;
 }
@@ -239,7 +271,7 @@ pub enum ActionHandle {
 impl ActionHandle {
     /// Get metadata regardless of variant.
     #[must_use]
-    pub fn metadata(&self) -> &ActionMetadata {
+    pub fn metadata(&self) -> &Arc<ActionMetadata> {
         match self {
             Self::Stateless(h) => h.metadata(),
             Self::Stateful(h) => h.metadata(),
@@ -248,6 +280,20 @@ impl ActionHandle {
             Self::Resource(h) => h.metadata(),
             Self::Control(h) => h.metadata(),
             Self::Agent(h) => h.metadata(),
+        }
+    }
+
+    /// Structural kind represented by this erased handle variant.
+    #[must_use]
+    pub const fn kind(&self) -> ActionKind {
+        match self {
+            Self::Stateless(_) => ActionKind::Stateless,
+            Self::Stateful(_) => ActionKind::Stateful,
+            Self::Stream(_) => ActionKind::Stream,
+            Self::Trigger(_) => ActionKind::Trigger,
+            Self::Resource(_) => ActionKind::Resource,
+            Self::Control(_) => ActionKind::Control,
+            Self::Agent(_) => ActionKind::Agent,
         }
     }
 
@@ -297,13 +343,13 @@ impl ActionHandle {
 impl fmt::Debug for ActionHandle {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let (tag, key) = match self {
-            Self::Stateless(h) => ("Stateless", h.metadata().base.key.as_str()),
-            Self::Stateful(h) => ("Stateful", h.metadata().base.key.as_str()),
-            Self::Stream(h) => ("Stream", h.metadata().base.key.as_str()),
-            Self::Trigger(h) => ("Trigger", h.metadata().base.key.as_str()),
-            Self::Resource(h) => ("Resource", h.metadata().base.key.as_str()),
-            Self::Control(h) => ("Control", h.metadata().base.key.as_str()),
-            Self::Agent(h) => ("Agent", h.metadata().base.key.as_str()),
+            Self::Stateless(h) => ("Stateless", h.metadata().base().key().as_str()),
+            Self::Stateful(h) => ("Stateful", h.metadata().base().key().as_str()),
+            Self::Stream(h) => ("Stream", h.metadata().base().key().as_str()),
+            Self::Trigger(h) => ("Trigger", h.metadata().base().key().as_str()),
+            Self::Resource(h) => ("Resource", h.metadata().base().key().as_str()),
+            Self::Control(h) => ("Control", h.metadata().base().key().as_str()),
+            Self::Agent(h) => ("Agent", h.metadata().base().key().as_str()),
         };
         f.debug_tuple(tag).field(&key).finish()
     }

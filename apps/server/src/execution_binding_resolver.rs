@@ -10,6 +10,7 @@ use nebula_execution::{
     ExecutionBindingEntryV2, ExecutionBindingManifestV2, ExecutionBindingSiteV2,
     ExecutionBindingTargetV2, ResourceBindingContractV2,
 };
+use nebula_metadata::Metadata;
 use nebula_plugin::{
     FrozenPluginRegistry, PlanBindingContract, PlanBindingRequirement,
     PlanBindingSelectorProvenance, PlanBindingSite,
@@ -87,8 +88,11 @@ impl ServerExecutionBindingResolver {
                     .registry
                     .resolve_credential(key)
                     .ok_or(BindingResolutionError::Incompatible)?;
+                let registered_metadata = registered
+                    .metadata()
+                    .map_err(|_| BindingResolutionError::Incompatible)?;
                 if selected.credential_key != key.as_str()
-                    || registered.metadata().base.version != *version
+                    || registered_metadata.base().version() != version
                     || !registered.capabilities().contains(*required_capabilities)
                 {
                     return Err(BindingResolutionError::Incompatible);
@@ -119,7 +123,11 @@ impl ServerExecutionBindingResolver {
                     .registry
                     .resolve_resource(key)
                     .ok_or(BindingResolutionError::Incompatible)?;
-                if selected.kind != key.as_str() || registered.metadata().base.version != *version {
+                let registered_metadata = registered
+                    .metadata()
+                    .map_err(|_| BindingResolutionError::Incompatible)?;
+                if selected.kind != key.as_str() || registered_metadata.base().version() != version
+                {
                     return Err(BindingResolutionError::Incompatible);
                 }
 

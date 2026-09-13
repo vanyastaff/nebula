@@ -12,12 +12,10 @@ fn engine(
 ) -> Arc<WorkflowEngine> {
     let (registry, frozen) = frozen_registry_with_barrier(count, barrier);
     let metrics = MetricsRegistry::new();
-    let executor: ActionExecutor =
-        Arc::new(|_, _, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
     let runtime = Arc::new(
         ActionRuntime::try_new(
             registry,
-            Arc::new(InProcessRunner::new(executor)),
+            Arc::new(InProcessRunner::new()),
             DataPassingPolicy::default(),
             metrics.clone(),
         )

@@ -1,5 +1,7 @@
 //! Array manipulation functions
 
+use std::fmt::{self, Write as _};
+
 use serde_json::Value;
 
 use super::{check_arg_count, check_min_arg_count, get_array_arg};
@@ -18,8 +20,8 @@ use crate::{
 // handles strings, arrays, and objects in one place.
 
 /// Get the first element of an array
-pub fn first(
-    args: &[Value],
+pub(crate) fn first(
+    args: &[&Value],
     _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
@@ -32,8 +34,8 @@ pub fn first(
 }
 
 /// Get the last element of an array
-pub fn last(
-    args: &[Value],
+pub(crate) fn last(
+    args: &[&Value],
     _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
@@ -50,8 +52,8 @@ pub fn last(
 }
 
 /// Filter array elements (stub - lambdas need special handling)
-pub fn filter(
-    _args: &[Value],
+pub(crate) fn filter(
+    _args: &[&Value],
     _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
@@ -62,8 +64,8 @@ pub fn filter(
 }
 
 /// Map over array elements (stub - lambdas need special handling)
-pub fn map(
-    _args: &[Value],
+pub(crate) fn map(
+    _args: &[&Value],
     _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
@@ -73,8 +75,8 @@ pub fn map(
 }
 
 /// Reduce array elements (stub - lambdas need special handling)
-pub fn reduce(
-    _args: &[Value],
+pub(crate) fn reduce(
+    _args: &[&Value],
     _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
@@ -84,24 +86,32 @@ pub fn reduce(
 }
 
 /// Sort an array
-pub fn sort(
-    args: &[Value],
-    _view: BuiltinView<'_>,
+pub(crate) fn sort(
+    args: &[&Value],
+    view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("sort", args, 1)?;
     let arr = get_array_arg("sort", args, 0, "array")?;
+
+    // Stable sorting performs O(n log n) comparisons in the worst case.
+    // String comparison can inspect every byte in the longest operand, so
+    // charge that upper bound before cloning or sorting the array.
+    let comparison_count = arr.len().saturating_mul(arr.len().bit_width() as usize);
+    let comparison_bytes = arr
+        .iter()
+        .filter_map(Value::as_str)
+        .map(str::len)
+        .max()
+        .unwrap_or(1);
+    view.charge_work(comparison_count.saturating_mul(comparison_bytes))?;
 
     let mut elements: Vec<Value> = arr.clone();
 
     // Sort the values
     elements.sort_by(|a, b| match (a, b) {
         (Value::Number(x), Value::Number(y)) => {
-            let x_val = crate::value_utils::number_as_f64(x).unwrap_or(0.0);
-            let y_val = crate::value_utils::number_as_f64(y).unwrap_or(0.0);
-            x_val
-                .partial_cmp(&y_val)
-                .unwrap_or(std::cmp::Ordering::Equal)
+            crate::value_utils::compare_numbers(x, y).unwrap_or(std::cmp::Ordering::Equal)
         },
         (Value::String(x), Value::String(y)) => x.cmp(y),
         _ => std::cmp::Ordering::Equal,
@@ -111,8 +121,8 @@ pub fn sort(
 }
 
 /// Reverse an array
-pub fn reverse(
-    args: &[Value],
+pub(crate) fn reverse(
+    args: &[&Value],
     _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
@@ -126,31 +136,65 @@ pub fn reverse(
 }
 
 /// Join array elements into a string
-pub fn join(
-    args: &[Value],
-    _view: BuiltinView<'_>,
-    _ctx: &EvaluationContext,
+pub(crate) fn join(
+    args: &[&Value],
+    view: BuiltinView<'_>,
+    context: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("join", args, 2)?;
     let arr = get_array_arg("join", args, 0, "array")?;
     let separator = args[1].as_str().ok_or_else(|| {
         ExpressionError::expression_type_error(
             "string",
-            crate::value_utils::value_type_name(&args[1]),
+            crate::value_utils::value_type_name(args[1]),
         )
     })?;
 
-    // Convert array elements to strings and join
-    let result = arr
-        .iter()
-        .map(|v| match v {
-            Value::String(s) => s.clone(),
-            _ => v.to_string(),
-        })
-        .collect::<Vec<_>>()
-        .join(separator);
+    let mut output_bytes = separator.len().saturating_mul(arr.len().saturating_sub(1));
+    for value in arr {
+        let element_bytes = match value {
+            Value::String(string) => string.len(),
+            value => {
+                let mut counter = FormatLength::default();
+                write!(&mut counter, "{value}").map_err(|_| {
+                    ExpressionError::expression_eval_error("failed to measure join output")
+                })?;
+                counter.bytes
+            },
+        };
+        output_bytes = output_bytes.saturating_add(element_bytes);
+    }
+    view.check_output_bytes(output_bytes)?;
+    let output = view.output_builder(context);
+    output.ensure_string_bytes(output_bytes)?;
+    output.ensure_total_bytes(output_bytes)?;
+
+    let mut result = String::with_capacity(output_bytes);
+    for (index, value) in arr.iter().enumerate() {
+        if index > 0 {
+            result.push_str(separator);
+        }
+        match value {
+            Value::String(string) => result.push_str(string),
+            value => write!(&mut result, "{value}").map_err(|_| {
+                ExpressionError::expression_eval_error("failed to render join output")
+            })?,
+        }
+    }
 
     Ok(Value::String(result))
+}
+
+#[derive(Default)]
+struct FormatLength {
+    bytes: usize,
+}
+
+impl fmt::Write for FormatLength {
+    fn write_str(&mut self, value: &str) -> fmt::Result {
+        self.bytes = self.bytes.saturating_add(value.len());
+        Ok(())
+    }
 }
 
 /// Resolve a slice bound: a negative index counts from the end (like `arr[-1]`),
@@ -163,8 +207,8 @@ fn resolve_slice_bound(index: i64, len: usize) -> usize {
 }
 
 /// Slice an array
-pub fn slice(
-    args: &[Value],
+pub(crate) fn slice(
+    args: &[&Value],
     _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
@@ -173,14 +217,14 @@ pub fn slice(
     let start_index = args[1].as_i64().ok_or_else(|| {
         ExpressionError::expression_type_error(
             "integer",
-            crate::value_utils::value_type_name(&args[1]),
+            crate::value_utils::value_type_name(args[1]),
         )
     })?;
     let end_index = if args.len() > 2 {
         args[2].as_i64().ok_or_else(|| {
             ExpressionError::expression_type_error(
                 "integer",
-                crate::value_utils::value_type_name(&args[2]),
+                crate::value_utils::value_type_name(args[2]),
             )
         })?
     } else {
@@ -200,18 +244,23 @@ pub fn slice(
 }
 
 /// Concatenate arrays
-pub fn concat(
-    args: &[Value],
-    _view: BuiltinView<'_>,
-    _ctx: &EvaluationContext,
+pub(crate) fn concat(
+    args: &[&Value],
+    view: BuiltinView<'_>,
+    context: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_min_arg_count("concat", args, 1)?;
 
-    // Calculate total size to pre-allocate
-    let total_size: usize = args
-        .iter()
-        .filter_map(|arg| arg.as_array().map(Vec::len))
-        .sum();
+    let mut total_size = 0usize;
+    for (index, _) in args.iter().enumerate() {
+        let array = get_array_arg("concat", args, index, "array")?;
+        total_size = total_size.saturating_add(array.len());
+    }
+    view.output_builder(context).preflight_array(
+        args.iter()
+            .filter_map(|argument| argument.as_array())
+            .flatten(),
+    )?;
 
     let mut result = Vec::with_capacity(total_size);
     for (i, _arg) in args.iter().enumerate() {
@@ -226,13 +275,28 @@ pub fn concat(
 ///
 /// Uses string representation for equality comparison.
 /// Example: `unique([1,2,2,3,1])` returns `[1,2,3]`
-pub fn unique(
-    args: &[Value],
-    _view: BuiltinView<'_>,
+pub(crate) fn unique(
+    args: &[&Value],
+    view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("unique", args, 1)?;
     let arr = get_array_arg("unique", args, 0, "array")?;
+
+    let mut scratch_bytes = 0usize;
+    for item in arr {
+        let mut counter = FormatLength::default();
+        write!(&mut counter, "{item}").map_err(|_| {
+            ExpressionError::expression_eval_error("failed to measure unique comparison key")
+        })?;
+        scratch_bytes = scratch_bytes.saturating_add(counter.bytes);
+        crate::limits::check_limit(
+            "builtin scratch bytes",
+            scratch_bytes,
+            crate::limits::MAX_RESULT_BYTES,
+        )?;
+    }
+    view.charge_work(scratch_bytes)?;
 
     let mut seen = std::collections::HashSet::new();
     let result: Vec<Value> = arr
@@ -249,15 +313,22 @@ pub fn unique(
 }
 
 /// Flatten a nested array
-pub fn flatten(
-    args: &[Value],
-    _view: BuiltinView<'_>,
-    _ctx: &EvaluationContext,
+pub(crate) fn flatten(
+    args: &[&Value],
+    view: BuiltinView<'_>,
+    context: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("flatten", args, 1)?;
     let arr = get_array_arg("flatten", args, 0, "array")?;
 
-    // Use iterator + flat_map for more efficient flattening
+    view.output_builder(context)
+        .preflight_array(arr.iter().flat_map(|value| {
+            value
+                .as_array()
+                .map(Vec::as_slice)
+                .unwrap_or_else(|| std::slice::from_ref(value))
+        }))?;
+
     let result: Vec<_> = arr
         .iter()
         .flat_map(|elem| {

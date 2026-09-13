@@ -1,13 +1,36 @@
 use super::*;
 
-pub(super) struct SnapshotHandler(pub(super) &'static str);
+pub(super) struct SnapshotHandler {
+    output: &'static str,
+    executions: Option<Arc<AtomicU32>>,
+}
+
+impl SnapshotHandler {
+    pub(super) const fn new(output: &'static str) -> Self {
+        Self {
+            output,
+            executions: None,
+        }
+    }
+
+    fn counted(output: &'static str, executions: Arc<AtomicU32>) -> Self {
+        Self {
+            output,
+            executions: Some(executions),
+        }
+    }
+}
 
 impl Action for SnapshotHandler {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(action_key!("exact.run"), "Run", "snapshot fixture")
+    fn metadata() -> ActionMetadataDraft {
+        ActionMetadataDraft::new(
+            action_key!("exact.run"),
+            nebula_action::metadata_name!("Run"),
+            "snapshot fixture",
+        )
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -21,38 +44,16 @@ impl StatelessAction for SnapshotHandler {
         _: Self::Input,
         _: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<Self::Output>, ActionError> {
-        Ok(ActionResult::success(serde_json::json!(self.0)))
+        if let Some(executions) = &self.executions {
+            executions.fetch_add(1, Ordering::SeqCst);
+        }
+        Ok(ActionResult::success(serde_json::json!(self.output)))
     }
 }
 
 pub(super) struct SnapshotPlugin {
     pub(super) manifest: nebula_plugin::PluginManifest,
     pub(super) factory: Arc<dyn nebula_action::ActionFactory>,
-}
-
-struct ObservedFactory {
-    inner: Arc<dyn nebula_action::ActionFactory>,
-    instantiations: Arc<AtomicU32>,
-}
-
-impl nebula_action::ActionFactory for ObservedFactory {
-    fn metadata(&self) -> &ActionMetadata {
-        self.inner.metadata()
-    }
-
-    fn dependencies(&self) -> &Dependencies {
-        self.inner.dependencies()
-    }
-
-    fn instantiate<'a>(
-        &'a self,
-        node: &'a NodeDefinition,
-        context: &'a dyn nebula_action::ActionContext,
-    ) -> Pin<Box<dyn Future<Output = Result<nebula_action::ActionHandle, ActionError>> + Send + 'a>>
-    {
-        self.instantiations.fetch_add(1, Ordering::SeqCst);
-        self.inner.instantiate(node, context)
-    }
 }
 
 impl std::fmt::Debug for SnapshotPlugin {
@@ -85,22 +86,29 @@ pub(super) fn snapshot_registry_counted(
     output: &'static str,
 ) -> (Arc<FrozenPluginRegistry>, Arc<AtomicU32>) {
     let metadata = SnapshotHandler::metadata()
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
-        .with_schema(nebula_schema::ValidSchema::empty())
-        .with_output_schema(nebula_schema::ValidSchema::empty());
-    runtime_registry.register_stateless_instance(metadata, SnapshotHandler(output));
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects);
+    let executions = Arc::new(AtomicU32::new(0));
+    runtime_registry
+        .register_stateless_instance(
+            metadata,
+            SnapshotHandler::counted(output, Arc::clone(&executions)),
+        )
+        .expect("valid snapshot fixture factory");
+    let frozen = frozen_registered_snapshot(runtime_registry);
+    (frozen, executions)
+}
+
+pub(super) fn frozen_registered_snapshot(
+    runtime_registry: &ActionRegistry,
+) -> Arc<FrozenPluginRegistry> {
     let (_, factory) = runtime_registry
         .get_factory(&action_key!("exact.run"))
         .unwrap();
-    let instantiations = Arc::new(AtomicU32::new(0));
     let plugin = SnapshotPlugin {
         manifest: nebula_plugin::PluginManifest::builder("exact", "Exact")
             .build()
             .unwrap(),
-        factory: Arc::new(ObservedFactory {
-            inner: factory,
-            instantiations: Arc::clone(&instantiations),
-        }),
+        factory,
     };
     let mut registry = PluginRegistry::new();
     registry
@@ -108,16 +116,13 @@ pub(super) fn snapshot_registry_counted(
             nebula_plugin::ResolvedPlugin::from(plugin).unwrap(),
         ))
         .unwrap();
-    (
-        Arc::new(
-            registry
-                .freeze(
-                    nebula_core::ArtifactSetDigest::from_bytes([0x93; 32]),
-                    "1.0.0".parse().unwrap(),
-                )
-                .unwrap(),
-        ),
-        instantiations,
+    Arc::new(
+        registry
+            .freeze(
+                nebula_core::ArtifactSetDigest::from_bytes([0x93; 32]),
+                "1.0.0".parse().unwrap(),
+            )
+            .unwrap(),
     )
 }
 

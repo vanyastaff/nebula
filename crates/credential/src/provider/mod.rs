@@ -87,7 +87,7 @@ impl fmt::Display for ProviderKind {
 /// Stored in Nebula's database instead of the actual secret value.
 /// On resolution, the framework calls the registered [`ExternalProvider`]
 /// to fetch the real secret from the external system.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct ExternalReference {
     /// Which external provider manages this secret.
     pub provider: ProviderKind,
@@ -97,6 +97,18 @@ pub struct ExternalReference {
     pub version: Option<String>,
     /// Optional field within the secret (for providers that store multiple K/V pairs per secret).
     pub field: Option<String>,
+}
+
+impl fmt::Debug for ExternalReference {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ExternalReference")
+            .field("provider", &self.provider)
+            .field("path", &"[REDACTED]")
+            .field("version", &self.version.as_ref().map(|_| "[REDACTED]"))
+            .field("field", &self.field.as_ref().map(|_| "[REDACTED]"))
+            .finish()
+    }
 }
 
 /// Error returned by [`ExternalProvider::resolve`].
@@ -109,12 +121,10 @@ pub struct ExternalReference {
 /// provider cannot mask an `Unavailable` or `AccessDenied` from an earlier
 /// one. Implementations MUST classify errors carefully — for example, a
 /// network failure to a backing store is `Unavailable`, not `NotFound`.
-#[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum ProviderError {
     /// Secret not found at the given path/version/field. **Triggers chain
     /// fall-through.**
-    #[error("secret not found: {path}")]
     NotFound {
         /// The path that was looked up.
         path: String,
@@ -122,22 +132,49 @@ pub enum ProviderError {
 
     /// Provider is temporarily unavailable (network, rate limit, etc.).
     /// **Short-circuits the chain.**
-    #[error("provider unavailable: {reason}")]
     Unavailable {
         /// Human-readable cause.
         reason: String,
     },
 
     /// Caller lacks permission to access the secret. **Short-circuits the chain.**
-    #[error("access denied: {reason}")]
     AccessDenied {
         /// Human-readable cause.
         reason: String,
     },
 
     /// Catch-all for provider-specific errors. **Short-circuits the chain.**
-    #[error("provider error: {0}")]
-    Backend(#[from] Box<dyn std::error::Error + Send + Sync>),
+    Backend(Box<dyn std::error::Error + Send + Sync>),
+}
+
+impl fmt::Debug for ProviderError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::NotFound { .. } => "ProviderError::NotFound",
+            Self::Unavailable { .. } => "ProviderError::Unavailable",
+            Self::AccessDenied { .. } => "ProviderError::AccessDenied",
+            Self::Backend(_) => "ProviderError::Backend",
+        })
+    }
+}
+
+impl fmt::Display for ProviderError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::NotFound { .. } => "secret not found",
+            Self::Unavailable { .. } => "provider unavailable",
+            Self::AccessDenied { .. } => "access denied",
+            Self::Backend(_) => "provider error",
+        })
+    }
+}
+
+impl std::error::Error for ProviderError {}
+
+impl From<Box<dyn std::error::Error + Send + Sync>> for ProviderError {
+    fn from(error: Box<dyn std::error::Error + Send + Sync>) -> Self {
+        Self::Backend(error)
+    }
 }
 
 /// Trait for external secret providers.
@@ -216,10 +253,40 @@ mod tests {
     }
 
     #[test]
-    fn provider_error_display_includes_payload() {
-        let err = ProviderError::NotFound {
-            path: "secret/foo".to_owned(),
+    fn provider_error_diagnostics_are_payload_free() {
+        const CANARY: &str = "provider-secret-diagnostic-canary";
+        let errors = [
+            ProviderError::NotFound {
+                path: CANARY.to_owned(),
+            },
+            ProviderError::Unavailable {
+                reason: CANARY.to_owned(),
+            },
+            ProviderError::AccessDenied {
+                reason: CANARY.to_owned(),
+            },
+            ProviderError::Backend(CANARY.to_owned().into()),
+        ];
+
+        for error in errors {
+            let diagnostic = format!("{error:?} {error}");
+            assert!(!diagnostic.contains(CANARY));
+            assert!(std::error::Error::source(&error).is_none());
+        }
+    }
+
+    #[test]
+    fn external_reference_debug_redacts_provider_coordinates() {
+        const CANARY: &str = "external-reference-diagnostic-canary";
+        let reference = ExternalReference {
+            provider: ProviderKind::Vault,
+            path: CANARY.to_owned(),
+            version: Some(CANARY.to_owned()),
+            field: Some(CANARY.to_owned()),
         };
-        assert!(err.to_string().contains("secret/foo"));
+
+        let diagnostic = format!("{reference:?}");
+        assert!(!diagnostic.contains(CANARY));
+        assert!(diagnostic.contains("[REDACTED]"));
     }
 }

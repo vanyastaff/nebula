@@ -11,8 +11,8 @@ use std::{future::Future, pin::Pin, sync::Arc};
 
 use nebula_credential::provider::ExternalProvider;
 use nebula_credential::runtime::{
-    LeaseLifecycleConfig, RefreshTransport, RefreshTransportError, TokenPostRequest,
-    TokenPostResponse,
+    AcquisitionTransport, AcquisitionTransportError, LeaseLifecycleConfig, RefreshTransport,
+    RefreshTransportError, TokenPostRequest, TokenPostResponse,
 };
 use nebula_credential::{
     ApiKeyCredential, BasicAuthCredential, ErasedPendingStore, SigningKeyCredential,
@@ -64,6 +64,17 @@ impl RefreshTransport for NoNetworkRefreshTransport {
     ) -> Pin<Box<dyn Future<Output = Result<TokenPostResponse, RefreshTransportError>> + Send + 'a>>
     {
         Box::pin(async { Err(RefreshTransportError::Send) })
+    }
+}
+
+impl AcquisitionTransport for NoNetworkRefreshTransport {
+    fn post_token<'a>(
+        &'a self,
+        _request: TokenPostRequest,
+    ) -> Pin<
+        Box<dyn Future<Output = Result<TokenPostResponse, AcquisitionTransportError>> + Send + 'a>,
+    > {
+        Box::pin(async { Err(AcquisitionTransportError::Send) })
     }
 }
 
@@ -191,6 +202,7 @@ fn compose_credential_service<S: CredentialPersistence + 'static>(
     // so the factory mints the token internally.
     let shutdown = tokio_util::sync::CancellationToken::new();
 
+    let transport = Arc::new(NoNetworkRefreshTransport);
     let mut builder = CredentialServiceBuilder::new(
         raw_store,
         key_provider,
@@ -198,7 +210,8 @@ fn compose_credential_service<S: CredentialPersistence + 'static>(
         pending,
         Arc::new(registry),
         Arc::new(ops),
-        Arc::new(NoNetworkRefreshTransport),
+        transport.clone(),
+        transport,
         observer,
         lease_config,
         shutdown,

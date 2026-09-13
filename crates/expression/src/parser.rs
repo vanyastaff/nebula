@@ -28,6 +28,7 @@ const EOF_TOKEN: Token<'static> = Token {
 pub struct Parser<'a> {
     tokens: Vec<Token<'a>>,
     position: usize,
+    nodes: usize,
 }
 
 impl<'a> Parser<'a> {
@@ -36,6 +37,7 @@ impl<'a> Parser<'a> {
         Self {
             tokens,
             position: 0,
+            nodes: 0,
         }
     }
 
@@ -44,6 +46,7 @@ impl<'a> Parser<'a> {
     /// The entire token stream must be consumed: after the root expression, only [`TokenKind::Eof`]
     /// is allowed. Extra tokens are rejected to avoid accepting valid prefixes of invalid inputs.
     pub fn parse(&mut self) -> ExpressionResult<Expr> {
+        crate::limits::check_limit("tokens", self.tokens.len(), crate::limits::MAX_TOKENS)?;
         let expr = self.parse_expression_with_depth(0)?;
         if self.current_token().kind != TokenKind::Eof {
             return Err(ExpressionError::expression_parse_error(format!(
@@ -51,7 +54,13 @@ impl<'a> Parser<'a> {
                 self.current_token()
             )));
         }
+        check_ast_depth(&expr)?;
         Ok(expr)
+    }
+
+    fn record_node(&mut self) -> ExpressionResult<()> {
+        self.nodes += 1;
+        crate::limits::check_limit("AST nodes", self.nodes, crate::limits::MAX_AST_NODES)
     }
 
     /// Parse expression with depth tracking
@@ -67,6 +76,7 @@ impl<'a> Parser<'a> {
     /// Parse conditional with depth tracking
     fn parse_conditional_with_depth(&mut self, depth: usize) -> ExpressionResult<Expr> {
         if self.match_token(&TokenKind::If) {
+            self.record_node()?;
             let condition = Box::new(self.parse_pipeline_with_depth(depth + 1)?);
             self.expect_token(TokenKind::Then)?;
             let then_expr = Box::new(self.parse_pipeline_with_depth(depth + 1)?);
@@ -88,6 +98,7 @@ impl<'a> Parser<'a> {
         let mut expr = self.parse_binary_op_with_depth(0, depth + 1)?;
 
         while self.current_token().kind == TokenKind::Pipe {
+            self.record_node()?;
             self.advance();
 
             // Expect function name
@@ -113,6 +124,7 @@ impl<'a> Parser<'a> {
                 function,
                 args,
             };
+            check_ast_depth(&expr)?;
         }
 
         Ok(expr)
@@ -142,6 +154,7 @@ impl<'a> Parser<'a> {
             if precedence < min_precedence {
                 break;
             }
+            self.record_node()?;
 
             let is_right_assoc = self.current_token().kind.is_right_associative();
             let binary_op = match &self.current_token().kind {
@@ -183,6 +196,7 @@ impl<'a> Parser<'a> {
                 op: binary_op,
                 right: Box::new(right),
             };
+            check_ast_depth(&left)?;
         }
 
         Ok(left)
@@ -200,11 +214,19 @@ impl<'a> Parser<'a> {
         }
         match &self.current_token().kind {
             TokenKind::Minus => {
+                self.record_node()?;
                 self.advance();
+                if let TokenKind::UnsignedInteger(value) = self.current_token().kind
+                    && value == i64::MIN.unsigned_abs()
+                {
+                    self.advance();
+                    return Ok(Expr::Literal(Value::Number(i64::MIN.into())));
+                }
                 let expr = self.parse_unary_with_depth(depth + 1)?;
                 Ok(Expr::Negate(Box::new(expr)))
             },
             TokenKind::Not => {
+                self.record_node()?;
                 self.advance();
                 let expr = self.parse_unary_with_depth(depth + 1)?;
                 Ok(Expr::Not(Box::new(expr)))
@@ -220,6 +242,7 @@ impl<'a> Parser<'a> {
         loop {
             match &self.current_token().kind {
                 TokenKind::Dot => {
+                    self.record_node()?;
                     self.advance();
                     let property = if let TokenKind::Identifier(name) = &self.current_token().kind {
                         let name = Arc::from(*name);
@@ -235,8 +258,10 @@ impl<'a> Parser<'a> {
                         object: Box::new(expr),
                         property,
                     };
+                    check_ast_depth(&expr)?;
                 },
                 TokenKind::LeftBracket => {
+                    self.record_node()?;
                     self.advance();
                     let index = self.parse_expression_with_depth(depth + 1)?;
                     self.expect_token(TokenKind::RightBracket)?;
@@ -245,6 +270,7 @@ impl<'a> Parser<'a> {
                         object: Box::new(expr),
                         index: Box::new(index),
                     };
+                    check_ast_depth(&expr)?;
                 },
                 _ => break,
             }
@@ -255,12 +281,18 @@ impl<'a> Parser<'a> {
 
     /// Parse primary expression with depth tracking
     fn parse_primary_with_depth(&mut self, depth: usize) -> ExpressionResult<Expr> {
+        self.record_node()?;
         match &self.current_token().kind {
             // Literals
             TokenKind::Integer(n) => {
                 let n = *n;
                 self.advance();
                 Ok(Expr::Literal(Value::Number(n.into())))
+            },
+            TokenKind::UnsignedInteger(n) => {
+                let number = *n;
+                self.advance();
+                Ok(Expr::Literal(Value::Number(number.into())))
             },
             TokenKind::Float(n) => {
                 let n = *n;
@@ -470,6 +502,51 @@ impl<'a> Parser<'a> {
             )))
         }
     }
+}
+
+fn check_ast_depth(root: &Expr) -> ExpressionResult<()> {
+    let mut pending = vec![(root, 1)];
+    while let Some((expression, depth)) = pending.pop() {
+        crate::limits::check_limit("AST depth", depth, crate::limits::MAX_AST_DEPTH)?;
+        let child_depth = depth + 1;
+        match expression {
+            Expr::Literal(_) | Expr::Variable(_) | Expr::Identifier(_) => {},
+            Expr::Negate(child)
+            | Expr::Not(child)
+            | Expr::PropertyAccess { object: child, .. }
+            | Expr::Lambda { body: child, .. } => pending.push((child, child_depth)),
+            Expr::Binary { left, right, .. }
+            | Expr::IndexAccess {
+                object: left,
+                index: right,
+            } => {
+                pending.push((left, child_depth));
+                pending.push((right, child_depth));
+            },
+            Expr::FunctionCall { args, .. } | Expr::Array(args) => {
+                pending.extend(args.iter().map(|child| (child, child_depth)));
+            },
+            Expr::Pipeline { value, args, .. } => {
+                pending.push((value, child_depth));
+                pending.extend(args.iter().map(|child| (child, child_depth)));
+            },
+            Expr::Conditional {
+                condition,
+                then_expr,
+                else_expr,
+            } => {
+                pending.extend([
+                    (condition.as_ref(), child_depth),
+                    (then_expr.as_ref(), child_depth),
+                    (else_expr.as_ref(), child_depth),
+                ]);
+            },
+            Expr::Object(properties) => {
+                pending.extend(properties.iter().map(|(_, child)| (child, child_depth)));
+            },
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

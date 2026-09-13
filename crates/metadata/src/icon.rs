@@ -1,6 +1,13 @@
 //! Catalog icon — exactly one valid representation at a time.
 
-use serde::{Deserialize, Serialize};
+use crate::{
+    MetadataError,
+    bounded::{self, SHARED_BYTES},
+};
+use serde::{
+    Deserialize, Deserializer, Serialize,
+    de::{Error as _, MapAccess, Visitor},
+};
 
 /// Icon for a catalog entity (action, credential, resource, …).
 ///
@@ -13,7 +20,7 @@ use serde::{Deserialize, Serialize};
 /// - [`Icon::Inline`] → a bare string, e.g. `"github"` or `"🔑"`.
 /// - [`Icon::Url`] → a `{ "url": "https://..." }` object.
 #[non_exhaustive]
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[serde(untagged)]
 pub enum Icon {
     /// No icon declared.
@@ -27,6 +34,52 @@ pub enum Icon {
         /// Icon URL (absolute or root-relative).
         url: String,
     },
+}
+
+impl<'de> Deserialize<'de> for Icon {
+    #[tracing::instrument(name = "metadata.deserialize_icon", skip_all)]
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct IconVisitor;
+        impl<'de> Visitor<'de> for IconVisitor {
+            type Value = Icon;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a bounded metadata icon")
+            }
+            fn visit_unit<E: serde::de::Error>(self) -> Result<Icon, E> {
+                Ok(Icon::None)
+            }
+            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Icon, E> {
+                bounded::check_bytes(value, SHARED_BYTES, crate::MetadataField::Icon)
+                    .map_err(E::custom)?;
+                Ok(Icon::inline(value))
+            }
+            fn visit_string<E: serde::de::Error>(self, value: String) -> Result<Icon, E> {
+                bounded::check_bytes(&value, SHARED_BYTES, crate::MetadataField::Icon)
+                    .map_err(E::custom)?;
+                Ok(Icon::inline(value))
+            }
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Icon, A::Error> {
+                #[derive(Deserialize)]
+                struct Text(
+                    #[serde(deserialize_with = "bounded::string::<_, SHARED_BYTES>")] String,
+                );
+                let Some(Text(key)) = map.next_key()? else {
+                    return Err(A::Error::custom(MetadataError::InvalidWire));
+                };
+                if key != "url" {
+                    return Err(A::Error::custom(MetadataError::InvalidWire));
+                }
+                let Text(url) = map.next_value()?;
+                if map.next_key::<Text>()?.is_some() {
+                    return Err(A::Error::custom(MetadataError::InvalidWire));
+                }
+                Ok(Icon::url(url))
+            }
+        }
+        deserializer
+            .deserialize_any(IconVisitor)
+            .map_err(|_| D::Error::custom(MetadataError::InvalidWire))
+    }
 }
 
 impl Icon {

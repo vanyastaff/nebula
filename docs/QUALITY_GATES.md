@@ -95,6 +95,31 @@ under `tools/xtask/**`, `.github/workflows/test-matrix.yml`, and
 `scripts/pre-push-crate-diff.sh`. Changing how selection works must therefore
 prove the complete workspace rather than trusting the changed selector.
 
+## Fixture-aware pre-commit checks
+
+Pre-commit formatting and clippy consume the separate schema-v1
+`cargo xtask pre-commit-plan -- <paths>` protocol. This reuses locked Cargo
+workspace ownership without changing the CI plan or adding reverse dependents.
+An isolated contract fixture declares
+`package.metadata.nebula.fixture.test-target`; its enclosing Cargo workspace
+member is the owner, and that owner's integration-test target must exist.
+An optional declared owner must equal the derived owner. Malformed declarations
+and invalid hook plans fail closed, without falling back to path/name guesses.
+
+Both hooks retain direct manifest checks for ordinary standalone packages.
+Formatting includes every source in selected fixtures, including negative
+probes. Fixture clippy runs through the owner harness so local unpublished
+dependencies can be patched in a temporary workspace: positive probes receive
+strict clippy and execution, while compile-fail probes retain their failure
+and diagnostic assertions. Each distinct owner/test-target pair executes once
+with nextest's zero-test failure policy. Declaring an existing target does not
+prove semantic coverage; the actual owner harness and its assertions remain
+reviewed, executable contracts.
+
+See [xtask's protocol and declaration guide](../tools/xtask/README.md#pre-commit-fixture-ownership)
+for the closed schema, limits, and focused verification commands. These are
+owner-scoped local checks; the required full-workspace gates remain unchanged.
+
 ## Versioned North Star gate policy
 
 The North Star measurement and exit-gate contract is executable repository

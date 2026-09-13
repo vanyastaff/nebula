@@ -29,7 +29,9 @@
 //! assert!(flexible_validator.validate("ab").is_ok()); // satisfies max_length
 //! ```
 
-use crate::foundation::{Validate, ValidationError, ValidationErrors, ValidationMode};
+use crate::foundation::{
+    Validate, ValidationError, ValidationErrorKind, ValidationErrors, ValidationMode,
+};
 
 // ============================================================================
 // ALL OF (AND semantics)
@@ -142,7 +144,8 @@ where
 /// Combines multiple validators with OR semantics.
 ///
 /// At least one validator must pass for the combined validator to pass.
-/// If all fail, errors from all validators are included.
+/// If all fail, errors from all validators are included. An empty collection
+/// rejects every input because it has no successful alternative.
 ///
 /// # Examples
 ///
@@ -201,15 +204,12 @@ where
     V: Validate<T>,
 {
     fn validate(&self, input: &T) -> Result<(), ValidationError> {
-        if self.validators.is_empty() {
-            return Ok(());
-        }
-
         let mut errors = ValidationErrors::new();
 
         for validator in &self.validators {
             match validator.validate(input) {
                 Ok(()) => return Ok(()),
+                Err(error) if error.kind() != ValidationErrorKind::Violation => return Err(error),
                 Err(e) => errors.add(e),
             }
         }
@@ -301,7 +301,10 @@ mod tests {
     #[test]
     fn test_any_of_empty() {
         let validator: AnyOf<crate::validators::MinLength> = any_of([]);
-        assert!(validator.validate("anything").is_ok());
+        assert_eq!(
+            validator.validate("anything").unwrap_err().code,
+            "any_of_failed"
+        );
     }
 
     #[test]

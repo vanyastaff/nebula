@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use futures::FutureExt;
 use nebula_action::{
-    ActionResult,
+    ActionResult, PreparedActionInput,
     effect::{
         EffectInvocationContext, EffectInvocationOutcome, EffectPreparationContext,
         EffectPreparationError, EffectQueryContext, EffectReconciliationOutcome,
@@ -63,7 +63,7 @@ impl EffectTurn<'_> {
         &self,
         factory: &dyn RemoteEffectFactory,
         descriptor: &RemoteEffectDescriptor,
-        input: Value,
+        input: PreparedActionInput,
     ) -> Result<ActionResult<Value>, EffectExecutionError> {
         descriptor
             .validate()

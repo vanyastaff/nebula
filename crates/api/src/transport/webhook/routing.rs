@@ -41,7 +41,7 @@ impl std::fmt::Debug for ActivationEntry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use nebula_core::Context;
         f.debug_struct("ActivationEntry")
-            .field("handler_key", &self.handler.metadata().base.key)
+            .field("handler_key", self.handler.metadata().base().key())
             .field("trigger_id", &self.ctx.trigger_id())
             .field("workflow_id", &self.ctx.scope().workflow_id)
             .finish_non_exhaustive()
@@ -96,39 +96,60 @@ impl RoutingMap {
 
 #[cfg(test)]
 mod tests {
-    use nebula_action::TriggerContext;
+    use nebula_action::{
+        Action, ActionMetadataDraft, TriggerContext, TriggerEventOutcome, WebhookAction,
+        WebhookRequest, WebhookResponse, WebhookTriggerAdapter,
+    };
+    use nebula_core::Dependencies;
     use uuid::Uuid;
 
     use super::{super::key::WebhookKey, *};
 
-    // A minimal dummy TriggerHandler for the routing tests so we
-    // don't need a real webhook action here.
-    struct Noop {
-        meta: nebula_action::ActionMetadata,
+    struct NoopWebhook;
+
+    impl Action for NoopWebhook {
+        type Input = serde_json::Value;
+        type Output = serde_json::Value;
+
+        fn metadata() -> ActionMetadataDraft {
+            ActionMetadataDraft::new(
+                nebula_core::action_key!("test.routing.noop"),
+                nebula_action::metadata_name!("Noop"),
+                "routing map unit test",
+            )
+        }
+
+        fn dependencies() -> &'static Dependencies {
+            static DEPENDENCIES: std::sync::OnceLock<Dependencies> = std::sync::OnceLock::new();
+            DEPENDENCIES.get_or_init(Dependencies::new)
+        }
     }
 
-    #[async_trait::async_trait]
-    impl TriggerHandler for Noop {
-        fn metadata(&self) -> &nebula_action::ActionMetadata {
-            &self.meta
-        }
-        async fn start(&self, _ctx: &dyn TriggerContext) -> Result<(), nebula_action::ActionError> {
+    impl WebhookAction for NoopWebhook {
+        type State = ();
+
+        async fn on_activate(
+            &self,
+            _ctx: &(impl TriggerContext + ?Sized),
+        ) -> Result<(), nebula_action::ActionError> {
             Ok(())
         }
-        async fn stop(&self, _ctx: &dyn TriggerContext) -> Result<(), nebula_action::ActionError> {
-            Ok(())
+
+        async fn handle_request(
+            &self,
+            _request: &WebhookRequest,
+            _state: &(),
+            _ctx: &(impl TriggerContext + ?Sized),
+        ) -> Result<WebhookResponse, nebula_action::ActionError> {
+            Ok(WebhookResponse::accept(TriggerEventOutcome::skip()))
         }
     }
 
     fn dummy_entry() -> ActivationEntry {
         use tokio_util::sync::CancellationToken;
-        let handler: Arc<dyn TriggerHandler> = Arc::new(Noop {
-            meta: nebula_action::ActionMetadata::new(
-                nebula_core::action_key!("test.routing.noop"),
-                "Noop",
-                "routing map unit test",
-            ),
-        });
+        let handler: Arc<dyn TriggerHandler> = Arc::new(
+            WebhookTriggerAdapter::new(NoopWebhook).expect("valid test catalog definition"),
+        );
         let ctx = TriggerRuntimeContext::new(
             Arc::new(
                 nebula_core::BaseContext::builder(nebula_core::scope::Scope::default())

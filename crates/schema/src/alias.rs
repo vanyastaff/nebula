@@ -41,10 +41,6 @@ impl FieldAliases {
     ///
     /// Returns `alias.invalid_key` if any item is not a valid field key, or
     /// `alias.duplicate` if the same key appears more than once in the input.
-    #[expect(
-        clippy::result_large_err,
-        reason = "ValidationError is intentionally large; callers are on the validation path"
-    )]
     pub fn new(
         aliases: impl IntoIterator<Item = impl AsRef<str>>,
     ) -> Result<Self, ValidationError> {
@@ -120,9 +116,9 @@ mod tests {
     #[test]
     fn new_validates_keys() {
         let err = FieldAliases::new(["has-dash"]).unwrap_err();
-        assert_eq!(err.code, "alias.invalid_key");
+        assert_eq!(err.code(), "alias.invalid_key");
         assert_eq!(
-            err.params
+            err.params()
                 .iter()
                 .find(|(k, _)| k.as_ref() == "key")
                 .map(|(_, v)| v.as_str().unwrap()),
@@ -133,7 +129,7 @@ mod tests {
     #[test]
     fn new_rejects_intra_set_duplicate() {
         let err = FieldAliases::new(["foo", "foo"]).unwrap_err();
-        assert_eq!(err.code, "alias.duplicate");
+        assert_eq!(err.code(), "alias.duplicate");
     }
 
     #[test]

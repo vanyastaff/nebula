@@ -1,6 +1,11 @@
 //! Utility functions for working with serde_json::Value
 
+use std::cmp::Ordering;
+
+use num_cmp::NumCmp;
 use serde_json::{Number, Value};
+
+use crate::{ExpressionError, ExpressionResult};
 
 /// Get the type name of a Value for error messages
 pub fn value_type_name(value: &Value) -> &'static str {
@@ -14,16 +19,32 @@ pub fn value_type_name(value: &Value) -> &'static str {
     }
 }
 
-/// Extract i64 from Number, trying both i64 and f64 representations
+/// Extract an exact i64, accepting integral floats only within the i64 range.
 #[inline]
 pub fn number_as_i64(num: &Number) -> Option<i64> {
-    num.as_i64().or_else(|| num.as_f64().map(|f| f as i64))
+    num.as_i64().or_else(|| {
+        let float = num.is_f64().then(|| num.as_f64()).flatten()?;
+        (float.is_finite()
+            && float.fract() == 0.0
+            && float.num_ge(i64::MIN)
+            && float.num_le(i64::MAX))
+        .then_some(float as i64)
+    })
 }
 
 /// Extract f64 from Number, trying both f64 and i64 representations
 #[inline]
 pub fn number_as_f64(num: &Number) -> Option<f64> {
     num.as_f64().or_else(|| num.as_i64().map(|i| i as f64))
+}
+
+/// Parse finite JSON numeric syntax without rounding out-of-range integer text.
+pub(crate) fn parse_number(text: &str) -> Result<Number, &'static str> {
+    let number: Number = serde_json::from_str(text).map_err(|_| "expected a finite JSON number")?;
+    if number.is_f64() && !text.contains(['.', 'e', 'E']) {
+        return Err("integer is outside the JSON integer range");
+    }
+    Ok(number)
 }
 
 /// Check if two numbers can be added as integers
@@ -81,11 +102,80 @@ pub fn to_integer(value: &Value) -> Result<i64, &'static str> {
 
 /// Convert Value to f64 with error
 pub fn to_float(value: &Value) -> Result<f64, &'static str> {
-    match value {
+    let float = match value {
         Value::Number(n) => number_as_f64(n).ok_or("number cannot be represented as float"),
         Value::String(s) => s.parse().map_err(|_| "string is not a valid number"),
         Value::Bool(b) => Ok(if *b { 1.0 } else { 0.0 }),
         _ => Err("value cannot be converted to number"),
+    }?;
+    if float.is_finite() {
+        Ok(float)
+    } else {
+        Err("number is not finite")
+    }
+}
+
+/// Adapt JSON number representations to the shared exact numeric comparator.
+pub(crate) fn compare_numbers(left: &Number, right: &Number) -> Option<Ordering> {
+    if let Some(left) = left.as_i64() {
+        if let Some(right) = right.as_i64() {
+            return left.num_cmp(right);
+        }
+        if let Some(right) = right.as_u64() {
+            return left.num_cmp(right);
+        }
+        return left.num_cmp(right.as_f64()?);
+    }
+    if let Some(left) = left.as_u64() {
+        if let Some(right) = right.as_i64() {
+            return left.num_cmp(right);
+        }
+        if let Some(right) = right.as_u64() {
+            return left.num_cmp(right);
+        }
+        return left.num_cmp(right.as_f64()?);
+    }
+    let left = left.as_f64()?;
+    if let Some(right) = right.as_i64() {
+        return left.num_cmp(right);
+    }
+    if let Some(right) = right.as_u64() {
+        return left.num_cmp(right);
+    }
+    left.num_cmp(right.as_f64()?)
+}
+
+pub(crate) fn integer_value(number: &Number) -> Option<i128> {
+    number
+        .as_i64()
+        .map(i128::from)
+        .or_else(|| number.as_u64().map(i128::from))
+}
+
+pub(crate) fn integer_result(
+    value: Option<i128>,
+    operation: &'static str,
+) -> ExpressionResult<Value> {
+    let number = value.and_then(|value| {
+        i64::try_from(value)
+            .map(Number::from)
+            .ok()
+            .or_else(|| u64::try_from(value).map(Number::from).ok())
+    });
+    if let Some(number) = number {
+        Ok(Value::Number(number))
+    } else {
+        tracing::debug!(operation, "integer arithmetic overflow");
+        Err(ExpressionError::NumericOverflow { operation })
+    }
+}
+
+pub(crate) fn finite_result(value: f64, operation: &'static str) -> ExpressionResult<Value> {
+    if let Some(number) = Number::from_f64(value) {
+        Ok(Value::Number(number))
+    } else {
+        tracing::debug!(operation, "non-finite numeric result");
+        Err(ExpressionError::NonFiniteNumber { operation })
     }
 }
 

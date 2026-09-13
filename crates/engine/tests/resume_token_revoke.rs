@@ -32,6 +32,13 @@ mod exact_fixture;
 #[path = "exact_fixture/qualified_runtime.rs"]
 mod qualified_runtime;
 
+macro_rules! pure_action_metadata {
+    ($key:expr, $name:expr, $description:expr $(,)?) => {
+        nebula_action::metadata::ActionMetadataDraft::new($key, $name, $description)
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+    };
+}
+
 use std::{
     collections::HashMap,
     sync::{
@@ -46,14 +53,13 @@ use chrono::Utc;
 use nebula_action::{
     ActionError,
     action::Action,
-    metadata::ActionMetadata,
     result::{ActionResult, WaitCondition},
     stateless::StatelessAction,
 };
 use nebula_core::{Dependencies, action_key, id::ExecutionId, node_key};
 use nebula_engine::{
-    ActionExecutor, ActionRegistry, ActionRuntime, ControlDispatch, DataPassingPolicy,
-    EngineControlDispatch, InProcessRunner, WorkflowEngine,
+    ActionRegistry, ActionRuntime, ControlDispatch, DataPassingPolicy, EngineControlDispatch,
+    InProcessRunner, WorkflowEngine,
 };
 use nebula_execution::{ExecutionState, ExecutionStatus};
 use nebula_metrics::MetricsRegistry;
@@ -290,10 +296,10 @@ impl Action for WebhookParkNode {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        pure_action_metadata!(
             action_key!("test.w_s3e.webhook_park"),
-            "WebhookParkNode",
+            nebula_action::metadata_name!("WebhookParkNode"),
             "W-S3e revoke-on-terminal integration test stub",
         )
     }
@@ -328,10 +334,10 @@ impl Action for EchoNode {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        pure_action_metadata!(
             action_key!("test.w_s3e.echo"),
-            "EchoNode",
+            nebula_action::metadata_name!("EchoNode"),
             "W-S3e downstream echo stub",
         )
     }
@@ -397,28 +403,29 @@ impl RevokeHarness {
     /// to inject a custom store (e.g. the failing one).
     async fn new(resume_tokens: Option<Arc<dyn ResumeTokenStore>>) -> Self {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless_instance(
-            ActionMetadata::new(
-                action_key!("test.w_s3e.webhook_park"),
-                "WebhookParkNode",
-                "W-S3e revoke-on-terminal integration test stub",
-            ),
-            WebhookParkNode,
-        );
-        registry.register_stateless_instance(
-            ActionMetadata::new(
-                action_key!("test.w_s3e.echo"),
-                "EchoNode",
-                "W-S3e downstream echo stub",
-            ),
-            EchoNode,
-        );
+        registry
+            .register_stateless_instance(
+                pure_action_metadata!(
+                    action_key!("test.w_s3e.webhook_park"),
+                    nebula_action::metadata_name!("WebhookParkNode"),
+                    "W-S3e revoke-on-terminal integration test stub",
+                ),
+                WebhookParkNode,
+            )
+            .expect("valid test catalog definition");
+        registry
+            .register_stateless_instance(
+                pure_action_metadata!(
+                    action_key!("test.w_s3e.echo"),
+                    nebula_action::metadata_name!("EchoNode"),
+                    "W-S3e downstream echo stub",
+                ),
+                EchoNode,
+            )
+            .expect("valid test catalog definition");
 
         let exact = qualified_runtime::QualifiedRuntime::new(&registry);
-        let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
-            Box::pin(async move { Ok(ActionResult::success(input)) })
-        });
-        let runner = Arc::new(InProcessRunner::new(executor));
+        let runner = Arc::new(InProcessRunner::new());
         let metrics = MetricsRegistry::new();
         let runtime = Arc::new(
             ActionRuntime::try_new(
@@ -479,28 +486,29 @@ impl RevokeHarness {
     /// `dispatch_start` and `dispatch_resume`.
     async fn new_with_cas_interceptor() -> (Self, Arc<ArmableConflictStore>) {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless_instance(
-            ActionMetadata::new(
-                action_key!("test.w_s3e.webhook_park"),
-                "WebhookParkNode",
-                "W-S3e revoke-on-terminal integration test stub",
-            ),
-            WebhookParkNode,
-        );
-        registry.register_stateless_instance(
-            ActionMetadata::new(
-                action_key!("test.w_s3e.echo"),
-                "EchoNode",
-                "W-S3e downstream echo stub",
-            ),
-            EchoNode,
-        );
+        registry
+            .register_stateless_instance(
+                pure_action_metadata!(
+                    action_key!("test.w_s3e.webhook_park"),
+                    nebula_action::metadata_name!("WebhookParkNode"),
+                    "W-S3e revoke-on-terminal integration test stub",
+                ),
+                WebhookParkNode,
+            )
+            .expect("valid test catalog definition");
+        registry
+            .register_stateless_instance(
+                pure_action_metadata!(
+                    action_key!("test.w_s3e.echo"),
+                    nebula_action::metadata_name!("EchoNode"),
+                    "W-S3e downstream echo stub",
+                ),
+                EchoNode,
+            )
+            .expect("valid test catalog definition");
 
         let exact = qualified_runtime::QualifiedRuntime::new(&registry);
-        let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
-            Box::pin(async move { Ok(ActionResult::success(input)) })
-        });
-        let runner = Arc::new(InProcessRunner::new(executor));
+        let runner = Arc::new(InProcessRunner::new());
         let metrics = MetricsRegistry::new();
         let runtime = Arc::new(
             ActionRuntime::try_new(

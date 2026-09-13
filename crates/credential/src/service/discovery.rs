@@ -16,8 +16,8 @@ impl CredentialService {
     #[must_use]
     pub fn list_types(&self) -> Vec<CredentialTypeInfo> {
         self.registry
-            .iter_compatible(crate::Capabilities::empty())
-            .filter_map(|(key, _caps)| self.type_info(key))
+            .catalog()
+            .map(|(metadata, capabilities)| Self::type_info(metadata, capabilities))
             .collect()
     }
 
@@ -25,27 +25,75 @@ impl CredentialService {
     /// key is not registered.
     #[must_use]
     pub fn get_type(&self, key: &str) -> Option<CredentialTypeInfo> {
-        if !self.registry.contains(key) {
-            return None;
-        }
-        self.type_info(key)
+        Some(Self::type_info(
+            self.registry.metadata(key)?,
+            self.registry.capabilities_of(key)?,
+        ))
     }
 
     /// Build a [`CredentialTypeInfo`] from the registry metadata +
-    /// capability bitflag. Returns `None` if the registry has no
-    /// instance for `key` (cannot project metadata).
-    fn type_info(&self, key: &str) -> Option<CredentialTypeInfo> {
-        let metadata = self.registry.resolve_any(key)?.metadata();
-        Some(CredentialTypeInfo {
-            key: metadata.base.key.as_str().to_owned(),
-            name: metadata.base.name.clone(),
-            description: metadata.base.description.clone(),
-            pattern: metadata.pattern,
+    /// capability bitflag.
+    fn type_info(
+        metadata: &crate::CredentialMetadata,
+        capabilities: crate::Capabilities,
+    ) -> CredentialTypeInfo {
+        CredentialTypeInfo {
+            key: metadata.key().as_str().to_owned(),
+            name: metadata.name().to_owned(),
+            description: metadata.description().to_owned(),
+            pattern: metadata.pattern(),
             capabilities: TypeCapabilities {
-                refreshable: self.registry.is_refreshable(key),
-                testable: self.registry.is_testable(key),
-                revocable: self.registry.is_revocable(key),
+                interactive: capabilities.contains(crate::Capabilities::INTERACTIVE),
+                dynamic: capabilities.contains(crate::Capabilities::DYNAMIC),
+                refreshable: capabilities.contains(crate::Capabilities::REFRESHABLE),
+                testable: capabilities.contains(crate::Capabilities::TESTABLE),
+                revocable: capabilities.contains(crate::Capabilities::REVOCABLE),
             },
-        })
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CredentialService;
+    use crate::{ApiKeyCredential, Capabilities, Credential, CredentialRegistry};
+
+    #[test]
+    fn discovery_preserves_all_five_registry_capabilities() {
+        let mut registry = CredentialRegistry::new();
+        registry
+            .register(ApiKeyCredential, "discovery-projection-test")
+            .expect("valid credential");
+        let metadata = registry
+            .metadata(ApiKeyCredential::KEY)
+            .expect("registered metadata");
+        for capabilities in [
+            Capabilities::empty(),
+            Capabilities::all(),
+            Capabilities::INTERACTIVE | Capabilities::DYNAMIC,
+        ] {
+            let projection = CredentialService::type_info(metadata, capabilities);
+            assert_eq!(projection.pattern, metadata.pattern());
+            assert_eq!(
+                projection.capabilities.interactive,
+                capabilities.contains(Capabilities::INTERACTIVE)
+            );
+            assert_eq!(
+                projection.capabilities.dynamic,
+                capabilities.contains(Capabilities::DYNAMIC)
+            );
+            assert_eq!(
+                projection.capabilities.refreshable,
+                capabilities.contains(Capabilities::REFRESHABLE)
+            );
+            assert_eq!(
+                projection.capabilities.testable,
+                capabilities.contains(Capabilities::TESTABLE)
+            );
+            assert_eq!(
+                projection.capabilities.revocable,
+                capabilities.contains(Capabilities::REVOCABLE)
+            );
+        }
     }
 }

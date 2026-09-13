@@ -23,8 +23,9 @@
 //! | Type | Purpose |
 //! |------|---------|
 //! | [`ExpressionEngine`] | Parse and evaluate expressions; optional LRU cache |
+//! | [`CompiledProgram`] | Immutable syntax retained across evaluations; raw, template, or auto compilation |
 //! | [`EvaluationContext`] | Runtime variable bindings (`$node`, `$execution`, `$workflow`, `$input`) |
-//! | [`EvaluationPolicy`] | DoS budget (step limit, max recursion depth) |
+//! | [`EvaluationPolicy`] | Function restrictions, coercion rules, and bounded work/JSON input |
 //! | [`Template`] | Pre-parsed `{{ }}` template; call `.render(engine, ctx)` |
 //! | [`MaybeExpression`] | Typed wrapper: literal `T` or expression string |
 //! | [`MaybeTemplate`] | Text template wrapper with auto-detection |
@@ -49,9 +50,10 @@
 //!
 //! ## BuiltinFunction signature
 //!
-//! `BuiltinFunction` receives [`eval::BuiltinView`], a borrowed handle that
-//! exposes only policy queries (`is_strict_mode`, `strict_conversions_enabled`,
-//! `max_json_parse_length`). It does NOT expose `Evaluator::eval`, so a
+//! `BuiltinFunction` receives [`eval::BuiltinView`] for policy/work accounting
+//! and a mandatory [`BuiltinOutputBuilder`]. It returns opaque [`BuiltinOutput`]
+//! rather than an unchecked JSON value.
+//! It does NOT expose `Evaluator::eval`, so a
 //! registered builtin literally cannot recurse into AST evaluation. The
 //! step-budget bypass that was historically a "discipline-only" rule
 //! (issue #252, audit memory `pitfall_expression_builtin_frame.md`) is now
@@ -73,8 +75,10 @@ pub mod error;
 pub mod error_formatter;
 #[doc(hidden)]
 pub mod interner;
+mod limits;
 pub mod maybe;
 pub mod policy;
+mod program;
 #[doc(hidden)]
 pub mod span;
 pub mod template;
@@ -96,17 +100,19 @@ pub mod parser;
 // Most users should not need these types directly
 #[doc(hidden)]
 pub use ast::{BinaryOp, Expr};
+pub use builtins::{BuiltinOutput, BuiltinOutputBuilder, BuiltinOutputLimit};
 pub use context::{EvaluationContext, EvaluationContextBuilder};
 pub use engine::{CacheOverview, ExpressionEngine};
 // Re-export error types
 pub use error::{ExpressionError, ExpressionErrorExt, ExpressionResult};
 pub use maybe::{CachedExpression, MaybeExpression};
-pub use policy::EvaluationPolicy;
+pub use policy::{BuiltinOutputBound, BuiltinOutputLimits, EvaluationPolicy, EvaluationStepLimit};
+pub use program::{CompiledProgram, ProgramSyntax};
 // Re-export serde_json types for convenience
 pub use serde_json::Value;
 #[doc(hidden)]
 pub use span::Span;
-pub use template::{MaybeTemplate, Template};
+pub use template::{MaybeTemplate, Template, has_expression_marker};
 #[doc(hidden)]
 pub use template::{Position, TemplatePart};
 #[doc(hidden)]
@@ -118,41 +124,22 @@ pub use token::{Token, TokenKind};
 /// context. It is the stable parsing entrypoint for downstream crates that
 /// need parse-only checks.
 ///
-/// Inputs that contain at least one `{{ ... }}` block are parsed as a
-/// template; otherwise the source is parsed as a raw expression. The
-/// dispatch is decided by the actual template parser, not by a substring
-/// search — so a raw expression that legitimately contains a `{{` literal
-/// (for example inside a string) does not get mis-routed.
+/// Uses [`CompiledProgram::compile`]: raw expression grammar takes precedence,
+/// then the template parser handles envelopes and mixed text. Quoted template
+/// markers are string contents. Callers that evaluate later should retain the
+/// compiled program instead of discarding it through this syntax-only helper.
 pub fn parse_expression(source: &str) -> ExpressionResult<()> {
-    // Template parser is authoritative: if it sees no expressions, treat
-    // the source as raw. If it errors as a template, also fall through —
-    // raw parsing will surface the real syntax error in context.
-    if let Ok(template) = Template::new(source.to_owned())
-        && template.expression_count() > 0
-    {
-        for expression in template.expressions() {
-            parse_raw_expression(expression.trim())?;
-        }
-        return Ok(());
-    }
-
-    parse_raw_expression(source)
-}
-
-fn parse_raw_expression(source: &str) -> ExpressionResult<()> {
-    let mut lexer = lexer::Lexer::new(source);
-    let tokens = lexer.tokenize()?;
-    let mut parser = parser::Parser::new(tokens);
-    parser.parse()?;
-    Ok(())
+    CompiledProgram::compile(source).map(|_| ())
 }
 
 /// Prelude module for convenient imports
 pub mod prelude {
     pub use crate::{
-        CacheOverview, EvaluationContext, EvaluationContextBuilder, EvaluationPolicy,
-        ExpressionEngine, ExpressionError, ExpressionErrorExt, ExpressionResult, MaybeExpression,
-        MaybeTemplate, Template, Value,
+        BuiltinOutput, BuiltinOutputBound, BuiltinOutputBuilder, BuiltinOutputLimit,
+        BuiltinOutputLimits, CacheOverview, CompiledProgram, EvaluationContext,
+        EvaluationContextBuilder, EvaluationPolicy, EvaluationStepLimit, ExpressionEngine,
+        ExpressionError, ExpressionErrorExt, ExpressionResult, MaybeExpression, MaybeTemplate,
+        ProgramSyntax, Template, Value, has_expression_marker,
     };
 }
 

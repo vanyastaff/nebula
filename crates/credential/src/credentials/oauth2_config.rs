@@ -7,7 +7,6 @@
 //!   unconditionally enables PKCE S256 (RFC 7636 + RFC 8252 §6).
 //! - [`ClientCredentialsBuilder`] has no `redirect_uri` method and no `pkce` method — neither
 //!   concept applies.
-//! - [`DeviceCodeBuilder`] likewise has no `redirect_uri`/`pkce` methods.
 //!
 //! Closes the missing-`redirect_uri` / missing-`state` / missing-PKCE
 //! holes from GitHub issues #250 and #251.
@@ -21,16 +20,13 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 // this credential-configuration module — imported, never re-exported.
 use crate::scheme::oauth2::AuthStyle;
 
-/// OAuth2 grant type (RFC 6749 / RFC 8628).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+/// Supported OAuth2 grant type (RFC 6749).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GrantType {
-    /// Authorization Code flow — user browser redirect (default)
-    #[default]
+    /// Authorization Code flow — user browser redirect.
     AuthorizationCode,
     /// Client Credentials — server-to-server, no user interaction
     ClientCredentials,
-    /// Device Authorization Grant (RFC 8628) — for CLI/TV apps
-    DeviceCode,
 }
 
 /// PKCE code-challenge method (RFC 7636 §4.2).
@@ -57,8 +53,8 @@ impl PkceMethod {
 
 /// Provider-specific OAuth2 configuration.
 ///
-/// Build via [`OAuth2Config::authorization_code()`] / `client_credentials()` /
-/// `device_code()`. Each returns a grant-specific builder with only the
+/// Build via [`OAuth2Config::authorization_code()`] or
+/// [`OAuth2Config::client_credentials()`]. Each returns a grant-specific builder with only the
 /// methods that make sense for that grant, so misconfiguration fails at
 /// compile time rather than at runtime.
 ///
@@ -114,16 +110,6 @@ impl OAuth2Config {
     /// Start building a Client Credentials flow config.
     pub fn client_credentials() -> ClientCredentialsBuilder {
         ClientCredentialsBuilder {
-            auth_url: String::new(),
-            token_url: String::new(),
-            scopes: Vec::new(),
-            auth_style: AuthStyle::Header,
-        }
-    }
-
-    /// Start building a Device Code flow config.
-    pub fn device_code() -> DeviceCodeBuilder {
-        DeviceCodeBuilder {
             auth_url: String::new(),
             token_url: String::new(),
             scopes: Vec::new(),
@@ -248,58 +234,6 @@ impl ClientCredentialsBuilder {
     }
 }
 
-/// Builder for Device Code grant configs.
-pub struct DeviceCodeBuilder {
-    auth_url: String,
-    token_url: String,
-    scopes: Vec<String>,
-    auth_style: AuthStyle,
-}
-
-impl fmt::Debug for DeviceCodeBuilder {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("DeviceCodeBuilder(<redacted>)")
-    }
-}
-
-impl DeviceCodeBuilder {
-    pub fn auth_url(mut self, url: impl Into<String>) -> Self {
-        self.auth_url = url.into();
-        self
-    }
-
-    pub fn token_url(mut self, url: impl Into<String>) -> Self {
-        self.token_url = url.into();
-        self
-    }
-
-    pub fn scopes<I, S>(mut self, scopes: I) -> Self
-    where
-        I: IntoIterator<Item = S>,
-        S: Into<String>,
-    {
-        self.scopes = scopes.into_iter().map(Into::into).collect();
-        self
-    }
-
-    pub fn auth_style(mut self, style: AuthStyle) -> Self {
-        self.auth_style = style;
-        self
-    }
-
-    pub fn build(self) -> OAuth2Config {
-        OAuth2Config {
-            auth_url: self.auth_url,
-            token_url: self.token_url,
-            scopes: self.scopes,
-            grant_type: GrantType::DeviceCode,
-            auth_style: self.auth_style,
-            pkce: None,
-            redirect_uri: None,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -351,17 +285,6 @@ mod tests {
     }
 
     #[test]
-    fn device_code_builder_omits_pkce_and_redirect() {
-        let config = OAuth2Config::device_code()
-            .auth_url("https://a.com/auth")
-            .token_url("https://a.com/token")
-            .build();
-        assert_eq!(config.grant_type, GrantType::DeviceCode);
-        assert_eq!(config.pkce, None);
-        assert_eq!(config.redirect_uri, None);
-    }
-
-    #[test]
     fn pkce_method_s256_is_default_on_auth_code_builder() {
         let config = OAuth2Config::authorization_code(CALLBACK)
             .auth_url("https://a.com/auth")
@@ -399,14 +322,7 @@ mod tests {
         .auth_url("https://provider.example/auth?diagnostic=builder-canary");
         let client_credentials = OAuth2Config::client_credentials()
             .token_url("https://provider.example/token?diagnostic=builder-canary");
-        let device_code = OAuth2Config::device_code()
-            .auth_url("https://provider.example/device?diagnostic=builder-canary");
-
-        for debug in [
-            format!("{auth_code:?}"),
-            format!("{client_credentials:?}"),
-            format!("{device_code:?}"),
-        ] {
+        for debug in [format!("{auth_code:?}"), format!("{client_credentials:?}")] {
             assert!(!debug.contains("builder-canary"));
             assert!(!debug.contains("provider.example"));
             assert!(debug.ends_with("(<redacted>)"));

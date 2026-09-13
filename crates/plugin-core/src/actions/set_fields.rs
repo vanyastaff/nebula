@@ -24,9 +24,9 @@
 
 use std::sync::OnceLock;
 
-use nebula_action::{ActionContext, ActionError, ActionMetadata, ActionResult, StatelessAction};
+use nebula_action::{ActionContext, ActionError, ActionResult, StatelessAction};
 use nebula_core::action_key;
-use nebula_schema::HasSchema;
+use nebula_schema::{Field, HasSchema, Schema, ValidSchema, ValidationReport, field_key};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tracing::instrument;
@@ -67,12 +67,21 @@ pub struct SetFieldsInput {
     pub assignments: Vec<Assignment>,
 }
 
-// `assignments[*].value` is a fully dynamic JSON value, so a concrete typed
-// schema cannot enumerate its shape. Empty schema is the honest declaration;
-// the doc-comment above describes the expected structure out-of-band.
 impl HasSchema for SetFieldsInput {
-    fn schema() -> nebula_schema::validated::ValidSchema {
-        nebula_schema::validated::ValidSchema::empty()
+    #[instrument(name = "core.set_fields.schema", skip_all, err)]
+    fn schema() -> Result<ValidSchema, ValidationReport> {
+        static SCHEMA: OnceLock<Result<ValidSchema, ValidationReport>> = OnceLock::new();
+        SCHEMA.get_or_init(|| {
+            Schema::builder()
+                .add(super::input_schema::nullable_object_data())
+                .add(Field::list(field_key!("assignments")).item(
+                    Field::object(field_key!("item"))
+                        .description("Assignment; serde requires both keys while allowing empty names and null values.")
+                        .add(Field::string(field_key!("name")))
+                        .add(Field::dynamic(field_key!("value"))),
+                ))
+                .build()
+        }).clone()
     }
 }
 
@@ -110,12 +119,13 @@ impl nebula_action::action::Action for SetFields {
     type Input = SetFieldsInput;
     type Output = Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        nebula_action::ActionMetadataDraft::new(
             action_key!("core.set_fields"),
-            "Set Fields",
+            nebula_action::metadata_name!("Set Fields"),
             "Merges a list of named field assignments onto a JSON object",
         )
+        .with_version(nebula_action::MetadataVersion::new(2, 0, 0))
         .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
     }
 
@@ -270,7 +280,14 @@ mod tests {
 
     #[test]
     fn action_key_is_core_dot_set_fields() {
-        use nebula_action::action::Action;
-        assert_eq!(SetFields::metadata().base.key.as_str(), "core.set_fields");
+        let factory = nebula_action::GenericStatelessFactory::<SetFields>::new()
+            .expect("set-fields metadata must admit");
+        assert_eq!(
+            nebula_action::ActionFactory::metadata(&factory)
+                .base()
+                .key()
+                .as_str(),
+            "core.set_fields"
+        );
     }
 }

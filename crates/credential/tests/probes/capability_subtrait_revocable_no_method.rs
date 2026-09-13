@@ -6,13 +6,9 @@
 use std::future::Future;
 
 use nebula_credential::{
-    Credential, CredentialContext, CredentialMetadata, Revocable,
-    error::CredentialError,
-    resolve::ResolveResult,
-    scheme::SecretToken,
-    SecretString,
+    Credential, CredentialContext, CredentialMetadataDraft, Revocable, SecretString,
+    error::CredentialError, resolve::StaticResolveResult, scheme::SecretToken,
 };
-use nebula_schema::FieldValues;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Serialize, Deserialize, zeroize::Zeroize, zeroize::ZeroizeOnDrop)]
@@ -28,13 +24,13 @@ impl nebula_credential::CredentialState for DummyState {
 struct Dummy;
 
 impl Credential for Dummy {
-    type Properties = FieldValues;
+    type Properties = serde_json::Value;
     type Scheme = SecretToken;
     type State = DummyState;
 
     const KEY: &'static str = "dummy";
 
-    fn metadata() -> CredentialMetadata {
+    fn metadata() -> CredentialMetadataDraft {
         unimplemented!()
     }
 
@@ -43,9 +39,9 @@ impl Credential for Dummy {
     }
 
     fn resolve(
-        _values: &FieldValues,
+        _properties: &Self::Properties,
         _ctx: &CredentialContext,
-    ) -> impl Future<Output = Result<ResolveResult<DummyState, ()>, CredentialError>> + Send {
+    ) -> impl Future<Output = Result<StaticResolveResult<DummyState>, CredentialError>> + Send {
         async { unimplemented!() }
     }
 }

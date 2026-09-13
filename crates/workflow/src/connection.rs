@@ -146,9 +146,13 @@ mod tests {
             encoded,
             serde_json::json!({"error": "diagnostic-canary", "node_id": "source"})
         );
-        nebula_schema::schema_of::<ErrorPortPayload>()
-            .validate(&nebula_schema::FieldValues::from_json(encoded.clone()).unwrap())
+        let resolved = nebula_schema::schema_of::<ErrorPortPayload>()
+            .expect("valid test catalog definition")
+            .validate(nebula_schema::AuthoredValue::from_data(encoded.clone()).unwrap())
+            .unwrap()
+            .resolve_data()
             .unwrap();
+        assert_eq!(resolved.into_typed::<ErrorPortPayload>().unwrap(), payload);
         assert_eq!(
             serde_json::from_value::<ErrorPortPayload>(encoded).unwrap(),
             payload

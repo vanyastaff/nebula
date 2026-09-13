@@ -25,10 +25,9 @@ impl CredentialService {
     /// resolve it to encrypted state, and persist it scoped to `scope`.
     ///
     /// The validation pipeline is the canonical credential pipeline
-    /// (credential secrecy): `schema_of::<Properties>().validate(FieldValues)`
-    /// then a typed `serde_json::from_value` round-trip — a `{"$expr": ..}`
-    /// envelope survives schema validation but is refused by the typed
-    /// deserialize, so secrets never depend on workflow state.
+    /// consumes literal JSON, prepares it against `Properties`' schema,
+    /// completes validation without an expression engine, and checks typed
+    /// decoding before handing the same prepared values to the credential.
     ///
     /// # Errors
     ///
@@ -57,23 +56,10 @@ impl CredentialService {
             });
         }
 
-        // Canonical validation pipeline: schema validate + typed
-        // deserialize (the `$expr` refusal point) without ever resolving
-        // expressions. Monomorphised per type in the ops table.
-        self.ops.validate(credential_key, &props)?;
-
-        // Union-aware ingress: a record `Properties` folds via `from_json`; a union
-        // folds serde's tagged wire into the `{mode, value}` envelope `resolve`
-        // consumes (per-type, keyed by the registered schema's `serde_tagging`).
-        let values = self.ops.ingest(credential_key, &props)?;
-
         let id = CredentialId::new();
-        let ctx = Self::owner_context(scope);
+        let ctx = self.owner_context(scope);
 
-        let resolved = self
-            .ops
-            .resolve(credential_key, &values, &ctx, &self.pending)
-            .await?;
+        let resolved = self.ops.resolve(credential_key, props, &ctx).await?;
 
         let head = self
             .persist_resolved(scope, credential_key, id, resolved, display)
@@ -259,12 +245,10 @@ impl CredentialService {
         // display-only update carries the existing state through.
         let resolved = match props {
             Some(props) => {
-                self.ops.validate(existing.credential_key(), &props)?;
-                let values = self.ops.ingest(existing.credential_key(), &props)?;
-                let ctx = Self::owner_context(scope);
+                let ctx = self.owner_context(scope);
                 Some(
                     self.ops
-                        .resolve(existing.credential_key(), &values, &ctx, &self.pending)
+                        .resolve(existing.credential_key(), props, &ctx)
                         .await?,
                 )
             },

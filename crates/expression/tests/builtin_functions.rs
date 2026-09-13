@@ -1,12 +1,328 @@
 //! Integration tests for builtin functions added in expression-v1
 
-use nebula_expression::{EvaluationContext, ExpressionEngine};
+use nebula_expression::{
+    BuiltinOutput, BuiltinOutputBound, BuiltinOutputBuilder, BuiltinOutputLimit, EvaluationContext,
+    EvaluationPolicy, EvaluationStepLimit, ExpressionEngine, ExpressionError, ExpressionResult,
+    Value, eval::BuiltinView,
+};
 use serde_json::json;
 
-fn eval(expr: &str) -> serde_json::Value {
+fn eval(expr: &str) -> Value {
     let engine = ExpressionEngine::default();
     let ctx = EvaluationContext::default();
     engine.evaluate(expr, &ctx).unwrap()
+}
+
+fn permissive_step_limit() -> EvaluationStepLimit {
+    EvaluationStepLimit::new(10_000_000).unwrap()
+}
+
+fn output_bound(limit: usize) -> BuiltinOutputBound {
+    BuiltinOutputBound::new(limit).unwrap()
+}
+
+fn assert_output_limit(error: ExpressionError, expected: BuiltinOutputLimit) {
+    let ExpressionError::BuiltinOutputLimitExceeded { dimension, .. } = error else {
+        panic!("expected BuiltinOutputLimitExceeded, got {error:?}");
+    };
+    assert_eq!(dimension, expected);
+}
+
+fn oversized_custom_output(
+    _args: &[&Value],
+    _view: BuiltinView<'_>,
+    _context: &EvaluationContext,
+    output: BuiltinOutputBuilder,
+) -> ExpressionResult<BuiltinOutput> {
+    output.repeat_string("x", 9)
+}
+
+fn assert_borrowed_input(
+    args: &[&Value],
+    _view: BuiltinView<'_>,
+    context: &EvaluationContext,
+    output: BuiltinOutputBuilder,
+) -> ExpressionResult<BuiltinOutput> {
+    let input = context.get_input();
+    assert!(std::ptr::eq(args[0], &raw const input["large"]));
+    output.boolean(true)
+}
+
+#[test]
+fn evaluator_passes_context_property_to_builtin_without_deep_clone() {
+    let mut engine = ExpressionEngine::new()
+        .with_policy(EvaluationPolicy::new().with_max_eval_steps(permissive_step_limit()));
+    engine.register_function("assert_borrowed_input", assert_borrowed_input);
+    let context = EvaluationContext::builder()
+        .input(json!({"large": "x".repeat(256 * 1024)}))
+        .build();
+
+    let result = engine
+        .evaluate("assert_borrowed_input($input.large)", &context)
+        .unwrap();
+    assert_eq!(result, Value::Bool(true));
+}
+
+#[test]
+fn custom_builtin_cannot_produce_output_beyond_mandatory_limit() {
+    let policy = EvaluationPolicy::new()
+        .with_max_eval_steps(permissive_step_limit())
+        .with_max_builtin_output_string_bytes(output_bound(8));
+    let mut engine = ExpressionEngine::new().with_policy(policy);
+    engine.register_function("oversized", oversized_custom_output);
+
+    let error = engine
+        .evaluate("oversized()", &EvaluationContext::new())
+        .unwrap_err();
+    assert_output_limit(error, BuiltinOutputLimit::StringBytes);
+}
+
+#[test]
+fn split_rejects_collection_before_permissive_step_budget() {
+    let policy = EvaluationPolicy::new()
+        .with_max_eval_steps(permissive_step_limit())
+        .with_max_builtin_output_collection_items(output_bound(2));
+    let engine = ExpressionEngine::new().with_policy(policy);
+
+    let error = engine
+        .evaluate(r#"split("a,b,c", ",")"#, &EvaluationContext::new())
+        .unwrap_err();
+    assert_output_limit(error, BuiltinOutputLimit::CollectionItems);
+}
+
+#[test]
+fn join_rejects_string_before_permissive_step_budget() {
+    let policy = EvaluationPolicy::new()
+        .with_max_eval_steps(permissive_step_limit())
+        .with_max_builtin_output_string_bytes(output_bound(4));
+    let engine = ExpressionEngine::new().with_policy(policy);
+
+    let error = engine
+        .evaluate(r#"join(["aa", "bb"], ",")"#, &EvaluationContext::new())
+        .unwrap_err();
+    assert_output_limit(error, BuiltinOutputLimit::StringBytes);
+}
+
+#[test]
+fn to_json_rejects_string_before_permissive_step_budget() {
+    let policy = EvaluationPolicy::new()
+        .with_max_eval_steps(permissive_step_limit())
+        .with_max_builtin_output_string_bytes(output_bound(8));
+    let engine = ExpressionEngine::new().with_policy(policy);
+
+    let error = engine
+        .evaluate(r#"to_json({"value": 42})"#, &EvaluationContext::new())
+        .unwrap_err();
+    assert_output_limit(error, BuiltinOutputLimit::StringBytes);
+}
+
+#[test]
+fn to_json_accounts_for_escaped_output_bytes() {
+    let policy = EvaluationPolicy::new()
+        .with_max_eval_steps(permissive_step_limit())
+        .with_max_builtin_output_string_bytes(output_bound(7));
+    let engine = ExpressionEngine::new().with_policy(policy);
+    let context = EvaluationContext::builder().input(json!("\0")).build();
+
+    let error = engine.evaluate("to_json($input)", &context).unwrap_err();
+
+    assert_output_limit(error, BuiltinOutputLimit::StringBytes);
+}
+
+#[test]
+fn parse_json_preflights_output_nodes_without_counting_string_punctuation() {
+    let policy = EvaluationPolicy::new()
+        .with_max_eval_steps(permissive_step_limit())
+        .with_max_builtin_output_nodes(output_bound(4));
+    let engine = ExpressionEngine::new().with_policy(policy);
+
+    assert_eq!(
+        engine
+            .evaluate(
+                r#"parse_json('["[,{:]", 1, 2]')"#,
+                &EvaluationContext::new()
+            )
+            .unwrap(),
+        json!(["[,{:]", 1, 2])
+    );
+    let error = engine
+        .evaluate("parse_json('[1, 2, 3, 4]')", &EvaluationContext::new())
+        .unwrap_err();
+    assert_output_limit(error, BuiltinOutputLimit::ValueNodes);
+}
+
+#[test]
+fn central_output_validation_covers_non_expanding_builtins() {
+    let policy = EvaluationPolicy::new()
+        .with_max_eval_steps(permissive_step_limit())
+        .with_max_builtin_output_collection_items(output_bound(2));
+    let engine = ExpressionEngine::new().with_policy(policy);
+    let context = EvaluationContext::builder()
+        .input(json!({"first": 1, "second": 2, "third": 3}))
+        .build();
+
+    let error = engine.evaluate("keys($input)", &context).unwrap_err();
+
+    assert_output_limit(error, BuiltinOutputLimit::CollectionItems);
+}
+
+#[test]
+fn unique_bounds_json_escaped_scratch_space() {
+    let engine = ExpressionEngine::new()
+        .with_policy(EvaluationPolicy::new().with_max_eval_steps(permissive_step_limit()));
+    let context = EvaluationContext::builder()
+        .input(json!(["\0".repeat(200_000)]))
+        .build();
+
+    let error = engine.evaluate("unique($input)", &context).unwrap_err();
+
+    std::assert_matches!(
+        error,
+        ExpressionError::ResourceLimitExceeded {
+            resource: "builtin scratch bytes",
+            ..
+        }
+    );
+}
+
+#[test]
+fn sort_charges_string_comparison_bytes_before_cloning() {
+    let strings = (0..16)
+        .map(|index| format!("{}{index:02}", "x".repeat(1_022)))
+        .collect::<Vec<_>>();
+    let context = EvaluationContext::builder().input(json!(strings)).build();
+    let limit = EvaluationStepLimit::new(100_000).unwrap();
+    let engine =
+        ExpressionEngine::new().with_policy(EvaluationPolicy::new().with_max_eval_steps(limit));
+
+    let error = engine.evaluate("sort($input)", &context).unwrap_err();
+
+    std::assert_matches!(
+        error,
+        ExpressionError::StepLimitExceeded {
+            limit: 100_000,
+            actual: 100_001..
+        }
+    );
+}
+
+#[test]
+fn dynamic_lookup_error_redacts_runtime_key() {
+    const CANARY: &str = "RUNTIME_LOOKUP_SECRET_CANARY";
+    let context = EvaluationContext::builder()
+        .input(json!({"object": {}, "key": CANARY}))
+        .build();
+    let error = ExpressionEngine::new()
+        .evaluate("$input.object[$input.key]", &context)
+        .unwrap_err();
+
+    for diagnostic in [error.to_string(), format!("{error:?}")] {
+        assert!(
+            !diagnostic.contains(CANARY),
+            "leaked runtime key: {diagnostic}"
+        );
+    }
+}
+
+#[test]
+#[cfg(feature = "regex")]
+fn regex_error_redacts_runtime_pattern() {
+    const CANARY: &str = "RUNTIME_REGEX_SECRET_CANARY";
+    let context = EvaluationContext::builder()
+        .input(json!({"text": "value", "pattern": format!("(?<{CANARY}")}))
+        .build();
+    let error = ExpressionEngine::new()
+        .evaluate("$input.text =~ $input.pattern", &context)
+        .unwrap_err();
+
+    for diagnostic in [error.to_string(), format!("{error:?}")] {
+        assert!(
+            !diagnostic.contains(CANARY),
+            "leaked regex pattern: {diagnostic}"
+        );
+    }
+}
+
+#[test]
+fn concat_rejects_collection_before_allocating_result() {
+    let policy = EvaluationPolicy::new()
+        .with_max_eval_steps(permissive_step_limit())
+        .with_max_builtin_output_collection_items(output_bound(3));
+    let engine = ExpressionEngine::new().with_policy(policy);
+
+    let error = engine
+        .evaluate("concat([1, 2], [3, 4])", &EvaluationContext::new())
+        .unwrap_err();
+    assert_output_limit(error, BuiltinOutputLimit::CollectionItems);
+}
+
+#[test]
+fn map_enforces_collection_limit_during_construction() {
+    let policy = EvaluationPolicy::new()
+        .with_max_eval_steps(permissive_step_limit())
+        .with_max_builtin_output_collection_items(output_bound(2));
+    let engine = ExpressionEngine::new().with_policy(policy);
+
+    let error = engine
+        .evaluate("map([1, 2, 3], x => x)", &EvaluationContext::new())
+        .unwrap_err();
+    assert_output_limit(error, BuiltinOutputLimit::CollectionItems);
+}
+
+#[test]
+fn map_enforces_total_byte_limit_during_construction() {
+    let policy = EvaluationPolicy::new()
+        .with_max_eval_steps(permissive_step_limit())
+        .with_max_builtin_output_bytes(output_bound(10));
+    let engine = ExpressionEngine::new().with_policy(policy);
+
+    let error = engine
+        .evaluate(r#"map([1, 2], x => "xxxx")"#, &EvaluationContext::new())
+        .unwrap_err();
+    assert_output_limit(error, BuiltinOutputLimit::TotalBytes);
+}
+
+#[test]
+fn flat_map_enforces_aggregate_node_limit_during_construction() {
+    let policy = EvaluationPolicy::new()
+        .with_max_eval_steps(permissive_step_limit())
+        .with_max_builtin_output_nodes(output_bound(4));
+    let engine = ExpressionEngine::new().with_policy(policy);
+
+    let error = engine
+        .evaluate("flat_map([1, 2], x => [x, x])", &EvaluationContext::new())
+        .unwrap_err();
+    assert_output_limit(error, BuiltinOutputLimit::ValueNodes);
+}
+
+#[test]
+fn group_by_enforces_result_depth_during_construction() {
+    let policy = EvaluationPolicy::new()
+        .with_max_eval_steps(permissive_step_limit())
+        .with_max_builtin_output_depth(output_bound(2));
+    let engine = ExpressionEngine::new().with_policy(policy);
+
+    let error = engine
+        .evaluate("group_by([1, 2], x => x)", &EvaluationContext::new())
+        .unwrap_err();
+    assert_output_limit(error, BuiltinOutputLimit::ValueDepth);
+}
+
+#[test]
+fn pick_and_omit_charge_bounded_lookup_work() {
+    let policy = EvaluationPolicy::new().with_max_eval_steps(EvaluationStepLimit::new(75).unwrap());
+    let engine = ExpressionEngine::new().with_policy(policy);
+    let object = (0..16)
+        .map(|index| (format!("k{index}"), json!(index)))
+        .collect();
+    let context = EvaluationContext::builder()
+        .input(Value::Object(object))
+        .build();
+
+    for expression in [r#"pick($input, "missing")"#, r#"omit($input, "missing")"#] {
+        let error = engine.evaluate(expression, &context).unwrap_err();
+        std::assert_matches!(error, ExpressionError::StepLimitExceeded { limit: 75, .. });
+    }
 }
 
 fn eval_err(expr: &str) -> String {
@@ -327,6 +643,11 @@ fn pad_start_default_space() {
 }
 
 #[test]
+fn pad_start_accounts_for_multibyte_fill_cycles() {
+    assert_eq!(eval(r#"pad_start("x", 4, "éa")"#), json!("éaéx"));
+}
+
+#[test]
 fn pad_start_already_long_enough() {
     assert_eq!(eval(r#"pad_start("hello", 3, "0")"#), json!("hello"));
 }
@@ -599,12 +920,14 @@ fn substring_start_past_end_returns_empty() {
 // ──────────────────────────────────────────────
 
 #[test]
+#[cfg(feature = "datetime")]
 fn format_date_default_is_utc_rfc3339() {
     // Unix timestamp 0 → 1970-01-01 00:00:00 UTC.
     assert_eq!(eval("format_date(0)"), json!("1970-01-01T00:00:00+00:00"));
 }
 
 #[test]
+#[cfg(feature = "datetime")]
 fn format_date_with_named_tz_shifts_displayed_clock() {
     // Unix timestamp 0 in Europe/Moscow (MSK = +03:00) is 03:00 wall time.
     assert_eq!(
@@ -614,6 +937,7 @@ fn format_date_with_named_tz_shifts_displayed_clock() {
 }
 
 #[test]
+#[cfg(feature = "datetime")]
 fn format_date_with_format_no_tz_stays_in_utc() {
     assert_eq!(
         eval(r#"format_date(0, "YYYY-MM-DD HH:mm:ss")"#),
@@ -622,6 +946,22 @@ fn format_date_with_format_no_tz_stays_in_utc() {
 }
 
 #[test]
+#[cfg(feature = "datetime")]
+fn format_date_preflights_expanding_format_output() {
+    let policy = EvaluationPolicy::new()
+        .with_max_eval_steps(permissive_step_limit())
+        .with_max_builtin_output_string_bytes(output_bound(3));
+    let engine = ExpressionEngine::new().with_policy(policy);
+
+    let error = engine
+        .evaluate(r#"format_date(28857600, "MMM")"#, &EvaluationContext::new())
+        .unwrap_err();
+
+    assert_output_limit(error, BuiltinOutputLimit::StringBytes);
+}
+
+#[test]
+#[cfg(feature = "datetime")]
 fn format_date_with_only_tz_emits_rfc3339_in_that_zone() {
     // 2-arg form: arg[1] is probed as a timezone first. `Europe/Moscow`
     // parses successfully, so the call renders RFC 3339 in Moscow time
@@ -635,6 +975,7 @@ fn format_date_with_only_tz_emits_rfc3339_in_that_zone() {
 }
 
 #[test]
+#[cfg(feature = "datetime")]
 fn format_date_2arg_falls_back_to_format_when_not_a_tz() {
     // If arg[1] doesn't parse as an IANA name, treat it as a format.
     // Backward-compat with the original 2-arg shape.
@@ -642,6 +983,7 @@ fn format_date_2arg_falls_back_to_format_when_not_a_tz() {
 }
 
 #[test]
+#[cfg(feature = "datetime")]
 fn format_date_unknown_tz_returns_error() {
     let err = eval_err(r#"format_date(0, "YYYY-MM-DD", "Mars/Olympus_Mons")"#);
     assert!(
@@ -651,6 +993,7 @@ fn format_date_unknown_tz_returns_error() {
 }
 
 #[test]
+#[cfg(feature = "datetime")]
 fn parse_date_with_tz_interprets_naive_as_local_wall_time() {
     // "2024-01-01 00:00:00" interpreted as Moscow wall time = 2023-12-31
     // 21:00 UTC → timestamp 1704056400.
@@ -661,6 +1004,7 @@ fn parse_date_with_tz_interprets_naive_as_local_wall_time() {
 }
 
 #[test]
+#[cfg(feature = "datetime")]
 fn parse_date_with_tz_ignores_explicit_offset() {
     // RFC 3339 strings already nail down the instant — `tz` is redundant.
     assert_eq!(
@@ -669,17 +1013,41 @@ fn parse_date_with_tz_ignores_explicit_offset() {
     );
 }
 
+#[test]
+#[cfg(feature = "datetime")]
+fn datetime_errors_redact_runtime_values() {
+    const CANARY: &str = "RUNTIME_DATETIME_SECRET_CANARY";
+    let context = EvaluationContext::builder().input(json!(CANARY)).build();
+    let engine = ExpressionEngine::new();
+
+    for expression in [
+        "parse_date($input)",
+        "format_date(0, 'YYYY', $input)",
+        "date_diff(0, 0, $input)",
+    ] {
+        let error = engine.evaluate(expression, &context).unwrap_err();
+        for diagnostic in [error.to_string(), format!("{error:?}")] {
+            assert!(
+                !diagnostic.contains(CANARY),
+                "leaked datetime argument: {diagnostic}"
+            );
+        }
+    }
+}
+
 // ──────────────────────────────────────────────
 // DateTime: date_add / date_subtract overflow (no panic)
 // ──────────────────────────────────────────────
 
 #[test]
+#[cfg(feature = "datetime")]
 fn date_add_normal_still_works() {
     // epoch 0 + 1 day = 86_400 seconds.
     assert_eq!(eval(r#"date_add(0, 1, "days")"#), json!(86_400));
 }
 
 #[test]
+#[cfg(feature = "datetime")]
 fn date_subtract_normal_still_works() {
     assert_eq!(eval(r#"date_subtract(86400, 1, "days")"#), json!(0));
 }
@@ -690,6 +1058,7 @@ fn date_subtract_normal_still_works() {
 /// `dt + Duration::weeks(amount)` aborted the whole evaluation instead of
 /// returning an error.
 #[test]
+#[cfg(feature = "datetime")]
 fn date_add_overflow_amount_is_error_not_panic() {
     let err = eval_err(r#"date_add(0, 9223372036854775807, "weeks")"#);
     assert!(
@@ -700,12 +1069,29 @@ fn date_add_overflow_amount_is_error_not_panic() {
 
 /// `date_subtract` has the same guard.
 #[test]
+#[cfg(feature = "datetime")]
 fn date_subtract_overflow_amount_is_error_not_panic() {
     let err = eval_err(r#"date_subtract(0, 9223372036854775807, "days")"#);
     assert!(
         err.contains("out of range") || err.contains("overflow"),
         "date_subtract with i64::MAX days must be a typed error; got: {err}"
     );
+}
+
+#[test]
+#[cfg(not(feature = "datetime"))]
+fn datetime_functions_require_the_datetime_feature() {
+    for expression in [
+        "format_date(0)",
+        "parse_date('2024-01-01')",
+        "date_add(0, 1, 'days')",
+        "date_subtract(0, 1, 'days')",
+    ] {
+        let error = ExpressionEngine::new()
+            .evaluate(expression, &EvaluationContext::new())
+            .unwrap_err();
+        std::assert_matches!(error, ExpressionError::FunctionNotFound { .. });
+    }
 }
 
 // ──────────────────────────────────────────────

@@ -14,7 +14,7 @@ include!(concat!(
     "/examples_include/outbound_http_connector_shared.rs"
 ));
 
-use nebula_schema::FieldValues;
+use nebula_schema::AuthoredValue;
 use serde_json::json;
 
 fn main() {
@@ -43,10 +43,20 @@ fn main() {
         "include_event_types": [ "order.paid", "user.created" ]
     });
 
-    let v = FieldValues::from_json(full).expect("ingest");
-    schema
-        .validate(&v)
-        .expect("full connector payload should validate");
+    let values = AuthoredValue::from_data(full).expect("ingest");
+    let resolved = schema
+        .validate(values)
+        .expect("full connector payload should validate")
+        .resolve_data()
+        .expect("full connector payload completes");
+    assert_eq!(
+        resolved.get(&field_key!("http_method")),
+        Some(&json!("POST"))
+    );
+    assert_eq!(
+        resolved.to_wire_json()["auth"]["value"],
+        json!({"header_name": "X-Api-Key"})
+    );
 
     let minimal = json!({
         "base_url": "https://api.example.com",
@@ -57,8 +67,13 @@ fn main() {
         "query": { "params": [] },
         "request_signing": { "mode": "none" },
     });
-    let v = FieldValues::from_json(minimal).expect("ingest");
-    schema.validate(&v).expect("minimal GET without lists");
+    let values = AuthoredValue::from_data(minimal).expect("ingest");
+    let resolved = schema
+        .validate(values)
+        .expect("minimal GET without lists")
+        .resolve_data()
+        .expect("minimal connector payload completes");
+    assert_eq!(resolved.get(&field_key!("path")), Some(&json!("/health")));
 
     eprintln!("OK: outbound HTTP connector example payloads validated");
 }

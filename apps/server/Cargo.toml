@@ -45,6 +45,7 @@ nebula-plugin = { path = "../../crates/plugin" }
 nebula-plugin-core = { path = "../../crates/plugin-core" }
 nebula-tenancy = { path = "../../crates/tenancy" }
 nebula-core = { path = "../../crates/core" }
+nebula-metadata = { path = "../../crates/metadata" }
 nebula-schema = { path = "../../crates/schema", features = ["schemars"] }
 # Reused only by the evidence-only runtime-repair profile. The ordinary server
 # does not link the worker composition root.

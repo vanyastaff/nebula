@@ -20,8 +20,24 @@ product crate and does not participate in the product layer map.
   package name from a directory name.
 - Diff uncertainty widens to the full workspace. Invalid nonempty Git revisions
   remain hard errors so configuration failures are visible.
+- `pre-commit-plan` is a separate versioned contract, not a new `ci-plan` scope.
+  It reuses deepest Cargo ownership without reverse-dependent expansion.
+  Standalone fixture declarations bind only to an existing integration-test
+  target on their actual owner; optional owner assertions cannot redirect it.
+  Target existence is structural routing, not proof of harness coverage.
+  Preserve complete-fixture formatting, positive strict clippy and execution,
+  negative diagnostic assertions, and ordinary standalone checks.
 - `package.metadata.nebula.ci.test-features` affects tests only; it never changes
   check, documentation, or dependency resolution policy.
+- `ci-plan semver` is a separate schema-v1 contract. It reuses diff ownership
+  and reverse closure, then selects publishable library targets and requires
+  every selected Cargo package name to exist in immutable baseline metadata.
+  New or renamed selected packages are hard errors, never skipped entries.
+  Sorted names are distributed round-robin across at most three deterministic,
+  nonempty shard entries; empty selections emit no shards, and nonempty shard
+  count is `min(3, package_count)`. Pull-request CI plans from the checked-out
+  synthetic merge commit at `github.sha` against the exact base SHA, so
+  base-only changes are not interpreted as pull-request removals.
 - Consumers may name packages in an independent, documented gate policy only
   after plan selection. The current no-default-feature policy names
   `nebula-resilience`, `nebula-log`, `nebula-expression`, `nebula-credential`,
@@ -46,6 +62,7 @@ product crate and does not participate in the product layer map.
 
 ```bash
 cargo nextest run -p nebula-xtask
+cargo nextest run -p nebula-xtask --test pre_commit --test pre_commit_plan -j 1
 cargo clippy -p nebula-xtask --all-targets -- -D warnings
 cargo xtask ci-plan full | jq .
 cargo xtask north-star-gates validate

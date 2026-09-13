@@ -20,16 +20,14 @@ use criterion::{Criterion, criterion_group, criterion_main};
 use nebula_resource::{
     AcquireOptions, Error, Manager, PoolConfig, Pooled, Provider, RegistrationSpec, Resident,
     ResidentConfig, ResourceConfig, ResourceContext, ResourceKey, ScopeLevel, SlotIdentity,
-    resource::ResourceMetadata,
+    resource::ResourceMetadataDraft,
     resource_key,
     topology::pooled::{PoolProvider, RecycleDecision},
     topology::resident::ResidentProvider,
 };
 
-#[derive(Clone)]
+#[derive(Clone, nebula_schema::Schema)]
 struct BenchCfg;
-
-nebula_schema::impl_empty_has_schema!(BenchCfg);
 
 impl ResourceConfig for BenchCfg {
     fn validate(&self) -> Result<(), Error> {
@@ -61,8 +59,12 @@ impl Provider for KeepPool {
         Ok(0xBEEF)
     }
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::from_key(&Self::key())
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("bench-pool-keep"),
+            "",
+        )
     }
 }
 
@@ -89,8 +91,12 @@ impl Provider for DiscardPool {
         Ok(0xDEAD)
     }
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::from_key(&Self::key())
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("bench-pool-discard"),
+            "",
+        )
     }
 }
 
@@ -124,8 +130,12 @@ impl Provider for SharedResident {
         Ok(0xF00D)
     }
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::from_key(&Self::key())
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("bench-resident"),
+            "",
+        )
     }
 }
 

@@ -113,11 +113,6 @@ const SCENARIOS: &[ScenarioRule] = &[
         &["UNDECLARED_EFFECTS"],
     ),
     rule(
-        "unsupported_effect_kind",
-        Boundary::Compiler,
-        &["UNSUPPORTED_EFFECT_KIND"],
-    ),
-    rule(
         "unsupported_node_kind",
         Boundary::Compiler,
         &["UNSUPPORTED_NODE_KIND"],
@@ -151,11 +146,6 @@ const SCENARIOS: &[ScenarioRule] = &[
         "duplicate_trigger",
         Boundary::Compiler,
         &["DUPLICATE_TRIGGER", "TRIGGER_KIND_MISMATCH"],
-    ),
-    rule(
-        "invalid_reference_path",
-        Boundary::Compiler,
-        &["INVALID_REFERENCE_PATH"],
     ),
     rule(
         "unknown_slot_override",
@@ -427,21 +417,7 @@ pub(crate) fn verify(value: &Value) -> Result<(), ActivationDiagnosticError> {
     {
         return Err(ActivationDiagnosticError::Version);
     }
-    let excluded = root["excluded_diagnostics"]
-        .as_array()
-        .ok_or(ActivationDiagnosticError::Exclusions)?;
-    if excluded.len() != 1 {
-        return Err(ActivationDiagnosticError::Exclusions);
-    }
-    let exclusion = object(&excluded[0], &["code", "reason"])?;
-    if exclusion["code"].as_str() != Some("WORKFLOW:GRAPH_ERROR")
-        || exclusion["reason"].as_str()
-            != Some(
-                "No reachable producer beyond error conversion plumbing in the supported workflow validator.",
-            )
-    {
-        return Err(ActivationDiagnosticError::Exclusions);
-    }
+    verify_exclusions(&root["excluded_diagnostics"])?;
     let scenarios = root["scenarios"]
         .as_array()
         .ok_or(ActivationDiagnosticError::Inventory)?;
@@ -472,6 +448,38 @@ pub(crate) fn verify(value: &Value) -> Result<(), ActivationDiagnosticError> {
             return Err(ActivationDiagnosticError::Shape);
         }
         verify_events(&fields["events"], rule)?;
+    }
+    Ok(())
+}
+
+fn verify_exclusions(value: &Value) -> Result<(), ActivationDiagnosticError> {
+    const EXCLUSIONS: &[(&str, &str)] = &[
+        (
+            "PLUGIN_PLAN_GRAPH_V1:INVALID_REFERENCE_PATH",
+            "Workflow definitions deserialize reference output paths as admitted RFC6901 ValuePath values, so malformed paths are rejected before the plugin Graph-v1 compiler boundary.",
+        ),
+        (
+            "PLUGIN_PLAN_GRAPH_V1:UNSUPPORTED_EFFECT_KIND",
+            "Frozen registry admission rejects a remote effect contract unless the retained factory exposes a matching remote-effect capability, and that capability is only provided by stateless remote-effect factories.",
+        ),
+        (
+            "WORKFLOW:GRAPH_ERROR",
+            "No reachable producer beyond error conversion plumbing in the supported workflow validator.",
+        ),
+    ];
+    let excluded = value
+        .as_array()
+        .ok_or(ActivationDiagnosticError::Exclusions)?;
+    if excluded.len() != EXCLUSIONS.len() {
+        return Err(ActivationDiagnosticError::Exclusions);
+    }
+    for (actual, expected) in excluded.iter().zip(EXCLUSIONS) {
+        let exclusion = object(actual, &["code", "reason"])?;
+        if exclusion["code"].as_str() != Some(expected.0)
+            || exclusion["reason"].as_str() != Some(expected.1)
+        {
+            return Err(ActivationDiagnosticError::Exclusions);
+        }
     }
     Ok(())
 }

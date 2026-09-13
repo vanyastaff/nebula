@@ -80,23 +80,18 @@
 use std::sync::OnceLock;
 
 use nebula_action::{
-    ActionContext, ActionError, ActionMetadata, branch_key,
-    control::{ControlAction, ControlInput, ControlOutcome},
+    ActionContext, ActionError, branch_key,
+    control::{ControlAction, ControlOutcome},
     port::{OutputPort, default_input_ports},
     port_key,
 };
 use nebula_core::action_key;
-use nebula_schema::HasSchema;
+use nebula_schema::{HasSchema, Schema, ValidSchema, ValidationReport, field_key};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::instrument;
 
-use crate::condition::{evaluate_condition, normalize_data};
-
-// Re-export shared types so the existing public path
-// `nebula_plugin_core::actions::if_action::{Condition, ConditionOp}` stays
-// valid for any downstream code that imported them from here.
-pub use crate::condition::{Condition, ConditionOp};
+use crate::condition::{Condition, evaluate_condition, normalize_data};
 
 // ── Wire types ────────────────────────────────────────────────────────────────
 
@@ -113,12 +108,18 @@ pub struct IfInput {
     pub condition: Condition,
 }
 
-// Dynamic `data` and a runtime-polymorphic `condition.value` make a closed-
-// form schema impossible to express. `ValidSchema::empty()` is the honest
-// declaration; the module doc describes the expected structure out-of-band.
 impl HasSchema for IfInput {
-    fn schema() -> nebula_schema::validated::ValidSchema {
-        nebula_schema::validated::ValidSchema::empty()
+    #[instrument(name = "core.if.schema", skip_all, err)]
+    fn schema() -> Result<ValidSchema, ValidationReport> {
+        static SCHEMA: OnceLock<Result<ValidSchema, ValidationReport>> = OnceLock::new();
+        SCHEMA
+            .get_or_init(|| {
+                Schema::builder()
+                    .add(super::input_schema::nullable_object_data())
+                    .add(super::input_schema::condition(field_key!("condition")))
+                    .build()
+            })
+            .clone()
     }
 }
 
@@ -135,7 +136,7 @@ impl HasSchema for IfInput {
 /// engine resolves from `NodeDefinition::parameters` before dispatch:
 ///
 /// ```rust
-/// use nebula_plugin_core::actions::if_action::{Condition, ConditionOp};
+/// use nebula_plugin_core::condition::{Condition, ConditionOp};
 /// use serde_json::json;
 ///
 /// let condition = Condition::Leaf {
@@ -163,10 +164,10 @@ impl nebula_action::action::Action for CoreIf {
     type Input = IfInput;
     type Output = Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        nebula_action::ActionMetadataDraft::new(
             action_key!("core.if"),
-            "If",
+            nebula_action::metadata_name!("If"),
             "Routes execution to 'true' or 'false' port based on a field condition",
         )
         .with_inputs(default_input_ports())
@@ -174,6 +175,7 @@ impl nebula_action::action::Action for CoreIf {
             OutputPort::flow(port_key!("true")),
             OutputPort::flow(port_key!("false")),
         ])
+        .with_version(nebula_action::MetadataVersion::new(2, 0, 0))
         .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
     }
 
@@ -198,22 +200,14 @@ impl ControlAction for CoreIf {
     #[instrument(
         name = "core.if",
         skip_all,
-        fields(op = ?input.as_value().get("condition").and_then(|c| c.get("op")))
+        fields(condition_kind = condition_kind(&input.condition))
     )]
     async fn evaluate(
         &self,
-        input: ControlInput,
+        input: IfInput,
         _ctx: &(impl ActionContext + ?Sized),
-    ) -> Result<ControlOutcome, ActionError> {
-        // The GenericControlFactory dispatch path passes the raw JSON value
-        // directly — it does NOT deserialize through `CoreIf::Input`. We must
-        // manually deserialize to gain typed access to `condition` and `data`.
-        let IfInput { data, condition } = serde_json::from_value::<IfInput>(input.into_value())
-            .map_err(|deserialization_err| {
-                ActionError::fatal(format!(
-                    "core.if: invalid input shape — {deserialization_err}"
-                ))
-            })?;
+    ) -> Result<ControlOutcome<Value>, ActionError> {
+        let IfInput { data, condition } = input;
 
         let data_object = normalize_data(data).map_err(|err| {
             // Prefix the normalisation error with the action key for context.
@@ -233,17 +227,24 @@ impl ControlAction for CoreIf {
     }
 }
 
+fn condition_kind(condition: &Condition) -> &'static str {
+    match condition {
+        Condition::Leaf { .. } => "leaf",
+        Condition::All(_) => "all",
+        Condition::Any(_) => "any",
+        Condition::Not(_) => "not",
+    }
+}
+
 // ── Unit tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
-    use nebula_action::{
-        control::{ControlInput, ControlOutcome},
-        testing::TestContextBuilder,
-    };
+    use nebula_action::{control::ControlOutcome, testing::TestContextBuilder};
     use serde_json::json;
 
     use super::*;
+    use crate::condition::ConditionOp;
 
     fn ctx() -> impl ActionContext {
         TestContextBuilder::new().build()
@@ -251,15 +252,15 @@ mod tests {
 
     /// Drive `CoreIf::evaluate` directly from a JSON value that mirrors the
     /// wire shape the engine provides.
-    async fn run_if(wire_json: Value) -> Result<ControlOutcome, ActionError> {
+    async fn run_if(wire_json: Value) -> Result<ControlOutcome<Value>, ActionError> {
         let action = CoreIf;
-        action
-            .evaluate(ControlInput::from_value(wire_json), &ctx())
-            .await
+        let input = serde_json::from_value(wire_json)
+            .expect("test input must match the declared IfInput wire shape");
+        action.evaluate(input, &ctx()).await
     }
 
     /// Assert the branch port selected by `ControlOutcome::Branch`.
-    fn assert_branch(outcome: ControlOutcome, expected_port: &str) {
+    fn assert_branch(outcome: ControlOutcome<Value>, expected_port: &str) {
         match outcome {
             ControlOutcome::Branch { selected, .. } => {
                 assert_eq!(
@@ -273,7 +274,7 @@ mod tests {
     }
 
     /// Extract the output value from `ControlOutcome::Branch`.
-    fn branch_output(outcome: ControlOutcome) -> Value {
+    fn branch_output(outcome: ControlOutcome<Value>) -> Value {
         match outcome {
             ControlOutcome::Branch { output, .. } => output,
             other => panic!("expected ControlOutcome::Branch, got {other:?}"),
@@ -781,15 +782,23 @@ mod tests {
 
     #[test]
     fn action_key_is_core_dot_if() {
-        use nebula_action::action::Action;
-        assert_eq!(CoreIf::metadata().base.key.as_str(), "core.if");
+        let factory =
+            nebula_action::GenericControlFactory::<CoreIf>::new().expect("if metadata must admit");
+        assert_eq!(
+            nebula_action::ActionFactory::metadata(&factory)
+                .base()
+                .key()
+                .as_str(),
+            "core.if"
+        );
     }
 
     #[test]
     fn metadata_has_two_output_ports_true_and_false() {
-        use nebula_action::action::Action;
-        let meta = CoreIf::metadata();
-        let port_keys: Vec<&str> = meta.outputs.iter().map(OutputPort::key).collect();
+        let factory =
+            nebula_action::GenericControlFactory::<CoreIf>::new().expect("if metadata must admit");
+        let metadata = nebula_action::ActionFactory::metadata(&factory);
+        let port_keys: Vec<&str> = metadata.outputs().iter().map(OutputPort::key).collect();
         assert!(
             port_keys.contains(&"true"),
             "outputs must include 'true'; got: {port_keys:?}"
@@ -808,10 +817,10 @@ mod tests {
     #[test]
     fn action_kind_is_control_after_factory_stamp() {
         use nebula_action::factory::GenericControlFactory;
-        let factory = GenericControlFactory::<CoreIf>::new();
+        let factory = GenericControlFactory::<CoreIf>::new().expect("if metadata must admit");
         use nebula_action::ActionFactory;
         assert_eq!(
-            factory.metadata().kind,
+            factory.metadata().kind(),
             nebula_action::metadata::ActionKind::Control,
             "GenericControlFactory must stamp ActionKind::Control on CoreIf"
         );

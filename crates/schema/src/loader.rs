@@ -7,15 +7,16 @@
 //! |------|------|
 //! | `loader.not_registered` | Named loader key not found in registry |
 //! | `loader.failed` | Loader invocation returned an error |
-//! | `loader.result_too_large` | A loader page exceeded `MAX_LOADER_ITEMS` |
+//! | `loader.result_too_large` | A loader page exceeded an item resource limit |
+//! | `recursion_limit` | A context exceeded the value depth limit before dispatch |
 //!
 //! Lint-time warnings (`missing_loader`, `loader_without_dynamic`) are emitted
 //! by the lint pass in `lint.rs`, not here.
 //!
 //! # Resource bounds (what this layer does and does NOT enforce)
 //!
-//! The registry enforces a **result-size** bound (`MAX_LOADER_ITEMS`) — the
-//! one loader DoS vector a runtime-agnostic schema library can own. It does
+//! The registry bounds page length, cumulative serialized item bytes, returned
+//! item depth, and value snapshot depth before dispatch. It does
 //! **not** apply a **timeout**, **rate limit**, or **cache**: those need a
 //! runtime, a clock, and a tenant identity that this crate deliberately has none
 //! of (mirroring its `validator` / `expression` peers). The caller wiring a
@@ -29,32 +30,30 @@
 //! such as `(loader_key, filter, cursor)` alone would leak one context's page to
 //! another.
 
-use std::{future::Future, pin::Pin, sync::Arc};
+use std::{future::Future, io::Write, pin::Pin, sync::Arc};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    FieldValues, SelectOption,
-    error::ValidationError,
-    field::Field,
-    key::FieldKey,
-    path::{FieldPath, PathSegment},
-    secret::SECRET_REDACTED,
-    value::FieldValue,
+    AuthoredValue, SelectOption, ValuePath, error::ValidationError, field::Field,
+    path::FieldPath as SchemaPath,
 };
 
 /// Boxed future used by async loader functions.
 pub type LoaderFuture<T> =
     Pin<Box<dyn Future<Output = Result<LoaderResult<T>, ValidationError>> + Send>>;
 
-/// Context passed to runtime loaders.
-#[derive(Debug, Clone)]
+/// Request context before or after schema-bound redaction.
+///
+/// A raw context may contain unvalidated authored input. Schema entrypoints
+/// apply `redacted` before dispatch; loaders receive data-only snapshots.
+#[derive(Clone)]
 pub struct LoaderContext {
     /// Key or schema path of the field currently requesting dynamic data.
     pub field_key: String,
-    /// Current runtime values at call time.
-    pub values: FieldValues,
+    /// Input values, or the data-only snapshot after schema-bound redaction.
+    pub values: AuthoredValue,
     /// Optional free-text query from searchable UI controls.
     pub filter: Option<String>,
     /// Optional pagination cursor from previous response.
@@ -63,9 +62,17 @@ pub struct LoaderContext {
     pub metadata: Option<Value>,
 }
 
+impl std::fmt::Debug for LoaderContext {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("LoaderContext")
+            .finish_non_exhaustive()
+    }
+}
+
 impl LoaderContext {
-    /// Construct context for a specific field key.
-    pub fn new(field_key: impl Into<String>, values: FieldValues) -> Self {
+    /// Construct a raw request for a specific field key.
+    pub fn new(field_key: impl Into<String>, values: AuthoredValue) -> Self {
         Self {
             field_key: field_key.into(),
             values,
@@ -75,19 +82,30 @@ impl LoaderContext {
         }
     }
 
-    /// Redact all [`Field::Secret`]-backed values (including any nested
-    /// secrets) before exposing `values` to a loader. Does **not** evaluate
-    /// expressions — [`crate::value::FieldValue::Expression`] leaves under
-    /// secret fields are also collapsed to a redacted string literal to avoid
-    /// surfacing the expression source.
-    #[must_use]
-    pub fn with_secrets_redacted(mut self, schema: &crate::validated::ValidSchema) -> Self {
-        for field in schema.fields() {
-            if let Some(v) = self.values.get_mut(field.key()) {
-                redact_secrets_in_value_for_loader(field, v);
-            }
-        }
-        self
+    /// Produces an inspectable schema-bound snapshot without making it
+    /// executable. Loader dispatch remains available only through
+    /// [`Schema`](struct@crate::Schema) and [`ValidSchema`](struct@crate::ValidSchema)
+    /// entrypoints.
+    ///
+    /// # Errors
+    ///
+    /// Returns `recursion_limit` before copying input deeper than the value limit.
+    pub fn with_secrets_redacted(
+        self,
+        schema: &crate::validated::ValidSchema,
+    ) -> Result<RedactedLoaderContext, ValidationError> {
+        self.redacted(schema.fields())
+    }
+
+    /// Schema and ValidSchema both bind loader input through this boundary.
+    #[tracing::instrument(level = "debug", skip_all, fields(field_count = fields.len()))]
+    pub(crate) fn redacted(
+        mut self,
+        fields: &[Field],
+    ) -> Result<RedactedLoaderContext, ValidationError> {
+        let snapshot = crate::context::redacted_loader_json(fields, &self.values)?;
+        self.values = AuthoredValue::from_data(snapshot)?;
+        Ok(RedactedLoaderContext(self))
     }
 
     /// Attach text filter.
@@ -112,88 +130,25 @@ impl LoaderContext {
     }
 }
 
-fn redact_secrets_in_value_for_loader(field: &Field, value: &mut FieldValue) {
-    use serde_json::Value as Json;
-    match (field, &mut *value) {
-        (Field::Secret(_), _) => {
-            *value = FieldValue::Literal(Json::String(SECRET_REDACTED.to_owned()));
-        },
-        (Field::Object(obj), FieldValue::Object(map)) => {
-            for ch in &obj.fields {
-                if let Some(v) = map.get_mut(ch.key()) {
-                    redact_secrets_in_value_for_loader(ch, v);
-                }
-            }
-        },
-        (Field::List(list), FieldValue::List(items)) => {
-            if let Some(item_field) = list.item.as_deref() {
-                for v in &mut *items {
-                    redact_secrets_in_value_for_loader(item_field, v);
-                }
-            }
-        },
-        (
-            Field::Mode(mode),
-            FieldValue::Mode {
-                mode: mode_key,
-                value: Some(mv),
-            },
-        ) => {
-            let Some(var) = mode.variants.iter().find(|v| v.key == mode_key.as_str()) else {
-                // Active variant cannot be determined: over-redact the payload
-                // rather than risk handing nested secret material to a loader.
-                // Symmetric with the `Field::Mode` + `Object` arm below.
-                **mv = FieldValue::Literal(Json::String(SECRET_REDACTED.to_owned()));
-                return;
-            };
-            redact_secrets_in_value_for_loader(&var.field, mv.as_mut());
-        },
-        (Field::Mode(mode), FieldValue::Object(map)) => {
-            // Reuse the interned `MODE_SELECTOR_KEY` / `MODE_PAYLOAD_KEY` exported by
-            // `validated`; defining them here too would duplicate the `LazyLock` cells.
-            let mode_selector_key = &*crate::validated::MODE_SELECTOR_KEY;
-            let payload_key = &*crate::validated::MODE_PAYLOAD_KEY;
-            let resolved_key = match map.get(mode_selector_key) {
-                Some(FieldValue::Literal(Json::String(mode_key))) => Some(mode_key.clone()),
-                Some(_) => None,
-                None => mode.default_variant.clone(),
-            };
-            let Some(mv) = map.get_mut(payload_key) else {
-                return;
-            };
-            let Some(var) = resolved_key
-                .as_deref()
-                .and_then(|mode_key| mode.variants.iter().find(|v| v.key == mode_key))
-            else {
-                // If the active variant cannot be determined, over-redact the payload rather
-                // than risk exposing nested secret material to loader implementations.
-                *mv = FieldValue::Literal(Json::String(SECRET_REDACTED.to_owned()));
-                return;
-            };
-            redact_secrets_in_value_for_loader(&var.field, mv);
-        },
-        // A structured-typed secret-bearing field whose value is not the
-        // matching structured shape (e.g. a `Literal` blob handed to an
-        // `Object`/`List`/`Mode` field via the unvalidated `FieldValues::set`):
-        // over-redact the whole value. The blob's serialized form could carry a
-        // nested secret's plaintext, and recursion can't descend a non-matching
-        // shape. Mirrors `context::strip_secret_value`'s blob-bypass defense.
-        //
-        // Scope note: the matching-shape arms above redact every *declared*
-        // `Field::Secret` leaf, and this arm collapses non-matching blobs. They
-        // do NOT drop *undeclared* sibling keys inside a matching `Object`/`List`
-        // (which `context::strip_secrets_scope` does, via `keep_undeclared=false`,
-        // to stop predicate-path smuggling). That divergence is deliberate: an
-        // undeclared key holds caller-supplied non-schema data, not a declared
-        // secret (the declared secret is already redacted), so passing it to a
-        // loader is not a secret leak — the predicate-context boundary has a
-        // stricter need that does not apply here.
-        (Field::Object(_) | Field::List(_) | Field::Mode(_), _)
-            if crate::context::field_subtree_has_secret(field) =>
-        {
-            *value = FieldValue::Literal(Json::String(SECRET_REDACTED.to_owned()));
-        },
-        _ => {},
+/// Proof that a loader request was scrubbed against its owning schema.
+///
+/// Construction is crate-private so executable loader paths cannot accept an
+/// unbound [`LoaderContext`].
+pub struct RedactedLoaderContext(LoaderContext);
+
+impl RedactedLoaderContext {
+    /// Returns the data-only, schema-scrubbed value snapshot.
+    #[must_use]
+    pub fn values(&self) -> &AuthoredValue {
+        &self.0.values
+    }
+}
+
+impl std::fmt::Debug for RedactedLoaderContext {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RedactedLoaderContext")
+            .finish_non_exhaustive()
     }
 }
 
@@ -212,17 +167,12 @@ impl<T: Send + 'static> Loader<T> {
         Self(Arc::new(move |context| Box::pin(loader(context))))
     }
 
-    /// Execute loader for the provided context.
-    ///
-    /// # Errors
-    ///
-    /// Returns any [`ValidationError`] produced by the wrapped loader.
-    ///
-    /// cancel-safe: depends on the wrapped closure. `call` holds no state and
-    /// only awaits the loader future, so cancellation simply drops that future;
-    /// any side-effect cleanup is the loader author's responsibility.
-    pub async fn call(&self, context: LoaderContext) -> Result<LoaderResult<T>, ValidationError> {
-        (self.0)(context).await
+    /// Executes a schema-scrubbed request.
+    pub(crate) async fn call(
+        &self,
+        context: RedactedLoaderContext,
+    ) -> Result<LoaderResult<T>, ValidationError> {
+        (self.0)(context.0).await
     }
 }
 
@@ -232,10 +182,7 @@ impl<T: Send + 'static> Clone for Loader<T> {
     }
 }
 
-// `Loader<T>` intentionally does NOT implement `PartialEq`. Two loaders backed
-// by different closures cannot be compared by value, and a previous "always
-// `true`" impl violated the contract — see the T05 entry of the
-// nebula-schema-quality-fixes plan.
+// Loader closures have no meaningful value equality.
 
 impl<T: Send + 'static> std::fmt::Debug for Loader<T> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -295,25 +242,24 @@ pub type OptionLoader = Loader<SelectOption>;
 /// Loader returning dynamic record payloads.
 pub type RecordLoader = Loader<Value>;
 
-/// Build a `FieldPath` from a `LoaderContext::field_key` string.
+/// Build a runtime data path from a loader request's pointer or schema path.
 ///
 /// Falls back to root if the string is not a valid schema path.
-fn field_path_from_key(key: &str) -> FieldPath {
-    FieldPath::parse(key).unwrap_or_else(|_| {
-        FieldKey::new(key).map_or_else(
-            |_| FieldPath::root(),
-            |fk| FieldPath::root().join(PathSegment::Key(fk)),
-        )
-    })
+fn field_path_from_key(key: &str) -> ValuePath {
+    if key.starts_with('/') {
+        ValuePath::parse(key).unwrap_or_else(ValuePath::root)
+    } else {
+        SchemaPath::parse(key).map_or_else(|_| ValuePath::root(), Into::into)
+    }
 }
 
 /// Use the path from a loader-returned error if it's non-root, otherwise fall
 /// back to the request field path.
-fn field_path_from_err_or(fallback: &FieldPath, err: &ValidationError) -> FieldPath {
-    if err.path.is_root() {
+fn field_path_from_err_or(fallback: &ValuePath, err: &ValidationError) -> ValuePath {
+    if err.path().is_root() {
         fallback.clone()
     } else {
-        err.path.clone()
+        err.path().clone()
     }
 }
 
@@ -322,35 +268,164 @@ fn field_path_from_err_or(fallback: &FieldPath, err: &ValidationError) -> FieldP
 /// A loader returning more than this fails `loader.result_too_large` instead of
 /// flowing an unbounded result into validation, the UI, or serialization — a
 /// misbehaving (or hostile) loader must paginate via [`LoaderResult::next_cursor`].
-/// This is the one loader resource bound the schema layer can enforce itself; the
-/// timeout / rate-limit / cache concerns belong to the caller's runtime (see
-/// [`LoaderRegistry`]).
+/// Item bytes and depth have separate ceilings below. Timeout, rate-limit, and
+/// cache concerns belong to the caller's runtime (see [`LoaderRegistry`]).
 pub const MAX_LOADER_ITEMS: usize = 10_000;
 
-/// Reject a loader page whose item count exceeds [`MAX_LOADER_ITEMS`].
-#[expect(
-    clippy::result_large_err,
-    reason = "ValidationError is intentionally large; callers are on the validation path"
-)]
-fn enforce_items_bound<T>(
+/// Hard ceiling on cumulative serialized item bytes in one loader page.
+pub const MAX_LOADER_PAGE_BYTES: usize = 1_048_576;
+
+/// Hard ceiling on JSON nesting inside one loader item.
+pub const MAX_LOADER_ITEM_DEPTH: u8 = crate::value::MAX_VALUE_DEPTH;
+
+trait LoaderPageItem: Serialize {
+    fn nested_value(&self) -> &Value;
+}
+
+impl LoaderPageItem for Value {
+    fn nested_value(&self) -> &Value {
+        self
+    }
+}
+
+impl LoaderPageItem for SelectOption {
+    fn nested_value(&self) -> &Value {
+        &self.value
+    }
+}
+
+fn enforce_page_bounds<T: LoaderPageItem>(
     result: LoaderResult<T>,
     key: &str,
-    path: &FieldPath,
+    path: &ValuePath,
 ) -> Result<LoaderResult<T>, ValidationError> {
     let count = result.items.len();
     if count > MAX_LOADER_ITEMS {
-        return Err(ValidationError::builder("loader.result_too_large")
-            .at(path.clone())
-            .message(format!(
-                "loader `{key}` returned {count} items, exceeding the \
-                 {MAX_LOADER_ITEMS}-item page limit — paginate via the cursor"
-            ))
-            .param("loader", Value::String(key.to_owned()))
-            .param("count", Value::from(count as u64))
-            .param("limit", Value::from(MAX_LOADER_ITEMS as u64))
-            .build());
+        return Err(loader_page_limit_error(
+            key,
+            path,
+            "item count",
+            count,
+            MAX_LOADER_ITEMS,
+        ));
+    }
+
+    let mut byte_counter = LoaderPageByteCounter::new(MAX_LOADER_PAGE_BYTES);
+    for item in &result.items {
+        let item_depth = json_depth(item.nested_value());
+        if item_depth > usize::from(MAX_LOADER_ITEM_DEPTH) {
+            return Err(loader_page_limit_error(
+                key,
+                path,
+                "item depth",
+                item_depth,
+                usize::from(MAX_LOADER_ITEM_DEPTH),
+            ));
+        }
+        if let Err(error) = serde_json::to_writer(&mut byte_counter, item) {
+            if byte_counter.exceeded {
+                return Err(loader_page_limit_error(
+                    key,
+                    path,
+                    "serialized item bytes",
+                    byte_counter.attempted_bytes,
+                    MAX_LOADER_PAGE_BYTES,
+                ));
+            }
+            return Err(ValidationError::builder("loader.failed")
+                .at(path.clone())
+                .message("loader result encoding failed")
+                .param("loader", Value::String(key.to_owned()))
+                .private_source(error)
+                .build());
+        }
     }
     Ok(result)
+}
+
+fn json_depth(value: &Value) -> usize {
+    let mut maximum_depth = 0;
+    let mut pending = vec![(value, 0_usize)];
+    while let Some((value, depth)) = pending.pop() {
+        maximum_depth = maximum_depth.max(depth);
+        match value {
+            Value::Array(values) => {
+                pending.extend(values.iter().map(|value| (value, depth.saturating_add(1))));
+            },
+            Value::Object(values) => {
+                pending.extend(
+                    values
+                        .values()
+                        .map(|value| (value, depth.saturating_add(1))),
+                );
+            },
+            _ => {},
+        }
+    }
+    maximum_depth
+}
+
+fn loader_page_limit_error(
+    key: &str,
+    path: &ValuePath,
+    resource: &'static str,
+    count: usize,
+    limit: usize,
+) -> ValidationError {
+    tracing::warn!(
+        target: "nebula_schema::loader",
+        loader_key = %key,
+        resource,
+        count,
+        limit,
+        "loader page resource limit exceeded"
+    );
+    ValidationError::builder("loader.result_too_large")
+        .at(path.clone())
+        .message("loader page exceeds a resource limit")
+        .param("loader", Value::String(key.to_owned()))
+        .param("resource", resource)
+        .param("count", usize_as_u64(count))
+        .param("limit", usize_as_u64(limit))
+        .build()
+}
+
+fn usize_as_u64(value: usize) -> u64 {
+    u64::try_from(value).unwrap_or(u64::MAX)
+}
+
+struct LoaderPageByteCounter {
+    written_bytes: usize,
+    attempted_bytes: usize,
+    limit_bytes: usize,
+    exceeded: bool,
+}
+
+impl LoaderPageByteCounter {
+    const fn new(limit_bytes: usize) -> Self {
+        Self {
+            written_bytes: 0,
+            attempted_bytes: 0,
+            limit_bytes,
+            exceeded: false,
+        }
+    }
+}
+
+impl Write for LoaderPageByteCounter {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        self.attempted_bytes = self.written_bytes.saturating_add(buffer.len());
+        if self.attempted_bytes > self.limit_bytes {
+            self.exceeded = true;
+            return Err(std::io::Error::other("loader page byte limit exceeded"));
+        }
+        self.written_bytes = self.attempted_bytes;
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 /// Runtime registry for named loader functions.
@@ -405,14 +480,14 @@ impl LoaderRegistry {
         level = "info",
         target = "nebula_schema::loader",
         skip(self, context),
-        fields(loader_key = %key, field_key = %context.field_key)
+        fields(loader_key = %key, field_key = %context.0.field_key)
     )]
-    pub async fn load_options(
+    pub(crate) async fn load_options(
         &self,
         key: &str,
-        context: LoaderContext,
+        context: RedactedLoaderContext,
     ) -> Result<LoaderResult<SelectOption>, ValidationError> {
-        let field_path = field_path_from_key(&context.field_key);
+        let field_path = field_path_from_key(&context.0.field_key);
         let Some(loader) = self.option_loaders.get(key) else {
             tracing::warn!(
                 target: "nebula_schema::loader",
@@ -429,17 +504,17 @@ impl LoaderRegistry {
             tracing::warn!(
                 target: "nebula_schema::loader",
                 loader_key = %key,
-                code = %e.code,
+                code = %e.code(),
                 "option loader call failed"
             );
             ValidationError::builder("loader.failed")
                 .at(field_path_from_err_or(&field_path, &e))
-                .message(format!("option loader `{key}` failed: {e}"))
+                .message("option loader failed")
                 .param("loader", Value::String(key.to_owned()))
-                .source(e)
+                .private_source(e)
                 .build()
         })?;
-        enforce_items_bound(result, key, &field_path)
+        enforce_page_bounds(result, key, &field_path)
     }
 
     /// Resolve and execute record loader by key.
@@ -456,14 +531,14 @@ impl LoaderRegistry {
         level = "info",
         target = "nebula_schema::loader",
         skip(self, context),
-        fields(loader_key = %key, field_key = %context.field_key)
+        fields(loader_key = %key, field_key = %context.0.field_key)
     )]
-    pub async fn load_records(
+    pub(crate) async fn load_records(
         &self,
         key: &str,
-        context: LoaderContext,
+        context: RedactedLoaderContext,
     ) -> Result<LoaderResult<Value>, ValidationError> {
-        let field_path = field_path_from_key(&context.field_key);
+        let field_path = field_path_from_key(&context.0.field_key);
         let Some(loader) = self.record_loaders.get(key) else {
             tracing::warn!(
                 target: "nebula_schema::loader",
@@ -480,57 +555,63 @@ impl LoaderRegistry {
             tracing::warn!(
                 target: "nebula_schema::loader",
                 loader_key = %key,
-                code = %e.code,
+                code = %e.code(),
                 "record loader call failed"
             );
             ValidationError::builder("loader.failed")
                 .at(field_path_from_err_or(&field_path, &e))
-                .message(format!("record loader `{key}` failed: {e}"))
+                .message("record loader failed")
                 .param("loader", Value::String(key.to_owned()))
-                .source(e)
+                .private_source(e)
                 .build()
         })?;
-        enforce_items_bound(result, key, &field_path)
+        enforce_page_bounds(result, key, &field_path)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use serde_json::{Value as Json, json};
+    use serde_json::json;
 
     use super::*;
     use crate::{
-        Field, FieldValues, Schema, expression::Expression, field_key, key::FieldKey,
-        secret::SECRET_REDACTED, value::FieldValue,
+        AuthoredValue, Field, ScalarValue, Schema, ValueTree, expression::Expression, field_key,
+        secret::SECRET_REDACTED,
     };
 
-    fn k(name: &str) -> FieldKey {
-        FieldKey::new(name).expect("test key")
+    fn scrub(context: LoaderContext) -> RedactedLoaderContext {
+        context.redacted(&[]).unwrap()
     }
 
     #[tokio::test]
     async fn load_options_unregistered_returns_not_registered() {
         let registry = LoaderRegistry::new();
-        let ctx = LoaderContext::new("field", FieldValues::new());
-        let err = registry.load_options("missing", ctx).await.unwrap_err();
-        assert_eq!(err.code, "loader.not_registered");
+        let ctx = LoaderContext::new("field", AuthoredValue::object());
+        let err = registry
+            .load_options("missing", scrub(ctx))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), "loader.not_registered");
         assert!(
-            err.params
+            err.params()
                 .iter()
                 .any(|(k, v)| k == "loader" && v == "missing")
         );
         // Error path should reflect the requesting field key.
-        assert_eq!(err.path.to_string(), "field");
+        assert_eq!(err.path().to_string(), "/field");
     }
 
     #[tokio::test]
     async fn load_records_unregistered_returns_not_registered() {
         let registry = LoaderRegistry::new();
-        let ctx = LoaderContext::new("field", FieldValues::new());
-        let err = registry.load_records("missing", ctx).await.unwrap_err();
-        assert_eq!(err.code, "loader.not_registered");
+        let ctx = LoaderContext::new("field", AuthoredValue::object());
+        let err = registry
+            .load_records("missing", scrub(ctx))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), "loader.not_registered");
         // Error path should reflect the requesting field key.
-        assert_eq!(err.path.to_string(), "field");
+        assert_eq!(err.path().to_string(), "/field");
     }
 
     #[tokio::test]
@@ -541,38 +622,66 @@ mod tests {
                 "Option A",
             )]))
         });
-        let ctx = LoaderContext::new("field", FieldValues::new());
-        let result = registry.load_options("opts", ctx).await.unwrap();
+        let ctx = LoaderContext::new("field", AuthoredValue::object());
+        let result = registry.load_options("opts", scrub(ctx)).await.unwrap();
         assert_eq!(result.items.len(), 1);
     }
 
     #[tokio::test]
     async fn loader_failure_wraps_as_loader_failed() {
+        const PRIVATE_DETAIL: &str = "PRIVATE downstream loader detail";
         let registry = LoaderRegistry::new().register_option("fail", |_ctx| async {
             Err(ValidationError::builder("loader.failed")
-                .message("downstream error")
+                .message(PRIVATE_DETAIL)
                 .build())
         });
-        let ctx = LoaderContext::new("field", FieldValues::new());
-        let err = registry.load_options("fail", ctx).await.unwrap_err();
-        assert_eq!(err.code, "loader.failed");
+        let ctx = LoaderContext::new("field", AuthoredValue::object());
+        let err = registry.load_options("fail", scrub(ctx)).await.unwrap_err();
+        assert_eq!(err.code(), "loader.failed");
+        assert_eq!(err.message(), "option loader failed");
+        assert!(!format!("{err:?} {err}").contains(PRIVATE_DETAIL));
+        assert_eq!(
+            std::error::Error::source(&err).map(ToString::to_string),
+            Some("diagnostic details contain private input".to_owned())
+        );
+    }
+
+    #[tokio::test]
+    async fn record_loader_failure_keeps_source_private() {
+        const PRIVATE_DETAIL: &str = "PRIVATE record loader detail";
+        let registry = LoaderRegistry::new().register_record("fail", |_ctx| async {
+            Err(ValidationError::builder("loader.failed")
+                .message(PRIVATE_DETAIL)
+                .build())
+        });
+        let context = LoaderContext::new("field", AuthoredValue::object());
+        let error = registry
+            .load_records("fail", scrub(context))
+            .await
+            .unwrap_err();
+        assert_eq!(error.message(), "record loader failed");
+        assert!(!format!("{error:?} {error}").contains(PRIVATE_DETAIL));
+        assert_eq!(
+            std::error::Error::source(&error).map(ToString::to_string),
+            Some("diagnostic details contain private input".to_owned())
+        );
     }
 
     #[tokio::test]
     async fn loader_failure_root_path_maps_back_to_request_field() {
         let registry = LoaderRegistry::new().register_option("regions_loader", |_ctx| async {
             Err(ValidationError::builder("loader.failed")
-                .at(FieldPath::root())
+                .at(ValuePath::root())
                 .message("downstream error")
                 .build())
         });
-        let ctx = LoaderContext::new("region", FieldValues::new());
+        let ctx = LoaderContext::new("region", AuthoredValue::object());
         let err = registry
-            .load_options("regions_loader", ctx)
+            .load_options("regions_loader", scrub(ctx))
             .await
             .unwrap_err();
-        assert_eq!(err.code, "loader.failed");
-        assert_eq!(err.path.to_string(), "region");
+        assert_eq!(err.code(), "loader.failed");
+        assert_eq!(err.path().to_string(), "/region");
     }
 
     #[tokio::test]
@@ -584,20 +693,20 @@ mod tests {
                 .collect();
             Ok(LoaderResult::done(items))
         });
-        let ctx = LoaderContext::new("region", FieldValues::new());
-        let err = registry.load_options("big", ctx).await.unwrap_err();
-        assert_eq!(err.code, "loader.result_too_large");
+        let ctx = LoaderContext::new("region", AuthoredValue::object());
+        let err = registry.load_options("big", scrub(ctx)).await.unwrap_err();
+        assert_eq!(err.code(), "loader.result_too_large");
         assert_eq!(
-            err.path.to_string(),
-            "region",
+            err.path().to_string(),
+            "/region",
             "carries the requesting field"
         );
         assert!(
-            err.params
+            err.params()
                 .iter()
                 .any(|(k, v)| k == "limit" && v.as_u64() == Some(MAX_LOADER_ITEMS as u64)),
             "reports the limit: {:?}",
-            err.params
+            err.params()
         );
     }
 
@@ -610,8 +719,8 @@ mod tests {
                 .collect();
             Ok(LoaderResult::done(items))
         });
-        let ctx = LoaderContext::new("region", FieldValues::new());
-        let result = registry.load_options("atlimit", ctx).await.unwrap();
+        let ctx = LoaderContext::new("region", AuthoredValue::object());
+        let result = registry.load_options("atlimit", scrub(ctx)).await.unwrap();
         assert_eq!(result.items.len(), MAX_LOADER_ITEMS);
     }
 
@@ -621,14 +730,53 @@ mod tests {
             let items = (0..=MAX_LOADER_ITEMS).map(|i| json!({ "i": i })).collect();
             Ok(LoaderResult::done(items))
         });
-        let ctx = LoaderContext::new("rows", FieldValues::new());
-        let err = registry.load_records("big", ctx).await.unwrap_err();
-        assert_eq!(err.code, "loader.result_too_large");
+        let ctx = LoaderContext::new("rows", AuthoredValue::object());
+        let err = registry.load_records("big", scrub(ctx)).await.unwrap_err();
+        assert_eq!(err.code(), "loader.result_too_large");
+    }
+
+    #[tokio::test]
+    async fn load_records_rejects_cumulative_page_bytes() {
+        let registry = LoaderRegistry::new().register_record("wide", |_ctx| async {
+            Ok(LoaderResult::done(vec![
+                Value::String("a".repeat(600_000)),
+                Value::String("b".repeat(600_000)),
+            ]))
+        });
+        let ctx = LoaderContext::new("rows", AuthoredValue::object());
+        let error = registry.load_records("wide", scrub(ctx)).await.unwrap_err();
+        assert_eq!(error.code(), "loader.result_too_large");
+        assert!(
+            error
+                .params()
+                .iter()
+                .any(|(key, value)| key == "resource" && value == "serialized item bytes")
+        );
+    }
+
+    #[tokio::test]
+    async fn load_records_rejects_excessive_item_depth() {
+        let registry = LoaderRegistry::new().register_record("deep", |_ctx| async {
+            let mut value = Value::Null;
+            for _ in 0..=64 {
+                value = Value::Array(vec![value]);
+            }
+            Ok(LoaderResult::done(vec![value]))
+        });
+        let ctx = LoaderContext::new("rows", AuthoredValue::object());
+        let error = registry.load_records("deep", scrub(ctx)).await.unwrap_err();
+        assert_eq!(error.code(), "loader.result_too_large");
+        assert!(
+            error
+                .params()
+                .iter()
+                .any(|(key, value)| key == "resource" && value == "item depth")
+        );
     }
 
     #[test]
     fn loader_context_builder() {
-        let ctx = LoaderContext::new("my_field", FieldValues::new())
+        let ctx = LoaderContext::new("my_field", AuthoredValue::object())
             .with_filter("query")
             .with_cursor("tok")
             .with_metadata(json!({"page": 1}));
@@ -650,8 +798,8 @@ mod tests {
         assert_eq!(t.total, Some(100));
     }
 
-    fn redacted_literal() -> FieldValue {
-        FieldValue::Literal(Json::String(SECRET_REDACTED.to_owned()))
+    fn redacted_literal() -> AuthoredValue {
+        AuthoredValue::from_data(json!(SECRET_REDACTED)).unwrap()
     }
 
     #[test]
@@ -664,24 +812,23 @@ mod tests {
             )
             .build()
             .expect("valid schema");
-        let values = FieldValues::from_json(json!({
+        let values = AuthoredValue::from_data(json!({
             "config": {
                 "api_key": "hunter2",
                 "label": "visible"
             }
         }))
         .expect("values");
-        let ctx = LoaderContext::new("k", values).with_secrets_redacted(&schema);
-        let config = ctx.values.get_by_str("config").expect("config");
-        let FieldValue::Object(map) = config else {
+        let ctx = LoaderContext::new("k", values)
+            .redacted(schema.fields())
+            .unwrap();
+        let config = ctx.0.values.get("config").expect("config");
+        let ValueTree::Object(map) = config else {
             panic!("expected object, got {config:?}");
         };
-        assert_eq!(map.get(&k("api_key")), Some(&redacted_literal()));
-        let label = map.get(&k("label")).expect("label");
-        let FieldValue::Literal(Json::String(s)) = label else {
-            panic!("expected string literal, got {label:?}");
-        };
-        assert_eq!(s, "visible");
+        assert_eq!(map.get("api_key"), Some(&redacted_literal()));
+        let label = map.get("label").expect("label");
+        assert_eq!(label.as_str(), Some("visible"));
     }
 
     #[test]
@@ -690,10 +837,12 @@ mod tests {
             .add(Field::list(field_key!("tokens")).item(Field::secret(field_key!("t"))))
             .build()
             .expect("valid schema");
-        let values = FieldValues::from_json(json!({ "tokens": ["a", "b"] })).expect("values");
-        let ctx = LoaderContext::new("k", values).with_secrets_redacted(&schema);
-        let list = ctx.values.get_by_str("tokens").expect("tokens");
-        let FieldValue::List(items) = list else {
+        let values = AuthoredValue::from_data(json!({ "tokens": ["a", "b"] })).expect("values");
+        let ctx = LoaderContext::new("k", values)
+            .redacted(schema.fields())
+            .unwrap();
+        let list = ctx.0.values.get("tokens").expect("tokens");
+        let ValueTree::List(items) = list else {
             panic!("expected list, got {list:?}");
         };
         assert_eq!(items.as_slice(), &[redacted_literal(), redacted_literal()]);
@@ -721,7 +870,7 @@ mod tests {
         // The mode `value` is the unwrapped object payload: same shape as a top-level
         // `Object` field's value (child keys), not `{"creds": { ... }}` — see `redact` +
         // `Field::Object` matching in `redact_secrets_in_value_for_loader`.
-        let values = FieldValues::from_json(json!({
+        let values = AuthoredValue::from_data(json!({
             "auth": {
                 "mode": "oauth",
                 "value": {
@@ -731,26 +880,22 @@ mod tests {
             }
         }))
         .expect("values");
-        let ctx = LoaderContext::new("k", values).with_secrets_redacted(&schema);
-        let auth = ctx.values.get_by_str("auth").expect("auth");
-        let FieldValue::Object(map) = auth else {
+        let ctx = LoaderContext::new("k", values)
+            .redacted(schema.fields())
+            .unwrap();
+        let auth = ctx.0.values.get("auth").expect("auth");
+        let ValueTree::Object(map) = auth else {
             panic!("expected object envelope, got {auth:?}");
         };
-        let mode = map.get(&k("mode")).expect("mode");
-        let FieldValue::Literal(Json::String(mode_key)) = mode else {
-            panic!("expected mode literal, got {mode:?}");
-        };
-        assert_eq!(mode_key, "oauth");
-        let payload = map.get(&k("value")).expect("payload");
-        let FieldValue::Object(m) = payload else {
+        let mode = map.get("mode").expect("mode");
+        assert_eq!(mode.as_str(), Some("oauth"));
+        let payload = map.get("value").expect("payload");
+        let ValueTree::Object(m) = payload else {
             panic!("expected object payload, got {payload:?}");
         };
-        assert_eq!(m.get(&k("client_secret")), Some(&redacted_literal()));
-        let id = m.get(&k("client_id")).expect("id");
-        let FieldValue::Literal(Json::String(s)) = id else {
-            panic!("expected client_id literal, got {id:?}");
-        };
-        assert_eq!(s, "visible");
+        assert_eq!(m.get("client_secret"), Some(&redacted_literal()));
+        let id = m.get("client_id").expect("id");
+        assert_eq!(id.as_str(), Some("visible"));
     }
 
     #[test]
@@ -769,7 +914,7 @@ mod tests {
             )
             .build()
             .expect("valid schema");
-        let values = FieldValues::from_json(json!({
+        let values = AuthoredValue::from_data(json!({
             "auth": {
                 "value": {
                     "client_secret": "top",
@@ -779,21 +924,20 @@ mod tests {
         }))
         .expect("values");
 
-        let ctx = LoaderContext::new("k", values).with_secrets_redacted(&schema);
-        let auth = ctx.values.get_by_str("auth").expect("auth");
-        let FieldValue::Object(map) = auth else {
+        let ctx = LoaderContext::new("k", values)
+            .redacted(schema.fields())
+            .unwrap();
+        let auth = ctx.0.values.get("auth").expect("auth");
+        let ValueTree::Object(map) = auth else {
             panic!("expected object envelope, got {auth:?}");
         };
-        let payload = map.get(&k("value")).expect("payload");
-        let FieldValue::Object(m) = payload else {
+        let payload = map.get("value").expect("payload");
+        let ValueTree::Object(m) = payload else {
             panic!("expected object payload, got {payload:?}");
         };
-        assert_eq!(m.get(&k("client_secret")), Some(&redacted_literal()));
-        let id = m.get(&k("client_id")).expect("id");
-        let FieldValue::Literal(Json::String(s)) = id else {
-            panic!("expected client_id literal, got {id:?}");
-        };
-        assert_eq!(s, "visible");
+        assert_eq!(m.get("client_secret"), Some(&redacted_literal()));
+        let id = m.get("client_id").expect("id");
+        assert_eq!(id.as_str(), Some("visible"));
     }
 
     #[test]
@@ -802,24 +946,26 @@ mod tests {
             .add(Field::secret(field_key!("api_key")))
             .build()
             .expect("valid schema");
-        let mut values = FieldValues::new();
-        values.set(
-            k("api_key"),
-            FieldValue::Expression(Expression::new("would.leak()")),
-        );
-        let ctx = LoaderContext::new("k", values).with_secrets_redacted(&schema);
-        let v = ctx.values.get_by_str("api_key").expect("api_key");
+        let mut values = AuthoredValue::object();
+        values
+            .insert(
+                "api_key",
+                ValueTree::Expression(Expression::new("would.leak()")),
+            )
+            .unwrap();
+        let ctx = LoaderContext::new("k", values)
+            .redacted(schema.fields())
+            .unwrap();
+        let v = ctx.0.values.get("api_key").expect("api_key");
         assert_eq!(*v, redacted_literal());
     }
 
     #[test]
     fn with_secrets_redacted_object_literal_blob_is_over_redacted() {
-        // A secret-bearing `Field::Object` whose value arrives as a `Literal`
-        // JSON blob (reachable via the unvalidated `FieldValues::set`, never via
-        // `from_json`) must be over-redacted wholesale: recursion can't descend a
-        // non-matching shape, so a nested secret's plaintext would otherwise reach
-        // the loader. Loader-side mirror of context.rs's
-        // `structured_field_with_literal_blob_does_not_leak_nested_secret`.
+        // Objects cannot hide inside literals. Serialized secret data supplied
+        // as a scalar to a secret-bearing container still needs whole redaction.
+        let error = ScalarValue::try_from(json!({"api_key": "PLAINTEXT-LEAK"})).unwrap_err();
+        assert_eq!(error.code(), "type_mismatch");
         let schema = Schema::builder()
             .add(
                 Field::object(field_key!("cfg"))
@@ -828,13 +974,14 @@ mod tests {
             )
             .build()
             .expect("valid schema");
-        let mut values = FieldValues::new();
-        values.set(
-            k("cfg"),
-            FieldValue::Literal(json!({ "api_key": "PLAINTEXT-LEAK", "label": "x" })),
-        );
-        let ctx = LoaderContext::new("k", values).with_secrets_redacted(&schema);
-        let cfg = ctx.values.get_by_str("cfg").expect("cfg");
+        let values = AuthoredValue::from_data(json!({
+            "cfg": json!({"api_key": "PLAINTEXT-LEAK", "label": "x"}).to_string()
+        }))
+        .unwrap();
+        let ctx = LoaderContext::new("k", values)
+            .redacted(schema.fields())
+            .unwrap();
+        let cfg = ctx.0.values.get("cfg").expect("cfg");
         assert_eq!(*cfg, redacted_literal());
         assert!(
             !format!("{cfg:?}").contains("PLAINTEXT-LEAK"),
@@ -843,12 +990,8 @@ mod tests {
     }
 
     #[test]
-    fn with_secrets_redacted_typed_mode_unknown_variant_over_redacts() {
-        // A typed `FieldValue::Mode` envelope whose mode key matches no declared
-        // variant: the payload must be over-redacted (the active variant — and
-        // thus which leaves are secret — cannot be determined). Covers the typed
-        // `Mode { value: Some(..) }` unknown-variant arm; the `Field::Mode` +
-        // `Object` envelope path is covered by the tests above.
+    fn with_secrets_redacted_mode_unknown_variant_over_redacts() {
+        // The canonical object envelope must redact an unknown variant's payload.
         let schema = Schema::builder()
             .add(Field::mode(field_key!("auth")).variant(
                 "oauth",
@@ -857,26 +1000,19 @@ mod tests {
             ))
             .build()
             .expect("valid schema");
-        let mut values = FieldValues::new();
-        values.set(
-            k("auth"),
-            FieldValue::Mode {
-                mode: k("nonexistent"),
-                value: Some(Box::new(FieldValue::from_json(
-                    json!({ "client_secret": "PLAINTEXT-LEAK" }),
-                ))),
-            },
+        let values = AuthoredValue::from_data(json!({
+            "auth": {"mode": "nonexistent", "value": {"client_secret": "PLAINTEXT-LEAK"}}
+        }))
+        .unwrap();
+        let ctx = LoaderContext::new("k", values)
+            .redacted(schema.fields())
+            .unwrap();
+        let auth = ctx.0.values.get("auth").expect("auth");
+        assert_eq!(
+            auth.get("mode").and_then(ValueTree::as_str),
+            Some("nonexistent")
         );
-        let ctx = LoaderContext::new("k", values).with_secrets_redacted(&schema);
-        let auth = ctx.values.get_by_str("auth").expect("auth");
-        let FieldValue::Mode {
-            value: Some(payload),
-            ..
-        } = auth
-        else {
-            panic!("expected mode envelope, got {auth:?}");
-        };
-        assert_eq!(**payload, redacted_literal());
+        assert_eq!(auth.get("value"), Some(&redacted_literal()));
         assert!(!format!("{auth:?}").contains("PLAINTEXT-LEAK"));
     }
 }

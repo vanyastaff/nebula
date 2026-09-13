@@ -33,7 +33,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::resolve::InteractionRequest;
-use crate::runtime::{CredentialResolver, LeaseLifecycle};
+use crate::runtime::{AcquisitionTransport, CredentialResolver, LeaseLifecycle};
 use crate::{
     AuthPattern, CredentialAlreadyExistsKey, CredentialContext, CredentialDisplay, CredentialId,
     CredentialPersistence, CredentialPersistenceError, CredentialRegistry, ErasedPendingStore,
@@ -120,6 +120,10 @@ impl fmt::Debug for Acquisition {
 /// membership at registration), not self-attested metadata.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct TypeCapabilities {
+    /// Type implements `Interactive`.
+    pub interactive: bool,
+    /// Type implements `Dynamic`.
+    pub dynamic: bool,
     /// Type implements `Refreshable`.
     pub refreshable: bool,
     /// Type implements `Testable`.
@@ -168,9 +172,10 @@ pub struct CredentialService {
     pub(crate) registry: Arc<CredentialRegistry>,
     pub(crate) ops: Arc<DispatchOps<ErasedPendingStore>>,
     pub(crate) observer: Arc<dyn CredentialObserver>,
+    pub(crate) acquisition_transport: Arc<dyn AcquisitionTransport>,
     // Read by `ensure_local_source` on every secret-resolving entry
     // point. `External` is configurable but its resolution wiring (the
-    // external provider bridge bridge) is not implemented here yet, so it fails
+    // external provider bridge) is not implemented here yet, so it fails
     // typed rather than silently resolving from the local store.
     pub(crate) source: StateSource,
 }
@@ -196,6 +201,7 @@ impl CredentialService {
         registry: Arc<CredentialRegistry>,
         ops: Arc<DispatchOps<ErasedPendingStore>>,
         observer: Arc<dyn CredentialObserver>,
+        acquisition_transport: Arc<dyn AcquisitionTransport>,
         source: StateSource,
     ) -> Self {
         // Tie the resolver's source gate to the configured source at the single
@@ -213,6 +219,7 @@ impl CredentialService {
             registry,
             ops,
             observer,
+            acquisition_transport,
             source,
         }
     }
@@ -338,8 +345,9 @@ impl CredentialService {
     /// `ctx.session_id()`, so without this the interactive paths would
     /// always fail `MissingSessionId`. CRUD passes a binding-less scope
     /// and the accessors ignore the absent value.
-    pub(crate) fn owner_context(scope: &TenantScope) -> CredentialContext {
-        let ctx = CredentialContext::for_owner(scope.owner_id());
+    pub(crate) fn owner_context(&self, scope: &TenantScope) -> CredentialContext {
+        let ctx = CredentialContext::for_owner(scope.owner_id())
+            .for_acquisition(Arc::clone(&self.acquisition_transport));
         match scope.authentication_binding() {
             Some(binding) => ctx.with_session_id(binding),
             None => ctx,

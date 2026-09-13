@@ -6,7 +6,7 @@
 
 **Modular, type-safe workflow automation engine written in Rust.**
 
-Nebula is a DAG-based workflow automation engine &mdash; in the same space as n8n, Zapier, and Temporal &mdash; built as a composable Rust library rather than a monolithic platform. The goal is to give teams a foundation they can embed into their own infrastructure, extend with custom integrations, and trust with production secrets.
+Nebula is a DAG-based workflow automation engine &mdash; in the same space as n8n, Zapier, and Temporal &mdash; built from composable Rust libraries rather than as a monolithic platform. First-party deployment roots live under `apps/`; downstream embedding becomes supported only through the curated SDK runtime builder when that surface ships. Integration authors extend Nebula through `nebula-sdk`, the sole supported Rust façade.
 
 **Current status:** core crates are stable and well-tested; the execution engine and API layer are in active development. Not production-ready yet.
 
@@ -16,9 +16,9 @@ Nebula is a DAG-based workflow automation engine &mdash; in the same space as n8
 
 Most automation platforms are runtime-interpreted, dynamically typed, and treat security as an afterthought. Nebula takes a different approach.
 
-**Credentials are a first-class concern, not a bolt-on.** Every secret is encrypted at rest with AES-256-GCM, bound to its record via AAD to prevent swapping attacks, and wiped from memory on drop. Key rotation is built into the storage layer &mdash; not a future feature.
+**Credentials are a first-class concern, not a bolt-on.** Every secret is encrypted at rest with AES-256-GCM, bound to its record via AAD to prevent swapping attacks, and wiped from memory on drop. Credential authors declare typed `Properties`, stored `State`, and projected auth material. Initial OAuth acquisition and refresh receive separate narrow authority; actions never own token refresh.
 
-**Types and activation validation share the work.** Integration contracts, action I/O, parameter schemas, and auth patterns are expressed as Rust types. Persisted or dynamically assembled workflow graphs are validated when activated: references, graph structure, declared schemas, and runtime capabilities must agree before execution. Compiling an integration proves its Rust contracts; it does not make arbitrary workflow data valid.
+**Types and activation validation share the work.** Integration contracts, action I/O, credential properties, resource config, and auth patterns are expressed as Rust types. Catalog authors provide schema-free metadata drafts; owning registries/factories derive schemas, reject invalid definitions, and retain immutable admitted metadata. Runtime values move explicitly from authored data to valid preparation, resolved data, and a trusted typed decode. Literal JSON is never silently reinterpreted as a template. Compiling an integration proves its Rust contracts; it does not make arbitrary workflow data valid.
 
 **Resilience is built in, not bolted on.** Retry with backoff, circuit breakers, rate limiting, hedged requests, and bulkhead isolation are composable building blocks in `nebula-resilience`. Every pattern returns a typed error with enough context to decide what to do next. Purpose-built for the engine's concurrency model.
 
@@ -54,6 +54,14 @@ Durable write authority is aggregate-scoped rather than concentrated in a god se
 
 Private ADR-0117, *Support one Rust SDK surface with lockstep dependency packages*, defines one persona-scoped `nebula-sdk`: workflow/authoring, integration, schema, testing, client, and embedded façades. Client and embedded support are curated safe surfaces when their documented features ship; they do not expose raw storage, durable mutation, admission, claim, or tenant-proof capabilities. Transport-contract and implementation crates remain technical lockstep dependencies, not additional supported Rust products.
 
+Action, Credential, and Resource metadata follows one-way admission in 0.6:
+authors return `*MetadataDraft`, the owning factory or registry derives the
+associated Rust schema and admits an immutable terminal definition, and stored
+catalog bytes deserialize only into `Recorded*Metadata` evidence. Internal
+validated/resolved value proofs, admitted metadata, erased/prepared action
+input, registries, and factories are intentionally absent from the supported
+SDK surface.
+
 ### Data Flow
 
 ```
@@ -61,12 +69,13 @@ Trigger (webhook / cron / event)
   -> Activation validates and pins the workflow contract
     -> Runtime control accepts durable work
       -> Graph runtime schedules ready nodes
-        -> Each node: Action::execute(Context) -> serde_json::Value
-          -> Context provides guarded credentials, resources, parameters, and observability
-            -> Durable effects persist; optional EventBus observations may wake readers
+        -> Selected factory prepares authored input against its exact schema
+          -> Trusted boundary decodes Action::Input and dispatches the action
+            -> Action output returns to the DAG interchange boundary
+              -> Durable effects persist; optional EventBus observations may wake readers
 ```
 
-While strict Rust typing is enforced at the boundaries (inside Actions and Credentials), `serde_json::Value` is the universal interchange data type between nodes in the DAG. Nebula does not add a second universal value crate or permit ad hoc conversion chains: canonical, revision-pinned converters are allowed only at validated contract boundaries. Dates are ISO-8601 strings, decimals use a base64 convention. The `nebula-schema` runtime validation bridges the gap between the dynamic graph and strictly typed nodes.
+`serde_json::Value` remains the interchange representation between nodes, but it is not a validation proof or a secret-bearing typed boundary. `nebula-schema` distinguishes literal data from explicit template authoring, applies transformations once, retains unresolved programs and pending checks, and yields expression-free schema-bound data before the selected factory performs typed decoding. Declared secrets stay in protected tree nodes; trusted typed extraction does not first create a plaintext `serde_json::Value`.
 
 ## Crate Map
 
@@ -82,7 +91,7 @@ Source of truth: workspace members in `Cargo.toml`.
 |                   | `workflow`      | `WorkflowDefinition`, DAG structure, activation-time validator                       |
 |                   | `execution`     | Execution state machine + transitions                                                |
 |                   | `storage-port`  | Object-safe storage seam: row-model traits every storage consumer depends on (ADR-0072) |
-|                   | `credential`    | Shared-infra credential subsystem (ADR-0092): contract + runtime (resolver/refresh/lease/rotation-state) + `CredentialService` facade + builtin types; 12 universal auth schemes |
+|                   | `credential`    | Shared-infra credential subsystem (ADR-0092): typed properties + resolver/acquisition/refresh/lease/rotation runtime + built-in credentials |
 | **Business**      | `resource`           | External service lifecycle, typed credential refs, per-slot rotation fan-out         |
 |                   | `action`             | Action trait family (Stateless / Stateful / Trigger / Resource / Control)            |
 |                   | `plugin`             | In-process plugin trait + registry                                                   |
@@ -141,7 +150,7 @@ This enables local hooks from `lefthook.yml`: fast checks on `pre-commit` and fu
 
 Nebula is in **active alpha development**. The core layer, credential system, resilience patterns, schema system, and error infrastructure are stable and well-tested. The execution engine and API layer are actively being wired together.
 
-APIs will change. Not production-ready yet. See [AGENTS.md](AGENTS.md) for the workspace map, common commands, and contribution workflow.
+APIs will change. Not production-ready yet. See [CHANGELOG.md](CHANGELOG.md) for the 0.6 breaking migration and [AGENTS.md](AGENTS.md) for the workspace map, common commands, and contribution workflow.
 
 ## License
 

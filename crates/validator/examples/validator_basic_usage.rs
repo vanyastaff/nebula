@@ -67,7 +67,7 @@ fn composed_string_validation() {
 fn numeric_validation() {
     println!("\n=== Numeric Validation ===");
 
-    let age = in_range(18_u32, 120_u32);
+    let age = in_range(18_u32, 120_u32).expect("ordered bounds");
     for value in [16_u32, 30_u32, 140_u32] {
         println!("age {value}: {}", status(&age.validate(&value)));
     }
@@ -107,7 +107,7 @@ fn regex_and_conditional_validation() {
 fn collection_validation() {
     println!("\n=== Collection Validation ===");
 
-    let tags = size_range::<&str>(1, 3);
+    let tags = size_range::<&str>(1, 3).expect("ordered bounds");
 
     let a = vec!["rust"];
     let b = vec!["rust", "validator", "nebula", "extra"];
@@ -142,7 +142,10 @@ fn json_field_validation() {
     });
 
     let name_rule = json_field::<_, str>("/user/name", min_length(3));
-    let port_rule = json_field::<_, i64>("/user/port", in_range(1_i64, 65535_i64));
+    let port_rule = json_field::<_, i64>(
+        "/user/port",
+        in_range(1_i64, 65535_i64).expect("ordered bounds"),
+    );
     let email_optional = json_field_optional::<_, str>("/user/email", email());
 
     println!("/user/name: {}", status(&name_rule.validate(&payload)));
@@ -158,7 +161,10 @@ fn profile_payload_validation() {
 
     let profile_validator = json_field::<_, str>("/username", min_length(3).and(max_length(20)))
         .and(json_field::<_, str>("/email", email()))
-        .and(json_field::<_, i64>("/age", in_range(13_i64, 120_i64)))
+        .and(json_field::<_, i64>(
+            "/age",
+            in_range(13_i64, 120_i64).expect("ordered bounds"),
+        ))
         .and(json_field_optional::<_, str>("/website", url()));
 
     let ok = json!({
@@ -191,7 +197,10 @@ fn collect_all_errors_demo() {
     let validator = all_of([
         AnyValidator::new(json_field::<_, str>("/username", min_length(3))),
         AnyValidator::new(json_field::<_, str>("/email", email())),
-        AnyValidator::new(json_field::<_, i64>("/age", in_range(13_i64, 120_i64))),
+        AnyValidator::new(json_field::<_, i64>(
+            "/age",
+            in_range(13_i64, 120_i64).expect("ordered bounds"),
+        )),
     ])
     .with_mode(ValidationMode::CollectAll);
 

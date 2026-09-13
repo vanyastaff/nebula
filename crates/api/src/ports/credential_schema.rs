@@ -134,7 +134,7 @@ impl CredentialValidationCode {
 /// `Capabilities` type crosses the seam).
 #[derive(Debug, Clone, Copy, Default, Serialize, ToSchema)]
 pub struct CredentialCapabilityFlags {
-    /// Multi-step user interaction (OAuth redirect, device code).
+    /// Multi-step user interaction (for example, an OAuth redirect).
     pub interactive: bool,
     /// Token refresh (OAuth2 `refresh_token`).
     pub refreshable: bool,
@@ -170,9 +170,11 @@ pub struct CredentialTypeDescriptor {
     pub schema_json: serde_json::Value,
 }
 
-/// Resolve a credential type's schema for the write-path gate (V2) and the
-/// catalog read-model (V3). Implemented in the composition root over a
-/// `nebula_credential::CredentialRegistry`.
+/// Read a complete credential catalog admitted by the composition root.
+///
+/// Implementations must propagate definition/export failures during construction,
+/// never drop entries or substitute permissive schemas. Mutation validation is
+/// owned by the credential service, not this read model.
 pub trait CredentialSchemaPort: Send + Sync + 'static {
     /// All known credential types (raw `json_schema()` in `schema_json`;
     /// the api applies the public projection before serializing).

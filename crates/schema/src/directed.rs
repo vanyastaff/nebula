@@ -92,7 +92,6 @@ impl<P: Polarity> DirectedSchema<P> {
     /// For storage / serde / interop. Do **not** feed the result back into an
     /// assignability check as a `producer`/`consumer` — that round-trips through
     /// untyped `ValidSchema` and defeats the direction guarantee. Use
-    /// [`is_assignable_schema`](crate::is_assignable_schema) /
     /// [`explain_assignable`](crate::explain_assignable), which take the typed
     /// newtypes directly.
     #[must_use]
@@ -134,28 +133,36 @@ impl<P: Polarity> PartialEq for DirectedSchema<P> {
 impl<P: Polarity> Eq for DirectedSchema<P> {}
 
 impl OutputSchema {
-    /// Is `self` a backward-compatible **successor** of `prev` — does the new
+    /// Explain whether `self` is a structurally compatible **successor** of `prev`: does the new
     /// output still satisfy everything consumers typed against the *old* output
     /// required? An *output-vs-output* width-supertype check, distinct from the
     /// producer→consumer edge relation, so it does **not** route through the
-    /// [`InputSchema`]-typed [`is_assignable_schema`](crate::is_assignable_schema).
+    /// [`InputSchema`]-typed [`explain_assignable`](crate::explain_assignable).
     ///
-    /// The action catalog's same-major compatibility gate uses this: an `Err`
-    /// means the new output dropped or narrowed a field old consumers relied on.
-    /// An `Any` old output imposes no constraints (always `Ok`); an empty-record
-    /// new output provably satisfies nothing a typed old output required.
+    /// Only [`Assignability::Yes`](crate::Assignability::Yes) proves the
+    /// relation. In particular, replacing a concrete old output with `Any`
+    /// returns `Unknown`, not success. This structural relation does not
+    /// substitute for metadata identity, lifecycle, or version checks.
     ///
-    /// # Errors
+    /// # Examples
     ///
-    /// Returns the first [`SchemaIncompat`](crate::SchemaIncompat) (the new
-    /// output `self` is the producer, the old output `prev` the
-    /// consumer-expectation).
-    #[must_use = "check the Result — an Err means the new output is not a compatible successor"]
-    pub fn is_compatible_successor_of(
-        &self,
-        prev: &OutputSchema,
-    ) -> Result<(), crate::SchemaIncompat> {
-        crate::compat::is_assignable_core(self.as_schema(), prev.as_schema())
+    /// ```rust
+    /// use nebula_schema::{Assignability, OutputSchema, UnknownReason, ValidSchema};
+    ///
+    /// let previous = OutputSchema::new(ValidSchema::empty());
+    /// assert_eq!(previous.explain_successor_of(&previous), Assignability::Yes);
+    /// assert_eq!(
+    ///     OutputSchema::new(ValidSchema::any()).explain_successor_of(&previous),
+    ///     Assignability::Unknown(vec![UnknownReason::OpaqueProducer]),
+    /// );
+    /// ```
+    #[must_use]
+    #[tracing::instrument(name = "schema.successor", skip_all, fields(
+        producer_kind = ?self.as_schema().kind(),
+        consumer_kind = ?prev.as_schema().kind(),
+    ))]
+    pub fn explain_successor_of(&self, prev: &OutputSchema) -> crate::Assignability {
+        crate::compat::explain_assignable_core(self.as_schema(), prev.as_schema())
     }
 }
 

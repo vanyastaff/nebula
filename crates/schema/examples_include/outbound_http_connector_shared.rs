@@ -38,7 +38,11 @@ fn auth_mode() -> Field {
             "basic",
             "HTTP Basic",
             Field::object(field_key!("basic_auth"))
-                .add(Field::string(field_key!("username")).required().label("Username"))
+                .add(
+                    Field::string(field_key!("username"))
+                        .required()
+                        .label("Username"),
+                )
                 .add(
                     Field::secret(field_key!("password"))
                         .required()
@@ -70,11 +74,7 @@ fn body_mode() -> Field {
                 .label("Fields")
                 .item(
                     Field::object(field_key!("field"))
-                        .add(
-                            Field::string(field_key!("name"))
-                                .required()
-                                .max_length(256),
-                        )
+                        .add(Field::string(field_key!("name")).required().max_length(256))
                         .add(Field::string(field_key!("value")).max_length(4096)),
                 )
                 .min_items(1)
@@ -104,7 +104,9 @@ fn signing_mode() -> Field {
                         .default(serde_json::json!("X-Integration-Signature"))
                         .max_length(128),
                 )
-                .description("Signature = hex(HMAC-SHA256(secret, raw_body_bytes)) — policy is illustrative"),
+                .description(
+                    "Signature = hex(HMAC-SHA256(secret, raw_body_bytes)) — policy is illustrative",
+                ),
         )
         .default_variant("none")
         .into()

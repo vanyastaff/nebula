@@ -65,8 +65,8 @@ use crate::{action::Action, context::ActionContext, error::ActionError};
 ///     type Input  = serde_json::Value;
 ///     type Output = u64;
 ///
-///     fn metadata() -> ActionMetadata {
-///         ActionMetadata::new(action_key!("demo.sum_stream"), "SumStream", "Sums a chunk stream")
+///     fn metadata() -> nebula_action::ActionMetadataDraft {
+///         nebula_action::ActionMetadataDraft::new(action_key!("demo.sum_stream"), nebula_action::metadata_name!("SumStream"), "Sums a chunk stream")
 ///     }
 ///     fn dependencies() -> &'static Dependencies {
 ///         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -131,7 +131,6 @@ mod tests {
 
     use futures::stream;
     use nebula_core::Dependencies;
-    use nebula_schema::{HasSchema, ValidSchema};
     use nebula_workflow::NodeDefinition;
     use serde::{Deserialize, Serialize};
     use serde_json::Value;
@@ -144,7 +143,7 @@ mod tests {
         factory::{ActionFactory, GenericStreamFactory},
         from_workflow_node::FromWorkflowNode,
         handle::ActionHandle,
-        metadata::{ActionKind, ActionMetadata},
+        metadata::ActionKind,
         result::ActionResult,
         testing::TestContextBuilder,
     };
@@ -168,36 +167,24 @@ mod tests {
     /// Yields Ok(1), Ok(2), Ok(3) and folds by sum → total must be 6.
     struct SumStream;
 
-    #[derive(Debug, Deserialize)]
+    #[derive(Debug, Deserialize, nebula_schema::Schema)]
     struct SumInput {
         start: u8,
     }
 
-    impl HasSchema for SumInput {
-        fn schema() -> ValidSchema {
-            ValidSchema::empty()
-        }
-    }
-
-    #[derive(Debug, Serialize, Deserialize, PartialEq)]
+    #[derive(Debug, Serialize, Deserialize, PartialEq, nebula_schema::Schema)]
     struct SumOutput {
         total: u64,
-    }
-
-    impl HasSchema for SumOutput {
-        fn schema() -> ValidSchema {
-            ValidSchema::empty()
-        }
     }
 
     impl Action for SumStream {
         type Input = SumInput;
         type Output = SumOutput;
 
-        fn metadata() -> ActionMetadata {
-            ActionMetadata::new(
+        fn metadata() -> crate::ActionMetadataDraft {
+            crate::ActionMetadataDraft::new(
                 nebula_core::action_key!("test.stream.sum"),
-                "SumStream",
+                crate::metadata_name!("SumStream"),
                 "Yields three chunks and sums them",
             )
         }
@@ -255,10 +242,10 @@ mod tests {
         type Input = Value;
         type Output = Value;
 
-        fn metadata() -> ActionMetadata {
-            ActionMetadata::new(
+        fn metadata() -> crate::ActionMetadataDraft {
+            crate::ActionMetadataDraft::new(
                 nebula_core::action_key!("test.stream.error"),
-                "ErrorStream",
+                crate::metadata_name!("ErrorStream"),
                 "Emits one chunk then fails",
             )
         }
@@ -309,7 +296,8 @@ mod tests {
     /// dispatch folds Ok(1)+Ok(2)+Ok(3) → `Success { Value({"total":6}) }`.
     #[tokio::test]
     async fn sum_stream_folds_to_six() {
-        let factory = GenericStreamFactory::<SumStream>::new();
+        let factory =
+            GenericStreamFactory::<SumStream>::new().expect("valid test catalog definition");
         let node = make_node("test.stream.sum");
         let ctx = make_ctx();
 
@@ -323,13 +311,16 @@ mod tests {
         };
 
         assert_eq!(
-            stream_handle.metadata().kind,
+            stream_handle.metadata().kind(),
             ActionKind::Stream,
             "factory must stamp ActionKind::Stream"
         );
 
+        let input = stream_handle
+            .prepare_input(crate::ActionInput::Raw(serde_json::json!({ "start": 0 })))
+            .expect("input preparation must succeed");
         let result = stream_handle
-            .dispatch(serde_json::json!({ "start": 0 }), &ctx)
+            .dispatch(input, &ctx)
             .await
             .expect("dispatch must succeed");
 
@@ -347,14 +338,15 @@ mod tests {
     /// Proves: `is_stream()` and `kind == Stream` set via factory.
     #[tokio::test]
     async fn stream_metadata_kind_and_predicate() {
-        let factory = GenericStreamFactory::<SumStream>::new();
+        let factory =
+            GenericStreamFactory::<SumStream>::new().expect("valid test catalog definition");
         let node = make_node("test.stream.sum");
         let ctx = make_ctx();
 
         let handle = factory.instantiate(&node, &ctx).await.unwrap();
 
         assert_eq!(
-            handle.metadata().kind,
+            handle.metadata().kind(),
             ActionKind::Stream,
             "GenericStreamFactory must stamp ActionKind::Stream on the stored metadata"
         );
@@ -367,7 +359,8 @@ mod tests {
     /// Proves D-4: a chunk `Err` short-circuits dispatch — no partial output, typed error returned.
     #[tokio::test]
     async fn error_chunk_short_circuits_with_no_partial_output() {
-        let factory = GenericStreamFactory::<ErrorStream>::new();
+        let factory =
+            GenericStreamFactory::<ErrorStream>::new().expect("valid test catalog definition");
         let node = make_node("test.stream.error");
         let ctx = make_ctx();
 
@@ -376,8 +369,11 @@ mod tests {
             panic!("expected ActionHandle::Stream");
         };
 
+        let input = stream_handle
+            .prepare_input(crate::ActionInput::Raw(serde_json::json!(null)))
+            .expect("input preparation must succeed");
         let err = stream_handle
-            .dispatch(serde_json::json!(null), &ctx)
+            .dispatch(input, &ctx)
             .await
             .expect_err("dispatch must propagate the chunk error without partial output");
 

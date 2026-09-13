@@ -5,7 +5,7 @@ include!(concat!(
     "/examples_include/outbound_http_connector_shared.rs"
 ));
 
-use nebula_schema::FieldValues;
+use nebula_schema::AuthoredValue;
 use serde_json::json;
 
 #[test]
@@ -26,7 +26,10 @@ fn minimal_get_validates() {
         "query": { "params": [] },
         "request_signing": { "mode": "none" },
     });
-    assert!(s.validate(&FieldValues::from_json(v).unwrap()).is_ok());
+    assert!(
+        s.validate(AuthoredValue::from_template_json(v).unwrap())
+            .is_ok()
+    );
 }
 
 #[test]
@@ -41,7 +44,10 @@ fn post_with_bearer_and_json_body_validates() {
         "query": { "params": [] },
         "request_signing": { "mode": "none" },
     });
-    assert!(s.validate(&FieldValues::from_json(v).unwrap()).is_ok());
+    assert!(
+        s.validate(AuthoredValue::from_template_json(v).unwrap())
+            .is_ok()
+    );
 }
 
 #[test]
@@ -58,6 +64,6 @@ fn form_body_validates() {
         "query": { "params": [] },
         "request_signing": { "mode": "none" },
     });
-    let values = FieldValues::from_json(v).expect("ingest");
-    assert!(s.validate(&values).is_ok());
+    let values = AuthoredValue::from_template_json(v).expect("ingest");
+    assert!(s.validate(values).is_ok());
 }

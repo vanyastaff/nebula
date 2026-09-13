@@ -15,9 +15,11 @@ use semver::Version;
 /// Direction-typed (ADR-0100 C15): the input is an [`InputSchema`] (consumer)
 /// and the output an [`OutputSchema`] (producer), both cheap `Arc`-backed
 /// newtypes over `ValidSchema`, so the per-edge check
-/// `is_assignable_schema(&producer.output, &consumer.input)` cannot transpose
-/// the two. An empty/`Any` schema on either side still acts as the gradual
-/// escape (ADR-0100 L2): an untyped node is compatible with any neighbour.
+/// `explain_assignable(&producer.output, &consumer.input)` cannot transpose
+/// the two. An `Any` consumer accepts all producers; an `Any` producer yields
+/// an undecidable verdict for a concrete consumer. Empty records are object
+/// contracts, not universal consumers. The workflow's explicit schema-check
+/// mode decides whether an undecidable edge may be admitted.
 #[derive(Debug, Clone)]
 pub struct NodeIoSchemas {
     /// The schema describing this node's input (what it consumes).

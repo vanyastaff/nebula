@@ -7,17 +7,17 @@
 #![allow(unused_imports)]
 
 use nebula_credential::{
-    CredentialContext, SecretString, error::CredentialError,
-    resolve::{ResolveResult, UserInput},
+    CredentialContext, SecretString,
+    error::CredentialError,
+    resolve::{ResolveResult, StaticResolveResult, UserInput},
     scheme::SecretToken,
 };
-use nebula_schema::FieldValues;
 
 struct Bad;
 
 #[nebula_credential::credential(key = "bad", name = "Bad")]
 impl Bad {
-    type Properties = FieldValues;
+    type Properties = serde_json::Value;
     type Scheme = SecretToken;
     type State = SecretToken;
     // No `type Pending` — the macro must reject the interactive method below.
@@ -27,10 +27,12 @@ impl Bad {
     }
 
     async fn resolve(
-        _values: &FieldValues,
+        _properties: &Self::Properties,
         _ctx: &CredentialContext,
-    ) -> Result<ResolveResult<SecretToken, ()>, CredentialError> {
-        Ok(ResolveResult::Complete(SecretToken::new(SecretString::new("t"))))
+    ) -> Result<StaticResolveResult<SecretToken>, CredentialError> {
+        Ok(StaticResolveResult::Complete(SecretToken::new(
+            SecretString::new("t"),
+        )))
     }
 
     async fn continue_resolve(

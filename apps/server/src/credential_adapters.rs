@@ -10,22 +10,25 @@ use nebula_api::ports::credential_schema::{
     CredentialCapabilityFlags, CredentialSchemaPort, CredentialTypeDescriptor,
 };
 use nebula_credential::{
-    AnyCredential, Capabilities, CredentialRegistry,
-    runtime::{RefreshTransport, RefreshTransportError, TokenPostRequest, TokenPostResponse},
+    Capabilities, CredentialRegistry,
+    runtime::{
+        AcquisitionTransport, AcquisitionTransportError, RefreshTransport, RefreshTransportError,
+        TokenPostRequest, TokenPostResponse,
+    },
 };
-use nebula_schema::ValidSchema;
+use nebula_schema::JsonSchemaExportError;
 use nebula_storage_port::SecretBytes;
 use zeroize::Zeroizing;
 
 use crate::oauth_egress::build_oauth_client;
 
-/// Reqwest-backed token refresh transport for the first-party process.
+/// Reqwest-backed OAuth token transport for the first-party process.
 #[derive(Clone)]
-pub(crate) struct ReqwestRefreshTransport {
+pub(crate) struct ReqwestOAuthTransport {
     client: reqwest::Client,
 }
 
-impl ReqwestRefreshTransport {
+impl ReqwestOAuthTransport {
     /// Build the process-wide policy-bearing client.
     pub(crate) fn new() -> Result<Self, reqwest::Error> {
         build_oauth_client().map(|client| Self { client })
@@ -42,13 +45,13 @@ impl ReqwestRefreshTransport {
     }
 }
 
-impl std::fmt::Debug for ReqwestRefreshTransport {
+impl std::fmt::Debug for ReqwestOAuthTransport {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("ReqwestRefreshTransport")
+        formatter.write_str("ReqwestOAuthTransport")
     }
 }
 
-impl RefreshTransport for ReqwestRefreshTransport {
+impl RefreshTransport for ReqwestOAuthTransport {
     fn post_token<'a>(
         &'a self,
         request: TokenPostRequest,
@@ -56,33 +59,65 @@ impl RefreshTransport for ReqwestRefreshTransport {
         Box<dyn Future<Output = Result<TokenPostResponse, RefreshTransportError>> + Send + 'a>,
     > {
         Box::pin(async move {
-            let form_pairs: Vec<(&str, &str)> = request
-                .form()
-                .iter()
-                .map(|(key, value)| (key.as_str(), value.expose_secret()))
-                .collect();
-            let max_response_bytes = request.max_response_bytes();
-            let mut builder = self
-                .client
-                .post(request.endpoint().expose_url().clone())
-                .form(&form_pairs);
-            if let Some((user, password)) = request.basic_auth() {
-                builder = builder.basic_auth(user.expose_secret(), Some(password.expose_secret()));
-            }
-            drop(form_pairs);
-            drop(request);
-
-            let response = builder
-                .send()
+            post_token(&self.client, request)
                 .await
-                .map_err(|_| RefreshTransportError::Send)?;
-            let status = response.status().as_u16();
-            let body = read_bounded(response, max_response_bytes)
-                .await
-                .map_err(|_| RefreshTransportError::ReadBody)?;
-            TokenPostResponse::try_new(status, body).map_err(|_| RefreshTransportError::ReadBody)
+                .map_err(|error| match error {
+                    OAuthHttpError::Send => RefreshTransportError::Send,
+                    OAuthHttpError::ReadBody => RefreshTransportError::ReadBody,
+                })
         })
     }
+}
+
+impl AcquisitionTransport for ReqwestOAuthTransport {
+    fn post_token<'a>(
+        &'a self,
+        request: TokenPostRequest,
+    ) -> std::pin::Pin<
+        Box<dyn Future<Output = Result<TokenPostResponse, AcquisitionTransportError>> + Send + 'a>,
+    > {
+        Box::pin(async move {
+            post_token(&self.client, request)
+                .await
+                .map_err(|error| match error {
+                    OAuthHttpError::Send => AcquisitionTransportError::Send,
+                    OAuthHttpError::ReadBody => AcquisitionTransportError::ReadBody,
+                })
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum OAuthHttpError {
+    Send,
+    ReadBody,
+}
+
+async fn post_token(
+    client: &reqwest::Client,
+    request: TokenPostRequest,
+) -> Result<TokenPostResponse, OAuthHttpError> {
+    let form_pairs: Vec<(&str, &str)> = request
+        .form()
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.expose_secret()))
+        .collect();
+    let max_response_bytes = request.max_response_bytes();
+    let mut builder = client
+        .post(request.endpoint().expose_url().clone())
+        .form(&form_pairs);
+    if let Some((user, password)) = request.basic_auth() {
+        builder = builder.basic_auth(user.expose_secret(), Some(password.expose_secret()));
+    }
+    drop(form_pairs);
+    drop(request);
+
+    let response = builder.send().await.map_err(|_| OAuthHttpError::Send)?;
+    let status = response.status().as_u16();
+    let body = read_bounded(response, max_response_bytes)
+        .await
+        .map_err(|_| OAuthHttpError::ReadBody)?;
+    TokenPostResponse::try_new(status, body).map_err(|_| OAuthHttpError::ReadBody)
 }
 
 async fn read_bounded(
@@ -123,63 +158,59 @@ enum ReadBoundedError {
 
 /// Catalog projection over the exact registry used by the runtime.
 pub(crate) struct RegistryCredentialSchema {
-    registry: Arc<CredentialRegistry>,
+    // Keep the source immutable for as long as its exported snapshot is used.
+    _registry: Arc<CredentialRegistry>,
+    descriptors: Vec<CredentialTypeDescriptor>,
 }
 
 impl RegistryCredentialSchema {
-    pub(crate) fn new(registry: Arc<CredentialRegistry>) -> Self {
-        Self { registry }
+    /// Fail composition if any admitted schema cannot be exported.
+    #[tracing::instrument(name = "server.credential_catalog.build", skip_all)]
+    pub(crate) fn new(registry: Arc<CredentialRegistry>) -> Result<Self, JsonSchemaExportError> {
+        let descriptors = registry
+            .catalog()
+            .map(|(metadata, capabilities)| Self::descriptor(metadata, capabilities))
+            .collect::<Result<Vec<_>, _>>()
+            .inspect_err(|_| tracing::error!("credential catalog schema export failed"))?;
+        Ok(Self {
+            _registry: registry,
+            descriptors,
+        })
     }
 
-    fn descriptor(&self, credential: &dyn AnyCredential) -> CredentialTypeDescriptor {
-        let metadata = credential.metadata();
-        let key = credential.credential_key().to_owned();
-        let capabilities = self
-            .registry
-            .capabilities_of(&key)
-            .unwrap_or_else(Capabilities::empty);
-        CredentialTypeDescriptor {
+    fn descriptor(
+        metadata: &nebula_credential::CredentialMetadata,
+        capabilities: Capabilities,
+    ) -> Result<CredentialTypeDescriptor, JsonSchemaExportError> {
+        let key = metadata.key().as_str().to_owned();
+        Ok(CredentialTypeDescriptor {
             key,
-            name: metadata.base.name.clone(),
-            description: metadata.base.description.clone(),
-            auth_pattern: format!("{:?}", metadata.pattern),
+            name: metadata.name().to_owned(),
+            description: metadata.description().to_owned(),
+            auth_pattern: format!("{:?}", metadata.pattern()),
             capabilities: CredentialCapabilityFlags {
                 interactive: capabilities.contains(Capabilities::INTERACTIVE),
                 refreshable: capabilities.contains(Capabilities::REFRESHABLE),
                 testable: capabilities.contains(Capabilities::TESTABLE),
                 revocable: capabilities.contains(Capabilities::REVOCABLE),
             },
-            icon: metadata.base.icon.as_inline().map(str::to_owned),
-            documentation_url: metadata.base.documentation_url,
-            schema_json: export_schema(&metadata.base.schema),
-        }
+            icon: metadata.icon().as_inline().map(str::to_owned),
+            documentation_url: metadata.documentation_url().map(str::to_owned),
+            schema_json: metadata.schema().json_schema()?.to_value(),
+        })
     }
-}
-
-fn export_schema(schema: &ValidSchema) -> serde_json::Value {
-    schema
-        .json_schema()
-        .ok()
-        .and_then(|exported| serde_json::to_value(&exported).ok())
-        .unwrap_or_else(|| serde_json::json!({ "type": "object" }))
 }
 
 impl CredentialSchemaPort for RegistryCredentialSchema {
     fn list_types(&self) -> Vec<CredentialTypeDescriptor> {
-        self.registry
-            .iter_compatible(Capabilities::empty())
-            .filter_map(|(key, _)| {
-                self.registry
-                    .resolve_any(key)
-                    .map(|credential| self.descriptor(credential))
-            })
-            .collect()
+        self.descriptors.clone()
     }
 
     fn get_type(&self, credential_key: &str) -> Option<CredentialTypeDescriptor> {
-        self.registry
-            .resolve_any(credential_key)
-            .map(|credential| self.descriptor(credential))
+        self.descriptors
+            .iter()
+            .find(|descriptor| descriptor.key == credential_key)
+            .cloned()
     }
 }
 

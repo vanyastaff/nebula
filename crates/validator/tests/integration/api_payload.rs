@@ -4,7 +4,7 @@
 //! the derive macro), and the engine produces a flat [`ValidationErrors`]
 //! collection suitable for mapping to an HTTP 400 response body.
 
-use nebula_validator::{ExecutionMode, Rule, validate_rules};
+use nebula_validator::{DiagnosticDisclosure, ExecutionMode, Rule, validate_rules};
 use serde_json::json;
 
 use super::common::{assert_codes_exactly, assert_has_code, expect_errors};
@@ -15,7 +15,10 @@ fn username_rules() -> Vec<Rule> {
     vec![
         Rule::min_length(3),
         Rule::max_length(32),
-        Rule::pattern(r"^[a-z0-9_]+$").with_message("lowercase letters, digits, underscore only"),
+        Rule::pattern(r"^[a-z0-9_]+$")
+            .unwrap()
+            .with_message("lowercase letters, digits, underscore only")
+            .unwrap(),
     ]
 }
 
@@ -30,10 +33,19 @@ fn valid_payload_passes_static_mode() {
             &json!("alice_42"),
             &username_rules(),
             ExecutionMode::StaticOnly,
+            DiagnosticDisclosure::IncludeValue,
         )
         .is_ok()
     );
-    assert!(validate_rules(&json!(30), &age_rules(), ExecutionMode::StaticOnly).is_ok());
+    assert!(
+        validate_rules(
+            &json!(30),
+            &age_rules(),
+            ExecutionMode::StaticOnly,
+            DiagnosticDisclosure::IncludeValue,
+        )
+        .is_ok()
+    );
 }
 
 #[test]
@@ -43,6 +55,7 @@ fn invalid_payload_accumulates_every_rule_failure() {
         &json!("A"),
         &username_rules(),
         ExecutionMode::StaticOnly,
+        DiagnosticDisclosure::IncludeValue,
     ));
     assert_has_code(&errors, "min_length");
     assert_has_code(&errors, "invalid_format"); // Pattern -> invalid_format
@@ -60,6 +73,7 @@ fn custom_message_overrides_default() {
         &json!("UPPER"),
         &username_rules(),
         ExecutionMode::StaticOnly,
+        DiagnosticDisclosure::IncludeValue,
     ));
 
     // With the Described decorator, the error code is still the inner rule's
@@ -79,32 +93,63 @@ fn custom_message_overrides_default() {
 fn deferred_rules_are_skipped_in_static_mode() {
     let rules = vec![
         Rule::min_length(3),
-        Rule::custom("sibling_match('email')"),
+        Rule::custom("sibling_match('email')").unwrap(),
         Rule::unique_by("id").unwrap(),
     ];
 
     // Only MinLength runs; Custom and UniqueBy are deferred.
-    assert!(validate_rules(&json!("alice"), &rules, ExecutionMode::StaticOnly).is_ok());
+    assert_eq!(
+        validate_rules(
+            &json!("alice"),
+            &rules,
+            ExecutionMode::StaticOnly,
+            DiagnosticDisclosure::IncludeValue,
+        )
+        .unwrap(),
+        nebula_validator::EvaluationOutcome::Deferred(
+            vec![nebula_validator::DeferredReason::DeferredRule; 2]
+        )
+    );
 
-    // In Deferred mode, the static rule is skipped and deferred ones
-    // return Ok (they need a runtime evaluator).
-    assert!(validate_rules(&json!("ab"), &rules, ExecutionMode::Deferred).is_ok());
+    let errors = validate_rules(
+        &json!("ab"),
+        &rules,
+        ExecutionMode::Deferred,
+        DiagnosticDisclosure::IncludeValue,
+    )
+    .unwrap_err();
+    assert_eq!(errors.len(), 2);
+    for error in errors.errors() {
+        assert_eq!(
+            error.kind(),
+            nebula_validator::ValidationErrorKind::Unavailable
+        );
+    }
 }
 
 #[test]
 fn combinator_rules_short_circuit_on_any() {
-    let rules = vec![Rule::any([Rule::min_length(10), Rule::max_length(3)])];
+    let rules = vec![Rule::any([Rule::min_length(10), Rule::max_length(3)]).unwrap()];
 
     // "hello" is neither >=10 nor <=3 — both alternatives fail.
     let errors = expect_errors(validate_rules(
         &json!("hello"),
         &rules,
         ExecutionMode::StaticOnly,
+        DiagnosticDisclosure::IncludeValue,
     ));
     assert_codes_exactly(&errors, &["any_failed"]);
 
     // "ab" satisfies MaxLength — the combinator passes overall.
-    assert!(validate_rules(&json!("ab"), &rules, ExecutionMode::StaticOnly).is_ok());
+    assert!(
+        validate_rules(
+            &json!("ab"),
+            &rules,
+            ExecutionMode::StaticOnly,
+            DiagnosticDisclosure::IncludeValue,
+        )
+        .is_ok()
+    );
 }
 
 #[test]
@@ -118,6 +163,7 @@ fn type_mismatch_surfaces_as_error() {
         &json!(42),
         &rules,
         ExecutionMode::StaticOnly,
+        DiagnosticDisclosure::IncludeValue,
     ));
     assert_has_code(&errors, "type_mismatch");
 }

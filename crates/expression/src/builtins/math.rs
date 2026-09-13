@@ -1,6 +1,6 @@
 //! Math functions
 
-use serde_json::Value;
+use serde_json::{Number, Value};
 
 use super::{
     check_arg_count, check_min_arg_count, get_int_arg_with_policy, get_number_arg_with_policy,
@@ -28,147 +28,148 @@ fn finite_result(fn_name: &str, value: f64) -> ExpressionResult<Value> {
     }
 }
 
-/// Compare two JSON numbers by value, exactly for integers.
-///
-/// `f64` loses precision past 2^53, which would make `max`/`min` pick the wrong
-/// 64-bit value; compare as `i64` (or `u64` when both exceed `i64::MAX`) and only
-/// fall back to `f64` for genuine floats. Both inputs are validated as numbers by
-/// the caller, so the `f64` fallback is total.
-fn number_cmp(a: &Value, b: &Value) -> std::cmp::Ordering {
-    use std::cmp::Ordering;
-    if let (Some(lhs), Some(rhs)) = (a.as_i64(), b.as_i64()) {
-        return lhs.cmp(&rhs);
+fn numeric_argument(
+    function: &str,
+    args: &[&Value],
+    index: usize,
+    view: BuiltinView<'_>,
+    context: &EvaluationContext,
+) -> ExpressionResult<Number> {
+    let float = get_number_arg_with_policy(function, args, index, "value", view, context)?;
+    match args[index] {
+        Value::Number(number) => Ok(number.clone()),
+        Value::String(text) => crate::value_utils::parse_number(text)
+            .map_err(|message| ExpressionError::invalid_argument(function, message)),
+        Value::Bool(value) => Ok(Number::from(i64::from(*value))),
+        _ => Number::from_f64(float)
+            .ok_or_else(|| ExpressionError::invalid_argument(function, "expected a finite number")),
     }
-    if let (Some(lhs), Some(rhs)) = (a.as_u64(), b.as_u64()) {
-        return lhs.cmp(&rhs);
-    }
-    let lhs = a.as_f64().unwrap_or(f64::NAN);
-    let rhs = b.as_f64().unwrap_or(f64::NAN);
-    lhs.partial_cmp(&rhs).unwrap_or(Ordering::Equal)
 }
 
 /// Absolute value
-pub fn abs(
-    args: &[Value],
+pub(crate) fn abs(
+    args: &[&Value],
     view: BuiltinView<'_>,
     ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("abs", args, 1)?;
-    let num = get_number_arg_with_policy("abs", args, 0, "value", view, ctx)?;
-    Ok(serde_json::json!(num.abs()))
+    let number = numeric_argument("abs", args, 0, view, ctx)?;
+    if let Some(integer) = crate::value_utils::integer_value(&number) {
+        return crate::value_utils::integer_result(integer.checked_abs(), "abs");
+    }
+    finite_result(
+        "abs",
+        get_number_arg_with_policy("abs", args, 0, "value", view, ctx)?.abs(),
+    )
 }
 
 /// Round to specified decimal places (default: 0)
-pub fn round(
-    args: &[Value],
+pub(crate) fn round(
+    args: &[&Value],
     view: BuiltinView<'_>,
     ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_min_arg_count("round", args, 1)?;
-    let num = get_number_arg_with_policy("round", args, 0, "value", view, ctx)?;
-
-    if args.len() >= 2 {
-        // Round to specific decimal places
-        let decimals = get_int_arg_with_policy("round", args, 1, "decimals", view, ctx)?;
-        if decimals < 0 {
-            return Err(ExpressionError::expression_invalid_argument(
-                "round",
-                "Argument 'decimals' must be non-negative",
-            ));
-        }
-        let decimals = decimals as u32;
-        let multiplier = 10_f64.powi(decimals as i32);
-        let rounded = (num * multiplier).round() / multiplier;
-        // A very large `decimals` makes `multiplier` overflow to `inf`, turning
-        // `rounded` into `NaN`; reject that instead of returning silent `null`.
-        finite_result("round", rounded)
+    let number = numeric_argument("round", args, 0, view, ctx)?;
+    let decimals = if args.len() >= 2 {
+        get_int_arg_with_policy("round", args, 1, "decimals", view, ctx)?
     } else {
-        // Round to nearest integer
-        Ok(serde_json::json!(num.round()))
+        0
+    };
+    let decimals = i32::try_from(decimals)
+        .ok()
+        .filter(|value| (0..=308).contains(value))
+        .ok_or_else(|| {
+            ExpressionError::invalid_argument(
+                "round",
+                "decimals must be between 0 and 308 for a finite result",
+            )
+        })?;
+    if crate::value_utils::is_integer_number(&number) {
+        return Ok(Value::Number(number));
     }
+    let num = get_number_arg_with_policy("round", args, 0, "value", view, ctx)?;
+    let multiplier = 10_f64.powi(decimals);
+    finite_result("round", (num * multiplier).round() / multiplier)
 }
 
 /// Floor function
-pub fn floor(
-    args: &[Value],
+pub(crate) fn floor(
+    args: &[&Value],
     view: BuiltinView<'_>,
     ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("floor", args, 1)?;
+    let number = numeric_argument("floor", args, 0, view, ctx)?;
+    if crate::value_utils::is_integer_number(&number) {
+        return Ok(Value::Number(number));
+    }
     let num = get_number_arg_with_policy("floor", args, 0, "value", view, ctx)?;
     Ok(serde_json::json!(num.floor()))
 }
 
 /// Ceiling function
-pub fn ceil(
-    args: &[Value],
+pub(crate) fn ceil(
+    args: &[&Value],
     view: BuiltinView<'_>,
     ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("ceil", args, 1)?;
+    let number = numeric_argument("ceil", args, 0, view, ctx)?;
+    if crate::value_utils::is_integer_number(&number) {
+        return Ok(Value::Number(number));
+    }
     let num = get_number_arg_with_policy("ceil", args, 0, "value", view, ctx)?;
     Ok(serde_json::json!(num.ceil()))
 }
 
 /// Minimum of two or more numbers
-pub fn min(
-    args: &[Value],
+pub(crate) fn min(
+    args: &[&Value],
     view: BuiltinView<'_>,
     ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_min_arg_count("min", args, 1)?;
 
-    // Validate arg 0 is numeric, then select by EXACT comparison and return the
-    // original value — preserving integer type and exact 64-bit magnitude (an
-    // f64 running min would collapse large ids and emit a spurious `.0`).
-    get_number_arg_with_policy("min", args, 0, "value", view, ctx)?;
-    let mut best = &args[0];
-    for (i, arg) in args[1..].iter().enumerate() {
-        get_number_arg_with_policy("min", std::slice::from_ref(arg), 0, "value", view, ctx)
-            .map_err(|_| {
-                ExpressionError::expression_invalid_argument(
-                    "min",
-                    format!("Argument at position {} must be a number", i + 1),
-                )
-            })?;
-        if number_cmp(arg, best) == std::cmp::Ordering::Less {
-            best = arg;
-        }
-    }
-
-    Ok(best.clone())
+    extremum("min", args, view, ctx, std::cmp::Ordering::Less)
 }
 
 /// Maximum of two or more numbers
-pub fn max(
-    args: &[Value],
+pub(crate) fn max(
+    args: &[&Value],
     view: BuiltinView<'_>,
     ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_min_arg_count("max", args, 1)?;
 
-    // See `min`: select by exact comparison and return the original value.
-    get_number_arg_with_policy("max", args, 0, "value", view, ctx)?;
-    let mut best = &args[0];
-    for (i, arg) in args[1..].iter().enumerate() {
-        get_number_arg_with_policy("max", std::slice::from_ref(arg), 0, "value", view, ctx)
-            .map_err(|_| {
-                ExpressionError::expression_invalid_argument(
-                    "max",
-                    format!("Argument at position {} must be a number", i + 1),
-                )
-            })?;
-        if number_cmp(arg, best) == std::cmp::Ordering::Greater {
-            best = arg;
+    extremum("max", args, view, ctx, std::cmp::Ordering::Greater)
+}
+
+fn extremum(
+    function: &'static str,
+    args: &[&Value],
+    view: BuiltinView<'_>,
+    context: &EvaluationContext,
+    ordering: std::cmp::Ordering,
+) -> ExpressionResult<Value> {
+    let mut best = numeric_argument(function, args, 0, view, context)?;
+    for index in 1..args.len() {
+        let candidate = numeric_argument(function, args, index, view, context)?;
+        let comparison = crate::value_utils::compare_numbers(&candidate, &best).ok_or(
+            ExpressionError::NonFiniteNumber {
+                operation: function,
+            },
+        )?;
+        if comparison == ordering {
+            best = candidate;
         }
     }
-
-    Ok(best.clone())
+    Ok(Value::Number(best))
 }
 
 /// Square root
-pub fn sqrt(
-    args: &[Value],
+pub(crate) fn sqrt(
+    args: &[&Value],
     view: BuiltinView<'_>,
     ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
@@ -184,8 +185,8 @@ pub fn sqrt(
 }
 
 /// Power function
-pub fn pow(
-    args: &[Value],
+pub(crate) fn pow(
+    args: &[&Value],
     view: BuiltinView<'_>,
     ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {

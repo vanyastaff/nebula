@@ -30,6 +30,8 @@ nebula-validator-macros = { path = "macros", optional = true }
 # Error handling
 thiserror = { workspace = true }
 nebula-error = { workspace = true, features = ["derive"] }
+tracing = { workspace = true }
+num-cmp = { workspace = true }
 
 # Small vector optimization for error params
 smallvec = "1.15"
@@ -54,6 +56,10 @@ criterion = { workspace = true }
 [[example]]
 name = "json_validation"
 
+[[example]]
+name = "validator_basic_usage"
+required-features = ["network"]
+
 [[bench]]
 name = "string_validators"
 harness = false
@@ -70,9 +76,14 @@ harness = false
 name = "integration"
 path = "tests/integration/main.rs"
 
+[[test]]
+name = "derive_tests"
+required-features = ["derive"]
+
 [[bench]]
 name = "derive_regex"
 harness = false
+required-features = ["derive"]
 
 [[bench]]
 name = "rule_engine"
@@ -81,6 +92,7 @@ harness = false
 [[bench]]
 name = "derive_large_struct"
 harness = false
+required-features = ["derive"]
 
 [package.metadata.docs.rs]
 # Render feature-gated items on docs.rs (build with every feature).

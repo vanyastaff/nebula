@@ -12,7 +12,7 @@
 //! `crates/plugin-core/tests/plugin_wiring_e2e.rs` (the `core.switch` e2e) and
 //! reused by the sibling workflow examples:
 //!
-//!   `ActionRegistry` -> `ActionExecutor` -> `InProcessRunner`
+//!   `ActionRegistry` -> `InProcessRunner`
 //!   -> `ActionRuntime` -> `WorkflowEngine::with_plugin(CorePlugin)`
 //!
 //! ## The workflow (support-ticket router)
@@ -53,12 +53,10 @@
 use std::{collections::HashMap, sync::Arc};
 
 use anyhow::Context as _;
-use nebula_action::ActionResult;
 use nebula_core::port_key;
 use nebula_engine::ResolvedPlugin;
 use nebula_engine::{
-    ActionExecutor, ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner,
-    WorkflowEngine,
+    ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner, WorkflowEngine,
 };
 use nebula_execution::{ExecutionStatus, context::ExecutionBudget};
 use nebula_metrics::MetricsRegistry;
@@ -210,14 +208,12 @@ fn init_tracing() {
 
 /// Build a standalone `WorkflowEngine` with the first-party `CorePlugin` wired.
 ///
-/// Mirrors `workflow_data_pipeline`'s `build_engine`: the `ActionExecutor` is the
-/// identity executor used by the in-process runner; the `core.*` actions
+/// Mirrors `workflow_data_pipeline`'s `build_engine`: the in-process runner
+/// executes actions registered in the `ActionRegistry`; the `core.*` actions
 /// themselves are registered by `with_plugin(CorePlugin)`.
 fn build_engine() -> anyhow::Result<WorkflowEngine> {
     let registry = Arc::new(ActionRegistry::new());
-    let executor: ActionExecutor =
-        Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
-    let runner = Arc::new(InProcessRunner::new(executor));
+    let runner = Arc::new(InProcessRunner::new());
     let metrics = MetricsRegistry::new();
     let runtime = Arc::new(
         ActionRuntime::try_new(
@@ -314,7 +310,7 @@ fn branch_node(
 ) -> NodeDefinition {
     NodeDefinition::new(key.clone(), display_name, "core", "core.set_fields")
         .expect("branch NodeDefinition has valid keys")
-        .with_parameter("data", ParamValue::reference(route_key.clone(), ""))
+        .with_parameter("data", ParamValue::root_reference(route_key.clone()))
         .with_parameter(
             "assignments",
             ParamValue::literal(json!([{ "name": "action", "value": action }])),

@@ -39,6 +39,12 @@
 //!         resource_key!("quickstart.http_client")
 //!     }
 //!
+//!     fn metadata() -> nebula_resource::ResourceMetadataDraft {
+//!         nebula_resource::ResourceMetadataDraft::new(
+//!             Self::key(), nebula_resource::metadata_name!("HTTP client"), "Pooled HTTP client",
+//!         )
+//!     }
+//!
 //!     async fn create(&self, _config: &(), _ctx: &ResourceContext) -> Result<(), Error> {
 //!         Ok(())
 //!     }
@@ -273,6 +279,10 @@ pub use nebula_core::{ExecutionId, ResourceKey, ScopeLevel, WorkflowId, resource
 /// Re-export [`Subscriber`] so callers of [`Manager::subscribe_events`] do not
 /// need a direct `nebula-eventbus` dependency.
 pub use nebula_eventbus::Subscriber;
+pub use nebula_metadata::{
+    DeprecationNotice, Icon, MaturityLevel, MetadataError, MetadataName, MetadataReadmissionError,
+    metadata_name,
+};
 // Credential surface re-exported so resource consumers don't need a
 // direct nebula-credential dep for trait shape.
 //
@@ -333,16 +343,19 @@ pub use nebula_resource_macros::ClassifyError;
 /// slot field), see the doctest on [`Manager::register`].
 pub use nebula_resource_macros::Resource;
 /// Derive macro that generates `impl ResourceConfig` with a structural fingerprint
-/// and an optional default empty `impl HasSchema`.
+/// and automatic schemas only for unit/null and empty-braced record configs.
+/// Nonempty configs require `#[config(schema = external)]` plus a real
+/// `HasSchema` implementation, usually derived with `Schema`.
 ///
 /// See [`nebula_resource_macros::ResourceConfig`] for the full container-
 /// and field-attribute reference (`#[config(validate = path)]`,
 /// `#[config(skip_fingerprint)]`).
 ///
 /// ```
-/// use nebula_resource::ResourceConfig;
+/// use nebula_resource::{ResourceConfig, Schema};
 ///
-/// #[derive(ResourceConfig, Clone)]
+/// #[derive(ResourceConfig, Schema, Clone)]
+/// #[config(schema = external)]
 /// struct PgConfig {
 ///     url: String,
 ///     max_conns: u32,
@@ -362,7 +375,8 @@ pub use nebula_resource_macros::ResourceConfig;
 // `nebula-schema` in extern_prelude either.
 pub use factory::{
     BoxFut, CredentialSlotInstall, KindActivator, RegisterRequest, RegistrarError,
-    ResourceActivatorRegistry, ResourceFactory, ResourceRegistrationOutcome, SlotBinding,
+    ResourceActivatorRegistry, ResourceConfigInput, ResourceFactory, ResourceRegistrationOutcome,
+    SlotBinding,
 };
 pub use nebula_schema::{HasSchema, Schema, ValidSchema, impl_empty_has_schema};
 pub use options::AcquireOptions;
@@ -373,8 +387,9 @@ pub use registry::{LookupOutcome, ManagedResourceView, Registry};
 pub use release_queue::ReleaseQueue;
 pub use reload::ReloadOutcome;
 pub use resource::{
-    CheckCost, HasCredentialSlots, MetadataCompatibilityError, Provider, ResourceConfig,
-    ResourceMetadata, TeardownCx, TeardownReason,
+    CheckCost, HasCredentialSlots, MetadataBuildError, MetadataCompatibilityError, Provider,
+    RecordedResourceMetadata, ResourceConfig, ResourceMetadata, ResourceMetadataDraft, TeardownCx,
+    TeardownReason,
 };
 pub use resource_ref::ResourceRef;
 pub use slot::{CredentialSlot, SlotCell, SlotInstallError, SlotUpdate};
@@ -423,6 +438,9 @@ pub use credential_fanout::{Bind, ResourceFanoutDriver, ResourceFanoutIndex, Rot
 ///     type Instance = ();
 ///     type Topology = Pooled<Self>;
 ///     fn key() -> ResourceKey { resource_key!("my.resource") }
+///     fn metadata() -> ResourceMetadataDraft {
+///         ResourceMetadataDraft::new(Self::key(), nebula_resource::metadata_name!("My resource"), "")
+///     }
 ///     async fn create(&self, _: &(), _: &ResourceContext) -> Result<(), Error> {
 ///         Ok(())
 ///     }
@@ -438,7 +456,7 @@ pub mod prelude {
     pub use crate::{
         AcquireOptions, Error, ErrorKind, HasCredentialSlots, Manager, PoolConfig, Pooled,
         Provider, RegistrationSpec, ReleaseOutcome, Resident, ResidentConfig, ResourceConfig,
-        ResourceContext, ResourceGuard, ResourceKey, ResourceMetadata, ScopeLevel, ShutdownConfig,
-        SlotCell, SlotIdentity, TopologyTag, resource_key,
+        ResourceContext, ResourceGuard, ResourceKey, ResourceMetadata, ResourceMetadataDraft,
+        ScopeLevel, ShutdownConfig, SlotCell, SlotIdentity, TopologyTag, resource_key,
     };
 }

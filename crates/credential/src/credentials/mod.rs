@@ -23,8 +23,7 @@ pub use basic_auth::{BasicAuthCredential, BasicAuthProperties};
 pub use bearer_token::{BearerTokenCredential, BearerTokenProperties};
 pub use oauth2::{OAuth2Credential, OAuth2Pending, OAuth2Properties, OAuth2State};
 pub use oauth2_config::{
-    AuthCodeBuilder, ClientCredentialsBuilder, DeviceCodeBuilder, GrantType, OAuth2Config,
-    PkceMethod,
+    AuthCodeBuilder, ClientCredentialsBuilder, GrantType, OAuth2Config, PkceMethod,
 };
 pub use shared_key::{SharedKeyCredential, SharedKeyProperties};
 pub use signing_key::{SigningKeyCredential, SigningKeyProperties};
@@ -57,4 +56,14 @@ pub fn register_builtins(
     registry.register(SharedKeyCredential, crate_name)?;
     registry.register(SigningKeyCredential, crate_name)?;
     Ok(())
+}
+
+#[cfg(test)]
+pub(crate) fn resolve_properties<C: crate::Credential>(
+    data: serde_json::Value,
+) -> Result<C::Properties, nebula_schema::ValidationReport> {
+    nebula_schema::schema_of::<C::Properties>()?
+        .validate(nebula_schema::AuthoredValue::from_data(data)?)?
+        .resolve_data()
+        .and_then(|resolved| resolved.into_typed_exposing_secrets().map_err(Into::into))
 }

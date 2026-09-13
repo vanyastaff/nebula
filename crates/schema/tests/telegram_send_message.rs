@@ -5,7 +5,7 @@ include!(concat!(
     "/examples_include/telegram_send_message_shared.rs"
 ));
 
-use nebula_schema::FieldValues;
+use nebula_schema::AuthoredValue;
 use serde_json::json;
 
 #[test]
@@ -31,7 +31,11 @@ fn message_with_inline_keyboard_validates() {
             ]
         }
     });
-    assert!(schema.validate(&FieldValues::from_json(v).unwrap()).is_ok());
+    assert!(
+        schema
+            .validate(AuthoredValue::from_template_json(v).unwrap())
+            .is_ok()
+    );
 }
 
 #[test]
@@ -42,5 +46,9 @@ fn text_only_message_validates() {
         "chat_id": "x",
         "text": "ok",
     });
-    assert!(schema.validate(&FieldValues::from_json(v).unwrap()).is_ok());
+    assert!(
+        schema
+            .validate(AuthoredValue::from_template_json(v).unwrap())
+            .is_ok()
+    );
 }

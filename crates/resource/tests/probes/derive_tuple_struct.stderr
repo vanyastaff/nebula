@@ -1,5 +1,5 @@
 error: #[derive(Resource)] does not support `#[credential]` on tuple-struct fields — use a named-field struct
-  --> tests/probes/derive_tuple_struct.rs:14:22
+  --> tests/probes/derive_tuple_struct.rs:13:22
    |
-14 | struct TupleResource(#[credential(key = "auth")] SlotCell<CredentialGuard<FakeCred>>);
+13 | struct TupleResource(#[credential(key = "auth")] SlotCell<CredentialGuard<FakeCred>>);
    |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

@@ -16,7 +16,7 @@
 //! assert!("hi".validate_with(&validator).is_err()); // neither 5 nor 10
 //! ```
 
-use crate::foundation::{Validate, ValidationError};
+use crate::foundation::{Validate, ValidationError, ValidationErrorKind};
 
 /// Combines two validators with logical OR.
 ///
@@ -60,6 +60,7 @@ where
         // Contract: right side is evaluated only if the left side fails.
         match self.left.validate(input) {
             Ok(()) => Ok(()),
+            Err(error) if error.kind() != ValidationErrorKind::Violation => Err(error),
             Err(left_error) => match self.right.validate(input) {
                 Ok(()) => Ok(()),
                 Err(right_error) => {
@@ -99,6 +100,7 @@ where
         for validator in &self.validators {
             match validator.validate(input) {
                 Ok(()) => return Ok(()),
+                Err(error) if error.kind() != ValidationErrorKind::Violation => return Err(error),
                 Err(e) => errors.push(e),
             }
         }

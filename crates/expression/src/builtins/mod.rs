@@ -1,13 +1,14 @@
 //! Built-in functions for the expression language
 //! This module provides all built-in functions organized by category.
-pub mod array;
-pub mod conversion;
+pub(crate) mod array;
+pub(crate) mod conversion;
 #[cfg(feature = "datetime")]
-pub mod datetime;
-pub mod math;
-pub mod object;
-pub mod string;
-pub mod util;
+pub(crate) mod datetime;
+pub(crate) mod math;
+pub(crate) mod object;
+mod output;
+pub(crate) mod string;
+pub(crate) mod util;
 
 use std::collections::HashMap;
 
@@ -18,24 +19,40 @@ use crate::{
     ast::Expr,
     context::EvaluationContext,
     error::{ExpressionErrorExt, ExpressionResult},
-    eval::{BuiltinView, Evaluator},
+    eval::BuiltinView,
 };
+
+pub(crate) use output::{ArrayOutputBudget, GroupOutputBudget};
+pub use output::{BuiltinOutput, BuiltinOutputBuilder, BuiltinOutputLimit};
 
 /// Type alias for a builtin function.
 ///
 /// The middle parameter is `BuiltinView<'_>`, NOT `&Evaluator`. The view
-/// exposes only policy-query methods (`is_strict_mode`,
-/// `strict_conversions_enabled`, `max_json_parse_length`) — registered
+/// exposes policy queries and shared work charging (`charge_work`,
+/// `check_output_bytes`) — registered
 /// builtins cannot recurse back into AST evaluation. This is a
 /// type-enforced replacement for the discipline rule documented in the
 /// crate `lib.rs` "Known limitation" note (CO-C1-01 step-budget bypass).
-pub type BuiltinFunction =
-    fn(&[Value], BuiltinView<'_>, &EvaluationContext) -> ExpressionResult<Value>;
+pub type BuiltinFunction = fn(
+    &[&Value],
+    BuiltinView<'_>,
+    &EvaluationContext,
+    BuiltinOutputBuilder,
+) -> ExpressionResult<BuiltinOutput>;
+
+type TrustedBuiltinFunction =
+    fn(&[&Value], BuiltinView<'_>, &EvaluationContext) -> ExpressionResult<Value>;
+
+#[derive(Clone, Copy)]
+enum RegisteredBuiltin {
+    Bounded(BuiltinFunction),
+    Trusted(TrustedBuiltinFunction),
+}
 
 /// Registry of all builtin functions
 #[derive(Clone)]
 pub struct BuiltinRegistry {
-    functions: HashMap<String, BuiltinFunction>,
+    functions: HashMap<String, RegisteredBuiltin>,
 }
 
 impl BuiltinRegistry {
@@ -58,28 +75,44 @@ impl BuiltinRegistry {
         registry
     }
 
-    /// Register a builtin function
-    pub fn register(&mut self, name: impl AsRef<str>, func: BuiltinFunction) {
-        self.functions.insert(name.as_ref().to_owned(), func);
+    fn register(&mut self, name: impl AsRef<str>, function: TrustedBuiltinFunction) {
+        self.functions.insert(
+            name.as_ref().to_owned(),
+            RegisteredBuiltin::Trusted(function),
+        );
+    }
+
+    pub(crate) fn register_bounded(&mut self, name: impl AsRef<str>, function: BuiltinFunction) {
+        self.functions.insert(
+            name.as_ref().to_owned(),
+            RegisteredBuiltin::Bounded(function),
+        );
     }
 
     /// Call a builtin function by name.
     ///
-    /// The evaluator is wrapped in a [`BuiltinView`] before the call, so
-    /// the registered function never sees `&Evaluator` directly.
+    /// Requires the calling evaluator's policy and budget view. The registered
+    /// function cannot construct a fresh budget or re-enter evaluation.
     pub fn call(
         &self,
         name: &str,
-        args: &[Value],
-        evaluator: &Evaluator,
+        args: &[&Value],
+        view: BuiltinView<'_>,
         context: &EvaluationContext,
     ) -> ExpressionResult<Value> {
-        let func = self
+        let function = self
             .functions
             .get(name)
             .ok_or_else(|| ExpressionError::expression_function_not_found(name))?;
+        let output = view.output_builder(context);
 
-        func(args, BuiltinView::new(evaluator), context)
+        match function {
+            RegisteredBuiltin::Bounded(function) => {
+                output.accept(function(args, view, context, output)?)
+            },
+            RegisteredBuiltin::Trusted(function) => output.value(function(args, view, context)?),
+        }
+        .map(BuiltinOutput::into_value)
     }
 
     /// Check if a function exists
@@ -204,7 +237,7 @@ impl Default for BuiltinRegistry {
 /// Helper to check argument count
 pub(crate) fn check_arg_count(
     func_name: &str,
-    args: &[Value],
+    args: &[&Value],
     expected: usize,
 ) -> ExpressionResult<()> {
     if args.len() == expected {
@@ -220,7 +253,7 @@ pub(crate) fn check_arg_count(
 /// Helper to check minimum argument count
 pub(crate) fn check_min_arg_count(
     func_name: &str,
-    args: &[Value],
+    args: &[&Value],
     min: usize,
 ) -> ExpressionResult<()> {
     if args.len() < min {
@@ -248,7 +281,7 @@ pub(crate) fn extract_lambda(arg: &Expr) -> ExpressionResult<(&str, &Expr)> {
 /// Helper to get a string argument with better error message
 pub(crate) fn get_string_arg<'a>(
     func_name: &str,
-    args: &'a [Value],
+    args: &[&'a Value],
     index: usize,
     arg_name: &str,
 ) -> ExpressionResult<&'a str> {
@@ -266,7 +299,7 @@ pub(crate) fn get_string_arg<'a>(
                 format!(
                     "Argument '{}' must be a string, got {}",
                     arg_name,
-                    crate::value_utils::value_type_name(&args[index])
+                    crate::value_utils::value_type_name(args[index])
                 ),
             )
         })
@@ -275,7 +308,7 @@ pub(crate) fn get_string_arg<'a>(
 /// Helper to get an integer argument with better error message
 pub(crate) fn get_int_arg(
     func_name: &str,
-    args: &[Value],
+    args: &[&Value],
     index: usize,
     arg_name: &str,
 ) -> ExpressionResult<i64> {
@@ -301,7 +334,7 @@ pub(crate) fn get_int_arg(
 /// Helper to get an integer argument with strict-mode awareness.
 pub(crate) fn get_int_arg_with_policy(
     func_name: &str,
-    args: &[Value],
+    args: &[&Value],
     index: usize,
     arg_name: &str,
     view: BuiltinView<'_>,
@@ -343,7 +376,7 @@ pub(crate) fn get_int_arg_with_policy(
 /// Helper to get a number argument (int or float) with better error message
 pub(crate) fn get_number_arg(
     func_name: &str,
-    args: &[Value],
+    args: &[&Value],
     index: usize,
     arg_name: &str,
 ) -> ExpressionResult<f64> {
@@ -369,7 +402,7 @@ pub(crate) fn get_number_arg(
 /// Helper to get a number argument with strict-mode awareness.
 pub(crate) fn get_number_arg_with_policy(
     func_name: &str,
-    args: &[Value],
+    args: &[&Value],
     index: usize,
     arg_name: &str,
     view: BuiltinView<'_>,
@@ -411,7 +444,7 @@ pub(crate) fn get_number_arg_with_policy(
 /// Helper to get an array argument with better error message
 pub(crate) fn get_array_arg<'a>(
     func_name: &str,
-    args: &'a [Value],
+    args: &[&'a Value],
     index: usize,
     arg_name: &str,
 ) -> ExpressionResult<&'a Vec<Value>> {
@@ -429,7 +462,7 @@ pub(crate) fn get_array_arg<'a>(
                 format!(
                     "Argument '{}' must be an array, got {}",
                     arg_name,
-                    crate::value_utils::value_type_name(&args[index])
+                    crate::value_utils::value_type_name(args[index])
                 ),
             )
         })
@@ -438,7 +471,7 @@ pub(crate) fn get_array_arg<'a>(
 /// Helper to get an object argument with better error message
 pub(crate) fn get_object_arg<'a>(
     func_name: &str,
-    args: &'a [Value],
+    args: &[&'a Value],
     index: usize,
     arg_name: &str,
 ) -> ExpressionResult<&'a serde_json::Map<String, Value>> {
@@ -456,7 +489,7 @@ pub(crate) fn get_object_arg<'a>(
                 format!(
                     "Argument '{}' must be an object, got {}",
                     arg_name,
-                    crate::value_utils::value_type_name(&args[index])
+                    crate::value_utils::value_type_name(args[index])
                 ),
             )
         })
@@ -468,8 +501,8 @@ mod tests {
 
     #[test]
     fn test_get_string_arg_type_error() {
-        let args = vec![Value::Number(42.into())];
-        let result = get_string_arg("test_func", &args, 0, "text");
+        let value = Value::Number(42.into());
+        let result = get_string_arg("test_func", &[&value], 0, "text");
 
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -480,8 +513,8 @@ mod tests {
 
     #[test]
     fn test_get_int_arg_type_error() {
-        let args = vec![Value::String("hello".to_string())];
-        let result = get_int_arg("test_func", &args, 0, "count");
+        let value = Value::String("hello".to_string());
+        let result = get_int_arg("test_func", &[&value], 0, "count");
 
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -495,19 +528,19 @@ mod tests {
     )]
     #[test]
     fn test_get_number_arg_accepts_int_and_float() {
-        let args_int = vec![Value::Number(42.into())];
-        let result_int = get_number_arg("test_func", &args_int, 0, "value");
+        let integer = Value::Number(42.into());
+        let result_int = get_number_arg("test_func", &[&integer], 0, "value");
         assert_eq!(result_int.unwrap(), 42.0);
 
-        let args_float = vec![serde_json::json!(3.14)];
-        let result_float = get_number_arg("test_func", &args_float, 0, "value");
+        let float = serde_json::json!(3.14);
+        let result_float = get_number_arg("test_func", &[&float], 0, "value");
         assert_eq!(result_float.unwrap(), 3.14);
     }
 
     #[test]
     fn test_get_array_arg_type_error() {
-        let args = vec![Value::String("not an array".to_string())];
-        let result = get_array_arg("test_func", &args, 0, "items");
+        let value = Value::String("not an array".to_string());
+        let result = get_array_arg("test_func", &[&value], 0, "items");
 
         assert!(result.is_err());
         let err = result.unwrap_err();

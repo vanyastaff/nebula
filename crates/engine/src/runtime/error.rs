@@ -1,5 +1,6 @@
 //! Runtime error types.
 
+use nebula_action::ActionKind;
 use nebula_core::{ActionKey, NodeKey};
 
 /// Errors from the runtime layer.
@@ -131,6 +132,34 @@ pub enum RuntimeError {
     ResourceNotExecutable {
         /// The action key that was looked up.
         key: String,
+    },
+
+    /// A sealed factory returned a handle carrying a different admitted metadata allocation.
+    #[classify(
+        category = "internal",
+        code = "RUNTIME:FACTORY_HANDLE_METADATA_MISMATCH",
+        retryable = false
+    )]
+    #[error("action factory for '{key}' returned a handle from another admitted contract")]
+    FactoryHandleMetadataMismatch {
+        /// Catalog key being dispatched.
+        key: String,
+    },
+
+    /// A sealed factory returned a handle variant inconsistent with its structural kind.
+    #[classify(
+        category = "internal",
+        code = "RUNTIME:FACTORY_HANDLE_KIND_MISMATCH",
+        retryable = false
+    )]
+    #[error("action factory for '{key}' returned {actual:?} handle for admitted {expected:?} kind")]
+    FactoryHandleKindMismatch {
+        /// Catalog key being dispatched.
+        key: String,
+        /// Kind stamped during metadata admission.
+        expected: ActionKind,
+        /// Kind represented by the instantiated handle variant.
+        actual: ActionKind,
     },
 
     /// The out-of-process plugin pool was configured with a zero per-key

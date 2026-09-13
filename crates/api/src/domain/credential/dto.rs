@@ -3,7 +3,7 @@
 //! These types form the HTTP API contract for credential lifecycle management.
 //! Management projections never include persisted credential material. Acquisition
 //! responses intentionally carry short-lived pending tokens, redirect URLs, form
-//! fields, and device/user instructions; treat that transit data as sensitive and
+//! fields, and user instructions; treat that transit data as sensitive and
 //! never log or casually persist it. Request types carry user-provided configuration
 //! that will be validated against the credential type's `ValidSchema` before
 //! persistence.
@@ -38,7 +38,7 @@ fn read_only_object_schema() -> utoipa::openapi::schema::Object {
 /// Capability flags for a credential type.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct CredentialCapabilities {
-    /// Requires multi-step user interaction (e.g. OAuth redirect, device code).
+    /// Requires multi-step user interaction (for example, an OAuth redirect).
     pub interactive: bool,
     /// Supports token refresh (e.g. OAuth2 refresh_token).
     pub refreshable: bool,
@@ -259,14 +259,13 @@ pub enum AcquisitionInteraction {
         /// Form fields to submit.
         fields: Vec<FormPostField>,
     },
-    /// Information the user must act on (device code, instructions).
+    /// Information the user must act on.
     DisplayInfo {
         /// Dialog title.
         title: String,
         /// Instructional message.
         message: String,
-        /// Sensitive structured display payload (e.g. a device `UserCode`
-        /// with its verification URI, or protocol instructions).
+        /// Sensitive structured display payload containing protocol instructions.
         #[schema(schema_with = read_only_object_schema)]
         data: serde_json::Value,
         /// Seconds until this information expires.

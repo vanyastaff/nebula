@@ -15,7 +15,7 @@
 //!
 //! # Adapter pattern
 //!
-//! `ControlAction` is erased to [`StatelessHandler`] via
+//! `ControlAction` is erased to [`ControlHandle`] via
 //! [`ControlActionAdapter`]. This mirrors the
 //! [`PollTriggerAdapter`](crate::poll::PollTriggerAdapter) and
 //! [`WebhookTriggerAdapter`](crate::webhook::WebhookTriggerAdapter) pattern
@@ -24,21 +24,20 @@
 //!
 //! ```rust
 //! # use std::sync::OnceLock;
-//! # use serde_json::Value;
 //! # use nebula_action::{
 //! #     Action, ActionContext, ActionError, ActionKind, ActionMetadata,
-//! #     ControlAction, ControlInput, ControlOutcome, branch_key,
+//! #     ControlAction, ControlOutcome, branch_key,
 //! # };
 //! # use nebula_core::{Dependencies, action_key};
 //! use std::sync::Arc;
-//! use nebula_action::{ControlActionAdapter, StatelessHandler};
+//! use nebula_action::{ControlActionAdapter, ControlHandle};
 //! # struct MyIf;
 //! # impl MyIf { fn new() -> Self { Self } }
 //! # impl Action for MyIf {
-//! #     type Input = Value;
-//! #     type Output = Value;
-//! #     fn metadata() -> ActionMetadata {
-//! #         ActionMetadata::new(action_key!("control.if"), "If", "Binary branch")
+//! #     type Input = bool;
+//! #     type Output = bool;
+//! #     fn metadata() -> nebula_action::ActionMetadataDraft {
+//! #         nebula_action::ActionMetadataDraft::new(action_key!("control.if"), nebula_action::metadata_name!("If"), "Binary branch")
 //! #     }
 //! #     fn dependencies() -> &'static Dependencies {
 //! #         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -48,30 +47,28 @@
 //! # impl ControlAction for MyIf {
 //! #     async fn evaluate(
 //! #         &self,
-//! #         input: ControlInput,
+//! #         input: bool,
 //! #         _ctx: &(impl ActionContext + ?Sized),
-//! #     ) -> Result<ControlOutcome, ActionError> {
-//! #         let cond = input.get_bool("/condition")?;
-//! #         let selected = if cond { branch_key!("true") } else { branch_key!("false") };
-//! #         Ok(ControlOutcome::Branch { selected, output: input.into_value() })
+//! #     ) -> Result<ControlOutcome<bool>, ActionError> {
+//! #         let selected = if input { branch_key!("true") } else { branch_key!("false") };
+//! #         Ok(ControlOutcome::Branch { selected, output: input })
 //! #     }
 //! # }
-//! let adapter = ControlActionAdapter::new(MyIf::new());
-//! let handler: Arc<dyn StatelessHandler> = Arc::new(adapter);
+//! let adapter = ControlActionAdapter::new(MyIf::new()).expect("valid metadata");
+//! let handler: Arc<dyn ControlHandle> = Arc::new(adapter);
 //! // The adapter stamps `ActionKind::Control`, so the registry can classify
 //! // the erased handler without the author tagging the node by hand.
-//! assert_eq!(handler.metadata().kind, ActionKind::Control);
+//! assert_eq!(handler.metadata().kind(), ActionKind::Control);
 //! ```
 //!
 //! # Example: writing an `If` node
 //!
 //! ```rust
 //! use std::sync::OnceLock;
-//! use serde_json::Value;
 //! use nebula_action::{
-//!     Action, ActionContext, ActionError, ActionMetadata, ActionResult,
-//!     ControlAction, ControlActionAdapter, ControlInput, ControlOutcome,
-//!     StatelessHandler, branch_key, port_key,
+//!     Action, ActionContext, ActionError, ActionInput, ActionResult,
+//!     ControlAction, ControlActionAdapter, ControlOutcome,
+//!     ControlHandle, branch_key, port_key,
 //!     port::{OutputPort, default_input_ports},
 //! };
 //! use nebula_action::testing::TestContextBuilder;
@@ -80,13 +77,13 @@
 //! pub struct MyIf;
 //!
 //! impl Action for MyIf {
-//!     type Input = Value;
-//!     type Output = Value;
+//!     type Input = bool;
+//!     type Output = bool;
 //!
 //!     // The `ControlActionAdapter` stamps `ActionKind::Control` automatically;
 //!     // authors do not classify the node by hand.
-//!     fn metadata() -> ActionMetadata {
-//!         ActionMetadata::new(action_key!("control.if"), "If", "Binary branch")
+//!     fn metadata() -> nebula_action::ActionMetadataDraft {
+//!         nebula_action::ActionMetadataDraft::new(action_key!("control.if"), nebula_action::metadata_name!("If"), "Binary branch")
 //!             .with_inputs(default_input_ports())
 //!             .with_outputs(vec![
 //!                 OutputPort::flow(port_key!("true")),
@@ -103,14 +100,13 @@
 //! impl ControlAction for MyIf {
 //!     async fn evaluate(
 //!         &self,
-//!         input: ControlInput,
+//!         input: bool,
 //!         _ctx: &(impl ActionContext + ?Sized),
-//!     ) -> Result<ControlOutcome, ActionError> {
-//!         let condition = input.get_bool("/condition")?;
-//!         let selected = if condition { branch_key!("true") } else { branch_key!("false") };
+//!     ) -> Result<ControlOutcome<bool>, ActionError> {
+//!         let selected = if input { branch_key!("true") } else { branch_key!("false") };
 //!         Ok(ControlOutcome::Branch {
 //!             selected,
-//!             output: input.into_value(),
+//!             output: input,
 //!         })
 //!     }
 //! }
@@ -118,15 +114,12 @@
 //! #[tokio::main]
 //! async fn main() {
 //!     // Wrap the typed action and drive it through the erased handler path.
-//!     let adapter = ControlActionAdapter::new(MyIf);
+//!     let adapter = ControlActionAdapter::new(MyIf).expect("valid metadata");
 //!     let ctx = TestContextBuilder::new().build();
-//!     let result = StatelessHandler::execute(
-//!         &adapter,
-//!         serde_json::json!({ "condition": true }),
-//!         &ctx,
-//!     )
-//!     .await
-//!     .unwrap();
+//!     let input = adapter
+//!         .prepare_input(ActionInput::Raw(serde_json::json!(true)))
+//!         .unwrap();
+//!     let result = adapter.dispatch(input, &ctx).await.unwrap();
 //!     assert!(matches!(
 //!         result,
 //!         ActionResult::Branch { selected, .. } if selected.as_str() == "true"
@@ -134,183 +127,22 @@
 //! }
 //! ```
 
-use std::{fmt, future::Future, pin::Pin, sync::Arc};
+use std::{fmt, future::Future, sync::Arc};
 
 use serde_json::Value;
 
 use crate::{
+    ActionInput,
     action::Action,
     branch_key::BranchKey,
     context::ActionContext,
-    error::{ActionError, ValidationReason},
+    error::ActionError,
+    handle::ControlHandle,
+    input::{ActionInputContract, PreparedActionInput},
     metadata::{ActionKind, ActionMetadata},
     port_key::PortKey,
     result::{ActionResult, TerminationReason},
-    stateless::StatelessHandler,
 };
-
-// ── ControlInput ────────────────────────────────────────────────────────────
-
-/// Owned wrapper around the JSON input passed to a [`ControlAction`].
-///
-/// Provides convenient typed accessors so control authors don't reinvent
-/// the same `serde_json::Value::pointer(...).and_then(...)` incantation
-/// for every If/Switch/Filter node.
-///
-/// The wrapper is **owned**, not borrowed. This is deliberate — the
-/// [`StatelessHandler::execute`] path returns a `Send + 'static` future,
-/// which cannot carry a borrow tied to the input. A borrowed wrapper
-/// would force every author to `async move` into owned copies anyway,
-/// so owning the value up front is both simpler and zero-cost.
-///
-/// Wrapper is `#[non_exhaustive]`; future versions may add fields
-/// (pre-parsed JSON pointer cache, metrics hooks) without breaking
-/// external implementors.
-#[derive(Debug, Clone)]
-pub struct ControlInput {
-    value: Value,
-}
-
-impl ControlInput {
-    /// Wrap a raw JSON value.
-    #[must_use]
-    pub fn from_value(value: Value) -> Self {
-        Self { value }
-    }
-
-    /// Borrow the underlying JSON value without consuming the wrapper.
-    #[must_use]
-    pub fn as_value(&self) -> &Value {
-        &self.value
-    }
-
-    /// Consume the wrapper and return the underlying value.
-    ///
-    /// Used in passthrough cases — e.g.
-    /// `ControlOutcome::Pass { output: input.into_value() }`.
-    #[must_use]
-    pub fn into_value(self) -> Value {
-        self.value
-    }
-
-    /// Look up an arbitrary sub-value at a JSON pointer.
-    ///
-    /// Thin wrapper around [`Value::pointer`]; returns `None` if the
-    /// path is missing or empty.
-    #[must_use]
-    pub fn get(&self, pointer: &str) -> Option<&Value> {
-        self.value.pointer(pointer)
-    }
-
-    /// Read a boolean at a JSON pointer.
-    ///
-    /// Returns [`ActionError::Validation`] with
-    /// [`ValidationReason::MissingField`] if the field is absent, or
-    /// [`ValidationReason::WrongType`] if the field exists but is not
-    /// a boolean.
-    pub fn get_bool(&self, pointer: &str) -> Result<bool, ActionError> {
-        let v = self.require(pointer)?;
-        v.as_bool().ok_or_else(|| {
-            ActionError::validation(
-                "control_input",
-                ValidationReason::WrongType,
-                Some(format!(
-                    "expected boolean at `{pointer}`, got {}",
-                    value_kind(v)
-                )),
-            )
-        })
-    }
-
-    /// Read a string slice at a JSON pointer.
-    ///
-    /// Returns the same validation errors as [`get_bool`](Self::get_bool)
-    /// for missing / wrong-type fields.
-    pub fn get_str(&self, pointer: &str) -> Result<&str, ActionError> {
-        let v = self.require(pointer)?;
-        v.as_str().ok_or_else(|| {
-            ActionError::validation(
-                "control_input",
-                ValidationReason::WrongType,
-                Some(format!(
-                    "expected string at `{pointer}`, got {}",
-                    value_kind(v)
-                )),
-            )
-        })
-    }
-
-    /// Read a signed 64-bit integer at a JSON pointer.
-    ///
-    /// Accepts any JSON number that fits in `i64`. Returns validation
-    /// errors for missing fields, non-numeric values, and numbers that
-    /// don't fit in `i64`.
-    pub fn get_i64(&self, pointer: &str) -> Result<i64, ActionError> {
-        let v = self.require(pointer)?;
-        v.as_i64().ok_or_else(|| {
-            ActionError::validation(
-                "control_input",
-                ValidationReason::WrongType,
-                Some(format!(
-                    "expected i64 at `{pointer}`, got {}",
-                    value_kind(v)
-                )),
-            )
-        })
-    }
-
-    /// Read an `f64` at a JSON pointer.
-    ///
-    /// Accepts any JSON number. Returns validation errors for missing
-    /// fields or non-numeric values.
-    pub fn get_f64(&self, pointer: &str) -> Result<f64, ActionError> {
-        let v = self.require(pointer)?;
-        v.as_f64().ok_or_else(|| {
-            ActionError::validation(
-                "control_input",
-                ValidationReason::WrongType,
-                Some(format!(
-                    "expected f64 at `{pointer}`, got {}",
-                    value_kind(v)
-                )),
-            )
-        })
-    }
-
-    fn require(&self, pointer: &str) -> Result<&Value, ActionError> {
-        self.value.pointer(pointer).ok_or_else(|| {
-            ActionError::validation(
-                "control_input",
-                ValidationReason::MissingField,
-                Some(format!("field `{pointer}` is required")),
-            )
-        })
-    }
-}
-
-/// Classify a JSON value by its type for use in validation error messages.
-///
-/// Returns a static string describing the JSON shape (`"null"`, `"bool"`,
-/// `"number"`, `"string"`, `"array"`, `"object"`). Deliberately does NOT
-/// include the actual value — a control node's input may carry secrets
-/// (API keys, passwords, PII) and the `ActionError::Validation.detail`
-/// field flows into logs.
-fn value_kind(value: &Value) -> &'static str {
-    match value {
-        Value::Null => "null",
-        Value::Bool(_) => "bool",
-        Value::Number(_) => "number",
-        Value::String(_) => "string",
-        Value::Array(_) => "array",
-        Value::Object(_) => "object",
-    }
-}
-
-impl From<Value> for ControlInput {
-    fn from(value: Value) -> Self {
-        Self::from_value(value)
-    }
-}
 
 // ── ControlOutcome ──────────────────────────────────────────────────────────
 
@@ -327,7 +159,7 @@ impl From<Value> for ControlInput {
 /// code must include a wildcard arm.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
-pub enum ControlOutcome {
+pub enum ControlOutcome<T> {
     /// Route the input to one selected output port.
     ///
     /// Used by `If` (2-way), `Switch` (N-way static), and `Router` in
@@ -337,7 +169,7 @@ pub enum ControlOutcome {
         /// Key of the chosen branch output port.
         selected: BranchKey,
         /// Value to emit on the selected port.
-        output: Value,
+        output: T,
     },
 
     /// Route the input to multiple output ports in one call.
@@ -353,7 +185,7 @@ pub enum ControlOutcome {
     Route {
         /// Per-port outputs. Ports not present in this map are not
         /// emitted this cycle.
-        ports: std::collections::HashMap<PortKey, Value>,
+        ports: std::collections::HashMap<PortKey, T>,
     },
 
     /// Pass the input through unchanged to the single main output.
@@ -362,7 +194,7 @@ pub enum ControlOutcome {
     /// [`ActionResult::Success`].
     Pass {
         /// Value to emit on the main output port.
-        output: Value,
+        output: T,
     },
 
     /// Drop this item without stopping the branch.
@@ -387,8 +219,8 @@ pub enum ControlOutcome {
     },
 }
 
-impl From<ControlOutcome> for ActionResult<Value> {
-    fn from(outcome: ControlOutcome) -> Self {
+impl<T> From<ControlOutcome<T>> for ActionResult<T> {
+    fn from(outcome: ControlOutcome<T>) -> Self {
         match outcome {
             ControlOutcome::Branch { selected, output } => ActionResult::Branch {
                 selected,
@@ -463,18 +295,17 @@ pub trait ControlAction: Action {
     ///
     /// ```rust
     /// # use std::sync::OnceLock;
-    /// # use serde_json::Value;
     /// # use nebula_action::{
     /// #     Action, ActionContext, ActionError, ActionMetadata,
-    /// #     ControlAction, ControlInput, ControlOutcome,
+    /// #     ControlAction, ControlOutcome,
     /// # };
     /// # use nebula_core::{Dependencies, action_key};
     /// struct SugarPass;
     /// # impl Action for SugarPass {
-    /// #     type Input = Value;
-    /// #     type Output = Value;
-    /// #     fn metadata() -> ActionMetadata {
-    /// #         ActionMetadata::new(action_key!("control.pass"), "Pass", "Pass through")
+    /// #     type Input = bool;
+    /// #     type Output = bool;
+    /// #     fn metadata() -> nebula_action::ActionMetadataDraft {
+    /// #         nebula_action::ActionMetadataDraft::new(action_key!("control.pass"), nebula_action::metadata_name!("Pass"), "Pass through")
     /// #     }
     /// #     fn dependencies() -> &'static Dependencies {
     /// #         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -486,10 +317,10 @@ pub trait ControlAction: Action {
     ///     // desugars via RPITIT to the explicit return-type form below.
     ///     async fn evaluate(
     ///         &self,
-    ///         input: ControlInput,
+    ///         input: bool,
     ///         _ctx: &(impl ActionContext + ?Sized),
-    ///     ) -> Result<ControlOutcome, ActionError> {
-    ///         Ok(ControlOutcome::Pass { output: input.into_value() })
+    ///     ) -> Result<ControlOutcome<bool>, ActionError> {
+    ///         Ok(ControlOutcome::Pass { output: input })
     ///     }
     /// }
     /// # #[tokio::main]
@@ -497,7 +328,7 @@ pub trait ControlAction: Action {
     /// #     use nebula_action::testing::TestContextBuilder;
     /// #     let ctx = TestContextBuilder::new().build();
     /// #     let outcome = SugarPass
-    /// #         .evaluate(ControlInput::from_value(Value::Null), &ctx)
+    /// #         .evaluate(true, &ctx)
     /// #         .await
     /// #         .unwrap();
     /// #     assert!(matches!(outcome, ControlOutcome::Pass { .. }));
@@ -507,18 +338,17 @@ pub trait ControlAction: Action {
     /// ```rust
     /// # use std::future::Future;
     /// # use std::sync::OnceLock;
-    /// # use serde_json::Value;
     /// # use nebula_action::{
     /// #     Action, ActionContext, ActionError, ActionMetadata,
-    /// #     ControlAction, ControlInput, ControlOutcome,
+    /// #     ControlAction, ControlOutcome,
     /// # };
     /// # use nebula_core::{Dependencies, action_key};
     /// struct ExplicitPass;
     /// # impl Action for ExplicitPass {
-    /// #     type Input = Value;
-    /// #     type Output = Value;
-    /// #     fn metadata() -> ActionMetadata {
-    /// #         ActionMetadata::new(action_key!("control.pass"), "Pass", "Pass through")
+    /// #     type Input = bool;
+    /// #     type Output = bool;
+    /// #     fn metadata() -> nebula_action::ActionMetadataDraft {
+    /// #         nebula_action::ActionMetadataDraft::new(action_key!("control.pass"), nebula_action::metadata_name!("Pass"), "Pass through")
     /// #     }
     /// #     fn dependencies() -> &'static Dependencies {
     /// #         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -530,10 +360,10 @@ pub trait ControlAction: Action {
     ///     // or match the existing `StatelessAction::execute` convention.
     ///     fn evaluate(
     ///         &self,
-    ///         input: ControlInput,
+    ///         input: bool,
     ///         _ctx: &(impl ActionContext + ?Sized),
-    ///     ) -> impl Future<Output = Result<ControlOutcome, ActionError>> + Send {
-    ///         async move { Ok(ControlOutcome::Pass { output: input.into_value() }) }
+    ///     ) -> impl Future<Output = Result<ControlOutcome<bool>, ActionError>> + Send {
+    ///         async move { Ok(ControlOutcome::Pass { output: input }) }
     ///     }
     /// }
     /// # #[tokio::main]
@@ -541,7 +371,7 @@ pub trait ControlAction: Action {
     /// #     use nebula_action::testing::TestContextBuilder;
     /// #     let ctx = TestContextBuilder::new().build();
     /// #     let outcome = ExplicitPass
-    /// #         .evaluate(ControlInput::from_value(Value::Null), &ctx)
+    /// #         .evaluate(true, &ctx)
     /// #         .await
     /// #         .unwrap();
     /// #     assert!(matches!(outcome, ControlOutcome::Pass { .. }));
@@ -553,14 +383,14 @@ pub trait ControlAction: Action {
     /// adapter instantiation site, which is the right place to notice.
     fn evaluate(
         &self,
-        input: ControlInput,
+        input: Self::Input,
         ctx: &(impl ActionContext + ?Sized),
-    ) -> impl Future<Output = Result<ControlOutcome, ActionError>> + Send;
+    ) -> impl Future<Output = Result<ControlOutcome<Self::Output>, ActionError>> + Send;
 }
 
 // ── ControlActionAdapter ────────────────────────────────────────────────────
 
-/// Wraps a [`ControlAction`] as a [`dyn StatelessHandler`].
+/// Wraps a [`ControlAction`] as a [`dyn ControlHandle`].
 ///
 /// The adapter caches a copy of the action's [`ActionMetadata`] with the
 /// [`ActionKind::Control`] node kind stamped automatically, so authors cannot
@@ -574,21 +404,20 @@ pub trait ControlAction: Action {
 ///
 /// ```rust
 /// # use std::sync::OnceLock;
-/// # use serde_json::Value;
 /// # use nebula_action::{
 /// #     Action, ActionContext, ActionError, ActionKind, ActionMetadata,
-/// #     ControlAction, ControlInput, ControlOutcome,
+/// #     ControlAction, ControlOutcome,
 /// # };
 /// # use nebula_core::{Dependencies, action_key};
 /// use std::sync::Arc;
-/// use nebula_action::{ControlActionAdapter, StatelessHandler};
+/// use nebula_action::{ControlActionAdapter, ControlHandle};
 /// # struct MyIf;
 /// # impl MyIf { fn new() -> Self { Self } }
 /// # impl Action for MyIf {
-/// #     type Input = Value;
-/// #     type Output = Value;
-/// #     fn metadata() -> ActionMetadata {
-/// #         ActionMetadata::new(action_key!("control.if"), "If", "Binary branch")
+/// #     type Input = bool;
+/// #     type Output = bool;
+/// #     fn metadata() -> nebula_action::ActionMetadataDraft {
+/// #         nebula_action::ActionMetadataDraft::new(action_key!("control.if"), nebula_action::metadata_name!("If"), "Binary branch")
 /// #     }
 /// #     fn dependencies() -> &'static Dependencies {
 /// #         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -598,21 +427,24 @@ pub trait ControlAction: Action {
 /// # impl ControlAction for MyIf {
 /// #     async fn evaluate(
 /// #         &self,
-/// #         input: ControlInput,
+/// #         input: bool,
 /// #         _ctx: &(impl ActionContext + ?Sized),
-/// #     ) -> Result<ControlOutcome, ActionError> {
-/// #         Ok(ControlOutcome::Pass { output: input.into_value() })
+/// #     ) -> Result<ControlOutcome<bool>, ActionError> {
+/// #         Ok(ControlOutcome::Pass { output: input })
 /// #     }
 /// # }
-/// let adapter = ControlActionAdapter::new(MyIf::new());
-/// let handler: Arc<dyn StatelessHandler> = Arc::new(adapter);
+/// let adapter = ControlActionAdapter::new(MyIf::new()).expect("valid metadata");
+/// let handler: Arc<dyn ControlHandle> = Arc::new(adapter);
 /// // The kind is stamped at construction, regardless of the inner action.
-/// assert_eq!(handler.metadata().kind, ActionKind::Control);
+/// assert_eq!(handler.metadata().kind(), ActionKind::Control);
 /// ```
 pub struct ControlActionAdapter<A: ControlAction> {
     action: A,
     cached_metadata: Arc<ActionMetadata>,
+    input_contract: ActionInputContract,
 }
+
+impl<A: ControlAction> crate::handle::sealed::Control for ControlActionAdapter<A> {}
 
 impl<A: ControlAction> ControlActionAdapter<A> {
     /// Wrap a typed control action.
@@ -624,15 +456,19 @@ impl<A: ControlAction> ControlActionAdapter<A> {
     /// A terminal control node (empty `outputs`) keeps
     /// [`ActionKind::Control`] — terminality is carried by the empty port set,
     /// not by a distinct kind.
-    #[must_use]
-    pub fn new(action: A) -> Self {
-        let mut meta = <A as Action>::metadata();
-        meta.kind = ActionKind::Control;
-        meta.output_schema = <A::Output as nebula_schema::HasSchema>::schema();
-        Self {
+    ///
+    /// # Errors
+    /// Returns a typed catalog error if metadata or an associated schema is invalid.
+    #[tracing::instrument(name = "action.metadata.admit", skip_all, err)]
+    pub fn new(action: A) -> Result<Self, crate::ActionMetadataAdmissionError> {
+        let meta = <A as Action>::metadata().admit_for::<A>(ActionKind::Control)?;
+        let cached_metadata = Arc::new(meta);
+        let input_contract = ActionInputContract::new(cached_metadata.base().schema());
+        Ok(Self {
             action,
-            cached_metadata: Arc::new(meta),
-        }
+            cached_metadata,
+            input_contract,
+        })
     }
 
     /// Consume the adapter, returning the inner action.
@@ -642,30 +478,29 @@ impl<A: ControlAction> ControlActionAdapter<A> {
     }
 }
 
-impl<A> StatelessHandler for ControlActionAdapter<A>
+#[async_trait::async_trait]
+impl<A> ControlHandle for ControlActionAdapter<A>
 where
     A: ControlAction + Send + Sync + 'static,
 {
-    fn metadata(&self) -> &ActionMetadata {
+    fn metadata(&self) -> &Arc<ActionMetadata> {
         &self.cached_metadata
     }
 
-    fn execute<'life0, 'life1, 'a>(
-        &'life0 self,
-        input: Value,
-        ctx: &'life1 dyn ActionContext,
-    ) -> Pin<Box<dyn Future<Output = Result<ActionResult<Value>, ActionError>> + Send + 'a>>
-    where
-        Self: 'a,
-        'life0: 'a,
-        'life1: 'a,
-    {
-        Box::pin(async move {
-            let outcome = self
-                .action
-                .evaluate(ControlInput::from_value(input), ctx)
-                .await?;
-            Ok(outcome.into())
+    fn prepare_input(&self, input: ActionInput) -> Result<PreparedActionInput, ActionError> {
+        self.input_contract.prepare::<A::Input>(input)
+    }
+
+    async fn dispatch(
+        &self,
+        input: PreparedActionInput,
+        ctx: &dyn ActionContext,
+    ) -> Result<ActionResult<Value>, ActionError> {
+        let input = input.into_typed::<A::Input>(&self.input_contract)?;
+        let outcome: ActionResult<A::Output> = self.action.evaluate(input, ctx).await?.into();
+        outcome.try_map_output(|output| {
+            serde_json::to_value(output)
+                .map_err(|_| ActionError::fatal("control output cannot be serialized as declared"))
         })
     }
 }
@@ -673,8 +508,8 @@ where
 impl<A: ControlAction> fmt::Debug for ControlActionAdapter<A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ControlActionAdapter")
-            .field("action", &self.cached_metadata.base.key)
-            .field("kind", &self.cached_metadata.kind)
+            .field("action", self.cached_metadata.base().key())
+            .field("kind", &self.cached_metadata.kind())
             .finish_non_exhaustive()
     }
 }
@@ -699,68 +534,13 @@ mod tests {
         TestContextBuilder::new().build()
     }
 
-    // ── ControlInput ────────────────────────────────────────────────
-
-    #[test]
-    fn control_input_get_bool_ok() {
-        let input = ControlInput::from_value(serde_json::json!({ "flag": true }));
-        assert!(input.get_bool("/flag").unwrap());
-    }
-
-    #[test]
-    fn control_input_get_bool_missing() {
-        let input = ControlInput::from_value(serde_json::json!({}));
-        let err = input.get_bool("/flag").unwrap_err();
-        match err {
-            ActionError::Validation { reason, .. } => {
-                assert!(matches!(reason, ValidationReason::MissingField));
-            },
-            _ => panic!("expected Validation"),
-        }
-    }
-
-    #[test]
-    fn control_input_get_bool_wrong_type() {
-        let input = ControlInput::from_value(serde_json::json!({ "flag": "yes" }));
-        let err = input.get_bool("/flag").unwrap_err();
-        match err {
-            ActionError::Validation { reason, .. } => {
-                assert!(matches!(reason, ValidationReason::WrongType));
-            },
-            _ => panic!("expected Validation"),
-        }
-    }
-
-    #[test]
-    fn control_input_get_str_ok() {
-        let input = ControlInput::from_value(serde_json::json!({ "name": "alice" }));
-        assert_eq!(input.get_str("/name").unwrap(), "alice");
-    }
-
-    #[test]
-    fn control_input_get_i64_ok() {
-        let input = ControlInput::from_value(serde_json::json!({ "n": 42 }));
-        assert_eq!(input.get_i64("/n").unwrap(), 42);
-    }
-
-    #[test]
-    fn control_input_get_f64_ok() {
-        let input = ControlInput::from_value(serde_json::json!({ "x": 2.5 }));
-        assert!((input.get_f64("/x").unwrap() - 2.5).abs() < 1e-9);
-    }
-
-    #[test]
-    fn control_input_into_value_passthrough() {
-        let original = serde_json::json!({ "foo": "bar" });
-        let input = ControlInput::from_value(original.clone());
-        assert_eq!(input.into_value(), original);
-    }
-
-    #[test]
-    fn control_input_from_value_impl() {
-        let v: Value = serde_json::json!(42);
-        let input: ControlInput = v.into();
-        assert_eq!(input.as_value(), &serde_json::json!(42));
+    async fn execute(
+        handler: &(impl ControlHandle + ?Sized),
+        input: Value,
+        context: &dyn ActionContext,
+    ) -> Result<ActionResult<Value>, ActionError> {
+        let input = handler.prepare_input(ActionInput::Raw(input))?;
+        handler.dispatch(input, context).await
     }
 
     // ── ControlOutcome → ActionResult ──────────────────────────────
@@ -880,6 +660,12 @@ mod tests {
     /// Minimal control action used for smoke tests.
     struct TestIf;
 
+    #[derive(serde::Deserialize, serde::Serialize, nebula_schema::Schema)]
+    struct TestIfInput {
+        condition: bool,
+        payload: Option<Value>,
+    }
+
     impl TestIf {
         fn new() -> Self {
             Self
@@ -887,16 +673,20 @@ mod tests {
     }
 
     impl Action for TestIf {
-        type Input = Value;
-        type Output = Value;
+        type Input = TestIfInput;
+        type Output = TestIfInput;
 
-        fn metadata() -> ActionMetadata {
-            ActionMetadata::new(action_key!("test.if"), "TestIf", "Binary branch")
-                .with_inputs(default_input_ports())
-                .with_outputs(vec![
-                    OutputPort::flow(port_key!("true")),
-                    OutputPort::flow(port_key!("false")),
-                ])
+        fn metadata() -> crate::ActionMetadataDraft {
+            crate::ActionMetadataDraft::new(
+                action_key!("test.if"),
+                crate::metadata_name!("TestIf"),
+                "Binary branch",
+            )
+            .with_inputs(default_input_ports())
+            .with_outputs(vec![
+                OutputPort::flow(port_key!("true")),
+                OutputPort::flow(port_key!("false")),
+            ])
         }
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();
@@ -907,18 +697,17 @@ mod tests {
     impl ControlAction for TestIf {
         async fn evaluate(
             &self,
-            input: ControlInput,
+            input: TestIfInput,
             _ctx: &(impl ActionContext + ?Sized),
-        ) -> Result<ControlOutcome, ActionError> {
-            let condition = input.get_bool("/condition")?;
-            let selected = if condition {
+        ) -> Result<ControlOutcome<TestIfInput>, ActionError> {
+            let selected = if input.condition {
                 branch_key!("true")
             } else {
                 branch_key!("false")
             };
             Ok(ControlOutcome::Branch {
                 selected,
-                output: input.into_value(),
+                output: input,
             })
         }
     }
@@ -936,9 +725,13 @@ mod tests {
         type Input = Value;
         type Output = Value;
 
-        fn metadata() -> ActionMetadata {
-            ActionMetadata::new(action_key!("test.stop"), "TestStop", "Terminate")
-                .with_outputs(Vec::new())
+        fn metadata() -> crate::ActionMetadataDraft {
+            crate::ActionMetadataDraft::new(
+                action_key!("test.stop"),
+                crate::metadata_name!("TestStop"),
+                "Terminate",
+            )
+            .with_outputs(Vec::new())
         }
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();
@@ -949,9 +742,9 @@ mod tests {
     impl ControlAction for TestStop {
         async fn evaluate(
             &self,
-            _input: ControlInput,
+            _input: Value,
             _ctx: &(impl ActionContext + ?Sized),
-        ) -> Result<ControlOutcome, ActionError> {
+        ) -> Result<ControlOutcome<Value>, ActionError> {
             Ok(ControlOutcome::Terminate {
                 reason: TerminationReason::Success {
                     note: Some("stopped".into()),
@@ -962,11 +755,12 @@ mod tests {
 
     #[test]
     fn adapter_stamps_control_kind() {
-        let adapter = ControlActionAdapter::new(TestIf::new());
-        let meta = StatelessHandler::metadata(&adapter);
-        assert_eq!(meta.kind, ActionKind::Control);
+        let adapter =
+            ControlActionAdapter::new(TestIf::new()).expect("valid test catalog definition");
+        let meta = adapter.metadata();
+        assert_eq!(meta.kind(), ActionKind::Control);
         assert!(
-            !meta.outputs.is_empty(),
+            !meta.outputs().is_empty(),
             "a routing control node declares output ports"
         );
     }
@@ -976,30 +770,33 @@ mod tests {
         // A terminal control node (Stop/Fail) keeps `ActionKind::Control`;
         // terminality is carried structurally by the empty `outputs` set, which
         // is what the workflow validator reads to recognise the graph sink.
-        let adapter = ControlActionAdapter::new(TestStop::new());
-        let meta = StatelessHandler::metadata(&adapter);
-        assert_eq!(meta.kind, ActionKind::Control);
+        let adapter =
+            ControlActionAdapter::new(TestStop::new()).expect("valid test catalog definition");
+        let meta = adapter.metadata();
+        assert_eq!(meta.kind(), ActionKind::Control);
         assert!(
-            meta.outputs.is_empty(),
+            meta.outputs().is_empty(),
             "a terminal control node declares no output ports"
         );
     }
 
     #[test]
     fn adapter_preserves_action_key() {
-        let adapter = ControlActionAdapter::new(TestIf::new());
+        let adapter =
+            ControlActionAdapter::new(TestIf::new()).expect("valid test catalog definition");
         assert_eq!(
-            StatelessHandler::metadata(&adapter).base.key,
+            adapter.metadata().base().key().clone(),
             action_key!("test.if")
         );
     }
 
     #[tokio::test]
     async fn adapter_executes_through_stateless_handler() {
-        let adapter = ControlActionAdapter::new(TestIf::new());
+        let adapter =
+            ControlActionAdapter::new(TestIf::new()).expect("valid test catalog definition");
         let ctx = make_ctx();
 
-        let result = StatelessHandler::execute(
+        let result = execute(
             &adapter,
             serde_json::json!({ "condition": true, "payload": 42 }),
             &ctx,
@@ -1023,13 +820,13 @@ mod tests {
 
     #[tokio::test]
     async fn adapter_evaluates_false_branch() {
-        let adapter = ControlActionAdapter::new(TestIf::new());
+        let adapter =
+            ControlActionAdapter::new(TestIf::new()).expect("valid test catalog definition");
         let ctx = make_ctx();
 
-        let result =
-            StatelessHandler::execute(&adapter, serde_json::json!({ "condition": false }), &ctx)
-                .await
-                .unwrap();
+        let result = execute(&adapter, serde_json::json!({ "condition": false }), &ctx)
+            .await
+            .unwrap();
 
         match result {
             ActionResult::Branch { selected, .. } => assert_eq!(selected.as_str(), "false"),
@@ -1039,10 +836,11 @@ mod tests {
 
     #[tokio::test]
     async fn adapter_propagates_validation_error_on_missing_field() {
-        let adapter = ControlActionAdapter::new(TestIf::new());
+        let adapter =
+            ControlActionAdapter::new(TestIf::new()).expect("valid test catalog definition");
         let ctx = make_ctx();
 
-        let err = StatelessHandler::execute(&adapter, serde_json::json!({}), &ctx)
+        let err = execute(&adapter, serde_json::json!({}), &ctx)
             .await
             .unwrap_err();
 
@@ -1051,10 +849,11 @@ mod tests {
 
     #[tokio::test]
     async fn adapter_stop_action_returns_terminate() {
-        let adapter = ControlActionAdapter::new(TestStop::new());
+        let adapter =
+            ControlActionAdapter::new(TestStop::new()).expect("valid test catalog definition");
         let ctx = make_ctx();
 
-        let result = StatelessHandler::execute(&adapter, serde_json::json!({}), &ctx)
+        let result = execute(&adapter, serde_json::json!({}), &ctx)
             .await
             .unwrap();
 
@@ -1071,29 +870,32 @@ mod tests {
 
     #[test]
     fn adapter_is_dyn_compatible() {
-        let adapter = ControlActionAdapter::new(TestIf::new());
-        let _: Arc<dyn StatelessHandler> = Arc::new(adapter);
+        let adapter =
+            ControlActionAdapter::new(TestIf::new()).expect("valid test catalog definition");
+        let _: Arc<dyn ControlHandle> = Arc::new(adapter);
     }
 
     #[test]
     fn adapter_into_inner_returns_action() {
-        let adapter = ControlActionAdapter::new(TestIf::new());
+        let adapter =
+            ControlActionAdapter::new(TestIf::new()).expect("valid test catalog definition");
+        let key = adapter.metadata().base().key().clone();
         let _action = adapter.into_inner();
-        assert_eq!(
-            <TestIf as Action>::metadata().base.key,
-            action_key!("test.if")
-        );
+        assert_eq!(key, action_key!("test.if"));
     }
 
     #[test]
     fn adapter_preserves_original_outputs_after_stamp() {
         // The adapter only rewrites `category`; it must not touch `outputs`
         // or any other metadata field.
-        let original_outputs = <TestIf as Action>::metadata().outputs;
-        let adapter = ControlActionAdapter::new(TestIf::new());
+        let adapter =
+            ControlActionAdapter::new(TestIf::new()).expect("valid test catalog definition");
         assert_eq!(
-            StatelessHandler::metadata(&adapter).outputs,
-            original_outputs
+            adapter.metadata().outputs(),
+            [
+                OutputPort::flow(port_key!("true")),
+                OutputPort::flow(port_key!("false")),
+            ]
         );
     }
 

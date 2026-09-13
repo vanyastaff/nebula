@@ -1,4 +1,4 @@
-//! Compile-fail / compile-pass probes for `#[derive(Resource)]`
+//! Compile-fail / compile-pass probes for `Resource` and `ResourceConfig` derives
 //! (slot model, two-derive pattern).
 //!
 //! Compile-fail probes under `tests/probes/` exercise diagnostic contracts:
@@ -8,6 +8,7 @@
 //! - `#[credential]` field with wrong type rejected naming both accepted shapes
 //! - `#[credential(key = "...")]` invalid key literal rejected at the literal span
 //! - `Option<SlotCell<CredentialGuard<C>>>` rejected (must be the bare shape)
+//! - nonempty or tuple configs cannot publish an automatic empty-record schema
 //!
 //! The positive probes exercise a clean two-derive expansion:
 //!
@@ -54,4 +55,10 @@ fn resource_slots_compile_pass_unit_struct() {
 fn resource_slots_compile_pass_slot_accessor() {
     let t = trybuild::TestCases::new();
     t.pass("tests/trybuild/derive_slot_accessor.rs");
+}
+
+#[test]
+fn resource_config_requires_real_schema_for_nonempty_and_tuple_structs() {
+    let tests = trybuild::TestCases::new();
+    tests.compile_fail("tests/probes/config_missing_schema.rs");
 }

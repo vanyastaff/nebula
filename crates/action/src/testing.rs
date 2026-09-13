@@ -43,6 +43,7 @@ pub struct TestContextBuilder {
     typed_credentials: HashMap<TypeId, CredentialSnapshot>,
     resources: HashMap<String, ResourceFactory>,
     input: Option<serde_json::Value>,
+    support_inputs: HashMap<nebula_core::PortKey, Vec<serde_json::Value>>,
     logs: Arc<SpyLogger>,
 }
 
@@ -54,6 +55,7 @@ impl TestContextBuilder {
             typed_credentials: HashMap::new(),
             resources: HashMap::new(),
             input: None,
+            support_inputs: HashMap::new(),
             logs: Arc::new(SpyLogger::new()),
         }
     }
@@ -111,6 +113,16 @@ impl TestContextBuilder {
     }
 
     #[must_use]
+    pub fn with_support_input(
+        mut self,
+        port: nebula_core::PortKey,
+        value: serde_json::Value,
+    ) -> Self {
+        self.support_inputs.entry(port).or_default().push(value);
+        self
+    }
+
+    #[must_use]
     pub fn spy_logger(&self) -> Arc<SpyLogger> {
         Arc::clone(&self.logs)
     }
@@ -139,6 +151,7 @@ impl TestContextBuilder {
             typed_credentials: self.typed_credentials,
         }))
         .with_logger(self.logs)
+        .with_support_inputs(crate::SupportInputs::new(self.support_inputs))
     }
 
     #[must_use]
@@ -494,7 +507,7 @@ where
             .map_err(|e| ActionError::fatal(format!("state deserialize: {e}")))?;
         let result = self
             .action
-            .execute(input, &mut typed_state, &self.ctx)
+            .execute(&input, &mut typed_state, &self.ctx)
             .await?;
         self.state = serde_json::to_value(&typed_state)
             .map_err(|e| ActionError::fatal(format!("state serialize: {e}")))?;

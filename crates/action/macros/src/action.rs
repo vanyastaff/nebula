@@ -14,7 +14,7 @@
 //! - `#[credential]` / `#[credential(key = "...")]` — declares a credential slot. Field type must
 //!   be `CredentialGuard<C>` (optionally wrapped in `Option<...>` and/or `Lazy<...>`).
 
-use nebula_macro_support::{attrs, diag, utils};
+use nebula_macro_support::{attrs, diag};
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::{Data, DeriveInput, Fields, parse_macro_input};
@@ -45,7 +45,7 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     };
 
     let attr_args = attrs::parse_attrs(&input.attrs, "action")?;
-    let description_fallback = utils::doc_string(&input.attrs);
+    let description_fallback = doc_string(&input.attrs);
     let description_fallback = if description_fallback.is_empty() {
         None
     } else {
@@ -76,7 +76,7 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
             type Input = #input_ty;
             type Output = #output_ty;
 
-            fn metadata() -> ::nebula_action::ActionMetadata {
+            fn metadata() -> ::nebula_action::ActionMetadataDraft {
                 #metadata_init
             }
 
@@ -101,6 +101,30 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
         #action_impl
         #factory_impl
     })
+}
+
+fn doc_string(attributes: &[syn::Attribute]) -> String {
+    attributes
+        .iter()
+        .filter_map(|attribute| {
+            let syn::Meta::NameValue(name_value) = &attribute.meta else {
+                return None;
+            };
+            if !name_value.path.is_ident("doc") {
+                return None;
+            }
+            let syn::Expr::Lit(expression) = &name_value.value else {
+                return None;
+            };
+            let syn::Lit::Str(documentation) = &expression.lit else {
+                return None;
+            };
+            let line = documentation.value();
+            let line = line.trim();
+            (!line.is_empty()).then(|| line.to_owned())
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn emit_factory_impl(

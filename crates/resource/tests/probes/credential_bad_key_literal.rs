@@ -3,11 +3,10 @@
 //! Invalid: trailing separator (`foo_`) violates CredentialKey rules.
 
 use nebula_credential::{
-    AuthPattern, Credential, CredentialContext, CredentialError, CredentialGuard,
-    CredentialMetadata, ResolveResult, SecretString, SecretToken,
+    Credential, CredentialContext, CredentialError, CredentialGuard, CredentialMetadataDraft,
+    SecretString, SecretToken, StaticResolveResult,
 };
 use nebula_resource::{Resource, SlotCell};
-use nebula_schema::FieldValues;
 use zeroize::Zeroize;
 
 #[derive(Resource)]
@@ -25,24 +24,21 @@ impl Credential for FakeCred {
     type Scheme = SecretToken;
     type State = SecretToken;
     const KEY: &'static str = "demo.fake";
-    fn metadata() -> CredentialMetadata {
-        CredentialMetadata::builder()
-            .key(nebula_core::credential_key!("demo.fake"))
-            .name("FakeCred")
-            .description("trybuild bad-key fixture")
-            .schema(nebula_credential::schema_of::<Self::Properties>())
-            .pattern(AuthPattern::SecretToken)
-            .build()
-            .expect("FakeCred metadata is valid")
+    fn metadata() -> CredentialMetadataDraft {
+        CredentialMetadataDraft::new(
+            nebula_core::credential_key!("demo.fake"),
+            nebula_credential::metadata_name!("FakeCred"),
+            "trybuild bad-key fixture",
+        )
     }
     fn project(state: &SecretToken) -> SecretToken {
         state.clone()
     }
     async fn resolve(
-        _values: &FieldValues,
+        _properties: &(),
         _ctx: &CredentialContext,
-    ) -> Result<ResolveResult<SecretToken, ()>, CredentialError> {
-        Ok(ResolveResult::Complete(SecretToken::new(
+    ) -> Result<StaticResolveResult<SecretToken>, CredentialError> {
+        Ok(StaticResolveResult::Complete(SecretToken::new(
             SecretString::new("fake-token"),
         )))
     }

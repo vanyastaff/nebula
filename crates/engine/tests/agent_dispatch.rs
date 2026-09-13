@@ -19,14 +19,13 @@ use std::{
 use nebula_action::{
     ActionContext, ActionError, AgentAction,
     action::Action,
-    metadata::ActionMetadata,
     output::ActionOutput,
     result::{ActionResult, BreakReason, WaitCondition},
     testing::TestContextBuilder,
 };
 use nebula_core::{Dependencies, action_key};
 use nebula_engine::{
-    ActionExecutor, ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner, RuntimeError,
+    ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner, RuntimeError,
 };
 use nebula_metrics::MetricsRegistry;
 use serde::{Deserialize, Serialize};
@@ -37,9 +36,7 @@ use serde_json::Value;
 /// Build a minimal `ActionRuntime` for testing — no capability runner, in-process only.
 fn make_runtime(registry: Arc<ActionRegistry>) -> ActionRuntime {
     let metrics = MetricsRegistry::new();
-    let executor: ActionExecutor =
-        Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
-    let runner = Arc::new(InProcessRunner::new(executor));
+    let runner = Arc::new(InProcessRunner::new());
     ActionRuntime::try_new(registry, runner, DataPassingPolicy::default(), metrics)
         .expect("ActionRuntime::try_new must succeed in tests")
 }
@@ -64,10 +61,10 @@ impl Action for TwoTurnAgent {
     type Input = Value;
     type Output = Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        nebula_action::ActionMetadataDraft::new(
             action_key!("test.agent.two_turn"),
-            "TwoTurnAgent",
+            nebula_action::metadata_name!("TwoTurnAgent"),
             "continues twice then breaks",
         )
         .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
@@ -149,10 +146,10 @@ impl Action for StubbornContinueAgent {
     type Input = Value;
     type Output = Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        nebula_action::ActionMetadataDraft::new(
             action_key!("test.agent.stubborn_continue"),
-            "StubbornContinueAgent",
+            nebula_action::metadata_name!("StubbornContinueAgent"),
             "continues N times without mutating turn state, then breaks",
         )
         .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
@@ -225,10 +222,10 @@ impl Action for LoopForeverAgent {
     type Input = Value;
     type Output = Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        nebula_action::ActionMetadataDraft::new(
             action_key!("test.agent.loop_forever"),
-            "LoopForeverAgent",
+            nebula_action::metadata_name!("LoopForeverAgent"),
             "loops until budget is exceeded",
         )
         .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
@@ -294,10 +291,10 @@ impl Action for SlowTurnAgent {
     type Input = Value;
     type Output = Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        nebula_action::ActionMetadataDraft::new(
             action_key!("test.agent.slow_turn"),
-            "SlowTurnAgent",
+            nebula_action::metadata_name!("SlowTurnAgent"),
             "sleeps per turn to exercise the per-turn timeout",
         )
         .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
@@ -352,10 +349,10 @@ impl Action for FastTurnAgent {
     type Input = Value;
     type Output = Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        nebula_action::ActionMetadataDraft::new(
             action_key!("test.agent.fast_turn"),
-            "FastTurnAgent",
+            nebula_action::metadata_name!("FastTurnAgent"),
             "completes instantly — per-turn timeout must NOT fire",
         )
         .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
@@ -415,10 +412,10 @@ impl Action for WaitReturningAgent {
     type Input = Value;
     type Output = Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        nebula_action::ActionMetadataDraft::new(
             action_key!("test.agent.wait_returning"),
-            "WaitReturningAgent",
+            nebula_action::metadata_name!("WaitReturningAgent"),
             "returns Wait — engine must reject with AgentWaitNotSupported",
         )
         .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
@@ -474,7 +471,9 @@ impl AgentAction for WaitReturningAgent {
 #[tokio::test]
 async fn agent_dispatches_through_engine() {
     let registry = Arc::new(ActionRegistry::new());
-    registry.register_agent_factory::<TwoTurnAgent>();
+    registry
+        .register_agent_factory::<TwoTurnAgent>()
+        .expect("valid test catalog definition");
 
     let runtime = make_runtime(registry);
     let ctx = make_ctx();
@@ -527,7 +526,9 @@ async fn agent_dispatches_through_engine() {
 #[tokio::test]
 async fn no_progress_turn_is_legal() {
     let registry = Arc::new(ActionRegistry::new());
-    registry.register_agent_factory::<StubbornContinueAgent>();
+    registry
+        .register_agent_factory::<StubbornContinueAgent>()
+        .expect("valid test catalog definition");
 
     let runtime = make_runtime(registry);
     let ctx = make_ctx();
@@ -566,7 +567,9 @@ async fn no_progress_turn_is_legal() {
 #[tokio::test]
 async fn max_turns_budget_enforced() {
     let registry = Arc::new(ActionRegistry::new());
-    registry.register_agent_factory::<LoopForeverAgent>();
+    registry
+        .register_agent_factory::<LoopForeverAgent>()
+        .expect("valid test catalog definition");
 
     let runtime = make_runtime(registry);
     let ctx = make_ctx();
@@ -597,7 +600,9 @@ async fn max_turns_budget_enforced() {
 async fn per_turn_timeout_fires() {
     // ── Slow case: turn exceeds the 10 ms deadline ──
     let registry = Arc::new(ActionRegistry::new());
-    registry.register_agent_factory::<SlowTurnAgent>();
+    registry
+        .register_agent_factory::<SlowTurnAgent>()
+        .expect("valid test catalog definition");
 
     let runtime = make_runtime(registry);
     let ctx = make_ctx();
@@ -621,7 +626,9 @@ async fn per_turn_timeout_fires() {
 
     // ── Fast case: turn completes well within the 200 ms deadline ──
     let fast_registry = Arc::new(ActionRegistry::new());
-    fast_registry.register_agent_factory::<FastTurnAgent>();
+    fast_registry
+        .register_agent_factory::<FastTurnAgent>()
+        .expect("valid test catalog definition");
 
     let fast_runtime = make_runtime(fast_registry);
     let fast_ctx = make_ctx();
@@ -645,7 +652,9 @@ async fn per_turn_timeout_fires() {
 #[tokio::test]
 async fn wait_step_rejected_in_a_s1() {
     let registry = Arc::new(ActionRegistry::new());
-    registry.register_agent_factory::<WaitReturningAgent>();
+    registry
+        .register_agent_factory::<WaitReturningAgent>()
+        .expect("valid test catalog definition");
 
     let runtime = make_runtime(registry);
     let ctx = make_ctx();

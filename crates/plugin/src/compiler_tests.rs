@@ -1,14 +1,20 @@
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::Arc;
+use std::{
+    cell::RefCell,
+    sync::{Arc, OnceLock},
+};
 
-use nebula_action::{ActionContext, ActionError, ActionFactory, ActionHandle, ActionMetadata};
+use nebula_action::{
+    Action, ActionContext, ActionError, ActionFactory, ActionKind, ActionMetadataDraft,
+    ActionResult, FromWorkflowNode, GenericTriggerFactory, InstanceFactory, StatelessAction,
+    TriggerAction, TriggerContext, TriggerEventOutcome, TriggerSource,
+};
 use nebula_core::{
     ArtifactSetDigest, Dependencies, PluginKey, WorkflowId, WorkflowVersionId, node_key,
 };
 use nebula_metadata::PluginManifest;
-use nebula_schema::{Field, ObjectField, Schema, SecretField, ValidSchema, field_key};
+use nebula_schema::{Field, ObjectField, Schema, SecretField, ValidSchema, ValuePath, field_key};
 use nebula_workflow::{NodeDefinition, ParamValue, WorkflowBuilder};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::*;
@@ -79,31 +85,132 @@ fn empty_connection_filter_is_refused_not_collapsed_to_unfiltered() {
     );
 }
 
-struct TestActionFactory {
-    metadata: ActionMetadata,
-    dependencies: Dependencies,
+thread_local! {
+    static INPUT_SCHEMA: RefCell<Option<ValidSchema>> = const { RefCell::new(None) };
+    static OUTPUT_SCHEMA: RefCell<Option<ValidSchema>> = const { RefCell::new(None) };
+    static TRIGGER_DRAFT: RefCell<Option<ActionMetadataDraft>> = const { RefCell::new(None) };
 }
 
-impl ActionFactory for TestActionFactory {
-    fn metadata(&self) -> &ActionMetadata {
-        &self.metadata
+#[derive(Deserialize)]
+struct ContractInput(Value);
+
+impl nebula_schema::HasSchema for ContractInput {
+    fn schema() -> Result<ValidSchema, nebula_schema::ValidationReport> {
+        Ok(INPUT_SCHEMA.with(|schema| {
+            schema
+                .borrow()
+                .clone()
+                .expect("input schema is installed during fixture admission")
+        }))
+    }
+}
+
+#[derive(Serialize)]
+struct ContractOutput(Value);
+
+impl nebula_schema::HasSchema for ContractOutput {
+    fn schema() -> Result<ValidSchema, nebula_schema::ValidationReport> {
+        Ok(OUTPUT_SCHEMA.with(|schema| {
+            schema
+                .borrow()
+                .clone()
+                .expect("output schema is installed during fixture admission")
+        }))
+    }
+}
+
+struct ContractAction;
+
+impl Action for ContractAction {
+    type Input = ContractInput;
+    type Output = ContractOutput;
+
+    fn metadata() -> ActionMetadataDraft {
+        ActionMetadataDraft::new(
+            nebula_core::action_key!("fixture.compiler_contract"),
+            nebula_action::metadata_name!("Compiler contract"),
+            "Typed backing action for compiler contract fixtures",
+        )
     }
 
-    fn dependencies(&self) -> &Dependencies {
-        &self.dependencies
+    fn dependencies() -> &'static Dependencies {
+        empty_dependencies()
     }
+}
 
-    fn instantiate<'a>(
-        &'a self,
-        _node: &'a NodeDefinition,
-        _context: &'a dyn ActionContext,
-    ) -> Pin<Box<dyn Future<Output = Result<ActionHandle, ActionError>> + Send + 'a>> {
-        Box::pin(async {
-            Err(ActionError::fatal(
-                "the pure compiler test factory is never instantiated",
-            ))
+impl StatelessAction for ContractAction {
+    async fn execute(
+        &self,
+        input: ContractInput,
+        _context: &(impl ActionContext + ?Sized),
+    ) -> Result<ActionResult<ContractOutput>, ActionError> {
+        Ok(ActionResult::success(ContractOutput(input.0)))
+    }
+}
+
+struct ContractTrigger;
+
+impl Action for ContractTrigger {
+    type Input = ContractInput;
+    type Output = ContractOutput;
+
+    fn metadata() -> ActionMetadataDraft {
+        TRIGGER_DRAFT.with(|draft| {
+            draft
+                .borrow()
+                .clone()
+                .expect("trigger draft is installed during fixture admission")
         })
     }
+
+    fn dependencies() -> &'static Dependencies {
+        empty_dependencies()
+    }
+}
+
+impl FromWorkflowNode for ContractTrigger {
+    type Error = ActionError;
+
+    async fn from_workflow_node<'a>(
+        _node: &'a NodeDefinition,
+        _context: &'a dyn ActionContext,
+    ) -> Result<Self, Self::Error> {
+        Ok(Self)
+    }
+}
+
+struct ContractTriggerSource;
+
+impl TriggerSource for ContractTriggerSource {
+    type Event = Value;
+}
+
+impl TriggerAction for ContractTrigger {
+    type Source = ContractTriggerSource;
+    type Error = ActionError;
+
+    async fn start(&self, _context: &(impl TriggerContext + ?Sized)) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    async fn stop(&self, _context: &(impl TriggerContext + ?Sized)) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    async fn handle(
+        &self,
+        _context: &(impl TriggerContext + ?Sized),
+        _event: Value,
+    ) -> Result<TriggerEventOutcome, Self::Error> {
+        Err(ActionError::fatal(
+            "compiler contract trigger does not accept external events",
+        ))
+    }
+}
+
+fn empty_dependencies() -> &'static Dependencies {
+    static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
+    DEPENDENCIES.get_or_init(Dependencies::new)
 }
 
 struct TestPlugin {
@@ -130,21 +237,39 @@ impl crate::Plugin for TestPlugin {
     }
 }
 
-fn action_metadata(
+fn action_factory(
     local_key: &str,
     kind: ActionKind,
     input_schema: ValidSchema,
     output_schema: ValidSchema,
-) -> ActionMetadata {
-    ActionMetadata::new(
+) -> Arc<dyn ActionFactory> {
+    let draft = ActionMetadataDraft::new(
         ActionKey::new(format!("demo.{local_key}")).expect("fixture action key is valid"),
-        local_key,
+        nebula_action::MetadataName::try_from(local_key).expect("fixture display name"),
         "compiler contract fixture",
     )
-    .with_kind(kind)
-    .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
-    .with_schema(input_schema)
-    .with_output_schema(output_schema)
+    .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects);
+    INPUT_SCHEMA.with(|schema| *schema.borrow_mut() = Some(input_schema));
+    OUTPUT_SCHEMA.with(|schema| *schema.borrow_mut() = Some(output_schema));
+    let factory: Arc<dyn ActionFactory> = match kind {
+        ActionKind::Stateless => Arc::new(
+            InstanceFactory::new(draft, ContractAction)
+                .expect("stateless compiler fixture contract must admit"),
+        ),
+        ActionKind::Trigger => {
+            TRIGGER_DRAFT.with(|installed| *installed.borrow_mut() = Some(draft));
+            let factory = Arc::new(
+                GenericTriggerFactory::<ContractTrigger>::new()
+                    .expect("trigger compiler fixture contract must admit"),
+            );
+            TRIGGER_DRAFT.with(|installed| *installed.borrow_mut() = None);
+            factory
+        },
+        _ => panic!("compiler contract fixture only supports stateless and trigger actions"),
+    };
+    INPUT_SCHEMA.with(|schema| *schema.borrow_mut() = None);
+    OUTPUT_SCHEMA.with(|schema| *schema.borrow_mut() = None);
+    factory
 }
 
 fn mode_equals(expected: &str) -> nebula_schema::Rule {
@@ -152,6 +277,7 @@ fn mode_equals(expected: &str) -> nebula_schema::Rule {
         nebula_schema::Predicate::eq("mode", expected)
             .expect("the static fixture predicate path is valid"),
     )
+    .expect("the static fixture predicate is bounded")
 }
 
 fn conditional_input_schema() -> ValidSchema {
@@ -189,13 +315,13 @@ fn reference_discriminator_error(
         .build()
         .expect("fixture output schema is valid");
     let registry = frozen(vec![
-        action_metadata(
+        action_factory(
             "source",
             ActionKind::Stateless,
             ValidSchema::empty(),
             mode_output,
         ),
-        action_metadata(
+        action_factory(
             "conditional",
             ActionKind::Stateless,
             input_schema,
@@ -206,7 +332,13 @@ fn reference_discriminator_error(
         .expect("fixture source node is valid");
     let target = NodeDefinition::new(node_key!("target"), "Target", "demo", "conditional")
         .expect("fixture target node is valid")
-        .with_parameter("mode", ParamValue::reference(node_key!("source"), "$.mode"))
+        .with_parameter(
+            "mode",
+            ParamValue::reference(
+                node_key!("source"),
+                ValuePath::from_pointer("/mode").unwrap(),
+            ),
+        )
         .with_parameter(nested_key, ParamValue::literal(nested_value));
     let workflow = WorkflowBuilder::new("Reference-backed nested condition")
         .id(WorkflowId::from_bytes([identity_byte; 16]))
@@ -219,20 +351,12 @@ fn reference_discriminator_error(
     compile_error(&registry, &workflow)
 }
 
-fn frozen(actions: Vec<ActionMetadata>) -> FrozenPluginRegistry {
+fn frozen(actions: Vec<Arc<dyn ActionFactory>>) -> FrozenPluginRegistry {
     let plugin = TestPlugin {
         manifest: PluginManifest::builder("demo", "Demo")
             .build()
             .expect("fixture manifest is valid"),
-        actions: actions
-            .into_iter()
-            .map(|metadata| {
-                Arc::new(TestActionFactory {
-                    metadata,
-                    dependencies: Dependencies::new(),
-                }) as Arc<dyn ActionFactory>
-            })
-            .collect(),
+        actions,
     };
     let resolved =
         Arc::new(ResolvedPlugin::from(plugin).expect("fixture plugin contracts resolve"));
@@ -268,19 +392,15 @@ fn compile_error(
 }
 
 #[test]
-fn reference_paths_normalize_only_ratified_aliases() {
-    assert_eq!(normalize_reference_path("$").as_deref(), Some(""));
-    assert_eq!(
-        normalize_reference_path("$.payload.0").as_deref(),
-        Some("payload.0")
-    );
-    assert_eq!(
-        normalize_reference_path("payload.0").as_deref(),
-        Some("payload.0")
-    );
-    assert!(normalize_reference_path("$payload").is_none());
-    assert!(normalize_reference_path("payload..name").is_none());
-    assert!(normalize_reference_path("payload.00").is_none());
+fn reference_paths_are_typed_as_canonical_rfc6901_before_compilation() {
+    let path = ValuePath::from_pointer("/payload/0").unwrap();
+    let reference = ParamValue::reference(node_key!("source"), path.clone());
+    let ParamValue::Reference { output_path, .. } = reference else {
+        panic!("reference constructor must preserve its variant");
+    };
+    assert_eq!(output_path, path);
+    assert!(ValuePath::from_pointer("$.payload.0").is_err());
+    assert!(ValuePath::from_pointer("payload.0").is_err());
 }
 
 #[test]
@@ -328,7 +448,7 @@ fn tagged_literal_is_not_reclassified_but_expression_is_rejected() {
         .add(Field::string(field_key!("value")).no_expression())
         .build()
         .expect("fixture schema is valid");
-    let registry = frozen(vec![action_metadata(
+    let registry = frozen(vec![action_factory(
         "literal",
         ActionKind::Stateless,
         input_schema,
@@ -356,7 +476,7 @@ fn tagged_literal_is_not_reclassified_but_expression_is_rejected() {
 
 #[test]
 fn gradual_any_accepts_canonical_arbitrary_parameters() {
-    let registry = frozen(vec![action_metadata(
+    let registry = frozen(vec![action_factory(
         "dynamic",
         ActionKind::Stateless,
         ValidSchema::any(),
@@ -385,13 +505,13 @@ fn gradual_any_accepts_a_whole_output_reference_under_an_arbitrary_key() {
         .build()
         .expect("fixture output schema is valid");
     let registry = frozen(vec![
-        action_metadata(
+        action_factory(
             "source",
             ActionKind::Stateless,
             ValidSchema::empty(),
             output_schema,
         ),
-        action_metadata(
+        action_factory(
             "dynamic",
             ActionKind::Stateless,
             ValidSchema::any(),
@@ -404,7 +524,7 @@ fn gradual_any_accepts_a_whole_output_reference_under_an_arbitrary_key() {
         .expect("fixture target node is valid")
         .with_parameter(
             "arbitrary_payload",
-            ParamValue::reference(node_key!("source"), "$"),
+            ParamValue::root_reference(node_key!("source")),
         );
     let workflow = WorkflowBuilder::new("Gradual whole-output reference")
         .id(WorkflowId::from_bytes([0x69; 16]))
@@ -426,13 +546,13 @@ fn gradual_any_accepts_an_existing_authored_path_under_an_arbitrary_key() {
         .build()
         .expect("fixture output schema is valid");
     let registry = frozen(vec![
-        action_metadata(
+        action_factory(
             "source",
             ActionKind::Stateless,
             ValidSchema::empty(),
             output_schema,
         ),
-        action_metadata(
+        action_factory(
             "dynamic",
             ActionKind::Stateless,
             ValidSchema::any(),
@@ -445,7 +565,10 @@ fn gradual_any_accepts_an_existing_authored_path_under_an_arbitrary_key() {
         .expect("fixture target node is valid")
         .with_parameter(
             "arbitrary_value",
-            ParamValue::reference(node_key!("source"), "$.value"),
+            ParamValue::reference(
+                node_key!("source"),
+                ValuePath::from_pointer("/value").unwrap(),
+            ),
         );
     let workflow = WorkflowBuilder::new("Gradual authored-path reference")
         .id(WorkflowId::from_bytes([0x6b; 16]))
@@ -462,7 +585,7 @@ fn gradual_any_accepts_an_existing_authored_path_under_an_arbitrary_key() {
 
 #[test]
 fn conditional_parameter_contract_is_checked_with_the_complete_parameter_bag() {
-    let registry = frozen(vec![action_metadata(
+    let registry = frozen(vec![action_factory(
         "conditional",
         ActionKind::Stateless,
         conditional_input_schema(),
@@ -484,7 +607,7 @@ fn conditional_parameter_contract_is_checked_with_the_complete_parameter_bag() {
 
 #[test]
 fn conditional_parameter_contract_rejects_a_value_outside_the_field_rules() {
-    let registry = frozen(vec![action_metadata(
+    let registry = frozen(vec![action_factory(
         "conditional",
         ActionKind::Stateless,
         conditional_input_schema(),
@@ -510,13 +633,13 @@ fn conditional_parameter_contract_rejects_a_reference_backed_discriminator() {
         .build()
         .expect("fixture output schema is valid");
     let registry = frozen(vec![
-        action_metadata(
+        action_factory(
             "source",
             ActionKind::Stateless,
             ValidSchema::empty(),
             mode_output,
         ),
-        action_metadata(
+        action_factory(
             "conditional",
             ActionKind::Stateless,
             conditional_input_schema(),
@@ -527,7 +650,13 @@ fn conditional_parameter_contract_rejects_a_reference_backed_discriminator() {
         .expect("fixture source node is valid");
     let target = NodeDefinition::new(node_key!("target"), "Target", "demo", "conditional")
         .expect("fixture target node is valid")
-        .with_parameter("mode", ParamValue::reference(node_key!("source"), "$.mode"))
+        .with_parameter(
+            "mode",
+            ParamValue::reference(
+                node_key!("source"),
+                ValuePath::from_pointer("/mode").unwrap(),
+            ),
+        )
         .with_parameter("amount", ParamValue::literal(json!(60_000)))
         .with_parameter("unit", ParamValue::literal(json!("milliseconds")));
     let workflow = WorkflowBuilder::new("Reference-backed conditional discriminator")
@@ -589,7 +718,7 @@ fn nested_secret_parameter_is_rejected_without_payload_disclosure() {
         .add(ObjectField::new(field_key!("auth")).add(SecretField::new(field_key!("token"))))
         .build()
         .expect("fixture schema is valid");
-    let registry = frozen(vec![action_metadata(
+    let registry = frozen(vec![action_factory(
         "secret",
         ActionKind::Stateless,
         input_schema,
@@ -630,13 +759,13 @@ fn trigger_secret_configuration_is_rejected_at_exact_path() {
         .build()
         .expect("fixture schema is valid");
     let registry = frozen(vec![
-        action_metadata(
+        action_factory(
             "run",
             ActionKind::Stateless,
             ValidSchema::empty(),
             ValidSchema::empty(),
         ),
-        action_metadata(
+        action_factory(
             "start",
             ActionKind::Trigger,
             trigger_schema,
@@ -665,19 +794,91 @@ fn trigger_secret_configuration_is_rejected_at_exact_path() {
 }
 
 #[test]
+fn scalar_trigger_configuration_is_recorded_without_null_object_coercion() {
+    for (schema, configuration) in [
+        (nebula_schema::schema_of::<()>().unwrap(), Value::Null),
+        (nebula_schema::schema_of::<u8>().unwrap(), json!(42)),
+        (ValidSchema::empty(), json!({})),
+        (ValidSchema::any(), json!(["{{ literal }}", null])),
+    ] {
+        let registry = frozen(vec![
+            action_factory(
+                "run",
+                ActionKind::Stateless,
+                ValidSchema::empty(),
+                ValidSchema::empty(),
+            ),
+            action_factory("start", ActionKind::Trigger, schema, ValidSchema::empty()),
+        ]);
+        let workflow = WorkflowBuilder::new("Root trigger contract")
+            .add_node(NodeDefinition::new(node_key!("run"), "Run", "demo", "run").unwrap())
+            .add_trigger(
+                node_key!("hook"),
+                PluginKey::new("demo").unwrap(),
+                ActionKey::new("start").unwrap(),
+                configuration.clone(),
+            )
+            .build()
+            .unwrap();
+        let plan = registry
+            .compile_graph_v1(WorkflowVersionId::new(), &workflow)
+            .unwrap();
+        let record = RecordedExecutablePlanRevisionV1::from(&plan);
+        assert_eq!(record.content.triggers[0].configuration, configuration);
+        let encoded = serde_json::to_vec(&record).unwrap();
+        let decoded = serde_json::from_slice(&encoded).unwrap();
+        let loaded = ExecutablePlanRevision::try_from_recorded_v1(decoded).unwrap();
+        loaded.validate_against(&registry).unwrap();
+        assert_eq!(loaded.id(), plan.id());
+    }
+}
+
+#[test]
+fn scalar_flow_edges_use_root_assignability_and_retain_empty_parameter_maps() {
+    let scalar = nebula_schema::schema_of::<u8>().unwrap();
+    let registry = frozen(vec![
+        action_factory(
+            "source",
+            ActionKind::Stateless,
+            ValidSchema::empty(),
+            scalar.clone(),
+        ),
+        action_factory("target", ActionKind::Stateless, scalar.clone(), scalar),
+    ]);
+    let workflow = WorkflowBuilder::new("Scalar flow")
+        .add_node(NodeDefinition::new(node_key!("source"), "Source", "demo", "source").unwrap())
+        .add_node(NodeDefinition::new(node_key!("target"), "Target", "demo", "target").unwrap())
+        .connect(node_key!("source"), node_key!("target"))
+        .build()
+        .unwrap();
+    let plan = registry
+        .compile_graph_v1(WorkflowVersionId::new(), &workflow)
+        .unwrap();
+    plan.validate_against(&registry).unwrap();
+    assert_eq!(plan.execution_graph().unwrap().connections().len(), 1);
+    assert!(
+        plan.execution_graph()
+            .unwrap()
+            .nodes()
+            .iter()
+            .all(|node| node.parameters.is_empty())
+    );
+}
+
+#[test]
 fn reference_alias_is_normalized_and_bad_contract_has_exact_path() {
     let value_schema = Schema::builder()
         .add(Field::string(field_key!("value")))
         .build()
         .expect("fixture schema is valid");
     let registry = frozen(vec![
-        action_metadata(
+        action_factory(
             "source",
             ActionKind::Stateless,
             ValidSchema::empty(),
             value_schema.clone(),
         ),
-        action_metadata(
+        action_factory(
             "target",
             ActionKind::Stateless,
             value_schema,
@@ -690,7 +891,10 @@ fn reference_alias_is_normalized_and_bad_contract_has_exact_path() {
         .expect("fixture target node is valid")
         .with_parameter(
             "value",
-            ParamValue::reference(node_key!("source"), "$.value"),
+            ParamValue::reference(
+                node_key!("source"),
+                ValuePath::from_pointer("/value").unwrap(),
+            ),
         );
     let workflow = WorkflowBuilder::new("Compiler reference contract")
         .id(WorkflowId::from_bytes([0x66; 16]))
@@ -711,14 +915,18 @@ fn reference_alias_is_normalized_and_bad_contract_has_exact_path() {
         .expect("target node is recorded");
     assert!(matches!(
         &target.parameters[0].value,
-        RecordedParameterValueV1::Reference { output_path, .. } if output_path == "value"
+        RecordedParameterValueV1::Reference { output_path, .. }
+            if output_path.as_str() == "/value"
     ));
 
     let bad_target = NodeDefinition::new(node_key!("target"), "Target", "demo", "target")
         .expect("fixture target node is valid")
         .with_parameter(
             "value",
-            ParamValue::reference(node_key!("source"), "$.missing"),
+            ParamValue::reference(
+                node_key!("source"),
+                ValuePath::from_pointer("/missing").unwrap(),
+            ),
         );
     let bad_workflow = WorkflowBuilder::new("Compiler bad reference contract")
         .id(WorkflowId::from_bytes([0x68; 16]))

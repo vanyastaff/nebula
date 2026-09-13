@@ -352,14 +352,12 @@ mod tests {
 
     use super::*;
     use crate::{
-        resource::{ResourceConfig, ResourceMetadata},
+        resource::{ResourceConfig, ResourceMetadataDraft},
         topology::bounded::BoundedProvider,
     };
 
-    #[derive(Debug, Clone, Copy)]
+    #[derive(Debug, Clone, Copy, nebula_schema::Schema)]
     struct BoundedCfg;
-
-    nebula_schema::impl_empty_has_schema!(BoundedCfg);
 
     impl ResourceConfig for BoundedCfg {
         fn validate(&self) -> Result<(), Error> {
@@ -405,8 +403,8 @@ mod tests {
             Ok(())
         }
 
-        fn metadata() -> ResourceMetadata {
-            ResourceMetadata::from_key(&Self::key())
+        fn metadata() -> ResourceMetadataDraft {
+            ResourceMetadataDraft::new(Self::key(), crate::metadata_name!("mock-bounded"), "")
         }
     }
 
@@ -608,9 +606,8 @@ mod tests {
         assert_eq!(topo.tag(), TopologyTag::Bounded);
     }
 
-    #[derive(Clone)]
+    #[derive(Clone, nebula_schema::Schema)]
     struct PanickingFingerprint;
-    crate::impl_empty_has_schema!(PanickingFingerprint);
 
     impl ResourceConfig for PanickingFingerprint {
         fn fingerprint(&self) -> u64 {
@@ -637,8 +634,12 @@ mod tests {
         async fn destroy(&self, _: u32, _: crate::TeardownCx) -> Result<(), Error> {
             Ok(())
         }
-        fn metadata() -> ResourceMetadata {
-            ResourceMetadata::from_key(&Self::key())
+        fn metadata() -> ResourceMetadataDraft {
+            ResourceMetadataDraft::new(
+                Self::key(),
+                crate::metadata_name!("fingerprint-ownership-regression"),
+                "",
+            )
         }
     }
 

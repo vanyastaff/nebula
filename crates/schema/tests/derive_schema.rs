@@ -1,14 +1,17 @@
 //! Integration tests for `#[derive(Schema)]` and `#[derive(EnumSelect)]`.
 
 use nebula_schema::{
-    EnumSelect, Field, FieldKey, FieldValues, HasSchema, HasSelectOptions, InputHint, RequiredMode,
-    Schema, StringWidget,
+    AuthoredValue, EnumSelect, Field, FieldKey, HasSchema, HasSelectOptions, InputHint,
+    RequiredMode, Schema, SchemaKind, SecretInput, StringWidget, schema_of,
 };
+use serde::Deserialize;
 use serde_json::json;
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
-fn fk(s: &str) -> FieldKey {
-    FieldKey::new(s).expect("valid field key")
-}
+#[derive(Deserialize, Zeroize, ZeroizeOnDrop)]
+struct TestSecret(String);
+
+impl SecretInput for TestSecret {}
 
 // ── #[derive(Schema)] ──────────────────────────────────────────────────────
 
@@ -35,12 +38,12 @@ struct HttpInput {
 
     #[field(secret, label = "API Key")]
     #[validate(required)]
-    api_key: String,
+    api_key: TestSecret,
 }
 
 #[test]
 fn derive_schema_matches_hand_written_schema() {
-    let derived = HttpInput::schema();
+    let derived = HttpInput::schema().unwrap();
     // 6 fields declared (skip would exclude).
     assert_eq!(derived.fields().len(), 6);
 
@@ -110,8 +113,8 @@ fn derive_schema_matches_hand_written_schema() {
 
 #[test]
 fn derive_schema_is_cached() {
-    let a = HttpInput::schema();
-    let b = HttpInput::schema();
+    let a = HttpInput::schema().unwrap();
+    let b = HttpInput::schema().unwrap();
     // `PartialEq` would succeed on structural equality even if the cache
     // is broken — `ptr_eq` is the actual invariant we care about.
     assert!(
@@ -135,7 +138,7 @@ struct TagList {
 
 #[test]
 fn derive_handles_vec_and_nested_user_type() {
-    let schema = TagList::schema();
+    let schema = TagList::schema().unwrap();
     assert_eq!(schema.fields().len(), 2);
 
     match &schema.fields()[0] {
@@ -171,7 +174,7 @@ struct WithSkip {
 
 #[test]
 fn derive_respects_skip() {
-    let s = WithSkip::schema();
+    let s = WithSkip::schema().unwrap();
     assert_eq!(s.fields().len(), 1);
     assert_eq!(s.fields()[0].key().as_str(), "keep");
 }
@@ -186,7 +189,7 @@ struct WithReservedKeys {
 
 #[test]
 fn derive_reserved_keys_do_not_materialize_or_block_other_fields() {
-    let s = WithReservedKeys::schema();
+    let s = WithReservedKeys::schema().unwrap();
     let keys: Vec<&str> = s.fields().iter().map(|f| f.key().as_str()).collect();
     // The real fields build normally — reserving unrelated keys is a no-op for them.
     assert_eq!(keys, ["name", "enabled"]);
@@ -208,7 +211,7 @@ struct ReservedMatchesSkippedField {
 
 #[test]
 fn derive_reserved_key_matching_a_skipped_field_is_allowed() {
-    let s = ReservedMatchesSkippedField::schema();
+    let s = ReservedMatchesSkippedField::schema().unwrap();
     let keys: Vec<&str> = s.fields().iter().map(|f| f.key().as_str()).collect();
     assert_eq!(
         keys,
@@ -229,7 +232,7 @@ struct AliasDoesNotCollide {
 
 #[test]
 fn derive_reserved_allows_a_non_colliding_serde_alias() {
-    let s = AliasDoesNotCollide::schema();
+    let s = AliasDoesNotCollide::schema().unwrap();
     let keys: Vec<&str> = s.fields().iter().map(|f| f.key().as_str()).collect();
     assert_eq!(keys, ["name"]);
 }
@@ -268,7 +271,7 @@ struct RequestLine {
 
 #[test]
 fn derive_enum_select_field_becomes_select() {
-    let schema = RequestLine::schema();
+    let schema = RequestLine::schema().unwrap();
     assert_eq!(schema.fields().len(), 2);
 
     match &schema.fields()[0] {
@@ -302,7 +305,7 @@ struct Uses {
 fn sanity_build_many_fields_via_derive() {
     // Confirm that `.add(Uses::schema().into())` also works via builder.
     let s = Schema::builder()
-        .add_many(Uses::schema().fields().iter().cloned())
+        .add_many(Uses::schema().unwrap().fields().iter().cloned())
         .build()
         .expect("derived fields build into a new Schema");
     assert_eq!(s.fields().len(), 1);
@@ -322,7 +325,7 @@ struct RawIdentFields {
 
 #[test]
 fn derive_schema_strips_raw_identifier_prefix() {
-    let schema = RawIdentFields::schema();
+    let schema = RawIdentFields::schema().unwrap();
     let keys: Vec<&str> = schema.fields().iter().map(|f| f.key().as_str()).collect();
     assert_eq!(keys, ["type", "async"]);
 }
@@ -359,7 +362,7 @@ fn derive_schema_honors_serde_rename_all_matching_wire() {
     // The schema key MUST equal serde's wire key, otherwise the validator checks a
     // field the deserializer never produces. Before this fix the keys stayed
     // `user_name` / `api_key_id` while serde emitted `userName` / `apiKeyId`.
-    let schema = CamelConfig::schema();
+    let schema = CamelConfig::schema().unwrap();
     let schema_keys: Vec<&str> = schema.fields().iter().map(|f| f.key().as_str()).collect();
     assert_eq!(schema_keys, ["userName", "apiKeyId"]);
 
@@ -385,7 +388,7 @@ struct RenamedField {
 
 #[test]
 fn derive_schema_honors_serde_field_rename() {
-    let schema = RenamedField::schema();
+    let schema = RenamedField::schema().unwrap();
     assert_eq!(schema.fields()[0].key().as_str(), "apiKey");
 }
 
@@ -399,7 +402,7 @@ struct WithSkipped {
 
 #[test]
 fn derive_schema_drops_serde_skipped_field() {
-    let schema = WithSkipped::schema();
+    let schema = WithSkipped::schema().unwrap();
     let keys: Vec<&str> = schema.fields().iter().map(|f| f.key().as_str()).collect();
     assert_eq!(keys, ["kept"]);
 }
@@ -449,7 +452,7 @@ struct AliasedInput {
 fn derive_serde_alias_becomes_read_alias() {
     // `#[serde(alias)]` keys become read-aliases — serde deserializes them AND the
     // schema accepts them, keeping wire and schema in sync.
-    let schema = AliasedInput::schema();
+    let schema = AliasedInput::schema().unwrap();
     let aliases: Vec<&str> = schema.fields()[0]
         .read_aliases()
         .iter()
@@ -459,9 +462,13 @@ fn derive_serde_alias_becomes_read_alias() {
 
     // Input under an alias is accepted and folded onto the canonical key.
     let valid = schema
-        .validate(&FieldValues::from_json(json!({"displayName": "Alice"})).unwrap())
+        .validate(AuthoredValue::from_data(json!({"displayName": "Alice"})).unwrap())
         .expect("alias-keyed input must be accepted");
-    assert_eq!(valid.raw().get_string(&fk("name")), Some("Alice"));
+    assert_eq!(
+        valid.values().get("name").unwrap().to_json(),
+        json!("Alice")
+    );
+    assert!(valid.values().get("displayName").is_none());
 }
 
 #[derive(Schema)]
@@ -473,14 +480,16 @@ struct RemappedOutput {
 
 #[test]
 fn derive_field_emit_as_emits_on_projection() {
-    let schema = RemappedOutput::schema();
+    let schema = RemappedOutput::schema().unwrap();
     assert_eq!(
         schema.fields()[0].emit_as().map(FieldKey::as_str),
         Some("externalId")
     );
 
     // Projection emits the field under the emit_as key, not the canonical key.
-    let projected = schema.project(&FieldValues::from_json(json!({"internal_id": "x1"})).unwrap());
+    let projected = schema
+        .project(&AuthoredValue::from_data(json!({"internal_id": "x1"})).unwrap())
+        .unwrap();
     assert_eq!(projected["externalId"], json!("x1"));
     assert!(projected.get("internal_id").is_none());
 }
@@ -497,10 +506,73 @@ struct RoundTripField {
 fn derive_same_field_read_and_emit_as_reuse_builds() {
     // Reading from and emitting to the SAME wire key on one field is round-trip
     // stable, so it must build (cross-field reuse would be rejected at compile time).
-    let schema = RoundTripField::schema();
+    let schema = RoundTripField::schema().unwrap();
     let field = &schema.fields()[0];
     assert_eq!(field.read_aliases()[0].as_str(), "wire");
     assert_eq!(field.emit_as().map(FieldKey::as_str), Some("wire"));
+}
+
+#[derive(Schema, serde::Deserialize)]
+#[expect(
+    dead_code,
+    reason = "checked builder chaining is exercised through its schema"
+)]
+struct PatternAlias {
+    #[serde(alias = "legacy")]
+    #[field(emit_as = "wire")]
+    #[validate(pattern = "^[a-z]+$")]
+    value: String,
+}
+
+#[test]
+fn checked_pattern_and_alias_builders_preserve_validation_and_projection() {
+    let schema = PatternAlias::schema().unwrap();
+    let valid = schema
+        .validate(AuthoredValue::from_data(json!({"legacy": "valid"})).unwrap())
+        .unwrap();
+    assert_eq!(valid.values().to_json(), json!({"value": "valid"}));
+    assert_eq!(valid.to_wire_json(), json!({"wire": "valid"}));
+    let report = schema
+        .validate(AuthoredValue::from_data(json!({"legacy": "INVALID"})).unwrap())
+        .unwrap_err();
+    assert_eq!(report.errors().count(), 1);
+    assert_eq!(report.errors().next().unwrap().code(), "invalid_format");
+    assert_eq!(report.errors().next().unwrap().path().to_string(), "/value");
+}
+
+struct EmptyRecord;
+nebula_schema::impl_empty_has_schema!(EmptyRecord);
+
+#[test]
+fn builtin_fallible_schemas_preserve_empty_and_any_identity() {
+    let unit = schema_of::<()>().unwrap();
+    let empty = nebula_schema::ValidSchema::empty();
+    let explicit_empty = schema_of::<EmptyRecord>().unwrap();
+    let any = schema_of::<serde_json::Value>().unwrap();
+    assert_eq!(empty.kind(), SchemaKind::Record);
+    assert!(empty.fields().is_empty());
+    assert!(empty.ptr_eq(&explicit_empty));
+    assert_eq!(any.kind(), SchemaKind::Any);
+    assert!(any.ptr_eq(&schema_of::<AuthoredValue>().unwrap()));
+    assert_eq!(
+        unit.scalar_schema().unwrap().kind(),
+        nebula_schema::ScalarKind::Null
+    );
+    assert_eq!(
+        schema_of::<String>()
+            .unwrap()
+            .scalar_schema()
+            .unwrap()
+            .kind(),
+        nebula_schema::ScalarKind::String
+    );
+    assert_eq!(
+        schema_of::<i32>().unwrap().scalar_schema().unwrap().kind(),
+        nebula_schema::ScalarKind::Integer
+    );
+    assert_ne!(unit, empty);
+    assert_ne!(unit, any);
+    assert_ne!(empty, any);
 }
 
 #[derive(Schema, serde::Deserialize)]
@@ -514,8 +586,8 @@ struct DuplicateAlias {
 fn derive_duplicate_serde_alias_is_deduped_not_rejected() {
     // serde tolerates a repeated alias on one field; the derive dedups so the
     // generated schema has exactly ONE read-alias and builds — without the dedup
-    // the runtime scope_duplicate lint would reject it and panic `schema()`.
-    let schema = DuplicateAlias::schema();
+    // the runtime scope_duplicate lint would reject its schema.
+    let schema = DuplicateAlias::schema().unwrap();
     let aliases: Vec<&str> = schema.fields()[0]
         .read_aliases()
         .iter()

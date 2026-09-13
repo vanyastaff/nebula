@@ -1,5 +1,5 @@
 error: field with `#[credential]` must have type `SlotCell<CredentialGuard<C>>` or `CredentialSlot<C>` — got: Option < SlotCell < CredentialGuard < FakeCred > > >
-  --> tests/probes/derive_slot_option_wrapped.rs:16:9
+  --> tests/probes/derive_slot_option_wrapped.rs:15:9
    |
-16 |     db: Option<SlotCell<CredentialGuard<FakeCred>>>,
+15 |     db: Option<SlotCell<CredentialGuard<FakeCred>>>,
    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

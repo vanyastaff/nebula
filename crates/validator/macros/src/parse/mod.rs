@@ -503,11 +503,19 @@ pub(super) fn parse_length_call(
     }
 
     match (min, max) {
-        (Some(min), Some(max)) => rules.push(if is_string {
-            Rule::LengthRange { min, max }
-        } else {
-            Rule::SizeRange { min, max }
-        }),
+        (Some(min), Some(max)) => {
+            if min > max {
+                return Err(syn::Error::new(
+                    proc_macro2::Span::call_site(),
+                    "`length(...)` requires `min <= max`",
+                ));
+            }
+            rules.push(if is_string {
+                Rule::LengthRange { min, max }
+            } else {
+                Rule::SizeRange { min, max }
+            });
+        },
         (Some(min), None) => rules.push(if is_string {
             Rule::MinLength(min)
         } else {
@@ -803,7 +811,10 @@ pub(super) fn rules_to_validator_expr(
             Rule::ExactSize(n) => Ok(quote!(::nebula_validator::validators::exact_size::<#element_ty>(#n))),
             Rule::MinSize(n) => Ok(quote!(::nebula_validator::validators::min_size::<#element_ty>(#n))),
             Rule::MaxSize(n) => Ok(quote!(::nebula_validator::validators::max_size::<#element_ty>(#n))),
-            Rule::SizeRange { min, max } => Ok(quote!(::nebula_validator::validators::try_size_range::<#element_ty>(#min, #max).expect("size bounds validated by derive parser"))),
+            Rule::SizeRange { min, max } => Ok(quote!(::nebula_validator::combinators::and(
+                ::nebula_validator::validators::min_size::<#element_ty>(#min),
+                ::nebula_validator::validators::max_size::<#element_ty>(#max),
+            ))),
             _ => Err(syn::Error::new_spanned(value_ty, "rule cannot be converted into a grouped validator expression")),
         })
         .collect::<syn::Result<Vec<_>>>()?;

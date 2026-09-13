@@ -31,10 +31,6 @@ impl FieldKey {
     /// # Errors
     ///
     /// Returns `invalid_key` when the candidate string violates key format constraints.
-    #[expect(
-        clippy::result_large_err,
-        reason = "ValidationError is intentionally large; callers are on the validation path"
-    )]
     pub fn new(value: impl AsRef<str>) -> Result<Self, ValidationError> {
         let value = value.as_ref();
         let bytes = value.as_bytes();
@@ -123,7 +119,7 @@ mod tests {
     fn rejects_invalid_keys() {
         for bad in ["", "1bad", "has-dash", "has space", &"x".repeat(65)] {
             let err = FieldKey::new(bad).unwrap_err();
-            assert_eq!(err.code, "invalid_key");
+            assert_eq!(err.code(), "invalid_key");
         }
     }
 

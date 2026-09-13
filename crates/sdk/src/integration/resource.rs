@@ -20,5 +20,5 @@ pub use nebula_resource::{
     Bounded, BoundedMode, BoundedProvider, CheckCost, ClassifyError, Error, ErrorKind,
     HasCredentialSlots, PoolConfig, PoolProvider, Pooled, Provider, ReleaseOutcome, Resident,
     ResidentConfig, ResidentProvider, Resource, ResourceConfig, ResourceContext, ResourceGuard,
-    ResourceMetadata, SlotCell, TeardownCx, TeardownReason, TopologyTag, no_credential_slots,
+    ResourceMetadataDraft, SlotCell, TeardownCx, TeardownReason, TopologyTag, no_credential_slots,
 };

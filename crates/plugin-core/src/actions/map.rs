@@ -53,9 +53,9 @@
 
 use std::sync::OnceLock;
 
-use nebula_action::{ActionContext, ActionError, ActionMetadata, ActionResult, StatelessAction};
+use nebula_action::{ActionContext, ActionError, ActionResult, StatelessAction};
 use nebula_core::action_key;
-use nebula_schema::HasSchema;
+use nebula_schema::{HasSchema, Schema, ValidSchema, ValidationReport, field_key};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::instrument;
@@ -92,12 +92,25 @@ pub struct MapInput {
     pub operations: Vec<TransformOperation>,
 }
 
-// `data` is a fully dynamic array and `operations` contain only string fields —
-// no closed-form schema can be emitted. Empty schema is the honest declaration;
-// the module doc describes the expected structure out-of-band.
 impl HasSchema for MapInput {
-    fn schema() -> nebula_schema::validated::ValidSchema {
-        nebula_schema::validated::ValidSchema::empty()
+    #[instrument(name = "core.map.schema", skip_all, err)]
+    fn schema() -> Result<ValidSchema, ValidationReport> {
+        static SCHEMA: OnceLock<Result<ValidSchema, ValidationReport>> = OnceLock::new();
+        SCHEMA
+            .get_or_init(|| {
+                Schema::builder()
+                    .add(super::input_schema::record_data())
+                    .add(
+                        super::json_transform::operations_schema()
+                            .description("Required operation array; an empty array is a no-op."),
+                    )
+                    .root_rule(super::input_schema::array_present(field_key!("data"))?)
+                    .root_rule(super::input_schema::array_present(field_key!(
+                        "operations"
+                    ))?)
+                    .build()
+            })
+            .clone()
     }
 }
 
@@ -139,13 +152,14 @@ impl nebula_action::action::Action for MapAction {
     type Input = MapInput;
     type Output = Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        nebula_action::ActionMetadataDraft::new(
             action_key!("core.map"),
-            "Map",
+            nebula_action::metadata_name!("Map"),
             "Reshape each element of a JSON array of objects (per-element \
              pick/omit/rename/flatten)",
         )
+        .with_version(nebula_action::MetadataVersion::new(2, 0, 0))
         .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
     }
 
@@ -515,7 +529,14 @@ mod tests {
     // ── 12: action key is "core.map" ─────────────────────────────────────────
     #[test]
     fn action_key_is_core_dot_map() {
-        use nebula_action::action::Action;
-        assert_eq!(MapAction::metadata().base.key.as_str(), "core.map");
+        let factory = nebula_action::GenericStatelessFactory::<MapAction>::new()
+            .expect("map metadata must admit");
+        assert_eq!(
+            nebula_action::ActionFactory::metadata(&factory)
+                .base()
+                .key()
+                .as_str(),
+            "core.map"
+        );
     }
 }

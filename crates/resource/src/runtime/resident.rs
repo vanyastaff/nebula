@@ -371,7 +371,7 @@ mod tests {
     use super::*;
     use crate::{
         context::ResourceContext,
-        resource::{ResourceConfig, ResourceMetadata},
+        resource::{ResourceConfig, ResourceMetadataDraft},
         topology::resident::ResidentProvider,
     };
 
@@ -423,8 +423,8 @@ mod tests {
             Ok(())
         }
 
-        fn metadata() -> ResourceMetadata {
-            ResourceMetadata::from_key(&Self::key())
+        fn metadata() -> ResourceMetadataDraft {
+            ResourceMetadataDraft::new(Self::key(), crate::metadata_name!("mock-resident"), "")
         }
     }
 
@@ -604,8 +604,8 @@ mod tests {
             Ok(())
         }
 
-        fn metadata() -> ResourceMetadata {
-            ResourceMetadata::from_key(&Self::key())
+        fn metadata() -> ResourceMetadataDraft {
+            ResourceMetadataDraft::new(Self::key(), crate::metadata_name!("hanging-resident"), "")
         }
     }
 
@@ -692,8 +692,8 @@ mod tests {
             Ok(())
         }
 
-        fn metadata() -> ResourceMetadata {
-            ResourceMetadata::from_key(&Self::key())
+        fn metadata() -> ResourceMetadataDraft {
+            ResourceMetadataDraft::new(Self::key(), crate::metadata_name!("slot-read-resident"), "")
         }
     }
 

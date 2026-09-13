@@ -1,5 +1,10 @@
 # Phase 1 Bench Results
 
+These are historical measurements of the retired value model, not the current
+consuming validation pipeline. Current validation benches exclude input cloning
+through batched setup. `resolve_literal_only` now measures `resolve_data()`,
+including completion checks; the old reference-only result below is not comparable.
+
 ## Summary
 
 Phase 0 baseline was captured in Task 1 using the legacy `Schema::validate(values, mode)`
@@ -136,3 +141,24 @@ the `RuleContext` descent path that Phase 0 could not measure (the old HashMap-f
   Phase 0 because the old `FieldValues` did not support nested objects. This workload
   is the one where the Task 16 `RuleContext` trait actually wins against a would-be
   HashMap-per-descent baseline.
+
+---
+
+## Schema/validator correction pass (2026-09-11)
+
+Criterion ran with 100 samples per benchmark and the Plotters backend. The existing
+`schema_validate_nested` benchmark had a same-machine pre-change baseline. The three
+new rejection/context benchmarks did not have pre-change baselines.
+
+| Benchmark | Pre-change | After |
+|---|---:|---:|
+| `schema_validate_nested` | 2.4713-2.4849 us | 1.1999-1.2380 us |
+| `schema_validate_nested_contextual` | unavailable | 7.1394-7.1827 us |
+| `authored_wire_rejects_oversized_source` | unavailable | 124.24-145.27 us |
+| `loader_rejects_oversized_page` | unavailable | 280.64-308.97 us |
+
+The existing nested case improved by about 50.8% at the midpoint (2.03x throughput).
+The host was concurrently running other workspace jobs; Criterion reported 11 high-side
+outliers for the final nested sample, four for the contextual sample (three high-mild and
+one high-severity), and 19 and 22 high-side outliers for the wire and loader samples. The
+raw intervals above are therefore more useful than a single point estimate.

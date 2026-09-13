@@ -1,102 +1,54 @@
 use super::*;
 
-struct DriftingFactory {
-    original: ActionMetadata,
-    changed: ActionMetadata,
-    drifted: Arc<std::sync::atomic::AtomicBool>,
-    instantiations: Arc<AtomicU32>,
-    inner: Arc<dyn nebula_action::ActionFactory>,
-}
-impl nebula_action::ActionFactory for DriftingFactory {
-    fn metadata(&self) -> &ActionMetadata {
-        if self.drifted.load(Ordering::SeqCst) {
-            &self.changed
-        } else {
-            &self.original
-        }
-    }
-    fn dependencies(&self) -> &Dependencies {
-        self.inner.dependencies()
-    }
-    fn instantiate<'a>(
-        &'a self,
-        node: &'a NodeDefinition,
-        context: &'a dyn nebula_action::ActionContext,
-    ) -> Pin<Box<dyn Future<Output = Result<nebula_action::ActionHandle, ActionError>> + Send + 'a>>
-    {
-        self.instantiations.fetch_add(1, Ordering::SeqCst);
-        self.inner.instantiate(node, context)
-    }
-}
-
 #[tokio::test]
 async fn exact_turn_rejects_factory_effect_or_version_drift_before_instantiation() {
     for change_version in [false, true] {
-        let runtime_registry = Arc::new(ActionRegistry::new());
+        let original_runtime_registry = Arc::new(ActionRegistry::new());
         let metadata = SnapshotHandler::metadata()
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
-            .with_schema(nebula_schema::ValidSchema::empty())
-            .with_output_schema(nebula_schema::ValidSchema::empty());
-        runtime_registry
-            .register_stateless_instance(metadata.clone(), SnapshotHandler("must-not-run"));
-        let inner = runtime_registry
-            .get_factory(&action_key!("exact.run"))
-            .unwrap()
-            .1;
-        let mut changed = metadata.clone();
-        if change_version {
-            changed.base.version = semver::Version::new(99, 0, 0);
-        } else {
-            changed.effect_contract = nebula_action::effect::ActionEffectContract::Undeclared;
-        }
-        let drifted = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let instantiations = Arc::new(AtomicU32::new(0));
-        let plugin = SnapshotPlugin {
-            manifest: nebula_plugin::PluginManifest::builder("exact", "Exact")
-                .build()
-                .unwrap(),
-            factory: Arc::new(DriftingFactory {
-                original: metadata,
-                changed,
-                drifted: drifted.clone(),
-                instantiations: instantiations.clone(),
-                inner,
-            }),
-        };
-        let mut registry = PluginRegistry::new();
-        registry
-            .register(Arc::new(
-                nebula_plugin::ResolvedPlugin::from(plugin).unwrap(),
-            ))
-            .unwrap();
-        let frozen = Arc::new(
-            registry
-                .freeze(
-                    nebula_core::ArtifactSetDigest::from_bytes([0x73; 32]),
-                    "1.0.0".parse().unwrap(),
-                )
-                .unwrap(),
-        );
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects);
+        let (frozen, executions) =
+            snapshot_registry_counted(&original_runtime_registry, "must-not-run");
         let stores = TestStores::new();
         let (id, _) = install_snapshot_execution(&stores, &frozen).await;
         let before = stores.get_state(id).await.unwrap();
-        let (engine, _) = make_engine(runtime_registry);
+
+        let changed_draft = if change_version {
+            metadata.with_version(semver::Version::new(99, 0, 0))
+        } else {
+            metadata.with_effect_contract(nebula_action::effect::ActionEffectContract::Undeclared)
+        };
+        let changed_runtime_registry = Arc::new(ActionRegistry::new());
+        changed_runtime_registry
+            .register_stateless_instance(changed_draft, SnapshotHandler::new("must-not-run"))
+            .expect("changed test definition is structurally valid");
+        let changed_frozen = frozen_registered_snapshot(&changed_runtime_registry);
+        let (engine, _) = make_engine(changed_runtime_registry);
         let engine = stores.attach(engine).with_plan_flavor_runtime(
             Arc::new(crate::PlanFlavorRevisionLoader::new(Arc::new(
                 stores.execution.plan_flavor_catalog(),
             ))),
-            frozen,
+            changed_frozen,
             Arc::new(nebula_storage::inmem::InMemoryStartAcceptanceStore::new(
                 &stores.execution,
             )),
         );
-        drifted.store(true, Ordering::SeqCst);
         let error = engine
             .resume_execution(&crate::store_seam::single_tenant_scope(), id)
             .await
             .unwrap_err();
-        assert!(matches!(error, EngineError::ExactFactoryUnavailable));
-        assert_eq!(instantiations.load(Ordering::SeqCst), 0);
+        std::assert_matches!(
+            error,
+            EngineError::ExactRevision { source }
+                if matches!(
+                    *source,
+                    crate::revision_catalog::PlanFlavorRevisionBridgeError::RegistryCompatibility {
+                        source: nebula_plugin::PlanRegistryCompatibilityError::ContractMismatch {
+                            section: "actions"
+                        }
+                    }
+                )
+        );
+        assert_eq!(executions.load(Ordering::SeqCst), 0);
         assert_eq!(stores.get_state(id).await.unwrap(), before);
     }
 }
@@ -297,10 +249,16 @@ fn checkpoint_requires_supported_format_and_terminal_evidence() {
 #[tokio::test]
 async fn resume_does_not_activate_an_all_dead_join() {
     let registry = Arc::new(ActionRegistry::new());
-    registry.register_stateless_instance(
-        ActionMetadata::new(action_key!("echo"), "Echo", "echo"),
-        EchoHandler,
-    );
+    registry
+        .register_stateless_instance(
+            pure_metadata(
+                action_key!("core.echo"),
+                nebula_action::metadata_name!("Echo"),
+                "echo",
+            ),
+            EchoHandler,
+        )
+        .expect("valid test catalog definition");
     let stores = TestStores::new();
     let (engine, _) = make_engine(registry);
     let a = node_key!("a");
@@ -338,10 +296,16 @@ async fn resume_does_not_activate_an_all_dead_join() {
 #[tokio::test]
 async fn resume_counts_distinct_ports_from_same_source_once_each() {
     let registry = Arc::new(ActionRegistry::new());
-    registry.register_stateless_instance(
-        ActionMetadata::new(action_key!("echo"), "Echo", "echo"),
-        EchoHandler,
-    );
+    registry
+        .register_stateless_instance(
+            pure_metadata(
+                action_key!("core.echo"),
+                nebula_action::metadata_name!("Echo"),
+                "echo",
+            ),
+            EchoHandler,
+        )
+        .expect("valid test catalog definition");
     let stores = TestStores::new();
     let (engine, _) = make_engine(registry);
     let a = node_key!("a");

@@ -52,10 +52,9 @@
 use std::{collections::HashMap, sync::Arc, time::Duration, time::Instant};
 
 use anyhow::Context as _;
-use nebula_action::ActionResult;
 use nebula_engine::{
-    ActionExecutor, ActionRegistry, ActionRuntime, DataPassingPolicy, ExecutionEvent,
-    InProcessRunner, ResolvedPlugin, WorkflowEngine,
+    ActionRegistry, ActionRuntime, DataPassingPolicy, ExecutionEvent, InProcessRunner,
+    ResolvedPlugin, WorkflowEngine,
 };
 use nebula_eventbus::EventBus;
 use nebula_execution::{ExecutionStatus, context::ExecutionBudget};
@@ -237,14 +236,12 @@ fn init_tracing() {
 
 /// Build a standalone `WorkflowEngine` with the first-party `CorePlugin` wired.
 ///
-/// Mirrors the data-pipeline example: the `ActionExecutor` is the identity
-/// executor used by the in-process runner; the `core.*` actions themselves are
+/// Mirrors the data-pipeline example: the in-process runner executes actions
+/// registered in the `ActionRegistry`; the `core.*` actions themselves are
 /// registered by `with_plugin(CorePlugin)`.
 fn build_engine() -> anyhow::Result<WorkflowEngine> {
     let registry = Arc::new(ActionRegistry::new());
-    let executor: ActionExecutor =
-        Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
-    let runner = Arc::new(InProcessRunner::new(executor));
+    let runner = Arc::new(InProcessRunner::new());
     let metrics = MetricsRegistry::new();
     let runtime = Arc::new(
         ActionRuntime::try_new(

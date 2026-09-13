@@ -15,6 +15,7 @@ use nebula_core::{
 use tokio_util::sync::CancellationToken;
 
 use crate::accessor::default_credential_accessor;
+use crate::runtime::acquisition::AcquisitionTransport;
 use crate::runtime::refresh::transport::RefreshTransport;
 
 // ── Noop ResourceAccessor (core trait) ────────────────────────────────────
@@ -97,6 +98,7 @@ fn default_resource_accessor() -> Arc<dyn ResourceAccessor> {
 ///     .build()
 ///     .expect("scope + principal must produce a valid BaseContext");
 /// let ctx = CredentialContextBuilder::new(
+///         "owner-1".to_owned(),
 ///         base,
 ///         default_credential_accessor(),
 ///         resource_accessor(),
@@ -134,12 +136,8 @@ pub struct CredentialContext {
     /// Session ID for `PendingStateStore` token binding.
     session_id: Option<String>,
 
-    /// Owner ID for backward-compatible pending-store binding.
-    ///
-    /// When set explicitly, this value is returned by [`owner_id()`](Self::owner_id).
-    /// Otherwise, `owner_id()` derives a string from
-    /// [`self.principal()`](Context::principal).
-    owner_id_override: Option<String>,
+    /// Explicit owner identity used for pending-store binding.
+    owner_id: String,
 
     /// Per-operation cancellation token.
     ///
@@ -156,6 +154,9 @@ pub struct CredentialContext {
     /// credential implementations can only borrow the narrow transport while
     /// the framework drives refresh.
     refresh_transport: Option<Arc<dyn RefreshTransport>>,
+
+    /// Initial OAuth acquisition transport, independent from refresh authority.
+    acquisition_transport: Option<Arc<dyn AcquisitionTransport>>,
 }
 
 impl fmt::Debug for CredentialContext {
@@ -167,14 +168,15 @@ impl fmt::Debug for CredentialContext {
             .field("callback_url_present", &self.callback_url.is_some())
             .field("app_url_present", &self.app_url.is_some())
             .field("session_id_present", &self.session_id.is_some())
-            .field(
-                "owner_id_override_present",
-                &self.owner_id_override.is_some(),
-            )
+            .field("owner_id_present", &!self.owner_id.is_empty())
             .field("cancel", &self.cancel)
             .field(
                 "refresh_transport_present",
                 &self.refresh_transport.is_some(),
+            )
+            .field(
+                "acquisition_transport_present",
+                &self.acquisition_transport.is_some(),
             )
             .finish()
     }
@@ -260,17 +262,10 @@ impl CredentialContext {
 
     /// Returns an owner identifier string for pending-store session binding.
     ///
-    /// If an explicit `owner_id` was set via [`CredentialContextBuilder::owner_id`]
-    /// or [`CredentialContext::for_owner`], that value is returned. Otherwise a
-    /// string representation of the [`Principal`] is derived.
+    /// The identity is mandatory at construction and is never synthesized
+    /// from a principal or replaced with a sentinel.
     pub fn owner_id(&self) -> &str {
-        if let Some(ref id) = self.owner_id_override {
-            return id.as_str();
-        }
-        // Fallback: we can't return a reference to a computed String from
-        // principal, so this branch returns a static fallback. Production
-        // callers should set owner_id_override via the builder.
-        "system"
+        &self.owner_id
     }
 
     /// Convenience constructor for contexts where only an `owner_id` is
@@ -282,10 +277,7 @@ impl CredentialContext {
     /// owner id with no incoming request context). For production paths
     /// that need real accessors use [`CredentialContextBuilder`].
     pub fn for_owner(owner_id: impl Into<String>) -> Self {
-        let base = BaseContext::builder(Scope::default())
-            .principal(Principal::System)
-            .build()
-            .expect("scope + principal must produce a valid BaseContext");
+        let base = BaseContext::builder(Scope::default()).build_with(Principal::System);
         let cancel = base.cancellation().child_token();
         Self {
             base: Arc::new(base),
@@ -294,9 +286,10 @@ impl CredentialContext {
             callback_url: None,
             app_url: None,
             session_id: None,
-            owner_id_override: Some(owner_id.into()),
+            owner_id: owner_id.into(),
             cancel,
             refresh_transport: None,
+            acquisition_transport: None,
         }
     }
 
@@ -306,6 +299,18 @@ impl CredentialContext {
     /// typed credential refresh, not an integration-facing capability.
     pub(crate) fn refresh_transport(&self) -> Option<&dyn RefreshTransport> {
         self.refresh_transport.as_deref()
+    }
+
+    /// Borrow the explicitly injected initial-acquisition transport.
+    pub(crate) fn acquisition_transport(&self) -> Option<&dyn AcquisitionTransport> {
+        self.acquisition_transport.as_deref()
+    }
+
+    /// Attach initial-acquisition authority without granting refresh authority.
+    pub(crate) fn for_acquisition(&self, transport: Arc<dyn AcquisitionTransport>) -> Self {
+        let mut acquisition = self.clone();
+        acquisition.acquisition_transport = Some(transport);
+        acquisition
     }
 
     /// Derive the provider/persistence critical-section context.
@@ -354,31 +359,32 @@ impl CredentialContext {
 /// Requires a [`BaseContext`], credential accessor, and resource accessor.
 /// Domain-specific fields (callback URL, app URL, session ID) are optional.
 pub struct CredentialContextBuilder {
+    owner_id: String,
     base: BaseContext,
     credentials: Arc<dyn CredentialAccessor>,
     resources: Arc<dyn ResourceAccessor>,
     callback_url: Option<String>,
     app_url: Option<String>,
     session_id: Option<String>,
-    owner_id: Option<String>,
     cancel: Option<CancellationToken>,
 }
 
 impl CredentialContextBuilder {
     /// Create a new builder with the required fields.
     pub fn new(
+        owner_id: String,
         base: BaseContext,
         credentials: Arc<dyn CredentialAccessor>,
         resources: Arc<dyn ResourceAccessor>,
     ) -> Self {
         Self {
+            owner_id,
             base,
             credentials,
             resources,
             callback_url: None,
             app_url: None,
             session_id: None,
-            owner_id: None,
             cancel: None,
         }
     }
@@ -401,16 +407,6 @@ impl CredentialContextBuilder {
     #[must_use]
     pub fn session_id(mut self, id: String) -> Self {
         self.session_id = Some(id);
-        self
-    }
-
-    /// Set explicit owner ID for pending-store session binding.
-    ///
-    /// If not set, [`CredentialContext::owner_id()`] falls back to deriving
-    /// a string from the principal.
-    #[must_use]
-    pub fn owner_id(mut self, id: String) -> Self {
-        self.owner_id = Some(id);
         self
     }
 
@@ -446,9 +442,10 @@ impl CredentialContextBuilder {
             callback_url: self.callback_url,
             app_url: self.app_url,
             session_id: self.session_id,
-            owner_id_override: self.owner_id,
+            owner_id: self.owner_id,
             cancel,
             refresh_transport: None,
+            acquisition_transport: None,
         }
     }
 }
@@ -493,6 +490,7 @@ mod tests {
             .build()
             .expect("scope + principal must produce a valid BaseContext");
         let ctx = CredentialContextBuilder::new(
+            "owner-1".to_owned(),
             base,
             default_credential_accessor(),
             default_resource_accessor(),
@@ -500,7 +498,6 @@ mod tests {
         .callback_url("https://app/callback".to_owned())
         .app_url("https://app".to_owned())
         .session_id("sess-1".to_owned())
-        .owner_id("owner-1".to_owned())
         .build();
 
         assert_eq!(ctx.callback_url(), Some("https://app/callback"));

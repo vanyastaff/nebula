@@ -106,7 +106,9 @@ pub(crate) fn validate_field_key(value: &str) -> Result<(), &'static str> {
         return Err("key max 64 chars");
     }
     let mut chars = value.chars();
-    let first = chars.next().unwrap();
+    let Some(first) = chars.next() else {
+        return Err("key cannot be empty");
+    };
     if !first.is_ascii_alphabetic() && first != '_' {
         return Err("key must start with letter or underscore");
     }

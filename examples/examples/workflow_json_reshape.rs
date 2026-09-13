@@ -12,7 +12,7 @@
 //! `crates/plugin-core/tests/plugin_wiring_e2e.rs` and reused by the sibling
 //! workflow examples:
 //!
-//!   `ActionRegistry` -> `ActionExecutor` -> `InProcessRunner`
+//!   `ActionRegistry` -> `InProcessRunner`
 //!   -> `ActionRuntime` -> `WorkflowEngine::with_plugin(CorePlugin)`
 //!
 //! ## The workflow
@@ -47,11 +47,9 @@
 use std::{collections::HashMap, sync::Arc};
 
 use anyhow::Context as _;
-use nebula_action::ActionResult;
 use nebula_engine::ResolvedPlugin;
 use nebula_engine::{
-    ActionExecutor, ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner,
-    WorkflowEngine,
+    ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner, WorkflowEngine,
 };
 use nebula_execution::{ExecutionStatus, context::ExecutionBudget};
 use nebula_metrics::MetricsRegistry;
@@ -159,14 +157,12 @@ fn init_tracing() {
 
 /// Build a standalone `WorkflowEngine` with the first-party `CorePlugin` wired.
 ///
-/// Mirrors `workflow_data_pipeline`'s `build_engine`: the `ActionExecutor` is the
-/// identity executor used by the in-process runner; the `core.*` actions
+/// Mirrors `workflow_data_pipeline`'s `build_engine`: the in-process runner
+/// executes actions registered in the `ActionRegistry`; the `core.*` actions
 /// themselves are registered by `with_plugin(CorePlugin)`.
 fn build_engine() -> anyhow::Result<WorkflowEngine> {
     let registry = Arc::new(ActionRegistry::new());
-    let executor: ActionExecutor =
-        Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
-    let runner = Arc::new(InProcessRunner::new(executor));
+    let runner = Arc::new(InProcessRunner::new());
     let metrics = MetricsRegistry::new();
     let runtime = Arc::new(
         ActionRuntime::try_new(
@@ -231,7 +227,7 @@ fn build_reshape_workflow() -> WorkflowDefinition {
         "core.set_fields",
     )
     .expect("finalize NodeDefinition has valid keys")
-    .with_parameter("data", ParamValue::reference(normalize_key.clone(), ""))
+    .with_parameter("data", ParamValue::root_reference(normalize_key.clone()))
     .with_parameter(
         "assignments",
         ParamValue::literal(json!([{ "name": "normalized", "value": true }])),

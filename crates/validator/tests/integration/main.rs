@@ -16,11 +16,14 @@ mod common;
 mod api_payload;
 mod combinator_interop;
 mod deep_nesting;
+#[cfg(feature = "derive")]
 mod derive_form;
 mod described_decorator;
+#[cfg(feature = "derive")]
 mod error_semantics;
 mod message_template;
 mod proof_tokens;
+mod rule_limits;
 mod rule_roundtrip;
 mod unicode_lengths;
 mod unknown_variant_error;

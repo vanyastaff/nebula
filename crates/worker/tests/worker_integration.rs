@@ -22,12 +22,12 @@ use std::{
 };
 
 use nebula_action::{
-    ActionError, ActionMetadata, action::Action, result::ActionResult, stateless::StatelessAction,
+    ActionError, action::Action, result::ActionResult, stateless::StatelessAction,
 };
 use nebula_core::{Dependencies, PluginKey, action_key, id::ExecutionId, node_key};
 use nebula_engine::{
-    ActionExecutor, ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner,
-    ResourceFanoutCoordinator, WorkflowEngine, WorkflowStartService,
+    ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner, ResourceFanoutCoordinator,
+    WorkflowEngine, WorkflowStartService,
 };
 use nebula_execution::{ExecutionState, ExecutionStatus};
 use nebula_metrics::MetricsRegistry;
@@ -217,9 +217,13 @@ impl Action for EchoHandler {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(action_key!("test.echo.worker"), "Echo", "echo")
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        nebula_action::ActionMetadataDraft::new(
+            action_key!("test.echo.worker"),
+            nebula_action::metadata_name!("Echo"),
+            "echo",
+        )
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -259,20 +263,24 @@ async fn make_engine_with_plugins(
 ) -> (Arc<WorkflowEngine>, Arc<AtomicU32>) {
     let count = Arc::new(AtomicU32::new(0));
     let registry = Arc::new(ActionRegistry::new());
-    registry.register_stateless_instance(
-        ActionMetadata::new(action_key!("test.echo.worker"), "Echo", "echo")
+    registry
+        .register_stateless_instance(
+            nebula_action::ActionMetadataDraft::new(
+                action_key!("test.echo.worker"),
+                nebula_action::metadata_name!("Echo"),
+                "echo",
+            )
             .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects),
-        EchoHandler {
-            count: count.clone(),
-        },
-    );
+            EchoHandler {
+                count: count.clone(),
+            },
+        )
+        .expect("valid test catalog definition");
     // `InProcessRunner` + `executor` are structural boilerplate required by
     // `ActionRuntime::try_new` but are NOT the code path exercised by this test.
     // The legacy-registered `EchoHandler` runs via the direct stateless dispatch path;
     // `echo_count` is the witness that the real handler was invoked.
-    let executor: ActionExecutor =
-        Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
-    let runner = Arc::new(InProcessRunner::new(executor));
+    let runner = Arc::new(InProcessRunner::new());
     let metrics = MetricsRegistry::new();
     let runtime = Arc::new(
         ActionRuntime::try_new(
@@ -1268,12 +1276,15 @@ fn frozen_fixture(
         }
         fn actions(&self) -> Vec<Arc<dyn nebula_action::ActionFactory>> {
             if self.0.key().as_str() == TEST_PLUGIN_KEY {
-                vec![Arc::new(nebula_action::factory::InstanceFactory::new(
-                    EchoHandler::metadata(),
-                    EchoHandler {
-                        count: self.1.clone(),
-                    },
-                ))]
+                vec![Arc::new(
+                    nebula_action::factory::InstanceFactory::new(
+                        EchoHandler::metadata(),
+                        EchoHandler {
+                            count: self.1.clone(),
+                        },
+                    )
+                    .expect("valid test catalog definition"),
+                )]
             } else {
                 Vec::new()
             }

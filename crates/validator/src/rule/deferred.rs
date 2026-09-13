@@ -9,26 +9,38 @@ use crate::{
 };
 
 /// Rule requiring runtime evaluation beyond static context.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum DeferredRule {
-    /// Custom expression string. Typing via `nebula-expression` is Refactor 2.
+    /// Opaque custom expression whose evaluation is owned by the runtime.
     Custom(String),
     /// Each array item must have a unique value at the given sub-path.
     UniqueBy(FieldPath),
 }
 
+impl std::fmt::Debug for DeferredRule {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Custom(_) => "DeferredRule::Custom(<protected>)",
+            Self::UniqueBy(_) => "DeferredRule::UniqueBy(<protected>)",
+        })
+    }
+}
+
 impl DeferredRule {
-    /// Validates deferred. Without a ctx bridge to the runtime evaluator
-    /// these rules return `Ok(())` — they'll be picked up by the workflow
-    /// engine when it has a real context.
+    /// Reports that the required runtime evaluator is unavailable.
+    ///
+    /// The static rule pass defers these rules before reaching this method.
+    /// Full evaluation cannot claim satisfaction without an evaluator.
     pub fn validate(
         &self,
         _input: &serde_json::Value,
         _ctx: Option<&PredicateContext>,
     ) -> Result<(), ValidationError> {
-        Ok(())
+        Err(ValidationError::unavailable(
+            "deferred rule requires a runtime evaluator",
+        ))
     }
 }
 

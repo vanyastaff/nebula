@@ -32,7 +32,29 @@
 
 ## Conventions & never-do
 
-- **No expressions in credential property values** — property JSON validates then `serde_json::from_value::<C::Properties>` directly; never run `ValidValues::resolve`. Secrets must not depend on runtime workflow state (seam: `tests/properties_pipeline.rs`).
+- **No expression execution for credential properties.** Decode property JSON as
+  literal `AuthoredValue` under the declared `C::Properties` schema, consume it
+  through `validate` and `resolve_data`, decode `C::Properties` once at the trusted
+  secret-aware boundary, and pass `&C::Properties` to provider resolve. Never run
+  `ValidValues::resolve` against workflow context. Template-like data stays literal;
+  executable nodes are rejected. Secret values cannot depend on runtime workflow
+  state (seam: `tests/properties_pipeline.rs`).
+- **Properties are declarations, not proofs.** `Properties` is the schema-bearing
+  type; unknown test doubles use `serde_json::Value`, never `ResolvedValues`.
+  Fixtures construct proof through `schema_of::<C::Properties>()`, literal
+  ingestion, consuming validation, and `resolve_data`; no fake `Any` proof for
+  a concrete credential. Assert required-field and type rejections at the schema
+  boundary, including canonical paths and codes, before a provider can be called.
+- **Declared secrets are already protected at dispatch.** Built-in secret fields use
+  zeroizing `SecretString`. Typed decoding uses the separately named
+  `into_typed_exposing_secrets` boundary once; ordinary `into_typed` refuses secrets.
+  Keep decoder causes and public reports redacted, and never repeat transforms on
+  prepared values.
+- **Catalog construction is checked.** `Credential::metadata` returns a
+  schema-free `CredentialMetadataDraft`; registry admission derives the one
+  canonical schema from `C::Properties` through fallible `schema_of`. Propagate
+  admission failures before registration or dispatch; do not panic or
+  substitute an empty schema.
 - **Crypto lives in `nebula-crypto`** (ADR-0088): import AES-256-GCM/`EncryptedData`/`encrypt_with_aad` from there, NOT this crate. AAD-free `encrypt` is deliberately unexposed (SEC-11). The object-safe persistence contract and port-local rows live in `nebula-storage-port`; the sole backend/decorator implementations live in `nebula-storage`. On the supported authenticated HTTP management path, `CredentialController` derives mandatory owner-bound selectors only after authority allows the command. Technical runtime/service paths still accept `TenantScope`; making the controller plus operation ledger the sole semantic writer is K3 debt.
 - **Capabilities are sub-trait membership, never const flags** — duplicate-KEY `register` is fatal in debug AND release; a declared-but-unimplemented capability is a compile error. Don't reintroduce capability bools or per-trait `*_schema` (schema = `Properties: HasSchema`, read via `schema_of`).
 - `CredentialState` requires `ZeroizeOnDrop`; `Debug` redacts secrets; `SchemeGuard` is `!Clone` and drop-zeroizes.

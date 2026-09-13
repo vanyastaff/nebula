@@ -14,8 +14,8 @@ use std::sync::{
 };
 
 use nebula_action::{
-    Action, ActionContext, ActionError, ActionFactory, ActionHandle, ActionKind, ActionMetadata,
-    ActionResult, InstanceFactory, StatelessAction, TestContextBuilder,
+    Action, ActionContext, ActionError, ActionFactory, ActionHandle, ActionKind, ActionResult,
+    InstanceFactory, StatelessAction, TestContextBuilder,
 };
 use nebula_core::{Dependencies, action_key, node_key};
 use nebula_workflow::NodeDefinition;
@@ -34,7 +34,7 @@ struct TypedEchoOutput {
 }
 
 impl nebula_schema::HasSchema for TypedEchoOutput {
-    fn schema() -> nebula_action::ValidSchema {
+    fn schema() -> Result<nebula_action::ValidSchema, nebula_schema::ValidationReport> {
         use nebula_schema::{FieldCollector, Schema, field_key};
         Schema::builder()
             .string(
@@ -42,7 +42,6 @@ impl nebula_schema::HasSchema for TypedEchoOutput {
                 nebula_schema::StringBuilder::required,
             )
             .build()
-            .expect("TypedEchoOutput schema is valid")
     }
 }
 
@@ -52,12 +51,11 @@ struct TypedEchoInput {
 }
 
 impl nebula_schema::HasSchema for TypedEchoInput {
-    fn schema() -> nebula_action::ValidSchema {
+    fn schema() -> Result<nebula_action::ValidSchema, nebula_schema::ValidationReport> {
         use nebula_schema::{FieldCollector, Schema, field_key};
         Schema::builder()
             .string(field_key!("text"), nebula_schema::StringBuilder::required)
             .build()
-            .expect("TypedEchoInput schema is valid")
     }
 }
 
@@ -69,10 +67,10 @@ impl Action for TypedEcho {
     type Input = TypedEchoInput;
     type Output = TypedEchoOutput;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        nebula_action::ActionMetadataDraft::new(
             action_key!("builtin.typed_echo"),
-            "TypedEcho",
+            nebula_action::metadata_name!("TypedEcho"),
             "fixture with typed output",
         )
     }
@@ -107,12 +105,12 @@ impl Action for CountingEcho {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
+    fn metadata() -> nebula_action::ActionMetadataDraft {
         // A distinct type-level key, so a test can prove the factory does NOT
         // fall back to this when caller metadata is supplied.
-        ActionMetadata::new(
+        nebula_action::ActionMetadataDraft::new(
             action_key!("builtin.counting_echo"),
-            "CountingEcho",
+            nebula_action::metadata_name!("CountingEcho"),
             "type-level metadata",
         )
     }
@@ -137,40 +135,46 @@ impl StatelessAction for CountingEcho {
 #[tokio::test]
 async fn instance_factory_uses_caller_metadata_not_type_metadata() {
     let factory = InstanceFactory::new(
-        ActionMetadata::new(
+        nebula_action::ActionMetadataDraft::new(
             action_key!("tenant.custom_echo"),
-            "Custom Echo",
+            nebula_action::metadata_name!("Custom Echo"),
             "per-registration metadata",
         ),
         CountingEcho {
             hits: Arc::new(AtomicUsize::new(0)),
         },
-    );
+    )
+    .expect("valid test catalog definition");
 
     // Caller metadata wins over the type's own `Action::metadata()` key — this
     // is why one action type can back many distinct catalog keys.
     assert_eq!(
-        factory.metadata().base.key,
+        factory.metadata().base().key().clone(),
         action_key!("tenant.custom_echo")
     );
     assert_ne!(
-        factory.metadata().base.key,
-        <CountingEcho as Action>::metadata().base.key,
+        factory.metadata().base().key().clone(),
+        action_key!("builtin.counting_echo"),
         "InstanceFactory must not fall back to the type's static metadata key"
     );
     // The factory is the single writer of the kind for the handle it produces.
-    assert_eq!(factory.metadata().kind, ActionKind::Stateless);
+    assert_eq!(factory.metadata().kind(), ActionKind::Stateless);
 }
 
 #[tokio::test]
 async fn instance_factory_shares_one_instance_across_dispatches() {
     let hits = Arc::new(AtomicUsize::new(0));
     let factory = InstanceFactory::new(
-        ActionMetadata::new(action_key!("tenant.custom_echo"), "Custom Echo", ""),
+        nebula_action::ActionMetadataDraft::new(
+            action_key!("tenant.custom_echo"),
+            nebula_action::metadata_name!("Custom Echo"),
+            "Shared instance fixture",
+        ),
         CountingEcho {
             hits: Arc::clone(&hits),
         },
-    );
+    )
+    .expect("valid test catalog definition");
 
     let node = NodeDefinition::new(
         node_key!("n"),
@@ -193,8 +197,13 @@ async fn instance_factory_shares_one_instance_across_dispatches() {
             panic!("InstanceFactory must produce ActionHandle::Stateless");
         };
 
+        let input = stateless
+            .prepare_input(nebula_action::ActionInput::Raw(serde_json::json!({
+                "n": expected
+            })))
+            .expect("input preparation succeeds");
         let result = stateless
-            .dispatch(serde_json::json!({ "n": expected }), &ctx)
+            .dispatch(input, &ctx)
             .await
             .expect("dispatch succeeds");
 
@@ -223,13 +232,14 @@ async fn instance_factory_stamps_output_schema_from_action_output_type() {
     // If the `output_schema` stamp is removed from `InstanceFactory::new`,
     // this test goes RED (the field will not be present).
     let factory = InstanceFactory::new(
-        ActionMetadata::new(
+        nebula_action::ActionMetadataDraft::new(
             action_key!("tenant.typed_echo"),
-            "Typed Echo",
+            nebula_action::metadata_name!("Typed Echo"),
             "per-registration metadata",
         ),
         TypedEcho,
-    );
+    )
+    .expect("valid test catalog definition");
 
     let output_schema = factory.metadata().output_schema();
     assert!(

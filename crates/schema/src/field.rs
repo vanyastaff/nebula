@@ -4,7 +4,7 @@
 //! - Date-like fields → `StringField` with `hint: InputHint::{Date, DateTime, Time, Color}`.
 //! - "Hidden" role → any field with `visible: VisibilityMode::Never`.
 
-use nebula_validator::{Rule, ValueRule};
+use nebula_validator::Rule;
 use serde::{Deserialize, Serialize};
 use serde_json::{Number, Value};
 
@@ -109,10 +109,6 @@ macro_rules! define_field {
             ///
             /// Returns [`ValidationError`] with code `invalid_key` when `key`
             /// does not satisfy [`FieldKey`] constraints.
-            #[expect(
-                clippy::result_large_err,
-                reason = "ValidationError is intentionally large; callers are on the validation path"
-            )]
             pub fn try_new(key: impl AsRef<str>) -> Result<Self, crate::error::ValidationError> {
                 FieldKey::new(key).map(Self::with_key)
             }
@@ -212,9 +208,10 @@ macro_rules! define_field {
             /// // `api_key` only appears and is only required when
             /// // `auth_type == "api_key"`.
             /// let field = Field::secret(field_key!("api_key"))
-            ///     .active_when(Rule::predicate(
-            ///         Predicate::eq("auth_type", json!("api_key")).unwrap(),
-            ///     ))
+            ///     .active_when(
+            ///         Rule::predicate(Predicate::eq("auth_type", json!("api_key")).unwrap())
+            ///             .unwrap(),
+            ///     )
             ///     .into_field();
             ///
             /// assert!(matches!(field.visible(), VisibilityMode::When(_)));
@@ -272,10 +269,6 @@ macro_rules! define_field {
             ///
             /// Returns `alias.invalid_key` when `alias` is not a valid field key.
             #[must_use = "builder: discard only if the error is intentionally ignored"]
-            #[expect(
-                clippy::result_large_err,
-                reason = "ValidationError is intentionally large; callers are on the validation path"
-            )]
             pub fn read_alias(
                 mut self,
                 alias: impl AsRef<str>,
@@ -311,10 +304,6 @@ macro_rules! define_field {
             ///
             /// Returns `alias.invalid_key` when `alias` is not a valid field key.
             #[must_use = "builder: discard only if the error is intentionally ignored"]
-            #[expect(
-                clippy::result_large_err,
-                reason = "ValidationError is intentionally large; callers are on the validation path"
-            )]
             pub fn emit_as(
                 mut self,
                 alias: impl AsRef<str>,
@@ -400,11 +389,18 @@ impl StringField {
         self
     }
 
-    /// Add a pattern rule.
-    #[must_use]
-    pub fn pattern(mut self, p: impl Into<String>) -> Self {
-        self.rules.push(Rule::pattern(p));
-        self
+    /// Add a checked pattern rule.
+    ///
+    /// # Errors
+    /// Returns `schema.invalid_pattern` for an invalid regular expression.
+    pub fn pattern(mut self, pattern: &str) -> Result<Self, ValidationError> {
+        self.rules.push(Rule::pattern(pattern).map_err(|error| {
+            ValidationError::builder("schema.invalid_pattern")
+                .message("field pattern is invalid")
+                .source(error)
+                .build()
+        })?);
+        Ok(self)
     }
 
     /// Add URL-format validation rule.
@@ -481,7 +477,7 @@ impl NumberField {
     /// Add minimum numeric rule.
     #[must_use]
     pub fn min(mut self, min: impl Into<Number>) -> Self {
-        self.rules.push(Rule::Value(ValueRule::Min(min.into())));
+        self.rules.push(Rule::min_number(min.into()));
         self
     }
 
@@ -495,7 +491,7 @@ impl NumberField {
     /// Add maximum numeric rule.
     #[must_use]
     pub fn max(mut self, max: impl Into<Number>) -> Self {
-        self.rules.push(Rule::Value(ValueRule::Max(max.into())));
+        self.rules.push(Rule::max_number(max.into()));
         self
     }
 
@@ -1118,13 +1114,9 @@ impl<'de> Deserialize<'de> for Field {
 // ── Factory methods ───────────────────────────────────────────────────────────
 
 impl Field {
-    #[expect(
-        clippy::result_large_err,
-        reason = "ValidationError is intentionally large; field creation is on the authoring path"
-    )]
     fn parse_key_or_error(key: &str) -> Result<FieldKey, ValidationError> {
         FieldKey::new(key)
-            .map_err(|err| ValidationError::invalid_key(FieldPath::root(), key, err.message))
+            .map_err(|err| ValidationError::invalid_key(FieldPath::root(), key, err.message()))
     }
 
     /// Create a [`StringField`] with the given key.
@@ -1150,7 +1142,6 @@ impl Field {
     /// # Errors
     ///
     /// Returns `invalid_key` when `key` cannot be parsed into a [`FieldKey`].
-    #[expect(clippy::result_large_err)]
     pub fn try_string(key: impl AsRef<str>) -> Result<StringField, ValidationError> {
         let key = Self::parse_key_or_error(key.as_ref())?;
         Ok(StringField::with_key(key))
@@ -1167,7 +1158,6 @@ impl Field {
     /// # Errors
     ///
     /// Returns `invalid_key` when `key` cannot be parsed into a [`FieldKey`].
-    #[expect(clippy::result_large_err)]
     pub fn try_secret(key: impl AsRef<str>) -> Result<SecretField, ValidationError> {
         let key = Self::parse_key_or_error(key.as_ref())?;
         Ok(SecretField::with_key(key))
@@ -1184,7 +1174,6 @@ impl Field {
     /// # Errors
     ///
     /// Returns `invalid_key` when `key` cannot be parsed into a [`FieldKey`].
-    #[expect(clippy::result_large_err)]
     pub fn try_number(key: impl AsRef<str>) -> Result<NumberField, ValidationError> {
         let key = Self::parse_key_or_error(key.as_ref())?;
         Ok(NumberField::with_key(key))
@@ -1201,7 +1190,6 @@ impl Field {
     /// # Errors
     ///
     /// Returns `invalid_key` when `key` cannot be parsed into a [`FieldKey`].
-    #[expect(clippy::result_large_err)]
     pub fn try_integer(key: impl AsRef<str>) -> Result<NumberField, ValidationError> {
         let key = Self::parse_key_or_error(key.as_ref())?;
         Ok(NumberField::with_key(key).integer())
@@ -1214,7 +1202,7 @@ impl Field {
     /// # Example
     ///
     /// ```rust
-    /// use nebula_schema::{Field, FieldValues, Schema, field_key};
+    /// use nebula_schema::{Field, AuthoredValue, Schema, field_key};
     /// use serde_json::json;
     ///
     /// let schema = Schema::builder()
@@ -1222,8 +1210,8 @@ impl Field {
     ///     .build()
     ///     .unwrap();
     ///
-    /// let values = FieldValues::from_json(json!({"enabled": false})).unwrap();
-    /// assert!(schema.validate(&values).is_ok());
+    /// let values = AuthoredValue::from_data(json!({"enabled": false})).unwrap();
+    /// assert!(schema.validate(values).is_ok());
     /// ```
     #[must_use]
     pub fn boolean(key: FieldKey) -> BooleanField {
@@ -1235,7 +1223,6 @@ impl Field {
     /// # Errors
     ///
     /// Returns `invalid_key` when `key` cannot be parsed into a [`FieldKey`].
-    #[expect(clippy::result_large_err)]
     pub fn try_boolean(key: impl AsRef<str>) -> Result<BooleanField, ValidationError> {
         let key = Self::parse_key_or_error(key.as_ref())?;
         Ok(BooleanField::with_key(key))
@@ -1252,7 +1239,6 @@ impl Field {
     /// # Errors
     ///
     /// Returns `invalid_key` when `key` cannot be parsed into a [`FieldKey`].
-    #[expect(clippy::result_large_err)]
     pub fn try_select(key: impl AsRef<str>) -> Result<SelectField, ValidationError> {
         let key = Self::parse_key_or_error(key.as_ref())?;
         Ok(SelectField::with_key(key))
@@ -1269,7 +1255,6 @@ impl Field {
     /// # Errors
     ///
     /// Returns `invalid_key` when `key` cannot be parsed into a [`FieldKey`].
-    #[expect(clippy::result_large_err)]
     pub fn try_object(key: impl AsRef<str>) -> Result<ObjectField, ValidationError> {
         let key = Self::parse_key_or_error(key.as_ref())?;
         Ok(ObjectField::with_key(key))
@@ -1286,7 +1271,6 @@ impl Field {
     /// # Errors
     ///
     /// Returns `invalid_key` when `key` cannot be parsed into a [`FieldKey`].
-    #[expect(clippy::result_large_err)]
     pub fn try_list(key: impl AsRef<str>) -> Result<ListField, ValidationError> {
         let key = Self::parse_key_or_error(key.as_ref())?;
         Ok(ListField::with_key(key))
@@ -1304,7 +1288,6 @@ impl Field {
     /// # Errors
     ///
     /// Returns `invalid_key` when `key` cannot be parsed into a [`FieldKey`].
-    #[expect(clippy::result_large_err)]
     pub fn try_mode(key: impl AsRef<str>) -> Result<ModeField, ValidationError> {
         let key = Self::parse_key_or_error(key.as_ref())?;
         Ok(ModeField::with_key(key))
@@ -1321,7 +1304,6 @@ impl Field {
     /// # Errors
     ///
     /// Returns `invalid_key` when `key` cannot be parsed into a [`FieldKey`].
-    #[expect(clippy::result_large_err)]
     pub fn try_code(key: impl AsRef<str>) -> Result<CodeField, ValidationError> {
         let key = Self::parse_key_or_error(key.as_ref())?;
         Ok(CodeField::with_key(key))
@@ -1338,7 +1320,6 @@ impl Field {
     /// # Errors
     ///
     /// Returns `invalid_key` when `key` cannot be parsed into a [`FieldKey`].
-    #[expect(clippy::result_large_err)]
     pub fn try_file(key: impl AsRef<str>) -> Result<FileField, ValidationError> {
         let key = Self::parse_key_or_error(key.as_ref())?;
         Ok(FileField::with_key(key))
@@ -1355,7 +1336,6 @@ impl Field {
     /// # Errors
     ///
     /// Returns `invalid_key` when `key` cannot be parsed into a [`FieldKey`].
-    #[expect(clippy::result_large_err)]
     pub fn try_computed(key: impl AsRef<str>) -> Result<ComputedField, ValidationError> {
         let key = Self::parse_key_or_error(key.as_ref())?;
         Ok(ComputedField::with_key(key))
@@ -1372,7 +1352,6 @@ impl Field {
     /// # Errors
     ///
     /// Returns `invalid_key` when `key` cannot be parsed into a [`FieldKey`].
-    #[expect(clippy::result_large_err)]
     pub fn try_dynamic(key: impl AsRef<str>) -> Result<DynamicField, ValidationError> {
         let key = Self::parse_key_or_error(key.as_ref())?;
         Ok(DynamicField::with_key(key))
@@ -1389,7 +1368,6 @@ impl Field {
     /// # Errors
     ///
     /// Returns `invalid_key` when `key` cannot be parsed into a [`FieldKey`].
-    #[expect(clippy::result_large_err)]
     pub fn try_notice(key: impl AsRef<str>) -> Result<NoticeField, ValidationError> {
         let key = Self::parse_key_or_error(key.as_ref())?;
         Ok(NoticeField::with_key(key))
@@ -1543,7 +1521,7 @@ impl Field {
     /// consumers (form renderers, `json_schema` export) but it does **not**
     /// auto-satisfy a `required` constraint at validation time. A field
     /// marked `required()` still fails validation when absent from the
-    /// submitted [`FieldValues`](crate::FieldValues), regardless of whether
+    /// submitted [`AuthoredValue`](crate::AuthoredValue), regardless of whether
     /// a default is set.
     ///
     /// Callers that want "fill in the default when absent" behaviour must

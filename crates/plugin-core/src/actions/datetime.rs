@@ -43,9 +43,11 @@
 use std::sync::OnceLock;
 
 use chrono::{DateTime, Duration, FixedOffset, SecondsFormat};
-use nebula_action::{ActionContext, ActionError, ActionMetadata, ActionResult, StatelessAction};
+use nebula_action::{ActionContext, ActionError, ActionResult, StatelessAction};
 use nebula_core::action_key;
-use nebula_schema::HasSchema;
+use nebula_schema::{
+    Field, HasSchema, Predicate, Rule, Schema, ValidSchema, ValidationReport, ValuePath, field_key,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::instrument;
@@ -92,7 +94,7 @@ impl DurationUnit {
     }
 }
 
-/// Externally-tagged operation carried by [`DateTimeInput`].
+/// Internally tagged operation flattened into [`DateTimeInput`].
 ///
 /// The `"op"` field drives deserialization to the correct variant. These
 /// types are deserialized from workflow JSON, not literal-constructed by
@@ -193,12 +195,81 @@ pub struct DateTimeInput {
     pub op: DateTimeOp,
 }
 
-// The input is dynamically typed (timestamp strings, op enum, strftime
-// strings) — no closed-form JSON Schema can be emitted. Empty schema is the
-// honest declaration; the module doc describes the expected structure.
 impl HasSchema for DateTimeInput {
-    fn schema() -> nebula_schema::validated::ValidSchema {
-        nebula_schema::validated::ValidSchema::empty()
+    #[instrument(name = "core.datetime.schema", skip_all, err)]
+    fn schema() -> Result<ValidSchema, ValidationReport> {
+        static SCHEMA: OnceLock<Result<ValidSchema, ValidationReport>> = OnceLock::new();
+        SCHEMA
+            .get_or_init(|| {
+                let selected = |operations: &[&str]| {
+                    super::input_schema::admit_rule(Rule::predicate(Predicate::In(
+                        ValuePath::root().push("op"),
+                        operations.iter().map(|op| Value::from(*op)).collect(),
+                    )))
+                };
+                let nullable_format = super::input_schema::admit_rule(Rule::any([
+                    super::input_schema::admit_rule(Rule::one_of([Value::Null]))?,
+                    Rule::min_length(0),
+                ]))?;
+                let offset_bounds = super::input_schema::admit_rule(Rule::all([
+                    Rule::min_value(i64::from(i32::MIN)),
+                    Rule::max_value(i64::from(i32::MAX)),
+                ]))?;
+                let nullable_offset = super::input_schema::admit_rule(Rule::any([
+                    super::input_schema::admit_rule(Rule::one_of([Value::Null]))?,
+                    offset_bounds,
+                ]))?;
+                Schema::builder()
+                    .add(super::input_schema::nullable_object_data())
+                    .add(
+                        Field::select(field_key!("op"))
+                            .option("format", "Format")
+                            .option("parse", "Parse")
+                            .option("add", "Add")
+                            .option("subtract", "Subtract")
+                            .option("diff", "Difference")
+                            .required(),
+                    )
+                    .add(
+                        Field::string(field_key!("input"))
+                            .required_when(selected(&["format", "parse", "add", "subtract"])?),
+                    )
+                    .add(
+                        Field::dynamic(field_key!("format"))
+                            .description(
+                                "String format; parse also accepts null. An empty string is valid.",
+                            )
+                            .with_rule(nullable_format)
+                            .required_when(selected(&["format"])?),
+                    )
+                    .add(
+                        Field::dynamic(field_key!("tz_offset_seconds"))
+                            .description(
+                                "Nullable i32 UTC offset; serde checks the integer representation.",
+                            )
+                            .with_rule(nullable_offset),
+                    )
+                    .add(
+                        Field::integer(field_key!("amount"))
+                            .min_int(0)
+                            .max_int(i64::MAX)
+                            .required_when(selected(&["add", "subtract"])?),
+                    )
+                    .add(
+                        Field::select(field_key!("unit"))
+                            .option("milliseconds", "Milliseconds")
+                            .option("seconds", "Seconds")
+                            .option("minutes", "Minutes")
+                            .option("hours", "Hours")
+                            .option("days", "Days")
+                            .option("weeks", "Weeks")
+                            .required_when(selected(&["add", "subtract", "diff"])?),
+                    )
+                    .add(Field::string(field_key!("from")).required_when(selected(&["diff"])?))
+                    .add(Field::string(field_key!("to")).required_when(selected(&["diff"])?))
+                    .build()
+            })
+            .clone()
     }
 }
 
@@ -272,12 +343,13 @@ impl nebula_action::action::Action for DateTimeAction {
     type Input = DateTimeInput;
     type Output = Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        nebula_action::ActionMetadataDraft::new(
             action_key!("core.datetime"),
-            "DateTime",
+            nebula_action::metadata_name!("DateTime"),
             "Offset-aware RFC3339 timestamp formatting, parsing, arithmetic, and diff",
         )
+        .with_version(nebula_action::MetadataVersion::new(2, 0, 0))
         .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
     }
 
@@ -990,16 +1062,27 @@ mod tests {
 
     #[test]
     fn action_key_is_core_dot_datetime() {
-        use nebula_action::action::Action;
+        let factory = nebula_action::GenericStatelessFactory::<DateTimeAction>::new()
+            .expect("datetime metadata must admit");
         assert_eq!(
-            DateTimeAction::metadata().base.key.as_str(),
+            nebula_action::ActionFactory::metadata(&factory)
+                .base()
+                .key()
+                .as_str(),
             "core.datetime"
         );
     }
 
     #[test]
     fn action_display_name_is_datetime() {
-        use nebula_action::action::Action;
-        assert_eq!(DateTimeAction::metadata().base.name, "DateTime");
+        let factory = nebula_action::GenericStatelessFactory::<DateTimeAction>::new()
+            .expect("datetime metadata must admit");
+        assert_eq!(
+            nebula_action::ActionFactory::metadata(&factory)
+                .base()
+                .name()
+                .to_owned(),
+            "DateTime"
+        );
     }
 }

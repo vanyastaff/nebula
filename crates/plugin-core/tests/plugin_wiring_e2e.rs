@@ -21,13 +21,16 @@
 //!   Unit: pre-registering an action with the same key as one inside the
 //!   plugin returns `PluginWiringError::DuplicateActionKey`.
 
-use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::{Arc, OnceLock},
+};
 
 use nebula_action::{
-    ActionContext, ActionError, ActionFactory, ActionHandle, ActionMetadata, ActionResult,
+    Action, ActionContext, ActionError, ActionFactory, ActionMetadataDraft, ActionResult,
+    InstanceFactory, StatelessAction,
 };
 use nebula_core::{Dependencies, port_key};
-use nebula_engine::ActionExecutor;
 use nebula_engine::{
     ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner, PluginWiringError,
     WorkflowEngine,
@@ -45,9 +48,7 @@ use nebula_workflow::{
 
 fn make_engine() -> WorkflowEngine {
     let registry = Arc::new(ActionRegistry::new());
-    let executor: ActionExecutor =
-        Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
-    let runner = Arc::new(InProcessRunner::new(executor));
+    let runner = Arc::new(InProcessRunner::new());
     let metrics = MetricsRegistry::new();
     let runtime = Arc::new(
         ActionRuntime::try_new(
@@ -235,46 +236,33 @@ async fn with_plugin_duplicate_plugin_key_returns_typed_error() {
 
 // ── on_load contract ─────────────────────────────────────────────────────────
 
-/// Minimal `ActionFactory` stub used by `FailOnLoadPlugin`.
-///
-/// The factory carries an action key under the `"failplugin."` namespace.
-/// Its `instantiate` is never called in this test — wiring aborts before
-/// registration.
-#[derive(Debug)]
-struct StubFactory {
-    meta: ActionMetadata,
-    dependencies: Dependencies,
-}
+struct StubAction;
 
-impl StubFactory {
-    fn new() -> Self {
-        Self {
-            meta: ActionMetadata::new(
-                nebula_core::action_key!("failplugin.noop"),
-                "Noop",
-                "A stub action that is never dispatched",
-            ),
-            dependencies: Dependencies::new(),
-        }
+impl Action for StubAction {
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
+
+    fn metadata() -> ActionMetadataDraft {
+        ActionMetadataDraft::new(
+            nebula_core::action_key!("failplugin.noop"),
+            nebula_action::metadata_name!("Noop"),
+            "A stub action that is never dispatched",
+        )
+    }
+
+    fn dependencies() -> &'static Dependencies {
+        static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
+        DEPENDENCIES.get_or_init(Dependencies::new)
     }
 }
 
-impl ActionFactory for StubFactory {
-    fn metadata(&self) -> &ActionMetadata {
-        &self.meta
-    }
-
-    fn dependencies(&self) -> &Dependencies {
-        &self.dependencies
-    }
-
-    fn instantiate<'a>(
-        &'a self,
-        _node: &'a NodeDefinition,
-        _ctx: &'a dyn ActionContext,
-    ) -> Pin<Box<dyn Future<Output = Result<ActionHandle, ActionError>> + Send + 'a>> {
-        // This method must never be called: on_load fails before registration.
-        Box::pin(async { unreachable!("StubFactory::instantiate must not be called in this test") })
+impl StatelessAction for StubAction {
+    async fn execute(
+        &self,
+        input: serde_json::Value,
+        _context: &(impl ActionContext + ?Sized),
+    ) -> Result<ActionResult<serde_json::Value>, ActionError> {
+        Ok(ActionResult::success(input))
     }
 }
 
@@ -303,7 +291,10 @@ impl Plugin for FailOnLoadPlugin {
     }
 
     fn actions(&self) -> Vec<Arc<dyn ActionFactory>> {
-        vec![Arc::new(StubFactory::new())]
+        vec![Arc::new(
+            InstanceFactory::new(StubAction::metadata(), StubAction)
+                .expect("stub action metadata admits"),
+        )]
     }
 
     fn on_load(&self) -> Result<(), PluginError> {
@@ -1209,11 +1200,10 @@ async fn with_plugin_duplicate_action_key_returns_typed_error() {
 
     // Build an engine whose ActionRegistry already contains core.set_fields.
     let registry = Arc::new(ActionRegistry::new());
-    registry.register_stateless_instance(SetFields::metadata(), SetFields);
-
-    let executor: ActionExecutor =
-        Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
-    let runner = Arc::new(InProcessRunner::new(executor));
+    registry
+        .register_stateless_instance(SetFields::metadata(), SetFields)
+        .expect("valid test catalog definition");
+    let runner = Arc::new(InProcessRunner::new());
     let metrics = MetricsRegistry::new();
     let runtime = Arc::new(
         ActionRuntime::try_new(

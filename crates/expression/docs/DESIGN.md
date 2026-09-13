@@ -28,8 +28,20 @@ credential/resource домен, не делает KDF/crypto, не валиди�
 
 ## 2. Публичная поверхность
 
+The retained-program contract is the syntax boundary shared with schema. Consumers
+cache `CompiledProgram`, not source-only AST wrappers, and call
+`ExpressionEngine::evaluate_compiled(&program, &context)`. Compilation does not
+resolve variables, validate result types, or apply runtime policy. Auto compilation
+tries raw grammar first, preserving quoted markers and typed lone envelopes;
+explicit template compilation always produces text. `has_expression_marker` is
+the shared allocation-free lexical classifier for optional authored JSON shorthand,
+including malformed unescaped openers. See README for escape rules and hard bounds.
+
 | Item | Where |
 |------|-------|
+| `CompiledProgram::{compile, compile_expression, compile_template, source}` | `program.rs` |
+| `ExpressionEngine::evaluate_compiled` | `engine.rs` |
+| `has_expression_marker` | `template.rs`, re-exported from the crate root |
 | `ExpressionEngine` (+ `new`/`with_cache_size`/`with_policy`) | `engine.rs:154` (169–256) |
 | `evaluate` / `parse_template` / `render_template` / `cache_overview` | `engine.rs:287 / 323 / 347 / 433` |
 | `CacheOverview` (+ `CacheStats`) | `engine.rs:32` (`:23`) |
@@ -38,9 +50,10 @@ credential/resource домен, не делает KDF/crypto, не валиди�
 | `Template` / `MaybeTemplate` (whitespace-control `{{- -}}`) | `template.rs:87 / 381` |
 | `MaybeExpression<T>` (+ `resolve_as_value/string/integer/float/bool`); `CachedExpression` | `maybe.rs:88` (203–280); `:27` |
 | `ExpressionError` (thiserror + `nebula_error::Classify`, коды `EXPR:*`); `ExpressionResult`; `ExpressionErrorExt` | `error.rs:14 / 220 / 227` |
-| `parse_expression(source)` — стабильный parse-only entrypoint (template-vs-raw через парсер, не substring) | `lib.rs:123` |
+| `parse_expression(source)` — delegates to the auto compiler and discards the program | `lib.rs` |
 | `BuiltinFunction` (alias); `BuiltinRegistry` | `builtins.rs:32 / 37` |
-| `BuiltinView<'_>` — policy-only handle для builtin'ов (type-enforced запрет рекурсии в eval) | `eval.rs:141` |
+| `BuiltinOutput`; `BuiltinOutputBuilder`; `BuiltinOutputBound`; `BuiltinOutputLimits` | `builtins/output.rs`; `policy.rs` |
+| `BuiltinView<'_>` — policy queries and work charging, no evaluator re-entry | `eval.rs` |
 | `ErrorFormatter` / `format_template_error` | `error_formatter.rs:28 / 183` |
 | `value_utils` — pub-хелперы коэрции (`is_truthy:48`, `to_integer:73`, `char_count:106`, …) | `value_utils.rs` |
 | Re-export `serde_json::Value`; `prelude` | `lib.rs:103 / 148` |
@@ -68,8 +81,18 @@ eval). `engine.rs` оркестрирует два moka-LRU кэша (expr-AST +
 `context.rs` несёт 4 пространства переменных. `template.rs` склеивает literal/expr-части
 с whitespace-control. `maybe.rs` — serde-слой литерал-или-выражение для конфигов.
 `error.rs`/`error_formatter.rs` — типизированные ошибки + красивый span-рендер.
-Поток: source → (`parse_expression`/`parse_template`) AST/`Template` → cache → `evaluate`
-под `EvaluationPolicy` → `Value`.
+Flow: source -> compiler -> immutable `CompiledProgram` -> optional cache ->
+`evaluate_compiled` under current `EvaluationPolicy` -> `Value`. Every template
+part and higher-order body shares one call-local frame. Context limits cannot
+raise engine ceilings (default work 100,000 units; default JSON input 1 MiB).
+Builtin argument/result materialization and allocation-heavy work use that frame.
+Public custom callbacks must return opaque `BuiltinOutput` through the supplied bounded
+builder; standard callbacks remain crate-private and their final values are checked.
+Custom callback execution remains cooperative trusted code, not a preemptible sandbox.
+Mixed numeric ordering delegates to `num-cmp`, without its nightly i128 feature.
+Stored context variables are immutable `Arc<Value>` snapshots. Evaluation uses
+borrowed-or-owned values internally, preserving borrows through access chains and
+builtin dispatch rather than cloning the referenced JSON graph.
 
 ## 5. Инварианты и контракты
 
@@ -80,14 +103,19 @@ eval). `engine.rs` оркестрирует два moka-LRU кэша (expr-AST +
 - **Step-budget нельзя обойти из builtin'а (issue #252).** Builtin'ы получают `BuiltinView`,
   а не `Evaluator` — тип запрещает рекурсивный вызов в обход счётчика шагов. Higher-order
   комбинаторы рекурсируют только через `eval_with_frame` под тем же бюджетом.
-- **Диспетчер template-vs-raw авторитетен.** `parse_expression` решает «шаблон или сырое
-  выражение» через парсер шаблона, не по substring `{{`.
+- **Builtin output is bounded by construction.** Public callbacks cannot return raw
+  `Value`; `BuiltinOutputBuilder` enforces finite total-byte, string, collection, node,
+  and depth ceilings. Expanding standard builtins preflight their exact output before
+  allocating it.
+- **One compilation dispatcher.** Raw grammar takes precedence; only then does the
+  template parser interpret unescaped delimiters. `parse_expression` and engine
+  source evaluation both use `CompiledProgram::compile`.
 - **Типизированные ошибки.** `ExpressionError` несёт `nebula_error::Classify` с кодами `EXPR:*`.
 
 ## 6. Известные напряжения / долг
 
-1. **Doc-drift в имени метода.** `README.md:33` и `AGENTS.md:15` называют `evaluate_template(tmpl, ctx)`,
-   которого в коде нет — фактический метод `render_template` (`engine.rs:347`). Чистая doc-правка.
+1. **Trusted callbacks.** `BuiltinView` exposes cooperative work charging but cannot
+   preempt a custom callback that blocks or ignores its budget.
 2. **Legacy-эвристика datetime.** `datetime.rs:101` — «legacy 2-arg shape»: разбор 3-го
    аргумента (tz vs format) эвристикой с fallback; единственное упоминание legacy в крейте.
 3. **Широкая doc-hidden pub-поверхность.** `lexer`/`parser`/`eval`/`ast`/`token`/`span`/`interner`

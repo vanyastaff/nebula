@@ -1,5 +1,7 @@
 //! Closed effect declarations in compiler-three executable-plan records.
 
+use std::sync::Arc;
+
 use nebula_action::{
     ActionFactory,
     effect::{
@@ -123,7 +125,9 @@ pub(crate) fn validate_factory_effect(
     match (declared, factory.remote_effect_factory()) {
         (ActionEffectContract::Remote(descriptor), Some(capability)) => {
             descriptor.validate().map_err(|_| InvalidEffectContract)?;
-            if descriptor.as_ref() != capability.descriptor() {
+            if !Arc::ptr_eq(factory.metadata(), capability.metadata())
+                || descriptor.as_ref() != capability.descriptor()
+            {
                 return Err(InvalidEffectContract);
             }
             Ok(())

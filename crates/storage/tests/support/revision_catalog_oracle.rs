@@ -129,8 +129,8 @@ pub(crate) async fn insert_then_exact_load_round_trips(
     );
 }
 
-/// Re-installing byte-identical content is idempotent, never a conflict.
-pub(crate) async fn byte_identical_reinsert_is_already_present(
+/// Re-installing the exact same record is idempotent, never a conflict.
+pub(crate) async fn exact_record_reinsert_is_already_present(
     catalog: &impl ExactRevisionCatalog,
     seed: u8,
 ) {
@@ -145,32 +145,40 @@ pub(crate) async fn byte_identical_reinsert_is_already_present(
     assert_eq!(catalog.load_exact(record.ids()).await, Ok(record));
 }
 
-/// Idempotency survives an encoder that emits the same document differently.
+/// Idempotency survives an encoder that emits semantically equal JSON with
+/// different whitespace and object-key order.
 ///
 /// Record bodies are ordinary `serde_json` output, so key order and whitespace
 /// depend on how the producing binary was built. Comparing raw bytes made two
 /// binaries that agree on a revision's content address disagree on its record,
 /// leaving an immutable revision permanently uninstallable.
-pub(crate) async fn reencoded_identical_record_is_already_present(
+pub(crate) async fn semantically_equal_json_reinsert_is_already_present(
     catalog: &impl ExactRevisionCatalog,
     seed: u8,
 ) {
-    let record = pair(seed, 0, "v1");
+    let record = PlanFlavorRevisionRecord::graph_v1_json(
+        plan_id(seed, 0),
+        body(br#"{"plan":"v1","version":1}"#.to_vec()),
+        WorkerFlavorRevisionRecord::v1_json(
+            worker_flavor_id(seed, 0),
+            body(br#"{"flavor":"v1","plugins":["core"]}"#.to_vec()),
+        ),
+    );
     install(catalog, &record).await;
 
     let reencoded = PlanFlavorRevisionRecord::graph_v1_json(
         record.ids().plan(),
-        body(br#"{  "plan"  :  "v1"  }"#.to_vec()),
+        body(br#"{ "version" : 1, "plan" : "v1" }"#.to_vec()),
         WorkerFlavorRevisionRecord::v1_json(
             record.ids().worker_flavor(),
-            body(br#"{  "flavor"  :  "v1"  }"#.to_vec()),
+            body(br#"{ "plugins" : [ "core" ], "flavor" : "v1" }"#.to_vec()),
         ),
     );
 
     assert_eq!(
         catalog.insert(&reencoded).await,
         Ok(RevisionInsertOutcome::AlreadyPresent),
-        "an encoding difference must not make an immutable revision uninstallable"
+        "JSON encoding differences must not make an immutable revision uninstallable"
     );
     assert_eq!(
         catalog.load_exact(record.ids()).await,
@@ -228,7 +236,7 @@ pub(crate) async fn worker_flavor_content_conflict_does_not_partially_insert_the
         Err(RevisionCatalogError::ContentConflict {
             target: flavor_target(&record),
         }),
-        "the conflict is reported against the identity whose bytes differ"
+        "the conflict is reported against the identity whose content differs"
     );
     assert_eq!(
         catalog.load_exact(conflicting.ids()).await,
@@ -510,9 +518,9 @@ pub(crate) async fn drain_of_an_unknown_revision_is_unavailable(
 macro_rules! revision_catalog_conformance_suite {
     ($catalog:expr) => {
         $crate::revision_catalog_case!(insert_then_exact_load_round_trips, 0x11, $catalog);
-        $crate::revision_catalog_case!(byte_identical_reinsert_is_already_present, 0x12, $catalog);
+        $crate::revision_catalog_case!(exact_record_reinsert_is_already_present, 0x12, $catalog);
         $crate::revision_catalog_case!(
-            reencoded_identical_record_is_already_present,
+            semantically_equal_json_reinsert_is_already_present,
             0x13,
             $catalog
         );

@@ -38,7 +38,7 @@ impl fmt::Display for PathSegment {
     }
 }
 
-/// Typed reference to a location in a `FieldValues` tree.
+/// Typed reference to a declared location in a schema field tree.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct FieldPath(SmallVec<[PathSegment; 4]>);
 
@@ -55,10 +55,6 @@ impl FieldPath {
     ///
     /// Returns `invalid_path` when the input has invalid separators, keys, or
     /// index syntax.
-    #[expect(
-        clippy::result_large_err,
-        reason = "ValidationError is intentionally large; callers are on the validation path"
-    )]
     pub fn parse(s: &str) -> Result<Self, ValidationError> {
         if s.is_empty() {
             return Err(Self::err(s, "empty path"));
@@ -209,6 +205,17 @@ impl FromStr for FieldPath {
     type Err = ValidationError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Self::parse(s)
+    }
+}
+
+impl From<FieldPath> for nebula_validator::foundation::FieldPath {
+    fn from(path: FieldPath) -> Self {
+        path.segments()
+            .iter()
+            .fold(Self::root(), |pointer, segment| match segment {
+                PathSegment::Key(key) => pointer.push(key.as_str()),
+                PathSegment::Index(index) => pointer.push(index.to_string()),
+            })
     }
 }
 

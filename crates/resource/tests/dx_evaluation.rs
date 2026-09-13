@@ -38,12 +38,10 @@ use tokio_util::sync::CancellationToken;
 // Use Case 1: Pooled HTTP client
 // ---------------------------------------------------------------------------
 
-#[derive(Clone)]
+#[derive(Clone, nebula_schema::Schema)]
 struct HttpConfig {
     base_url: String,
 }
-
-nebula_schema::impl_empty_has_schema!(HttpConfig);
 
 impl ResourceConfig for HttpConfig {
     fn validate(&self) -> Result<(), Error> {
@@ -81,6 +79,14 @@ impl Provider for HttpResource {
     type Config = HttpConfig;
     type Instance = HttpClient;
     type Topology = Pooled<Self>;
+
+    fn metadata() -> nebula_resource::ResourceMetadataDraft {
+        nebula_resource::ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("HttpResource"),
+            "",
+        )
+    }
 
     fn key() -> ResourceKey {
         resource_key!("http.client")
@@ -196,12 +202,10 @@ async fn use_case_1_invalid_config_is_rejected() {
 // Use Case 2: Resident config store
 // ---------------------------------------------------------------------------
 
-#[derive(Clone)]
+#[derive(Clone, nebula_schema::Schema)]
 struct ConfigStoreConfig {
     env: String,
 }
-
-nebula_schema::impl_empty_has_schema!(ConfigStoreConfig);
 
 impl ResourceConfig for ConfigStoreConfig {
     fn fingerprint(&self) -> u64 {
@@ -227,6 +231,14 @@ impl Provider for ConfigStoreResource {
     type Config = ConfigStoreConfig;
     type Instance = ConfigStore;
     type Topology = Resident<Self>;
+
+    fn metadata() -> nebula_resource::ResourceMetadataDraft {
+        nebula_resource::ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("ConfigStoreResource"),
+            "",
+        )
+    }
 
     fn key() -> ResourceKey {
         resource_key!("config.store")
@@ -317,13 +329,11 @@ async fn use_case_2_resident_config_store() {
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, nebula_schema::Schema)]
 struct DbConfig {
     dsn: String,
     pool_size: u32,
 }
-
-nebula_schema::impl_empty_has_schema!(DbConfig);
 
 impl ResourceConfig for DbConfig {
     fn validate(&self) -> Result<(), Error> {
@@ -365,6 +375,14 @@ impl Provider for DbResource {
     type Config = DbConfig;
     type Instance = DbConnection;
     type Topology = Pooled<Self>;
+
+    fn metadata() -> nebula_resource::ResourceMetadataDraft {
+        nebula_resource::ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("DbResource"),
+            "",
+        )
+    }
 
     fn key() -> ResourceKey {
         resource_key!("db.connection")

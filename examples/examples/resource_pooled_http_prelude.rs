@@ -54,6 +54,14 @@ impl Provider for HttpResource {
     type Instance = HttpClient;
     type Topology = Pooled<Self>;
 
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("HttpResource"),
+            "",
+        )
+    }
+
     fn key() -> ResourceKey {
         resource_key!("http.client.prelude")
     }

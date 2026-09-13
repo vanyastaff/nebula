@@ -22,6 +22,8 @@
 use std::borrow::Cow;
 use std::time::Duration;
 
+use zeroize::{Zeroize, ZeroizeOnDrop};
+
 use crate::CredentialId;
 
 /// Reason a lease left the lifecycle registry.
@@ -53,7 +55,7 @@ pub enum LeaseExpiryReason {
 /// Emitted after every state transition the lifecycle observes (renew
 /// success, renew failure, revoke success, revoke failure, expiry).
 /// `#[non_exhaustive]` so additive variants do not break subscribers.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 #[non_exhaustive]
 pub enum LeaseEvent {
     /// Lease was renewed against its issuing provider; the registry
@@ -122,6 +124,96 @@ pub enum LeaseEvent {
     },
 }
 
+impl std::fmt::Debug for LeaseEvent {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::LeaseRenewed {
+                credential_id,
+                provider,
+                new_ttl,
+                ..
+            } => formatter
+                .debug_struct("LeaseRenewed")
+                .field("credential_id", credential_id)
+                .field("lease_id", &"[REDACTED]")
+                .field("provider", provider)
+                .field("new_ttl", new_ttl)
+                .finish(),
+            Self::LeaseRevoked {
+                credential_id,
+                provider,
+                ..
+            } => formatter
+                .debug_struct("LeaseRevoked")
+                .field("credential_id", credential_id)
+                .field("lease_id", &"[REDACTED]")
+                .field("provider", provider)
+                .finish(),
+            Self::LeaseRenewalFailed {
+                credential_id,
+                provider,
+                ..
+            } => formatter
+                .debug_struct("LeaseRenewalFailed")
+                .field("credential_id", credential_id)
+                .field("lease_id", &"[REDACTED]")
+                .field("provider", provider)
+                .field("reason", &"[REDACTED]")
+                .finish(),
+            Self::LeaseRevocationFailed {
+                credential_id,
+                provider,
+                ..
+            } => formatter
+                .debug_struct("LeaseRevocationFailed")
+                .field("credential_id", credential_id)
+                .field("lease_id", &"[REDACTED]")
+                .field("provider", provider)
+                .field("reason", &"[REDACTED]")
+                .finish(),
+            Self::LeaseExpired {
+                credential_id,
+                provider,
+                reason,
+                ..
+            } => formatter
+                .debug_struct("LeaseExpired")
+                .field("credential_id", credential_id)
+                .field("lease_id", &"[REDACTED]")
+                .field("provider", provider)
+                .field("reason", reason)
+                .finish(),
+        }
+    }
+}
+
+impl Zeroize for LeaseEvent {
+    fn zeroize(&mut self) {
+        match self {
+            Self::LeaseRenewed { lease_id, .. }
+            | Self::LeaseRevoked { lease_id, .. }
+            | Self::LeaseExpired { lease_id, .. } => lease_id.zeroize(),
+            Self::LeaseRenewalFailed {
+                lease_id, reason, ..
+            }
+            | Self::LeaseRevocationFailed {
+                lease_id, reason, ..
+            } => {
+                lease_id.zeroize();
+                reason.zeroize();
+            },
+        }
+    }
+}
+
+impl Drop for LeaseEvent {
+    fn drop(&mut self) {
+        self.zeroize();
+    }
+}
+
+impl ZeroizeOnDrop for LeaseEvent {}
+
 impl LeaseEvent {
     /// Provider-specific lease identifier for any variant.
     #[must_use]
@@ -188,6 +280,42 @@ mod tests {
         };
         assert_eq!(ev.credential_id(), None);
         assert_eq!(ev.lease_id(), "orphan");
+    }
+
+    #[test]
+    fn debug_redacts_lease_identifier() {
+        const CANARY: &str = "lease-event-diagnostic-canary";
+        let event = LeaseEvent::LeaseRevocationFailed {
+            credential_id: None,
+            lease_id: CANARY.to_owned(),
+            provider: Cow::Borrowed("vault"),
+            reason: CANARY.to_owned(),
+        };
+
+        let diagnostic = format!("{event:?}");
+        assert!(!diagnostic.contains(CANARY));
+        assert!(diagnostic.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn zeroize_scrubs_lease_identifier_and_failure_reason() {
+        let mut event = LeaseEvent::LeaseRenewalFailed {
+            credential_id: None,
+            lease_id: "lease-secret".to_owned(),
+            provider: Cow::Borrowed("vault"),
+            reason: "provider-secret".to_owned(),
+        };
+
+        event.zeroize();
+
+        let LeaseEvent::LeaseRenewalFailed {
+            lease_id, reason, ..
+        } = &event
+        else {
+            panic!("fixture variant changed")
+        };
+        assert!(lease_id.is_empty());
+        assert!(reason.is_empty());
     }
 
     #[test]

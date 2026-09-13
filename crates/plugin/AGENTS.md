@@ -32,6 +32,10 @@
   runtime behavior, artifact authenticity, authorization, or a complete frozen registry.
   Artifact digest and runtime contract version are trusted composition-root inputs.
 - Flavor fingerprint domains are persisted protocol versions: never change v1 field order, structural semver tags, normalization, or framing in place. Introduce a new domain version and golden vectors.
+- Recorded plan hash domains use `nebula_schema::canonical_json_v1(&raw_json)`, not the authored tree's serde or canonical encoding. Keep existing v1/v2 plan identity goldens unchanged.
+- Compiler epochs are closed: 1/hash1 and 3/hash2 accept only schema envelope v1; current 4/hash2 also accepts scalar envelope v2 (scalar descriptor v1). Legacy Record/Any/Union bytes stay v1. Never relabel a legacy empty Record as unit/null or derive old epoch guards from the latest schema writer constant.
+- Node root rules in epoch 4 require a complete parameter object and no pending root checks from schema validation. References, deferred root rules, and passthrough root rules remain unsupported; epochs 1 and 3 keep rejecting node root rules outright. Never discard an unresolved root obligation to admit a plan.
+- Recorded literals become `AuthoredValue` through `from_data`; only explicit recorded expression/template variants become programs. Pass owned trees to schema validation, and propagate fallible metadata/schema construction before freezing a registry.
 - Cross-plugin type references need a Cargo dependency; the runtime load/version edge also needs a `PluginManifest` dependency. Freeze validates the manifest graph. Neither dependency source substitutes for the other.
 
 ## Change checks

@@ -33,14 +33,13 @@ use chrono::Utc;
 use nebula_action::{
     ActionError,
     action::Action,
-    metadata::ActionMetadata,
     result::{ActionResult, WaitCondition},
     stateless::StatelessAction,
 };
 use nebula_core::{Dependencies, action_key, id::ExecutionId, node_key, port_key};
 use nebula_engine::{
-    ActionExecutor, ActionRegistry, ActionRuntime, ControlDispatch, ControlDispatchError,
-    DataPassingPolicy, EngineControlDispatch, InProcessRunner, WorkflowEngine,
+    ActionRegistry, ActionRuntime, ControlDispatch, ControlDispatchError, DataPassingPolicy,
+    EngineControlDispatch, InProcessRunner, WorkflowEngine,
 };
 use nebula_execution::{ExecutionState, ExecutionStatus};
 use nebula_metrics::MetricsRegistry;
@@ -71,14 +70,25 @@ fn control_dispatch(
 
 // ── Action stubs ──────────────────────────────────────────────────────────────
 
+macro_rules! pure_action_metadata {
+    ($key:expr, $name:expr, $description:expr $(,)?) => {
+        nebula_action::metadata::ActionMetadataDraft::new($key, $name, $description)
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+    };
+}
+
 macro_rules! static_action_impl {
     ($ty:ty, $key:expr, $name:expr) => {
         impl Action for $ty {
             type Input = serde_json::Value;
             type Output = serde_json::Value;
 
-            fn metadata() -> ActionMetadata {
-                ActionMetadata::new($key, $name, "signal_resume integration test stub")
+            fn metadata() -> nebula_action::ActionMetadataDraft {
+                pure_action_metadata!(
+                    $key,
+                    nebula_action::metadata_name!($name),
+                    "signal_resume integration test stub",
+                )
             }
             fn dependencies() -> &'static Dependencies {
                 static D: OnceLock<Dependencies> = OnceLock::new();
@@ -292,29 +302,29 @@ impl SignalHarness {
     async fn new() -> Self {
         let downstream_invocations = Arc::new(AtomicU32::new(0));
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless_instance(
-            ActionMetadata::new(
-                action_key!("test.signal.webhook_wait"),
-                "WebhookWaitNode",
-                "signal_resume integration test stub",
-            ),
-            WebhookWaitNode,
-        );
-        registry.register_stateless_instance(
-            ActionMetadata::new(
-                action_key!("test.signal.counting_echo"),
-                "CountingEchoNode",
-                "signal_resume integration test stub",
-            ),
-            CountingEchoNode {
-                invocation_count: Arc::clone(&downstream_invocations),
-            },
-        );
-
-        let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
-            Box::pin(async move { Ok(ActionResult::success(input)) })
-        });
-        let runner = Arc::new(InProcessRunner::new(executor));
+        registry
+            .register_stateless_instance(
+                pure_action_metadata!(
+                    action_key!("test.signal.webhook_wait"),
+                    nebula_action::metadata_name!("WebhookWaitNode"),
+                    "signal_resume integration test stub",
+                ),
+                WebhookWaitNode,
+            )
+            .expect("valid test catalog definition");
+        registry
+            .register_stateless_instance(
+                pure_action_metadata!(
+                    action_key!("test.signal.counting_echo"),
+                    nebula_action::metadata_name!("CountingEchoNode"),
+                    "signal_resume integration test stub",
+                ),
+                CountingEchoNode {
+                    invocation_count: Arc::clone(&downstream_invocations),
+                },
+            )
+            .expect("valid test catalog definition");
+        let runner = Arc::new(InProcessRunner::new());
         let metrics = MetricsRegistry::new();
         let runtime = Arc::new(
             ActionRuntime::try_new(
@@ -705,36 +715,39 @@ async fn dispatch_resume_satisfies_all_signal_waits_in_one_pass() {
     // plus the shared downstream echo.
     let downstream_invocations = Arc::new(AtomicU32::new(0));
     let registry = Arc::new(ActionRegistry::new());
-    registry.register_stateless_instance(
-        ActionMetadata::new(
-            action_key!("test.signal.webhook_wait"),
-            "WebhookWaitNode",
-            "signal_resume integration test stub",
-        ),
-        WebhookWaitNode,
-    );
-    registry.register_stateless_instance(
-        ActionMetadata::new(
-            action_key!("test.signal.webhook_wait_b"),
-            "WebhookWaitNodeB",
-            "signal_resume integration test stub",
-        ),
-        WebhookWaitNodeB,
-    );
-    registry.register_stateless_instance(
-        ActionMetadata::new(
-            action_key!("test.signal.counting_echo"),
-            "CountingEchoNode",
-            "signal_resume integration test stub",
-        ),
-        CountingEchoNode {
-            invocation_count: Arc::clone(&downstream_invocations),
-        },
-    );
-
-    let executor: ActionExecutor =
-        Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
-    let runner = Arc::new(InProcessRunner::new(executor));
+    registry
+        .register_stateless_instance(
+            pure_action_metadata!(
+                action_key!("test.signal.webhook_wait"),
+                nebula_action::metadata_name!("WebhookWaitNode"),
+                "signal_resume integration test stub",
+            ),
+            WebhookWaitNode,
+        )
+        .expect("valid test catalog definition");
+    registry
+        .register_stateless_instance(
+            pure_action_metadata!(
+                action_key!("test.signal.webhook_wait_b"),
+                nebula_action::metadata_name!("WebhookWaitNodeB"),
+                "signal_resume integration test stub",
+            ),
+            WebhookWaitNodeB,
+        )
+        .expect("valid test catalog definition");
+    registry
+        .register_stateless_instance(
+            pure_action_metadata!(
+                action_key!("test.signal.counting_echo"),
+                nebula_action::metadata_name!("CountingEchoNode"),
+                "signal_resume integration test stub",
+            ),
+            CountingEchoNode {
+                invocation_count: Arc::clone(&downstream_invocations),
+            },
+        )
+        .expect("valid test catalog definition");
+    let runner = Arc::new(InProcessRunner::new());
     let metrics = MetricsRegistry::new();
     let runtime = Arc::new(
         ActionRuntime::try_new(
@@ -1434,27 +1447,29 @@ async fn dispatch_resume_defers_when_satisfy_commit_is_fenced_out_and_execution_
 
     let downstream_invocations_2 = Arc::new(AtomicU32::new(0));
     let registry2 = Arc::new(ActionRegistry::new());
-    registry2.register_stateless_instance(
-        ActionMetadata::new(
-            action_key!("test.signal.webhook_wait"),
-            "WebhookWaitNode",
-            "signal_resume integration test stub",
-        ),
-        WebhookWaitNode,
-    );
-    registry2.register_stateless_instance(
-        ActionMetadata::new(
-            action_key!("test.signal.counting_echo"),
-            "CountingEchoNode",
-            "signal_resume integration test stub",
-        ),
-        CountingEchoNode {
-            invocation_count: Arc::clone(&downstream_invocations_2),
-        },
-    );
-    let executor2: ActionExecutor =
-        Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
-    let runner2 = Arc::new(InProcessRunner::new(executor2));
+    registry2
+        .register_stateless_instance(
+            pure_action_metadata!(
+                action_key!("test.signal.webhook_wait"),
+                nebula_action::metadata_name!("WebhookWaitNode"),
+                "signal_resume integration test stub",
+            ),
+            WebhookWaitNode,
+        )
+        .expect("valid test catalog definition");
+    registry2
+        .register_stateless_instance(
+            pure_action_metadata!(
+                action_key!("test.signal.counting_echo"),
+                nebula_action::metadata_name!("CountingEchoNode"),
+                "signal_resume integration test stub",
+            ),
+            CountingEchoNode {
+                invocation_count: Arc::clone(&downstream_invocations_2),
+            },
+        )
+        .expect("valid test catalog definition");
+    let runner2 = Arc::new(InProcessRunner::new());
     let metrics2 = MetricsRegistry::new();
     let runtime2 = Arc::new(
         ActionRuntime::try_new(
@@ -1734,27 +1749,29 @@ async fn satisfy_signal_waits_skips_when_execution_cancelled_under_lease() {
 
     let downstream_invocations_2 = Arc::new(AtomicU32::new(0));
     let registry2 = Arc::new(ActionRegistry::new());
-    registry2.register_stateless_instance(
-        ActionMetadata::new(
-            action_key!("test.signal.webhook_wait"),
-            "WebhookWaitNode",
-            "signal_resume cancel-under-lease test stub",
-        ),
-        WebhookWaitNode,
-    );
-    registry2.register_stateless_instance(
-        ActionMetadata::new(
-            action_key!("test.signal.counting_echo"),
-            "CountingEchoNode",
-            "signal_resume cancel-under-lease test stub",
-        ),
-        CountingEchoNode {
-            invocation_count: Arc::clone(&downstream_invocations_2),
-        },
-    );
-    let executor2: ActionExecutor =
-        Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
-    let runner2 = Arc::new(InProcessRunner::new(executor2));
+    registry2
+        .register_stateless_instance(
+            pure_action_metadata!(
+                action_key!("test.signal.webhook_wait"),
+                nebula_action::metadata_name!("WebhookWaitNode"),
+                "signal_resume cancel-under-lease test stub",
+            ),
+            WebhookWaitNode,
+        )
+        .expect("valid test catalog definition");
+    registry2
+        .register_stateless_instance(
+            pure_action_metadata!(
+                action_key!("test.signal.counting_echo"),
+                nebula_action::metadata_name!("CountingEchoNode"),
+                "signal_resume cancel-under-lease test stub",
+            ),
+            CountingEchoNode {
+                invocation_count: Arc::clone(&downstream_invocations_2),
+            },
+        )
+        .expect("valid test catalog definition");
+    let runner2 = Arc::new(InProcessRunner::new());
     let metrics2 = MetricsRegistry::new();
     let runtime2 = Arc::new(
         ActionRuntime::try_new(
@@ -1867,38 +1884,41 @@ async fn satisfied_signal_wait_activates_main_port_only_not_error_branch() {
     let error_invocations = Arc::new(AtomicU32::new(0));
 
     let registry = Arc::new(ActionRegistry::new());
-    registry.register_stateless_instance(
-        ActionMetadata::new(
-            action_key!("test.signal.webhook_wait"),
-            "WebhookWaitNode",
-            "multi-port signal-wait test stub",
-        ),
-        WebhookWaitNode,
-    );
-    registry.register_stateless_instance(
-        ActionMetadata::new(
-            action_key!("test.signal.counting_echo"),
-            "CountingEchoNode",
-            "main-port downstream probe",
-        ),
-        CountingEchoNode {
-            invocation_count: Arc::clone(&main_invocations),
-        },
-    );
-    registry.register_stateless_instance(
-        ActionMetadata::new(
-            action_key!("test.signal.counting_error"),
-            "CountingErrorNode",
-            "error-port downstream probe",
-        ),
-        CountingErrorNode {
-            invocation_count: Arc::clone(&error_invocations),
-        },
-    );
-
-    let executor: ActionExecutor =
-        Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
-    let runner = Arc::new(InProcessRunner::new(executor));
+    registry
+        .register_stateless_instance(
+            pure_action_metadata!(
+                action_key!("test.signal.webhook_wait"),
+                nebula_action::metadata_name!("WebhookWaitNode"),
+                "multi-port signal-wait test stub",
+            ),
+            WebhookWaitNode,
+        )
+        .expect("valid test catalog definition");
+    registry
+        .register_stateless_instance(
+            pure_action_metadata!(
+                action_key!("test.signal.counting_echo"),
+                nebula_action::metadata_name!("CountingEchoNode"),
+                "main-port downstream probe",
+            ),
+            CountingEchoNode {
+                invocation_count: Arc::clone(&main_invocations),
+            },
+        )
+        .expect("valid test catalog definition");
+    registry
+        .register_stateless_instance(
+            pure_action_metadata!(
+                action_key!("test.signal.counting_error"),
+                nebula_action::metadata_name!("CountingErrorNode"),
+                "error-port downstream probe",
+            ),
+            CountingErrorNode {
+                invocation_count: Arc::clone(&error_invocations),
+            },
+        )
+        .expect("valid test catalog definition");
+    let runner = Arc::new(InProcessRunner::new());
     let metrics = MetricsRegistry::new();
     let runtime = Arc::new(
         ActionRuntime::try_new(
@@ -2187,27 +2207,29 @@ async fn armed_signal_wait_is_completed_by_reclaim_drive_not_lost() {
 
     let downstream = Arc::new(AtomicU32::new(0));
     let registry = Arc::new(ActionRegistry::new());
-    registry.register_stateless_instance(
-        ActionMetadata::new(
-            action_key!("test.signal.webhook_wait"),
-            "WebhookWaitNode",
-            "armed-wait reclaim test stub",
-        ),
-        WebhookWaitNode,
-    );
-    registry.register_stateless_instance(
-        ActionMetadata::new(
-            action_key!("test.signal.counting_echo"),
-            "CountingEchoNode",
-            "armed-wait reclaim downstream probe",
-        ),
-        CountingEchoNode {
-            invocation_count: Arc::clone(&downstream),
-        },
-    );
-    let executor: ActionExecutor =
-        Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
-    let runner = Arc::new(InProcessRunner::new(executor));
+    registry
+        .register_stateless_instance(
+            pure_action_metadata!(
+                action_key!("test.signal.webhook_wait"),
+                nebula_action::metadata_name!("WebhookWaitNode"),
+                "armed-wait reclaim test stub",
+            ),
+            WebhookWaitNode,
+        )
+        .expect("valid test catalog definition");
+    registry
+        .register_stateless_instance(
+            pure_action_metadata!(
+                action_key!("test.signal.counting_echo"),
+                nebula_action::metadata_name!("CountingEchoNode"),
+                "armed-wait reclaim downstream probe",
+            ),
+            CountingEchoNode {
+                invocation_count: Arc::clone(&downstream),
+            },
+        )
+        .expect("valid test catalog definition");
+    let runner = Arc::new(InProcessRunner::new());
     let metrics = MetricsRegistry::new();
     let runtime = Arc::new(
         ActionRuntime::try_new(
@@ -2515,17 +2537,17 @@ async fn signal_park_persists_paused_atomically_no_running_waiting_window() {
     let recorder_as_store: Arc<dyn ExecutionStore> = Arc::clone(&recorder) as _;
 
     let registry = Arc::new(ActionRegistry::new());
-    registry.register_stateless_instance(
-        ActionMetadata::new(
-            action_key!("test.signal.webhook_wait"),
-            "WebhookWaitNode",
-            "SHIP-C atomic-Paused test stub",
-        ),
-        WebhookWaitNode,
-    );
-    let executor: ActionExecutor =
-        Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
-    let runner = Arc::new(InProcessRunner::new(executor));
+    registry
+        .register_stateless_instance(
+            pure_action_metadata!(
+                action_key!("test.signal.webhook_wait"),
+                nebula_action::metadata_name!("WebhookWaitNode"),
+                "SHIP-C atomic-Paused test stub",
+            ),
+            WebhookWaitNode,
+        )
+        .expect("valid test catalog definition");
+    let runner = Arc::new(InProcessRunner::new());
     let metrics = MetricsRegistry::new();
     let runtime = Arc::new(
         ActionRuntime::try_new(

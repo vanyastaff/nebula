@@ -28,6 +28,58 @@ outputs are plain JSON (`serde_json::Value`), and errors are typed
 Numeric comparisons (`sort`, `if`/`switch` ordered ops, `aggregate` min/max)
 compare integers **exactly** — large 64-bit IDs are not collapsed through `f64`.
 
+## Input schemas
+
+Each input advertises a checked, cached record schema through `HasSchema`.
+Construction failures propagate through plugin discovery; no input falls back
+to an empty record or `Any`. The actions' genuinely arbitrary JSON outputs
+advertise `Any`.
+
+These input contracts use catalog interface version `2.0.0`; `core.delay`
+retains `1.0.0` because its schema is unchanged. The core plugin bundle is
+`2.0.0`. These entity versions are independent of the Rust package version.
+Recorded plans keep their exact catalog revision and are not rebound to the
+new schemas implicitly.
+
+| Input | Declared structure |
+|-------|--------------------|
+| Aggregate | Object array, grouping keys, tagged aggregation records, error-policy choices. |
+| Array | Arbitrary JSON array and tagged operations with bounded integer counts. |
+| Dedupe / Sort | Object arrays and non-empty typed key lists; sort options and booleans. |
+| Filter / If / Switch | Required condition objects; switch case records and ports. |
+| Map / JSON Transform | Shared tagged transform records, string keys and key lists. |
+| Set Fields | Assignment records with string names and arbitrary JSON values. |
+| DateTime | Flattened operation tag, conditional fields, numeric bounds and duration choices. |
+| Delay | Flattened wait mode and conditional duration or timestamp fields. |
+
+These are **partial structural contracts**, not a claim of serde equivalence:
+
+- Required data arrays permit `[]`. Root presence rules express this because
+  form-style `Field::required()` also rejects empty collections. Non-empty key
+  and aggregation lists use that stronger requirement intentionally.
+- Optional means absent, not nullable. Object-or-null `data` fields stay
+  explicitly dynamic; the existing action check validates their nullable
+  shape. No null-to-object transformation is introduced.
+- Recursive, key-sniffed `Condition` contents remain opaque inside a declared
+  object. The real condition deserializer validates that recursive union.
+- Operation records declare their tags and member types without pretending
+  to be a different mode-envelope wire format. Serde still checks
+  variant-specific missing members. Declared members are type-checked whenever
+  present, including members serde would ignore for another selected variant.
+- Empty JSON keys and null assignment values remain valid. Required nested
+  string/value presence stays with serde where form-style requiredness would
+  incorrectly reject those values.
+- Serde still checks exact Rust integer representations, including nullable
+  UTC offsets. Schema integer checks can accept integral JSON floats that
+  serde rejects for integer fields. Timestamp parsing, conditional operation
+  semantics and arithmetic overflow remain action responsibilities.
+
+Consumers must complete schema resolution **and** decode the concrete input;
+a schema proof alone does not guarantee that an opaque subtree is decodable.
+Literal JSON ingress never interprets template strings or `$expr` objects as
+programs. `tests/input_schema_contract.rs` exercises discovery, rejection,
+serde round-trips, empty values and these explicit limits.
+
 ## Runnable examples
 
 Each example wires a real `WorkflowEngine` with this plugin and drives a workflow

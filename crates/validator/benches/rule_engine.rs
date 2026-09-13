@@ -6,32 +6,35 @@
 use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use nebula_validator::{ExecutionMode, Rule, validate_rules};
+use nebula_validator::{DiagnosticDisclosure, ExecutionMode, Rule, validate_rules};
 use serde_json::json;
 
 fn small_value_ruleset() -> Vec<Rule> {
     vec![
         Rule::min_length(3),
         Rule::max_length(32),
-        Rule::pattern(r"^[a-z0-9_]+$"),
+        Rule::pattern(r"^[a-z0-9_]+$").unwrap(),
     ]
 }
 
 fn mixed_ruleset() -> Vec<Rule> {
     vec![
         Rule::min_length(3),
-        Rule::pattern(r"^[a-z]+$"),
-        Rule::custom("skipped"),
+        Rule::pattern(r"^[a-z]+$").unwrap(),
+        Rule::custom("skipped").unwrap(),
         Rule::unique_by("id").unwrap(),
-        Rule::all([Rule::min_length(1), Rule::max_length(64)]),
+        Rule::all([Rule::min_length(1), Rule::max_length(64)]).unwrap(),
     ]
 }
 
 fn combinator_ruleset() -> Vec<Rule> {
-    vec![Rule::all([
-        Rule::any([Rule::min_length(10), Rule::max_length(3)]),
-        Rule::not(Rule::pattern(r"[0-9]")),
-    ])]
+    vec![
+        Rule::all([
+            Rule::any([Rule::min_length(10), Rule::max_length(3)]).unwrap(),
+            Rule::not(Rule::pattern(r"[0-9]").unwrap()).unwrap(),
+        ])
+        .unwrap(),
+    ]
 }
 
 fn large_ruleset(n: usize) -> Vec<Rule> {
@@ -49,12 +52,20 @@ fn bench_value_rules(c: &mut Criterion) {
                 black_box(&value),
                 black_box(&rules),
                 ExecutionMode::StaticOnly,
+                DiagnosticDisclosure::IncludeValue,
             )
         });
     });
 
     group.bench_function("full_mode", |b| {
-        b.iter(|| validate_rules(black_box(&value), black_box(&rules), ExecutionMode::Full));
+        b.iter(|| {
+            validate_rules(
+                black_box(&value),
+                black_box(&rules),
+                ExecutionMode::Full,
+                DiagnosticDisclosure::IncludeValue,
+            )
+        });
     });
 
     group.finish();
@@ -72,7 +83,14 @@ fn bench_mixed_rules(c: &mut Criterion) {
     ] {
         let label = format!("{mode:?}");
         group.bench_function(label, |b| {
-            b.iter(|| validate_rules(black_box(&value), black_box(&rules), mode));
+            b.iter(|| {
+                validate_rules(
+                    black_box(&value),
+                    black_box(&rules),
+                    mode,
+                    DiagnosticDisclosure::IncludeValue,
+                )
+            });
         });
     }
 
@@ -85,12 +103,26 @@ fn bench_combinator_rules(c: &mut Criterion) {
 
     group.bench_function("depth_3_passes", |b| {
         let v = json!("abcdefghij");
-        b.iter(|| validate_rules(black_box(&v), black_box(&rules), ExecutionMode::StaticOnly));
+        b.iter(|| {
+            validate_rules(
+                black_box(&v),
+                black_box(&rules),
+                ExecutionMode::StaticOnly,
+                DiagnosticDisclosure::IncludeValue,
+            )
+        });
     });
 
     group.bench_function("depth_3_fails", |b| {
         let v = json!("hello5");
-        b.iter(|| validate_rules(black_box(&v), black_box(&rules), ExecutionMode::StaticOnly));
+        b.iter(|| {
+            validate_rules(
+                black_box(&v),
+                black_box(&rules),
+                ExecutionMode::StaticOnly,
+                DiagnosticDisclosure::IncludeValue,
+            )
+        });
     });
 
     group.finish();
@@ -108,6 +140,7 @@ fn bench_large_ruleset(c: &mut Criterion) {
                     black_box(&value),
                     black_box(&rules),
                     ExecutionMode::StaticOnly,
+                    DiagnosticDisclosure::IncludeValue,
                 )
             });
         });

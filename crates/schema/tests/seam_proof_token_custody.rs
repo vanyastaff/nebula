@@ -3,7 +3,7 @@
 //! `nebula-validator` must not add a back-door constructor. This pins the
 //! proof-token custody contract referenced by.
 
-use nebula_schema::{Field, FieldKey, FieldValue, FieldValues, Schema};
+use nebula_schema::{AuthoredValue, Field, FieldKey, Schema};
 use serde_json::json;
 
 fn fk(s: &str) -> FieldKey {
@@ -21,9 +21,9 @@ fn valid_values_only_minted_by_validate() {
         .expect("schema builds");
 
     // The ONLY way to obtain a `ValidValues` is `ValidSchema::validate`.
-    let good = FieldValues::from_json(json!({ "name": "alice" })).unwrap();
+    let good = AuthoredValue::from_template_json(json!({ "name": "alice" })).unwrap();
     let vv = schema
-        .validate(&good)
+        .validate(good)
         .expect("valid input mints the proof token");
 
     // The token carries the schema it was minted from (public accessor only —
@@ -39,16 +39,18 @@ fn valid_values_only_minted_by_validate() {
     // `ValidValues` cannot exist detached from the values that passed
     // `validate()`.
     assert_eq!(
-        vv.raw().get(&fk("name")),
-        Some(&FieldValue::Literal(json!("alice"))),
+        vv.values()
+            .get(fk("name"))
+            .and_then(|value| value.as_literal()),
+        Some(&json!("alice")),
         "the proof token carries the values it was minted from"
     );
 
     // Invalid input yields NO token (`Err`), so a `ValidValues` cannot exist
     // without having passed `validate()`.
-    let bad = FieldValues::from_json(json!({ "name": "ab" })).unwrap();
+    let bad = AuthoredValue::from_template_json(json!({ "name": "ab" })).unwrap();
     assert!(
-        schema.validate(&bad).is_err(),
+        schema.validate(bad).is_err(),
         "invalid input must not mint a proof token"
     );
 }

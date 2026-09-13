@@ -46,6 +46,7 @@ impl ResourceAccessor for NoopResourceAccessor {
 fn child_token_derivable_and_cascades_from_parent() {
     let parent = CancellationToken::new();
     let ctx = CredentialContextBuilder::new(
+        "owner-1".to_owned(),
         BaseContext::builder(Scope::default())
             .principal(Principal::System)
             .build()

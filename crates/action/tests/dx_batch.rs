@@ -9,7 +9,6 @@ use nebula_action::{
     ActionContext,
     action::Action,
     error::ActionError,
-    metadata::ActionMetadata,
     result::ActionResult,
     stateful::{BatchAction, BatchItemResult},
     testing::{StatefulTestHarness, TestContextBuilder},
@@ -28,37 +27,30 @@ struct NumberList {
 }
 
 impl HasSchema for NumberList {
-    fn schema() -> ValidSchema {
+    fn schema() -> Result<ValidSchema, nebula_schema::ValidationReport> {
         use nebula_schema::{FieldCollector, Schema, field_key};
         Schema::builder()
             .list(field_key!("numbers"), |l| {
                 l.item_number(field_key!("n"), nebula_schema::NumberBuilder::integer)
             })
             .build()
-            .expect("NumberList schema is valid")
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, nebula_schema::Schema)]
 struct BatchOutput {
     processed: Vec<i32>,
-    errors: usize,
-}
-
-impl HasSchema for BatchOutput {
-    fn schema() -> ValidSchema {
-        ValidSchema::empty()
-    }
+    errors: u64,
 }
 
 impl Action for DoublerBatch {
     type Input = NumberList;
     type Output = BatchOutput;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        nebula_action::ActionMetadataDraft::new(
             action_key!("test.doubler_batch"),
-            "DoublerBatch",
+            nebula_action::metadata_name!("DoublerBatch"),
             "Batch doubler",
         )
     }

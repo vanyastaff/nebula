@@ -117,27 +117,6 @@ pub(super) fn support_cardinality_violations(
     violations
 }
 
-pub(super) fn normalize_reference_path(path: &str) -> Option<String> {
-    let normalized = match path {
-        "$" => "",
-        value if value.starts_with("$.") => &value[2..],
-        value if value.starts_with('$') => return None,
-        value => value,
-    };
-    if normalized.is_empty() {
-        return Some(String::new());
-    }
-    normalized
-        .split('.')
-        .all(|segment| {
-            !segment.is_empty()
-                && (!segment.bytes().all(|byte| byte.is_ascii_digit())
-                    || segment == "0"
-                    || !segment.starts_with('0'))
-        })
-        .then(|| normalized.to_owned())
-}
-
 pub(super) fn authored_connection_key(
     connection: &Connection,
 ) -> (String, String, String, Option<String>) {

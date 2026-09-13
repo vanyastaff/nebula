@@ -15,16 +15,16 @@ fn fk(s: &str) -> FieldKey {
 #[test]
 fn empty_schema_empty_values_ok() {
     let schema = Schema::builder().build().unwrap();
-    let values = FieldValues::from_json(json!({})).unwrap();
-    assert!(schema.validate(&values).is_ok());
+    let values = AuthoredValue::from_template_json(json!({})).unwrap();
+    assert!(schema.validate(values).is_ok());
 }
 
 #[test]
 fn empty_schema_with_extra_values_ok() {
     // Schema doesn't care about extra keys.
     let schema = Schema::builder().build().unwrap();
-    let values = FieldValues::from_json(json!({"x": 1})).unwrap();
-    assert!(schema.validate(&values).is_ok());
+    let values = AuthoredValue::from_template_json(json!({"x": 1})).unwrap();
+    assert!(schema.validate(values).is_ok());
 }
 
 // ── Required-field checks ────────────────────────────────────────────────────
@@ -35,10 +35,10 @@ fn required_field_missing_emits_required() {
         .add(Field::string(fk("x")).required())
         .build()
         .unwrap();
-    let values = FieldValues::from_json(json!({})).unwrap();
-    let report = schema.validate(&values).unwrap_err();
+    let values = AuthoredValue::from_template_json(json!({})).unwrap();
+    let report = schema.validate(values).unwrap_err();
     assert!(
-        report.errors().any(|e| e.code == "required"),
+        report.errors().any(|e| e.code() == "required"),
         "expected required error"
     );
 }
@@ -49,9 +49,9 @@ fn required_field_null_value_emits_required() {
         .add(Field::string(fk("x")).required())
         .build()
         .unwrap();
-    let values = FieldValues::from_json(json!({"x": null})).unwrap();
-    let report = schema.validate(&values).unwrap_err();
-    assert!(report.errors().any(|e| e.code == "required"));
+    let values = AuthoredValue::from_template_json(json!({"x": null})).unwrap();
+    let report = schema.validate(values).unwrap_err();
+    assert!(report.errors().any(|e| e.code() == "required"));
 }
 
 #[test]
@@ -60,8 +60,8 @@ fn required_field_present_ok() {
         .add(Field::string(fk("x")).required())
         .build()
         .unwrap();
-    let values = FieldValues::from_json(json!({"x": "hello"})).unwrap();
-    assert!(schema.validate(&values).is_ok());
+    let values = AuthoredValue::from_template_json(json!({"x": "hello"})).unwrap();
+    assert!(schema.validate(values).is_ok());
 }
 
 #[test]
@@ -70,8 +70,8 @@ fn optional_field_absent_ok() {
         .add(Field::string(fk("x")))
         .build()
         .unwrap();
-    let values = FieldValues::from_json(json!({})).unwrap();
-    assert!(schema.validate(&values).is_ok());
+    let values = AuthoredValue::from_template_json(json!({})).unwrap();
+    assert!(schema.validate(values).is_ok());
 }
 
 // ── Expression handling ──────────────────────────────────────────────────────
@@ -83,9 +83,9 @@ fn expression_in_allowed_field_deferred_not_error() {
         .add(Field::string(fk("x")).required())
         .build()
         .unwrap();
-    let values = FieldValues::from_json(json!({"x": "{{ $ctx.value }}"})).unwrap();
+    let values = AuthoredValue::from_template_json(json!({"x": "{{ $ctx.value }}"})).unwrap();
     // Required field has expression value — must NOT produce "required" error.
-    assert!(schema.validate(&values).is_ok());
+    assert!(schema.validate(values).is_ok());
 }
 
 #[test]
@@ -95,12 +95,15 @@ fn expression_in_forbidden_mode_field_emits_error() {
         .add(Field::boolean(fk("flag")))
         .build()
         .unwrap();
-    let values = FieldValues::from_json(json!({"flag": "{{ $x }}"})).unwrap();
-    let report = schema.validate(&values).unwrap_err();
+    let values = AuthoredValue::from_template_json(json!({"flag": "{{ $x }}"})).unwrap();
+    let report = schema.validate(values).unwrap_err();
     assert!(
-        report.errors().any(|e| e.code == "expression.forbidden"),
+        report.errors().any(|e| e.code() == "expression.forbidden"),
         "expected expression.forbidden, got: {:?}",
-        report.errors().map(|e| &e.code).collect::<Vec<_>>()
+        report
+            .errors()
+            .map(ValidationError::code)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -110,9 +113,9 @@ fn expression_in_explicit_forbidden_string_emits_error() {
         .add(Field::string(fk("x")).no_expression())
         .build()
         .unwrap();
-    let values = FieldValues::from_json(json!({"x": "{{ $y }}"})).unwrap();
-    let report = schema.validate(&values).unwrap_err();
-    assert!(report.errors().any(|e| e.code == "expression.forbidden"));
+    let values = AuthoredValue::from_template_json(json!({"x": "{{ $y }}"})).unwrap();
+    let report = schema.validate(values).unwrap_err();
+    assert!(report.errors().any(|e| e.code() == "expression.forbidden"));
 }
 
 #[test]
@@ -125,15 +128,18 @@ fn mode_variant_empty_rejects_expression_in_placeholder() {
         )
         .build()
         .unwrap();
-    let values = FieldValues::from_json(json!({
+    let values = AuthoredValue::from_template_json(json!({
         "m": { "mode": "none", "value": "{{ $x }}" }
     }))
     .unwrap();
-    let report = schema.validate(&values).unwrap_err();
+    let report = schema.validate(values).unwrap_err();
     assert!(
-        report.errors().any(|e| e.code == "expression.forbidden"),
+        report.errors().any(|e| e.code() == "expression.forbidden"),
         "expected expression.forbidden, got: {:?}",
-        report.errors().map(|e| &e.code).collect::<Vec<_>>()
+        report
+            .errors()
+            .map(ValidationError::code)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -144,12 +150,12 @@ fn mode_field_accepts_object_wire_envelope() {
         .build()
         .unwrap();
 
-    let values = FieldValues::from_json(json!({
+    let values = AuthoredValue::from_template_json(json!({
         "auth": { "mode": "token", "value": "shh" }
     }))
     .unwrap();
 
-    assert!(schema.validate(&values).is_ok());
+    assert!(schema.validate(values).is_ok());
 }
 
 #[test]
@@ -163,12 +169,12 @@ fn mode_field_uses_default_variant_for_object_wire_envelope_without_mode() {
         .build()
         .unwrap();
 
-    let values = FieldValues::from_json(json!({
+    let values = AuthoredValue::from_template_json(json!({
         "auth": { "value": "shh" }
     }))
     .unwrap();
 
-    assert!(schema.validate(&values).is_ok());
+    assert!(schema.validate(values).is_ok());
 }
 
 #[test]
@@ -182,12 +188,12 @@ fn object_field_can_use_mode_and_value_keys_without_mode_coercion() {
         .build()
         .unwrap();
 
-    let values = FieldValues::from_json(json!({
+    let values = AuthoredValue::from_template_json(json!({
         "config": { "mode": "manual", "value": "literal" }
     }))
     .unwrap();
 
-    assert!(schema.validate(&values).is_ok());
+    assert!(schema.validate(values).is_ok());
 }
 
 #[test]
@@ -196,14 +202,17 @@ fn computed_field_literal_emits_expression_required() {
         .add(Field::computed(fk("derived")))
         .build()
         .unwrap();
-    let values = FieldValues::from_json(json!({"derived": "plain"})).unwrap();
-    let report = schema.validate(&values).unwrap_err();
+    let values = AuthoredValue::from_template_json(json!({"derived": "plain"})).unwrap();
+    let report = schema.validate(values).unwrap_err();
     assert!(
         report
             .errors()
-            .any(|e| e.code == "expression.required" || e.code == "expression.type_mismatch"),
+            .any(|e| e.code() == "expression.required" || e.code() == "expression.type_mismatch"),
         "expected expression.required/type_mismatch, got: {:?}",
-        report.errors().map(|e| &e.code).collect::<Vec<_>>()
+        report
+            .errors()
+            .map(ValidationError::code)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -220,12 +229,15 @@ fn computed_field_cannot_disable_expression_requirement() {
         "computed field must remain expression-required"
     );
 
-    let values = FieldValues::from_json(json!({"derived": "plain"})).unwrap();
-    let report = schema.validate(&values).unwrap_err();
+    let values = AuthoredValue::from_template_json(json!({"derived": "plain"})).unwrap();
+    let report = schema.validate(values).unwrap_err();
     assert!(
-        report.errors().any(|e| e.code == "expression.required"),
+        report.errors().any(|e| e.code() == "expression.required"),
         "expected expression.required, got: {:?}",
-        report.errors().map(|e| &e.code).collect::<Vec<_>>()
+        report
+            .errors()
+            .map(ValidationError::code)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -242,12 +254,15 @@ fn notice_field_cannot_enable_expression_mode() {
         "notice field must keep expression-forbidden invariant"
     );
 
-    let values = FieldValues::from_json(json!({"banner": "{{ $x }}"})).unwrap();
-    let report = schema.validate(&values).unwrap_err();
+    let values = AuthoredValue::from_template_json(json!({"banner": "{{ $x }}"})).unwrap();
+    let report = schema.validate(values).unwrap_err();
     assert!(
-        report.errors().any(|e| e.code == "expression.forbidden"),
+        report.errors().any(|e| e.code() == "expression.forbidden"),
         "expected expression.forbidden, got: {:?}",
-        report.errors().map(|e| &e.code).collect::<Vec<_>>()
+        report
+            .errors()
+            .map(ValidationError::code)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -301,9 +316,9 @@ fn string_field_number_value_emits_type_mismatch() {
         .add(Field::string(fk("name")))
         .build()
         .unwrap();
-    let values = FieldValues::from_json(json!({"name": 42})).unwrap();
-    let report = schema.validate(&values).unwrap_err();
-    assert!(report.errors().any(|e| e.code == "type_mismatch"));
+    let values = AuthoredValue::from_template_json(json!({"name": 42})).unwrap();
+    let report = schema.validate(values).unwrap_err();
+    assert!(report.errors().any(|e| e.code() == "type_mismatch"));
 }
 
 #[test]
@@ -312,9 +327,9 @@ fn number_field_string_value_emits_type_mismatch() {
         .add(Field::number(fk("n")))
         .build()
         .unwrap();
-    let values = FieldValues::from_json(json!({"n": "not a number"})).unwrap();
-    let report = schema.validate(&values).unwrap_err();
-    assert!(report.errors().any(|e| e.code == "type_mismatch"));
+    let values = AuthoredValue::from_template_json(json!({"n": "not a number"})).unwrap();
+    let report = schema.validate(values).unwrap_err();
+    assert!(report.errors().any(|e| e.code() == "type_mismatch"));
 }
 
 #[test]
@@ -323,9 +338,9 @@ fn boolean_field_string_emits_type_mismatch() {
         .add(Field::boolean(fk("ok")))
         .build()
         .unwrap();
-    let values = FieldValues::from_json(json!({"ok": "yes"})).unwrap();
-    let report = schema.validate(&values).unwrap_err();
-    assert!(report.errors().any(|e| e.code == "type_mismatch"));
+    let values = AuthoredValue::from_template_json(json!({"ok": "yes"})).unwrap();
+    let report = schema.validate(values).unwrap_err();
+    assert!(report.errors().any(|e| e.code() == "type_mismatch"));
 }
 
 // ── Rule evaluation (via RuleContext) ─────────────────────────────────────────
@@ -336,15 +351,18 @@ fn length_max_rule_violated() {
         .add(Field::string(fk("name")).max_length(5))
         .build()
         .unwrap();
-    let values = FieldValues::from_json(json!({"name": "toolongvalue"})).unwrap();
-    let report = schema.validate(&values).unwrap_err();
+    let values = AuthoredValue::from_template_json(json!({"name": "toolongvalue"})).unwrap();
+    let report = schema.validate(values).unwrap_err();
     // Rule-failure codes are surfaced verbatim from nebula-validator (no
     // schema-side remap); a `max_length` rule reports the native
     // `max_length` code. See (P2 amendment).
     assert!(
-        report.errors().any(|e| e.code == "max_length"),
+        report.errors().any(|e| e.code() == "max_length"),
         "expected max_length error, codes: {:?}",
-        report.errors().map(|e| &e.code).collect::<Vec<_>>()
+        report
+            .errors()
+            .map(ValidationError::code)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -354,8 +372,8 @@ fn length_max_rule_satisfied() {
         .add(Field::string(fk("name")).max_length(10))
         .build()
         .unwrap();
-    let values = FieldValues::from_json(json!({"name": "alice"})).unwrap();
-    assert!(schema.validate(&values).is_ok());
+    let values = AuthoredValue::from_template_json(json!({"name": "alice"})).unwrap();
+    assert!(schema.validate(values).is_ok());
 }
 
 // ── ValidValues accessors ─────────────────────────────────────────────────────
@@ -366,8 +384,8 @@ fn valid_values_exposes_warnings_empty_by_default() {
         .add(Field::string(fk("x")))
         .build()
         .unwrap();
-    let values = FieldValues::from_json(json!({"x": "hi"})).unwrap();
-    let valid = schema.validate(&values).unwrap();
+    let values = AuthoredValue::from_template_json(json!({"x": "hi"})).unwrap();
+    let valid = schema.validate(values).unwrap();
     assert!(valid.warnings().is_empty());
 }
 
@@ -377,12 +395,15 @@ fn valid_values_raw_matches_input() {
         .add(Field::string(fk("x")))
         .build()
         .unwrap();
-    let values = FieldValues::from_json(json!({"x": "hi"})).unwrap();
-    let valid = schema.validate(&values).unwrap();
+    let values = AuthoredValue::from_template_json(json!({"x": "hi"})).unwrap();
+    let valid = schema.validate(values).unwrap();
     let fk_x = FieldKey::new("x").unwrap();
     assert_eq!(
-        valid.raw().get(&fk_x),
-        Some(&FieldValue::Literal(json!("hi")))
+        valid
+            .values()
+            .get(&fk_x)
+            .and_then(|value| value.as_literal()),
+        Some(&json!("hi"))
     );
 }
 
@@ -395,9 +416,9 @@ fn nested_required_field_missing_emits_required() {
         .build()
         .unwrap();
     // Provide user object but without email.
-    let values = FieldValues::from_json(json!({"user": {}})).unwrap();
-    let report = schema.validate(&values).unwrap_err();
-    assert!(report.errors().any(|e| e.code == "required"));
+    let values = AuthoredValue::from_template_json(json!({"user": {}})).unwrap();
+    let report = schema.validate(values).unwrap_err();
+    assert!(report.errors().any(|e| e.code() == "required"));
 }
 
 #[test]
@@ -406,8 +427,8 @@ fn nested_required_field_present_ok() {
         .add(Field::object(fk("user")).add(Field::string(fk("email")).required()))
         .build()
         .unwrap();
-    let values = FieldValues::from_json(json!({"user": {"email": "a@b.com"}})).unwrap();
-    assert!(schema.validate(&values).is_ok());
+    let values = AuthoredValue::from_template_json(json!({"user": {"email": "a@b.com"}})).unwrap();
+    assert!(schema.validate(values).is_ok());
 }
 
 // ── Select multiple/scalar mismatch (exhaustive check) ──────────────────────
@@ -423,10 +444,10 @@ fn multi_select_with_scalar_value_emits_type_mismatch() {
         )
         .build()
         .unwrap();
-    let values = FieldValues::from_json(json!({"tags": "a"})).unwrap();
-    let report = schema.validate(&values).unwrap_err();
+    let values = AuthoredValue::from_template_json(json!({"tags": "a"})).unwrap();
+    let report = schema.validate(values).unwrap_err();
     assert!(
-        report.errors().any(|e| e.code == "type_mismatch"),
+        report.errors().any(|e| e.code() == "type_mismatch"),
         "expected type_mismatch for scalar on multi select, got: {:?}",
         report.errors().collect::<Vec<_>>()
     );
@@ -442,10 +463,10 @@ fn single_select_with_array_value_emits_type_mismatch() {
         )
         .build()
         .unwrap();
-    let values = FieldValues::from_json(json!({"choice": ["a", "b"]})).unwrap();
-    let report = schema.validate(&values).unwrap_err();
+    let values = AuthoredValue::from_template_json(json!({"choice": ["a", "b"]})).unwrap();
+    let report = schema.validate(values).unwrap_err();
     assert!(
-        report.errors().any(|e| e.code == "type_mismatch"),
+        report.errors().any(|e| e.code() == "type_mismatch"),
         "expected type_mismatch for array on single select, got: {:?}",
         report.errors().collect::<Vec<_>>()
     );
@@ -459,9 +480,9 @@ fn required_string_empty_emits_required() {
         .add(Field::string(fk("name")).required())
         .build()
         .unwrap();
-    let values = FieldValues::from_json(json!({"name": ""})).unwrap();
-    let report = schema.validate(&values).unwrap_err();
-    assert!(report.errors().any(|e| e.code == "required"));
+    let values = AuthoredValue::from_template_json(json!({"name": ""})).unwrap();
+    let report = schema.validate(values).unwrap_err();
+    assert!(report.errors().any(|e| e.code() == "required"));
 }
 
 #[test]
@@ -470,9 +491,9 @@ fn required_secret_empty_emits_required() {
         .add(Field::secret(fk("token")).required())
         .build()
         .unwrap();
-    let values = FieldValues::from_json(json!({"token": ""})).unwrap();
-    let report = schema.validate(&values).unwrap_err();
-    assert!(report.errors().any(|e| e.code == "required"));
+    let values = AuthoredValue::from_template_json(json!({"token": ""})).unwrap();
+    let report = schema.validate(values).unwrap_err();
+    assert!(report.errors().any(|e| e.code() == "required"));
 }
 
 #[test]
@@ -485,9 +506,9 @@ fn required_list_empty_emits_required() {
         )
         .build()
         .unwrap();
-    let values = FieldValues::from_json(json!({"items": []})).unwrap();
-    let report = schema.validate(&values).unwrap_err();
-    assert!(report.errors().any(|e| e.code == "required"));
+    let values = AuthoredValue::from_template_json(json!({"items": []})).unwrap();
+    let report = schema.validate(values).unwrap_err();
+    assert!(report.errors().any(|e| e.code() == "required"));
 }
 
 #[test]
@@ -500,12 +521,15 @@ fn list_unique_duplicate_emits_items_unique() {
         )
         .build()
         .unwrap();
-    let values = FieldValues::from_json(json!({"items": ["a", "b", "a"]})).unwrap();
-    let report = schema.validate(&values).unwrap_err();
+    let values = AuthoredValue::from_template_json(json!({"items": ["a", "b", "a"]})).unwrap();
+    let report = schema.validate(values).unwrap_err();
     assert!(
-        report.errors().any(|e| e.code == "items.unique"),
+        report.errors().any(|e| e.code() == "items.unique"),
         "expected items.unique, got: {:?}",
-        report.errors().map(|e| &e.code).collect::<Vec<_>>()
+        report
+            .errors()
+            .map(ValidationError::code)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -519,8 +543,8 @@ fn list_unique_distinct_values_ok() {
         )
         .build()
         .unwrap();
-    let values = FieldValues::from_json(json!({"items": ["a", "b", "c"]})).unwrap();
-    assert!(schema.validate(&values).is_ok());
+    let values = AuthoredValue::from_template_json(json!({"items": ["a", "b", "c"]})).unwrap();
+    assert!(schema.validate(values).is_ok());
 }
 
 /// `unique` now compares by canonical value, so `1` and `1.0` (the same number
@@ -536,12 +560,15 @@ fn list_unique_treats_int_and_float_as_duplicate() {
         )
         .build()
         .unwrap();
-    let values = FieldValues::from_json(json!({"items": [1, 1.0]})).unwrap();
-    let report = schema.validate(&values).unwrap_err();
+    let values = AuthoredValue::from_template_json(json!({"items": [1, 1.0]})).unwrap();
+    let report = schema.validate(values).unwrap_err();
     assert!(
-        report.errors().any(|e| e.code == "items.unique"),
+        report.errors().any(|e| e.code() == "items.unique"),
         "1 and 1.0 are the same number; got: {:?}",
-        report.errors().map(|e| &e.code).collect::<Vec<_>>()
+        report
+            .errors()
+            .map(ValidationError::code)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -551,9 +578,9 @@ fn required_multi_file_empty_array_emits_required() {
         .add(Field::file(fk("uploads")).multiple().required())
         .build()
         .unwrap();
-    let values = FieldValues::from_json(json!({"uploads": []})).unwrap();
-    let report = schema.validate(&values).unwrap_err();
-    assert!(report.errors().any(|e| e.code == "required"));
+    let values = AuthoredValue::from_template_json(json!({"uploads": []})).unwrap();
+    let report = schema.validate(values).unwrap_err();
+    assert!(report.errors().any(|e| e.code() == "required"));
 }
 
 #[test]
@@ -562,9 +589,9 @@ fn required_code_empty_emits_required() {
         .add(Field::code(fk("script")).required())
         .build()
         .unwrap();
-    let values = FieldValues::from_json(json!({"script": ""})).unwrap();
-    let report = schema.validate(&values).unwrap_err();
-    assert!(report.errors().any(|e| e.code == "required"));
+    let values = AuthoredValue::from_template_json(json!({"script": ""})).unwrap();
+    let report = schema.validate(values).unwrap_err();
+    assert!(report.errors().any(|e| e.code() == "required"));
 }
 
 #[test]
@@ -573,9 +600,9 @@ fn required_single_file_empty_string_emits_required() {
         .add(Field::file(fk("upload")).required())
         .build()
         .unwrap();
-    let values = FieldValues::from_json(json!({"upload": ""})).unwrap();
-    let report = schema.validate(&values).unwrap_err();
-    assert!(report.errors().any(|e| e.code == "required"));
+    let values = AuthoredValue::from_template_json(json!({"upload": ""})).unwrap();
+    let report = schema.validate(values).unwrap_err();
+    assert!(report.errors().any(|e| e.code() == "required"));
 }
 
 #[test]
@@ -589,9 +616,9 @@ fn required_multi_select_empty_array_emits_required() {
         )
         .build()
         .unwrap();
-    let values = FieldValues::from_json(json!({"tags": []})).unwrap();
-    let report = schema.validate(&values).unwrap_err();
-    assert!(report.errors().any(|e| e.code == "required"));
+    let values = AuthoredValue::from_template_json(json!({"tags": []})).unwrap();
+    let report = schema.validate(values).unwrap_err();
+    assert!(report.errors().any(|e| e.code() == "required"));
 }
 
 #[test]
@@ -608,15 +635,18 @@ fn multi_select_with_expression_item_forbidden_emits_expression_forbidden() {
         )
         .build()
         .unwrap();
-    let values = FieldValues::from_json(json!({
+    let values = AuthoredValue::from_template_json(json!({
         "tags": ["a", {"$expr": "{{ $dynamic }}"}]
     }))
     .unwrap();
-    let report = schema.validate(&values).unwrap_err();
+    let report = schema.validate(values).unwrap_err();
     assert!(
-        report.errors().any(|e| e.code == "expression.forbidden"),
+        report.errors().any(|e| e.code() == "expression.forbidden"),
         "expected expression.forbidden, got: {:?}",
-        report.errors().map(|e| &e.code).collect::<Vec<_>>()
+        report
+            .errors()
+            .map(ValidationError::code)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -626,8 +656,8 @@ fn required_string_single_char_ok() {
         .add(Field::string(fk("name")).required())
         .build()
         .unwrap();
-    let values = FieldValues::from_json(json!({"name": "a"})).unwrap();
-    assert!(schema.validate(&values).is_ok());
+    let values = AuthoredValue::from_template_json(json!({"name": "a"})).unwrap();
+    assert!(schema.validate(values).is_ok());
 }
 
 #[test]
@@ -641,8 +671,8 @@ fn multi_select_with_array_of_valid_options_ok() {
         )
         .build()
         .unwrap();
-    let values = FieldValues::from_json(json!({"tags": ["a", "b"]})).unwrap();
-    assert!(schema.validate(&values).is_ok());
+    let values = AuthoredValue::from_template_json(json!({"tags": ["a", "b"]})).unwrap();
+    assert!(schema.validate(values).is_ok());
 }
 
 #[test]
@@ -650,29 +680,33 @@ fn root_rule_error_path_snapshot() {
     let schema = Schema::builder()
         .add(Field::object(fk("config")).add(Field::string(fk("tier"))))
         .add(Field::list(fk("items")).item(Field::object(fk("row")).add(Field::string(fk("name")))))
-        .root_rule(Rule::predicate(
-            Predicate::eq("/config/tier", json!("pro")).unwrap(),
-        ))
-        .root_rule(Rule::predicate(
-            Predicate::eq("/items/0/name", json!("first")).unwrap(),
-        ))
-        .root_rule(Rule::predicate(
-            Predicate::eq("/items/0/name", json!("second")).unwrap(),
-        ))
+        .root_rule(
+            Rule::predicate(Predicate::eq("/config/tier", json!("pro")).unwrap())
+                .expect("bounded root predicate"),
+        )
+        .root_rule(
+            Rule::predicate(Predicate::eq("/items/0/name", json!("first")).unwrap())
+                .expect("bounded root predicate"),
+        )
+        .root_rule(
+            Rule::predicate(Predicate::eq("/items/0/name", json!("second")).unwrap())
+                .expect("bounded root predicate"),
+        )
         .build()
         .unwrap();
 
-    let values =
-        FieldValues::from_json(json!({"config": {"tier": "free"}, "items": [{"name": "wrong"}]}))
-            .unwrap();
-    let report = schema.validate(&values).unwrap_err();
+    let values = AuthoredValue::from_template_json(
+        json!({"config": {"tier": "free"}, "items": [{"name": "wrong"}]}),
+    )
+    .unwrap();
+    let report = schema.validate(values).unwrap_err();
     let issues: Vec<_> = report
         .errors()
         .map(|error| {
             json!({
-                "code": error.code,
-                "message": error.message,
-                "path": error.path.to_string(),
+                "code": error.code(),
+                "message": error.message(),
+                "path": error.path().to_string(),
             })
         })
         .collect();
@@ -682,17 +716,17 @@ fn root_rule_error_path_snapshot() {
       {
         "code": "eq_failed",
         "message": "predicate failed",
-        "path": "config.tier"
+        "path": "/config/tier"
       },
       {
         "code": "eq_failed",
         "message": "predicate failed",
-        "path": "items[0].name"
+        "path": "/items/0/name"
       },
       {
         "code": "eq_failed",
         "message": "predicate failed",
-        "path": "items[0].name"
+        "path": "/items/0/name"
       }
     ]
     "###);
@@ -709,27 +743,33 @@ fn nested_required_when_is_enforced_not_fail_open() {
     let schema = Schema::builder()
         .add(Field::object(fk("auth")).add(Field::string(fk("mode"))))
         .add(
-            Field::string(fk("secret_token")).required_when(Rule::Predicate(Predicate::Eq(
-                ValidatorPath::parse("/auth/mode").unwrap(),
-                json!("oauth"),
-            ))),
+            Field::string(fk("secret_token")).required_when(
+                Rule::predicate(Predicate::Eq(
+                    ValidatorPath::parse("/auth/mode").unwrap(),
+                    json!("oauth"),
+                ))
+                .expect("bounded nested requiredness rule"),
+            ),
         )
         .build()
         .expect("schema builds");
 
-    let values = FieldValues::from_json(json!({
+    let values = AuthoredValue::from_template_json(json!({
            "auth": { "mode": "oauth" }
     // secret_token absent
        }))
     .unwrap();
 
     let report = schema
-        .validate(&values)
+        .validate(values)
         .expect_err("must reject: required field absent");
     assert!(
-        report.errors().any(|e| e.code == "required"),
+        report.errors().any(|e| e.code() == "required"),
         "nested required_when must be enforced, got: {:?}",
-        report.errors().map(|e| &e.code).collect::<Vec<_>>()
+        report
+            .errors()
+            .map(ValidationError::code)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -745,14 +785,15 @@ fn middle_skipped_field_does_not_shift_plan_to_field_mapping() {
         .build()
         .expect("schema builds");
 
-    let values = FieldValues::from_json(json!({"f_first": "ab", "f_last": "cd"})).unwrap();
+    let values =
+        AuthoredValue::from_template_json(json!({"f_first": "ab", "f_last": "cd"})).unwrap();
     let report = schema
-        .validate(&values)
+        .validate(values)
         .expect_err("both short fields must fail");
 
     let codes_paths: Vec<(String, String)> = report
         .errors()
-        .map(|e| (e.code.to_string(), e.path.to_string()))
+        .map(|e| (e.code().to_string(), e.path().to_string()))
         .collect();
     assert!(
         codes_paths.iter().any(|(_, p)| p.contains("f_first")),
@@ -780,9 +821,9 @@ fn hidden_present_required_empty_emits_single_required() {
         .build()
         .expect("schema builds");
 
-    let values = FieldValues::from_json(json!({"secret_slot": ""})).unwrap();
+    let values = AuthoredValue::from_template_json(json!({"secret_slot": ""})).unwrap();
     let report = schema
-        .validate(&values)
+        .validate(values)
         .expect_err("hidden+present+required+empty must reject");
 
     let errors: Vec<_> = report.errors().collect();
@@ -792,9 +833,9 @@ fn hidden_present_required_empty_emits_single_required() {
         "expected exactly one error, got: {:?}",
         errors
             .iter()
-            .map(|e| (&e.code, e.path.to_string()))
+            .map(|e| (e.code(), e.path().to_string()))
             .collect::<Vec<_>>()
     );
-    assert_eq!(errors[0].code, "required");
-    assert_eq!(errors[0].path.to_string(), "secret_slot");
+    assert_eq!(errors[0].code(), "required");
+    assert_eq!(errors[0].path().to_string(), "/secret_slot");
 }

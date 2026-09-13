@@ -4,6 +4,14 @@
   "scenario_inventory_version": 1,
   "excluded_diagnostics": [
     {
+      "code": "PLUGIN_PLAN_GRAPH_V1:INVALID_REFERENCE_PATH",
+      "reason": "Workflow definitions deserialize reference output paths as admitted RFC6901 ValuePath values, so malformed paths are rejected before the plugin Graph-v1 compiler boundary."
+    },
+    {
+      "code": "PLUGIN_PLAN_GRAPH_V1:UNSUPPORTED_EFFECT_KIND",
+      "reason": "Frozen registry admission rejects a remote effect contract unless the retained factory exposes a matching remote-effect capability, and that capability is only provided by stateless remote-effect factories."
+    },
+    {
       "code": "WORKFLOW:GRAPH_ERROR",
       "reason": "No reachable producer beyond error conversion plumbing in the supported workflow validator."
     }
@@ -11,7 +19,7 @@
   "scenarios": [
     {
       "scenario": "missing_action",
-      "input_sha256": "cb6fc151f7556519c758a9d68f95b1c5a4ab7efab26e2ed8ed6bc61950e371b7",
+      "input_sha256": "b0b3740a5a80550373a9d0c93de11e88be93b2be6471f2208183bf7d5fd765fd",
       "events": [
         {
           "sequence": 0,
@@ -39,7 +47,7 @@
     },
     {
       "scenario": "missing_plugin",
-      "input_sha256": "090297f6ad3cb2cdea410c0b50a810ca644d2de1dc732f03384606ccab3f8f29",
+      "input_sha256": "0366f86d5a2b8a6c7e7ae2146edded28401d49d445dbb86492b6f070a3146f56",
       "events": [
         {
           "sequence": 0,
@@ -67,7 +75,7 @@
     },
     {
       "scenario": "unsupported_schema",
-      "input_sha256": "016dc71301108afb31eaca0aa5f167e0ca99d5e4157ffb36b1d35ee2daeeef46",
+      "input_sha256": "ebb3d13176807af01d757cf0e51f128d5a860f9643aed0aed9573d5d89a853a0",
       "events": [
         {
           "sequence": 0,
@@ -95,7 +103,7 @@
     },
     {
       "scenario": "duplicate_node",
-      "input_sha256": "45a410535e9ae09c696ceb284a7287451f3e839063b8fc5b3acf280018cf44ae",
+      "input_sha256": "424f7b12191dbd20d8e6536262b27ecd79b996435fcefde994a0dbb06e84ad36",
       "events": [
         {
           "sequence": 0,
@@ -123,7 +131,7 @@
     },
     {
       "scenario": "missing_endpoint",
-      "input_sha256": "359413bbd4b77e72912647713858d49a90ad8724f54fdad6962513f1944ae9cd",
+      "input_sha256": "bd08b54c7681ea56f00d4fcaaa2f34c635370cbdb8d1af6eb065f1fdadcf6cab",
       "events": [
         {
           "sequence": 0,
@@ -151,7 +159,7 @@
     },
     {
       "scenario": "duplicate_connection",
-      "input_sha256": "bafb86e06f6ff8e6d3905eae385ac6f72fd1d1c90c8c672c81a893803ff449a3",
+      "input_sha256": "c418706dba709d3c90d404884cc2acdacf9b510b215c719040982bb4d09048e9",
       "events": [
         {
           "sequence": 0,
@@ -179,7 +187,7 @@
     },
     {
       "scenario": "graph_cycle",
-      "input_sha256": "defe581ca3510c59b306dfe8693219239d4483c58cb44ec99d0917b2f04785e4",
+      "input_sha256": "f1e8d6dcf8f0f7cd669f3a3e7d687ccc652cf86e6a96e2a5e0ab449d96efd223",
       "events": [
         {
           "sequence": 0,
@@ -207,7 +215,7 @@
     },
     {
       "scenario": "undeclared_effects",
-      "input_sha256": "c0618f801d58ecafcd33a6a378612b59b25ef03c0d12d93baf9808cc81626037",
+      "input_sha256": "32bf0fb08ce1437401916eacbaf6327508e1f7875945693d5f4cea9861bfdbe4",
       "events": [
         {
           "sequence": 0,
@@ -230,40 +238,12 @@
           "expected": "<declared-effect-contract>",
           "actual": "<undeclared-effects>",
           "remediation": "declare reviewed external-effect behavior on the action factory"
-        }
-      ]
-    },
-    {
-      "scenario": "unsupported_effect_kind",
-      "input_sha256": "2d2a0c8107420790223c6ffefa6b4e3abce318f186a02ce0810e60a1b379a6f6",
-      "events": [
-        {
-          "sequence": 0,
-          "kind": "diagnostic_raised",
-          "boundary": "compiler",
-          "http_status": null,
-          "code": "PLUGIN_PLAN_GRAPH_V1:UNSUPPORTED_EFFECT_KIND",
-          "path": "/nodes/step_a/action_key",
-          "expected": "stateless",
-          "actual": "control",
-          "remediation": "use a stateless action for one terminal remote effect"
-        },
-        {
-          "sequence": 1,
-          "kind": "diagnostic_raised",
-          "boundary": "http_activation",
-          "http_status": 422,
-          "code": "PLUGIN_PLAN_GRAPH_V1:UNSUPPORTED_EFFECT_KIND",
-          "path": "/nodes/step_a/action_key",
-          "expected": "stateless",
-          "actual": "control",
-          "remediation": "use a stateless action for one terminal remote effect"
         }
       ]
     },
     {
       "scenario": "unsupported_node_kind",
-      "input_sha256": "558e4878889930a95afeb4410dbbec468864f8ecc596a48536309e28612313c8",
+      "input_sha256": "0dc9bc9d2f0eefd668eb4e09e2170a0e51f384f2319cec69bb32446d0bfc126a",
       "events": [
         {
           "sequence": 0,
@@ -291,7 +271,7 @@
     },
     {
       "scenario": "action_version_mismatch",
-      "input_sha256": "9693f3b55ba7d79c1be24a94168e7cb43e0ca9cf50cdfd27b10516521f3a4b1a",
+      "input_sha256": "98615fed7c35eac61bf406db759ae8cdca5806ecc3b1b3027e1c95b4029c128c",
       "events": [
         {
           "sequence": 0,
@@ -319,7 +299,7 @@
     },
     {
       "scenario": "disabled_node_edge",
-      "input_sha256": "952f8560f72bc41f8c353a86ed4913cf1d3db84953912cfea45f1eb7bb773258",
+      "input_sha256": "c7959d4ac6ab4efef433fe65944571f2728034e15abc47bfbadda30b4e3d9aed",
       "events": [
         {
           "sequence": 0,
@@ -347,7 +327,7 @@
     },
     {
       "scenario": "unsupported_source_port",
-      "input_sha256": "2f2a316a71fe7eae02ecb1d966ecffdfcebc8adc33e46f4c827f2be3189787fd",
+      "input_sha256": "cd8758842d973cb0db9c33d4ec01533ad19b3be572d7ca43c3325b76309aa84c",
       "events": [
         {
           "sequence": 0,
@@ -375,7 +355,7 @@
     },
     {
       "scenario": "unsupported_target_port",
-      "input_sha256": "43124e488e45056876a08886590f02f9f410a39dc39b8555055c6d1f7796d3ad",
+      "input_sha256": "468c3c7cb8f1f2d940286e3b9ae9e38bdb1ba77bc268c0ec44f4b8e5c86125a9",
       "events": [
         {
           "sequence": 0,
@@ -403,7 +383,7 @@
     },
     {
       "scenario": "trigger_kind_mismatch",
-      "input_sha256": "ee0f14c0a0c638264106e601b67bb41b95994cec7d80f8618c40b975d0537655",
+      "input_sha256": "5c403da798bf2103e5a31158e22054c49189727be46b8a322c8d7154a8ac705a",
       "events": [
         {
           "sequence": 0,
@@ -431,7 +411,7 @@
     },
     {
       "scenario": "duplicate_trigger",
-      "input_sha256": "002ca11d1eaabbb704d881e0aef1efc2597909d28a2ef70906ba76e6cf1676da",
+      "input_sha256": "d5fdb3a1acf3e5b0f925fad5fbff981b992c5340d596b94bc31b66c228f8d6f6",
       "events": [
         {
           "sequence": 0,
@@ -480,36 +460,8 @@
       ]
     },
     {
-      "scenario": "invalid_reference_path",
-      "input_sha256": "4a26260a4a9d7210726f8807d51d7047600671218114ea25fb7aec4618c6abd9",
-      "events": [
-        {
-          "sequence": 0,
-          "kind": "diagnostic_raised",
-          "boundary": "compiler",
-          "http_status": null,
-          "code": "PLUGIN_PLAN_GRAPH_V1:INVALID_REFERENCE_PATH",
-          "path": "/nodes/step_a/parameters/input",
-          "expected": "<root-or-canonical-dotted-path>",
-          "actual": "<unsupported-variant>",
-          "remediation": "use $, $.field, or a canonical bare dotted path"
-        },
-        {
-          "sequence": 1,
-          "kind": "diagnostic_raised",
-          "boundary": "http_activation",
-          "http_status": 422,
-          "code": "PLUGIN_PLAN_GRAPH_V1:INVALID_REFERENCE_PATH",
-          "path": "/nodes/step_a/parameters/input",
-          "expected": "<root-or-canonical-dotted-path>",
-          "actual": "<unsupported-variant>",
-          "remediation": "use $, $.field, or a canonical bare dotted path"
-        }
-      ]
-    },
-    {
       "scenario": "unknown_slot_override",
-      "input_sha256": "d14a6bb28c7d6f31620d063efb01268ba52dc5f7039e6450ddbfdbf1d7174009",
+      "input_sha256": "ac4eb04e5e45fceaa0f9532eb19abd7113669d2c4577f563aad2c149165ca510",
       "events": [
         {
           "sequence": 0,
@@ -537,7 +489,7 @@
     },
     {
       "scenario": "invalid_parameter_contract",
-      "input_sha256": "186bc66a4cf30985189883e7a310fec7b40c957a2a61f778655d64740893e7a5",
+      "input_sha256": "d088680fccfb1ca1f5886140ac938ffcfbeac72690301e37bf88bd185c5e0738",
       "events": [
         {
           "sequence": 0,
@@ -565,7 +517,7 @@
     },
     {
       "scenario": "invalid_reference_contract",
-      "input_sha256": "43dcd7041800473d9237c48c407584cf33f680b55221658d9db3d472349592c5",
+      "input_sha256": "c70dcf358d4b572db61d2f8a79dbeed4784f6013279879db24fd5902a46eb8a5",
       "events": [
         {
           "sequence": 0,
@@ -593,7 +545,7 @@
     },
     {
       "scenario": "invalid_trigger_configuration",
-      "input_sha256": "065d4ce95fab982e0e98ff83cbc7f7cb3f6812732844fe048db28f6c143a2122",
+      "input_sha256": "c0696ab5d10ed571d74bcacf6ed6fafd8a1c73b243a018efb5145c4ee1b550b9",
       "events": [
         {
           "sequence": 0,
@@ -621,7 +573,7 @@
     },
     {
       "scenario": "missing_resource_contract",
-      "input_sha256": "8e4f789279b719884f6a530fc451a89f66cbad97bc4344872116b178326ab5c4",
+      "input_sha256": "fdf3ee76a501338d6152151a1612d8bc9694fa159255c6ea182aaee9b1cb1b68",
       "events": [
         {
           "sequence": 0,
@@ -671,7 +623,7 @@
     },
     {
       "scenario": "missing_credential_contract",
-      "input_sha256": "ec2d19011a6e29dc3b0f17a187ca6a733e7bd2f5b6331a1755c5dcd0b4a89fd5",
+      "input_sha256": "a6ec630660a9e1a0df818894ad02a4f87166c503a92937b72e2b6c5588eb223b",
       "events": [
         {
           "sequence": 0,
@@ -721,7 +673,7 @@
     },
     {
       "scenario": "empty_selector",
-      "input_sha256": "b0ca687815942b989978d8691b2fb77efc43996d503f3aa9ba0619441c16439c",
+      "input_sha256": "823b70867be52a3256c5d6b129b9b250bb01c7b38e61d0a73977575927895d75",
       "events": [
         {
           "sequence": 0,
@@ -771,7 +723,7 @@
     },
     {
       "scenario": "slot_kind_mismatch",
-      "input_sha256": "f802187dc5782c98a0337c81dfcc2db1753aad5a2ee9fb56244e794323dcdbf1",
+      "input_sha256": "378593b169fdad82271a1e83bfa057819f50ee76f488e1eef9a935147183d991",
       "events": [
         {
           "sequence": 0,
@@ -821,7 +773,7 @@
     },
     {
       "scenario": "tag_filter",
-      "input_sha256": "dd35ec51765a2c93484c01969b43458a973f629cceb762afeefcd9240dd6f948",
+      "input_sha256": "87fc8b9204c61e8939ec9e2c42f722cdbefe9d2517e88385c396045a20042822",
       "events": [
         {
           "sequence": 0,
@@ -849,7 +801,7 @@
     },
     {
       "scenario": "node_filter",
-      "input_sha256": "edfc239a17386ee241d8202822b952534c5d19b30b94142b5ea64c7764900161",
+      "input_sha256": "010b517080bb88956721e832469effde4f1ab80d6e77a016865c28fe8d536c44",
       "events": [
         {
           "sequence": 0,
@@ -877,7 +829,7 @@
     },
     {
       "scenario": "support_required",
-      "input_sha256": "007c85896cc4bfa1a1a07ec73f417d73000047b58330fd7ac45939ce86cc3869",
+      "input_sha256": "6b479e11610ac34abfe313417db68d4dd605d0769770ecc349023f99040b0bdd",
       "events": [
         {
           "sequence": 0,
@@ -905,7 +857,7 @@
     },
     {
       "scenario": "invalid_projection",
-      "input_sha256": "b0f948c1789fb6d516e590bf36afa1bde1d5f1d6e32c21f007527dbba7dcf593",
+      "input_sha256": "c9fde51eaf69bda23cd60090ae9bab782d1d866eb429fdbdfedb04fc11def94b",
       "events": [
         {
           "sequence": 0,
@@ -933,7 +885,7 @@
     },
     {
       "scenario": "wrong_dependency_type",
-      "input_sha256": "9185f6fb3256ede920b6cd7a01dc394d337d44eb6f3ec1a0884d799eac52b223",
+      "input_sha256": "b50b0ed3badff7907131c189075a34f19178393a79628dc06fe07137422b1f11",
       "events": [
         {
           "sequence": 0,
@@ -961,7 +913,7 @@
     },
     {
       "scenario": "undeclared_dependency",
-      "input_sha256": "21fcfff8cf66d193a77fcd34f0778ca764f4b78d41e4daaaf864ca44d65b23dc",
+      "input_sha256": "3b64bdaf88bf6e002ef5a04f3ebc47a8e975f9eb49bd5d01ef0e145f795526c0",
       "events": [
         {
           "sequence": 0,
@@ -989,7 +941,7 @@
     },
     {
       "scenario": "schema_incompatible",
-      "input_sha256": "6ecbcc2e526bbaf04f75342b1de6e9e71799cd8592ebd990735eee392cbcd281",
+      "input_sha256": "d58a3e70715c4e42e5e231990a5557d70147766775456cacaa5be70c0c5ce707",
       "events": [
         {
           "sequence": 0,
@@ -1017,7 +969,7 @@
     },
     {
       "scenario": "compiled_record_depth",
-      "input_sha256": "e33cfab8e67a9bf3ac0a2af1b136254df95ad4c2055b478a0c1ac558b43489de",
+      "input_sha256": "5ad286dc98441cd5d122ea310a691d3b8293a19c4352c943d2d43ac02a8b2172",
       "events": [
         {
           "sequence": 0,
@@ -1045,7 +997,7 @@
     },
     {
       "scenario": "registry_compatibility.legacy_compiler_1",
-      "input_sha256": "60bd45db11f597ca6f6f50a6a70063229e00b405169d495ca3322e25f6826449",
+      "input_sha256": "fde8aa4df452bc92f12fd1d1283a193a400de680b2c0d86648b8e5f9f0ce3c1a",
       "events": [
         {
           "sequence": 0,
@@ -1054,7 +1006,7 @@
           "http_status": null,
           "code": "PLUGIN_PLAN_COMPATIBILITY:UNSUPPORTED_EFFECT_PROTOCOL",
           "path": "/plan/compiler_version",
-          "expected": "compiler 3 with explicit effect declarations",
+          "expected": "compiler 3 or 4 with explicit effect declarations",
           "actual": "legacy plan without effect declarations",
           "remediation": "activate a new workflow version using declared action effects"
         }
@@ -1062,7 +1014,7 @@
     },
     {
       "scenario": "plan_integrity.unsupported_compiler_2",
-      "input_sha256": "bc786bc1124d155d286eb5f8d3f1d4192623c721ab95d3f3df277314fbe2ea5e",
+      "input_sha256": "9f8b3d16df78e127f137a1c117a4e5075b28b353d992d0faa77aac4b959d6f75",
       "events": [
         {
           "sequence": 0,
@@ -1079,7 +1031,7 @@
     },
     {
       "scenario": "registry_compatibility.plugin_set_mismatch",
-      "input_sha256": "70e6c375ed2eac9eaeb909f488bd2a4604bd81193c535f2c18a5863f4de5667b",
+      "input_sha256": "96189d54d495dda3b0df531e0f8915c0de251e97e16daf8b80b32793d9dba723",
       "events": [
         {
           "sequence": 0,
@@ -1096,7 +1048,7 @@
     },
     {
       "scenario": "registry_compatibility.worker_flavor_mismatch",
-      "input_sha256": "17ea29d3772ea4e96b617d42ceb97b5837465737363361013ccccac58d2647c4",
+      "input_sha256": "19897a7dea85a354376baa4925d5997738cfa3b5a40822e06844bc14b1f7d084",
       "events": [
         {
           "sequence": 0,
@@ -1113,7 +1065,7 @@
     },
     {
       "scenario": "registry_compatibility.contract_mismatch",
-      "input_sha256": "ce81be2b2a925d8e1d69eb4a3ad50eb7b8bee7b19f07aab9b5ac756b93d7672c",
+      "input_sha256": "7bea4afcbcdf444f02f05664e35ea2b207223e65f7ffcd4e6593ea3a39becbe0",
       "events": [
         {
           "sequence": 0,
@@ -1130,7 +1082,7 @@
     },
     {
       "scenario": "plan_integrity.unsupported_format",
-      "input_sha256": "bb39a79862e6dcc29ab924c9efff940ceb2ad6b8b4ba3b77256cf4630a673eb2",
+      "input_sha256": "bf62915d75a3bfbea2b22c9b21b48e79fc61ffe82c64841edd611f0ddee2ebe7",
       "events": [
         {
           "sequence": 0,
@@ -1147,7 +1099,7 @@
     },
     {
       "scenario": "plan_integrity.noncanonical",
-      "input_sha256": "e8fa29942667411d03cf4147a427b05f2f27b3907a544f9c29d90556dea2e966",
+      "input_sha256": "816a009042b3a045dd0fecf4a84fff797735ed11aebea57a5423082b96920b8f",
       "events": [
         {
           "sequence": 0,
@@ -1164,7 +1116,7 @@
     },
     {
       "scenario": "plan_integrity.converters_unsupported",
-      "input_sha256": "23c3cefa88c7506cb225bf44404a60e126ba2d74317abae9009b901876f08b02",
+      "input_sha256": "ba9b96496061d7747604878017af3c1b8391874705f568c055ca3e7a95b50932",
       "events": [
         {
           "sequence": 0,
@@ -1181,7 +1133,7 @@
     },
     {
       "scenario": "plan_integrity.revision_mismatch",
-      "input_sha256": "3b577e6e04e77492fa46e514a6f2acedbe4378b91197cfab8e86fb9bdc864991",
+      "input_sha256": "6b8cc8a28530358aa2e8730987b2cf4baa6c0c86593abede5246da02439e4f15",
       "events": [
         {
           "sequence": 0,
@@ -1190,7 +1142,7 @@
           "http_status": null,
           "code": "PLUGIN_PLAN_INTEGRITY:REVISION_ID_MISMATCH",
           "path": "/plan/id",
-          "expected": "a039d7d53c2cab278897bd899b01efa20fd01439d1cad189227c985bfd9cda37",
+          "expected": "fdc01738496ae4ce2ca67dcc341cd0cb970f79526b53d7421cc2a62fa7fd2bd6",
           "actual": "9999999999999999999999999999999999999999999999999999999999999999",
           "remediation": "discard the record: its claimed identity does not match its own content"
         }
@@ -1198,7 +1150,7 @@
     },
     {
       "scenario": "plan_integrity.unknown_capability",
-      "input_sha256": "50ef6efe0d44abd791795e0952b7a068d971cc13a1071199ed93a80dbff77b63",
+      "input_sha256": "586a71819b68f0d31f5217471a380827ba43a8f8ef1240c2793b468ecb73f303",
       "events": [
         {
           "sequence": 0,
@@ -1215,7 +1167,7 @@
     },
     {
       "scenario": "plan_integrity.canonical_encoding_depth",
-      "input_sha256": "0bf601ef3661a377cb82b438bf2f1b8dae2f6eaf0858d0db17377fc5b8edd509",
+      "input_sha256": "ba8ea630e38a60e360273319d5e48ec0d0842928aae403fbb00ca1028c2e1dc7",
       "events": [
         {
           "sequence": 0,
@@ -1283,7 +1235,7 @@
     },
     {
       "scenario": "workflow_validation.empty_name",
-      "input_sha256": "34b95a987c7c7ae1b76e13f1cf15a73e548e6d1ee5e294a6b8270e1a7c192497",
+      "input_sha256": "0db4ede93acc22655c457b4a3dc101d4c2fb459b402cad4e71bc8251091d54cb",
       "events": [
         {
           "sequence": 0,
@@ -1300,7 +1252,7 @@
     },
     {
       "scenario": "workflow_validation.no_nodes",
-      "input_sha256": "c3c748d9831457ba22b66c244f95b1e47fedf8f43f51df6c12322848fcddf805",
+      "input_sha256": "67320a28c3bb720429d57d58d7cfa2c8de75a7642a416188880d4e6a328f3dac",
       "events": [
         {
           "sequence": 0,
@@ -1317,7 +1269,7 @@
     },
     {
       "scenario": "workflow_validation.self_loop",
-      "input_sha256": "b9f577a55a66f5a320a8b6e2d3cb54e3761a680f67d2a2cced3b8655d59d87f3",
+      "input_sha256": "83dbc784320629406bfc6c349dbd84f7b63474406a2d09d35a5e5e6636e8751b",
       "events": [
         {
           "sequence": 0,
@@ -1345,7 +1297,7 @@
     },
     {
       "scenario": "workflow_validation.duplicate_node",
-      "input_sha256": "8d44e4dea56d36953584d75c99b163f8664ebba725ee870fd0a1620776f92618",
+      "input_sha256": "d9c29c632a2c0a7555370d7c5bbcdab3bfc35540bfd8641b56d6250d050b31c3",
       "events": [
         {
           "sequence": 0,
@@ -1373,7 +1325,7 @@
     },
     {
       "scenario": "workflow_validation.missing_endpoint",
-      "input_sha256": "53421a34ee201bbed4441297562ee6e1267d0610081fce417d4156862a0cc026",
+      "input_sha256": "fe8afda6c7b8ef820356d5e2efae743a7cf7759dc01e66f4f984631eac73b3bc",
       "events": [
         {
           "sequence": 0,
@@ -1401,7 +1353,7 @@
     },
     {
       "scenario": "workflow_validation.duplicate_connection",
-      "input_sha256": "c323ddabd15721d29f45392e633bf0bc766e567f567010648dead6c57aff5177",
+      "input_sha256": "4f4d07f44189b0406dd0006aed36c8a64a1ab97832e51b31fe360a6fa272f639",
       "events": [
         {
           "sequence": 0,
@@ -1418,7 +1370,7 @@
     },
     {
       "scenario": "workflow_validation.graph_cycle",
-      "input_sha256": "fd045789b5972c003fb2c3afdf7830c396f8e9bf14b08a71c6935ba04c0bdb71",
+      "input_sha256": "a7107a3a87793cad6c3df71ec070e026b52498be90369d8f2ebaef7243b97626",
       "events": [
         {
           "sequence": 0,
@@ -1446,7 +1398,7 @@
     },
     {
       "scenario": "workflow_validation.invalid_reference_contract",
-      "input_sha256": "462f88a5bb12581448a1a7e1b3dd11548c867ba055daeed1bc5e4cfb5ced83aa",
+      "input_sha256": "20925cf3df711d4ab309453aeddbdfbe930baf951d878fb8f6a0a1b2e569530e",
       "events": [
         {
           "sequence": 0,
@@ -1463,7 +1415,7 @@
     },
     {
       "scenario": "workflow_validation.unsupported_schema",
-      "input_sha256": "f120d77367879d4d7dbbd7bb1e3d20a284e21cc1be859820b8f6481a97a43b55",
+      "input_sha256": "81ddbe8eb50691e30a2f06bd8644aacb2b405f6ce91003621fc5cb96ca603095",
       "events": [
         {
           "sequence": 0,
@@ -1480,7 +1432,7 @@
     },
     {
       "scenario": "workflow_validation.duplicate_trigger",
-      "input_sha256": "44b781daf3b8ad5a7b498d26adbcb329b06896385f712298122f7f78753a27eb",
+      "input_sha256": "6c590eabf6a04aa7ee0f59f6557868fc5ecbaeeb7934d32393434d3c5e538480",
       "events": [
         {
           "sequence": 0,
@@ -1497,7 +1449,7 @@
     },
     {
       "scenario": "workflow_validation.reference_without_connection",
-      "input_sha256": "271775352db384a742ef9ed90f652135171f2438c89dfbd32257dc2df8bbd287",
+      "input_sha256": "eeeebfb7cd929e397407420463532673304c53235bdfa8905866544e478b00d3",
       "events": [
         {
           "sequence": 0,
@@ -1514,7 +1466,7 @@
     },
     {
       "scenario": "workflow_validation.invalid_retry",
-      "input_sha256": "d5b7a72d789d88039d3daee99833c69fe2128f726462930ee329531af93d0dd3",
+      "input_sha256": "d4c65ff21ce88cd9e3e3c0a4b404dae4c2c08b6f52ee9bb029f01e053d76b719",
       "events": [
         {
           "sequence": 0,
@@ -1582,7 +1534,7 @@
     },
     {
       "scenario": "workflow_validation.port_incompatible",
-      "input_sha256": "de7d377615fea1b235c61d94eca52a2aa1cce079f041ab1bfc31bcfad56e7fab",
+      "input_sha256": "451cb4816b58a394039065e5899a2862de820906edd2bc3888af473eea2ff13e",
       "events": [
         {
           "sequence": 0,
@@ -1599,7 +1551,7 @@
     },
     {
       "scenario": "workflow_validation.port_undecidable",
-      "input_sha256": "1ef86de86dbc8011d2f75d5960ad79761a9eb89ccc1624a0d9c0b80a1ca493a6",
+      "input_sha256": "b5a1cd2a48a428575f3eac941f246f7e096fd29391a8d4f951b7148e7245f4f9",
       "events": [
         {
           "sequence": 0,
@@ -1616,7 +1568,7 @@
     },
     {
       "scenario": "workflow_validation.reference_path",
-      "input_sha256": "9d8957c6549537e568c82155c1e6650f2e109284ba33bf9927f3a446c41460bd",
+      "input_sha256": "57cc74a5629d20e29e3b396eb8219bb944591c1343ba80eaebefc5750051bd5c",
       "events": [
         {
           "sequence": 0,
@@ -1626,14 +1578,14 @@
           "code": "WORKFLOW:REFERENCE_PATH_UNRESOLVED",
           "path": "/nodes/target/parameters/input",
           "expected": "a path resolvable through the output schema of source",
-          "actual": "$.items.first: path segment `first` is not a valid list index",
+          "actual": "/items/first: path segment `first` is not a valid list index",
           "remediation": "correct the output path, or widen the producer's output schema"
         }
       ]
     },
     {
       "scenario": "workflow_validation.reference_incompatible",
-      "input_sha256": "aac28c1757dec1e40ff3f3e591efa09ac757ab835151e7effc1590ebd9efb69f",
+      "input_sha256": "9c3cf497437203e3e46030b821d9e4988809382d55ff962673b1e63c6b6b3d87",
       "events": [
         {
           "sequence": 0,
@@ -1653,7 +1605,7 @@
           "http_status": null,
           "code": "WORKFLOW:REFERENCE_TYPE_INCOMPATIBLE",
           "path": "/nodes/target/parameters/input",
-          "expected": "a leaf at $.value assignable to this parameter",
+          "expected": "a leaf at /value assignable to this parameter",
           "actual": "field `input` type mismatch: producer has `string`, consumer expects `boolean`",
           "remediation": "reference a compatible field, or change the parameter's expected type"
         }
@@ -1661,7 +1613,7 @@
     },
     {
       "scenario": "workflow_validation.reference_undecidable",
-      "input_sha256": "7bd304ddc2e11782360b7a44c59b24bb650614f5910f5613cde4b417d8afec30",
+      "input_sha256": "a60e992c686f21295d80f47aed3c6fdaee2c59c9063c82ec9b9d09bd5c04909b",
       "events": [
         {
           "sequence": 0,
@@ -1681,7 +1633,7 @@
           "http_status": null,
           "code": "WORKFLOW:REFERENCE_TYPE_UNDECIDABLE",
           "path": "/nodes/target/parameters/input",
-          "expected": "a statically decidable leaf at $.value",
+          "expected": "a statically decidable leaf at /value",
           "actual": "field `input` narrows float to integer (possible precision loss)",
           "remediation": "type the dynamic or opaque field, or validate in Gradual mode"
         }

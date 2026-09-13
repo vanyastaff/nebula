@@ -15,13 +15,7 @@
 //! [`FromWorkflowNode::from_workflow_node`](crate::FromWorkflowNode::from_workflow_node)
 //! and then erasing to the matching [`ActionHandle`] variant.
 
-use std::{
-    any::Any,
-    future::Future,
-    marker::PhantomData,
-    pin::Pin,
-    sync::{Arc, OnceLock},
-};
+use std::{any::Any, future::Future, marker::PhantomData, pin::Pin, sync::Arc};
 
 use async_trait::async_trait;
 use nebula_core::Dependencies;
@@ -34,44 +28,35 @@ use futures::StreamExt as _;
 use crate::{
     action::Action,
     context::{ActionContext, TriggerContext},
-    control::{ControlAction, ControlInput},
-    error::{ActionError, ValidationReason},
+    control::ControlAction,
+    effect::{
+        ActionEffectContract, EffectPreparationContext, EffectPreparationError,
+        PreparedRemoteEffect, RemoteEffectAction, RemoteEffectFactory,
+    },
+    error::ActionError,
     from_workflow_node::FromWorkflowNode,
     handle::{
-        ActionHandle, ControlHandle, ResourceHandle, StatefulHandle, StatelessHandle, StreamHandle,
-        TriggerHandle,
+        ActionHandle, ControlHandle, ResourceHandle, StatelessHandle, StreamHandle, TriggerHandle,
     },
-    metadata::{ActionKind, ActionMetadata},
+    input::{ActionInput, ActionInputContract, PreparedActionInput},
+    metadata::{ActionKind, ActionMetadata, ActionMetadataAdmissionError, ActionMetadataDraft},
     resource::ResourceAction,
     result::ActionResult,
-    stateful::StatefulAction,
+    stateful::{StatefulAction, StatefulActionAdapter},
     stateless::StatelessAction,
     stream::StreamAction,
     trigger::{TriggerAction, TriggerEvent, TriggerEventOutcome},
-    validation::validate_action_package,
 };
 
-/// Validate action metadata at the start of `instantiate` — fail-closed.
-///
-/// Called once per dispatch by all `Generic*Factory` instantiate implementations.
-/// Because `ActionFactory::metadata()` is cached via `OnceLock`, the
-/// `validate_action_package` cost (a few allocations and comparisons) is paid
-/// every dispatch. The check is cheap relative to the I/O that follows. If a
-/// factory's action has structurally invalid metadata (empty key, duplicate
-/// ports, invalid support-port declarations) the engine never executes it,
-/// preventing silent data-integrity issues.
-///
-/// Callers that need to suppress validation for tests (e.g., deliberately
-/// invalid metadata fixtures) should call the underlying action directly
-/// rather than going through an `ActionFactory`.
-fn check_metadata_or_fatal(meta: &ActionMetadata) -> Result<(), ActionError> {
-    validate_action_package(meta).map_err(|validation_errors| {
-        ActionError::fatal(format!(
-            "action `{}` has invalid metadata; registration should have been rejected: {}",
-            meta.base.key.as_str(),
-            validation_errors,
-        ))
-    })
+fn admit_metadata<A: Action>(
+    draft: ActionMetadataDraft,
+    kind: ActionKind,
+) -> Result<Arc<ActionMetadata>, ActionMetadataAdmissionError> {
+    draft.admit_for::<A>(kind).map(Arc::new)
+}
+
+mod sealed {
+    pub trait Sealed {}
 }
 
 /// Object-safe factory trait — engine registry stores `Arc<dyn ActionFactory>`.
@@ -83,12 +68,11 @@ fn check_metadata_or_fatal(meta: &ActionMetadata) -> Result<(), ActionError> {
 ///
 /// # Errors
 ///
-/// Returns [`ActionError::Fatal`] if slot resolution fails, if action metadata
-/// validation fails (duplicate ports, empty key, etc.), or the factory
+/// Returns [`ActionError::Fatal`] if slot resolution fails or the factory
 /// otherwise cannot construct an executable action for this dispatch.
-pub trait ActionFactory: Send + Sync + 'static {
+pub trait ActionFactory: sealed::Sealed + Send + Sync + 'static {
     /// Static metadata describing the action this factory produces.
-    fn metadata(&self) -> &ActionMetadata;
+    fn metadata(&self) -> &Arc<ActionMetadata>;
 
     /// Declared resource and credential dependencies for the produced action.
     fn dependencies(&self) -> &Dependencies;
@@ -97,7 +81,7 @@ pub trait ActionFactory: Send + Sync + 'static {
     ///
     /// Its descriptor must exactly match metadata before any instantiation.
     /// Durable remote execution never calls the generic `instantiate` path.
-    fn remote_effect_factory(&self) -> Option<&dyn crate::effect::RemoteEffectFactory> {
+    fn remote_effect_factory(&self) -> Option<&dyn RemoteEffectFactory> {
         None
     }
 
@@ -115,24 +99,24 @@ pub trait ActionFactory: Send + Sync + 'static {
 /// Generic factory that produces [`ActionHandle::Stateless`] for any type
 /// implementing [`StatelessAction`] + [`FromWorkflowNode`].
 pub struct GenericStatelessFactory<A> {
-    meta: OnceLock<ActionMetadata>,
+    meta: Arc<ActionMetadata>,
     _phantom: PhantomData<fn() -> A>,
 }
 
-impl<A> Default for GenericStatelessFactory<A> {
-    fn default() -> Self {
-        Self {
-            meta: OnceLock::new(),
-            _phantom: PhantomData,
-        }
-    }
-}
+impl<A> sealed::Sealed for GenericStatelessFactory<A> {}
 
-impl<A> GenericStatelessFactory<A> {
+impl<A: Action> GenericStatelessFactory<A> {
     /// Construct a new stateless factory.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed admission failure when associated schemas or authored
+    /// package declarations are invalid.
+    pub fn new() -> Result<Self, ActionMetadataAdmissionError> {
+        Ok(Self {
+            meta: admit_metadata::<A>(A::metadata(), ActionKind::Stateless)?,
+            _phantom: PhantomData,
+        })
     }
 }
 
@@ -146,12 +130,8 @@ where
         <A as Action>::dependencies()
     }
 
-    fn metadata(&self) -> &ActionMetadata {
-        self.meta.get_or_init(|| {
-            <A as Action>::metadata()
-                .with_kind(ActionKind::Stateless)
-                .with_output_schema(<A::Output as nebula_schema::HasSchema>::schema())
-        })
+    fn metadata(&self) -> &Arc<ActionMetadata> {
+        &self.meta
     }
 
     fn instantiate<'a>(
@@ -160,9 +140,8 @@ where
         ctx: &'a dyn ActionContext,
     ) -> Pin<Box<dyn Future<Output = Result<ActionHandle, ActionError>> + Send + 'a>> {
         Box::pin(async move {
-            check_metadata_or_fatal(self.metadata())?;
             let action = A::from_workflow_node(node, ctx).await?;
-            let meta = self.metadata().clone();
+            let meta = Arc::clone(&self.meta);
             let inner = StatelessHandleImpl::<A>::new(action, meta);
             Ok(ActionHandle::Stateless(Box::new(inner)))
         })
@@ -171,12 +150,20 @@ where
 
 struct StatelessHandleImpl<A> {
     action: A,
-    meta: ActionMetadata,
+    meta: Arc<ActionMetadata>,
+    input_contract: ActionInputContract,
 }
 
+impl<A> crate::handle::sealed::Stateless for StatelessHandleImpl<A> {}
+
 impl<A> StatelessHandleImpl<A> {
-    fn new(action: A, meta: ActionMetadata) -> Self {
-        Self { action, meta }
+    fn new(action: A, meta: Arc<ActionMetadata>) -> Self {
+        let input_contract = ActionInputContract::new(meta.base().schema());
+        Self {
+            action,
+            meta,
+            input_contract,
+        }
     }
 }
 
@@ -187,22 +174,20 @@ where
     <A as Action>::Input: DeserializeOwned + Send + Sync,
     <A as Action>::Output: Serialize + Send + Sync,
 {
-    fn metadata(&self) -> &ActionMetadata {
+    fn metadata(&self) -> &Arc<ActionMetadata> {
         &self.meta
+    }
+
+    fn prepare_input(&self, input: ActionInput) -> Result<PreparedActionInput, ActionError> {
+        self.input_contract.prepare::<A::Input>(input)
     }
 
     async fn dispatch(
         &self,
-        input: Value,
+        input: PreparedActionInput,
         ctx: &dyn ActionContext,
     ) -> Result<ActionResult<Value>, ActionError> {
-        let typed_input: <A as Action>::Input = serde_json::from_value(input).map_err(|e| {
-            ActionError::validation(
-                "input",
-                ValidationReason::MalformedJson,
-                Some(e.to_string()),
-            )
-        })?;
+        let typed_input = input.into_typed::<A::Input>(&self.input_contract)?;
 
         let result = self.action.execute(typed_input, ctx).await?;
 
@@ -216,7 +201,7 @@ where
 // ── InstanceFactory (instance-backed stateless factory) ─────────────────────
 
 /// Stateless [`ActionFactory`] backed by a pre-built action **instance** plus
-/// caller-supplied [`ActionMetadata`], instead of building the action from the
+/// caller-supplied [`ActionMetadataDraft`], instead of building the action from the
 /// workflow node like [`GenericStatelessFactory`].
 ///
 /// This is the `useValue` half of the dependency-injection dichotomy
@@ -244,24 +229,28 @@ pub struct InstanceFactory<A> {
     meta: Arc<ActionMetadata>,
 }
 
+impl<A> sealed::Sealed for InstanceFactory<A> {}
+
 impl<A: Action> InstanceFactory<A> {
-    /// Wrap a pre-built action instance with explicit metadata.
+    /// Wrap a pre-built action instance with explicit metadata intent.
     ///
     /// The metadata's [`kind`](ActionMetadata::kind) is stamped to
     /// [`ActionKind::Stateless`] and `output_schema` is stamped from
     /// `<A::Output as HasSchema>::schema()` — the factory is the single writer
     /// of both fields — while every other field is preserved as the caller
     /// supplied it.
-    #[must_use]
-    pub fn new(metadata: ActionMetadata, action: A) -> Self {
-        Self {
+    ///
+    /// # Errors
+    /// Returns a typed catalog error if metadata or an associated schema is invalid.
+    #[tracing::instrument(name = "action.metadata.admit", skip_all, err)]
+    pub fn new(
+        metadata: ActionMetadataDraft,
+        action: A,
+    ) -> Result<Self, ActionMetadataAdmissionError> {
+        Ok(Self {
             action: Arc::new(action),
-            meta: Arc::new(
-                metadata
-                    .with_kind(ActionKind::Stateless)
-                    .with_output_schema(<A::Output as nebula_schema::HasSchema>::schema()),
-            ),
-        }
+            meta: admit_metadata::<A>(metadata, ActionKind::Stateless)?,
+        })
     }
 }
 
@@ -275,7 +264,7 @@ where
         <A as Action>::dependencies()
     }
 
-    fn metadata(&self) -> &ActionMetadata {
+    fn metadata(&self) -> &Arc<ActionMetadata> {
         &self.meta
     }
 
@@ -287,15 +276,126 @@ where
         let inner = InstanceStatelessHandle {
             action: Arc::clone(&self.action),
             meta: Arc::clone(&self.meta),
+            input_contract: ActionInputContract::new(self.meta.base().schema()),
         };
         Box::pin(async move { Ok(ActionHandle::Stateless(Box::new(inner))) })
+    }
+}
+
+/// Factory for a pre-built typed remote-effect action.
+///
+/// This is the only constructor for a remote execution capability. Admission
+/// derives schemas from `A`, stamps the stateless structural kind, verifies the
+/// exact effect descriptor, and creates a private ingress identity retained by
+/// this factory.
+pub struct RemoteEffectInstanceFactory<A: Action> {
+    action: A,
+    meta: Arc<ActionMetadata>,
+    input_contract: ActionInputContract,
+}
+
+impl<A: Action> sealed::Sealed for RemoteEffectInstanceFactory<A> {}
+
+impl<A> RemoteEffectInstanceFactory<A>
+where
+    A: RemoteEffectAction,
+{
+    /// Admit a typed remote-effect action and bind its ingress capability.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed admission failure for invalid metadata, a missing
+    /// remote contract, or a descriptor mismatch.
+    pub fn new(
+        metadata: ActionMetadataDraft,
+        action: A,
+    ) -> Result<Self, ActionMetadataAdmissionError> {
+        let meta = admit_metadata::<A>(metadata, ActionKind::Stateless)?;
+        let ActionEffectContract::Remote(descriptor) = meta.effect_contract() else {
+            return Err(ActionMetadataAdmissionError::RemoteEffectContractRequired);
+        };
+        if descriptor.as_ref() != action.descriptor() {
+            return Err(ActionMetadataAdmissionError::RemoteEffectDescriptorMismatch);
+        }
+        let input_contract = ActionInputContract::new(meta.base().schema());
+        Ok(Self {
+            action,
+            meta,
+            input_contract,
+        })
+    }
+}
+
+impl<A> ActionFactory for RemoteEffectInstanceFactory<A>
+where
+    A: RemoteEffectAction,
+{
+    fn metadata(&self) -> &Arc<ActionMetadata> {
+        &self.meta
+    }
+
+    fn dependencies(&self) -> &Dependencies {
+        A::dependencies()
+    }
+
+    fn remote_effect_factory(&self) -> Option<&dyn RemoteEffectFactory> {
+        Some(self)
+    }
+
+    fn instantiate<'a>(
+        &'a self,
+        _node: &'a NodeDefinition,
+        _ctx: &'a dyn ActionContext,
+    ) -> Pin<Box<dyn Future<Output = Result<ActionHandle, ActionError>> + Send + 'a>> {
+        Box::pin(async {
+            Err(ActionError::fatal(
+                "remote-effect actions require execution-owner dispatch",
+            ))
+        })
+    }
+}
+
+impl<A: RemoteEffectAction> crate::effect::remote_effect_sealed::Sealed
+    for RemoteEffectInstanceFactory<A>
+{
+}
+
+#[async_trait]
+impl<A> RemoteEffectFactory for RemoteEffectInstanceFactory<A>
+where
+    A: RemoteEffectAction,
+{
+    fn descriptor(&self) -> &crate::RemoteEffectDescriptor {
+        self.action.descriptor()
+    }
+
+    fn metadata(&self) -> &Arc<ActionMetadata> {
+        &self.meta
+    }
+
+    fn prepare_input(&self, input: ActionInput) -> Result<PreparedActionInput, ActionError> {
+        self.input_contract.prepare::<A::Input>(input)
+    }
+
+    async fn prepare(
+        &self,
+        input: PreparedActionInput,
+        context: &EffectPreparationContext,
+    ) -> Result<PreparedRemoteEffect, EffectPreparationError> {
+        let input = input
+            .into_typed::<A::Input>(&self.input_contract)
+            .map_err(|_| EffectPreparationError::InvalidRequest)?;
+        self.action.prepare(input, context).await
     }
 }
 
 struct InstanceStatelessHandle<A> {
     action: Arc<A>,
     meta: Arc<ActionMetadata>,
+    input_contract: ActionInputContract,
 }
+
+impl<A> crate::handle::sealed::Stateless for InstanceStatelessHandle<A> {}
 
 #[async_trait]
 impl<A> StatelessHandle for InstanceStatelessHandle<A>
@@ -304,22 +404,20 @@ where
     <A as Action>::Input: DeserializeOwned + Send + Sync,
     <A as Action>::Output: Serialize + Send + Sync,
 {
-    fn metadata(&self) -> &ActionMetadata {
+    fn metadata(&self) -> &Arc<ActionMetadata> {
         &self.meta
+    }
+
+    fn prepare_input(&self, input: ActionInput) -> Result<PreparedActionInput, ActionError> {
+        self.input_contract.prepare::<A::Input>(input)
     }
 
     async fn dispatch(
         &self,
-        input: Value,
+        input: PreparedActionInput,
         ctx: &dyn ActionContext,
     ) -> Result<ActionResult<Value>, ActionError> {
-        let typed_input: <A as Action>::Input = serde_json::from_value(input).map_err(|e| {
-            ActionError::validation(
-                "input",
-                ValidationReason::MalformedJson,
-                Some(e.to_string()),
-            )
-        })?;
+        let typed_input = input.into_typed::<A::Input>(&self.input_contract)?;
 
         let result = self.action.execute(typed_input, ctx).await?;
 
@@ -335,24 +433,24 @@ where
 /// Generic factory that produces [`ActionHandle::Stateful`] for any type
 /// implementing [`StatefulAction`] + [`FromWorkflowNode`].
 pub struct GenericStatefulFactory<A> {
-    meta: OnceLock<ActionMetadata>,
+    meta: Arc<ActionMetadata>,
     _phantom: PhantomData<fn() -> A>,
 }
 
-impl<A> Default for GenericStatefulFactory<A> {
-    fn default() -> Self {
-        Self {
-            meta: OnceLock::new(),
-            _phantom: PhantomData,
-        }
-    }
-}
+impl<A> sealed::Sealed for GenericStatefulFactory<A> {}
 
-impl<A> GenericStatefulFactory<A> {
+impl<A: Action> GenericStatefulFactory<A> {
     /// Construct a new stateful factory.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed admission failure when associated schemas or authored
+    /// package declarations are invalid.
+    pub fn new() -> Result<Self, ActionMetadataAdmissionError> {
+        Ok(Self {
+            meta: admit_metadata::<A>(A::metadata(), ActionKind::Stateful)?,
+            _phantom: PhantomData,
+        })
     }
 }
 
@@ -367,12 +465,8 @@ where
         <A as Action>::dependencies()
     }
 
-    fn metadata(&self) -> &ActionMetadata {
-        self.meta.get_or_init(|| {
-            <A as Action>::metadata()
-                .with_kind(ActionKind::Stateful)
-                .with_output_schema(<A::Output as nebula_schema::HasSchema>::schema())
-        })
+    fn metadata(&self) -> &Arc<ActionMetadata> {
+        &self.meta
     }
 
     fn instantiate<'a>(
@@ -381,97 +475,9 @@ where
         ctx: &'a dyn ActionContext,
     ) -> Pin<Box<dyn Future<Output = Result<ActionHandle, ActionError>> + Send + 'a>> {
         Box::pin(async move {
-            check_metadata_or_fatal(self.metadata())?;
             let action = A::from_workflow_node(node, ctx).await?;
-            let meta = self.metadata().clone();
-            let inner = StatefulHandleImpl::<A>::new(action, meta);
+            let inner = StatefulActionAdapter::with_metadata(action, Arc::clone(&self.meta));
             Ok(ActionHandle::Stateful(Box::new(inner)))
-        })
-    }
-}
-
-struct StatefulHandleImpl<A> {
-    action: A,
-    meta: ActionMetadata,
-}
-
-impl<A> StatefulHandleImpl<A> {
-    fn new(action: A, meta: ActionMetadata) -> Self {
-        Self { action, meta }
-    }
-}
-
-#[async_trait]
-impl<A> StatefulHandle for StatefulHandleImpl<A>
-where
-    A: StatefulAction,
-    <A as Action>::Input: DeserializeOwned + Send + Sync,
-    <A as Action>::Output: Serialize + Send + Sync,
-    A::State: Serialize + DeserializeOwned + Clone + Send + Sync,
-{
-    fn metadata(&self) -> &ActionMetadata {
-        &self.meta
-    }
-
-    fn init_state(&self) -> Result<Value, ActionError> {
-        serde_json::to_value(self.action.init_state())
-            .map_err(|e| ActionError::fatal(format!("init_state serialization failed: {e}")))
-    }
-
-    fn migrate_state(&self, old: Value) -> Option<Value> {
-        self.action
-            .migrate_state(old)
-            .and_then(|state| serde_json::to_value(state).ok())
-    }
-
-    async fn dispatch(
-        &self,
-        input: &Value,
-        state: &mut Value,
-        ctx: &dyn ActionContext,
-    ) -> Result<ActionResult<Value>, ActionError> {
-        let typed_input: <A as Action>::Input =
-            serde_json::from_value(input.clone()).map_err(|e| {
-                ActionError::validation(
-                    "input",
-                    ValidationReason::MalformedJson,
-                    Some(e.to_string()),
-                )
-            })?;
-
-        let mut typed_state: A::State = match serde_json::from_value::<A::State>(state.clone()) {
-            Ok(s) => s,
-            Err(e) => self.action.migrate_state(state.clone()).ok_or_else(|| {
-                ActionError::validation(
-                    "state",
-                    ValidationReason::StateDeserialization,
-                    Some(e.to_string()),
-                )
-            })?,
-        };
-
-        let action_result = self
-            .action
-            .execute(typed_input, &mut typed_state, ctx)
-            .await;
-
-        match (serde_json::to_value(&typed_state), &action_result) {
-            (Ok(new_state), _) => *state = new_state,
-            (Err(ser_err), Ok(_)) => {
-                return Err(ActionError::fatal(format!(
-                    "state serialization failed: {ser_err}"
-                )));
-            },
-            (Err(_), Err(_)) => {
-                // On error path, propagate original error; checkpoint lost.
-            },
-        }
-
-        let result = action_result?;
-
-        result.try_map_output(|output| {
-            serde_json::to_value(output)
-                .map_err(|e| ActionError::fatal(format!("output serialization failed: {e}")))
         })
     }
 }
@@ -481,24 +487,24 @@ where
 /// Generic factory that produces [`ActionHandle::Trigger`] for any type
 /// implementing [`TriggerAction`] + [`FromWorkflowNode`].
 pub struct GenericTriggerFactory<A> {
-    meta: OnceLock<ActionMetadata>,
+    meta: Arc<ActionMetadata>,
     _phantom: PhantomData<fn() -> A>,
 }
 
-impl<A> Default for GenericTriggerFactory<A> {
-    fn default() -> Self {
-        Self {
-            meta: OnceLock::new(),
-            _phantom: PhantomData,
-        }
-    }
-}
+impl<A> sealed::Sealed for GenericTriggerFactory<A> {}
 
-impl<A> GenericTriggerFactory<A> {
+impl<A: Action> GenericTriggerFactory<A> {
     /// Construct a new trigger factory.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed admission failure when associated schemas or authored
+    /// package declarations are invalid.
+    pub fn new() -> Result<Self, ActionMetadataAdmissionError> {
+        Ok(Self {
+            meta: admit_metadata::<A>(A::metadata(), ActionKind::Trigger)?,
+            _phantom: PhantomData,
+        })
     }
 }
 
@@ -511,12 +517,8 @@ where
         <A as Action>::dependencies()
     }
 
-    fn metadata(&self) -> &ActionMetadata {
-        self.meta.get_or_init(|| {
-            <A as Action>::metadata()
-                .with_kind(ActionKind::Trigger)
-                .with_output_schema(<A::Output as nebula_schema::HasSchema>::schema())
-        })
+    fn metadata(&self) -> &Arc<ActionMetadata> {
+        &self.meta
     }
 
     fn instantiate<'a>(
@@ -525,10 +527,8 @@ where
         ctx: &'a dyn ActionContext,
     ) -> Pin<Box<dyn Future<Output = Result<ActionHandle, ActionError>> + Send + 'a>> {
         Box::pin(async move {
-            check_metadata_or_fatal(self.metadata())?;
             let action = A::from_workflow_node(node, ctx).await?;
-            let meta = self.metadata().clone();
-            let inner = TriggerHandleImpl::<A>::new(action, meta);
+            let inner = TriggerHandleImpl::<A>::new(action, Arc::clone(&self.meta));
             Ok(ActionHandle::Trigger(Box::new(inner)))
         })
     }
@@ -536,11 +536,13 @@ where
 
 struct TriggerHandleImpl<A> {
     action: A,
-    meta: ActionMetadata,
+    meta: Arc<ActionMetadata>,
 }
 
+impl<A> crate::handle::sealed::Trigger for TriggerHandleImpl<A> {}
+
 impl<A> TriggerHandleImpl<A> {
-    fn new(action: A, meta: ActionMetadata) -> Self {
+    fn new(action: A, meta: Arc<ActionMetadata>) -> Self {
         Self { action, meta }
     }
 }
@@ -551,7 +553,7 @@ where
     A: TriggerAction + Send + Sync + 'static,
     <A as TriggerAction>::Error: Into<ActionError>,
 {
-    fn metadata(&self) -> &ActionMetadata {
+    fn metadata(&self) -> &Arc<ActionMetadata> {
         &self.meta
     }
 
@@ -594,24 +596,24 @@ where
 /// Generic factory that produces [`ActionHandle::Resource`] for any type
 /// implementing [`ResourceAction`] + [`FromWorkflowNode`].
 pub struct GenericResourceFactory<A> {
-    meta: OnceLock<ActionMetadata>,
+    meta: Arc<ActionMetadata>,
     _phantom: PhantomData<fn() -> A>,
 }
 
-impl<A> Default for GenericResourceFactory<A> {
-    fn default() -> Self {
-        Self {
-            meta: OnceLock::new(),
-            _phantom: PhantomData,
-        }
-    }
-}
+impl<A> sealed::Sealed for GenericResourceFactory<A> {}
 
-impl<A> GenericResourceFactory<A> {
+impl<A: Action> GenericResourceFactory<A> {
     /// Construct a new resource factory.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed admission failure when associated schemas or authored
+    /// package declarations are invalid.
+    pub fn new() -> Result<Self, ActionMetadataAdmissionError> {
+        Ok(Self {
+            meta: admit_metadata::<A>(A::metadata(), ActionKind::Resource)?,
+            _phantom: PhantomData,
+        })
     }
 }
 
@@ -623,12 +625,8 @@ where
         <A as Action>::dependencies()
     }
 
-    fn metadata(&self) -> &ActionMetadata {
-        self.meta.get_or_init(|| {
-            <A as Action>::metadata()
-                .with_kind(ActionKind::Resource)
-                .with_output_schema(<A::Output as nebula_schema::HasSchema>::schema())
-        })
+    fn metadata(&self) -> &Arc<ActionMetadata> {
+        &self.meta
     }
 
     fn instantiate<'a>(
@@ -637,10 +635,8 @@ where
         ctx: &'a dyn ActionContext,
     ) -> Pin<Box<dyn Future<Output = Result<ActionHandle, ActionError>> + Send + 'a>> {
         Box::pin(async move {
-            check_metadata_or_fatal(self.metadata())?;
             let action = A::from_workflow_node(node, ctx).await?;
-            let meta = self.metadata().clone();
-            let inner = ResourceHandleImpl::<A>::new(action, meta);
+            let inner = ResourceHandleImpl::<A>::new(action, Arc::clone(&self.meta));
             Ok(ActionHandle::Resource(Box::new(inner)))
         })
     }
@@ -648,11 +644,13 @@ where
 
 struct ResourceHandleImpl<A> {
     action: A,
-    meta: ActionMetadata,
+    meta: Arc<ActionMetadata>,
 }
 
+impl<A> crate::handle::sealed::Resource for ResourceHandleImpl<A> {}
+
 impl<A> ResourceHandleImpl<A> {
-    fn new(action: A, meta: ActionMetadata) -> Self {
+    fn new(action: A, meta: Arc<ActionMetadata>) -> Self {
         Self { action, meta }
     }
 }
@@ -662,7 +660,7 @@ impl<A> ResourceHandle for ResourceHandleImpl<A>
 where
     A: ResourceAction + Send + Sync + 'static,
 {
-    fn metadata(&self) -> &ActionMetadata {
+    fn metadata(&self) -> &Arc<ActionMetadata> {
         &self.meta
     }
 
@@ -696,24 +694,24 @@ where
 /// Generic factory that produces [`ActionHandle::Control`] for any type
 /// implementing [`ControlAction`] + [`FromWorkflowNode`].
 pub struct GenericControlFactory<A> {
-    meta: OnceLock<ActionMetadata>,
+    meta: Arc<ActionMetadata>,
     _phantom: PhantomData<fn() -> A>,
 }
 
-impl<A> Default for GenericControlFactory<A> {
-    fn default() -> Self {
-        Self {
-            meta: OnceLock::new(),
-            _phantom: PhantomData,
-        }
-    }
-}
+impl<A> sealed::Sealed for GenericControlFactory<A> {}
 
-impl<A> GenericControlFactory<A> {
+impl<A: Action> GenericControlFactory<A> {
     /// Construct a new control factory.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed admission failure when associated schemas or authored
+    /// package declarations are invalid.
+    pub fn new() -> Result<Self, ActionMetadataAdmissionError> {
+        Ok(Self {
+            meta: admit_metadata::<A>(A::metadata(), ActionKind::Control)?,
+            _phantom: PhantomData,
+        })
     }
 }
 
@@ -725,12 +723,8 @@ where
         <A as Action>::dependencies()
     }
 
-    fn metadata(&self) -> &ActionMetadata {
-        self.meta.get_or_init(|| {
-            <A as Action>::metadata()
-                .with_kind(ActionKind::Control)
-                .with_output_schema(<A::Output as nebula_schema::HasSchema>::schema())
-        })
+    fn metadata(&self) -> &Arc<ActionMetadata> {
+        &self.meta
     }
 
     fn instantiate<'a>(
@@ -739,10 +733,8 @@ where
         ctx: &'a dyn ActionContext,
     ) -> Pin<Box<dyn Future<Output = Result<ActionHandle, ActionError>> + Send + 'a>> {
         Box::pin(async move {
-            check_metadata_or_fatal(self.metadata())?;
             let action = A::from_workflow_node(node, ctx).await?;
-            let meta = self.metadata().clone();
-            let inner = ControlHandleImpl::<A>::new(action, meta);
+            let inner = ControlHandleImpl::<A>::new(action, Arc::clone(&self.meta));
             Ok(ActionHandle::Control(Box::new(inner)))
         })
     }
@@ -750,12 +742,20 @@ where
 
 struct ControlHandleImpl<A> {
     action: A,
-    meta: ActionMetadata,
+    meta: Arc<ActionMetadata>,
+    input_contract: ActionInputContract,
 }
 
+impl<A> crate::handle::sealed::Control for ControlHandleImpl<A> {}
+
 impl<A> ControlHandleImpl<A> {
-    fn new(action: A, meta: ActionMetadata) -> Self {
-        Self { action, meta }
+    fn new(action: A, meta: Arc<ActionMetadata>) -> Self {
+        let input_contract = ActionInputContract::new(meta.base().schema());
+        Self {
+            action,
+            meta,
+            input_contract,
+        }
     }
 }
 
@@ -764,20 +764,25 @@ impl<A> ControlHandle for ControlHandleImpl<A>
 where
     A: ControlAction + Send + Sync + 'static,
 {
-    fn metadata(&self) -> &ActionMetadata {
+    fn metadata(&self) -> &Arc<ActionMetadata> {
         &self.meta
+    }
+
+    fn prepare_input(&self, input: ActionInput) -> Result<PreparedActionInput, ActionError> {
+        self.input_contract.prepare::<A::Input>(input)
     }
 
     async fn dispatch(
         &self,
-        input: Value,
+        input: PreparedActionInput,
         ctx: &dyn ActionContext,
     ) -> Result<ActionResult<Value>, ActionError> {
-        let outcome = self
-            .action
-            .evaluate(ControlInput::from_value(input), ctx)
-            .await?;
-        Ok(outcome.into())
+        let input = input.into_typed::<A::Input>(&self.input_contract)?;
+        let outcome: ActionResult<A::Output> = self.action.evaluate(input, ctx).await?.into();
+        outcome.try_map_output(|output| {
+            serde_json::to_value(output)
+                .map_err(|_| ActionError::fatal("control output cannot be serialized as declared"))
+        })
     }
 }
 
@@ -791,24 +796,24 @@ where
 /// stream fully in-process and delivers a single folded value — identical to
 /// stateless from the engine's perspective.
 pub struct GenericStreamFactory<A> {
-    meta: OnceLock<ActionMetadata>,
+    meta: Arc<ActionMetadata>,
     _phantom: PhantomData<fn() -> A>,
 }
 
-impl<A> Default for GenericStreamFactory<A> {
-    fn default() -> Self {
-        Self {
-            meta: OnceLock::new(),
-            _phantom: PhantomData,
-        }
-    }
-}
+impl<A> sealed::Sealed for GenericStreamFactory<A> {}
 
-impl<A> GenericStreamFactory<A> {
+impl<A: Action> GenericStreamFactory<A> {
     /// Construct a new stream factory.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed admission failure when associated schemas or authored
+    /// package declarations are invalid.
+    pub fn new() -> Result<Self, ActionMetadataAdmissionError> {
+        Ok(Self {
+            meta: admit_metadata::<A>(A::metadata(), ActionKind::Stream)?,
+            _phantom: PhantomData,
+        })
     }
 }
 
@@ -822,12 +827,8 @@ where
         <A as Action>::dependencies()
     }
 
-    fn metadata(&self) -> &ActionMetadata {
-        self.meta.get_or_init(|| {
-            <A as Action>::metadata()
-                .with_kind(ActionKind::Stream)
-                .with_output_schema(<A::Output as nebula_schema::HasSchema>::schema())
-        })
+    fn metadata(&self) -> &Arc<ActionMetadata> {
+        &self.meta
     }
 
     fn instantiate<'a>(
@@ -836,10 +837,8 @@ where
         ctx: &'a dyn ActionContext,
     ) -> Pin<Box<dyn Future<Output = Result<ActionHandle, ActionError>> + Send + 'a>> {
         Box::pin(async move {
-            check_metadata_or_fatal(self.metadata())?;
             let action = A::from_workflow_node(node, ctx).await?;
-            let meta = self.metadata().clone();
-            let inner = StreamHandleImpl::<A>::new(action, meta);
+            let inner = StreamHandleImpl::<A>::new(action, Arc::clone(&self.meta));
             Ok(ActionHandle::Stream(Box::new(inner)))
         })
     }
@@ -847,12 +846,20 @@ where
 
 struct StreamHandleImpl<A> {
     action: A,
-    meta: ActionMetadata,
+    meta: Arc<ActionMetadata>,
+    input_contract: ActionInputContract,
 }
 
+impl<A> crate::handle::sealed::Stream for StreamHandleImpl<A> {}
+
 impl<A> StreamHandleImpl<A> {
-    fn new(action: A, meta: ActionMetadata) -> Self {
-        Self { action, meta }
+    fn new(action: A, meta: Arc<ActionMetadata>) -> Self {
+        let input_contract = ActionInputContract::new(meta.base().schema());
+        Self {
+            action,
+            meta,
+            input_contract,
+        }
     }
 }
 
@@ -863,30 +870,28 @@ where
     <A as Action>::Input: DeserializeOwned + Send + Sync,
     <A as Action>::Output: Serialize + Send + Sync,
 {
-    fn metadata(&self) -> &ActionMetadata {
+    fn metadata(&self) -> &Arc<ActionMetadata> {
         &self.meta
+    }
+
+    fn prepare_input(&self, input: ActionInput) -> Result<PreparedActionInput, ActionError> {
+        self.input_contract.prepare::<A::Input>(input)
     }
 
     #[tracing::instrument(
         name = "stream_handle.dispatch",
         skip_all,
         fields(
-            action.key = %self.meta.base.key.as_str(),
+            action.key = %self.meta.base().key().as_str(),
             action.kind = "stream",
         )
     )]
     async fn dispatch(
         &self,
-        input: Value,
+        input: PreparedActionInput,
         ctx: &dyn ActionContext,
     ) -> Result<ActionResult<Value>, ActionError> {
-        let typed_input: <A as Action>::Input = serde_json::from_value(input).map_err(|e| {
-            ActionError::validation(
-                "input",
-                ValidationReason::MalformedJson,
-                Some(e.to_string()),
-            )
-        })?;
+        let typed_input = input.into_typed::<A::Input>(&self.input_contract)?;
 
         let chunk_stream = self.action.open_stream(typed_input, ctx);
         tokio::pin!(chunk_stream);
@@ -915,24 +920,24 @@ where
 /// on the stored metadata. The adapter inside the handle drives the turn loop
 /// in the engine, deserializing/serializing turn state on each call to `step`.
 pub struct GenericAgentFactory<A> {
-    meta: OnceLock<ActionMetadata>,
+    meta: Arc<ActionMetadata>,
     _phantom: PhantomData<fn() -> A>,
 }
 
-impl<A> Default for GenericAgentFactory<A> {
-    fn default() -> Self {
-        Self {
-            meta: OnceLock::new(),
-            _phantom: PhantomData,
-        }
-    }
-}
+impl<A> sealed::Sealed for GenericAgentFactory<A> {}
 
-impl<A> GenericAgentFactory<A> {
+impl<A: Action> GenericAgentFactory<A> {
     /// Construct a new agent factory.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed admission failure when associated schemas or authored
+    /// package declarations are invalid.
+    pub fn new() -> Result<Self, ActionMetadataAdmissionError> {
+        Ok(Self {
+            meta: admit_metadata::<A>(A::metadata(), ActionKind::Agent)?,
+            _phantom: PhantomData,
+        })
     }
 }
 
@@ -947,12 +952,8 @@ where
         <A as Action>::dependencies()
     }
 
-    fn metadata(&self) -> &ActionMetadata {
-        self.meta.get_or_init(|| {
-            <A as Action>::metadata()
-                .with_kind(ActionKind::Agent)
-                .with_output_schema(<A::Output as nebula_schema::HasSchema>::schema())
-        })
+    fn metadata(&self) -> &Arc<ActionMetadata> {
+        &self.meta
     }
 
     fn instantiate<'a>(
@@ -961,10 +962,11 @@ where
         ctx: &'a dyn ActionContext,
     ) -> Pin<Box<dyn Future<Output = Result<ActionHandle, ActionError>> + Send + 'a>> {
         Box::pin(async move {
-            check_metadata_or_fatal(self.metadata())?;
             let action = A::from_workflow_node(node, ctx).await?;
-            let meta = self.metadata().clone();
-            let adapter = crate::agent::AgentActionAdapter::<A>::new(action, meta);
+            let adapter = crate::agent::AgentActionAdapter::<A>::with_metadata(
+                action,
+                Arc::clone(&self.meta),
+            );
             Ok(ActionHandle::Agent(Box::new(adapter)))
         })
     }
@@ -974,22 +976,36 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::{any::TypeId, sync::OnceLock};
+    use std::{
+        any::TypeId,
+        assert_matches,
+        sync::{
+            Arc, OnceLock,
+            atomic::{AtomicUsize, Ordering},
+        },
+        time::Duration,
+    };
 
-    use nebula_core::{Dependencies, ResourceRequirement, action_key, node_key, resource_key};
+    use nebula_core::{
+        Dependencies, ExecutionId, ResourceRequirement, WorkflowId, action_key, node_key,
+        resource_key,
+    };
     use nebula_workflow::NodeDefinition;
     use serde_json::Value;
 
     use super::*;
     use crate::{
-        StatelessAction, action::Action, metadata::ActionMetadata, result::ActionResult,
+        StatelessAction,
+        action::Action,
+        effect::{RemoteDestinationGuarantee, RemoteEffectDescriptor, RemoteEffectPolicy},
+        result::ActionResult,
         testing::TestContextBuilder,
     };
 
     // ── InvalidMetadataAction ────────────────────────────────────────────────
     //
     // A stateless action whose `metadata()` returns deliberately invalid
-    // data (empty name + empty description). The factory must refuse to
+    // action-specific data (empty description). The factory must refuse to
     // instantiate it with `ActionError::Fatal` — fail-closed per FIX 3.
 
     struct InvalidMetadataAction;
@@ -998,10 +1014,14 @@ mod tests {
         type Input = Value;
         type Output = Value;
 
-        fn metadata() -> ActionMetadata {
-            // Empty name and description trigger `MissingMetadataField`
-            // validation failures in `validate_action_package`.
-            ActionMetadata::new(action_key!("test.invalid_meta"), "", "")
+        fn metadata() -> ActionMetadataDraft {
+            // Blank names are rejected at construction; an empty description
+            // still exercises the action-package admission guard.
+            ActionMetadataDraft::new(
+                action_key!("test.invalid_meta"),
+                crate::metadata_name!("Invalid metadata"),
+                "",
+            )
         }
 
         fn dependencies() -> &'static Dependencies {
@@ -1031,56 +1051,31 @@ mod tests {
         }
     }
 
-    fn stub_node() -> NodeDefinition {
-        NodeDefinition::new(
-            node_key!("test_node"),
-            "Test Node",
-            "nebula.test",
-            "test.invalid_meta",
-        )
-        .expect("stub node key is valid")
-    }
-
-    /// `instantiate` on a factory whose action has invalid metadata (empty
-    /// name and description) must return `ActionError::Fatal`, not silently
-    /// dispatch with corrupted catalog data (FIX 3 — fail-closed).
-    #[tokio::test]
-    async fn instantiate_fails_fatal_on_invalid_metadata() {
-        let factory = GenericStatelessFactory::<InvalidMetadataAction>::new();
-        let node = stub_node();
-        let ctx = TestContextBuilder::new().build();
-
-        let result = factory.instantiate(&node, &ctx).await;
-
-        assert!(
-            matches!(result, Err(ActionError::Fatal { .. })),
-            "expected Fatal but got {result:?}",
-        );
-    }
-
-    /// The error message must name the invalid action key so operators know
-    /// which registration is broken without digging through logs.
-    #[tokio::test]
-    async fn instantiate_fatal_message_names_action_key() {
-        let factory = GenericStatelessFactory::<InvalidMetadataAction>::new();
-        let node = stub_node();
-        let ctx = TestContextBuilder::new().build();
-
-        let Err(ActionError::Fatal { error, .. }) = factory.instantiate(&node, &ctx).await else {
-            panic!("expected Fatal error");
+    #[test]
+    fn construction_rejects_invalid_metadata() {
+        let Err(error) = GenericStatelessFactory::<InvalidMetadataAction>::new() else {
+            panic!("invalid metadata cannot produce a factory");
         };
-
-        let error_message = error.to_string();
-        assert!(
-            error_message.contains("test.invalid_meta"),
-            "error message should name the action key; got: {error_message}",
+        let ActionMetadataAdmissionError::Package(errors) = error else {
+            panic!("empty description must be a package admission error");
+        };
+        assert_matches!(
+            errors.errors(),
+            [crate::ActionPackageValidationError::EmptyMetadataField {
+                field: "description"
+            }]
         );
+    }
+
+    #[test]
+    fn invalid_metadata_never_reaches_instantiation() {
+        assert!(GenericStatelessFactory::<InvalidMetadataAction>::new().is_err());
     }
 
     // ── ValidMetadataAction ──────────────────────────────────────────────────
     //
     // A production-shaped stateless action with a non-empty name, description,
-    // and the default input+output ports from `ActionMetadata::new`. Proves
+    // and the default input+output ports from `crate::ActionMetadataDraft::new`. Proves
     // that `check_metadata_or_fatal` does NOT reject valid metadata — the
     // positive counterpart to the two fatal-path tests above.
 
@@ -1091,10 +1086,10 @@ mod tests {
         type Input = Value;
         type Output = Value;
 
-        fn metadata() -> ActionMetadata {
-            ActionMetadata::new(
+        fn metadata() -> ActionMetadataDraft {
+            ActionMetadataDraft::new(
                 action_key!("test.valid_meta"),
-                "Valid Metadata Action",
+                crate::metadata_name!("Valid Metadata Action"),
                 "A production-shaped action fixture used to prove the metadata gate passes valid registrations.",
             )
         }
@@ -1134,7 +1129,8 @@ mod tests {
 
     #[test]
     fn factory_exposes_exact_action_dependencies() {
-        let factory = GenericStatelessFactory::<ValidMetadataAction>::new();
+        let factory = GenericStatelessFactory::<ValidMetadataAction>::new()
+            .expect("valid test catalog definition");
         let projected_dependencies = factory.dependencies();
         let [resource_requirement] = projected_dependencies.resources() else {
             panic!("factory must expose the action's one declared resource dependency");
@@ -1163,7 +1159,8 @@ mod tests {
     /// registrations (positive counterpart to the two fatal-path tests).
     #[tokio::test]
     async fn instantiate_succeeds_with_valid_metadata() {
-        let factory = GenericStatelessFactory::<ValidMetadataAction>::new();
+        let factory = GenericStatelessFactory::<ValidMetadataAction>::new()
+            .expect("valid test catalog definition");
         let node = NodeDefinition::new(
             node_key!("test_node"),
             "Test Node",
@@ -1183,5 +1180,189 @@ mod tests {
             matches!(result.unwrap(), ActionHandle::Stateless(_)),
             "valid metadata action should produce a Stateless handle",
         );
+    }
+
+    #[tokio::test]
+    async fn instantiated_handle_shares_factory_metadata_allocation() {
+        let factory = GenericStatelessFactory::<ValidMetadataAction>::new()
+            .expect("valid test catalog definition");
+        let node = NodeDefinition::new(
+            node_key!("test_node"),
+            "Test Node",
+            "nebula.test",
+            "test.valid_meta",
+        )
+        .expect("stub node key is valid");
+        let ctx = TestContextBuilder::new().build();
+        let factory_metadata = factory.metadata();
+
+        let handle = factory
+            .instantiate(&node, &ctx)
+            .await
+            .expect("handle construction must succeed");
+
+        assert!(Arc::ptr_eq(factory_metadata, handle.metadata()));
+    }
+
+    struct RemoteValueProbe {
+        descriptor: RemoteEffectDescriptor,
+        preparations: Arc<AtomicUsize>,
+    }
+
+    impl Action for RemoteValueProbe {
+        type Input = Value;
+        type Output = Value;
+
+        fn metadata() -> ActionMetadataDraft {
+            unreachable!("instance-backed remote admission receives an explicit draft")
+        }
+
+        fn dependencies() -> &'static Dependencies {
+            static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
+            DEPENDENCIES.get_or_init(Dependencies::new)
+        }
+    }
+
+    impl RemoteEffectAction for RemoteValueProbe {
+        fn descriptor(&self) -> &RemoteEffectDescriptor {
+            &self.descriptor
+        }
+
+        async fn prepare(
+            &self,
+            _input: Value,
+            _context: &EffectPreparationContext,
+        ) -> Result<PreparedRemoteEffect, EffectPreparationError> {
+            self.preparations.fetch_add(1, Ordering::SeqCst);
+            Err(EffectPreparationError::Unavailable)
+        }
+    }
+
+    struct RemoteBoolProbe {
+        descriptor: RemoteEffectDescriptor,
+        preparations: Arc<AtomicUsize>,
+    }
+
+    impl Action for RemoteBoolProbe {
+        type Input = bool;
+        type Output = Value;
+
+        fn metadata() -> ActionMetadataDraft {
+            unreachable!("instance-backed remote admission receives an explicit draft")
+        }
+
+        fn dependencies() -> &'static Dependencies {
+            RemoteValueProbe::dependencies()
+        }
+    }
+
+    impl RemoteEffectAction for RemoteBoolProbe {
+        fn descriptor(&self) -> &RemoteEffectDescriptor {
+            &self.descriptor
+        }
+
+        async fn prepare(
+            &self,
+            _input: bool,
+            _context: &EffectPreparationContext,
+        ) -> Result<PreparedRemoteEffect, EffectPreparationError> {
+            self.preparations.fetch_add(1, Ordering::SeqCst);
+            Err(EffectPreparationError::Unavailable)
+        }
+    }
+
+    fn remote_descriptor() -> RemoteEffectDescriptor {
+        let policy = RemoteEffectPolicy::builder(RemoteDestinationGuarantee::Opaque)
+            .maximum_invocations(1)
+            .maximum_queries(0)
+            .recovery_window(Duration::from_mins(1))
+            .build()
+            .expect("fixture policy is valid");
+        RemoteEffectDescriptor::new("test.remote", 1, policy).expect("fixture descriptor is valid")
+    }
+
+    fn remote_draft(key: &'static str, descriptor: &RemoteEffectDescriptor) -> ActionMetadataDraft {
+        ActionMetadataDraft::new(
+            nebula_core::ActionKey::new(key).expect("fixture key is valid"),
+            crate::metadata_name!("Remote probe"),
+            "Remote input contract probe",
+        )
+        .with_effect_contract(ActionEffectContract::Remote(Box::new(descriptor.clone())))
+    }
+
+    fn effect_context() -> EffectPreparationContext {
+        EffectPreparationContext::new(
+            ExecutionId::new(),
+            WorkflowId::new(),
+            node_key!("remote"),
+            nebula_core::OrgId::new(),
+            nebula_core::WorkspaceId::new(),
+        )
+    }
+
+    #[tokio::test]
+    async fn equal_schema_remote_contract_rejects_foreign_factory_token() {
+        let descriptor = remote_descriptor();
+        let right_preparations = Arc::new(AtomicUsize::new(0));
+        let left = RemoteEffectInstanceFactory::new(
+            remote_draft("test.remote.left", &descriptor),
+            RemoteValueProbe {
+                descriptor: descriptor.clone(),
+                preparations: Arc::new(AtomicUsize::new(0)),
+            },
+        )
+        .expect("left factory admission succeeds");
+        let right = RemoteEffectInstanceFactory::new(
+            remote_draft("test.remote.right", &descriptor),
+            RemoteValueProbe {
+                descriptor,
+                preparations: Arc::clone(&right_preparations),
+            },
+        )
+        .expect("right factory admission succeeds");
+        let prepared = RemoteEffectFactory::prepare_input(
+            &left,
+            ActionInput::Raw(serde_json::json!({"value": 1})),
+        )
+        .expect("left contract accepts its input");
+
+        let error = RemoteEffectFactory::prepare(&right, prepared, &effect_context())
+            .await
+            .expect_err("equal schemas do not confer factory identity");
+
+        assert_eq!(error, EffectPreparationError::InvalidRequest);
+        assert_eq!(right_preparations.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn different_schema_remote_contract_rejects_foreign_factory_token() {
+        let descriptor = remote_descriptor();
+        let right_preparations = Arc::new(AtomicUsize::new(0));
+        let left = RemoteEffectInstanceFactory::new(
+            remote_draft("test.remote.value", &descriptor),
+            RemoteValueProbe {
+                descriptor: descriptor.clone(),
+                preparations: Arc::new(AtomicUsize::new(0)),
+            },
+        )
+        .expect("value factory admission succeeds");
+        let right = RemoteEffectInstanceFactory::new(
+            remote_draft("test.remote.bool", &descriptor),
+            RemoteBoolProbe {
+                descriptor,
+                preparations: Arc::clone(&right_preparations),
+            },
+        )
+        .expect("bool factory admission succeeds");
+        let prepared =
+            RemoteEffectFactory::prepare_input(&left, ActionInput::Raw(serde_json::json!(true)))
+                .expect("value factory accepts boolean JSON as a JSON value");
+
+        let error = RemoteEffectFactory::prepare(&right, prepared, &effect_context())
+            .await
+            .expect_err("schema mismatch must fail before remote preparation");
+
+        assert_eq!(error, EffectPreparationError::InvalidRequest);
+        assert_eq!(right_preparations.load(Ordering::SeqCst), 0);
     }
 }

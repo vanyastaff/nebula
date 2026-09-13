@@ -1,181 +1,184 @@
-//! Phase 9 / Task 9.3 — Credential properties validation pipeline.
-//!
-//! Exercises the validation half of the action pipeline against the `<Name>Properties` companion
-//! struct that Phase 5 attached to every `Credential` impl. The test pins:
-//!
-//!   1. The credential's metadata schema (the converged consumer path) equals
-//!      `nebula_schema::schema_of::<C::Properties>()` (schema-of properties — there is no
-//!      per-trait schema method).
-//!   2. JSON properties → `FieldValues::from_json` → `schema.validate` →
-//!      `serde_json::from_value::<C::Properties>`. The two passes (schema and serde) are
-//!      independent.
-//!   3. **Credential properties never run through `ValidValues::resolve`.** The engine deliberately
-//!      omits the expression-resolution step from the credential pipeline (credential secrecy: secrets
-//!      must not depend on runtime workflow state). This test asserts the policy by validating the
-//!      schema directly without `.resolve(...)` and by shape-checking the post-validate value tree
-//!      (no template gets replaced).
-//!
-//! See `crates/credential/README.md` "Expressions in credential properties" for the architectural
-//! rationale.
+//! Credential properties complete validation without executing authored programs.
+//! Serde consumes the normalized, explicitly exposed resolved data, not the
+//! original request or its redacted diagnostic projection.
 
-use nebula_credential::{Credential, credentials::ApiKeyCredential};
-use nebula_schema::{FieldValue, FieldValues, HasSchema};
+use nebula_credential::{Credential, CredentialRegistry, credentials::ApiKeyCredential};
+use nebula_schema::{
+    AuthoredValue, HasSchema, ResolvedValues, SecretValue, ValidationReport, field_key, schema_of,
+};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value, json};
 
-// ── Pipeline happy path on built-in ApiKeyCredential ───────────────────────
+fn prepare<P: HasSchema>(wire: Value) -> Result<ResolvedValues, ValidationReport> {
+    let schema = schema_of::<P>()?;
+    schema
+        .validate(schema.values_from_wire(wire)?)?
+        .resolve_data()
+}
+
+fn assert_issue(report: &ValidationReport, code: &str, path: &str) {
+    assert!(
+        report
+            .errors()
+            .any(|error| error.code() == code && error.path().as_str() == path),
+        "missing {code} at {path}: {report:?}",
+    );
+}
 
 #[test]
 fn metadata_schema_is_schema_of_properties() {
-    // schema-of properties seam: the converged path. `Credential::properties_schema()`
-    // is removed; the metadata schema is sourced from
-    // `nebula_schema::schema_of::<C::Properties>()` (the `Properties: HasSchema`
-    // associated-type bound is the single source of truth).
-    let from_metadata = ApiKeyCredential::metadata().base.schema;
-    let from_schema_of = nebula_schema::schema_of::<<ApiKeyCredential as Credential>::Properties>();
+    let mut registry = CredentialRegistry::new();
+    registry
+        .register(ApiKeyCredential, "properties-pipeline-test")
+        .unwrap();
+    let metadata = registry.metadata(ApiKeyCredential::KEY).unwrap();
+    let schema = schema_of::<<ApiKeyCredential as Credential>::Properties>().unwrap();
+    assert_eq!(metadata.schema(), &schema);
     assert_eq!(
-        from_metadata, from_schema_of,
-        "credential metadata schema must equal schema_of::<Properties>()"
-    );
-    // schema_of is exactly the trait-qualified form.
-    assert_eq!(
-        from_schema_of,
-        <<ApiKeyCredential as Credential>::Properties as HasSchema>::schema()
+        schema,
+        <<ApiKeyCredential as Credential>::Properties as HasSchema>::schema().unwrap()
     );
 }
 
 #[test]
 fn properties_pipeline_accepts_well_formed_json() {
-    let schema = nebula_schema::schema_of::<<ApiKeyCredential as Credential>::Properties>();
-    let raw = json!({
-        "server": "https://api.example.com",
-        "api_key": "sk-test-12345",
-    });
-
-    // 1. Ingest into FieldValues.
-    let values = FieldValues::from_json(raw.clone()).expect("ingest");
-
-    // 2. Schema validation (no `.resolve(...)` step — see expression policy below).
-    schema.validate(&values).expect("validate must pass");
-
-    // 3. Typed deserialize into the companion struct.
+    let resolved = prepare::<<ApiKeyCredential as Credential>::Properties>(json!({
+        "server": "https://api.example.com", "api_key": "sk-test-12345",
+    }))
+    .unwrap();
+    assert_eq!(
+        resolved.clone().into_json(),
+        json!({
+            "server": "https://api.example.com", "api_key": "<redacted>"
+        })
+    );
+    let SecretValue::String(secret) = resolved.get_secret(&field_key!("api_key")).unwrap() else {
+        panic!("API key must already be protected before provider resolution");
+    };
+    assert_eq!(secret.expose(), "sk-test-12345");
     let typed: <ApiKeyCredential as Credential>::Properties =
-        serde_json::from_value(raw).expect("typed deserialize");
+        resolved.into_typed_exposing_secrets().unwrap();
     assert_eq!(typed.server.as_deref(), Some("https://api.example.com"));
-    assert_eq!(typed.api_key, "sk-test-12345");
+    assert_eq!(typed.api_key.expose_secret(), "sk-test-12345");
 }
 
 #[test]
 fn properties_pipeline_rejects_missing_required_api_key() {
-    let schema = nebula_schema::schema_of::<<ApiKeyCredential as Credential>::Properties>();
-    let raw = json!({
-        "server": "https://api.example.com",
-        // `api_key` omitted — it carries `#[validate(required)]`.
-    });
-    let values = FieldValues::from_json(raw).expect("ingest");
-    let report = schema.validate(&values).expect_err("must reject");
-    assert!(
-        report
-            .errors()
-            .any(|e| e.code.as_ref() == "required" && e.path.to_string() == "api_key"),
-        "expected `required` on api_key, got: {:?}",
-        report.errors().collect::<Vec<_>>()
-    );
-}
-
-// ── Expression policy (credential secrecy) ────────────────────────────────────────
-
-/// Policy: the credential pipeline does NOT run `valid.resolve(...)`.
-///
-/// Even though every individual `Field` defaults to
-/// `ExpressionMode::Allowed` at the schema layer, credentials skip the
-/// resolution step entirely. A `{{ ... }}` template in a credential
-/// property survives validation as `FieldValue::Expression` and is then
-/// rejected by `serde::Deserialize` (which cannot deserialize a tagged
-/// expression object into the target type).
-///
-/// Rationale: secrets must not depend on runtime workflow state. A property
-/// value resolved via expression would couple credential storage to
-/// per-execution variables, breaking encapsulation and making secret
-/// rotation reason about workflow context.
-///
-/// Enforcement points (defense in depth):
-///
-/// 1. **Engine pipeline shape** — `nebula-engine` passes credential properties through
-///    `ValidSchema::validate` only, never through `.resolve(...)`. This is the authoritative seam;
-///    documented in `crates/credential/README.md`.
-/// 2. **Serde refusal** — even if a caller sneaks a `{{ ... }}` template past validation,
-///    `serde_json::from_value::<C::Properties>(...)` fails to deserialize the `{"$expr": "..."}`
-///    envelope into the typed `String` / `i64` / etc. property field.
-///
-/// This test asserts (2) by exercising the `from_value` step directly.
-#[test]
-fn expressions_in_properties_fail_serde_deserialize() {
-    // Template inside the secret field. Validation passes (expressions are
-    // syntactically allowed at the schema layer), but the resolved value
-    // tree still contains `FieldValue::Expression` because the credential
-    // pipeline does not call `.resolve(...)`.
-    let raw = json!({
-        "server": "https://api.example.com",
-        "api_key": { "$expr": "{{ $execution.id }}" },
-    });
-
-    // Schema validate — passes because ExpressionMode is Allowed by default.
-    let schema = nebula_schema::schema_of::<<ApiKeyCredential as Credential>::Properties>();
-    let values = FieldValues::from_json(raw.clone()).expect("ingest");
-    let validated = schema.validate(&values).expect("validate must pass");
-
-    // Inspect: the raw value tree retains the expression literal — the
-    // credential pipeline never resolves it.
-    let api_key_value = validated
-        .raw()
-        .get(&nebula_schema::FieldKey::new("api_key").unwrap())
-        .expect("api_key value present");
-    assert!(
-        matches!(api_key_value, FieldValue::Expression(_)),
-        "credential pipeline must leave FieldValue::Expression unresolved; \
-         got: {api_key_value:?}",
-    );
-
-    // serde::Deserialize attempt — fails because `api_key` is `String` but
-    // the JSON tree carries a `{"$expr": "..."}` object.
-    let result = serde_json::from_value::<<ApiKeyCredential as Credential>::Properties>(raw);
-    assert!(
-        result.is_err(),
-        "serde::Deserialize must refuse expression-bearing credential properties; \
-         got Ok variant (Properties does not impl Debug, cannot print)",
-    );
+    let report = prepare::<<ApiKeyCredential as Credential>::Properties>(json!({
+        "server": "https://api.example.com"
+    }))
+    .unwrap_err();
+    assert_issue(&report, "required", "/api_key");
 }
 
 #[test]
-fn expressions_in_optional_property_field_also_fail_serde() {
+fn expressions_in_properties_fail_schema_and_serde() {
     let raw = json!({
-        "server": { "$expr": "{{ $workflow.base_url }}" },
-        "api_key": "sk-real-secret",
+        "server": "https://api.example.com",
+        "api_key": {"$expr": "{{ $execution.id }}"},
     });
-
-    let schema = nebula_schema::schema_of::<<ApiKeyCredential as Credential>::Properties>();
-    let values = FieldValues::from_json(raw.clone()).expect("ingest");
-    schema.validate(&values).expect("validate passes");
-
-    // The optional `server: Option<String>` is also targeted by credential secrecy;
-    // serde refuses the `{"$expr": ...}` envelope as a `String`.
-    let result = serde_json::from_value::<<ApiKeyCredential as Credential>::Properties>(raw);
-    assert!(
-        result.is_err(),
-        "expressions in optional credential properties must also fail serde; \
-         got Ok variant (Properties does not impl Debug)",
-    );
+    let report = prepare::<<ApiKeyCredential as Credential>::Properties>(raw.clone()).unwrap_err();
+    assert_issue(&report, "type_mismatch", "/api_key");
+    assert!(serde_json::from_value::<<ApiKeyCredential as Credential>::Properties>(raw).is_err());
+    assert!(!format!("{report:?} {report}").contains("$execution.id"));
 }
 
-// ── Union (enum) credential properties: the value-layer ingress/egress bridge ──
-//
-// A credential whose `Properties` is a `#[derive(Schema)]` enum (a tagged union)
-// flows through the SAME pipeline the per-type ops `validate` closure now runs:
-// `ValidSchema::values_from_wire` (ingress) → `validate` → `FieldValues::to_typed`
-// (egress / the `$expr` refusal point). These tests drive that exact sequence with
-// serde's own output as the oracle, proving a union `Properties` is accepted by the
-// credential pipeline — the gap the value-layer adapter closes.
+#[test]
+fn expressions_in_optional_property_field_also_fail_schema_and_serde() {
+    let raw = json!({
+        "server": {"$expr": "{{ $workflow.base_url }}"}, "api_key": "sk-real-secret",
+    });
+    let report = prepare::<<ApiKeyCredential as Credential>::Properties>(raw.clone()).unwrap_err();
+    assert_issue(&report, "type_mismatch", "/server");
+    assert!(serde_json::from_value::<<ApiKeyCredential as Credential>::Properties>(raw).is_err());
+    assert!(!format!("{report:?} {report}").contains("sk-real-secret"));
+}
+
+#[test]
+fn template_looking_property_strings_remain_literal_secret_data() {
+    let resolved = prepare::<<ApiKeyCredential as Credential>::Properties>(json!({
+        "api_key": "{{ $execution.id }}",
+    }))
+    .unwrap();
+    let typed: <ApiKeyCredential as Credential>::Properties =
+        resolved.into_typed_exposing_secrets().unwrap();
+    assert_eq!(typed.api_key.expose_secret(), "{{ $execution.id }}");
+}
+
+#[test]
+fn explicit_authored_programs_cannot_complete_the_data_only_pipeline() {
+    let schema = schema_of::<<ApiKeyCredential as Credential>::Properties>().unwrap();
+    let input = AuthoredValue::from_template_json(json!({
+        "server": {"$expr": "{{ $input.url }}"}, "api_key": "private-token",
+    }))
+    .unwrap();
+    let prepared = schema.validate(input).unwrap();
+    assert_eq!(prepared.pending().len(), 1);
+    let error = prepared.resolve_data().unwrap_err();
+    assert_issue(&error, "expression.forbidden", "/server");
+    assert!(!format!("{error:?}").contains("private-token"));
+}
+
+#[derive(Debug, Deserialize, Serialize, PartialEq, nebula_schema::Schema)]
+#[expect(
+    clippy::empty_structs_with_brackets,
+    reason = "braced and unit structs have distinct serde wire shapes"
+)]
+struct EmptyProperties {}
+
+#[derive(Debug, Deserialize, Serialize, PartialEq, nebula_schema::Schema)]
+struct UnitProperties;
+
+fn assert_properties_roundtrip<P>(properties: P)
+where
+    P: HasSchema + Serialize + serde::de::DeserializeOwned + PartialEq + std::fmt::Debug,
+{
+    let wire = serde_json::to_value(&properties).unwrap();
+    let resolved = prepare::<P>(wire.clone()).unwrap();
+    assert_eq!(resolved.to_wire_json(), wire);
+    assert_eq!(resolved.into_typed::<P>().unwrap(), properties);
+}
+
+#[test]
+fn unit_and_empty_record_properties_have_distinct_serde_contracts() {
+    assert_properties_roundtrip(());
+    assert_properties_roundtrip(UnitProperties);
+    assert_properties_roundtrip(EmptyProperties {});
+    for error in [
+        prepare::<()>(json!({})).unwrap_err(),
+        prepare::<UnitProperties>(json!({})).unwrap_err(),
+        prepare::<EmptyProperties>(json!(null)).unwrap_err(),
+    ] {
+        assert_issue(&error, "type_mismatch", "");
+    }
+}
+
+#[test]
+fn scalar_properties_preserve_their_known_types() {
+    assert_properties_roundtrip(true);
+    assert_properties_roundtrip("{{ literal-secret-looking-data }}".to_owned());
+    assert_properties_roundtrip(i8::MIN);
+    assert_properties_roundtrip(i8::MAX);
+    assert_properties_roundtrip(u64::MAX);
+    assert_properties_roundtrip(f64::MIN_POSITIVE);
+    for error in [
+        prepare::<bool>(json!(1)).unwrap_err(),
+        prepare::<String>(json!(true)).unwrap_err(),
+        prepare::<i8>(json!("127")).unwrap_err(),
+    ] {
+        assert_issue(&error, "type_mismatch", "");
+    }
+}
+
+#[test]
+fn scalar_property_bounds_are_enforced_before_rust_decoding() {
+    for wire in [json!(-129), json!(128), json!(u64::MAX)] {
+        assert!(serde_json::from_value::<i8>(wire.clone()).is_err());
+        let report = prepare::<i8>(wire).unwrap_err();
+        assert_eq!(report.errors().count(), 1);
+        assert_eq!(report.errors().next().unwrap().path().as_str(), "");
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, nebula_schema::Schema)]
 struct OAuthProps {
@@ -189,19 +192,13 @@ enum AuthMethod {
     Anonymous,
 }
 
-/// Drive the credential validate pipeline (ingress → validate → typed round-trip)
-/// for a union `Properties` and assert it reconstructs the original value.
 fn assert_union_properties_roundtrip(value: AuthMethod) {
-    let schema = nebula_schema::schema_of::<AuthMethod>();
-    assert_eq!(
-        schema.kind(),
-        nebula_schema::SchemaKind::Union,
-        "fixture must be a union"
-    );
-    let wire = serde_json::to_value(&value).expect("serialize");
-    let values = schema.values_from_wire(wire).expect("union wire ingests");
-    let valid = schema.validate(&values).expect("union validates");
-    let back: AuthMethod = valid.raw().to_typed().expect("union round-trips");
+    let schema = schema_of::<AuthMethod>().unwrap();
+    assert_eq!(schema.kind(), nebula_schema::SchemaKind::Union);
+    let wire = serde_json::to_value(&value).unwrap();
+    let resolved = prepare::<AuthMethod>(wire.clone()).unwrap();
+    assert_eq!(resolved.to_wire_json(), wire);
+    let back: AuthMethod = resolved.into_typed_exposing_secrets().unwrap();
     assert_eq!(back, value, "credential union pipeline must round-trip");
 }
 
@@ -226,29 +223,22 @@ fn union_properties_pipeline_unit_variant() {
 
 #[test]
 fn union_properties_pipeline_rejects_unknown_variant() {
-    let schema = nebula_schema::schema_of::<AuthMethod>();
-    let err = schema
-        .values_from_wire(json!({ "Nope": {} }))
-        .expect_err("a non-variant discriminant must be rejected at ingress");
-    assert_eq!(err.code, "union.unknown_variant");
+    let schema = schema_of::<AuthMethod>().unwrap();
+    let error = schema.values_from_wire(json!({"Nope": {}})).unwrap_err();
+    assert_eq!(error.code(), "union.unknown_variant");
 }
 
-/// Credential secrecy carries to unions: an expression inside a union variant's
-/// payload survives schema validation (`ExpressionMode::Allowed`) but is refused
-/// by the typed round-trip — the same defense-in-depth #2 the record path has,
-/// now closed through `to_typed`.
 #[test]
 fn union_properties_pipeline_refuses_expression_payload() {
-    let schema = nebula_schema::schema_of::<AuthMethod>();
-    let values = schema
-        .values_from_wire(json!({ "ApiKey": { "token": { "$expr": "{{ $secret }}" } } }))
-        .expect("a well-shaped data variant ingests");
-    let valid = schema
-        .validate(&values)
-        .expect("an expression payload survives validation");
-    let result = valid.raw().to_typed::<AuthMethod>();
-    assert!(
-        result.is_err(),
-        "an expression-bearing union payload must be refused by the typed round-trip",
+    let wire = json!({"ApiKey": {"token": {"$expr": "{{ $secret }}"}}});
+    let error = prepare::<AuthMethod>(wire.clone()).unwrap_err();
+    assert_eq!(
+        error
+            .errors()
+            .map(nebula_schema::ValidationError::code)
+            .collect::<Vec<_>>(),
+        ["type_mismatch"]
     );
+    assert!(serde_json::from_value::<AuthMethod>(wire).is_err());
+    assert!(!format!("{error:?} {error}").contains("$secret"));
 }

@@ -42,14 +42,13 @@ use std::{
 use nebula_action::{
     ActionError,
     action::Action,
-    metadata::ActionMetadata,
     result::{ActionResult, WaitCondition},
     stateless::StatelessAction,
 };
 use nebula_core::{Dependencies, action_key, id::ExecutionId, node_key};
 use nebula_engine::{
-    ActionExecutor, ActionRegistry, ActionRuntime, DataPassingPolicy, ExecutionEvent,
-    InProcessRunner, WorkflowEngine,
+    ActionRegistry, ActionRuntime, DataPassingPolicy, ExecutionEvent, InProcessRunner,
+    WorkflowEngine,
 };
 use nebula_execution::{ExecutionState, ExecutionStatus};
 use nebula_metrics::MetricsRegistry;
@@ -66,14 +65,25 @@ mod exact_fixture;
 
 // ── Action stubs ─────────────────────────────────────────────────────────────
 
+macro_rules! pure_action_metadata {
+    ($key:expr, $name:expr, $description:expr $(,)?) => {
+        nebula_action::metadata::ActionMetadataDraft::new($key, $name, $description)
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+    };
+}
+
 macro_rules! static_action_impl {
     ($ty:ty, $key:expr, $name:expr) => {
         impl Action for $ty {
             type Input = serde_json::Value;
             type Output = serde_json::Value;
 
-            fn metadata() -> ActionMetadata {
-                ActionMetadata::new($key, $name, "timer_wait_crash_recovery test stub")
+            fn metadata() -> nebula_action::ActionMetadataDraft {
+                pure_action_metadata!(
+                    $key,
+                    nebula_action::metadata_name!($name),
+                    "timer_wait_crash_recovery test stub",
+                )
             }
             fn dependencies() -> &'static Dependencies {
                 static D: OnceLock<Dependencies> = OnceLock::new();
@@ -267,26 +277,30 @@ fn build_registry(
     downstream_invocations: &Arc<AtomicU32>,
 ) -> Arc<ActionRegistry> {
     let registry = Arc::new(ActionRegistry::new());
-    registry.register_stateless_instance(
-        ActionMetadata::new(
-            action_key!("test.twcr.timer_wait"),
-            "TimerWaitAction",
-            "timer_wait_crash_recovery stub",
-        ),
-        TimerWaitAction {
-            duration: timer_duration,
-        },
-    );
-    registry.register_stateless_instance(
-        ActionMetadata::new(
-            action_key!("test.twcr.downstream"),
-            "CountingDownstream",
-            "timer_wait_crash_recovery stub",
-        ),
-        CountingDownstream {
-            invocations: Arc::clone(downstream_invocations),
-        },
-    );
+    registry
+        .register_stateless_instance(
+            pure_action_metadata!(
+                action_key!("test.twcr.timer_wait"),
+                nebula_action::metadata_name!("TimerWaitAction"),
+                "timer_wait_crash_recovery stub",
+            ),
+            TimerWaitAction {
+                duration: timer_duration,
+            },
+        )
+        .expect("valid test catalog definition");
+    registry
+        .register_stateless_instance(
+            pure_action_metadata!(
+                action_key!("test.twcr.downstream"),
+                nebula_action::metadata_name!("CountingDownstream"),
+                "timer_wait_crash_recovery stub",
+            ),
+            CountingDownstream {
+                invocations: Arc::clone(downstream_invocations),
+            },
+        )
+        .expect("valid test catalog definition");
     registry
 }
 
@@ -296,9 +310,7 @@ fn make_engine(stores: &CrashRecoveryStores, registry: Arc<ActionRegistry>) -> W
     let frozen = exact_fixture::freeze_registry(&registry, &actions);
     *stores.frozen.lock().unwrap() = Some(Arc::clone(&frozen));
     let metrics = MetricsRegistry::new();
-    let executor: ActionExecutor =
-        Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
-    let runner = Arc::new(InProcessRunner::new(executor));
+    let runner = Arc::new(InProcessRunner::new());
     let runtime = Arc::new(
         ActionRuntime::try_new(
             registry,

@@ -51,9 +51,9 @@
 use std::collections::HashSet;
 use std::sync::OnceLock;
 
-use nebula_action::{ActionContext, ActionError, ActionMetadata, ActionResult, StatelessAction};
+use nebula_action::{ActionContext, ActionError, ActionResult, StatelessAction};
 use nebula_core::action_key;
-use nebula_schema::HasSchema;
+use nebula_schema::{HasSchema, Schema, ValidSchema, ValidationReport, field_key};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::instrument;
@@ -87,10 +87,19 @@ pub struct DedupeInput {
     pub keys: Vec<String>,
 }
 
-// `data` is fully dynamic; the module doc describes expected structure.
 impl HasSchema for DedupeInput {
-    fn schema() -> nebula_schema::validated::ValidSchema {
-        nebula_schema::validated::ValidSchema::empty()
+    #[instrument(name = "core.dedupe.schema", skip_all, err)]
+    fn schema() -> Result<ValidSchema, ValidationReport> {
+        static SCHEMA: OnceLock<Result<ValidSchema, ValidationReport>> = OnceLock::new();
+        SCHEMA
+            .get_or_init(|| {
+                Schema::builder()
+                    .add(super::input_schema::record_data())
+                    .add(super::input_schema::strings(field_key!("keys")).required())
+                    .root_rule(super::input_schema::array_present(field_key!("data"))?)
+                    .build()
+            })
+            .clone()
     }
 }
 
@@ -128,12 +137,13 @@ impl nebula_action::action::Action for Dedupe {
     type Input = DedupeInput;
     type Output = Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        nebula_action::ActionMetadataDraft::new(
             action_key!("core.dedupe"),
-            "Dedupe",
+            nebula_action::metadata_name!("Dedupe"),
             "Remove duplicate array elements by one or more key fields (first occurrence wins)",
         )
+        .with_version(nebula_action::MetadataVersion::new(2, 0, 0))
         .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
     }
 
@@ -542,7 +552,14 @@ mod tests {
     // ── 12: action key is "core.dedupe" ──────────────────────────────────────
     #[test]
     fn action_key_is_core_dot_dedupe() {
-        use nebula_action::action::Action;
-        assert_eq!(Dedupe::metadata().base.key.as_str(), "core.dedupe");
+        let factory = nebula_action::GenericStatelessFactory::<Dedupe>::new()
+            .expect("dedupe metadata must admit");
+        assert_eq!(
+            nebula_action::ActionFactory::metadata(&factory)
+                .base()
+                .key()
+                .as_str(),
+            "core.dedupe"
+        );
     }
 }

@@ -16,7 +16,7 @@ include!(concat!(
     "/examples_include/telegram_send_message_shared.rs"
 ));
 
-use nebula_schema::FieldValues;
+use nebula_schema::AuthoredValue;
 use serde_json::json;
 
 fn main() {
@@ -56,20 +56,37 @@ fn main() {
         }
     });
 
-    let values = FieldValues::from_json(with_keyboard).expect("ingest");
-    schema
-        .validate(&values)
-        .expect("message + inline keyboard should validate");
+    let values = AuthoredValue::from_data(with_keyboard).expect("ingest");
+    let resolved = schema
+        .validate(values)
+        .expect("message + inline keyboard should validate")
+        .resolve_data()
+        .expect("message and inline keyboard complete");
+    let projected = resolved.to_wire_json();
+    assert!(projected.get("api_key").is_none());
+    assert_eq!(
+        projected["reply_markup"]["inline_keyboard"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
 
     let minimal = json!({
         "api_key": "1234567890:AAHevabcdefghijklmnopqrstuvwxyz12",
         "chat_id": "@channelusername",
         "text": "Plain text only",
     });
-    let values = FieldValues::from_json(minimal).expect("ingest");
-    schema
-        .validate(&values)
-        .expect("minimal message without options");
+    let values = AuthoredValue::from_data(minimal).expect("ingest");
+    let resolved = schema
+        .validate(values)
+        .expect("minimal message without options")
+        .resolve_data()
+        .expect("minimal message completes");
+    assert_eq!(
+        resolved.get(&field_key!("text")),
+        Some(&json!("Plain text only"))
+    );
 
     eprintln!("OK: Telegram send_message payloads validated");
 }

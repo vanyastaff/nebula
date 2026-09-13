@@ -55,7 +55,7 @@ impl CredentialService {
                 key: stored.credential_key().to_owned(),
             });
         }
-        let ctx = Self::owner_context(scope);
+        let ctx = self.owner_context(scope);
         let result = self
             .ops
             .test(stored.credential_key(), stored.data(), &ctx)
@@ -205,7 +205,7 @@ impl CredentialService {
         let observer = self.observer.clone();
         let id_owned = id.to_owned();
         let selector_for_task = selector.clone();
-        let ctx = self.resolver.refresh_context(&Self::owner_context(scope));
+        let ctx = self.resolver.refresh_context(&self.owner_context(scope));
         let result = self
             .resolver
             .refresh_coordinator()
@@ -634,7 +634,7 @@ impl CredentialService {
         let observer = self.observer.clone();
         let selector_for_task = selector.clone();
         let id_owned = id.to_owned();
-        let ctx = Self::owner_context(scope);
+        let ctx = self.owner_context(scope);
         let result = self
             .resolver
             .refresh_coordinator()

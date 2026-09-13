@@ -57,13 +57,13 @@
 use std::sync::OnceLock;
 
 use nebula_action::{
-    ActionContext, ActionError, ActionMetadata, branch_key,
-    control::{ControlAction, ControlInput, ControlOutcome},
+    ActionContext, ActionError, branch_key,
+    control::{ControlAction, ControlOutcome},
     port::{DynamicPort, OutputPort, default_input_ports},
     port_key,
 };
 use nebula_core::action_key;
-use nebula_schema::HasSchema;
+use nebula_schema::{Field, HasSchema, Schema, ValidSchema, ValidationReport, field_key};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::instrument;
@@ -99,12 +99,24 @@ pub struct SwitchInput {
     pub cases: Vec<SwitchCase>,
 }
 
-// Dynamic `data` and runtime-polymorphic `condition.value` make a closed-form
-// schema impossible. `ValidSchema::empty()` is the honest declaration; the
-// module doc describes the expected structure out-of-band.
 impl HasSchema for SwitchInput {
-    fn schema() -> nebula_schema::validated::ValidSchema {
-        nebula_schema::validated::ValidSchema::empty()
+    #[instrument(name = "core.switch.schema", skip_all, err)]
+    fn schema() -> Result<ValidSchema, ValidationReport> {
+        static SCHEMA: OnceLock<Result<ValidSchema, ValidationReport>> = OnceLock::new();
+        SCHEMA
+            .get_or_init(|| {
+                Schema::builder()
+                    .add(super::input_schema::nullable_object_data())
+                    .add(
+                        Field::list(field_key!("cases")).item(
+                            Field::object(field_key!("item"))
+                                .add(super::input_schema::condition(field_key!("condition")))
+                                .add(Field::string(field_key!("port")).required()),
+                        ),
+                    )
+                    .build()
+            })
+            .clone()
     }
 }
 
@@ -121,10 +133,10 @@ impl nebula_action::action::Action for CoreSwitch {
     type Input = SwitchInput;
     type Output = Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        nebula_action::ActionMetadataDraft::new(
             action_key!("core.switch"),
-            "Switch",
+            nebula_action::metadata_name!("Switch"),
             "Routes execution to the first matching case port, or 'default' if none match",
         )
         .with_inputs(default_input_ports())
@@ -134,6 +146,7 @@ impl nebula_action::action::Action for CoreSwitch {
             label_field: Some("port".into()),
             include_fallback: true,
         })])
+        .with_version(nebula_action::MetadataVersion::new(2, 0, 0))
         .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
     }
 
@@ -158,26 +171,14 @@ impl ControlAction for CoreSwitch {
     #[instrument(
         name = "core.switch",
         skip_all,
-        fields(case_count = input.as_value()
-            .get("cases")
-            .and_then(|c| c.as_array())
-            .map(Vec::len)
-            .unwrap_or(0))
+        fields(case_count = input.cases.len())
     )]
     async fn evaluate(
         &self,
-        input: ControlInput,
+        input: SwitchInput,
         _ctx: &(impl ActionContext + ?Sized),
-    ) -> Result<ControlOutcome, ActionError> {
-        // The GenericControlFactory dispatch path passes the raw JSON value
-        // directly — it does NOT go through `CoreSwitch::Input`. Manual
-        // deserialization gives us typed access to `data` and `cases`.
-        let SwitchInput { data, cases } = serde_json::from_value::<SwitchInput>(input.into_value())
-            .map_err(|deserialization_err| {
-                ActionError::fatal(format!(
-                    "core.switch: invalid input shape — {deserialization_err}"
-                ))
-            })?;
+    ) -> Result<ControlOutcome<Value>, ActionError> {
+        let SwitchInput { data, cases } = input;
 
         let data_object = normalize_data(data)
             .map_err(|err| ActionError::fatal(format!("core.switch: {err}")))?;
@@ -210,11 +211,7 @@ impl ControlAction for CoreSwitch {
 
 #[cfg(test)]
 mod tests {
-    use nebula_action::{
-        ActionFactory,
-        control::{ControlInput, ControlOutcome},
-        testing::TestContextBuilder,
-    };
+    use nebula_action::{ActionFactory, control::ControlOutcome, testing::TestContextBuilder};
     use serde_json::json;
 
     use super::*;
@@ -223,14 +220,14 @@ mod tests {
         TestContextBuilder::new().build()
     }
 
-    async fn run_switch(wire_json: Value) -> Result<ControlOutcome, ActionError> {
-        CoreSwitch
-            .evaluate(ControlInput::from_value(wire_json), &ctx())
-            .await
+    async fn run_switch(wire_json: Value) -> Result<ControlOutcome<Value>, ActionError> {
+        let input = serde_json::from_value(wire_json)
+            .expect("test input must match the declared SwitchInput wire shape");
+        CoreSwitch.evaluate(input, &ctx()).await
     }
 
     /// Assert the selected port from `ControlOutcome::Branch`.
-    fn assert_port(outcome: &ControlOutcome, expected_port: &str) {
+    fn assert_port(outcome: &ControlOutcome<Value>, expected_port: &str) {
         match outcome {
             ControlOutcome::Branch { selected, .. } => {
                 assert_eq!(
@@ -244,7 +241,7 @@ mod tests {
     }
 
     /// Extract the output value from `ControlOutcome::Branch`.
-    fn branch_output(outcome: ControlOutcome) -> Value {
+    fn branch_output(outcome: ControlOutcome<Value>) -> Value {
         match outcome {
             ControlOutcome::Branch { output, .. } => output,
             other => panic!("expected ControlOutcome::Branch, got {other:?}"),
@@ -456,20 +453,25 @@ mod tests {
 
     #[test]
     fn action_key_is_core_switch() {
-        use nebula_action::action::Action;
-        assert_eq!(CoreSwitch::metadata().base.key.as_str(), "core.switch");
+        let factory = nebula_action::GenericControlFactory::<CoreSwitch>::new()
+            .expect("switch metadata must admit");
+        assert_eq!(
+            ActionFactory::metadata(&factory).base().key().as_str(),
+            "core.switch"
+        );
     }
 
     #[test]
     fn metadata_has_one_dynamic_output_port_with_source_field_cases() {
-        use nebula_action::action::Action;
-        let meta = CoreSwitch::metadata();
+        let factory = nebula_action::GenericControlFactory::<CoreSwitch>::new()
+            .expect("switch metadata must admit");
+        let metadata = ActionFactory::metadata(&factory);
         assert_eq!(
-            meta.outputs.len(),
+            metadata.outputs().len(),
             1,
             "must have exactly one output port declaration"
         );
-        match &meta.outputs[0] {
+        match &metadata.outputs()[0] {
             OutputPort::Dynamic(dynamic_port) => {
                 assert_eq!(
                     dynamic_port.source_field, "cases",
@@ -492,9 +494,10 @@ mod tests {
     #[test]
     fn action_kind_is_control_after_factory_stamp() {
         use nebula_action::factory::GenericControlFactory;
-        let factory = GenericControlFactory::<CoreSwitch>::new();
+        let factory =
+            GenericControlFactory::<CoreSwitch>::new().expect("switch metadata must admit");
         assert_eq!(
-            factory.metadata().kind,
+            factory.metadata().kind(),
             nebula_action::metadata::ActionKind::Control,
             "GenericControlFactory must stamp ActionKind::Control on CoreSwitch"
         );

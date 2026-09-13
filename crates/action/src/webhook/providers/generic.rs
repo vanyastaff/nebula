@@ -18,7 +18,6 @@ use crate::{
     action::Action,
     context::TriggerContext,
     error::{ActionError, ValidationReason},
-    metadata::ActionMetadata,
     trigger::TriggerEventOutcome,
     webhook::{
         BuiltWebhookHandler, ChallengeToken, FactoryError, PreHandleOutcome, RequiredPolicy,
@@ -104,10 +103,10 @@ impl Action for GenericWebhookAction {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> crate::ActionMetadataDraft {
+        crate::ActionMetadataDraft::new(
             action_key!("nebula.webhook.generic"),
-            "Generic Webhook",
+            crate::metadata_name!("Generic Webhook"),
             "Provider-agnostic HMAC-signed webhook trigger.",
         )
     }
@@ -305,7 +304,7 @@ impl WebhookActionFactory for GenericWebhookActionFactory {
         self.validate_provider_config(spec.provider_config.as_ref())?;
         let config = action.config();
         Ok(BuiltWebhookHandler {
-            handler: Arc::new(WebhookTriggerAdapter::new(action)),
+            handler: Arc::new(WebhookTriggerAdapter::new(action)?),
             config,
         })
     }

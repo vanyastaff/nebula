@@ -6,12 +6,17 @@
 //! match. `null` is a distinct kind and does not match any typed rule —
 //! schema layers are expected to filter optional/nullable fields upstream
 //! before dispatching rules (see `nebula-schema::validated`). Strictness
-//! here aligns with PRODUCT_ ("no silent shape mismatches").
+//! this boundary prevents schema validation from silently accepting the wrong
+//! JSON shape.
 
 use serde::{Deserialize, Serialize};
 
-use super::helpers::{compile_regex, format_json_number, json_number_cmp};
+use super::{
+    RulePattern,
+    helpers::{format_json_number, json_number_cmp},
+};
 use crate::{
+    engine::DiagnosticDisclosure,
     foundation::{Validate, ValidationError},
     validators::{
         content::{EMAIL_PATTERN, URL_PATTERN},
@@ -22,7 +27,7 @@ use crate::{
 /// Value-validation rule. Takes a JSON value, returns `Ok` or a
 /// `ValidationError` whose `params` include rule-specific placeholders
 /// (`{min}`, `{max}`, `{pattern}`, `{allowed}`) for template rendering.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum ValueRule {
@@ -31,7 +36,7 @@ pub enum ValueRule {
     /// String must be at most `n` characters.
     MaxLength(usize),
     /// String must match the regex.
-    Pattern(String),
+    Pattern(RulePattern),
     /// Number must be >= bound.
     Min(serde_json::Number),
     /// Number must be <= bound.
@@ -52,6 +57,25 @@ pub enum ValueRule {
     Url,
 }
 
+impl std::fmt::Debug for ValueRule {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::MinLength(_) => "ValueRule::MinLength(<protected>)",
+            Self::MaxLength(_) => "ValueRule::MaxLength(<protected>)",
+            Self::Pattern(_) => "ValueRule::Pattern(<protected>)",
+            Self::Min(_) => "ValueRule::Min(<protected>)",
+            Self::Max(_) => "ValueRule::Max(<protected>)",
+            Self::GreaterThan(_) => "ValueRule::GreaterThan(<protected>)",
+            Self::LessThan(_) => "ValueRule::LessThan(<protected>)",
+            Self::OneOf(_) => "ValueRule::OneOf(<protected>)",
+            Self::MinItems(_) => "ValueRule::MinItems(<protected>)",
+            Self::MaxItems(_) => "ValueRule::MaxItems(<protected>)",
+            Self::Email => "ValueRule::Email",
+            Self::Url => "ValueRule::Url",
+        })
+    }
+}
+
 /// JSON kind name for error reporting — stable across rustc versions.
 fn json_type_name(v: &serde_json::Value) -> &'static str {
     match v {
@@ -66,9 +90,27 @@ fn json_type_name(v: &serde_json::Value) -> &'static str {
 
 /// Builds a `type_mismatch` error with the rule-wide `{value}` param so
 /// templates can still render the offending input.
-fn type_mismatch(value: &serde_json::Value, expected: &'static str) -> ValidationError {
-    ValidationError::type_mismatch("", expected, json_type_name(value))
-        .with_param("value", format!("{value}"))
+fn with_input_value(
+    error: ValidationError,
+    value: &serde_json::Value,
+    disclosure: DiagnosticDisclosure,
+) -> ValidationError {
+    match disclosure {
+        DiagnosticDisclosure::IncludeValue => error.with_param("value", format!("{value}")),
+        DiagnosticDisclosure::OmitValue => error,
+    }
+}
+
+fn type_mismatch(
+    value: &serde_json::Value,
+    expected: &'static str,
+    disclosure: DiagnosticDisclosure,
+) -> ValidationError {
+    with_input_value(
+        ValidationError::type_mismatch("", expected, json_type_name(value)),
+        value,
+        disclosure,
+    )
 }
 
 impl ValueRule {
@@ -84,89 +126,99 @@ impl ValueRule {
     ///
     /// `OneOf` is kind-agnostic: a value that is not in the allowed set
     /// reports `one_of` regardless of kind (mismatched kind is just a
-    /// non-member). An empty allowed set passes.
+    /// non-member). An empty allowed set rejects every value.
     ///
     /// Rule-specific validation failures carry `params` for
     /// message-template rendering: `{min}`, `{max}`, `{pattern}`,
     /// `{allowed}`, plus always `{value}`.
     ///
-    /// Exception: when `Pattern` holds a malformed regex, this returns a
-    /// compile-time error with code `invalid_pattern` — no `{value}` param,
-    /// because the rule is mis-configured independently of the input value.
-    pub fn validate_value(&self, value: &serde_json::Value) -> Result<(), ValidationError> {
+    /// Patterns are compiled during construction or deserialization, so invalid
+    /// regex configuration cannot reach value evaluation.
+    pub fn validate_value(
+        &self,
+        value: &serde_json::Value,
+        disclosure: DiagnosticDisclosure,
+    ) -> Result<(), ValidationError> {
         match self {
             Self::MinLength(n) => {
                 let s = value
                     .as_str()
-                    .ok_or_else(|| type_mismatch(value, "string"))?;
+                    .ok_or_else(|| type_mismatch(value, "string", disclosure))?;
                 min_length(*n).validate(s).map_err(|e| {
-                    e.with_param("min", n.to_string())
-                        .with_param("value", format!("{value}"))
+                    with_input_value(e.with_param("min", n.to_string()), value, disclosure)
                 })
             },
             Self::MaxLength(n) => {
                 let s = value
                     .as_str()
-                    .ok_or_else(|| type_mismatch(value, "string"))?;
+                    .ok_or_else(|| type_mismatch(value, "string", disclosure))?;
                 max_length(*n).validate(s).map_err(|e| {
-                    e.with_param("max", n.to_string())
-                        .with_param("value", format!("{value}"))
+                    with_input_value(e.with_param("max", n.to_string()), value, disclosure)
                 })
             },
             Self::Pattern(p) => {
                 let s = value
                     .as_str()
-                    .ok_or_else(|| type_mismatch(value, "string"))?;
-                let re = compile_regex(p)?;
-                if !re.is_match(s) {
-                    return Err(ValidationError::invalid_format("", "regex")
-                        .with_param("pattern", p.clone())
-                        .with_param("value", format!("{value}")));
+                    .ok_or_else(|| type_mismatch(value, "string", disclosure))?;
+                if !p.is_match(s) {
+                    return Err(with_input_value(
+                        ValidationError::invalid_format("", "regex")
+                            .with_param("pattern", p.as_str().to_owned()),
+                        value,
+                        disclosure,
+                    ));
                 }
                 Ok(())
             },
             Self::Min(bound) => {
-                let ord =
-                    json_number_cmp(value, bound).ok_or_else(|| type_mismatch(value, "number"))?;
+                let ord = json_number_cmp(value, bound)
+                    .ok_or_else(|| type_mismatch(value, "number", disclosure))?;
                 if ord.is_lt() {
-                    return Err(ValidationError::new("min", "Value must be at least {min}")
-                        .with_param("min", format_json_number(bound))
-                        .with_param("value", format!("{value}")));
+                    return Err(with_input_value(
+                        ValidationError::new("min", "Value must be at least {min}")
+                            .with_param("min", format_json_number(bound)),
+                        value,
+                        disclosure,
+                    ));
                 }
                 Ok(())
             },
             Self::Max(bound) => {
-                let ord =
-                    json_number_cmp(value, bound).ok_or_else(|| type_mismatch(value, "number"))?;
+                let ord = json_number_cmp(value, bound)
+                    .ok_or_else(|| type_mismatch(value, "number", disclosure))?;
                 if ord.is_gt() {
-                    return Err(ValidationError::new("max", "Value must be at most {max}")
-                        .with_param("max", format_json_number(bound))
-                        .with_param("value", format!("{value}")));
+                    return Err(with_input_value(
+                        ValidationError::new("max", "Value must be at most {max}")
+                            .with_param("max", format_json_number(bound)),
+                        value,
+                        disclosure,
+                    ));
                 }
                 Ok(())
             },
             Self::GreaterThan(bound) => {
-                let ord =
-                    json_number_cmp(value, bound).ok_or_else(|| type_mismatch(value, "number"))?;
+                let ord = json_number_cmp(value, bound)
+                    .ok_or_else(|| type_mismatch(value, "number", disclosure))?;
                 if !ord.is_gt() {
-                    return Err(ValidationError::new(
-                        "greater_than",
-                        "Value must be greater than {min}",
-                    )
-                    .with_param("min", format_json_number(bound))
-                    .with_param("value", format!("{value}")));
+                    return Err(with_input_value(
+                        ValidationError::new("greater_than", "Value must be greater than {min}")
+                            .with_param("min", format_json_number(bound)),
+                        value,
+                        disclosure,
+                    ));
                 }
                 Ok(())
             },
             Self::LessThan(bound) => {
-                let ord =
-                    json_number_cmp(value, bound).ok_or_else(|| type_mismatch(value, "number"))?;
+                let ord = json_number_cmp(value, bound)
+                    .ok_or_else(|| type_mismatch(value, "number", disclosure))?;
                 if !ord.is_lt() {
-                    return Err(
+                    return Err(with_input_value(
                         ValidationError::new("less_than", "Value must be less than {max}")
-                            .with_param("max", format_json_number(bound))
-                            .with_param("value", format!("{value}")),
-                    );
+                            .with_param("max", format_json_number(bound)),
+                        value,
+                        disclosure,
+                    ));
                 }
                 Ok(())
             },
@@ -175,9 +227,6 @@ impl ValueRule {
             // is just "not one of the allowed values" — no need for a
             // separate type_mismatch path.
             Self::OneOf(values) => {
-                if values.is_empty() {
-                    return Ok(());
-                }
                 if values.contains(value) {
                     return Ok(());
                 }
@@ -190,57 +239,62 @@ impl ValueRule {
                     clippy::literal_string_with_formatting_args,
                     reason = "{allowed} is a ValidationError message-template placeholder, not a format arg"
                 )]
-                Err(
+                Err(with_input_value(
                     ValidationError::new("one_of", "Value must be one of {allowed}")
-                        .with_param("allowed", allowed)
-                        .with_param("value", format!("{value}")),
-                )
+                        .with_param("allowed", allowed),
+                    value,
+                    disclosure,
+                ))
             },
             Self::MinItems(n) => {
                 let items = value
                     .as_array()
-                    .ok_or_else(|| type_mismatch(value, "array"))?;
+                    .ok_or_else(|| type_mismatch(value, "array", disclosure))?;
                 min_size::<serde_json::Value>(*n)
                     .validate(items.as_slice())
                     .map_err(|e| {
-                        e.with_param("min", n.to_string())
-                            .with_param("value", format!("{value}"))
+                        with_input_value(e.with_param("min", n.to_string()), value, disclosure)
                     })
             },
             Self::MaxItems(n) => {
                 let items = value
                     .as_array()
-                    .ok_or_else(|| type_mismatch(value, "array"))?;
+                    .ok_or_else(|| type_mismatch(value, "array", disclosure))?;
                 max_size::<serde_json::Value>(*n)
                     .validate(items.as_slice())
                     .map_err(|e| {
-                        e.with_param("max", n.to_string())
-                            .with_param("value", format!("{value}"))
+                        with_input_value(e.with_param("max", n.to_string()), value, disclosure)
                     })
             },
             Self::Email => {
                 let s = value
                     .as_str()
-                    .ok_or_else(|| type_mismatch(value, "string"))?;
+                    .ok_or_else(|| type_mismatch(value, "string", disclosure))?;
                 static EMAIL_RE: std::sync::LazyLock<regex::Regex> =
                     std::sync::LazyLock::new(|| {
                         regex::Regex::new(EMAIL_PATTERN).expect("email regex")
                     });
                 if !EMAIL_RE.is_match(s) {
-                    return Err(ValidationError::invalid_format("", "email")
-                        .with_param("value", format!("{value}")));
+                    return Err(with_input_value(
+                        ValidationError::invalid_format("", "email"),
+                        value,
+                        disclosure,
+                    ));
                 }
                 Ok(())
             },
             Self::Url => {
                 let s = value
                     .as_str()
-                    .ok_or_else(|| type_mismatch(value, "string"))?;
+                    .ok_or_else(|| type_mismatch(value, "string", disclosure))?;
                 static URL_RE: std::sync::LazyLock<regex::Regex> =
                     std::sync::LazyLock::new(|| regex::Regex::new(URL_PATTERN).expect("url regex"));
                 if !URL_RE.is_match(s) {
-                    return Err(ValidationError::invalid_format("", "url")
-                        .with_param("value", format!("{value}")));
+                    return Err(with_input_value(
+                        ValidationError::invalid_format("", "url"),
+                        value,
+                        disclosure,
+                    ));
                 }
                 Ok(())
             },
@@ -254,16 +308,18 @@ mod tests {
 
     use super::*;
 
+    const DISCLOSURE: DiagnosticDisclosure = DiagnosticDisclosure::IncludeValue;
+
     #[test]
     fn min_length_ok_and_err() {
         assert!(
             ValueRule::MinLength(3)
-                .validate_value(&json!("alice"))
+                .validate_value(&json!("alice"), DISCLOSURE)
                 .is_ok()
         );
         assert!(
             ValueRule::MinLength(3)
-                .validate_value(&json!("ab"))
+                .validate_value(&json!("ab"), DISCLOSURE)
                 .is_err()
         );
     }
@@ -271,7 +327,7 @@ mod tests {
     #[test]
     fn min_length_rejects_non_string_with_type_mismatch() {
         let err = ValueRule::MinLength(3)
-            .validate_value(&json!(42))
+            .validate_value(&json!(42), DISCLOSURE)
             .unwrap_err();
         assert_eq!(err.code.as_ref(), "type_mismatch");
         assert_eq!(err.param("expected"), Some("string"));
@@ -281,14 +337,14 @@ mod tests {
     #[test]
     fn min_rejects_below_bound() {
         let rule = ValueRule::Min(serde_json::Number::from(10));
-        assert!(rule.validate_value(&json!(5)).is_err());
-        assert!(rule.validate_value(&json!(15)).is_ok());
+        assert!(rule.validate_value(&json!(5), DISCLOSURE).is_err());
+        assert!(rule.validate_value(&json!(15), DISCLOSURE).is_ok());
     }
 
     #[test]
     fn min_rejects_non_number_with_type_mismatch() {
         let err = ValueRule::Min(serde_json::Number::from(10))
-            .validate_value(&json!("hi"))
+            .validate_value(&json!("hi"), DISCLOSURE)
             .unwrap_err();
         assert_eq!(err.code.as_ref(), "type_mismatch");
         assert_eq!(err.param("expected"), Some("number"));
@@ -298,7 +354,7 @@ mod tests {
     #[test]
     fn min_items_rejects_non_array_with_type_mismatch() {
         let err = ValueRule::MinItems(1)
-            .validate_value(&json!("not-an-array"))
+            .validate_value(&json!("not-an-array"), DISCLOSURE)
             .unwrap_err();
         assert_eq!(err.code.as_ref(), "type_mismatch");
         assert_eq!(err.param("expected"), Some("array"));
@@ -306,7 +362,9 @@ mod tests {
 
     #[test]
     fn email_rejects_non_string_with_type_mismatch() {
-        let err = ValueRule::Email.validate_value(&json!(42)).unwrap_err();
+        let err = ValueRule::Email
+            .validate_value(&json!(42), DISCLOSURE)
+            .unwrap_err();
         assert_eq!(err.code.as_ref(), "type_mismatch");
         assert_eq!(err.param("expected"), Some("string"));
     }
@@ -315,19 +373,22 @@ mod tests {
     fn one_of_rejects_wrong_type_instead_of_silent_pass() {
         // Issue #264: OneOf(["a","b"]).validate(42) must not silently pass.
         let rule = ValueRule::OneOf(vec![json!("a"), json!("b")]);
-        let err = rule.validate_value(&json!(42)).unwrap_err();
+        let err = rule.validate_value(&json!(42), DISCLOSURE).unwrap_err();
         assert_eq!(err.code.as_ref(), "one_of");
     }
 
     #[test]
-    fn one_of_empty_passes() {
-        assert!(ValueRule::OneOf(vec![]).validate_value(&json!("x")).is_ok());
+    fn one_of_empty_rejects() {
+        let error = ValueRule::OneOf(vec![])
+            .validate_value(&json!("x"), DISCLOSURE)
+            .unwrap_err();
+        assert_eq!(error.code, "one_of");
     }
 
     #[test]
     fn null_rejected_as_type_mismatch() {
         let err = ValueRule::MinLength(3)
-            .validate_value(&json!(null))
+            .validate_value(&json!(null), DISCLOSURE)
             .unwrap_err();
         assert_eq!(err.code.as_ref(), "type_mismatch");
         assert_eq!(err.param("actual"), Some("null"));
@@ -350,7 +411,7 @@ mod tests {
     #[test]
     fn error_injects_params_for_template_rendering() {
         let err = ValueRule::MinLength(3)
-            .validate_value(&json!("hi"))
+            .validate_value(&json!("hi"), DISCLOSURE)
             .unwrap_err();
         assert_eq!(err.param("min"), Some("3"));
     }

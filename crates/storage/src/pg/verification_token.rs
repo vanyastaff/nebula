@@ -188,9 +188,11 @@ impl VerificationTokenRepo for PgVerificationTokenRepo {
 
 #[cfg(all(test, feature = "postgres"))]
 mod tests {
+    use std::str::FromStr;
+
     use chrono::{Duration, Utc};
     use serde_json::json;
-    use sqlx::postgres::PgPoolOptions;
+    use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 
     use super::*;
     use crate::{
@@ -200,28 +202,60 @@ mod tests {
     };
 
     static SPEC16_MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations/postgres");
-    static SCHEMA_READY: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
 
-    async fn pool() -> Option<Pool<Postgres>> {
+    struct IsolatedDatabase {
+        admin: Pool<Postgres>,
+        pool: Pool<Postgres>,
+        schema: String,
+    }
+
+    impl IsolatedDatabase {
+        async fn cleanup(self) {
+            self.pool.close().await;
+            let statement = format!("DROP SCHEMA {} CASCADE", self.schema);
+            sqlx::query(sqlx::AssertSqlSafe(statement))
+                .execute(&self.admin)
+                .await
+                .expect("drop isolated verification-token schema");
+            self.admin.close().await;
+        }
+    }
+
+    async fn database() -> Option<IsolatedDatabase> {
         let url = match std::env::var("DATABASE_URL") {
             Ok(url) => url,
             Err(std::env::VarError::NotPresent) => return None,
             Err(err) => panic!("DATABASE_URL is set but invalid: {err}"),
         };
-        let pool = PgPoolOptions::new()
-            .max_connections(4)
+        let admin = PgPoolOptions::new()
+            .max_connections(1)
             .connect(&url)
             .await
             .expect("connect");
-        SCHEMA_READY
-            .get_or_init(|| async {
-                SPEC16_MIGRATOR
-                    .run(&pool)
-                    .await
-                    .expect("spec-16 postgres migrations");
-            })
-            .await;
-        Some(pool)
+        // Cleanup is table-wide, so every fixture owns a separate schema.
+        let schema = format!("verification_token_test_{}", hex::encode(random_id()));
+        let statement = format!("CREATE SCHEMA {schema}");
+        sqlx::query(sqlx::AssertSqlSafe(statement))
+            .execute(&admin)
+            .await
+            .expect("create isolated verification-token schema");
+        let options = PgConnectOptions::from_str(&url)
+            .expect("parse DATABASE_URL")
+            .options([("search_path", schema.as_str())]);
+        let pool = PgPoolOptions::new()
+            .max_connections(4)
+            .connect_with(options)
+            .await
+            .expect("connect isolated verification-token schema");
+        SPEC16_MIGRATOR
+            .run(&pool)
+            .await
+            .expect("spec-16 postgres migrations");
+        Some(IsolatedDatabase {
+            admin,
+            pool,
+            schema,
+        })
     }
 
     async fn seed_user(pool: &Pool<Postgres>, prefix: &str) -> Vec<u8> {
@@ -252,7 +286,10 @@ mod tests {
 
     #[tokio::test]
     async fn create_get_roundtrip() {
-        let Some(pool) = pool().await else { return };
+        let Some(database) = database().await else {
+            return;
+        };
+        let pool = database.pool.clone();
         let user_id = seed_user(&pool, "vt-roundtrip").await;
         let repo = PgVerificationTokenRepo::new(pool);
         let token = fresh_token(&user_id, "email_verification");
@@ -268,11 +305,15 @@ mod tests {
         assert_eq!(loaded.kind, "email_verification");
         assert_eq!(loaded.payload, Some(json!({"reason": "test"})));
         assert!(loaded.consumed_at.is_none());
+        database.cleanup().await;
     }
 
     #[tokio::test]
     async fn duplicate_hash_is_rejected() {
-        let Some(pool) = pool().await else { return };
+        let Some(database) = database().await else {
+            return;
+        };
+        let pool = database.pool.clone();
         let user_id = seed_user(&pool, "vt-dup").await;
         let repo = PgVerificationTokenRepo::new(pool);
         let token = fresh_token(&user_id, "password_reset");
@@ -292,11 +333,15 @@ mod tests {
             ),
             "expected Duplicate {{ entity: 'verification_token', .. }}, got: {err:?}"
         );
+        database.cleanup().await;
     }
 
     #[tokio::test]
     async fn consume_by_hash_is_single_shot() {
-        let Some(pool) = pool().await else { return };
+        let Some(database) = database().await else {
+            return;
+        };
+        let pool = database.pool.clone();
         let user_id = seed_user(&pool, "vt-consume").await;
         let repo = PgVerificationTokenRepo::new(pool);
         let token = fresh_token(&user_id, "password_reset");
@@ -320,11 +365,15 @@ mod tests {
             .expect("get")
             .expect("still present");
         assert!(stored.consumed_at.is_some());
+        database.cleanup().await;
     }
 
     #[tokio::test]
     async fn consume_by_hash_and_kind_matching_kind_consumes() {
-        let Some(pool) = pool().await else { return };
+        let Some(database) = database().await else {
+            return;
+        };
+        let pool = database.pool.clone();
         let user_id = seed_user(&pool, "vt-consume-kind").await;
         let repo = PgVerificationTokenRepo::new(pool);
         let token = fresh_token(&user_id, "mfa_challenge");
@@ -345,11 +394,15 @@ mod tests {
             .await
             .expect("second consume");
         assert!(replay.is_none(), "second consume must return None");
+        database.cleanup().await;
     }
 
     #[tokio::test]
     async fn consume_by_hash_and_kind_mismatched_kind_does_not_consume() {
-        let Some(pool) = pool().await else { return };
+        let Some(database) = database().await else {
+            return;
+        };
+        let pool = database.pool.clone();
         let user_id = seed_user(&pool, "vt-consume-mismatch").await;
         let repo = PgVerificationTokenRepo::new(pool);
         // Persisted as password_reset, but the caller asks for mfa_challenge.
@@ -374,11 +427,15 @@ mod tests {
             .expect("consume correct")
             .expect("row still consumable");
         assert_eq!(correct.kind, "password_reset");
+        database.cleanup().await;
     }
 
     #[tokio::test]
     async fn revoke_all_for_user_only_touches_unconsumed_of_kind() {
-        let Some(pool) = pool().await else { return };
+        let Some(database) = database().await else {
+            return;
+        };
+        let pool = database.pool.clone();
         let user_id = seed_user(&pool, "vt-revoke").await;
         let repo = PgVerificationTokenRepo::new(pool);
         let reset_a = fresh_token(&user_id, "password_reset");
@@ -401,11 +458,15 @@ mod tests {
             .expect("consume other")
             .expect("other still consumable");
         assert_eq!(still.kind, "email_verification");
+        database.cleanup().await;
     }
 
     #[tokio::test]
     async fn cleanup_expired_deletes_only_past_rows() {
-        let Some(pool) = pool().await else { return };
+        let Some(database) = database().await else {
+            return;
+        };
+        let pool = database.pool.clone();
         let user_id = seed_user(&pool, "vt-cleanup").await;
         let repo = PgVerificationTokenRepo::new(pool);
 
@@ -430,5 +491,49 @@ mod tests {
         // Past row is gone (DELETE, not soft-consume).
         let gone = repo.get_by_hash(&past.token_hash).await.expect("get past");
         assert!(gone.is_none(), "expired row must be deleted");
+        database.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn cleanup_expired_is_isolated_between_test_databases() {
+        let Some(first_database) = database().await else {
+            return;
+        };
+        let Some(second_database) = database().await else {
+            return;
+        };
+        let first_user = seed_user(&first_database.pool, "vt-isolated-first").await;
+        let second_user = seed_user(&second_database.pool, "vt-isolated-second").await;
+        let first_repo = PgVerificationTokenRepo::new(first_database.pool.clone());
+        let second_repo = PgVerificationTokenRepo::new(second_database.pool.clone());
+        let mut first = fresh_token(&first_user, "password_reset");
+        first.expires_at = Utc::now() - Duration::hours(1);
+        let mut second = fresh_token(&second_user, "password_reset");
+        second.expires_at = Utc::now() - Duration::hours(1);
+        first_repo
+            .create(&first)
+            .await
+            .expect("create first expired token");
+        second_repo
+            .create(&second)
+            .await
+            .expect("create second expired token");
+
+        assert_eq!(
+            first_repo.cleanup_expired().await.expect("first cleanup"),
+            1
+        );
+        let retained = second_repo
+            .get_by_hash(&second.token_hash)
+            .await
+            .expect("get second expired token")
+            .expect("another test's expired token must survive");
+        assert_eq!(retained.user_id, second_user);
+        assert_eq!(
+            second_repo.cleanup_expired().await.expect("second cleanup"),
+            1
+        );
+        first_database.cleanup().await;
+        second_database.cleanup().await;
     }
 }

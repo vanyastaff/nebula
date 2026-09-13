@@ -62,8 +62,10 @@ pub mod validatable;
 
 // Re-export core types
 pub use any::AnyValidator;
-pub use error::{ErrorSeverity, ValidationError, ValidationErrors, ValidationMode};
-pub use field_path::FieldPath;
+pub use error::{
+    ErrorSeverity, ValidationError, ValidationErrorKind, ValidationErrors, ValidationMode,
+};
+pub use field_path::{FieldPath, FieldPathError};
 pub use traits::{Validatable, Validate, ValidateExt};
 pub use validatable::AsValidatable;
 

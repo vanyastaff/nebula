@@ -1,23 +1,37 @@
-//! Parameter resolution — resolves `ParamValue`s into concrete JSON values.
-//!
-//! Each node in a workflow can have parameters of type [`ParamValue`]:
-//! - `Literal` — static JSON, used as-is
-//! - `Expression` — evaluated via [`ExpressionEngine`]
-//! - `Template` — parsed and rendered via [`ExpressionEngine`]
-//! - `Reference` — looked up from a predecessor node's output
+//! Schema-bound admission of authored node parameters and retained-program evaluation.
 
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt,
+    sync::Arc,
+};
 
 use dashmap::DashMap;
 use nebula_core::NodeKey;
 use nebula_expression::{EvaluationContext, ExpressionEngine};
+use nebula_schema::{
+    AuthoredValue, CompiledProgram, EvalFuture, Expression, ExpressionContext, ResolvedValues,
+    ValidSchema, ValidValues, ValidationError, ValidationReport,
+};
 use nebula_workflow::ParamValue;
+use tokio_util::sync::CancellationToken;
 
 use crate::error::EngineError;
 
-/// Resolves node parameters into concrete JSON values.
+/// Admits node parameters against their selected action contract.
 pub(crate) struct ParamResolver {
     expression_engine: Arc<ExpressionEngine>,
+}
+
+/// Complete context for one node-input admission operation.
+pub(crate) struct NodeInputRequest<'a> {
+    pub(crate) node_key: &'a NodeKey,
+    pub(crate) parameters: &'a HashMap<String, ParamValue>,
+    pub(crate) predecessor_input: serde_json::Value,
+    pub(crate) outputs: &'a DashMap<NodeKey, serde_json::Value>,
+    pub(crate) shared_outputs: &'a DashMap<NodeKey, Arc<serde_json::Value>>,
+    pub(crate) schema: &'a ValidSchema,
+    pub(crate) cancellation: CancellationToken,
 }
 
 impl ParamResolver {
@@ -26,82 +40,117 @@ impl ParamResolver {
         Self { expression_engine }
     }
 
-    /// Resolve all parameters for a node, producing a JSON object.
-    ///
-    /// If the node has no parameters, returns `None` (caller uses
-    /// predecessor output as-is for backward compatibility).
-    pub(crate) fn resolve(
+    /// Named parameters are internal schema fields; absent parameters use raw serde wire.
+    #[tracing::instrument(name = "engine.input.prepare", skip_all, fields(node_key = %request.node_key), err)]
+    pub(crate) fn prepare(
         &self,
-        node_key: &NodeKey,
-        params: &HashMap<String, ParamValue>,
-        predecessor_input: &serde_json::Value,
-        outputs: &DashMap<NodeKey, serde_json::Value>,
-    ) -> Result<Option<serde_json::Value>, EngineError> {
-        if params.is_empty() {
-            return Ok(None);
-        }
+        request: NodeInputRequest<'_>,
+    ) -> Result<PreparedNodeInput, EngineError> {
+        let NodeInputRequest {
+            node_key,
+            parameters: params,
+            predecessor_input,
+            outputs,
+            shared_outputs,
+            schema,
+            cancellation,
+        } = request;
+        let (authored, context) = if params.is_empty() {
+            let values = schema
+                .values_from_wire(predecessor_input)
+                .map_err(|error| {
+                    input_error(node_key, error.into(), "input wire shape is invalid")
+                })?;
+            (values, None)
+        } else {
+            let has_expressions = params.values().any(|parameter| {
+                matches!(
+                    parameter,
+                    ParamValue::Expression { .. } | ParamValue::Template { .. }
+                )
+            });
+            let referenced_nodes: HashSet<NodeKey> = params
+                .values()
+                .filter_map(|parameter| match parameter {
+                    ParamValue::Reference { node_key, .. } => Some(node_key.clone()),
+                    _ => None,
+                })
+                .collect();
+            let mut expression_values = EvaluationContext::new();
+            if has_expressions || !referenced_nodes.is_empty() {
+                let snapshot = outputs
+                    .iter()
+                    .filter(|entry| has_expressions || referenced_nodes.contains(entry.key()))
+                    .collect::<Vec<_>>();
+                EvaluationContext::validate_node_data_snapshot(
+                    snapshot
+                        .iter()
+                        .map(|entry| (entry.key().as_str(), entry.value())),
+                )
+                .map_err(|source| expression_snapshot_error(node_key, source))?;
 
-        // Build expression context
-        let mut ctx = EvaluationContext::new();
-        ctx.set_input(predecessor_input.clone());
-
-        // Populate $node with all available outputs
-        for entry in outputs {
-            ctx.set_node_data(entry.key(), entry.value().clone());
-        }
-
-        // Resolve each parameter
-        let mut resolved = serde_json::Map::new();
-        for (key, param_value) in params {
-            let value = self.resolve_param(node_key, key, param_value, &ctx, outputs)?;
-            resolved.insert(key.clone(), value);
-        }
-
-        Ok(Some(serde_json::Value::Object(resolved)))
+                if has_expressions {
+                    for entry in snapshot {
+                        if !shared_outputs.contains_key(entry.key()) {
+                            let shared = share_output_for_expressions(entry.value())
+                                .map_err(|source| expression_snapshot_error(node_key, source))?;
+                            shared_outputs.insert(entry.key().clone(), shared);
+                        }
+                    }
+                    expression_values
+                        .try_set_shared_node_data_batch(shared_outputs.iter().filter_map(|entry| {
+                            outputs
+                                .contains_key(entry.key())
+                                .then(|| (entry.key().clone(), Arc::clone(entry.value())))
+                        }))
+                        .map_err(|source| expression_snapshot_error(node_key, source))?;
+                }
+            }
+            let values = params
+                .iter()
+                .map(|(key, parameter)| {
+                    Self::author_parameter(node_key, key, parameter, outputs)
+                        .map(|value| (key.clone(), value))
+                })
+                .collect::<Result<_, EngineError>>()?;
+            let context = has_expressions.then(|| {
+                expression_values.set_input(predecessor_input);
+                NodeExpressionContext {
+                    engine: Arc::clone(&self.expression_engine),
+                    values: expression_values,
+                    cancellation,
+                }
+            });
+            (AuthoredValue::Object(values), context)
+        };
+        let values = schema
+            .validate(authored)
+            .map_err(|report| input_error(node_key, report, "input schema validation failed"))?;
+        Ok(PreparedNodeInput {
+            node_key: node_key.clone(),
+            values,
+            context,
+        })
     }
 
-    /// Resolve a single parameter value.
-    fn resolve_param(
-        &self,
+    fn author_parameter(
         node_key: &NodeKey,
         key: &str,
         param: &ParamValue,
-        ctx: &EvaluationContext,
         outputs: &DashMap<NodeKey, serde_json::Value>,
-    ) -> Result<serde_json::Value, EngineError> {
+    ) -> Result<AuthoredValue, EngineError> {
+        let data = |value| {
+            AuthoredValue::from_data(value)
+                .map_err(|error| input_error(node_key, error.into(), "input data is invalid"))
+        };
         match param {
-            ParamValue::Literal { value } => Ok(value.clone()),
-
+            ParamValue::Literal { value } => data(value.clone()),
             ParamValue::Expression { expr } => {
-                self.expression_engine
-                    .evaluate(expr, ctx)
-                    .map_err(|expression_error| EngineError::ParameterResolution {
-                        node_key: node_key.clone(),
-                        param_key: key.to_owned(),
-                        error: expression_error.to_string(),
-                        source: Some(Box::new(expression_error)),
-                    })
+                Ok(AuthoredValue::Expression(Expression::new(expr.as_str())))
             },
-
-            ParamValue::Template { template } => {
-                let tmpl = self.expression_engine.parse_template(template).map_err(
-                    |expression_error| EngineError::ParameterResolution {
-                        node_key: node_key.clone(),
-                        param_key: key.to_owned(),
-                        error: format!("template parse error: {expression_error}"),
-                        source: Some(Box::new(expression_error)),
-                    },
-                )?;
-                let rendered = self.expression_engine.render_template(&tmpl, ctx).map_err(
-                    |expression_error| EngineError::ParameterResolution {
-                        node_key: node_key.clone(),
-                        param_key: key.to_owned(),
-                        error: format!("template render error: {expression_error}"),
-                        source: Some(Box::new(expression_error)),
-                    },
-                )?;
-                Ok(serde_json::Value::String(rendered))
-            },
+            ParamValue::Template { template } => Ok(AuthoredValue::Expression(
+                Expression::template(template.as_str()),
+            )),
 
             ParamValue::Reference {
                 node_key: ref_node,
@@ -116,8 +165,18 @@ impl ParamResolver {
                             error: format!("referenced node {ref_node} has no output"),
                             source: None,
                         })?;
-                let value = navigate_path(output.value(), output_path);
-                Ok(value)
+                let pointer = output_path.as_str();
+                let value = output.value().pointer(pointer).cloned().ok_or_else(|| {
+                    EngineError::ParameterResolution {
+                        node_key: node_key.clone(),
+                        param_key: key.to_owned(),
+                        error: format!(
+                            "referenced node {ref_node} output path `{pointer}` does not resolve"
+                        ),
+                        source: None,
+                    }
+                })?;
+                data(value)
             },
 
             _ => Err(EngineError::ParameterResolution {
@@ -130,55 +189,141 @@ impl ParamResolver {
     }
 }
 
-/// Navigate a JSON value by a dot-separated path.
-///
-/// Supports object key access and array index access, with an optional JSONPath
-/// root prefix:
-/// - `"data.items"` → `value["data"]["items"]`
-/// - `"$.data.items"` → same (the `$.` root is stripped)
-/// - `"items.0.name"` → `value["items"][0]["name"]`
-/// - `"$"` → the whole value (root)
-///
-/// The public [`ParamValue::reference`](nebula_workflow::ParamValue::reference)
-/// constructor documents `output_path` as JSONPath (`$.data.items`), while this
-/// navigator splits on `.`. Stripping an optional leading `$.` (or a bare `$`)
-/// reconciles the two grammars so both forms resolve to the same location;
-/// without it a `$.`-prefixed path looked up a literal `"$"` key and silently
-/// resolved to `Null`. (A JSON object key literally named `$…` is not
-/// addressable — `$` is reserved for the JSONPath root, as in the standard.)
-///
-/// Returns `Value::Null` for missing keys or out-of-bounds indices.
-fn navigate_path(value: &serde_json::Value, path: &str) -> serde_json::Value {
-    let path = match path.strip_prefix("$.") {
-        Some(rest) => rest,
-        None => path.strip_prefix('$').unwrap_or(path),
-    };
-    if path.is_empty() {
-        return value.clone();
+pub(crate) fn share_output_for_expressions(
+    value: &serde_json::Value,
+) -> Result<Arc<serde_json::Value>, nebula_expression::ExpressionError> {
+    EvaluationContext::try_share_value(value)
+}
+
+/// An admitted input whose retained programs have not yet been evaluated.
+pub(crate) struct PreparedNodeInput {
+    node_key: NodeKey,
+    values: ValidValues,
+    context: Option<NodeExpressionContext>,
+}
+
+impl fmt::Debug for PreparedNodeInput {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PreparedNodeInput")
+            .field("node_key", &self.node_key)
+            .finish_non_exhaustive()
     }
-    let mut current = value;
-    for segment in path.split('.') {
-        match current {
-            serde_json::Value::Object(map) => {
-                current = map.get(segment).unwrap_or(&serde_json::Value::Null);
-            },
-            serde_json::Value::Array(arr) => {
-                if let Ok(idx) = segment.parse::<usize>() {
-                    current = arr.get(idx).unwrap_or(&serde_json::Value::Null);
-                } else {
-                    return serde_json::Value::Null;
+}
+
+impl PreparedNodeInput {
+    #[tracing::instrument(name = "engine.input.resolve", skip_all, fields(node_key = %self.node_key), err)]
+    pub(crate) async fn resolve(self) -> Result<ResolvedValues, EngineError> {
+        let resolved = match self.context {
+            Some(context) => {
+                tokio::select! {
+                    biased;
+                    () = context.cancellation.cancelled() => return Err(EngineError::Cancelled),
+                    resolved = self.values.resolve(&context) => resolved,
                 }
             },
-            _ => return serde_json::Value::Null,
-        }
+            None => self.values.resolve_data(),
+        };
+        resolved.map_err(|report| {
+            input_error(&self.node_key, report, "input expression resolution failed")
+        })
     }
-    current.clone()
+}
+
+struct NodeExpressionContext {
+    engine: Arc<ExpressionEngine>,
+    values: EvaluationContext,
+    cancellation: CancellationToken,
+}
+
+impl ExpressionContext for NodeExpressionContext {
+    fn evaluate<'a>(&'a self, program: &'a CompiledProgram) -> EvalFuture<'a> {
+        let engine = Arc::clone(&self.engine);
+        let values = self.values.clone();
+        let program = program.clone();
+        Box::pin(async move {
+            tokio::task::spawn_blocking(move || engine.evaluate_compiled(&program, &values))
+                .await
+                .map_err(|source| {
+                    ValidationError::builder("expression.runtime")
+                        .message("expression evaluation failed")
+                        .source(PrivateInputCause { _source: source })
+                        .build()
+                })?
+                .map_err(|source| {
+                    ValidationError::builder("expression.runtime")
+                        .message("expression evaluation failed")
+                        .source(PrivateInputCause { _source: source })
+                        .build()
+                })
+        })
+    }
+}
+
+// Preserve typed causes without exposing evaluator sources or input payloads.
+struct PrivateInputCause<E> {
+    _source: E,
+}
+
+impl<E> fmt::Debug for PrivateInputCause<E> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("PrivateInputCause(..)")
+    }
+}
+
+impl<E> fmt::Display for PrivateInputCause<E> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("input processing failed")
+    }
+}
+
+impl<E> std::error::Error for PrivateInputCause<E> {}
+
+fn expression_snapshot_error(
+    node_key: &NodeKey,
+    error: nebula_expression::ExpressionError,
+) -> EngineError {
+    let message = "expression context exceeds fixed resource limits";
+    let source = ValidationError::builder("expression.context_limit")
+        .message(message)
+        .source(PrivateInputCause { _source: error })
+        .build();
+    EngineError::ParameterResolution {
+        node_key: node_key.clone(),
+        param_key: String::new(),
+        error: message.to_owned(),
+        source: Some(Box::new(source)),
+    }
+}
+
+fn input_error(node_key: &NodeKey, report: ValidationReport, message: &'static str) -> EngineError {
+    let param_key = report
+        .errors()
+        .next()
+        .and_then(|error| {
+            error
+                .path()
+                .segments()
+                .next()
+                .map(std::borrow::Cow::into_owned)
+        })
+        .unwrap_or_default();
+    let source = ValidationError::builder("input.validation")
+        .message(message)
+        .source(PrivateInputCause { _source: report })
+        .build();
+    EngineError::ParameterResolution {
+        node_key: node_key.clone(),
+        param_key,
+        error: message.to_owned(),
+        source: Some(Box::new(source)),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use nebula_core::node_key;
-    use nebula_schema::{Field, FieldKey, PathWalk, Schema, ValidSchema};
+    use nebula_schema::{Field, FieldKey, PathWalk, Schema, ValidSchema, ValuePath};
     use proptest::prelude::*;
     use serde_json::json;
 
@@ -189,90 +334,48 @@ mod tests {
         ParamResolver::new(engine)
     }
 
-    // -- navigate_path tests --
-
-    #[test]
-    fn navigate_path_empty_returns_value() {
-        let val = json!({"a": 1});
-        assert_eq!(navigate_path(&val, ""), val);
-    }
-
-    #[test]
-    fn navigate_path_object_key() {
-        let val = json!({"data": {"name": "Alice"}});
-        assert_eq!(navigate_path(&val, "data.name"), json!("Alice"));
-    }
-
-    #[test]
-    fn navigate_path_array_index() {
-        let val = json!({"items": [10, 20, 30]});
-        assert_eq!(navigate_path(&val, "items.1"), json!(20));
-    }
-
-    #[test]
-    fn navigate_path_missing_key_returns_null() {
-        let val = json!({"a": 1});
-        assert_eq!(navigate_path(&val, "b"), json!(null));
-    }
-
-    #[test]
-    fn navigate_path_out_of_bounds_returns_null() {
-        let val = json!({"items": [1]});
-        assert_eq!(navigate_path(&val, "items.5"), json!(null));
-    }
-
-    #[test]
-    fn navigate_path_non_container_returns_null() {
-        let val = json!(42);
-        assert_eq!(navigate_path(&val, "key"), json!(null));
-    }
-
-    #[test]
-    fn navigate_path_array_with_non_numeric_returns_null() {
-        let val = json!([1, 2, 3]);
-        assert_eq!(navigate_path(&val, "name"), json!(null));
-    }
-
-    /// The documented JSONPath grammar (`$.data.items`) must resolve to the same
-    /// place as the bare-dotted form. Before the root-prefix reconciliation a
-    /// `$.`-prefixed path looked up a literal `"$"` key and returned `Null`.
-    #[test]
-    fn navigate_path_strips_jsonpath_root_prefix() {
-        let val = json!({"data": {"items": [1, 2, 3]}});
-        assert_eq!(
-            navigate_path(&val, "$.data.items.0"),
-            json!(1),
-            "`$.`-prefixed JSONPath must resolve like the bare-dotted form"
-        );
-        // Both grammars agree.
-        assert_eq!(
-            navigate_path(&val, "$.data.items"),
-            navigate_path(&val, "data.items"),
-        );
-    }
-
-    /// A bare `$` is the JSONPath root — the whole value.
-    #[test]
-    fn navigate_path_bare_root_returns_whole_value() {
-        let val = json!({"a": 1});
-        assert_eq!(navigate_path(&val, "$"), val);
+    async fn resolved_data(
+        schema: &ValidSchema,
+        params: &HashMap<String, ParamValue>,
+        input: serde_json::Value,
+        outputs: &DashMap<NodeKey, serde_json::Value>,
+    ) -> Result<serde_json::Value, EngineError> {
+        let shared_outputs = DashMap::new();
+        let resolved = make_resolver()
+            .prepare(NodeInputRequest {
+                node_key: &node_key!("test"),
+                parameters: params,
+                predecessor_input: input,
+                outputs,
+                shared_outputs: &shared_outputs,
+                schema,
+                cancellation: CancellationToken::new(),
+            })?
+            .resolve()
+            .await?;
+        Ok(resolved.into_typed_exposing_secrets().unwrap())
     }
 
     // -- resolve tests --
 
-    #[test]
-    fn empty_params_returns_none() {
-        let resolver = make_resolver();
+    #[tokio::test]
+    async fn empty_params_preserve_predecessor_data() {
         let outputs = DashMap::new();
-        let result = resolver
-            .resolve(&node_key!("test"), &HashMap::new(), &json!(null), &outputs)
-            .unwrap();
-        assert!(result.is_none());
+        let schema = nebula_schema::schema_of::<serde_json::Value>().unwrap();
+        for input in [json!(null), json!(7), json!({"literal": "{{ 7 }}"})] {
+            let result = resolved_data(&schema, &HashMap::new(), input.clone(), &outputs)
+                .await
+                .unwrap();
+            assert_eq!(result, input);
+        }
     }
 
-    #[test]
-    fn literal_resolution_passthrough() {
-        let resolver = make_resolver();
+    #[tokio::test]
+    async fn literal_resolution_passthrough() {
+        let schema = Schema::builder()
+            .add(Field::string(FieldKey::new("url").unwrap()))
+            .build()
+            .unwrap();
         let outputs = DashMap::new();
         let mut params = HashMap::new();
         params.insert(
@@ -280,16 +383,18 @@ mod tests {
             ParamValue::literal(json!("https://example.com")),
         );
 
-        let result = resolver
-            .resolve(&node_key!("test"), &params, &json!(null), &outputs)
-            .unwrap()
+        let result = resolved_data(&schema, &params, json!(null), &outputs)
+            .await
             .unwrap();
         assert_eq!(result["url"], json!("https://example.com"));
     }
 
-    #[test]
-    fn expression_resolution_evaluates() {
-        let resolver = make_resolver();
+    #[tokio::test]
+    async fn expression_resolution_evaluates() {
+        let schema = Schema::builder()
+            .add(Field::number(FieldKey::new("count").unwrap()).integer())
+            .build()
+            .unwrap();
         let outputs = DashMap::new();
         let mut params = HashMap::new();
         params.insert(
@@ -298,16 +403,102 @@ mod tests {
         );
 
         let input = json!({"count": 5});
-        let result = resolver
-            .resolve(&node_key!("test"), &params, &input, &outputs)
-            .unwrap()
+        let result = resolved_data(&schema, &params, input, &outputs)
+            .await
             .unwrap();
         assert_eq!(result["count"], json!(6));
     }
 
+    #[tokio::test]
+    async fn expression_resolution_observes_cancellation_before_evaluation() {
+        let schema = Schema::builder()
+            .add(Field::number(FieldKey::new("count").unwrap()).integer())
+            .build()
+            .unwrap();
+        let outputs = DashMap::new();
+        let shared_outputs = DashMap::new();
+        let mut params = HashMap::new();
+        params.insert("count".to_owned(), ParamValue::expression("1 + 1"));
+        let cancellation = CancellationToken::new();
+        let prepared = make_resolver()
+            .prepare(NodeInputRequest {
+                node_key: &node_key!("test"),
+                parameters: &params,
+                predecessor_input: json!(null),
+                outputs: &outputs,
+                shared_outputs: &shared_outputs,
+                schema: &schema,
+                cancellation: cancellation.clone(),
+            })
+            .unwrap();
+        cancellation.cancel();
+
+        let error = prepared.resolve().await.unwrap_err();
+
+        std::assert_matches!(error, EngineError::Cancelled);
+    }
+
     #[test]
-    fn template_resolution_renders() {
-        let resolver = make_resolver();
+    fn expression_snapshot_rejects_deep_output_before_admission() {
+        let schema = nebula_schema::schema_of::<serde_json::Value>().unwrap();
+        let source_id = node_key!("source");
+        let outputs = DashMap::new();
+        let mut nested = json!(null);
+        for _ in 0..300 {
+            nested = json!([nested]);
+        }
+        outputs.insert(source_id, nested);
+        let shared_outputs = DashMap::new();
+        let mut params = HashMap::new();
+        params.insert("value".to_owned(), ParamValue::expression("$node.source"));
+
+        let error = make_resolver()
+            .prepare(NodeInputRequest {
+                node_key: &node_key!("test"),
+                parameters: &params,
+                predecessor_input: json!(null),
+                outputs: &outputs,
+                shared_outputs: &shared_outputs,
+                schema: &schema,
+                cancellation: CancellationToken::new(),
+            })
+            .unwrap_err();
+
+        std::assert_matches!(error, EngineError::ParameterResolution { .. });
+    }
+
+    #[test]
+    fn expression_snapshot_rejects_aggregate_before_populating_shared_cache() {
+        let schema = nebula_schema::schema_of::<serde_json::Value>().unwrap();
+        let outputs = DashMap::new();
+        outputs.insert(node_key!("first"), json!("a".repeat(600_000)));
+        outputs.insert(node_key!("second"), json!("b".repeat(600_000)));
+        let shared_outputs = DashMap::new();
+        let mut params = HashMap::new();
+        params.insert("value".to_owned(), ParamValue::expression("$node.first"));
+
+        let error = make_resolver()
+            .prepare(NodeInputRequest {
+                node_key: &node_key!("test"),
+                parameters: &params,
+                predecessor_input: json!(null),
+                outputs: &outputs,
+                shared_outputs: &shared_outputs,
+                schema: &schema,
+                cancellation: CancellationToken::new(),
+            })
+            .unwrap_err();
+
+        std::assert_matches!(error, EngineError::ParameterResolution { .. });
+        assert!(shared_outputs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn template_resolution_renders() {
+        let schema = Schema::builder()
+            .add(Field::string(FieldKey::new("greeting").unwrap()))
+            .build()
+            .unwrap();
         let outputs = DashMap::new();
         let mut params = HashMap::new();
         params.insert(
@@ -316,33 +507,40 @@ mod tests {
         );
 
         let input = json!({"name": "World"});
-        let result = resolver
-            .resolve(&node_key!("test"), &params, &input, &outputs)
-            .unwrap()
+        let result = resolved_data(&schema, &params, input, &outputs)
+            .await
             .unwrap();
         assert_eq!(result["greeting"], json!("Hello World!"));
     }
 
-    #[test]
-    fn reference_resolution_looks_up_output() {
-        let resolver = make_resolver();
+    #[tokio::test]
+    async fn reference_resolution_looks_up_output() {
+        let schema = Schema::builder()
+            .add(
+                Field::object(FieldKey::new("input").unwrap())
+                    .add(Field::string(FieldKey::new("data").unwrap())),
+            )
+            .build()
+            .unwrap();
         let source_id = node_key!("source");
         let outputs = DashMap::new();
         outputs.insert(source_id.clone(), json!({"data": "fetched"}));
 
         let mut params = HashMap::new();
-        params.insert("input".to_owned(), ParamValue::reference(source_id, ""));
+        params.insert("input".to_owned(), ParamValue::root_reference(source_id));
 
-        let result = resolver
-            .resolve(&node_key!("test"), &params, &json!(null), &outputs)
-            .unwrap()
+        let result = resolved_data(&schema, &params, json!(null), &outputs)
+            .await
             .unwrap();
         assert_eq!(result["input"], json!({"data": "fetched"}));
     }
 
-    #[test]
-    fn reference_with_path_navigates_output() {
-        let resolver = make_resolver();
+    #[tokio::test]
+    async fn reference_with_path_navigates_output() {
+        let schema = Schema::builder()
+            .add(Field::number(FieldKey::new("val").unwrap()).integer())
+            .build()
+            .unwrap();
         let source_id = node_key!("source");
         let outputs = DashMap::new();
         outputs.insert(source_id.clone(), json!({"nested": {"value": 42}}));
@@ -350,35 +548,114 @@ mod tests {
         let mut params = HashMap::new();
         params.insert(
             "val".to_owned(),
-            ParamValue::reference(source_id, "nested.value"),
+            ParamValue::reference(source_id, ValuePath::from_pointer("/nested/value").unwrap()),
         );
 
-        let result = resolver
-            .resolve(&node_key!("test"), &params, &json!(null), &outputs)
-            .unwrap()
+        let result = resolved_data(&schema, &params, json!(null), &outputs)
+            .await
             .unwrap();
         assert_eq!(result["val"], json!(42));
     }
 
     #[test]
-    fn reference_to_missing_node_returns_error() {
-        let resolver = make_resolver();
+    fn reference_path_uses_rfc6901_escaping() {
+        let source_id = node_key!("source");
+        let outputs = DashMap::new();
+        outputs.insert(source_id.clone(), json!({"a/b": {"~key": 42}}));
+        let parameter =
+            ParamValue::reference(source_id, ValuePath::from_pointer("/a~1b/~0key").unwrap());
+
+        let authored =
+            ParamResolver::author_parameter(&node_key!("consumer"), "val", &parameter, &outputs)
+                .unwrap();
+        let AuthoredValue::Literal(value) = authored else {
+            panic!("expected literal reference output");
+        };
+        assert_eq!(value.as_json(), &json!(42));
+    }
+
+    #[test]
+    fn reference_to_explicit_null_preserves_null() {
+        let source_id = node_key!("source");
+        let outputs = DashMap::new();
+        outputs.insert(source_id.clone(), json!({"nested": null}));
+        let parameter =
+            ParamValue::reference(source_id, ValuePath::from_pointer("/nested").unwrap());
+
+        let authored =
+            ParamResolver::author_parameter(&node_key!("consumer"), "val", &parameter, &outputs)
+                .unwrap();
+        let AuthoredValue::Literal(value) = authored else {
+            panic!("expected literal reference output");
+        };
+        assert_eq!(value.as_json(), &serde_json::Value::Null);
+    }
+
+    fn assert_reference_path_error(output: serde_json::Value, output_path: &str) {
+        let source_id = node_key!("source");
+        let outputs = DashMap::new();
+        outputs.insert(source_id.clone(), output);
+        let parameter =
+            ParamValue::reference(source_id, ValuePath::from_pointer(output_path).unwrap());
+
+        let error =
+            ParamResolver::author_parameter(&node_key!("consumer"), "val", &parameter, &outputs)
+                .unwrap_err();
+        let EngineError::ParameterResolution {
+            node_key,
+            param_key,
+            error: detail,
+            source,
+        } = error
+        else {
+            panic!("expected ParameterResolution, got {error:?}");
+        };
+        assert_eq!(node_key, node_key!("consumer"));
+        assert_eq!(param_key, "val");
+        assert!(detail.contains(output_path), "unexpected detail: {detail}");
+        assert!(source.is_none());
+    }
+
+    #[test]
+    fn reference_to_missing_key_returns_parameter_resolution_error() {
+        assert_reference_path_error(json!({"nested": 42}), "/missing");
+    }
+
+    #[test]
+    fn reference_to_bad_array_index_returns_parameter_resolution_error() {
+        assert_reference_path_error(json!({"items": [1]}), "/items/5");
+    }
+
+    #[test]
+    fn reference_descending_through_scalar_returns_parameter_resolution_error() {
+        assert_reference_path_error(json!({"scalar": 42}), "/scalar/value");
+    }
+
+    #[tokio::test]
+    async fn reference_to_missing_node_returns_error() {
+        let schema = Schema::builder()
+            .add(Field::object(FieldKey::new("data").unwrap()))
+            .build()
+            .unwrap();
         let missing_id = node_key!("missing");
         let outputs = DashMap::new();
 
         let mut params = HashMap::new();
-        params.insert("data".to_owned(), ParamValue::reference(missing_id, ""));
+        params.insert("data".to_owned(), ParamValue::root_reference(missing_id));
 
-        let err = resolver
-            .resolve(&node_key!("test"), &params, &json!(null), &outputs)
+        let err = resolved_data(&schema, &params, json!(null), &outputs)
+            .await
             .unwrap_err();
-        assert!(matches!(err, EngineError::ParameterResolution { .. }));
+        std::assert_matches!(err, EngineError::ParameterResolution { .. });
         assert!(err.to_string().contains("has no output"));
     }
 
-    #[test]
-    fn expression_eval_failure_returns_error() {
-        let resolver = make_resolver();
+    #[tokio::test]
+    async fn expression_eval_failure_returns_error() {
+        let schema = Schema::builder()
+            .add(Field::number(FieldKey::new("bad").unwrap()))
+            .build()
+            .unwrap();
         let outputs = DashMap::new();
         let mut params = HashMap::new();
         // invalid expression: accessing property on undefined variable
@@ -387,46 +664,47 @@ mod tests {
             ParamValue::expression("$nonexistent.foo.bar"),
         );
 
-        let err = resolver
-            .resolve(&node_key!("test"), &params, &json!(null), &outputs)
+        let err = resolved_data(&schema, &params, json!(null), &outputs)
+            .await
             .unwrap_err();
-        assert!(matches!(err, EngineError::ParameterResolution { .. }));
+        std::assert_matches!(err, EngineError::ParameterResolution { .. });
     }
 
-    #[test]
-    fn template_parse_failure_returns_error() {
-        let resolver = make_resolver();
+    #[tokio::test]
+    async fn template_parse_failure_returns_error() {
+        let schema = Schema::builder()
+            .add(Field::string(FieldKey::new("bad").unwrap()))
+            .build()
+            .unwrap();
         let outputs = DashMap::new();
         let mut params = HashMap::new();
         // Unclosed template delimiter
         params.insert("bad".to_owned(), ParamValue::template("Hello {{ unclosed"));
 
-        let err = resolver
-            .resolve(&node_key!("test"), &params, &json!(null), &outputs)
+        let err = resolved_data(&schema, &params, json!(null), &outputs)
+            .await
             .unwrap_err();
-        assert!(matches!(err, EngineError::ParameterResolution { .. }));
+        std::assert_matches!(err, EngineError::ParameterResolution { .. });
     }
 
-    // ── FIX 4: ParameterResolution carries a typed #[source] ─────────────────
-    //
-    // Before the fix, `ParameterResolution` was a `{ node_key, param_key,
-    // error: String }` — the upstream `ExpressionError` was stringified and
-    // thrown away, breaking the `std::error::Error` source chain. After the
-    // fix, expression-originated failures carry `source: Some(ExpressionError)`
-    // so callers can inspect or route on the typed upstream error and
-    // `std::error::Error::source()` returns `Some(&ExpressionError)`.
-
-    #[test]
-    fn expression_resolution_error_preserves_typed_source() {
+    // Typed validation sources remain available without publishing expression text.
+    #[tokio::test]
+    async fn expression_resolution_error_preserves_typed_source() {
         use std::error::Error as StdError;
 
-        let resolver = make_resolver();
+        let schema = Schema::builder()
+            .add(Field::number(FieldKey::new("bad").unwrap()))
+            .build()
+            .unwrap();
         let outputs = DashMap::new();
         let mut params = HashMap::new();
-        params.insert("bad".to_owned(), ParamValue::expression("$nonexistent.foo"));
+        params.insert(
+            "bad".to_owned(),
+            ParamValue::expression("$NONEXISTENT_SECRET_CANARY.foo"),
+        );
 
-        let err = resolver
-            .resolve(&node_key!("test"), &params, &json!(null), &outputs)
+        let err = resolved_data(&schema, &params, json!(null), &outputs)
+            .await
             .unwrap_err();
 
         // The error must be the ParameterResolution variant with a typed source.
@@ -435,7 +713,7 @@ mod tests {
         };
         assert!(
             source.is_some(),
-            "expression eval failure must carry a typed ExpressionError source, got None"
+            "expression eval failure must carry a typed validation source, got None"
         );
 
         // The std::error::Error source chain must be intact.
@@ -443,24 +721,34 @@ mod tests {
             (&err as &dyn StdError).source().is_some(),
             "std::error::Error::source() must return Some(_) for expression failures"
         );
+        let source = source.as_ref().unwrap();
+        assert_eq!(source.code(), "input.validation");
+        let mut cause: Option<&dyn StdError> = Some(&err);
+        while let Some(error) = cause {
+            assert!(!format!("{error} {error:?}").contains("NONEXISTENT_SECRET_CANARY"));
+            cause = error.source();
+        }
     }
 
-    #[test]
-    fn reference_resolution_error_has_no_source() {
+    #[tokio::test]
+    async fn reference_resolution_error_has_no_source() {
         use std::error::Error as StdError;
 
         // Reference-to-missing-node is a string-only failure: no typed upstream.
         // Verify `source: None` and that the chain terminates cleanly.
-        let resolver = make_resolver();
+        let schema = Schema::builder()
+            .add(Field::object(FieldKey::new("data").unwrap()))
+            .build()
+            .unwrap();
         let outputs = DashMap::new();
         let mut params = HashMap::new();
         params.insert(
             "data".to_owned(),
-            ParamValue::reference(node_key!("missing"), ""),
+            ParamValue::root_reference(node_key!("missing")),
         );
 
-        let err = resolver
-            .resolve(&node_key!("test"), &params, &json!(null), &outputs)
+        let err = resolved_data(&schema, &params, json!(null), &outputs)
+            .await
             .unwrap_err();
 
         let EngineError::ParameterResolution { ref source, .. } = err else {
@@ -476,20 +764,7 @@ mod tests {
         );
     }
 
-    // -- walk_authored_path vs. navigate_path tripwire (ADR-0100 TypeDAG, W0 U5) --
-    //
-    // `nebula_schema::ValidSchema::walk_authored_path` is a validation-time,
-    // schema-only walk; `navigate_path` above is the runtime, value-only
-    // navigator. This crate is the one place both are reachable together
-    // (`navigate_path` is private to this module; `nebula-schema` cannot depend
-    // on `nebula-engine` to call it, and vice versa this crate already depends
-    // on `nebula-schema`) — see the W0 U5 plan's "Option B" on why the two are
-    // deliberately NOT unified into shared code.
-
-    /// A fully-closed schema for the tripwire: `items: List<Object { name:
-    /// String }>` — matches the plan's example paths (`items.0.name` /
-    /// `$.items.0.name`) exactly.
-    fn tripwire_schema() -> ValidSchema {
+    fn reference_path_schema() -> ValidSchema {
         Schema::builder()
             .add(
                 Field::list(FieldKey::new("items").unwrap()).item(
@@ -501,48 +776,19 @@ mod tests {
             .unwrap()
     }
 
-    /// A value conforming to [`tripwire_schema`]: two items, indices 0 and 1
-    /// resolve to a real (non-`Null`) `name`.
-    fn tripwire_conforming_value() -> serde_json::Value {
-        json!({"items": [{"name": "a"}, {"name": "b"}]})
-    }
-
     proptest! {
-        /// Tripwire, not a completeness proof (framed per the W0 U5 plan): over a
-        /// fully-closed `(schema, conforming value)` fixture, `walk_authored_path`
-        /// must never claim a path is a PROVABLE MISTAKE
-        /// (`PathWalk::Unresolved`) when the runtime `navigate_path` actually
-        /// resolves that SAME authored path to a real (non-`Null`) value. A
-        /// divergence here would mean the walk hard-rejects a `Reference` the
-        /// engine would happily resolve at runtime — exactly the false-positive
-        /// class the four review rounds were about.
-        ///
-        /// Runtime output is never validated against its declared schema
-        /// (`engine.rs:2565-2567`), so the two navigators CAN legitimately
-        /// diverge outside the cases this design already excludes (this fixture
-        /// is fully closed by construction, so no such divergence is expected
-        /// here — the property still only asserts the one-directional
-        /// implication, not full agreement).
         #[test]
-        fn walk_never_unresolved_where_navigate_path_resolves(
-            index in 0usize..6,
-            dollar_prefix in any::<bool>(),
-        ) {
-            let schema = tripwire_schema();
-            let value = tripwire_conforming_value();
-            let path = if dollar_prefix {
-                format!("$.items.{index}.name")
-            } else {
-                format!("items.{index}.name")
-            };
+        fn schema_walk_never_rejects_a_runtime_resolvable_reference(index in 0usize..6) {
+            let schema = reference_path_schema();
+            let output = json!({"items": [{"name": "a"}, {"name": "b"}]});
+            let path = ValuePath::from_pointer(&format!("/items/{index}/name")).unwrap();
 
-            let runtime = navigate_path(&value, &path);
-            if runtime != serde_json::Value::Null {
-                let walked = schema.walk_authored_path(&path);
+            if let Some(runtime) = output.pointer(path.as_str()) {
+                let walked = schema.walk_reference_path(&path);
                 prop_assert!(
                     !matches!(walked, PathWalk::Unresolved(_)),
-                    "navigate_path resolved `{path}` to {runtime:?}, but walk_authored_path \
-                     claimed it was unresolvable: {walked:?}"
+                    "runtime resolved `{}` to {runtime:?}, but schema rejected it: {walked:?}",
+                    path.as_str(),
                 );
             }
         }

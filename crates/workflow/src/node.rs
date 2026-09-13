@@ -3,6 +3,7 @@
 use std::{collections::HashMap, time::Duration};
 
 use nebula_core::{ActionKey, NodeKey, PluginKey, prelude::KeyParseError};
+use nebula_schema::ValuePath;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 
@@ -267,8 +268,8 @@ pub enum ParamValue {
     Reference {
         /// The source node producing the output.
         node_key: NodeKey,
-        /// JSONPath-like path into the source node's output.
-        output_path: String,
+        /// Canonical RFC6901 path into the source node's output.
+        output_path: ValuePath,
     },
 }
 
@@ -295,11 +296,17 @@ impl ParamValue {
 
     /// Construct a reference parameter.
     #[must_use]
-    pub fn reference(node_key: NodeKey, output_path: impl Into<String>) -> Self {
+    pub fn reference(node_key: NodeKey, output_path: ValuePath) -> Self {
         Self::Reference {
             node_key,
-            output_path: output_path.into(),
+            output_path,
         }
+    }
+
+    /// Construct a reference to the complete output of another node.
+    #[must_use]
+    pub fn root_reference(node_key: NodeKey) -> Self {
+        Self::reference(node_key, ValuePath::root())
     }
 }
 
@@ -402,14 +409,15 @@ mod tests {
     #[test]
     fn param_value_reference() {
         let source = node_key!("source");
-        let pv = ParamValue::reference(source.clone(), "$.data.items");
+        let path = ValuePath::from_pointer("/data/items").unwrap();
+        let pv = ParamValue::reference(source.clone(), path.clone());
         match pv {
             ParamValue::Reference {
                 node_key,
                 output_path,
             } => {
                 assert_eq!(node_key, source);
-                assert_eq!(output_path, "$.data.items");
+                assert_eq!(output_path, path);
             },
             _ => panic!("expected Reference"),
         }
@@ -422,7 +430,7 @@ mod tests {
             ParamValue::literal(serde_json::json!({"key": "value"})),
             ParamValue::expression("1 + 2"),
             ParamValue::template("Hello {{ world }}"),
-            ParamValue::reference(source, "$.out"),
+            ParamValue::reference(source, ValuePath::from_pointer("/out").unwrap()),
         ];
 
         for original in &values {

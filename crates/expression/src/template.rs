@@ -6,11 +6,10 @@
 
 use std::{fmt, sync::Arc};
 
-use nebula_log::trace;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ExpressionError,
+    CompiledProgram, ExpressionError,
     context::EvaluationContext,
     engine::ExpressionEngine,
     error::{ExpressionErrorExt, ExpressionResult},
@@ -82,24 +81,93 @@ impl fmt::Display for Position {
     }
 }
 
+enum TemplateToken {
+    Open,
+    Escaped { width: usize, text: &'static str },
+    Text,
+}
+
+fn template_token(bytes: &[u8]) -> TemplateToken {
+    if bytes.starts_with(b"\\\\") {
+        TemplateToken::Escaped {
+            width: 2,
+            text: "\\\\",
+        }
+    } else if bytes.starts_with(b"\\{{") {
+        TemplateToken::Escaped {
+            width: 3,
+            text: "{{",
+        }
+    } else if bytes.starts_with(b"{{{{") {
+        TemplateToken::Escaped {
+            width: 4,
+            text: "{{",
+        }
+    } else if bytes.starts_with(b"}}}}") {
+        TemplateToken::Escaped {
+            width: 4,
+            text: "}}",
+        }
+    } else if bytes.starts_with(b"{{") {
+        TemplateToken::Open
+    } else {
+        TemplateToken::Text
+    }
+}
+
+/// Detect an unescaped template opener without parsing or evaluating the source.
+///
+/// Neither a closing delimiter nor a `$` sigil is required: malformed syntax
+/// remains authored expression input and can subsequently fail compilation.
+/// `{{{{` escapes an opener; an odd backslash run before `{{` escapes it, while
+/// an even run does not. Quotes have no meaning during this template-text scan.
+/// This performs a linear scan without allocation or a compilation size check.
+///
+/// ```
+/// use nebula_expression::has_expression_marker;
+/// assert!(has_expression_marker("total: {{ 1 +"));
+/// assert!(!has_expression_marker(r"literal \{{ opener"));
+/// assert!(has_expression_marker(r"prefix \\{{ 1 }}"));
+/// ```
+#[must_use]
+#[tracing::instrument(level = "trace", skip_all, fields(source_bytes = source.len()))]
+pub fn has_expression_marker(source: &str) -> bool {
+    let bytes = source.as_bytes();
+    let mut position = 0;
+    while position < bytes.len() {
+        match template_token(&bytes[position..]) {
+            TemplateToken::Open => return true,
+            TemplateToken::Escaped { width, .. } => position += width,
+            TemplateToken::Text => position += 1,
+        }
+    }
+    false
+}
+
 /// A parsed template with cached structure
 #[derive(Debug, Clone)]
 pub struct Template {
     /// Original template source
     source: Arc<str>,
     /// Parsed template parts (cached after first parse)
-    parts: Vec<TemplatePart>,
+    parts: Arc<[TemplatePart]>,
+    program: CompiledProgram,
 }
 
 impl Template {
     /// Create a new template from a string
     ///
     /// This will parse the template immediately and cache the structure.
-    pub fn new(source: impl Into<String>) -> ExpressionResult<Self> {
-        let source_str = source.into();
-        let parts = Self::parse(&source_str)?;
-        let source = Arc::from(source_str.as_str());
-        Ok(Self { source, parts })
+    pub fn new(source: impl AsRef<str>) -> ExpressionResult<Self> {
+        let source_str = source.as_ref();
+        let parts = Self::parse(source_str)?;
+        let source: Arc<str> = Arc::from(source_str);
+        let program = CompiledProgram::from_template_parts(Arc::clone(&source), &parts)?;
+        Ok(Self {
+            source,
+            parts: parts.into(),
+            program,
+        })
     }
 
     /// Get the original source string
@@ -112,79 +180,32 @@ impl Template {
         &self.parts
     }
 
+    pub(crate) fn program(&self) -> &CompiledProgram {
+        &self.program
+    }
+
     /// Render the template with the given context
     pub fn render(
         &self,
         engine: &ExpressionEngine,
         context: &EvaluationContext,
     ) -> ExpressionResult<String> {
-        let mut result = String::with_capacity(self.source.len());
-        let mut strip_next_leading = false;
-
-        for part in &self.parts {
-            match part {
-                TemplatePart::Static { content, .. } => {
-                    if strip_next_leading {
-                        result.push_str(content.trim_start());
-                        strip_next_leading = false;
-                    } else {
-                        result.push_str(content);
-                    }
-                },
-                TemplatePart::Expression {
-                    content,
-                    position,
-                    strip_left,
-                    strip_right,
-                    ..
-                } => {
-                    trace!(
-                        expression = &**content,
-                        position = %position,
-                        strip_left = strip_left,
-                        strip_right = strip_right,
-                        "Rendering template expression"
-                    );
-
-                    // Strip whitespace on the left if requested
-                    if *strip_left {
-                        // Truncate in-place instead of allocating new String
-                        let trimmed_len = result.trim_end().len();
-                        result.truncate(trimmed_len);
-                    }
-
-                    match engine.evaluate(content.trim(), context) {
-                        Ok(value) => {
-                            match value.as_str() {
-                                Some(s) => result.push_str(s),
-                                None => result.push_str(&value.to_string()),
-                            }
-
-                            // Mark that we should strip leading whitespace from next static part
-                            if *strip_right {
-                                strip_next_leading = true;
-                            }
-                        },
-                        Err(e) => {
-                            // Create beautiful error message with source context
-                            let formatted_error = format_template_error(
-                                &self.source,
-                                *position,
-                                &e.to_string(),
-                                Some(content.trim()),
-                            );
-                            return Err(ExpressionError::expression_eval_error(formatted_error));
-                        },
-                    }
-                },
-            }
+        match engine.evaluate_compiled(&self.program, context)? {
+            serde_json::Value::String(text) => Ok(text),
+            other => Err(ExpressionError::type_error(
+                "template string",
+                crate::value_utils::value_type_name(&other),
+            )),
         }
-
-        Ok(result)
     }
 
     /// Parse a template string into parts
     fn parse(source: &str) -> ExpressionResult<Vec<TemplatePart>> {
+        crate::limits::check_limit(
+            "source bytes",
+            source.len(),
+            crate::limits::MAX_SOURCE_BYTES,
+        )?;
         let mut parts = Vec::new();
         let mut current_static = String::new();
         let mut static_start = Position::start();
@@ -192,12 +213,21 @@ impl Template {
         let chars: Vec<char> = source.chars().collect();
         let len = chars.len();
         let mut i = 0;
+        let mut byte_offset = 0;
         let mut line = 1;
         let mut column = 1;
 
         while i < len {
+            let token = template_token(&source.as_bytes()[byte_offset..]);
+            if let TemplateToken::Escaped { width, text } = token {
+                current_static.push_str(text);
+                i += width;
+                byte_offset += width;
+                column += width;
+                continue;
+            }
             // Look for opening {{
-            if i + 1 < len && chars[i] == '{' && chars[i + 1] == '{' {
+            if matches!(token, TemplateToken::Open) {
                 // Save any accumulated static content
                 if !current_static.is_empty() {
                     parts.push(TemplatePart::Static {
@@ -211,44 +241,45 @@ impl Template {
 
                 // Find closing }}
                 let mut j = i + 2;
-                let mut depth = 1;
+                let mut object_depth = 0_usize;
+                let mut quote = None;
+                let mut escaped = false;
+                let mut closed = false;
                 let mut expr_line = line;
                 let mut expr_column = column + 2;
 
-                while j + 1 < len {
-                    // Newline handling must short-circuit the rest of the
-                    // loop body. Previously the `\n` branch ran first, set
-                    // `expr_column = 1`, then *fell through* to the `else`
-                    // branch's `expr_column += 1` — producing an off-by-one
-                    // column for every char that followed a newline inside
-                    // a multiline `{{ ... }}` expression. The error
-                    // formatter then highlighted one cell to the right of
-                    // the actual offending character.
+                while j < len {
+                    let character = chars[j];
+                    if let Some(delimiter) = quote {
+                        if escaped {
+                            escaped = false;
+                        } else if character == '\\' {
+                            escaped = true;
+                        } else if character == delimiter {
+                            quote = None;
+                        }
+                    } else {
+                        match character {
+                            '\'' | '"' => quote = Some(character),
+                            '{' => object_depth += 1,
+                            '}' if object_depth > 0 => object_depth -= 1,
+                            '}' if chars.get(j + 1) == Some(&'}') => {
+                                closed = true;
+                                break;
+                            },
+                            _ => {},
+                        }
+                    }
                     if chars[j] == '\n' {
                         expr_line += 1;
                         expr_column = 1;
-                        j += 1;
-                        continue;
-                    }
-
-                    if chars[j] == '{' && chars[j + 1] == '{' {
-                        depth += 1;
-                        j += 2;
-                        expr_column += 2;
-                    } else if chars[j] == '}' && chars[j + 1] == '}' {
-                        depth -= 1;
-                        if depth == 0 {
-                            break;
-                        }
-                        j += 2;
-                        expr_column += 2;
                     } else {
-                        j += 1;
                         expr_column += 1;
                     }
+                    j += 1;
                 }
 
-                if depth == 0 && j + 1 < len {
+                if closed {
                     // Check for whitespace control markers
                     let mut expr_start_idx = i + 2;
                     let mut expr_end_idx = j;
@@ -291,6 +322,10 @@ impl Template {
                     }
 
                     // Update position tracking
+                    byte_offset += chars[i..j + 2]
+                        .iter()
+                        .map(|character| character.len_utf8())
+                        .sum::<usize>();
                     i = j + 2;
                     line = expr_line;
                     column = expr_column + 2;
@@ -308,6 +343,7 @@ impl Template {
             } else {
                 // Regular character
                 current_static.push(chars[i]);
+                byte_offset += chars[i].len_utf8();
                 i += 1;
 
                 // Track newlines
@@ -387,7 +423,7 @@ pub enum MaybeTemplate {
 
 impl MaybeTemplate {
     /// Create from a string, automatically detecting if it's a template
-    /// based on `{{ }}` delimiters.
+    /// using [`has_expression_marker`], including malformed unescaped openers.
     ///
     /// This constructor is heuristic by design — caller has explicitly
     /// opted into auto-detection. The serde path uses the tagged form
@@ -395,7 +431,7 @@ impl MaybeTemplate {
     /// `{{ }}` do not get mis-routed.
     pub fn from_string(s: impl Into<String>) -> Self {
         let s = s.into();
-        if s.contains("{{") && s.contains("}}") {
+        if has_expression_marker(&s) {
             Self::Template(s)
         } else {
             Self::Resolved(s)
@@ -415,7 +451,7 @@ impl MaybeTemplate {
     ) -> ExpressionResult<String> {
         match self {
             Self::Template(template_str) => {
-                let template = Template::new(template_str)?;
+                let template = engine.parse_template(template_str)?;
                 template.render(engine, context)
             },
             Self::Resolved(value) => Ok(value.clone()),

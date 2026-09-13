@@ -294,10 +294,10 @@ For `allow_spaces`, construct directly: `Alphanumeric { allow_spaces: true }`.
 |------|---------|----------|------|
 | `Min<T>` | `min(v)` | Inclusive `>=` | `min` |
 | `Max<T>` | `max(v)` | Inclusive `<=` | `max` |
-| `InRange<T>` | `in_range(min, max)` | Inclusive `[min, max]` | `out_of_range` |
+| `InRange<T>` | `in_range(min, max) -> Result<_, RangeConfigError>` | Inclusive `[min, max]` | `out_of_range` |
 | `GreaterThan<T>` | `greater_than(v)` | Exclusive `>` | `greater_than` |
 | `LessThan<T>` | `less_than(v)` | Exclusive `<` | `less_than` |
-| `ExclusiveRange<T>` | `exclusive_range(min, max)` | Exclusive `(min, max)` | `exclusive_range` |
+| `ExclusiveRange<T>` | `exclusive_range(min, max) -> Result<_, RangeConfigError>` | Exclusive `(min, max)` | `exclusive_range` |
 
 ### Size — `validators::size` (for `[T]`)
 
@@ -307,7 +307,7 @@ For `allow_spaces`, construct directly: `Alphanumeric { allow_spaces: true }`.
 | `MaxSize<T>` | `max_size::<T>(n)` | `max_size` |
 | `ExactSize<T>` | `exact_size::<T>(n)` | `exact_size` |
 | `NotEmptyCollection<T>` | `not_empty_collection::<T>()` | `not_empty` |
-| `SizeRange<T>` | `size_range::<T>(min, max)` | `size_range` |
+| `SizeRange<T>` | `size_range::<T>(min, max) -> Result<_, RangeConfigError>` | `size_range` |
 
 `SizeRange` does not validate `min <= max` at construction; validate at call site if needed.
 

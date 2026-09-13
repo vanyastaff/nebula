@@ -32,7 +32,7 @@ pub trait PendingStateStore: Send + Sync {
         pending: P,
     ) -> impl Future<Output = Result<PendingToken, PendingStoreError>> + Send;
 
-    /// Reads pending state without consuming (for polling flows like device code).
+    /// Reads pending state without consuming for polling-based flows.
     fn get<P: PendingState>(
         &self,
         token: &PendingToken,
@@ -70,29 +70,71 @@ pub trait PendingStateStore: Send + Sync {
 }
 
 /// Error from pending state operations.
-#[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum PendingStoreError {
     /// No pending state found for this token.
-    #[error("pending state not found")]
     NotFound,
 
     /// Pending state has expired (TTL exceeded).
-    #[error("pending state expired")]
     Expired,
 
     /// Already consumed (single-use violation).
-    #[error("pending state already consumed")]
     AlreadyConsumed,
 
     /// 4-dimensional validation failed.
-    #[error("validation failed: {reason}")]
     ValidationFailed {
         /// Which dimension failed and why.
         reason: String,
     },
 
     /// Backend storage error.
-    #[error("pending store backend error: {0}")]
     Backend(Box<dyn std::error::Error + Send + Sync>),
+}
+
+impl std::fmt::Debug for PendingStoreError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::NotFound => "PendingStoreError::NotFound",
+            Self::Expired => "PendingStoreError::Expired",
+            Self::AlreadyConsumed => "PendingStoreError::AlreadyConsumed",
+            Self::ValidationFailed { .. } => "PendingStoreError::ValidationFailed",
+            Self::Backend(_) => "PendingStoreError::Backend",
+        })
+    }
+}
+
+impl std::fmt::Display for PendingStoreError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::NotFound => "pending state not found",
+            Self::Expired => "pending state expired",
+            Self::AlreadyConsumed => "pending state already consumed",
+            Self::ValidationFailed { .. } => "pending state validation failed",
+            Self::Backend(_) => "pending store backend error",
+        })
+    }
+}
+
+impl std::error::Error for PendingStoreError {}
+
+#[cfg(test)]
+mod tests {
+    use super::PendingStoreError;
+
+    #[test]
+    fn pending_store_error_diagnostics_are_payload_free() {
+        const CANARY: &str = "pending-state-secret-diagnostic-canary";
+        let errors = [
+            PendingStoreError::ValidationFailed {
+                reason: CANARY.to_owned(),
+            },
+            PendingStoreError::Backend(CANARY.to_owned().into()),
+        ];
+
+        for error in errors {
+            let diagnostic = format!("{error:?} {error}");
+            assert!(!diagnostic.contains(CANARY));
+            assert!(std::error::Error::source(&error).is_none());
+        }
+    }
 }

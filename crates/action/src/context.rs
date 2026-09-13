@@ -12,10 +12,10 @@
 //! type the runtime chooses to supply (engine runtime, test harness,
 //! runner context wrapper,...).
 
-use std::{any::Any, fmt, future::Future, pin::Pin, sync::Arc};
+use std::{any::Any, collections::HashMap, fmt, future::Future, pin::Pin, sync::Arc};
 
 use nebula_core::{
-    AttemptId, BaseContext, CredentialKey, NodeKey, ResourceKey,
+    AttemptId, BaseContext, CredentialKey, NodeKey, PortKey, ResourceKey,
     accessor::{Clock, CredentialAccessor, EventEmitter, Logger, MetricsEmitter, ResourceAccessor},
     context::{
         Context as CoreContext, HasCredentials, HasEventBus, HasLogger, HasMetrics, HasResources,
@@ -38,6 +38,68 @@ use crate::{
 };
 
 // ── Action-specific capability traits ──────────────────────────────────────
+
+/// Values delivered through named support input ports for one dispatch.
+///
+/// Payloads are deliberately absent from [`Debug`]. Port declarations constrain
+/// cardinality during engine preflight; the runtime context only exposes the
+/// already-admitted values to action code.
+#[derive(Clone, Default)]
+pub struct SupportInputs {
+    ports: Arc<HashMap<PortKey, Vec<serde_json::Value>>>,
+}
+
+impl SupportInputs {
+    /// Construct a support-input snapshot from values grouped by port.
+    #[must_use]
+    pub fn new(ports: HashMap<PortKey, Vec<serde_json::Value>>) -> Self {
+        Self {
+            ports: Arc::new(ports),
+        }
+    }
+
+    /// Values delivered to `port`, in deterministic connection order.
+    #[must_use]
+    pub fn values(&self, port: &PortKey) -> &[serde_json::Value] {
+        self.ports.get(port).map_or(&[], Vec::as_slice)
+    }
+
+    /// The sole value delivered to `port`, or `None` when absent or multi-valued.
+    #[must_use]
+    pub fn single(&self, port: &PortKey) -> Option<&serde_json::Value> {
+        let values = self.values(port);
+        (values.len() == 1).then(|| &values[0])
+    }
+
+    /// Whether this dispatch has no named support values.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.ports.is_empty()
+    }
+
+    /// Number of support ports carrying at least one value.
+    #[must_use]
+    pub fn port_count(&self) -> usize {
+        self.ports.len()
+    }
+}
+
+impl fmt::Debug for SupportInputs {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let value_count = self.ports.values().map(Vec::len).sum::<usize>();
+        formatter
+            .debug_struct("SupportInputs")
+            .field("port_count", &self.ports.len())
+            .field("value_count", &value_count)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Capability: named support inputs admitted for the current node dispatch.
+pub trait HasSupportInputs: CoreContext {
+    /// Immutable support-input snapshot for this dispatch.
+    fn support_inputs(&self) -> &SupportInputs;
+}
 
 /// Capability: node identity within a workflow graph.
 ///
@@ -79,7 +141,14 @@ pub trait HasWebhookEndpoint: CoreContext {
     note = "ActionContext requires core::Context + resources + credentials + logger + metrics + event bus + node identity"
 )]
 pub trait ActionContext:
-    CoreContext + HasResources + HasCredentials + HasLogger + HasMetrics + HasEventBus + HasNodeIdentity
+    CoreContext
+    + HasResources
+    + HasCredentials
+    + HasLogger
+    + HasMetrics
+    + HasEventBus
+    + HasNodeIdentity
+    + HasSupportInputs
 {
 }
 
@@ -91,6 +160,7 @@ impl<T> ActionContext for T where
         + HasMetrics
         + HasEventBus
         + HasNodeIdentity
+        + HasSupportInputs
         + ?Sized
 {
 }
@@ -151,6 +221,7 @@ pub struct ActionRuntimeContext {
     logger: Arc<dyn Logger>,
     metrics: Arc<dyn MetricsEmitter>,
     eventbus: Arc<dyn EventEmitter>,
+    support_inputs: SupportInputs,
 }
 
 impl ActionRuntimeContext {
@@ -185,6 +256,7 @@ impl ActionRuntimeContext {
             logger: default_action_logger(),
             metrics: default_metrics_emitter(),
             eventbus: default_event_emitter(),
+            support_inputs: SupportInputs::default(),
         }
     }
 
@@ -220,6 +292,13 @@ impl ActionRuntimeContext {
     #[must_use]
     pub fn with_eventbus(mut self, eventbus: Arc<dyn EventEmitter>) -> Self {
         self.eventbus = eventbus;
+        self
+    }
+
+    /// Inject the immutable named support inputs for this dispatch.
+    #[must_use]
+    pub fn with_support_inputs(mut self, support_inputs: SupportInputs) -> Self {
+        self.support_inputs = support_inputs;
         self
     }
 
@@ -375,6 +454,12 @@ impl HasNodeIdentity for ActionRuntimeContext {
     }
 }
 
+impl HasSupportInputs for ActionRuntimeContext {
+    fn support_inputs(&self) -> &SupportInputs {
+        &self.support_inputs
+    }
+}
+
 impl fmt::Debug for ActionRuntimeContext {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ActionRuntimeContext")
@@ -385,6 +470,7 @@ impl fmt::Debug for ActionRuntimeContext {
             .field("logger", &"<dyn Logger>")
             .field("metrics", &"<dyn MetricsEmitter>")
             .field("eventbus", &"<dyn EventEmitter>")
+            .field("support_inputs", &self.support_inputs)
             .finish()
     }
 }

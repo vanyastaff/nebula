@@ -21,12 +21,12 @@ use semver::Version;
 use crate::{ComponentKind, PluginError, plugin::Plugin};
 
 pub(crate) struct ActionContractSnapshot {
-    metadata: ActionMetadata,
+    metadata: Arc<ActionMetadata>,
     dependencies: Dependencies,
 }
 
 impl ActionContractSnapshot {
-    pub(crate) const fn metadata(&self) -> &ActionMetadata {
+    pub(crate) fn metadata(&self) -> &ActionMetadata {
         &self.metadata
     }
 
@@ -191,6 +191,15 @@ impl ResolvedPlugin {
         self.actions.get(key).map(|entry| &entry.factory)
     }
 
+    /// Iterate factories with the checked metadata captured during plugin admission.
+    pub fn action_definitions(
+        &self,
+    ) -> impl Iterator<Item = (&Arc<ActionMetadata>, &Arc<dyn ActionFactory>)> {
+        self.actions
+            .values()
+            .map(|entry| (&entry.contract.metadata, &entry.factory))
+    }
+
     /// Look up a credential by key.
     pub fn credential(&self, key: &CredentialKey) -> Option<&Arc<dyn AnyCredential>> {
         self.credentials.get(key).map(|entry| &entry.credential)
@@ -257,10 +266,10 @@ impl ResolvedPlugin {
         let mut projected = contributions
             .into_iter()
             .map(|factory| {
-                let metadata = factory.metadata().clone();
+                let metadata = Arc::clone(factory.metadata());
                 let dependencies = factory.dependencies().clone();
-                let key = metadata.base.key.clone();
-                (
+                let key = metadata.base().key().clone();
+                Ok::<_, PluginError>((
                     key,
                     ResolvedAction {
                         factory,
@@ -269,9 +278,9 @@ impl ResolvedPlugin {
                             dependencies,
                         },
                     },
-                )
+                ))
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, _>>()?;
         projected.sort_by(|(left, _), (right, _)| left.cmp(right));
 
         let mut index = HashMap::with_capacity(projected.len());
@@ -291,7 +300,7 @@ impl ResolvedPlugin {
                 });
             }
             crate::plan_effect::validate_factory_effect(
-                &action.contract.metadata.effect_contract,
+                action.contract.metadata.effect_contract(),
                 action.factory.as_ref(),
             )
             .map_err(|_| PluginError::InvalidEffectContract {
@@ -311,25 +320,24 @@ impl ResolvedPlugin {
             .into_iter()
             .map(|credential| {
                 let raw_projected_key = credential.credential_key().to_owned();
-                let metadata = credential.metadata();
+                let metadata = credential.metadata()?;
                 let capabilities = credential.capabilities();
                 let erased_type_id = std::any::Any::type_id(credential.as_ref());
                 let downcast_type_id = credential.as_any().type_id();
-                ProjectedCredential {
+                Ok::<_, PluginError>(ProjectedCredential {
                     credential,
                     raw_projected_key,
                     metadata,
                     capabilities,
                     erased_type_id,
                     downcast_type_id,
-                }
+                })
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, _>>()?;
         projected.sort_by(|left, right| {
             left.metadata
-                .base
-                .key
-                .cmp(&right.metadata.base.key)
+                .key()
+                .cmp(right.metadata.key())
                 .then_with(|| left.raw_projected_key.cmp(&right.raw_projected_key))
         });
 
@@ -343,7 +351,7 @@ impl ResolvedPlugin {
                         projected_key: projected.raw_projected_key.clone(),
                     }
                 })?;
-            let metadata_key = &projected.metadata.base.key;
+            let metadata_key = projected.metadata.key();
             if typed_projected_key != *metadata_key {
                 return Err(PluginError::ComponentKeyMismatch {
                     plugin: plugin_key.clone(),
@@ -399,10 +407,10 @@ impl ResolvedPlugin {
             .into_iter()
             .map(|factory| {
                 let key = factory.key();
-                let metadata = factory.metadata();
+                let metadata = factory.metadata()?.clone();
                 let dependencies = factory.dependencies().clone();
                 let type_id = factory.resource_type_id();
-                (
+                Ok::<_, PluginError>((
                     key,
                     ResolvedResource {
                         factory,
@@ -412,22 +420,22 @@ impl ResolvedPlugin {
                             type_id,
                         },
                     },
-                )
+                ))
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, _>>()?;
         projected.sort_by(|(left_key, left), (right_key, right)| {
             left_key.cmp(right_key).then_with(|| {
                 left.contract
                     .metadata
-                    .base
-                    .key
-                    .cmp(&right.contract.metadata.base.key)
+                    .base()
+                    .key()
+                    .cmp(right.contract.metadata.base().key())
             })
         });
 
         let mut index = HashMap::with_capacity(projected.len());
         for (key, resource) in projected {
-            let metadata_key = &resource.contract.metadata.base.key;
+            let metadata_key = resource.contract.metadata.base().key();
             if &key != metadata_key {
                 return Err(PluginError::ComponentKeyMismatch {
                     plugin: plugin_key.clone(),

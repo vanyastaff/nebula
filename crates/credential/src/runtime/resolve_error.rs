@@ -38,41 +38,29 @@ pub(crate) fn resolve_error_to_credential_error(err: ResolveError) -> Credential
             CredentialError::RefreshNotApplied(context)
         },
         // Local policy/configuration defect — non-retryable, actionable.
-        ResolveError::RefreshContainmentViolation {
-            ref credential_id,
-            ref refresh_kind,
-            ref family_pattern,
-        } => CredentialError::InvalidInput(format!(
-            "credential {credential_id}: F3 containment violation — \
-             refresh kind {refresh_kind:?} is not permitted by scheme family {family_pattern:?}; \
-             fix the credential's policy() implementation or its AuthScheme::Family declaration"
-        )),
+        ResolveError::RefreshContainmentViolation { .. } => CredentialError::InvalidInput,
         // Re-auth: the stored refresh grant was rejected — terminal until the
         // user reconnects. `InvalidGrant` is non-retryable, so the resolve path
         // does not re-POST a dead grant.
-        ResolveError::ReauthRequired {
-            ref credential_id,
-            ref reason,
-        } => CredentialError::Provider(Box::new(ProviderErrorContext::new(
-            ProviderErrorKind::InvalidGrant,
-            SecretFreeMessage::new(format!(
-                "credential {credential_id}: re-authentication required ({})",
-                reason.code()
-            )),
-        ))),
+        ResolveError::ReauthRequired { .. } => {
+            CredentialError::Provider(Box::new(ProviderErrorContext::new(
+                ProviderErrorKind::InvalidGrant,
+                SecretFreeMessage::new("credential re-authentication is required"),
+            )))
+        },
         // Permanent data-integrity / configuration faults — no better on retry.
-        error @ (ResolveError::Deserialize { .. }
+        ResolveError::Deserialize { .. }
         | ResolveError::KindMismatch { .. }
-        | ResolveError::ExternalSourceNotWired) => CredentialError::InvalidInput(error.to_string()),
+        | ResolveError::ExternalSourceNotWired => CredentialError::InvalidInput,
         // Permanent store faults for a specific row — missing or already
         // existing. Retrying will not change the outcome.
-        error @ ResolveError::Store(
+        ResolveError::Store(
             CredentialPersistenceError::NotFound
             | CredentialPersistenceError::AlreadyExists { .. }
             | CredentialPersistenceError::VersionExhausted
             | CredentialPersistenceError::MaterialEpochExhausted
             | CredentialPersistenceError::CorruptRecord,
-        ) => CredentialError::InvalidInput(error.to_string()),
+        ) => CredentialError::InvalidInput,
         // A post-provider commit with a lost acknowledgement is operational but
         // explicitly non-retryable: replay could duplicate or conflict with a
         // mutation that already committed.
@@ -98,10 +86,10 @@ pub(crate) fn resolve_error_to_credential_error(err: ResolveError) -> Credential
         // pre-dispatch rejection, or a replay-safe runtime failure. Exact
         // provider no-effect responses are handled above as
         // `RefreshNotApplied` or `RefreshFinalization`.
-        error @ (ResolveError::Store(_) | ResolveError::Refresh { .. }) => {
+        ResolveError::Store(_) | ResolveError::Refresh { .. } => {
             CredentialError::Provider(Box::new(ProviderErrorContext::new(
                 ProviderErrorKind::ServerError,
-                SecretFreeMessage::new(error.to_string()),
+                SecretFreeMessage::new("credential runtime dependency is unavailable"),
             )))
         },
     }
@@ -583,7 +571,7 @@ mod tests {
         };
         let mapped = resolve_error_to_credential_error(resolve_err);
         assert!(
-            matches!(mapped, CredentialError::InvalidInput(_)),
+            matches!(mapped, CredentialError::InvalidInput),
             "expected InvalidInput (non-retriable, Validation category), got {mapped:?}"
         );
         // Confirm it is NOT mapped to a retriable provider error.

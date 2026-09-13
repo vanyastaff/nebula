@@ -1,11 +1,14 @@
 // Baseline benchmarks for nebula-expression
 // Run with: cargo bench --bench baseline
 
-use std::{hint::black_box, sync::Arc, thread};
+use std::{assert_matches, hint::black_box, sync::Arc, thread};
 
-use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use nebula_expression::{EvaluationContext, ExpressionEngine, Template};
-use serde_json::Value;
+use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use nebula_expression::{
+    BuiltinOutput, BuiltinOutputBound, BuiltinOutputBuilder, BuiltinOutputLimit, EvaluationContext,
+    EvaluationPolicy, ExpressionEngine, ExpressionError, ExpressionResult, Template, Value,
+    eval::BuiltinView,
+};
 
 // ================================
 // Template Benchmarks
@@ -127,6 +130,7 @@ fn benchmark_evaluate_no_cache(c: &mut Criterion) {
     group.finish();
 }
 
+#[cfg(feature = "cache")]
 fn benchmark_evaluate_with_cache(c: &mut Criterion) {
     let mut group = c.benchmark_group("engine/evaluate_with_cache");
 
@@ -176,6 +180,79 @@ fn benchmark_context_operations(c: &mut Criterion) {
         b.iter(|| context.get_execution_var(black_box("var_50")));
     });
 
+    for payload_bytes in [4 * 1024usize, 256 * 1024] {
+        let mut shared_context = EvaluationContext::new();
+        shared_context.set_node_data("large", Value::String("x".repeat(payload_bytes)));
+        group.bench_with_input(
+            BenchmarkId::new("resolve_shared_node", payload_bytes),
+            &shared_context,
+            |bencher, shared_context| {
+                bencher.iter(|| {
+                    black_box(
+                        shared_context
+                            .resolve_variable(black_box("node"))
+                            .unwrap()
+                            .unwrap(),
+                    )
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
+fn benchmark_context_population(c: &mut Criterion) {
+    let mut group = c.benchmark_group("context/populate_nodes");
+
+    for node_count in [16usize, 64, 256] {
+        let entries: Vec<_> = (0..node_count)
+            .map(|index| {
+                (
+                    format!("node_{index}"),
+                    Value::Number((index as i64).into()),
+                )
+            })
+            .collect();
+        group.throughput(Throughput::Elements(node_count as u64));
+
+        group.bench_with_input(
+            BenchmarkId::new("individual_updates", node_count),
+            &entries,
+            |bencher, entries| {
+                bencher.iter_batched(
+                    EvaluationContext::new,
+                    |mut context| {
+                        for (node_key, value) in entries {
+                            context.set_node_data(node_key, value.clone());
+                        }
+                        black_box(context)
+                    },
+                    BatchSize::SmallInput,
+                );
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("batch", node_count),
+            &entries,
+            |bencher, entries| {
+                bencher.iter_batched(
+                    EvaluationContext::new,
+                    |mut context| {
+                        context.set_node_data_batch(
+                            entries
+                                .iter()
+                                .map(|(node_key, value)| (node_key, value.clone())),
+                        );
+                        black_box(context)
+                    },
+                    BatchSize::SmallInput,
+                );
+            },
+        );
+    }
+
     group.finish();
 }
 
@@ -191,7 +268,10 @@ fn benchmark_concurrent_access(c: &mut Criterion) {
     let mut group = c.benchmark_group("concurrent/access");
     group.throughput(Throughput::Elements(1));
 
+    #[cfg(feature = "cache")]
     let engine = Arc::new(ExpressionEngine::with_cache_size(1000));
+    #[cfg(not(feature = "cache"))]
+    let engine = Arc::new(ExpressionEngine::new());
     let expr = "2 + 2";
 
     // Warm up cache
@@ -236,7 +316,10 @@ fn benchmark_throughput(c: &mut Criterion) {
     let mut group = c.benchmark_group("concurrent/throughput");
     group.throughput(Throughput::Elements(1));
 
+    #[cfg(feature = "cache")]
     let engine = Arc::new(ExpressionEngine::with_cache_size(1000));
+    #[cfg(not(feature = "cache"))]
+    let engine = Arc::new(ExpressionEngine::new());
     let context = EvaluationContext::new();
 
     group.bench_function("ops_per_sec", |b| {
@@ -279,6 +362,52 @@ fn benchmark_builtins(c: &mut Criterion) {
     group.finish();
 }
 
+fn oversized_custom_output(
+    _args: &[&Value],
+    _view: BuiltinView<'_>,
+    _context: &EvaluationContext,
+    output: BuiltinOutputBuilder,
+) -> ExpressionResult<BuiltinOutput> {
+    output.repeat_string("0123456789abcdef", 256)
+}
+
+fn benchmark_builtin_output_rejection(c: &mut Criterion) {
+    let policy = EvaluationPolicy::new()
+        .with_max_builtin_output_string_bytes(BuiltinOutputBound::new(64).unwrap());
+    let mut engine = ExpressionEngine::new().with_policy(policy);
+    engine.register_function("oversized", oversized_custom_output);
+    let context = EvaluationContext::new();
+    let expression = "oversized()";
+    let rejection = engine.evaluate(expression, &context).unwrap_err();
+    assert_matches!(
+        rejection,
+        ExpressionError::BuiltinOutputLimitExceeded {
+            dimension: BuiltinOutputLimit::StringBytes,
+            limit: 64,
+            actual: 4096,
+        }
+    );
+
+    c.bench_function(
+        "builtins/output_limit/reject_before_allocation",
+        |bencher| {
+            bencher.iter(|| {
+                let rejection = engine
+                    .evaluate(black_box(expression), black_box(&context))
+                    .unwrap_err();
+                assert_matches!(
+                    rejection,
+                    ExpressionError::BuiltinOutputLimitExceeded {
+                        dimension: BuiltinOutputLimit::StringBytes,
+                        limit: 64,
+                        actual: 4096,
+                    }
+                );
+            });
+        },
+    );
+}
+
 // ================================
 // Criterion Groups
 // ================================
@@ -290,13 +419,21 @@ criterion_group!(
     benchmark_template_clone
 );
 
+#[cfg(feature = "cache")]
 criterion_group!(
     engine_benches,
     benchmark_evaluate_no_cache,
     benchmark_evaluate_with_cache
 );
 
-criterion_group!(context_benches, benchmark_context_operations);
+#[cfg(not(feature = "cache"))]
+criterion_group!(engine_benches, benchmark_evaluate_no_cache);
+
+criterion_group!(
+    context_benches,
+    benchmark_context_operations,
+    benchmark_context_population
+);
 
 criterion_group!(
     concurrent_benches,
@@ -304,7 +441,11 @@ criterion_group!(
     benchmark_throughput
 );
 
-criterion_group!(builtin_benches, benchmark_builtins);
+criterion_group!(
+    builtin_benches,
+    benchmark_builtins,
+    benchmark_builtin_output_rejection
+);
 
 criterion_main!(
     template_benches,

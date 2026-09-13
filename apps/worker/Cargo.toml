@@ -22,8 +22,6 @@ doc = false
 nebula-worker = { path = "../../crates/worker" }
 # Engine wiring (with_plugin) and ActionRuntime construction.
 nebula-engine = { path = "../../crates/engine" }
-# ActionResult type used in the no-op ActionExecutor closure.
-nebula-action = { path = "../../crates/action" }
 # First-party core plugin (SetFields and other utility actions).
 nebula-plugin-core = { path = "../../crates/plugin-core" }
 # ResolvedPlugin::from wraps the concrete plugin for the engine.

@@ -1,14 +1,15 @@
 //! Compile contract for the supported SDK perimeter.
 //!
 //! The fixture has exactly one Nebula dependency. Its positive binary exercises
-//! the currently supported builder/testing subset (`ActionBuilder`,
-//! `WorkflowBuilder`, and credential `TestResult`) and manual `Provider` authoring
+//! typed action authoring (`ActionMetadataDraft`, `simple_action!`, and associated
+//! `Input`/`Output`), `WorkflowBuilder`, credential `TestResult`, and manual `Provider` authoring
 //! with a consuming terminal hook over a non-Clone instance, using the
 //! general-purpose `async-trait` dependency. This is a compile check, not runtime
 //! teardown coverage. A second positive binary checks custom resource topology
 //! authoring. Each negative binary targets one distinct authority or persistence
-//! escape hatch that must stay
-//! unavailable. Procedural derives have a separate SDK-only compile-pass
+//! escape hatch that must stay unavailable, including paths below `__private`:
+//! Rust documentation hiding is not access control. Procedural derives have a
+//! separate SDK-only compile-pass
 //! contract in `derive_external_contract.rs`.
 
 use std::{
@@ -22,6 +23,10 @@ const FIXTURE_FILES: &[&str] = &[
     "Cargo.toml",
     "src/bin/positive.rs",
     "src/bin/resource_topology.rs",
+    "src/bin/removed_resource_from_key.rs",
+    "src/bin/removed_credential_pattern.rs",
+    "src/bin/removed_credential_fourth_argument.rs",
+    "src/bin/private_notice_since.rs",
     "src/bin/resource_manager.rs",
     "src/bin/resource_registry.rs",
     "src/bin/resource_release_queue.rs",
@@ -33,6 +38,42 @@ const FIXTURE_FILES: &[&str] = &[
     "src/bin/unscoped_resolver.rs",
     "src/bin/operation_protocol.rs",
     "src/bin/turn_handoff.rs",
+    "src/bin/removed_field_values.rs",
+    "src/bin/removed_field_value.rs",
+    "src/bin/compiled_program.rs",
+    "src/bin/compiled_value.rs",
+    "src/bin/engine_expression_context.rs",
+    "src/bin/eval_future.rs",
+    "src/bin/expression_context.rs",
+    "src/bin/action_input.rs",
+    "src/bin/prepared_action_input.rs",
+    "src/bin/base_metadata.rs",
+    "src/bin/action_metadata.rs",
+    "src/bin/credential_metadata.rs",
+    "src/bin/resource_metadata.rs",
+    "src/bin/metadata_trait.rs",
+    "src/bin/metadata_build_error.rs",
+    "src/bin/value_tree.rs",
+    "src/bin/valid_values.rs",
+    "src/bin/resolved_value.rs",
+    "src/bin/resolved_values.rs",
+    "src/bin/resolved_lookup.rs",
+    "src/bin/credential_record.rs",
+    "src/bin/stateless_action_adapter.rs",
+    "src/bin/resource_registration_spec.rs",
+    "src/bin/resource_acquire_options.rs",
+    "src/bin/resource_slot_identity.rs",
+    "src/bin/remote_effect_factory.rs",
+    "src/bin/action_builder.rs",
+    "src/bin/hidden_resource_manager.rs",
+    "src/bin/hidden_resource_factory.rs",
+    "src/bin/hidden_resource_kind_activator.rs",
+    "src/bin/hidden_resource_register_request.rs",
+    "src/bin/hidden_resource_box_fut.rs",
+    "src/bin/hidden_resource_metadata.rs",
+    "src/bin/hidden_resource_metadata_build_error.rs",
+    "src/bin/hidden_resource_slot_identity.rs",
+    "src/bin/hidden_resource_bridge_field.rs",
 ];
 
 const FORBIDDEN: &[(&str, &str)] = &[
@@ -47,6 +88,59 @@ const FORBIDDEN: &[(&str, &str)] = &[
     ("unscoped_resolver", "CredentialResolver"),
     ("operation_protocol", "PreparedEffectContract"),
     ("turn_handoff", "ExecutionTurnHandoff"),
+    ("removed_field_values", "FieldValues"),
+    ("removed_field_value", "FieldValue"),
+    ("compiled_program", "CompiledProgram"),
+    ("compiled_value", "CompiledValue"),
+    ("engine_expression_context", "EngineExpressionContext"),
+    ("eval_future", "EvalFuture"),
+    ("expression_context", "ExpressionContext"),
+    ("action_input", "ActionInput"),
+    ("prepared_action_input", "PreparedActionInput"),
+    ("base_metadata", "BaseMetadata"),
+    ("action_metadata", "ActionMetadata"),
+    ("credential_metadata", "CredentialMetadata"),
+    ("resource_metadata", "ResourceMetadata"),
+    ("metadata_trait", "Metadata"),
+    ("metadata_build_error", "MetadataBuildError"),
+    ("value_tree", "ValueTree"),
+    ("valid_values", "ValidValues"),
+    ("resolved_value", "ResolvedValue"),
+    ("resolved_values", "ResolvedValues"),
+    ("resolved_lookup", "ResolvedLookup"),
+    ("credential_record", "CredentialRecord"),
+    ("stateless_action_adapter", "StatelessActionAdapter"),
+    ("resource_registration_spec", "RegistrationSpec"),
+    ("resource_acquire_options", "AcquireOptions"),
+    ("resource_slot_identity", "SlotIdentity"),
+    ("remote_effect_factory", "RemoteEffectFactory"),
+    ("action_builder", "ActionBuilder"),
+    ("hidden_resource_manager", "Manager"),
+    ("hidden_resource_factory", "ResourceFactory"),
+    ("hidden_resource_kind_activator", "factory"),
+    ("hidden_resource_register_request", "factory"),
+    ("hidden_resource_box_fut", "factory"),
+    ("hidden_resource_metadata", "ResourceMetadata"),
+    ("hidden_resource_metadata_build_error", "MetadataBuildError"),
+    ("hidden_resource_slot_identity", "SlotIdentity"),
+];
+
+const OPAQUE: &[(&str, &str)] = &[
+    ("hidden_resource_bridge_field", "factory"),
+    ("private_notice_since", "since"),
+];
+
+const REMOVED_CATALOG_API: &[(&str, &str, &str)] = &[
+    (
+        "removed_resource_from_key",
+        "from_key",
+        "ResourceMetadataDraft",
+    ),
+    (
+        "removed_credential_pattern",
+        "pattern",
+        "CredentialMetadataDraft",
+    ),
 ];
 
 #[test]
@@ -92,21 +186,8 @@ fn sdk_only_consumer_cannot_name_authority_or_raw_persistence() {
     )
     .expect("copy workspace lockfile into public-perimeter fixture");
 
-    let positive = cargo_check(temp.path(), "positive");
-    assert!(
-        positive.status.success(),
-        "supported SDK authoring path must compile:\n{}",
-        render_output(&positive)
-    );
-    let topology = cargo_check(temp.path(), "resource_topology");
-    assert!(
-        topology.status.success(),
-        "custom topology authoring must compile:\n{}",
-        render_output(&topology)
-    );
-
     for &(binary, forbidden_segment) in FORBIDDEN {
-        let output = cargo_check(temp.path(), binary);
+        let output = cargo_probe(temp.path(), "check", binary);
         assert!(
             !output.status.success(),
             "forbidden perimeter probe `{binary}` unexpectedly compiled"
@@ -141,6 +222,81 @@ fn sdk_only_consumer_cannot_name_authority_or_raw_persistence() {
             );
         }
     }
+
+    for &(binary, private_segment) in OPAQUE {
+        let output = cargo_probe(temp.path(), "check", binary);
+        assert!(
+            !output.status.success(),
+            "opaque bridge probe `{binary}` unexpectedly compiled"
+        );
+        let diagnostics = compiler_errors(&output);
+        assert!(
+            diagnostics.iter().any(|diagnostic| {
+                diagnostic.message.contains(private_segment)
+                    && diagnostic.highlighted == private_segment
+                    && diagnostic.message.contains("private")
+            }),
+            "probe `{binary}` did not produce an exact private-member diagnostic for \
+             `{private_segment}`; diagnostics: {diagnostics:#?}\n{}",
+            render_output(&output)
+        );
+    }
+
+    for &(binary, removed_symbol, draft_type) in REMOVED_CATALOG_API {
+        let output = cargo_probe(temp.path(), "check", binary);
+        assert!(
+            !output.status.success(),
+            "removed catalog API `{binary}` unexpectedly compiled"
+        );
+        let diagnostics = compiler_errors(&output);
+        std::assert_matches!(
+            diagnostics.as_slice(),
+            [error] if error.code.as_deref() == Some("E0599")
+                && error.highlighted == removed_symbol
+                && error.message.contains(&format!("`{removed_symbol}`"))
+                && error.message.contains(&format!("`{draft_type}`")),
+            "probe `{binary}` must fail only for the removed `{draft_type}::{removed_symbol}`: {}",
+            render_output(&output)
+        );
+    }
+
+    let arity = cargo_probe(temp.path(), "check", "removed_credential_fourth_argument");
+    assert!(
+        !arity.status.success(),
+        "removed credential fourth argument unexpectedly compiled"
+    );
+    let diagnostics = compiler_errors(&arity);
+    std::assert_matches!(
+        diagnostics.as_slice(),
+        [error] if error.code.as_deref() == Some("E0061")
+            && error.message.split_whitespace()
+                .filter_map(|word| word.parse::<usize>().ok())
+                .eq([3, 4]),
+        "credential constructor must reject four arguments when it takes three: {}",
+        render_output(&arity)
+    );
+
+    for binary in ["positive", "resource_topology"] {
+        let output = cargo_probe(temp.path(), "clippy", binary);
+        assert!(
+            output.status.success(),
+            "positive SDK probe `{binary}` must pass strict clippy:\n{}",
+            render_output(&output)
+        );
+    }
+
+    let positive = cargo_probe(temp.path(), "run", "positive");
+    assert!(
+        positive.status.success(),
+        "supported SDK authoring path must compile and its assertions must pass:\n{}",
+        render_output(&positive)
+    );
+    let topology = cargo_probe(temp.path(), "run", "resource_topology");
+    assert!(
+        topology.status.success(),
+        "custom topology authoring witness must compile and execute:\n{}",
+        render_output(&topology)
+    );
 }
 
 #[test]
@@ -149,8 +305,8 @@ fn macro_private_surface_matches_the_explicit_allowlist() {
         pub mod __private {
             pub mod action {
                 pub use nebula_action::{
-                    Action, ActionContext, ActionContextExt, ActionError, ActionMetadata,
-                    ActionResult, FromWorkflowNode, StatelessAction,
+                    Action, ActionContext, ActionContextExt, ActionError, ActionMetadataDraft,
+                    ActionResult, FromWorkflowNode, MetadataVersion, StatelessAction, metadata_name,
                 };
             }
             pub mod core {
@@ -170,9 +326,9 @@ fn macro_private_surface_matches_the_explicit_allowlist() {
             pub mod credential {
                 pub use nebula_credential::{
                     AuthScheme, Credential, CredentialGuard, CredentialLifecycle,
-                    CredentialMetadata, CredentialPolicy, CredentialState, Dynamic, Interactive,
+                    CredentialMetadataDraft, CredentialPolicy, CredentialState, Dynamic, Interactive,
                     RefreshStrategy, Refreshable, Revocable, RevokeStrategy, Testable,
-                    credential_key, schema_of,
+                    credential_key, metadata_name, schema_of,
                 };
                 pub mod contract {
                     pub mod plugin_capability_report {
@@ -186,12 +342,11 @@ fn macro_private_surface_matches_the_explicit_allowlist() {
                 pub use nebula_plugin::{Plugin, PluginManifest};
             }
             pub mod resource {
-                pub use nebula_resource::{
-                    Error, HasCredentialSlots, Manager, ResourceConfig, ResourceFactory,
-                    ResourceMetadata, SlotIdentity,
-                };
-                pub mod factory {
-                    pub use nebula_resource::factory::{BoxFut, KindActivator, RegisterRequest};
+                pub use nebula_resource::{Error, HasCredentialSlots, ResourceConfig};
+                pub mod contribution {
+                    pub use crate::resource_contribution::{
+                        ResourceContribution, ResourceContributionBridge,
+                    };
                 }
                 #[expect(
                     clippy::module_inception,
@@ -201,7 +356,7 @@ fn macro_private_surface_matches_the_explicit_allowlist() {
                     pub use nebula_resource::resource::Provider;
                 }
                 pub mod topology {
-                    pub use nebula_resource::topology::{Pooled, Resident};
+                    pub use nebula_resource::topology::{Pooled, Resident, Topology};
                     pub mod pooled {
                         pub mod config {
                             pub use nebula_resource::topology::pooled::config::Config;
@@ -215,10 +370,10 @@ fn macro_private_surface_matches_the_explicit_allowlist() {
                 }
             }
             pub mod schema {
-                pub use nebula_schema::value::FieldValues;
                 pub use nebula_schema::{
-                    ExpressionMode, Field, FieldKey, HasSchema, HasSelectOptions, InputHint, Rule,
-                    Schema, SelectOption, SerdeTagging, StringWidget, ValidSchema,
+                    AuthoredValue, ExpressionMode, Field, FieldKey, HasSchema, HasSelectOptions, InputHint,
+                    RootShape, Rule, ScalarSchema, Schema, SelectOption, SerdeTagging, StringWidget,
+                    ValidSchema, ValidationError, ValidationReport,
                 };
                 pub mod error {
                     pub use nebula_schema::error::ValidationReport;
@@ -265,6 +420,7 @@ fn macro_private_surface_matches_the_explicit_allowlist() {
 
 #[derive(Debug)]
 struct CompilerError {
+    code: Option<String>,
     message: String,
     highlighted: String,
 }
@@ -281,6 +437,11 @@ fn compiler_errors(output: &Output) -> Vec<CompilerError> {
             if diagnostic.get("level")?.as_str()? != "error" {
                 return None;
             }
+            let code = diagnostic
+                .get("code")
+                .and_then(|code| code.get("code"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned);
             let message = diagnostic.get("message")?.as_str()?.to_owned();
             let span = diagnostic.get("spans")?.as_array()?.iter().find(|span| {
                 span.get("is_primary").and_then(serde_json::Value::as_bool) == Some(true)
@@ -295,6 +456,7 @@ fn compiler_errors(output: &Output) -> Vec<CompilerError> {
                 .take(end.saturating_sub(start))
                 .collect();
             Some(CompilerError {
+                code,
                 message,
                 highlighted,
             })
@@ -324,22 +486,25 @@ fn copy_fixture(source_root: &Path, destination_root: &Path) {
     }
 }
 
-fn cargo_check(fixture_root: &Path, binary: &str) -> Output {
+fn cargo_probe(fixture_root: &Path, command: &str, binary: &str) -> Output {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
-    Command::new(cargo)
-        .current_dir(fixture_root)
-        .args([
-            "check",
-            "--offline",
-            "--quiet",
-            "--message-format=json",
-            "--bin",
-            binary,
-        ])
+    let mut invocation = Command::new(cargo);
+    invocation.current_dir(fixture_root).args([
+        command,
+        "--offline",
+        "--quiet",
+        "--message-format=json",
+        "--bin",
+        binary,
+    ]);
+    if command == "clippy" {
+        invocation.args(["--", "-D", "warnings"]);
+    }
+    invocation
         .env("CARGO_TERM_COLOR", "never")
         .env("CARGO_TARGET_DIR", fixture_root.join("target"))
         .output()
-        .expect("run cargo check for external SDK perimeter consumer")
+        .expect("run cargo probe for external SDK perimeter consumer")
 }
 
 fn toml_basic_string(path: &Path) -> String {

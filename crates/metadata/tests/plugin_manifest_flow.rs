@@ -5,7 +5,8 @@
 //! `Err`-path a success-only test cannot prove.
 
 use nebula_metadata::{
-    DeprecationNotice, ManifestError, MaturityLevel, PluginDependency, PluginManifest,
+    DeprecationNotice, ManifestError, MaturityLevel, MetadataError, PluginDependency,
+    PluginManifest,
 };
 use pretty_assertions::assert_eq;
 use semver::{Version, VersionReq};
@@ -37,13 +38,13 @@ fn try_new_succeeds_for_a_valid_key_and_name() {
 #[test]
 fn try_new_propagates_invalid_key_unchanged() {
     let err = FixturePlugin::try_new("", "Fixture").expect_err("empty key must be rejected");
-    assert!(matches!(err, ManifestError::InvalidKey(_)), "got: {err:?}");
+    assert_eq!(err, ManifestError::InvalidKey);
 }
 
 #[test]
 fn try_new_propagates_missing_name_unchanged() {
     let err = FixturePlugin::try_new("fixture", "   ").expect_err("blank name must be rejected");
-    assert_eq!(err, ManifestError::MissingRequiredField { field: "name" });
+    assert_eq!(err, ManifestError::Metadata(MetadataError::BlankName));
 }
 
 #[test]
@@ -59,7 +60,7 @@ fn build_full_manifest_round_trips_through_json() {
         .license("Apache-2.0")
         .homepage("https://example.com")
         .repository("https://github.com/acme/slack-notify")
-        .nebula_version("0.5.0")
+        .nebula_version(Version::new(0, 5, 0))
         .maturity(MaturityLevel::Beta)
         .dependency(PluginDependency::new(
             "auth".parse().expect("valid key"),
@@ -82,6 +83,17 @@ fn key_normalization_lowercases_and_replaces_spaces() {
         .build()
         .expect("valid manifest");
     assert_eq!(manifest.key().as_str(), "slack_notify");
+}
+
+#[test]
+fn accepted_manifest_names_are_trimmed_before_storage_and_serde() {
+    let manifest = PluginManifest::builder("slack", " \tSlack Notify\n ")
+        .build()
+        .expect("trimmed name is nonblank");
+
+    assert_eq!(manifest.name(), "Slack Notify");
+    let wire = serde_json::to_value(manifest).expect("manifest serializes");
+    assert_eq!(wire["name"], "Slack Notify");
 }
 
 #[test]
@@ -108,7 +120,7 @@ fn dependency_declarations_preserve_order() {
 #[test]
 fn deprecation_notice_forces_deprecated_maturity_end_to_end() {
     let manifest = PluginManifest::builder("legacy", "Legacy")
-        .deprecation(DeprecationNotice::new(Version::new(1, 0, 0)).reason("superseded"))
+        .deprecation(DeprecationNotice::new(Version::new(1, 0, 0)).with_reason("superseded"))
         .build()
         .expect("valid manifest");
     assert_eq!(manifest.maturity(), MaturityLevel::Deprecated);

@@ -314,17 +314,15 @@ mod tests {
     use nebula_resource::{
         context::ResourceContext,
         error::Error as ResourceError,
-        resource::{Provider, ResourceConfig, ResourceMetadata},
+        resource::{Provider, ResourceConfig, ResourceMetadataDraft},
     };
     use tokio_util::sync::CancellationToken;
 
     use super::*;
     use crate::daemon::{Daemon, DaemonConfig, RestartPolicy};
 
-    #[derive(Clone, Debug, Default)]
+    #[derive(Clone, Debug, Default, nebula_schema::Schema)]
     struct EmptyCfg;
-
-    nebula_schema::impl_empty_has_schema!(EmptyCfg);
 
     impl ResourceConfig for EmptyCfg {
         fn fingerprint(&self) -> u64 {
@@ -365,8 +363,12 @@ mod tests {
             Ok(())
         }
 
-        fn metadata() -> ResourceMetadata {
-            ResourceMetadata::from_key(&Self::key())
+        fn metadata() -> ResourceMetadataDraft {
+            ResourceMetadataDraft::new(
+                Self::key(),
+                nebula_resource::metadata_name!("registry-counted"),
+                "",
+            )
         }
     }
 
@@ -475,8 +477,12 @@ mod tests {
         ) -> Result<(), ResourceError> {
             Ok(())
         }
-        fn metadata() -> ResourceMetadata {
-            ResourceMetadata::from_key(&Self::key())
+        fn metadata() -> ResourceMetadataDraft {
+            ResourceMetadataDraft::new(
+                Self::key(),
+                nebula_resource::metadata_name!("registry-counted-b"),
+                "",
+            )
         }
     }
     nebula_resource::no_credential_slots!(CountedDaemonB);

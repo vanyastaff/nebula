@@ -63,9 +63,9 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-use nebula_action::{ActionContext, ActionError, ActionMetadata, ActionResult, StatelessAction};
+use nebula_action::{ActionContext, ActionError, ActionResult, StatelessAction};
 use nebula_core::action_key;
-use nebula_schema::HasSchema;
+use nebula_schema::{Field, HasSchema, Schema, ValidSchema, ValidationReport, field_key};
 use serde::{Deserialize, Serialize};
 use serde_json::{Number, Value};
 use tracing::instrument;
@@ -231,10 +231,32 @@ impl Aggregation {
     }
 }
 
-// `data` is fully dynamic; the module doc describes expected structure.
 impl HasSchema for AggregateInput {
-    fn schema() -> nebula_schema::validated::ValidSchema {
-        nebula_schema::validated::ValidSchema::empty()
+    #[instrument(name = "core.aggregate.schema", skip_all, err)]
+    fn schema() -> Result<ValidSchema, ValidationReport> {
+        static SCHEMA: OnceLock<Result<ValidSchema, ValidationReport>> = OnceLock::new();
+        SCHEMA.get_or_init(|| {
+            Schema::builder()
+                .add(super::input_schema::record_data())
+                .add(super::input_schema::strings(field_key!("group_by")))
+                .add(Field::list(field_key!("aggregations")).required().item(
+                    Field::object(field_key!("item"))
+                        .description("Tagged aggregation; variant-specific field presence is checked by serde.")
+                        .add(Field::select(field_key!("fn"))
+                            .option("count", "Count")
+                            .option("count_distinct", "Count distinct")
+                            .option("sum", "Sum").option("avg", "Average")
+                            .option("min", "Minimum").option("max", "Maximum")
+                            .option("collect", "Collect").option("join", "Join").required())
+                        .add(Field::string(field_key!("field")))
+                        .add(Field::string(field_key!("out")))
+                        .add(Field::string(field_key!("sep"))),
+                ))
+                .add(Field::select(field_key!("on_error"))
+                    .option("fail", "Fail").option("skip", "Skip"))
+                .root_rule(super::input_schema::array_present(field_key!("data"))?)
+                .build()
+        }).clone()
     }
 }
 
@@ -679,13 +701,14 @@ impl nebula_action::action::Action for Aggregate {
     type Input = AggregateInput;
     type Output = Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        nebula_action::ActionMetadataDraft::new(
             action_key!("core.aggregate"),
-            "Aggregate",
+            nebula_action::metadata_name!("Aggregate"),
             "Reduce an array of objects to grouped/scalar summaries \
              (sum/count/avg/min/max/collect/join)",
         )
+        .with_version(nebula_action::MetadataVersion::new(2, 0, 0))
         .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
     }
 
@@ -1462,8 +1485,15 @@ mod tests {
     // ── 18: action key is "core.aggregate" ───────────────────────────────────
     #[test]
     fn action_key_is_core_dot_aggregate() {
-        use nebula_action::action::Action;
-        assert_eq!(Aggregate::metadata().base.key.as_str(), "core.aggregate");
+        let factory = nebula_action::GenericStatelessFactory::<Aggregate>::new()
+            .expect("aggregate metadata must admit");
+        assert_eq!(
+            nebula_action::ActionFactory::metadata(&factory)
+                .base()
+                .key()
+                .as_str(),
+            "core.aggregate"
+        );
     }
 
     // ── FIX 1: float sum overflow → Fatal, NOT silent 0 ──────────────────────

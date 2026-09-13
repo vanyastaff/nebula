@@ -28,6 +28,8 @@ pub enum TokenKind<'a> {
     // Literals
     /// Integer literal (e.g., 42, -10)
     Integer(i64),
+    /// Positive integer literal above the signed range.
+    UnsignedInteger(u64),
     /// Float literal (e.g., 3.14, -2.5)
     Float(f64),
     /// String literal (e.g., "hello", 'world')
@@ -136,6 +138,7 @@ impl TokenKind<'_> {
         matches!(
             self,
             TokenKind::Integer(_)
+                | TokenKind::UnsignedInteger(_)
                 | TokenKind::Float(_)
                 | TokenKind::String(_)
                 | TokenKind::Boolean(_)
@@ -225,6 +228,7 @@ impl std::fmt::Display for TokenKind<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             TokenKind::Integer(n) => write!(f, "{n}"),
+            TokenKind::UnsignedInteger(n) => write!(f, "{n}"),
             TokenKind::Float(n) => write!(f, "{n}"),
             TokenKind::String(s) => write!(f, "\"{s}\""),
             TokenKind::Boolean(b) => write!(f, "{b}"),

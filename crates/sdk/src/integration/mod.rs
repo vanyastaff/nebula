@@ -7,3 +7,11 @@
 pub mod action;
 pub mod credential;
 pub mod resource;
+
+pub use nebula_metadata::{
+    CatalogCategoryKey, CatalogLink, CatalogLinkRelation, CatalogLinkTarget, CatalogReference,
+    CatalogValueError, DeprecationNotice, DocumentationOrigin, Icon, MaturityLevel, MetadataError,
+    MetadataField, MetadataName, MetadataVersion, RemovalDate, RemovalMilestone, RemovalSchedule,
+    metadata_name,
+};
+pub use semver::VersionReq;

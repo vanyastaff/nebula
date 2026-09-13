@@ -38,9 +38,11 @@
 
 use std::sync::OnceLock;
 
-use nebula_action::{ActionContext, ActionError, ActionMetadata, ActionResult, StatelessAction};
+use nebula_action::{ActionContext, ActionError, ActionResult, StatelessAction};
 use nebula_core::action_key;
-use nebula_schema::HasSchema;
+use nebula_schema::{
+    Field, HasSchema, ListField, Schema, ValidSchema, ValidationReport, field_key,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tracing::instrument;
@@ -139,13 +141,41 @@ pub struct JsonTransformInput {
     pub operations: Vec<TransformOperation>,
 }
 
-// `data` is a fully dynamic JSON object and `operations` contain only string
-// fields — no closed-form schema can be emitted. Empty schema is the honest
-// declaration; the module doc describes the expected structure out-of-band.
 impl HasSchema for JsonTransformInput {
-    fn schema() -> nebula_schema::validated::ValidSchema {
-        nebula_schema::validated::ValidSchema::empty()
+    #[instrument(name = "core.json_transform.schema", skip_all, err)]
+    fn schema() -> Result<ValidSchema, ValidationReport> {
+        static SCHEMA: OnceLock<Result<ValidSchema, ValidationReport>> = OnceLock::new();
+        SCHEMA
+            .get_or_init(|| {
+                Schema::builder()
+                    .add(super::input_schema::nullable_object_data())
+                    .add(operations_schema())
+                    .build()
+            })
+            .clone()
     }
+}
+
+/// Both transform actions consume the same internally tagged operation records.
+/// Presence of variant-specific fields stays with serde, preserving valid empty
+/// strings and arrays that form-style `required` would otherwise reject.
+pub(super) fn operations_schema() -> ListField {
+    Field::list(field_key!("operations")).item(
+        Field::object(field_key!("item"))
+            .description("Tagged transform; variant-specific field presence is checked by serde.")
+            .add(
+                Field::select(field_key!("op"))
+                    .option("pick", "Pick")
+                    .option("omit", "Omit")
+                    .option("rename", "Rename")
+                    .option("flatten", "Flatten")
+                    .required(),
+            )
+            .add(super::input_schema::strings(field_key!("fields")))
+            .add(Field::string(field_key!("from")))
+            .add(Field::string(field_key!("to")))
+            .add(Field::string(field_key!("separator"))),
+    )
 }
 
 // ── Shared operation applier ──────────────────────────────────────────────────
@@ -289,12 +319,13 @@ impl nebula_action::action::Action for JsonTransform {
     type Input = JsonTransformInput;
     type Output = Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        nebula_action::ActionMetadataDraft::new(
             action_key!("core.json_transform"),
-            "JSON Transform",
+            nebula_action::metadata_name!("JSON Transform"),
             "Applies a sequence of pick/omit/rename/flatten operations to a JSON object",
         )
+        .with_version(nebula_action::MetadataVersion::new(2, 0, 0))
         .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
     }
 
@@ -773,9 +804,13 @@ mod tests {
 
     #[test]
     fn action_key_is_core_dot_json_transform() {
-        use nebula_action::action::Action;
+        let factory = nebula_action::GenericStatelessFactory::<JsonTransform>::new()
+            .expect("JSON transform metadata must admit");
         assert_eq!(
-            JsonTransform::metadata().base.key.as_str(),
+            nebula_action::ActionFactory::metadata(&factory)
+                .base()
+                .key()
+                .as_str(),
             "core.json_transform"
         );
     }

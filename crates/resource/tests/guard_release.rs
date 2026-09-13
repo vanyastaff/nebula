@@ -28,6 +28,14 @@ impl Provider for NestedCleanupResource {
     type Instance = u64;
     type Topology = nebula_resource::Bounded<Self>;
 
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("NestedCleanupResource"),
+            "",
+        )
+    }
+
     fn key() -> ResourceKey {
         resource_key!("nested-cleanup")
     }
@@ -228,7 +236,7 @@ use nebula_resource::{
     ResourceContext, ScopeLevel, ShutdownConfig, SlotIdentity,
     error::Error,
     guard::ResourceGuard,
-    resource::{HasCredentialSlots, Provider, ResourceMetadata},
+    resource::{HasCredentialSlots, Provider, ResourceMetadataDraft},
     topology::pooled::{PoolProvider, RecycleDecision},
 };
 
@@ -249,6 +257,14 @@ impl Provider for ResidentLifecycleResource {
     type Config = TestConfig;
     type Instance = UniqueResident;
     type Topology = Resident<Self>;
+
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("ResidentLifecycleResource"),
+            "",
+        )
+    }
 
     fn key() -> ResourceKey {
         resource_key!("resident-lifecycle")
@@ -628,8 +644,12 @@ impl Provider for SlowDestroyPoolResource {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::from_key(&Self::key())
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("slow-destroy-pool"),
+            "",
+        )
     }
 }
 
@@ -746,8 +766,12 @@ impl Provider for HangingDestroyPoolResource {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::from_key(&Self::key())
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("hanging-destroy-pool"),
+            "",
+        )
     }
 }
 
@@ -791,8 +815,12 @@ impl Provider for PanickingDestroyPoolResource {
         panic!("author Provider::destroy panics on purpose");
     }
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::from_key(&Self::key())
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("panicking-destroy-pool"),
+            "",
+        )
     }
 }
 
@@ -914,8 +942,12 @@ impl Provider for PanickingCreatePoolResource {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::from_key(&Self::key())
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("panicking-create-pool"),
+            "",
+        )
     }
 }
 
@@ -1106,8 +1138,12 @@ impl Provider for DropOnRecycleResource {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::from_key(&Self::key())
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("drop-on-recycle"),
+            "",
+        )
     }
 }
 
@@ -1212,8 +1248,12 @@ impl Provider for CredentialedDefaultPoolResource {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::from_key(&Self::key())
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("cred-pool-default"),
+            "",
+        )
     }
 }
 
@@ -1268,8 +1308,12 @@ impl Provider for CredentialedKeepPoolResource {
         Ok(Arc::new(AtomicU64::new(id)))
     }
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::from_key(&Self::key())
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("cred-pool-keep"),
+            "",
+        )
     }
 }
 

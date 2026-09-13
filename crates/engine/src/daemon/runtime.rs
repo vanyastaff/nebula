@@ -267,16 +267,14 @@ mod tests {
     use nebula_resource::{
         context::ResourceContext,
         error::Error as ResourceError,
-        resource::{Provider, ResourceConfig, ResourceMetadata},
+        resource::{Provider, ResourceConfig, ResourceMetadataDraft},
     };
 
     use super::*;
     use crate::daemon::{Daemon, DaemonConfig as DaemonCfg, RestartPolicy};
 
-    #[derive(Clone, Debug, Default)]
+    #[derive(Clone, Debug, Default, nebula_schema::Schema)]
     struct EmptyCfg;
-
-    nebula_schema::impl_empty_has_schema!(EmptyCfg);
 
     impl ResourceConfig for EmptyCfg {
         fn fingerprint(&self) -> u64 {
@@ -317,8 +315,12 @@ mod tests {
             Ok(())
         }
 
-        fn metadata() -> ResourceMetadata {
-            ResourceMetadata::from_key(&Self::key())
+        fn metadata() -> ResourceMetadataDraft {
+            ResourceMetadataDraft::new(
+                Self::key(),
+                nebula_resource::metadata_name!("daemon-flaky"),
+                "",
+            )
         }
     }
 
@@ -357,8 +359,12 @@ mod tests {
             Ok(())
         }
 
-        fn metadata() -> ResourceMetadata {
-            ResourceMetadata::from_key(&Self::key())
+        fn metadata() -> ResourceMetadataDraft {
+            ResourceMetadataDraft::new(
+                Self::key(),
+                nebula_resource::metadata_name!("daemon-oneshot"),
+                "",
+            )
         }
     }
 

@@ -104,6 +104,10 @@ impl Zeroize for SecretString {
     }
 }
 
+impl zeroize::ZeroizeOnDrop for SecretString {}
+
+impl nebula_schema::SecretInput for SecretString {}
+
 /// Sentinel written by the default `Serialize` impl.
 pub(crate) const REDACTED_SENTINEL: &str = "[REDACTED]";
 

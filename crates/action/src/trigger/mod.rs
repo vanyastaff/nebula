@@ -151,8 +151,8 @@ pub trait TriggerAction: Action {
     /// # impl Action for CronTrigger {
     /// #     type Input = serde_json::Value;
     /// #     type Output = serde_json::Value;
-    /// #     fn metadata() -> ActionMetadata {
-    /// #         ActionMetadata::new(action_key!("example.cron"), "Cron", "Schedule-driven")
+    /// #     fn metadata() -> nebula_action::ActionMetadataDraft {
+    /// #         nebula_action::ActionMetadataDraft::new(action_key!("example.cron"), nebula_action::metadata_name!("Cron"), "Schedule-driven")
     /// #     }
     /// #     fn dependencies() -> &'static Dependencies {
     /// #         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -393,7 +393,7 @@ impl TriggerEventOutcome {
 ///
 /// Returns [`ActionError`] if start or stop fails.
 #[async_trait::async_trait]
-pub trait TriggerHandler: Send + Sync + 'static {
+pub trait TriggerHandler: crate::handle::sealed::Trigger + Send + Sync + 'static {
     /// Action metadata (key, version, capabilities).
     fn metadata(&self) -> &ActionMetadata;
 
@@ -508,8 +508,8 @@ pub trait TriggerHandler: Send + Sync + 'static {
 /// # impl Action for CronTrigger {
 /// #     type Input = serde_json::Value;
 /// #     type Output = serde_json::Value;
-/// #     fn metadata() -> ActionMetadata {
-/// #         ActionMetadata::new(action_key!("example.cron"), "Cron", "Schedule-driven")
+/// #     fn metadata() -> nebula_action::ActionMetadataDraft {
+/// #         nebula_action::ActionMetadataDraft::new(action_key!("example.cron"), nebula_action::metadata_name!("Cron"), "Schedule-driven")
 /// #     }
 /// #     fn dependencies() -> &'static Dependencies {
 /// #         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -527,8 +527,8 @@ pub trait TriggerHandler: Send + Sync + 'static {
 /// #     }
 /// # }
 /// // Erase the typed trigger behind the dyn handler contract the runtime stores.
-/// let handler: Arc<dyn TriggerHandler> = Arc::new(TriggerActionAdapter::new(CronTrigger));
-/// assert_eq!(handler.metadata().base.key, action_key!("example.cron"));
+/// let handler: Arc<dyn TriggerHandler> = Arc::new(TriggerActionAdapter::new(CronTrigger).expect("valid metadata"));
+/// assert_eq!(handler.metadata().base().key(), &action_key!("example.cron"));
 /// assert!(!handler.accepts_events());
 /// ```
 pub struct TriggerActionAdapter<A> {
@@ -536,15 +536,20 @@ pub struct TriggerActionAdapter<A> {
     meta: ActionMetadata,
 }
 
+impl<A> crate::handle::sealed::Trigger for TriggerActionAdapter<A> {}
+
 impl<A> TriggerActionAdapter<A> {
     /// Wrap a typed trigger action.
-    #[must_use]
-    pub fn new(action: A) -> Self
+    ///
+    /// # Errors
+    /// Returns a typed catalog error if metadata or an associated schema is invalid.
+    #[tracing::instrument(name = "action.metadata.admit", skip_all, err)]
+    pub fn new(action: A) -> Result<Self, crate::ActionMetadataAdmissionError>
     where
         A: Action,
     {
-        let meta = <A as Action>::metadata();
-        Self { action, meta }
+        let meta = <A as Action>::metadata().admit_for::<A>(crate::ActionKind::Trigger)?;
+        Ok(Self { action, meta })
     }
 
     /// Consume the adapter, returning the inner action.
@@ -629,7 +634,7 @@ where
 impl<A: TriggerAction> fmt::Debug for TriggerActionAdapter<A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TriggerActionAdapter")
-            .field("action", &<A as Action>::metadata().base.key)
+            .field("action", self.meta.base().key())
             .finish_non_exhaustive()
     }
 }
@@ -671,10 +676,10 @@ mod tests {
         type Input = Value;
         type Output = Value;
 
-        fn metadata() -> ActionMetadata {
-            ActionMetadata::new(
+        fn metadata() -> crate::ActionMetadataDraft {
+            crate::ActionMetadataDraft::new(
                 nebula_core::action_key!("test.trigger_action"),
-                "MockTrigger",
+                crate::metadata_name!("MockTrigger"),
                 "Tracks start/stop",
             )
         }
@@ -716,14 +721,15 @@ mod tests {
 
     #[test]
     fn trigger_adapter_is_dyn_compatible() {
-        let adapter = TriggerActionAdapter::new(MockTriggerAction::new());
+        let adapter = TriggerActionAdapter::new(MockTriggerAction::new())
+            .expect("valid test catalog definition");
         let _: Arc<dyn TriggerHandler> = Arc::new(adapter);
     }
 
     #[tokio::test]
     async fn trigger_adapter_delegates_start_stop() {
         let action = MockTriggerAction::new();
-        let adapter = TriggerActionAdapter::new(action);
+        let adapter = TriggerActionAdapter::new(action).expect("valid test catalog definition");
         let ctx = make_trigger_ctx();
 
         adapter.start(&ctx).await.unwrap();
@@ -735,12 +741,11 @@ mod tests {
 
     #[test]
     fn trigger_adapter_into_inner_returns_action() {
-        let adapter = TriggerActionAdapter::new(MockTriggerAction::new());
+        let adapter = TriggerActionAdapter::new(MockTriggerAction::new())
+            .expect("valid test catalog definition");
+        let key = adapter.metadata().base().key().clone();
         let _action = adapter.into_inner();
-        assert_eq!(
-            <MockTriggerAction as Action>::metadata().base.key,
-            nebula_core::action_key!("test.trigger_action")
-        );
+        assert_eq!(key, nebula_core::action_key!("test.trigger_action"));
     }
 
     // ── TriggerEvent tests ────────────────────────────────────────────────────

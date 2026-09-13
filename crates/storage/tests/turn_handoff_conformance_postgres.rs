@@ -18,16 +18,13 @@ use nebula_storage::postgres::{
     PgExecutionStore, PgJobDispatchQueue, PgPlanFlavorCatalog, PgStartAcceptanceStore,
     PgTurnHandoff, init_schema,
 };
-use sqlx::PgPool;
-use sqlx::postgres::PgPoolOptions;
-use tokio::sync::OnceCell;
-
-static SCHEMA_READY: OnceCell<()> = OnceCell::const_new();
 use nebula_storage_port::dto::{ControlCommand, JobDispatchMsg};
 use nebula_storage_port::store::{
     ExecutionStore, ExecutionTurnHandoff, JobDispatchQueue, TurnAcceptance, TurnHandoff,
+    TurnRecovery,
 };
 use nebula_storage_port::{Scope, StorageError};
+use sqlx::PgPool;
 
 const TTL: Duration = Duration::from_secs(30);
 
@@ -38,9 +35,10 @@ const PROCESSOR_B: [u8; 16] = [0xb2; 16];
 
 #[path = "support/job_turn_handoff_fixture.rs"]
 mod handoff_fixture;
+#[path = "support/postgres_schema.rs"]
+mod postgres_schema;
 
-/// Execution ids unique per process, so cases share one database without
-/// meeting an earlier run's rows.
+/// Execution identities remain distinct within each isolated fixture.
 fn unique(_label: &str) -> String {
     nebula_core::ExecutionId::new().to_string()
 }
@@ -76,8 +74,53 @@ fn scope() -> Scope {
     )
 }
 
-/// Connect to `DATABASE_URL` and apply the ordered migration catalog, or report
-/// that PostgreSQL is unreachable.
+#[tokio::test]
+async fn recovery_scans_are_isolated_between_fixtures() {
+    let Some(first) = Fixture::new().await else {
+        return;
+    };
+    let Some(second) = Fixture::new().await else {
+        return;
+    };
+    let scope = scope();
+    let execution = unique("recovery-isolation");
+    let claim = first.seed(&execution).await;
+    let accepted = first
+        .handoff
+        .accept_turn(&first.request(&execution, claim, "fixture-owner", &scope))
+        .await
+        .expect("the first fixture accepts its turn");
+    let TurnAcceptance::Accepted { fence } = accepted else {
+        panic!("expected an accepted turn, got {accepted:?}");
+    };
+    assert!(
+        first
+            .store
+            .release_lease(&scope, &execution, fence)
+            .await
+            .expect("release the accepted owner lease"),
+        "the first fixture must own the lease it releases"
+    );
+
+    let first_candidates = first
+        .handoff
+        .list_recoverable_turns(handoff_fixture::LIVE_FLAVOR, None, 16)
+        .await
+        .expect("the first fixture recovery scan succeeds");
+    assert_eq!(first_candidates.turns().len(), 1);
+    assert_eq!(first_candidates.turns()[0].execution_id(), execution);
+    let second_candidates = second
+        .handoff
+        .list_recoverable_turns(handoff_fixture::LIVE_FLAVOR, None, 16)
+        .await
+        .expect("the second fixture recovery scan succeeds");
+    assert!(
+        second_candidates.turns().is_empty(),
+        "a fixture must not observe another fixture's accepted turn"
+    );
+}
+
+/// Connect an isolated fixture to `DATABASE_URL` and apply the ordered catalog.
 async fn fresh_pool() -> Option<PgPool> {
     let url = match std::env::var("DATABASE_URL") {
         Ok(url) => url,
@@ -92,18 +135,12 @@ async fn fresh_pool() -> Option<PgPool> {
         },
         Err(error) => panic!("DATABASE_URL is set but invalid: {error}"),
     };
-    let pool = PgPoolOptions::new()
-        .max_connections(8)
-        .connect(&url)
+    let pool = postgres_schema::connect_with_private_schema(&url, "turn_handoff")
         .await
         .expect("connect to DATABASE_URL");
-    SCHEMA_READY
-        .get_or_init(|| async {
-            init_schema(&pool)
-                .await
-                .expect("apply the ordered PostgreSQL migration catalog");
-        })
-        .await;
+    init_schema(&pool)
+        .await
+        .expect("apply the ordered PostgreSQL migration catalog");
     Some(pool)
 }
 
@@ -137,10 +174,8 @@ impl Fixture {
 
     /// A plugin key unique to one execution.
     ///
-    /// The required PostgreSQL job runs against a shared `DATABASE_URL`, so a
-    /// shared routing key would let `claim_pending` return another case's
-    /// pending row. Binding the key to the execution keeps each case claiming
-    /// only what it enqueued.
+    /// Binding the routing key to the execution keeps `claim_pending` targeted
+    /// when a fixture owns multiple queued executions.
     fn plugin_for(execution_id: &str) -> PluginKey {
         execution_id
             .replace('-', "")

@@ -526,7 +526,7 @@ impl CredentialService {
         C::Scheme: Zeroize + Clone + Send + Sync + 'static,
     {
         self.resolver
-            .scheme_factory(scope.selector(credential_id), Self::owner_context(scope))
+            .scheme_factory(scope.selector(credential_id), self.owner_context(scope))
     }
 }
 

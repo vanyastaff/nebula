@@ -25,7 +25,6 @@ nebula-metadata = { path = "../metadata" }
 nebula-schema = { path = "../schema" }
 nebula-resource = { path = "../resource" }
 nebula-workflow = { path = "../workflow" }
-semver = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -55,7 +54,7 @@ subtle = { workspace = true }
 nebula-core = { path = "../core" }
 nebula-schema = { path = "../schema" }
 nebula-credential-macros = { path = "../credential/macros" }
-# Phase 9 / Task 9.1: pipeline test exercises the expression engine end-to-end.
+# The pipeline integration test exercises expression resolution end to end.
 nebula-expression = { path = "../expression", default-features = false, features = ["cache"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "test-util"] }
 hex = { workspace = true }
@@ -63,8 +62,7 @@ insta = { workspace = true }
 pretty_assertions = { workspace = true }
 rstest = { workspace = true }
 static_assertions = { workspace = true }
-# Closes Stage-4 review I3 — fixture in tests/action_attr_phantom_rewrite.rs
-# wires #[capability] and #[action_phantom] together via local stand-in types.
+# The phantom-rewrite fixture needs derive support for secret-bearing stand-in types.
 zeroize = { version = "1.8.2", features = ["zeroize_derive"] }
 serde = { workspace = true, features = ["derive"] }
 trybuild = "1"

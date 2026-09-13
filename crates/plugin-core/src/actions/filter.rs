@@ -40,9 +40,9 @@
 
 use std::sync::OnceLock;
 
-use nebula_action::{ActionContext, ActionError, ActionMetadata, ActionResult, StatelessAction};
+use nebula_action::{ActionContext, ActionError, ActionResult, StatelessAction};
 use nebula_core::action_key;
-use nebula_schema::HasSchema;
+use nebula_schema::{HasSchema, Schema, ValidSchema, ValidationReport, field_key};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::instrument;
@@ -76,12 +76,19 @@ pub struct FilterInput {
     pub condition: Condition,
 }
 
-// `data` is a fully dynamic array and `condition` has no fixed JSON schema.
-// Empty schema is the honest declaration; the module doc describes the
-// expected structure out-of-band.
 impl HasSchema for FilterInput {
-    fn schema() -> nebula_schema::validated::ValidSchema {
-        nebula_schema::validated::ValidSchema::empty()
+    #[instrument(name = "core.filter.schema", skip_all, err)]
+    fn schema() -> Result<ValidSchema, ValidationReport> {
+        static SCHEMA: OnceLock<Result<ValidSchema, ValidationReport>> = OnceLock::new();
+        SCHEMA
+            .get_or_init(|| {
+                Schema::builder()
+                    .add(super::input_schema::record_data())
+                    .add(super::input_schema::condition(field_key!("condition")))
+                    .root_rule(super::input_schema::array_present(field_key!("data"))?)
+                    .build()
+            })
+            .clone()
     }
 }
 
@@ -115,12 +122,13 @@ impl nebula_action::action::Action for Filter {
     type Input = FilterInput;
     type Output = Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        nebula_action::ActionMetadataDraft::new(
             action_key!("core.filter"),
-            "Filter",
+            nebula_action::metadata_name!("Filter"),
             "Filter an array of JSON objects by a condition",
         )
+        .with_version(nebula_action::MetadataVersion::new(2, 0, 0))
         .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
     }
 
@@ -441,7 +449,14 @@ mod tests {
     // ── 9: action key is "core.filter" ───────────────────────────────────────
     #[test]
     fn action_key_is_core_dot_filter() {
-        use nebula_action::action::Action;
-        assert_eq!(Filter::metadata().base.key.as_str(), "core.filter");
+        let factory = nebula_action::GenericStatelessFactory::<Filter>::new()
+            .expect("filter metadata must admit");
+        assert_eq!(
+            nebula_action::ActionFactory::metadata(&factory)
+                .base()
+                .key()
+                .as_str(),
+            "core.filter"
+        );
     }
 }

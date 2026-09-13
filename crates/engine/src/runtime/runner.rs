@@ -1,33 +1,21 @@
-//! Action runner abstraction — the engine-side dispatch boundary between
-//! the action dispatcher and the in-process execution transport.
-//!
-//! The dispatcher owns the runner trait: it decides, per `IsolationLevel`,
-//! how an action is executed. Today the sole runner is [`InProcessRunner`],
-//! which runs actions in the same process with a cooperative cancellation
-//! check.
-//!
-//! ## Key types
-//!
-//! - [`ActionRunner`] — execute an action through the in-process dispatch boundary.
-//! - [`InProcessRunner`] — the sole runner; trusted in-process dispatch.
-//! - [`ActionRunContext`] — cooperative cancellation check for the runner.
-//! - [`ActionExecutor`] — registry-lookup-and-invoke callback.
-
-use std::sync::Arc;
+//! Capability-gated in-process dispatch through exact action handles.
 
 use async_trait::async_trait;
-use nebula_action::{ActionContext, ActionError, ActionMetadata, result::ActionResult};
+use nebula_action::{
+    ActionContext, ActionError, ActionInput, ActionResult, StatelessHandle, StreamHandle,
+};
 use tokio_util::sync::CancellationToken;
 
 /// Action run context wrapping an [`ActionContext`].
 ///
-/// Provides a cooperative cancellation check before action execution.
+/// Provides cooperative cancellation checks around input preparation.
 pub struct ActionRunContext {
     cancellation: CancellationToken,
 }
 
 impl ActionRunContext {
     /// Build run-context metadata from an action context.
+    #[must_use]
     pub fn new(context: &dyn ActionContext) -> Self {
         Self {
             cancellation: context.cancellation().clone(),
@@ -35,6 +23,10 @@ impl ActionRunContext {
     }
 
     /// Check whether execution has been cancelled.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ActionError::Cancelled`] after cancellation is requested.
     pub fn check_cancelled(&self) -> Result<(), ActionError> {
         if self.cancellation.is_cancelled() {
             Err(ActionError::Cancelled)
@@ -43,78 +35,94 @@ impl ActionRunContext {
         }
     }
 
-    /// Borrow the cancellation token for long-running dispatch paths that
-    /// need to `select!` against it.
+    /// Borrow the cancellation token for long-running dispatch paths.
+    #[must_use]
     pub fn cancellation(&self) -> &CancellationToken {
         &self.cancellation
     }
 }
 
-/// Trait for executing actions through the in-process dispatch boundary.
+/// Object-safe capability-gated dispatch boundary.
 ///
-/// [`InProcessRunner`] is the sole implementation today. The trait exists
-/// as the dispatch boundary so additional execution strategies can be added
-/// additively without touching call sites.
-///
-/// WASM and out-of-process isolation are explicit non-goals — see
-/// `docs/PRODUCT_CANON.md` (ADR-0091).
+/// The exact receiving handle crosses this boundary with raw or schema-resolved
+/// ingress. Runner implementations cannot replace handle-owned preparation with
+/// schema-only validation.
 #[async_trait]
 pub trait ActionRunner: Send + Sync {
-    /// Execute an action through the runner.
-    async fn execute(
+    /// Prepare and execute one stateless action through the same handle.
+    ///
+    /// # Errors
+    ///
+    /// Returns an action validation, cancellation, or execution error.
+    async fn execute_stateless(
         &self,
-        context: ActionRunContext,
-        metadata: &ActionMetadata,
-        input: serde_json::Value,
+        run_context: ActionRunContext,
+        handle: Box<dyn StatelessHandle>,
+        input: ActionInput,
+        action_context: &dyn ActionContext,
+    ) -> Result<ActionResult<serde_json::Value>, ActionError>;
+
+    /// Prepare and execute one stream action through the same handle.
+    ///
+    /// # Errors
+    ///
+    /// Returns an action validation, cancellation, or execution error.
+    async fn execute_stream(
+        &self,
+        run_context: ActionRunContext,
+        handle: Box<dyn StreamHandle>,
+        input: ActionInput,
+        action_context: &dyn ActionContext,
     ) -> Result<ActionResult<serde_json::Value>, ActionError>;
 }
 
-/// Boxed future returned by the action executor.
-pub type ActionExecutorFuture = std::pin::Pin<
-    Box<dyn Future<Output = Result<ActionResult<serde_json::Value>, ActionError>> + Send>,
->;
-
-/// Callback type for executing an action (registry lookup + invoke).
-pub type ActionExecutor = Arc<
-    dyn Fn(ActionRunContext, &ActionMetadata, serde_json::Value) -> ActionExecutorFuture
-        + Send
-        + Sync,
->;
-
-/// In-process runner: runs actions in the same process (cooperative
-/// cancellation check only — no isolation).
-///
-/// The sole [`ActionRunner`] implementation. Suitable for all registered
-/// actions today; additional execution strategies can be introduced
-/// additively as new implementations of [`ActionRunner`].
-pub struct InProcessRunner {
-    executor: ActionExecutor,
-}
+/// Trusted in-process runner with cooperative cancellation checks.
+#[derive(Debug, Default)]
+pub struct InProcessRunner;
 
 impl InProcessRunner {
-    /// Create a new in-process runner with the given action executor.
-    pub fn new(executor: ActionExecutor) -> Self {
-        Self { executor }
+    /// Construct the in-process runner.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
     }
 }
 
 #[async_trait]
 impl ActionRunner for InProcessRunner {
-    async fn execute(
+    #[tracing::instrument(
+        name = "action.runner.stateless",
+        skip_all,
+        fields(action_key = %handle.metadata().base().key())
+    )]
+    async fn execute_stateless(
         &self,
-        context: ActionRunContext,
-        metadata: &ActionMetadata,
-        input: serde_json::Value,
+        run_context: ActionRunContext,
+        handle: Box<dyn StatelessHandle>,
+        input: ActionInput,
+        action_context: &dyn ActionContext,
     ) -> Result<ActionResult<serde_json::Value>, ActionError> {
-        tracing::debug!(
-            action_key = %metadata.base.key,
-            "executing action in-process"
-        );
-        context.check_cancelled()?;
-        let result = (self.executor)(context, metadata, input).await;
-        if let Err(e) = &result {
-            tracing::warn!(action_key = %metadata.base.key, error = %e, "action failed");
-        }
-        result
+        run_context.check_cancelled()?;
+        let prepared = handle.prepare_input(input)?;
+        run_context.check_cancelled()?;
+        handle.dispatch(prepared, action_context).await
+    }
+
+    #[tracing::instrument(
+        name = "action.runner.stream",
+        skip_all,
+        fields(action_key = %handle.metadata().base().key())
+    )]
+    async fn execute_stream(
+        &self,
+        run_context: ActionRunContext,
+        handle: Box<dyn StreamHandle>,
+        input: ActionInput,
+        action_context: &dyn ActionContext,
+    ) -> Result<ActionResult<serde_json::Value>, ActionError> {
+        run_context.check_cancelled()?;
+        let prepared = handle.prepare_input(input)?;
+        run_context.check_cancelled()?;
+        handle.dispatch(prepared, action_context).await
     }
 }

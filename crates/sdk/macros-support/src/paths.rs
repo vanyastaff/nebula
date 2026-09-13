@@ -25,15 +25,26 @@ const NEBULA_CRATES: &[(&str, &str, &str)] = &[
 /// identify.
 #[must_use]
 pub fn resolve_generated_crate_paths(tokens: TokenStream) -> TokenStream {
-    rewrite_stream(tokens)
+    let uses_sdk_resource_contribution = resource_factory_path_is_present(&tokens)
+        && crate_name("nebula-resource").is_err()
+        && crate_name("nebula-sdk").is_ok();
+    rewrite_stream(tokens, uses_sdk_resource_contribution)
 }
 
-fn rewrite_stream(tokens: TokenStream) -> TokenStream {
+fn rewrite_stream(tokens: TokenStream, uses_sdk_resource_contribution: bool) -> TokenStream {
     let trees = tokens.into_iter().collect::<Vec<_>>();
     let mut output = TokenStream::new();
     let mut index = 0;
 
     while index < trees.len() {
+        if uses_sdk_resource_contribution
+            && let Some((replacement, consumed)) = sdk_resource_contribution_path_at(&trees, index)
+        {
+            output.extend(replacement);
+            index += consumed;
+            continue;
+        }
+
         if let Some(canonical) = absolute_rewritable_path_at(&trees, index) {
             output.extend(resolve_path(canonical));
             index += 3;
@@ -42,9 +53,20 @@ fn rewrite_stream(tokens: TokenStream) -> TokenStream {
 
         match trees[index].clone() {
             TokenTree::Group(group) => {
-                let mut rewritten = Group::new(group.delimiter(), rewrite_stream(group.stream()));
+                let mut rewritten = Group::new(
+                    group.delimiter(),
+                    rewrite_stream(group.stream(), uses_sdk_resource_contribution),
+                );
                 rewritten.set_span(group.span());
                 output.extend([TokenTree::Group(rewritten)]);
+            },
+            TokenTree::Ident(ident)
+                if uses_sdk_resource_contribution && ident == "KindActivator" =>
+            {
+                output.extend([TokenTree::Ident(Ident::new(
+                    "ResourceContributionBridge",
+                    ident.span(),
+                ))]);
             },
             tree => output.extend([tree]),
         }
@@ -52,6 +74,81 @@ fn rewrite_stream(tokens: TokenStream) -> TokenStream {
     }
 
     output
+}
+
+fn resource_factory_path_is_present(tokens: &TokenStream) -> bool {
+    let trees = tokens.clone().into_iter().collect::<Vec<_>>();
+    let mut index = 0;
+    while index < trees.len() {
+        if resource_contribution_path_at(&trees, index).is_some() {
+            return true;
+        }
+        if let TokenTree::Group(group) = &trees[index]
+            && resource_factory_path_is_present(&group.stream())
+        {
+            return true;
+        }
+        index += 1;
+    }
+    false
+}
+
+fn sdk_resource_contribution_path_at(
+    trees: &[TokenTree],
+    index: usize,
+) -> Option<(TokenStream, usize)> {
+    let (path, consumed) = resource_contribution_path_at(trees, index)?;
+    let resource_path = resolve_sdk_path("resource")?;
+    match path {
+        ResourceContributionPath::Contribution => Some((
+            quote!(#resource_path::contribution::ResourceContribution),
+            consumed,
+        )),
+        ResourceContributionPath::Bridge => Some((
+            quote!(#resource_path::contribution::ResourceContributionBridge),
+            consumed,
+        )),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResourceContributionPath {
+    Contribution,
+    Bridge,
+}
+
+fn resource_contribution_path_at(
+    trees: &[TokenTree],
+    index: usize,
+) -> Option<(ResourceContributionPath, usize)> {
+    if !absolute_path_starts_with(trees, index, "nebula_resource") {
+        return None;
+    }
+    if path_ident_at(trees, index + 3, "ResourceFactory") {
+        return Some((ResourceContributionPath::Contribution, 6));
+    }
+    if path_ident_at(trees, index + 3, "factory")
+        && path_ident_at(trees, index + 6, "KindActivator")
+    {
+        return Some((ResourceContributionPath::Bridge, 9));
+    }
+    None
+}
+
+fn absolute_path_starts_with(trees: &[TokenTree], index: usize, crate_name: &str) -> bool {
+    is_colon_at(trees, index)
+        && is_colon_at(trees, index + 1)
+        && matches!(trees.get(index + 2), Some(TokenTree::Ident(ident)) if ident == crate_name)
+}
+
+fn path_ident_at(trees: &[TokenTree], colon_index: usize, expected: &str) -> bool {
+    is_colon_at(trees, colon_index)
+        && is_colon_at(trees, colon_index + 1)
+        && matches!(trees.get(colon_index + 2), Some(TokenTree::Ident(ident)) if ident == expected)
+}
+
+fn is_colon_at(trees: &[TokenTree], index: usize) -> bool {
+    trees.get(index).is_some_and(is_colon)
 }
 
 fn absolute_rewritable_path_at(trees: &[TokenTree], index: usize) -> Option<&str> {
@@ -134,4 +231,31 @@ fn resolve_sdk_path(module: &str) -> Option<TokenStream> {
 fn absolute_ident_path(name: &str) -> TokenStream {
     let ident = Ident::new(name, proc_macro2::Span::call_site());
     quote!(::#ident)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_resource_factory_paths_inside_generated_items() {
+        let generated = quote! {
+            pub struct ExampleFactory {
+                inner: ::std::sync::Arc<dyn ::nebula_resource::ResourceFactory>,
+            }
+        };
+
+        assert!(resource_factory_path_is_present(&generated));
+    }
+
+    #[test]
+    fn identifies_typed_resource_contribution_bridge_path() {
+        let generated = quote!(::nebula_resource::factory::KindActivator::<Example, _, _>);
+        let trees = generated.into_iter().collect::<Vec<_>>();
+
+        assert_eq!(
+            resource_contribution_path_at(&trees, 0),
+            Some((ResourceContributionPath::Bridge, 9))
+        );
+    }
 }

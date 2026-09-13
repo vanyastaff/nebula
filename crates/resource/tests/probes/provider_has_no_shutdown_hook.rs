@@ -6,9 +6,8 @@ use nebula_resource::{
 struct LegacyProvider;
 nebula_resource::no_credential_slots!(LegacyProvider);
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, nebula_schema::Schema)]
 struct Config;
-nebula_schema::impl_empty_has_schema!(Config);
 
 impl ResourceConfig for Config {
     fn fingerprint(&self) -> u64 {
@@ -32,6 +31,14 @@ impl Provider for LegacyProvider {
 
     async fn shutdown(&self, _instance: &()) -> Result<(), Error> {
         Ok(())
+    }
+
+    fn metadata() -> nebula_resource::ResourceMetadataDraft {
+        nebula_resource::ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("LegacyProvider"),
+            "",
+        )
     }
 }
 

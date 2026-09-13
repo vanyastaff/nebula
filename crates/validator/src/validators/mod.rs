@@ -23,7 +23,7 @@
 //! assert!(username.validate("alice").is_ok());
 //!
 //! // Numeric validation
-//! let age = in_range(18, 100);
+//! let age = in_range(18, 100).expect("ordered bounds");
 //! assert!(age.validate(&25).is_ok());
 //!
 //! // Collection validation
@@ -73,13 +73,13 @@ pub use pattern::{
     alphabetic, alphanumeric, contains, ends_with, lowercase, numeric, starts_with, uppercase,
 };
 pub use range::{
-    ExclusiveRange, GreaterThan, InRange, LessThan, Max, Min, exclusive_range, greater_than,
-    in_range, in_range_f64, in_range_i64, less_than, max, max_f64, max_i64, min, min_f64, min_i64,
-    try_exclusive_range, try_in_range,
+    ExclusiveRange, GreaterThan, InRange, LessThan, Max, Min, RangeConfigError, exclusive_range,
+    greater_than, in_range, in_range_f64, in_range_i64, less_than, max, max_f64, max_i64, min,
+    min_f64, min_i64,
 };
 pub use size::{
     ExactSize, MaxSize, MinSize, NotEmptyCollection, SizeRange, exact_size, max_size, min_size,
-    not_empty_collection, size_range, try_size_range,
+    not_empty_collection, size_range,
 };
 #[cfg(feature = "temporal")]
 pub use temporal::{Date, DateTime, Time, Uuid, date, date_time, time, uuid};

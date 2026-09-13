@@ -8,7 +8,10 @@
 //! - Lint: all alias.* error codes emitted at `SchemaBuilder::build` time
 //! - No-alias path: fields without aliases produce no extra wire keys
 
-use nebula_schema::{Field, FieldAliases, FieldKey, FieldValue, FieldValues, Schema};
+use nebula_schema::{
+    AuthoredValue, Field, FieldAliases, FieldKey, Schema, SecretValue, ValidValues, ValuePath,
+    ValueTree,
+};
 use serde_json::json;
 
 fn fk(s: &str) -> FieldKey {
@@ -16,7 +19,15 @@ fn fk(s: &str) -> FieldKey {
 }
 
 fn has_error_code(r: &nebula_schema::ValidationReport, code: &str) -> bool {
-    r.errors().any(|e| e.code == code)
+    r.errors().any(|e| e.code() == code)
+}
+
+fn assert_prepared_secret(values: &ValidValues, pointer: &str, expected: &str) {
+    let path = ValuePath::from_pointer(pointer).unwrap();
+    let Some(ValueTree::Secret(SecretValue::String(secret))) = values.get_path(&path) else {
+        panic!("expected protected string at {path}");
+    };
+    assert_eq!(secret.expose(), expected);
 }
 
 // ── Builder API ───────────────────────────────────────────────────────────────
@@ -37,7 +48,7 @@ fn builder_read_alias_rejects_invalid_key() {
     let err = Field::string(fk("name"))
         .read_alias("has-dash")
         .unwrap_err();
-    assert_eq!(err.code, "alias.invalid_key");
+    assert_eq!(err.code(), "alias.invalid_key");
 }
 
 #[test]
@@ -60,7 +71,7 @@ fn builder_emit_as_registers_on_field_enum() {
 #[test]
 fn builder_emit_as_rejects_invalid_key() {
     let err = Field::string(fk("name")).emit_as("has-dash").unwrap_err();
-    assert_eq!(err.code, "alias.invalid_key");
+    assert_eq!(err.code(), "alias.invalid_key");
 }
 
 #[test]
@@ -83,18 +94,18 @@ fn alias_key_accepted_and_stored_under_canonical_key() {
         .build()
         .unwrap();
 
-    let submitted = FieldValues::from_json(json!({"alias_name": "hello"})).unwrap();
+    let submitted = AuthoredValue::from_template_json(json!({"alias_name": "hello"})).unwrap();
     let valid = schema
-        .validate(&submitted)
+        .validate(submitted)
         .expect("alias_name must be accepted");
 
     // After ingest the value lives under the canonical key only.
     assert!(
-        valid.raw().get(&fk("canonical_name")).is_some(),
+        valid.values().get(fk("canonical_name")).is_some(),
         "value must be stored under the canonical key"
     );
     assert!(
-        valid.raw().get(&fk("alias_name")).is_none(),
+        valid.values().get(fk("alias_name")).is_none(),
         "alias key must not remain in stored values"
     );
 }
@@ -107,18 +118,22 @@ fn canonical_key_wins_over_alias_when_both_submitted() {
         .unwrap();
 
     // Submit both canonical and alias — canonical must win (matches serde alias semantics).
-    let submitted =
-        FieldValues::from_json(json!({"name": "canonical_value", "alt_name": "alias_value"}))
-            .unwrap();
-    let valid = schema.validate(&submitted).expect("should accept");
+    let submitted = AuthoredValue::from_template_json(
+        json!({"name": "canonical_value", "alt_name": "alias_value"}),
+    )
+    .unwrap();
+    let valid = schema.validate(submitted).expect("should accept");
 
-    let stored_string = valid.raw().get_string(&fk("name"));
+    let stored_string = valid
+        .values()
+        .get(fk("name"))
+        .and_then(|value| value.as_str());
     assert_eq!(
         stored_string,
         Some("canonical_value"),
         "canonical value must win when both submitted"
     );
-    assert!(valid.raw().get(&fk("alt_name")).is_none());
+    assert!(valid.values().get(fk("alt_name")).is_none());
 }
 
 #[test]
@@ -135,15 +150,16 @@ fn multiple_aliases_first_present_wins() {
         .unwrap();
 
     // Submit second alias only.
-    let submitted = FieldValues::from_json(json!({"second_alias": "from_second"})).unwrap();
+    let submitted =
+        AuthoredValue::from_template_json(json!({"second_alias": "from_second"})).unwrap();
     let valid = schema
-        .validate(&submitted)
+        .validate(submitted)
         .expect("second_alias must be accepted");
     assert!(
-        valid.raw().get(&fk("target")).is_some(),
+        valid.values().get(fk("target")).is_some(),
         "value must be stored under canonical key"
     );
-    assert!(valid.raw().get(&fk("second_alias")).is_none());
+    assert!(valid.values().get(fk("second_alias")).is_none());
 }
 
 #[test]
@@ -158,10 +174,15 @@ fn required_field_satisfied_via_alias_key() {
         .build()
         .unwrap();
 
-    let submitted = FieldValues::from_json(json!({"email_address": "user@example.com"})).unwrap();
-    schema
-        .validate(&submitted)
+    let submitted =
+        AuthoredValue::from_template_json(json!({"email_address": "user@example.com"})).unwrap();
+    let valid = schema
+        .validate(submitted)
         .expect("required satisfied via alias must not emit 'required'");
+    assert_eq!(
+        valid.get(&fk("email")).and_then(ValueTree::as_str),
+        Some("user@example.com")
+    );
 }
 
 #[test]
@@ -177,12 +198,15 @@ fn field_validation_runs_on_alias_submitted_value() {
         .build()
         .unwrap();
 
-    let too_short = FieldValues::from_json(json!({"user_name": "ab"})).unwrap();
-    let report = schema.validate(&too_short).unwrap_err();
+    let too_short = AuthoredValue::from_template_json(json!({"user_name": "ab"})).unwrap();
+    let report = schema.validate(too_short).unwrap_err();
     assert!(
-        report.errors().any(|e| e.code == "min_length"),
+        report.errors().any(|e| e.code() == "min_length"),
         "min_length validation must run on alias-submitted value; got: {:?}",
-        report.errors().map(|e| &e.code).collect::<Vec<_>>()
+        report
+            .errors()
+            .map(nebula_schema::ValidationError::code)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -196,20 +220,20 @@ fn nested_object_alias_is_canonicalized() {
         .build()
         .unwrap();
 
-    let submitted = FieldValues::from_json(json!({"user": {"login": "admin"}})).unwrap();
+    let submitted = AuthoredValue::from_template_json(json!({"user": {"login": "admin"}})).unwrap();
     let valid = schema
-        .validate(&submitted)
+        .validate(submitted)
         .expect("nested alias must be accepted");
 
     // Inner value must be stored under canonical key.
-    let user_value = valid.raw().get(&fk("user"));
-    if let Some(FieldValue::Object(inner_map)) = user_value {
+    let user_value = valid.values().get(fk("user"));
+    if let Some(ValueTree::Object(inner_map)) = user_value {
         assert!(
-            inner_map.get(&fk("username")).is_some(),
+            inner_map.get("username").is_some(),
             "nested value must be under canonical key"
         );
         assert!(
-            inner_map.get(&fk("login")).is_none(),
+            inner_map.get("login").is_none(),
             "alias key must be removed"
         );
     } else {
@@ -228,18 +252,18 @@ fn secret_via_alias_is_canonicalized_not_stored_under_alias_key() {
         .build()
         .unwrap();
 
-    let submitted = FieldValues::from_json(json!({"token": "s3cr3t"})).unwrap();
+    let submitted = AuthoredValue::from_template_json(json!({"token": "s3cr3t"})).unwrap();
     let valid = schema
-        .validate(&submitted)
+        .validate(submitted)
         .expect("secret via alias must be accepted");
 
     // Alias key must be absent; canonical key present so secret-strip can find it.
     assert!(
-        valid.raw().get(&fk("token")).is_none(),
+        valid.values().get(fk("token")).is_none(),
         "alias key must not remain after ingest — secret would bypass secret-strip"
     );
     assert!(
-        valid.raw().get(&fk("api_key")).is_some(),
+        valid.values().get(fk("api_key")).is_some(),
         "secret must be stored under canonical key so context.rs redaction runs"
     );
 }
@@ -257,8 +281,8 @@ fn project_emits_emit_as_key_instead_of_canonical_key() {
         .build()
         .unwrap();
 
-    let values = FieldValues::from_json(json!({"internal_id": "abc123"})).unwrap();
-    let projected = schema.project(&values);
+    let values = AuthoredValue::from_template_json(json!({"internal_id": "abc123"})).unwrap();
+    let projected = schema.project(&values).unwrap();
 
     assert_eq!(projected["externalId"], json!("abc123"));
     assert!(
@@ -274,8 +298,8 @@ fn project_emits_canonical_key_when_no_emit_as() {
         .build()
         .unwrap();
 
-    let values = FieldValues::from_json(json!({"name": "alice"})).unwrap();
-    let projected = schema.project(&values);
+    let values = AuthoredValue::from_template_json(json!({"name": "alice"})).unwrap();
+    let projected = schema.project(&values).unwrap();
 
     assert_eq!(projected["name"], json!("alice"));
 }
@@ -288,8 +312,9 @@ fn project_excludes_secret_fields() {
         .build()
         .unwrap();
 
-    let values = FieldValues::from_json(json!({"name": "alice", "password": "s3cr3t"})).unwrap();
-    let projected = schema.project(&values);
+    let values =
+        AuthoredValue::from_template_json(json!({"name": "alice", "password": "s3cr3t"})).unwrap();
+    let projected = schema.project(&values).unwrap();
 
     assert_eq!(projected["name"], json!("alice"));
     assert!(
@@ -305,8 +330,8 @@ fn project_passes_extra_non_schema_keys_through_unchanged() {
         .build()
         .unwrap();
 
-    let values = FieldValues::from_json(json!({"x": "hello", "extra_key": 99})).unwrap();
-    let projected = schema.project(&values);
+    let values = AuthoredValue::from_template_json(json!({"x": "hello", "extra_key": 99})).unwrap();
+    let projected = schema.project(&values).unwrap();
 
     assert_eq!(projected["x"], json!("hello"));
     assert_eq!(projected["extra_key"], json!(99));
@@ -325,8 +350,10 @@ fn project_recurses_into_nested_object_emit_as() {
         .build()
         .unwrap();
 
-    let values = FieldValues::from_json(json!({"contact": {"phone_number": "555-1234"}})).unwrap();
-    let projected = schema.project(&values);
+    let values =
+        AuthoredValue::from_template_json(json!({"contact": {"phone_number": "555-1234"}}))
+            .unwrap();
+    let projected = schema.project(&values).unwrap();
 
     assert_eq!(projected["contact"]["phoneNumber"], json!("555-1234"));
     assert!(
@@ -348,8 +375,8 @@ fn to_wire_json_applies_emit_as_to_validated_output() {
         .build()
         .unwrap();
 
-    let values = FieldValues::from_json(json!({"internal_field": "payload"})).unwrap();
-    let valid = schema.validate(&values).expect("validates");
+    let values = AuthoredValue::from_template_json(json!({"internal_field": "payload"})).unwrap();
+    let valid = schema.validate(values).expect("validates");
     let wire = valid.to_wire_json();
 
     assert_eq!(wire["wireField"], json!("payload"));
@@ -378,7 +405,7 @@ fn emit_as_with_matching_read_alias_is_wire_round_trip_stable() {
         .unwrap();
 
     let valid = schema
-        .validate(&FieldValues::from_json(json!({"internal": "v"})).unwrap())
+        .validate(AuthoredValue::from_template_json(json!({"internal": "v"})).unwrap())
         .unwrap();
     let wire = valid.to_wire_json();
     assert_eq!(wire["wire"], json!("v"), "emits under the emit_as key");
@@ -386,9 +413,15 @@ fn emit_as_with_matching_read_alias_is_wire_round_trip_stable() {
     // Feed the projection back through validate: `wire` is a read-alias, so it
     // folds onto the canonical key — the value survives a full wire round-trip.
     let revalidated = schema
-        .validate(&FieldValues::from_json(wire).unwrap())
+        .validate(AuthoredValue::from_template_json(wire).unwrap())
         .unwrap();
-    assert_eq!(revalidated.raw().get_string(&fk("internal")), Some("v"));
+    assert_eq!(
+        revalidated
+            .values()
+            .get(fk("internal"))
+            .and_then(|value| value.as_str()),
+        Some("v")
+    );
 }
 
 #[test]
@@ -403,16 +436,19 @@ fn emit_as_without_matching_read_alias_is_not_round_trip_stable() {
         .unwrap();
 
     let valid = schema
-        .validate(&FieldValues::from_json(json!({"internal": "v"})).unwrap())
+        .validate(AuthoredValue::from_template_json(json!({"internal": "v"})).unwrap())
         .unwrap();
     let wire = valid.to_wire_json();
     assert_eq!(wire["ext"], json!("v"));
 
     let revalidated = schema
-        .validate(&FieldValues::from_json(wire).unwrap())
+        .validate(AuthoredValue::from_template_json(wire).unwrap())
         .unwrap();
     assert_eq!(
-        revalidated.raw().get_string(&fk("internal")),
+        revalidated
+            .values()
+            .get(fk("internal"))
+            .and_then(|value| value.as_str()),
         None,
         "emit_as output key is not an input key — no round-trip without a read-alias"
     );
@@ -430,7 +466,10 @@ fn lint_emit_on_secret_emits_error() {
     assert!(
         has_error_code(&report, "alias.emit_on_secret"),
         "expected alias.emit_on_secret, got: {:?}",
-        report.errors().map(|e| &e.code).collect::<Vec<_>>()
+        report
+            .errors()
+            .map(nebula_schema::ValidationError::code)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -443,7 +482,10 @@ fn lint_read_alias_equal_to_own_key_emits_self_collision() {
     assert!(
         has_error_code(&report, "alias.self_collision"),
         "expected alias.self_collision, got: {:?}",
-        report.errors().map(|e| &e.code).collect::<Vec<_>>()
+        report
+            .errors()
+            .map(nebula_schema::ValidationError::code)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -457,7 +499,10 @@ fn lint_read_alias_equal_to_sibling_canonical_key_emits_scope_collision() {
     assert!(
         has_error_code(&report, "alias.scope_collision"),
         "expected alias.scope_collision, got: {:?}",
-        report.errors().map(|e| &e.code).collect::<Vec<_>>()
+        report
+            .errors()
+            .map(nebula_schema::ValidationError::code)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -471,7 +516,10 @@ fn lint_shared_read_alias_across_sibling_fields_emits_scope_duplicate() {
     assert!(
         has_error_code(&report, "alias.scope_duplicate"),
         "expected alias.scope_duplicate, got: {:?}",
-        report.errors().map(|e| &e.code).collect::<Vec<_>>()
+        report
+            .errors()
+            .map(nebula_schema::ValidationError::code)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -486,7 +534,10 @@ fn lint_emit_as_equal_to_sibling_canonical_key_emits_emit_collision() {
     assert!(
         has_error_code(&report, "alias.emit_collision"),
         "expected alias.emit_collision, got: {:?}",
-        report.errors().map(|e| &e.code).collect::<Vec<_>>()
+        report
+            .errors()
+            .map(nebula_schema::ValidationError::code)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -500,7 +551,10 @@ fn lint_shared_emit_as_across_sibling_fields_emits_emit_scope_duplicate() {
     assert!(
         has_error_code(&report, "alias.emit_scope_duplicate"),
         "expected alias.emit_scope_duplicate, got: {:?}",
-        report.errors().map(|e| &e.code).collect::<Vec<_>>()
+        report
+            .errors()
+            .map(nebula_schema::ValidationError::code)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -517,7 +571,10 @@ fn lint_read_alias_colliding_with_sibling_emit_as_emits_read_emit_collision() {
     assert!(
         has_error_code(&report, "alias.read_emit_collision"),
         "expected alias.read_emit_collision, got: {:?}",
-        report.errors().map(|e| &e.code).collect::<Vec<_>>()
+        report
+            .errors()
+            .map(nebula_schema::ValidationError::code)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -532,7 +589,10 @@ fn lint_read_emit_collision_caught_regardless_of_declaration_order() {
     assert!(
         has_error_code(&report, "alias.read_emit_collision"),
         "expected alias.read_emit_collision regardless of order, got: {:?}",
-        report.errors().map(|e| &e.code).collect::<Vec<_>>()
+        report
+            .errors()
+            .map(nebula_schema::ValidationError::code)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -553,7 +613,7 @@ fn lint_same_field_read_and_emit_as_reuse_is_allowed() {
         "same-field read+emit_as reuse must build, got: {:?}",
         result
             .err()
-            .map(|r| r.errors().map(|e| e.code.clone()).collect::<Vec<_>>())
+            .map(|r| r.errors().map(|e| e.code().to_owned()).collect::<Vec<_>>())
     );
 }
 
@@ -600,13 +660,13 @@ fn schema_without_aliases_round_trips_byte_identical() {
 // ── Security: aliases & secrets nested in Mode / List payloads ─────────────────
 //
 // Regression guards for the canonicalize/project/lint recursion gaps found in
-// the Step-12a adversarial review: a wire `{"mode","value"}` envelope parses to
-// a `FieldValue::Object` (never `FieldValue::Mode`), so canonicalization and
+// an adversarial review: a wire `{"mode","value"}` envelope is an ordinary
+// `ValueTree::Object`, so canonicalization and
 // projection must handle the Object shape at every container depth, and the
 // build-time collision lint must reach the same depth the canonicalizer folds.
 
 /// Serialize a validated value tree to its wire string, for leak assertions.
-fn wire_string(valid: &nebula_schema::ValidValues) -> String {
+fn wire_string(valid: &ValidValues) -> String {
     serde_json::to_string(&valid.to_wire_json()).expect("wire json serializes")
 }
 
@@ -629,21 +689,22 @@ fn mode_payload_secret_alias_canonicalized_not_leaked() {
         .build()
         .unwrap();
 
-    let submitted = FieldValues::from_json(json!({
+    let submitted = AuthoredValue::from_template_json(json!({
         "auth": {"mode": "apikey", "value": {"token_alias": "PLAINTEXT_SECRET"}}
     }))
     .unwrap();
     let valid = schema
-        .validate(&submitted)
+        .validate(submitted)
         .expect("mode-payload alias must be accepted");
 
     // The alias key must have folded onto the canonical secret key at depth.
-    let raw = valid.raw().to_json();
+    let raw = valid.values().to_json();
     assert_eq!(
         raw["auth"]["value"]["api_key"],
-        json!("PLAINTEXT_SECRET"),
+        json!("<redacted>"),
         "mode-payload alias must fold onto the canonical secret key"
     );
+    assert_prepared_secret(&valid, "/auth/value/api_key", "PLAINTEXT_SECRET");
     assert!(
         raw["auth"]["value"].get("token_alias").is_none(),
         "alias key must not survive inside the mode payload"
@@ -677,12 +738,12 @@ fn mode_payload_alias_canonicalized_via_default_variant() {
         .unwrap();
 
     let submitted =
-        FieldValues::from_json(json!({"auth": {"value": {"clientId": "abc"}}})).unwrap();
+        AuthoredValue::from_template_json(json!({"auth": {"value": {"clientId": "abc"}}})).unwrap();
     let valid = schema
-        .validate(&submitted)
+        .validate(submitted)
         .expect("default-variant nested alias must be accepted");
 
-    let raw = valid.raw().to_json();
+    let raw = valid.values().to_json();
     assert_eq!(
         raw["auth"]["value"]["client_id"],
         json!("abc"),
@@ -714,20 +775,21 @@ fn list_item_mode_payload_secret_alias_not_leaked() {
 
     // A mode variant's object payload maps its child fields directly under
     // `value` — the variant field's own key is not a wire wrapper.
-    let submitted = FieldValues::from_json(json!({
+    let submitted = AuthoredValue::from_template_json(json!({
         "rows": [{"auth": {"mode": "apikey", "value": {"token": "PLAINTEXT_SECRET"}}}]
     }))
     .unwrap();
     let valid = schema
-        .validate(&submitted)
+        .validate(submitted)
         .expect("list-item mode alias accepted");
 
-    let raw = valid.raw().to_json();
+    let raw = valid.values().to_json();
     assert_eq!(
         raw["rows"][0]["auth"]["value"]["api_key"],
-        json!("PLAINTEXT_SECRET"),
+        json!("<redacted>"),
         "alias inside a list-item mode payload must fold onto the canonical key"
     );
+    assert_prepared_secret(&valid, "/rows/0/auth/value/api_key", "PLAINTEXT_SECRET");
     assert!(raw["rows"][0]["auth"]["value"].get("token").is_none());
     assert!(
         !wire_string(&valid).contains("PLAINTEXT_SECRET"),
@@ -750,10 +812,11 @@ fn project_drops_secret_nested_in_list() {
         .build()
         .unwrap();
 
-    let values =
-        FieldValues::from_json(json!({"creds": [{"user": "alice", "password": "PLAINTEXT_LEAK"}]}))
-            .unwrap();
-    let projected = schema.project(&values);
+    let values = AuthoredValue::from_template_json(
+        json!({"creds": [{"user": "alice", "password": "PLAINTEXT_LEAK"}]}),
+    )
+    .unwrap();
+    let projected = schema.project(&values).unwrap();
 
     assert_eq!(projected["creds"][0]["user"], json!("alice"));
     assert!(
@@ -784,11 +847,11 @@ fn project_drops_secret_nested_in_mode_payload() {
         .build()
         .unwrap();
 
-    let values = FieldValues::from_json(json!({
+    let values = AuthoredValue::from_template_json(json!({
         "auth": {"mode": "basic", "value": {"user": "bob", "password": "MODE_SECRET"}}
     }))
     .unwrap();
-    let projected = schema.project(&values);
+    let projected = schema.project(&values).unwrap();
 
     assert_eq!(projected["auth"]["value"]["user"], json!("bob"));
     assert!(
@@ -817,10 +880,11 @@ fn project_applies_emit_as_inside_list_items() {
         .build()
         .unwrap();
 
-    let values =
-        FieldValues::from_json(json!({"rows": [{"internal_id": "x1"}, {"internal_id": "x2"}]}))
-            .unwrap();
-    let projected = schema.project(&values);
+    let values = AuthoredValue::from_template_json(
+        json!({"rows": [{"internal_id": "x1"}, {"internal_id": "x2"}]}),
+    )
+    .unwrap();
+    let projected = schema.project(&values).unwrap();
 
     assert_eq!(projected["rows"][0]["externalId"], json!("x1"));
     assert_eq!(projected["rows"][1]["externalId"], json!("x2"));
@@ -846,10 +910,11 @@ fn project_applies_emit_as_inside_mode_payload() {
         .build()
         .unwrap();
 
-    let values =
-        FieldValues::from_json(json!({"auth": {"mode": "token", "value": {"client_id": "abc"}}}))
-            .unwrap();
-    let projected = schema.project(&values);
+    let values = AuthoredValue::from_template_json(
+        json!({"auth": {"mode": "token", "value": {"client_id": "abc"}}}),
+    )
+    .unwrap();
+    let projected = schema.project(&values).unwrap();
 
     assert_eq!(projected["auth"]["value"]["clientId"], json!("abc"));
     assert!(projected["auth"]["value"].get("client_id").is_none());
@@ -869,16 +934,17 @@ fn project_extra_key_cannot_clobber_emit_as_output() {
         .unwrap();
 
     let values =
-        FieldValues::from_json(json!({"internal_id": "REAL", "externalId": "ATTACKER"})).unwrap();
+        AuthoredValue::from_template_json(json!({"internal_id": "REAL", "externalId": "ATTACKER"}))
+            .unwrap();
 
-    let projected = schema.project(&values);
+    let projected = schema.project(&values).unwrap();
     assert_eq!(
         projected["externalId"],
         json!("REAL"),
         "declared field must win over a colliding extra pass-through key"
     );
     // The validated path stores the extra key, so the guard must hold there too.
-    let valid = schema.validate(&values).expect("validates");
+    let valid = schema.validate(values).expect("validates");
     assert_eq!(valid.to_wire_json()["externalId"], json!("REAL"));
 }
 
@@ -897,15 +963,15 @@ fn project_extra_key_cannot_occupy_absent_emit_as_output_slot() {
         .unwrap();
 
     // `internal_id` is optional and omitted; only the spoof key is present.
-    let values = FieldValues::from_json(json!({"externalId": "ATTACKER"})).unwrap();
+    let values = AuthoredValue::from_template_json(json!({"externalId": "ATTACKER"})).unwrap();
 
-    let projected = schema.project(&values);
+    let projected = schema.project(&values).unwrap();
     assert!(
         projected.get("externalId").is_none(),
         "extra key must not occupy an absent emit_as field's output slot, got: {projected}"
     );
     // Same on the validated wire path (validate stores the extra key).
-    let valid = schema.validate(&values).expect("validates");
+    let valid = schema.validate(values).expect("validates");
     assert!(valid.to_wire_json().get("externalId").is_none());
 }
 
@@ -926,13 +992,13 @@ fn project_extra_key_cannot_occupy_dropped_secret_field_output_slot() {
 
     // `creds` is a wrong-shape literal blob (dropped by the over-redact guard),
     // plus an attacker payload under the reserved `credsOut` output name.
-    let values = FieldValues::from_json(json!({
+    let values = AuthoredValue::from_template_json(json!({
         "creds": "wrong-shape-blob",
         "credsOut": {"injected": "ATTACKER"}
     }))
     .unwrap();
 
-    let projected = schema.project(&values);
+    let projected = schema.project(&values).unwrap();
     assert!(
         projected.get("credsOut").is_none(),
         "extra key must not occupy a dropped emit_as field's output slot, got: {projected}"
@@ -955,8 +1021,8 @@ fn project_on_raw_read_aliased_secret_does_not_leak() {
         .build()
         .unwrap();
 
-    let raw = FieldValues::from_json(json!({"token": "s3cr3t"})).unwrap();
-    let projected = schema.project(&raw);
+    let raw = AuthoredValue::from_template_json(json!({"token": "s3cr3t"})).unwrap();
+    let projected = schema.project(&raw).unwrap();
 
     assert!(
         projected.get("token").is_none(),
@@ -994,7 +1060,10 @@ fn lint_catches_alias_scope_collision_at_list_of_list_depth() {
     assert!(
         has_error_code(&report, "alias.scope_collision"),
         "expected alias.scope_collision at list-of-list depth, got: {:?}",
-        report.errors().map(|e| &e.code).collect::<Vec<_>>()
+        report
+            .errors()
+            .map(nebula_schema::ValidationError::code)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -1019,7 +1088,10 @@ fn lint_catches_alias_self_collision_at_mode_of_list_depth() {
     assert!(
         has_error_code(&report, "alias.self_collision"),
         "expected alias.self_collision at mode-of-list depth, got: {:?}",
-        report.errors().map(|e| &e.code).collect::<Vec<_>>()
+        report
+            .errors()
+            .map(nebula_schema::ValidationError::code)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -1038,7 +1110,10 @@ fn lint_catches_emit_on_secret_for_bare_list_item() {
     assert!(
         has_error_code(&report, "alias.emit_on_secret"),
         "expected alias.emit_on_secret for a bare secret list item, got: {:?}",
-        report.errors().map(|e| &e.code).collect::<Vec<_>>()
+        report
+            .errors()
+            .map(nebula_schema::ValidationError::code)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -1053,7 +1128,7 @@ fn lint_nested_self_collision_reported_exactly_once() {
 
     let collision_count = report
         .errors()
-        .filter(|e| e.code == "alias.self_collision")
+        .filter(|e| e.code() == "alias.self_collision")
         .count();
     assert_eq!(
         collision_count, 1,

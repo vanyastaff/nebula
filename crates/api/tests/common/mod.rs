@@ -1016,19 +1016,18 @@ pub(crate) async fn create_state_with_failing_queue() -> (AppState, InMemoryExec
 // `execution_terminate_e2e.rs::terminate_persists_terminal_state_and_control_intent_while_handler_runs`
 // both source the wiring here so they differ ONLY in the final HTTP call
 // (DELETE-cancel vs POST-terminate) and the command/terminal assertion.
-// The wiring (action key `"slow"`, the `ActionExecutor` closure,
-// `InProcessRunner`, `ActionRuntime`, `EngineControlDispatch`,
-// `ControlConsumer` with a 10ms poll interval and the `b"knife-a3"`
-// processor id) is byte-behaviorally identical to the original inline
-// knife step-5 wiring — the move is mechanical, not a behavior change.
+// The wiring (action key `"slow"`, `InProcessRunner`, `ActionRuntime`,
+// `EngineControlDispatch`, `ControlConsumer` with a 10ms poll interval and
+// the `b"knife-a3"` processor id) matches the engine-consumer harness shape
+// expected by the seam tests.
 
 pub(crate) mod engine_seam {
     use std::{sync::Arc, time::Duration};
 
     use nebula_api::AppState;
     use nebula_engine::{
-        ActionExecutor, ActionRegistry, ActionRuntime, ControlConsumer, DataPassingPolicy,
-        EngineControlDispatch, InProcessRunner, WorkflowEngine,
+        ActionRegistry, ActionRuntime, ControlConsumer, DataPassingPolicy, EngineControlDispatch,
+        InProcessRunner, WorkflowEngine,
     };
     use nebula_tenancy::{
         ScopedControlQueue, ScopedExecutionJournalReader, ScopedExecutionStore,
@@ -1055,14 +1054,13 @@ pub(crate) mod engine_seam {
         type Input = serde_json::Value;
         type Output = serde_json::Value;
 
-        fn metadata() -> nebula_action::metadata::ActionMetadata {
-            nebula_action::metadata::ActionMetadata::new(
+        fn metadata() -> nebula_action::metadata::ActionMetadataDraft {
+            nebula_action::metadata::ActionMetadataDraft::new(
                 nebula_core::action_key!("core.slow"),
-                "SlowAction",
+                nebula_action::metadata_name!("SlowAction"),
                 "static",
             )
             .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
-            .with_kind(nebula_action::ActionKind::Stateless)
         }
         fn dependencies() -> &'static nebula_core::Dependencies {
             static D: std::sync::OnceLock<nebula_core::Dependencies> = std::sync::OnceLock::new();
@@ -1190,10 +1188,9 @@ pub(crate) mod engine_seam {
     /// control request. No completion signal is exposed for the later
     /// `Cancel` / `Terminate` command.
     ///
-    /// Byte-behaviorally identical to the original inline knife step-5
-    /// wiring: same action key (`"slow"`), same `ActionExecutor` closure,
-    /// `InProcessRunner`, `ActionRuntime`, 10ms poll interval, and the
-    /// `b"knife-a3"` processor id.
+    /// Shared engine-consumer wiring for the seam tests: same action key
+    /// (`"slow"`), `InProcessRunner`, `ActionRuntime`, 10ms poll interval,
+    /// and the `b"knife-a3"` processor id.
     pub(crate) fn spawn_engine_consumer(
         state: &AppState,
         handles: &super::PortHandles,
@@ -1201,10 +1198,7 @@ pub(crate) mod engine_seam {
         let slow_started = Arc::clone(&handles.runtime.slow_started);
         let registry = Arc::new(ActionRegistry::new());
 
-        let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
-            Box::pin(async move { Ok(nebula_action::result::ActionResult::success(input)) })
-        });
-        let runner = Arc::new(InProcessRunner::new(executor));
+        let runner = Arc::new(InProcessRunner::new());
         let metrics = nebula_metrics::MetricsRegistry::new();
         let runtime = Arc::new(
             ActionRuntime::try_new(

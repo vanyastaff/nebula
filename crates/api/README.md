@@ -526,6 +526,9 @@ service runs the typed validate→resolve pipeline and persists only through own
 Handlers do not run a competing `CredentialSchemaPort` precheck: that port serves catalog/form
 schema reads only. Its absence does not block create/update/resolve or produce a mutation 503;
 authorized service validation is the single mutation authority.
+Registry-backed catalog adapters export every admitted definition during fallible
+construction. Export failure aborts construction; it never removes a catalog entry
+or substitutes a permissive schema, and catalog reads use the resulting snapshot.
 The universal `resolve` / `resolve/continue` endpoints are the only
 credential-acquisition HTTP contract. The former raw Plane-B
 `credentials/{id}/oauth2/{auth,callback}` ceremony is parked and returns

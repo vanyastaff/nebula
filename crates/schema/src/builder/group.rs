@@ -5,7 +5,7 @@
 //! `visible_when` / `required_when` conditions. At finish time each child
 //! inherits the shared conditions (AND-composed with any per-child condition).
 
-use nebula_validator::Rule;
+use nebula_validator::{Rule, RuleBuildError};
 
 use crate::{
     builder::FieldCollector,
@@ -53,8 +53,10 @@ impl GroupBuilder {
     }
 
     /// Consume the group and return its children with shared conditions applied.
-    #[must_use]
-    pub fn into_fields(self) -> Vec<Field> {
+    ///
+    /// # Errors
+    /// Returns the exhausted rule budget when composing shared and child conditions.
+    pub fn into_fields(self) -> Result<Vec<Field>, RuleBuildError> {
         let Self {
             name,
             visible_when,
@@ -81,16 +83,16 @@ fn apply_group(
     group: &str,
     visible_when: Option<&Rule>,
     required_when: Option<&Rule>,
-) -> Field {
+) -> Result<Field, RuleBuildError> {
     let mut field = field;
     set_group(&mut field, group);
     if let Some(rule) = visible_when {
-        set_visible(&mut field, rule);
+        set_visible(&mut field, rule)?;
     }
     if let Some(rule) = required_when {
-        set_required(&mut field, rule);
+        set_required(&mut field, rule)?;
     }
-    field
+    Ok(field)
 }
 
 /// Helper enum used by the three `set_*` functions — each match arm is fully
@@ -155,34 +157,45 @@ fn set_group(field: &mut Field, group: &str) {
     });
 }
 
-fn set_visible(field: &mut Field, rule: &Rule) {
+fn set_visible(field: &mut Field, rule: &Rule) -> Result<(), RuleBuildError> {
+    let mut result = Ok(());
     for_each_field!(field, |_g: &mut Option<String>,
                             v: &mut VisibilityMode,
                             _r: &mut RequiredMode| {
-        *v = compose_visible(v.clone(), rule.clone());
+        if result.is_ok() {
+            result = compose_visible(v.clone(), rule.clone()).map(|mode| *v = mode);
+        }
     });
+    result
 }
 
-fn set_required(field: &mut Field, rule: &Rule) {
+fn set_required(field: &mut Field, rule: &Rule) -> Result<(), RuleBuildError> {
+    let mut result = Ok(());
     for_each_field!(field, |_g: &mut Option<String>,
                             _v: &mut VisibilityMode,
                             r: &mut RequiredMode| {
-        *r = compose_required(r.clone(), rule.clone());
+        if result.is_ok() {
+            result = compose_required(r.clone(), rule.clone()).map(|mode| *r = mode);
+        }
     });
+    result
 }
 
-fn compose_visible(existing: VisibilityMode, shared: Rule) -> VisibilityMode {
-    match existing {
+fn compose_visible(
+    existing: VisibilityMode,
+    shared: Rule,
+) -> Result<VisibilityMode, RuleBuildError> {
+    Ok(match existing {
         VisibilityMode::Always => VisibilityMode::When(shared),
         VisibilityMode::Never => VisibilityMode::Never,
-        VisibilityMode::When(child) => VisibilityMode::When(Rule::all([child, shared])),
-    }
+        VisibilityMode::When(child) => VisibilityMode::When(Rule::all([child, shared])?),
+    })
 }
 
-fn compose_required(existing: RequiredMode, shared: Rule) -> RequiredMode {
-    match existing {
+fn compose_required(existing: RequiredMode, shared: Rule) -> Result<RequiredMode, RuleBuildError> {
+    Ok(match existing {
         RequiredMode::Never => RequiredMode::When(shared),
         RequiredMode::Always => RequiredMode::Always,
-        RequiredMode::When(child) => RequiredMode::When(Rule::all([child, shared])),
-    }
+        RequiredMode::When(child) => RequiredMode::When(Rule::all([child, shared])?),
+    })
 }

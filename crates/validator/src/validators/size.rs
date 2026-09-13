@@ -5,6 +5,7 @@
 use std::marker::PhantomData;
 
 use crate::foundation::{Validate, ValidationError};
+use crate::validators::range::RangeConfigError;
 
 /// Validates that a collection has at least a minimum size.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -203,44 +204,25 @@ impl<T> Validate<[T]> for SizeRange<T> {
 
 /// Creates a validator that checks if a collection size is within a range.
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics in debug builds if `min > max`. In release builds, creates a
-/// degenerate validator that rejects all input. Prefer [`try_size_range`]
-/// when bounds come from user input or config.
+/// Returns [`RangeConfigError::MinGreaterThanMax`] when `min > max`.
 ///
 /// # Examples
 ///
 /// ```
 /// use nebula_validator::{foundation::Validate, validators::size_range};
 ///
-/// let validator = size_range::<i32>(2, 4);
+/// let validator = size_range::<i32>(2, 4)?;
 /// assert!(validator.validate(&vec![1, 2]).is_ok());
 /// assert!(validator.validate(&vec![1, 2, 3, 4]).is_ok());
 /// assert!(validator.validate(&vec![1]).is_err());
 /// assert!(validator.validate(&vec![1, 2, 3, 4, 5]).is_err());
+/// # Ok::<(), nebula_validator::validators::RangeConfigError>(())
 /// ```
-#[must_use]
-pub fn size_range<T>(min: usize, max: usize) -> SizeRange<T> {
-    debug_assert!(min <= max, "size_range: min ({min}) must be <= max ({max})");
-    SizeRange {
-        min,
-        max,
-        _phantom: PhantomData,
-    }
-}
-
-/// Creates a validator that checks if a collection size is within a range.
-///
-/// Returns an error when `min > max`.
-pub fn try_size_range<T>(min: usize, max: usize) -> Result<SizeRange<T>, ValidationError> {
+pub fn size_range<T>(min: usize, max: usize) -> Result<SizeRange<T>, RangeConfigError> {
     if min > max {
-        return Err(ValidationError::new(
-            "invalid_range",
-            format!("size_range requires min <= max (got {min} > {max})"),
-        )
-        .with_param("min", min.to_string())
-        .with_param("max", max.to_string()));
+        return Err(RangeConfigError::MinGreaterThanMax);
     }
 
     Ok(SizeRange {
@@ -305,7 +287,7 @@ mod tests {
 
     #[test]
     fn test_size_range() {
-        let validator = size_range::<i32>(2, 4);
+        let validator = size_range::<i32>(2, 4).expect("ordered bounds");
         assert!(validator.validate(&[1, 2]).is_ok());
         assert!(validator.validate(&[1, 2, 3]).is_ok());
         assert!(validator.validate(&[1, 2, 3, 4]).is_ok());
@@ -314,14 +296,11 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(
-        debug_assertions,
-        should_panic(expected = "min (10) must be <= max (2)")
-    )]
-    fn test_size_range_inverted_bounds_panics_in_debug() {
-        let v = size_range::<i32>(10, 2);
-        // In release mode the validator is degenerate — rejects everything
-        assert!(v.validate(&[1, 2, 3]).is_err());
+    fn size_range_rejects_inverted_bounds() {
+        assert_eq!(
+            size_range::<i32>(10, 2).expect_err("inverted bounds must fail"),
+            RangeConfigError::MinGreaterThanMax
+        );
     }
 
     #[test]
@@ -332,16 +311,9 @@ mod tests {
     }
 
     #[test]
-    fn test_try_size_range_accepts_valid_bounds() {
-        let validator = try_size_range::<i32>(1, 3).expect("valid bounds");
+    fn size_range_accepts_equal_bounds() {
+        let validator = size_range::<i32>(2, 2).expect("equal bounds");
         assert!(validator.validate(&[1, 2]).is_ok());
-    }
-
-    #[test]
-    fn test_try_size_range_rejects_inverted_bounds() {
-        let err = try_size_range::<i32>(10, 2).expect_err("min > max must fail");
-        assert_eq!(err.code.as_ref(), "invalid_range");
-        assert_eq!(err.param("min"), Some("10"));
-        assert_eq!(err.param("max"), Some("2"));
+        assert!(validator.validate(&[1]).is_err());
     }
 }

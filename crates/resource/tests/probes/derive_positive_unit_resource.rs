@@ -15,9 +15,9 @@ use nebula_resource::{
 #[derive(Clone, Resource)]
 struct UnitResource;
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, nebula_schema::Schema)]
 struct MyConfig;
-nebula_schema::impl_empty_has_schema!(MyConfig);
+
 impl nebula_resource::resource::ResourceConfig for MyConfig {
     fn fingerprint(&self) -> u64 {
         0
@@ -29,6 +29,14 @@ impl Provider for UnitResource {
     type Config = MyConfig;
     type Instance = ();
     type Topology = Resident<Self>;
+
+    fn metadata() -> nebula_resource::ResourceMetadataDraft {
+        nebula_resource::ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("UnitResource"),
+            "",
+        )
+    }
 
     fn key() -> ResourceKey {
         resource_key!("positive.unit")

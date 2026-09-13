@@ -11,11 +11,30 @@
 
 use std::fmt;
 
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use zeroize::Zeroizing;
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de::DeserializeOwned};
+use zeroize::{ZeroizeOnDrop, Zeroizing};
 
 /// String returned by JSON helpers when a secret must not be leaked on the wire.
 pub const SECRET_REDACTED: &str = "<redacted>";
+
+/// Marker contract for a Rust type that may receive a typed secret property.
+///
+/// Implementations must own deserialized input and erase their owned secret
+/// material when dropped. The marker is intentionally explicit: implementing
+/// [`DeserializeOwned`] and [`ZeroizeOnDrop`] alone does not opt a type into
+/// secret extraction.
+///
+/// ```
+/// use nebula_schema::SecretInput;
+/// use serde::Deserialize;
+/// use zeroize::{Zeroize, ZeroizeOnDrop};
+///
+/// #[derive(Deserialize, Zeroize, ZeroizeOnDrop)]
+/// struct ApiToken(String);
+///
+/// impl SecretInput for ApiToken {}
+/// ```
+pub trait SecretInput: DeserializeOwned + ZeroizeOnDrop {}
 
 // ── SecretString / SecretBytes / SecretValue --------------------------------
 
@@ -98,7 +117,7 @@ impl Serialize for SecretString {
 // - Schema definitions (`Field::Secret`) flow over `serde` for catalog / plugin manifests; allowing
 //   `SecretString` here would let a default value or a leaked test fixture round-trip plaintext
 //   through schema storage.
-// - Resolved secret values are always introduced by the resolve pipeline (via `SecretValue::string`),
+// - Declared secret values are introduced by consuming preparation (via `SecretValue::string`),
 //   not by parsing wire JSON.
 //
 // As a result, `Schema` definitions must NOT contain a `default` for a
@@ -109,7 +128,7 @@ impl<'de> Deserialize<'de> for SecretString {
     fn deserialize<D: Deserializer<'de>>(_deserializer: D) -> Result<Self, D::Error> {
         Err(serde::de::Error::custom(
             "SecretString cannot be constructed from a deserializer — \
-             secret material must originate from the resolve pipeline, \
+            secret material must originate from consuming preparation, \
              not from wire JSON",
         ))
     }
@@ -217,6 +236,13 @@ impl SecretValue {
     /// Wrap raw bytes.
     pub fn bytes(value: impl Into<Zeroizing<Vec<u8>>>) -> Self {
         Self::Bytes(SecretBytes(value.into()))
+    }
+
+    pub(crate) fn len_bytes(&self) -> usize {
+        match self {
+            Self::String(value) => value.0.len(),
+            Self::Bytes(value) => value.0.len(),
+        }
     }
 
     /// `true` when the secret is an empty string or empty buffer.

@@ -9,14 +9,14 @@ use std::{
 };
 
 use nebula_action::{
-    Action, ActionMetadata, ActionOutput, ActionResult, StatelessAction,
-    effect::ActionEffectContract, result::WaitCondition,
+    Action, ActionOutput, ActionResult, StatelessAction, effect::ActionEffectContract,
+    result::WaitCondition,
 };
 use nebula_core::{Dependencies, ExecutionId, WorkflowId, action_key, node_key};
 use nebula_engine::{
-    ActionExecutor, ActionRegistry, ActionRuntime, ControlDispatch, DataPassingPolicy,
-    EngineControlDispatch, ExecutionStores, InProcessRunner, PlanFlavorRevisionInstaller,
-    PlanFlavorRevisionLoader, WorkflowEngine,
+    ActionRegistry, ActionRuntime, ControlDispatch, DataPassingPolicy, EngineControlDispatch,
+    ExecutionStores, InProcessRunner, PlanFlavorRevisionInstaller, PlanFlavorRevisionLoader,
+    WorkflowEngine,
 };
 use nebula_execution::{
     ExecutionBudget, ExecutionContractBundle, ExecutionRevisions, ExecutionState,
@@ -50,9 +50,13 @@ struct Park;
 impl Action for Echo {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(action_key!("checkpoint.echo"), "Echo", "pure payload echo")
-            .with_effect_contract(ActionEffectContract::NoExternalEffects)
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        nebula_action::ActionMetadataDraft::new(
+            action_key!("checkpoint.echo"),
+            nebula_action::metadata_name!("Echo"),
+            "pure payload echo",
+        )
+        .with_effect_contract(ActionEffectContract::NoExternalEffects)
     }
     fn dependencies() -> &'static Dependencies {
         static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
@@ -78,10 +82,10 @@ impl StatelessAction for Echo {
 impl Action for Park {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        nebula_action::ActionMetadataDraft::new(
             action_key!("checkpoint.park"),
-            "Park",
+            nebula_action::metadata_name!("Park"),
             "durable signal wait",
         )
         .with_effect_contract(ActionEffectContract::NoExternalEffects)
@@ -133,8 +137,12 @@ fn frozen_registry_with_barrier(
     barrier: Option<Arc<ActionBarrier>>,
 ) -> (Arc<ActionRegistry>, Arc<FrozenPluginRegistry>) {
     let actions = Arc::new(ActionRegistry::new());
-    actions.register_stateless_instance(Echo::metadata(), Echo(Arc::clone(count), barrier));
-    actions.register_stateless_instance(Park::metadata(), Park);
+    actions
+        .register_stateless_instance(Echo::metadata(), Echo(Arc::clone(count), barrier))
+        .expect("valid test catalog definition");
+    actions
+        .register_stateless_instance(Park::metadata(), Park)
+        .expect("valid test catalog definition");
     let plugin = FixturePlugin {
         manifest: PluginManifest::builder("checkpoint", "Checkpoint")
             .build()
@@ -351,12 +359,10 @@ async fn drive(
 ) -> serde_json::Value {
     let (registry, frozen) = frozen_registry(count);
     let metrics = MetricsRegistry::new();
-    let executor: ActionExecutor =
-        Arc::new(|_, _, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
     let runtime = Arc::new(
         ActionRuntime::try_new(
             registry,
-            Arc::new(InProcessRunner::new(executor)),
+            Arc::new(InProcessRunner::new()),
             DataPassingPolicy::default(),
             metrics.clone(),
         )
@@ -512,12 +518,10 @@ async fn claimed_start_ends_delivery(
     let (registry, frozen) = frozen_registry_with_barrier(count, Some(Arc::clone(&barrier)));
     let flavor = frozen.revision().id();
     let metrics = MetricsRegistry::new();
-    let executor: ActionExecutor =
-        Arc::new(|_, _, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
     let runtime = Arc::new(
         ActionRuntime::try_new(
             registry,
-            Arc::new(InProcessRunner::new(executor)),
+            Arc::new(InProcessRunner::new()),
             DataPassingPolicy::default(),
             metrics.clone(),
         )
@@ -671,12 +675,10 @@ async fn control_start_preflight_and_unknown_acceptance_never_invoke_actions() {
     let ports = in_memory(&core);
     let (registry, frozen) = frozen_registry(&count);
     let metrics = MetricsRegistry::new();
-    let executor: ActionExecutor =
-        Arc::new(|_, _, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
     let runtime = Arc::new(
         ActionRuntime::try_new(
             registry,
-            Arc::new(InProcessRunner::new(executor)),
+            Arc::new(InProcessRunner::new()),
             DataPassingPolicy::default(),
             metrics.clone(),
         )
@@ -789,12 +791,10 @@ async fn claimed_control_ends_delivery_before_action(
         .unwrap();
     assert_eq!(claim.len(), 1);
     let metrics = MetricsRegistry::new();
-    let executor: ActionExecutor =
-        Arc::new(|_, _, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
     let runtime = Arc::new(
         ActionRuntime::try_new(
             registry,
-            Arc::new(InProcessRunner::new(executor)),
+            Arc::new(InProcessRunner::new()),
             DataPassingPolicy::default(),
             metrics.clone(),
         )

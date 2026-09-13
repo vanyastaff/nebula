@@ -1,5 +1,5 @@
 use nebula_schema::{
-    BooleanWidget, ExpressionMode, Field, FieldValues, NumberWidget, RequiredMode, Schema,
+    AuthoredValue, BooleanWidget, ExpressionMode, Field, NumberWidget, RequiredMode, Schema,
     SecretWidget, SelectWidget, StringWidget, Transformer, ValidSchema, VisibilityMode, field_key,
 };
 use serde_json::json;
@@ -46,7 +46,7 @@ fn supports_select_and_number_builders() {
 #[test]
 fn try_field_constructors_reject_invalid_keys() {
     let err = Field::try_string("bad-key").expect_err("invalid key should fail");
-    assert_eq!(err.code, "invalid_key");
+    assert_eq!(err.code(), "invalid_key");
     assert!(Field::try_dynamic(" also bad ").is_err());
 }
 
@@ -86,16 +86,19 @@ fn schema_builder_rejects_duplicate_key() {
         .build();
 
     let err = result.expect_err("duplicate key should cause build to fail");
-    assert!(err.errors().any(|e| e.code == "duplicate_key"));
+    assert!(err.errors().any(|e| e.code() == "duplicate_key"));
 }
 
 #[test]
 fn serde_roundtrip_field_and_schema() {
     let schema = raw_schema(vec![
         Field::string(field_key!("username"))
-            .visible_when(nebula_validator::Rule::predicate(
-                nebula_validator::Predicate::eq("enabled", json!(true)).unwrap(),
-            ))
+            .visible_when(
+                nebula_validator::Rule::predicate(
+                    nebula_validator::Predicate::eq("enabled", json!(true)).unwrap(),
+                )
+                .expect("bounded visibility rule"),
+            )
             .required()
             .into(),
     ]);
@@ -114,13 +117,13 @@ fn validate_reports_missing_required() {
         .add(Field::string(field_key!("username")).required())
         .build()
         .expect("valid schema");
-    let values = FieldValues::new();
-    let report = schema.validate(&values).unwrap_err();
+    let values = AuthoredValue::object();
+    let report = schema.validate(values).unwrap_err();
 
     assert!(report.has_errors());
     assert_eq!(report.errors().count(), 1);
-    assert!(report.errors().any(|e| e.path.to_string() == "username"));
-    assert!(report.errors().any(|e| e.code == "required"));
+    assert!(report.errors().any(|e| e.path().to_string() == "/username"));
+    assert!(report.errors().any(|e| e.code() == "required"));
 }
 
 #[test]
@@ -129,30 +132,42 @@ fn validate_applies_visibility_and_rules() {
         .add(Field::boolean(field_key!("enabled")).required())
         .add(
             Field::string(field_key!("api_key"))
-                .visible_when(nebula_validator::Rule::predicate(
-                    nebula_validator::Predicate::eq("enabled", json!(true)).unwrap(),
-                ))
+                .visible_when(
+                    nebula_validator::Rule::predicate(
+                        nebula_validator::Predicate::eq("enabled", json!(true)).unwrap(),
+                    )
+                    .expect("bounded visibility rule"),
+                )
                 .required()
                 .min_length(5),
         )
         .build()
         .expect("valid schema");
 
-    let mut values = FieldValues::new();
+    let mut values = AuthoredValue::object();
     values
-        .try_set_raw("enabled", json!(false))
+        .insert(
+            ("enabled").to_string(),
+            AuthoredValue::from_template_json(json!(false)).unwrap(),
+        )
         .expect("test-only known-good key");
-    assert!(schema.validate(&values).is_ok());
+    assert!(schema.validate(values.clone()).is_ok());
 
     values
-        .try_set_raw("enabled", json!(true))
+        .insert(
+            ("enabled").to_string(),
+            AuthoredValue::from_template_json(json!(true)).unwrap(),
+        )
         .expect("test-only known-good key");
     values
-        .try_set_raw("api_key", json!("abc"))
+        .insert(
+            ("api_key").to_string(),
+            AuthoredValue::from_template_json(json!("abc")).unwrap(),
+        )
         .expect("test-only known-good key");
-    let report = schema.validate(&values).unwrap_err();
+    let report = schema.validate(values.clone()).unwrap_err();
     assert!(report.has_errors());
-    assert!(report.errors().any(|e| e.path.to_string() == "api_key"));
+    assert!(report.errors().any(|e| e.path().to_string() == "/api_key"));
 }
 
 #[test]
@@ -163,33 +178,42 @@ fn validate_enforces_scalar_type_mismatches() {
         .add(Field::boolean(field_key!("enabled")).required())
         .build()
         .expect("valid schema");
-    let mut values = FieldValues::new();
+    let mut values = AuthoredValue::object();
     values
-        .try_set_raw("name", json!(123))
+        .insert(
+            ("name").to_string(),
+            AuthoredValue::from_template_json(json!(123)).unwrap(),
+        )
         .expect("test-only known-good key");
     values
-        .try_set_raw("retries", json!("bad"))
+        .insert(
+            ("retries").to_string(),
+            AuthoredValue::from_template_json(json!("bad")).unwrap(),
+        )
         .expect("test-only known-good key");
     values
-        .try_set_raw("enabled", json!("true"))
+        .insert(
+            ("enabled").to_string(),
+            AuthoredValue::from_template_json(json!("true")).unwrap(),
+        )
         .expect("test-only known-good key");
 
-    let report = schema.validate(&values).unwrap_err();
+    let report = schema.validate(values.clone()).unwrap_err();
     assert!(report.has_errors());
     assert!(
         report
             .errors()
-            .any(|e| e.path.to_string() == "name" && e.code == "type_mismatch")
+            .any(|e| e.path().to_string() == "/name" && e.code() == "type_mismatch")
     );
     assert!(
         report
             .errors()
-            .any(|e| e.path.to_string() == "retries" && e.code == "type_mismatch")
+            .any(|e| e.path().to_string() == "/retries" && e.code() == "type_mismatch")
     );
     assert!(
         report
             .errors()
-            .any(|e| e.path.to_string() == "enabled" && e.code == "type_mismatch")
+            .any(|e| e.path().to_string() == "/enabled" && e.code() == "type_mismatch")
     );
 }
 
@@ -203,12 +227,15 @@ fn validate_applies_transformers_before_rules() {
         )
         .build()
         .expect("valid schema");
-    let mut values = FieldValues::new();
+    let mut values = AuthoredValue::object();
     values
-        .try_set_raw("api_key", json!("  SECRET  "))
+        .insert(
+            ("api_key").to_string(),
+            AuthoredValue::from_template_json(json!("  SECRET  ")).unwrap(),
+        )
         .expect("test-only known-good key");
 
-    assert!(schema.validate(&values).is_ok());
+    assert!(schema.validate(values.clone()).is_ok());
 }
 
 #[test]
@@ -218,25 +245,31 @@ fn validate_enforces_file_value_shape() {
         .add(Field::file(field_key!("many")).multiple().required())
         .build()
         .expect("valid schema");
-    let mut values = FieldValues::new();
+    let mut values = AuthoredValue::object();
     values
-        .try_set_raw("single", json!(true))
+        .insert(
+            ("single").to_string(),
+            AuthoredValue::from_template_json(json!(true)).unwrap(),
+        )
         .expect("test-only known-good key");
     values
-        .try_set_raw("many", json!(["a.txt", 42]))
+        .insert(
+            ("many").to_string(),
+            AuthoredValue::from_template_json(json!(["a.txt", 42])).unwrap(),
+        )
         .expect("test-only known-good key");
 
-    let report = schema.validate(&values).unwrap_err();
+    let report = schema.validate(values.clone()).unwrap_err();
     assert!(report.has_errors());
     assert!(
         report
             .errors()
-            .any(|e| e.path.to_string() == "single" && e.code == "type_mismatch")
+            .any(|e| e.path().to_string() == "/single" && e.code() == "type_mismatch")
     );
     assert!(
         report
             .errors()
-            .any(|e| e.path.to_string() == "many" && e.code == "type_mismatch")
+            .any(|e| e.path().to_string() == "/many" && e.code() == "type_mismatch")
     );
 }
 
@@ -484,21 +517,24 @@ fn unknown_field_value_is_accepted_but_required_mode_still_enforced() {
     .expect("a required Unknown field builds");
 
     // Any shape of value passes — there is no value contract to check.
-    let mut values = FieldValues::new();
+    let mut values = AuthoredValue::object();
     values
-        .try_set_raw("bio", json!({ "blocks": [1, 2, 3] }))
+        .insert(
+            ("bio").to_string(),
+            AuthoredValue::from_template_json(json!({ "blocks": [1, 2, 3] })).unwrap(),
+        )
         .expect("test-only known-good key");
     assert!(
-        valid.validate(&values).is_ok(),
+        valid.validate(values.clone()).is_ok(),
         "an opaque Unknown field accepts an arbitrary value"
     );
 
     // But a required Unknown field with no value still reports `required`.
     let report = valid
-        .validate(&FieldValues::new())
+        .validate(AuthoredValue::object())
         .expect_err("a required Unknown field with no value must fail");
     assert!(
-        report.errors().any(|e| e.code == "required"),
+        report.errors().any(|e| e.code() == "required"),
         "required-mode is enforced even for an opaque field"
     );
 }

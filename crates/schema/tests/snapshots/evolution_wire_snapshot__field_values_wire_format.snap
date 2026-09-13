@@ -3,24 +3,32 @@ source: crates/schema/tests/evolution_wire_snapshot.rs
 expression: values
 ---
 {
-  "expr": {
-    "$expr": "{{ $x.y }}"
+  "version": 2,
+  "data": {
+    "expr": null,
+    "flag": true,
+    "list": [
+      1,
+      2,
+      3
+    ],
+    "mode": {
+      "mode": "oauth2",
+      "value": {
+        "scope": "read"
+      }
+    },
+    "nested": {
+      "k": "v"
+    },
+    "scalar": 1,
+    "text": "hello"
   },
-  "flag": true,
-  "list": [
-    1,
-    2,
-    3
-  ],
-  "mode": {
-    "mode": "oauth2",
-    "value": {
-      "scope": "read"
+  "expressions": [
+    {
+      "path": "/expr",
+      "syntax": "auto",
+      "source": "{{ $x.y }}"
     }
-  },
-  "nested": {
-    "k": "v"
-  },
-  "scalar": 1,
-  "text": "hello"
+  ]
 }

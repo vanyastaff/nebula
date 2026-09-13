@@ -44,21 +44,45 @@ fn parse_codepoint(hex: &str) -> ExpressionResult<char> {
 pub struct Lexer<'a> {
     input: &'a str,
     position: usize,
+    mode: LexMode,
+}
+
+enum LexMode {
+    Source,
+    Expression,
 }
 
 impl<'a> Lexer<'a> {
     /// Create a new lexer from an input string
     pub fn new(input: &'a str) -> Self {
-        Self { input, position: 0 }
+        Self {
+            input,
+            position: 0,
+            mode: LexMode::Source,
+        }
+    }
+
+    pub(crate) fn for_expression(input: &'a str) -> Self {
+        Self {
+            input,
+            position: 0,
+            mode: LexMode::Expression,
+        }
     }
 
     /// Tokenize the entire input string
     pub fn tokenize(&mut self) -> ExpressionResult<Vec<Token<'a>>> {
+        crate::limits::check_limit(
+            "source bytes",
+            self.input.len(),
+            crate::limits::MAX_SOURCE_BYTES,
+        )?;
         // Estimate: typical expressions have ~1 token per 5 chars
-        let estimated_tokens = (self.input.len() / 5).max(8);
+        let estimated_tokens = (self.input.len() / 5).clamp(8, 1024);
         let mut tokens = Vec::with_capacity(estimated_tokens);
 
         loop {
+            crate::limits::check_limit("tokens", tokens.len() + 1, crate::limits::MAX_TOKENS)?;
             let token = self.next_token()?;
             if token.kind == TokenKind::Eof {
                 tokens.push(token);
@@ -85,12 +109,12 @@ impl<'a> Lexer<'a> {
 
         let token = match ch {
             // Template delimiters
-            '{' if self.peek() == Some('{') => {
+            '{' if matches!(self.mode, LexMode::Source) && self.peek() == Some('{') => {
                 self.advance();
                 self.advance();
                 Token::new(TokenKind::TemplateStart, Span::new(start, self.position))
             },
-            '}' if self.peek() == Some('}') => {
+            '}' if matches!(self.mode, LexMode::Source) && self.peek() == Some('}') => {
                 self.advance();
                 self.advance();
                 Token::new(TokenKind::TemplateEnd, Span::new(start, self.position))
@@ -482,6 +506,21 @@ impl<'a> Lexer<'a> {
             }
         }
 
+        if matches!(self.current_char(), Some('e' | 'E')) {
+            is_float = true;
+            self.advance();
+            if matches!(self.current_char(), Some('+' | '-')) {
+                self.advance();
+            }
+            let exponent_start = self.position;
+            while self.current_char().is_some_and(|ch| ch.is_ascii_digit()) {
+                self.advance();
+            }
+            if self.position == exponent_start {
+                return Err(ExpressionError::syntax_error("Missing exponent digits"));
+            }
+        }
+
         let end_pos = self.position;
         let num_str = &self.input[start_pos..end_pos];
         let span = Span::new(start_pos, end_pos);
@@ -489,12 +528,25 @@ impl<'a> Lexer<'a> {
         if is_float {
             num_str
                 .parse::<f64>()
-                .map(|f| Token::new(TokenKind::Float(f), span))
                 .map_err(|_| ExpressionError::expression_syntax_error("Invalid float literal"))
+                .and_then(|f| {
+                    if f.is_finite() {
+                        Ok(Token::new(TokenKind::Float(f), span))
+                    } else {
+                        Err(ExpressionError::NonFiniteNumber {
+                            operation: "float literal",
+                        })
+                    }
+                })
         } else {
             num_str
                 .parse::<i64>()
                 .map(|i| Token::new(TokenKind::Integer(i), span))
+                .or_else(|_| {
+                    num_str
+                        .parse::<u64>()
+                        .map(|n| Token::new(TokenKind::UnsignedInteger(n), span))
+                })
                 .map_err(|_| ExpressionError::expression_syntax_error("Invalid integer literal"))
         }
     }

@@ -18,10 +18,9 @@
 use std::sync::{Arc, OnceLock};
 
 use nebula_action::{
-    Action, ActionError, ActionKind, ActionMetadata, ActionOutput, ActionResult,
-    ActionRuntimeContext, BranchKey, ControlAction, ControlActionAdapter, ControlInput,
-    ControlOutcome, OutputPort, StatelessHandler, TerminationReason, ValidationReason, port_key,
-    testing::TestContextBuilder,
+    Action, ActionError, ActionInput, ActionKind, ActionOutput, ActionResult, ActionRuntimeContext,
+    BranchKey, ControlAction, ControlActionAdapter, ControlHandle, ControlOutcome, OutputPort,
+    TerminationReason, ValidationReason, port_key, testing::TestContextBuilder,
 };
 use nebula_core::{Dependencies, action_key};
 use nebula_schema::{FieldCollector, HasSchema, Schema, StringBuilder, ValidSchema, field_key};
@@ -33,32 +32,90 @@ fn make_ctx() -> ActionRuntimeContext {
 }
 
 async fn run(
-    adapter: &impl StatelessHandler,
+    adapter: &impl ControlHandle,
     input: serde_json::Value,
 ) -> ActionResult<serde_json::Value> {
     let ctx = make_ctx();
-    StatelessHandler::execute(adapter, input, &ctx)
+    let input = adapter
+        .prepare_input(ActionInput::Raw(input))
+        .expect("input should prepare");
+    adapter
+        .dispatch(input, &ctx)
         .await
         .expect("execute should succeed")
 }
 
-async fn run_err(adapter: &impl StatelessHandler, input: serde_json::Value) -> ActionError {
+async fn run_err(adapter: &impl ControlHandle, input: serde_json::Value) -> ActionError {
     let ctx = make_ctx();
-    StatelessHandler::execute(adapter, input, &ctx)
-        .await
-        .expect_err("execute should fail")
+    match adapter.prepare_input(ActionInput::Raw(input)) {
+        Ok(input) => adapter
+            .dispatch(input, &ctx)
+            .await
+            .expect_err("execute should fail"),
+        Err(error) => error,
+    }
+}
+
+fn required_bool(input: &serde_json::Value, pointer: &str) -> Result<bool, ActionError> {
+    input
+        .pointer(pointer)
+        .and_then(serde_json::Value::as_bool)
+        .ok_or_else(|| {
+            ActionError::validation(
+                "control_input",
+                ValidationReason::WrongType,
+                Some(format!("expected boolean at `{pointer}`")),
+            )
+        })
+}
+
+fn required_str<'a>(input: &'a serde_json::Value, pointer: &str) -> Result<&'a str, ActionError> {
+    input
+        .pointer(pointer)
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            ActionError::validation(
+                "control_input",
+                ValidationReason::WrongType,
+                Some(format!("expected string at `{pointer}`")),
+            )
+        })
+}
+
+fn required_i64(input: &serde_json::Value, pointer: &str) -> Result<i64, ActionError> {
+    input
+        .pointer(pointer)
+        .and_then(serde_json::Value::as_i64)
+        .ok_or_else(|| {
+            ActionError::validation(
+                "control_input",
+                ValidationReason::WrongType,
+                Some(format!("expected i64 at `{pointer}`")),
+            )
+        })
 }
 
 // ── DemoIf ─ binary branch ─────────────────────────────────────────────────
 
 struct DemoIf;
 
-impl Action for DemoIf {
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
+#[derive(serde::Deserialize, serde::Serialize, nebula_schema::Schema)]
+struct DemoIfInput {
+    condition: bool,
+    value: Option<i64>,
+}
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(action_key!("demo.if"), "If", "Binary branch").with_outputs(vec![
+impl Action for DemoIf {
+    type Input = DemoIfInput;
+    type Output = DemoIfInput;
+
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        nebula_action::ActionMetadataDraft::new(
+            action_key!("demo.if"),
+            nebula_action::metadata_name!("If"),
+            "Binary branch",
+        )
+        .with_outputs(vec![
             OutputPort::flow(port_key!("true")),
             OutputPort::flow(port_key!("false")),
         ])
@@ -73,11 +130,10 @@ impl Action for DemoIf {
 impl ControlAction for DemoIf {
     async fn evaluate(
         &self,
-        input: ControlInput,
+        input: DemoIfInput,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
-    ) -> Result<ControlOutcome, ActionError> {
-        let condition = input.get_bool("/condition")?;
-        let selected = if condition {
+    ) -> Result<ControlOutcome<DemoIfInput>, ActionError> {
+        let selected = if input.condition {
             BranchKey::new("true")
         } else {
             BranchKey::new("false")
@@ -85,14 +141,14 @@ impl ControlAction for DemoIf {
         .expect("'true'/'false' are valid branch key literals");
         Ok(ControlOutcome::Branch {
             selected,
-            output: input.into_value(),
+            output: input,
         })
     }
 }
 
 #[tokio::test]
 async fn demo_if_routes_true() {
-    let adapter = ControlActionAdapter::new(DemoIf);
+    let adapter = ControlActionAdapter::new(DemoIf).expect("valid test catalog definition");
     let result = run(
         &adapter,
         serde_json::json!({ "condition": true, "value": 42 }),
@@ -114,7 +170,7 @@ async fn demo_if_routes_true() {
 
 #[tokio::test]
 async fn demo_if_routes_false() {
-    let adapter = ControlActionAdapter::new(DemoIf);
+    let adapter = ControlActionAdapter::new(DemoIf).expect("valid test catalog definition");
     let result = run(&adapter, serde_json::json!({ "condition": false })).await;
     match result {
         ActionResult::Branch { selected, .. } => assert_eq!(selected.as_str(), "false"),
@@ -124,7 +180,7 @@ async fn demo_if_routes_false() {
 
 #[tokio::test]
 async fn demo_if_missing_condition_is_validation_error() {
-    let adapter = ControlActionAdapter::new(DemoIf);
+    let adapter = ControlActionAdapter::new(DemoIf).expect("valid test catalog definition");
     let err = run_err(&adapter, serde_json::json!({})).await;
     match err {
         ActionError::Validation { reason, .. } => {
@@ -136,7 +192,7 @@ async fn demo_if_missing_condition_is_validation_error() {
 
 #[tokio::test]
 async fn demo_if_wrong_type_is_validation_error() {
-    let adapter = ControlActionAdapter::new(DemoIf);
+    let adapter = ControlActionAdapter::new(DemoIf).expect("valid test catalog definition");
     let err = run_err(&adapter, serde_json::json!({ "condition": "yes" })).await;
     match err {
         ActionError::Validation { reason, .. } => {
@@ -148,8 +204,8 @@ async fn demo_if_wrong_type_is_validation_error() {
 
 #[test]
 fn demo_if_has_control_kind() {
-    let adapter = ControlActionAdapter::new(DemoIf);
-    assert_eq!(adapter.metadata().kind, ActionKind::Control);
+    let adapter = ControlActionAdapter::new(DemoIf).expect("valid test catalog definition");
+    assert_eq!(adapter.metadata().kind(), ActionKind::Control);
 }
 
 // ── DemoSwitch ─ N-way static branch ───────────────────────────────────────
@@ -160,10 +216,10 @@ impl Action for DemoSwitch {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        nebula_action::ActionMetadataDraft::new(
             action_key!("demo.switch"),
-            "Switch",
+            nebula_action::metadata_name!("Switch"),
             "N-way branch by status field",
         )
         .with_outputs(vec![
@@ -183,10 +239,10 @@ impl Action for DemoSwitch {
 impl ControlAction for DemoSwitch {
     async fn evaluate(
         &self,
-        input: ControlInput,
+        input: serde_json::Value,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
-    ) -> Result<ControlOutcome, ActionError> {
-        let status = input.get_str("/status")?;
+    ) -> Result<ControlOutcome<serde_json::Value>, ActionError> {
+        let status = required_str(&input, "/status")?;
         let branch_name = match status {
             "active" | "pending" | "archived" => status,
             _ => "default",
@@ -195,14 +251,14 @@ impl ControlAction for DemoSwitch {
             BranchKey::new(branch_name).expect("switch branch names are valid key literals");
         Ok(ControlOutcome::Branch {
             selected,
-            output: input.into_value(),
+            output: input,
         })
     }
 }
 
 #[tokio::test]
 async fn demo_switch_routes_known_case() {
-    let adapter = ControlActionAdapter::new(DemoSwitch);
+    let adapter = ControlActionAdapter::new(DemoSwitch).expect("valid test catalog definition");
     let result = run(&adapter, serde_json::json!({ "status": "pending" })).await;
     match result {
         ActionResult::Branch { selected, .. } => assert_eq!(selected.as_str(), "pending"),
@@ -212,7 +268,7 @@ async fn demo_switch_routes_known_case() {
 
 #[tokio::test]
 async fn demo_switch_falls_back_to_default() {
-    let adapter = ControlActionAdapter::new(DemoSwitch);
+    let adapter = ControlActionAdapter::new(DemoSwitch).expect("valid test catalog definition");
     let result = run(&adapter, serde_json::json!({ "status": "unknown" })).await;
     match result {
         ActionResult::Branch { selected, .. } => assert_eq!(selected.as_str(), "default"),
@@ -256,13 +312,17 @@ impl Action for DemoRouter {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(action_key!("demo.router"), "Router", "Multi-rule routing")
-            .with_outputs(vec![
-                OutputPort::flow(port_key!("high")),
-                OutputPort::flow(port_key!("medium")),
-                OutputPort::flow(port_key!("low")),
-            ])
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        nebula_action::ActionMetadataDraft::new(
+            action_key!("demo.router"),
+            nebula_action::metadata_name!("Router"),
+            "Multi-rule routing",
+        )
+        .with_outputs(vec![
+            OutputPort::flow(port_key!("high")),
+            OutputPort::flow(port_key!("medium")),
+            OutputPort::flow(port_key!("low")),
+        ])
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -274,17 +334,17 @@ impl Action for DemoRouter {
 impl ControlAction for DemoRouter {
     async fn evaluate(
         &self,
-        input: ControlInput,
+        input: serde_json::Value,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
-    ) -> Result<ControlOutcome, ActionError> {
-        let priority = input.get_i64("/priority")?;
+    ) -> Result<ControlOutcome<serde_json::Value>, ActionError> {
+        let priority = required_i64(&input, "/priority")?;
         let matches = Self::classify(priority);
         match (self.mode, matches.as_slice()) {
             (_, []) => Ok(ControlOutcome::Drop {
                 reason: Some(format!("no rule matched priority {priority}")),
             }),
             (RouterMode::FirstMatch, _) => {
-                let value = input.into_value();
+                let value = input;
                 let selected =
                     BranchKey::new(matches[0]).expect("router branch names are valid key literals");
                 Ok(ControlOutcome::Branch {
@@ -293,7 +353,7 @@ impl ControlAction for DemoRouter {
                 })
             },
             (RouterMode::AllMatch, _) => {
-                let value = input.into_value();
+                let value = input;
                 let ports: std::collections::HashMap<_, _> = matches
                     .iter()
                     .map(|port_name| {
@@ -310,7 +370,8 @@ impl ControlAction for DemoRouter {
 
 #[tokio::test]
 async fn demo_router_first_match_picks_first_rule() {
-    let adapter = ControlActionAdapter::new(DemoRouter::new(RouterMode::FirstMatch));
+    let adapter = ControlActionAdapter::new(DemoRouter::new(RouterMode::FirstMatch))
+        .expect("valid test catalog definition");
     let result = run(&adapter, serde_json::json!({ "priority": 150 })).await;
     match result {
         ActionResult::Branch { selected, .. } => assert_eq!(selected.as_str(), "high"),
@@ -320,7 +381,8 @@ async fn demo_router_first_match_picks_first_rule() {
 
 #[tokio::test]
 async fn demo_router_all_match_fires_multiple_ports() {
-    let adapter = ControlActionAdapter::new(DemoRouter::new(RouterMode::AllMatch));
+    let adapter = ControlActionAdapter::new(DemoRouter::new(RouterMode::AllMatch))
+        .expect("valid test catalog definition");
     // priority=150 matches `high` (>=100) AND `medium` (10..=500)
     let result = run(&adapter, serde_json::json!({ "priority": 150 })).await;
     match result {
@@ -346,10 +408,10 @@ impl Action for NeverMatchRouter {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        nebula_action::ActionMetadataDraft::new(
             action_key!("demo.never_match_router"),
-            "NeverMatchRouter",
+            nebula_action::metadata_name!("NeverMatchRouter"),
             "Drops every input — used to test Drop code path",
         )
         .with_outputs(vec![OutputPort::flow(port_key!("out"))])
@@ -364,9 +426,9 @@ impl Action for NeverMatchRouter {
 impl ControlAction for NeverMatchRouter {
     async fn evaluate(
         &self,
-        _input: ControlInput,
+        _input: serde_json::Value,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
-    ) -> Result<ControlOutcome, ActionError> {
+    ) -> Result<ControlOutcome<serde_json::Value>, ActionError> {
         Ok(ControlOutcome::Drop {
             reason: Some("sentinel".into()),
         })
@@ -375,7 +437,8 @@ impl ControlAction for NeverMatchRouter {
 
 #[tokio::test]
 async fn demo_router_no_rules_match_drops() {
-    let adapter = ControlActionAdapter::new(NeverMatchRouter);
+    let adapter =
+        ControlActionAdapter::new(NeverMatchRouter).expect("valid test catalog definition");
     let result = run(&adapter, serde_json::json!({ "priority": 999 })).await;
     match result {
         ActionResult::Drop { reason } => assert_eq!(reason.as_deref(), Some("sentinel")),
@@ -391,10 +454,10 @@ impl Action for DemoFilter {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        nebula_action::ActionMetadataDraft::new(
             action_key!("demo.filter"),
-            "Filter",
+            nebula_action::metadata_name!("Filter"),
             "Drop items below threshold",
         )
         .with_outputs(vec![OutputPort::flow(port_key!("out"))])
@@ -409,14 +472,12 @@ impl Action for DemoFilter {
 impl ControlAction for DemoFilter {
     async fn evaluate(
         &self,
-        input: ControlInput,
+        input: serde_json::Value,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
-    ) -> Result<ControlOutcome, ActionError> {
-        let score = input.get_i64("/score")?;
+    ) -> Result<ControlOutcome<serde_json::Value>, ActionError> {
+        let score = required_i64(&input, "/score")?;
         if score >= 50 {
-            Ok(ControlOutcome::Pass {
-                output: input.into_value(),
-            })
+            Ok(ControlOutcome::Pass { output: input })
         } else {
             Ok(ControlOutcome::Drop {
                 reason: Some(format!("score {score} below 50")),
@@ -427,7 +488,7 @@ impl ControlAction for DemoFilter {
 
 #[tokio::test]
 async fn demo_filter_passes_above_threshold() {
-    let adapter = ControlActionAdapter::new(DemoFilter);
+    let adapter = ControlActionAdapter::new(DemoFilter).expect("valid test catalog definition");
     let result = run(&adapter, serde_json::json!({ "score": 75 })).await;
     match result {
         ActionResult::Success { output } => {
@@ -439,7 +500,7 @@ async fn demo_filter_passes_above_threshold() {
 
 #[tokio::test]
 async fn demo_filter_drops_below_threshold() {
-    let adapter = ControlActionAdapter::new(DemoFilter);
+    let adapter = ControlActionAdapter::new(DemoFilter).expect("valid test catalog definition");
     let result = run(&adapter, serde_json::json!({ "score": 10 })).await;
     match result {
         ActionResult::Drop { reason } => {
@@ -454,7 +515,7 @@ async fn demo_filter_distinguishes_drop_from_skip() {
     // Drop is semantically different from Skip. This test documents that
     // a ControlAction author must use Drop for "this item failed the
     // predicate" — not Skip, which would cancel the downstream subgraph.
-    let adapter = ControlActionAdapter::new(DemoFilter);
+    let adapter = ControlActionAdapter::new(DemoFilter).expect("valid test catalog definition");
     let result = run(&adapter, serde_json::json!({ "score": 5 })).await;
     assert!(result.is_drop(), "Filter must use Drop, not Skip");
     assert!(!matches!(result, ActionResult::Skip { .. }));
@@ -468,8 +529,12 @@ impl Action for DemoNoOp {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(action_key!("demo.noop"), "NoOp", "Pass-through placeholder")
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        nebula_action::ActionMetadataDraft::new(
+            action_key!("demo.noop"),
+            nebula_action::metadata_name!("NoOp"),
+            "Pass-through placeholder",
+        )
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -481,18 +546,16 @@ impl Action for DemoNoOp {
 impl ControlAction for DemoNoOp {
     async fn evaluate(
         &self,
-        input: ControlInput,
+        input: serde_json::Value,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
-    ) -> Result<ControlOutcome, ActionError> {
-        Ok(ControlOutcome::Pass {
-            output: input.into_value(),
-        })
+    ) -> Result<ControlOutcome<serde_json::Value>, ActionError> {
+        Ok(ControlOutcome::Pass { output: input })
     }
 }
 
 #[tokio::test]
 async fn demo_noop_preserves_input() {
-    let adapter = ControlActionAdapter::new(DemoNoOp);
+    let adapter = ControlActionAdapter::new(DemoNoOp).expect("valid test catalog definition");
     let input = serde_json::json!({ "arbitrary": { "nested": [1, 2, 3] } });
     let result = run(&adapter, input.clone()).await;
     match result {
@@ -507,10 +570,10 @@ async fn demo_noop_preserves_input() {
 fn demo_noop_has_control_kind_with_default_ports() {
     // NoOp uses default output ports (one main output) → a non-terminal
     // control node.
-    let adapter = ControlActionAdapter::new(DemoNoOp);
+    let adapter = ControlActionAdapter::new(DemoNoOp).expect("valid test catalog definition");
     let meta = adapter.metadata();
-    assert_eq!(meta.kind, ActionKind::Control);
-    assert!(!meta.outputs.is_empty(), "NoOp is not a terminal sink");
+    assert_eq!(meta.kind(), ActionKind::Control);
+    assert!(!meta.outputs().is_empty(), "NoOp is not a terminal sink");
 }
 
 // ── DemoStop ─ explicit success termination ────────────────────────────────
@@ -531,10 +594,10 @@ impl Action for DemoStop {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        nebula_action::ActionMetadataDraft::new(
             action_key!("demo.stop"),
-            "Stop",
+            nebula_action::metadata_name!("Stop"),
             "Terminate execution with success",
         )
         .with_outputs(Vec::new())
@@ -549,9 +612,9 @@ impl Action for DemoStop {
 impl ControlAction for DemoStop {
     async fn evaluate(
         &self,
-        _input: ControlInput,
+        _input: serde_json::Value,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
-    ) -> Result<ControlOutcome, ActionError> {
+    ) -> Result<ControlOutcome<serde_json::Value>, ActionError> {
         Ok(ControlOutcome::Terminate {
             reason: TerminationReason::Success {
                 note: self.note.clone(),
@@ -562,7 +625,8 @@ impl ControlAction for DemoStop {
 
 #[tokio::test]
 async fn demo_stop_terminates_with_success() {
-    let adapter = ControlActionAdapter::new(DemoStop::new(Some("duplicate detected")));
+    let adapter = ControlActionAdapter::new(DemoStop::new(Some("duplicate detected")))
+        .expect("valid test catalog definition");
     let result = run(&adapter, serde_json::json!({})).await;
     match result {
         ActionResult::Terminate { reason } => match reason {
@@ -580,10 +644,11 @@ async fn demo_stop_terminates_with_success() {
 fn demo_stop_is_terminal_control_node() {
     // Stop keeps `ActionKind::Control`; terminality is carried by its empty
     // `outputs` set, which the validator reads to recognise the graph sink.
-    let adapter = ControlActionAdapter::new(DemoStop::new(None));
+    let adapter =
+        ControlActionAdapter::new(DemoStop::new(None)).expect("valid test catalog definition");
     let meta = adapter.metadata();
-    assert_eq!(meta.kind, ActionKind::Control);
-    assert!(meta.outputs.is_empty(), "Stop is a terminal sink");
+    assert_eq!(meta.kind(), ActionKind::Control);
+    assert!(meta.outputs().is_empty(), "Stop is a terminal sink");
 }
 
 // ── DemoFail ─ explicit error termination ──────────────────────────────────
@@ -606,10 +671,10 @@ impl Action for DemoFail {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        nebula_action::ActionMetadataDraft::new(
             action_key!("demo.fail"),
-            "Fail",
+            nebula_action::metadata_name!("Fail"),
             "Terminate execution with failure",
         )
         .with_outputs(Vec::new())
@@ -624,9 +689,9 @@ impl Action for DemoFail {
 impl ControlAction for DemoFail {
     async fn evaluate(
         &self,
-        _input: ControlInput,
+        _input: serde_json::Value,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
-    ) -> Result<ControlOutcome, ActionError> {
+    ) -> Result<ControlOutcome<serde_json::Value>, ActionError> {
         Ok(ControlOutcome::Terminate {
             reason: TerminationReason::Failure {
                 code: self.code.as_str().into(),
@@ -639,7 +704,8 @@ impl ControlAction for DemoFail {
 #[tokio::test]
 async fn demo_fail_terminates_with_failure() {
     let adapter =
-        ControlActionAdapter::new(DemoFail::new("E_VALIDATION", "input failed business rules"));
+        ControlActionAdapter::new(DemoFail::new("E_VALIDATION", "input failed business rules"))
+            .expect("valid test catalog definition");
     let result = run(&adapter, serde_json::json!({})).await;
     match result {
         ActionResult::Terminate { reason } => match reason {
@@ -656,36 +722,43 @@ async fn demo_fail_terminates_with_failure() {
 
 #[test]
 fn demo_fail_is_terminal_control_node() {
-    let adapter = ControlActionAdapter::new(DemoFail::new("E", "m"));
+    let adapter =
+        ControlActionAdapter::new(DemoFail::new("E", "m")).expect("valid test catalog definition");
     let meta = adapter.metadata();
-    assert_eq!(meta.kind, ActionKind::Control);
-    assert!(meta.outputs.is_empty(), "Fail is a terminal sink");
+    assert_eq!(meta.kind(), ActionKind::Control);
+    assert!(meta.outputs().is_empty(), "Fail is a terminal sink");
 }
 
 // ── Cross-cutting: all seven fixtures are dyn-compatible and registerable ──
 
 #[test]
-fn all_demo_fixtures_are_dyn_stateless_handlers() {
-    // Collect all seven demos into a homogeneous Vec<Arc<dyn StatelessHandler>>.
+fn all_demo_fixtures_are_dyn_control_handles() {
+    // Collect all seven demos into a homogeneous Vec<Arc<dyn ControlHandle>>.
     // This simulates what a downstream crate's `register_core_control_nodes`
     // helper would do when populating the ActionRegistry.
-    let handlers: Vec<Arc<dyn StatelessHandler>> = vec![
-        Arc::new(ControlActionAdapter::new(DemoIf)),
-        Arc::new(ControlActionAdapter::new(DemoSwitch)),
-        Arc::new(ControlActionAdapter::new(DemoRouter::new(
-            RouterMode::FirstMatch,
-        ))),
-        Arc::new(ControlActionAdapter::new(DemoFilter)),
-        Arc::new(ControlActionAdapter::new(DemoNoOp)),
-        Arc::new(ControlActionAdapter::new(DemoStop::new(None))),
-        Arc::new(ControlActionAdapter::new(DemoFail::new("E", "m"))),
+    let handlers: Vec<Arc<dyn ControlHandle>> = vec![
+        Arc::new(ControlActionAdapter::new(DemoIf).expect("valid test catalog definition")),
+        Arc::new(ControlActionAdapter::new(DemoSwitch).expect("valid test catalog definition")),
+        Arc::new(
+            ControlActionAdapter::new(DemoRouter::new(RouterMode::FirstMatch))
+                .expect("valid test catalog definition"),
+        ),
+        Arc::new(ControlActionAdapter::new(DemoFilter).expect("valid test catalog definition")),
+        Arc::new(ControlActionAdapter::new(DemoNoOp).expect("valid test catalog definition")),
+        Arc::new(
+            ControlActionAdapter::new(DemoStop::new(None)).expect("valid test catalog definition"),
+        ),
+        Arc::new(
+            ControlActionAdapter::new(DemoFail::new("E", "m"))
+                .expect("valid test catalog definition"),
+        ),
     ];
     assert_eq!(handlers.len(), 7);
 
     // Each must report its own distinct action key.
     let keys: Vec<_> = handlers
         .iter()
-        .map(|h| h.metadata().base.key.clone())
+        .map(|h| h.metadata().base().key().clone())
         .collect();
     let unique: std::collections::HashSet<_> = keys.iter().collect();
     assert_eq!(unique.len(), 7, "action keys must be distinct");
@@ -696,33 +769,51 @@ fn kind_and_terminality_inference_matches_expectation() {
     // Every control node is stamped `ActionKind::Control`. Terminality is no
     // longer a distinct kind: it is read structurally from an empty `outputs`
     // set, so the `is_terminal` column maps to `outputs.is_empty()`.
-    let cases: &[(Arc<dyn StatelessHandler>, bool)] = &[
-        (Arc::new(ControlActionAdapter::new(DemoIf)), false),
-        (Arc::new(ControlActionAdapter::new(DemoSwitch)), false),
-        (Arc::new(ControlActionAdapter::new(DemoFilter)), false),
-        (Arc::new(ControlActionAdapter::new(DemoNoOp)), false),
+    let cases: &[(Arc<dyn ControlHandle>, bool)] = &[
         (
-            Arc::new(ControlActionAdapter::new(DemoStop::new(None))),
+            Arc::new(ControlActionAdapter::new(DemoIf).expect("valid test catalog definition")),
+            false,
+        ),
+        (
+            Arc::new(ControlActionAdapter::new(DemoSwitch).expect("valid test catalog definition")),
+            false,
+        ),
+        (
+            Arc::new(ControlActionAdapter::new(DemoFilter).expect("valid test catalog definition")),
+            false,
+        ),
+        (
+            Arc::new(ControlActionAdapter::new(DemoNoOp).expect("valid test catalog definition")),
+            false,
+        ),
+        (
+            Arc::new(
+                ControlActionAdapter::new(DemoStop::new(None))
+                    .expect("valid test catalog definition"),
+            ),
             true,
         ),
         (
-            Arc::new(ControlActionAdapter::new(DemoFail::new("E", "m"))),
+            Arc::new(
+                ControlActionAdapter::new(DemoFail::new("E", "m"))
+                    .expect("valid test catalog definition"),
+            ),
             true,
         ),
     ];
     for (handler, is_terminal) in cases {
         let meta = handler.metadata();
         assert_eq!(
-            meta.kind,
+            meta.kind(),
             ActionKind::Control,
             "every control node is `Control`: {}",
-            meta.base.key
+            meta.base().key().clone()
         );
         assert_eq!(
-            meta.outputs.is_empty(),
+            meta.outputs().is_empty(),
             *is_terminal,
             "terminality (empty outputs) mismatch for {}",
-            meta.base.key
+            meta.base().key().clone()
         );
     }
 }
@@ -733,18 +824,18 @@ fn kind_and_terminality_inference_matches_expectation() {
 /// compile-time trait bound. This is the main reason the trait exists as
 /// a public contract rather than a macro — community code can write
 /// functions parameterized by `impl ControlAction`.
-fn wrap_and_execute<A: ControlAction>(action: A) -> Arc<dyn StatelessHandler> {
-    Arc::new(ControlActionAdapter::new(action))
+fn wrap_and_execute<A: ControlAction>(action: A) -> Arc<dyn ControlHandle> {
+    Arc::new(ControlActionAdapter::new(action).expect("valid test catalog definition"))
 }
 
 #[tokio::test]
 async fn generic_bound_accepts_any_control_action() {
     let h = wrap_and_execute(DemoIf);
     let ctx = make_ctx();
-    let result = h
-        .execute(serde_json::json!({ "condition": true }), &ctx)
-        .await
+    let input = h
+        .prepare_input(ActionInput::Raw(serde_json::json!({ "condition": true })))
         .unwrap();
+    let result = h.dispatch(input, &ctx).await.unwrap();
     assert!(matches!(result, ActionResult::Branch { .. }));
 }
 
@@ -754,7 +845,7 @@ async fn generic_bound_accepts_any_control_action() {
 async fn pass_and_drop_have_distinct_runtime_shapes() {
     // Pass carries an output in ActionOutput, Drop has no output at all.
     // Downstream consumers (engine, journal) must distinguish these shapes.
-    let filter = ControlActionAdapter::new(DemoFilter);
+    let filter = ControlActionAdapter::new(DemoFilter).expect("valid test catalog definition");
 
     let pass_result = run(&filter, serde_json::json!({ "score": 100 })).await;
     match pass_result {
@@ -788,11 +879,10 @@ struct TypedBranchOutput {
 }
 
 impl HasSchema for TypedBranchOutput {
-    fn schema() -> ValidSchema {
+    fn schema() -> Result<ValidSchema, nebula_schema::ValidationReport> {
         Schema::builder()
             .string(field_key!("selected"), StringBuilder::required)
             .build()
-            .expect("TypedBranchOutput schema is valid")
     }
 }
 
@@ -804,10 +894,10 @@ impl Action for DemoTypedBranch {
     type Input = serde_json::Value;
     type Output = TypedBranchOutput;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        nebula_action::ActionMetadataDraft::new(
             action_key!("demo.typed_branch"),
-            "TypedBranch",
+            nebula_action::metadata_name!("TypedBranch"),
             "Branch with typed output",
         )
         .with_outputs(vec![
@@ -825,10 +915,10 @@ impl Action for DemoTypedBranch {
 impl ControlAction for DemoTypedBranch {
     async fn evaluate(
         &self,
-        input: ControlInput,
+        input: serde_json::Value,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
-    ) -> Result<ControlOutcome, ActionError> {
-        let branch_name = if input.get_bool("/condition").unwrap_or(false) {
+    ) -> Result<ControlOutcome<TypedBranchOutput>, ActionError> {
+        let branch_name = if required_bool(&input, "/condition")? {
             "true"
         } else {
             "false"
@@ -837,10 +927,9 @@ impl ControlAction for DemoTypedBranch {
             BranchKey::new(branch_name).expect("'true'/'false' are valid branch key literals");
         Ok(ControlOutcome::Branch {
             selected,
-            output: serde_json::to_value(TypedBranchOutput {
+            output: TypedBranchOutput {
                 selected: branch_name.into(),
-            })
-            .unwrap_or_default(),
+            },
         })
     }
 }
@@ -851,7 +940,8 @@ fn control_action_adapter_stamps_output_schema_from_action_output_type() {
     // Removing the `output_schema` stamp from `ControlActionAdapter::new`
     // causes this test to go RED — the schema will be empty and the `any()`
     // predicate will return false.
-    let adapter = ControlActionAdapter::new(DemoTypedBranch);
+    let adapter =
+        ControlActionAdapter::new(DemoTypedBranch).expect("valid test catalog definition");
     let output_schema = adapter.metadata().output_schema();
 
     assert!(
