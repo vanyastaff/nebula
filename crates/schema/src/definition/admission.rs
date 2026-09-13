@@ -1492,7 +1492,8 @@ fn literal_matches_use(
     value: &Value,
     purpose: LiteralPurpose,
 ) -> Result<bool, AdmissionIssue> {
-    if !literal_matches_use_facets(core, value, purpose)? {
+    let mut current_value = literal_with_use_transformers(core, value, purpose);
+    if !literal_matches_use_facets(core, &current_value, purpose)? {
         return Ok(false);
     }
     let mut current = *lookup
@@ -1506,7 +1507,8 @@ fn literal_matches_use(
         visited[current.0] = true;
         let body = &graph.definitions[current.0].body;
         if let Body::Alias(alias) = body {
-            if !literal_matches_use_facets(&alias.0, value, purpose)? {
+            current_value = literal_with_use_transformers(&alias.0, &current_value, purpose);
+            if !literal_matches_use_facets(&alias.0, &current_value, purpose)? {
                 return Ok(false);
             }
             current = *lookup
@@ -1514,8 +1516,23 @@ fn literal_matches_use(
                 .ok_or(AdmissionIssue::DanglingReference)?;
             continue;
         }
-        return literal_matches_body(graph, lookup, body, value, purpose);
+        return literal_matches_body(graph, lookup, body, &current_value, purpose);
     }
+}
+
+fn literal_with_use_transformers(
+    core: &UseSiteCore,
+    value: &Value,
+    purpose: LiteralPurpose,
+) -> Value {
+    if purpose != LiteralPurpose::InputDefault {
+        return value.clone();
+    }
+    core.transformers
+        .iter()
+        .fold(value.clone(), |current, transformer| {
+            transformer.apply(&current)
+        })
 }
 
 fn literal_matches_use_facets(
@@ -1633,7 +1650,7 @@ fn record_literal_matches(
             Some(value) if !literal_matches_use(graph, lookup, &property.core, value, purpose)? => {
                 return Ok(false);
             },
-            None if matches!(property.presence, PresencePolicy::Required)
+            None if presence_is_always_required(&property.presence)?
                 && property.input_default.is_none() =>
             {
                 return Ok(false);
@@ -1739,12 +1756,15 @@ fn union_literal_matches(
             };
             match &variant.payload {
                 Some(payload) => {
+                    if object.len() != 2 {
+                        return Ok(false);
+                    }
                     let Some(value) = object.get(content) else {
                         return Ok(false);
                     };
                     literal_matches_use(graph, lookup, &payload.0, value, purpose)
                 },
-                None => Ok(!object.contains_key(content)),
+                None => Ok(object.len() == 1 && !object.contains_key(content)),
             }
         },
     }

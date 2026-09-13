@@ -1868,6 +1868,43 @@ fn accepted_domain_is_exact_nonempty_duplicate_free_and_occurrence_compatible() 
         .admit()
         .is_err()
     );
+
+    let adjacent_union_domain = |values: Value| {
+        let mut value = property("value", "choice");
+        value["accepted_domain"] = json!({"closed":values});
+        document(
+            json!([
+                record("root", vec![value]),
+                {
+                    "key":"choice",
+                    "body":{
+                        "kind":"union",
+                        "tagging":{"adjacent":{"tag":"kind","content":"value"}},
+                        "variants":[
+                            {"key":"unit","payload":null},
+                            {"key":"text","payload":{"target":"leaf"}}
+                        ]
+                    }
+                },
+                scalar("leaf", "string")
+            ]),
+            "root",
+        )
+    };
+    assert!(
+        adjacent_union_domain(json!([{"kind":"unit"}, {"kind":"text","value":"ok"}]))
+            .admit()
+            .is_ok()
+    );
+    for values in [
+        json!([{"kind":"unit","extra":true}]),
+        json!([{"kind":"text","value":"ok","extra":true}]),
+    ] {
+        assert_eq!(
+            codes(&adjacent_union_domain(values).admit().unwrap_err()),
+            ["schema.graph.inapplicable_facet"]
+        );
+    }
 }
 
 #[test]
@@ -1965,6 +2002,24 @@ fn input_default_is_property_only_context_free_semantics() {
             .admit()
             .is_ok()
     );
+    let mut transformed_default = property("value", "leaf");
+    transformed_default["input_default"] = json!(" ");
+    transformed_default["transformers"] = json!([{"kind":"trim"}]);
+    transformed_default["rules"] = json!([{"min_length":1}]);
+    assert_eq!(
+        codes(
+            &document(
+                json!([
+                    record("root", vec![transformed_default]),
+                    scalar("leaf", "string")
+                ]),
+                "root"
+            )
+            .admit()
+            .unwrap_err()
+        ),
+        ["schema.graph.invalid_default"]
+    );
     assert!(
         graph(json!("x"), json!([{"eq":["/other",1]}]))
             .admit()
@@ -2038,6 +2093,26 @@ fn input_default_is_property_only_context_free_semantics() {
     assert_ne!(
         admitted(object_default(json!(1))).0,
         admitted(object_default(json!(1.0))).0
+    );
+
+    let mut required_when_true_default = property("value", "nested");
+    required_when_true_default["input_default"] = json!({});
+    let mut required_when_true_child = property("child", "text");
+    required_when_true_child["presence"] = json!({"required_when":{"all":[]}});
+    assert_eq!(
+        codes(
+            &document(
+                json!([
+                    record("root", vec![required_when_true_default]),
+                    record("nested", vec![required_when_true_child]),
+                    scalar("text", "string")
+                ]),
+                "root"
+            )
+            .admit()
+            .unwrap_err()
+        ),
+        ["schema.graph.invalid_default"]
     );
 }
 
@@ -2163,6 +2238,41 @@ fn lowerer_codes_are_registered_as_standard_schema_diagnostics() {
         assert!(
             STANDARD_CODES.contains(&code),
             "missing lowerer code from STANDARD_CODES: {code}"
+        );
+    }
+}
+
+#[test]
+fn admission_codes_are_registered_as_standard_schema_diagnostics() {
+    let expected = [
+        "schema.graph.invalid_document",
+        "schema.graph.unsupported_version",
+        "schema.graph.unknown_facet",
+        "schema.graph.unknown_body",
+        "schema.graph.unknown_required_extension",
+        "schema.graph.invalid_identifier",
+        "schema.graph.duplicate_definition",
+        "schema.graph.duplicate_local_key",
+        "schema.graph.definition_limit",
+        "schema.graph.reference_limit",
+        "schema.graph.identifier_bytes_limit",
+        "schema.graph.budget_overflow",
+        "schema.graph.dangling_reference",
+        "schema.graph.unreachable_definition",
+        "schema.graph.nonproductive_definition",
+        "schema.graph.invalid_bounds",
+        "schema.graph.invalid_rule",
+        "schema.graph.invalid_transformer",
+        "schema.graph.inapplicable_facet",
+        "schema.graph.invalid_default",
+        "schema.graph.canonical_bytes_limit",
+        "schema.graph.diagnostic_limit",
+        "schema.graph.index_overflow",
+    ];
+    for code in expected {
+        assert!(
+            STANDARD_CODES.contains(&code),
+            "missing admission code from STANDARD_CODES: {code}"
         );
     }
 }
