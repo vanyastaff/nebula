@@ -10,7 +10,7 @@ use nebula_execution::{
     ExecutionBindingManifestV2, ExecutionContractBundle, ExecutionContractBundleV2,
     ExecutionRevisions, ExecutionState, context::ExecutionBudget,
 };
-use nebula_plugin::FrozenPluginRegistry;
+use nebula_plugin::{FrozenPluginRegistry, PlanBindingContract};
 use nebula_storage_port::{
     Scope,
     dto::{
@@ -512,46 +512,56 @@ impl WorkflowStartService {
             activation.workflow_version_id(),
             plan.worker_flavor_revision_id(),
         );
-        let record = if plan.bindings().is_empty() {
-            let bundle = ExecutionContractBundle::new_graph_v1(
-                ExecutionContractBundleId::new(),
-                org_id,
-                workspace_id,
-                plan.id(),
-                plan.plugin_set_id(),
-                revisions,
-                [],
-            );
-            ContractBundleRecord::v1_json(
-                StartContractIdentity::new(bundle.bundle_id(), activation.revisions()),
-                serde_json::to_vec(&bundle).map_err(|_| WorkflowStartError::InvalidInput)?,
-            )
-        } else {
-            let resolver = self
-                .binding_resolver
-                .as_ref()
-                .ok_or(WorkflowStartError::UnsupportedBindings)?;
-            let manifest: ExecutionBindingManifestV2 = resolver
-                .resolve(scope, plan.bindings())
-                .await
-                .map_err(WorkflowStartError::BindingResolution)?;
-            crate::binding_resolver::validate_manifest(plan.bindings(), &manifest)
-                .map_err(WorkflowStartError::BindingResolution)?;
-            let bundle = ExecutionContractBundleV2::new_graph_v2(
-                ExecutionContractBundleId::new(),
-                org_id,
-                workspace_id,
-                plan.id(),
-                plan.plugin_set_id(),
-                revisions,
-                manifest,
-            );
-            ContractBundleRecord::v2_json(
-                StartContractIdentity::new(bundle.bundle_id(), activation.revisions()),
-                serde_json::to_vec(&bundle).map_err(|_| WorkflowStartError::InvalidInput)?,
-            )
-        }
-        .map_err(|_| WorkflowStartError::InvalidInput)?;
+        let record =
+            if plan.bindings().is_empty() {
+                let bundle = ExecutionContractBundle::new_graph_v1(
+                    ExecutionContractBundleId::new(),
+                    org_id,
+                    workspace_id,
+                    plan.id(),
+                    plan.plugin_set_id(),
+                    revisions,
+                    [],
+                );
+                ContractBundleRecord::v1_json(
+                    StartContractIdentity::new(bundle.bundle_id(), activation.revisions()),
+                    serde_json::to_vec(&bundle).map_err(|_| WorkflowStartError::InvalidInput)?,
+                )
+            } else {
+                if plan.bindings().iter().any(|binding| {
+                    matches!(binding.contract(), PlanBindingContract::Resource { .. })
+                }) {
+                    tracing::warn!(
+                        binding_count = plan.bindings().len(),
+                        "workflow start rejected resource bindings before dispatch target wiring"
+                    );
+                    return Err(WorkflowStartError::UnsupportedBindings);
+                }
+                let resolver = self
+                    .binding_resolver
+                    .as_ref()
+                    .ok_or(WorkflowStartError::UnsupportedBindings)?;
+                let manifest: ExecutionBindingManifestV2 = resolver
+                    .resolve(scope, plan.bindings())
+                    .await
+                    .map_err(WorkflowStartError::BindingResolution)?;
+                crate::binding_resolver::validate_manifest(plan.bindings(), &manifest)
+                    .map_err(WorkflowStartError::BindingResolution)?;
+                let bundle = ExecutionContractBundleV2::new_graph_v2(
+                    ExecutionContractBundleId::new(),
+                    org_id,
+                    workspace_id,
+                    plan.id(),
+                    plan.plugin_set_id(),
+                    revisions,
+                    manifest,
+                );
+                ContractBundleRecord::v2_json(
+                    StartContractIdentity::new(bundle.bundle_id(), activation.revisions()),
+                    serde_json::to_vec(&bundle).map_err(|_| WorkflowStartError::InvalidInput)?,
+                )
+            }
+            .map_err(|_| WorkflowStartError::InvalidInput)?;
         let execution_id = ExecutionId::new();
         let mut state = ExecutionState::new(execution_id, workflow_id, &[]);
         let now = self.clock.now();

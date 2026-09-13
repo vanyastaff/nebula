@@ -7,10 +7,11 @@
 //! dispatch time:
 //!
 //! 1. Read each declared slot field from `Self::dependencies()`.
-//! 2. For each slot, look up the override in `node.slot_bindings` ( hybrid binding) —
-//! falling back to the action's declared `default_id`.
-//! 3. Resolve the resource / credential through [`ActionContext`](crate::ActionContext) typed
-//! helpers ([`acquire_resource_by_id`](crate::context::ActionContextExt::acquire_resource_by_id),
+//! 2. For each slot, look up the override in `node.slot_bindings` for diagnostics and resource
+//! resolution.
+//! 3. Resolve resources by selected id and credentials by declared slot key through
+//! [`ActionContext`](crate::ActionContext) typed helpers
+//! ([`acquire_resource_by_id`](crate::context::ActionContextExt::acquire_resource_by_id),
 //! [`resolve_credential_by_id`](crate::context::ActionContextExt::resolve_credential_by_id)).
 //! 4. Assemble `Self` with the resolved guards.
 //!

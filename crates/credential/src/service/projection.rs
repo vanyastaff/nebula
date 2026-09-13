@@ -30,6 +30,9 @@ pub enum CredentialProjectionRuntimeBuildError {
     /// A registered credential advertises capabilities without matching ops.
     #[error("credential capability operations are incomplete")]
     CapabilityOpsMissing,
+    /// Dynamic credentials need lease lifecycle authority that projection-only workers do not own.
+    #[error("dynamic credentials are not supported by the projection runtime")]
+    DynamicUnsupported,
 }
 
 /// Read/project-only credential runtime for execution composition roots.
@@ -57,7 +60,8 @@ impl CredentialProjectionRuntime {
     /// Returns [`CredentialProjectionRuntimeBuildError::ProjectionOpsMissing`]
     /// when a registry key has no base projector, or
     /// [`CredentialProjectionRuntimeBuildError::CapabilityOpsMissing`] when
-    /// any advertised capability lacks a matching operation closure.
+    /// any advertised capability lacks a matching operation closure. Dynamic
+    /// credentials return [`CredentialProjectionRuntimeBuildError::DynamicUnsupported`].
     pub fn from_secure_parts(
         store: Arc<dyn CredentialPersistence>,
         registry: Arc<CredentialRegistry>,
@@ -125,6 +129,13 @@ fn validate_projection_parts(
         }
 
         let advertised = registry.capabilities_of(key).unwrap_or_default();
+        if advertised.contains(Capabilities::DYNAMIC) {
+            tracing::error!(
+                credential.key = key,
+                "credential projection runtime rejected dynamic credential"
+            );
+            return Err(CredentialProjectionRuntimeBuildError::DynamicUnsupported);
+        }
         let missing = advertised.difference(ops.capabilities_of(key));
         if !missing.is_empty() {
             tracing::error!(
@@ -142,8 +153,68 @@ fn validate_projection_parts(
 mod tests {
     use super::*;
     use crate::{
-        BearerTokenCredential, OAuth2Credential, register_refreshable_ops, register_runtime_ops,
+        BearerTokenCredential, BearerTokenProperties, Credential, CredentialContext,
+        CredentialError, CredentialMetadataDraft, Dynamic, OAuth2Credential, SecretToken,
+        contract::plugin_capability_report, metadata_name, register_refreshable_ops,
+        register_runtime_ops, resolve::StaticResolveResult,
     };
+    use nebula_core::credential_key;
+
+    struct DynamicFixtureCredential;
+
+    impl Credential for DynamicFixtureCredential {
+        type Properties = BearerTokenProperties;
+        type Scheme = SecretToken;
+        type State = SecretToken;
+
+        const KEY: &'static str = "projection_dynamic_fixture";
+
+        fn metadata() -> CredentialMetadataDraft {
+            CredentialMetadataDraft::new(
+                credential_key!("projection_dynamic_fixture"),
+                metadata_name!("Projection Dynamic Fixture"),
+                "Projection-only runtime dynamic rejection fixture.",
+            )
+        }
+
+        fn project(state: &Self::State) -> Self::Scheme {
+            state.clone()
+        }
+
+        async fn resolve(
+            properties: &Self::Properties,
+            _ctx: &CredentialContext,
+        ) -> Result<StaticResolveResult<Self::State>, CredentialError> {
+            Ok(StaticResolveResult::Complete(SecretToken::new(
+                properties.token.clone(),
+            )))
+        }
+    }
+
+    impl Dynamic for DynamicFixtureCredential {
+        async fn release(
+            _state: &Self::State,
+            _ctx: &CredentialContext,
+        ) -> Result<(), CredentialError> {
+            Ok(())
+        }
+    }
+
+    impl plugin_capability_report::IsInteractive for DynamicFixtureCredential {
+        const VALUE: bool = false;
+    }
+    impl plugin_capability_report::IsRefreshable for DynamicFixtureCredential {
+        const VALUE: bool = false;
+    }
+    impl plugin_capability_report::IsRevocable for DynamicFixtureCredential {
+        const VALUE: bool = false;
+    }
+    impl plugin_capability_report::IsTestable for DynamicFixtureCredential {
+        const VALUE: bool = false;
+    }
+    impl plugin_capability_report::IsDynamic for DynamicFixtureCredential {
+        const VALUE: bool = true;
+    }
 
     #[test]
     fn accepts_complete_static_projection_registration() {
@@ -199,10 +270,27 @@ mod tests {
     }
 
     #[test]
+    fn rejects_dynamic_credentials_even_with_base_projection_ops() {
+        let mut registry = CredentialRegistry::new();
+        registry
+            .register(DynamicFixtureCredential, "projection-test")
+            .expect("fixture registry key is unique");
+        let mut ops = DispatchOps::new();
+        register_runtime_ops::<DynamicFixtureCredential, ErasedPendingStore>(&mut ops)
+            .expect("fixture base ops key is unique");
+
+        assert_eq!(
+            validate_projection_parts(&registry, &ops),
+            Err(CredentialProjectionRuntimeBuildError::DynamicUnsupported)
+        );
+    }
+
+    #[test]
     fn build_error_debug_and_display_are_payload_free() {
         let errors = [
             CredentialProjectionRuntimeBuildError::ProjectionOpsMissing,
             CredentialProjectionRuntimeBuildError::CapabilityOpsMissing,
+            CredentialProjectionRuntimeBuildError::DynamicUnsupported,
         ];
         for error in errors {
             let rendered = format!("{error:?} {error}");

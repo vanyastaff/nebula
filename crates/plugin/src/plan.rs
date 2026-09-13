@@ -41,6 +41,7 @@ const _: () = assert!(nebula_schema::ScalarSchema::WIRE_VERSION == 1);
 pub(crate) enum PlanEpoch {
     GraphV1,
     GraphV3,
+    GraphV4Legacy,
     GraphV4,
 }
 
@@ -54,6 +55,7 @@ impl PlanEpoch {
         match (compiler_version, canonical_hash_version) {
             (COMPILER_VERSION_GRAPH_V1, CANONICAL_HASH_VERSION_V1) => Some(Self::GraphV1),
             (COMPILER_VERSION_GRAPH_V3, CANONICAL_HASH_VERSION_V2) => Some(Self::GraphV3),
+            (COMPILER_VERSION_GRAPH_V4, CANONICAL_HASH_VERSION_V2) => Some(Self::GraphV4Legacy),
             (COMPILER_VERSION_GRAPH_V4, CANONICAL_HASH_VERSION_V3) => Some(Self::GraphV4),
             _ => None,
         }
@@ -63,7 +65,7 @@ impl PlanEpoch {
         match self {
             Self::GraphV1 => COMPILER_VERSION_GRAPH_V1,
             Self::GraphV3 => COMPILER_VERSION_GRAPH_V3,
-            Self::GraphV4 => COMPILER_VERSION_GRAPH_V4,
+            Self::GraphV4Legacy | Self::GraphV4 => COMPILER_VERSION_GRAPH_V4,
         }
     }
 
@@ -71,16 +73,17 @@ impl PlanEpoch {
         match self {
             Self::GraphV1 => CANONICAL_HASH_VERSION_V1,
             Self::GraphV3 => CANONICAL_HASH_VERSION_V2,
+            Self::GraphV4Legacy => CANONICAL_HASH_VERSION_V2,
             Self::GraphV4 => CANONICAL_HASH_VERSION_V3,
         }
     }
 
     pub(crate) const fn records_effect_contract(self) -> bool {
-        matches!(self, Self::GraphV3 | Self::GraphV4)
+        matches!(self, Self::GraphV3 | Self::GraphV4Legacy | Self::GraphV4)
     }
 
     const fn supports_intrinsic_error_port(self) -> bool {
-        matches!(self, Self::GraphV3 | Self::GraphV4)
+        matches!(self, Self::GraphV3 | Self::GraphV4Legacy | Self::GraphV4)
     }
 
     const fn records_binding_selector_provenance(self) -> bool {
@@ -88,11 +91,11 @@ impl PlanEpoch {
     }
 
     const fn supports_scalar_schema(self) -> bool {
-        matches!(self, Self::GraphV4)
+        matches!(self, Self::GraphV4Legacy | Self::GraphV4)
     }
 
     const fn supports_static_root_rules(self) -> bool {
-        matches!(self, Self::GraphV4)
+        matches!(self, Self::GraphV4Legacy | Self::GraphV4)
     }
 }
 

@@ -748,13 +748,14 @@ fn checked_record_observations() -> Vec<ScenarioObservation> {
 fn rehash_record(record: &mut Value) {
     record.as_object_mut().unwrap().remove("claimed_id");
     let canonical = nebula_schema::canonical_json_v1(record).unwrap();
-    let domain = if record["canonical_hash_version"] == 1 {
-        b"nebula.executable-plan.graph.v1"
-    } else {
-        b"nebula.executable-plan.graph.v2"
+    let domain: &[u8] = match record["canonical_hash_version"].as_u64() {
+        Some(1) => b"nebula.executable-plan.graph.v1",
+        Some(2) => b"nebula.executable-plan.graph.v2",
+        Some(3) => b"nebula.executable-plan.graph.v3",
+        _ => b"nebula.executable-plan.graph.v2",
     };
     let mut hash = Sha256::new();
-    for (tag, bytes) in [(1_u8, domain.as_slice()), (2, canonical.as_slice())] {
+    for (tag, bytes) in [(1_u8, domain), (2, canonical.as_slice())] {
         hash.update([tag]);
         hash.update((bytes.len() as u64).to_be_bytes());
         hash.update(bytes);

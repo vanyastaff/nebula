@@ -807,8 +807,9 @@ impl<T: ?Sized + HasCredentials> CredentialContextExt for T {}
 ///
 /// `FromWorkflowNode::from_workflow_node` (the auto-generated factory)
 /// resolves each `#[resource]` / `#[credential]` field by calling these
-/// methods with the concrete slot id (either the action's declared
-/// `default_id` or the per-node `slot_bindings` override ).
+/// methods with the concrete resource id or credential slot key. Credential
+/// selectors are resolved during start admission; dispatch looks up the
+/// checked durable manifest by slot key.
 ///
 /// Plugin authors normally do not call these methods directly; the
 /// derive macro emits the call sites. They are public so authors who

@@ -233,6 +233,9 @@ deny = [
     # the API-owned command port.
     "nebula-server",
     "nebula-storage",
+    # The core-flavor worker binary wires credential runtime alongside the
+    # engine/resource composition root so slot guards can be resolved at run time.
+    "nebula-worker-bin",
   ], reason = "Credential contracts and credential-owned resolver/refresh/lease runtime are shared infra; the listed Business/Exec/API consumers, first-party backends, and server composition root may depend on them (no upward deps from core/*)" },
 
   # nebula-expression is a Core-tier expression evaluator. The wrapper

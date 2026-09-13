@@ -259,10 +259,11 @@ pub(crate) fn emit_slot_field_registrations(slots: &[ParsedSlotField]) -> TokenS
 
 /// Generate the field-resolution body for `FromWorkflowNode::from_workflow_node`.
 ///
-/// Each emitted statement reads the slot binding from the node, falling
-/// back to the slot's `default_id`, then calls into `ActionContextExt`
-/// (or `Lazy::with_value` etc.) and binds the result to a local matching
-/// the field name.
+/// Each emitted statement reads the authored slot binding from the node for
+/// diagnostics, then calls into `ActionContextExt` (or `Lazy::with_value`
+/// etc.) and binds the result to a local matching the field name. Credential
+/// slots resolve through the declared slot key because start admission already
+/// resolved any authored selector into the durable binding manifest.
 pub(crate) fn emit_slot_resolution_block(slots: &[ParsedSlotField]) -> (TokenStream2, Vec<Ident>) {
     let mut stmts = Vec::with_capacity(slots.len());
     let mut idents = Vec::with_capacity(slots.len());
@@ -277,17 +278,21 @@ pub(crate) fn emit_slot_resolution_block(slots: &[ParsedSlotField]) -> (TokenStr
             SlotKind::Resource => quote! { node.resource_binding(#slot_key_lit) },
             SlotKind::Credential => quote! { node.credential_binding(#slot_key_lit) },
         };
+        let lookup_id = match slot.kind {
+            SlotKind::Resource => quote! { slot_id },
+            SlotKind::Credential => quote! { #slot_key_lit },
+        };
 
         // Resolution call dispatched through `ActionContextExt`.
         let resolve_call = match slot.kind {
             SlotKind::Resource => quote! {
                 <dyn ::nebula_action::ActionContext as ::nebula_action::ActionContextExt>
-                    ::acquire_resource_by_id::<#inner_ty>(ctx, slot_id)
+                    ::acquire_resource_by_id::<#inner_ty>(ctx, #lookup_id)
                     .await
             },
             SlotKind::Credential => quote! {
                 <dyn ::nebula_action::ActionContext as ::nebula_action::ActionContextExt>
-                    ::resolve_credential_by_id::<#inner_ty>(ctx, slot_id)
+                    ::resolve_credential_by_id::<#inner_ty>(ctx, #lookup_id)
                     .await
             },
         };
@@ -393,4 +398,45 @@ pub(crate) fn emit_slot_resolution_block(slots: &[ParsedSlotField]) -> (TokenStr
 
     let block = quote! { #(#stmts)* };
     (block, idents)
+}
+
+#[cfg(test)]
+mod tests {
+    use quote::format_ident;
+
+    use super::*;
+
+    fn slot(kind: SlotKind) -> ParsedSlotField {
+        ParsedSlotField {
+            field_ident: format_ident!("auth"),
+            key_override: None,
+            kind,
+            optional: false,
+            lazy: false,
+            inner_type: syn::parse_quote!(DemoCredential),
+        }
+    }
+
+    #[test]
+    fn credential_resolution_uses_slot_key_not_authored_selector() {
+        let (block, _) = emit_slot_resolution_block(&[slot(SlotKind::Credential)]);
+        let expanded = block.to_string();
+
+        assert!(expanded.contains("let slot_id = node . credential_binding"));
+        assert!(
+            expanded.contains("resolve_credential_by_id :: < DemoCredential > (ctx , \"auth\")")
+        );
+        assert!(
+            !expanded.contains("resolve_credential_by_id :: < DemoCredential > (ctx , slot_id)")
+        );
+    }
+
+    #[test]
+    fn resource_resolution_still_uses_selected_resource_id() {
+        let (block, _) = emit_slot_resolution_block(&[slot(SlotKind::Resource)]);
+        let expanded = block.to_string();
+
+        assert!(expanded.contains("let slot_id = node . resource_binding"));
+        assert!(expanded.contains("acquire_resource_by_id :: < DemoCredential > (ctx , slot_id)"));
+    }
 }
