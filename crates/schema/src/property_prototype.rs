@@ -1,41 +1,108 @@
 // guard-justified: Schema maintainers own this throwaway, test-only authoring
 // prototype. It does not establish a production API, wire contract, or migration.
-// guard-justified: Only finite data-only records, strings, and booleans are
-// evidenced. Context rebasing, general rule composition, performance, and SDK
-// integration are not proven; unsupported policies must fail explicitly.
+// guard-justified: The array item key is an adapter detail required by legacy
+// Field. Union and default semantics remain explicit promotion blockers.
 
-use nebula_validator::{RuleView, ValueRule};
+use nebula_validator::{RuleRef, RuleView, ValueRule};
+use serde::Serialize;
+use serde_json::{Number, Value};
 
 use crate::{
-    ExpressionMode, Field, FieldKey, RequiredMode, RootShape, Rule, ScalarKind, ValidSchema,
-    ValidationError, ValidationReport, ValuePath, VisibilityMode,
+    Field, FieldKey, RequiredMode, Rule, ScalarSchema, ValidSchema, ValidationError,
+    ValidationReport, ValuePath,
 };
 
-// Retains CURRENT RequiredMode semantics: required rejects missing, null, and
-// empty strings. Optional permits omission but still type-checks present null.
-// This is not evidence of orthogonal key-presence, nullability, or emptiness.
+const ARRAY_ITEM_KEY: &str = "_prototype_item";
+
+// Retains CURRENT RequiredMode semantics: required rejects missing, null,
+// empty strings, and empty arrays. Optional permits omission but still checks
+// the type of a present null. This is not orthogonal presence/nullability.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 enum Requirement {
     Required,
     Optional,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 struct Presentation {
+    #[serde(skip_serializing_if = "Option::is_none")]
     label: Option<String>,
-    visibility: VisibilityMode,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    hidden: bool,
 }
 
+#[derive(Debug, Clone, Serialize)]
 struct Property {
     key: FieldKey,
-    value: ValidSchema,
+    value: ValueDefinition,
     requirement: Requirement,
+    #[serde(skip)]
     presentation: Presentation,
 }
 
+// Property equality is semantic equality. Presentation has its own serialized
+// occurrence stream and is deliberately excluded here.
+impl PartialEq for Property {
+    fn eq(&self, other: &Self) -> bool {
+        self.key == other.key && self.value == other.value && self.requirement == other.requirement
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ValueDefinition {
+    String {
+        rules: Vec<Rule>,
+    },
+    Boolean {
+        rules: Vec<Rule>,
+    },
+    Number(NumberDefinition),
+    Record {
+        properties: Vec<Property>,
+        rules: Vec<Rule>,
+    },
+    Array(ArrayDefinition),
+    // Explicitly represented so unsupported union semantics cannot disappear.
+    Union,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct NumberDefinition {
+    integer: bool,
+    minimum: Number,
+    maximum: Number,
+    rules: Vec<Rule>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct ArrayDefinition {
+    item: Box<ValueDefinition>,
+    min_items: Option<u32>,
+    max_items: Option<u32>,
+    unique: bool,
+    rules: Vec<Rule>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum DefinitionKind {
+    String,
+    Boolean,
+    Number { integer: bool },
+    Record,
+    Array,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
 struct OccurrenceAnnotation {
     path: ValuePath,
     presentation: Presentation,
 }
 
+#[derive(Debug)]
 struct LoweredSchema {
     schema: ValidSchema,
     annotations: Vec<OccurrenceAnnotation>,
@@ -68,11 +135,10 @@ impl SchemaBuilder {
         let mut annotations = Vec::new();
         for property in self.properties {
             let path = ValuePath::single(property.key.as_str());
-            check_visibility(&property.presentation.visibility, &path)?;
             let field = lower_value(
                 &property.key,
                 &property.value,
-                &property.requirement,
+                property.requirement,
                 &path,
                 &mut annotations,
             )?;
@@ -91,181 +157,227 @@ impl SchemaBuilder {
 
 fn lower_value(
     key: &FieldKey,
-    value: &ValidSchema,
-    requirement: &Requirement,
+    definition: &ValueDefinition,
+    requirement: Requirement,
     path: &ValuePath,
     annotations: &mut Vec<OccurrenceAnnotation>,
 ) -> Result<Field, ValidationReport> {
-    let required = match requirement {
-        Requirement::Required => RequiredMode::Always,
-        Requirement::Optional => RequiredMode::Never,
-    };
-    match value.root_shape() {
-        RootShape::Scalar(scalar) => match scalar.kind() {
-            ScalarKind::String => {
-                check_string_rules(scalar.root_rules(), path)?;
-                let mut field = Field::string(key.clone()).no_expression();
-                field.required = required;
-                field.rules = scalar.root_rules().to_vec();
-                Ok(field.into())
-            },
-            ScalarKind::Boolean => {
-                if !scalar.root_rules().is_empty() {
-                    return Err(unsupported("property.boolean_rules", path));
-                }
-                let mut field = Field::boolean(key.clone()).no_expression();
-                field.required = required;
-                Ok(field.into())
-            },
-            ScalarKind::Null | ScalarKind::Integer | ScalarKind::Number => {
-                Err(unsupported("property.unsupported_shape", path))
-            },
-        },
-        RootShape::Record(record) => {
-            if !record.root_rules().is_empty() {
-                return Err(unsupported("property.record_rules", path));
-            }
-            let mut field = Field::object(key.clone()).no_expression();
-            field.required = required;
-            field.fields = lower_fields(record.fields(), path, annotations)?;
+    match definition {
+        ValueDefinition::String { rules } => {
+            check_rules(rules, DefinitionKind::String, path)?;
+            let mut field = Field::string(key.clone()).no_expression();
+            field.required = required_mode(requirement);
+            field.rules.clone_from(rules);
             Ok(field.into())
         },
-        RootShape::Any | RootShape::Union(_) => {
-            Err(unsupported("property.unsupported_shape", path))
+        ValueDefinition::Boolean { rules } => {
+            check_rules(rules, DefinitionKind::Boolean, path)?;
+            let mut field = Field::boolean(key.clone()).no_expression();
+            field.required = required_mode(requirement);
+            field.rules.clone_from(rules);
+            Ok(field.into())
         },
+        ValueDefinition::Number(number) => lower_number(key, number, requirement, path),
+        ValueDefinition::Record { properties, rules } => {
+            check_rules(rules, DefinitionKind::Record, path)?;
+            let mut field = Field::object(key.clone()).no_expression();
+            field.required = required_mode(requirement);
+            field.rules.clone_from(rules);
+            for property in properties {
+                let child_path = path.push(property.key.as_str());
+                let child = lower_value(
+                    &property.key,
+                    &property.value,
+                    property.requirement,
+                    &child_path,
+                    annotations,
+                )?;
+                field = field.add(child);
+                annotations.push(OccurrenceAnnotation {
+                    path: child_path,
+                    presentation: property.presentation.clone(),
+                });
+            }
+            Ok(field.into())
+        },
+        ValueDefinition::Array(array) => lower_array(key, array, requirement, path, annotations),
+        ValueDefinition::Union => Err(unsupported("property.union", path)),
     }
 }
 
-fn lower_fields(
-    fields: &[Field],
-    parent: &ValuePath,
-    annotations: &mut Vec<OccurrenceAnnotation>,
-) -> Result<Vec<Field>, ValidationReport> {
-    fields
-        .iter()
-        .map(|field| {
-            let path = parent.push(field.key().as_str());
-            lower_field(field, &path, annotations)
-        })
-        .collect()
+fn lower_number(
+    key: &FieldKey,
+    definition: &NumberDefinition,
+    requirement: Requirement,
+    path: &ValuePath,
+) -> Result<Field, ValidationReport> {
+    check_rules(
+        &definition.rules,
+        DefinitionKind::Number {
+            integer: definition.integer,
+        },
+        path,
+    )?;
+    let bounds = if definition.integer {
+        ScalarSchema::integer(definition.minimum.clone(), definition.maximum.clone())
+    } else {
+        ScalarSchema::number(definition.minimum.clone(), definition.maximum.clone())
+    };
+    if bounds.is_err() {
+        return Err(unsupported("property.number_bounds", path));
+    }
+
+    let mut field = Field::number(key.clone())
+        .no_expression()
+        .min(definition.minimum.clone())
+        .max(definition.maximum.clone());
+    if definition.integer {
+        field = field.integer();
+    }
+    field.required = required_mode(requirement);
+    field.rules.extend(definition.rules.iter().cloned());
+    Ok(field.into())
 }
 
-fn lower_field(
-    source: &Field,
+fn lower_array(
+    key: &FieldKey,
+    definition: &ArrayDefinition,
+    requirement: Requirement,
     path: &ValuePath,
     annotations: &mut Vec<OccurrenceAnnotation>,
 ) -> Result<Field, ValidationReport> {
-    if !matches!(
-        source,
-        Field::String(_) | Field::Boolean(_) | Field::Object(_)
-    ) {
-        return Err(unsupported("property.unsupported_field", path));
+    check_rules(&definition.rules, DefinitionKind::Array, path)?;
+    if definition
+        .min_items
+        .zip(definition.max_items)
+        .is_some_and(|(minimum, maximum)| minimum > maximum)
+    {
+        return Err(unsupported("property.array_bounds", path));
     }
-    if !source.read_aliases().is_empty() || source.emit_as().is_some() {
-        return Err(unsupported("property.aliases", path));
+    let item_key =
+        FieldKey::new(ARRAY_ITEM_KEY).map_err(|_| unsupported("property.array_adapter", path))?;
+    let item = lower_value(
+        &item_key,
+        &definition.item,
+        Requirement::Optional,
+        path,
+        annotations,
+    )?;
+    let mut field = Field::list(key.clone()).no_expression().item(item);
+    if let Some(minimum) = definition.min_items {
+        field = field.min_items(minimum);
     }
-    if !source.transformers().is_empty() {
-        return Err(unsupported("property.transforms", path));
+    if let Some(maximum) = definition.max_items {
+        field = field.max_items(maximum);
     }
-    if source.default().is_some() {
-        return Err(unsupported("property.defaults", path));
+    if definition.unique {
+        field = field.unique();
     }
-    if source.expression() != &ExpressionMode::Forbidden {
-        return Err(unsupported("property.expressions", path));
-    }
-    if matches!(source.required(), RequiredMode::When(_)) {
-        return Err(unsupported("property.presence", path));
-    }
-    check_visibility(source.visible(), path)?;
-
-    // Compare against the supported builder shape before removing presentation.
-    // A nondefault policy or type-specific option cannot disappear unnoticed.
-    let (runtime, label) = match source {
-        Field::String(source) => {
-            check_string_rules(&source.rules, path)?;
-            let mut field = Field::string(source.key.clone()).no_expression();
-            field.required = source.required.clone();
-            field.rules.clone_from(&source.rules);
-            field.label.clone_from(&source.label);
-            field.visible = source.visible.clone();
-            if &field != source {
-                return Err(unsupported("property.field_metadata", path));
-            }
-            let label = field.label.take();
-            field.visible = VisibilityMode::Always;
-            (field.into(), label)
-        },
-        Field::Boolean(source) => {
-            if !source.rules.is_empty() {
-                return Err(unsupported("property.boolean_rules", path));
-            }
-            let mut field = Field::boolean(source.key.clone()).no_expression();
-            field.required = source.required.clone();
-            field.label.clone_from(&source.label);
-            field.visible = source.visible.clone();
-            if &field != source {
-                return Err(unsupported("property.field_metadata", path));
-            }
-            let label = field.label.take();
-            field.visible = VisibilityMode::Always;
-            (field.into(), label)
-        },
-        Field::Object(source) => {
-            if !source.rules.is_empty() {
-                return Err(unsupported("property.record_rules", path));
-            }
-            let mut field = Field::object(source.key.clone()).no_expression();
-            field.required = source.required.clone();
-            field.label.clone_from(&source.label);
-            field.visible = source.visible.clone();
-            field.fields.clone_from(&source.fields);
-            if &field != source {
-                return Err(unsupported("property.field_metadata", path));
-            }
-            let label = field.label.take();
-            field.visible = VisibilityMode::Always;
-            field.fields = lower_fields(&source.fields, path, annotations)?;
-            (field.into(), label)
-        },
-        _ => return Err(unsupported("property.unsupported_field", path)),
-    };
-    annotations.push(OccurrenceAnnotation {
-        path: path.clone(),
-        presentation: Presentation {
-            label,
-            visibility: source.visible().clone(),
-        },
-    });
-    Ok(runtime)
+    field.required = required_mode(requirement);
+    field.rules.clone_from(&definition.rules);
+    Ok(field.into())
 }
 
-fn check_visibility(visibility: &VisibilityMode, path: &ValuePath) -> Result<(), ValidationReport> {
-    match visibility {
-        VisibilityMode::Always | VisibilityMode::Never => Ok(()),
-        VisibilityMode::When(_) => Err(unsupported("property.visibility", path)),
+const fn required_mode(requirement: Requirement) -> RequiredMode {
+    match requirement {
+        Requirement::Required => RequiredMode::Always,
+        Requirement::Optional => RequiredMode::Never,
     }
 }
 
-fn check_string_rules(rules: &[Rule], path: &ValuePath) -> Result<(), ValidationReport> {
+fn check_rules(
+    rules: &[Rule],
+    kind: DefinitionKind,
+    path: &ValuePath,
+) -> Result<(), ValidationReport> {
+    check_context_free_rules(rules, path)?;
+    check_compatible_rules(rules, kind, path)
+}
+
+fn check_context_free_rules(rules: &[Rule], path: &ValuePath) -> Result<(), ValidationReport> {
     for rule in rules {
-        let supported = match rule.view() {
-            RuleView::Value(
-                ValueRule::MinLength(_)
-                | ValueRule::MaxLength(_)
-                | ValueRule::Pattern(_)
-                | ValueRule::Email
-                | ValueRule::Url,
-            ) => true,
-            RuleView::Value(ValueRule::OneOf(values)) => {
-                values.iter().all(serde_json::Value::is_string)
-            },
-            _ => false,
-        };
-        if !supported {
-            return Err(unsupported("property.string_rule", path));
+        let mut pending = vec![rule.root()];
+        while let Some(current) = pending.pop() {
+            match current.view() {
+                RuleView::Value(_) => {},
+                RuleView::All(children) | RuleView::Any(children) => pending.extend(children),
+                RuleView::Not(inner) | RuleView::Described { inner, .. } => pending.push(inner),
+                RuleView::Predicate(_) => {
+                    return Err(unsupported("property.rule.contextual", path));
+                },
+                RuleView::Deferred(_) => {
+                    return Err(unsupported("property.rule.deferred", path));
+                },
+                _ => return Err(unsupported_rule_kind(current, path)),
+            }
         }
     }
     Ok(())
+}
+
+fn check_compatible_rules(
+    rules: &[Rule],
+    kind: DefinitionKind,
+    path: &ValuePath,
+) -> Result<(), ValidationReport> {
+    for rule in rules {
+        let mut pending = vec![rule.root()];
+        while let Some(current) = pending.pop() {
+            match current.view() {
+                RuleView::Value(value) if value_rule_is_compatible(value, kind) => {},
+                RuleView::Value(_) => {
+                    return Err(unsupported("property.rule.incompatible", path));
+                },
+                RuleView::All(children) | RuleView::Any(children) => pending.extend(children),
+                RuleView::Not(inner) | RuleView::Described { inner, .. } => pending.push(inner),
+                RuleView::Predicate(_) | RuleView::Deferred(_) => {
+                    return Err(unsupported("property.rule.unsupported", path));
+                },
+                _ => return Err(unsupported_rule_kind(current, path)),
+            }
+        }
+    }
+    Ok(())
+}
+
+fn value_rule_is_compatible(rule: &ValueRule, kind: DefinitionKind) -> bool {
+    match (kind, rule) {
+        (
+            DefinitionKind::String,
+            ValueRule::MinLength(_)
+            | ValueRule::MaxLength(_)
+            | ValueRule::Pattern(_)
+            | ValueRule::Email
+            | ValueRule::Url,
+        ) => true,
+        (DefinitionKind::String, ValueRule::OneOf(values)) => values.iter().all(Value::is_string),
+        (DefinitionKind::Boolean, ValueRule::OneOf(values)) => values.iter().all(Value::is_boolean),
+        (
+            DefinitionKind::Number { .. },
+            ValueRule::Min(_)
+            | ValueRule::Max(_)
+            | ValueRule::GreaterThan(_)
+            | ValueRule::LessThan(_),
+        ) => true,
+        (DefinitionKind::Number { integer }, ValueRule::OneOf(values)) => {
+            values.iter().all(|value| {
+                value.as_number().is_some_and(|number| {
+                    !integer
+                        || number.is_i64()
+                        || number.is_u64()
+                        || number.as_f64().is_some_and(|value| value.fract() == 0.0)
+                })
+            })
+        },
+        (DefinitionKind::Record, ValueRule::OneOf(values)) => values.iter().all(Value::is_object),
+        (DefinitionKind::Array, ValueRule::MinItems(_) | ValueRule::MaxItems(_)) => true,
+        (DefinitionKind::Array, ValueRule::OneOf(values)) => values.iter().all(Value::is_array),
+        _ => false,
+    }
+}
+
+fn unsupported_rule_kind(_rule: RuleRef<'_>, path: &ValuePath) -> ValidationReport {
+    unsupported("property.rule.unsupported", path)
 }
 
 fn unsupported(code: &'static str, path: &ValuePath) -> ValidationReport {
