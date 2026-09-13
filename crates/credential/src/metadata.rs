@@ -428,7 +428,10 @@ pub enum MetadataCompatibilityError {
 #[cfg(test)]
 mod tests {
     use nebula_core::credential_key;
-    use nebula_metadata::{BaseCompatError, DeprecationNotice, Icon, MaturityLevel};
+    use nebula_metadata::{
+        BaseCompatError, CatalogCategoryKey, CatalogLink, CatalogLinkRelation, DeprecationNotice,
+        Icon, MaturityLevel,
+    };
     use semver::Version;
 
     use super::{CredentialMetadata, CredentialMetadataDraft, MetadataCompatibilityError};
@@ -451,14 +454,33 @@ mod tests {
     #[test]
     fn draft_fields_survive_admission() {
         let version = Version::parse("2.1.3-beta.1").expect("version literal is valid");
+        let category: CatalogCategoryKey = "auth.tokens".parse().expect("valid category");
+        let link = CatalogLink::new(
+            CatalogLinkRelation::Setup,
+            "/credentials/cred/setup"
+                .parse()
+                .expect("valid relative link"),
+        );
+        let documentation_link = CatalogLink::new(
+            CatalogLinkRelation::Overview,
+            "https://example.test/credentials/cred"
+                .parse()
+                .expect("valid documentation link"),
+        );
         let metadata = CredentialMetadataDraft::new(
             credential_key!("cred"),
             crate::metadata_name!("Credential"),
             "description",
         )
         .with_version(version.clone())
-        .with_icon(Icon::inline("key"))
+        .with_icon(Icon::None)
+        .with_inline_icon("key")
         .with_documentation_url("https://example.test/credentials/cred")
+        .with_categories([category.clone()])
+        .add_link(link.clone())
+        .with_tags(["credential"])
+        .add_tag("catalog")
+        .mark_beta()
         .admit_with_schema(
             nebula_schema::schema_of::<()>().expect("unit schema is valid"),
             AuthPattern::SecretToken,
@@ -471,6 +493,10 @@ mod tests {
             metadata.documentation_url(),
             Some("https://example.test/credentials/cred")
         );
+        assert_eq!(metadata.categories(), std::slice::from_ref(&category));
+        assert_eq!(metadata.links(), [documentation_link, link]);
+        assert_eq!(metadata.tags(), ["catalog", "credential"]);
+        assert_eq!(metadata.maturity(), MaturityLevel::Beta);
         assert_eq!(metadata.pattern(), AuthPattern::SecretToken);
     }
 

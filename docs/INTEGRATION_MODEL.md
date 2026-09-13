@@ -182,23 +182,27 @@ runtime semantics remain in effect until then. Full schema equality remains
 conservative and includes presentation/UI fields. This proposal does not split
 presentation identity or rewrite existing schema or plan bytes.
 
-### Shared metadata authoring (current foundation, target parity)
+### Shared metadata authoring (current foundation)
 
 `nebula-metadata` owns shared catalog metadata; leaf crates compose it and own
 entity-specific admission. Property display hints belong to schema authoring,
 not to a new catalog-leaf metadata type. SDK personas curate these contracts.
 
-| Metadata row | Shared owner / entity extra | Authoring and admission |
-|---|---|---|
-| Identity and text | `MetadataDraft<K>`: typed key, `MetadataName`, description | Checked `new` or fallible `try_new`; no key replacement |
-| Revision | `MetadataVersion` | `with_version`; compatibility checked separately |
-| Icon | `Icon::None`, `Icon::Inline`, `Icon::Url` | `with_icon`, `with_inline_icon`, `with_url_icon`; one representation |
-| Documentation and discovery | Documentation URL, tags | `with_documentation_url`, `with_tags`, `add_tag` |
-| Lifecycle | Active maturity or deprecation notice | `mark_experimental`, `mark_beta`, `mark_stable`, `with_deprecation`; notice wins |
-| Canonical value schema | `BaseMetadata<K>` | Owning factory/registry binds the associated type's checked schema; never supplied by a leaf draft |
-| Action extras | Ports, isolation, checkpoint/effect policy, concurrency; admitted kind and output schema | Existing leaf `with_*` / `add_*` methods; factory derives both schemas and stamps kind |
-| Credential extras | Admitted auth pattern; capability membership remains trait-derived | Target admission derives pattern from `C::Scheme`; current draft still takes it as a fourth constructor argument |
-| Resource extras | No additional catalog fields beyond the shared base | Factory derives `R::Config` schema and checks `Provider::key()`; topology and live instance stay resource contracts |
+| Shared concern | `ActionMetadataDraft` | `CredentialMetadataDraft` | `ResourceMetadataDraft` |
+|---|---|---|---|
+| Identity and text | `new(ActionKey, MetadataName, description)` / `try_new` | `new(CredentialKey, MetadataName, description)` / `try_new` | `new(ResourceKey, MetadataName, description)` / `try_new` |
+| Revision | `with_version(MetadataVersion)` | `with_version(MetadataVersion)` | `with_version(MetadataVersion)` |
+| Icon | `with_icon`, `with_inline_icon`, `with_url_icon` | `with_icon`, `with_inline_icon`, `with_url_icon` | `with_icon`, `with_inline_icon`, `with_url_icon` |
+| Documentation and discovery | `with_documentation_url`, `with_categories`, `add_link`, `with_tags`, `add_tag` | `with_documentation_url`, `with_categories`, `add_link`, `with_tags`, `add_tag` | `with_documentation_url`, `with_categories`, `add_link`, `with_tags`, `add_tag` |
+| Lifecycle | `mark_experimental`, `mark_beta`, `mark_stable`, `with_deprecation` | `mark_experimental`, `mark_beta`, `mark_stable`, `with_deprecation` | `mark_experimental`, `mark_beta`, `mark_stable`, `with_deprecation` |
+| Schema ownership | Factory derives input schema from `Action::Input` and output schema from `Action::Output` | Registry derives properties schema from `Credential::Properties` | Factory derives config schema from `Provider::Config` |
+
+Entity-specific extras stay separate: actions add ports, isolation,
+checkpoint/effect policy, concurrency, admitted kind and output schema;
+credentials add the admitted auth pattern derived from
+`<C::Scheme as AuthScheme>::pattern()` and capability membership derived from
+trait implementations; resources add no catalog fields beyond the shared base,
+while topology and live instances remain resource runtime contracts.
 
 The exact common constructor contract is the following, with `K` replaced by
 `ActionKey`, `CredentialKey`, or `ResourceKey` on each concrete leaf draft:
@@ -219,11 +223,9 @@ schema-free, and non-deserializable. Only the owning factory/registry binds leaf
 schemas and creates admitted metadata; recorded DTOs still require readmission
 against a fresh definition. No public leaf `build()` or schema setter is added.
 
-Issue 1018 covers the remaining constructor and SDK export parity: add Action's
-`try_new`, remove the credential constructor's redundant pattern argument in
-favor of admission from `C::Scheme`, and curate equivalent draft/ornament imports
-for manual authoring. All three drafts already delegate typed icons and shared
-`with_*` methods to `nebula-metadata`; this is not an icon repair from scratch.
+Issue 1018 locked this programmatic surface: no public leaf `build()` or schema
+setter is added, all three leaves use the same shared draft vocabulary, and all
+three delegate typed icons and shared `with_*` methods to `nebula-metadata`.
 
 **Further metadata evolution, proposed:** the
 [Phase-5 metadata contract](../crates/schema/docs/PHASE5_PROPERTY.md#metadata-evolution)
