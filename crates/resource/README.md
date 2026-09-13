@@ -93,8 +93,11 @@ and invariant-bearing base fields are read through accessors.
 `Provider::metadata` is required. Replace removed `ResourceMetadataDraft::from_key`
 calls with `new(key, metadata_name!("Display name"), description)` or checked
 `try_new(key, name, description)`; names are never inferred from keys. Typed
-categories and links use `with_categories` and `add_link`; the documentation URL
-convenience authors the Overview link. Tags are trimmed, sorted, and deduplicated.
+icons use `with_icon`, `with_inline_icon`, or `with_url_icon`; there is no
+separate `icon_url` field. Typed categories and links use `with_categories` and
+`add_link`; the documentation URL convenience authors the Overview link. Tags
+are trimmed, sorted, and deduplicated. Lifecycle uses the shared
+`mark_experimental`, `mark_beta`, `mark_stable`, and `with_deprecation` methods.
 
 `ResourceFactory::validate` treats JSON strictly as data, consumes validation
 against the admitted schema and `resolve_data()`, then decodes the resulting

@@ -75,8 +75,10 @@ precedence regardless of setter order. Schema compatibility remains conservative
 equality, separate from expression-edge assignability.
 
 **Catalog migration:** `with_categories` and `add_link` accept typed catalog
-values. `with_documentation_url` authors the Overview link. Tags are trimmed,
-sorted, and deduplicated; categories and links are also canonicalized. Serialized
+values. `with_icon`, `with_inline_icon`, and `with_url_icon` use the shared
+`Icon` representation; there is no separate `icon_url` field. `with_documentation_url`
+authors the Overview link. Tags are trimmed, sorted, and deduplicated; categories
+and links are also canonicalized. Serialized
 metadata now has a nested `base` with required `metadata_wire_version: 2`.
 `RecordedActionMetadata` rejects old flat/unversioned records and compares every
 shared field and action-specific field against fresh factory admission, including

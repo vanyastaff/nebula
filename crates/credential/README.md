@@ -76,6 +76,7 @@ Both `new(key, MetadataName, description)` and `try_new(key, name, description)`
 take exactly three arguments. There is no draft auth-pattern argument or getter:
 admission derives the pattern from `<C::Scheme as AuthScheme>::pattern()`.
 The draft uses the shared catalog vocabulary: `Icon` for inline, URL-backed, or absent icons;
+`with_icon`, `with_inline_icon`, and `with_url_icon` as the only icon setters;
 `mark_experimental`, `mark_beta`, `mark_stable`, and `with_deprecation` for lifecycle; and
 `with_tags`/`add_tag`, typed `with_categories`, and `add_link` for discovery.
 `with_documentation_url` authors the Overview link. Tags are trimmed, sorted, and

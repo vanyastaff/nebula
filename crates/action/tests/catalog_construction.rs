@@ -8,8 +8,9 @@ use nebula_action::{
 };
 use nebula_core::{Dependencies, action_key};
 use nebula_metadata::{
-    CatalogLink, CatalogLinkRelation, CatalogReference, DeprecationNotice, MetadataDecodeError,
-    MetadataDecodeLimits, MetadataError, MetadataField, RemovalSchedule,
+    CatalogCategoryKey, CatalogLink, CatalogLinkRelation, CatalogReference, DeprecationNotice,
+    Icon, MaturityLevel, MetadataDecodeError, MetadataDecodeLimits, MetadataError, MetadataField,
+    RemovalSchedule,
 };
 use serde_json::Value;
 
@@ -268,6 +269,57 @@ fn hidden_version_literal_is_checked_and_the_last_setter_wins() {
             .expect("last valid setter replaces old intent");
         assert_eq!(factory.metadata().base().version(), &version);
     }
+}
+
+#[test]
+fn draft_shared_authoring_surface_survives_factory_admission() {
+    let version = MetadataVersion::new(2, 3, 4);
+    let category: CatalogCategoryKey = "automation.events".parse().expect("valid category");
+    let link = CatalogLink::new(
+        CatalogLinkRelation::Setup,
+        "/actions/catalog/setup"
+            .parse()
+            .expect("valid relative link"),
+    );
+    let documentation_link = CatalogLink::new(
+        CatalogLinkRelation::Overview,
+        "https://example.test/actions/catalog"
+            .parse()
+            .expect("valid documentation link"),
+    );
+    let draft = ActionMetadataDraft::try_new(
+        action_key!("catalog.action"),
+        "Catalog action",
+        "Catalog admission fixture",
+    )
+    .expect("dynamic name is valid")
+    .with_version(version.clone())
+    .with_icon(Icon::None)
+    .with_inline_icon("catalog-action")
+    .with_documentation_url("https://example.test/actions/catalog")
+    .with_categories([category.clone()])
+    .add_link(link.clone())
+    .with_tags(["actions"])
+    .add_tag("catalog")
+    .mark_experimental()
+    .mark_beta();
+
+    let factory = InstanceFactory::new(draft, CatalogAction).expect("valid action contract");
+    let base = factory.metadata().base();
+
+    assert_eq!(base.key(), &action_key!("catalog.action"));
+    assert_eq!(base.name(), "Catalog action");
+    assert_eq!(base.description(), "Catalog admission fixture");
+    assert_eq!(base.version(), &version);
+    assert_eq!(base.icon(), &Icon::inline("catalog-action"));
+    assert_eq!(
+        base.documentation_url(),
+        Some("https://example.test/actions/catalog")
+    );
+    assert_eq!(base.categories(), std::slice::from_ref(&category));
+    assert_eq!(base.links(), [documentation_link, link]);
+    assert_eq!(base.tags(), ["actions", "catalog"]);
+    assert_eq!(base.maturity(), MaturityLevel::Beta);
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]

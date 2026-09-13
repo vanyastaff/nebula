@@ -205,6 +205,65 @@ fn factory_binds_and_caches_the_canonical_config_schema_once() {
 }
 
 #[test]
+fn draft_shared_authoring_surface_survives_factory_admission() {
+    let version = Version::new(2, 3, 4);
+    let category: nebula_metadata::CatalogCategoryKey =
+        "network.http".parse().expect("valid category");
+    let link = nebula_metadata::CatalogLink::new(
+        nebula_metadata::CatalogLinkRelation::Setup,
+        "/resources/metadata-probe/setup"
+            .parse()
+            .expect("valid relative link"),
+    );
+    let documentation_link = nebula_metadata::CatalogLink::new(
+        nebula_metadata::CatalogLinkRelation::Overview,
+        "https://example.test/resources/metadata-probe"
+            .parse()
+            .expect("valid documentation link"),
+    );
+    let draft = ResourceMetadataDraft::try_new(
+        MetadataProbe::key(),
+        "Metadata probe",
+        "Factory admission probe",
+    )
+    .expect("dynamic name is valid")
+    .with_version(version.clone())
+    .with_icon(nebula_metadata::Icon::None)
+    .with_inline_icon("metadata-probe")
+    .with_documentation_url("https://example.test/resources/metadata-probe")
+    .with_categories([category.clone()])
+    .add_link(link.clone())
+    .with_tags(["resource"])
+    .add_tag("catalog")
+    .mark_experimental()
+    .mark_beta();
+    let factory = KindActivator::<MetadataProbe, _, _>::with_metadata(
+        draft,
+        || MetadataProbe,
+        || Resident::new(nebula_resource::ResidentConfig::default()),
+    );
+    let metadata = factory.metadata().expect("valid static definition");
+    let base = metadata.base();
+
+    assert_eq!(base.key(), &MetadataProbe::key());
+    assert_eq!(base.name(), "Metadata probe");
+    assert_eq!(base.description(), "Factory admission probe");
+    assert_eq!(base.version(), &version);
+    assert_eq!(
+        base.icon(),
+        &nebula_metadata::Icon::inline("metadata-probe")
+    );
+    assert_eq!(
+        base.documentation_url(),
+        Some("https://example.test/resources/metadata-probe")
+    );
+    assert_eq!(base.categories(), std::slice::from_ref(&category));
+    assert_eq!(base.links(), [documentation_link, link]);
+    assert_eq!(base.tags(), ["catalog", "resource"]);
+    assert_eq!(base.maturity(), nebula_metadata::MaturityLevel::Beta);
+}
+
+#[test]
 fn recorded_metadata_only_readmits_against_an_exact_fresh_definition() {
     let factory = factory();
     let fresh = factory.metadata().expect("valid static definition");
