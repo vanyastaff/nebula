@@ -23,6 +23,7 @@ mod admission;
 mod canonical;
 mod document;
 mod error;
+mod lower;
 mod model;
 mod number;
 mod rule_canonical;

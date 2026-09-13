@@ -1,8 +1,9 @@
 use nebula_schema::{
-    AddressSpaceCommitment, DeclarationAddress, DeclarationUse, DefinitionKey, DefinitionMemberKey,
-    MAX_GRAPH_DEFINITIONS, MAX_GRAPH_DIAGNOSTICS, MAX_GRAPH_DOCUMENT_BYTES,
-    MAX_GRAPH_IDENTIFIER_BYTES, MAX_GRAPH_REFERENCES, SchemaAdmissionError, SchemaGraphDocument,
-    SemanticCommitment,
+    AddressSpaceCommitment, AuthoredValue, DeclarationAddress, DeclarationUse, DefinitionKey,
+    DefinitionMemberKey, Field, MAX_GRAPH_DEFINITIONS, MAX_GRAPH_DIAGNOSTICS,
+    MAX_GRAPH_DOCUMENT_BYTES, MAX_GRAPH_IDENTIFIER_BYTES, MAX_GRAPH_REFERENCES, STANDARD_CODES,
+    ScalarSchema, Schema, SchemaAdmissionError, SchemaGraphDocument, SemanticCommitment,
+    ValidSchema, field_key,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -11,6 +12,15 @@ fn document(definitions: Value, root: &str) -> SchemaGraphDocument {
     serde_json::from_value(json!({
         "version": 3,
         "root": { "target": root },
+        "definitions": definitions,
+    }))
+    .expect("fixture is a bounded graph document")
+}
+
+fn document_with_root(definitions: Value, root: Value) -> SchemaGraphDocument {
+    serde_json::from_value(json!({
+        "version": 3,
+        "root": root,
         "definitions": definitions,
     }))
     .expect("fixture is a bounded graph document")
@@ -56,6 +66,13 @@ fn admitted(document: SchemaGraphDocument) -> (SemanticCommitment, AddressSpaceC
 fn codes(error: &SchemaAdmissionError) -> Vec<&str> {
     error
         .report()
+        .iter()
+        .map(nebula_schema::ValidationError::code)
+        .collect()
+}
+
+fn report_codes(report: &nebula_schema::ValidationReport) -> Vec<&str> {
+    report
         .iter()
         .map(nebula_schema::ValidationError::code)
         .collect()
@@ -2095,4 +2112,383 @@ fn new_semantic_fields_fail_closed_outside_their_exact_locations() {
         .unwrap();
         assert!(document.admit().is_err());
     }
+}
+
+fn validation_signature(schema: &ValidSchema, input: Value) -> Vec<String> {
+    schema
+        .validate(AuthoredValue::from_data(input).expect("fixture data is literal JSON"))
+        .err()
+        .map(|report| report.iter().map(|error| error.code().to_owned()).collect())
+        .unwrap_or_default()
+}
+
+fn assert_validation_equivalence(lowered: &ValidSchema, expected: &ValidSchema, cases: &[Value]) {
+    for case in cases {
+        assert_eq!(
+            validation_signature(lowered, case.clone()),
+            validation_signature(expected, case.clone()),
+            "validation differed for {case}"
+        );
+    }
+}
+
+fn lowered(document: SchemaGraphDocument) -> ValidSchema {
+    document
+        .admit()
+        .expect("fixture admits")
+        .lower_to_valid_schema()
+        .expect("fixture lowers")
+}
+
+#[test]
+fn lowerer_codes_are_registered_as_standard_schema_diagnostics() {
+    let expected = [
+        "schema.graph.lower.root_array",
+        "schema.graph.lower.bytes",
+        "schema.graph.lower.union",
+        "schema.graph.lower.alias_body",
+        "schema.graph.lower.nested_container",
+        "schema.graph.lower.closed_additional_properties",
+        "schema.graph.lower.typed_additional_properties",
+        "schema.graph.lower.cycle_or_recursive",
+        "schema.graph.lower.default",
+        "schema.graph.lower.accepted_domain",
+        "schema.graph.lower.protection",
+        "schema.graph.lower.rules",
+        "schema.graph.lower.transformers",
+        "schema.graph.lower.expression",
+        "schema.graph.lower.occurrence",
+    ];
+    for code in expected {
+        assert!(
+            STANDARD_CODES.contains(&code),
+            "missing lowerer code from STANDARD_CODES: {code}"
+        );
+    }
+}
+
+#[test]
+fn lower_scalar_roots_to_legacy_valid_schema_when_exact() {
+    let scalar_cases = [
+        (
+            document_with_root(
+                json!([scalar("root", "null")]),
+                json!({"target":"root","null":"allow","expression":"forbidden"}),
+            ),
+            ValidSchema::scalar(ScalarSchema::null()).unwrap(),
+            vec![Value::Null, json!(false), json!("")],
+        ),
+        (
+            document_with_root(
+                json!([scalar("root", "boolean")]),
+                json!({"target":"root","null":"reject","expression":"forbidden"}),
+            ),
+            ValidSchema::scalar(ScalarSchema::boolean()).unwrap(),
+            vec![json!(true), json!(false), Value::Null, json!("true")],
+        ),
+        (
+            document_with_root(
+                json!([scalar("root", "string")]),
+                json!({"target":"root","null":"reject","expression":"forbidden"}),
+            ),
+            ValidSchema::scalar(ScalarSchema::string()).unwrap(),
+            vec![json!("text"), json!(""), Value::Null, json!(7)],
+        ),
+        (
+            document_with_root(
+                json!([{"key":"root","body":{"kind":"integer","minimum":-2,"maximum":5}}]),
+                json!({"target":"root","null":"reject","expression":"forbidden"}),
+            ),
+            ValidSchema::scalar(ScalarSchema::integer(-2, 5).unwrap()).unwrap(),
+            vec![json!(-2), json!(5), json!(6), json!(1.5), Value::Null],
+        ),
+        (
+            document_with_root(
+                json!([{"key":"root","body":{"kind":"number","minimum":-1.25,"maximum":2.5}}]),
+                json!({"target":"root","null":"reject","expression":"forbidden"}),
+            ),
+            ValidSchema::scalar(
+                ScalarSchema::number(
+                    serde_json::Number::from_f64(-1.25).unwrap(),
+                    serde_json::Number::from_f64(2.5).unwrap(),
+                )
+                .unwrap(),
+            )
+            .unwrap(),
+            vec![
+                json!(-1.25),
+                json!(2.5),
+                json!(2.75),
+                json!("1"),
+                Value::Null,
+            ],
+        ),
+    ];
+
+    for (document, expected, cases) in scalar_cases {
+        let lowered = lowered(document);
+        assert_validation_equivalence(&lowered, &expected, &cases);
+    }
+}
+
+#[test]
+fn lower_root_any_when_root_use_site_is_transparent() {
+    let lowered = lowered(document_with_root(
+        json!([scalar("root", "any")]),
+        json!({"target":"root","expression":"forbidden"}),
+    ));
+    let expected = ValidSchema::any();
+    assert_validation_equivalence(
+        &lowered,
+        &expected,
+        &[
+            Value::Null,
+            json!(true),
+            json!("text"),
+            json!([1]),
+            json!({"a":1}),
+        ],
+    );
+}
+
+#[test]
+fn lower_flat_required_scalar_record_to_legacy_valid_schema_when_exact() {
+    let mut name = property("name", "text");
+    name["empty_string"] = json!("reject");
+    let graph = document_with_root(
+        json!([
+            record("root", vec![name, property("enabled", "flag"), property("count", "count")]),
+            scalar("text", "string"),
+            scalar("flag", "boolean"),
+            {"key":"count","body":{"kind":"integer","minimum":0,"maximum":10}}
+        ]),
+        json!({"target":"root","null":"reject","empty_collection":"allow","expression":"forbidden"}),
+    );
+    let lowered = lowered(graph);
+    let expected = Schema::builder()
+        .add(Field::string(field_key!("name")).required().no_expression())
+        .add(Field::boolean(field_key!("enabled")).required())
+        .add(
+            Field::integer(field_key!("count"))
+                .required()
+                .no_expression()
+                .min(0)
+                .max(10),
+        )
+        .build()
+        .unwrap();
+    assert_validation_equivalence(
+        &lowered,
+        &expected,
+        &[
+            json!({"name":"Ada","enabled":true,"count":0}),
+            json!({"name":"","enabled":true,"count":0}),
+            json!({"enabled":true,"count":0}),
+            json!({"name":"Ada","enabled":null,"count":0}),
+            json!({"name":"Ada","enabled":false,"count":11}),
+            json!({"name":"Ada","enabled":false,"count":1.5}),
+            json!({"name":"Ada","enabled":false,"count":1,"extra":[1]}),
+        ],
+    );
+}
+
+#[test]
+fn lower_rejects_optional_property_until_explicit_null_semantics_are_proven() {
+    let graph = document_with_root(
+        json!([
+            record("root", vec![optional_property("name", "text")]),
+            scalar("text", "string")
+        ]),
+        json!({"target":"root","null":"reject","expression":"forbidden"}),
+    )
+    .admit()
+    .unwrap();
+
+    let report = graph
+        .lower_to_valid_schema()
+        .expect_err("optional explicit-null ambiguity must fail closed");
+    assert_eq!(report_codes(&report), ["schema.graph.lower.occurrence"]);
+}
+
+#[test]
+fn lower_rejects_valid_but_unrepresentable_root_and_definition_shapes() {
+    let cases = [
+        (
+            document(
+                json!([{"key":"root","body":{"kind":"array","element":{"target":"leaf"}}}, scalar("leaf", "string")]),
+                "root",
+            ),
+            "schema.graph.lower.root_array",
+        ),
+        (
+            document(
+                json!([{"key":"root","body":{"kind":"bytes","encoding":"base64"}}]),
+                "root",
+            ),
+            "schema.graph.lower.bytes",
+        ),
+        (
+            document(
+                json!([{"key":"root","body":{"kind":"union","tagging":"external","variants":[{"key":"unit","payload":null}]}}]),
+                "root",
+            ),
+            "schema.graph.lower.union",
+        ),
+        (
+            document(
+                json!([{"key":"root","body":{"kind":"alias","alias":{"target":"leaf"}}}, scalar("leaf", "string")]),
+                "root",
+            ),
+            "schema.graph.lower.alias_body",
+        ),
+    ];
+    for (document, expected) in cases {
+        let report = document
+            .admit()
+            .expect("fixture admits")
+            .lower_to_valid_schema()
+            .expect_err("fixture must fail closed");
+        assert_eq!(report_codes(&report), [expected]);
+    }
+}
+
+#[test]
+fn lower_rejects_unproven_facets_with_specific_codes() {
+    let root_case = |root: Value| {
+        document_with_root(json!([scalar("root", "string")]), root)
+            .admit()
+            .unwrap()
+            .lower_to_valid_schema()
+            .unwrap_err()
+    };
+    assert_eq!(
+        report_codes(&root_case(
+            json!({"target":"root","null":"reject","protection":"secret_utf8"})
+        )),
+        ["schema.graph.lower.protection"]
+    );
+    assert_eq!(
+        report_codes(&root_case(
+            json!({"target":"root","null":"reject","accepted_domain":{"closed":["x"]}})
+        )),
+        ["schema.graph.lower.accepted_domain"]
+    );
+    assert_eq!(
+        report_codes(&root_case(
+            json!({"target":"root","null":"reject","rules":[{"min_length":1}]})
+        )),
+        ["schema.graph.lower.rules"]
+    );
+    assert_eq!(
+        report_codes(&root_case(
+            json!({"target":"root","null":"reject","transformers":[{"kind":"trim"}]})
+        )),
+        ["schema.graph.lower.transformers"]
+    );
+    assert_eq!(
+        report_codes(&root_case(
+            json!({"target":"root","null":"reject","expression":"allowed"})
+        )),
+        ["schema.graph.lower.expression"]
+    );
+
+    let mut with_default = property("name", "text");
+    with_default["input_default"] = json!("Ada");
+    let report = document_with_root(
+        json!([record("root", vec![with_default]), scalar("text", "string")]),
+        json!({"target":"root","null":"reject","expression":"forbidden"}),
+    )
+    .admit()
+    .unwrap()
+    .lower_to_valid_schema()
+    .unwrap_err();
+    assert_eq!(report_codes(&report), ["schema.graph.lower.default"]);
+
+    let mut conditional_presence = property("name", "text");
+    conditional_presence["presence"] = json!({"required_when":{"set":"/enabled"}});
+    let report = document_with_root(
+        json!([
+            record("root", vec![conditional_presence]),
+            scalar("text", "string")
+        ]),
+        json!({"target":"root","null":"reject","expression":"forbidden"}),
+    )
+    .admit()
+    .unwrap()
+    .lower_to_valid_schema()
+    .unwrap_err();
+    assert_eq!(report_codes(&report), ["schema.graph.lower.occurrence"]);
+
+    let report = document_with_root(
+        json!([{"key":"root","body":{"kind":"string","intrinsic_rules":[{"min_length":1}]}}]),
+        json!({"target":"root","null":"reject","expression":"forbidden"}),
+    )
+    .admit()
+    .unwrap()
+    .lower_to_valid_schema()
+    .unwrap_err();
+    assert_eq!(report_codes(&report), ["schema.graph.lower.rules"]);
+}
+
+#[test]
+fn lower_rejects_record_shapes_outside_the_exact_flat_scalar_subset() {
+    let cases = [
+        (
+            document_with_root(
+                json!([{"key":"root","body":{"kind":"record","properties":[],"additional_properties":"closed"}}]),
+                json!({"target":"root","null":"reject","expression":"forbidden"}),
+            ),
+            "schema.graph.lower.closed_additional_properties",
+        ),
+        (
+            document_with_root(
+                json!([{"key":"root","body":{"kind":"record","properties":[],"additional_properties":{"typed":{"target":"leaf"}}}}, scalar("leaf", "string")]),
+                json!({"target":"root","null":"reject","expression":"forbidden"}),
+            ),
+            "schema.graph.lower.typed_additional_properties",
+        ),
+        (
+            document_with_root(
+                json!([
+                    record("root", vec![property("child", "child")]),
+                    record("child", vec![])
+                ]),
+                json!({"target":"root","null":"reject","expression":"forbidden"}),
+            ),
+            "schema.graph.lower.nested_container",
+        ),
+    ];
+    for (document, expected) in cases {
+        let report = document
+            .admit()
+            .expect("fixture admits")
+            .lower_to_valid_schema()
+            .expect_err("fixture must fail closed");
+        assert_eq!(report_codes(&report), [expected]);
+    }
+}
+
+#[test]
+fn lower_rejects_reachable_recursive_graphs() {
+    let graph = document_with_root(
+        json!([record(
+            "root",
+            vec![{
+                let mut recursive = optional_property("next", "root");
+                recursive["null"] = json!("allow");
+                recursive
+            }]
+        )]),
+        json!({"target":"root","null":"reject","expression":"forbidden"}),
+    )
+    .admit()
+    .expect("nullable optional recursion admits");
+
+    let report = graph
+        .lower_to_valid_schema()
+        .expect_err("recursive admitted graph cannot lower to legacy record");
+    assert_eq!(
+        report_codes(&report),
+        ["schema.graph.lower.cycle_or_recursive"]
+    );
 }
