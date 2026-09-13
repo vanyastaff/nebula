@@ -188,6 +188,8 @@ pub mod commitment;
 pub mod compat;
 /// Builds the validator predicate context (visibility/required) from schema fields + values.
 pub mod context;
+/// Lossless semantic graph documents, admission, addresses, and commitments.
+pub mod definition;
 /// Directional schema newtypes (`InputSchema`/`OutputSchema`) — polarity-typed.
 pub mod directed;
 /// Error types for schema operations.
@@ -219,6 +221,7 @@ pub mod option;
 pub mod path;
 /// Common imports for schema-definition code.
 pub mod prelude;
+
 /// Pure schema-path / rule-reference parsing for lints and error merging.
 pub(crate) mod rule_ref;
 /// Top-level schema aggregate.
@@ -243,6 +246,13 @@ pub use commitment::{CommitmentId, CommitmentKey};
 pub use compat::{
     Assignability, SchemaIncompat, UnknownReason, explain_assignable, explain_field_assignable,
     explain_root_field_assignable,
+};
+pub use definition::{
+    AddressSpaceCommitment, AdmittedDeclarationAddress, AdmittedSchemaGraph, DeclarationAddress,
+    DeclarationUse, DefinitionKey, DefinitionMemberKey, MAX_GRAPH_CANONICAL_BYTES,
+    MAX_GRAPH_DEFINITIONS, MAX_GRAPH_DIAGNOSTICS, MAX_GRAPH_DOCUMENT_BYTES,
+    MAX_GRAPH_IDENTIFIER_BYTES, MAX_GRAPH_REFERENCES, SCHEMA_GRAPH_WIRE_VERSION,
+    SchemaAdmissionError, SchemaGraphDocument, SemanticCommitment,
 };
 pub use directed::{DirectedSchema, Input, InputSchema, Output, OutputSchema, Polarity};
 pub use error::{

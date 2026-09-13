@@ -1,0 +1,5 @@
+error[E0599]: no associated function or constant named `new` found for struct `AdmittedDeclarationAddress` in the current scope
+ --> tests/definition_compile_fail/admitted_address_construct.rs:4:41
+  |
+4 |     let _ = AdmittedDeclarationAddress::new(DeclarationUse::Root);
+  |                                         ^^^ associated function or constant not found in `AdmittedDeclarationAddress`
