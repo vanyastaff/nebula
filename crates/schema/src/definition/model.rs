@@ -88,8 +88,10 @@ pub(super) enum Body {
     String {
         intrinsic_rules: Vec<Rule>,
     },
+    Bytes,
     Record {
         properties: Vec<PropertyUse>,
+        additional_properties: AdditionalProperties,
         intrinsic_rules: Vec<Rule>,
     },
     Array(ArrayBody),
@@ -133,6 +135,8 @@ pub(super) struct UseSiteCore {
     pub(super) empty_string: EmptyPolicy,
     pub(super) empty_collection: EmptyPolicy,
     pub(super) expression: ExpressionMode,
+    pub(super) protection: ValueProtection,
+    pub(super) accepted_domain: AcceptedDomain,
     pub(super) rules: Vec<Rule>,
     pub(super) transformers: Vec<Transformer>,
 }
@@ -145,7 +149,30 @@ pub(super) struct PropertyUse {
     pub(super) key: FieldKey,
     pub(super) presence: PresencePolicy,
     pub(super) aliases: DirectionalAliases,
+    pub(super) input_default: Option<Value>,
     pub(super) core: UseSiteCore,
+}
+
+#[derive(Debug, Clone)]
+pub(super) enum AdditionalProperties {
+    Open,
+    Closed,
+    Typed(Box<UseSiteCore>),
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) enum ValueProtection {
+    #[default]
+    Public,
+    SecretUtf8,
+    SecretBytes,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(super) enum AcceptedDomain {
+    #[default]
+    Open,
+    Closed(Vec<Value>),
 }
 
 #[derive(Debug, Clone)]
@@ -198,6 +225,8 @@ pub(super) enum EdgeRole {
     Property = 2,
     Element = 3,
     VariantPayload = 4,
+    /// Typed dynamic record values have a frozen tag distinct from their canonical sort rank.
+    AdditionalProperty = 5,
 }
 
 #[derive(Debug, Clone)]
@@ -211,7 +240,8 @@ pub(super) struct Edge {
 impl Edge {
     pub(super) fn compare(left: &Self, right: &Self) -> Ordering {
         left.role
-            .cmp(&right.role)
+            .canonical_rank()
+            .cmp(&right.role.canonical_rank())
             .then_with(|| {
                 left.local_key
                     .as_ref()
@@ -219,6 +249,19 @@ impl Edge {
                     .cmp(&right.local_key.as_ref().map(FieldKey::as_str))
             })
             .then_with(|| left.ordinal.cmp(&right.ordinal))
+    }
+}
+
+impl EdgeRole {
+    const fn canonical_rank(self) -> u8 {
+        match self {
+            Self::Root => 0,
+            Self::Alias => 1,
+            Self::Property => 2,
+            Self::AdditionalProperty => 3,
+            Self::Element => 4,
+            Self::VariantPayload => 5,
+        }
     }
 }
 
@@ -243,6 +286,7 @@ pub(super) enum AdmissionIssue {
     InvalidRule,
     InvalidTransformer,
     InapplicableFacet,
+    InvalidDefault,
     CanonicalBytesLimit,
     DiagnosticsLimit,
     IndexOverflow,

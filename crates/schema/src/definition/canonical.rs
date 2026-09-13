@@ -112,8 +112,10 @@ fn write_body(
             bytes.u8(0x15)?;
             write_rules(bytes, intrinsic_rules)?;
         },
+        Body::Bytes => bytes.u8(0x1a)?,
         Body::Record {
             properties,
+            additional_properties,
             intrinsic_rules,
         } => {
             bytes.u8(0x16)?;
@@ -123,6 +125,13 @@ fn write_body(
                 bytes.string(property.key.as_str())?;
                 write_presence(bytes, &property.presence)?;
                 write_aliases(bytes, &property.aliases)?;
+                match &property.input_default {
+                    Some(value) => {
+                        bytes.u8(1)?;
+                        bytes.exact_json(value)?;
+                    },
+                    None => bytes.u8(0)?,
+                }
                 write_use(
                     bytes,
                     EdgeRole::Property,
@@ -131,6 +140,7 @@ fn write_body(
                     canonical_numbers,
                 )?;
             }
+            write_additional_properties(bytes, additional_properties, lookup, canonical_numbers)?;
         },
         Body::Array(array) => {
             bytes.u8(0x17)?;
@@ -223,8 +233,45 @@ fn write_use(
     write_empty_policy(bytes, &use_site.empty_string)?;
     write_empty_policy(bytes, &use_site.empty_collection)?;
     bytes.serializable(&use_site.expression)?;
+    bytes.u8(match use_site.protection {
+        super::model::ValueProtection::Public => 0,
+        super::model::ValueProtection::SecretUtf8 => 1,
+        super::model::ValueProtection::SecretBytes => 2,
+    })?;
+    match &use_site.accepted_domain {
+        super::model::AcceptedDomain::Open => bytes.u8(0)?,
+        super::model::AcceptedDomain::Closed(values) => {
+            bytes.u8(1)?;
+            bytes.count(values.len())?;
+            for value in values {
+                bytes.exact_json(value)?;
+            }
+        },
+    }
     write_rules(bytes, &use_site.rules)?;
     bytes.serializable(&use_site.transformers)
+}
+
+fn write_additional_properties(
+    bytes: &mut Writer,
+    policy: &super::model::AdditionalProperties,
+    lookup: &BTreeMap<super::DefinitionKey, DefinitionIndex>,
+    canonical_numbers: &[u32],
+) -> Result<(), AdmissionIssue> {
+    match policy {
+        super::model::AdditionalProperties::Open => bytes.u8(0),
+        super::model::AdditionalProperties::Closed => bytes.u8(1),
+        super::model::AdditionalProperties::Typed(core) => {
+            bytes.u8(2)?;
+            write_use(
+                bytes,
+                EdgeRole::AdditionalProperty,
+                core,
+                lookup,
+                canonical_numbers,
+            )
+        },
+    }
 }
 
 fn write_presence(
@@ -415,6 +462,12 @@ fn canonical_json(value: &Value, output: &mut Vec<u8>) -> Result<(), AdmissionIs
     canonical_json_mode(value, output, true)
 }
 
+pub(super) fn exact_json_bytes(value: &Value) -> Result<Vec<u8>, AdmissionIssue> {
+    let mut output = Vec::new();
+    canonical_json_mode(value, &mut output, false)?;
+    Ok(output)
+}
+
 fn canonical_json_mode(
     value: &Value,
     output: &mut Vec<u8>,
@@ -484,8 +537,30 @@ mod tests {
                 EdgeRole::Property as u8,
                 EdgeRole::Element as u8,
                 EdgeRole::VariantPayload as u8,
+                EdgeRole::AdditionalProperty as u8,
             ],
-            [0, 1, 2, 3, 4]
+            [0, 1, 2, 3, 4, 5]
+        );
+
+        let edge = |role| Edge {
+            role,
+            local_key: None,
+            ordinal: 0,
+            target: super::super::DefinitionKey::new("target").expect("valid fixture key"),
+        };
+        let mut edges = [
+            edge(EdgeRole::Element),
+            edge(EdgeRole::AdditionalProperty),
+            edge(EdgeRole::Property),
+        ];
+        edges.sort_unstable_by(Edge::compare);
+        assert_eq!(
+            edges.map(|edge| edge.role),
+            [
+                EdgeRole::Property,
+                EdgeRole::AdditionalProperty,
+                EdgeRole::Element
+            ]
         );
     }
 }

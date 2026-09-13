@@ -26,6 +26,7 @@ mod error;
 mod model;
 mod number;
 mod rule_canonical;
+mod view;
 
 pub use admission::{
     AdmittedDeclarationAddress, AdmittedSchemaGraph, DeclarationAddress, DeclarationUse,

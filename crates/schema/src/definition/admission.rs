@@ -1,4 +1,5 @@
 use std::{
+    cmp::Ordering,
     collections::{BTreeMap, HashSet, VecDeque},
     fmt,
     sync::Arc,
@@ -6,22 +7,23 @@ use std::{
 
 use serde_json::{Map, Value};
 
-use nebula_validator::{Rule, RuleRef, RuleView, ValueRule};
+use nebula_validator::{DiagnosticDisclosure, ExecutionMode, Rule, RuleRef, RuleView, ValueRule};
 
 use crate::{ExpressionMode, FieldKey, SerdeTagging, ValidationError, ValidationReport};
 
 use super::{
     MAX_GRAPH_DEFINITIONS, MAX_GRAPH_DIAGNOSTICS, MAX_GRAPH_IDENTIFIER_BYTES, MAX_GRAPH_REFERENCES,
     SCHEMA_GRAPH_WIRE_VERSION,
-    canonical::{AddressSpaceCommitment, SemanticCommitment, commitments},
+    canonical::{AddressSpaceCommitment, SemanticCommitment, commitments, exact_json_bytes},
     document::SchemaGraphDocument,
     error::SchemaAdmissionError,
     model::{
-        AdmissionDiagnostic, AdmissionIssue, AdmissionLocation, AliasUse, ArrayBody, Body,
-        Definition, DefinitionIndex, DefinitionKey, DefinitionLookup, DirectionalAliases,
-        DraftGraph, Edge, EdgeRole, ElementUse, EmptyPolicy, NullPolicy, NumericBody, PayloadUse,
-        PresencePolicy, PropertyUse, RootUse, SelectorNormalization, UnionBody, UseSiteCore,
-        VariantUse, check_members, object, parse_field_key, parse_rules, parse_transformers,
+        AcceptedDomain, AdditionalProperties, AdmissionDiagnostic, AdmissionIssue,
+        AdmissionLocation, AliasUse, ArrayBody, Body, Definition, DefinitionIndex, DefinitionKey,
+        DefinitionLookup, DirectionalAliases, DraftGraph, Edge, EdgeRole, ElementUse, EmptyPolicy,
+        NullPolicy, NumericBody, PayloadUse, PresencePolicy, PropertyUse, RootUse,
+        SelectorNormalization, UnionBody, UseSiteCore, ValueProtection, VariantUse, check_members,
+        object, parse_field_key, parse_rules, parse_transformers,
     },
     number::compare_numbers,
 };
@@ -73,6 +75,8 @@ pub enum DeclarationUse {
     Alias,
     /// A record property use.
     Property(DefinitionMemberKey),
+    /// The typed value use for undeclared keys in a record.
+    AdditionalProperty,
     /// An array element use.
     Element,
     /// A unit union variant declaration.
@@ -163,9 +167,10 @@ impl AdmittedDeclarationAddress {
     }
 }
 
-struct AdmittedGraph {
-    graph: DraftGraph,
-    lookup: DefinitionLookup,
+pub(super) struct AdmittedGraph {
+    pub(super) graph: DraftGraph,
+    pub(super) lookup: DefinitionLookup,
+    pub(super) canonical_numbers: Vec<u32>,
     semantic_commitment: SemanticCommitment,
     address_space_commitment: AddressSpaceCommitment,
     reference_count: usize,
@@ -173,7 +178,7 @@ struct AdmittedGraph {
 
 /// An opaque graph admitted for future `ValidSchema` custody.
 #[derive(Clone)]
-pub struct AdmittedSchemaGraph(Arc<AdmittedGraph>);
+pub struct AdmittedSchemaGraph(pub(super) Arc<AdmittedGraph>);
 
 impl fmt::Debug for AdmittedSchemaGraph {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -309,6 +314,7 @@ fn admit_inner(raw: &Value) -> Result<AdmittedGraph, AdmissionFailure> {
     Ok(AdmittedGraph {
         graph,
         lookup,
+        canonical_numbers,
         semantic_commitment,
         address_space_commitment,
         reference_count,
@@ -403,6 +409,13 @@ fn parse_body(body: &Map<String, Value>) -> Result<Body, AdmissionIssue> {
                 intrinsic_rules: parse_rules(body.get("intrinsic_rules"))?,
             })
         },
+        "bytes" => {
+            check_members(body, &["kind", "encoding"])?;
+            if body.get("encoding").and_then(Value::as_str) != Some("base64") {
+                return Err(AdmissionIssue::InvalidDocument);
+            }
+            Ok(Body::Bytes)
+        },
         "record" => parse_record(body),
         "array" => parse_array(body),
         "union" => parse_union(body),
@@ -434,7 +447,15 @@ fn parse_number(value: &Value) -> Result<serde_json::Number, AdmissionIssue> {
 }
 
 fn parse_record(body: &Map<String, Value>) -> Result<Body, AdmissionIssue> {
-    check_members(body, &["kind", "properties", "intrinsic_rules"])?;
+    check_members(
+        body,
+        &[
+            "kind",
+            "properties",
+            "additional_properties",
+            "intrinsic_rules",
+        ],
+    )?;
     let properties = body
         .get("properties")
         .and_then(Value::as_array)
@@ -445,8 +466,30 @@ fn parse_record(body: &Map<String, Value>) -> Result<Body, AdmissionIssue> {
         .collect::<Result<Vec<_>, _>>()?;
     Ok(Body::Record {
         properties,
+        additional_properties: parse_additional_properties(body.get("additional_properties"))?,
         intrinsic_rules: parse_rules(body.get("intrinsic_rules"))?,
     })
+}
+
+fn parse_additional_properties(
+    value: Option<&Value>,
+) -> Result<AdditionalProperties, AdmissionIssue> {
+    let Some(value) = value else {
+        return Ok(AdditionalProperties::Open);
+    };
+    match value.as_str() {
+        Some("open") => Ok(AdditionalProperties::Open),
+        Some("closed") => Ok(AdditionalProperties::Closed),
+        Some(_) => Err(AdmissionIssue::InvalidDocument),
+        None => {
+            let policy = object(value)?;
+            check_members(policy, &["typed"])?;
+            let typed = object(policy.get("typed").ok_or(AdmissionIssue::InvalidDocument)?)?;
+            parse_use(typed, &["target"])
+                .map(Box::new)
+                .map(AdditionalProperties::Typed)
+        },
+    }
 }
 
 fn parse_property(value: &Value) -> Result<PropertyUse, AdmissionIssue> {
@@ -464,6 +507,9 @@ fn parse_property(value: &Value) -> Result<PropertyUse, AdmissionIssue> {
             "rules",
             "transformers",
             "aliases",
+            "input_default",
+            "protection",
+            "accepted_domain",
         ],
     )?;
     let key = parse_field_key(property.get("key").ok_or(AdmissionIssue::InvalidDocument)?)?;
@@ -473,7 +519,8 @@ fn parse_property(value: &Value) -> Result<PropertyUse, AdmissionIssue> {
         key,
         presence,
         aliases,
-        core: parse_use(property, &["key", "presence", "aliases"])?,
+        input_default: property.get("input_default").map(canonical_literal),
+        core: parse_use(property, &["key", "presence", "aliases", "input_default"])?,
     })
 }
 
@@ -622,6 +669,8 @@ fn parse_use(
         "expression",
         "rules",
         "transformers",
+        "protection",
+        "accepted_domain",
     ];
     known.extend_from_slice(role_fields);
     check_members(object, &known)?;
@@ -638,15 +687,78 @@ fn parse_use(
         .map_or(Ok(ExpressionMode::Forbidden), |value| {
             serde_json::from_value(value.clone()).map_err(|_| AdmissionIssue::InvalidDocument)
         })?;
+    let protection = parse_protection(object.get("protection"))?;
+    let accepted_domain = parse_accepted_domain(object.get("accepted_domain"))?;
     Ok(UseSiteCore {
         target,
         null,
         empty_string,
         empty_collection,
         expression,
+        protection,
+        accepted_domain,
         rules: parse_rules(object.get("rules"))?,
         transformers: parse_transformers(object.get("transformers"))?,
     })
+}
+
+fn parse_protection(value: Option<&Value>) -> Result<ValueProtection, AdmissionIssue> {
+    match value.and_then(Value::as_str) {
+        None if value.is_none() => Ok(ValueProtection::Public),
+        Some("public") => Ok(ValueProtection::Public),
+        Some("secret_utf8") => Ok(ValueProtection::SecretUtf8),
+        Some("secret_bytes") => Ok(ValueProtection::SecretBytes),
+        _ => Err(AdmissionIssue::InvalidDocument),
+    }
+}
+
+fn parse_accepted_domain(value: Option<&Value>) -> Result<AcceptedDomain, AdmissionIssue> {
+    let Some(value) = value else {
+        return Ok(AcceptedDomain::Open);
+    };
+    if value.as_str() == Some("open") {
+        return Ok(AcceptedDomain::Open);
+    }
+    let domain = object(value)?;
+    check_members(domain, &["closed"])?;
+    let values = domain
+        .get("closed")
+        .and_then(Value::as_array)
+        .ok_or(AdmissionIssue::InvalidDocument)?;
+    if values.is_empty() {
+        return Err(AdmissionIssue::InvalidBounds);
+    }
+    let mut values = values
+        .iter()
+        .map(|value| {
+            let value = canonical_literal(value);
+            exact_json_bytes(&value).map(|encoded| (encoded, value))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    values.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+    if values.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+        return Err(AdmissionIssue::InvalidBounds);
+    }
+    Ok(AcceptedDomain::Closed(
+        values.into_iter().map(|(_, value)| value).collect(),
+    ))
+}
+
+fn canonical_literal(value: &Value) -> Value {
+    match value {
+        Value::Array(values) => Value::Array(values.iter().map(canonical_literal).collect()),
+        Value::Object(values) => {
+            let mut entries = values.iter().collect::<Vec<_>>();
+            entries.sort_unstable_by(|left, right| left.0.cmp(right.0));
+            Value::Object(
+                entries
+                    .into_iter()
+                    .map(|(key, value)| (key.clone(), canonical_literal(value)))
+                    .collect(),
+            )
+        },
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => value.clone(),
+    }
 }
 
 fn parse_null(value: Option<&Value>) -> Result<NullPolicy, AdmissionIssue> {
@@ -864,6 +976,7 @@ fn additional_identifier_bytes(body: &Body) -> Result<usize, AdmissionIssue> {
         | Body::Integer(_)
         | Body::Number(_)
         | Body::String { .. }
+        | Body::Bytes
         | Body::Array(_)
         | Body::Alias(_) => {},
     }
@@ -1005,26 +1118,46 @@ fn body_shape(
             can_be_empty_collection: true,
             can_be_other: true,
         }),
-        Body::Boolean { .. } | Body::Integer(_) | Body::Number(_) | Body::String { .. } => {
-            Ok(StructuralShape {
-                can_be_other: true,
-                ..StructuralShape::default()
-            })
-        },
-        Body::Record { properties, .. } => {
+        Body::Boolean { .. }
+        | Body::Integer(_)
+        | Body::Number(_)
+        | Body::String { .. }
+        | Body::Bytes => Ok(StructuralShape {
+            can_be_other: true,
+            ..StructuralShape::default()
+        }),
+        Body::Record {
+            properties,
+            additional_properties,
+            ..
+        } => {
             let mut required_paths_productive = true;
             let mut has_required_property = false;
+            let mut has_productive_property = false;
             for property in properties {
                 let property_shape = occurrence_shape(&property.core, lookup, shapes)?;
-                if presence_is_always_required(&property.presence)? {
+                has_productive_property |= property_shape.is_productive();
+                if presence_is_always_required(&property.presence)?
+                    || property.input_default.is_some()
+                {
                     has_required_property = true;
                     required_paths_productive &= property_shape.is_productive();
                 }
             }
+            let dynamic_property_productive = match additional_properties {
+                AdditionalProperties::Open => true,
+                AdditionalProperties::Closed => false,
+                AdditionalProperties::Typed(core) => {
+                    occurrence_shape(core, lookup, shapes)?.is_productive()
+                },
+            };
             Ok(StructuralShape {
                 can_be_null: false,
                 can_be_empty_collection: required_paths_productive && !has_required_property,
-                can_be_other: required_paths_productive,
+                can_be_other: required_paths_productive
+                    && (has_required_property
+                        || has_productive_property
+                        || dynamic_property_productive),
             })
         },
         Body::Array(array) => Ok(StructuralShape {
@@ -1173,6 +1306,9 @@ fn check_facet_applicability(
                 if let PresencePolicy::RequiredWhen(rule) = &property.presence {
                     check_condition(rule)?;
                 }
+                if let Some(default) = &property.input_default {
+                    check_input_default(graph, lookup, property, default)?;
+                }
             }
         }
         match &definition.body {
@@ -1241,15 +1377,35 @@ fn check_use_facets(
     let needs_target = !matches!(core.empty_string, EmptyPolicy::Allow)
         || !matches!(core.empty_collection, EmptyPolicy::Allow)
         || !core.transformers.is_empty()
-        || !core.rules.is_empty();
+        || !core.rules.is_empty()
+        || core.protection != ValueProtection::Public
+        || matches!(core.accepted_domain, AcceptedDomain::Closed(_));
     if !needs_target {
         return Ok(());
     }
     let target = resolved_body(graph, lookup, &core.target)?;
+    match core.protection {
+        ValueProtection::Public => {},
+        ValueProtection::SecretUtf8 if matches!(target, Body::String { .. }) => {},
+        ValueProtection::SecretBytes if matches!(target, Body::Bytes) => {},
+        ValueProtection::SecretUtf8 | ValueProtection::SecretBytes => {
+            return Err(AdmissionIssue::InapplicableFacet);
+        },
+    }
+    if let AcceptedDomain::Closed(values) = &core.accepted_domain {
+        if occurrence_contains_protected(graph, lookup, core)? || matches!(target, Body::Bytes) {
+            return Err(AdmissionIssue::InapplicableFacet);
+        }
+        for value in values {
+            if !literal_matches_use(graph, lookup, core, value, LiteralPurpose::AcceptedDomain)? {
+                return Err(AdmissionIssue::InapplicableFacet);
+            }
+        }
+    }
     if matches!(
         core.empty_string,
         EmptyPolicy::Reject | EmptyPolicy::RejectWhen(_)
-    ) && !matches!(target, Body::String { .. })
+    ) && !matches!(target, Body::String { .. } | Body::Bytes)
     {
         return Err(AdmissionIssue::InapplicableFacet);
     }
@@ -1265,6 +1421,397 @@ fn check_use_facets(
     }
     check_rules(&core.rules, target, false)?;
     Ok(())
+}
+
+fn check_input_default(
+    graph: &DraftGraph,
+    lookup: &DefinitionLookup,
+    property: &PropertyUse,
+    default: &Value,
+) -> Result<(), AdmissionIssue> {
+    if property.core.expression == ExpressionMode::Required
+        || occurrence_contains_protected(graph, lookup, &property.core)?
+        || !literal_matches_use(
+            graph,
+            lookup,
+            &property.core,
+            default,
+            LiteralPurpose::InputDefault,
+        )?
+    {
+        return Err(AdmissionIssue::InvalidDefault);
+    }
+    Ok(())
+}
+
+fn occurrence_contains_protected(
+    graph: &DraftGraph,
+    lookup: &DefinitionLookup,
+    core: &UseSiteCore,
+) -> Result<bool, AdmissionIssue> {
+    if core.protection != ValueProtection::Public {
+        return Ok(true);
+    }
+    let root = *lookup
+        .get(&core.target)
+        .ok_or(AdmissionIssue::DanglingReference)?;
+    let mut visited = vec![false; graph.definitions.len()];
+    let mut pending = vec![root];
+    while let Some(index) = pending.pop() {
+        if visited[index.0] {
+            continue;
+        }
+        visited[index.0] = true;
+        for edge in graph.definitions[index.0].edges()? {
+            let edge_core = graph.definitions[index.0]
+                .use_for_edge(&edge)
+                .ok_or(AdmissionIssue::InvalidDocument)?;
+            if edge_core.protection != ValueProtection::Public {
+                return Ok(true);
+            }
+            pending.push(
+                *lookup
+                    .get(&edge.target)
+                    .ok_or(AdmissionIssue::DanglingReference)?,
+            );
+        }
+    }
+    Ok(false)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LiteralPurpose {
+    AcceptedDomain,
+    InputDefault,
+}
+
+fn literal_matches_use(
+    graph: &DraftGraph,
+    lookup: &DefinitionLookup,
+    core: &UseSiteCore,
+    value: &Value,
+    purpose: LiteralPurpose,
+) -> Result<bool, AdmissionIssue> {
+    if !literal_matches_use_facets(core, value, purpose)? {
+        return Ok(false);
+    }
+    let mut current = *lookup
+        .get(&core.target)
+        .ok_or(AdmissionIssue::DanglingReference)?;
+    let mut visited = vec![false; graph.definitions.len()];
+    loop {
+        if visited[current.0] {
+            return Err(AdmissionIssue::NonproductiveDefinition);
+        }
+        visited[current.0] = true;
+        let body = &graph.definitions[current.0].body;
+        if let Body::Alias(alias) = body {
+            if !literal_matches_use_facets(&alias.0, value, purpose)? {
+                return Ok(false);
+            }
+            current = *lookup
+                .get(&alias.0.target)
+                .ok_or(AdmissionIssue::DanglingReference)?;
+            continue;
+        }
+        return literal_matches_body(graph, lookup, body, value, purpose);
+    }
+}
+
+fn literal_matches_use_facets(
+    core: &UseSiteCore,
+    value: &Value,
+    purpose: LiteralPurpose,
+) -> Result<bool, AdmissionIssue> {
+    Ok(
+        !(purpose == LiteralPurpose::InputDefault && core.expression == ExpressionMode::Required)
+            && literal_matches_occurrence_policies(core, value)?
+            && !matches!(&core.accepted_domain, AcceptedDomain::Closed(values) if !values.contains(value))
+            && rules_accept(&core.rules, value)?,
+    )
+}
+
+fn literal_matches_occurrence_policies(
+    core: &UseSiteCore,
+    value: &Value,
+) -> Result<bool, AdmissionIssue> {
+    if value.is_null() {
+        return Ok(matches!(core.null, NullPolicy::Allow));
+    }
+    if value.as_str() == Some("") && !matches!(core.empty_string, EmptyPolicy::Allow) {
+        return Ok(false);
+    }
+    if matches!(value, Value::Array(values) if values.is_empty())
+        || matches!(value, Value::Object(values) if values.is_empty())
+    {
+        return Ok(matches!(core.empty_collection, EmptyPolicy::Allow));
+    }
+    Ok(true)
+}
+
+fn literal_matches_body(
+    graph: &DraftGraph,
+    lookup: &DefinitionLookup,
+    body: &Body,
+    value: &Value,
+    purpose: LiteralPurpose,
+) -> Result<bool, AdmissionIssue> {
+    let shape_matches = match body {
+        Body::Any => true,
+        Body::Null => value.is_null(),
+        Body::Boolean { .. } => value.is_boolean(),
+        Body::Integer(number) => {
+            value
+                .as_number()
+                .is_some_and(|value| value.is_i64() || value.is_u64())
+                && numeric_value_in_bounds(value, number)?
+        },
+        Body::Number(number) => value.is_number() && numeric_value_in_bounds(value, number)?,
+        Body::String { .. } => value.is_string(),
+        Body::Bytes => value.as_str().is_some_and(is_canonical_base64),
+        Body::Record {
+            properties,
+            additional_properties,
+            ..
+        } => record_literal_matches(
+            graph,
+            lookup,
+            properties,
+            additional_properties,
+            value,
+            purpose,
+        )?,
+        Body::Array(array) => array_literal_matches(graph, lookup, array, value, purpose)?,
+        Body::Union(union) => union_literal_matches(graph, lookup, union, value, purpose)?,
+        Body::Alias(_) => return Err(AdmissionIssue::InvalidDocument),
+    };
+    Ok(shape_matches && rules_accept(intrinsic_rules(body), value)?)
+}
+
+fn intrinsic_rules(body: &Body) -> &[Rule] {
+    match body {
+        Body::Boolean { intrinsic_rules } | Body::String { intrinsic_rules } => intrinsic_rules,
+        Body::Integer(number) | Body::Number(number) => &number.intrinsic_rules,
+        Body::Record {
+            intrinsic_rules, ..
+        } => intrinsic_rules,
+        Body::Array(array) => &array.intrinsic_rules,
+        Body::Any | Body::Null | Body::Bytes | Body::Union(_) | Body::Alias(_) => &[],
+    }
+}
+
+fn numeric_value_in_bounds(value: &Value, body: &NumericBody) -> Result<bool, AdmissionIssue> {
+    let Some(value) = value.as_number() else {
+        return Ok(false);
+    };
+    if let Some(minimum) = &body.minimum
+        && compare_numbers(value, minimum)? == Ordering::Less
+    {
+        return Ok(false);
+    }
+    if let Some(maximum) = &body.maximum
+        && compare_numbers(value, maximum)? == Ordering::Greater
+    {
+        return Ok(false);
+    }
+    Ok(true)
+}
+
+fn record_literal_matches(
+    graph: &DraftGraph,
+    lookup: &DefinitionLookup,
+    properties: &[PropertyUse],
+    additional_properties: &AdditionalProperties,
+    value: &Value,
+    purpose: LiteralPurpose,
+) -> Result<bool, AdmissionIssue> {
+    let Some(object) = value.as_object() else {
+        return Ok(false);
+    };
+    for property in properties {
+        match object.get(property.key.as_str()) {
+            Some(value) if !literal_matches_use(graph, lookup, &property.core, value, purpose)? => {
+                return Ok(false);
+            },
+            None if matches!(property.presence, PresencePolicy::Required)
+                && property.input_default.is_none() =>
+            {
+                return Ok(false);
+            },
+            Some(_) | None => {},
+        }
+    }
+    for (key, value) in object {
+        if properties
+            .iter()
+            .any(|property| property.key.as_str() == key)
+        {
+            continue;
+        }
+        match additional_properties {
+            AdditionalProperties::Open => {},
+            AdditionalProperties::Closed => return Ok(false),
+            AdditionalProperties::Typed(core)
+                if literal_matches_use(graph, lookup, core, value, purpose)? => {},
+            AdditionalProperties::Typed(_) => return Ok(false),
+        }
+    }
+    Ok(true)
+}
+
+fn array_literal_matches(
+    graph: &DraftGraph,
+    lookup: &DefinitionLookup,
+    array: &ArrayBody,
+    value: &Value,
+    purpose: LiteralPurpose,
+) -> Result<bool, AdmissionIssue> {
+    let Some(values) = value.as_array() else {
+        return Ok(false);
+    };
+    let len = u64::try_from(values.len()).map_err(|_| AdmissionIssue::IndexOverflow)?;
+    if len < u64::from(array.min_items)
+        || array
+            .max_items
+            .is_some_and(|maximum| len > u64::from(maximum))
+        || array.unique
+            && values
+                .iter()
+                .enumerate()
+                .any(|(index, value)| values[..index].contains(value))
+    {
+        return Ok(false);
+    }
+    for value in values {
+        if !literal_matches_use(graph, lookup, &array.element.0, value, purpose)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn union_literal_matches(
+    graph: &DraftGraph,
+    lookup: &DefinitionLookup,
+    union: &UnionBody,
+    value: &Value,
+    purpose: LiteralPurpose,
+) -> Result<bool, AdmissionIssue> {
+    match &union.tagging {
+        SerdeTagging::External => match value {
+            Value::String(selector) => Ok(union
+                .variants
+                .iter()
+                .any(|variant| variant.key.as_str() == selector && variant.payload.is_none())),
+            Value::Object(object) if object.len() == 1 => {
+                let Some((selector, payload_value)) = object.iter().next() else {
+                    return Ok(false);
+                };
+                let Some(payload) = union
+                    .variants
+                    .iter()
+                    .find(|variant| variant.key.as_str() == selector)
+                    .and_then(|variant| variant.payload.as_ref())
+                else {
+                    return Ok(false);
+                };
+                literal_matches_use(graph, lookup, &payload.0, payload_value, purpose)
+            },
+            Value::Null
+            | Value::Bool(_)
+            | Value::Number(_)
+            | Value::Array(_)
+            | Value::Object(_) => Ok(false),
+        },
+        SerdeTagging::Adjacent { tag, content } => {
+            let Some(object) = value.as_object() else {
+                return Ok(false);
+            };
+            let Some(selector) = object.get(tag).and_then(Value::as_str) else {
+                return Ok(false);
+            };
+            let Some(variant) = union
+                .variants
+                .iter()
+                .find(|variant| variant.key.as_str() == selector)
+            else {
+                return Ok(false);
+            };
+            match &variant.payload {
+                Some(payload) => {
+                    let Some(value) = object.get(content) else {
+                        return Ok(false);
+                    };
+                    literal_matches_use(graph, lookup, &payload.0, value, purpose)
+                },
+                None => Ok(!object.contains_key(content)),
+            }
+        },
+    }
+}
+
+fn rules_accept(rules: &[Rule], value: &Value) -> Result<bool, AdmissionIssue> {
+    for rule in rules {
+        let mut pending = vec![rule.root()];
+        while let Some(current) = pending.pop() {
+            match current.view() {
+                RuleView::Value(_) => {},
+                RuleView::All(children) | RuleView::Any(children) => pending.extend(children),
+                RuleView::Not(inner) | RuleView::Described { inner, .. } => pending.push(inner),
+                RuleView::Predicate(_) | RuleView::Deferred(_) => return Ok(false),
+                _ => return Err(AdmissionIssue::InvalidRule),
+            }
+        }
+        if rule
+            .validate(
+                value,
+                None,
+                ExecutionMode::StaticOnly,
+                DiagnosticDisclosure::OmitValue,
+            )
+            .and_then(nebula_validator::EvaluationOutcome::require_satisfied)
+            .is_err()
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn is_canonical_base64(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if !bytes.len().is_multiple_of(4) {
+        return false;
+    }
+    if bytes.is_empty() {
+        return true;
+    }
+    let padding = usize::from(bytes.ends_with(b"=")) + usize::from(bytes.ends_with(b"=="));
+    let payload_len = bytes.len() - padding;
+    if bytes[..payload_len]
+        .iter()
+        .any(|byte| base64_value(*byte).is_none())
+        || bytes[payload_len..].iter().any(|byte| *byte != b'=')
+    {
+        return false;
+    }
+    match padding {
+        0 => true,
+        1 => base64_value(bytes[payload_len - 1]).is_some_and(|value| value.trailing_zeros() >= 2),
+        2 => base64_value(bytes[payload_len - 1]).is_some_and(|value| value.trailing_zeros() >= 4),
+        _ => false,
+    }
+}
+
+fn base64_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'A'..=b'Z' => Some(byte - b'A'),
+        b'a'..=b'z' => Some(byte - b'a' + 26),
+        b'0'..=b'9' => Some(byte - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    }
 }
 
 fn check_condition(rule: &Rule) -> Result<(), AdmissionIssue> {
@@ -1291,7 +1838,7 @@ fn check_intrinsic_rules(body: &Body) -> Result<(), AdmissionIssue> {
             intrinsic_rules, ..
         } => intrinsic_rules,
         Body::Array(array) => &array.intrinsic_rules,
-        Body::Any | Body::Null | Body::Union(_) | Body::Alias(_) => return Ok(()),
+        Body::Any | Body::Null | Body::Bytes | Body::Union(_) | Body::Alias(_) => return Ok(()),
     };
     check_rules(rules, body, true)
 }
@@ -1351,6 +1898,7 @@ fn value_matches_body(value: &Value, body: &Body) -> bool {
             .is_some_and(|number| number.is_i64() || number.is_u64()),
         Body::Number(_) => value.is_number(),
         Body::String { .. } => value.is_string(),
+        Body::Bytes => value.as_str().is_some_and(is_canonical_base64),
         Body::Record { .. } => value.is_object(),
         Body::Array(_) => value.is_array(),
         Body::Union(_) | Body::Alias(_) => true,
@@ -1435,6 +1983,15 @@ fn address_exists(
         DeclarationUse::Property(key) => {
             matches!(&graph.definitions[definition.0].body, Body::Record { properties, .. } if properties.iter().any(|property| property.key.as_str() == key.as_str()))
         },
+        DeclarationUse::AdditionalProperty => {
+            matches!(
+                &graph.definitions[definition.0].body,
+                Body::Record {
+                    additional_properties: AdditionalProperties::Typed(_),
+                    ..
+                }
+            )
+        },
         DeclarationUse::Element => matches!(graph.definitions[definition.0].body, Body::Array(_)),
         DeclarationUse::Variant(key) => {
             matches!(&graph.definitions[definition.0].body, Body::Union(union) if union.variants.iter().any(|variant| variant.key.as_str() == key.as_str()))
@@ -1449,7 +2006,11 @@ impl Definition {
     pub(super) fn edges(&self) -> Result<Vec<Edge>, AdmissionIssue> {
         let mut edges = Vec::new();
         match &self.body {
-            Body::Record { properties, .. } => {
+            Body::Record {
+                properties,
+                additional_properties,
+                ..
+            } => {
                 for (ordinal, property) in properties.iter().enumerate() {
                     edges.push(Edge {
                         role: EdgeRole::Property,
@@ -1457,6 +2018,14 @@ impl Definition {
                         ordinal: u32::try_from(ordinal)
                             .map_err(|_| AdmissionIssue::IndexOverflow)?,
                         target: property.core.target.clone(),
+                    });
+                }
+                if let AdditionalProperties::Typed(core) = additional_properties {
+                    edges.push(Edge {
+                        role: EdgeRole::AdditionalProperty,
+                        local_key: None,
+                        ordinal: 0,
+                        target: core.target.clone(),
                     });
                 }
             },
@@ -1490,7 +2059,7 @@ impl Definition {
         Ok(edges)
     }
 
-    fn use_for_edge(&self, edge: &Edge) -> Option<&UseSiteCore> {
+    pub(super) fn use_for_edge(&self, edge: &Edge) -> Option<&UseSiteCore> {
         match (&self.body, edge.role) {
             (Body::Record { properties, .. }, EdgeRole::Property) => properties
                 .iter()
@@ -1500,6 +2069,13 @@ impl Definition {
                         .is_some_and(|key| key == &property.key)
                 })
                 .map(|property| &property.core),
+            (
+                Body::Record {
+                    additional_properties: AdditionalProperties::Typed(core),
+                    ..
+                },
+                EdgeRole::AdditionalProperty,
+            ) => Some(core),
             (Body::Array(array), EdgeRole::Element) => Some(&array.element.0),
             (Body::Union(union), EdgeRole::VariantPayload) => union
                 .variants
@@ -1596,6 +2172,10 @@ impl AdmissionDiagnostic {
                 "schema.graph.inapplicable_facet",
                 "schema graph applies a facet to an incompatible body",
             ),
+            AdmissionIssue::InvalidDefault => (
+                "schema.graph.invalid_default",
+                "schema graph contains an invalid input default",
+            ),
             AdmissionIssue::CanonicalBytesLimit => (
                 "schema.graph.canonical_bytes_limit",
                 "schema graph exceeds the canonical byte limit",
@@ -1635,6 +2215,7 @@ impl EdgeRole {
             Self::Root => "root",
             Self::Alias => "alias",
             Self::Property => "property",
+            Self::AdditionalProperty => "additional_property",
             Self::Element => "element",
             Self::VariantPayload => "variant_payload",
         }

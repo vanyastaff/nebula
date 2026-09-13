@@ -206,6 +206,26 @@ fn admission_diagnostics_are_deterministic_for_structural_failures() {
 }
 
 #[test]
+fn typed_additional_property_with_dangling_target_reports_dangling_reference() {
+    let graph = document(
+        json!([{
+            "key":"root",
+            "body":{
+                "kind":"record",
+                "properties":[],
+                "additional_properties":{"typed":{"target":"missing"}}
+            }
+        }]),
+        "root",
+    );
+
+    let error = graph
+        .admit()
+        .expect_err("typed additional property target must resolve");
+    assert_eq!(codes(&error), ["schema.graph.dangling_reference"]);
+}
+
+#[test]
 fn diagnostic_budget_accepts_exact_limit_and_marks_one_over() {
     let graph = |dangling: usize| {
         let properties = (0..dangling)
@@ -1530,6 +1550,7 @@ fn semantic_commitment_has_an_independent_numeric_and_equality_framing_oracle() 
     expected.extend_from_slice(&0_u32.to_be_bytes());
     expected.extend_from_slice(&[0, 0, 0]);
     append_bytes(&mut expected, br#""forbidden""#);
+    expected.extend_from_slice(&[0, 0]);
     expected.extend_from_slice(&0_u32.to_be_bytes());
     append_bytes(&mut expected, b"[]");
     expected.extend_from_slice(&1_u32.to_be_bytes());
@@ -1556,4 +1577,522 @@ fn semantic_commitment_has_an_independent_numeric_and_equality_framing_oracle() 
         "root",
     );
     assert_ne!(actual, admitted(distinct_equality).0);
+}
+
+#[test]
+fn protection_is_exact_use_site_semantics_and_allows_public_secret_reuse() {
+    let reused = |protection: &str| {
+        let mut secret = property("secret", "text");
+        secret["protection"] = json!(protection);
+        document(
+            json!([
+                record("root", vec![property("public", "text"), secret]),
+                scalar("text", "string")
+            ]),
+            "root",
+        )
+    };
+    let public = admitted(reused("public"));
+    let secret = admitted(reused("secret_utf8"));
+    assert_ne!(public.0, secret.0);
+    assert_eq!(public.1, secret.1);
+
+    for (protection, target) in [
+        ("secret_utf8", "number"),
+        ("secret_bytes", "string"),
+        ("secret_utf8", "bytes"),
+    ] {
+        let mut protected = property("value", "leaf");
+        protected["protection"] = json!(protection);
+        let leaf = if target == "bytes" {
+            json!({"key":"leaf","body":{"kind":"bytes","encoding":"base64"}})
+        } else {
+            scalar("leaf", target)
+        };
+        assert_eq!(
+            codes(
+                &document(json!([record("root", vec![protected]), leaf]), "root")
+                    .admit()
+                    .unwrap_err()
+            ),
+            ["schema.graph.inapplicable_facet"]
+        );
+    }
+
+    let body_secret = document(json!([{"key":"root","body":{"kind":"secret"}}]), "root");
+    assert_eq!(
+        codes(&body_secret.admit().unwrap_err()),
+        ["schema.graph.unknown_body"]
+    );
+
+    for (protection, terminal, admits) in [
+        ("secret_utf8", "string", true),
+        ("secret_utf8", "bytes", false),
+        ("secret_bytes", "bytes", true),
+        ("secret_bytes", "string", false),
+    ] {
+        let mut protected = property("value", "alias");
+        protected["protection"] = json!(protection);
+        let terminal = if terminal == "bytes" {
+            json!({"key":"terminal","body":{"kind":"bytes","encoding":"base64"}})
+        } else {
+            scalar("terminal", terminal)
+        };
+        let graph = document(
+            json!([
+                record("root", vec![protected]),
+                {"key":"alias","body":{"kind":"alias","alias":{"target":"terminal"}}},
+                terminal
+            ]),
+            "root",
+        );
+        assert_eq!(graph.admit().is_ok(), admits, "{protection}");
+    }
+}
+
+#[test]
+fn bytes_use_canonical_base64_and_file_reference_is_deferred() {
+    let bytes = document(
+        json!([{"key":"root","body":{"kind":"bytes","encoding":"base64"}}]),
+        "root",
+    );
+    assert!(bytes.admit().is_ok());
+    for malformed in [
+        json!({"kind":"bytes"}),
+        json!({"kind":"bytes","encoding":"hex"}),
+        json!({"kind":"bytes","encoding":"base64","rules":[]}),
+        json!({"kind":"file_reference"}),
+        json!({"kind":"file_reference","media_type":"text/plain"}),
+    ] {
+        assert!(
+            document(json!([{"key":"root","body":malformed}]), "root")
+                .admit()
+                .is_err()
+        );
+    }
+
+    let with_default = |value: &str| {
+        let mut property = property("value", "bytes");
+        property["input_default"] = json!(value);
+        document(
+            json!([
+                record("root", vec![property]),
+                {"key":"bytes","body":{"kind":"bytes","encoding":"base64"}}
+            ]),
+            "root",
+        )
+    };
+    for canonical in ["", "TQ==", "TWE=", "TWFu", "+/8="] {
+        assert!(with_default(canonical).admit().is_ok(), "{canonical}");
+    }
+    for rejected in ["TQ", "TQ=", "TQ===", "TR==", "TWF=", "TQ==\n", "-_8="] {
+        assert!(with_default(rejected).admit().is_err(), "{rejected}");
+    }
+    let mut nonempty_bytes = property("value", "bytes");
+    nonempty_bytes["empty_string"] = json!("reject");
+    assert!(
+        document(
+            json!([
+                record("root", vec![nonempty_bytes]),
+                {"key":"bytes","body":{"kind":"bytes","encoding":"base64"}}
+            ]),
+            "root"
+        )
+        .admit()
+        .is_ok(),
+        "empty-string policy governs the zero-byte encoding"
+    );
+    for facet in [
+        json!({"rules":[{"min_length":1}]}),
+        json!({"transformers":[{"kind":"trim"}]}),
+    ] {
+        let mut bytes_use = property("value", "bytes");
+        for (key, value) in facet.as_object().unwrap() {
+            bytes_use[key] = value.clone();
+        }
+        assert!(
+            document(
+                json!([
+                    record("root", vec![bytes_use]),
+                    {"key":"bytes","body":{"kind":"bytes","encoding":"base64"}}
+                ]),
+                "root"
+            )
+            .admit()
+            .is_err()
+        );
+    }
+}
+
+#[test]
+fn accepted_domain_is_exact_nonempty_duplicate_free_and_occurrence_compatible() {
+    let with_domain = |target: &str, domain: Value| {
+        let mut value = property("value", "leaf");
+        value["accepted_domain"] = domain;
+        document(
+            json!([record("root", vec![value]), scalar("leaf", target)]),
+            "root",
+        )
+    };
+    assert!(
+        with_domain("number", json!({"closed":[1, 1.0]}))
+            .admit()
+            .is_ok()
+    );
+    assert_eq!(
+        codes(
+            &with_domain("number", json!({"closed":[1, 1]}))
+                .admit()
+                .unwrap_err()
+        ),
+        ["schema.graph.invalid_bounds"]
+    );
+    assert_eq!(
+        codes(
+            &with_domain("string", json!({"closed":[]}))
+                .admit()
+                .unwrap_err()
+        ),
+        ["schema.graph.invalid_bounds"]
+    );
+    assert_eq!(
+        codes(
+            &with_domain("string", json!({"closed":[1]}))
+                .admit()
+                .unwrap_err()
+        ),
+        ["schema.graph.inapplicable_facet"]
+    );
+
+    let mut nullable = property("value", "leaf");
+    nullable["accepted_domain"] = json!({"closed":[null]});
+    nullable["null"] = json!("reject");
+    assert!(
+        document(
+            json!([record("root", vec![nullable]), scalar("leaf", "string")]),
+            "root"
+        )
+        .admit()
+        .is_err()
+    );
+
+    let domain_graph = |values: Value| {
+        let mut value = property("value", "leaf");
+        value["accepted_domain"] = json!({"closed":values});
+        document(
+            json!([record("root", vec![value]), scalar("leaf", "any")]),
+            "root",
+        )
+    };
+    assert_ne!(
+        admitted(domain_graph(json!([1]))).0,
+        admitted(domain_graph(json!([1.0]))).0
+    );
+    assert_eq!(
+        admitted(domain_graph(json!([{"a":1,"b":2}]))).0,
+        admitted(domain_graph(json!([{"b":2,"a":1}]))).0
+    );
+    assert_eq!(
+        admitted(domain_graph(json!([1]))).1,
+        admitted(domain_graph(json!([2]))).1
+    );
+    assert_eq!(
+        admitted(domain_graph(json!([1, 2.0, {"key":"value"}]))).0,
+        admitted(domain_graph(json!([{"key":"value"}, 1, 2.0]))).0,
+        "closed domain order is not semantic"
+    );
+    assert_eq!(
+        codes(
+            &domain_graph(json!([{"a":1,"b":2}, {"b":2,"a":1}]))
+                .admit()
+                .unwrap_err()
+        ),
+        ["schema.graph.invalid_bounds"]
+    );
+
+    let mut protected = property("value", "leaf");
+    protected["protection"] = json!("secret_utf8");
+    protected["accepted_domain"] = json!({"closed":["x"]});
+    assert!(
+        document(
+            json!([record("root", vec![protected]), scalar("leaf", "string")]),
+            "root"
+        )
+        .admit()
+        .is_err()
+    );
+
+    let array = |values: Value| {
+        document(
+            json!([
+                {"key":"root","body":{"kind":"array","element":{
+                    "target":"leaf","accepted_domain":{"closed":values}}}},
+                scalar("leaf", "string")
+            ]),
+            "root",
+        )
+    };
+    assert!(array(json!(["a", "b"])).admit().is_ok());
+    assert!(array(json!([["a", "b"]])).admit().is_err());
+
+    let mut container = property("value", "nested");
+    container["accepted_domain"] = json!({"closed":[{"password":"x"}]});
+    let mut password = property("password", "text");
+    password["protection"] = json!("secret_utf8");
+    assert!(
+        document(
+            json!([
+                record("root", vec![container]),
+                record("nested", vec![password]),
+                scalar("text", "string")
+            ]),
+            "root"
+        )
+        .admit()
+        .is_err()
+    );
+}
+
+#[test]
+fn additional_properties_policy_changes_the_correct_commitments_and_graph_edges() {
+    let graph = |policy: Value, include_leaf: bool| {
+        let mut definitions = vec![json!({"key":"root","body":{"kind":"record","properties":[],
+            "additional_properties":policy}})];
+        if include_leaf {
+            definitions.push(scalar("leaf", "string"));
+        }
+        document(Value::Array(definitions), "root")
+    };
+    let open = admitted(graph(json!("open"), false));
+    let closed = admitted(document(
+        json!([
+            {"key":"root","body":{"kind":"record","properties":[],
+                "additional_properties":"closed"}}
+        ]),
+        "root",
+    ));
+    let typed = admitted(graph(json!({"typed":{"target":"leaf"}}), true));
+    assert_ne!(open.0, closed.0);
+    assert_ne!(open.0, typed.0);
+    assert_ne!(open.1, typed.1);
+    assert_eq!(open.1, admitted(graph(json!("open"), false)).1);
+
+    let recursive = document(
+        json!([
+            {"key":"root","body":{"kind":"record","properties":[],
+                "additional_properties":{"typed":{"target":"root","null":"reject"}}}}
+        ]),
+        "root",
+    );
+    assert!(
+        recursive.admit().is_ok(),
+        "an empty open-key object is productive"
+    );
+
+    let closed_nonempty = document(
+        json!([{"key":"root","body":{"kind":"record","properties":[],
+            "additional_properties":"closed"}}]),
+        "root",
+    );
+    let mut raw = serde_json::to_value(closed_nonempty).unwrap();
+    raw["root"]["null"] = json!("reject");
+    raw["root"]["empty_collection"] = json!("reject");
+    assert_eq!(
+        codes(
+            &serde_json::from_value::<SchemaGraphDocument>(raw)
+                .unwrap()
+                .admit()
+                .unwrap_err()
+        ),
+        ["schema.graph.nonproductive_definition"]
+    );
+}
+
+#[test]
+fn input_default_is_property_only_context_free_semantics() {
+    let graph = |default: Value, rules: Value| {
+        let mut value = property("value", "leaf");
+        value["input_default"] = default;
+        value["rules"] = rules;
+        document(
+            json!([record("root", vec![value]), scalar("leaf", "string")]),
+            "root",
+        )
+    };
+    let plain = admitted(graph(json!("ok"), json!([])));
+    let changed = admitted(graph(json!("other"), json!([])));
+    assert_ne!(plain.0, changed.0);
+    assert_eq!(plain.1, changed.1);
+    assert!(graph(json!(1), json!([])).admit().is_err());
+    let mut domain_default = property("value", "leaf");
+    domain_default["accepted_domain"] = json!({"closed":["allowed"]});
+    domain_default["input_default"] = json!("denied");
+    assert!(
+        document(
+            json!([
+                record("root", vec![domain_default]),
+                scalar("leaf", "string")
+            ]),
+            "root"
+        )
+        .admit()
+        .is_err()
+    );
+    assert!(
+        graph(json!("x"), json!([{"min_length":2}]))
+            .admit()
+            .is_err()
+    );
+    assert!(
+        graph(json!("xx"), json!([{"min_length":2}]))
+            .admit()
+            .is_ok()
+    );
+    assert!(
+        graph(json!("x"), json!([{"eq":["/other",1]}]))
+            .admit()
+            .is_err()
+    );
+    assert!(
+        graph(json!("x"), json!([{"custom":"runtime"}]))
+            .admit()
+            .is_err()
+    );
+
+    let mut protected = property("value", "leaf");
+    protected["protection"] = json!("secret_utf8");
+    protected["input_default"] = json!("secret");
+    assert!(
+        document(
+            json!([record("root", vec![protected]), scalar("leaf", "string")]),
+            "root"
+        )
+        .admit()
+        .is_err()
+    );
+
+    let mut required_expression = property("value", "leaf");
+    required_expression["expression"] = json!("required");
+    required_expression["input_default"] = json!("x");
+    assert!(
+        document(
+            json!([
+                record("root", vec![required_expression]),
+                scalar("leaf", "string")
+            ]),
+            "root"
+        )
+        .admit()
+        .is_err()
+    );
+
+    let mut container = property("value", "nested");
+    container["input_default"] = json!({"password":"x"});
+    let mut password = property("password", "text");
+    password["protection"] = json!("secret_utf8");
+    assert!(
+        document(
+            json!([
+                record("root", vec![container]),
+                record("nested", vec![password]),
+                scalar("text", "string")
+            ]),
+            "root"
+        )
+        .admit()
+        .is_err()
+    );
+
+    let object_default = |value: Value| {
+        let mut property = property("value", "leaf");
+        property["input_default"] = value;
+        document(
+            json!([
+                record("root", vec![property]),
+                {"key":"leaf","body":{"kind":"any"}}
+            ]),
+            "root",
+        )
+    };
+    assert_eq!(
+        admitted(object_default(json!({"a":1,"b":2}))).0,
+        admitted(object_default(json!({"b":2,"a":1}))).0
+    );
+    assert_ne!(
+        admitted(object_default(json!(1))).0,
+        admitted(object_default(json!(1.0))).0
+    );
+}
+
+#[test]
+fn input_default_rejects_required_expression_on_traversed_alias() {
+    let mut value = property("value", "alias");
+    value["input_default"] = json!("literal");
+    let graph = document(
+        json!([
+            record("root", vec![value]),
+            {
+                "key":"alias",
+                "body":{
+                    "kind":"alias",
+                    "alias":{"target":"text","expression":"required"}
+                }
+            },
+            scalar("text", "string")
+        ]),
+        "root",
+    );
+
+    let error = graph
+        .admit()
+        .expect_err("defaults cannot cross an expression-required alias use");
+    assert_eq!(codes(&error), ["schema.graph.invalid_default"]);
+}
+
+#[test]
+fn typed_additional_property_is_addressable_with_one_frozen_role_edge() {
+    let graph = document(
+        json!([
+            {"key":"root","body":{"kind":"record","properties":[],
+                "additional_properties":{"typed":{"target":"leaf"}}}},
+            scalar("leaf", "string")
+        ]),
+        "root",
+    )
+    .admit()
+    .unwrap();
+    assert_eq!(graph.reference_count(), 2);
+    let address = DeclarationAddress::new(
+        DefinitionKey::new("root").unwrap(),
+        DeclarationUse::AdditionalProperty,
+    );
+    assert!(graph.resolve_address(&address).is_some());
+}
+
+#[test]
+fn new_semantic_fields_fail_closed_outside_their_exact_locations() {
+    for key in ["protection", "accepted_domain", "input_default"] {
+        let mut body = json!({"kind":"string"});
+        body[key] = json!("open");
+        assert!(
+            document(json!([{"key":"root","body":body}]), "root")
+                .admit()
+                .is_err()
+        );
+    }
+    for forbidden in [
+        "loader",
+        "presentation",
+        "media_type",
+        "max_size",
+        "visibility",
+    ] {
+        let mut root = json!({"target":"root"});
+        root[forbidden] = json!(true);
+        let document: SchemaGraphDocument = serde_json::from_value(json!({
+            "version":3,"root":root,"definitions":[scalar("root", "string")]
+        }))
+        .unwrap();
+        assert!(document.admit().is_err());
+    }
 }
