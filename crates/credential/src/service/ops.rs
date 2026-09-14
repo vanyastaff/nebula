@@ -10,13 +10,14 @@
 //! concrete `C`, so `Credential::resolve` / `Credential::project` run without
 //! reflection. Registration is fail-closed on a duplicate `KEY`.
 
+use std::any::Any;
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
 use nebula_schema::{ValidSchema, ValidationError, ValidationReport};
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::pending_store::PendingStateStore;
 use crate::resolve::{InteractionRequest, TestResult, UserInput};
@@ -219,6 +220,17 @@ type RevokeFuture<'a> =
 type RevokeFn =
     Arc<dyn for<'a> Fn(&'a [u8], &'a CredentialContext) -> RevokeFuture<'a> + Send + Sync>;
 
+/// Monomorphized stored-state projection for one credential type.
+///
+/// The erased value never leaves this crate: [`CredentialService`](super::CredentialService)
+/// immediately seals it inside an opaque
+/// [`ErasedCredentialGuard`](super::ErasedCredentialGuard).
+type ProjectFn = Arc<
+    dyn Fn(&[u8], &str, u32) -> Result<Box<dyn Any + Send + Sync>, CredentialServiceError>
+        + Send
+        + Sync,
+>;
+
 /// One credential type's erased operation closures.
 ///
 /// `resolve` / `acquire` are always present (the base
@@ -232,6 +244,7 @@ struct OpsEntry<PS> {
     schema: ValidSchema,
     resolve: ResolveFn,
     acquire: AcquireFn<PS>,
+    project: ProjectFn,
     test_fn: Option<TestFn>,
     refresh_fn: Option<RefreshFn>,
     revoke_fn: Option<RevokeFn>,
@@ -333,6 +346,24 @@ impl<PS: PendingStateStore> DispatchOps<PS> {
                 key: key.to_owned(),
             })?;
         (entry.resolve)(props, ctx).await
+    }
+
+    /// Project persisted state into a concrete credential guard through the
+    /// monomorphized operation registered for `key`.
+    pub(crate) fn project_guard(
+        &self,
+        key: &str,
+        data: &[u8],
+        state_kind: &str,
+        state_version: u32,
+    ) -> Result<Box<dyn Any + Send + Sync>, CredentialServiceError> {
+        let entry = self
+            .entries
+            .get(key)
+            .ok_or_else(|| CredentialServiceError::TypeUnknown {
+                key: key.to_owned(),
+            })?;
+        (entry.project)(data, state_kind, state_version)
     }
 
     /// Drive an acquisition for the type at `key`: same canonical
@@ -486,9 +517,8 @@ impl<PS: PendingStateStore> DispatchOps<PS> {
 /// monomorphised `execute_resolve::<C, PS>` / `C::project` calls are
 /// captured here once per type — there is no reflection at the call site.
 ///
-/// `C::Scheme: Clone` is required by
-/// [`CredentialSnapshot::new`](crate::CredentialSnapshot::new);
-/// every first-party scheme satisfies it.
+/// `C::Scheme: Zeroize` is required because the projection is immediately
+/// wrapped in a [`CredentialGuard`](crate::CredentialGuard).
 ///
 /// # Errors
 ///
@@ -498,7 +528,7 @@ impl<PS: PendingStateStore> DispatchOps<PS> {
 pub fn register_runtime_ops<C, PS>(ops: &mut DispatchOps<PS>) -> Result<(), DispatchError>
 where
     C: Credential,
-    C::Scheme: Clone,
+    C::Scheme: Zeroize,
     PS: PendingStateStore,
 {
     let key: &'static str = C::KEY;
@@ -550,12 +580,25 @@ where
         },
     );
 
+    let project: ProjectFn = Arc::new(|data: &[u8], state_kind: &str, state_version: u32| {
+        if state_kind != <C::State as CredentialState>::KIND
+            || state_version != <C::State as CredentialState>::VERSION
+        {
+            return Err(CredentialServiceError::InvalidSlotState);
+        }
+        let state: C::State =
+            serde_json::from_slice(data).map_err(|_| CredentialServiceError::InvalidSlotState)?;
+        let guard = crate::CredentialGuard::new(C::project(&state));
+        Ok(Box::new(guard))
+    });
+
     ops.entries.insert(
         key,
         OpsEntry {
             schema: validation_schema,
             resolve,
             acquire,
+            project,
             test_fn: None,
             refresh_fn: None,
             revoke_fn: None,

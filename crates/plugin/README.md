@@ -90,16 +90,19 @@ logical versions.
 snapshots. It performs no lookup outside the registry, no selector resolution, no tenant or
 credential/resource-ID binding, no persistence, and no runtime mutation. The plan's binding
 requirements remain untrusted author selectors for the authenticated runtime-control plane to
-resolve later.
+resolve later. Current plans preserve selector provenance explicitly: an absent node override is
+an owner-local slot-key name, while resource and credential overrides retain their typed authoring
+kind. Selector text is never interpreted by prefix. Legacy records remain readable and expose
+`PlanBindingSelectorProvenance::Legacy` rather than inventing provenance.
 
 First-party activation retains checked plans and worker flavors; runtime start atomically
 materializes their execution bundle, and exact loading checks the retained registry before
 dispatch. The boundary remains `partial`: binding resolution and the complete remote-effect
 execution protocol have separate runtime admission requirements. Compilation grants neither.
 
-The new plan hash domain is `nebula.executable-plan.graph.v2`. It includes the complete
-static effect descriptor and a closed versioned policy projection. Dynamic requests, targets,
-and credentials are not compiler inputs. Snapshot construction and exact compatibility checks
+The current plan hash domain is `nebula.executable-plan.graph.v3`. It includes selector provenance,
+the complete static effect descriptor, and a closed versioned policy projection. Dynamic requests,
+resolved tenant targets, and credentials are not compiler inputs. Snapshot construction and exact compatibility checks
 require a remote declaration to match the actual factory's remote capability before any action
 is instantiated; a no-external-effects declaration must have no remote capability.
 

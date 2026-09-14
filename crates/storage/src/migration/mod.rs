@@ -1323,6 +1323,10 @@ mod tests {
         assert!(!is_transient_sqlite_lock(&sqlx::Error::WorkerCrashed));
     }
 
+    /// Head 0052 adds a default-empty credential-binding document to resource
+    /// definitions. Existing rows could not persist bindings before this
+    /// migration, so the empty backfill does not infer or fabricate credential
+    /// authority; it is aggregate-neutral and the floor remains at 0040.
     /// Head 0051 creates only empty resource-runtime relations, indexes, and
     /// constraints. It does not inspect, infer, backfill, or rewrite any
     /// aggregate state, so catalog-only admission remains valid and the general
@@ -1346,9 +1350,9 @@ mod tests {
     fn new_catalog_head_requires_explicit_admission_policy_review() {
         assert_eq!(GENERAL_CATALOG_SUPPORTED_FLOOR, 40);
         #[cfg(feature = "sqlite")]
-        assert_eq!(catalog::catalog_head(&super::SQLITE_MIGRATOR), 51);
+        assert_eq!(catalog::catalog_head(&super::SQLITE_MIGRATOR), 52);
         #[cfg(feature = "postgres")]
-        assert_eq!(catalog::catalog_head(&super::POSTGRES_MIGRATOR), 51);
+        assert_eq!(catalog::catalog_head(&super::POSTGRES_MIGRATOR), 52);
     }
 
     /// The setup guard must never hold a descriptor on the database file.

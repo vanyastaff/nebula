@@ -374,8 +374,9 @@ pub use nebula_resource_macros::ResourceConfig;
 // `$crate::*` paths, so its expansion does not require adapters to keep
 // `nebula-schema` in extern_prelude either.
 pub use factory::{
-    BoxFut, KindActivator, RegisterRequest, RegistrarError, ResourceActivatorRegistry,
-    ResourceConfigInput, ResourceFactory, ResourceRegistrationOutcome, SlotBinding,
+    BoxFut, CredentialSlotInstall, KindActivator, RegisterRequest, RegistrarError,
+    ResourceActivatorRegistry, ResourceConfigInput, ResourceFactory, ResourceRegistrationOutcome,
+    SlotBinding,
 };
 pub use nebula_schema::{HasSchema, Schema, ValidSchema, impl_empty_has_schema};
 pub use options::AcquireOptions;
@@ -391,7 +392,7 @@ pub use resource::{
     TeardownReason,
 };
 pub use resource_ref::ResourceRef;
-pub use slot::{CredentialSlot, SlotCell};
+pub use slot::{CredentialSlot, SlotCell, SlotInstallError, SlotUpdate};
 // Runtime types — the framework topologies needed for `Manager::register()`.
 pub use runtime::managed::ManagedResource;
 pub use runtime::retained_store::{

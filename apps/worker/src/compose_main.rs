@@ -23,6 +23,9 @@ use nebula_storage_port::store::{ControlQueue, ExecutionTurnHandoff, TurnRecover
 use nebula_worker_bin::compose::{
     ComposeError, ResourceFanoutInputs, WorkerConfig, WorkerConfigError, build_core_flavor_runtime,
 };
+use nebula_worker_bin::credential_projection::{
+    CredentialProjectionCompositionError, compose_first_party_projection,
+};
 
 /// Top-level error union for the worker binary startup.
 ///
@@ -92,6 +95,10 @@ pub(crate) enum WorkerRunError {
     /// Plugin wiring or worker runtime assembly failed.
     #[error("composition failed — this is likely a build or config bug: {0}")]
     Compose(#[from] ComposeError),
+
+    /// Read/project-only credential runtime startup failed.
+    #[error("credential projection composition failed: {0}")]
+    CredentialProjection(#[from] CredentialProjectionCompositionError),
 
     /// `WorkerRuntimeBuilder::build` failed (e.g. empty plugin set).
     #[error("runtime build failed: {0}")]
@@ -340,6 +347,7 @@ pub(crate) async fn run() -> Result<(), WorkerRunError> {
     tracing::info!("nebula-worker (core flavor) starting");
 
     let config = WorkerConfig::from_env()?;
+    let credential_resolver = compose_first_party_projection().await?;
 
     // Log the active backend. Only emit `db_path` on the SQLite path — on the
     // Postgres path it is the ignored default "nebula-worker.db" and emitting
@@ -377,6 +385,7 @@ pub(crate) async fn run() -> Result<(), WorkerRunError> {
             artifact_set_digest: config.artifact_set_digest,
             catalog,
             bundles,
+            credential_resolver,
         },
         resource_fanout,
     )?;
@@ -434,6 +443,8 @@ async fn wait_for_shutdown_signal() -> Result<(), std::io::Error> {
 
 #[cfg(test)]
 mod tests {
+    const TEST_KEY_BASE64: &str = "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI=";
+
     // ── Fail-closed routing test ──────────────────────────────────────────────
     //
     // Runs under the DEFAULT (no-postgres) feature set — the same path CI uses.
@@ -506,6 +517,24 @@ mod tests {
                 artifact_set_digest: config.artifact_set_digest,
                 catalog,
                 bundles,
+                credential_resolver: {
+                    let store =
+                        nebula_storage::credential::SqliteCredentialPersistence::connect_memory()
+                            .await
+                            .expect("ready in-memory credential store");
+                    let key_provider: std::sync::Arc<dyn nebula_storage::credential::KeyProvider> =
+                        std::sync::Arc::new(
+                            nebula_storage::credential::EnvKeyProvider::from_base64(
+                                TEST_KEY_BASE64,
+                            )
+                            .expect("valid fixed test key"),
+                        );
+                    nebula_worker_bin::credential_projection::build_first_party_projection(
+                        store,
+                        key_provider,
+                    )
+                    .expect("credential projection runtime composes")
+                },
             },
             resource_fanout,
         )

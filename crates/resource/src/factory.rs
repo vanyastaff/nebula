@@ -107,6 +107,28 @@ pub struct SlotBinding {
     pub credential_id: Option<nebula_credential::CredentialId>,
 }
 
+/// One resolved projected guard to install before resource publication.
+///
+/// This travels separately from [`SlotBinding`]: structural identity and
+/// fan-out routing remain cloneable metadata, while the guard itself has one
+/// owner and cannot be cloned.
+pub struct CredentialSlotInstall {
+    /// Declared resource slot receiving the guard.
+    pub slot_name: String,
+    /// Opaque projected guard carrying its authoritative material epoch.
+    pub guard: nebula_credential::ErasedCredentialGuard,
+}
+
+impl std::fmt::Debug for CredentialSlotInstall {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CredentialSlotInstall")
+            .field("slot_name", &self.slot_name)
+            .field("guard", &self.guard)
+            .finish()
+    }
+}
+
 /// Explicit ingress for resource configuration registration.
 ///
 /// Literal JSON and authored expressions are different capabilities. Use
@@ -179,6 +201,11 @@ pub struct RegisterRequest<'a> {
     /// typed call; both the reverse-index row and the structural identity are
     /// derived from these same bindings, so the two cannot diverge.
     pub slot_bindings: Vec<SlotBinding>,
+    /// Projected guards installed into the freshly constructed resource
+    /// before the manager can publish its registry row. Each guard carries
+    /// its own authoritative material epoch; callers cannot pair them
+    /// independently.
+    pub slot_installs: Vec<CredentialSlotInstall>,
     /// Registration scope.
     pub scope: ScopeLevel,
     /// Optional recovery gate shared across a recovery group.
@@ -194,6 +221,7 @@ impl std::fmt::Debug for RegisterRequest<'_> {
             .field("config", &self.config)
             .field("expr_engine", &"<ExpressionEngine>")
             .field("slot_binding_count", &self.slot_bindings.len())
+            .field("slot_install_count", &self.slot_installs.len())
             .field("scope", &self.scope)
             .field("recovery_gate", &self.recovery_gate.is_some())
             .finish()
@@ -601,6 +629,28 @@ where
                 .iter()
                 .map(|binding| (binding.slot_name.clone(), binding.credential_key.clone()))
                 .collect();
+            for install in request.slot_installs {
+                match resource.install_credential_slot(&install.slot_name, install.guard) {
+                    Ok(crate::SlotUpdate::Installed) => {},
+                    Ok(
+                        crate::SlotUpdate::Stale { .. }
+                        | crate::SlotUpdate::Revoked
+                        | crate::SlotUpdate::AlreadyRevoked,
+                    ) => {
+                        return Err(crate::Error::permanent(
+                            "initial credential slot population was not installed",
+                        )
+                        .with_resource_key(R::key()));
+                    },
+                    Err(source) => {
+                        return Err(crate::Error::permanent(
+                            "initial credential slot population failed",
+                        )
+                        .with_source(source)
+                        .with_resource_key(R::key()));
+                    },
+                }
+            }
             manager
                 .register_resolved::<R>(
                     metadata.base().schema(),
@@ -1153,6 +1203,7 @@ mod tests {
             config: ResourceConfigInput::data(serde_json::json!({ "name": "from-factory" })),
             expr_engine,
             slot_bindings: Vec::new(),
+            slot_installs: Vec::new(),
             scope: ScopeLevel::Global,
             recovery_gate: None,
         }
@@ -1306,6 +1357,7 @@ mod tests {
                         credential_key: nebula_core::credential_key!("test.factory-credential"),
                         credential_id: Some(credential_id),
                     }],
+                    slot_installs: Vec::new(),
                     scope: ScopeLevel::Global,
                     recovery_gate: None,
                 },
@@ -1371,6 +1423,7 @@ mod tests {
                             credential_id: Some(second_credential_id),
                         },
                     ],
+                    slot_installs: Vec::new(),
                     scope: ScopeLevel::Global,
                     recovery_gate: None,
                 },

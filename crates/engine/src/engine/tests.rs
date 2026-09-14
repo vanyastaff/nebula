@@ -3496,6 +3496,31 @@ async fn version_pinned_node_uses_specified_handler() {
 
 // -- Proactive credential refresh tests --
 
+struct UnavailableSlotResolver;
+
+impl nebula_credential::CredentialSlotResolver for UnavailableSlotResolver {
+    fn resolve_slot<'a>(
+        &'a self,
+        _scope: &'a nebula_credential::TenantScope,
+        _credential_id: nebula_core::CredentialId,
+        _expected_key: nebula_core::CredentialKey,
+        _required_capabilities: nebula_credential::Capabilities,
+        _cancel: CancellationToken,
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        nebula_credential::ErasedCredentialGuard,
+                        nebula_credential::CredentialSlotResolveError,
+                    >,
+                > + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async { Err(nebula_credential::CredentialSlotResolveError::Unavailable) })
+    }
+}
+
 /// When a credential refresh hook is set, it is called before each node dispatch.
 #[tokio::test]
 async fn credential_refresh_hook_is_called_before_node_dispatch() {
@@ -3519,11 +3544,7 @@ async fn credential_refresh_hook_is_called_before_node_dispatch() {
     // The refresh hook is only called when a credential resolver is also set.
     let (engine, _) = make_engine(registry);
     let engine = engine
-        .with_credential_resolver(|_id: &str| async move {
-            Err(nebula_credential::CredentialAccessError::NotFound(
-                "no credentials".to_owned(),
-            ))
-        })
+        .with_credential_resolver(Arc::new(UnavailableSlotResolver))
         .with_credential_refresh(move |_id: &str| {
             let count = refresh_count_clone.clone();
             async move {
@@ -4047,11 +4068,7 @@ async fn credential_refresh_failure_surfaces_as_typed_error() {
     // `CredentialRefreshFailed` round-trips through Display.
     let (engine, _) = make_engine(registry);
     let engine = engine
-        .with_credential_resolver(|_id: &str| async move {
-            Err(nebula_credential::CredentialAccessError::NotFound(
-                "no credentials".to_owned(),
-            ))
-        })
+        .with_credential_resolver(Arc::new(UnavailableSlotResolver))
         .with_credential_refresh(|_id: &str| async move {
             Err(ActionError::retryable("credential store down"))
         });
@@ -4240,14 +4257,6 @@ fn probe_workflow(action: &str, cred_id: &str) -> WorkflowDefinition {
 /// denial happens **before** the resolver is consulted, not as a side effect
 /// of the store returning nothing — deny-by-default must be a real policy
 /// check, not a lucky miss.
-fn dummy_snapshot(id: &str) -> nebula_credential::CredentialSnapshot {
-    nebula_credential::CredentialSnapshot::new(
-        id,
-        nebula_credential::CredentialRecord::new(),
-        nebula_credential::SecretToken::new(nebula_credential::SecretString::new("test-value")),
-    )
-}
-
 /// Default-deny: an action that was never declared to the engine cannot
 /// acquire any credential — even one the resolver would happily return.
 #[tokio::test]
@@ -4256,11 +4265,7 @@ async fn credential_access_denied_without_declaration() {
     register_probe(&registry, action_key!("probe"), "Probe");
 
     let (engine, _) = make_engine(registry);
-    // No `with_action_credentials` — `probe` has no declaration.
-    let engine = engine.with_credential_resolver(|id: &str| {
-        let id = id.to_owned();
-        async move { Ok(dummy_snapshot(&id)) }
-    });
+    let engine = engine.with_credential_resolver(Arc::new(UnavailableSlotResolver));
 
     let wf = probe_workflow("probe", "api_key");
     let result = engine
@@ -4281,38 +4286,20 @@ async fn credential_access_denied_without_declaration() {
         .node_errors
         .get(&node_key!("probe"))
         .expect("failed node must carry an error message");
-    // `CredentialAccessError::AccessDenied` is mapped to
-    // `ActionError::CapabilityViolation { capability, action_id }` (see
-    // `nebula_action::error::From<CredentialAccessError>`), whose Display
-    // is `"capability violation: capability `{capability}` denied for ..."`.
     assert!(
-        err.contains("capability violation") && err.contains("denied"),
-        "error must surface capability-violation denial, got: {err}"
-    );
-    assert!(
-        err.contains("credential:api_key"),
-        "error must attribute the denied credential id, got: {err}"
-    );
-    assert!(
-        err.contains("for action `probe`"),
-        "error must attribute the action whose access was denied, got: {err}"
+        err.contains("credential not configured"),
+        "a missing durable manifest must fail closed, got: {err}"
     );
 }
 
-/// Declared: the engine permits exactly the credential ids explicitly
-/// declared for the action's `ActionKey`.
+/// Storeless execution cannot manufacture credential authority outside a durable manifest.
 #[tokio::test]
-async fn credential_access_allowed_with_declaration() {
+async fn storeless_execution_cannot_grant_credential_access() {
     let registry = Arc::new(ActionRegistry::new());
     register_probe(&registry, action_key!("probe"), "Probe");
 
     let (engine, _) = make_engine(registry);
-    let engine = engine
-        .with_credential_resolver(|id: &str| {
-            let id = id.to_owned();
-            async move { Ok(dummy_snapshot(&id)) }
-        })
-        .with_action_credentials(action_key!("probe"), ["api_key"]);
+    let engine = engine.with_credential_resolver(Arc::new(UnavailableSlotResolver));
 
     let wf = probe_workflow("probe", "api_key");
     let result = engine
@@ -4323,11 +4310,11 @@ async fn credential_access_allowed_with_declaration() {
             ExecutionBudget::default(),
         )
         .await
-        .expect("engine returns Ok(ExecutionResult)");
+        .expect("engine returns Ok(ExecutionResult) even on node failure");
 
     assert!(
-        result.is_success(),
-        "declared credential must be acquirable, errors: {:?}",
+        !result.is_success(),
+        "storeless execution must not synthesize credential authority: {:?}",
         result.node_errors
     );
 }
@@ -4340,12 +4327,7 @@ async fn credential_access_denied_for_mismatched_key() {
     register_probe(&registry, action_key!("probe"), "Probe");
 
     let (engine, _) = make_engine(registry);
-    let engine = engine
-        .with_credential_resolver(|id: &str| {
-            let id = id.to_owned();
-            async move { Ok(dummy_snapshot(&id)) }
-        })
-        .with_action_credentials(action_key!("probe"), ["cred_a"]);
+    let engine = engine.with_credential_resolver(Arc::new(UnavailableSlotResolver));
 
     let wf = probe_workflow("probe", "cred_b");
     let result = engine
@@ -4367,12 +4349,8 @@ async fn credential_access_denied_for_mismatched_key() {
         .get(&node_key!("probe"))
         .expect("failed node must carry an error message");
     assert!(
-        err.contains("capability violation") && err.contains("denied"),
-        "error must surface capability-violation denial, got: {err}"
-    );
-    assert!(
-        err.contains("credential:cred_b"),
-        "error must attribute the denied credential id (cred_b), got: {err}"
+        err.contains("credential not configured"),
+        "an unbound credential key must fail closed, got: {err}"
     );
 }
 
@@ -4384,13 +4362,7 @@ async fn credential_declaration_is_per_action_key() {
     register_probe(&registry, action_key!("probe_b"), "Probe B");
 
     let (engine, _) = make_engine(registry);
-    let engine = engine
-            .with_credential_resolver(|id: &str| {
-                let id = id.to_owned();
-                async move { Ok(dummy_snapshot(&id)) }
-            })
-            // Only `probe_a` declares `shared_key`. `probe_b` must still be denied.
-            .with_action_credentials(action_key!("probe_a"), ["shared_key"]);
+    let engine = engine.with_credential_resolver(Arc::new(UnavailableSlotResolver));
 
     // probe_b tries shared_key → must fail even though probe_a has it declared.
     let wf = probe_workflow("probe_b", "shared_key");
@@ -4410,23 +4382,15 @@ async fn credential_declaration_is_per_action_key() {
     );
 }
 
-/// Merging: repeat declarations for the same `ActionKey` add keys cumulatively
-/// rather than replacing the set.
+/// Attaching a resolver alone does not grant any credential slot.
 #[tokio::test]
-async fn action_credentials_merge_across_builder_calls() {
+async fn resolver_without_durable_manifest_denies_every_slot() {
     let registry = Arc::new(ActionRegistry::new());
     register_probe(&registry, action_key!("probe"), "Probe");
 
     let (engine, _) = make_engine(registry);
-    let engine = engine
-        .with_credential_resolver(|id: &str| {
-            let id = id.to_owned();
-            async move { Ok(dummy_snapshot(&id)) }
-        })
-        .with_action_credentials(action_key!("probe"), ["first"])
-        .with_action_credentials(action_key!("probe"), ["second"]);
+    let engine = engine.with_credential_resolver(Arc::new(UnavailableSlotResolver));
 
-    // Probing "second" must succeed — the second call adds, not replaces.
     let wf = probe_workflow("probe", "second");
     let result = engine
         .execute_unit_fixture(
@@ -4438,8 +4402,8 @@ async fn action_credentials_merge_across_builder_calls() {
         .await
         .expect("engine returns Ok(ExecutionResult)");
     assert!(
-        result.is_success(),
-        "repeated with_action_credentials must merge, not replace. errors: {:?}",
+        !result.is_success(),
+        "resolver presence without a durable manifest must deny: {:?}",
         result.node_errors
     );
 }

@@ -43,7 +43,7 @@ pub enum ExecutionProfile {
 }
 
 impl ExecutionProfile {
-    const fn wire_name(self) -> &'static str {
+    pub(crate) const fn wire_name(self) -> &'static str {
         match self {
             Self::Graph => "graph",
         }

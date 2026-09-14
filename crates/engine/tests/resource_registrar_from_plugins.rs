@@ -323,6 +323,7 @@ async fn wired_registrar_performs_typed_registration() {
                 config: ResourceConfigInput::data(serde_json::json!({ "label": "wired" })),
                 expr_engine: &expr,
                 slot_bindings: Vec::new(),
+                slot_installs: Vec::new(),
                 scope: ScopeLevel::Global,
                 recovery_gate: None,
             },

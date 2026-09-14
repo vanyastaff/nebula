@@ -577,6 +577,21 @@ mod tests {
             true
         }
 
+        fn install_credential_slot(
+            &self,
+            _slot: &str,
+            _guard: nebula_credential::ErasedCredentialGuard,
+        ) -> Result<crate::SlotUpdate, crate::SlotInstallError> {
+            unreachable!("retirement fake never installs credential slots")
+        }
+
+        fn revoke_credential_slot(
+            &self,
+            _slot: &str,
+        ) -> Result<crate::SlotUpdate, crate::SlotInstallError> {
+            unreachable!("retirement fake never revokes credential slots")
+        }
+
         fn submit_on_refresh(
             self: Arc<Self>,
             _slot: &str,

@@ -119,6 +119,20 @@ pub(crate) trait ManagedHandle: Send + Sync + 'static {
     /// name is rejected before any author code runs.
     fn accepts_credential_slot_name(&self, slot: &str) -> bool;
 
+    /// Installs a newer projected credential guard through the concrete
+    /// resource's derive-generated slot dispatcher.
+    fn install_credential_slot(
+        &self,
+        slot: &str,
+        guard: nebula_credential::ErasedCredentialGuard,
+    ) -> Result<crate::SlotUpdate, crate::SlotInstallError>;
+
+    /// Clears and epoch-fences a concrete credential slot.
+    fn revoke_credential_slot(
+        &self,
+        slot: &str,
+    ) -> Result<crate::SlotUpdate, crate::SlotInstallError>;
+
     /// Per-slot refresh dispatch.
     ///
     /// `#[async_trait]` boxes the future for `dyn`-safety. Forwards to
@@ -271,6 +285,21 @@ where
 
     fn accepts_credential_slot_name(&self, slot: &str) -> bool {
         R::credential_slot_names().contains(&slot)
+    }
+
+    fn install_credential_slot(
+        &self,
+        slot: &str,
+        guard: nebula_credential::ErasedCredentialGuard,
+    ) -> Result<crate::SlotUpdate, crate::SlotInstallError> {
+        self.resource.install_credential_slot(slot, guard)
+    }
+
+    fn revoke_credential_slot(
+        &self,
+        slot: &str,
+    ) -> Result<crate::SlotUpdate, crate::SlotInstallError> {
+        self.resource.revoke_credential_slot(slot)
     }
 
     fn submit_on_refresh(
@@ -1346,6 +1375,19 @@ mod tests {
                 fn bump_revoke_epoch(&self) {}
                 fn accepts_credential_slot_name(&self, _slot: &str) -> bool {
                     true
+                }
+                fn install_credential_slot(
+                    &self,
+                    _slot: &str,
+                    _guard: nebula_credential::ErasedCredentialGuard,
+                ) -> Result<crate::SlotUpdate, crate::SlotInstallError> {
+                    unreachable!("registry lookup fake never installs credential slots")
+                }
+                fn revoke_credential_slot(
+                    &self,
+                    _slot: &str,
+                ) -> Result<crate::SlotUpdate, crate::SlotInstallError> {
+                    unreachable!("registry lookup fake never revokes credential slots")
                 }
                 fn submit_on_refresh(
                     self: Arc<Self>,

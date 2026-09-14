@@ -115,6 +115,13 @@ pub enum EngineError {
         #[source]
         source: nebula_execution::ExecutionContractBundleIntegrityError,
     },
+    /// Recorded V2 contract fingerprint or wire protocol integrity failed.
+    #[error("persisted version-two execution contract integrity failed")]
+    ContractBundleIntegrityV2 {
+        /// Typed structural diagnosis, containing no workflow payload.
+        #[source]
+        source: nebula_execution::ExecutionContractBundleIntegrityErrorV2,
+    },
     /// The execution owner's contract could not be read.
     #[error("persisted execution contract could not be read")]
     ContractBundleRead {
@@ -448,6 +455,7 @@ impl nebula_error::Classify for EngineError {
             | Self::InvalidRecordedContract
             | Self::InvalidRecordedCheckpoint
             | Self::ContractBundleIntegrity { .. }
+            | Self::ContractBundleIntegrityV2 { .. }
             | Self::UnresolvedPlanBindings
             | Self::UnsupportedRecordedSemantics
             | Self::InvalidRecordedBudget
@@ -511,6 +519,7 @@ impl nebula_error::Classify for EngineError {
             Self::InvalidRecordedCheckpoint => "ENGINE:INVALID_RECORDED_CHECKPOINT",
             Self::CheckpointPayloadLimit => "ENGINE:CHECKPOINT_PAYLOAD_LIMIT",
             Self::ContractBundleIntegrity { .. } => "ENGINE:CONTRACT_BUNDLE_INTEGRITY",
+            Self::ContractBundleIntegrityV2 { .. } => "ENGINE:CONTRACT_BUNDLE_INTEGRITY_V2",
             Self::ContractBundleRead { .. } => "ENGINE:CONTRACT_BUNDLE_READ",
             Self::ExactFactoryUnavailable => "ENGINE:EXACT_FACTORY_UNAVAILABLE",
             Self::UnresolvedPlanBindings => "ENGINE:UNRESOLVED_PLAN_BINDINGS",

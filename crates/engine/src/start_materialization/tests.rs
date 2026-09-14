@@ -1,4 +1,4 @@
-use std::sync::OnceLock;
+use std::{any::TypeId, fmt, sync::OnceLock};
 
 use nebula_action::{
     Action, ActionContext, ActionError, ActionFactory, ActionMetadataDraft, ActionResult,
@@ -6,6 +6,9 @@ use nebula_action::{
 };
 use nebula_core::{ActionKey, ArtifactSetDigest, Dependencies, OrgId, WorkspaceId, node_key};
 use nebula_plugin::{Plugin, PluginManifest, PluginRegistry, ResolvedPlugin};
+use nebula_resource::{
+    KindActivator, Provider, Resident, ResidentConfig, ResourceFactory, ResourceMetadataDraft,
+};
 use nebula_schema::{HasSchema, ValidSchema};
 use nebula_storage::{
     InMemoryControlQueue, InMemoryExecutionStore, InMemoryWorkflowStore,
@@ -180,27 +183,160 @@ impl StatelessAction for FixtureAction {
         Ok(ActionResult::success(input))
     }
 }
-#[derive(Debug)]
+
+struct ResourceBoundAction;
+
+impl Action for ResourceBoundAction {
+    type Input = EmptyContract;
+    type Output = EmptyContract;
+
+    fn metadata() -> ActionMetadataDraft {
+        ActionMetadataDraft::new(
+            ActionKey::new("start.resource_bound").unwrap(),
+            nebula_action::metadata_name!("Resource Bound"),
+            "resource-bound start fixture",
+        )
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+    }
+
+    fn dependencies() -> &'static Dependencies {
+        static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
+        DEPENDENCIES.get_or_init(|| {
+            Dependencies::new().slot_field(nebula_core::SlotField {
+                slot_key: "client",
+                default_id: "primary",
+                kind: nebula_core::SlotKind::Resource {
+                    type_id: TypeId::of::<FixtureResource>(),
+                    type_name: "FixtureResource",
+                    key: FixtureResource::key(),
+                },
+                required: true,
+                lazy: false,
+                purpose: None,
+            })
+        })
+    }
+}
+
+impl StatelessAction for ResourceBoundAction {
+    async fn execute(
+        &self,
+        input: EmptyContract,
+        _context: &(impl ActionContext + ?Sized),
+    ) -> Result<ActionResult<EmptyContract>, ActionError> {
+        Ok(ActionResult::success(input))
+    }
+}
+
+struct FixtureResource;
+
+impl nebula_core::DeclaresDependencies for FixtureResource {}
+
+impl nebula_resource::HasCredentialSlots for FixtureResource {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
+    }
+
+    fn declares_credential_slots() -> bool {
+        false
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for FixtureResource {
+    type Config = ();
+    type Instance = ();
+    type Topology = Resident<Self>;
+
+    fn key() -> nebula_core::ResourceKey {
+        "start.client".parse().unwrap()
+    }
+
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("Start Client"),
+            "",
+        )
+    }
+
+    async fn create(
+        &self,
+        _config: &(),
+        _context: &nebula_resource::ResourceContext,
+    ) -> Result<(), nebula_resource::Error> {
+        panic!("start admission must not construct resource fixture")
+    }
+}
+
+#[async_trait::async_trait]
+impl nebula_resource::ResidentProvider for FixtureResource {}
+
+fn resource_factory() -> Arc<dyn ResourceFactory> {
+    Arc::new(KindActivator::<FixtureResource, _, _>::with_metadata(
+        FixtureResource::metadata(),
+        || FixtureResource,
+        || Resident::new(ResidentConfig::default()),
+    ))
+}
+
 struct FixturePlugin {
     manifest: PluginManifest,
+    include_resource_bound_action: bool,
+    resources: Vec<Arc<dyn ResourceFactory>>,
+}
+impl fmt::Debug for FixturePlugin {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("FixturePlugin")
+            .field("manifest", &self.manifest)
+            .field(
+                "include_resource_bound_action",
+                &self.include_resource_bound_action,
+            )
+            .field("resource_count", &self.resources.len())
+            .finish()
+    }
 }
 impl Plugin for FixturePlugin {
     fn manifest(&self) -> &PluginManifest {
         &self.manifest
     }
     fn actions(&self) -> Vec<Arc<dyn ActionFactory>> {
-        vec![Arc::new(
+        let mut actions: Vec<Arc<dyn ActionFactory>> = vec![Arc::new(
             InstanceFactory::new(FixtureAction::metadata(), FixtureAction)
                 .expect("start fixture admits"),
-        )]
+        )];
+        if self.include_resource_bound_action {
+            actions.push(Arc::new(
+                InstanceFactory::new(ResourceBoundAction::metadata(), ResourceBoundAction)
+                    .expect("resource-bound start fixture admits"),
+            ));
+        }
+        actions
+    }
+    fn resources(&self) -> Vec<Arc<dyn ResourceFactory>> {
+        self.resources.clone()
     }
 }
 fn frozen() -> Arc<FrozenPluginRegistry> {
+    frozen_with(false)
+}
+fn frozen_with_resource_bound_action() -> Arc<FrozenPluginRegistry> {
+    frozen_with(true)
+}
+fn frozen_with(include_resource_bound_action: bool) -> Arc<FrozenPluginRegistry> {
     let mut plugins = PluginRegistry::new();
     plugins
         .register(Arc::new(
             ResolvedPlugin::from(FixturePlugin {
                 manifest: PluginManifest::builder("start", "Start").build().unwrap(),
+                include_resource_bound_action,
+                resources: if include_resource_bound_action {
+                    vec![resource_factory()]
+                } else {
+                    Vec::new()
+                },
             })
             .unwrap(),
         ))
@@ -223,6 +359,21 @@ impl Clock for FixedClock {
         std::time::Instant::now()
     }
 }
+
+struct PanicBindingResolver;
+
+impl ExecutionBindingResolver for PanicBindingResolver {
+    fn resolve<'a>(
+        &'a self,
+        _scope: &'a Scope,
+        _requirements: &'a [nebula_plugin::PlanBindingRequirement],
+    ) -> crate::BindingResolutionFuture<'a> {
+        Box::pin(async {
+            panic!("resource bindings must fail before authenticated binding resolution")
+        })
+    }
+}
+
 struct Fixture {
     executions: Arc<InMemoryExecutionStore>,
     starts: Arc<InMemoryStartAcceptanceStore>,
@@ -234,6 +385,14 @@ struct Fixture {
 }
 impl Fixture {
     async fn new() -> Self {
+        let definition = WorkflowBuilder::new("Start fixture")
+            .add_node(NodeDefinition::new(node_key!("run"), "Run", "start", "run").unwrap())
+            .build()
+            .unwrap();
+        Self::new_with(frozen(), definition).await
+    }
+
+    async fn new_with(registry: Arc<FrozenPluginRegistry>, definition: WorkflowDefinition) -> Self {
         let executions = Arc::new(InMemoryExecutionStore::new());
         let starts = Arc::new(InMemoryStartAcceptanceStore::new(&executions));
         let versions = Arc::new(InMemoryWorkflowVersionStore::new());
@@ -241,10 +400,6 @@ impl Fixture {
             &versions,
             &executions,
         ));
-        let definition = WorkflowBuilder::new("Start fixture")
-            .add_node(NodeDefinition::new(node_key!("run"), "Run", "start", "run").unwrap())
-            .build()
-            .unwrap();
         let scope = Scope::new(WorkspaceId::new().to_string(), OrgId::new().to_string());
         workflows
             .create(
@@ -264,7 +419,7 @@ impl Fixture {
             starts,
             workflows,
             versions,
-            registry: frozen(),
+            registry,
             definition,
             scope,
         };
@@ -344,6 +499,33 @@ async fn runtime_start_atomically_materializes_real_bundle_state_and_command() {
     let commands = queue.claim_pending(&[3; 16], 10).await.unwrap();
     assert_eq!(commands.len(), 1);
     assert!(!format!("{receipt:?}").contains("input-canary"));
+}
+
+#[tokio::test]
+async fn runtime_start_rejects_resource_bindings_before_resolution() {
+    let definition = WorkflowBuilder::new("Start resource fixture")
+        .add_node(
+            NodeDefinition::new(
+                node_key!("resource_run"),
+                "Resource Run",
+                "start",
+                "resource_bound",
+            )
+            .unwrap()
+            .with_resource_binding("client", "primary"),
+        )
+        .build()
+        .unwrap();
+    let fixture = Fixture::new_with(frozen_with_resource_bound_action(), definition).await;
+    let mut service = fixture.service();
+    service.binding_resolver = Some(Arc::new(PanicBindingResolver));
+
+    let error = service
+        .start(&fixture.scope, fixture.definition.id, None, None, None)
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, WorkflowStartError::UnsupportedBindings));
 }
 
 #[tokio::test]

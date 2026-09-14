@@ -36,6 +36,8 @@ nebula-storage = { path = "../../crates/storage", features = ["sqlite"] }
 nebula-metrics = { path = "../../crates/metrics" }
 # Durable store contracts used by composition.
 nebula-storage-port = { path = "../../crates/storage-port" }
+# Read/project-only execution credential runtime and first-party projections.
+nebula-credential = { path = "../../crates/credential" }
 # Evidence-only engine inputs. These stay absent from the ordinary worker
 # feature graph and are enabled only by the app-owned runtime-repair profile.
 nebula-core = { path = "../../crates/core" }

@@ -1,6 +1,6 @@
 //! Closed first-party runtime composition used only for RED evidence.
 
-use std::{future::Future, net::SocketAddr, str::FromStr, sync::Arc, time::Duration};
+use std::{future::Future, net::SocketAddr, pin::Pin, str::FromStr, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use nebula_api::{
@@ -59,6 +59,32 @@ const PROFILE_PROCESSOR_ID: [u8; 16] = *b"runtime-repair-1";
 /// through a production interval.
 const PROFILE_TIMER_SCAN_INTERVAL: Duration = Duration::from_millis(25);
 const EXECUTION_EVENT_BUFFER: usize = 1_024;
+
+#[derive(Debug)]
+struct RuntimeRepairCredentialResolver;
+
+impl nebula_credential::CredentialSlotResolver for RuntimeRepairCredentialResolver {
+    fn resolve_slot<'a>(
+        &'a self,
+        _scope: &'a nebula_credential::TenantScope,
+        _credential_id: nebula_credential::CredentialId,
+        _expected_key: nebula_credential::CredentialKey,
+        _required_capabilities: nebula_credential::Capabilities,
+        _cancel: CancellationToken,
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        nebula_credential::ErasedCredentialGuard,
+                        nebula_credential::CredentialSlotResolveError,
+                    >,
+                > + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async { Err(nebula_credential::CredentialSlotResolveError::SourceUnavailable) })
+    }
+}
 
 /// Explicit closed configuration for the app-owned RED profile.
 ///
@@ -245,6 +271,7 @@ impl RuntimeRepairHarness {
             Arc::clone(&metrics_registry),
             execution_bundle,
             registry,
+            None,
         )
         .map_err(ProfileErrorKind::Composition)?;
         state = compose_closed_identity(state, &api_config).await?;
@@ -270,6 +297,7 @@ impl RuntimeRepairHarness {
                     artifact_set_digest: nebula_core::ArtifactSetDigest::from_bytes([0x71; 32]),
                     catalog: worker_projection.revision_catalog,
                     bundles: worker_projection.bundles,
+                    credential_resolver: Arc::new(RuntimeRepairCredentialResolver),
                 },
                 worker_projection.resource_fanout,
                 nebula_worker_bin::compose::RuntimeRepairEvidenceInputs {

@@ -46,6 +46,7 @@
 | `ExecutionRevisions` — workflow + worker-flavor revision pins | `src/revision.rs` |
 | `ExecutionProfile`, `ExecutionContractBundle` | `src/bundle.rs` |
 | `RecordedExecutionContractBundleV1`, `ExecutionContractBundleIntegrityError` | `src/bundle.rs` |
+| `ExecutionContractBundleV2`, `ExecutionBindingManifestV2`, typed site/target contracts | `src/bundle_v2.rs` |
 | re-export `W3cTraceContext` из `nebula-core` | `src/lib.rs:55` |
 
 ## 3. Зависимости и зависимые
@@ -78,8 +79,11 @@ retry-механика. `journal.rs` (262) — WAL-события. `idempotency.
   (`context.rs:63`) — движок сверяется с обоими на каждом отказе; `Some(0)` отключает engine-level retry.
 - **`#[non_exhaustive]` на причинах терминации** + `forbid(unsafe_code)` — расширяемость и отсутствие unsafe.
 - **Bundle structural integrity, не authority.** Recorded-v1 принимает только supported
-  versions/profile, canonical unique credential IDs и совпадающий fingerprint. Admission отдельно
-  проверяет tenant authority, exact revisions и credential closure; `PluginSetId` остаётся
+  versions/profile, canonical unique credential IDs и совпадающий fingerprint. Отдельный V2
+  envelope канонически фиксирует `(node|trigger, slot_key)` → typed credential/resource target,
+  expected contract и credential capabilities; fingerprint включает tenant, plan/workflow/flavor
+  revisions и всю mapping, но не secret/material epoch. Admission отдельно проверяет tenant
+  authority, exact revisions и binding closure; `PluginSetId` остаётся
   независимым pin, а не proof полного registry/schema/runtime behavior.
 
 ## 6. Известные напряжения / долг (честно)

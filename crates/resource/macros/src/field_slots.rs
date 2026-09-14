@@ -13,7 +13,7 @@
 //! | Accepted shape | Matches |
 //! |---|---|
 //! | `SlotCell<CredentialGuard<C>>` | bare or `nebula_resource::SlotCell<nebula_credential::CredentialGuard<C>>` |
-//! | `CredentialSlot<C>` | bare or `nebula_resource::CredentialSlot<C>` (alias for the above) |
+//! | `CredentialSlot<C>` | credential definition `C`; stores `CredentialGuard<C::Scheme>` |
 //!
 //! All other types on a `#[credential]`-annotated field are rejected at
 //! expansion time with a compile error naming both accepted shapes.
@@ -47,6 +47,9 @@ pub(crate) struct ParsedCredentialSlot {
     pub purpose: Option<String>,
     /// The inner concrete credential type `C` underneath the wrappers.
     pub inner_type: Type,
+    /// `true` for `CredentialSlot<C>`, whose stored guard is projected to
+    /// `<C as Credential>::Scheme`; `false` for the explicit raw guard form.
+    pub credential_alias: bool,
 }
 
 impl ParsedCredentialSlot {
@@ -210,13 +213,14 @@ fn parse_one_slot(field: &Field, args: attrs::AttrArgs) -> Result<ParsedCredenti
 
     let purpose = args.get_string("purpose");
 
-    let inner_type = decode_field_type_slots(&field.ty)?;
+    let (inner_type, credential_alias) = decode_field_type_slots(&field.ty)?;
 
     Ok(ParsedCredentialSlot {
         field_ident,
         key_override,
         purpose,
         inner_type,
+        credential_alias,
     })
 }
 
@@ -258,17 +262,17 @@ fn find_key_litstr(field: &Field) -> Option<LitStr> {
 /// - `CredentialSlot<C>` (alias for the above)
 ///
 /// Returns the inner credential type `C`.
-fn decode_field_type_slots(ty: &Type) -> Result<Type> {
+fn decode_field_type_slots(ty: &Type) -> Result<(Type, bool)> {
     // Shape 1: CredentialSlot<C>
     if let Some(inner) = strip_path_tail(ty, "CredentialSlot") {
-        return Ok(inner);
+        return Ok((inner, true));
     }
 
     // Shape 2: SlotCell<CredentialGuard<C>>
     if let Some(after_cell) = strip_path_tail(ty, "SlotCell")
         && let Some(inner) = strip_path_tail(&after_cell, "CredentialGuard")
     {
-        return Ok(inner);
+        return Ok((inner, false));
     }
 
     Err(syn::Error::new_spanned(
@@ -391,6 +395,59 @@ pub(crate) fn emit_credential_slot_epoch_body(slots: &[ParsedCredentialSlot]) ->
     }
 }
 
+/// Emit checked erased-value installation for every declared credential slot.
+pub(crate) fn emit_slot_install_body(slots: &[ParsedCredentialSlot]) -> TokenStream2 {
+    let arms = slots.iter().map(|slot| {
+        let field = &slot.field_ident;
+        let inner = &slot.inner_type;
+        let projected = if slot.credential_alias {
+            quote! { <#inner as ::nebula_credential::Credential>::Scheme }
+        } else {
+            quote! { #inner }
+        };
+        let slot_key = slot.slot_key();
+        quote! {
+            #slot_key => {
+                let material_epoch = guard.metadata().material_epoch();
+                let guard = guard
+                    .into_typed::<#projected>()
+                    .map_err(|_| ::nebula_resource::SlotInstallError::CredentialTypeMismatch)?;
+                self.#field.install_at_material_epoch(
+                    material_epoch,
+                    ::std::sync::Arc::new(guard),
+                )
+            }
+        }
+    });
+    quote! {
+        match slot {
+            #(#arms,)*
+            _ => ::core::result::Result::Err(
+                ::nebula_resource::SlotInstallError::UnknownSlot,
+            ),
+        }
+    }
+}
+
+/// Emit authoritative revoke dispatch for every declared credential slot.
+pub(crate) fn emit_slot_revoke_body(slots: &[ParsedCredentialSlot]) -> TokenStream2 {
+    let arms = slots.iter().map(|slot| {
+        let field = &slot.field_ident;
+        let slot_key = slot.slot_key();
+        quote! {
+            #slot_key => ::core::result::Result::Ok(self.#field.revoke()),
+        }
+    });
+    quote! {
+        match slot {
+            #(#arms)*
+            _ => ::core::result::Result::Err(
+                ::nebula_resource::SlotInstallError::UnknownSlot,
+            ),
+        }
+    }
+}
+
 /// Uppercases an ASCII slot key into the suffix of its `SLOT_*` associated
 /// constant, mapping every non-alphanumeric character (`.`/`-`) to `_` so the
 /// result is a valid identifier fragment. Two keys that sanitize to the same
@@ -430,6 +487,11 @@ pub(crate) fn emit_slot_accessors(slots: &[ParsedCredentialSlot]) -> TokenStream
             let field = &slot.field_ident;
             let acc_ident = format_ident!("{}_slot", field);
             let inner = &slot.inner_type;
+            let projected = if slot.credential_alias {
+                quote! { <#inner as ::nebula_credential::Credential>::Scheme }
+            } else {
+                quote! { #inner }
+            };
             let slot_key = slot.slot_key();
             let const_ident = format_ident!("SLOT_{}", slot_const_suffix(&slot_key));
             let const_doc = format!(
@@ -443,7 +505,7 @@ pub(crate) fn emit_slot_accessors(slots: &[ParsedCredentialSlot]) -> TokenStream
 
                 /// Resolved credential for this slot, or `None` until the framework binds it.
                 pub fn #acc_ident(&self) -> ::std::option::Option<
-                    ::std::sync::Arc<::nebula_credential::CredentialGuard<#inner>>
+                    ::std::sync::Arc<::nebula_credential::CredentialGuard<#projected>>
                 > {
                     self.#field.load()
                 }

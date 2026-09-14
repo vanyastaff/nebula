@@ -326,8 +326,9 @@ fn macro_private_surface_matches_the_explicit_allowlist() {
             pub mod credential {
                 pub use nebula_credential::{
                     AuthScheme, Credential, CredentialGuard, CredentialLifecycle,
-                    CredentialMetadataDraft, CredentialPolicy, CredentialState, Dynamic, Interactive,
-                    RefreshStrategy, Refreshable, Revocable, RevokeStrategy, Testable,
+                    CredentialMetadataDraft, CredentialPolicy, CredentialState, Dynamic,
+                    ErasedCredentialGuard, Interactive, RefreshStrategy, Refreshable, Revocable,
+                    RevokeStrategy, Testable,
                     credential_key, metadata_name, schema_of,
                 };
                 pub mod contract {
@@ -342,7 +343,9 @@ fn macro_private_surface_matches_the_explicit_allowlist() {
                 pub use nebula_plugin::{Plugin, PluginManifest};
             }
             pub mod resource {
-                pub use nebula_resource::{Error, HasCredentialSlots, ResourceConfig};
+                pub use nebula_resource::{
+                    Error, HasCredentialSlots, ResourceConfig, SlotInstallError, SlotUpdate,
+                };
                 pub mod contribution {
                     pub use crate::resource_contribution::{
                         ResourceContribution, ResourceContributionBridge,

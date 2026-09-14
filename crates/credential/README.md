@@ -100,6 +100,15 @@ runtime proof and must not be used as a properties declaration.
 - `CredentialGuard`, `SchemeGuard`, and `SchemeFactory` for redacted, zeroizing access.
 - Pending-state, refresh, lease, revocation, and provider contracts.
 - `ValidatedCredentialBinding` for slot binding without caller-created tenant authority.
+- `CredentialSlotResolver` for object-safe, tenant-scoped action/resource projection. It reads a
+  secret-free owner-qualified head first, validates the expected credential key and capabilities,
+  then decrypts and projects into an opaque `ErasedCredentialGuard`. The guard carries the
+  authoritative material epoch and aggregate revision for stale-refresh rejection; its private
+  erased storage is recoverable only through checked typed extraction.
+- `CredentialProjectionRuntime` for worker-side read/project composition from an already-secured
+  persistence stack, registry, dispatch ops, and state source. Construction rejects missing base
+  projectors or advertised capabilities without matching ops; it owns no refresh coordinator,
+  lease lifecycle, reclaim sweep, pending acquisition state, or management authority.
 
 Resolver cache identity includes the full `CredentialSelector` and scheme `TypeId`; equal
 credential IDs in different owner partitions cannot share a handle.
@@ -209,8 +218,9 @@ wired to a hardened injected transport.
 - Universal first-party interactive OAuth acquisition remains parked pending the universal
   acquisition and authority flow.
 - Proactive pre-expiry refresh and some rotation behavior remain evolving.
-- Production composition (key policy, persistence, catalog, refresh transport, and authority)
-  lives in `apps/server`. API fixtures inject a deterministic no-network refresh adapter; they do
+- Production management composition (key policy, catalog, refresh transport, lease lifecycle, and
+  authority) lives in `apps/server`; workers may compose only the read/project runtime over the
+  same secured persistence backend. API fixtures inject a deterministic no-network refresh adapter; they do
   not carry a second HTTP implementation. The first-party refresh transport enforces
   rustls/HTTPS-only, no redirects/retries/implicit proxies, and connect-time all-answer
   global-unicast DNS validation. A downstream implementation of the technical `RefreshTransport`

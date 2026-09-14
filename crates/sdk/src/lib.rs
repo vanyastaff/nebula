@@ -103,8 +103,9 @@ pub mod __private {
     pub mod credential {
         pub use nebula_credential::{
             AuthScheme, Credential, CredentialGuard, CredentialLifecycle, CredentialMetadataDraft,
-            CredentialPolicy, CredentialState, Dynamic, Interactive, RefreshStrategy, Refreshable,
-            Revocable, RevokeStrategy, Testable, credential_key, metadata_name, schema_of,
+            CredentialPolicy, CredentialState, Dynamic, ErasedCredentialGuard, Interactive,
+            RefreshStrategy, Refreshable, Revocable, RevokeStrategy, Testable, credential_key,
+            metadata_name, schema_of,
         };
 
         pub mod contract {
@@ -125,7 +126,9 @@ pub mod __private {
     /// Resource contracts referenced by generated implementations.
     #[doc(hidden)]
     pub mod resource {
-        pub use nebula_resource::{Error, HasCredentialSlots, ResourceConfig};
+        pub use nebula_resource::{
+            Error, HasCredentialSlots, ResourceConfig, SlotInstallError, SlotUpdate,
+        };
 
         /// Opaque resource contribution contracts used by SDK-only derives.
         #[doc(hidden)]

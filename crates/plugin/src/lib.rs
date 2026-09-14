@@ -83,8 +83,8 @@ pub use nebula_metadata::PluginDependency;
 pub use nebula_plugin_macros::Plugin;
 pub use plan::{
     ExecutablePlanIntegrityError, ExecutablePlanRevision, PlanActionEffectContract,
-    PlanBindingContract, PlanBindingRequirement, PlanBindingSite, PlanCompilationError,
-    RecordedExecutablePlanRevisionV1,
+    PlanBindingContract, PlanBindingRequirement, PlanBindingSelectorProvenance, PlanBindingSite,
+    PlanCompilationError, RecordedExecutablePlanRevisionV1,
 };
 pub use plugin::Plugin;
 pub use registry::PluginRegistry;

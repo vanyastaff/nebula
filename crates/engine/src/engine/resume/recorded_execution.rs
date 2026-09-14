@@ -7,6 +7,7 @@ pub(super) struct ValidatedRecordedExecution {
     pub(super) workflow: nebula_plugin::ExecutableGraph,
     pub(super) persisted_outputs: Vec<(NodeKey, serde_json::Value)>,
     pub(super) factories: HashMap<NodeKey, Arc<dyn nebula_action::ActionFactory>>,
+    pub(super) binding_manifest: Option<Arc<nebula_execution::ExecutionBindingManifestV2>>,
 }
 
 impl WorkflowEngine {
@@ -36,8 +37,11 @@ impl WorkflowEngine {
             .ok_or(EngineError::MissingContractBundle)?;
         let bundle = crate::recorded_contract::checked_bundle(scope, &execution_key, &stored)
             .map_err(|rejection| match rejection {
-                crate::recorded_contract::RecordedContractRejection::Integrity(source) => {
+                crate::recorded_contract::RecordedContractRejection::IntegrityV1(source) => {
                     EngineError::ContractBundleIntegrity { source }
+                },
+                crate::recorded_contract::RecordedContractRejection::IntegrityV2(source) => {
+                    EngineError::ContractBundleIntegrityV2 { source }
                 },
                 crate::recorded_contract::RecordedContractRejection::Identity
                 | crate::recorded_contract::RecordedContractRejection::Malformed => {
@@ -45,7 +49,7 @@ impl WorkflowEngine {
                 },
             })?;
         if plan_id != bundle.executable_plan_revision_id()
-            || flavor_id != bundle.revisions().worker_flavor()
+            || flavor_id != bundle.worker_flavor_revision_id()
             || state
                 .workflow_version_number
                 .is_none_or(|number| number == 0)
@@ -58,7 +62,7 @@ impl WorkflowEngine {
             .load_exact(
                 nebula_storage_port::PlanFlavorRevisionIds::new(
                     bundle.executable_plan_revision_id(),
-                    bundle.revisions().worker_flavor(),
+                    bundle.worker_flavor_revision_id(),
                 ),
                 Arc::clone(&exact_runtime.registry),
             )
@@ -67,29 +71,34 @@ impl WorkflowEngine {
                 source: Box::new(source),
             })?;
         if loaded.plan().workflow_id() != workflow_id
-            || loaded.plan().workflow_version_id() != bundle.revisions().workflow()
+            || loaded.plan().workflow_version_id() != bundle.workflow_version_id()
             || loaded.plan().plugin_set_id() != bundle.plugin_set_id()
         {
             return Err(EngineError::InvalidRecordedContract);
         }
-        if !loaded.plan().bindings().is_empty() || !bundle.authorized_credential_ids().is_empty() {
-            return Err(EngineError::UnresolvedPlanBindings);
-        }
+        let binding_manifest = match (loaded.plan().bindings().is_empty(), &bundle) {
+            (true, crate::CheckedExecutionContract::V1(bundle))
+                if bundle.authorized_credential_ids().is_empty() =>
+            {
+                None
+            },
+            (false, crate::CheckedExecutionContract::V2(bundle)) => {
+                crate::binding_resolver::validate_manifest(
+                    loaded.plan().bindings(),
+                    bundle.binding_manifest(),
+                )
+                .map_err(|_| EngineError::UnresolvedPlanBindings)?;
+                Some(Arc::new(bundle.binding_manifest().clone()))
+            },
+            _ => return Err(EngineError::UnresolvedPlanBindings),
+        };
 
         let workflow = loaded
             .plan()
             .execution_graph()
             .map_err(|source| EngineError::ExactGraphProjection { source })?;
-        crate::recorded_graph::validate_recorded_graph(&workflow).map_err(|rejection| {
-            match rejection {
-                crate::recorded_graph::RecordedGraphRejection::UnresolvedBindings => {
-                    EngineError::UnresolvedPlanBindings
-                },
-                crate::recorded_graph::RecordedGraphRejection::UnsupportedSemantics => {
-                    EngineError::UnsupportedRecordedSemantics
-                },
-            }
-        })?;
+        crate::recorded_graph::validate_recorded_graph(&workflow)
+            .map_err(|_| EngineError::UnsupportedRecordedSemantics)?;
 
         let node_keys = workflow
             .nodes()
@@ -157,6 +166,7 @@ impl WorkflowEngine {
             workflow,
             persisted_outputs,
             factories,
+            binding_manifest,
         })
     }
 }

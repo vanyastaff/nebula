@@ -267,10 +267,10 @@ ROADMAP "Out of scope for 1.0" entry — M2.2 closes Layer 1 only.
 
 ### Architecture notes
 
-- **Deny-by-default credential allowlist** (`credential_accessor.rs`): an empty allowlist denies
-  every request (canon §12.5, §4.5). Per-action allowlists are populated via
-  `WorkflowEngine::with_action_credentials`; an action whose credentials were never declared to
-  the engine falls through to the deny baseline. There is no "fail-open" escape hatch.
+- **Deny-by-default credential manifest** (`credential_accessor.rs`): only the current node's
+  exact, site-qualified entries from the persisted V2 execution contract are resolvable (canon
+  §12.5, §4.5). A missing manifest, slot, tenant match, or capability falls through to the deny
+  baseline. There is no process-local population or "fail-open" escape hatch.
 - **No resource allowlist** (`resource_accessor.rs`): unlike credentials, there is no allowlist
   for resources — any registered key may be acquired by any action. Resource scoping is
   intentionally owned by the topology layer (e.g. pool scope, daemon scope), not the engine.

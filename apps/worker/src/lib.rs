@@ -14,3 +14,4 @@
 #![warn(missing_docs)]
 
 pub mod compose;
+pub mod credential_projection;

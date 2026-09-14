@@ -891,6 +891,40 @@ pub trait HasCredentialSlots {
     fn credential_slot_names() -> &'static [&'static str] {
         &[]
     }
+
+    /// Installs a projected credential guard into one declared slot.
+    ///
+    /// Implementations must check the erased value against the slot's
+    /// concrete `CredentialGuard<S>` type before mutating the cell. The
+    /// `Resource` derive emits that checked dispatch.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SlotInstallError`](crate::SlotInstallError) when the slot is
+    /// unknown, the guard type differs, or its material epoch is invalid.
+    fn install_credential_slot(
+        &self,
+        _slot: &str,
+        _guard: nebula_credential::ErasedCredentialGuard,
+    ) -> Result<crate::SlotUpdate, crate::SlotInstallError> {
+        Err(crate::SlotInstallError::UnknownSlot)
+    }
+
+    /// Terminally clears one declared slot.
+    ///
+    /// The derive forwards to [`SlotCell::revoke`](crate::SlotCell::revoke),
+    /// establishing a terminal fence that rejects every delayed refresh.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SlotInstallError::UnknownSlot`](crate::SlotInstallError::UnknownSlot)
+    /// when the resource does not declare the requested slot.
+    fn revoke_credential_slot(
+        &self,
+        _slot: &str,
+    ) -> Result<crate::SlotUpdate, crate::SlotInstallError> {
+        Err(crate::SlotInstallError::UnknownSlot)
+    }
 }
 
 /// Emits the honest zero [`HasCredentialSlots`] impl for a resource with no

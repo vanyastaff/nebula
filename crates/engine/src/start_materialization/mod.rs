@@ -7,9 +7,10 @@ use nebula_core::{
     accessor::Clock,
 };
 use nebula_execution::{
-    ExecutionContractBundle, ExecutionRevisions, ExecutionState, context::ExecutionBudget,
+    ExecutionBindingManifestV2, ExecutionContractBundle, ExecutionContractBundleV2,
+    ExecutionRevisions, ExecutionState, context::ExecutionBudget,
 };
-use nebula_plugin::FrozenPluginRegistry;
+use nebula_plugin::{FrozenPluginRegistry, PlanBindingContract};
 use nebula_storage_port::{
     Scope,
     dto::{
@@ -24,7 +25,10 @@ use nebula_storage_port::{
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::{PlanFlavorRevisionBridgeError, PlanFlavorRevisionLoader, WorkflowStores};
+use crate::{
+    CheckedExecutionContract, ExecutionBindingResolver, PlanFlavorRevisionBridgeError,
+    PlanFlavorRevisionLoader, WorkflowStores,
+};
 
 /// Whether this request created an execution or recovered an existing acceptance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,7 +42,7 @@ pub enum WorkflowStartDisposition {
 /// Receipt read from persisted state and its checked immutable bundle.
 pub struct WorkflowStartReceipt {
     state: ExecutionState,
-    bundle: ExecutionContractBundle,
+    bundle: CheckedExecutionContract,
     disposition: WorkflowStartDisposition,
 }
 impl WorkflowStartReceipt {
@@ -49,7 +53,7 @@ impl WorkflowStartReceipt {
     }
     /// Checked original bundle; no current catalog lookup is needed for replay.
     #[must_use]
-    pub const fn bundle(&self) -> &ExecutionContractBundle {
+    pub const fn bundle(&self) -> &CheckedExecutionContract {
         &self.bundle
     }
     /// Owner transaction disposition.
@@ -109,6 +113,9 @@ pub enum WorkflowStartError {
     /// Binding requirements have no authenticated owner-scoped resolution yet.
     #[error("workflow bindings cannot be admitted")]
     UnsupportedBindings,
+    /// Authenticated binding selection failed or returned an invalid closure.
+    #[error("workflow binding resolution failed")]
+    BindingResolution(#[source] crate::BindingResolutionError),
     /// The runtime does not execute some recorded graph semantics yet.
     #[error("recorded workflow semantics are unsupported")]
     UnsupportedRecordedSemantics,
@@ -224,6 +231,7 @@ pub struct WorkflowStartService {
     registry: Arc<FrozenPluginRegistry>,
     clock: Arc<dyn Clock>,
     budget: ExecutionBudget,
+    binding_resolver: Option<Arc<dyn ExecutionBindingResolver>>,
 }
 
 impl WorkflowStartService {
@@ -254,7 +262,15 @@ impl WorkflowStartService {
             registry,
             clock,
             budget,
+            binding_resolver: None,
         })
+    }
+
+    /// Attach the authenticated resolver used for plans with resource or credential slots.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_binding_resolver(mut self, resolver: Arc<dyn ExecutionBindingResolver>) -> Self {
+        self.binding_resolver = Some(resolver);
+        self
     }
 
     /// Submit caller intent through the execution owner's atomic transaction.
@@ -489,34 +505,63 @@ impl WorkflowStartService {
         let graph = plan
             .execution_graph()
             .map_err(|_| WorkflowStartError::UnsupportedRecordedSemantics)?;
-        crate::recorded_graph::validate_recorded_graph(&graph).map_err(
-            |rejection| match rejection {
-                crate::recorded_graph::RecordedGraphRejection::UnresolvedBindings => {
-                    WorkflowStartError::UnsupportedBindings
-                },
-                crate::recorded_graph::RecordedGraphRejection::UnsupportedSemantics => {
-                    WorkflowStartError::UnsupportedRecordedSemantics
-                },
-            },
-        )?;
+        crate::recorded_graph::validate_recorded_graph(&graph)
+            .map_err(|_| WorkflowStartError::UnsupportedRecordedSemantics)?;
         let (org_id, workspace_id) = tenant_ids(scope)?;
-        let bundle = ExecutionContractBundle::new_graph_v1(
-            ExecutionContractBundleId::new(),
-            org_id,
-            workspace_id,
-            plan.id(),
-            plan.plugin_set_id(),
-            ExecutionRevisions::new(
-                activation.workflow_version_id(),
-                plan.worker_flavor_revision_id(),
-            ),
-            [],
+        let revisions = ExecutionRevisions::new(
+            activation.workflow_version_id(),
+            plan.worker_flavor_revision_id(),
         );
-        let record = ContractBundleRecord::v1_json(
-            StartContractIdentity::new(bundle.bundle_id(), activation.revisions()),
-            serde_json::to_vec(&bundle).map_err(|_| WorkflowStartError::InvalidInput)?,
-        )
-        .map_err(|_| WorkflowStartError::InvalidInput)?;
+        let record =
+            if plan.bindings().is_empty() {
+                let bundle = ExecutionContractBundle::new_graph_v1(
+                    ExecutionContractBundleId::new(),
+                    org_id,
+                    workspace_id,
+                    plan.id(),
+                    plan.plugin_set_id(),
+                    revisions,
+                    [],
+                );
+                ContractBundleRecord::v1_json(
+                    StartContractIdentity::new(bundle.bundle_id(), activation.revisions()),
+                    serde_json::to_vec(&bundle).map_err(|_| WorkflowStartError::InvalidInput)?,
+                )
+            } else {
+                if plan.bindings().iter().any(|binding| {
+                    matches!(binding.contract(), PlanBindingContract::Resource { .. })
+                }) {
+                    tracing::warn!(
+                        binding_count = plan.bindings().len(),
+                        "workflow start rejected resource bindings before dispatch target wiring"
+                    );
+                    return Err(WorkflowStartError::UnsupportedBindings);
+                }
+                let resolver = self
+                    .binding_resolver
+                    .as_ref()
+                    .ok_or(WorkflowStartError::UnsupportedBindings)?;
+                let manifest: ExecutionBindingManifestV2 = resolver
+                    .resolve(scope, plan.bindings())
+                    .await
+                    .map_err(WorkflowStartError::BindingResolution)?;
+                crate::binding_resolver::validate_manifest(plan.bindings(), &manifest)
+                    .map_err(WorkflowStartError::BindingResolution)?;
+                let bundle = ExecutionContractBundleV2::new_graph_v2(
+                    ExecutionContractBundleId::new(),
+                    org_id,
+                    workspace_id,
+                    plan.id(),
+                    plan.plugin_set_id(),
+                    revisions,
+                    manifest,
+                );
+                ContractBundleRecord::v2_json(
+                    StartContractIdentity::new(bundle.bundle_id(), activation.revisions()),
+                    serde_json::to_vec(&bundle).map_err(|_| WorkflowStartError::InvalidInput)?,
+                )
+            }
+            .map_err(|_| WorkflowStartError::InvalidInput)?;
         let execution_id = ExecutionId::new();
         let mut state = ExecutionState::new(execution_id, workflow_id, &[]);
         let now = self.clock.now();
@@ -713,6 +758,7 @@ impl WorkflowStartError {
             Self::RevisionUnavailable(_) => "WORKFLOW_START:REVISION_UNAVAILABLE",
             Self::RevisionNotAdmitted(_) => "WORKFLOW_START:REVISION_NOT_ADMITTED",
             Self::UnsupportedBindings => "WORKFLOW_START:UNSUPPORTED_BINDINGS",
+            Self::BindingResolution(_) => "WORKFLOW_START:BINDING_RESOLUTION",
             Self::UnsupportedRecordedSemantics => "WORKFLOW_START:UNSUPPORTED_SEMANTICS",
             Self::FingerprintMismatch => "WORKFLOW_START:FINGERPRINT_MISMATCH",
             Self::ReceiptUnavailable { .. } => "WORKFLOW_START:RECEIPT_UNAVAILABLE",

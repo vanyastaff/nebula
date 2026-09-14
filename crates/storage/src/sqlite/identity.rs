@@ -619,6 +619,8 @@ fn resource_from_row(r: &sqlx::sqlite::SqliteRow) -> Result<ResourceRow, Storage
         display_name: required(r, "display_name")?,
         kind: required(r, "kind")?,
         config: text_to_json(&required::<String>(r, "config")?)?,
+        credential_bindings: serde_json::from_str(&required::<String>(r, "credential_bindings")?)
+            .map_err(|error| StorageError::Serialization(error.to_string()))?,
         created_at: required(r, "created_at")?,
         created_by: required(r, "created_by")?,
         version: required::<i64>(r, "version")? as u64,
@@ -632,8 +634,9 @@ impl ResourceStore for SqliteResourceStore {
     async fn create(&self, scope: &Scope, row: ResourceRow) -> Result<(), StorageError> {
         let res = sqlx::query(
             "INSERT INTO port_resources (id, workspace_id, org_id, slug, \
-             display_name, kind, config, created_at, created_by, version, \
-             deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             display_name, kind, config, credential_bindings, created_at, \
+             created_by, version, deleted_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&row.id)
         .bind(&scope.workspace_id)
@@ -642,6 +645,10 @@ impl ResourceStore for SqliteResourceStore {
         .bind(&row.display_name)
         .bind(&row.kind)
         .bind(json_to_text(&row.config))
+        .bind(
+            serde_json::to_string(&row.credential_bindings)
+                .map_err(|error| StorageError::Serialization(error.to_string()))?,
+        )
         .bind(&row.created_at)
         .bind(&row.created_by)
         .bind(row.version as i64)
@@ -697,13 +704,18 @@ impl ResourceStore for SqliteResourceStore {
     ) -> Result<(), StorageError> {
         let res = sqlx::query(
             "UPDATE port_resources SET slug = ?, display_name = ?, kind = ?, \
-             config = ?, version = ? WHERE workspace_id = ? AND org_id = ? \
-             AND id = ? AND deleted_at IS NULL AND version = ?",
+             config = ?, credential_bindings = ?, version = ? \
+             WHERE workspace_id = ? AND org_id = ? AND id = ? \
+             AND deleted_at IS NULL AND version = ?",
         )
         .bind(&row.slug)
         .bind(&row.display_name)
         .bind(&row.kind)
         .bind(json_to_text(&row.config))
+        .bind(
+            serde_json::to_string(&row.credential_bindings)
+                .map_err(|error| StorageError::Serialization(error.to_string()))?,
+        )
         .bind(row.version as i64)
         .bind(&scope.workspace_id)
         .bind(&scope.org_id)

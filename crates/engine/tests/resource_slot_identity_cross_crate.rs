@@ -212,6 +212,7 @@ fn request<'a>(expr: &'a ExpressionEngine, bindings: &[(&str, &str)]) -> Registe
         config: ResourceConfigInput::data(serde_json::json!({ "label": "x" })),
         expr_engine: expr,
         slot_bindings,
+        slot_installs: Vec::new(),
         scope: ScopeLevel::Global,
         recovery_gate: None,
     }

@@ -624,6 +624,7 @@ fn classify_workflow_start_error(error: &WorkflowStartError) -> WorkflowStartFai
         | WorkflowStartError::WorkflowNotActivated
         | WorkflowStartError::RevisionNotAdmitted(_)
         | WorkflowStartError::UnsupportedBindings
+        | WorkflowStartError::BindingResolution(_)
         | WorkflowStartError::UnsupportedRecordedSemantics
         | WorkflowStartError::MaterializationRejected => WorkflowStartFailureClass::Terminal,
     }

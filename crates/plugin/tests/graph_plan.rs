@@ -230,6 +230,7 @@ fn graph_v3_records_remain_executable_against_identical_legacy_contracts() {
         .unwrap();
     let mut record = serde_json::to_value(RecordedExecutablePlanRevisionV1::from(&plan)).unwrap();
     record["compiler_version"] = serde_json::json!(3);
+    record["canonical_hash_version"] = serde_json::json!(2);
     record.as_object_mut().unwrap().remove("claimed_id");
     let canonical = nebula_schema::canonical_json_v1(&record).unwrap();
     let domain = b"nebula.executable-plan.graph.v2";
@@ -471,7 +472,7 @@ fn newly_compiled_plan_records_explicit_effect_protocol() {
         .unwrap();
     let record = serde_json::to_value(RecordedExecutablePlanRevisionV1::from(&plan)).unwrap();
     assert_eq!(record["compiler_version"], 4);
-    assert_eq!(record["canonical_hash_version"], 2);
+    assert_eq!(record["canonical_hash_version"], 3);
     assert_eq!(
         record["content"]["actions"][0]["effect_contract"],
         "NoExternalEffects"
@@ -490,7 +491,7 @@ fn scalar_contracts_roundtrip_under_the_new_epoch_without_named_parameters() {
             .unwrap();
         let wire = serde_json::to_value(RecordedExecutablePlanRevisionV1::from(&plan)).unwrap();
         assert_eq!(wire["compiler_version"], 4);
-        assert_eq!(wire["canonical_hash_version"], 2);
+        assert_eq!(wire["canonical_hash_version"], 3);
         assert_eq!(
             wire["content"]["actions"][0]["input_schema"],
             serde_json::json!({

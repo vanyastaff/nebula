@@ -9,7 +9,7 @@
 use std::fmt;
 
 use nebula_core::CredentialId;
-use nebula_storage_port::{CredentialOwner, CredentialSelector};
+use nebula_storage_port::CredentialOwner;
 
 use super::scope::TenantScope;
 
@@ -25,7 +25,7 @@ use super::scope::TenantScope;
 #[derive(Debug, Clone)]
 pub struct ValidatedCredentialBinding {
     credential_id: CredentialId,
-    tenant_fingerprint: TenantFingerprint,
+    _tenant_fingerprint: TenantFingerprint,
 }
 
 /// Opaque proof of which tenant validated this binding.
@@ -50,7 +50,7 @@ impl ValidatedCredentialBinding {
     pub(crate) fn new(credential_id: CredentialId, tenant_fingerprint: TenantFingerprint) -> Self {
         Self {
             credential_id,
-            tenant_fingerprint,
+            _tenant_fingerprint: tenant_fingerprint,
         }
     }
 
@@ -58,25 +58,6 @@ impl ValidatedCredentialBinding {
     #[must_use]
     pub fn credential_id(&self) -> CredentialId {
         self.credential_id
-    }
-
-    /// The owner-scoped lookup key for this binding — the credential id paired
-    /// with the `owner_id` the scope check proved owns it (the fingerprint is
-    /// the `owner_id`).
-    ///
-    /// The runtime resolver consumes this to re-verify the stored row's owner
-    /// at load, so a validated binding is backed by a load-time owner check
-    /// rather than authorizing an unscoped load on its provenance alone.
-    pub(crate) fn selector(&self) -> CredentialSelector {
-        CredentialSelector::new(self.tenant_fingerprint.0.clone(), self.credential_id)
-    }
-
-    /// Crate-private access to the scope fingerprint. Consumed by the
-    /// engine execution path that re-validates the binding before
-    /// dispatching secrets (`resolve_for_slot`).
-    #[must_use]
-    pub(crate) fn fingerprint(&self) -> &TenantFingerprint {
-        &self.tenant_fingerprint
     }
 }
 

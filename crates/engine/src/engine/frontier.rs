@@ -2247,44 +2247,95 @@ impl WorkflowEngine {
         let sem = semaphore.clone();
         let outputs_ref = outputs.clone();
 
-        // Build credential accessor with a **deny-by-default** per-action allowlist.
-        //
-        // Per `PRODUCT_CANON` / + audit : an action can only
-        // acquire credential IDs explicitly declared for its `ActionKey` via
-        // `WorkflowEngine::with_action_credentials`. If the node's action was
-        // never declared — or was declared with an empty set — the accessor
-        // refuses every `get`/`has` request with
-        // `CredentialAccessError::AccessDenied`. No silent "allow all" fallback.
-        let allowed_keys: HashSet<String> = self
-            .action_credentials
-            .get(&node_def.action_key)
-            .cloned()
+        // The exact durable manifest is the sole action credential allowlist.
+        // Direct/storeless execution and a missing site entry both deny every key.
+        let credential_bindings = self
+            .credential_bindings_by_execution
+            .get(&execution_id)
+            .map(|manifest| {
+                manifest
+                    .entries()
+                    .iter()
+                    .filter_map(|entry| match (entry.site(), entry.target()) {
+                        (
+                            nebula_execution::ExecutionBindingSiteV2::Node(site),
+                            nebula_execution::ExecutionBindingTargetV2::Credential {
+                                credential_id,
+                                contract,
+                            },
+                        ) if site == &node_key => Some((
+                            entry.slot_key().to_owned(),
+                            (*credential_id, contract.clone()),
+                        )),
+                        _ => None,
+                    })
+                    .collect::<HashMap<_, _>>()
+            })
             .unwrap_or_default();
-        let credentials: Arc<dyn CredentialAccessor> = if let Some(resolver_fn) =
-            &self.credential_resolver
-        {
-            let resolver_fn = Arc::clone(resolver_fn);
+        let allowed_keys = credential_bindings.keys().cloned().collect();
+        let credentials: Arc<dyn CredentialAccessor> = if let (Some(resolver), Some(scope)) = (
+            &self.credential_resolver,
+            self.credential_scopes_by_execution
+                .get(&execution_id)
+                .map(|scope| scope.value().clone()),
+        ) {
+            let resolver = Arc::clone(resolver);
+            let cancel = cancel_token.clone();
+            let credential_bindings = Arc::new(credential_bindings);
             Arc::new(EngineCredentialAccessor::new(
                 allowed_keys,
-                move |id: &str| {
-                    let resolver_fn = Arc::clone(&resolver_fn);
-                    let credential_key_str = id.to_owned();
+                move |slot_key: &str| {
+                    let resolver = Arc::clone(&resolver);
+                    let scope = scope.clone();
+                    let cancel = cancel.clone();
+                    let binding = credential_bindings.get(slot_key).cloned();
                     async move {
-                        let snapshot = (resolver_fn)(&credential_key_str).await.map_err(|e| {
-                            tracing::debug!(
-                                credential_key = %credential_key_str,
-                                error = %e,
-                                "credential resolution failed"
-                            );
-                            match CredentialKey::new(&credential_key_str) {
-                                Ok(key) => nebula_core::CoreError::credential_not_found(key),
-                                Err(_) => nebula_core::CoreError::invalid_key(
-                                    credential_key_str.clone(),
-                                    "credential",
-                                ),
-                            }
+                        let (credential_id, contract) = binding.ok_or_else(|| {
+                            nebula_core::CoreError::RegistryInvariant(
+                                "credential slot allowlist and manifest diverged",
+                            )
                         })?;
-                        Ok(Box::new(snapshot) as Box<dyn std::any::Any + Send + Sync>)
+                        let required_capabilities = contract.required_capabilities().iter().fold(
+                            nebula_credential::Capabilities::empty(),
+                            |set, capability| {
+                                set | match capability {
+                                    nebula_execution::CredentialCapability::Interactive => {
+                                        nebula_credential::Capabilities::INTERACTIVE
+                                    },
+                                    nebula_execution::CredentialCapability::Refreshable => {
+                                        nebula_credential::Capabilities::REFRESHABLE
+                                    },
+                                    nebula_execution::CredentialCapability::Revocable => {
+                                        nebula_credential::Capabilities::REVOCABLE
+                                    },
+                                    nebula_execution::CredentialCapability::Testable => {
+                                        nebula_credential::Capabilities::TESTABLE
+                                    },
+                                    nebula_execution::CredentialCapability::Dynamic => {
+                                        nebula_credential::Capabilities::DYNAMIC
+                                    },
+                                }
+                            },
+                        );
+                        let key = contract.key().clone();
+                        let guard = resolver
+                            .resolve_slot(
+                                &scope,
+                                credential_id,
+                                key.clone(),
+                                required_capabilities,
+                                cancel,
+                            )
+                            .await
+                            .map_err(|error| {
+                                tracing::debug!(
+                                    credential.key = key.as_str(),
+                                    error = %error,
+                                    "credential slot resolution failed"
+                                );
+                                nebula_core::CoreError::credential_not_found(key)
+                            })?;
+                        Ok(Box::new(guard) as Box<dyn std::any::Any + Send + Sync>)
                     }
                 },
                 node_def.action_key.as_str().to_owned(),

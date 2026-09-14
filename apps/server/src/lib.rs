@@ -11,6 +11,7 @@ mod credential_adapters;
 mod credential_composition;
 mod credential_runtime;
 mod email;
+mod execution_binding_resolver;
 mod execution_store_backends;
 mod oauth_egress;
 mod transport;

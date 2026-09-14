@@ -153,6 +153,7 @@ async fn register_from_value(
                 config: ResourceConfigInput::data(config_json),
                 expr_engine: expression_engine,
                 slot_bindings: Vec::new(),
+                slot_installs: Vec::new(),
                 scope: ScopeLevel::Global,
                 recovery_gate: None,
             },

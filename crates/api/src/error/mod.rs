@@ -305,80 +305,6 @@ pub enum ApiError {
     NotImplemented(String),
 }
 
-/// api ↔ legacy-storage seam: classify a `nebula_storage::StorageError`
-/// onto the HTTP contract.
-///
-/// `ApiError::Storage` bridges the **spec-16 port** error
-/// ([`nebula_storage_port::StorageError`]) — the canonical surface every
-/// port-migrated path returns. The resource-catalog path is the one
-/// surface still on the **retained legacy** `nebula_storage::repos::ResourceRepo`
-/// (deliberately not migrated to the row-model port — storage port migration), which
-/// returns the legacy `nebula_storage::StorageError`. This is the seam
-/// adapter for that single path: a direct legacy→`ApiError` classification
-/// (NotFound → 404, Conflict/Duplicate → 409, everything else → opaque
-/// 500 with no internal-detail leak per no secret echo) — **not** a
-/// back-compat re-export of the deleted legacy surface, and **not** a
-/// re-route through the port error type.
-impl From<nebula_storage::StorageError> for ApiError {
-    fn from(err: nebula_storage::StorageError) -> Self {
-        use nebula_storage::StorageError as Se;
-        match err {
-            Se::NotFound { entity, id } => Self::NotFound(format!("{entity} not found: {id}")),
-            Se::Conflict {
-                entity,
-                id,
-                expected,
-                actual,
-            } => Self::Conflict(format!(
-                "{entity} {id}: version conflict (expected {expected}, actual {actual}); \
-                 re-read and retry"
-            )),
-            Se::Duplicate { entity, detail } => {
-                Self::Conflict(format!("duplicate {entity}: {detail}"))
-            },
-            // Lease / timeout / serialization / connection / configuration /
-            // internal are genuine backend faults — the opaque
-            // `Self::Storage` arm (still a 500 with no internal detail
-            // leaked to the client per no secret echo). Mapped through the
-            // port `StorageError` so the variant is preserved end-to-end
-            // (`map_resource_create_storage_error`'s contract: a
-            // non-caller fault stays the opaque `Storage` variant, never
-            // a catch-all `Internal`).
-            other => Self::Storage(storage_fault_to_port(other)),
-        }
-    }
-}
-
-/// Map a non-caller [`nebula_storage::StorageError`] fault onto the
-/// equivalent port [`nebula_storage_port::StorageError`] so
-/// [`ApiError::Storage`] carries the original failure class.
-///
-/// Only the genuine-backend-fault variants reach this — caller-conflict
-/// variants (`NotFound` / `Conflict` / `Duplicate`) are handled by the
-/// `From` arms above and never get here. The message text is
-/// store-authored (no submitted payload), so it is safe to carry; the
-/// HTTP surface still collapses every `Storage` to a detail-free 500.
-fn storage_fault_to_port(err: nebula_storage::StorageError) -> nebula_storage_port::StorageError {
-    use nebula_storage::StorageError as Se;
-    use nebula_storage_port::StorageError as Pe;
-    match err {
-        Se::LeaseUnavailable { entity, id } => Pe::LeaseUnavailable { entity, id },
-        Se::Timeout {
-            operation,
-            duration,
-        } => Pe::Timeout {
-            operation,
-            duration,
-        },
-        Se::Serialization(detail) => Pe::Serialization(detail),
-        Se::Connection(detail) => Pe::Connection(detail),
-        Se::Configuration(detail) => Pe::Configuration(detail),
-        // `Se::Internal` and any future non-caller variant fold into the
-        // port `Internal` — fail-closed, never silently dropped.
-        other => Pe::Internal(other.to_string()),
-    }
-}
-
 /// Project a [`nebula_tenancy::TenancyError`] (raised when a request's
 /// `TenantContext` is turned into a port `Scope`) onto the HTTP surface.
 ///
@@ -815,9 +741,6 @@ impl From<nebula_engine::WorkflowActivationError> for ApiError {
                 Self::validation_message("Invalid workflow definition")
             },
             WorkflowActivationError::Compilation(error) => Self::WorkflowCompilation(error),
-            WorkflowActivationError::UnresolvedBindings => Self::validation_message(
-                "Workflow contains unresolved resource or credential bindings",
-            ),
             WorkflowActivationError::UnsupportedRecordedSemantics => {
                 Self::validation_message("Workflow uses runtime semantics that cannot be recorded")
             },
@@ -857,6 +780,14 @@ impl From<&nebula_engine::WorkflowStartError> for ApiError {
             },
             WorkflowStartError::UnsupportedBindings => Self::WorkflowStartRejected {
                 reason: "The workflow requires bindings that cannot be admitted.",
+            },
+            WorkflowStartError::BindingResolution(source) => match source {
+                nebula_engine::BindingResolutionError::Unavailable => {
+                    Self::ServiceUnavailable("Workflow binding resolution is unavailable".into())
+                },
+                _ => Self::WorkflowStartRejected {
+                    reason: "The workflow bindings could not be resolved.",
+                },
             },
             WorkflowStartError::UnsupportedRecordedSemantics => Self::WorkflowStartRejected {
                 reason: "The workflow contains unsupported runtime semantics.",
@@ -1045,6 +976,34 @@ mod tests {
                 .headers()
                 .get(header::RETRY_AFTER)
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn binding_resolution_failures_are_secret_free_and_backend_outage_is_retryable() {
+        use nebula_engine::{BindingResolutionError, WorkflowStartError};
+
+        for source in [
+            BindingResolutionError::NotFound,
+            BindingResolutionError::Ambiguous,
+            BindingResolutionError::Incompatible,
+            BindingResolutionError::InvalidManifest,
+        ] {
+            let error = ApiError::from(&WorkflowStartError::BindingResolution(source));
+            let (status, problem) = error.to_problem_details();
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+            let encoded = serde_json::to_string(&problem).expect("problem details serialize");
+            assert!(!encoded.contains("credential"));
+            assert!(!encoded.contains("resource"));
+            assert!(!encoded.contains("selector"));
+        }
+
+        let unavailable = ApiError::from(&WorkflowStartError::BindingResolution(
+            BindingResolutionError::Unavailable,
+        ));
+        assert_eq!(
+            unavailable.to_problem_details().0,
+            StatusCode::SERVICE_UNAVAILABLE
         );
     }
 

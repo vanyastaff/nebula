@@ -44,6 +44,7 @@ struct PreparedExactExecution {
     seed_nodes: Vec<NodeKey>,
     activated_edges: HashMap<NodeKey, HashSet<NodeKey>>,
     resolved_edges: HashMap<NodeKey, usize>,
+    binding_manifest: Option<Arc<nebula_execution::ExecutionBindingManifestV2>>,
 }
 
 struct ExactExecutionBody<'a> {
@@ -284,6 +285,7 @@ impl WorkflowEngine {
             workflow,
             persisted_outputs,
             factories,
+            binding_manifest,
         } = recorded;
         let graph = DependencyGraph::from_parts(workflow.nodes(), workflow.connections())
             .map_err(|error| EngineError::PlanningFailed(error.to_string()))?;
@@ -511,6 +513,7 @@ impl WorkflowEngine {
             seed_nodes,
             activated_edges,
             resolved_edges,
+            binding_manifest,
         })
     }
 
@@ -797,6 +800,7 @@ impl WorkflowEngine {
             seed_nodes,
             activated_edges,
             resolved_edges,
+            binding_manifest,
         } = prepared;
 
         let cancel_token = CancellationToken::new();
@@ -820,6 +824,21 @@ impl WorkflowEngine {
             LeasePreparation::Drive(lease) => lease,
             LeasePreparation::Completed(result) => return Ok(result),
         };
+
+        if let Some(binding_manifest) = binding_manifest {
+            self.credential_bindings_by_execution
+                .insert(execution_id, binding_manifest);
+            self.credential_scopes_by_execution.insert(
+                execution_id,
+                nebula_credential::TenantScope::from_scope(scope),
+            );
+        }
+        let binding_manifests = &self.credential_bindings_by_execution;
+        let credential_scopes = &self.credential_scopes_by_execution;
+        let _credential_context_guard = scopeguard::guard(execution_id, move |id| {
+            binding_manifests.remove(&id);
+            credential_scopes.remove(&id);
+        });
 
         self.execute_exact_execution_body(ExactExecutionBody {
             scope,

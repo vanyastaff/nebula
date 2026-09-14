@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use nebula_core::ArtifactSetDigest;
+use nebula_credential::CredentialSlotResolver;
 use nebula_engine::{
     ActionRegistry, ActionRuntime, DataPassingPolicy, EngineError, ExecutionStores,
     InProcessRunner, Plugin, PluginKey, PluginWiringError, ResolvedPlugin,
@@ -235,6 +236,8 @@ pub struct CoreFlavorRevisionInputs {
     pub catalog: Arc<dyn nebula_storage_port::PlanFlavorCatalog>,
     /// Contract reader on the same persistence backend as admitted executions.
     pub bundles: Arc<dyn nebula_storage_port::store::StartAcceptanceStore>,
+    /// Read/project-only credential capability on the deployment credential store.
+    pub credential_resolver: Arc<dyn CredentialSlotResolver>,
 }
 
 enum EngineEvidenceInputs {
@@ -280,7 +283,8 @@ fn build_core_flavor_runtime_impl(
         EngineEvidenceInputs::RuntimeRepair(evidence) => Arc::clone(&evidence.clock),
     };
     let engine = WorkflowEngine::new(action_runtime, metrics.clone())?
-        .with_execution_stores(execution_stores.clone());
+        .with_execution_stores(execution_stores.clone())
+        .with_credential_resolver(revisions.credential_resolver);
     let engine = match evidence_inputs {
         EngineEvidenceInputs::Ordinary => engine,
         #[cfg(feature = "runtime-repair-red")]

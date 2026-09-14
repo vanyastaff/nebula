@@ -355,6 +355,10 @@ pub enum CredentialServiceError {
         /// `owner_id` of the caller's scope.
         requested: String,
     },
+
+    /// Persisted state cannot be projected through its registered credential type.
+    #[error("credential slot state is invalid")]
+    InvalidSlotState,
 }
 
 impl fmt::Debug for CredentialServiceError {
@@ -396,7 +400,8 @@ impl nebula_error::Classify for CredentialServiceError {
             | Self::RevokePostProviderPersistence
             | Self::ExternalSourceNotWired { .. }
             | Self::Internal(_)
-            | Self::Cancelled => ErrorCategory::Internal,
+            | Self::Cancelled
+            | Self::InvalidSlotState => ErrorCategory::Internal,
         }
     }
 
@@ -434,6 +439,7 @@ impl nebula_error::Classify for CredentialServiceError {
                 "CREDENTIAL_SERVICE:REVOKE_POST_PROVIDER_PERSISTENCE"
             },
             Self::ExternalSourceNotWired { .. } => "CREDENTIAL_SERVICE:EXTERNAL_NOT_WIRED",
+            Self::InvalidSlotState => "CREDENTIAL_SERVICE:INVALID_SLOT_STATE",
             Self::Internal(_) => "CREDENTIAL_SERVICE:INTERNAL",
             Self::Cancelled => "CREDENTIAL_SERVICE:CANCELLED",
             Self::ScopeViolation { .. } => "CREDENTIAL_SERVICE:SCOPE_VIOLATION",

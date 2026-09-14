@@ -267,7 +267,7 @@ pub struct MembershipRow {
 // hold a float); the clippy `Eq`-derivable hint is a false positive for
 // JSON-bearing rows.
 #[expect(clippy::derive_partial_eq_without_eq)]
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
 pub struct ResourceRow {
     /// `res_` ULID (opaque string form).
     pub id: String,
@@ -281,6 +281,14 @@ pub struct ResourceRow {
     pub kind: String,
     /// Resource config blob.
     pub config: serde_json::Value,
+    /// Credential selectors keyed by the resource's declared slot name.
+    ///
+    /// These bindings are persisted separately from `config` so credential
+    /// authority cannot be smuggled through resource-specific values. Values
+    /// remain untrusted selectors until the credential runtime resolves them
+    /// under the authenticated [`Scope`](crate::Scope).
+    #[serde(default)]
+    pub credential_bindings: std::collections::BTreeMap<String, String>,
     /// Creation timestamp.
     pub created_at: String,
     /// Creator id (opaque string form).
@@ -289,6 +297,25 @@ pub struct ResourceRow {
     pub version: u64,
     /// Soft-delete timestamp.
     pub deleted_at: Option<String>,
+}
+
+impl std::fmt::Debug for ResourceRow {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ResourceRow")
+            .field("id", &self.id)
+            .field("workspace_id", &self.workspace_id)
+            .field("slug", &self.slug)
+            .field("display_name", &self.display_name)
+            .field("kind", &self.kind)
+            .field("config", &"<redacted>")
+            .field("credential_binding_count", &self.credential_bindings.len())
+            .field("created_at", &self.created_at)
+            .field("created_by", &self.created_by)
+            .field("version", &self.version)
+            .field("deleted_at", &self.deleted_at)
+            .finish()
+    }
 }
 
 /// `triggers` row (migrations 0010 + 0018 webhook_path).

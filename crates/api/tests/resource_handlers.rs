@@ -3,18 +3,16 @@
 //! `GET /api/v1/orgs/{org}/workspaces/{ws}/resources` and
 //! `GET .../resources/{res}` are config-CRUD read endpoints (stub-endpoint policy
 //! Stub Endpoint Policy retired for these routes). These tests boot the
-//! in-memory app with a fake [`ResourceRepo`] and assert the honest
-//! `ResourceEntry` → `ResourceSummary` mapping: `res_<ULID>` id encoding,
+//! in-memory app with a fake [`ResourceStore`] and assert the honest
+//! `ResourceRow` → `ResourceSummary` mapping: `res_<ULID>` id encoding,
 //! `display_name` → `name`, soft-deleted rows excluded, and no raw
 //! `config` ever surfaced (no secret echo).
 //!
 //! The single-resource read additionally enforces tenant isolation: a
 //! resource whose `workspace_id` differs from the caller's authorized
 //! workspace is **404 Not Found**, indistinguishable from a missing row
-//! (no cross-tenant existence or content leak — `ResourceRepo::get` is
-//! looked up purely by id and is *not* workspace-scoped, so the handler
-//! is the isolation boundary). A soft-deleted row and an unparsable id
-//! are likewise 404.
+//! (no cross-tenant existence or content leak). A soft-deleted row and an
+//! unparsable id are likewise 404.
 
 mod common;
 
@@ -26,22 +24,16 @@ use axum::{
 };
 use common::*;
 use nebula_api::{ApiConfig, AppState, app};
-use nebula_core::{ResourceId, ResourceKey, WorkspaceId};
+use nebula_core::{ResourceId, ResourceKey};
 use nebula_engine::{EngineResourceStatus, ResourceRuntimeStatus};
-use nebula_storage::repos::{ResourceEntry, ResourceRepo};
+use nebula_storage_port::{Scope, StorageError, dto::ResourceRow, store::ResourceStore};
 use tower::ServiceExt;
 
-/// Raw 16-byte workspace id matching [`TEST_WS`], as the repo stores it.
-fn test_ws_bytes() -> Vec<u8> {
-    TEST_WS
-        .parse::<WorkspaceId>()
-        .expect("TEST_WS is a valid ws_<ULID>")
-        .as_bytes()
-        .to_vec()
+fn test_scope() -> Scope {
+    Scope::new(TEST_WS, TEST_ORG)
 }
 
-/// Build a `ResourceEntry` whose id is the 16 raw bytes of `id`, owned by
-/// `workspace_id_bytes`.
+/// Build a `ResourceRow` owned by `workspace_id`.
 ///
 /// Grounding the stored id bytes in a real [`ResourceId`] (rather than
 /// arbitrary filler bytes) makes the path-id ↔ stored-id decode round-trip
@@ -51,87 +43,82 @@ fn test_ws_bytes() -> Vec<u8> {
 /// to never echo it (no secret echo).
 fn entry(
     id: ResourceId,
-    workspace_id_bytes: Vec<u8>,
+    workspace_id: String,
     slug: &str,
     display_name: &str,
     kind: &str,
-    version: i64,
+    version: u64,
     deleted: bool,
-) -> ResourceEntry {
-    ResourceEntry {
-        id: id.as_bytes().to_vec(),
-        workspace_id: workspace_id_bytes,
+) -> ResourceRow {
+    ResourceRow {
+        id: id.to_string(),
+        workspace_id,
         slug: slug.to_owned(),
         display_name: display_name.to_owned(),
         kind: kind.to_owned(),
         // A config value that must NEVER appear in any response body.
         config: serde_json::json!({ "secret_looking_key": "do-not-leak" }),
-        created_at: chrono::Utc::now(),
-        created_by: vec![0u8; 16],
+        credential_bindings: std::collections::BTreeMap::from([(
+            "api_token".to_owned(),
+            "binding-selector-do-not-leak".to_owned(),
+        )]),
+        created_at: chrono::Utc::now().to_rfc3339(),
+        created_by: "system".to_owned(),
         version,
-        deleted_at: deleted.then_some(chrono::Utc::now()),
+        deleted_at: deleted.then(|| chrono::Utc::now().to_rfc3339()),
     }
 }
 
-/// One parametrizable fake [`ResourceRepo`] for every resource-handler
+/// One parametrizable fake [`ResourceStore`] for every resource-handler
 /// test.
 ///
-/// - `list` honours the `ResourceRepo::list` contract: it excludes
-///   soft-deleted rows **as part of** pagination (filter tombstones,
-///   then window over the live set) — the store owns tombstone
-///   exclusion, not the handler. When `expect_list_ws` is set the
-///   looked-up workspace id is asserted, pinning that the handler scopes
-///   `list()` to the tenant.
-/// - `get` mirrors the real id-keyed store: it returns `get_row` only
-///   when the looked-up id equals the stored row's id, and is *not*
-///   workspace-scoped — tenant isolation is the handler's job, asserted
-///   by the get tests.
+/// - `list` excludes soft-deleted and foreign-workspace rows before the
+///   handler applies pagination. The supplied scope is asserted.
+/// - `get` returns `get_row` only when id and authenticated scope match.
 /// - `create` / `update` / `soft_delete` record their argument into a
 ///   capture `Mutex` (and `Ok`), so a mutation test can inspect exactly
 ///   what the handler persisted (e.g. that `workspace_id` is the
 ///   caller's, never client-supplied).
-#[derive(Default)]
-struct FakeResourceRepo {
-    list_rows: Vec<ResourceEntry>,
-    get_row: Option<ResourceEntry>,
-    expect_list_ws: Option<Vec<u8>>,
-    last_create: Mutex<Option<ResourceEntry>>,
+#[derive(Debug, Default)]
+struct FakeResourceStore {
+    list_rows: Vec<ResourceRow>,
+    get_row: Option<ResourceRow>,
+    expect_list_scope: Option<Scope>,
+    last_create: Mutex<Option<(Scope, ResourceRow)>>,
     // Populated by `update` / `soft_delete`; read by the mutation tests
     // that exercise those handlers via `updated()` / `soft_deleted()`.
-    last_update: Mutex<Option<(ResourceEntry, i64)>>,
-    last_soft_delete: Mutex<Option<Vec<u8>>>,
+    last_update: Mutex<Option<(Scope, ResourceRow, u64)>>,
+    last_soft_delete: Mutex<Option<(Scope, String)>>,
     // When set, `update` returns this CAS conflict instead of `Ok` — so a
     // stale-`expected_version` test can drive the handler's
     // `StorageError::Conflict` → 409 mapping without a stateful store.
-    update_conflict: Option<(i64, i64)>,
+    update_conflict: Option<(u64, u64)>,
 }
 
-impl FakeResourceRepo {
-    /// Repo that serves `rows` from `list` and asserts `list()` is scoped
+impl FakeResourceStore {
+    /// Store that serves `rows` from `list` and asserts `list()` is scoped
     /// to the test workspace.
-    fn with_list(rows: Vec<ResourceEntry>) -> Self {
+    fn with_list(rows: Vec<ResourceRow>) -> Self {
         Self {
             list_rows: rows,
-            expect_list_ws: Some(test_ws_bytes()),
+            expect_list_scope: Some(test_scope()),
             ..Self::default()
         }
     }
 
-    /// Repo whose `get(id)` resolves `row` (by exact id match), faithfully
-    /// returning even a foreign-workspace row so the handler is the
-    /// isolation boundary.
-    fn with_get(row: Option<ResourceEntry>) -> Self {
+    /// Store whose `get(id)` resolves `row` only under its owning scope.
+    fn with_get(row: Option<ResourceRow>) -> Self {
         Self {
             get_row: row,
             ..Self::default()
         }
     }
 
-    /// Repo whose `get(id)` resolves `row` and whose `update` rejects
+    /// Store whose `get(id)` resolves `row` and whose `update` rejects
     /// with a CAS [`StorageError::Conflict`] (`expected` vs `actual`)
     /// instead of `Ok`. Drives the handler's stale-version → 409 path
     /// without a stateful store.
-    fn with_get_and_update_conflict(row: ResourceEntry, expected: i64, actual: i64) -> Self {
+    fn with_get_and_update_conflict(row: ResourceRow, expected: u64, actual: u64) -> Self {
         Self {
             get_row: Some(row),
             update_conflict: Some((expected, actual)),
@@ -139,8 +126,8 @@ impl FakeResourceRepo {
         }
     }
 
-    /// The `ResourceEntry` the handler passed to `create`, if any.
-    fn created(&self) -> Option<ResourceEntry> {
+    /// The scoped row the handler passed to `create`, if any.
+    fn created(&self) -> Option<(Scope, ResourceRow)> {
         self.last_create
             .lock()
             .expect("create capture mutex not poisoned")
@@ -150,16 +137,16 @@ impl FakeResourceRepo {
     /// The `(entry, expected_version)` the handler passed to `update`, if
     /// any. `None` proves `update` was never reached (e.g. a foreign-
     /// workspace target must collapse to 404 *before* any mutation).
-    fn updated(&self) -> Option<(ResourceEntry, i64)> {
+    fn updated(&self) -> Option<(Scope, ResourceRow, u64)> {
         self.last_update
             .lock()
             .expect("update capture mutex not poisoned")
             .clone()
     }
 
-    /// The raw id bytes the handler passed to `soft_delete`, if any.
+    /// The scope and id the handler passed to `soft_delete`, if any.
     /// `None` proves `soft_delete` was never reached.
-    fn soft_deleted(&self) -> Option<Vec<u8>> {
+    fn soft_deleted(&self) -> Option<(Scope, String)> {
         self.last_soft_delete
             .lock()
             .expect("soft_delete capture mutex not poisoned")
@@ -168,88 +155,75 @@ impl FakeResourceRepo {
 }
 
 #[async_trait::async_trait]
-impl ResourceRepo for FakeResourceRepo {
-    async fn create(&self, r: &ResourceEntry) -> Result<(), nebula_storage::StorageError> {
+impl ResourceStore for FakeResourceStore {
+    async fn create(&self, scope: &Scope, row: ResourceRow) -> Result<(), StorageError> {
         *self
             .last_create
             .lock()
-            .expect("create capture mutex not poisoned") = Some(r.clone());
+            .expect("create capture mutex not poisoned") = Some((scope.clone(), row));
         Ok(())
     }
 
-    async fn get(&self, id: &[u8]) -> Result<Option<ResourceEntry>, nebula_storage::StorageError> {
+    async fn get(&self, scope: &Scope, id: &str) -> Result<Option<ResourceRow>, StorageError> {
         Ok(self
             .get_row
             .as_ref()
-            .filter(|e| e.id.as_slice() == id)
+            .filter(|row| {
+                row.id == id
+                    && row.workspace_id == scope.workspace_id
+                    && scope.org_id == TEST_ORG
+                    && row.deleted_at.is_none()
+            })
             .cloned())
     }
 
-    async fn get_by_slug(
-        &self,
-        _ws: &[u8],
-        _slug: &str,
-    ) -> Result<Option<ResourceEntry>, nebula_storage::StorageError> {
-        Ok(None)
+    async fn list(&self, scope: &Scope) -> Result<Vec<ResourceRow>, StorageError> {
+        if let Some(expected) = &self.expect_list_scope {
+            assert_eq!(scope, expected, "handler must pass authenticated scope");
+        }
+        Ok(self
+            .list_rows
+            .iter()
+            .filter(|row| {
+                row.workspace_id == scope.workspace_id
+                    && scope.org_id == TEST_ORG
+                    && row.deleted_at.is_none()
+            })
+            .cloned()
+            .collect())
     }
 
     async fn update(
         &self,
-        r: &ResourceEntry,
-        expected: i64,
-    ) -> Result<i64, nebula_storage::StorageError> {
+        scope: &Scope,
+        row: ResourceRow,
+        expected: u64,
+    ) -> Result<(), StorageError> {
         // Capture first (even on the conflict path): a CAS-conflict test
         // still asserts the handler reached `update` with the EXISTING
         // row's workspace_id, never a body-supplied one.
         *self
             .last_update
             .lock()
-            .expect("update capture mutex not poisoned") = Some((r.clone(), expected));
+            .expect("update capture mutex not poisoned") = Some((scope.clone(), row, expected));
         if let Some((expected_v, actual_v)) = self.update_conflict {
-            return Err(nebula_storage::StorageError::conflict(
-                "resource", "res", expected_v, actual_v,
-            ));
+            return Err(StorageError::Conflict {
+                entity: "resource",
+                id: "res".to_owned(),
+                expected: expected_v,
+                actual: actual_v,
+            });
         }
-        // The store owns the post-CAS increment; the fake mirrors the
-        // contract by returning the store-assigned `expected + 1`.
-        Ok(expected + 1)
-    }
-
-    async fn soft_delete(&self, id: &[u8]) -> Result<(), nebula_storage::StorageError> {
-        *self
-            .last_soft_delete
-            .lock()
-            .expect("soft_delete capture mutex not poisoned") = Some(id.to_vec());
         Ok(())
     }
 
-    async fn list(
-        &self,
-        workspace_id: &[u8],
-        offset: u64,
-        limit: u64,
-    ) -> Result<Vec<ResourceEntry>, nebula_storage::StorageError> {
-        if let Some(expected) = &self.expect_list_ws {
-            assert_eq!(
-                workspace_id,
-                expected.as_slice(),
-                "handler must scope list() to the tenant workspace id bytes"
-            );
-        }
-        // Honour the `ResourceRepo::list` contract: exclude soft-deleted
-        // rows as PART OF pagination — filter tombstones first, *then*
-        // window [offset, offset+limit) over the live set (never the
-        // reverse, which would yield sparse pages / skip live rows).
-        let offset = usize::try_from(offset).unwrap_or(usize::MAX);
-        let limit = usize::try_from(limit).unwrap_or(usize::MAX);
-        Ok(self
-            .list_rows
-            .iter()
-            .filter(|e| e.deleted_at.is_none())
-            .skip(offset)
-            .take(limit)
-            .cloned()
-            .collect())
+    async fn soft_delete(&self, scope: &Scope, id: &str) -> Result<(), StorageError> {
+        *self
+            .last_soft_delete
+            .lock()
+            .expect("soft_delete capture mutex not poisoned") =
+            Some((scope.clone(), id.to_owned()));
+        Ok(())
     }
 }
 
@@ -288,22 +262,22 @@ fn port_resource_state(api_config: &ApiConfig) -> AppState {
     .with_insecure_tenant_rbac_bypass_for_tests()
 }
 
-/// Build an [`AppState`] wired with `repo` as the resource catalog
+/// Build an [`AppState`] wired with `store` as the resource catalog
 /// backend (plus the shared org/workspace resolvers).
-fn state_with_repo(api_config: &ApiConfig, repo: Arc<dyn ResourceRepo>) -> AppState {
-    port_resource_state(api_config).with_resource_repo(repo)
+fn state_with_store(api_config: &ApiConfig, store: Arc<dyn ResourceStore>) -> AppState {
+    port_resource_state(api_config).with_resource_store(store)
 }
 
 #[tokio::test]
 async fn list_resources_returns_200_with_mapped_summaries() {
     let api_config = ApiConfig::for_test();
     // Two live rows plus one soft-deleted one for the test workspace.
-    // Per the `ResourceRepo::list` contract the repo excludes the
-    // tombstone as part of pagination, so only the two live rows surface.
+    // The store excludes the tombstone before handler pagination, so only
+    // the two live rows surface.
     let rows = vec![
         entry(
             ResourceId::new(),
-            test_ws_bytes(),
+            TEST_WS.to_owned(),
             "http-pool",
             "HTTP Pool",
             "http_pool",
@@ -312,7 +286,7 @@ async fn list_resources_returns_200_with_mapped_summaries() {
         ),
         entry(
             ResourceId::new(),
-            test_ws_bytes(),
+            TEST_WS.to_owned(),
             "redis",
             "Redis Cache",
             "redis_cache",
@@ -321,7 +295,7 @@ async fn list_resources_returns_200_with_mapped_summaries() {
         ),
         entry(
             ResourceId::new(),
-            test_ws_bytes(),
+            TEST_WS.to_owned(),
             "old-pool",
             "Deleted Pool",
             "http_pool",
@@ -329,8 +303,8 @@ async fn list_resources_returns_200_with_mapped_summaries() {
             true,
         ),
     ];
-    let repo: Arc<dyn ResourceRepo> = Arc::new(FakeResourceRepo::with_list(rows));
-    let state = state_with_repo(&api_config, repo);
+    let store: Arc<dyn ResourceStore> = Arc::new(FakeResourceStore::with_list(rows));
+    let state = state_with_store(&api_config, store);
     let app = app::build_app(state, &api_config);
     let token = create_test_jwt();
 
@@ -362,8 +336,10 @@ async fn list_resources_returns_200_with_mapped_summaries() {
 
     // Raw, non-secret config must never leak into the summary payload.
     assert!(
-        !raw.contains("secret_looking_key") && !raw.contains("do-not-leak"),
-        "response must not surface raw resource config; body: {raw}"
+        !raw.contains("secret_looking_key")
+            && !raw.contains("do-not-leak")
+            && !raw.contains("binding-selector-do-not-leak"),
+        "response must not surface resource config or credential bindings; body: {raw}"
     );
 
     let json: serde_json::Value = serde_json::from_str(&raw).expect("valid JSON body");
@@ -371,12 +347,12 @@ async fn list_resources_returns_200_with_mapped_summaries() {
         .as_array()
         .expect("`resources` must be a JSON array");
 
-    // The repo excludes the soft-deleted row as part of pagination →
+    // The store excludes the soft-deleted row before handler pagination →
     // exactly 2 live summaries reach the handler.
     assert_eq!(
         resources.len(),
         2,
-        "soft-deleted resources must be excluded by the repo; got {resources:?}"
+        "soft-deleted resources must be excluded by the store; got {resources:?}"
     );
 
     let first = &resources[0];
@@ -414,8 +390,8 @@ async fn list_resources_returns_200_with_mapped_summaries() {
 /// live* row — not the tombstone, and not an empty page. This is the
 /// regression guard for the pagination-before-tombstone bug: paginating
 /// the raw window then filtering would make this page sparse (it would
-/// land on the tombstone and return nothing); the `ResourceRepo::list`
-/// contract (filter, then window over the live set) makes it correct.
+/// land on the tombstone and return nothing); the `ResourceStore::list`
+/// contract supplies the live set before the handler applies the window.
 #[tokio::test]
 async fn list_resources_paginates_over_live_rows_honouring_offset_limit() {
     let api_config = ApiConfig::for_test();
@@ -424,7 +400,7 @@ async fn list_resources_paginates_over_live_rows_honouring_offset_limit() {
     let rows = vec![
         entry(
             ResourceId::new(),
-            test_ws_bytes(),
+            TEST_WS.to_owned(),
             "live-a",
             "Live A",
             "http_pool",
@@ -433,7 +409,7 @@ async fn list_resources_paginates_over_live_rows_honouring_offset_limit() {
         ),
         entry(
             ResourceId::new(),
-            test_ws_bytes(),
+            TEST_WS.to_owned(),
             "tomb",
             "Tombstone",
             "http_pool",
@@ -442,7 +418,7 @@ async fn list_resources_paginates_over_live_rows_honouring_offset_limit() {
         ),
         entry(
             ResourceId::new(),
-            test_ws_bytes(),
+            TEST_WS.to_owned(),
             "live-b",
             "Live B",
             "redis_cache",
@@ -451,7 +427,7 @@ async fn list_resources_paginates_over_live_rows_honouring_offset_limit() {
         ),
         entry(
             ResourceId::new(),
-            test_ws_bytes(),
+            TEST_WS.to_owned(),
             "live-c",
             "Live C",
             "http_pool",
@@ -459,8 +435,8 @@ async fn list_resources_paginates_over_live_rows_honouring_offset_limit() {
             false,
         ),
     ];
-    let repo: Arc<dyn ResourceRepo> = Arc::new(FakeResourceRepo::with_list(rows));
-    let state = state_with_repo(&api_config, repo);
+    let store: Arc<dyn ResourceStore> = Arc::new(FakeResourceStore::with_list(rows));
+    let state = state_with_store(&api_config, store);
     let app = app::build_app(state, &api_config);
     let token = create_test_jwt();
 
@@ -489,7 +465,7 @@ async fn list_resources_paginates_over_live_rows_honouring_offset_limit() {
         .expect("`resources` must be a JSON array");
 
     // Exactly the SECOND LIVE row — the window is over live rows, the
-    // tombstone is excluded by the repo (never a sparse/empty page).
+    // tombstone is excluded by the store (never a sparse/empty page).
     assert_eq!(
         resources.len(),
         1,
@@ -504,8 +480,8 @@ async fn list_resources_paginates_over_live_rows_honouring_offset_limit() {
 }
 
 #[tokio::test]
-async fn list_resources_without_repo_is_service_unavailable() {
-    // No `.with_resource_repo(...)` → the optional dependency is None.
+async fn list_resources_without_store_is_service_unavailable() {
+    // No `.with_resource_store(...)` → the optional dependency is None.
     // Mirrors the action/plugin catalog convention: 503, not a 501 stub.
     let api_config = ApiConfig::for_test();
     let state = port_resource_state(&api_config);
@@ -530,7 +506,7 @@ async fn list_resources_without_repo_is_service_unavailable() {
     assert_eq!(
         response.status(),
         StatusCode::SERVICE_UNAVAILABLE,
-        "an unconfigured resource repo must be 503 (not the retired 501 stub)"
+        "an unconfigured resource store must be 503 (not the retired 501 stub)"
     );
 }
 
@@ -547,7 +523,7 @@ async fn list_resources_without_repo_is_service_unavailable() {
 // build a populated registrar here. These tests therefore pin the
 // *handler's HTTP contract and tenant isolation* over every path
 // reachable without a concrete resource type: unknown-kind → 409,
-// no-validation-backend → 422 (fail closed), no-repo → 503, and the
+// no-validation-backend → 422 (fail closed), no-store → 503, and the
 // structural impossibility of a client-supplied owning workspace.
 
 /// POST a create body to the resources collection.
@@ -588,9 +564,9 @@ fn create_body(kind: &str) -> serde_json::Value {
 #[tokio::test]
 async fn create_resource_unknown_kind_is_409_and_not_persisted() {
     let api_config = ApiConfig::for_test();
-    let repo = Arc::new(FakeResourceRepo::default());
+    let store = Arc::new(FakeResourceStore::default());
     let registrars = Arc::new(nebula_engine::ResourceActivatorRegistry::new());
-    let state = state_with_repo(&api_config, Arc::clone(&repo) as Arc<dyn ResourceRepo>)
+    let state = state_with_store(&api_config, Arc::clone(&store) as Arc<dyn ResourceStore>)
         .with_resource_registrars(registrars);
     let app = app::build_app(state, &api_config);
 
@@ -611,7 +587,7 @@ async fn create_resource_unknown_kind_is_409_and_not_persisted() {
          → Conflict), got {status}, body: {raw}"
     );
     assert!(
-        repo.created().is_none(),
+        store.created().is_none(),
         "a config whose kind failed validation must NOT be persisted"
     );
 }
@@ -622,9 +598,9 @@ async fn create_resource_unknown_kind_is_409_and_not_persisted() {
 #[tokio::test]
 async fn create_resource_without_validation_backend_is_422_fail_closed() {
     let api_config = ApiConfig::for_test();
-    let repo = Arc::new(FakeResourceRepo::default());
+    let store = Arc::new(FakeResourceStore::default());
     // `.with_resource_registrars(...)` deliberately NOT called.
-    let state = state_with_repo(&api_config, Arc::clone(&repo) as Arc<dyn ResourceRepo>);
+    let state = state_with_store(&api_config, Arc::clone(&store) as Arc<dyn ResourceStore>);
     let app = app::build_app(state, &api_config);
 
     let response = create_resource_request(app, create_body("http_pool")).await;
@@ -634,15 +610,15 @@ async fn create_resource_without_validation_backend_is_422_fail_closed() {
         "no validation backend ⇒ fail closed with 422, never persist unvalidated"
     );
     assert!(
-        repo.created().is_none(),
+        store.created().is_none(),
         "an unvalidated config must NEVER be persisted"
     );
 }
 
-/// No resource repo configured ⇒ 503 (same convention as the read
+/// No resource store configured ⇒ 503 (same convention as the read
 /// endpoints), checked before any validation work.
 #[tokio::test]
-async fn create_resource_without_repo_is_503() {
+async fn create_resource_without_store_is_503() {
     let api_config = ApiConfig::for_test();
     let state = port_resource_state(&api_config);
     let app = app::build_app(state, &api_config);
@@ -651,7 +627,7 @@ async fn create_resource_without_repo_is_503() {
     assert_eq!(
         response.status(),
         StatusCode::SERVICE_UNAVAILABLE,
-        "an unconfigured resource repo must be 503"
+        "an unconfigured resource store must be 503"
     );
 }
 
@@ -691,11 +667,11 @@ async fn create_resource_request_body_cannot_set_workspace() {
 
     // End to end: even attempting the smuggle cannot persist a foreign
     // row — the (unknown) kind fails validation first (409), so the
-    // create never reaches the repo regardless of the body.
+    // create never reaches the store regardless of the body.
     let api_config = ApiConfig::for_test();
-    let repo = Arc::new(FakeResourceRepo::default());
+    let store = Arc::new(FakeResourceStore::default());
     let registrars = Arc::new(nebula_engine::ResourceActivatorRegistry::new());
-    let state = state_with_repo(&api_config, Arc::clone(&repo) as Arc<dyn ResourceRepo>)
+    let state = state_with_store(&api_config, Arc::clone(&store) as Arc<dyn ResourceStore>)
         .with_resource_registrars(registrars);
     let app = app::build_app(state, &api_config);
 
@@ -706,7 +682,7 @@ async fn create_resource_request_body_cannot_set_workspace() {
         "unknown kind is still rejected; a smuggled workspace_id changes nothing"
     );
     assert!(
-        repo.created().is_none(),
+        store.created().is_none(),
         "no row — and therefore no foreign-workspace row — may be persisted"
     );
 }
@@ -717,23 +693,23 @@ async fn create_resource_request_body_cannot_set_workspace() {
 /// exact id match (and is *not* workspace-scoped — the handler is the
 /// tenant-isolation boundary). A fixed `"the-slug"` keeps the get tests'
 /// call sites terse.
-fn get_state(api_config: &ApiConfig, row: Option<ResourceEntry>) -> AppState {
-    let repo: Arc<dyn ResourceRepo> = Arc::new(FakeResourceRepo::with_get(row));
-    state_with_repo(api_config, repo)
+fn get_state(api_config: &ApiConfig, row: Option<ResourceRow>) -> AppState {
+    let store: Arc<dyn ResourceStore> = Arc::new(FakeResourceStore::with_get(row));
+    state_with_store(api_config, store)
 }
 
 /// `entry` with the fixed slug the single-resource read tests use.
 fn get_entry(
     id: ResourceId,
-    workspace_id_bytes: Vec<u8>,
+    workspace_id: String,
     display_name: &str,
     kind: &str,
-    version: i64,
+    version: u64,
     deleted: bool,
-) -> ResourceEntry {
+) -> ResourceRow {
     entry(
         id,
-        workspace_id_bytes,
+        workspace_id,
         "the-slug",
         display_name,
         kind,
@@ -762,7 +738,7 @@ async fn get_resource_request(app: axum::Router, res_id: &str) -> axum::http::Re
 async fn get_resource_returns_200_with_mapped_summary() {
     let api_config = ApiConfig::for_test();
     let id = ResourceId::new();
-    let row = get_entry(id, test_ws_bytes(), "HTTP Pool", "http_pool", 3, false);
+    let row = get_entry(id, TEST_WS.to_owned(), "HTTP Pool", "http_pool", 3, false);
     let state = get_state(&api_config, Some(row));
     let app = app::build_app(state, &api_config);
 
@@ -780,8 +756,10 @@ async fn get_resource_returns_200_with_mapped_summary() {
 
     // Raw config must never leak into the single-resource payload.
     assert!(
-        !raw.contains("secret_looking_key") && !raw.contains("do-not-leak"),
-        "response must not surface raw resource config; body: {raw}"
+        !raw.contains("secret_looking_key")
+            && !raw.contains("do-not-leak")
+            && !raw.contains("binding-selector-do-not-leak"),
+        "response must not surface resource config or credential bindings; body: {raw}"
     );
 
     let json: serde_json::Value = serde_json::from_str(&raw).expect("valid JSON body");
@@ -815,7 +793,7 @@ async fn get_resource_returns_200_with_mapped_summary() {
 #[tokio::test]
 async fn get_resource_unknown_id_is_404() {
     let api_config = ApiConfig::for_test();
-    // Repo has no entry at all → any well-formed id is unknown.
+    // Store has no entry at all → any well-formed id is unknown.
     let state = get_state(&api_config, None);
     let app = app::build_app(state, &api_config);
 
@@ -830,9 +808,8 @@ async fn get_resource_unknown_id_is_404() {
 /// SECURITY (tenant isolation): a resource that *exists* but whose
 /// `workspace_id` is a different workspace than the caller's authorized
 /// path workspace MUST be **404** — not 200 (content leak) and not 403
-/// (existence leak). `ResourceRepo::get` is keyed purely by id, so the
-/// fake faithfully returns the foreign-workspace row; the handler is the
-/// isolation boundary and must filter it as if it does not exist.
+/// (existence leak). The scoped store returns the same miss as an absent
+/// row, and the handler preserves that indistinguishable response.
 #[tokio::test]
 async fn get_resource_cross_workspace_is_404_not_leaked() {
     let api_config = ApiConfig::for_test();
@@ -841,10 +818,9 @@ async fn get_resource_cross_workspace_is_404_not_leaked() {
     // 16 deterministic bytes that are NOT the caller's TEST_WS workspace
     // id — a genuinely different tenant. Sanity-check the premise so the
     // test cannot silently degrade into "same workspace".
-    let other_workspace = vec![0xAB_u8; 16];
+    let other_workspace = nebula_core::WorkspaceId::new().to_string();
     assert_ne!(
-        other_workspace,
-        test_ws_bytes(),
+        other_workspace, TEST_WS,
         "the cross-workspace fixture must differ from the caller's workspace"
     );
 
@@ -884,7 +860,7 @@ async fn get_resource_soft_deleted_is_404() {
     let api_config = ApiConfig::for_test();
     let id = ResourceId::new();
     // Belongs to the caller's workspace but is a tombstone (deleted_at set).
-    let tombstone = get_entry(id, test_ws_bytes(), "Deleted Pool", "http_pool", 7, true);
+    let tombstone = get_entry(id, TEST_WS.to_owned(), "Deleted Pool", "http_pool", 7, true);
     let state = get_state(&api_config, Some(tombstone));
     let app = app::build_app(state, &api_config);
 
@@ -925,7 +901,7 @@ async fn get_resource_malformed_id_is_404() {
 // `StorageError::Conflict` maps to 409, the persisted row keeps the
 // EXISTING workspace_id (never body-supplied), a foreign / unknown / soft-
 // deleted target collapses to an indistinguishable 404 with NO mutation,
-// and no-repo → 503.
+// and no-store → 503.
 
 /// Issue a `PUT .../resources/{res}` with `body`.
 async fn update_resource_request(
@@ -956,33 +932,31 @@ fn update_body(kind: &str, expected_version: i64) -> serde_json::Value {
         "display_name": "Renamed Pool",
         "kind": kind,
         "config": { "rotated_secret_key": "do-not-leak-on-update" },
+        "credential_bindings": { "api_token": "binding-update-do-not-leak" },
         "expected_version": expected_version,
     })
 }
 
 /// SECURITY (cross-tenant mutation isolation — the severe surface): a
 /// resource that exists but is owned by ANOTHER workspace MUST collapse
-/// to a 404 *before any mutation*. `ResourceRepo::get`/`update` are keyed
-/// purely by id (not workspace-scoped), so the fake faithfully resolves
-/// the foreign row; the handler is the isolation boundary. The capture
-/// MUST stay `None` — the foreign row is never written, and neither its
-/// content nor its existence leaks.
+/// to a 404 *before any mutation*. The scoped store returns the same miss
+/// as an absent row. The capture MUST stay `None` — the foreign row is never
+/// written, and neither its content nor its existence leaks.
 #[tokio::test]
 async fn update_resource_cross_workspace_is_404_no_mutation() {
     let api_config = ApiConfig::for_test();
     let id = ResourceId::new();
 
-    let other_workspace = vec![0xAB_u8; 16];
+    let other_workspace = nebula_core::WorkspaceId::new().to_string();
     assert_ne!(
-        other_workspace,
-        test_ws_bytes(),
+        other_workspace, TEST_WS,
         "the cross-workspace fixture must differ from the caller's workspace"
     );
     let foreign = get_entry(id, other_workspace, "Foreign Pool", "http_pool", 4, false);
 
-    let repo = Arc::new(FakeResourceRepo::with_get(Some(foreign)));
+    let store = Arc::new(FakeResourceStore::with_get(Some(foreign)));
     let registrars = Arc::new(nebula_engine::ResourceActivatorRegistry::new());
-    let state = state_with_repo(&api_config, Arc::clone(&repo) as Arc<dyn ResourceRepo>)
+    let state = state_with_store(&api_config, Arc::clone(&store) as Arc<dyn ResourceStore>)
         .with_resource_registrars(registrars);
     let app = app::build_app(state, &api_config);
 
@@ -1003,7 +977,7 @@ async fn update_resource_cross_workspace_is_404_no_mutation() {
          mutation; no existence leak) — got {status}, body: {raw}"
     );
     assert!(
-        repo.updated().is_none(),
+        store.updated().is_none(),
         "the foreign-workspace row must NEVER be passed to update — \
          isolation must short-circuit before any mutation"
     );
@@ -1021,9 +995,9 @@ async fn update_resource_cross_workspace_is_404_no_mutation() {
 #[tokio::test]
 async fn update_resource_unknown_id_is_404_no_mutation() {
     let api_config = ApiConfig::for_test();
-    let repo = Arc::new(FakeResourceRepo::with_get(None));
+    let store = Arc::new(FakeResourceStore::with_get(None));
     let registrars = Arc::new(nebula_engine::ResourceActivatorRegistry::new());
-    let state = state_with_repo(&api_config, Arc::clone(&repo) as Arc<dyn ResourceRepo>)
+    let state = state_with_store(&api_config, Arc::clone(&store) as Arc<dyn ResourceStore>)
         .with_resource_registrars(registrars);
     let app = app::build_app(state, &api_config);
 
@@ -1039,7 +1013,7 @@ async fn update_resource_unknown_id_is_404_no_mutation() {
         "an id with no backing row must be 404 on update"
     );
     assert!(
-        repo.updated().is_none(),
+        store.updated().is_none(),
         "an absent target must not reach update"
     );
 }
@@ -1050,11 +1024,11 @@ async fn update_resource_unknown_id_is_404_no_mutation() {
 async fn update_resource_soft_deleted_is_404_no_mutation() {
     let api_config = ApiConfig::for_test();
     let id = ResourceId::new();
-    let tombstone = get_entry(id, test_ws_bytes(), "Deleted Pool", "http_pool", 7, true);
+    let tombstone = get_entry(id, TEST_WS.to_owned(), "Deleted Pool", "http_pool", 7, true);
 
-    let repo = Arc::new(FakeResourceRepo::with_get(Some(tombstone)));
+    let store = Arc::new(FakeResourceStore::with_get(Some(tombstone)));
     let registrars = Arc::new(nebula_engine::ResourceActivatorRegistry::new());
-    let state = state_with_repo(&api_config, Arc::clone(&repo) as Arc<dyn ResourceRepo>)
+    let state = state_with_store(&api_config, Arc::clone(&store) as Arc<dyn ResourceStore>)
         .with_resource_registrars(registrars);
     let app = app::build_app(state, &api_config);
 
@@ -1065,7 +1039,7 @@ async fn update_resource_soft_deleted_is_404_no_mutation() {
         "a soft-deleted resource is a tombstone, not a resource → 404"
     );
     assert!(
-        repo.updated().is_none(),
+        store.updated().is_none(),
         "a tombstone must not be re-written by update"
     );
 }
@@ -1075,9 +1049,9 @@ async fn update_resource_soft_deleted_is_404_no_mutation() {
 #[tokio::test]
 async fn update_resource_malformed_id_is_404() {
     let api_config = ApiConfig::for_test();
-    let repo = Arc::new(FakeResourceRepo::with_get(None));
+    let store = Arc::new(FakeResourceStore::with_get(None));
     let registrars = Arc::new(nebula_engine::ResourceActivatorRegistry::new());
-    let state = state_with_repo(&api_config, Arc::clone(&repo) as Arc<dyn ResourceRepo>)
+    let state = state_with_store(&api_config, Arc::clone(&store) as Arc<dyn ResourceStore>)
         .with_resource_registrars(registrars);
     let app = app::build_app(state, &api_config);
 
@@ -1100,12 +1074,12 @@ async fn update_resource_unknown_kind_is_409_no_mutation() {
     let id = ResourceId::new();
     // A live row the caller owns — so a non-200 can only be the
     // re-validation gate, not isolation/soft-delete.
-    let row = get_entry(id, test_ws_bytes(), "My Pool", "http_pool", 2, false);
+    let row = get_entry(id, TEST_WS.to_owned(), "My Pool", "http_pool", 2, false);
 
-    let repo = Arc::new(FakeResourceRepo::with_get(Some(row)));
+    let store = Arc::new(FakeResourceStore::with_get(Some(row)));
     // Empty registry ⇒ every kind is UnknownKind.
     let registrars = Arc::new(nebula_engine::ResourceActivatorRegistry::new());
-    let state = state_with_repo(&api_config, Arc::clone(&repo) as Arc<dyn ResourceRepo>)
+    let state = state_with_store(&api_config, Arc::clone(&store) as Arc<dyn ResourceStore>)
         .with_resource_registrars(registrars);
     let app = app::build_app(state, &api_config);
 
@@ -1122,7 +1096,7 @@ async fn update_resource_unknown_kind_is_409_no_mutation() {
          Conflict), re-validated before any write"
     );
     assert!(
-        repo.updated().is_none(),
+        store.updated().is_none(),
         "a config whose kind failed re-validation must NOT be persisted"
     );
 }
@@ -1135,11 +1109,11 @@ async fn update_resource_unknown_kind_is_409_no_mutation() {
 async fn update_resource_without_validation_backend_is_422_fail_closed_no_secret() {
     let api_config = ApiConfig::for_test();
     let id = ResourceId::new();
-    let row = get_entry(id, test_ws_bytes(), "My Pool", "http_pool", 1, false);
+    let row = get_entry(id, TEST_WS.to_owned(), "My Pool", "http_pool", 1, false);
 
-    let repo = Arc::new(FakeResourceRepo::with_get(Some(row)));
+    let store = Arc::new(FakeResourceStore::with_get(Some(row)));
     // `.with_resource_registrars(...)` deliberately NOT called.
-    let state = state_with_repo(&api_config, Arc::clone(&repo) as Arc<dyn ResourceRepo>);
+    let state = state_with_store(&api_config, Arc::clone(&store) as Arc<dyn ResourceStore>);
     let app = app::build_app(state, &api_config);
 
     let response = update_resource_request(app, &id.to_string(), update_body("http_pool", 1)).await;
@@ -1159,7 +1133,7 @@ async fn update_resource_without_validation_backend_is_422_fail_closed_no_secret
          persist unvalidated; got {status}, body: {raw}"
     );
     assert!(
-        repo.updated().is_none(),
+        store.updated().is_none(),
         "an unvalidated config must NEVER be persisted on update"
     );
     assert!(
@@ -1169,11 +1143,11 @@ async fn update_resource_without_validation_backend_is_422_fail_closed_no_secret
     );
 }
 
-/// Gate ordering: re-validation runs BEFORE the CAS write. The repo stub
+/// Gate ordering: re-validation runs BEFORE the CAS write. The store stub
 /// is armed to reject the write with a CAS `StorageError::Conflict`, but
 /// the validation backend is absent — so the request must fail closed
 /// with 422 (an unvalidated config never even reaches the CAS layer)
-/// rather than surface the repo's 409. The CAS→409 mapping itself is
+/// rather than surface the store's 409. The CAS→409 mapping itself is
 /// asserted directly at the type level in
 /// `storage_cas_conflict_maps_to_409_other_storage_errors_stay_500`
 /// (the API crate cannot stand up a real registrar — no `nebula-resource`
@@ -1183,12 +1157,12 @@ async fn update_resource_without_validation_backend_is_422_fail_closed_no_secret
 async fn update_resource_revalidation_precedes_cas() {
     let api_config = ApiConfig::for_test();
     let id = ResourceId::new();
-    let row = get_entry(id, test_ws_bytes(), "My Pool", "http_pool", 5, false);
+    let row = get_entry(id, TEST_WS.to_owned(), "My Pool", "http_pool", 5, false);
 
-    // Repo would reject with a CAS conflict — but re-validation (absent
+    // Store would reject with a CAS conflict — but re-validation (absent
     // backend → 422) MUST run first, proving the gate ordering.
-    let repo = Arc::new(FakeResourceRepo::with_get_and_update_conflict(row, 5, 9));
-    let state = state_with_repo(&api_config, Arc::clone(&repo) as Arc<dyn ResourceRepo>);
+    let store = Arc::new(FakeResourceStore::with_get_and_update_conflict(row, 5, 9));
+    let state = state_with_store(&api_config, Arc::clone(&store) as Arc<dyn ResourceStore>);
     let app = app::build_app(state, &api_config);
 
     let response = update_resource_request(app, &id.to_string(), update_body("http_pool", 5)).await;
@@ -1199,15 +1173,15 @@ async fn update_resource_revalidation_precedes_cas() {
          an unvalidated config must never even reach the CAS layer"
     );
     assert!(
-        repo.updated().is_none(),
+        store.updated().is_none(),
         "update must not be reached when re-validation fails closed"
     );
 }
 
-/// No resource repo configured ⇒ 503 (same convention as the read/create
+/// No resource store configured ⇒ 503 (same convention as the read/create
 /// endpoints), checked before any validation or isolation work.
 #[tokio::test]
-async fn update_resource_without_repo_is_503() {
+async fn update_resource_without_store_is_503() {
     let api_config = ApiConfig::for_test();
     let state = port_resource_state(&api_config);
     let app = app::build_app(state, &api_config);
@@ -1221,7 +1195,7 @@ async fn update_resource_without_repo_is_503() {
     assert_eq!(
         response.status(),
         StatusCode::SERVICE_UNAVAILABLE,
-        "an unconfigured resource repo must be 503 on update"
+        "an unconfigured resource store must be 503 on update"
     );
 }
 
@@ -1277,10 +1251,10 @@ async fn delete_resource_request(app: axum::Router, res_id: &str) -> axum::http:
 async fn delete_resource_valid_is_204_and_soft_deletes() {
     let api_config = ApiConfig::for_test();
     let id = ResourceId::new();
-    let row = get_entry(id, test_ws_bytes(), "My Pool", "http_pool", 3, false);
+    let row = get_entry(id, TEST_WS.to_owned(), "My Pool", "http_pool", 3, false);
 
-    let repo = Arc::new(FakeResourceRepo::with_get(Some(row)));
-    let state = state_with_repo(&api_config, Arc::clone(&repo) as Arc<dyn ResourceRepo>);
+    let store = Arc::new(FakeResourceStore::with_get(Some(row)));
+    let state = state_with_store(&api_config, Arc::clone(&store) as Arc<dyn ResourceStore>);
     let app = app::build_app(state, &api_config);
 
     let response = delete_resource_request(app, &id.to_string()).await;
@@ -1290,9 +1264,9 @@ async fn delete_resource_valid_is_204_and_soft_deletes() {
         "a live resource the caller owns must soft-delete with 204"
     );
     assert_eq!(
-        repo.soft_deleted().as_deref(),
-        Some(id.as_bytes().as_slice()),
-        "soft_delete must be called with the resolved row's id bytes"
+        store.soft_deleted(),
+        Some((test_scope(), id.to_string())),
+        "soft_delete must receive the authenticated scope and exact resource id"
     );
 }
 
@@ -1306,16 +1280,15 @@ async fn delete_resource_cross_workspace_is_404_no_mutation() {
     let api_config = ApiConfig::for_test();
     let id = ResourceId::new();
 
-    let other_workspace = vec![0xCD_u8; 16];
+    let other_workspace = nebula_core::WorkspaceId::new().to_string();
     assert_ne!(
-        other_workspace,
-        test_ws_bytes(),
+        other_workspace, TEST_WS,
         "the cross-workspace fixture must differ from the caller's workspace"
     );
     let foreign = get_entry(id, other_workspace, "Foreign Pool", "http_pool", 8, false);
 
-    let repo = Arc::new(FakeResourceRepo::with_get(Some(foreign)));
-    let state = state_with_repo(&api_config, Arc::clone(&repo) as Arc<dyn ResourceRepo>);
+    let store = Arc::new(FakeResourceStore::with_get(Some(foreign)));
+    let state = state_with_store(&api_config, Arc::clone(&store) as Arc<dyn ResourceStore>);
     let app = app::build_app(state, &api_config);
 
     let response = delete_resource_request(app, &id.to_string()).await;
@@ -1335,7 +1308,7 @@ async fn delete_resource_cross_workspace_is_404_no_mutation() {
          cross-tenant delete; no existence leak) — got {status}"
     );
     assert!(
-        repo.soft_deleted().is_none(),
+        store.soft_deleted().is_none(),
         "the foreign-workspace row must NEVER be soft-deleted — \
          isolation must short-circuit before any mutation"
     );
@@ -1350,8 +1323,8 @@ async fn delete_resource_cross_workspace_is_404_no_mutation() {
 #[tokio::test]
 async fn delete_resource_unknown_id_is_404_no_mutation() {
     let api_config = ApiConfig::for_test();
-    let repo = Arc::new(FakeResourceRepo::with_get(None));
-    let state = state_with_repo(&api_config, Arc::clone(&repo) as Arc<dyn ResourceRepo>);
+    let store = Arc::new(FakeResourceStore::with_get(None));
+    let state = state_with_store(&api_config, Arc::clone(&store) as Arc<dyn ResourceStore>);
     let app = app::build_app(state, &api_config);
 
     let response = delete_resource_request(app, &ResourceId::new().to_string()).await;
@@ -1361,7 +1334,7 @@ async fn delete_resource_unknown_id_is_404_no_mutation() {
         "an id with no backing row must be 404 on delete"
     );
     assert!(
-        repo.soft_deleted().is_none(),
+        store.soft_deleted().is_none(),
         "an absent target must not reach soft_delete"
     );
 }
@@ -1372,10 +1345,10 @@ async fn delete_resource_unknown_id_is_404_no_mutation() {
 async fn delete_resource_already_deleted_is_404() {
     let api_config = ApiConfig::for_test();
     let id = ResourceId::new();
-    let tombstone = get_entry(id, test_ws_bytes(), "Deleted Pool", "http_pool", 7, true);
+    let tombstone = get_entry(id, TEST_WS.to_owned(), "Deleted Pool", "http_pool", 7, true);
 
-    let repo = Arc::new(FakeResourceRepo::with_get(Some(tombstone)));
-    let state = state_with_repo(&api_config, Arc::clone(&repo) as Arc<dyn ResourceRepo>);
+    let store = Arc::new(FakeResourceStore::with_get(Some(tombstone)));
+    let state = state_with_store(&api_config, Arc::clone(&store) as Arc<dyn ResourceStore>);
     let app = app::build_app(state, &api_config);
 
     let response = delete_resource_request(app, &id.to_string()).await;
@@ -1385,7 +1358,7 @@ async fn delete_resource_already_deleted_is_404() {
         "an already soft-deleted resource is a tombstone → 404"
     );
     assert!(
-        repo.soft_deleted().is_none(),
+        store.soft_deleted().is_none(),
         "an already-tombstoned row must not be soft-deleted again"
     );
 }
@@ -1394,8 +1367,8 @@ async fn delete_resource_already_deleted_is_404() {
 #[tokio::test]
 async fn delete_resource_malformed_id_is_404() {
     let api_config = ApiConfig::for_test();
-    let repo = Arc::new(FakeResourceRepo::with_get(None));
-    let state = state_with_repo(&api_config, Arc::clone(&repo) as Arc<dyn ResourceRepo>);
+    let store = Arc::new(FakeResourceStore::with_get(None));
+    let state = state_with_store(&api_config, Arc::clone(&store) as Arc<dyn ResourceStore>);
     let app = app::build_app(state, &api_config);
 
     let response = delete_resource_request(app, "not-a-valid-resource-id").await;
@@ -1406,9 +1379,9 @@ async fn delete_resource_malformed_id_is_404() {
     );
 }
 
-/// No resource repo configured ⇒ 503 on delete (same convention).
+/// No resource store configured ⇒ 503 on delete (same convention).
 #[tokio::test]
-async fn delete_resource_without_repo_is_503() {
+async fn delete_resource_without_store_is_503() {
     let api_config = ApiConfig::for_test();
     let state = port_resource_state(&api_config);
     let app = app::build_app(state, &api_config);
@@ -1417,7 +1390,7 @@ async fn delete_resource_without_repo_is_503() {
     assert_eq!(
         response.status(),
         StatusCode::SERVICE_UNAVAILABLE,
-        "an unconfigured resource repo must be 503 on delete"
+        "an unconfigured resource store must be 503 on delete"
     );
 }
 
@@ -1432,9 +1405,12 @@ async fn delete_resource_without_repo_is_503() {
 fn storage_cas_conflict_maps_to_409_other_storage_errors_stay_500() {
     use nebula_api::ApiError;
 
-    let cas = nebula_api::map_resource_update_storage_error(
-        nebula_storage::StorageError::conflict("resource", "res_x", 3, 7),
-    );
+    let cas = nebula_api::map_resource_update_storage_error(StorageError::Conflict {
+        entity: "resource",
+        id: "res_x".to_owned(),
+        expected: 3,
+        actual: 7,
+    });
     let (status, _) = cas.to_problem_details();
     assert_eq!(
         status,
@@ -1443,9 +1419,9 @@ fn storage_cas_conflict_maps_to_409_other_storage_errors_stay_500() {
     );
 
     // A non-CAS storage fault must NOT be coerced to 409 — it stays 500.
-    let other = nebula_api::map_resource_update_storage_error(
-        nebula_storage::StorageError::Connection("db down".to_owned()),
-    );
+    let other = nebula_api::map_resource_update_storage_error(StorageError::Connection(
+        "db down".to_owned(),
+    ));
     let (status, _) = other.to_problem_details();
     assert_eq!(
         status,
@@ -1472,9 +1448,10 @@ fn storage_cas_conflict_maps_to_409_other_storage_errors_stay_500() {
 fn create_duplicate_slug_maps_to_409_other_storage_errors_stay_500() {
     use nebula_api::ApiError;
 
-    let dup = nebula_api::map_resource_create_storage_error(
-        nebula_storage::StorageError::duplicate("resource", "workspace slug already in use"),
-    );
+    let dup = nebula_api::map_resource_create_storage_error(StorageError::Duplicate {
+        entity: "resource",
+        detail: "workspace slug already in use".to_owned(),
+    });
     let (status, _) = dup.to_problem_details();
     assert_eq!(
         status,
@@ -1483,9 +1460,9 @@ fn create_duplicate_slug_maps_to_409_other_storage_errors_stay_500() {
     );
 
     // A non-duplicate storage fault must NOT be coerced to 409 — 500.
-    let other = nebula_api::map_resource_create_storage_error(
-        nebula_storage::StorageError::Connection("db down".to_owned()),
-    );
+    let other = nebula_api::map_resource_create_storage_error(StorageError::Connection(
+        "db down".to_owned(),
+    ));
     let (status, _) = other.to_problem_details();
     assert_eq!(
         status,
@@ -1510,9 +1487,12 @@ async fn delete_then_get_same_id_is_404() {
     let id = ResourceId::new();
 
     // 1) DELETE a live row → 204.
-    let live = get_entry(id, test_ws_bytes(), "My Pool", "http_pool", 3, false);
-    let del_repo = Arc::new(FakeResourceRepo::with_get(Some(live)));
-    let del_state = state_with_repo(&api_config, Arc::clone(&del_repo) as Arc<dyn ResourceRepo>);
+    let live = get_entry(id, TEST_WS.to_owned(), "My Pool", "http_pool", 3, false);
+    let delete_store = Arc::new(FakeResourceStore::with_get(Some(live)));
+    let del_state = state_with_store(
+        &api_config,
+        Arc::clone(&delete_store) as Arc<dyn ResourceStore>,
+    );
     let del_app = app::build_app(del_state, &api_config);
     let del_resp = delete_resource_request(del_app, &id.to_string()).await;
     assert_eq!(
@@ -1521,14 +1501,14 @@ async fn delete_then_get_same_id_is_404() {
         "the soft-delete itself must be 204"
     );
     assert_eq!(
-        del_repo.soft_deleted().as_deref(),
-        Some(id.as_bytes().as_slice()),
+        delete_store.soft_deleted(),
+        Some((test_scope(), id.to_string())),
         "soft_delete must have been issued for that id"
     );
 
     // 2) Post-delete the row is a tombstone; GET of the same id → 404
     //    (the get-by-id filter excludes `deleted_at.is_some()`).
-    let tombstone = get_entry(id, test_ws_bytes(), "My Pool", "http_pool", 3, true);
+    let tombstone = get_entry(id, TEST_WS.to_owned(), "My Pool", "http_pool", 3, true);
     let get_app = app::build_app(get_state(&api_config, Some(tombstone)), &api_config);
     let get_resp = get_resource_request(get_app, &id.to_string()).await;
     assert_eq!(
@@ -1643,8 +1623,8 @@ async fn get_resource_status_owned_active_is_200_with_dto() {
     let id = ResourceId::new();
     // The stored row's `kind` is what the handler must use to key the
     // engine status seam.
-    let row = get_entry(id, test_ws_bytes(), "HTTP Pool", "http_pool", 3, false);
-    let repo: Arc<dyn ResourceRepo> = Arc::new(FakeResourceRepo::with_get(Some(row)));
+    let row = get_entry(id, TEST_WS.to_owned(), "HTTP Pool", "http_pool", 3, false);
+    let store: Arc<dyn ResourceStore> = Arc::new(FakeResourceStore::with_get(Some(row)));
     let status = Arc::new(FakeResourceStatus::resolving(
         "http_pool",
         ResourceRuntimeStatus {
@@ -1653,7 +1633,7 @@ async fn get_resource_status_owned_active_is_200_with_dto() {
             accepting: true,
         },
     ));
-    let state = state_with_repo(&api_config, repo).with_resource_status(Arc::clone(&status) as _);
+    let state = state_with_store(&api_config, store).with_resource_status(Arc::clone(&status) as _);
     let app = app::build_app(state, &api_config);
 
     let response = get_status_request(app, &id.to_string()).await;
@@ -1716,14 +1696,13 @@ async fn get_resource_status_cross_workspace_is_404_no_status_oracle() {
     let api_config = ApiConfig::for_test();
     let id = ResourceId::new();
 
-    let other_workspace = vec![0xAB_u8; 16];
+    let other_workspace = nebula_core::WorkspaceId::new().to_string();
     assert_ne!(
-        other_workspace,
-        test_ws_bytes(),
+        other_workspace, TEST_WS,
         "the cross-workspace fixture must differ from the caller's workspace"
     );
     let foreign = get_entry(id, other_workspace, "Foreign Pool", "http_pool", 9, false);
-    let repo: Arc<dyn ResourceRepo> = Arc::new(FakeResourceRepo::with_get(Some(foreign)));
+    let store: Arc<dyn ResourceStore> = Arc::new(FakeResourceStore::with_get(Some(foreign)));
     // The seam would resolve `http_pool` — but isolation must stop the
     // request before it is ever consulted.
     let status = Arc::new(FakeResourceStatus::resolving(
@@ -1734,7 +1713,7 @@ async fn get_resource_status_cross_workspace_is_404_no_status_oracle() {
             accepting: true,
         },
     ));
-    let state = state_with_repo(&api_config, repo).with_resource_status(Arc::clone(&status) as _);
+    let state = state_with_store(&api_config, store).with_resource_status(Arc::clone(&status) as _);
     let app = app::build_app(state, &api_config);
 
     let response = get_status_request(app, &id.to_string()).await;
@@ -1778,8 +1757,8 @@ async fn get_resource_status_soft_deleted_is_404_no_status_oracle() {
     let id = ResourceId::new();
 
     // Owned by the CALLER's workspace, but soft-deleted (`deleted = true`).
-    let tombstone = get_entry(id, test_ws_bytes(), "Deleted Pool", "http_pool", 4, true);
-    let repo: Arc<dyn ResourceRepo> = Arc::new(FakeResourceRepo::with_get(Some(tombstone)));
+    let tombstone = get_entry(id, TEST_WS.to_owned(), "Deleted Pool", "http_pool", 4, true);
+    let store: Arc<dyn ResourceStore> = Arc::new(FakeResourceStore::with_get(Some(tombstone)));
     // The seam would resolve `http_pool` — isolation/tombstone filter
     // must stop the request before it is ever consulted.
     let status = Arc::new(FakeResourceStatus::resolving(
@@ -1790,7 +1769,7 @@ async fn get_resource_status_soft_deleted_is_404_no_status_oracle() {
             accepting: true,
         },
     ));
-    let state = state_with_repo(&api_config, repo).with_resource_status(Arc::clone(&status) as _);
+    let state = state_with_store(&api_config, store).with_resource_status(Arc::clone(&status) as _);
     let app = app::build_app(state, &api_config);
 
     let response = get_status_request(app, &id.to_string()).await;
@@ -1826,9 +1805,9 @@ async fn get_resource_status_soft_deleted_is_404_no_status_oracle() {
 #[tokio::test]
 async fn get_resource_status_unknown_id_is_404() {
     let api_config = ApiConfig::for_test();
-    let repo: Arc<dyn ResourceRepo> = Arc::new(FakeResourceRepo::with_get(None));
+    let store: Arc<dyn ResourceStore> = Arc::new(FakeResourceStore::with_get(None));
     let status = Arc::new(FakeResourceStatus::empty());
-    let state = state_with_repo(&api_config, repo).with_resource_status(Arc::clone(&status) as _);
+    let state = state_with_store(&api_config, store).with_resource_status(Arc::clone(&status) as _);
     let app = app::build_app(state, &api_config);
 
     let response = get_status_request(app, &ResourceId::new().to_string()).await;
@@ -1847,9 +1826,9 @@ async fn get_resource_status_unknown_id_is_404() {
 #[tokio::test]
 async fn get_resource_status_malformed_id_is_404() {
     let api_config = ApiConfig::for_test();
-    let repo: Arc<dyn ResourceRepo> = Arc::new(FakeResourceRepo::with_get(None));
+    let store: Arc<dyn ResourceStore> = Arc::new(FakeResourceStore::with_get(None));
     let status = Arc::new(FakeResourceStatus::empty());
-    let state = state_with_repo(&api_config, repo).with_resource_status(status as _);
+    let state = state_with_store(&api_config, store).with_resource_status(status as _);
     let app = app::build_app(state, &api_config);
 
     let response = get_status_request(app, "not-a-valid-resource-id").await;
@@ -1868,12 +1847,12 @@ async fn get_resource_status_malformed_id_is_404() {
 async fn get_resource_status_owned_but_not_active_is_200_inactive() {
     let api_config = ApiConfig::for_test();
     let id = ResourceId::new();
-    let row = get_entry(id, test_ws_bytes(), "Idle Pool", "http_pool", 1, false);
-    let repo: Arc<dyn ResourceRepo> = Arc::new(FakeResourceRepo::with_get(Some(row)));
+    let row = get_entry(id, TEST_WS.to_owned(), "Idle Pool", "http_pool", 1, false);
+    let store: Arc<dyn ResourceStore> = Arc::new(FakeResourceStore::with_get(Some(row)));
     // Seam resolves NOTHING → the owned resource is configured but not
     // currently active.
     let status = Arc::new(FakeResourceStatus::empty());
-    let state = state_with_repo(&api_config, repo).with_resource_status(Arc::clone(&status) as _);
+    let state = state_with_store(&api_config, store).with_resource_status(Arc::clone(&status) as _);
     let app = app::build_app(state, &api_config);
 
     let response = get_status_request(app, &id.to_string()).await;
@@ -1920,10 +1899,10 @@ async fn get_resource_status_owned_but_not_active_is_200_inactive() {
 async fn get_resource_status_without_status_backend_is_503() {
     let api_config = ApiConfig::for_test();
     let id = ResourceId::new();
-    let row = get_entry(id, test_ws_bytes(), "HTTP Pool", "http_pool", 3, false);
-    let repo: Arc<dyn ResourceRepo> = Arc::new(FakeResourceRepo::with_get(Some(row)));
+    let row = get_entry(id, TEST_WS.to_owned(), "HTTP Pool", "http_pool", 3, false);
+    let store: Arc<dyn ResourceStore> = Arc::new(FakeResourceStore::with_get(Some(row)));
     // `.with_resource_status(...)` deliberately NOT called.
-    let state = state_with_repo(&api_config, repo);
+    let state = state_with_store(&api_config, store);
     let app = app::build_app(state, &api_config);
 
     let response = get_status_request(app, &id.to_string()).await;
@@ -1935,10 +1914,10 @@ async fn get_resource_status_without_status_backend_is_503() {
     );
 }
 
-/// No resource repo configured ⇒ 503 (same convention as the other
+/// No resource store configured ⇒ 503 (same convention as the other
 /// resource endpoints), checked before any isolation/status work.
 #[tokio::test]
-async fn get_resource_status_without_repo_is_503() {
+async fn get_resource_status_without_store_is_503() {
     let api_config = ApiConfig::for_test();
     let state = port_resource_state(&api_config);
     let app = app::build_app(state, &api_config);
@@ -1947,7 +1926,7 @@ async fn get_resource_status_without_repo_is_503() {
     assert_eq!(
         response.status(),
         StatusCode::SERVICE_UNAVAILABLE,
-        "an unconfigured resource repo must be 503 on status"
+        "an unconfigured resource store must be 503 on status"
     );
 }
 
@@ -1971,8 +1950,8 @@ async fn get_resource_status_without_repo_is_503() {
 async fn post_resource_acquire_route_does_not_exist() {
     let api_config = ApiConfig::for_test();
     let id = ResourceId::new();
-    let row = get_entry(id, test_ws_bytes(), "HTTP Pool", "http_pool", 3, false);
-    let repo: Arc<dyn ResourceRepo> = Arc::new(FakeResourceRepo::with_get(Some(row)));
+    let row = get_entry(id, TEST_WS.to_owned(), "HTTP Pool", "http_pool", 3, false);
+    let store: Arc<dyn ResourceStore> = Arc::new(FakeResourceStore::with_get(Some(row)));
     let status = Arc::new(FakeResourceStatus::resolving(
         "http_pool",
         ResourceRuntimeStatus {
@@ -1981,7 +1960,7 @@ async fn post_resource_acquire_route_does_not_exist() {
             accepting: true,
         },
     ));
-    let state = state_with_repo(&api_config, repo).with_resource_status(status as _);
+    let state = state_with_store(&api_config, store).with_resource_status(status as _);
     let app = app::build_app(state, &api_config);
     let token = create_test_jwt();
 

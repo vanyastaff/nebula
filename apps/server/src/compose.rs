@@ -27,6 +27,7 @@ use crate::{
     credential_composition::{compose_first_party_runtime, resolve_first_party_key_provider},
     credential_runtime::{ServerCredentialAuthority, ServerCredentialGateway},
     email::{SmtpEmailPort, SmtpEmailPortBuildError},
+    execution_binding_resolver::ServerExecutionBindingResolver,
     transport::ServerTransport,
 };
 
@@ -224,6 +225,8 @@ pub(crate) struct ExecutionStoreBundle {
     pub(super) revision_installer: Arc<dyn nebula_storage_port::PlanFlavorCatalogWriter>,
     pub(super) workflow_store: Arc<dyn nebula_storage_port::store::WorkflowStore>,
     pub(super) workflow_version_store: Arc<dyn nebula_storage_port::store::WorkflowVersionStore>,
+    /// Resource catalog selected with the deployment's execution backend.
+    pub(super) resource_store: Arc<dyn nebula_storage_port::store::ResourceStore>,
     pub(super) execution_store: Arc<dyn nebula_storage_port::store::ExecutionStore>,
     pub(super) node_result_store: Arc<dyn nebula_storage_port::store::NodeResultStore>,
     pub(super) journal_reader: Arc<dyn nebula_storage_port::store::ExecutionJournalReader>,
@@ -361,11 +364,27 @@ impl ServerRuntime {
         let registry =
             crate::transport::worker_registry(std::env::var("NEBULA_WORKER_ARTIFACT_SET_DIGEST"))
                 .map_err(TransportInitError::from)?;
+        // Compose credential persistence before workflow start so binding
+        // resolution and management routes share one service instance.
+        let key_provider = resolve_first_party_key_provider()
+            .map_err(|error| TransportInitError::CredentialServiceInit(error.to_string()))?;
+        let credential_runtime =
+            compose_first_party_runtime(Arc::clone(&key_provider), Arc::clone(&metrics_registry))
+                .await
+                .map_err(|error| TransportInitError::CredentialServiceInit(error.to_string()))?;
+        let credential_service = Arc::clone(&credential_runtime.service);
+        let binding_resolver: Arc<dyn nebula_engine::ExecutionBindingResolver> =
+            Arc::new(ServerExecutionBindingResolver::new(
+                Arc::clone(&credential_service),
+                Arc::clone(&execution_bundle.resource_store),
+                Arc::clone(&registry),
+            ));
         let mut state = default_state(
             &api_config,
             Arc::clone(&metrics_registry),
             execution_bundle,
             registry,
+            Some(binding_resolver),
         )?;
         let bind_address =
             resolve_bind_address(transport.bind_override_var(), api_config.bind_address)?;
@@ -377,16 +396,6 @@ impl ServerRuntime {
         // (per ADR-0048).
         let idempotency_store = build_idempotency_store(&api_config).await?;
         state = state.with_idempotency_store(idempotency_store);
-        // Compose concrete credential adapters in the first-party app. The
-        // secure-store build spawns the lease reaper, so it must run inside
-        // this Tokio context. Key policy is shared with Plane-A identity.
-        let key_provider = resolve_first_party_key_provider()
-            .map_err(|error| TransportInitError::CredentialServiceInit(error.to_string()))?;
-        let credential_runtime =
-            compose_first_party_runtime(Arc::clone(&key_provider), Arc::clone(&metrics_registry))
-                .await
-                .map_err(|error| TransportInitError::CredentialServiceInit(error.to_string()))?;
-        let credential_service = Arc::clone(&credential_runtime.service);
         // The webhook execution resolver and authenticated command controller
         // share the same service instance. Only the resolver retains direct
         // execution-plane access; AppState receives the API-owned gateway.
@@ -591,11 +600,16 @@ async fn wait_for_unix_shutdown_signal(
 /// the async context (so the PG arm can `await` the sqlx pool) and
 /// `default_state` no longer wires an unconditional in-memory backend
 /// — the conditional builder owns the slot now.
+///
+/// `binding_resolver` is present in ordinary production composition. The
+/// evidence-only runtime-repair profile omits it because that profile drives
+/// pre-materialized scenarios rather than authenticated binding selection.
 pub(crate) fn default_state(
     api_config: &ApiConfig,
     metrics_registry: Arc<MetricsRegistry>,
     execution_bundle: ExecutionStoreBundle,
     registry: Arc<nebula_plugin::FrozenPluginRegistry>,
+    binding_resolver: Option<Arc<dyn nebula_engine::ExecutionBindingResolver>>,
 ) -> Result<AppState, TransportInitError> {
     // Plane-A identity backend is wired asynchronously by
     // [`build_auth_backend`] inside [`ServerRuntime::run_transport`]
@@ -666,6 +680,7 @@ pub(crate) fn default_state(
         revision_installer,
         workflow_store,
         workflow_version_store,
+        resource_store,
         execution_store,
         node_result_store,
         journal_reader,
@@ -685,7 +700,7 @@ pub(crate) fn default_state(
         nebula_engine::PlanFlavorRevisionInstaller::new(revision_installer),
         Arc::new(nebula_core::accessor::SystemClock),
     ));
-    let start = Arc::new(nebula_engine::WorkflowStartService::new(
+    let mut start = nebula_engine::WorkflowStartService::new(
         nebula_engine::WorkflowStores {
             workflow: Arc::clone(&workflow_store),
             versions: Arc::clone(&workflow_version_store),
@@ -696,7 +711,11 @@ pub(crate) fn default_state(
         registry,
         Arc::new(nebula_core::accessor::SystemClock),
         Default::default(),
-    )?);
+    )?;
+    if let Some(resolver) = binding_resolver {
+        start = start.with_binding_resolver(resolver);
+    }
+    let start = Arc::new(start);
     let mut state = AppState::new(
         workflow_store,
         workflow_version_store,
@@ -711,6 +730,7 @@ pub(crate) fn default_state(
     )
     .with_workflow_activation(activation)
     .with_workflow_start(start)
+    .with_resource_store(Arc::clone(&resource_store))
     .with_api_keys(api_config.api_keys.clone())
     .with_metrics_registry(metrics_registry)
     // Public URL is required for Plane-A OAuth `redirect_uri`

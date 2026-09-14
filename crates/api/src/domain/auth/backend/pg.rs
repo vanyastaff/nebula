@@ -296,6 +296,12 @@ fn mfa_enrollment_repo_error(_: nebula_storage::StorageError) -> AuthError {
     AuthError::Internal("MFA enrollment storage operation failed".to_owned())
 }
 
+/// Session repository errors can include storage-driver detail. Collapse them
+/// before crossing the public API boundary.
+fn session_repo_error(_: nebula_storage::StorageError) -> AuthError {
+    AuthError::Internal("session storage operation failed".to_owned())
+}
+
 fn identity_secret_auth_error(
     _: nebula_storage::identity_secret::IdentitySecretError,
 ) -> AuthError {
@@ -480,6 +486,7 @@ impl AuthBackend for PgAuthBackend {
             .session_repo
             .get(session_id.as_bytes())
             .await
+            .map_err(session_repo_error)
             .map_err(crate::ApiError::from)?;
         match row {
             Some(row) => {

@@ -201,6 +201,7 @@ fn resource_binding(slot_key: &str, selector: &str) -> RecordedBindingV1 {
         site: RecordedBindingSiteV1::Node("fetch".into()),
         slot_key: slot_key.into(),
         selector: selector.into(),
+        selector_provenance: None,
         contract: RecordedBindingContractV1::Resource {
             key: "demo.client".into(),
             version: recorded_semver(1, 0, 0),
@@ -215,6 +216,7 @@ fn credential_binding(slot_key: &str, selector: &str, capability_bits: u8) -> Re
         site: RecordedBindingSiteV1::Node("fetch".into()),
         slot_key: slot_key.into(),
         selector: selector.into(),
+        selector_provenance: None,
         contract: RecordedBindingContractV1::Credential {
             key: "demo.oauth".into(),
             version: recorded_semver(2, 1, 0),
@@ -439,7 +441,11 @@ fn compiler_effect_tuples_are_closed_and_legacy_fields_stay_absent() {
         COMPILER_VERSION_GRAPH_V3,
         COMPILER_VERSION_GRAPH_V4,
     ] {
-        for hash in [CANONICAL_HASH_VERSION_V1, CANONICAL_HASH_VERSION_V2] {
+        for hash in [
+            CANONICAL_HASH_VERSION_V1,
+            CANONICAL_HASH_VERSION_V2,
+            CANONICAL_HASH_VERSION_V3,
+        ] {
             for declared in [false, true] {
                 let mut record = fixture_record();
                 record.compiler_version = compiler;
@@ -449,8 +455,11 @@ fn compiler_effect_tuples_are_closed_and_legacy_fields_stay_absent() {
                 reseal(&mut record);
                 let expected = if compiler == COMPILER_VERSION_GRAPH_V1 {
                     hash == CANONICAL_HASH_VERSION_V1 && !declared
+                } else if compiler == COMPILER_VERSION_GRAPH_V4 {
+                    matches!(hash, CANONICAL_HASH_VERSION_V2 | CANONICAL_HASH_VERSION_V3)
+                        && declared
                 } else {
-                    hash == CANONICAL_HASH_VERSION_V2 && declared
+                    hash == compiler_epoch_hash(compiler) && declared
                 };
                 assert_eq!(
                     ExecutablePlanRevision::try_from(record.clone()).is_ok(),
@@ -473,7 +482,7 @@ fn compiler_effect_tuples_are_closed_and_legacy_fields_stay_absent() {
 fn scalar_aware_compiler_epoch_preserves_legacy_schema_bytes() {
     let mut record = fixture_record();
     record.compiler_version = COMPILER_VERSION_GRAPH_V4;
-    record.canonical_hash_version = CANONICAL_HASH_VERSION_V2;
+    record.canonical_hash_version = CANONICAL_HASH_VERSION_V3;
     record.content.actions[0].effect_contract =
         Some(crate::plan_effect::RecordedActionEffectV1::NoExternalEffects);
     reseal(&mut record);
@@ -491,6 +500,7 @@ fn scalar_aware_compiler_epoch_preserves_legacy_schema_bytes() {
 
     let current_id = record.claimed_id;
     record.compiler_version = COMPILER_VERSION_GRAPH_V3;
+    record.canonical_hash_version = CANONICAL_HASH_VERSION_V2;
     reseal(&mut record);
     assert_ne!(current_id, record.claimed_id);
     ExecutablePlanRevision::try_from(record).unwrap();
@@ -551,7 +561,7 @@ fn scalar_schema_envelopes_require_the_scalar_compiler_epoch_at_every_contract_s
                     _ => fixture_record(),
                 };
                 record.compiler_version = compiler;
-                record.canonical_hash_version = if compiler == 1 { 1 } else { 2 };
+                record.canonical_hash_version = compiler_epoch_hash(compiler);
                 record.content.actions[0].effect_contract = (compiler != 1)
                     .then_some(crate::plan_effect::RecordedActionEffectV1::NoExternalEffects);
                 let contract = match site {
@@ -563,6 +573,19 @@ fn scalar_schema_envelopes_require_the_scalar_compiler_epoch_at_every_contract_s
                 };
                 contract.schema = scalar.clone();
                 contract.schema_wire_version = wire_version;
+                if compiler == COMPILER_VERSION_GRAPH_V4 {
+                    match site {
+                        "resource" => {
+                            record.bindings[0].selector_provenance =
+                                Some(RecordedBindingSelectorProvenanceV1::ResourceIdOverride);
+                        },
+                        "credential" => {
+                            record.bindings[0].selector_provenance =
+                                Some(RecordedBindingSelectorProvenanceV1::CredentialIdOverride);
+                        },
+                        _ => {},
+                    }
+                }
                 reseal(&mut record);
                 let encoded = serde_json::to_vec(&record).unwrap();
                 let decoded = serde_json::from_slice(&encoded).unwrap();
@@ -580,6 +603,15 @@ fn scalar_schema_envelopes_require_the_scalar_compiler_epoch_at_every_contract_s
                 }
             }
         }
+    }
+}
+
+fn compiler_epoch_hash(compiler: u16) -> u16 {
+    match compiler {
+        COMPILER_VERSION_GRAPH_V1 => CANONICAL_HASH_VERSION_V1,
+        COMPILER_VERSION_GRAPH_V3 => CANONICAL_HASH_VERSION_V2,
+        COMPILER_VERSION_GRAPH_V4 => CANONICAL_HASH_VERSION_V3,
+        _ => CANONICAL_HASH_VERSION_V3,
     }
 }
 
@@ -1660,4 +1692,70 @@ fn checked_plan_roundtrips_record_and_redacts_debug_surfaces() {
         reloaded.worker_flavor_revision_id(),
         plan.worker_flavor_revision_id()
     );
+}
+
+#[test]
+fn legacy_binding_records_decode_without_inventing_selector_provenance() {
+    let record = credential_binding_record("cred_legacy-looking", Capabilities::REFRESHABLE.bits());
+    let plan = ExecutablePlanRevision::try_from(record).expect("legacy record remains readable");
+
+    assert_eq!(
+        plan.bindings()[0].selector_provenance(),
+        PlanBindingSelectorProvenance::Legacy
+    );
+}
+
+#[test]
+fn current_binding_records_distinguish_defaults_from_overrides_without_prefix_inference() {
+    let mut default_record = credential_binding_record("auth", Capabilities::REFRESHABLE.bits());
+    default_record.compiler_version = COMPILER_VERSION_GRAPH_V4;
+    default_record.canonical_hash_version = CANONICAL_HASH_VERSION_V3;
+    default_record.content.actions[0].effect_contract =
+        Some(crate::plan_effect::RecordedActionEffectV1::NoExternalEffects);
+    default_record.bindings[0].slot_key = "auth".into();
+    default_record.bindings[0].selector = "auth".into();
+    default_record.bindings[0].selector_provenance =
+        Some(RecordedBindingSelectorProvenanceV1::DefaultName);
+    reseal(&mut default_record);
+
+    let mut override_record =
+        credential_binding_record("primary", Capabilities::REFRESHABLE.bits());
+    override_record.compiler_version = COMPILER_VERSION_GRAPH_V4;
+    override_record.canonical_hash_version = CANONICAL_HASH_VERSION_V3;
+    override_record.content.actions[0].effect_contract =
+        Some(crate::plan_effect::RecordedActionEffectV1::NoExternalEffects);
+    override_record.bindings[0].selector_provenance =
+        Some(RecordedBindingSelectorProvenanceV1::CredentialIdOverride);
+    reseal(&mut override_record);
+
+    let default_plan = ExecutablePlanRevision::try_from(default_record).unwrap();
+    let override_plan = ExecutablePlanRevision::try_from(override_record).unwrap();
+    assert_eq!(
+        default_plan.bindings()[0].selector_provenance(),
+        PlanBindingSelectorProvenance::DefaultName
+    );
+    assert_eq!(
+        override_plan.bindings()[0].selector_provenance(),
+        PlanBindingSelectorProvenance::CredentialIdOverride
+    );
+    assert_eq!(override_plan.bindings()[0].selector(), "primary");
+}
+
+#[test]
+fn current_binding_record_rejects_cross_kind_selector_provenance() {
+    let mut record = credential_binding_record("primary", Capabilities::REFRESHABLE.bits());
+    record.compiler_version = COMPILER_VERSION_GRAPH_V4;
+    record.canonical_hash_version = CANONICAL_HASH_VERSION_V3;
+    record.content.actions[0].effect_contract =
+        Some(crate::plan_effect::RecordedActionEffectV1::NoExternalEffects);
+    record.bindings[0].selector_provenance =
+        Some(RecordedBindingSelectorProvenanceV1::ResourceIdOverride);
+    reseal(&mut record);
+
+    assert!(matches!(
+        ExecutablePlanRevision::try_from(record),
+        Err(ExecutablePlanIntegrityError::NonCanonical {
+            section: "bindings.selector_provenance"
+        })
+    ));
 }
