@@ -34,7 +34,7 @@ jobs:
       shard_count: ${{ steps.plan.outputs.shard_count }}
     steps:
       - name: Checkout exact head revision
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.HEAD_REVISION }}
           fetch-depth: 0
@@ -113,7 +113,7 @@ jobs:
       matrix: ${{ fromJSON(needs.select.outputs.plan) }}
     steps:
       - name: Checkout exact head revision
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.HEAD_REVISION }}
           fetch-depth: 0
@@ -132,7 +132,7 @@ jobs:
       - name: Install cargo-semver-checks 0.50.0
         # This intentionally adopts the 0.50 lint catalog; findings may differ
         # from 0.47 even though the fail-closed release policy is unchanged.
-        uses: taiki-e/install-action@481c34c1cf3a84c68b5e46f4eccfc82af798415a # v2.75.23
+        uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af # v2.87.11
         with:
           tool: cargo-semver-checks@0.50.0
       - name: Assert cargo-semver-checks version
@@ -155,7 +155,7 @@ jobs:
     timeout-minutes: 2
     steps:
       - name: Checkout exact head revision
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.HEAD_REVISION }}
           fetch-depth: 0
