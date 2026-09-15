@@ -57,7 +57,7 @@ pub(super) fn decode<T: DeserializeOwned>(
     let path = ValuePath::root();
     let tree = match values {
         ValueTree::Object(properties) => {
-            project_sensitive_level(schema.fields(), properties, disclosure, &path)?
+            project_sensitive_level(schema.properties(), properties, disclosure, &path)?
         },
         _ => build_sensitive_tree(values, disclosure, &path)?,
     };
@@ -257,7 +257,7 @@ fn project_root_union_wire<'a>(
         return tree;
     }
     let (Some(Field::Mode(mode)), Some(tagging)) =
-        (schema.fields().first(), schema.serde_tagging())
+        (schema.properties().first(), schema.serde_tagging())
     else {
         return tree;
     };

@@ -17,6 +17,9 @@ fn property_entrypoints_share_the_admitted_field_contract() {
         .build()
         .unwrap();
 
+    assert_eq!(schema.properties().len(), 2);
+    assert_eq!(schema.properties(), schema.fields());
+
     let valid = schema
         .validate(
             AuthoredValue::from_data(json!({

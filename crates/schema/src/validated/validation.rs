@@ -76,7 +76,7 @@ pub(super) fn validate_tree<E>(
 ) -> CheckResult {
     let context = predicate_context.or_else(|| {
         schema.has_contextual_rules().then(|| {
-            crate::context::prepared_predicate_context(schema.fields(), values)
+            crate::context::prepared_predicate_context(schema.properties(), values)
                 .with_pending_paths(expression_paths.iter().cloned())
         })
     });
@@ -112,7 +112,7 @@ pub(super) fn validate_tree<E>(
             _ => checks.type_error(&path, "object"),
         },
     }
-    checks.rules(schema.root_rules(), values, &path, schema.fields());
+    checks.rules(schema.root_rules(), values, &path, schema.properties());
     checks.result.predicate_context = checks.context.take();
     checks.result
 }

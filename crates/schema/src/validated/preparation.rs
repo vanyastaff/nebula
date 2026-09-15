@@ -103,7 +103,7 @@ pub(super) struct PreparedValues {
     pub(super) expression_paths: Vec<ValuePath>,
 }
 
-#[tracing::instrument(level = "debug", skip_all, fields(field_count = schema.fields().len()))]
+#[tracing::instrument(level = "debug", skip_all, fields(property_count = schema.properties().len()))]
 pub(super) fn prepare_input(
     values: AuthoredValue,
     schema: &ValidSchema,
@@ -116,7 +116,7 @@ pub(super) fn prepare_input(
     let mut expression_paths = Vec::new();
     let values = compile_node(
         values,
-        Scope::Root(schema.fields()),
+        Scope::Root(schema.properties()),
         &ValuePath::root(),
         &mut expression_paths,
         false,

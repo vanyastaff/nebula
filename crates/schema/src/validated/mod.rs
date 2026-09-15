@@ -8,7 +8,7 @@ use smallvec::SmallVec;
 
 use crate::{
     error::{ValidationError, ValidationReport},
-    field::{Field, ModeField, ModeVariant},
+    field::{Field, ModeField, ModeVariant, Property},
     key::FieldKey,
     loader::{LoaderContext, LoaderRegistry, LoaderResult},
     option::SelectOption,
@@ -212,7 +212,7 @@ impl Serialize for ValidSchema {
         if let Some(tagging) = self.serde_tagging() {
             s.serialize_field("serde_tagging", tagging)?;
         }
-        s.serialize_field("fields", self.fields())?;
+        s.serialize_field("fields", self.properties())?;
         if has_rules {
             s.serialize_field("root_rules", self.root_rules())?;
         }
@@ -370,7 +370,7 @@ impl ValidSchema {
     /// validate values or grant any metadata or execution authority.
     #[tracing::instrument(name = "schema.policy.check", skip(self), fields(policy_version = self.policy_version()))]
     pub fn ensure_current_semantics(&self) -> Result<(), ValidationReport> {
-        if let Some(path) = crate::field_tree::unsupported_property_path(self.fields()) {
+        if let Some(path) = crate::field_tree::unsupported_property_path(self.properties()) {
             tracing::debug!(code = "schema.unsupported_property_kind", %path,
                 "unsupported declaration rejected before current admission");
             return Err(ValidationError::builder("schema.unsupported_property_kind")
@@ -603,12 +603,12 @@ impl ValidSchema {
                 .build()
         };
 
-        let Some(root_field) = self.fields().first() else {
+        let Some(root_property) = self.properties().first() else {
             return Err(malformed(
                 "union schema is missing its root mode field".to_owned(),
             ));
         };
-        let Field::Mode(mode) = root_field else {
+        let Field::Mode(mode) = root_property else {
             return Err(malformed(
                 "union schema's root field is not a mode field".to_owned(),
             ));
@@ -700,7 +700,7 @@ impl ValidSchema {
         }
         let mut out = serde_json::Map::with_capacity(1);
         out.insert(
-            root_field.key().as_str().to_owned(),
+            root_property.key().as_str().to_owned(),
             Value::Object(envelope),
         );
         Ok(Value::Object(out))
@@ -718,7 +718,7 @@ impl ValidSchema {
             return data;
         }
         let (Some(Field::Mode(mode)), Some(tagging)) =
-            (self.fields().first(), self.serde_tagging())
+            (self.properties().first(), self.serde_tagging())
         else {
             return data;
         };
@@ -790,7 +790,7 @@ impl ValidSchema {
     /// that every key is undeclared.
     #[must_use]
     pub fn first_undeclared_path<E>(&self, values: &ValueTree<E>) -> Option<ValuePath> {
-        first_undeclared_in_level(self.fields(), values.as_object()?, &ValuePath::root())
+        first_undeclared_in_level(self.properties(), values.as_object()?, &ValuePath::root())
     }
 
     /// Whether this schema is a concrete [`Record`](SchemaKind::Record), the
@@ -817,10 +817,16 @@ impl ValidSchema {
         Arc::ptr_eq(&self.0, &other.0)
     }
 
+    /// Borrow all top-level properties in insertion order.
+    #[must_use]
+    pub fn properties(&self) -> &[Property] {
+        self.0.root.properties()
+    }
+
     /// Borrow all top-level fields in insertion order.
     #[must_use]
     pub fn fields(&self) -> &[Field] {
-        self.0.root.fields()
+        self.properties()
     }
 
     /// Borrow the build-time flags.
@@ -839,17 +845,25 @@ impl ValidSchema {
         self.0.has_contextual_rules
     }
 
-    /// Find a top-level field by key.
+    /// Find a top-level property by key.
     #[must_use]
-    pub fn find(&self, key: &FieldKey) -> Option<&Field> {
-        self.fields().iter().find(|f| f.key() == key)
+    pub fn find_property(&self, key: &FieldKey) -> Option<&Property> {
+        self.properties()
+            .iter()
+            .find(|property| property.key() == key)
     }
 
-    /// Find a field by dotted path using the O(1) index.
+    /// Find a top-level legacy field by key.
     #[must_use]
-    pub fn find_by_path(&self, path: &FieldPath) -> Option<&Field> {
+    pub fn find(&self, key: &FieldKey) -> Option<&Field> {
+        self.find_property(key)
+    }
+
+    /// Find a property by dotted path using the O(1) index.
+    #[must_use]
+    pub fn find_property_by_path(&self, path: &FieldPath) -> Option<&Property> {
         let handle = self.0.index.get(path)?;
-        let mut cur = self.fields().get(*handle.cursor.first()? as usize)?;
+        let mut cur = self.properties().get(*handle.cursor.first()? as usize)?;
         for &step in &handle.cursor[1..] {
             cur = match cur {
                 Field::Object(o) => o.fields.get(step as usize)?,
@@ -859,6 +873,12 @@ impl ValidSchema {
             };
         }
         Some(cur)
+    }
+
+    /// Find a field by dotted path using the O(1) index.
+    #[must_use]
+    pub fn find_by_path(&self, path: &FieldPath) -> Option<&Field> {
+        self.find_property_by_path(path)
     }
 
     /// Walk a `Reference` parameter's canonical RFC6901 `output_path` through this
@@ -1024,9 +1044,9 @@ impl ValidSchema {
         registry: &LoaderRegistry,
         context: LoaderContext,
     ) -> Result<LoaderResult<SelectOption>, ValidationError> {
-        let loader_key = resolve_select_loader_key(self.fields(), key)?;
+        let loader_key = resolve_select_loader_key(self.properties(), key)?;
         registry
-            .load_options(&loader_key, context.redacted(self.fields())?)
+            .load_options(&loader_key, context.redacted(self.properties())?)
             .await
     }
 
@@ -1045,9 +1065,9 @@ impl ValidSchema {
         registry: &LoaderRegistry,
         context: LoaderContext,
     ) -> Result<LoaderResult<SelectOption>, ValidationError> {
-        let loader_key = resolve_select_loader_path(self.fields(), path)?;
+        let loader_key = resolve_select_loader_path(self.properties(), path)?;
         registry
-            .load_options(&loader_key, context.redacted(self.fields())?)
+            .load_options(&loader_key, context.redacted(self.properties())?)
             .await
     }
 
@@ -1065,9 +1085,9 @@ impl ValidSchema {
         registry: &LoaderRegistry,
         context: LoaderContext,
     ) -> Result<LoaderResult<serde_json::Value>, ValidationError> {
-        let loader_key = resolve_dynamic_loader_key(self.fields(), key)?;
+        let loader_key = resolve_dynamic_loader_key(self.properties(), key)?;
         registry
-            .load_records(&loader_key, context.redacted(self.fields())?)
+            .load_records(&loader_key, context.redacted(self.properties())?)
             .await
     }
 
@@ -1086,9 +1106,9 @@ impl ValidSchema {
         registry: &LoaderRegistry,
         context: LoaderContext,
     ) -> Result<LoaderResult<serde_json::Value>, ValidationError> {
-        let loader_key = resolve_dynamic_loader_path(self.fields(), path)?;
+        let loader_key = resolve_dynamic_loader_path(self.properties(), path)?;
         registry
-            .load_records(&loader_key, context.redacted(self.fields())?)
+            .load_records(&loader_key, context.redacted(self.properties())?)
             .await
     }
 
@@ -1120,7 +1140,7 @@ impl ValidSchema {
         level = "debug",
         target = "nebula_schema::validate",
         skip(self, values),
-        fields(field_count = self.fields().len(), has_root_rules = !self.root_rules().is_empty())
+        fields(property_count = self.properties().len(), has_root_rules = !self.root_rules().is_empty())
     )]
     pub fn validate(&self, values: AuthoredValue) -> Result<ValidValues, ValidationReport> {
         self.ensure_current_semantics()?;
@@ -1139,10 +1159,10 @@ impl ValidSchema {
     ///
     /// Returns `recursion_limit` for over-deep input, or `type_mismatch` for a
     /// non-object input to a record or union schema.
-    #[tracing::instrument(level = "trace", skip_all, fields(field_count = self.fields().len()))]
+    #[tracing::instrument(level = "trace", skip_all, fields(property_count = self.properties().len()))]
     pub fn project(&self, values: &AuthoredValue) -> Result<serde_json::Value, ValidationError> {
         values.check_depth(&ValuePath::root(), 0)?;
-        crate::field_tree::ensure_supported_properties(self.fields())?;
+        crate::field_tree::ensure_supported_properties(self.properties())?;
         if matches!(self.kind(), SchemaKind::Record | SchemaKind::Union)
             && values.as_object().is_none()
         {
@@ -1154,7 +1174,7 @@ impl ValidSchema {
             scalar.validate_value(values, &ValuePath::root())?;
         }
         Ok(self.raw_values_to_wire(project_tree(
-            self.fields(),
+            self.properties(),
             values,
             &|expression| serde_json::json!({"$expr": expression.source()}),
         )))
