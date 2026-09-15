@@ -20,7 +20,7 @@ fn invalid_static_input_cannot_obtain_literal_token() {
         "a/b",
         "a~b",
         "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789___",
-        "caf\u{e9}",
+        "unicode_\u{2603}",
     ] {
         assert!(LiteralFieldKey::parse(invalid).is_none(), "{invalid}");
         assert!(FieldKey::new(invalid).is_err(), "{invalid}");

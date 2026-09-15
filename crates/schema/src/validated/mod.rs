@@ -999,7 +999,7 @@ impl ValidSchema {
     /// Bypasses the full lint / index-build pipeline `SchemaBuilder::build` runs
     /// (mirrors [`Self::empty`]/[`Self::any`]): `field` was already lint-clean
     /// inside its source schema, and the assignability check reads only
-    /// [`Self::fields`]/[`Self::kind`] — never the path index or build-time
+    /// [`Self::properties`]/[`Self::kind`] — never the path index or build-time
     /// flags — so an empty index and default flags are safe for this narrow,
     /// internal, single-comparison use.
     pub(crate) fn single_field(key: FieldKey, field: Property) -> ValidSchema {
