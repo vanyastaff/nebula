@@ -3,7 +3,9 @@ use serde_json::json;
 
 #[test]
 fn property_entrypoints_share_the_admitted_field_contract() {
-    let name: Property = Property::string(field_key!("name")).required().into();
+    let name: Property = Property::string(field_key!("name"))
+        .required()
+        .into_property();
     let contact: Property = Property::object(field_key!("contact"))
         .add(Property::string(field_key!("email")).email())
         .into();

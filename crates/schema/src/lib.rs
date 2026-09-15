@@ -1,7 +1,7 @@
 //! `nebula-schema` — schema definition system for Nebula workflow surfaces.
 //!
 //! This crate provides:
-//! - Typed field definitions and the `Field` enum.
+//! - Typed property definitions and the legacy `Field` alias.
 //! - `Schema` builder with structural lint passes via `Schema::lint`.
 //! - Schema-time validation via `ValidSchema::validate` returning a `ValidValues` proof-token.
 //! - Consuming expression resolution or data-only completion returning `ResolvedValues`.
@@ -298,16 +298,9 @@ pub use expression::{
 pub use field::ModeField;
 pub use field::{
     BooleanField, CodeField, ComputedField, ComputedReturn, DynamicField, Field, FileField,
-    ListField, ModeVariant, NoticeField, NoticeSeverity, NumberField, ObjectField, SecretField,
-    SelectField, StringField, UnknownField,
+    ListField, ModeVariant, NoticeField, NoticeSeverity, NumberField, ObjectField, Property,
+    SecretField, SelectField, StringField, UnknownField,
 };
-/// Canonical semantic property declaration.
-///
-/// `Property` is the public authoring name for a typed input/configuration
-/// declaration. The current carrier is [`Field`] so existing canonical wire,
-/// validation, proof, and serde compatibility remain unchanged while the API
-/// migrates away from field-first wording.
-pub type Property = Field;
 /// Typed reference to a declared property location.
 ///
 /// This is a schema-declaration address, not a runtime JSON value path.
