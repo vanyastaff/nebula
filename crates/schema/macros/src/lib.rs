@@ -46,8 +46,7 @@ pub fn field_key(input: TokenStream) -> TokenStream {
     let crate_path = crate_path();
 
     let out = quote! {
-        #crate_path::FieldKey::new(#lit)
-            .expect("field_key! validated at compile time")
+        #crate_path::__private::field_key_from_validated_literal(#lit)
     };
     nebula_macro_support::paths::resolve_generated_crate_paths(out).into()
 }
@@ -63,6 +62,8 @@ pub fn field_key(input: TokenStream) -> TokenStream {
 /// `#[derive(EnumSelect)]` instead.)
 ///
 /// Supported attributes:
+/// - `#[property(...)]` — structured Phase-5 property sections:
+///   `display(...)`, `input(...)`, and `validate(...)`.
 /// - `#[field(...)]` — label/description/placeholder/default/hint/secret/
 ///   multiline/no_expression/expression_required/enum_select/skip/group.
 /// - `#[validate(...)]` — required/length(min,max)/range(min..=max)/ pattern/url/email.
@@ -75,7 +76,7 @@ pub fn field_key(input: TokenStream) -> TokenStream {
 ///   key: `rename` / `rename_all` rename the field or variant, `skip` /
 ///   `skip_deserializing` drop it, `tag` / `content` select adjacent enum tagging.
 ///   `#[serde(flatten)]` is rejected (splicing is a follow-up).
-#[proc_macro_derive(Schema, attributes(field, validate, schema))]
+#[proc_macro_derive(Schema, attributes(property, field, validate, schema))]
 pub fn derive_schema(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let tokens = derive_schema::expand(input).unwrap_or_else(|error| error.to_compile_error());

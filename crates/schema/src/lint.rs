@@ -18,26 +18,38 @@ fn has_nonempty_loader_key(loader: Option<&str>) -> bool {
     loader.is_some_and(|key| !key.trim().is_empty())
 }
 
-/// Advisory lint: `$root.foo` rule references still resolve but JSON Pointer is preferred.
-fn lint_legacy_root_reference(field_ref: &str, path: &FieldPath, report: &mut ValidationReport) {
-    let Some(rest) = field_ref.strip_prefix("$root.") else {
-        return;
+/// Hard lint: `$root.foo` rule references are removed; JSON Pointer is required.
+fn lint_legacy_root_reference(
+    field_ref: &str,
+    path: &FieldPath,
+    report: &mut ValidationReport,
+) -> bool {
+    let rest = if let Some(rest) = field_ref.strip_prefix("$root.") {
+        rest
+    } else if let Some(rest) = field_ref.strip_prefix("/$root/") {
+        rest
+    } else {
+        return false;
     };
     if rest.split('.').any(str::is_empty) {
-        return;
+        return false;
     }
-    let suggested = format!("/{}", rest.replace('.', "/"));
+    let suggested = if field_ref.starts_with('/') {
+        format!("/{rest}")
+    } else {
+        format!("/{}", rest.replace('.', "/"))
+    };
     report.push(
         ValidationError::builder("reference.legacy_root")
             .at(path.clone())
-            .warn()
             .param("reference", serde_json::Value::String(field_ref.to_owned()))
             .param("suggested", serde_json::Value::String(suggested.clone()))
             .message(format!(
-                "rule reference `{field_ref}` uses legacy `$root.` syntax; prefer JSON Pointer `{suggested}`"
+                "rule reference `{field_ref}` uses removed `$root.` syntax; rewrite it as JSON Pointer `{suggested}`"
             ))
             .build(),
     );
+    true
 }
 
 /// Build-time lint entry point used by `SchemaBuilder::build()`.
@@ -109,14 +121,16 @@ pub(crate) fn lint_root_rules(rules: &[Rule], fields: &[Field], report: &mut Val
         let mut refs = Vec::new();
         rule.field_references(&mut refs);
         for field_ref in refs {
-            lint_legacy_root_reference(field_ref, &FieldPath::root(), report);
+            if lint_legacy_root_reference(field_ref, &FieldPath::root(), report) {
+                continue;
+            }
             let Some(target) = resolve_rule_dependency(field_ref) else {
                 report.push(
                     ValidationError::builder("dangling_reference")
                         .at(FieldPath::root())
                         .param("reference", serde_json::Value::String(field_ref.to_owned()))
                         .message(format!(
-                            "root rule reference `{field_ref}` must be a JSON Pointer path (for example `/foo/bar`) or legacy `$root.foo` path"
+                            "root rule reference `{field_ref}` must be a JSON Pointer path (for example `/foo/bar`)"
                         ))
                         .build(),
                 );
@@ -913,7 +927,9 @@ fn lint_rule_refs_new(
     let mut refs = Vec::new();
     rule.field_references(&mut refs);
     for field_ref in refs {
-        lint_legacy_root_reference(field_ref, path, report);
+        if lint_legacy_root_reference(field_ref, path, report) {
+            continue;
+        }
         // Field-level refs intentionally validate only referenced_root_key
         // against root_keys; lint_root_rules uses defined_field_paths for full
         // paths because root-level rules have global schema semantics.
@@ -922,7 +938,7 @@ fn lint_rule_refs_new(
                 ValidationError::builder("dangling_reference")
                     .at(path.clone())
                     .message(format!(
-                        "rule reference `{field_ref}` must be a JSON Pointer path (for example `/foo/bar`) or legacy `$root.foo` path"
+                        "rule reference `{field_ref}` must be a JSON Pointer path (for example `/foo/bar`)"
                     ))
                     .build(),
             );
@@ -2108,27 +2124,27 @@ mod tests {
     }
 
     #[test]
-    fn legacy_root_rule_reference_emits_advisory_warning() {
-        let mut report = ValidationReport::new();
-        lint_legacy_root_reference("$root.tier", &FieldPath::root(), &mut report);
-        assert!(
-            report
-                .warnings()
-                .any(|e| e.code() == "reference.legacy_root"),
-            "expected legacy root reference warning, got {:?}",
-            report
-                .iter()
-                .map(|e| (e.code(), e.severity()))
-                .collect::<Vec<_>>()
-        );
-        let warning = report
-            .warnings()
-            .find(|e| e.code() == "reference.legacy_root")
-            .expect("warning");
-        assert_eq!(
-            warning.params()[1].1.as_str(),
-            Some("/tier"),
-            "suggested JSON Pointer"
-        );
+    fn legacy_root_rule_reference_is_a_hard_error_with_pointer_rewrite() {
+        for field_ref in ["$root.tier", "/$root/tier"] {
+            let mut report = ValidationReport::new();
+            lint_legacy_root_reference(field_ref, &FieldPath::root(), &mut report);
+            assert!(
+                report.errors().any(|e| e.code() == "reference.legacy_root"),
+                "expected legacy root reference error, got {:?}",
+                report
+                    .iter()
+                    .map(|e| (e.code(), e.severity()))
+                    .collect::<Vec<_>>()
+            );
+            let error = report
+                .errors()
+                .find(|e| e.code() == "reference.legacy_root")
+                .expect("error");
+            assert_eq!(
+                error.params()[1].1.as_str(),
+                Some("/tier"),
+                "suggested JSON Pointer"
+            );
+        }
     }
 }

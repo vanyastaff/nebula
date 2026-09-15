@@ -3,7 +3,7 @@
 > this guide adds crate-specific rules. Contract: [README.md](README.md) and
 > [design](docs/DESIGN.md).
 
-**Purpose:** Typed configuration schema and canonical phase-indexed data shared by
+**Purpose:** Typed property schema and canonical phase-indexed data shared by
 Actions, Credentials, and Resources; enforces the lint -> validate -> resolve
 proof-token pipeline. Replaces the deleted `nebula-parameter` crate.
 **Layer:** Core; follow the root dependency map. Siblings own rules
@@ -30,6 +30,8 @@ an internal technical boundary, not a separately supported downstream API.
 - `src/context.rs` / `src/loader.rs` - prepared predicate context and bounded, schema-aware redacted loader snapshots
 - `src/transformer.rs` - checked regex/capture configuration; infallible string-only application
 - `src/json_schema.rs` — `schemars`-feature Draft 2020-12 export with `x-nebula-*` extensions
+- `docs/JSON_SCHEMA_EXTENSIONS.md` — versioned export-extension registry; update it with any `x-nebula-*` key change
+- `macros/src/attrs.rs`, `macros/src/derive_schema.rs` — `#[derive(Schema)]`, including the structured `#[property(...)]` primitive
 
 ## Conventions & never-do
 
@@ -83,8 +85,16 @@ an internal technical boundary, not a separately supported downstream API.
   `ProgramSyntax` plus exact source bytes. `ExpressionMode` is permission, not grammar.
   `Expression::template` is always string; `new` and authoring shorthand remain AUTO.
 - `HasSchema`/derives return checked results and cache failures as reports.
+  `#[property(display(...), input(...), validate(...))]` is the preferred
+  authoring grammar for value properties. Presentation hints project to forms,
+  CLIs, SDK docs and editor panels, but they never grant authority or waive
+  validation. Slot/dependency declarations stay outside `ValidSchema`.
+  Unsupported Phase-5 sections must fail closed instead of becoming inert UI
+  hints.
   Regex transformers compile and validate capture indices at construction/serde;
   never restore invalid-pattern no-op fallbacks or logs containing patterns.
+- `$root.foo` rule references are removed. Reject them with
+  `reference.legacy_root` and include the JSON Pointer rewrite (`/foo`).
 - No KDF/hashing here — cryptographic primitives belong to `nebula-crypto`.
 - Declaration construction is strict: `Field::*::new` needs a pre-validated
   `FieldKey`; use `field_key!(...)` or `Field::try_*`, never panic-on-bad-key
@@ -102,7 +112,7 @@ an internal technical boundary, not a separately supported downstream API.
 | Secrets, predicates, or loader snapshots | [context_loader_foundation](tests/context_loader_foundation.rs), [seam_root_rule_scrub](tests/seam_root_rule_scrub.rs), [lint_and_loader](tests/lint_and_loader.rs), [expression_diagnostics](tests/expression_diagnostics.rs). |
 | Checked transformer configuration | [transformer_contract](tests/transformer_contract.rs), plus the transformer unit tests. |
 | Persisted shape or JSON Schema export | [wire_format](tests/wire_format.rs), [evolution_wire_snapshot](tests/evolution_wire_snapshot.rs); [json_schema_smoke](tests/json_schema_smoke.rs) requires `schemars`. |
-| Derives and checked schema discovery | [derive_schema](tests/derive_schema.rs), [derive_schema_failures](tests/derive_schema_failures.rs), [compile_fail](tests/compile_fail.rs), and SDK [derive_external_contract](../sdk/tests/derive_external_contract.rs). |
+| Derives and checked schema discovery | [derive_schema](tests/derive_schema.rs), [derive_schema_failures](tests/derive_schema_failures.rs), [compile_fail](tests/compile_fail.rs), and SDK [derive_external_contract](../sdk/tests/derive_external_contract.rs). Include `#[property]` compile-pass and compile-fail coverage for new grammar. |
 
 ## See also
 

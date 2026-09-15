@@ -1,8 +1,9 @@
 //! Integration tests for `#[derive(Schema)]` and `#[derive(EnumSelect)]`.
 
 use nebula_schema::{
-    AuthoredValue, EnumSelect, Field, FieldKey, HasSchema, HasSelectOptions, InputHint,
-    RequiredMode, Schema, SchemaKind, SecretInput, StringWidget, schema_of,
+    AuthoredValue, BooleanWidget, EnumSelect, Field, FieldKey, HasSchema, HasSelectOptions,
+    InputHint, RequiredMode, Schema, SchemaKind, SecretInput, SecretWidget, StringWidget,
+    VisibilityMode, schema_of,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -108,6 +109,103 @@ fn derive_schema_matches_hand_written_schema() {
             assert!(matches!(s.required, RequiredMode::Always));
         },
         other => panic!("expected SecretField, got {other:?}"),
+    }
+}
+
+#[derive(Schema)]
+#[expect(dead_code, reason = "fields are exercised via HasSchema::schema")]
+struct PropertyInput {
+    #[property(
+        display(
+            label = "URL",
+            description = "Endpoint",
+            placeholder = "https://example.test",
+            hint = "url",
+            widget = text,
+            group = "request"
+        ),
+        input(required, expressions = forbidden),
+        validate(non_empty, url, length(max = 8192))
+    )]
+    url: String,
+
+    #[property(display(label = "Body", widget = textarea), validate(length(max = 1024)))]
+    body: Option<String>,
+
+    #[property(display(widget = checkbox), input(expressions = forbidden))]
+    enabled: bool,
+
+    #[property(display(widget = password), input(secret, required), validate(non_empty))]
+    api_key: TestSecret,
+
+    #[property(display(hidden))]
+    internal_note: Option<String>,
+}
+
+#[test]
+fn property_attribute_maps_to_schema_semantics_without_ui_authority() {
+    let schema = PropertyInput::schema().unwrap();
+    assert_eq!(schema.fields().len(), 5);
+
+    match &schema.fields()[0] {
+        Field::String(field) => {
+            assert_eq!(field.key.as_str(), "url");
+            assert_eq!(field.label.as_deref(), Some("URL"));
+            assert_eq!(field.description.as_deref(), Some("Endpoint"));
+            assert_eq!(field.placeholder.as_deref(), Some("https://example.test"));
+            assert_eq!(field.group.as_deref(), Some("request"));
+            assert_eq!(field.hint, InputHint::Url);
+            assert_eq!(field.widget, StringWidget::Plain);
+            assert!(matches!(field.required, RequiredMode::Always));
+            assert!(matches!(
+                field.expression,
+                nebula_schema::ExpressionMode::Forbidden
+            ));
+            assert!(
+                field.rules.len() >= 3,
+                "non_empty, url, and max-length rules must all survive"
+            );
+        },
+        other => panic!("expected url StringField, got {other:?}"),
+    }
+
+    match &schema.fields()[1] {
+        Field::String(field) => {
+            assert_eq!(field.key.as_str(), "body");
+            assert_eq!(field.widget, StringWidget::Multiline);
+            assert!(matches!(field.required, RequiredMode::Never));
+        },
+        other => panic!("expected body StringField, got {other:?}"),
+    }
+
+    match &schema.fields()[2] {
+        Field::Boolean(field) => {
+            assert_eq!(field.key.as_str(), "enabled");
+            assert_eq!(field.widget, BooleanWidget::Checkbox);
+            assert!(matches!(
+                field.expression,
+                nebula_schema::ExpressionMode::Forbidden
+            ));
+        },
+        other => panic!("expected BooleanField, got {other:?}"),
+    }
+
+    match &schema.fields()[3] {
+        Field::Secret(field) => {
+            assert_eq!(field.key.as_str(), "api_key");
+            assert_eq!(field.widget, SecretWidget::Plain);
+            assert!(matches!(field.required, RequiredMode::Always));
+        },
+        other => panic!("expected SecretField, got {other:?}"),
+    }
+
+    match &schema.fields()[4] {
+        Field::String(field) => {
+            assert_eq!(field.key.as_str(), "internal_note");
+            assert!(matches!(field.visible, VisibilityMode::Never));
+            assert!(matches!(field.required, RequiredMode::Never));
+        },
+        other => panic!("expected hidden StringField, got {other:?}"),
     }
 }
 

@@ -76,6 +76,33 @@ fn lint_schema_reports_dangling_refs_and_structural_issues() {
     );
 }
 
+#[test]
+fn root_rule_legacy_reference_fails_with_json_pointer_rewrite() {
+    let report = Schema::builder()
+        .add(Field::string(field_key!("tier")))
+        .root_rule(
+            nebula_validator::Rule::predicate(
+                nebula_validator::Predicate::eq("$root.tier", json!("pro")).unwrap(),
+            )
+            .expect("bounded rule"),
+        )
+        .build()
+        .expect_err("legacy root reference must block schema admission");
+
+    let issue = report
+        .errors()
+        .find(|issue| issue.code() == "reference.legacy_root")
+        .expect("legacy root reference diagnostic");
+    assert_eq!(
+        issue
+            .params()
+            .iter()
+            .find(|(key, _)| key.as_ref() == "suggested")
+            .and_then(|(_, value)| value.as_str()),
+        Some("/tier")
+    );
+}
+
 #[tokio::test]
 async fn loader_registry_resolves_select_and_dynamic_loaders() {
     let schema = raw_schema(vec![

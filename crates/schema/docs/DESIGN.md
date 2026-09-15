@@ -2,7 +2,7 @@
 
 | Property | Contract |
 |----------|----------|
-| Status | Frontier internal API; incompatible changes are possible |
+| Status | Stable internal schema/proof/export contract; unshipped Phase-5 targets remain proposed |
 | Layer | Core, subject to the workspace dependency map |
 | Owns | Schema definitions, canonical value trees, preparation, proof custody, schema-aware projections |
 | Delegates | Rules and conditional policies to `nebula-validator`; compilation and evaluation to `nebula-expression` |
@@ -10,8 +10,8 @@
 
 ## Ownership
 
-`nebula-schema` supplies the typed-configuration model shared by Actions,
-Credentials, and Resources (canon L1-3.5). It owns `Schema`, field declarations,
+`nebula-schema` supplies the typed-property model shared by Actions,
+Credentials, and Resources (canon L1-3.5). It owns `Schema`, property declarations,
 structural lint, phase-indexed values, schema-bound proofs, secret wrappers,
 option/record loader interfaces, and optional JSON Schema export.
 
@@ -21,6 +21,11 @@ Cryptographic primitives belong to `nebula-crypto`; KDF/password hashing must
 not be added here. Consumers decide when validated data is persisted and which
 trusted boundary may expose protected material. This design does not claim
 that any particular consumer has adopted the complete pipeline.
+
+Forms, CLIs, API payloads, webhooks, credential setup, resource configuration,
+SDK authoring and future visual property panels are projections from the same
+admitted contract. Visibility, disabled state, grouping, widget selection and
+client-side validation never authorize an operation or waive validation.
 
 ## One tree, separate proofs
 
@@ -36,6 +41,11 @@ declare their known types and exact numeric bounds rather than advertising
 `Any`. Preparation preserves lossless integral-number normalization, and final
 validation rechecks the scalar domain and rules. Scalar roots do not acquire
 expression permission through a synthetic declaration.
+
+Root arrays are not lowered into fake wrapper properties. Existing list support
+is field-level. Until `RootShape` gains a first-class root-list container, any
+lowering boundary that receives a root array must fail closed rather than
+changing the input shape.
 
 `ValueTree<E>` has exactly five variants:
 
@@ -102,6 +112,15 @@ to its whole subtree; a child cannot reopen that restriction. `ExpressionMode::R
 literals with `expression.required`. Template-like strings or `$expr` objects
 returned by the evaluator remain data and cannot trigger another evaluation.
 
+Derived authoring accepts structured `#[property(...)]` on data fields.
+`display(...)` records presentation annotations, `input(...)` records
+requiredness, expression policy and secret protection, and `validate(...)`
+records value rules. The macro lowers these sections to the existing `Field`
+runtime representation and rejects unimplemented Phase-5 sections such as
+`options(...)` rather than silently treating them as hints. Legacy `#[field]`
+and `#[validate]` remain for current in-workspace declarations, but new code
+should use the property grammar.
+
 `Transformer::regex(pattern, group)` and `RegexCapture::new(pattern, group)`
 return `Result<_, ValidationError>`. The capture-specific configuration owns a
 compiled `regex::Regex` and a checked group index; the validator's `RulePattern`
@@ -128,6 +147,10 @@ keys remain keys. Lists require canonical decimal indices without leading zeros.
 `insert(key, tree)` returns `Result<Option<Self>, ValidationError>` and rejects
 non-object receivers. Key insertion grants neither schema admission nor proof.
 Data property names need not satisfy `FieldKey` syntax.
+
+Rule references use JSON Pointer for root-relative data paths. The historical
+`$root.foo` syntax is removed and produces `reference.legacy_root` with the
+rewrite (`/foo`) in diagnostic params.
 
 ## Wire, views, and identities
 
@@ -245,19 +268,22 @@ execution stays centralized at `validate_rules_with_ctx` and
 
 ## Module map and checks
 
-- [PHASE5_PROPERTY.md](PHASE5_PROPERTY.md): revised target design; implementation
-  pending. Value-only `#[property(display(...), input(...), validate(...), options(...))]`
+- [PHASE5_PROPERTY.md](PHASE5_PROPERTY.md): revised target design. The
+  `#[property(display(...), input(...), validate(...))]` value primitive is
+  implemented for `#[derive(Schema)]`; `schema_type`, directional codec
+  evidence, validator Condition v2, slots, options providers and trigger output
+  gates remain target contracts until their owners ship code and tests.
+  Value-only `#[property(display(...), input(...), validate(...), options(...))]`
   describes explicit `Input` / `Output` / `Properties` / `Config` data types.
   `schema_type(input)`, `schema_type(output)` or `schema_type(input, output)` owns
   real Serde derives plus Schema and recursive InputCodec/OutputCodec evidence;
   raw Schema remains descriptive without codec evidence. Custom codecs use reviewed
   adapters; defaults additionally require their field's encoding direction.
   Separate `#[slot(...)]` dependencies stay outside `HasSchema` and persisted values.
-  Current `#[field(...)]` /
-  `#[validate(...)]` helpers remain the implementation baseline. Target presentation
-  must not affect value requiredness or grant slot authority; semantic decoupling
-  requires a future versioned migration. Full schema equality remains conservative
-  and includes UI fields; root shapes and exact-schema proof boundaries are unchanged.
+  Current `#[field(...)]` / `#[validate(...)]` helpers remain accepted for
+  existing declarations. Presentation must not affect value requiredness or
+  grant slot authority. Full schema equality remains conservative and includes
+  UI fields; root shapes and exact-schema proof boundaries are unchanged.
 - `schema.rs`, `field.rs`, `builder/`, and `lint.rs`: definitions, construction,
   checked keys, aliases, and bounded structural lint.
 - `value/mod.rs`, `tree.rs`, `wire.rs`, `tree_canonical.rs`, and `canonical.rs`
@@ -268,8 +294,10 @@ execution stays centralized at `validate_rules_with_ctx` and
 - `expression.rs`, `context.rs`, `loader.rs`, `secret.rs`, and `transformer.rs`:
   evaluation adapters, safe projections, loader boundaries, and checked primitives.
 - `has_schema.rs` and `macros/`: checked schema discovery and derives.
-- `json_schema.rs`: optional Draft 2020-12 export with `x-nebula-*` extensions;
-  exported metadata does not replace validation or runtime proof.
+- `json_schema.rs`: optional Draft 2020-12 export with versioned
+  `x-nebula-*` extensions. [JSON_SCHEMA_EXTENSIONS.md](JSON_SCHEMA_EXTENSIONS.md)
+  is the extension registry. Exported metadata does not replace validation or
+  runtime proof.
 
 The [agent guide](../AGENTS.md) maps changed contracts to focused tests and
 commands. [README](../README.md) summarizes the API; [CHANGELOG](../CHANGELOG.md)

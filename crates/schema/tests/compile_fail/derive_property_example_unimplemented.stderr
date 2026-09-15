@@ -1,0 +1,5 @@
+error: `display(example = ...)` requires schema-owned presentation example storage and is not implemented by this derive yet
+ --> tests/compile_fail/derive_property_example_unimplemented.rs:5:24
+  |
+5 |     #[property(display(example = "hello"))]
+  |                        ^^^^^^^

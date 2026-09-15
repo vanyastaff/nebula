@@ -1,8 +1,8 @@
 ---
 name: Schema, metadata and slot authoring
 status: proposed
-implementation: not shipped
-last-reviewed: 2026-09-12
+implementation: property value primitive partially shipped
+last-reviewed: 2026-09-15
 related:
   - ../../../docs/INTEGRATION_MODEL.md
   - DESIGN.md
@@ -19,9 +19,54 @@ related:
 
 This is the proposed implementation contract for revising design-only PR1027.
 The user authorizes a breaking architectural redesign, superseding issue 992's
-earlier ratify-only restriction. This document does not ship any implementation.
+earlier ratify-only restriction. The structured
+`#[property(display(...), input(...), validate(...))]` value primitive has
+landed in `#[derive(Schema)]`; the codec, slot, condition, options and trigger
+contracts below remain target designs until their owners ship code and tests.
 The private design vault was unavailable: ADR text is unverified and unmodified.
 Private ADR-0108 remains unverified; only its preceding summary was available.
+
+## 2026+ Research Lens
+
+The durable product shape is a trust grammar, not a field renderer. n8n proves
+that expressions and credentials need to work across many input surfaces, while
+ComfyUI shows why client-side datatype matching, hidden inputs and dynamic
+custom kinds cannot become backend authority. Windmill validates using one input
+schema across scripts, flows, resources, webhooks and generated UIs, but also
+shows the trap of letting UI customization mutate the apparent data contract.
+Temporal adds the runtime lesson: data conversion, codec transforms, external
+storage and replay history are separate concerns, so rendered JSON must not be
+treated as enough proof for expressions, secrets or large file handoffs. OpenAPI,
+JSON Schema and TypeSpec provide the export/authoring precedent: describe
+durable typed models, project them into tooling artifacts, and version extension
+metadata explicitly.
+
+GitHub research reinforced the same boundary from a different angle. Acts uses
+YAML workflow inputs and expressions, which is ergonomic but too stringly to be
+Nebula's proof layer. Orka and Sayiir bias toward typed workflow composition and
+durable checkpointing; that belongs in execution/action contracts, with schema
+providing the admitted input proof before runtime. z8run combines typed ports,
+DAG validation, WASM plugin capabilities, credential vaulting and a smart config
+UI; the lesson for Nebula is to keep node ports, dependency slots and capability
+checks separate from structured value properties. Obelisk's WIT/schema-first
+engine and persisted value limits support a versioned wire contract and explicit
+payload-size budgets. FlowGram and Coze Studio are strong evidence for visual
+workflow panels, variable scopes and node configuration forms as projections,
+not the source of semantic authority. JSON Forms shows the cleanest UI pattern:
+JSON Schema describes data while a separate UI schema/rendering layer arranges
+presentation. TypeScript builders such as Zod-style or workflow-template
+schemas are valuable DX precedents for inference and authoring fluency, but they
+usually stop at runtime validation; Nebula also needs authored provenance,
+compiled program syntax, secret redaction, canonical wire and admitted proof.
+
+Nebula therefore keeps a closed core property model plus fail-closed extension
+points. Unknown semantic kinds never become `String` or `Any`. A future
+schema-owned semantic descriptor can add temporal, network, identity,
+resource-handle, map/dictionary, file/blob checksum, storage handle, bounded
+inline transport and streaming hints, but only when those descriptors are part
+of admitted schema wire and validation. Until then, derive accepts only property
+syntax that lowers to real `Field`, `Rule`, `ExpressionMode`, `RequiredMode` and
+secret semantics, and rejects the rest with diagnostics.
 
 Use structured `#[property(display(...), input(...), validate(...), options(...))]`
 on data fields and a separate `#[slot(...)]` on dependency fields. Permanently
@@ -194,7 +239,7 @@ Field attributes are optional; the Rust data domain supplies the baseline.
 
 | Section | Accepted keys and argument shapes |
 |---|---|
-| display | `label = "..."`, `description = "..."`, `placeholder = "..."`, `hint = "..."`, `group = "..."`, `example = literal`, `widget = token`, `hidden`, `visible_when(C)`. |
+| display | `label = "..."`, `description = "..."`, `placeholder = "..."`, `hint = "..."`, `group = "..."`, `widget = token`, `hidden`; `example = literal` and `visible_when(C)` fail closed until schema-owned storage and checked conditions land. |
 | input | `required`, `required_when(C)`, `expressions = allowed\|forbidden\|required`, `secret`. |
 | validate | `non_empty`, `length(min = n, max = n)`, `range(min = number, max = number)`, `pattern = "..."`, `url`, `email`. Either bound may be omitted, but not both. |
 | options | `source = RustPath`, `depends_on(reference, ...)`, `mode = closed\|suggestions`. Source is required; mode defaults to suggestions. |
@@ -550,7 +595,9 @@ empty values. Complete all pending obligations before trusted typed decode.
 Serde must not supply additional undeclared values after the proof: supported
 default paths are already materialized, while omitted Option decodes to None.
 Schema export's default annotation never performs this mutation.
-`display(example = literal)` is a non-mutating suggestion, never a fallback.
+When schema-owned example storage lands, `display(example = literal)` must stay
+a non-mutating suggestion, never a fallback. The current derive rejects it until
+that storage exists.
 Unknown fields, invalid data and unsupported codec output cannot become accepted
 by serde dropping them; schema rejection precedes decoder invocation.
 

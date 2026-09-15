@@ -352,6 +352,16 @@ pub mod __private {
     //! unrenamed `serde_json` dependency of its own.
     pub use {serde_json, tracing};
 
+    /// Build a [`FieldKey`](crate::FieldKey) from a string literal already
+    /// checked by `nebula-schema-macros`.
+    ///
+    /// Not part of the stable authoring surface. Normal code must use
+    /// [`crate::FieldKey::new`] or [`crate::field_key!`].
+    #[must_use]
+    pub fn field_key_from_validated_literal(value: &'static str) -> crate::FieldKey {
+        crate::FieldKey::from_validated_literal(value)
+    }
+
     /// Build a union newtype-variant's payload field from the payload type's
     /// schema, enforcing that the schema is a
     /// [`Record`](crate::SchemaKind::Record).

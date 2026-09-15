@@ -8,7 +8,10 @@ use quote::quote;
 use syn::{Data, DataStruct, DeriveInput, Fields, Ident, Type, ext::IdentExt};
 
 use crate::{
-    attrs::{DefaultLit, FieldAttrs, RenameRule, SchemaStructAttrs, SerdeAttrs, ValidateAttrs},
+    attrs::{
+        DefaultLit, FieldAttrs, PropertyWidget, RenameRule, SchemaStructAttrs, SerdeAttrs,
+        ValidateAttrs,
+    },
     type_infer::{FieldKind, classify, secret_leaf_type},
 };
 
@@ -715,6 +718,20 @@ pub(crate) fn build_field_expr(
     if let Some(group) = &field_attr.group {
         expr = quote! { #expr.group(#group) };
     }
+    if field_attr.hidden {
+        expr = quote! { #expr.visible(#crate_path::VisibilityMode::Never) };
+    }
+    if let Some(widget) = field_attr.widget {
+        expr = apply_property_widget(
+            expr,
+            widget,
+            inner,
+            field_attr.enum_select,
+            field_attr.secret,
+            field_name,
+            crate_path,
+        )?;
+    }
     if field_attr.multiline && matches!(inner, FieldKind::String) && !field_attr.secret {
         expr = quote! { #expr.widget(#crate_path::StringWidget::Multiline) };
     }
@@ -797,6 +814,71 @@ pub(crate) fn build_field_expr(
         ));
     }
     Ok(decorated)
+}
+
+fn apply_property_widget(
+    expr: TokenStream2,
+    widget: PropertyWidget,
+    inner: &FieldKind,
+    enum_select: bool,
+    secret: bool,
+    field_name: &Ident,
+    crate_path: &TokenStream2,
+) -> syn::Result<TokenStream2> {
+    let unsupported = |message: &str| syn::Error::new_spanned(field_name, message);
+    match widget {
+        PropertyWidget::Auto => Ok(expr),
+        PropertyWidget::Text if matches!(inner, FieldKind::String) && !secret => {
+            Ok(quote! { #expr.widget(#crate_path::StringWidget::Plain) })
+        },
+        PropertyWidget::Textarea if matches!(inner, FieldKind::String) && !secret => {
+            Ok(quote! { #expr.widget(#crate_path::StringWidget::Multiline) })
+        },
+        PropertyWidget::Password if secret => {
+            Ok(quote! { #expr.widget(#crate_path::SecretWidget::Plain) })
+        },
+        PropertyWidget::Number
+            if matches!(inner, FieldKind::IntegerNumber | FieldKind::FloatNumber) =>
+        {
+            Ok(quote! { #expr.widget(#crate_path::NumberWidget::Plain) })
+        },
+        PropertyWidget::Checkbox if matches!(inner, FieldKind::Boolean) => {
+            Ok(quote! { #expr.widget(#crate_path::BooleanWidget::Checkbox) })
+        },
+        PropertyWidget::Radio if matches!(inner, FieldKind::Boolean) => {
+            Ok(quote! { #expr.widget(#crate_path::BooleanWidget::Radio) })
+        },
+        PropertyWidget::Select if enum_select && matches!(inner, FieldKind::UserDefined(_)) => {
+            Ok(quote! { #expr.widget(#crate_path::SelectWidget::Dropdown) })
+        },
+        PropertyWidget::Radio if enum_select && matches!(inner, FieldKind::UserDefined(_)) => {
+            Ok(quote! { #expr.widget(#crate_path::SelectWidget::Radio) })
+        },
+        PropertyWidget::List if matches!(inner, FieldKind::List(_)) => {
+            Ok(quote! { #expr.widget(#crate_path::ListWidget::Plain) })
+        },
+        PropertyWidget::Text | PropertyWidget::Textarea => Err(unsupported(
+            "`display(widget = text|textarea)` applies only to non-secret text properties",
+        )),
+        PropertyWidget::Password => Err(unsupported(
+            "`display(widget = password)` is presentation only; add `input(secret)` to protect the property",
+        )),
+        PropertyWidget::Number => Err(unsupported(
+            "`display(widget = number)` applies only to integer or number properties",
+        )),
+        PropertyWidget::Checkbox => Err(unsupported(
+            "`display(widget = checkbox)` applies only to boolean properties",
+        )),
+        PropertyWidget::Select | PropertyWidget::Radio => Err(unsupported(
+            "`display(widget = select|radio)` applies only to enum-select or boolean properties",
+        )),
+        PropertyWidget::Object => Err(unsupported(
+            "`display(widget = object)` requires nested-object widget storage and is not implemented by this derive yet",
+        )),
+        PropertyWidget::List => Err(unsupported(
+            "`display(widget = list)` applies only to list properties",
+        )),
+    }
 }
 
 /// `#[field(enum_select)]` maps to a `SelectField`; only `#[validate(required)]` is meaningful

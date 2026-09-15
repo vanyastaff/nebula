@@ -2,9 +2,9 @@
 
 name: nebula-schema
 
-role: Typed configuration schema and phase-indexed data with schema-bound proofs
-status: frontier
-last-reviewed: 2026-09-10
+role: Typed property schema and phase-indexed data with schema-bound proofs
+status: stable
+last-reviewed: 2026-09-15
 canon-invariants: [L1-3.5, L1-4.5]
 related: [nebula-validator, nebula-expression, nebula-action, nebula-resource, nebula-credential]
 ---
@@ -14,9 +14,9 @@ related: [nebula-validator, nebula-expression, nebula-action, nebula-resource, n
 ## Purpose
 
 Core infrastructure for typed configuration shared by Actions, Credentials, and
-Resources. The crate owns schema definitions, a canonical value tree, and the
-checked transitions from authoring input to resolved runtime data. It replaces
-the deleted `nebula-parameter` crate.
+Resources. The crate owns schema definitions, semantic properties, a canonical
+value tree, and the checked transitions from authoring input to resolved runtime
+data. It replaces the deleted `nebula-parameter` crate.
 
 `nebula-sdk` is the sole curated, supported Rust product surface. This README
 describes `nebula-schema` as an internal technical boundary, not a separately
@@ -80,6 +80,17 @@ when the current node is a list.
 
 ## Construction APIs
 
+- `#[derive(Schema)]` now accepts the Phase-5 `#[property(...)]` grammar on
+  value fields. `display(...)` maps labels, descriptions, placeholders, hints,
+  groups, widgets and hidden-state annotations; `input(...)` maps requiredness,
+  expression policy and secret protection; `validate(...)` maps non-empty,
+  length, range, pattern, URL and email rules. These attributes describe data
+  properties only. Slots, bindings, tenant authority, file scanning and runtime
+  capability checks remain outside `ValidSchema`.
+- Legacy `#[field(...)]` and `#[validate(...)]` remain accepted for current
+  in-workspace declarations, but new authoring should prefer structured
+  `#[property]`. Unsupported Phase-5 sections such as `options(...)` fail
+  closed until their checked loader/provider contract is implemented.
 - `ValidSchema::root_shape()` is the authoritative `RootShape`: `Any`,
   `Scalar(ScalarSchema)`, `Record(RecordShape)`, or `Union(UnionShape)`.
   Kind, declarations, and root rules are derived views, not independent state.
@@ -190,8 +201,11 @@ Old empty record snapshots remain records, never implicitly become `null`.
 
 With the optional `schemars` feature, `ValidSchema::json_schema()` returns
 `Result<schemars::Schema, JsonSchemaExportError>` for Draft 2020-12. Shape and
-rules use standard keywords; `x-nebula-*` extensions carry expression policies,
-requiredness, visibility, root rules, and UI/runtime hints.
+rules use standard keywords; versioned `x-nebula-*` extensions carry expression
+policies, requiredness, visibility, root rules, aliases, projections, file
+constraints, choice metadata, and mode defaults. The extension registry lives in
+[docs/JSON_SCHEMA_EXTENSIONS.md](docs/JSON_SCHEMA_EXTENSIONS.md), and snapshot
+tests freeze the exported key set.
 Exported JSON Schema does not replace the proof pipeline.
 
 ## Non-goals
@@ -204,9 +218,12 @@ Exported JSON Schema does not replace the proof pipeline.
 
 ## Maturity
 
-The internal API is `frontier` and may change incompatibly. Supported downstream
-contracts are curated through `nebula-sdk`. See [AGENTS.md](AGENTS.md) for the
-relevant checks when changing a crate contract.
+The core schema/proof/export contract is stable for in-workspace consumers.
+Supported downstream contracts are still curated through `nebula-sdk`; this
+crate remains an internal technical boundary. Proposed Phase-5 targets that
+depend on validator condition v2, directional codec evidence, slot grammar, or
+trigger output admission are documented as unshipped until they have code and
+tests.
 
 ## Related
 

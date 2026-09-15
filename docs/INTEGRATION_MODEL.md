@@ -88,17 +88,20 @@ compiler projects selected identity, schema, dependency, and execution fields;
 it does not serialize `BaseMetadata` or `DeprecationNotice`. This catalog migration
 does not change compiler epochs, durable hashes, or historical frozen plan bytes.
 
-### Phase-5 authoring target (implementation pending)
+### Phase-5 authoring target
 
 [`crates/schema/docs/PHASE5_PROPERTY.md`](../crates/schema/docs/PHASE5_PROPERTY.md)
 specifies the revised target contract for separate value and slot grammars with
-explicit associated data types. Implementation is pending.
+explicit associated data types.
 
-**Current implementation:** value derives use the existing `#[field(...)]` /
-`#[validate(...)]` helpers; integration fields use `#[credential(...)]` /
-`#[resource(...)]` for slots. The schema-free draft/admission lifecycle above
-already exists. The new grammar and remaining builder parity below are targets,
-not shipped APIs.
+**Current implementation:** schema value derives accept structured
+`#[property(display(...), input(...), validate(...))]` and still accept the
+existing `#[field(...)]` / `#[validate(...)]` helpers for in-workspace
+declarations. Integration fields use `#[credential(...)]` / `#[resource(...)]`
+for slots. The schema-free draft/admission lifecycle above already exists.
+`schema_type`, directional codec evidence, checked condition v2, slot grammar,
+options-provider admission and trigger output gates remain targets, not shipped
+APIs.
 
 **Target authoring:** `#[property(display(...), input(...), validate(...),
 options(...))]` describes values only; the blocks are optional according to the

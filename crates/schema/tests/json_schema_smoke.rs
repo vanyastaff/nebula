@@ -1,8 +1,9 @@
 //! JSON Schema export smoke test (`schemars` feature). Run with:
 //! `cargo test -p nebula-schema --features schemars json_schema_smoke`
 
-use nebula_schema::{Field, FieldKey, Schema};
+use nebula_schema::{Field, FieldKey, Schema, SelectOption};
 use serde_json::{Value, json};
+use std::collections::BTreeSet;
 
 #[test]
 fn valid_schema_json_schema_includes_draft_2020_12_and_typed_property() {
@@ -86,4 +87,83 @@ fn json_schema_extension_snapshot() {
       }
     }
     "###);
+}
+
+#[test]
+fn json_schema_x_nebula_extension_set_is_frozen() {
+    let schema = Schema::builder()
+        .add(
+            Field::string(FieldKey::new("name").expect("key"))
+                .read_alias("legacy_name")
+                .expect("alias")
+                .emit_as("display_name")
+                .expect("emit key"),
+        )
+        .add(
+            Field::file(FieldKey::new("avatar").expect("key"))
+                .accept("image/png")
+                .max_size(1_048_576),
+        )
+        .add(
+            Field::select(FieldKey::new("region").expect("key"))
+                .dynamic()
+                .multiple()
+                .allow_custom(),
+        )
+        .add(
+            Field::select(FieldKey::new("provider").expect("key")).extend_options([
+                SelectOption::new(json!("github"), "GitHub"),
+                SelectOption::new(json!("legacy"), "Legacy").disabled(),
+            ]),
+        )
+        .add(
+            Field::mode(FieldKey::new("auth").expect("key"))
+                .variant_empty("none", "None")
+                .default_variant("none"),
+        )
+        .root_rule(nebula_schema::Rule::custom("engine.check").expect("rule"))
+        .build()
+        .expect("build");
+
+    let value = schema.json_schema().expect("export").to_value();
+    let mut extensions = BTreeSet::new();
+    collect_extensions(&value, &mut extensions);
+    insta::assert_json_snapshot!(extensions, @r###"
+    [
+      "x-nebula-disabled",
+      "x-nebula-emit-as",
+      "x-nebula-expression-mode",
+      "x-nebula-field-kind",
+      "x-nebula-file-accept",
+      "x-nebula-file-max-size",
+      "x-nebula-mode-default-variant",
+      "x-nebula-read-aliases",
+      "x-nebula-required-mode",
+      "x-nebula-resolved-value-schema",
+      "x-nebula-root-rules",
+      "x-nebula-select-allow-custom",
+      "x-nebula-select-dynamic",
+      "x-nebula-select-multiple",
+      "x-nebula-visibility-mode"
+    ]
+    "###);
+}
+
+fn collect_extensions(value: &Value, extensions: &mut BTreeSet<String>) {
+    match value {
+        Value::Object(object) => {
+            for (key, value) in object {
+                if key.starts_with("x-nebula-") {
+                    extensions.insert(key.clone());
+                }
+                collect_extensions(value, extensions);
+            }
+        },
+        Value::Array(values) => {
+            for value in values {
+                collect_extensions(value, extensions);
+            }
+        },
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {},
+    }
 }

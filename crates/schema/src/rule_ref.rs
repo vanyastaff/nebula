@@ -2,7 +2,7 @@
 //! secret lints.
 //!
 //! These helpers translate the address forms rule references and validator
-//! field pointers use (`$root.foo`, `/foo/bar` JSON Pointers, `items[0].name`)
+//! field pointers use (`/foo/bar` JSON Pointers, `items[0].name`)
 //! into the schema's [`FieldPath`] addressing. They carry no error-mapping or
 //! evaluation logic. Runtime diagnostics retain their data pointers instead of
 //! narrowing arbitrary data keys into schema identifiers.
@@ -14,16 +14,8 @@ use crate::{FieldPath, key::FieldKey, path::PathSegment};
 /// Resolve a validator rule reference to an absolute schema path.
 ///
 /// Supported forms:
-/// - `$root.foo` for legacy root-relative refs
 /// - `/foo/bar` JSON Pointer refs emitted by current predicates
 pub(crate) fn resolve_rule_dependency(field_ref: &str) -> Option<FieldPath> {
-    if let Some(rest) = field_ref.strip_prefix("$root.") {
-        if rest.split('.').any(str::is_empty) {
-            return None;
-        }
-        let vp = ValidatorFieldPath::parse(rest)?;
-        return validator_path_to_schema_path(&vp);
-    }
     if field_ref.starts_with('/') {
         let vp = ValidatorFieldPath::parse(field_ref)?;
         return validator_path_to_schema_path(&vp);
@@ -108,7 +100,6 @@ mod tests {
     fn rule_dependency_rejects_empty_path_segments() {
         assert!(resolve_rule_dependency("/items//name").is_none());
         assert!(resolve_rule_dependency("/items/").is_none());
-        assert!(resolve_rule_dependency("$root.items..name").is_none());
     }
 
     #[test]

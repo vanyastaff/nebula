@@ -1,0 +1,5 @@
+error: unknown #[property(..)] section `layout`; expected display(...), input(...), validate(...), or options(...)
+ --> tests/compile_fail/derive_property_unknown_section.rs:5:16
+  |
+5 |     #[property(layout(label = "Name"))]
+  |                ^^^^^^

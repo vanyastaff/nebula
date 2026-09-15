@@ -56,6 +56,10 @@ impl FieldKey {
         Ok(Self(Arc::from(value)))
     }
 
+    pub(crate) fn from_validated_literal(value: &'static str) -> Self {
+        Self(Arc::from(value))
+    }
+
     /// Borrow the key as `&str`.
     #[inline]
     #[must_use]

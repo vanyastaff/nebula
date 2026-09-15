@@ -1,9 +1,10 @@
 //! Attribute parsers for `#[derive(Schema)]` / `#[derive(EnumSelect)]`.
 //!
-//! Two namespaces are recognised today:
+//! Three namespaces are recognised today:
 //!
+//! - `#[property(...)]` — structured Phase-5 property sections
 //! - `#[field(...)]` — UI / metadata options (label, hint, default, secret, multiline,
-//!   `enum_select`, …)
+//!   `enum_select`, …); retained for existing in-workspace declarations
 //! - `#[validate(...)]`  — value rules (required, length, range, pattern, url, email)
 //!
 //! Struct-level `#[schema(...)]` on `#[derive(Schema)]` supports:
@@ -36,6 +37,8 @@ pub(crate) struct FieldAttrs {
     pub hint: Option<String>,
     pub secret: bool,
     pub multiline: bool,
+    pub hidden: bool,
+    pub widget: Option<PropertyWidget>,
     pub no_expression: bool,
     pub expression_required: bool,
     /// When true, a user-defined field type is emitted as a static `Select` field whose options
@@ -47,6 +50,21 @@ pub(crate) struct FieldAttrs {
     /// projection output (`to_wire_json`). Read-aliases come from `#[serde(alias)]`
     /// instead (so serde and the schema stay in sync on accepted input keys).
     pub emit_as: Option<String>,
+}
+
+/// Widget tokens accepted by `#[property(display(widget = ...))]`.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum PropertyWidget {
+    Auto,
+    Text,
+    Textarea,
+    Password,
+    Number,
+    Checkbox,
+    Select,
+    Radio,
+    Object,
+    List,
 }
 
 /// Typed literal carried by `#[field(default = ...)]`.
@@ -81,6 +99,8 @@ impl FieldAttrs {
                 entry.apply(&mut out)?;
             }
         }
+        let property = PropertyAttrs::from_attrs(attrs)?;
+        property.apply_to(&mut out)?;
         Ok(out)
     }
 }
@@ -95,7 +115,529 @@ impl ValidateAttrs {
                 entry.apply(&mut out)?;
             }
         }
+        let property = PropertyAttrs::from_attrs(attrs)?;
+        property.apply_validation_to(&mut out)?;
         Ok(out)
+    }
+}
+
+// ── Phase-5 #[property(...)] ────────────────────────────────────────────────
+
+#[derive(Default, Debug)]
+struct PropertyAttrs {
+    display: Option<PropertyDisplay>,
+    input: Option<PropertyInput>,
+    validate: Option<PropertyValidate>,
+    options: Option<Span>,
+}
+
+#[derive(Default, Debug)]
+struct PropertyDisplay {
+    label: Option<String>,
+    description: Option<String>,
+    placeholder: Option<String>,
+    hint: Option<String>,
+    group: Option<String>,
+    widget: Option<PropertyWidget>,
+    hidden: bool,
+}
+
+#[derive(Default, Debug)]
+struct PropertyInput {
+    required: bool,
+    secret: bool,
+    expressions: Option<PropertyExpressionMode>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum PropertyExpressionMode {
+    Allowed,
+    Forbidden,
+    Required,
+}
+
+#[derive(Default, Debug)]
+struct PropertyValidate {
+    non_empty: bool,
+    min_length: Option<usize>,
+    max_length: Option<usize>,
+    min: Option<i64>,
+    max: Option<i64>,
+    pattern: Option<String>,
+    url: bool,
+    email: bool,
+}
+
+impl PropertyAttrs {
+    fn from_attrs(attrs: &[Attribute]) -> syn::Result<Self> {
+        let mut out = Self::default();
+        for attr in attrs.iter().filter(|a| a.path().is_ident("property")) {
+            let entries: Punctuated<PropertySection, Token![,]> =
+                attr.parse_args_with(Punctuated::parse_terminated)?;
+            for entry in entries {
+                entry.apply(&mut out)?;
+            }
+        }
+        Ok(out)
+    }
+
+    fn apply_to(self, out: &mut FieldAttrs) -> syn::Result<()> {
+        if let Some(display) = self.display {
+            merge_opt(&mut out.label, display.label, "display(label)")?;
+            merge_opt(
+                &mut out.description,
+                display.description,
+                "display(description)",
+            )?;
+            merge_opt(
+                &mut out.placeholder,
+                display.placeholder,
+                "display(placeholder)",
+            )?;
+            merge_opt(&mut out.hint, display.hint, "display(hint)")?;
+            merge_opt(&mut out.group, display.group, "display(group)")?;
+            if display.hidden {
+                out.hidden = true;
+            }
+            merge_opt(&mut out.widget, display.widget, "display(widget)")?;
+        }
+        if let Some(input) = self.input {
+            if input.required {
+                // `ValidateAttrs` owns the final required bit; this mirrors
+                // legacy `#[validate(required)]` without granting UI authority.
+            }
+            if input.secret {
+                out.secret = true;
+            }
+            match input.expressions {
+                Some(PropertyExpressionMode::Allowed) | None => {},
+                Some(PropertyExpressionMode::Forbidden) => out.no_expression = true,
+                Some(PropertyExpressionMode::Required) => out.expression_required = true,
+            }
+        }
+        if let Some(span) = self.options {
+            return Err(syn::Error::new(
+                span,
+                "`#[property(options(...))]` requires the checked loader/option-provider \
+                 contract and is not implemented by this derive yet",
+            ));
+        }
+        Ok(())
+    }
+
+    fn apply_validation_to(self, out: &mut ValidateAttrs) -> syn::Result<()> {
+        if let Some(input) = self.input
+            && input.required
+        {
+            out.required = true;
+        }
+        if let Some(validate) = self.validate {
+            if validate.non_empty {
+                out.min_length = Some(out.min_length.unwrap_or(0).max(1));
+            }
+            merge_opt(
+                &mut out.min_length,
+                validate.min_length,
+                "validate(length.min)",
+            )?;
+            merge_opt(
+                &mut out.max_length,
+                validate.max_length,
+                "validate(length.max)",
+            )?;
+            merge_opt(&mut out.min, validate.min, "validate(range.min)")?;
+            merge_opt(&mut out.max, validate.max, "validate(range.max)")?;
+            merge_opt(&mut out.pattern, validate.pattern, "validate(pattern)")?;
+            out.url |= validate.url;
+            out.email |= validate.email;
+        }
+        Ok(())
+    }
+}
+
+fn merge_opt<T>(slot: &mut Option<T>, value: Option<T>, name: &str) -> syn::Result<()> {
+    if let Some(value) = value {
+        if slot.is_some() {
+            return Err(syn::Error::new(
+                Span::call_site(),
+                format!("duplicate property setting `{name}`"),
+            ));
+        }
+        *slot = Some(value);
+    }
+    Ok(())
+}
+
+enum PropertySection {
+    Display(PropertyDisplay),
+    Input(PropertyInput),
+    Validate(PropertyValidate),
+    Options(Span),
+}
+
+impl PropertySection {
+    fn apply(self, out: &mut PropertyAttrs) -> syn::Result<()> {
+        match self {
+            Self::Display(section) => set_section(&mut out.display, section, "display"),
+            Self::Input(section) => set_section(&mut out.input, section, "input"),
+            Self::Validate(section) => set_section(&mut out.validate, section, "validate"),
+            Self::Options(span) => {
+                if out.options.replace(span).is_some() {
+                    return Err(syn::Error::new(
+                        span,
+                        "duplicate `options(...)` section in `#[property]`",
+                    ));
+                }
+                Ok(())
+            },
+        }
+    }
+}
+
+fn set_section<T>(slot: &mut Option<T>, value: T, name: &str) -> syn::Result<()> {
+    if slot.replace(value).is_some() {
+        return Err(syn::Error::new(
+            Span::call_site(),
+            format!("duplicate `{name}(...)` section in `#[property]`"),
+        ));
+    }
+    Ok(())
+}
+
+impl Parse for PropertySection {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let name: syn::Ident = input.parse()?;
+        let content;
+        syn::parenthesized!(content in input);
+        match name.to_string().as_str() {
+            "display" => Ok(Self::Display(content.parse()?)),
+            "input" => Ok(Self::Input(content.parse()?)),
+            "validate" => Ok(Self::Validate(content.parse()?)),
+            "options" => {
+                let _ = content.parse::<proc_macro2::TokenStream>()?;
+                Ok(Self::Options(name.span()))
+            },
+            other => Err(syn::Error::new(
+                name.span(),
+                format!(
+                    "unknown #[property(..)] section `{other}`; expected display(...), input(...), validate(...), or options(...)"
+                ),
+            )),
+        }
+    }
+}
+
+enum DisplayEntry {
+    KeyValue { name: syn::Ident, value: Expr },
+    Flag(syn::Ident),
+}
+
+impl Parse for PropertyDisplay {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let mut out = Self::default();
+        let entries: Punctuated<DisplayEntry, Token![,]> = Punctuated::parse_terminated(input)?;
+        for entry in entries {
+            match entry {
+                DisplayEntry::KeyValue { name, value } => {
+                    let key = name.to_string();
+                    match key.as_str() {
+                        "label" => {
+                            out.label = Some(expr_string_lit(&value, &name, "display(label)")?);
+                        },
+                        "description" => {
+                            out.description =
+                                Some(expr_string_lit(&value, &name, "display(description)")?);
+                        },
+                        "placeholder" => {
+                            out.placeholder =
+                                Some(expr_string_lit(&value, &name, "display(placeholder)")?);
+                        },
+                        "hint" => out.hint = Some(expr_string_lit(&value, &name, "display(hint)")?),
+                        "group" => {
+                            out.group = Some(expr_string_lit(&value, &name, "display(group)")?);
+                        },
+                        "widget" => out.widget = Some(parse_widget(&value, name.span())?),
+                        "example" => {
+                            return Err(syn::Error::new(
+                                name.span(),
+                                "`display(example = ...)` requires schema-owned presentation \
+                                 example storage and is not implemented by this derive yet",
+                            ));
+                        },
+                        other => {
+                            return Err(syn::Error::new(
+                                name.span(),
+                                format!("unknown #[property(display(..))] key `{other}`"),
+                            ));
+                        },
+                    }
+                },
+                DisplayEntry::Flag(name) => match name.to_string().as_str() {
+                    "hidden" => out.hidden = true,
+                    "visible_when" => {
+                        return Err(syn::Error::new(
+                            name.span(),
+                            "`display(visible_when(...))` requires checked Condition support and is not implemented by this derive yet",
+                        ));
+                    },
+                    other => {
+                        return Err(syn::Error::new(
+                            name.span(),
+                            format!("unknown #[property(display(..))] flag `{other}`"),
+                        ));
+                    },
+                },
+            }
+        }
+        Ok(out)
+    }
+}
+
+impl Parse for DisplayEntry {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let name: syn::Ident = input.parse()?;
+        if input.peek(Token![=]) {
+            input.parse::<Token![=]>()?;
+            Ok(Self::KeyValue {
+                name,
+                value: input.parse()?,
+            })
+        } else if input.peek(syn::token::Paren) {
+            let content;
+            syn::parenthesized!(content in input);
+            let _ = content.parse::<proc_macro2::TokenStream>()?;
+            Ok(Self::Flag(name))
+        } else {
+            Ok(Self::Flag(name))
+        }
+    }
+}
+
+enum InputEntry {
+    KeyValue { name: syn::Ident, value: syn::Ident },
+    Flag(syn::Ident),
+}
+
+impl Parse for PropertyInput {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let mut out = Self::default();
+        let entries: Punctuated<InputEntry, Token![,]> = Punctuated::parse_terminated(input)?;
+        for entry in entries {
+            match entry {
+                InputEntry::Flag(name) => match name.to_string().as_str() {
+                    "required" => out.required = true,
+                    "secret" => out.secret = true,
+                    "required_when" => {
+                        return Err(syn::Error::new(
+                            name.span(),
+                            "`input(required_when(...))` requires checked Condition support and is not implemented by this derive yet",
+                        ));
+                    },
+                    other => {
+                        return Err(syn::Error::new(
+                            name.span(),
+                            format!("unknown #[property(input(..))] flag `{other}`"),
+                        ));
+                    },
+                },
+                InputEntry::KeyValue { name, value } => {
+                    if !name.to_string().eq("expressions") {
+                        return Err(syn::Error::new(
+                            name.span(),
+                            format!("unknown #[property(input(..))] key `{name}`"),
+                        ));
+                    }
+                    out.expressions = Some(match value.to_string().as_str() {
+                        "allowed" => PropertyExpressionMode::Allowed,
+                        "forbidden" => PropertyExpressionMode::Forbidden,
+                        "required" => PropertyExpressionMode::Required,
+                        other => {
+                            return Err(syn::Error::new(
+                                value.span(),
+                                format!(
+                                    "unknown expression mode `{other}`; expected allowed, forbidden, or required"
+                                ),
+                            ));
+                        },
+                    });
+                },
+            }
+        }
+        Ok(out)
+    }
+}
+
+impl Parse for InputEntry {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let name: syn::Ident = input.parse()?;
+        if input.peek(Token![=]) {
+            input.parse::<Token![=]>()?;
+            Ok(Self::KeyValue {
+                name,
+                value: input.parse()?,
+            })
+        } else if input.peek(syn::token::Paren) {
+            let content;
+            syn::parenthesized!(content in input);
+            let _ = content.parse::<proc_macro2::TokenStream>()?;
+            Ok(Self::Flag(name))
+        } else {
+            Ok(Self::Flag(name))
+        }
+    }
+}
+
+enum PropertyValidateEntry {
+    Flag(syn::Ident),
+    Length {
+        min: Option<usize>,
+        max: Option<usize>,
+    },
+    Range {
+        min: Option<i64>,
+        max: Option<i64>,
+    },
+    Pattern(String),
+}
+
+impl Parse for PropertyValidate {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let mut out = Self::default();
+        let entries: Punctuated<PropertyValidateEntry, Token![,]> =
+            Punctuated::parse_terminated(input)?;
+        for entry in entries {
+            match entry {
+                PropertyValidateEntry::Flag(name) => match name.to_string().as_str() {
+                    "non_empty" => out.non_empty = true,
+                    "url" => out.url = true,
+                    "email" => out.email = true,
+                    other => {
+                        return Err(syn::Error::new(
+                            name.span(),
+                            format!("unknown #[property(validate(..))] flag `{other}`"),
+                        ));
+                    },
+                },
+                PropertyValidateEntry::Length { min, max } => {
+                    out.min_length = min;
+                    out.max_length = max;
+                },
+                PropertyValidateEntry::Range { min, max } => {
+                    out.min = min;
+                    out.max = max;
+                },
+                PropertyValidateEntry::Pattern(pattern) => out.pattern = Some(pattern),
+            }
+        }
+        Ok(out)
+    }
+}
+
+impl Parse for PropertyValidateEntry {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let name: syn::Ident = input.parse()?;
+        let key = name.to_string();
+        if input.peek(syn::token::Paren) {
+            let content;
+            syn::parenthesized!(content in input);
+            match key.as_str() {
+                "length" => match parse_length(&content)? {
+                    ValidateEntry::Length { min, max } => Ok(Self::Length { min, max }),
+                    _ => Err(syn::Error::new(
+                        name.span(),
+                        "internal property parser invariant failed for length",
+                    )),
+                },
+                "range" => match parse_range(&content)? {
+                    ValidateEntry::Range { min, max } => Ok(Self::Range { min, max }),
+                    _ => Err(syn::Error::new(
+                        name.span(),
+                        "internal property parser invariant failed for range",
+                    )),
+                },
+                other => Err(syn::Error::new(
+                    name.span(),
+                    format!("unknown #[property(validate(..))] function `{other}`"),
+                )),
+            }
+        } else if input.peek(Token![=]) {
+            input.parse::<Token![=]>()?;
+            let lit: Lit = input.parse()?;
+            if key == "pattern" {
+                Ok(Self::Pattern(string_lit(&lit, &name, "validate(pattern)")?))
+            } else {
+                Err(syn::Error::new(
+                    name.span(),
+                    format!("unknown #[property(validate(..))] option `{key}`"),
+                ))
+            }
+        } else {
+            Ok(Self::Flag(name))
+        }
+    }
+}
+
+fn parse_widget(value: &Expr, span: Span) -> syn::Result<PropertyWidget> {
+    let raw = match value {
+        Expr::Path(path) if path.path.segments.len() == 1 => {
+            path.path.segments[0].ident.to_string()
+        },
+        Expr::Lit(ExprLit {
+            lit: Lit::Str(value),
+            ..
+        }) => value.value(),
+        _ => {
+            return Err(syn::Error::new(
+                span,
+                "`display(widget = ..)` expects a widget token such as `textarea`",
+            ));
+        },
+    };
+    Ok(match raw.as_str() {
+        "auto" => PropertyWidget::Auto,
+        "text" => PropertyWidget::Text,
+        "textarea" => PropertyWidget::Textarea,
+        "password" => PropertyWidget::Password,
+        "number" => PropertyWidget::Number,
+        "checkbox" => PropertyWidget::Checkbox,
+        "select" => PropertyWidget::Select,
+        "radio" => PropertyWidget::Radio,
+        "object" => PropertyWidget::Object,
+        "list" => PropertyWidget::List,
+        other => {
+            return Err(syn::Error::new(
+                span,
+                format!(
+                    "unknown property widget `{other}`; expected auto, text, textarea, password, number, checkbox, select, radio, object, or list"
+                ),
+            ));
+        },
+    })
+}
+
+fn expr_string_lit(value: &Expr, name: &syn::Ident, field: &str) -> syn::Result<String> {
+    if let Expr::Lit(ExprLit {
+        lit: Lit::Str(value),
+        ..
+    }) = value
+    {
+        Ok(value.value())
+    } else {
+        Err(syn::Error::new(
+            name.span(),
+            format!("`{field}` expects a string literal"),
+        ))
+    }
+}
+
+fn string_lit(value: &Lit, name: &syn::Ident, field: &str) -> syn::Result<String> {
+    if let Lit::Str(s) = value {
+        Ok(s.value())
+    } else {
+        Err(syn::Error::new(
+            name.span(),
+            format!("`{field}` expects a string literal"),
+        ))
     }
 }
 
