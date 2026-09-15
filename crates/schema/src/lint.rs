@@ -362,6 +362,135 @@ fn lint_default_type(field: &Field, path: &FieldPath, report: &mut ValidationRep
     }
 }
 
+/// Current construction forbids secret values in defaults at every declaration depth.
+/// Historical decoding retains its original lint contract and explicit wire evidence.
+#[tracing::instrument(level = "debug", skip_all, fields(field_count = fields.len()))]
+pub(crate) fn lint_current_secret_defaults(
+    fields: &[Field],
+    prefix: &FieldPath,
+    report: &mut ValidationReport,
+) {
+    let mut pending: Vec<_> = fields
+        .iter()
+        .map(|field| (field, prefix.clone().join(field.key().clone()), false))
+        .collect();
+    while let Some((field, path, anonymous)) = pending.pop() {
+        // Ordinary scope secrets already receive the historical direct-default lint.
+        if (anonymous || !matches!(field, Field::Secret(_)))
+            && field
+                .default()
+                .is_some_and(|default| default_contains_secret(field, default))
+        {
+            tracing::debug!(code = "secret.default_forbidden", %path,
+                "secret-bearing declaration default rejected");
+            report.push(
+                ValidationError::builder("secret.default_forbidden")
+                    .at(path.clone())
+                    .message("defaults must not contain values for declared secret fields")
+                    .build(),
+            );
+        }
+        match field {
+            Field::Object(object) => pending.extend(
+                object
+                    .fields
+                    .iter()
+                    .map(|child| (child, path.clone().join(child.key().clone()), false)),
+            ),
+            Field::List(list) => pending.extend(
+                list.item
+                    .as_deref()
+                    .map(|item| (item, path.clone().join(0_usize), true)),
+            ),
+            Field::Mode(mode) => pending.extend(mode.variants.iter().filter_map(|variant| {
+                // Invalid variant keys already block the structural lint; no index proof exists.
+                crate::FieldKey::new(&variant.key)
+                    .ok()
+                    .map(|key| (variant.field.as_ref(), path.clone().join(key), true))
+            })),
+            Field::String(_)
+            | Field::Secret(_)
+            | Field::Number(_)
+            | Field::Boolean(_)
+            | Field::Select(_)
+            | Field::Code(_)
+            | Field::File(_)
+            | Field::Computed(_)
+            | Field::Dynamic(_)
+            | Field::Notice(_)
+            | Field::Unknown(_) => {},
+        }
+    }
+}
+
+fn default_contains_secret(field: &Field, default: &serde_json::Value) -> bool {
+    use serde_json::Value;
+
+    let mut pending = vec![(field, default)];
+    while let Some((field, default)) = pending.pop() {
+        if default.is_null() {
+            continue;
+        }
+        match (field, default) {
+            (Field::Secret(_), _) => return true,
+            (Field::Object(object), Value::Object(values)) => {
+                for child in &object.fields {
+                    // Losing aliases remain in exported defaults, unlike prepared input.
+                    pending.extend(
+                        std::iter::once(child.key())
+                            .chain(child.read_aliases())
+                            .filter_map(|key| values.get(key.as_str()))
+                            .map(|value| (child, value)),
+                    );
+                }
+            },
+            (Field::List(list), Value::Array(values)) => {
+                if let Some(item) = list.item.as_deref() {
+                    pending.extend(values.iter().map(|value| (item, value)));
+                }
+            },
+            (Field::Mode(mode), Value::Object(values)) => {
+                let Some(value) = values.get("value").filter(|value| !value.is_null()) else {
+                    continue;
+                };
+                let selected = match values.get("mode") {
+                    None => mode.default_variant.as_deref(),
+                    Some(Value::String(key)) => Some(key.as_str()),
+                    Some(_) => None,
+                };
+                if let Some(variant) = mode
+                    .variants
+                    .iter()
+                    .find(|variant| Some(variant.key.as_str()) == selected)
+                {
+                    pending.push((&variant.field, value));
+                } else if crate::context::field_subtree_has_secret(field) {
+                    return true;
+                }
+            },
+            (Field::Object(_) | Field::List(_) | Field::Mode(_), _) => {
+                if crate::context::field_subtree_has_secret(field) {
+                    return true;
+                }
+            },
+            (
+                Field::String(_)
+                | Field::Number(_)
+                | Field::Boolean(_)
+                | Field::Select(_)
+                | Field::Code(_)
+                | Field::File(_)
+                | Field::Computed(_)
+                | Field::Dynamic(_)
+                | Field::Notice(_)
+                | Field::Unknown(_),
+                _,
+            ) => {},
+        }
+    }
+    false
+}
+
 fn lint_duplicate_keys_in_scope(
     fields: &[Field],
     prefix: &FieldPath,

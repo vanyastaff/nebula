@@ -9,6 +9,8 @@
 //! | `loader.failed` | Loader invocation returned an error |
 //! | `loader.result_too_large` | A loader page exceeded an item resource limit |
 //! | `recursion_limit` | A context exceeded the value depth limit before dispatch |
+//! | `schema.depth_limit` | Raw declarations exceeded the schema depth limit |
+//! | `schema.unsupported_property_kind` | A declaration has an unknown secret policy |
 //!
 //! Lint-time warnings (`missing_loader`, `loader_without_dynamic`) are emitted
 //! by the lint pass in `lint.rs`, not here.
@@ -90,6 +92,8 @@ impl LoaderContext {
     /// # Errors
     ///
     /// Returns `recursion_limit` before copying input deeper than the value limit.
+    /// Returns `schema.unsupported_property_kind` for unknown declarations;
+    /// their secret policy cannot be inferred safely.
     pub fn with_secrets_redacted(
         self,
         schema: &crate::validated::ValidSchema,

@@ -651,7 +651,7 @@ fn builtin_fallible_schemas_preserve_empty_and_any_identity() {
     assert!(empty.fields().is_empty());
     assert!(empty.ptr_eq(&explicit_empty));
     assert_eq!(any.kind(), SchemaKind::Any);
-    assert!(any.ptr_eq(&schema_of::<AuthoredValue>().unwrap()));
+    assert!(any.ptr_eq(&schema_of::<serde_json::Value>().unwrap()));
     assert_eq!(
         unit.scalar_schema().unwrap().kind(),
         nebula_schema::ScalarKind::Null

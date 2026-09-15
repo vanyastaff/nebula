@@ -114,6 +114,7 @@ pub enum SerdeTagging {
 ///
 #[derive(Debug)]
 pub(crate) struct ValidSchemaInner {
+    pub policy: SchemaPolicy,
     pub root: RootShape,
     /// Flat index from `FieldPath` → `FieldHandle` for O(1) path lookup.
     pub index: IndexMap<FieldPath, FieldHandle>,
@@ -123,11 +124,30 @@ pub(crate) struct ValidSchemaInner {
     pub has_contextual_rules: bool,
 }
 
+/// Historical policies remain descriptive evidence, never current authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SchemaPolicy {
+    LegacyV1,
+    PropertiesV2,
+}
+
+impl SchemaPolicy {
+    const fn version(self) -> u16 {
+        match self {
+            Self::LegacyV1 => 1,
+            Self::PropertiesV2 => 2,
+        }
+    }
+}
+
 /// Proof-token: schema has been built and linted successfully.
 ///
 /// Cheap to clone — backed by `Arc`.
 ///
-/// Serde: a [`SchemaKind::Record`] serializes as `{"fields": [...]}` (plus
+/// Current definitions carry `policy_version: 2`. Historical definitions without
+/// that marker retain their original serialization, but cannot admit values or
+/// export a current contract. Deserialization proves structural validity only.
+/// A historical [`SchemaKind::Record`] serializes as `{"fields": [...]}` (plus
 /// `"root_rules": [...]` when [`ValidSchema::root_rules`] is non-empty) —
 /// no `kind` tag, so the wire shape is identical to before `kind` existed and a
 /// payload with a missing `kind` deserializes back as a record. A
@@ -152,7 +172,8 @@ pub(crate) fn rules_use_predicate_context(rules: &[nebula_validator::Rule]) -> b
 
 impl PartialEq for ValidSchema {
     fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.0, &other.0) || self.0.root == other.0.root
+        Arc::ptr_eq(&self.0, &other.0)
+            || (self.0.policy == other.0.policy && self.0.root == other.0.root)
     }
 }
 
@@ -161,8 +182,13 @@ impl Eq for ValidSchema {}
 impl Serialize for ValidSchema {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
+        let emit_policy = self.0.policy == SchemaPolicy::PropertiesV2;
         if let Some(scalar) = self.scalar_schema() {
-            let mut wire = serializer.serialize_struct("ValidSchema", 2)?;
+            let mut wire =
+                serializer.serialize_struct("ValidSchema", 2 + usize::from(emit_policy))?;
+            if emit_policy {
+                wire.serialize_field("policy_version", &self.policy_version())?;
+            }
             wire.serialize_field("kind", &SchemaKind::Scalar)?;
             wire.serialize_field("scalar", scalar)?;
             return wire.end();
@@ -171,8 +197,15 @@ impl Serialize for ValidSchema {
         let emit_kind = self.kind() != SchemaKind::Record;
         let emit_tagging = self.serde_tagging().is_some();
         let has_rules = !self.root_rules().is_empty();
-        let len = 1 + usize::from(emit_kind) + usize::from(emit_tagging) + usize::from(has_rules);
+        let len = 1
+            + usize::from(emit_policy)
+            + usize::from(emit_kind)
+            + usize::from(emit_tagging)
+            + usize::from(has_rules);
         let mut s = serializer.serialize_struct("ValidSchema", len)?;
+        if emit_policy {
+            s.serialize_field("policy_version", &self.policy_version())?;
+        }
         if emit_kind {
             s.serialize_field("kind", &self.kind())?;
         }
@@ -193,6 +226,8 @@ impl<'de> Deserialize<'de> for ValidSchema {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
         struct ValidSchemaRepr {
+            #[serde(default, deserialize_with = "deserialize_policy_version")]
+            policy_version: Option<u16>,
             /// Defaults to [`SchemaKind::Record`], so wire data that pre-dates
             /// `kind` (`{"fields": [...]}`) round-trips as a record.
             #[serde(default)]
@@ -208,6 +243,15 @@ impl<'de> Deserialize<'de> for ValidSchema {
             scalar: Option<ScalarSchema>,
         }
         let repr = ValidSchemaRepr::deserialize(deserializer)?;
+        let policy = match repr.policy_version {
+            None => SchemaPolicy::LegacyV1,
+            Some(2) => SchemaPolicy::PropertiesV2,
+            Some(_) => {
+                return Err(serde::de::Error::custom(
+                    "unsupported schema policy version",
+                ));
+            },
+        };
         if repr.kind == SchemaKind::Scalar {
             if repr.fields.is_some() || repr.root_rules.is_some() || repr.serde_tagging.is_some() {
                 return Err(serde::de::Error::custom(
@@ -217,7 +261,7 @@ impl<'de> Deserialize<'de> for ValidSchema {
             let scalar = repr.scalar.ok_or_else(|| {
                 serde::de::Error::custom("scalar root requires a scalar descriptor")
             })?;
-            return Self::scalar(scalar).map_err(serde::de::Error::custom);
+            return Self::scalar_with_policy(scalar, policy).map_err(serde::de::Error::custom);
         }
         if repr.scalar.is_some() {
             return Err(serde::de::Error::custom(
@@ -254,7 +298,7 @@ impl<'de> Deserialize<'de> for ValidSchema {
                     "union schema's root field must be a mode field",
                 ));
             };
-            return Self::union(mode, tagging)
+            return Self::union_with_policy(mode, tagging, policy)
                 .map_err(|report| serde::de::Error::custom(format!("invalid union: {report:?}")));
         }
         // `serde_tagging` belongs only to a union; a `Record`/`Any` carrying it is
@@ -275,7 +319,7 @@ impl<'de> Deserialize<'de> for ValidSchema {
                     "schema tagged `kind: \"any\"` must not carry `fields` or `root_rules`",
                 ));
             }
-            return Ok(Self::any());
+            return Ok(Self::unconstrained_with_policy(RootShape::Any, policy));
         }
         let mut b = fields.into_iter().fold(
             crate::schema::SchemaBuilder::default(),
@@ -284,7 +328,7 @@ impl<'de> Deserialize<'de> for ValidSchema {
         for rule in root_rules {
             b = b.root_rule(rule);
         }
-        b.build()
+        b.build_with_policy(None, policy)
             .map_err(|report| serde::de::Error::custom(format!("invalid schema: {report:?}")))
     }
 }
@@ -297,9 +341,65 @@ where
     T::deserialize(deserializer).map(Some)
 }
 
+#[tracing::instrument(level = "debug", skip_all)]
+fn deserialize_policy_version<'de, D>(deserializer: D) -> Result<Option<u16>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    u16::deserialize(deserializer)
+        .map(Some)
+        .map_err(|_| serde::de::Error::custom("invalid schema policy version"))
+}
+
 impl ValidSchema {
     pub(crate) fn from_inner(inner: ValidSchemaInner) -> Self {
         Self(Arc::new(inner))
+    }
+
+    /// Semantic policy carried by this definition, independent of its root shape.
+    #[must_use]
+    pub fn policy_version(&self) -> u16 {
+        self.0.policy.version()
+    }
+
+    /// Require supported semantics before deriving current authority from a schema.
+    ///
+    /// # Errors
+    /// Returns `schema.unsupported_property_kind` for unknown declarations, or
+    /// `schema.unsupported_policy` for historical evidence. This check does not
+    /// validate values or grant any metadata or execution authority.
+    #[tracing::instrument(name = "schema.policy.check", skip(self), fields(policy_version = self.policy_version()))]
+    pub fn ensure_current_semantics(&self) -> Result<(), ValidationReport> {
+        if let Some(path) = crate::field_tree::unsupported_property_path(self.fields()) {
+            tracing::debug!(code = "schema.unsupported_property_kind", %path,
+                "unsupported declaration rejected before current admission");
+            return Err(ValidationError::builder("schema.unsupported_property_kind")
+                .at(path)
+                .message("schema contains an unsupported property kind")
+                .build()
+                .into());
+        }
+        match self.0.policy {
+            SchemaPolicy::PropertiesV2 => Ok(()),
+            SchemaPolicy::LegacyV1 => Err(ValidationError::builder("schema.unsupported_policy")
+                .message("historical schema policy is unsupported for current admission")
+                .build()
+                .into()),
+        }
+    }
+
+    pub(crate) fn has_current_policy(&self) -> bool {
+        self.0.policy == SchemaPolicy::PropertiesV2
+    }
+
+    fn unconstrained_with_policy(root: RootShape, policy: SchemaPolicy) -> Self {
+        Self::from_inner(ValidSchemaInner {
+            policy,
+            root,
+            index: IndexMap::new(),
+            flags: SchemaFlags::default(),
+            has_contextual_rules: false,
+        })
     }
 
     /// Shared empty `ValidSchema` — cheap `Arc` clone.
@@ -311,6 +411,7 @@ impl ValidSchema {
         EMPTY
             .get_or_init(|| {
                 Self::from_inner(ValidSchemaInner {
+                    policy: SchemaPolicy::PropertiesV2,
                     root: RootShape::record(Vec::new(), Vec::new()),
                     index: IndexMap::new(),
                     flags: SchemaFlags::default(),
@@ -332,6 +433,7 @@ impl ValidSchema {
         static ANY: OnceLock<ValidSchema> = OnceLock::new();
         ANY.get_or_init(|| {
             Self::from_inner(ValidSchemaInner {
+                policy: SchemaPolicy::PropertiesV2,
                 root: RootShape::Any,
                 index: IndexMap::new(),
                 flags: SchemaFlags::default(),
@@ -347,6 +449,13 @@ impl ValidSchema {
     /// Returns root-rule lint failures, including references to absent fields.
     #[tracing::instrument(name = "schema.scalar.build", skip_all, fields(kind = ?scalar.kind()))]
     pub fn scalar(scalar: ScalarSchema) -> Result<Self, ValidationReport> {
+        Self::scalar_with_policy(scalar, SchemaPolicy::PropertiesV2)
+    }
+
+    fn scalar_with_policy(
+        scalar: ScalarSchema,
+        policy: SchemaPolicy,
+    ) -> Result<Self, ValidationReport> {
         let mut report = ValidationReport::new();
         crate::lint::lint_root_rules(scalar.root_rules(), &[], &mut report);
         if report.has_errors() {
@@ -358,6 +467,7 @@ impl ValidSchema {
         }
         let has_contextual_rules = rules_use_predicate_context(scalar.root_rules());
         Ok(Self::from_inner(ValidSchemaInner {
+            policy,
             root: RootShape::Scalar(scalar),
             index: IndexMap::new(),
             flags: SchemaFlags::default(),
@@ -400,6 +510,14 @@ impl ValidSchema {
     /// a valid [`FieldKey`], two variants collide, or the schema otherwise fails a
     /// build-time lint.
     pub fn union(mode_field: ModeField, tagging: SerdeTagging) -> Result<Self, ValidationReport> {
+        Self::union_with_policy(mode_field, tagging, SchemaPolicy::PropertiesV2)
+    }
+
+    fn union_with_policy(
+        mode_field: ModeField,
+        tagging: SerdeTagging,
+        policy: SchemaPolicy,
+    ) -> Result<Self, ValidationReport> {
         // A tagged union has no default variant: serde always requires the
         // discriminant on the wire, and mode validation otherwise falls back to a
         // `default_variant` when the selector is absent — which would let a value
@@ -415,12 +533,12 @@ impl ValidSchema {
             ));
         }
         // Build through the normal builder so the union runs the same field lint
-        // (variant-key validity / uniqueness), index, and depth guard; `build_union`
+        // (variant-key validity / uniqueness), index, and depth guard; `build_with_policy`
         // stamps the kind + tagging during construction (no post-build `Arc`
         // surgery, no panic path).
         crate::schema::Schema::builder()
             .add(mode_field.required())
-            .build_union(tagging)
+            .build_with_policy(Some(tagging), policy)
     }
 
     /// Ingest an external **serde wire** value into the `{mode, value}` envelope
@@ -884,6 +1002,7 @@ impl ValidSchema {
     /// internal, single-comparison use.
     pub(crate) fn single_field(key: FieldKey, field: Field) -> ValidSchema {
         Self::from_inner(ValidSchemaInner {
+            policy: SchemaPolicy::PropertiesV2,
             root: RootShape::record(vec![rekeyed(field, key)], Vec::new()),
             index: IndexMap::new(),
             flags: SchemaFlags::default(),
@@ -1004,6 +1123,7 @@ impl ValidSchema {
         fields(field_count = self.fields().len(), has_root_rules = !self.root_rules().is_empty())
     )]
     pub fn validate(&self, values: AuthoredValue) -> Result<ValidValues, ValidationReport> {
+        self.ensure_current_semantics()?;
         values::validate_input(self, values)
     }
 
@@ -1022,6 +1142,7 @@ impl ValidSchema {
     #[tracing::instrument(level = "trace", skip_all, fields(field_count = self.fields().len()))]
     pub fn project(&self, values: &AuthoredValue) -> Result<serde_json::Value, ValidationError> {
         values.check_depth(&ValuePath::root(), 0)?;
+        crate::field_tree::ensure_supported_properties(self.fields())?;
         if matches!(self.kind(), SchemaKind::Record | SchemaKind::Union)
             && values.as_object().is_none()
         {

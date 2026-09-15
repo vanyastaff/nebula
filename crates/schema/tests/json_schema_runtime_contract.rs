@@ -371,11 +371,11 @@ fn numeric_bounds_match_without_integer_rounding(
 }
 
 #[rstest]
-#[case::absent(json!({}), true)]
+#[case::absent(json!({}), false)]
 #[case::present(json!({"value": "data"}), true)]
 #[case::empty(json!({"value": ""}), false)]
 #[case::null(json!({"value": null}), false)]
-fn hidden_required_field_is_optional_until_supplied(#[case] input: Value, #[case] accepted: bool) {
+fn hidden_required_field_remains_required(#[case] input: Value, #[case] accepted: bool) {
     let schema = Schema::builder()
         .add(
             Field::string(field_key!("value"))
@@ -446,7 +446,7 @@ fn mode_default_only_supplies_an_absent_selector(#[case] input: Value, #[case] a
 }
 
 #[test]
-fn hidden_required_mode_payload_follows_presence_policy() {
+fn hidden_required_mode_payload_remains_required() {
     let schema = Schema::builder()
         .add(
             Field::mode(field_key!("auth")).no_expression().variant(
@@ -460,7 +460,7 @@ fn hidden_required_mode_payload_follows_presence_policy() {
         )
         .build()
         .unwrap();
-    assert_parity(&schema, json!({"auth": {"mode": "hidden"}}), true);
+    assert_parity(&schema, json!({"auth": {"mode": "hidden"}}), false);
     assert_parity(
         &schema,
         json!({"auth": {"mode": "hidden", "value": "data"}}),

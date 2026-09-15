@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking Changes: Property Admission
+
+- Fresh schemas carry `policy_version: 2`. Hidden properties remain subject to
+  requiredness and value validation. Missing policy markers retain historical
+  v1 bytes as evidence, but no longer authorize new input or catalog admission.
+  Recreate definitions through their owning typed factory; do not edit stored
+  version markers to promote historical records.
+- `#[property(display(...), input(...), validate(...))]` lowers to checked
+  schema declarations. Conflicting or repeated settings, malformed flags,
+  inapplicable rules and ignored secret annotations fail compilation.
+- Numeric property and list-item schemas retain their Rust primitive bounds,
+  including exact `u64::MAX` and finite `f32` bounds. List properties support
+  `validate(items(min = 1, max = 8), unique)` through existing list constraints.
+- Phase-indexed `ValueTree<E>` no longer implements `HasSchema`. Use a concrete
+  associated DTO with `#[derive(Schema)]`; choose `serde_json::Value` only for an
+  intentionally opaque JSON contract.
+- `$root.foo` rule references fail with `reference.legacy_root` and the JSON
+  Pointer rewrite `/foo`.
+- Unknown property kinds remain readable for lossless evidence and conservative
+  compatibility analysis. New value admission returns
+  `schema.unsupported_property_kind`; JSON Schema export returns
+  `JsonSchemaExportError::UnsupportedPropertyKind` instead of an unconstrained
+  schema, even for absent properties and inactive variants. Catalog admission
+  rejects those definitions too; loader and predicate snapshots refuse unknown
+  protection policies before exposing values.
+- JSON Schema extension snapshots now cover payload shapes. File `accept` and
+  `max_size` extensions are documented as hints: the current opaque-reference
+  field does not verify file contents or storage admission.
+
 ### Breaking Changes: Data Foundation
 
 - **Root shapes are explicit.** `RootShape` is the sole structural contract;

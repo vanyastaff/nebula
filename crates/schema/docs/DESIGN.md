@@ -2,7 +2,7 @@
 
 | Property | Contract |
 |----------|----------|
-| Status | Stable internal schema/proof/export contract; unshipped Phase-5 targets remain proposed |
+| Status | Frontier while property semantics and authoring coverage are completed |
 | Layer | Core, subject to the workspace dependency map |
 | Owns | Schema definitions, canonical value trees, preparation, proof custody, schema-aware projections |
 | Delegates | Rules and conditional policies to `nebula-validator`; compilation and evaluation to `nebula-expression` |
@@ -26,6 +26,14 @@ Forms, CLIs, API payloads, webhooks, credential setup, resource configuration,
 SDK authoring and future visual property panels are projections from the same
 admitted contract. Visibility, disabled state, grouping, widget selection and
 client-side validation never authorize an operation or waive validation.
+
+This rule is enforced by schema policy v2. Fresh definitions serialize
+`policy_version: 2`; absent markers identify historical v1 definitions whose
+bytes remain readable and unchanged. Historical definitions cannot validate
+new values, produce current exports, or regain factory/compiler authority by
+being decoded. Policy versions participate in complete schema equality.
+The writer version, plugin schema envelope version, graph version and value
+canonical version are independent protocols.
 
 ## One tree, separate proofs
 
@@ -70,6 +78,16 @@ These aliases control representation, not proof. A caller can construct a
 data-only tree without validating it. Only `ValidValues` and `ResolvedValues`
 certify the appropriate checks against an immutable `ValidSchema` snapshot;
 neither proof has a public constructor or a deserialization bypass (L1-4.5).
+
+The phase aliases do not implement `HasSchema`. A phase describes expression
+capabilities, not the contract for a user's input. `serde_json::Value` explicitly
+advertises `Any` when an opaque JSON contract is intentional.
+
+Unknown property declarations are retained for historical serialization and
+conservative compatibility analysis. They cannot yield value proof or JSON
+Schema export. A complete declaration walk checks object properties, anonymous
+list items and all mode variants before input preparation; absence or an
+inactive mode does not bypass support checks.
 
 ## Checked transitions
 
@@ -121,6 +139,12 @@ runtime representation and rejects unimplemented Phase-5 sections such as
 and `#[validate]` remain for current in-workspace declarations, but new code
 should use the property grammar.
 
+Duplicate settings, conflicting expression modes, inapplicable validation rules,
+arguments on boolean flags and property attributes on unsupported locations are
+compile errors. In particular, skipping a field or moving a secret annotation
+onto an enum variant cannot silently erase its protection. `non_empty` combines
+with compatible length bounds and does not make an optional property required.
+
 `Transformer::regex(pattern, group)` and `RegexCapture::new(pattern, group)`
 return `Result<_, ValidationError>`. The capture-specific configuration owns a
 compiled `regex::Regex` and a checked group index; the validator's `RulePattern`
@@ -165,7 +189,7 @@ There are independent contracts, not interchangeable serialization helpers:
 | Schema projection | `project`/`to_wire_json` apply output aliases and omit secrets; not proof or authored persistence |
 | Tree canonical encoding | Version 2 content-addressing; expression and literal identities stay distinct |
 | Durable raw JSON encoding | `canonical_json_v1` retains the existing JSON-v1 byte contract |
-| Schema-definition serde | Historical record/union/unknown v1 bytes; scalar roots have a separately versioned descriptor |
+| Schema-definition serde | Current policy-v2 marker; historical v1 bytes preserved as evidence; scalar descriptors retain their own version |
 
 Authored v2 has this shape:
 

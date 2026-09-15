@@ -337,8 +337,9 @@ pub use widget::{
     StringWidget,
 };
 
-/// Schema wire-format version emitted in serialized output (plugins read this).
-pub const SCHEMA_WIRE_VERSION: u16 = 1;
+/// Current schema-definition writer version, independent of plugin envelopes.
+/// Historical definitions retain their original bytes when reserialized.
+pub const SCHEMA_WIRE_VERSION: u16 = 2;
 
 #[doc(hidden)]
 pub mod __private {
@@ -350,6 +351,7 @@ pub mod __private {
     //! `nebula_schema::__private::serde_json` instead of a bare `::serde_json`
     //! path — the latter only resolves if the deriving crate happens to have an
     //! unrenamed `serde_json` dependency of its own.
+    pub use crate::key::LiteralFieldKey;
     pub use {serde_json, tracing};
 
     /// Build a [`FieldKey`](crate::FieldKey) from a string literal already
@@ -358,7 +360,7 @@ pub mod __private {
     /// Not part of the stable authoring surface. Normal code must use
     /// [`crate::FieldKey::new`] or [`crate::field_key!`].
     #[must_use]
-    pub fn field_key_from_validated_literal(value: &'static str) -> crate::FieldKey {
+    pub fn field_key_from_validated_literal(value: LiteralFieldKey) -> crate::FieldKey {
         crate::FieldKey::from_validated_literal(value)
     }
 
@@ -380,7 +382,8 @@ pub mod __private {
     /// Returns a [`ValidationReport`](crate::error::ValidationReport) when
     /// `payload`'s kind is not [`Record`](crate::SchemaKind::Record) (e.g. a
     /// newtype over an enum, over `serde_json::Value`, or over any other
-    /// `Any`-typed payload), or when embedding would discard record root rules.
+    /// `Any`-typed payload), when its semantics are unsupported, or when embedding
+    /// would discard record root rules.
     /// The derive routes this through the same schema-build error path as a
     /// failed `ValidSchema::union`, so the failure
     /// surfaces at `schema()` construction — it does not panic from library code.
@@ -392,6 +395,7 @@ pub mod __private {
         enum_name: &str,
         variant: &str,
     ) -> ::core::result::Result<crate::Field, crate::error::ValidationReport> {
+        payload.ensure_current_semantics()?;
         if payload.kind() != crate::SchemaKind::Record {
             return ::core::result::Result::Err(crate::error::ValidationReport::from(
                 crate::error::ValidationError::builder("union.newtype_not_record")

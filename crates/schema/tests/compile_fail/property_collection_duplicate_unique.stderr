@@ -1,0 +1,5 @@
+error: duplicate property setting `unique`
+ --> tests/compile_fail/property_collection_duplicate_unique.rs:5:33
+  |
+5 |     #[property(validate(unique, unique))]
+  |                                 ^^^^^^

@@ -1,0 +1,5 @@
+error: validation flag `unique` does not accept arguments
+ --> tests/compile_fail/property_collection_unique_arguments.rs:5:25
+  |
+5 |     #[property(validate(unique(false)))]
+  |                         ^^^^^^

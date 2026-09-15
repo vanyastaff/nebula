@@ -89,6 +89,7 @@ impl Schema {
         if report.has_errors() {
             return report;
         }
+        crate::lint::lint_current_secret_defaults(&self.fields, &FieldPath::root(), &mut report);
         crate::lint::lint_tree(&self.fields, &FieldPath::root(), &mut report);
         report
     }
@@ -409,31 +410,13 @@ impl SchemaBuilder {
     /// Returns a [`ValidationReport`] when structural linting or index-limit
     /// checks fail.
     pub fn build(self) -> Result<ValidSchema, ValidationReport> {
-        self.build_inner(None)
+        self.build_with_policy(None, crate::validated::SchemaPolicy::PropertiesV2)
     }
 
-    /// Build a [`SchemaKind::Union`](crate::SchemaKind::Union) from a builder carrying exactly one root
-    /// `Field::Mode` (the union's variants), recording its serde `tagging`.
-    ///
-    /// Runs the same lint / index / depth checks as [`build`](Self::build), then
-    /// stamps the kind and tagging — so the union goes through one construction
-    /// path (no post-build `Arc` surgery) and a malformed shape is rejected as a
-    /// [`ValidationReport`], never a panic.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`ValidationReport`] when structural linting or index-limit
-    /// checks fail.
-    pub(crate) fn build_union(
-        self,
-        tagging: crate::SerdeTagging,
-    ) -> Result<ValidSchema, ValidationReport> {
-        self.build_inner(Some(tagging))
-    }
-
-    fn build_inner(
+    pub(crate) fn build_with_policy(
         self,
         serde_tagging: Option<crate::SerdeTagging>,
+        policy: crate::validated::SchemaPolicy,
     ) -> Result<ValidSchema, ValidationReport> {
         let mut fields = self.fields;
         let mut report = ValidationReport::new();
@@ -449,6 +432,9 @@ impl SchemaBuilder {
             return Err(report);
         }
 
+        if matches!(policy, crate::validated::SchemaPolicy::PropertiesV2) {
+            crate::lint::lint_current_secret_defaults(&fields, &FieldPath::root(), &mut report);
+        }
         crate::lint::lint_tree(&fields, &FieldPath::root(), &mut report);
         // Root-rule diagnostics are best-effort while structural lint errors
         // are present; build still stops before indexing when any error exists.
@@ -480,6 +466,7 @@ impl SchemaBuilder {
             None => RootShape::record(fields, self.root_rules),
         };
         Ok(ValidSchema::from_inner(ValidSchemaInner {
+            policy,
             root,
             index,
             flags,
@@ -627,7 +614,6 @@ fn build_index(
 
 fn field_uses_predicate_context(field: &Field) -> bool {
     crate::validated::rules_use_predicate_context(field.rules())
-        || matches!(field.visible(), crate::VisibilityMode::When(_))
         || matches!(field.required(), crate::RequiredMode::When(_))
 }
 

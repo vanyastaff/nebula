@@ -23,50 +23,11 @@ earlier ratify-only restriction. The structured
 `#[property(display(...), input(...), validate(...))]` value primitive has
 landed in `#[derive(Schema)]`; the codec, slot, condition, options and trigger
 contracts below remain target designs until their owners ship code and tests.
+Current schema policy v2 separates visibility from validation but retains legacy
+required-value null/empty checks. The presence-only policy proposed below is a
+different, unshipped contract and must receive a newer policy and wire version.
 The private design vault was unavailable: ADR text is unverified and unmodified.
 Private ADR-0108 remains unverified; only its preceding summary was available.
-
-## 2026+ Research Lens
-
-The durable product shape is a trust grammar, not a field renderer. n8n proves
-that expressions and credentials need to work across many input surfaces, while
-ComfyUI shows why client-side datatype matching, hidden inputs and dynamic
-custom kinds cannot become backend authority. Windmill validates using one input
-schema across scripts, flows, resources, webhooks and generated UIs, but also
-shows the trap of letting UI customization mutate the apparent data contract.
-Temporal adds the runtime lesson: data conversion, codec transforms, external
-storage and replay history are separate concerns, so rendered JSON must not be
-treated as enough proof for expressions, secrets or large file handoffs. OpenAPI,
-JSON Schema and TypeSpec provide the export/authoring precedent: describe
-durable typed models, project them into tooling artifacts, and version extension
-metadata explicitly.
-
-GitHub research reinforced the same boundary from a different angle. Acts uses
-YAML workflow inputs and expressions, which is ergonomic but too stringly to be
-Nebula's proof layer. Orka and Sayiir bias toward typed workflow composition and
-durable checkpointing; that belongs in execution/action contracts, with schema
-providing the admitted input proof before runtime. z8run combines typed ports,
-DAG validation, WASM plugin capabilities, credential vaulting and a smart config
-UI; the lesson for Nebula is to keep node ports, dependency slots and capability
-checks separate from structured value properties. Obelisk's WIT/schema-first
-engine and persisted value limits support a versioned wire contract and explicit
-payload-size budgets. FlowGram and Coze Studio are strong evidence for visual
-workflow panels, variable scopes and node configuration forms as projections,
-not the source of semantic authority. JSON Forms shows the cleanest UI pattern:
-JSON Schema describes data while a separate UI schema/rendering layer arranges
-presentation. TypeScript builders such as Zod-style or workflow-template
-schemas are valuable DX precedents for inference and authoring fluency, but they
-usually stop at runtime validation; Nebula also needs authored provenance,
-compiled program syntax, secret redaction, canonical wire and admitted proof.
-
-Nebula therefore keeps a closed core property model plus fail-closed extension
-points. Unknown semantic kinds never become `String` or `Any`. A future
-schema-owned semantic descriptor can add temporal, network, identity,
-resource-handle, map/dictionary, file/blob checksum, storage handle, bounded
-inline transport and streaming hints, but only when those descriptors are part
-of admitted schema wire and validation. Until then, derive accepts only property
-syntax that lowers to real `Field`, `Rule`, `ExpressionMode`, `RequiredMode` and
-secret semantics, and rejects the rest with diagnostics.
 
 Use structured `#[property(display(...), input(...), validate(...), options(...))]`
 on data fields and a separate `#[slot(...)]` on dependency fields. Permanently
@@ -102,7 +63,7 @@ receiver rewriting and hidden companion data types remain outside this contract.
 | Owner | Reuse and required responsibility |
 |---|---|
 | schema | HasSchema, PropertyType, schema_type and directional codec contracts, Field, RootShape, checked ValidSchema, value/proof pipeline, serde projections, LoaderRegistry and redacted loader context. |
-| validator | Rule, Predicate, FieldPath, budgets, pending evaluation; checked Condition refinement and policy semantic v2. |
+| validator | Rule, Predicate, FieldPath, budgets, pending evaluation; checked Condition refinement and a future presence-policy epoch. |
 | core | Dependencies, SlotField, SlotKind and typed keys; remains condition-free. |
 | action | Action traits, FromWorkflowNode, input preparation, factories, leaf slot declarations and invocation decisions. |
 | resource | Provider, ResourceConfig, resource leases, SlotCell generations, slot rotation and resource leaf declarations. |
@@ -539,7 +500,8 @@ mutual and generic recursion fixtures must fail without a hang or stack overflow
 
 ## Presence, Nullability and Defaults
 
-Policy semantic v2 defines required as key presence after normalization/defaults.
+The proposed presence policy defines required as key presence after normalization/defaults.
+It is not current schema policy v2, which still rejects required null/empty values.
 Type/domain decides nullability; non_empty separately rejects empty strings or
 collections. Display state never changes any of these decisions.
 Baseline omission is allowed for Option or a supported serde fallback; otherwise
@@ -831,8 +793,9 @@ scheme version or capability requirement invalidates stale evidence.
 
 This requires a new plugin compiler epoch and versioned binding/schema records,
 not mutation of RecordedBindingContractV1. Existing epoch 1/3 schema-envelope-v1
-and epoch 4 scalar-envelope-v2 rules stay closed. Choose a new schema envelope
-version for policy-v2 definitions; envelope v2 is already used for scalar roots.
+and epoch 4 scalar-envelope-v2 rules stay closed. Current epoch 5 uses schema
+envelope v3 for policy-v2 definitions. The proposed presence, codec and slot
+contracts need newer epochs; no existing envelope may acquire those meanings.
 Preserve old plan/hash golden bytes and canonical_json_v1. Add new-epoch golden
 records plus negative dependency-closure, candidate drift and readmission tests.
 
@@ -986,12 +949,14 @@ not publisher trust; tenant availability and trust remain host-owned projections
 
 ## Versioning and Breaking Migration
 
-Introduce an explicit schema policy semantic v2 envelope, conceptually
-`{ policy_version: 2, schema_wire_version: N, definition: ... }`.
-This envelope identifies admission semantics, independently of encoded shape.
+Current definitions identify schema policy v2 and wire version 2; plugin plans
+carry them in envelope v3 under compiler epoch 5. The presence-only, nullable,
+default-materializing and directional contracts proposed here require newer
+policy, definition-wire and owning catalog-envelope versions.
+The policy identifies admission semantics, independently of encoded shape.
 Policy version alone must change even when definition bytes would be identical.
 Adding nullable/condition/default/projection fields to durable definitions also
-requires a SCHEMA_WIRE_VERSION bump from historical v1; v2 is the target here.
+requires a SCHEMA_WIRE_VERSION bump beyond current v2.
 That schema crate constant is not the plugin's schema-envelope discriminator:
 plugin envelope v2 already identifies scalar roots and cannot be repurposed.
 Do not label new definition fields as policy-only metadata to avoid that bump.
@@ -1000,7 +965,7 @@ Catalog slot/options extensions have their own integration catalog version.
 Historical schema wire v1, authored-value wire, tree canonical formats and
 canonical_json_v1 are distinct contracts. Preserve all prior persisted bytes and
 canonical_json_v1 encoding. New admission rejects unsupported old policy
-envelopes explicitly; it never silently reinterprets them as v2.
+envelopes explicitly; it never silently reinterprets them as the new policy.
 Migration creates new versioned definitions and requires fresh admission;
 old stored records remain evidence, not automatically upgraded proof tokens.
 
@@ -1248,7 +1213,7 @@ Each issue must update its original scope to this contract before implementation
 
 1. **1018:** constructor/SDK parity for existing metadata drafts; no new icon inventory.
 2. **Metadata evolution prerequisite:** after 1018, implement shared category/link/reference/schedule contracts, bounded admission, evidence and compatibility rules; specify the mandatory catalog envelope. Leaf tasks consume this foundation and extend existing derived projections; the Plugin prerequisite completes export/readmission integration. Localization services and static topology export are deferred.
-3. **Validator prerequisite:** Condition refinement, presence semantics, budgets and policy-v2 contract; independent of metadata/schema imports.
+3. **Validator prerequisite:** Condition refinement, presence semantics, budgets and a new presence-policy contract; independent of metadata/schema imports. Current schema policy v2 must not be reinterpreted.
 4. **995:** schema-codegen package and gates, schema_type ownership, recursive directional codec contracts and reviewed adapter path, grammar, descriptors, projections, defaults, conditions/options and versioned admission; consumes the validator prerequisite.
 5. **994, contract subtask:** leaf slot declarations and prepared-input port signatures over core; consumes 995, keeps a single projected declaration source. Separate this from 994's later end-to-end production wiring.
 6. **997 / 998 and a resource follow-up:** action, credential and resource implementation after the declaration/codec contracts, including all-family protected-output admission and actual outbound validation. The action task derives exact `Action::Output` schema/codec evidence, treats `ExpectedOutput` as informational, removes PollAction::Event, types trigger/webhook outcomes with Self::Output and implements per-call/batch validation before erasure/publication across checked and explicit trusted adapters, with runtime-owned item/encoded-byte caps, bounded serialization and overflow counter tests. Issue 999 is already closed; scope a new resource task instead of treating it as unfinished. No dependency on final SDK exports.

@@ -514,6 +514,7 @@ fn untyped_list_item_reference_fails_open() {
     // `from_inner` to prove that defensive arm, rather than asserting on
     // dead code.
     let untyped = ValidSchema::from_inner(ValidSchemaInner {
+        policy: SchemaPolicy::PropertiesV2,
         root: RootShape::record(
             vec![Field::from(Field::list(field_key!("items")))],
             Vec::new(),

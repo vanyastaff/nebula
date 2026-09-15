@@ -141,6 +141,7 @@ fn json_schema_x_nebula_extension_set_is_frozen() {
       "x-nebula-required-mode",
       "x-nebula-resolved-value-schema",
       "x-nebula-root-rules",
+      "x-nebula-schema-version",
       "x-nebula-select-allow-custom",
       "x-nebula-select-dynamic",
       "x-nebula-select-multiple",

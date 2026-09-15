@@ -1,0 +1,5 @@
+error: duplicate property setting `items`
+ --> tests/compile_fail/property_collection_duplicate_items.rs:5:41
+  |
+5 |     #[property(validate(items(min = 1), items(max = 8)))]
+  |                                         ^^^^^

@@ -739,6 +739,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn load_rejects_historical_schema_authority_without_rewriting_catalog_evidence() {
+        let registry = frozen(0x39);
+        let plan = compile(&registry);
+        let mut wire = serde_json::to_value(RecordedExecutablePlanRevisionV1::from(&plan)).unwrap();
+        let input = &mut wire["content"]["actions"][0]["input_schema"];
+        input["schema_wire_version"] = serde_json::json!(1);
+        input["schema"]
+            .as_object_mut()
+            .unwrap()
+            .remove("policy_version");
+        // Policy rejection precedes identity admission; this fixture cannot be
+        // repaired into current execution authority by the catalog loader.
+        let evidence_bytes = serde_json::to_vec(&wire).unwrap();
+        let evidence: RecordedExecutablePlanRevisionV1 =
+            serde_json::from_slice(&evidence_bytes).unwrap();
+        assert_eq!(serde_json::to_value(&evidence).unwrap(), wire);
+        let record = PlanFlavorRevisionRecord::graph_v1_json(
+            plan.id(),
+            RevisionRecordBytes::try_from_vec(evidence_bytes.clone()).unwrap(),
+            WorkerFlavorRevisionRecord::v1_json(
+                registry.revision().id(),
+                RevisionRecordBytes::try_from_vec(
+                    serde_json::to_vec(&RecordedWorkerFlavorRevisionV1::from(registry.revision()))
+                        .unwrap(),
+                )
+                .unwrap(),
+            ),
+        );
+        let catalog = Arc::new(StubCatalog::default());
+        catalog.replace(record);
+        let loader = PlanFlavorRevisionLoader::new(catalog.clone());
+        let ids = PlanFlavorRevisionIds::new(plan.id(), registry.revision().id());
+        std::assert_matches!(
+            loader.load_exact(ids, registry).await,
+            Err(PlanFlavorRevisionBridgeError::PlanIntegrity {
+                source: ExecutablePlanIntegrityError::UnsupportedSchemaPolicy,
+            })
+        );
+        assert_eq!(
+            catalog.load_exact(ids).await.unwrap().plan_bytes(),
+            evidence_bytes
+        );
+    }
+
+    #[tokio::test]
     async fn stored_empty_record_cannot_rebind_to_live_unit_null() {
         let archived = frozen(0x38);
         let live = frozen_for::<()>(0x38);
@@ -752,7 +797,7 @@ mod tests {
         let input_wire = &wire["content"]["actions"][0]["input_schema"];
         assert_eq!(
             input_wire,
-            &serde_json::json!({"schema_wire_version": 1, "schema": {"fields": []}})
+            &serde_json::json!({"schema_wire_version": 3, "schema": {"policy_version": 2, "fields": []}})
         );
         let stored_schema: ValidSchema =
             serde_json::from_value(input_wire["schema"].clone()).unwrap();

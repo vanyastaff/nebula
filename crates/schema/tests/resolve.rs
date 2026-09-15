@@ -710,11 +710,13 @@ async fn resolved_expression_object_folds_aliases_and_protects_secrets() {
         .add(Field::string(field_key!("child")))
         .into(),
     json!({"payload": {"child": {"$expr": "{{ $x }}"}}}),
+    "expression.forbidden",
     "/payload/child",
 )]
 #[case::hidden_extra(
     Field::object(field_key!("payload")).no_expression().into(),
     json!({"payload": {"extra": [{"$expr": "{{ $x }}"}]}}),
+    "expression.forbidden",
     "/payload/extra/0",
 )]
 #[case::declared_list_item(
@@ -723,16 +725,19 @@ async fn resolved_expression_object_folds_aliases_and_protects_secrets() {
         .item(Field::string(field_key!("item")))
         .into(),
     json!({"payload": [{"$expr": "{{ $x }}"}]}),
+    "expression.forbidden",
     "/payload/0",
 )]
 #[case::opaque_field(
     serde_json::from_value(json!({"type": "future_widget", "key": "payload"})).unwrap(),
     json!({"payload": {"extra": [{"$expr": "{{ $x }}"}]}}),
-    "/payload/extra/0",
+    "schema.unsupported_property_kind",
+    "/payload",
 )]
 fn forbidden_subtrees_reject_expressions_in_declared_children_and_hidden_data(
     #[case] field: Field,
     #[case] input: serde_json::Value,
+    #[case] code: &str,
     #[case] pointer: &str,
 ) {
     let schema = Schema::builder().add(field).build().unwrap();
@@ -744,5 +749,5 @@ fn forbidden_subtrees_reject_expressions_in_declared_children_and_hidden_data(
         .errors()
         .map(|error| (error.code(), error.path().to_string()))
         .collect();
-    assert_eq!(errors, [("expression.forbidden", pointer.to_owned())]);
+    assert_eq!(errors, [(code, pointer.to_owned())]);
 }

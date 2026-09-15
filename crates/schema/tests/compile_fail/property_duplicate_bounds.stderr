@@ -1,0 +1,5 @@
+error: duplicate property setting `length`
+ --> tests/compile_fail/property_duplicate_bounds.rs:5:42
+  |
+5 |     #[property(validate(length(min = 8), length(max = 64)))]
+  |                                          ^^^^^^

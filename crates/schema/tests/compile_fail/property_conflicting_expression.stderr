@@ -1,0 +1,7 @@
+error: `input(expressions)` conflicts with a legacy expression-mode setting
+ --> tests/compile_fail/property_conflicting_expression.rs:3:10
+  |
+3 | #[derive(Schema)]
+  |          ^^^^^^
+  |
+  = note: this error originates in the derive macro `Schema` (in Nightly builds, run with -Z macro-backtrace for more info)

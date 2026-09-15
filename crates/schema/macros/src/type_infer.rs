@@ -21,8 +21,8 @@ use syn::{GenericArgument, PathArguments, Type, TypePath};
 pub(crate) enum FieldKind {
     String,
     Boolean,
-    IntegerNumber,
-    FloatNumber,
+    IntegerNumber(Box<Type>),
+    FloatNumber(Box<Type>),
     /// `Option<T>` — marks the field optional and recurses into `T`.
     Optional(Box<FieldKind>),
     /// `Vec<T>` — emits a `ListField` whose item is the inner kind.
@@ -66,8 +66,12 @@ pub(crate) fn classify(ty: &Type) -> FieldKind {
             "bool" => FieldKind::Boolean,
             // Narrow integer types that round-trip cleanly through
             // `serde_json::Number` (via `From<i64>` / `From<u64>`).
-            "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" => FieldKind::IntegerNumber,
-            "f32" | "f64" => FieldKind::FloatNumber,
+            "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64"
+                if is_primitive_path(ty) =>
+            {
+                FieldKind::IntegerNumber(Box::new(ty.clone()))
+            },
+            "f32" | "f64" if is_primitive_path(ty) => FieldKind::FloatNumber(Box::new(ty.clone())),
             // Wider integer widths — no `Number::from_i128/u128` impl
             // without the `serde_json/arbitrary_precision` feature, and
             // the validator's rule layer is `i64`-bounded anyway.
@@ -75,6 +79,35 @@ pub(crate) fn classify(ty: &Type) -> FieldKind {
             _ => FieldKind::UserDefined(Box::new(ty.clone())),
         },
         None => FieldKind::UserDefined(Box::new(ty.clone())),
+    }
+}
+
+fn is_primitive_path(ty: &Type) -> bool {
+    let Type::Path(TypePath {
+        qself: None, path, ..
+    }) = ty
+    else {
+        return false;
+    };
+    if path
+        .segments
+        .iter()
+        .any(|segment| !matches!(segment.arguments, PathArguments::None))
+    {
+        return false;
+    }
+    let mut segments = path.segments.iter();
+    match (
+        segments.next(),
+        segments.next(),
+        segments.next(),
+        segments.next(),
+    ) {
+        (Some(_), None, None, None) => true,
+        (Some(root), Some(module), Some(_), None) => {
+            (root.ident == "core" || root.ident == "std") && module.ident == "primitive"
+        },
+        _ => false,
     }
 }
 

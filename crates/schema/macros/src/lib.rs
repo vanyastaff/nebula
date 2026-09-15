@@ -45,9 +45,16 @@ pub fn field_key(input: TokenStream) -> TokenStream {
 
     let crate_path = crate_path();
 
-    let out = quote! {
-        #crate_path::__private::field_key_from_validated_literal(#lit)
-    };
+    let out = quote! {{
+        const __NEBULA_KEY: #crate_path::__private::LiteralFieldKey =
+            match #crate_path::__private::LiteralFieldKey::parse(#lit) {
+                ::core::option::Option::Some(key) => key,
+                ::core::option::Option::None => {
+                    ::core::panic!("schema macro and runtime key validation disagree")
+                }
+            };
+        #crate_path::__private::field_key_from_validated_literal(__NEBULA_KEY)
+    }};
     nebula_macro_support::paths::resolve_generated_crate_paths(out).into()
 }
 
@@ -87,7 +94,7 @@ pub fn derive_schema(input: TokenStream) -> TokenStream {
 /// Variant names become catalog values following serde (`rename` / `rename_all`,
 /// else `snake_case`); `#[serde(skip)]` drops a variant. Use
 /// `#[field(label = "...")]` to override the display label.
-#[proc_macro_derive(EnumSelect, attributes(field))]
+#[proc_macro_derive(EnumSelect, attributes(property, field))]
 pub fn derive_enum_select(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let tokens = derive_enum::expand(input).unwrap_or_else(|error| error.to_compile_error());

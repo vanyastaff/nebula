@@ -1012,6 +1012,29 @@ mod tests {
     }
 
     #[test]
+    fn historical_schema_cannot_admit_resource_metadata() {
+        let historical: ValidSchema = serde_json::from_str(r#"{"fields":[]}"#).unwrap();
+        let result =
+            ResourceMetadataDraft::new(resource_key!("postgres"), crate::metadata_name!("pg"), "d")
+                .admit(historical);
+        std::assert_matches!(result, Err(super::MetadataBuildError::Definition(nebula_metadata::MetadataBuildError::Schema(report)))
+            if report.errors().any(|error| error.code() == "schema.unsupported_policy"));
+    }
+
+    #[test]
+    fn resource_readmission_requires_the_same_schema_policy() {
+        let current = md(1, 0);
+        let mut wire = serde_json::to_value(&current).unwrap();
+        wire["base"]["schema"]
+            .as_object_mut()
+            .unwrap()
+            .remove("policy_version");
+        let recorded: RecordedResourceMetadata = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&recorded).unwrap(), wire);
+        assert!(recorded.readmit_against(&current).is_err());
+    }
+
+    #[test]
     fn recorded_metadata_roundtrip_requires_fresh_readmission() {
         let original = md(2, 1);
 

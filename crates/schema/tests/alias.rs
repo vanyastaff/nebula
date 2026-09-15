@@ -648,13 +648,24 @@ fn schema_without_aliases_round_trips_byte_identical() {
         .unwrap();
 
     let wire_first = serde_json::to_string(&schema).unwrap();
-    let schema_back: Schema = serde_json::from_str(&wire_first).unwrap();
+    let schema_back: nebula_schema::ValidSchema = serde_json::from_str(&wire_first).unwrap();
     let wire_second = serde_json::to_string(&schema_back).unwrap();
 
     assert_eq!(
         wire_first, wire_second,
         "no-alias schema must round-trip byte-identical"
     );
+
+    let mut historical_wire = serde_json::to_value(&schema).unwrap();
+    historical_wire
+        .as_object_mut()
+        .unwrap()
+        .remove("policy_version");
+    let historical: nebula_schema::ValidSchema =
+        serde_json::from_value(historical_wire.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&historical).unwrap(), historical_wire);
+    assert_ne!(historical, schema);
+    assert!(historical.ensure_current_semantics().is_err());
 }
 
 // ── Security: aliases & secrets nested in Mode / List payloads ─────────────────

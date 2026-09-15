@@ -261,6 +261,9 @@ pub fn explain_root_field_assignable(
     consumer_field: &Field,
 ) -> Assignability {
     let producer_schema = producer_root.as_schema();
+    if !producer_schema.has_current_policy() {
+        return Assignability::Unknown(vec![UnknownReason::UnsupportedPolicy]);
+    }
     let mut findings = Explain::default();
     match producer_schema.root_shape() {
         RootShape::Any | RootShape::Union(_) => {
@@ -362,6 +365,8 @@ pub enum Assignability {
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UnknownReason {
+    /// Historical policy evidence cannot prove a current data contract.
+    UnsupportedPolicy,
     /// The producer side is opaque, so it cannot be *proven* to match a typed
     /// consumer: either the producer schema is the gradual `Any`
     /// ([`SchemaKind::Any`]), or a matched `List` field's producer item carries
@@ -441,6 +446,7 @@ impl core::fmt::Display for UnknownReason {
                     "field `{key}` narrows float to integer (possible precision loss)"
                 )
             },
+            Self::UnsupportedPolicy => f.write_str("historical schema policy is unsupported"),
             Self::OpaqueFieldKind { key } => {
                 write!(
                     f,
@@ -466,6 +472,9 @@ pub(crate) fn explain_assignable_core(
     producer: &ValidSchema,
     consumer: &ValidSchema,
 ) -> Assignability {
+    if !producer.has_current_policy() || !consumer.has_current_policy() {
+        return Assignability::Unknown(vec![UnknownReason::UnsupportedPolicy]);
+    }
     let mut findings = Explain::default();
     match (producer.root_shape(), consumer.root_shape()) {
         (_, RootShape::Any) => return Assignability::Yes,
@@ -1427,12 +1436,14 @@ mod tests {
     /// version cannot prove an unrecognized kind's value contract.
     #[test]
     fn explain_unknown_field_pair_is_unknown_not_yes() {
-        let producer: ValidSchema =
-            serde_json::from_value(json!({"fields": [{"type": "richtext", "key": "bio"}]}))
-                .expect("Unknown producer schema");
-        let consumer: ValidSchema =
-            serde_json::from_value(json!({"fields": [{"type": "richtext", "key": "bio"}]}))
-                .expect("Unknown consumer schema");
+        let producer: ValidSchema = serde_json::from_value(
+            json!({"policy_version": 2, "fields": [{"type": "richtext", "key": "bio"}]}),
+        )
+        .expect("Unknown producer schema");
+        let consumer: ValidSchema = serde_json::from_value(
+            json!({"policy_version": 2, "fields": [{"type": "richtext", "key": "bio"}]}),
+        )
+        .expect("Unknown consumer schema");
         assert_eq!(
             explain_assignable(&producer, &consumer),
             Assignability::Unknown(vec![UnknownReason::OpaqueFieldKind { key: fk("bio") }]),
@@ -1444,12 +1455,14 @@ mod tests {
     /// the pair is genuinely undecidable, not provably incompatible.
     #[test]
     fn explain_distinct_unknown_kinds_are_unknown_not_mismatch() {
-        let producer: ValidSchema =
-            serde_json::from_value(json!({"fields": [{"type": "richtext", "key": "bio"}]}))
-                .expect("Unknown producer schema");
-        let consumer: ValidSchema =
-            serde_json::from_value(json!({"fields": [{"type": "gallery", "key": "bio"}]}))
-                .expect("Unknown consumer schema");
+        let producer: ValidSchema = serde_json::from_value(
+            json!({"policy_version": 2, "fields": [{"type": "richtext", "key": "bio"}]}),
+        )
+        .expect("Unknown producer schema");
+        let consumer: ValidSchema = serde_json::from_value(
+            json!({"policy_version": 2, "fields": [{"type": "gallery", "key": "bio"}]}),
+        )
+        .expect("Unknown consumer schema");
         assert_eq!(
             explain_assignable(&producer, &consumer),
             Assignability::Unknown(vec![UnknownReason::OpaqueFieldKind { key: fk("bio") }]),
@@ -1460,9 +1473,10 @@ mod tests {
     /// mismatch — because this version cannot reason about the unknown side.
     #[test]
     fn explain_unknown_vs_known_field_is_unknown_not_mismatch() {
-        let producer: ValidSchema =
-            serde_json::from_value(json!({"fields": [{"type": "richtext", "key": "bio"}]}))
-                .expect("Unknown producer schema");
+        let producer: ValidSchema = serde_json::from_value(
+            json!({"policy_version": 2, "fields": [{"type": "richtext", "key": "bio"}]}),
+        )
+        .expect("Unknown producer schema");
         let consumer = crate::Schema::builder()
             .add(Field::string(fk("bio")))
             .build()

@@ -16,6 +16,9 @@
 //! - a `type` an old reader does not recognize deserializes to `Field::Unknown`
 //!   and is preserved key-for-key (see `unknown_field_type_preserved`), so a
 //!   newer writer's field kind never fails to read on an older deployment.
+//!
+//! Historical record/union vectors remain unversioned evidence. Separate current
+//! writer vectors freeze policy v2; reading old bytes must not upgrade their policy.
 
 use nebula_schema::{
     AuthoredValue, Field, FieldPath, Predicate, Rule, Schema, SerdeTagging, ValidSchema,
@@ -66,10 +69,36 @@ fn field_variants_wire_format() {
     insta::assert_json_snapshot!(variants);
 }
 
-/// A built `ValidSchema`'s wire shape (the `{"fields": [...]}` envelope plus a
-/// representative field set).
+fn read_historical_schema(wire: &str) -> ValidSchema {
+    let schema: ValidSchema =
+        serde_json::from_str(wire).expect("historical schema remains readable");
+    assert_eq!(schema.policy_version(), 1);
+    assert_eq!(
+        serde_json::to_string(&schema).unwrap(),
+        wire,
+        "reading historical evidence must not upgrade or rewrite its bytes"
+    );
+    schema
+}
+
+/// The historical record vector retains its unversioned envelope and exact bytes.
 #[test]
 fn valid_schema_wire_format() {
+    let schema = read_historical_schema(concat!(
+        r#"{"fields":["#,
+        r#"{"type":"string","key":"name","required":{"kind":"always"},"hint":"text","widget":"plain"},"#,
+        r#"{"type":"number","key":"age","integer":false,"widget":"plain","step":null},"#,
+        r#"{"type":"object","key":"address","fields":["#,
+        r#"{"type":"string","key":"city","hint":"text","widget":"plain"},"#,
+        r#"{"type":"string","key":"zip","required":{"kind":"always"},"hint":"text","widget":"plain"}"#,
+        r#"],"widget":"inline"}]}"#,
+    ));
+    insta::assert_json_snapshot!(schema);
+}
+
+/// The same record declaration written freshly carries policy v2.
+#[test]
+fn current_valid_schema_wire_format() {
     let schema = Schema::builder()
         .add(Field::string(field_key!("name")).required())
         .add(Field::number(field_key!("age")))
@@ -80,14 +109,39 @@ fn valid_schema_wire_format() {
         )
         .build()
         .unwrap();
+    assert_eq!(schema.policy_version(), 2);
     insta::assert_json_snapshot!(schema);
 }
 
-/// A tagged-union (`SchemaKind::Union`) wire shape: `kind: "union"` +
-/// `serde_tagging` + the single root mode field carrying the variants. A change
-/// to the union envelope (or to how a mixed unit+data union is stored) diffs here.
+/// Both historical serde tagging forms retain their original envelopes and bytes.
 #[test]
 fn union_schema_wire_format() {
+    let external = read_historical_schema(concat!(
+        r#"{"kind":"union","serde_tagging":"external","fields":["#,
+        r#"{"type":"mode","key":"auth","required":{"kind":"always"},"variants":["#,
+        r#"{"key":"oauth","label":"OAuth","field":{"type":"object","key":"oauth","fields":["#,
+        r#"{"type":"secret","key":"token","required":{"kind":"always"},"widget":"plain","reveal_last":null}"#,
+        r#"],"widget":"inline"}},"#,
+        r#"{"key":"none","label":"None","field":{"type":"string","key":"_nebula_mode_empty","visible":{"kind":"never"},"expression":"forbidden","hint":"text","widget":"plain"}}"#,
+        r#"],"default_variant":null}]}"#,
+    ));
+    insta::assert_json_snapshot!("union_schema_external_wire_format", external);
+
+    let adjacent = read_historical_schema(concat!(
+        r#"{"kind":"union","serde_tagging":{"adjacent":{"tag":"type","content":"data"}},"fields":["#,
+        r#"{"type":"mode","key":"event","required":{"kind":"always"},"variants":["#,
+        r#"{"key":"click","label":"Click","field":{"type":"object","key":"click","fields":["#,
+        r#"{"type":"number","key":"x","required":{"kind":"always"},"integer":false,"widget":"plain","step":null}"#,
+        r#"],"widget":"inline"}},"#,
+        r#"{"key":"noop","label":"No-op","field":{"type":"string","key":"_nebula_mode_empty","visible":{"kind":"never"},"expression":"forbidden","hint":"text","widget":"plain"}}"#,
+        r#"],"default_variant":null}]}"#,
+    ));
+    insta::assert_json_snapshot!("union_schema_adjacent_wire_format", adjacent);
+}
+
+/// Fresh tagged unions retain their serde tagging and explicitly write policy v2.
+#[test]
+fn current_union_schema_wire_format() {
     let external = ValidSchema::union(
         Field::mode(field_key!("auth"))
             .variant(
@@ -100,7 +154,8 @@ fn union_schema_wire_format() {
         SerdeTagging::External,
     )
     .unwrap();
-    insta::assert_json_snapshot!("union_schema_external_wire_format", external);
+    assert_eq!(external.policy_version(), 2);
+    insta::assert_json_snapshot!("current_union_schema_external_wire_format", external);
 
     let adjacent = ValidSchema::union(
         Field::mode(field_key!("event"))
@@ -116,7 +171,8 @@ fn union_schema_wire_format() {
         },
     )
     .unwrap();
-    insta::assert_json_snapshot!("union_schema_adjacent_wire_format", adjacent);
+    assert_eq!(adjacent.policy_version(), 2);
+    insta::assert_json_snapshot!("current_union_schema_adjacent_wire_format", adjacent);
 }
 
 /// An authored tree covering every value shape (literal, nested
@@ -193,4 +249,126 @@ fn validation_report_wire_format() {
             .build(),
     );
     insta::assert_json_snapshot!(report);
+}
+
+/// Literal input projection exercising every registered export extension.
+#[cfg(feature = "schemars")]
+fn literal_extension_fixture() -> ValidSchema {
+    let enabled = Rule::predicate(Predicate::eq("/enabled", json!(true)).unwrap()).unwrap();
+    Schema::builder()
+        .add(Field::boolean(field_key!("enabled")))
+        .add(
+            Field::string(field_key!("name"))
+                .no_expression()
+                .required()
+                .min_length(3)
+                .max_length(32)
+                .label("Display name")
+                .description("Literal name with inbound aliases")
+                .default(json!("Example"))
+                .read_alias("legacy_name")
+                .unwrap()
+                .read_alias("old_name")
+                .unwrap()
+                .emit_as("display_name")
+                .unwrap(),
+        )
+        .add(
+            Field::file(field_key!("avatar"))
+                .no_expression()
+                .accept("image/png")
+                .max_size(1_048_576),
+        )
+        .add(
+            Field::file(field_key!("attachments"))
+                .no_expression()
+                .multiple()
+                .accept("application/pdf,image/*")
+                .max_size(0),
+        )
+        .add(
+            Field::select(field_key!("regions"))
+                .dynamic()
+                .multiple()
+                .allow_custom(),
+        )
+        .add(Field::select(field_key!("provider")).extend_options([
+            nebula_schema::SelectOption::new(json!("current"), "Current"),
+            nebula_schema::SelectOption::new(json!("legacy"), "Legacy").disabled(),
+        ]))
+        .add(
+            Field::select(field_key!("tags"))
+                .multiple()
+                .extend_options([
+                    nebula_schema::SelectOption::new(json!("stable"), "Stable"),
+                    nebula_schema::SelectOption::new(json!("retired"), "Retired").disabled(),
+                ]),
+        )
+        .add(
+            Field::mode(field_key!("auth"))
+                .no_expression()
+                .variant_empty("none", "None")
+                .variant(
+                    "token",
+                    "Token",
+                    Field::string(field_key!("token"))
+                        .required()
+                        .no_expression(),
+                )
+                .default_variant("none"),
+        )
+        .add(
+            Field::object(field_key!("profile"))
+                .no_expression()
+                .add(Field::string(field_key!("note")).no_expression()),
+        )
+        .add(
+            Field::list(field_key!("labels"))
+                .no_expression()
+                .item(Field::string(field_key!("label")).no_expression()),
+        )
+        .add(
+            Field::string(field_key!("conditional"))
+                .no_expression()
+                .active_when(enabled.clone()),
+        )
+        .add(
+            Field::string(field_key!("hidden"))
+                .no_expression()
+                .required()
+                .visible(VisibilityMode::Never),
+        )
+        .root_rule(enabled)
+        .build()
+        .expect("literal extension fixture has valid declarations")
+}
+
+#[cfg(feature = "schemars")]
+#[test]
+fn json_schema_literal_extensions() {
+    let exported = literal_extension_fixture()
+        .json_schema()
+        .expect("literal fixture exports")
+        .to_value();
+    insta::assert_json_snapshot!("json_schema_literal_extensions", exported);
+}
+
+#[cfg(feature = "schemars")]
+#[test]
+fn json_schema_expression_modes() {
+    let schema = Schema::builder()
+        .add(
+            Field::string(field_key!("literal"))
+                .no_expression()
+                .min_length(2),
+        )
+        .add(Field::string(field_key!("template")).min_length(2))
+        .add(Field::computed(field_key!("computed")).returns(nebula_schema::ComputedReturn::Number))
+        .build()
+        .expect("expression mode fixture has valid declarations");
+    let exported = schema
+        .json_schema()
+        .expect("expression fixture exports")
+        .to_value();
+    insta::assert_json_snapshot!("json_schema_expression_modes", exported);
 }

@@ -36,6 +36,16 @@ an internal technical boundary, not a separately supported downstream API.
 ## Conventions & never-do
 
 - Proof-tokens are compile-time-evident (L1-4.5): never add runtime flags to skip validate/resolve — the type transition IS the gate.
+- Current schemas use policy v2: visibility never suppresses requiredness or
+  value validation. Missing policy markers identify historical v1 evidence;
+  preserve its bytes, but reject fresh authority. Include policy in exact schema
+  equality and check it before extracting nested definitions or minting metadata.
+- Unknown kinds remain lossless descriptive evidence, never permissive validators.
+  Check every declaration before value admission and JSON Schema export, including
+  anonymous list items and inactive mode variants. Do not use the field index as
+  a complete declaration walk: scalar list items are intentionally not indexed.
+- Phase-indexed value trees do not implement `HasSchema`; consumers declare actual
+  DTO schemas. Explicit `serde_json::Value` is the opaque JSON escape hatch.
 - `RootShape` owns the authoritative root contract. Unit types describe `null`,
   empty braced structs describe objects, and primitives retain known domains.
   Never restore `Any` or empty-object fallbacks for a known scalar. Preserve
@@ -102,6 +112,11 @@ an internal technical boundary, not a separately supported downstream API.
 - `#[deny(clippy::disallowed_macros)]` bans `#[async_trait]`; use the crate's `EvalFuture` (BoxFuture) alias for object-safe async.
 
 ## Change checks
+
+Schema-version and support changes require `schema_policy_epoch`,
+`unknown_property_admission`, `unknown_property_disclosure` and
+`value_schema_compile_fail`, including the
+`schemars` feature for export rejection probes.
 
 | Change | Relevant evidence |
 |--------|-------------------|

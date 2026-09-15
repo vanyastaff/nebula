@@ -8,7 +8,7 @@ use crate::ValidationError;
 
 /// Value transformer applied before validation/runtime use.
 #[non_exhaustive]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Transformer {
     /// Trim surrounding whitespace.
@@ -26,6 +26,18 @@ pub enum Transformer {
     },
     /// Extract a capture group from a checked regular expression.
     Regex(RegexCapture),
+}
+
+impl std::fmt::Debug for Transformer {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Trim => formatter.write_str("Trim"),
+            Self::Lowercase => formatter.write_str("Lowercase"),
+            Self::Uppercase => formatter.write_str("Uppercase"),
+            Self::Replace { .. } => formatter.write_str("Replace(<redacted>)"),
+            Self::Regex(capture) => formatter.debug_tuple("Regex").field(capture).finish(),
+        }
+    }
 }
 
 /// A compiled pattern bound to a capture index that exists in that pattern.

@@ -4,9 +4,103 @@ use std::collections::HashSet;
 
 use smallvec::SmallVec;
 
-use crate::{Field, FieldPath, key::FieldKey};
+use crate::{
+    Field, FieldPath, ValidationError, ValuePath, key::FieldKey, schema::MAX_SCHEMA_DEPTH,
+};
 
 pub(crate) type FieldCursor = SmallVec<[u16; 4]>;
+
+/// Reject unsupported declarations before deriving a schema-bound snapshot.
+/// Raw fields need a depth proof before the recursive support walk, including
+/// mode variants whose keys cannot be represented in the field index.
+#[tracing::instrument(level = "debug", skip_all, fields(field_count = fields.len()))]
+pub(crate) fn ensure_supported_properties(fields: &[Field]) -> Result<(), ValidationError> {
+    let mut pending: Vec<_> = fields.iter().map(|field| (field, 0_u8)).collect();
+    while let Some((field, depth)) = pending.pop() {
+        if depth > MAX_SCHEMA_DEPTH {
+            tracing::debug!(
+                code = "schema.depth_limit",
+                "snapshot schema exceeds depth limit"
+            );
+            return Err(ValidationError::builder("schema.depth_limit")
+                .param("limit", MAX_SCHEMA_DEPTH)
+                .message("schema nesting depth exceeds the supported limit")
+                .build());
+        }
+        let child_depth = depth.saturating_add(1);
+        match field {
+            Field::Object(object) => {
+                pending.extend(object.fields.iter().map(|child| (child, child_depth)));
+            },
+            Field::List(list) => {
+                pending.extend(list.item.as_deref().map(|item| (item, child_depth)));
+            },
+            Field::Mode(mode) => {
+                pending.extend(
+                    mode.variants
+                        .iter()
+                        .map(|variant| (variant.field.as_ref(), child_depth)),
+                );
+            },
+            Field::String(_)
+            | Field::Secret(_)
+            | Field::Number(_)
+            | Field::Boolean(_)
+            | Field::Select(_)
+            | Field::Code(_)
+            | Field::File(_)
+            | Field::Computed(_)
+            | Field::Dynamic(_)
+            | Field::Notice(_)
+            | Field::Unknown(_) => {},
+        }
+    }
+    if let Some(path) = unsupported_property_path(fields) {
+        tracing::debug!(code = "schema.unsupported_property_kind", %path,
+            "unsupported declaration rejected before snapshot projection");
+        return Err(ValidationError::builder("schema.unsupported_property_kind")
+            .at(path)
+            .message("schema contains an unsupported property kind")
+            .build());
+    }
+    Ok(())
+}
+
+/// Inspect every declaration, including anonymous items and inactive variants.
+/// Callers pass an admitted, depth-bounded schema; indexing alone omits scalar items.
+pub(crate) fn unsupported_property_path(fields: &[Field]) -> Option<ValuePath> {
+    fields.iter().find_map(|field| {
+        unsupported_property_at(field, ValuePath::root().push(field.key().as_str()))
+    })
+}
+
+fn unsupported_property_at(field: &Field, path: ValuePath) -> Option<ValuePath> {
+    match field {
+        Field::Unknown(_) => Some(path),
+        Field::Object(object) => object
+            .fields
+            .iter()
+            .find_map(|child| unsupported_property_at(child, path.push(child.key().as_str()))),
+        Field::List(list) => list
+            .item
+            .as_deref()
+            .and_then(|item| unsupported_property_at(item, path.push("0"))),
+        Field::Mode(mode) => mode
+            .variants
+            .iter()
+            .find_map(|variant| unsupported_property_at(&variant.field, path.push(&variant.key))),
+        Field::String(_)
+        | Field::Secret(_)
+        | Field::Number(_)
+        | Field::Boolean(_)
+        | Field::Select(_)
+        | Field::Code(_)
+        | Field::File(_)
+        | Field::Computed(_)
+        | Field::Dynamic(_)
+        | Field::Notice(_) => None,
+    }
+}
 
 /// A field-like schema node with its canonical schema path and lookup cursor.
 #[derive(Debug, Clone)]

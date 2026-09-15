@@ -1,0 +1,5 @@
+error: items requires at least one bound
+ --> tests/compile_fail/property_collection_empty_counts.rs:5:31
+  |
+5 |     #[property(validate(items()))]
+  |                               ^

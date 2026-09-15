@@ -127,7 +127,7 @@ fn validate_reports_missing_required() {
 }
 
 #[test]
-fn validate_applies_visibility_and_rules() {
+fn validate_applies_requiredness_and_rules_independently_of_visibility() {
     let schema = Schema::builder()
         .add(Field::boolean(field_key!("enabled")).required())
         .add(
@@ -151,7 +151,25 @@ fn validate_applies_visibility_and_rules() {
             AuthoredValue::from_template_json(json!(false)).unwrap(),
         )
         .expect("test-only known-good key");
-    assert!(schema.validate(values.clone()).is_ok());
+    let report = schema.validate(values.clone()).unwrap_err();
+    assert!(
+        report
+            .errors()
+            .any(|error| error.code() == "required" && error.path().to_string() == "/api_key")
+    );
+
+    values
+        .insert(
+            "api_key".to_string(),
+            AuthoredValue::from_data(json!("abc")).unwrap(),
+        )
+        .unwrap();
+    let report = schema.validate(values.clone()).unwrap_err();
+    assert!(
+        report
+            .errors()
+            .any(|error| error.path().to_string() == "/api_key")
+    );
 
     values
         .insert(
@@ -508,15 +526,14 @@ fn unknown_field_survives_full_valid_schema_build() {
 }
 
 #[test]
-fn unknown_field_value_is_accepted_but_required_mode_still_enforced() {
-    // An opaque Unknown field type-checks nothing (accepts any value), yet the
-    // recovered `required` mode is still enforced like any other field.
+fn unknown_field_cannot_admit_supplied_or_absent_values() {
+    // Historical kind metadata is readable, but never an unchecked value domain.
     let valid: ValidSchema = serde_json::from_value(json!({
+        "policy_version": 2,
         "fields": [{ "type": "richtext", "key": "bio", "required": { "kind": "always" } }]
     }))
     .expect("a required Unknown field builds");
 
-    // Any shape of value passes — there is no value contract to check.
     let mut values = AuthoredValue::object();
     values
         .insert(
@@ -524,19 +541,19 @@ fn unknown_field_value_is_accepted_but_required_mode_still_enforced() {
             AuthoredValue::from_template_json(json!({ "blocks": [1, 2, 3] })).unwrap(),
         )
         .expect("test-only known-good key");
-    assert!(
-        valid.validate(values.clone()).is_ok(),
-        "an opaque Unknown field accepts an arbitrary value"
-    );
-
-    // But a required Unknown field with no value still reports `required`.
-    let report = valid
-        .validate(AuthoredValue::object())
-        .expect_err("a required Unknown field with no value must fail");
-    assert!(
-        report.errors().any(|e| e.code() == "required"),
-        "required-mode is enforced even for an opaque field"
-    );
+    for input in [values, AuthoredValue::object()] {
+        let report = valid
+            .validate(input)
+            .expect_err("unsupported kinds cannot admit input");
+        let errors: Vec<_> = report
+            .errors()
+            .map(|error| (error.code(), error.path().to_string()))
+            .collect();
+        assert_eq!(
+            errors,
+            [("schema.unsupported_property_kind", "/bio".to_owned())]
+        );
+    }
 }
 
 #[test]

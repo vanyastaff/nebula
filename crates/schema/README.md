@@ -3,7 +3,7 @@
 name: nebula-schema
 
 role: Typed property schema and phase-indexed data with schema-bound proofs
-status: stable
+status: frontier
 last-reviewed: 2026-09-15
 canon-invariants: [L1-3.5, L1-4.5]
 related: [nebula-validator, nebula-expression, nebula-action, nebula-resource, nebula-credential]
@@ -39,6 +39,11 @@ declared string secrets, and retains admitted `CompiledProgram`s. `ValidValues`
 holds a schema snapshot and explicit `PendingValidation` obligations; it is not
 yet a runtime proof. Resolution consumes that token and checks full rules and
 conditional policies before producing `ResolvedValues`.
+
+Current schemas carry `policy_version: 2`. Visibility describes presentation and
+does not suppress requiredness or value checks. A definition without that marker
+is historical v1 evidence: it retains its original serialization, but cannot
+validate new input or be silently promoted into the current contract.
 
 `resolve_data` is the synchronous, no-engine path. It rejects any compiled
 expression with `expression.forbidden`; it does not skip final validation.
@@ -84,7 +89,9 @@ when the current node is a list.
   value fields. `display(...)` maps labels, descriptions, placeholders, hints,
   groups, widgets and hidden-state annotations; `input(...)` maps requiredness,
   expression policy and secret protection; `validate(...)` maps non-empty,
-  length, range, pattern, URL and email rules. These attributes describe data
+  length, range, pattern, URL and email rules, plus `items(min = ..., max = ...)`
+  and `unique` for lists. Primitive numeric fields and list items retain their
+  Rust type's bounds before typed decoding. These attributes describe data
   properties only. Slots, bindings, tenant authority, file scanning and runtime
   capability checks remain outside `ValidSchema`.
 - Legacy `#[field(...)]` and `#[validate(...)]` remain accepted for current
@@ -151,7 +158,8 @@ The separate
 durable identities. It does not interpret expression syntax or redact data;
 callers must exclude secrets. Tree content IDs reject secrets unless the caller
 explicitly requests a keyed commitment. Historical record, union, and unknown
-schema encodings retain `SCHEMA_WIRE_VERSION = 1` and their existing bytes.
+schema encodings retain their v1 bytes. `SCHEMA_WIRE_VERSION` identifies the
+current writer; historical evidence is not upgraded during decoding.
 Scalar roots add a separately versioned descriptor under `kind: "scalar"`;
 persisted plans require an explicitly supporting compiler/schema envelope.
 Old empty record snapshots remain records, never implicitly become `null`.
@@ -203,10 +211,32 @@ With the optional `schemars` feature, `ValidSchema::json_schema()` returns
 `Result<schemars::Schema, JsonSchemaExportError>` for Draft 2020-12. Shape and
 rules use standard keywords; versioned `x-nebula-*` extensions carry expression
 policies, requiredness, visibility, root rules, aliases, projections, file
-constraints, choice metadata, and mode defaults. The extension registry lives in
+hints, choice metadata, and mode defaults. The extension registry lives in
 [docs/JSON_SCHEMA_EXTENSIONS.md](docs/JSON_SCHEMA_EXTENSIONS.md), and snapshot
-tests freeze the exported key set.
+tests freeze the exported keys and values.
 Exported JSON Schema does not replace the proof pipeline.
+
+Unknown property kinds remain losslessly readable as descriptive evidence.
+They cannot produce a value proof or an unconstrained JSON Schema export,
+including when the unknown declaration is absent or belongs to an inactive mode.
+An explicit `serde_json::Value` schema remains the intentional, less introspectable
+JSON escape hatch. Phase-indexed value trees do not implement `HasSchema`.
+
+## Input coverage
+
+These are internal semantic capabilities, not a list of widgets or a claim that
+every family already has complete derive support.
+
+| Family | Current contract |
+|---|---|
+| Text | String shape, checked patterns, length, URL and email rules. Markdown, rich text and temporal input hints do not add format validation. |
+| Numbers and boolean | Integer/number/boolean shapes and checked numeric bounds. Currency and step-oriented widgets carry no financial semantics. |
+| Choice and modes | Static single/multiple selection, mode payloads, root externally/adjacently tagged unions. Nested derived unions still require explicit supported declarations. |
+| Collections | Field-level lists, item rules, uniqueness and nested objects. `#[property(validate(items(min = 1, max = 8), unique))]` constrains supplied lists without changing optional absence. Graph documents describe arrays and typed dictionaries; unsupported lowering rejects them. Root arrays never acquire synthetic wrapper fields. |
+| Secrets | Protected value storage, redacted diagnostics, explicit trusted decoding through `SecretInput`. A password widget alone provides no protection. |
+| Defaults and conditions | Existing defaults are annotations, not automatic input materialization; construction checks cover only supported field kinds and literal rules. Required conditions use checked validator rules; `#[property]` does not yet expose the full condition grammar. |
+| Files and blobs | Existing `FileField` checks an opaque string or string-list shape. `accept` and `max_size` are hints; no admitted blob metadata, storage handoff, MIME verification or content-size proof exists yet. Inline bytes are not implied. |
+| Domain references | Temporal, identity, resource and network contracts beyond the existing URL/email rules need explicit admitted types. Input hints and unknown kind names never substitute for them. |
 
 ## Non-goals
 
@@ -218,12 +248,12 @@ Exported JSON Schema does not replace the proof pipeline.
 
 ## Maturity
 
-The core schema/proof/export contract is stable for in-workspace consumers.
-Supported downstream contracts are still curated through `nebula-sdk`; this
-crate remains an internal technical boundary. Proposed Phase-5 targets that
-depend on validator condition v2, directional codec evidence, slot grammar, or
-trigger output admission are documented as unshipped until they have code and
-tests.
+The internal API remains `frontier` while the complete property contract is being
+implemented. The proof pipeline and the new admission guards have focused tests;
+that evidence does not complete the input-family coverage above or the
+directional codec, condition, options-provider and slot contracts. Issue #995
+must not be closed by relabeling a partial implementation as stable. Supported
+downstream contracts remain curated through `nebula-sdk`.
 
 ## Related
 

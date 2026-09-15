@@ -99,6 +99,11 @@ explicit associated data types.
 existing `#[field(...)]` / `#[validate(...)]` helpers for in-workspace
 declarations. Integration fields use `#[credential(...)]` / `#[resource(...)]`
 for slots. The schema-free draft/admission lifecycle above already exists.
+Fresh schemas carry policy v2: presentation visibility never suppresses value
+requirements. Historical schemas retain their original wire representation but
+cannot grant fresh input, metadata or plan authority. Phase-indexed value trees
+no longer advertise a `HasSchema` baseline; associated DTOs declare the contract,
+with `serde_json::Value` reserved for an intentional opaque JSON input.
 `schema_type`, directional codec evidence, checked condition v2, slot grammar,
 options-provider admission and trigger output gates remain targets, not shipped
 APIs.

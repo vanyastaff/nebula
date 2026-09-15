@@ -1,0 +1,71 @@
+---
+source: crates/schema/tests/evolution_wire_snapshot.rs
+expression: exported
+---
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "computed": {
+      "additionalProperties": false,
+      "properties": {
+        "$expr": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "$expr"
+      ],
+      "type": "object",
+      "x-nebula-expression-mode": "required",
+      "x-nebula-field-kind": "computed",
+      "x-nebula-required-mode": "never",
+      "x-nebula-resolved-value-schema": {
+        "type": "number"
+      },
+      "x-nebula-visibility-mode": "always"
+    },
+    "literal": {
+      "minLength": 2,
+      "type": "string",
+      "x-nebula-expression-mode": "forbidden",
+      "x-nebula-field-kind": "string",
+      "x-nebula-required-mode": "never",
+      "x-nebula-resolved-value-schema": {
+        "minLength": 2,
+        "type": "string"
+      },
+      "x-nebula-visibility-mode": "always"
+    },
+    "template": {
+      "anyOf": [
+        {
+          "minLength": 2,
+          "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "$expr": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "$expr"
+          ],
+          "type": "object"
+        }
+      ],
+      "x-nebula-expression-mode": "allowed",
+      "x-nebula-field-kind": "string",
+      "x-nebula-required-mode": "never",
+      "x-nebula-resolved-value-schema": {
+        "minLength": 2,
+        "type": "string"
+      },
+      "x-nebula-visibility-mode": "always"
+    }
+  },
+  "type": "object",
+  "x-nebula-schema-version": 2
+}

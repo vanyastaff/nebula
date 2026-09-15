@@ -19,7 +19,7 @@ use zeroize::Zeroize;
 use super::{RootShape, ValidSchema};
 use crate::{
     Field, RequiredMode, SecretValue, SelectOption, ValidationError, ValidationReport, ValuePath,
-    ValueTree, VisibilityMode,
+    ValueTree,
     commitment::{CommitmentKey, write_secret_commitment},
 };
 
@@ -38,7 +38,7 @@ pub enum PendingValidation {
         /// The missing input or phase that prevents a complete verdict.
         reason: DeferredReason,
     },
-    /// Visibility or requiredness depends on unresolved context.
+    /// Requiredness depends on unresolved context.
     Policy {
         /// Field whose conditional policy awaits input.
         path: ValuePath,
@@ -129,11 +129,7 @@ impl Checks {
             entries.iter().map(|entry| {
                 FieldPolicyDecl::new(
                     &entry.path,
-                    match entry.field.visible() {
-                        VisibilityMode::Always => VisibilityPolicy::Always,
-                        VisibilityMode::Never => VisibilityPolicy::Never,
-                        VisibilityMode::When(rule) => VisibilityPolicy::When(rule),
-                    },
+                    VisibilityPolicy::Always,
                     match entry.field.required() {
                         RequiredMode::Never => RequiredPolicy::Optional,
                         RequiredMode::Always => RequiredPolicy::Always,

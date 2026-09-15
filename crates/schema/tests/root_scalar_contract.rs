@@ -161,24 +161,24 @@ fn scalar_rules_are_not_lost_when_the_root_has_no_fields() {
 
 #[test]
 fn scalar_wire_is_versioned_without_changing_historical_roots() {
-    assert_eq!(
-        serde_json::to_string(&ValidSchema::empty()).unwrap(),
-        r#"{"fields":[]}"#
-    );
-    assert_eq!(
-        serde_json::to_string(&ValidSchema::any()).unwrap(),
-        r#"{"kind":"any","fields":[]}"#
-    );
+    for wire in [
+        r#"{"fields":[]}"#,
+        r#"{"kind":"any","fields":[]}"#,
+        r#"{"kind":"scalar","scalar":{"version":1,"type":"integer","minimum":-128,"maximum":127}}"#,
+    ] {
+        let historical = serde_json::from_str::<ValidSchema>(wire).unwrap();
+        assert_eq!(serde_json::to_string(&historical).unwrap(), wire);
+        assert!(historical.ensure_current_semantics().is_err());
+    }
     let schema = schema_of::<i8>().unwrap();
-    let wire =
-        r#"{"kind":"scalar","scalar":{"version":1,"type":"integer","minimum":-128,"maximum":127}}"#;
+    let wire = r#"{"policy_version":2,"kind":"scalar","scalar":{"version":1,"type":"integer","minimum":-128,"maximum":127}}"#;
     assert_eq!(serde_json::to_string(&schema).unwrap(), wire);
     assert_eq!(serde_json::from_str::<ValidSchema>(wire).unwrap(), schema);
-    assert_eq!(
+    assert_ne!(
         serde_json::from_str::<ValidSchema>(r#"{"fields":[]}"#).unwrap(),
         ValidSchema::empty()
     );
-    assert_eq!(nebula_schema::SCHEMA_WIRE_VERSION, 1);
+    assert_eq!(nebula_schema::SCHEMA_WIRE_VERSION, 2);
 }
 
 #[test]

@@ -169,8 +169,9 @@ pub mod __private {
         pub use nebula_schema::{
             AuthoredValue, BooleanWidget, ExpressionMode, Field, FieldKey, HasSchema,
             HasSelectOptions, InputHint, ListWidget, NumberWidget, ObjectWidget, RootShape, Rule,
-            ScalarSchema, Schema, SecretWidget, SelectOption, SelectWidget, SerdeTagging,
-            StringWidget, ValidSchema, ValidationError, ValidationReport, VisibilityMode,
+            ScalarSchema, Schema, SecretInput, SecretWidget, SelectOption, SelectWidget,
+            SerdeTagging, StringWidget, ValidSchema, ValidationError, ValidationReport,
+            VisibilityMode,
         };
 
         pub mod error {
@@ -179,7 +180,8 @@ pub mod __private {
 
         pub mod __private {
             pub use nebula_schema::__private::{
-                field_key_from_validated_literal, serde_json, tracing, union_newtype_payload,
+                LiteralFieldKey, field_key_from_validated_literal, serde_json, tracing,
+                union_newtype_payload,
             };
         }
     }

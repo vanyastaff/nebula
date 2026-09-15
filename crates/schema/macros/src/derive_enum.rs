@@ -30,6 +30,7 @@ use syn::{Data, DataEnum, DeriveInput, Fields, Ident, ext::IdentExt};
 use crate::attrs::{FieldAttrs, RenameRule, SerdeAttrs};
 
 pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
+    crate::attrs::reject_field_attributes(&input.attrs, "enum-select containers")?;
     let crate_path = crate::crate_path();
     let ty_name = &input.ident;
     let generics = &input.generics;
@@ -59,6 +60,7 @@ pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
         let serde = SerdeAttrs::from_attrs(&variant.attrs)?;
         // A variant serde skips can never round-trip, so it is not a catalog option.
         if serde.skip {
+            crate::attrs::check_skipped_attributes(&variant.attrs)?;
             continue;
         }
         let value = resolve_variant_value(variant_name, &serde, container_serde.rename_all);
@@ -71,7 +73,7 @@ pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
                 ),
             ));
         }
-        let field_attr = FieldAttrs::from_attrs(&variant.attrs)?;
+        let field_attr = FieldAttrs::from_variant_attrs(&variant.attrs, true)?;
         let label = field_attr
             .label
             .unwrap_or_else(|| variant_name.unraw().to_string());

@@ -9,8 +9,9 @@ use syn::{Data, DataStruct, DeriveInput, Fields, Ident, Type, ext::IdentExt};
 
 use crate::{
     attrs::{
-        DefaultLit, FieldAttrs, PropertyWidget, RenameRule, SchemaStructAttrs, SerdeAttrs,
-        ValidateAttrs,
+        DefaultLit, FieldAttrs, PropertyExpressionMode, PropertyWidget, RangeUpperBound,
+        RenameRule, SchemaStructAttrs, SerdeAttrs, ValidateAttrs, check_skipped_attributes,
+        reject_field_attributes,
     },
     type_infer::{FieldKind, classify, secret_leaf_type},
 };
@@ -32,6 +33,7 @@ pub(crate) struct FieldContext<'a> {
 }
 
 pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
+    reject_field_attributes(&input.attrs, "schema containers")?;
     let crate_path = crate::crate_path();
     let ty_name = &input.ident;
     let generics = &input.generics;
@@ -133,6 +135,7 @@ pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
         }
         // A field serde skips never reaches the wire, so it has no schema entry.
         if field_attr.skip || serde.skip {
+            check_skipped_attributes(&f.attrs)?;
             continue;
         }
         let validate = ValidateAttrs::from_attrs(&f.attrs)?;
@@ -305,6 +308,7 @@ fn nested_field_expr(
 ) -> TokenStream2 {
     quote! {{
         let nested_schema = <#ty as #crate_path::HasSchema>::schema()?;
+        nested_schema.ensure_current_semantics()?;
         match nested_schema.root_shape() {
             #crate_path::RootShape::Any => {
                 let #binding = #crate_path::Field::dynamic(#key);
@@ -628,6 +632,8 @@ pub(crate) fn build_field_expr(
         ));
     }
 
+    ensure_value_rule_applicability(field_name, inner, field_attr, validate)?;
+
     // A secret property's Rust leaf type is checked below against the explicit
     // `SecretInput` contract. Both String and user-defined wrappers map to the
     // schema's string-shaped Secret field.
@@ -641,12 +647,8 @@ pub(crate) fn build_field_expr(
         FieldKind::Boolean => quote! {
             #crate_path::Field::boolean(#key)
         },
-        FieldKind::IntegerNumber => quote! {
-            #crate_path::Field::integer(#key)
-        },
-        FieldKind::FloatNumber => quote! {
-            #crate_path::Field::number(#key)
-        },
+        FieldKind::IntegerNumber(ty) => integer_field_expr(ty, &key, crate_path),
+        FieldKind::FloatNumber(ty) => float_field_expr(ty, &key, crate_path),
         FieldKind::List(item_kind) => list_field_expr(field_name, key_str, item_kind, crate_path)?,
         FieldKind::Optional(_) => {
             // Cannot nest `Option<Option<T>>`; classify already flattened one layer.
@@ -743,42 +745,78 @@ pub(crate) fn build_field_expr(
             #expr.expression_mode(#crate_path::ExpressionMode::Required)
         };
     }
+    if let Some(mode) = field_attr.expressions {
+        let mode = match mode {
+            PropertyExpressionMode::Allowed => quote! { Allowed },
+            PropertyExpressionMode::Forbidden => quote! { Forbidden },
+            PropertyExpressionMode::Required => quote! { Required },
+        };
+        expr = quote! { #expr.expression_mode(#crate_path::ExpressionMode::#mode) };
+    }
 
     // Required: mark when `#[validate(required)]` or the Rust type is not Option.
     if validate.required || !optional {
         expr = quote! { #expr.required() };
     }
 
+    if let Some(min) = validate.min_items {
+        expr = quote! { #expr.min_items(#min) };
+    }
+    if let Some(max) = validate.max_items {
+        expr = quote! { #expr.max_items(#max) };
+    }
+    if validate.unique {
+        expr = quote! { #expr.unique() };
+    }
+
     // Length rules apply to String / Secret.
     if let Some(min) = validate.min_length {
-        expr = quote! { #expr.min_length(#min) };
+        expr = quote! { #expr.with_rule(#crate_path::Rule::min_length(#min)) };
     }
     if let Some(max) = validate.max_length {
-        expr = quote! { #expr.max_length(#max) };
+        expr = quote! { #expr.with_rule(#crate_path::Rule::max_length(#max)) };
     }
 
     // Range rules apply to Number.
     if let Some(min) = validate.min
-        && matches!(inner, FieldKind::IntegerNumber | FieldKind::FloatNumber)
+        && matches!(
+            inner,
+            FieldKind::IntegerNumber(_) | FieldKind::FloatNumber(_)
+        )
     {
         expr = quote! { #expr.min(#min) };
     }
     if let Some(max) = validate.max
-        && matches!(inner, FieldKind::IntegerNumber | FieldKind::FloatNumber)
+        && matches!(
+            inner,
+            FieldKind::IntegerNumber(_) | FieldKind::FloatNumber(_)
+        )
     {
-        expr = quote! { #expr.max(#max) };
+        expr = match max {
+            RangeUpperBound::Included(max) => quote! { #expr.max(#max) },
+            RangeUpperBound::Excluded(max) => {
+                quote! { #expr.with_rule(#crate_path::Rule::less_than(#max)) }
+            },
+        };
     }
 
     if let Some(pattern) = &validate.pattern
         && (field_attr.secret || matches!(inner, FieldKind::String))
     {
-        expr = quote! { #expr.pattern(#pattern)? };
+        expr = quote! {
+            #expr.with_rule(#crate_path::Rule::pattern(#pattern).map_err(|error| {
+                #crate_path::ValidationError::builder("schema.invalid_pattern")
+                    .message("field pattern is invalid")
+                    .source(error)
+                    .build()
+            })?)
+        };
     }
     if validate.url && (field_attr.secret || matches!(inner, FieldKind::String)) {
-        expr = quote! { #expr.url() };
+        expr = quote! { #expr.with_rule(#crate_path::Rule::url()) };
     }
     if validate.email && (field_attr.secret || matches!(inner, FieldKind::String)) {
-        expr = quote! { #expr.email() };
+        expr = quote! { #expr.with_rule(#crate_path::Rule::email()) };
     }
 
     for alias in read_aliases {
@@ -838,7 +876,10 @@ fn apply_property_widget(
             Ok(quote! { #expr.widget(#crate_path::SecretWidget::Plain) })
         },
         PropertyWidget::Number
-            if matches!(inner, FieldKind::IntegerNumber | FieldKind::FloatNumber) =>
+            if matches!(
+                inner,
+                FieldKind::IntegerNumber(_) | FieldKind::FloatNumber(_)
+            ) =>
         {
             Ok(quote! { #expr.widget(#crate_path::NumberWidget::Plain) })
         },
@@ -881,6 +922,47 @@ fn apply_property_widget(
     }
 }
 
+fn ensure_value_rule_applicability(
+    field_name: &Ident,
+    kind: &FieldKind,
+    field: &FieldAttrs,
+    validate: &ValidateAttrs,
+) -> syn::Result<()> {
+    let text = field.secret || matches!(kind, FieldKind::String);
+    let numeric = matches!(
+        kind,
+        FieldKind::IntegerNumber(_) | FieldKind::FloatNumber(_)
+    );
+    for (invalid, message) in [
+        (
+            (validate.min_items.is_some() || validate.max_items.is_some() || validate.unique)
+                && !matches!(kind, FieldKind::List(_)),
+            "items/unique validation applies only to list properties",
+        ),
+        (
+            (validate.min_length.is_some() || validate.max_length.is_some()) && !text,
+            "length/non_empty validation applies only to string or secret-string properties",
+        ),
+        (
+            (validate.min.is_some() || validate.max.is_some()) && !numeric,
+            "range validation applies only to numeric properties",
+        ),
+        (
+            (validate.pattern.is_some() || validate.url || validate.email) && !text,
+            "pattern/url/email validation applies only to string or secret-string properties",
+        ),
+        (
+            field.multiline && !matches!(kind, FieldKind::String),
+            "multiline applies only to non-secret string properties",
+        ),
+    ] {
+        if invalid {
+            return Err(syn::Error::new_spanned(field_name, message));
+        }
+    }
+    Ok(())
+}
+
 /// `#[field(enum_select)]` maps to a `SelectField`; only `#[validate(required)]` is meaningful
 /// there.
 fn ensure_enum_select_validate_attrs(
@@ -904,6 +986,23 @@ fn ensure_enum_select_validate_attrs(
     Ok(())
 }
 
+fn integer_field_expr(ty: &Type, key: &TokenStream2, crate_path: &TokenStream2) -> TokenStream2 {
+    quote! {
+        #crate_path::Field::integer(#key).min(<#ty>::MIN).max(<#ty>::MAX)
+    }
+}
+
+fn float_field_expr(ty: &Type, key: &TokenStream2, crate_path: &TokenStream2) -> TokenStream2 {
+    let bounds = [quote! { MIN }, quote! { MAX }].map(|bound| quote! {
+        #crate_path::__private::serde_json::Number::from_f64(::core::primitive::f64::from(<#ty>::#bound))
+            .ok_or_else(|| #crate_path::ValidationError::builder("schema.invalid_numeric_bound")
+                .message("primitive floating-point bound must be finite")
+                .build())?
+    });
+    let [minimum, maximum] = bounds;
+    quote! { #crate_path::Field::number(#key).min(#minimum).max(#maximum) }
+}
+
 fn list_field_expr(
     field_name: &Ident,
     key_str: &str,
@@ -923,8 +1022,8 @@ fn list_field_expr(
     let item_expr = match item_kind {
         FieldKind::String => quote! { #crate_path::Field::string(#item_key) },
         FieldKind::Boolean => quote! { #crate_path::Field::boolean(#item_key) },
-        FieldKind::IntegerNumber => quote! { #crate_path::Field::integer(#item_key) },
-        FieldKind::FloatNumber => quote! { #crate_path::Field::number(#item_key) },
+        FieldKind::IntegerNumber(ty) => integer_field_expr(ty, &item_key, crate_path),
+        FieldKind::FloatNumber(ty) => float_field_expr(ty, &item_key, crate_path),
         FieldKind::UserDefined(ty) => {
             let binding = Ident::new("__nebula_nested_item", Span::mixed_site());
             let item = nested_field_expr(
@@ -980,15 +1079,17 @@ fn default_lit_tokens(
         (FieldKind::String, _) => Err(mismatch("a string literal", "non-string literal")),
 
         // Integer targets accept integer defaults.
-        (FieldKind::IntegerNumber, DefaultLit::Int(i)) => Ok(quote! {
+        (FieldKind::IntegerNumber(_), DefaultLit::Int(i)) => Ok(quote! {
             #crate_path::__private::serde_json::Value::Number(
                 #crate_path::__private::serde_json::Number::from(#i)
             )
         }),
-        (FieldKind::IntegerNumber, _) => Err(mismatch("an integer literal", "non-integer literal")),
+        (FieldKind::IntegerNumber(_), _) => {
+            Err(mismatch("an integer literal", "non-integer literal"))
+        },
 
         // Float targets accept both integer (coerced) and float literals.
-        (FieldKind::FloatNumber, DefaultLit::Float(f)) => {
+        (FieldKind::FloatNumber(_), DefaultLit::Float(f)) => {
             // Reject non-finite defaults at EXPANSION time. A float literal can
             // overflow to infinity (e.g. `1e400` parses to `f64::INFINITY`), and
             // `serde_json::Number::from_f64` returns `None` for NaN/±inf — so
@@ -1007,12 +1108,12 @@ fn default_lit_tokens(
                 #crate_path::__private::serde_json::Value::from(#f)
             })
         },
-        (FieldKind::FloatNumber, DefaultLit::Int(i)) => Ok(quote! {
+        (FieldKind::FloatNumber(_), DefaultLit::Int(i)) => Ok(quote! {
             #crate_path::__private::serde_json::Value::Number(
                 #crate_path::__private::serde_json::Number::from(#i)
             )
         }),
-        (FieldKind::FloatNumber, _) => Err(mismatch("a numeric literal", "non-numeric literal")),
+        (FieldKind::FloatNumber(_), _) => Err(mismatch("a numeric literal", "non-numeric literal")),
 
         (FieldKind::Boolean, DefaultLit::Bool(b)) => Ok(quote! {
             #crate_path::__private::serde_json::Value::Bool(#b)
@@ -1061,4 +1162,227 @@ fn input_hint_ident(hint: &str, span_source: &Ident) -> syn::Result<Ident> {
         },
     };
     Ok(Ident::new(variant, span_source.span()))
+}
+
+#[cfg(test)]
+mod property_contract_tests {
+    use super::expand;
+
+    fn rejects(source: &str, diagnostic: &str) {
+        let result = expand(syn::parse_str(source).expect("test declaration"));
+        let error = result.expect_err("invalid declaration must fail expansion");
+        assert!(error.to_string().contains(diagnostic), "{error}");
+    }
+
+    #[test]
+    fn duplicate_rule_entries_are_rejected() {
+        for rule in [
+            "length(min = 8), length(max = 64)",
+            "length(min = 8, min = 1)",
+            "range(1..=8), range(..=64)",
+            "pattern = \"^a\", pattern = \".*\"",
+            "url, url",
+            "non_empty, non_empty",
+        ] {
+            rejects(
+                &format!("struct C {{ #[property(validate({rule}))] x: String }}"),
+                "duplicate",
+            );
+        }
+    }
+
+    #[test]
+    fn duplicate_display_and_input_entries_are_rejected() {
+        for section in [
+            "display(label = \"a\", label = \"b\")",
+            "display(hidden, hidden)",
+            "input(secret, secret)",
+            "input(required, required)",
+            "input(expressions = forbidden, expressions = allowed)",
+        ] {
+            rejects(
+                &format!("struct C {{ #[property({section})] x: String }}"),
+                "duplicate",
+            );
+        }
+    }
+
+    #[test]
+    fn mixed_namespace_duplicates_are_rejected() {
+        for attrs in [
+            "#[field(secret)] #[property(input(secret))]",
+            "#[validate(required)] #[property(input(required))]",
+            "#[validate(url)] #[property(validate(url))]",
+            "#[validate(length(min = 8))] #[property(validate(length(max = 64)))]",
+            "#[field(label = \"a\", label = \"b\")]",
+            "#[validate(pattern = \"^a\", pattern = \".*\")]",
+        ] {
+            rejects(&format!("struct C {{ {attrs} x: String }}"), "duplicate");
+        }
+    }
+
+    #[test]
+    fn mixed_namespace_mode_conflicts_are_rejected() {
+        for attrs in [
+            "#[field(no_expression)] #[property(input(expressions = allowed))]",
+            "#[field(expression_required)] #[property(input(expressions = allowed))]",
+            "#[field(multiline)] #[property(display(widget = text))]",
+        ] {
+            rejects(&format!("struct C {{ {attrs} x: String }}"), "conflict");
+        }
+    }
+
+    #[test]
+    fn property_flags_do_not_accept_arguments() {
+        for section in [
+            "input(required(false))",
+            "input(secret(false))",
+            "display(hidden(false))",
+        ] {
+            rejects(
+                &format!("struct C {{ #[property({section})] x: String }}"),
+                "arguments",
+            );
+        }
+    }
+
+    #[test]
+    fn empty_rule_bounds_are_rejected() {
+        for rule in ["length()", "range(..)"] {
+            rejects(
+                &format!("struct C {{ #[property(validate({rule}))] x: String }}"),
+                "bound",
+            );
+        }
+    }
+
+    #[test]
+    fn incompatible_value_rules_are_rejected() {
+        for (rule, ty) in [
+            ("range(1..=3)", "String"),
+            ("pattern = \"^a\"", "u32"),
+            ("url", "bool"),
+            ("email", "Vec<String>"),
+            ("length(min = 1)", "bool"),
+        ] {
+            rejects(
+                &format!("struct C {{ #[property(validate({rule}))] x: {ty} }}"),
+                "applies only",
+            );
+        }
+    }
+
+    #[test]
+    fn container_and_variant_secret_intent_is_rejected() {
+        for source in [
+            "#[property(input(secret))] struct C { x: String }",
+            "#[field(secret)] struct C;",
+            "enum C { #[property(input(secret))] Token { x: String } }",
+            "enum C { Token(#[property(input(secret))] Payload) }",
+            "enum C { Token(#[field(secret)] Payload) }",
+        ] {
+            rejects(source, "not supported");
+        }
+    }
+
+    #[test]
+    fn skipped_secret_intent_is_rejected() {
+        for source in [
+            "struct C { #[serde(skip)] #[property(input(secret))] x: String }",
+            "struct C { #[field(skip, secret)] x: String }",
+            "enum C { #[serde(skip)] #[property(input(secret))] Token { x: String }, Other }",
+            "enum C { #[serde(skip)] Token { #[property(input(secret))] x: String }, Other }",
+            "enum C { Token { #[serde(skip_deserializing)] #[field(secret)] x: String } }",
+        ] {
+            rejects(source, "skipped");
+        }
+    }
+
+    #[test]
+    fn non_empty_combines_with_an_explicit_minimum() {
+        let input = syn::parse_quote! {
+            struct C {
+                #[property(validate(non_empty, length(min = 8, max = 64)))]
+                x: Option<String>,
+            }
+        };
+        expand(input).expect("compatible constraints must expand");
+    }
+
+    #[test]
+    fn collection_constraints_accept_lists_and_optional_lists() {
+        for ty in ["Vec<u8>", "Option<Vec<u8>>", "Vec<Payload>"] {
+            for rules in [
+                "items(min = 1, max = 8), unique",
+                "items(min = 0)",
+                "items(max = 4294967295)",
+                "unique",
+            ] {
+                let input = syn::parse_str(&format!(
+                    "struct C {{ #[property(validate({rules}))] values: {ty} }}"
+                ))
+                .expect("test declaration");
+                expand(input).expect("supported collection constraints must expand");
+            }
+        }
+    }
+
+    #[test]
+    fn collection_constraints_reject_duplicate_settings() {
+        for rules in [
+            "items(min = 1), items(max = 8)",
+            "items(min = 1, min = 0)",
+            "items(max = 8, max = 9)",
+            "unique, unique",
+        ] {
+            rejects(
+                &format!("struct C {{ #[property(validate({rules}))] values: Vec<u8> }}"),
+                "duplicate",
+            );
+        }
+    }
+
+    #[test]
+    fn collection_constraints_reject_non_list_types() {
+        for ty in ["String", "Option<String>", "u8", "bool", "Payload"] {
+            for rules in ["items(min = 1)", "unique"] {
+                rejects(
+                    &format!("struct C {{ #[property(validate({rules}))] values: {ty} }}"),
+                    "applies only to list properties",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn collection_counts_reject_invalid_bounds() {
+        for (bounds, diagnostic) in [
+            ("", "requires at least one bound"),
+            ("min = 2, max = 1", "minimum exceeds maximum"),
+            ("min = 4294967296", "u32"),
+            ("max = 4294967296", "u32"),
+            ("min = -1", "non-negative integer literal"),
+            ("max = 1.5", "non-negative integer literal"),
+            ("other = 1", "must be `min` or `max`"),
+        ] {
+            rejects(
+                &format!("struct C {{ #[property(validate(items({bounds})))] values: Vec<u8> }}"),
+                diagnostic,
+            );
+        }
+        rejects(
+            "struct C { #[property(validate(unique(false)))] values: Vec<u8> }",
+            "does not accept arguments",
+        );
+    }
+
+    #[test]
+    fn union_container_schema_attributes_are_not_ignored() {
+        for attribute in ["reserved(\"Old\")", "custom = \"validate\"", "unknown", ""] {
+            rejects(
+                &format!("#[schema({attribute})] enum C {{ Old, New }}"),
+                "not supported on enums",
+            );
+        }
+    }
 }

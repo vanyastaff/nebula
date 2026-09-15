@@ -1,0 +1,5 @@
+error: items minimum exceeds maximum
+ --> tests/compile_fail/property_collection_contradictory_counts.rs:5:31
+  |
+5 |     #[property(validate(items(min = 8, max = 1)))]
+  |                               ^^^

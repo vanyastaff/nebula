@@ -4,7 +4,14 @@ use nebula::prelude::*;
 #[derive(Debug, Deserialize, Schema)]
 #[serde(crate = "nebula::serde")]
 struct SchemaPayload {
+    #[property(
+        display(label = "Name", widget = text),
+        input(expressions = forbidden),
+        validate(non_empty, length(min = 1, max = 64))
+    )]
     name: String,
+    #[property(validate(items(min = 1, max = 3), unique))]
+    tags: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize, Schema)]
@@ -51,6 +58,7 @@ struct ContractResource;
 #[derive(Clone, Schema, ResourceConfig)]
 #[config(schema = external)]
 struct ContractConfig {
+    #[property(display(widget = checkbox))]
     enabled: bool,
 }
 
@@ -66,7 +74,12 @@ struct ContractCredential;
 #[derive(Debug, Deserialize, Schema)]
 #[serde(crate = "nebula::serde")]
 struct CredentialProperties {
-    token: String,
+    #[property(
+        display(label = "Token", widget = password),
+        input(secret, expressions = forbidden),
+        validate(non_empty)
+    )]
+    token: SecretString,
 }
 
 #[credential(key = "contract.credential", name = "Contract credential")]
@@ -84,7 +97,7 @@ impl ContractCredential {
         _context: &CredentialContext,
     ) -> Result<StaticResolveResult<SecretToken>, CredentialError> {
         Ok(StaticResolveResult::Complete(SecretToken::new(
-            SecretString::new(properties.token.clone()),
+            properties.token.clone(),
         )))
     }
 }
@@ -123,6 +136,35 @@ fn main() {
         Some("{{ literal }}")
     );
     assert!(schema.find(&field_key!("name")).is_some());
+    assert!(
+        schema
+            .validate(nebula::params! { data; "name" => "" }.unwrap())
+            .is_err()
+    );
+    let tagged = schema
+        .validate(nebula::params! { data; "name" => "Example", "tags" => ["a", "b"] }.unwrap())
+        .unwrap()
+        .resolve_data()
+        .unwrap()
+        .into_typed::<SchemaPayload>()
+        .unwrap();
+    assert_eq!(tagged.tags, Some(vec!["a".to_owned(), "b".to_owned()]));
+    let duplicates = schema
+        .validate(nebula::params! { data; "name" => "Example", "tags" => ["a", "a"] }.unwrap())
+        .unwrap_err();
+    assert!(duplicates.errors().any(|error| error.code() == "items.unique"));
+    let properties_schema = schema_of::<CredentialProperties>().unwrap();
+    let secret_input = properties_schema
+        .validate(nebula::params! { data; "token" => "sdk-property-secret" }.unwrap())
+        .unwrap()
+        .resolve_data()
+        .unwrap();
+    assert!(!format!("{secret_input:?}").contains("sdk-property-secret"));
+    let properties: CredentialProperties = secret_input
+        .into_typed_exposing_secrets()
+        .unwrap();
+    assert_eq!(properties.token.expose_secret(), "sdk-property-secret");
+    assert!(!format!("{properties:?}").contains("sdk-property-secret"));
     let _: CredentialMetadataDraft = ContractCredential::metadata();
     let _: ActionMetadataDraft = <ContractAction as Action>::metadata();
     let _ = ContractPlugin.manifest();

@@ -1,0 +1,5 @@
+error: range validation applies only to numeric properties
+ --> tests/compile_fail/property_incompatible_rule.rs:6:5
+  |
+6 |     text: String,
+  |     ^^^^

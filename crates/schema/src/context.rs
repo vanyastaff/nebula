@@ -13,6 +13,7 @@ use serde_json::Value;
 use crate::{
     ValidationError,
     field::{Field, ModeField},
+    field_tree::ensure_supported_properties,
     key::FieldKey,
     secret::SECRET_REDACTED,
     value::{ValuePath, ValueTree},
@@ -26,6 +27,8 @@ use crate::{
 /// # Errors
 ///
 /// Returns `recursion_limit` before copying input deeper than the value limit.
+/// Rejects over-deep declarations with `schema.depth_limit` and unknown kinds
+/// with `schema.unsupported_property_kind` before deriving a snapshot.
 #[doc(hidden)]
 #[tracing::instrument(level = "debug", skip_all, fields(field_count = fields.len()))]
 pub fn predicate_context_for<E>(
@@ -33,6 +36,7 @@ pub fn predicate_context_for<E>(
     values: &ValueTree<E>,
 ) -> Result<PredicateContext, ValidationError> {
     values.check_depth(&ValuePath::root(), 0)?;
+    ensure_supported_properties(fields)?;
     Ok(prepared_predicate_context(fields, values))
 }
 
@@ -41,6 +45,8 @@ pub fn predicate_context_for<E>(
 /// # Errors
 ///
 /// Returns `recursion_limit` before copying input deeper than the value limit.
+/// Rejects over-deep declarations with `schema.depth_limit` and unknown kinds
+/// with `schema.unsupported_property_kind` before deriving a snapshot.
 #[doc(hidden)]
 pub fn root_predicate_context_for<E>(
     fields: &[Field],
@@ -51,8 +57,8 @@ pub fn root_predicate_context_for<E>(
 
 /// Build the single field/root rule context after canonical preparation.
 ///
-/// The caller owns the depth proof and supplies pending expression paths to
-/// the validator separately. No source text or redaction marker is observable.
+/// The caller owns the depth and declaration-support proofs and supplies pending
+/// expression paths separately. No source text or redaction marker is observable.
 #[tracing::instrument(level = "debug", skip_all, fields(field_count = fields.len()))]
 pub(crate) fn prepared_predicate_context<E>(
     fields: &[Field],
@@ -67,6 +73,7 @@ pub(crate) fn redacted_loader_json<E>(
     values: &ValueTree<E>,
 ) -> Result<Value, ValidationError> {
     values.check_depth(&ValuePath::root(), 0)?;
+    ensure_supported_properties(fields)?;
     Ok(project_root(fields, values, Projection::Loader))
 }
 

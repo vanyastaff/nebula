@@ -17,7 +17,6 @@ use crate::{
     error::{ValidationError, ValidationReport},
     option::SelectOption,
     validated::{ScalarSchema, ValidSchema},
-    value::ValueTree,
 };
 
 /// Types that expose a canonical [`ValidSchema`].
@@ -76,14 +75,6 @@ pub trait HasSelectOptions {
 /// expected shape out-of-band. Use a concrete typed struct with
 /// `#[derive(Schema)]` to get a real schema.
 impl HasSchema for serde_json::Value {
-    fn schema() -> Result<ValidSchema, ValidationReport> {
-        Ok(ValidSchema::any())
-    }
-}
-
-/// Dynamic data trees advertise no fixed shape. This does not grant expression
-/// admission; an `Any` schema has no expression-permitting declarations.
-impl<E> HasSchema for ValueTree<E> {
     fn schema() -> Result<ValidSchema, ValidationReport> {
         Ok(ValidSchema::any())
     }
@@ -165,7 +156,6 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::AuthoredValue;
     use crate::{field::Field, key::FieldKey, schema::Schema};
 
     struct Dummy;
@@ -242,13 +232,6 @@ mod tests {
     }
 
     #[test]
-    fn field_values_has_any_schema() {
-        let schema = <AuthoredValue as HasSchema>::schema().unwrap();
-        assert_eq!(schema.fields().len(), 0);
-        assert_eq!(schema.kind(), crate::SchemaKind::Any);
-    }
-
-    #[test]
     fn primitive_schemas_preserve_known_scalar_kinds() {
         assert_eq!(
             <i32 as HasSchema>::schema()
@@ -273,7 +256,7 @@ mod tests {
         let unit_a = <() as HasSchema>::schema().unwrap();
         let unit_b = <() as HasSchema>::schema().unwrap();
         let any_a = <serde_json::Value as HasSchema>::schema().unwrap();
-        let any_b = <AuthoredValue as HasSchema>::schema().unwrap();
+        let any_b = <serde_json::Value as HasSchema>::schema().unwrap();
 
         // Each constructor returns a shared, cached `Arc`.
         assert!(unit_a.ptr_eq(&unit_b), "`()` schema is cached");

@@ -1,0 +1,5 @@
+error: item counts require a non-negative integer literal
+ --> tests/compile_fail/property_collection_negative_count.rs:5:37
+  |
+5 |     #[property(validate(items(min = -1)))]
+  |                                     ^

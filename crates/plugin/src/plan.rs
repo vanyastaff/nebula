@@ -12,8 +12,8 @@ use nebula_credential::Capabilities;
 use nebula_error::ActivationDiagnostic;
 use nebula_schema::{
     Assignability, AuthoredValue, Field, FieldKey, InputSchema, OutputSchema, PathWalk,
-    RequiredMode, RootShape, Schema, SchemaKind, ValidSchema, ValuePath, VisibilityMode,
-    canonical_json_v1, explain_assignable, explain_field_assignable,
+    RequiredMode, RootShape, Schema, SchemaKind, ValidSchema, ValuePath, canonical_json_v1,
+    explain_assignable, explain_field_assignable,
 };
 use semver::{BuildMetadata, Prerelease, Version};
 use serde::{Deserialize, Serialize};
@@ -24,6 +24,7 @@ pub(crate) const RECORD_VERSION_V1: u16 = 1;
 pub(crate) const COMPILER_VERSION_GRAPH_V1: u16 = 1;
 pub(crate) const COMPILER_VERSION_GRAPH_V3: u16 = 3;
 pub(crate) const COMPILER_VERSION_GRAPH_V4: u16 = 4;
+pub(crate) const COMPILER_VERSION_GRAPH_V5: u16 = 5;
 pub(crate) const CANONICAL_HASH_VERSION_V1: u16 = 1;
 pub(crate) const CANONICAL_HASH_VERSION_V2: u16 = 2;
 pub(crate) const CANONICAL_HASH_VERSION_V3: u16 = 3;
@@ -34,8 +35,12 @@ const EXECUTABLE_PLAN_GRAPH_V2_DOMAIN: &[u8] = b"nebula.executable-plan.graph.v2
 const EXECUTABLE_PLAN_GRAPH_V3_DOMAIN: &[u8] = b"nebula.executable-plan.graph.v3";
 pub(crate) const SCHEMA_WIRE_VERSION_GRAPH_V1: u16 = 1;
 pub(crate) const SCHEMA_WIRE_VERSION_SCALAR_V2: u16 = 2;
+pub(crate) const SCHEMA_WIRE_VERSION_PROPERTY_V3: u16 = 3;
+const PROPERTY_POLICY_VERSION_V2: u16 = 2;
 // Graph-v4's scalar envelope admits descriptor v1, not a future writer's grammar.
 const _: () = assert!(nebula_schema::ScalarSchema::WIRE_VERSION == 1);
+// A new schema writer requires an explicit plan-epoch decision.
+const _: () = assert!(nebula_schema::SCHEMA_WIRE_VERSION == PROPERTY_POLICY_VERSION_V2);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PlanEpoch {
@@ -43,10 +48,11 @@ pub(crate) enum PlanEpoch {
     GraphV3,
     GraphV4Legacy,
     GraphV4,
+    GraphV5,
 }
 
 impl PlanEpoch {
-    pub(crate) const CURRENT: Self = Self::GraphV4;
+    pub(crate) const CURRENT: Self = Self::GraphV5;
 
     pub(crate) const fn from_record(
         compiler_version: u16,
@@ -57,6 +63,7 @@ impl PlanEpoch {
             (COMPILER_VERSION_GRAPH_V3, CANONICAL_HASH_VERSION_V2) => Some(Self::GraphV3),
             (COMPILER_VERSION_GRAPH_V4, CANONICAL_HASH_VERSION_V2) => Some(Self::GraphV4Legacy),
             (COMPILER_VERSION_GRAPH_V4, CANONICAL_HASH_VERSION_V3) => Some(Self::GraphV4),
+            (COMPILER_VERSION_GRAPH_V5, CANONICAL_HASH_VERSION_V3) => Some(Self::GraphV5),
             _ => None,
         }
     }
@@ -66,6 +73,7 @@ impl PlanEpoch {
             Self::GraphV1 => COMPILER_VERSION_GRAPH_V1,
             Self::GraphV3 => COMPILER_VERSION_GRAPH_V3,
             Self::GraphV4Legacy | Self::GraphV4 => COMPILER_VERSION_GRAPH_V4,
+            Self::GraphV5 => COMPILER_VERSION_GRAPH_V5,
         }
     }
 
@@ -74,28 +82,38 @@ impl PlanEpoch {
             Self::GraphV1 => CANONICAL_HASH_VERSION_V1,
             Self::GraphV3 => CANONICAL_HASH_VERSION_V2,
             Self::GraphV4Legacy => CANONICAL_HASH_VERSION_V2,
-            Self::GraphV4 => CANONICAL_HASH_VERSION_V3,
+            Self::GraphV4 | Self::GraphV5 => CANONICAL_HASH_VERSION_V3,
         }
     }
 
     pub(crate) const fn records_effect_contract(self) -> bool {
-        matches!(self, Self::GraphV3 | Self::GraphV4Legacy | Self::GraphV4)
+        matches!(
+            self,
+            Self::GraphV3 | Self::GraphV4Legacy | Self::GraphV4 | Self::GraphV5
+        )
     }
 
     const fn supports_intrinsic_error_port(self) -> bool {
-        matches!(self, Self::GraphV3 | Self::GraphV4Legacy | Self::GraphV4)
+        matches!(
+            self,
+            Self::GraphV3 | Self::GraphV4Legacy | Self::GraphV4 | Self::GraphV5
+        )
     }
 
     const fn records_binding_selector_provenance(self) -> bool {
-        matches!(self, Self::GraphV4)
+        matches!(self, Self::GraphV4 | Self::GraphV5)
     }
 
     const fn supports_scalar_schema(self) -> bool {
-        matches!(self, Self::GraphV4Legacy | Self::GraphV4)
+        matches!(self, Self::GraphV4Legacy | Self::GraphV4 | Self::GraphV5)
     }
 
     const fn supports_static_root_rules(self) -> bool {
-        matches!(self, Self::GraphV4Legacy | Self::GraphV4)
+        matches!(self, Self::GraphV4Legacy | Self::GraphV4 | Self::GraphV5)
+    }
+
+    const fn supports_property_policy(self) -> bool {
+        matches!(self, Self::GraphV5)
     }
 }
 
@@ -446,6 +464,9 @@ impl RecordedSchemaV1 {
     fn version_for(schema: &ValidSchema) -> u16 {
         // Plan envelope versions are pinned protocols, not the schema crate's
         // latest writer version. Legacy definitions keep their original bytes.
+        if schema.policy_version() == PROPERTY_POLICY_VERSION_V2 {
+            return SCHEMA_WIRE_VERSION_PROPERTY_V3;
+        }
         match schema.root_shape() {
             RootShape::Any | RootShape::Record(_) | RootShape::Union(_) => {
                 SCHEMA_WIRE_VERSION_GRAPH_V1
@@ -466,7 +487,41 @@ struct RecordedSchemaSerializeV1<'a> {
 #[serde(deny_unknown_fields)]
 struct RecordedSchemaDeserializeV1 {
     schema_wire_version: u16,
+    #[serde(deserialize_with = "deserialize_schema_definition")]
     schema: Value,
+}
+
+#[tracing::instrument(level = "debug", skip_all)]
+fn deserialize_schema_definition<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Value, D::Error> {
+    struct DefinitionVisitor;
+
+    impl<'de> serde::de::Visitor<'de> for DefinitionVisitor {
+        type Value = Value;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("a schema definition with unique members")
+        }
+
+        fn visit_map<A: serde::de::MapAccess<'de>>(self, mut fields: A) -> Result<Value, A::Error> {
+            let mut definition = serde_json::Map::new();
+            while let Some(key) = fields.next_key::<String>()? {
+                if definition.contains_key(&key) {
+                    return Err(serde::de::Error::custom(
+                        "duplicate schema definition member",
+                    ));
+                }
+                definition.insert(key, fields.next_value()?);
+            }
+            Ok(Value::Object(definition))
+        }
+    }
+
+    // Check the semantic marker before Value can erase duplicate members.
+    deserializer
+        .deserialize_map(DefinitionVisitor)
+        .map_err(|_| serde::de::Error::custom("invalid recorded schema definition"))
 }
 
 impl Serialize for RecordedSchemaV1 {
@@ -488,10 +543,28 @@ impl<'de> Deserialize<'de> for RecordedSchemaV1 {
         D: serde::Deserializer<'de>,
     {
         let recorded = RecordedSchemaDeserializeV1::deserialize(deserializer)?;
+        let policy = recorded.schema.get("policy_version");
+        let supported_envelope = match recorded.schema_wire_version {
+            SCHEMA_WIRE_VERSION_GRAPH_V1 | SCHEMA_WIRE_VERSION_SCALAR_V2 => policy.is_none(),
+            SCHEMA_WIRE_VERSION_PROPERTY_V3 => {
+                policy.and_then(Value::as_u64) == Some(u64::from(PROPERTY_POLICY_VERSION_V2))
+            },
+            _ => false,
+        };
+        if !supported_envelope {
+            return Err(serde::de::Error::custom(
+                "unsupported recorded schema envelope or policy",
+            ));
+        }
         let schema_wire = serde_json::to_string(&recorded.schema)
             .map_err(|_| serde::de::Error::custom("invalid Graph-v1 schema wire"))?;
         let schema = serde_json::from_str::<ValidSchema>(&schema_wire)
             .map_err(|_| serde::de::Error::custom("invalid Graph-v1 schema wire"))?;
+        if recorded.schema_wire_version != Self::version_for(&schema) {
+            return Err(serde::de::Error::custom(
+                "recorded schema envelope does not match its definition",
+            ));
+        }
         let normalized = serde_json::to_value(&schema)
             .map_err(|_| serde::de::Error::custom("invalid Graph-v1 schema wire"))?;
         let recorded_bytes = canonical_json_v1(&recorded.schema)
@@ -854,6 +927,14 @@ pub enum ExecutablePlanIntegrityError {
     #[error("unsupported executable-plan record format")]
     UnsupportedFormat,
 
+    /// Historical schema semantics cannot grant current plan authority.
+    #[classify(
+        category = "validation",
+        code = "PLUGIN_PLAN_INTEGRITY:UNSUPPORTED_SCHEMA_POLICY"
+    )]
+    #[error("executable plan carries an unsupported schema policy")]
+    UnsupportedSchemaPolicy,
+
     /// A canonical section is empty, unsorted, duplicated, or otherwise malformed.
     #[classify(category = "validation", code = "PLUGIN_PLAN_INTEGRITY:NON_CANONICAL")]
     #[error("executable-plan record is not canonical in section '{section}'")]
@@ -916,6 +997,13 @@ impl nebula_error::ActivationDiagnostics for ExecutablePlanIntegrityError {
                 "graph_v1_json".to_owned(),
                 "<unsupported-format>".to_owned(),
                 "recompile the workflow with a runtime that writes Graph-v1 plans",
+            ),
+            Self::UnsupportedSchemaPolicy => (
+                "PLUGIN_PLAN_INTEGRITY:UNSUPPORTED_SCHEMA_POLICY",
+                "/plan/schema_policy".to_owned(),
+                "current property validation semantics".to_owned(),
+                "<historical-policy>".to_owned(),
+                "recompile and admit the workflow against current component definitions",
             ),
             // The section is a stable path, never a payload value: a
             // non-canonical section can hold parameter defaults.
@@ -1251,6 +1339,9 @@ fn validate_record(
     else {
         return Err(ExecutablePlanIntegrityError::UnsupportedFormat);
     };
+    if !epoch.supports_property_policy() {
+        return Err(ExecutablePlanIntegrityError::UnsupportedSchemaPolicy);
+    }
     for action in &record.content.actions {
         match (&action.effect_contract, epoch.records_effect_contract()) {
             (None, false) => {},
@@ -1414,7 +1505,15 @@ fn validate_schema(
     section: &'static str,
     epoch: PlanEpoch,
 ) -> Result<(), ExecutablePlanIntegrityError> {
+    if schema.schema.policy_version() != PROPERTY_POLICY_VERSION_V2 {
+        return Err(ExecutablePlanIntegrityError::UnsupportedSchemaPolicy);
+    }
+    schema
+        .schema
+        .ensure_current_semantics()
+        .map_err(|_| noncanonical(section))?;
     if schema.schema_wire_version != RecordedSchemaV1::version_for(&schema.schema)
+        || !epoch.supports_property_policy()
         || (schema.schema.scalar_schema().is_some() && !epoch.supports_scalar_schema())
     {
         return Err(noncanonical(section));
@@ -1921,17 +2020,12 @@ pub(crate) fn validate_node_parameters(
 }
 
 fn field_context_depends_on_reference(field: &Field, referenced: &HashSet<&str>) -> bool {
-    let contextual_rules = match (field.required(), field.visible()) {
-        (RequiredMode::When(required), VisibilityMode::When(visible)) => {
-            [Some(required), Some(visible)]
-        },
-        (RequiredMode::When(required), _) => [Some(required), None],
-        (_, VisibilityMode::When(visible)) => [Some(visible), None],
-        _ => [None, None],
+    let contextual_rules = match field.required() {
+        RequiredMode::When(required) => Some(required),
+        _ => None,
     };
     if contextual_rules
         .into_iter()
-        .flatten()
         .any(|rule| rule_depends_on_reference(rule, referenced))
     {
         return true;
@@ -1956,9 +2050,7 @@ fn field_context_depends_on_reference(field: &Field, referenced: &HashSet<&str>)
 }
 
 fn field_contains_contextual_policy(field: &Field) -> bool {
-    if matches!(field.required(), RequiredMode::When(_))
-        || matches!(field.visible(), VisibilityMode::When(_))
-    {
+    if matches!(field.required(), RequiredMode::When(_)) {
         return true;
     }
 

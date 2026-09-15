@@ -1,0 +1,5 @@
+error: length/non_empty validation applies only to string or secret-string properties
+ --> tests/compile_fail/property_collection_incompatible_legacy_rule.rs:7:5
+  |
+7 |     values: Vec<u8>,
+  |     ^^^^^^

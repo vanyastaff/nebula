@@ -626,6 +626,36 @@ mod tests {
     }
 
     #[test]
+    fn historical_schema_cannot_admit_credential_metadata() {
+        let historical: nebula_schema::ValidSchema =
+            serde_json::from_str(r#"{"fields":[]}"#).unwrap();
+        let result = CredentialMetadataDraft::new(
+            credential_key!("cred"),
+            crate::metadata_name!("Credential"),
+            "description",
+        )
+        .admit_with_schema(historical, AuthPattern::SecretToken);
+        std::assert_matches!(
+            result,
+            Err(super::CredentialMetadataAdmissionError::CatalogMetadata)
+        );
+    }
+
+    #[test]
+    fn credential_readmission_requires_the_same_schema_policy() {
+        let current = admitted(AuthPattern::SecretToken, 1, 0);
+        let mut wire = serde_json::to_value(&current).unwrap();
+        wire["base"]["schema"]
+            .as_object_mut()
+            .unwrap()
+            .remove("policy_version");
+        let recorded: super::RecordedCredentialMetadata =
+            serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&recorded).unwrap(), wire);
+        assert!(recorded.readmit_against(&current).is_err());
+    }
+
+    #[test]
     fn pattern_change_requires_major_bump() {
         let previous = admitted(AuthPattern::SecretToken, 1, 0);
         let next = admitted(AuthPattern::OAuth2, 1, 1);

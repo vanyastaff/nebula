@@ -1,0 +1,13 @@
+error[E0308]: mismatched types
+ --> tests/literal_key_compile_fail/raw_literal_cannot_forge_key.rs:2:75
+  |
+2 |     let _key = nebula_schema::__private::field_key_from_validated_literal("not-a-key");
+  |                ---------------------------------------------------------- ^^^^^^^^^^^ expected `LiteralFieldKey`, found `&str`
+  |                |
+  |                arguments to this function are incorrect
+  |
+note: function defined here
+ --> src/lib.rs
+  |
+  |     pub fn field_key_from_validated_literal(value: LiteralFieldKey) -> crate::FieldKey {
+  |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

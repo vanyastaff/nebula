@@ -2,12 +2,77 @@ use super::*;
 use nebula_core::{
     ExecutablePlanRevisionId, PluginSetId, WorkerFlavorRevisionId, WorkflowId, WorkflowVersionId,
 };
-use nebula_schema::{ModeField, ObjectField, Schema, SecretField, ValuePath, field_key};
+use nebula_schema::{Field, ModeField, ObjectField, Schema, SecretField, ValuePath, field_key};
 use serde_json::{Value, json};
 use std::assert_matches;
 
 const SECRET_PAYLOAD: &str = "credential-value-that-must-not-leak";
 const ACTUAL_CONTRACT_DETAIL: &str = "registered-contract-v2";
+
+#[test]
+fn current_schema_policy_uses_its_own_plan_envelope() {
+    let recorded = RecordedSchemaV1::new(ValidSchema::empty());
+    assert_eq!(recorded.schema_wire_version, 3);
+    assert_eq!(
+        serde_json::to_value(recorded).unwrap()["schema"]["policy_version"],
+        json!(2)
+    );
+}
+
+#[test]
+fn current_compiler_epoch_identifies_property_semantics() {
+    assert_eq!(PlanEpoch::CURRENT.compiler_version(), 5);
+}
+
+#[test]
+fn recorded_schema_rejects_ambiguous_policy_markers() {
+    for schema in [
+        r#"{"policy_version":1,"policy_version":2,"fields":[]}"#,
+        r#"{"policy_version":2,"policy_version":2,"fields":[]}"#,
+        r#"{"fields":[{}],"fields":[],"policy_version":2}"#,
+    ] {
+        let wire = format!(r#"{{"schema_wire_version":3,"schema":{schema}}}"#);
+        assert!(serde_json::from_str::<RecordedSchemaV1>(&wire).is_err());
+    }
+}
+
+#[test]
+fn current_plan_cannot_promote_historical_schema_at_any_catalog_site() {
+    for site in 0..4 {
+        let mut record = match site {
+            2 => resource_binding_record("primary"),
+            3 => credential_binding_record("primary", Capabilities::REFRESHABLE.bits()),
+            _ => fixture_record(),
+        };
+        let schema = match site {
+            0 => &mut record.content.actions[0].input_schema,
+            1 => &mut record.content.actions[0].output_schema,
+            2 => &mut record.content.resources[0].configuration_schema,
+            _ => &mut record.content.credentials[0].properties_schema,
+        };
+        *schema = recorded_schema(historical_schema(&schema.schema));
+        reseal(&mut record);
+        let bytes = serde_json::to_vec(&record).unwrap();
+        let evidence: RecordedExecutablePlanRevisionV1 = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(serde_json::to_vec(&evidence).unwrap(), bytes);
+        assert_matches!(
+            ExecutablePlanRevision::try_from(evidence),
+            Err(ExecutablePlanIntegrityError::UnsupportedSchemaPolicy)
+        );
+    }
+}
+
+#[test]
+fn legacy_scalar_envelope_two_preserves_its_bytes_without_current_authority() {
+    let bytes = r#"{"schema_wire_version":2,"schema":{"kind":"scalar","scalar":{"version":1,"type":"null"}}}"#;
+    let schema: RecordedSchemaV1 = serde_json::from_str(bytes).unwrap();
+    assert_eq!(serde_json::to_string(&schema).unwrap(), bytes);
+    assert_eq!(schema.schema.policy_version(), 1);
+    assert_matches!(
+        validate_schema(&schema, "actions.input_schema", PlanEpoch::CURRENT),
+        Err(ExecutablePlanIntegrityError::UnsupportedSchemaPolicy)
+    );
+}
 
 fn diagnostic(
     code: &str,
@@ -73,6 +138,7 @@ fn every_plan_integrity_rejection_reports_all_five_fields() {
 
     let rejections = [
         ExecutablePlanIntegrityError::UnsupportedFormat,
+        ExecutablePlanIntegrityError::UnsupportedSchemaPolicy,
         ExecutablePlanIntegrityError::NonCanonical {
             section: "bindings",
         },
@@ -133,10 +199,26 @@ fn recorded_semver(major: u64, minor: u64, patch: u64) -> RecordedSemverV1 {
 }
 
 fn recorded_schema(schema: ValidSchema) -> RecordedSchemaV1 {
-    RecordedSchemaV1 {
-        schema_wire_version: SCHEMA_WIRE_VERSION_GRAPH_V1,
-        schema,
+    RecordedSchemaV1::new(schema)
+}
+
+fn historical_schema(schema: &ValidSchema) -> ValidSchema {
+    let mut wire = serde_json::to_value(schema).unwrap();
+    wire.as_object_mut().unwrap().remove("policy_version");
+    serde_json::from_value(wire).expect("historical definition remains structural evidence")
+}
+
+fn historical_fixture_record() -> RecordedExecutablePlanRevisionV1 {
+    let mut record = fixture_record();
+    record.compiler_version = COMPILER_VERSION_GRAPH_V1;
+    record.canonical_hash_version = CANONICAL_HASH_VERSION_V1;
+    for action in &mut record.content.actions {
+        action.effect_contract = None;
+        action.input_schema = recorded_schema(historical_schema(&action.input_schema.schema));
+        action.output_schema = recorded_schema(historical_schema(&action.output_schema.schema));
     }
+    reseal(&mut record);
+    record
 }
 
 fn empty_dependencies() -> RecordedDependenciesV1 {
@@ -149,7 +231,7 @@ fn empty_dependencies() -> RecordedDependenciesV1 {
 
 fn minimal_action(dependencies: RecordedDependenciesV1) -> RecordedActionV1 {
     RecordedActionV1 {
-        effect_contract: None,
+        effect_contract: Some(crate::plan_effect::RecordedActionEffectV1::NoExternalEffects),
         key: "demo.echo".into(),
         plugin_key: "demo".into(),
         version: recorded_semver(1, 0, 0),
@@ -201,7 +283,7 @@ fn resource_binding(slot_key: &str, selector: &str) -> RecordedBindingV1 {
         site: RecordedBindingSiteV1::Node("fetch".into()),
         slot_key: slot_key.into(),
         selector: selector.into(),
-        selector_provenance: None,
+        selector_provenance: Some(RecordedBindingSelectorProvenanceV1::ResourceIdOverride),
         contract: RecordedBindingContractV1::Resource {
             key: "demo.client".into(),
             version: recorded_semver(1, 0, 0),
@@ -216,7 +298,7 @@ fn credential_binding(slot_key: &str, selector: &str, capability_bits: u8) -> Re
         site: RecordedBindingSiteV1::Node("fetch".into()),
         slot_key: slot_key.into(),
         selector: selector.into(),
-        selector_provenance: None,
+        selector_provenance: Some(RecordedBindingSelectorProvenanceV1::CredentialIdOverride),
         contract: RecordedBindingContractV1::Credential {
             key: "demo.oauth".into(),
             version: recorded_semver(2, 1, 0),
@@ -236,8 +318,8 @@ fn reseal(record: &mut RecordedExecutablePlanRevisionV1) {
 fn fixture_record() -> RecordedExecutablePlanRevisionV1 {
     let mut record = RecordedExecutablePlanRevisionV1 {
         record_version: RECORD_VERSION_V1,
-        compiler_version: COMPILER_VERSION_GRAPH_V1,
-        canonical_hash_version: CANONICAL_HASH_VERSION_V1,
+        compiler_version: COMPILER_VERSION_GRAPH_V5,
+        canonical_hash_version: CANONICAL_HASH_VERSION_V3,
         profile: RecordedPlanProfileV1::GraphV1,
         claimed_id: ExecutablePlanRevisionId::from_bytes([0; 32]),
         workflow_version_id: WorkflowVersionId::from_bytes([1; 16]),
@@ -372,25 +454,23 @@ fn credential_binding_record(
 }
 
 fn object_with_secret_default(default: Value) -> ValidSchema {
-    Schema::builder()
-        .add(
-            ObjectField::new(field_key!("auth"))
-                .add(SecretField::new(field_key!("token")))
-                .default(default),
-        )
-        .build()
-        .expect("the object default is accepted by the general schema contract")
+    let field = Field::from(
+        ObjectField::new(field_key!("auth"))
+            .add(SecretField::new(field_key!("token")))
+            .default(default),
+    );
+    serde_json::from_value(json!({ "fields": [serde_json::to_value(field).unwrap()] }))
+        .expect("historical schema wire remains readable as legacy evidence")
 }
 
 fn mode_with_secret_default(default: Value) -> ValidSchema {
-    Schema::builder()
-        .add(
-            ModeField::new(field_key!("auth"))
-                .variant("token", "Token", SecretField::new(field_key!("token")))
-                .default(default),
-        )
-        .build()
-        .expect("the mode default is accepted by the general schema contract")
+    let field = Field::from(
+        ModeField::new(field_key!("auth"))
+            .variant("token", "Token", SecretField::new(field_key!("token")))
+            .default(default),
+    );
+    serde_json::from_value(json!({ "fields": [serde_json::to_value(field).unwrap()] }))
+        .expect("historical schema wire remains readable as legacy evidence")
 }
 
 #[test]
@@ -423,14 +503,16 @@ fn minimal_typed_record_is_integrity_valid() {
 }
 
 #[test]
-fn effect_lookup_distinguishes_legacy_declarations_from_unknown_actions() {
+fn effect_lookup_distinguishes_current_declarations_from_unknown_actions() {
     let plan = ExecutablePlanRevision::try_from(fixture_record())
         .expect("the fixture is a fully closed Graph-v1 record");
 
     assert_eq!(
         plan.action_effect_contract(&ActionKey::new("demo.echo").unwrap())
             .unwrap(),
-        PlanActionEffectContract::LegacyUndeclared
+        PlanActionEffectContract::Declared(
+            nebula_action::effect::ActionEffectContract::NoExternalEffects
+        )
     );
     assert_eq!(
         plan.action_effect_contract(&ActionKey::new("demo.missing").unwrap())
@@ -441,13 +523,12 @@ fn effect_lookup_distinguishes_legacy_declarations_from_unknown_actions() {
 
 #[test]
 fn graph_v1_hash_matches_literal_golden_and_independent_record_projection() {
-    let record = fixture_record();
+    let record = historical_fixture_record();
     assert_eq!(record.compiler_version, COMPILER_VERSION_GRAPH_V1);
-    assert_eq!(
-        ExecutablePlanRevision::try_from(record.clone())
-            .unwrap()
-            .id(),
-        record.claimed_id
+    assert_eq!(record.recomputed_id().unwrap(), record.claimed_id);
+    assert_matches!(
+        ExecutablePlanRevision::try_from(record.clone()),
+        Err(ExecutablePlanIntegrityError::UnsupportedSchemaPolicy)
     );
     assert_eq!(
         record.claimed_id.to_string(),
@@ -480,6 +561,7 @@ fn compiler_effect_tuples_are_closed_and_legacy_fields_stay_absent() {
         COMPILER_VERSION_GRAPH_V1,
         COMPILER_VERSION_GRAPH_V3,
         COMPILER_VERSION_GRAPH_V4,
+        COMPILER_VERSION_GRAPH_V5,
     ] {
         for hash in [
             CANONICAL_HASH_VERSION_V1,
@@ -493,14 +575,9 @@ fn compiler_effect_tuples_are_closed_and_legacy_fields_stay_absent() {
                 record.content.actions[0].effect_contract = declared
                     .then_some(crate::plan_effect::RecordedActionEffectV1::NoExternalEffects);
                 reseal(&mut record);
-                let expected = if compiler == COMPILER_VERSION_GRAPH_V1 {
-                    hash == CANONICAL_HASH_VERSION_V1 && !declared
-                } else if compiler == COMPILER_VERSION_GRAPH_V4 {
-                    matches!(hash, CANONICAL_HASH_VERSION_V2 | CANONICAL_HASH_VERSION_V3)
-                        && declared
-                } else {
-                    hash == compiler_epoch_hash(compiler) && declared
-                };
+                let expected = compiler == COMPILER_VERSION_GRAPH_V5
+                    && hash == CANONICAL_HASH_VERSION_V3
+                    && declared;
                 assert_eq!(
                     ExecutablePlanRevision::try_from(record.clone()).is_ok(),
                     expected,
@@ -520,19 +597,16 @@ fn compiler_effect_tuples_are_closed_and_legacy_fields_stay_absent() {
 
 #[test]
 fn scalar_aware_compiler_epoch_preserves_legacy_schema_bytes() {
-    let mut record = fixture_record();
+    let mut record = historical_fixture_record();
     record.compiler_version = COMPILER_VERSION_GRAPH_V4;
     record.canonical_hash_version = CANONICAL_HASH_VERSION_V3;
     record.content.actions[0].effect_contract =
         Some(crate::plan_effect::RecordedActionEffectV1::NoExternalEffects);
     reseal(&mut record);
     let encoded = serde_json::to_vec(&record).unwrap();
-    let checked = ExecutablePlanRevision::try_from(record.clone()).unwrap();
-    assert_eq!(checked.id(), record.claimed_id);
-    assert_eq!(
-        serde_json::to_vec(&RecordedExecutablePlanRevisionV1::from(&checked)).unwrap(),
-        encoded
-    );
+    let decoded: RecordedExecutablePlanRevisionV1 = serde_json::from_slice(&encoded).unwrap();
+    assert_eq!(decoded.recomputed_id().unwrap(), record.claimed_id);
+    assert_eq!(serde_json::to_vec(&decoded).unwrap(), encoded);
     assert_eq!(
         serde_json::to_value(&record.content.actions[0].input_schema).unwrap(),
         json!({"schema_wire_version": 1, "schema": {"fields": []}})
@@ -543,7 +617,10 @@ fn scalar_aware_compiler_epoch_preserves_legacy_schema_bytes() {
     record.canonical_hash_version = CANONICAL_HASH_VERSION_V2;
     reseal(&mut record);
     assert_ne!(current_id, record.claimed_id);
-    ExecutablePlanRevision::try_from(record).unwrap();
+    assert_matches!(
+        ExecutablePlanRevision::try_from(record),
+        Err(ExecutablePlanIntegrityError::UnsupportedSchemaPolicy)
+    );
 }
 
 #[test]
@@ -556,7 +633,7 @@ fn legacy_empty_record_never_decodes_as_null() {
             Some(crate::plan_effect::RecordedActionEffectV1::NoExternalEffects),
         ),
     ] {
-        let mut record = fixture_record();
+        let mut record = historical_fixture_record();
         record.compiler_version = compiler;
         record.canonical_hash_version = hash;
         record.content.actions[0].effect_contract = effect;
@@ -565,33 +642,32 @@ fn legacy_empty_record_never_decodes_as_null() {
         let decoded: RecordedExecutablePlanRevisionV1 = serde_json::from_slice(&encoded).unwrap();
         let schema = &decoded.content.actions[0].input_schema.schema;
         assert_eq!(schema.kind(), SchemaKind::Record);
-        let resolved = schema
+        let report = schema
             .validate(AuthoredValue::from_data(json!({})).unwrap())
-            .unwrap()
-            .resolve_data()
-            .unwrap();
-        assert_eq!(resolved.into_typed::<Value>().unwrap(), json!({}));
+            .unwrap_err();
+        assert!(
+            report
+                .errors()
+                .any(|error| error.code() == "schema.unsupported_policy")
+        );
         assert!(
             schema
                 .validate(AuthoredValue::from_data(Value::Null).unwrap())
                 .is_err()
         );
-        let checked = ExecutablePlanRevision::try_from(decoded).unwrap();
-        assert_eq!(
-            serde_json::to_vec(&RecordedExecutablePlanRevisionV1::from(&checked)).unwrap(),
-            encoded
+        assert_eq!(serde_json::to_vec(&decoded).unwrap(), encoded);
+        assert_matches!(
+            ExecutablePlanRevision::try_from(decoded),
+            Err(ExecutablePlanIntegrityError::UnsupportedSchemaPolicy)
         );
     }
 }
 
 #[test]
-fn scalar_schema_envelopes_require_the_scalar_compiler_epoch_at_every_contract_site() {
-    let scalar = serde_json::from_value::<ValidSchema>(json!({
-        "kind": "scalar", "scalar": {"version": 1, "type": "null"}
-    }))
-    .unwrap();
+fn scalar_schema_envelopes_require_current_policy_at_every_contract_site() {
+    let scalar = nebula_schema::schema_of::<()>().unwrap();
     for site in ["input", "output", "resource", "credential"] {
-        for compiler in [1, 3, 4] {
+        for compiler in [1, 3, 4, 5] {
             for wire_version in [1, 2, 3] {
                 let mut record = match site {
                     "resource" => resource_binding_record("primary"),
@@ -613,7 +689,7 @@ fn scalar_schema_envelopes_require_the_scalar_compiler_epoch_at_every_contract_s
                 };
                 contract.schema = scalar.clone();
                 contract.schema_wire_version = wire_version;
-                if compiler == COMPILER_VERSION_GRAPH_V4 {
+                if compiler >= COMPILER_VERSION_GRAPH_V4 {
                     match site {
                         "resource" => {
                             record.bindings[0].selector_provenance =
@@ -628,11 +704,19 @@ fn scalar_schema_envelopes_require_the_scalar_compiler_epoch_at_every_contract_s
                 }
                 reseal(&mut record);
                 let encoded = serde_json::to_vec(&record).unwrap();
-                let decoded = serde_json::from_slice(&encoded).unwrap();
+                let decoded = serde_json::from_slice::<RecordedExecutablePlanRevisionV1>(&encoded);
+                if wire_version != 3 {
+                    assert!(
+                        decoded.is_err(),
+                        "current policy must not decode under a legacy envelope"
+                    );
+                    continue;
+                }
+                let decoded = decoded.unwrap();
                 let checked = ExecutablePlanRevision::try_from_recorded_v1(decoded);
                 assert_eq!(
                     checked.is_ok(),
-                    compiler == 4 && wire_version == 2,
+                    compiler == 5 && wire_version == 3,
                     "site={site}, compiler={compiler}, schema_wire={wire_version}: {checked:?}"
                 );
                 if let Ok(plan) = checked {
@@ -688,8 +772,9 @@ fn scalar_compiler_does_not_relabel_legacy_record_any_or_union_schema_wire() {
     )
     .unwrap();
     for schema in [ValidSchema::empty(), ValidSchema::any(), union] {
+        let schema = historical_schema(&schema);
         for epoch in [PlanEpoch::GraphV1, PlanEpoch::GraphV3, PlanEpoch::GraphV4] {
-            let mut record = fixture_record();
+            let mut record = historical_fixture_record();
             record.compiler_version = epoch.compiler_version();
             record.canonical_hash_version = epoch.canonical_hash_version();
             record.content.actions[0].effect_contract = epoch
@@ -702,22 +787,21 @@ fn scalar_compiler_does_not_relabel_legacy_record_any_or_union_schema_wire() {
             );
             reseal(&mut record);
             let encoded = serde_json::to_vec(&record).unwrap();
-            let loaded = ExecutablePlanRevision::try_from_recorded_v1(
-                serde_json::from_slice(&encoded).unwrap(),
-            )
-            .unwrap();
-            assert_eq!(
-                serde_json::to_vec(&RecordedExecutablePlanRevisionV1::from(&loaded)).unwrap(),
-                encoded
+            let loaded: RecordedExecutablePlanRevisionV1 =
+                serde_json::from_slice(&encoded).unwrap();
+            assert_eq!(serde_json::to_vec(&loaded).unwrap(), encoded);
+            assert_matches!(
+                ExecutablePlanRevision::try_from(loaded),
+                Err(ExecutablePlanIntegrityError::UnsupportedSchemaPolicy)
             );
             record.content.actions[0].output_schema.schema_wire_version =
                 SCHEMA_WIRE_VERSION_SCALAR_V2;
             reseal(&mut record);
             std::assert_matches!(
-                ExecutablePlanRevision::try_from_recorded_v1(record),
-                Err(ExecutablePlanIntegrityError::NonCanonical {
-                    section: "actions.output_schema"
-                })
+                serde_json::from_value::<RecordedExecutablePlanRevisionV1>(
+                    serde_json::to_value(record).unwrap()
+                ),
+                Err(_)
             );
         }
     }
@@ -746,7 +830,7 @@ fn trigger_root_configuration_preserves_legacy_normalization_without_scalar_coer
 
 #[test]
 fn effect_plan_hash_uses_new_domain_and_complete_record_projection() {
-    let mut record = fixture_record();
+    let mut record = historical_fixture_record();
     record.compiler_version = COMPILER_VERSION_GRAPH_V3;
     record.canonical_hash_version = CANONICAL_HASH_VERSION_V2;
     record.content.actions[0].effect_contract =
@@ -767,7 +851,10 @@ fn effect_plan_hash_uses_new_domain_and_complete_record_projection() {
         record.claimed_id,
         ExecutablePlanRevisionId::from_bytes(digest)
     );
-    ExecutablePlanRevision::try_from(record).unwrap();
+    assert_matches!(
+        ExecutablePlanRevision::try_from(record),
+        Err(ExecutablePlanIntegrityError::UnsupportedSchemaPolicy)
+    );
 }
 
 #[test]
@@ -781,17 +868,14 @@ fn intrinsic_error_edges_require_the_effect_aware_compiler() {
         to_port: None,
     }]
     .into_boxed_slice();
-    reseal(&mut record);
-    assert!(matches!(
-        ExecutablePlanRevision::try_from(record.clone()),
-        Err(ExecutablePlanIntegrityError::NonCanonical {
-            section: "connections.from_port"
-        })
-    ));
-    record.compiler_version = COMPILER_VERSION_GRAPH_V3;
-    record.canonical_hash_version = CANONICAL_HASH_VERSION_V2;
-    record.content.actions[0].effect_contract =
-        Some(crate::plan_effect::RecordedActionEffectV1::NoExternalEffects);
+    let mut legacy = record.clone();
+    legacy.compiler_version = COMPILER_VERSION_GRAPH_V1;
+    legacy.canonical_hash_version = CANONICAL_HASH_VERSION_V1;
+    reseal(&mut legacy);
+    assert_matches!(
+        ExecutablePlanRevision::try_from(legacy),
+        Err(ExecutablePlanIntegrityError::UnsupportedSchemaPolicy)
+    );
     reseal(&mut record);
     let plan = ExecutablePlanRevision::try_from(record).expect("intrinsic error edge is certified");
     assert_eq!(
@@ -807,8 +891,6 @@ fn intrinsic_error_edges_require_the_effect_aware_compiler() {
 #[test]
 fn resealed_error_references_cannot_read_success_only_fields() {
     let mut record = fixture_record();
-    record.compiler_version = COMPILER_VERSION_GRAPH_V3;
-    record.canonical_hash_version = CANONICAL_HASH_VERSION_V2;
     record.content.actions[0].effect_contract =
         Some(crate::plan_effect::RecordedActionEffectV1::NoExternalEffects);
     record.content.actions[0].input_schema.schema =
@@ -918,7 +1000,7 @@ fn unsupported_versions_and_profile_fail_closed() {
     for mutate in [
         |record: &mut RecordedExecutablePlanRevisionV1| record.record_version += 1,
         |record: &mut RecordedExecutablePlanRevisionV1| {
-            record.compiler_version = COMPILER_VERSION_GRAPH_V4 + 1;
+            record.compiler_version = COMPILER_VERSION_GRAPH_V5 + 1;
         },
         |record: &mut RecordedExecutablePlanRevisionV1| record.canonical_hash_version += 1,
     ] {
@@ -1164,7 +1246,7 @@ fn node_parameter_set_cannot_bypass_required_fields_or_root_rules() {
     assert!(matches!(
         ExecutablePlanRevision::try_from(root_rules),
         Err(ExecutablePlanIntegrityError::NonCanonical {
-            section: "nodes.parameters.root_rules"
+            section: "nodes.parameters.schema"
         })
     ));
 }
@@ -1230,7 +1312,12 @@ fn static_root_rules_are_proved_in_current_plans_without_changing_legacy_epochs(
         nebula_schema::Rule::predicate(nebula_schema::Predicate::Eq(path, json!([]))).unwrap(),
     ])
     .unwrap();
-    for epoch in [PlanEpoch::GraphV1, PlanEpoch::GraphV3, PlanEpoch::GraphV4] {
+    for epoch in [
+        PlanEpoch::GraphV1,
+        PlanEpoch::GraphV3,
+        PlanEpoch::GraphV4,
+        PlanEpoch::GraphV5,
+    ] {
         for value in [json!([]), json!([1])] {
             let record = root_rule_record(
                 epoch,
@@ -1241,7 +1328,7 @@ fn static_root_rules_are_proved_in_current_plans_without_changing_legacy_epochs(
             let checked = ExecutablePlanRevision::try_from_recorded_v1(
                 serde_json::from_slice(&encoded).unwrap(),
             );
-            if epoch == PlanEpoch::GraphV4 {
+            if epoch == PlanEpoch::GraphV5 {
                 let checked = checked.expect("current plans prove pure root presence predicates");
                 assert_eq!(checked.id(), record.claimed_id);
                 assert_eq!(
@@ -1251,9 +1338,7 @@ fn static_root_rules_are_proved_in_current_plans_without_changing_legacy_epochs(
             } else {
                 assert_matches!(
                     checked,
-                    Err(ExecutablePlanIntegrityError::NonCanonical {
-                        section: "nodes.parameters.root_rules"
-                    })
+                    Err(ExecutablePlanIntegrityError::UnsupportedSchemaPolicy)
                 );
             }
         }
@@ -1268,7 +1353,7 @@ fn current_root_rules_are_rechecked_after_resealed_parameter_changes() {
     ))
     .unwrap();
     let record = root_rule_record(
-        PlanEpoch::GraphV4,
+        PlanEpoch::CURRENT,
         rule,
         Some(RecordedParameterValueV1::Literal { value: json!([]) }),
     );
@@ -1311,7 +1396,7 @@ fn current_root_rules_cannot_discard_unresolved_parameter_obligations() {
             output_path: ValuePath::root(),
         },
     ] {
-        let record = root_rule_record(PlanEpoch::GraphV4, presence.clone(), Some(value));
+        let record = root_rule_record(PlanEpoch::CURRENT, presence.clone(), Some(value));
         assert_matches!(
             ExecutablePlanRevision::try_from(record),
             Err(ExecutablePlanIntegrityError::NonCanonical {
@@ -1320,7 +1405,7 @@ fn current_root_rules_cannot_discard_unresolved_parameter_obligations() {
         );
     }
     let custom = root_rule_record(
-        PlanEpoch::GraphV4,
+        PlanEpoch::CURRENT,
         nebula_schema::Rule::custom("runtime_only").unwrap(),
         Some(RecordedParameterValueV1::Literal { value: json!([]) }),
     );
@@ -1357,7 +1442,7 @@ fn current_root_rules_do_not_prove_unknown_passthrough_against_empty_objects() {
         .unwrap(),
     )
     .unwrap();
-    let record = root_rule_record(PlanEpoch::GraphV4, rule, None);
+    let record = root_rule_record(PlanEpoch::CURRENT, rule, None);
     let prepared = record.content.actions[0]
         .input_schema
         .schema
@@ -1555,7 +1640,7 @@ fn typed_schema_rejects_unknown_fields_and_any_secret_bearing_default() {
             ExecutablePlanRevision::try_from(record),
             Err(ExecutablePlanIntegrityError::NonCanonical {
                 section: "actions.input_schema"
-            })
+            } | ExecutablePlanIntegrityError::UnsupportedSchemaPolicy)
         ));
     }
 }
@@ -1567,6 +1652,7 @@ fn malformed_schema_decode_is_secret_free_and_fail_closed() {
         .pointer_mut("/content/actions/0/input_schema/schema")
         .expect("fixture action input schema exists");
     *schema = json!({
+        "policy_version": 2,
         "fields": [{
             "type": "string",
             "key": format!("{SECRET_PAYLOAD} invalid")
@@ -1578,6 +1664,34 @@ fn malformed_schema_decode_is_secret_free_and_fail_closed() {
     assert!(error.to_string().contains("invalid Graph-v1 schema wire"));
     assert!(!error.to_string().contains(SECRET_PAYLOAD));
     assert!(!format!("{error:?}").contains(SECRET_PAYLOAD));
+}
+
+#[test]
+fn non_object_recorded_schema_diagnostics_do_not_echo_payloads() {
+    for payload in [
+        json!(SECRET_PAYLOAD),
+        json!([SECRET_PAYLOAD]),
+        json!(null),
+        json!(42),
+    ] {
+        let mut encoded = serde_json::to_value(fixture_record()).unwrap();
+        *encoded
+            .pointer_mut("/content/actions/0/input_schema/schema")
+            .unwrap() = payload;
+        for error in [
+            serde_json::from_value::<RecordedExecutablePlanRevisionV1>(encoded.clone())
+                .unwrap_err(),
+            serde_json::from_str::<RecordedExecutablePlanRevisionV1>(&encoded.to_string())
+                .unwrap_err(),
+        ] {
+            let mut cause: Option<&dyn std::error::Error> = Some(&error);
+            while let Some(error) = cause {
+                assert!(!error.to_string().contains(SECRET_PAYLOAD));
+                assert!(!format!("{error:?}").contains(SECRET_PAYLOAD));
+                cause = error.source();
+            }
+        }
+    }
 }
 
 #[test]
@@ -1736,11 +1850,19 @@ fn checked_plan_roundtrips_record_and_redacts_debug_surfaces() {
 
 #[test]
 fn legacy_binding_records_decode_without_inventing_selector_provenance() {
-    let record = credential_binding_record("cred_legacy-looking", Capabilities::REFRESHABLE.bits());
-    let plan = ExecutablePlanRevision::try_from(record).expect("legacy record remains readable");
+    let mut binding = credential_binding(
+        "auth",
+        "cred_legacy-looking",
+        Capabilities::REFRESHABLE.bits(),
+    );
+    binding.selector_provenance = None;
+    let wire = serde_json::to_value(&binding).unwrap();
+    let decoded: RecordedBindingV1 = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&decoded).unwrap(), wire);
+    let binding = PlanBindingRequirement::try_from(&decoded).unwrap();
 
     assert_eq!(
-        plan.bindings()[0].selector_provenance(),
+        binding.selector_provenance(),
         PlanBindingSelectorProvenance::Legacy
     );
 }
@@ -1748,7 +1870,7 @@ fn legacy_binding_records_decode_without_inventing_selector_provenance() {
 #[test]
 fn current_binding_records_distinguish_defaults_from_overrides_without_prefix_inference() {
     let mut default_record = credential_binding_record("auth", Capabilities::REFRESHABLE.bits());
-    default_record.compiler_version = COMPILER_VERSION_GRAPH_V4;
+    default_record.compiler_version = COMPILER_VERSION_GRAPH_V5;
     default_record.canonical_hash_version = CANONICAL_HASH_VERSION_V3;
     default_record.content.actions[0].effect_contract =
         Some(crate::plan_effect::RecordedActionEffectV1::NoExternalEffects);
@@ -1760,7 +1882,7 @@ fn current_binding_records_distinguish_defaults_from_overrides_without_prefix_in
 
     let mut override_record =
         credential_binding_record("primary", Capabilities::REFRESHABLE.bits());
-    override_record.compiler_version = COMPILER_VERSION_GRAPH_V4;
+    override_record.compiler_version = COMPILER_VERSION_GRAPH_V5;
     override_record.canonical_hash_version = CANONICAL_HASH_VERSION_V3;
     override_record.content.actions[0].effect_contract =
         Some(crate::plan_effect::RecordedActionEffectV1::NoExternalEffects);
@@ -1784,7 +1906,7 @@ fn current_binding_records_distinguish_defaults_from_overrides_without_prefix_in
 #[test]
 fn current_binding_record_rejects_cross_kind_selector_provenance() {
     let mut record = credential_binding_record("primary", Capabilities::REFRESHABLE.bits());
-    record.compiler_version = COMPILER_VERSION_GRAPH_V4;
+    record.compiler_version = COMPILER_VERSION_GRAPH_V5;
     record.canonical_hash_version = CANONICAL_HASH_VERSION_V3;
     record.content.actions[0].effect_contract =
         Some(crate::plan_effect::RecordedActionEffectV1::NoExternalEffects);

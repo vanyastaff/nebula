@@ -44,6 +44,16 @@ use crate::{
 const UNION_ROOT_KEY: &str = "_nebula_union";
 
 pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
+    if let Some(attribute) = input
+        .attrs
+        .iter()
+        .find(|attribute| attribute.path().is_ident("schema"))
+    {
+        return Err(syn::Error::new_spanned(
+            attribute,
+            "#[schema(...)] is not supported on enums; implement HasSchema explicitly for enum-level rules or reserved keys",
+        ));
+    }
     let crate_path = crate::crate_path();
     let ty_name = &input.ident;
 
@@ -76,6 +86,10 @@ pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         // ingress validates serialized output against a union yet, so dropping it
         // here keeps the input contract honest.)
         if variant_serde.skip {
+            crate::attrs::check_skipped_attributes(&variant.attrs)?;
+            for field in &variant.fields {
+                crate::attrs::check_skipped_attributes(&field.attrs)?;
+            }
             continue;
         }
         // A `#[serde(alias = "..")]` on a variant is an extra wire key serde will
@@ -123,7 +137,7 @@ pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
             ));
         }
 
-        let variant_attr = FieldAttrs::from_attrs(&variant.attrs)?;
+        let variant_attr = FieldAttrs::from_variant_attrs(&variant.attrs, false)?;
         let label = variant_attr
             .label
             .unwrap_or_else(|| variant.ident.unraw().to_string());
@@ -219,6 +233,9 @@ fn build_variant_call(
     match &variant.fields {
         Fields::Unit => Ok(quote! { .variant_empty(#wire_key, #label) }),
         Fields::Unnamed(unnamed) => {
+            for field in &unnamed.unnamed {
+                crate::attrs::reject_field_attributes(&field.attrs, "enum newtype payloads")?;
+            }
             let mut fields = unnamed.unnamed.iter();
             let (Some(only), None) = (fields.next(), fields.next()) else {
                 return Err(syn::Error::new_spanned(
@@ -237,14 +254,16 @@ fn build_variant_call(
             match classify(&only.ty) {
                 FieldKind::UserDefined(ty) => {
                     let payload_ty = &*ty;
-                    let payload = quote! {
+                    let payload = quote! {{
+                        let __nebula_payload_schema = <#payload_ty as #crate_path::HasSchema>::schema()?;
+                        __nebula_payload_schema.ensure_current_semantics()?;
                         #crate_path::__private::union_newtype_payload(
                             #crate_path::FieldKey::new(#wire_key)?,
-                            <#payload_ty as #crate_path::HasSchema>::schema()?,
+                            __nebula_payload_schema,
                             #enum_name,
                             #wire_key,
                         )?
-                    };
+                    }};
                     Ok(quote! { .variant(#wire_key, #label, #payload) })
                 },
                 _ => Err(syn::Error::new_spanned(
@@ -270,6 +289,7 @@ fn build_variant_call(
                 }
                 let field_attr = FieldAttrs::from_attrs(&field.attrs)?;
                 if field_attr.skip || field_serde.skip {
+                    crate::attrs::check_skipped_attributes(&field.attrs)?;
                     continue;
                 }
                 let validate = ValidateAttrs::from_attrs(&field.attrs)?;

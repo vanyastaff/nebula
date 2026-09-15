@@ -200,6 +200,13 @@ fn readable_legacy_plans_do_not_gain_implicit_execution_permission() {
     record.as_object_mut().unwrap().remove("claimed_id");
     for action in record["content"]["actions"].as_array_mut().unwrap() {
         action.as_object_mut().unwrap().remove("effect_contract");
+        for slot in ["input_schema", "output_schema"] {
+            action[slot]["schema_wire_version"] = serde_json::json!(1);
+            action[slot]["schema"]
+                .as_object_mut()
+                .unwrap()
+                .remove("policy_version");
+        }
     }
     let canonical = nebula_schema::canonical_json_v1(&record).unwrap();
     let domain = b"nebula.executable-plan.graph.v1";
@@ -213,16 +220,17 @@ fn readable_legacy_plans_do_not_gain_implicit_execution_permission() {
     let digest: [u8; 32] = hash.finalize().into();
     record["claimed_id"] =
         serde_json::to_value(nebula_core::ExecutablePlanRevisionId::from_bytes(digest)).unwrap();
-    let recorded: RecordedExecutablePlanRevisionV1 = serde_json::from_value(record).unwrap();
-    let legacy = ExecutablePlanRevision::try_from(recorded).unwrap();
+    let recorded: RecordedExecutablePlanRevisionV1 =
+        serde_json::from_value(record.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&recorded).unwrap(), record);
     assert!(matches!(
-        legacy.validate_against(&registry),
-        Err(PlanRegistryCompatibilityError::UnsupportedEffectProtocol)
+        ExecutablePlanRevision::try_from(recorded),
+        Err(nebula_plugin::ExecutablePlanIntegrityError::UnsupportedSchemaPolicy)
     ));
 }
 
 #[test]
-fn graph_v3_records_remain_executable_against_identical_legacy_contracts() {
+fn graph_v3_records_remain_evidence_without_current_execution_authority() {
     use sha2::{Digest, Sha256};
     let registry = frozen(ValidSchema::empty(), 0x82);
     let plan = registry
@@ -231,6 +239,15 @@ fn graph_v3_records_remain_executable_against_identical_legacy_contracts() {
     let mut record = serde_json::to_value(RecordedExecutablePlanRevisionV1::from(&plan)).unwrap();
     record["compiler_version"] = serde_json::json!(3);
     record["canonical_hash_version"] = serde_json::json!(2);
+    for action in record["content"]["actions"].as_array_mut().unwrap() {
+        for slot in ["input_schema", "output_schema"] {
+            action[slot]["schema_wire_version"] = serde_json::json!(1);
+            action[slot]["schema"]
+                .as_object_mut()
+                .unwrap()
+                .remove("policy_version");
+        }
+    }
     record.as_object_mut().unwrap().remove("claimed_id");
     let canonical = nebula_schema::canonical_json_v1(&record).unwrap();
     let domain = b"nebula.executable-plan.graph.v2";
@@ -245,15 +262,16 @@ fn graph_v3_records_remain_executable_against_identical_legacy_contracts() {
     record["claimed_id"] =
         serde_json::to_value(nebula_core::ExecutablePlanRevisionId::from_bytes(digest)).unwrap();
     let encoded = serde_json::to_vec(&record).unwrap();
-    let legacy =
-        ExecutablePlanRevision::try_from_recorded_v1(serde_json::from_slice(&encoded).unwrap())
-            .unwrap();
-    legacy.validate_against(&registry).unwrap();
-    assert_eq!(
-        serde_json::to_value(RecordedExecutablePlanRevisionV1::from(&legacy)).unwrap(),
-        record
+    let legacy: RecordedExecutablePlanRevisionV1 = serde_json::from_slice(&encoded).unwrap();
+    assert_eq!(serde_json::to_value(&legacy).unwrap(), record);
+    std::assert_matches!(
+        ExecutablePlanRevision::try_from(legacy),
+        Err(nebula_plugin::ExecutablePlanIntegrityError::UnsupportedSchemaPolicy)
     );
-    assert_ne!(legacy.id(), plan.id());
+    assert_ne!(
+        nebula_core::ExecutablePlanRevisionId::from_bytes(digest),
+        plan.id()
+    );
 }
 
 #[test]
@@ -471,7 +489,7 @@ fn newly_compiled_plan_records_explicit_effect_protocol() {
         .compile_graph_v1(WorkflowVersionId::new(), &workflow)
         .unwrap();
     let record = serde_json::to_value(RecordedExecutablePlanRevisionV1::from(&plan)).unwrap();
-    assert_eq!(record["compiler_version"], 4);
+    assert_eq!(record["compiler_version"], 5);
     assert_eq!(record["canonical_hash_version"], 3);
     assert_eq!(
         record["content"]["actions"][0]["effect_contract"],
@@ -490,12 +508,12 @@ fn scalar_contracts_roundtrip_under_the_new_epoch_without_named_parameters() {
             .compile_graph_v1(WorkflowVersionId::new(), &workflow_with_variables(&[]))
             .unwrap();
         let wire = serde_json::to_value(RecordedExecutablePlanRevisionV1::from(&plan)).unwrap();
-        assert_eq!(wire["compiler_version"], 4);
+        assert_eq!(wire["compiler_version"], 5);
         assert_eq!(wire["canonical_hash_version"], 3);
         assert_eq!(
             wire["content"]["actions"][0]["input_schema"],
             serde_json::json!({
-                "schema_wire_version": 2, "schema": schema,
+                "schema_wire_version": 3, "schema": schema,
             })
         );
         let loaded =
