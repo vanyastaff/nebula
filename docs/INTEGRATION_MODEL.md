@@ -458,9 +458,22 @@ The table below is an **external, illustrative** bucketing (by auth *shape* / tr
 
 ## `nebula-action`
 
-**What / why:** **Action** traits, declared dependencies, **`ActionResult`** flow, draft metadata, and factory-owned typed input preparation so the engine can enforce branching and retries **honestly** — not untyped "JSON in / out." `CheckpointPolicy` is factory-admitted from `ActionMetadataDraft` into immutable `ActionMetadata` (default `Inherit`); the runtime does not yet enforce non-`Inherit` cadences.
+**What / why:** **Action** traits, declared dependencies, **`ActionResult`** flow, draft metadata, and factory-owned typed input preparation provide typed boundaries for branching and retries.
 
-> **Status of `CheckpointPolicy`:** field on `ActionMetadata` (`checkpoint_policy`, default `Inherit`); engine enforcement of non-`Inherit` cadences not yet wired end-to-end. See `crates/action/README.md` and `docs/MATURITY.md` row for `nebula-action`.
+**Checkpoint contract:** runtime control owns durable graph boundaries. The public
+`CheckpointPolicy` enum and its metadata setter/getter are removed because the
+explicit modes were not implemented. Fresh metadata and plan records retain
+`checkpoint_policy: "inherit"` for their existing wire contracts. Historical
+non-default tags remain readable evidence, but cannot pass metadata readmission,
+exact-registry compatibility, or scheduler projection. They are not resumable
+under the current runtime. See the [migration](../crates/action/README.md#checkpoint-and-retry-migration)
+and canon §11.5 for the distinction between execution snapshots and internal
+stateful checkpoints.
+
+**Retry contract:** `ActionResult::Retry` is intentionally absent. Resilience
+inside an integration retries an outbound operation; engine redispatch uses
+operator-declared node/workflow `retry_policy` after a typed retryable failure.
+An action result or retry hint does not grant attempts or remote-effect authority.
 
 **Where to read:** `crates/action/src/lib.rs` (module map; crate `README.md` may lag).
 

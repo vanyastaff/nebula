@@ -19,8 +19,7 @@
 //! ```
 
 pub use nebula_action::{
-    Action, ActionEffectContract, ActionMetadataDraft, CheckpointPolicy, InputPort, IsolationLevel,
-    OutputPort,
+    Action, ActionEffectContract, ActionMetadataDraft, InputPort, IsolationLevel, OutputPort,
 };
 pub use nebula_core::{ActionKey, Dependencies, action_key};
 pub use nebula_metadata::{

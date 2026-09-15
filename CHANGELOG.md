@@ -11,6 +11,16 @@ changes are expected between minor releases — call them out here.
 
 ### Breaking
 
+- **Checkpoint API removal advances development packages to 0.9.0 in lockstep.**
+  Remove `CheckpointPolicy` imports and `with_checkpoint_policy` calls; the
+  admitted metadata getter is also removed. `OnePass`, `Stepwise`, and
+  `ForcedHandoff` had no end-to-end runtime implementation. No replacement
+  authoring selector is provided. Historical metadata and plan tags retain their
+  original encoding and identities, but non-default records cannot readmit or
+  project into an executable graph. Existing runs with such contracts cannot
+  resume under this runtime. The supported durable graph boundaries and the two
+  retry layers remain unchanged; `ActionResult::Retry` is intentionally absent.
+  See [migration guidance](crates/action/README.md#checkpoint-and-retry-migration).
 - **The prior foundation migration moved the workspace from 0.5 to 0.6 in
   lockstep.** Exact-version SDK consumers and renamed leaf fixtures must
   continue to update all Nebula pins together.
@@ -517,6 +527,9 @@ let admitted = recorded.readmit_against(fresh)?;
 
 ### Security
 
+- Update the locked TLS stack to `rustls 0.23.45`, including its required
+  `aws-lc-rs`, `aws-lc-sys`, and `rustls-webpki` updates, to resolve
+  [RUSTSEC-2026-0285](https://github.com/rustls/rustls/security/advisories/GHSA-2mjx-qc3c-rqvc).
 - **(breaking) Credential owner authority is selector-bound.** At the
   port/application boundary, persistence
   operations require a mandatory `(owner, credential_id)` selector (or owner

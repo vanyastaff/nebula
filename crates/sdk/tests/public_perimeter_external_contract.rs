@@ -24,6 +24,9 @@ const FIXTURE_FILES: &[&str] = &[
     "src/bin/positive.rs",
     "src/bin/resource_topology.rs",
     "src/bin/removed_resource_from_key.rs",
+    "src/bin/removed_checkpoint_policy_action.rs",
+    "src/bin/removed_checkpoint_policy_prelude.rs",
+    "src/bin/removed_checkpoint_policy_setter.rs",
     "src/bin/removed_credential_pattern.rs",
     "src/bin/removed_credential_fourth_argument.rs",
     "src/bin/private_notice_since.rs",
@@ -77,6 +80,8 @@ const FIXTURE_FILES: &[&str] = &[
 ];
 
 const FORBIDDEN: &[(&str, &str)] = &[
+    ("removed_checkpoint_policy_action", "CheckpointPolicy"),
+    ("removed_checkpoint_policy_prelude", "CheckpointPolicy"),
     ("resource_manager", "Manager"),
     ("resource_registry", "Registry"),
     ("resource_release_queue", "ReleaseQueue"),
@@ -131,6 +136,11 @@ const OPAQUE: &[(&str, &str)] = &[
 ];
 
 const REMOVED_CATALOG_API: &[(&str, &str, &str)] = &[
+    (
+        "removed_checkpoint_policy_setter",
+        "with_checkpoint_policy",
+        "ActionMetadataDraft",
+    ),
     (
         "removed_resource_from_key",
         "from_key",

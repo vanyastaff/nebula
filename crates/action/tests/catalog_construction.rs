@@ -60,6 +60,39 @@ fn recorded_metadata_readmits_only_against_factory_admission() {
 }
 
 #[test]
+fn historical_checkpoint_tags_preserve_wire_order_and_require_fresh_evidence() {
+    let factory = InstanceFactory::new(CatalogAction::metadata(), CatalogAction)
+        .expect("valid action contract");
+    let admitted = factory.metadata();
+    let fresh_wire = serde_json::to_string(admitted).expect("admitted metadata serializes");
+    for policy in ["inherit", "one_pass", "stepwise", "forced_handoff"] {
+        let historical_wire = format!(
+            r#"{{"base":{},"inputs":{},"outputs":{},"isolation_level":"none","kind":"stateless","checkpoint_policy":"{policy}","effect_contract":{},"output_schema":{}}}"#,
+            serde_json::to_string(admitted.base()).unwrap(),
+            serde_json::to_string(admitted.inputs()).unwrap(),
+            serde_json::to_string(admitted.outputs()).unwrap(),
+            serde_json::to_string(admitted.effect_contract()).unwrap(),
+            serde_json::to_string(admitted.output_schema()).unwrap(),
+        );
+        let recorded = RecordedActionMetadata::from_slice(
+            historical_wire.as_bytes(),
+            MetadataDecodeLimits::default(),
+        )
+        .expect("historical checkpoint tag remains readable");
+        assert_eq!(serde_json::to_string(&recorded).unwrap(), historical_wire);
+        if policy == "inherit" {
+            assert_eq!(fresh_wire, historical_wire);
+            assert_eq!(recorded.readmit_against(admitted).unwrap(), **admitted);
+        } else {
+            assert_eq!(
+                recorded.readmit_against(admitted),
+                Err(nebula_action::ActionMetadataReadmissionError::DefinitionMismatch)
+            );
+        }
+    }
+}
+
+#[test]
 fn recorded_metadata_rejects_blank_wire_names() {
     let factory = InstanceFactory::new(CatalogAction::metadata(), CatalogAction)
         .expect("valid action contract");

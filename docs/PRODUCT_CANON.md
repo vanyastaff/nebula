@@ -401,6 +401,16 @@ Seam: `crates/resource/src/release_queue.rs` — `ReleaseQueue`. Test coverage: 
 
 **[L2]** Authors should place checkpoint boundaries before irreversible or expensive side effects; the engine does not guess those boundaries for you.
 
+**Current graph profile:** runtime control commits processed node outcomes, wait
+and retry transitions, and workflow completion through the fenced execution
+store. Recorded admission currently supports only the default workflow checkpoint
+configuration (`enabled: true`, no interval). There is no public action cadence
+selector: the former `CheckpointPolicy` choices did not implement additional
+boundaries and have been removed under §4.5. Historical non-default policy tags
+remain readable evidence but cannot authorize execution. Authors must use the
+implemented remote-effect protocol (§11.3); internal stateful iterations are not
+individually durable merely because the enclosing node will be checkpointed.
+
 
 | Artifact                           | Status                                                               | Operator-visible truth                                                                                                                                                           |
 | ---------------------------------- | -------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

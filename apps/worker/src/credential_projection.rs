@@ -243,7 +243,7 @@ mod tests {
 
     const TEST_KEY_BASE64: &str = "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI=";
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn projection_composition_spawns_no_lifecycle_owner_tasks() {
         let raw_store = Arc::new(
             SqliteCredentialPersistence::connect_memory()
@@ -252,13 +252,14 @@ mod tests {
         );
         let key_provider: Arc<dyn KeyProvider> =
             Arc::new(EnvKeyProvider::from_base64(TEST_KEY_BASE64).expect("valid fixed test key"));
+        // Keep both snapshots in one uninterrupted current-thread poll so SQLite
+        // housekeeping cannot finish while the synchronous constructor is measured.
         let alive_before = tokio::runtime::Handle::current()
             .metrics()
             .num_alive_tasks();
 
         let projection = build_first_party_projection(raw_store, key_provider)
             .expect("credential projection runtime composes");
-        tokio::task::yield_now().await;
 
         assert_eq!(
             tokio::runtime::Handle::current()

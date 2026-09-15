@@ -66,6 +66,13 @@ behind that token.
 
 ### Typed action and schema authoring
 
+**Checkpoint API migration:** remove `CheckpointPolicy` imports from `action` or
+`prelude` and calls to `ActionMetadataDraft::with_checkpoint_policy`. The SDK no
+longer offers a checkpoint cadence selector. Runtime control owns the supported
+durable boundaries; the removed choices did not implement additional durability.
+Operator retry continues through workflow/node `retry_policy` and typed retryable
+errors; there is intentionally no `ActionResult::Retry` variant.
+
 `AuthoredValue` accepts any JSON root. Use `AuthoredValue::from_data(json)` for
 data ingress: template-looking strings and `{"$expr": ...}` objects remain data.
 Use `AuthoredValue::from_template_json(json)` only when the author explicitly opts

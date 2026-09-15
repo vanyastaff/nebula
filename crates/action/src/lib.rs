@@ -142,7 +142,7 @@ pub use idempotency::IdempotencyKey;
 pub use input::{ActionInput, PreparedActionInput};
 pub use metadata::{
     ActionKind, ActionMetadata, ActionMetadataAdmissionError, ActionMetadataDraft,
-    ActionMetadataReadmissionError, CheckpointPolicy, IsolationLevel, MetadataCompatibilityError,
+    ActionMetadataReadmissionError, IsolationLevel, MetadataCompatibilityError,
     RecordedActionMetadata,
 };
 pub use nebula_action_macros::{Action, action_phantom};

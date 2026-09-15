@@ -81,10 +81,10 @@
 // Action traits and types
 pub use nebula_action::{
     Action, ActionContext, ActionEffectContract, ActionError, ActionMetadataDraft, ActionResult,
-    CheckpointPolicy, Field, IsolationLevel, RemoteDestinationGuarantee, RemoteEffectDescriptor,
-    RemoteEffectPolicy, RemoteEffectPolicyBuilder, RemoteEffectPolicyError, Schema,
-    StatelessAction, StreamAction, TriggerContext, TriggerEvent, TriggerEventOutcome,
-    TriggerHealthSnapshot, WebhookRequest, field_key,
+    Field, IsolationLevel, RemoteDestinationGuarantee, RemoteEffectDescriptor, RemoteEffectPolicy,
+    RemoteEffectPolicyBuilder, RemoteEffectPolicyError, Schema, StatelessAction, StreamAction,
+    TriggerContext, TriggerEvent, TriggerEventOutcome, TriggerHealthSnapshot, WebhookRequest,
+    field_key,
     poll::{DeduplicatingCursor, PollAction, PollConfig, PollCursor, PollResult},
     port::{InputPort, OutputPort},
     result::BreakReason,

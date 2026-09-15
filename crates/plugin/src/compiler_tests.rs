@@ -382,6 +382,52 @@ fn one_node_workflow(node: NodeDefinition) -> WorkflowDefinition {
         .expect("fixture workflow is structurally valid")
 }
 
+#[test]
+fn current_checkpoint_policy_is_inherited_and_historical_contracts_mismatch() {
+    let registry = frozen(vec![action_factory(
+        "run",
+        ActionKind::Stateless,
+        ValidSchema::empty(),
+        ValidSchema::empty(),
+    )]);
+    let workflow =
+        one_node_workflow(NodeDefinition::new(node_key!("run"), "Run", "demo", "run").unwrap());
+    let current = registry
+        .compile_graph_v1(WorkflowVersionId::from_bytes([0x63; 16]), &workflow)
+        .expect("current authoring compiles");
+    assert!(
+        current
+            .recorded()
+            .content
+            .actions
+            .iter()
+            .all(|action| { action.checkpoint_policy == RecordedCheckpointPolicyV1::Inherit })
+    );
+    current
+        .validate_against(&registry)
+        .expect("current contracts match");
+    assert_eq!(current.execution_graph().unwrap().nodes().len(), 1);
+    for policy in [
+        RecordedCheckpointPolicyV1::OnePass,
+        RecordedCheckpointPolicyV1::Stepwise,
+        RecordedCheckpointPolicyV1::ForcedHandoff,
+    ] {
+        let mut historical = current.recorded().clone();
+        historical.content.actions[0].checkpoint_policy = policy;
+        historical.claimed_id = historical.recomputed_id().unwrap();
+        let plan = ExecutablePlanRevision::try_from_recorded_v1(historical)
+            .expect("historical checkpoint policy passes integrity");
+        std::assert_matches!(
+            plan.validate_against(&registry),
+            Err(crate::PlanRegistryCompatibilityError::ContractMismatch { section: "actions" })
+        );
+        std::assert_matches!(
+            plan.execution_graph(),
+            Err(crate::ExecutionGraphProjectionError::UnsupportedCheckpointPolicy)
+        );
+    }
+}
+
 fn compile_error(
     registry: &FrozenPluginRegistry,
     workflow: &WorkflowDefinition,

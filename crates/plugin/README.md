@@ -151,6 +151,13 @@ domains retain their original framing and use `canonical_json_v1` on the raw rec
 projection. Schema canonicality checks use that same fixed JSON-v1 encoder; neither path serializes
 an authored tree or changes existing recorded identity goldens.
 
+Historical action checkpoint tags remain part of those recorded contracts.
+Fresh compilation always records `inherit`; action authors have no cadence
+selector. A historical non-default tag survives integrity loading and exact
+reserialization, but fails exact-registry compatibility and scheduler graph
+projection. This applies to the entire action contract table, including actions
+referenced only by triggers. A readable plan is not an admitted or resumable run.
+
 Schema envelopes are shape-specific: Record/Union/Any remain schema wire version 1;
 Scalar uses envelope version 2 with schema-owned scalar descriptor version 1. Old epochs
 cannot admit a scalar even if its outer envelope is mislabeled as version 1. `()` and unit
