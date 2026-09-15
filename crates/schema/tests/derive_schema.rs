@@ -1,8 +1,8 @@
 //! Integration tests for `#[derive(Schema)]` and `#[derive(EnumSelect)]`.
 
 use nebula_schema::{
-    AuthoredValue, BooleanWidget, EnumSelect, Field, FieldKey, HasSchema, HasSelectOptions,
-    InputHint, RequiredMode, Schema, SchemaKind, SecretInput, SecretWidget, StringWidget,
+    AuthoredValue, BooleanWidget, EnumSelect, FieldKey, HasSchema, HasSelectOptions, InputHint,
+    Property, RequiredMode, Schema, SchemaKind, SecretInput, SecretWidget, StringWidget,
     VisibilityMode, schema_of,
 };
 use serde::Deserialize;
@@ -46,11 +46,11 @@ struct HttpInput {
 fn derive_schema_matches_hand_written_schema() {
     let derived = HttpInput::schema().unwrap();
     // 6 fields declared (skip would exclude).
-    assert_eq!(derived.fields().len(), 6);
+    assert_eq!(derived.properties().len(), 6);
 
     // url — required String with url + max_length.
-    match &derived.fields()[0] {
-        Field::String(s) => {
+    match &derived.properties()[0] {
+        Property::String(s) => {
             assert_eq!(s.key.as_str(), "url");
             assert_eq!(s.label.as_deref(), Some("URL"));
             assert!(matches!(s.required, RequiredMode::Always));
@@ -61,8 +61,8 @@ fn derive_schema_matches_hand_written_schema() {
     }
 
     // method — plain string with default "GET".
-    match &derived.fields()[1] {
-        Field::String(s) => {
+    match &derived.properties()[1] {
+        Property::String(s) => {
             assert_eq!(s.key.as_str(), "method");
             assert_eq!(s.default.as_ref(), Some(&json!("GET")));
         },
@@ -70,8 +70,8 @@ fn derive_schema_matches_hand_written_schema() {
     }
 
     // body — Option<String> + multiline widget.
-    match &derived.fields()[2] {
-        Field::String(s) => {
+    match &derived.properties()[2] {
+        Property::String(s) => {
             assert_eq!(s.key.as_str(), "body");
             assert!(matches!(s.required, RequiredMode::Never));
             assert!(matches!(s.widget, StringWidget::Multiline));
@@ -80,8 +80,8 @@ fn derive_schema_matches_hand_written_schema() {
     }
 
     // timeout — Option<u32> with range.
-    match &derived.fields()[3] {
-        Field::Number(n) => {
+    match &derived.properties()[3] {
+        Property::Number(n) => {
             assert_eq!(n.key.as_str(), "timeout");
             assert!(n.integer);
             assert!(matches!(n.required, RequiredMode::Never));
@@ -91,8 +91,8 @@ fn derive_schema_matches_hand_written_schema() {
     }
 
     // verbose — bool with no_expression.
-    match &derived.fields()[4] {
-        Field::Boolean(b) => {
+    match &derived.properties()[4] {
+        Property::Boolean(b) => {
             assert_eq!(b.key.as_str(), "verbose");
             assert!(matches!(
                 b.expression,
@@ -103,8 +103,8 @@ fn derive_schema_matches_hand_written_schema() {
     }
 
     // api_key — secret, because #[field(secret)] switched String → SecretField.
-    match &derived.fields()[5] {
-        Field::Secret(s) => {
+    match &derived.properties()[5] {
+        Property::Secret(s) => {
             assert_eq!(s.key.as_str(), "api_key");
             assert!(matches!(s.required, RequiredMode::Always));
         },
@@ -145,10 +145,10 @@ struct PropertyInput {
 #[test]
 fn property_attribute_maps_to_schema_semantics_without_ui_authority() {
     let schema = PropertyInput::schema().unwrap();
-    assert_eq!(schema.fields().len(), 5);
+    assert_eq!(schema.properties().len(), 5);
 
-    match &schema.fields()[0] {
-        Field::String(field) => {
+    match &schema.properties()[0] {
+        Property::String(field) => {
             assert_eq!(field.key.as_str(), "url");
             assert_eq!(field.label.as_deref(), Some("URL"));
             assert_eq!(field.description.as_deref(), Some("Endpoint"));
@@ -169,8 +169,8 @@ fn property_attribute_maps_to_schema_semantics_without_ui_authority() {
         other => panic!("expected url StringField, got {other:?}"),
     }
 
-    match &schema.fields()[1] {
-        Field::String(field) => {
+    match &schema.properties()[1] {
+        Property::String(field) => {
             assert_eq!(field.key.as_str(), "body");
             assert_eq!(field.widget, StringWidget::Multiline);
             assert!(matches!(field.required, RequiredMode::Never));
@@ -178,8 +178,8 @@ fn property_attribute_maps_to_schema_semantics_without_ui_authority() {
         other => panic!("expected body StringField, got {other:?}"),
     }
 
-    match &schema.fields()[2] {
-        Field::Boolean(field) => {
+    match &schema.properties()[2] {
+        Property::Boolean(field) => {
             assert_eq!(field.key.as_str(), "enabled");
             assert_eq!(field.widget, BooleanWidget::Checkbox);
             assert!(matches!(
@@ -190,8 +190,8 @@ fn property_attribute_maps_to_schema_semantics_without_ui_authority() {
         other => panic!("expected BooleanField, got {other:?}"),
     }
 
-    match &schema.fields()[3] {
-        Field::Secret(field) => {
+    match &schema.properties()[3] {
+        Property::Secret(field) => {
             assert_eq!(field.key.as_str(), "api_key");
             assert_eq!(field.widget, SecretWidget::Plain);
             assert!(matches!(field.required, RequiredMode::Always));
@@ -199,8 +199,8 @@ fn property_attribute_maps_to_schema_semantics_without_ui_authority() {
         other => panic!("expected SecretField, got {other:?}"),
     }
 
-    match &schema.fields()[4] {
-        Field::String(field) => {
+    match &schema.properties()[4] {
+        Property::String(field) => {
             assert_eq!(field.key.as_str(), "internal_note");
             assert!(matches!(field.visible, VisibilityMode::Never));
             assert!(matches!(field.required, RequiredMode::Never));
@@ -237,22 +237,22 @@ struct TagList {
 #[test]
 fn derive_handles_vec_and_nested_user_type() {
     let schema = TagList::schema().unwrap();
-    assert_eq!(schema.fields().len(), 2);
+    assert_eq!(schema.properties().len(), 2);
 
-    match &schema.fields()[0] {
-        Field::List(l) => {
+    match &schema.properties()[0] {
+        Property::List(l) => {
             assert_eq!(l.key.as_str(), "tags");
             assert!(l.item.is_some());
             match l.item.as_deref().unwrap() {
-                Field::String(_) => {},
+                Property::String(_) => {},
                 other => panic!("expected String list item, got {other:?}"),
             }
         },
         other => panic!("expected ListField, got {other:?}"),
     }
 
-    match &schema.fields()[1] {
-        Field::Object(o) => {
+    match &schema.properties()[1] {
+        Property::Object(o) => {
             assert_eq!(o.key.as_str(), "owner");
             // Tag has one field (name) — inlined via user-defined object.
             assert_eq!(o.fields.len(), 1);
@@ -273,8 +273,8 @@ struct WithSkip {
 #[test]
 fn derive_respects_skip() {
     let s = WithSkip::schema().unwrap();
-    assert_eq!(s.fields().len(), 1);
-    assert_eq!(s.fields()[0].key().as_str(), "keep");
+    assert_eq!(s.properties().len(), 1);
+    assert_eq!(s.properties()[0].key().as_str(), "keep");
 }
 
 #[derive(Schema)]
@@ -288,7 +288,7 @@ struct WithReservedKeys {
 #[test]
 fn derive_reserved_keys_do_not_materialize_or_block_other_fields() {
     let s = WithReservedKeys::schema().unwrap();
-    let keys: Vec<&str> = s.fields().iter().map(|f| f.key().as_str()).collect();
+    let keys: Vec<&str> = s.properties().iter().map(|f| f.key().as_str()).collect();
     // The real fields build normally — reserving unrelated keys is a no-op for them.
     assert_eq!(keys, ["name", "enabled"]);
     // The reserved keys are guard rails only: they are not materialized as fields.
@@ -310,7 +310,7 @@ struct ReservedMatchesSkippedField {
 #[test]
 fn derive_reserved_key_matching_a_skipped_field_is_allowed() {
     let s = ReservedMatchesSkippedField::schema().unwrap();
-    let keys: Vec<&str> = s.fields().iter().map(|f| f.key().as_str()).collect();
+    let keys: Vec<&str> = s.properties().iter().map(|f| f.key().as_str()).collect();
     assert_eq!(
         keys,
         ["keep"],
@@ -331,7 +331,7 @@ struct AliasDoesNotCollide {
 #[test]
 fn derive_reserved_allows_a_non_colliding_serde_alias() {
     let s = AliasDoesNotCollide::schema().unwrap();
-    let keys: Vec<&str> = s.fields().iter().map(|f| f.key().as_str()).collect();
+    let keys: Vec<&str> = s.properties().iter().map(|f| f.key().as_str()).collect();
     assert_eq!(keys, ["name"]);
 }
 
@@ -370,10 +370,10 @@ struct RequestLine {
 #[test]
 fn derive_enum_select_field_becomes_select() {
     let schema = RequestLine::schema().unwrap();
-    assert_eq!(schema.fields().len(), 2);
+    assert_eq!(schema.properties().len(), 2);
 
-    match &schema.fields()[0] {
-        Field::Select(s) => {
+    match &schema.properties()[0] {
+        Property::Select(s) => {
             assert_eq!(s.key.as_str(), "method");
             assert_eq!(s.options.len(), 4);
             assert_eq!(s.default.as_ref(), Some(&json!("get")));
@@ -382,8 +382,8 @@ fn derive_enum_select_field_becomes_select() {
         other => panic!("expected SelectField for enum_select, got {other:?}"),
     }
 
-    match &schema.fields()[1] {
-        Field::Select(s) => {
+    match &schema.properties()[1] {
+        Property::Select(s) => {
             assert_eq!(s.key.as_str(), "alt");
             assert_eq!(s.options.len(), 4);
             assert!(matches!(s.required, RequiredMode::Never));
@@ -401,12 +401,12 @@ struct Uses {
 
 #[test]
 fn sanity_build_many_fields_via_derive() {
-    // Confirm that `.add(Uses::schema().into())` also works via builder.
+    // Confirm that `.property(Uses::schema().into())` also works via builder.
     let s = Schema::builder()
-        .add_many(Uses::schema().unwrap().fields().iter().cloned())
+        .properties(Uses::schema().unwrap().properties().iter().cloned())
         .build()
         .expect("derived fields build into a new Schema");
-    assert_eq!(s.fields().len(), 1);
+    assert_eq!(s.properties().len(), 1);
 }
 
 // ── raw identifiers (keywords as field names) ──────────────────────────────
@@ -424,7 +424,11 @@ struct RawIdentFields {
 #[test]
 fn derive_schema_strips_raw_identifier_prefix() {
     let schema = RawIdentFields::schema().unwrap();
-    let keys: Vec<&str> = schema.fields().iter().map(|f| f.key().as_str()).collect();
+    let keys: Vec<&str> = schema
+        .properties()
+        .iter()
+        .map(|f| f.key().as_str())
+        .collect();
     assert_eq!(keys, ["type", "async"]);
 }
 
@@ -461,7 +465,11 @@ fn derive_schema_honors_serde_rename_all_matching_wire() {
     // field the deserializer never produces. Before this fix the keys stayed
     // `user_name` / `api_key_id` while serde emitted `userName` / `apiKeyId`.
     let schema = CamelConfig::schema().unwrap();
-    let schema_keys: Vec<&str> = schema.fields().iter().map(|f| f.key().as_str()).collect();
+    let schema_keys: Vec<&str> = schema
+        .properties()
+        .iter()
+        .map(|f| f.key().as_str())
+        .collect();
     assert_eq!(schema_keys, ["userName", "apiKeyId"]);
 
     // Parity guard: every schema key is an actual serde wire key (order-independent
@@ -487,7 +495,7 @@ struct RenamedField {
 #[test]
 fn derive_schema_honors_serde_field_rename() {
     let schema = RenamedField::schema().unwrap();
-    assert_eq!(schema.fields()[0].key().as_str(), "apiKey");
+    assert_eq!(schema.properties()[0].key().as_str(), "apiKey");
 }
 
 #[derive(Schema, serde::Deserialize)]
@@ -501,7 +509,11 @@ struct WithSkipped {
 #[test]
 fn derive_schema_drops_serde_skipped_field() {
     let schema = WithSkipped::schema().unwrap();
-    let keys: Vec<&str> = schema.fields().iter().map(|f| f.key().as_str()).collect();
+    let keys: Vec<&str> = schema
+        .properties()
+        .iter()
+        .map(|f| f.key().as_str())
+        .collect();
     assert_eq!(keys, ["kept"]);
 }
 
@@ -551,7 +563,7 @@ fn derive_serde_alias_becomes_read_alias() {
     // `#[serde(alias)]` keys become read-aliases — serde deserializes them AND the
     // schema accepts them, keeping wire and schema in sync.
     let schema = AliasedInput::schema().unwrap();
-    let aliases: Vec<&str> = schema.fields()[0]
+    let aliases: Vec<&str> = schema.properties()[0]
         .read_aliases()
         .iter()
         .map(FieldKey::as_str)
@@ -580,7 +592,7 @@ struct RemappedOutput {
 fn derive_field_emit_as_emits_on_projection() {
     let schema = RemappedOutput::schema().unwrap();
     assert_eq!(
-        schema.fields()[0].emit_as().map(FieldKey::as_str),
+        schema.properties()[0].emit_as().map(FieldKey::as_str),
         Some("externalId")
     );
 
@@ -605,7 +617,7 @@ fn derive_same_field_read_and_emit_as_reuse_builds() {
     // Reading from and emitting to the SAME wire key on one field is round-trip
     // stable, so it must build (cross-field reuse would be rejected at compile time).
     let schema = RoundTripField::schema().unwrap();
-    let field = &schema.fields()[0];
+    let field = &schema.properties()[0];
     assert_eq!(field.read_aliases()[0].as_str(), "wire");
     assert_eq!(field.emit_as().map(FieldKey::as_str), Some("wire"));
 }
@@ -648,7 +660,7 @@ fn builtin_fallible_schemas_preserve_empty_and_any_identity() {
     let explicit_empty = schema_of::<EmptyRecord>().unwrap();
     let any = schema_of::<serde_json::Value>().unwrap();
     assert_eq!(empty.kind(), SchemaKind::Record);
-    assert!(empty.fields().is_empty());
+    assert!(empty.properties().is_empty());
     assert!(empty.ptr_eq(&explicit_empty));
     assert_eq!(any.kind(), SchemaKind::Any);
     assert!(any.ptr_eq(&schema_of::<serde_json::Value>().unwrap()));
@@ -686,7 +698,7 @@ fn derive_duplicate_serde_alias_is_deduped_not_rejected() {
     // generated schema has exactly ONE read-alias and builds — without the dedup
     // the runtime scope_duplicate lint would reject its schema.
     let schema = DuplicateAlias::schema().unwrap();
-    let aliases: Vec<&str> = schema.fields()[0]
+    let aliases: Vec<&str> = schema.properties()[0]
         .read_aliases()
         .iter()
         .map(FieldKey::as_str)

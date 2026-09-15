@@ -1,4 +1,4 @@
-use nebula_schema::{FieldCollector, Schema};
+use nebula_schema::{PropertyCollector, Schema};
 use serde_json::json;
 
 fn main() {

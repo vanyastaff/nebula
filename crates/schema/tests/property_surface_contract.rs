@@ -7,7 +7,7 @@ fn property_entrypoints_share_the_admitted_field_contract() {
         .required()
         .into_property();
     let contact: Property = Property::object(field_key!("contact"))
-        .add(Property::string(field_key!("email")).email())
+        .property(Property::string(field_key!("email")).email())
         .into();
     let email_ref = PropertyRef::parse("contact.email").unwrap();
 
@@ -18,7 +18,7 @@ fn property_entrypoints_share_the_admitted_field_contract() {
         .unwrap();
 
     assert_eq!(schema.properties().len(), 2);
-    assert_eq!(schema.properties(), schema.fields());
+    assert_eq!(schema.properties(), schema.properties());
 
     let valid = schema
         .validate(
@@ -31,7 +31,11 @@ fn property_entrypoints_share_the_admitted_field_contract() {
         .unwrap();
 
     assert_eq!(
-        schema.find_by_path(&email_ref).unwrap().key().as_str(),
+        schema
+            .find_property_by_path(&email_ref)
+            .unwrap()
+            .key()
+            .as_str(),
         "email"
     );
     assert_eq!(valid.to_wire_json()["name"], json!("Ada"));

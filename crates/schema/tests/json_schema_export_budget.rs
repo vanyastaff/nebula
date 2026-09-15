@@ -5,24 +5,24 @@
 use std::{assert_matches, error::Error};
 
 use nebula_schema::{
-    ExpressionMode, Field, JsonSchemaExportError, Schema, SerdeTagging, ValidSchema, field_key,
+    ExpressionMode, JsonSchemaExportError, Property, Schema, SerdeTagging, ValidSchema, field_key,
 };
 
 fn nested_schema(depth: usize, mode: ExpressionMode, aliases: bool) -> ValidSchema {
-    let mut field: Field = Field::string(field_key!("leaf"))
+    let mut field: Property = Property::string(field_key!("leaf"))
         .description("x".repeat(1024))
         .expression_mode(mode)
         .into();
     for _ in 0..depth {
-        let mut object = Field::object(field_key!("nested"))
+        let mut object = Property::object(field_key!("nested"))
             .expression_mode(mode)
-            .add(field);
+            .property(field);
         if aliases {
             object = object.read_alias("legacy").unwrap();
         }
         field = object.into();
     }
-    Schema::builder().add(field).build().unwrap()
+    Schema::builder().property(field).build().unwrap()
 }
 
 fn rejection(schema: &ValidSchema) -> JsonSchemaExportError {
@@ -83,7 +83,7 @@ fn deep_expression_required_chain_does_not_pay_for_nonexistent_copies() {
 fn escaped_metadata_rejects_serialized_source_size_without_disclosure() {
     let description = format!("private-export-sentinel{}", "\0".repeat(200_000));
     let schema = Schema::builder()
-        .add(Field::string(field_key!("text")).description(description))
+        .property(Property::string(field_key!("text")).description(description))
         .build()
         .unwrap();
     let error = rejection(&schema);
@@ -100,10 +100,10 @@ fn escaped_metadata_rejects_serialized_source_size_without_disclosure() {
 fn defaults_and_option_metadata_share_the_source_budget() {
     let oversized = "\0".repeat(200_000);
     for field in [
-        Field::from(Field::string(field_key!("text")).default(oversized.clone().into())),
-        Field::from(Field::select(field_key!("choice")).option("value", oversized)),
+        Property::from(Property::string(field_key!("text")).default(oversized.clone().into())),
+        Property::from(Property::select(field_key!("choice")).option("value", oversized)),
     ] {
-        let schema = Schema::builder().add(field).build().unwrap();
+        let schema = Schema::builder().property(field).build().unwrap();
         assert_matches!(
             rejection(&schema),
             JsonSchemaExportError::SourceBudgetExceeded
@@ -118,17 +118,17 @@ fn deeply_nested_metadata_is_not_recursively_copied_or_measured_without_a_depth_
         value = serde_json::json!([value]);
     }
     for field in [
-        Field::from(
-            Field::list(field_key!("list"))
-                .item(Field::string(field_key!("item")))
+        Property::from(
+            Property::list(field_key!("list"))
+                .item(Property::string(field_key!("item")))
                 .default(value.clone()),
         ),
-        Field::from(
-            Field::select(field_key!("select"))
+        Property::from(
+            Property::select(field_key!("select"))
                 .option(serde_json::json!({"nested": value}), "Nested"),
         ),
     ] {
-        let schema = Schema::builder().add(field).build().unwrap();
+        let schema = Schema::builder().property(field).build().unwrap();
         assert_matches!(
             rejection(&schema),
             JsonSchemaExportError::BudgetSerialization
@@ -138,7 +138,7 @@ fn deeply_nested_metadata_is_not_recursively_copied_or_measured_without_a_depth_
 
 #[test]
 fn repeated_adjacent_union_names_share_the_copy_budget() {
-    let mut mode = Field::mode(field_key!("choice"));
+    let mut mode = Property::mode(field_key!("choice"));
     for index in 0..64 {
         mode = mode.variant_empty(format!("variant_{index}"), "Variant");
     }

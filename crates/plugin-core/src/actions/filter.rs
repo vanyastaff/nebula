@@ -83,8 +83,8 @@ impl HasSchema for FilterInput {
         SCHEMA
             .get_or_init(|| {
                 Schema::builder()
-                    .add(super::input_schema::record_data())
-                    .add(super::input_schema::condition(field_key!("condition")))
+                    .property(super::input_schema::record_data())
+                    .property(super::input_schema::condition(field_key!("condition")))
                     .root_rule(super::input_schema::array_present(field_key!("data"))?)
                     .build()
             })

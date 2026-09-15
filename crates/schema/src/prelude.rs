@@ -6,12 +6,12 @@
 //!
 //! Covers:
 //! - The property authoring surface (`Property`, `PropertyRef`) plus the legacy
-//!   `Field` carrier during migration.
+//!   `Property` carrier during migration.
 //! - All 13 property variants (`StringField`, `SecretField`, `NumberField`, `BooleanField`,
 //!   `SelectField`, `ObjectField`, `ListField`, `ModeField`, `CodeField`, `FileField`,
 //!   `ComputedField`, `DynamicField`, `NoticeField`) and their associated enums (`ComputedReturn`,
 //!   `ModeVariant`, `NoticeSeverity`).
-//! - The closure-style DSL trait (`FieldCollector`) so `.string()/.select()/…` are discoverable on
+//! - The closure-style DSL trait (`PropertyCollector`) so `.string()/.select()/…` are discoverable on
 //!   `SchemaBuilder` without a separate import.
 //! - The derive family: `HasSchema` / `HasSelectOptions` traits, the `EnumSelect` derive macro, and
 //!   the `field_key!` macro. The `Schema` derive macro lives at `nebula_schema::Schema` — the same
@@ -25,7 +25,7 @@ pub use nebula_validator::{Predicate, Rule};
 
 pub use crate::{
     AuthoredValue, BooleanField, CodeField, CompiledProgram, CompiledValue, ComputedField,
-    ComputedReturn, DynamicField, EvalFuture, Expression, ExpressionContext, ExpressionMode, Field,
+    ComputedReturn, DynamicField, EvalFuture, Expression, ExpressionContext, ExpressionMode,
     FieldKey, FieldPath, FileField, HasSchema, HasSelectOptions, InputHint, ListField,
     LoaderContext, LoaderRegistry, ModeField, ModeVariant, NoticeField, NoticeSeverity,
     NumberField, ObjectField, PendingValidation, ProgramSyntax, Property, PropertyRef,
@@ -33,7 +33,7 @@ pub use crate::{
     ScalarSchema, ScalarValue, Schema, SchemaBuilder, SecretField, SecretInput, SecretValue,
     SecretWire, SelectField, SelectOption, Severity, StringField, Transformer, ValidSchema,
     ValidValues, ValidationError, ValidationReport, ValuePath, ValueTree, VisibilityMode,
-    builder::FieldCollector, field_key,
+    builder::PropertyCollector, field_key,
 };
 
 #[cfg(test)]
@@ -47,17 +47,17 @@ mod coverage_smoke {
     fn touch_all_reexports() {
         fn _j<T: HasSchema>(_: &T) {}
         fn _k<T: HasSelectOptions>(_: &T) {}
-        fn _l<T: FieldCollector>(_: T) {}
+        fn _l<T: PropertyCollector>(_: T) {}
         fn _m<T: SecretInput>(_: &T) {}
 
-        // Field variants.
+        // Property variants.
         fn _f(_: &StringField, _: &SecretField, _: &NumberField, _: &BooleanField) {}
         fn _g(_: &SelectField, _: &ObjectField, _: &ListField, _: &ModeField) {}
         fn _h(_: &CodeField, _: &FileField, _: &ComputedField, _: &DynamicField) {}
         fn _i(_: &NoticeField) {}
         let _: Option<Property> = None;
         let _: Option<PropertyRef> = None;
-        // Field-variant companions.
+        // Property-variant companions.
         let _: Option<NoticeSeverity> = None;
         let _: Option<ComputedReturn> = None;
         let _: Option<ModeVariant> = None;

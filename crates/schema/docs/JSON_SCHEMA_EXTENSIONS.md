@@ -10,30 +10,30 @@ preserving their definition wire does not make them exportable current contracts
 
 ## Locations and Values
 
-A **field schema** is the object emitted for a `Field`: a record/object property,
+A **property schema** is the object emitted for a `Property`: a record/object property,
 a declared list item, or a mode/union payload. Read-alias properties repeat the
-same field schema. Nested field schemas also appear inside literal branches and
+same property schema. Nested property schemas also appear inside literal branches and
 `x-nebula-resolved-value-schema` copies. The synthetic `$expr` wrapper's `$expr`
-property, mode selector, and select option entries are not field schemas.
-Record/scalar/union roots do not receive the common field extensions merely
+property, mode selector, and select option entries are not property schemas.
+Record/scalar/union roots do not receive the common property extensions merely
 because they are roots; a scalar root's rules have the separate annotation below.
 
 | Extension | Exact emitted location and condition | JSON value | Current meaning and enforcement |
 |---|---|---|---|
 | `x-nebula-schema-version` | Every document root: record, scalar, Any, external union, and adjacent union. Not copied onto nested field schemas. | JSON integer `2`, from `SCHEMA_WIRE_VERSION`. | Identifies the definition/export writer contract. Nebula-aware consumers must reject missing, malformed, or unsupported versions before interpreting extensions. Generic validators do not enforce this marker; it is neither schema-policy admission nor runtime authority. |
-| `x-nebula-field-kind` | Every field schema. | String: `"string"`, `"secret"`, `"number"`, `"boolean"`, `"select"`, `"object"`, `"list"`, `"mode"`, `"code"`, `"file"`, `"computed"`, `"dynamic"`, or `"notice"`. | Identifies the declared family. Unknown field kinds are rejected before export, including nested declarations and inactive variants. A recognized family name alone grants no admission authority. |
-| `x-nebula-expression-mode` | Every field schema. | String: `"forbidden"`, `"allowed"`, or `"required"`. | Runtime expression policy at this declaration. Standard keywords describe a literal shape and/or `$expr` wrapper; they do not compile or authorize a program. |
-| `x-nebula-resolved-value-schema` | Every field schema, including expression-forbidden fields. | JSON Schema object; may be `{}` or contain nested field extensions. | The projected literal shape before the outer expression wrapper and common annotations. This is not proof that resolution or all runtime constraints succeed. |
-| `x-nebula-required-mode` | Every field schema. | String: `"never"`, `"always"`, or `"when"`. | Requiredness mode. `"when"` omits the predicate. Current runtime also rejects required null/empty values; static presence constraints no longer depend on visibility under policy v2. |
-| `x-nebula-visibility-mode` | Every field schema. | String: `"always"`, `"never"`, or `"when"`. | Visibility mode; `"when"` omits the predicate. Policy v2 treats visibility as display metadata. Historical legacy behavior could suppress missing-required errors; this annotation alone does not identify that policy boundary. |
+| `x-nebula-field-kind` | Every property schema. | String: `"string"`, `"secret"`, `"number"`, `"boolean"`, `"select"`, `"object"`, `"list"`, `"mode"`, `"code"`, `"file"`, `"computed"`, `"dynamic"`, or `"notice"`. | Identifies the declared family. Unknown property kinds are rejected before export, including nested declarations and inactive variants. A recognized family name alone grants no admission authority. |
+| `x-nebula-expression-mode` | Every property schema. | String: `"forbidden"`, `"allowed"`, or `"required"`. | Runtime expression policy at this declaration. Standard keywords describe a literal shape and/or `$expr` wrapper; they do not compile or authorize a program. |
+| `x-nebula-resolved-value-schema` | Every property schema, including expression-forbidden properties. | JSON Schema object; may be `{}` or contain nested property extensions. | The projected literal shape before the outer expression wrapper and common annotations. This is not proof that resolution or all runtime constraints succeed. |
+| `x-nebula-required-mode` | Every property schema. | String: `"never"`, `"always"`, or `"when"`. | Requiredness mode. `"when"` omits the predicate. Current runtime also rejects required null/empty values; static presence constraints no longer depend on visibility under policy v2. |
+| `x-nebula-visibility-mode` | Every property schema. | String: `"always"`, `"never"`, or `"when"`. | Visibility mode; `"when"` omits the predicate. Policy v2 treats visibility as display metadata. Historical legacy behavior could suppress missing-required errors; this annotation alone does not identify that policy boundary. |
 | `x-nebula-root-rules` | Record or scalar root, only when root rules are nonempty. Not emitted on union roots. | Array of serialized `Rule` objects, in declaration order. | Retains root-rule descriptions. Scalar basic rules can also become standard constraints; contextual/custom obligations remain runtime-owned. Generic validators do not execute this array. |
-| `x-nebula-read-aliases` | Field schema with nonempty read aliases, including its alias-property copies. | Nonempty array of strings, in admitted alias order. | Inbound aliases also become typed properties. Required aliases use `allOf`/`anyOf` presence clauses. Generic validation does not consume aliases or apply canonical-key precedence. |
-| `x-nebula-emit-as` | Field schema with an output alias. | String. | Output projection key for `to_wire_json`; it does not rename input properties or make that name an input alias. |
-| `x-nebula-file-accept` | File field schema with `accept: Some(...)`. | String, preserved verbatim. | File-picker/reference hint. Runtime validates a string reference or string-reference list; it does not read files, verify MIME, or check this pattern against content. |
-| `x-nebula-file-max-size` | File field schema with `max_size: Some(...)`, including zero. | Nonnegative JSON integer from `u64`, intended byte unit. | Requested file-size hint, not an enforced byte limit. Reference-string length is not file size; neither this extension nor current schema validation checks referenced bytes. |
-| `x-nebula-select-dynamic` | Every select field schema, including when false. | Boolean. | Records dynamic-option intent. It does not perform loader calls or certify that a loader is available. |
-| `x-nebula-select-multiple` | Every select field schema, including when false. | Boolean. | Mirrors single-value versus array selection. Standard shape keywords and runtime enforce the declared container shape. |
-| `x-nebula-select-allow-custom` | Every select field schema, including when false. | Boolean. | True permits values outside static options. The export omits option membership constraints for custom values and empty dynamic option sets; the extension itself performs no validation. |
+| `x-nebula-read-aliases` | Property schema with nonempty read aliases, including its alias-property copies. | Nonempty array of strings, in admitted alias order. | Inbound aliases also become typed properties. Required aliases use `allOf`/`anyOf` presence clauses. Generic validation does not consume aliases or apply canonical-key precedence. |
+| `x-nebula-emit-as` | Property schema with an output alias. | String. | Output projection key for `to_wire_json`; it does not rename input properties or make that name an input alias. |
+| `x-nebula-file-accept` | File property schema with `accept: Some(...)`. | String, preserved verbatim. | File-picker/reference hint. Runtime validates a string reference or string-reference list; it does not read files, verify MIME, or check this pattern against content. |
+| `x-nebula-file-max-size` | File property schema with `max_size: Some(...)`, including zero. | Nonnegative JSON integer from `u64`, intended byte unit. | Requested file-size hint, not an enforced byte limit. Reference-string length is not file size; neither this extension nor current schema validation checks referenced bytes. |
+| `x-nebula-select-dynamic` | Every select property schema, including when false. | Boolean. | Records dynamic-option intent. It does not perform loader calls or certify that a loader is available. |
+| `x-nebula-select-multiple` | Every select property schema, including when false. | Boolean. | Mirrors single-value versus array selection. Standard shape keywords and runtime enforce the declared container shape. |
+| `x-nebula-select-allow-custom` | Every select property schema, including when false. | Boolean. | True permits values outside static options. The export omits option membership constraints for custom values and empty dynamic option sets; the extension itself performs no validation. |
 | `x-nebula-disabled` | Disabled option's `anyOf` entry in a single select, or `items.anyOf` entry in a multiple select; only when static options are projected. Also repeated in resolved-schema copies. | Literal `true`; absent for enabled options. | Presentation hint. The option's `const` remains in the allowed domain, and runtime membership checks do not exclude disabled options. Custom-value selects do not project these option entries. |
 | `x-nebula-mode-default-variant` | Mode field schema with a default variant; not the root of a serde-tagged union. | String containing the declared variant key. | Runtime can choose this variant when the selector is omitted. The corresponding standard `oneOf` branch permits an omitted `mode`; generic validation does not insert the selector. |
 
@@ -43,7 +43,7 @@ Export has two resource budgets: **1 MiB of compact JSON for an unelided,
 borrowed source descriptor**, and **8 MiB cumulatively for compact-JSON inputs
 to expansion copies**. The source measurement includes every field slot, even
 defaults omitted by the definition writer, so it conservatively bounds source
-wire size without invoking the cloning `Field` wire serializer. Defaults,
+wire size without invoking the cloning `Property` wire serializer. Defaults,
 options, rules, aliases, and display/loader metadata participate. Counting uses
 a `Write` sink without materializing JSON. Arbitrary JSON in defaults/options
 must also fit the existing 64-level value-depth limit to be measured safely.

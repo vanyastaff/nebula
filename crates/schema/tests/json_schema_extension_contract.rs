@@ -3,7 +3,7 @@
 #![cfg(feature = "schemars")]
 
 use nebula_schema::{
-    AuthoredValue, Field, Predicate, Rule, ScalarSchema, Schema, SerdeTagging, ValidSchema,
+    AuthoredValue, Predicate, Property, Rule, ScalarSchema, Schema, SerdeTagging, ValidSchema,
     field_key, schema_of,
 };
 use serde_json::json;
@@ -11,12 +11,12 @@ use serde_json::json;
 #[test]
 fn export_version_identifies_every_root_shape() {
     let external = ValidSchema::union(
-        Field::mode(field_key!("choice")).variant_empty("none", "None"),
+        Property::mode(field_key!("choice")).variant_empty("none", "None"),
         SerdeTagging::External,
     )
     .unwrap();
     let adjacent = ValidSchema::union(
-        Field::mode(field_key!("choice")).variant_empty("none", "None"),
+        Property::mode(field_key!("choice")).variant_empty("none", "None"),
         SerdeTagging::Adjacent {
             tag: "type".to_owned(),
             content: "data".to_owned(),
@@ -42,7 +42,11 @@ fn export_version_identifies_every_root_shape() {
 #[test]
 fn generic_validation_does_not_enforce_export_version() {
     let schema = Schema::builder()
-        .add(Field::string(field_key!("name")).required().no_expression())
+        .property(
+            Property::string(field_key!("name"))
+                .required()
+                .no_expression(),
+        )
         .build()
         .unwrap();
     let mut exported = schema.json_schema().unwrap().to_value();
@@ -121,15 +125,15 @@ fn display_attributes_cannot_override_validation_keywords() {
 #[test]
 fn file_hints_preserve_opaque_string_reference_validation() {
     let schema = Schema::builder()
-        .add(
-            Field::file(field_key!("upload"))
+        .property(
+            Property::file(field_key!("upload"))
                 .required()
                 .no_expression()
                 .accept("image/png")
                 .max_size(0),
         )
-        .add(
-            Field::file(field_key!("attachments"))
+        .property(
+            Property::file(field_key!("attachments"))
                 .required()
                 .no_expression()
                 .multiple()
@@ -187,7 +191,11 @@ fn file_hints_preserve_opaque_string_reference_validation() {
 #[test]
 fn unknown_extension_keywords_do_not_authorize_generic_validation() {
     let schema = Schema::builder()
-        .add(Field::string(field_key!("name")).required().no_expression())
+        .property(
+            Property::string(field_key!("name"))
+                .required()
+                .no_expression(),
+        )
         .build()
         .unwrap();
     let mut exported = schema.json_schema().unwrap().to_value();
@@ -202,7 +210,7 @@ fn unknown_extension_keywords_do_not_authorize_generic_validation() {
 #[test]
 fn generic_validation_does_not_enforce_exported_root_rules() {
     let schema = Schema::builder()
-        .add(Field::boolean(field_key!("enabled")))
+        .property(Property::boolean(field_key!("enabled")))
         .root_rule(Rule::predicate(Predicate::eq("/enabled", json!(true)).unwrap()).unwrap())
         .build()
         .unwrap();

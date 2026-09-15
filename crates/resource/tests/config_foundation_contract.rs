@@ -11,7 +11,7 @@ use nebula_resource::{
     ResourceConfig, ResourceConfigInput, ResourceContext, ResourceFactory,
 };
 use nebula_schema::{
-    AuthoredValue, Expression, Field, HasSchema, Schema, Transformer, ValidSchema,
+    AuthoredValue, Expression, HasSchema, Property, Schema, Transformer, ValidSchema,
     ValidationReport, field_key,
 };
 use serde::Deserialize;
@@ -139,8 +139,8 @@ struct PreparedConfig {
 impl HasSchema for PreparedConfig {
     fn schema() -> Result<ValidSchema, ValidationReport> {
         Schema::builder()
-            .add(
-                Field::string(field_key!("host"))
+            .property(
+                Property::string(field_key!("host"))
                     .required()
                     .with_transformer(Transformer::Replace {
                         from: "a".into(),
@@ -161,7 +161,7 @@ impl ResourceConfig for PreparedConfig {
 
 fn mode_string_schema() -> Result<ValidSchema, ValidationReport> {
     Schema::builder()
-        .add(Field::string(field_key!("mode")).required())
+        .property(Property::string(field_key!("mode")).required())
         .build()
 }
 
@@ -221,7 +221,7 @@ struct DifferentSchemaFactoryBConfig {
 impl HasSchema for DifferentSchemaFactoryBConfig {
     fn schema() -> Result<ValidSchema, ValidationReport> {
         Schema::builder()
-            .add(Field::number(field_key!("mode")).integer().required())
+            .property(Property::number(field_key!("mode")).integer().required())
             .build()
     }
 }
@@ -242,7 +242,7 @@ struct SecretConfig {
 impl HasSchema for SecretConfig {
     fn schema() -> Result<ValidSchema, ValidationReport> {
         Schema::builder()
-            .add(Field::secret(field_key!("token")).required())
+            .property(Property::secret(field_key!("token")).required())
             .build()
     }
 }
@@ -307,7 +307,10 @@ struct NestedConfig {
 impl HasSchema for NestedConfig {
     fn schema() -> Result<ValidSchema, ValidationReport> {
         Schema::builder()
-            .add(Field::object(field_key!("endpoint")).add(Field::string(field_key!("host"))))
+            .property(
+                Property::object(field_key!("endpoint"))
+                    .property(Property::string(field_key!("host"))),
+            )
             .build()
     }
 }

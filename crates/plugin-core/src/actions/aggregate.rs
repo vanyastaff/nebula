@@ -65,7 +65,7 @@ use std::sync::OnceLock;
 
 use nebula_action::{ActionContext, ActionError, ActionResult, StatelessAction};
 use nebula_core::action_key;
-use nebula_schema::{Field, HasSchema, Schema, ValidSchema, ValidationReport, field_key};
+use nebula_schema::{HasSchema, Property, Schema, ValidSchema, ValidationReport, field_key};
 use serde::{Deserialize, Serialize};
 use serde_json::{Number, Value};
 use tracing::instrument;
@@ -237,22 +237,22 @@ impl HasSchema for AggregateInput {
         static SCHEMA: OnceLock<Result<ValidSchema, ValidationReport>> = OnceLock::new();
         SCHEMA.get_or_init(|| {
             Schema::builder()
-                .add(super::input_schema::record_data())
-                .add(super::input_schema::strings(field_key!("group_by")))
-                .add(Field::list(field_key!("aggregations")).required().item(
-                    Field::object(field_key!("item"))
+                .property(super::input_schema::record_data())
+                .property(super::input_schema::strings(field_key!("group_by")))
+                .property(Property::list(field_key!("aggregations")).required().item(
+                    Property::object(field_key!("item"))
                         .description("Tagged aggregation; variant-specific field presence is checked by serde.")
-                        .add(Field::select(field_key!("fn"))
+                        .property(Property::select(field_key!("fn"))
                             .option("count", "Count")
                             .option("count_distinct", "Count distinct")
                             .option("sum", "Sum").option("avg", "Average")
                             .option("min", "Minimum").option("max", "Maximum")
                             .option("collect", "Collect").option("join", "Join").required())
-                        .add(Field::string(field_key!("field")))
-                        .add(Field::string(field_key!("out")))
-                        .add(Field::string(field_key!("sep"))),
+                        .property(Property::string(field_key!("field")))
+                        .property(Property::string(field_key!("out")))
+                        .property(Property::string(field_key!("sep"))),
                 ))
-                .add(Field::select(field_key!("on_error"))
+                .property(Property::select(field_key!("on_error"))
                     .option("fail", "Fail").option("skip", "Skip"))
                 .root_rule(super::input_schema::array_present(field_key!("data"))?)
                 .build()

@@ -1,12 +1,12 @@
 use criterion::{Criterion, black_box};
-use nebula_schema::{Field, FieldKey, Schema, ValidSchema};
+use nebula_schema::{FieldKey, Property, Schema, ValidSchema};
 
 fn build_sample_schema(field_count: usize) -> ValidSchema {
     let mut builder = Schema::builder();
     for index in 0..field_count {
         let key = format!("field_{index}");
         let key = FieldKey::new(key).expect("generated key should be valid");
-        builder = builder.add(Field::string(key).min_length(1).max_length(128));
+        builder = builder.property(Property::string(key).min_length(1).max_length(128));
     }
     builder.build().expect("benchmark schema should build")
 }

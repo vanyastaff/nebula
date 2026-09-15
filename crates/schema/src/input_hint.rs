@@ -10,9 +10,9 @@ use serde::{Deserialize, Serialize};
 /// # Example
 ///
 /// ```rust
-/// use nebula_schema::{Field, InputHint, field_key};
+/// use nebula_schema::{Property, InputHint, field_key};
 ///
-/// let field = Field::string(field_key!("contact_email")).hint(InputHint::Email);
+/// let field = Property::string(field_key!("contact_email")).hint(InputHint::Email);
 /// ```
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]

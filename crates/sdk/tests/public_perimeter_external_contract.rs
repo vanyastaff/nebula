@@ -384,7 +384,7 @@ fn macro_private_surface_matches_the_explicit_allowlist() {
             }
             pub mod schema {
                 pub use nebula_schema::{
-                    AuthoredValue, BooleanWidget, ExpressionMode, Field, FieldKey, HasSchema,
+                    AuthoredValue, BooleanWidget, ExpressionMode, FieldKey, HasSchema,
                     HasSelectOptions, InputHint, ListWidget, NumberWidget, ObjectWidget, Property,
                     RootShape, Rule, ScalarSchema, Schema, SecretInput, SecretWidget, SelectOption,
                     SelectWidget, SerdeTagging, StringWidget, ValidSchema, ValidationError, ValidationReport,

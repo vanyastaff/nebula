@@ -1,10 +1,10 @@
 //! Unknown declarations remain readable evidence, never executable contracts.
 
-use nebula_schema::{AuthoredValue, Field, Schema, ValidSchema, field_key};
+use nebula_schema::{AuthoredValue, Property, Schema, ValidSchema, field_key};
 use rstest::rstest;
 use serde_json::{Value, json};
 
-fn unknown() -> Field {
+fn unknown() -> Property {
     serde_json::from_value(json!({
         "type": "vendor.future_secret",
         "key": "future",
@@ -19,7 +19,7 @@ fn unknown_descriptor_debug_is_redacted_without_losing_explicit_wire() {
     let wire = serde_json::to_value(&field).unwrap();
     assert_eq!(wire["vendor_payload"], "descriptor-sentinel");
     let field_debug = format!("{field:?}");
-    let schema = Schema::builder().add(field).build().unwrap();
+    let schema = Schema::builder().property(field).build().unwrap();
     for diagnostic in [field_debug, format!("{schema:?}")] {
         assert!(!diagnostic.contains("descriptor-sentinel"));
         assert!(!diagnostic.contains("vendor.future_secret"));
@@ -29,12 +29,12 @@ fn unknown_descriptor_debug_is_redacted_without_losing_explicit_wire() {
 
 #[rstest]
 #[case::root(unknown(), "/future")]
-#[case::object(Field::object(field_key!("config")).add(unknown()).into(), "/config/future")]
-#[case::list(Field::list(field_key!("items")).item(unknown()).into(), "/items/0")]
-#[case::nested_list(Field::list(field_key!("items")).item(Field::list(field_key!("row")).item(unknown())).into(), "/items/0/0")]
-#[case::mode(Field::mode(field_key!("auth")).variant_empty("none", "None").variant("future", "Future", unknown()).into(), "/auth/future")]
-fn unknown_kind_cannot_produce_value_proof(#[case] field: Field, #[case] path: &str) {
-    let schema = Schema::builder().add(field).build().unwrap();
+#[case::object(Property::object(field_key!("config")).property(unknown()).into(), "/config/future")]
+#[case::list(Property::list(field_key!("items")).item(unknown()).into(), "/items/0")]
+#[case::nested_list(Property::list(field_key!("items")).item(Property::list(field_key!("row")).item(unknown())).into(), "/items/0/0")]
+#[case::mode(Property::mode(field_key!("auth")).variant_empty("none", "None").variant("future", "Future", unknown()).into(), "/auth/future")]
+fn unknown_kind_cannot_produce_value_proof(#[case] field: Property, #[case] path: &str) {
+    let schema = Schema::builder().property(field).build().unwrap();
     let wire = serde_json::to_value(&schema).unwrap();
     let historical: ValidSchema = serde_json::from_value(wire.clone()).unwrap();
     assert_eq!(serde_json::to_value(&historical).unwrap(), wire);
@@ -66,10 +66,10 @@ fn explicit_json_escape_hatch_still_validates_literal_data() {
 #[cfg(feature = "schemars")]
 #[rstest]
 #[case::root(unknown())]
-#[case::list(Field::list(field_key!("items")).item(unknown()).into())]
-#[case::inactive_mode(Field::mode(field_key!("auth")).variant_empty("none", "None").variant("future", "Future", unknown()).into())]
-fn unknown_kind_cannot_export_as_unconstrained_json_schema(#[case] field: Field) {
-    let schema = Schema::builder().add(field).build().unwrap();
+#[case::list(Property::list(field_key!("items")).item(unknown()).into())]
+#[case::inactive_mode(Property::mode(field_key!("auth")).variant_empty("none", "None").variant("future", "Future", unknown()).into())]
+fn unknown_kind_cannot_export_as_unconstrained_json_schema(#[case] field: Property) {
+    let schema = Schema::builder().property(field).build().unwrap();
     let error = schema
         .json_schema()
         .expect_err("unknown semantics must not export an unconstrained schema");

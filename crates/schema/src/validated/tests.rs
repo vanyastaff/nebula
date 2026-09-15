@@ -1,7 +1,7 @@
 use serde_json::json;
 
 use super::*;
-use crate::{Field, FieldKey, Schema, field_key};
+use crate::{FieldKey, Property, Schema, field_key};
 
 fn reference_path(pointer: &str) -> ValuePath {
     ValuePath::from_pointer(pointer).expect("test pointer is canonical RFC6901")
@@ -10,7 +10,7 @@ fn reference_path(pointer: &str) -> ValuePath {
 #[test]
 fn clone_is_cheap_via_arc() {
     let s = Schema::builder()
-        .add(Field::string(FieldKey::new("x").unwrap()))
+        .property(Property::string(FieldKey::new("x").unwrap()))
         .build()
         .unwrap();
     let c = s.clone();
@@ -20,23 +20,23 @@ fn clone_is_cheap_via_arc() {
 #[test]
 fn find_returns_top_level() {
     let s = Schema::builder()
-        .add(Field::string(FieldKey::new("x").unwrap()))
+        .property(Property::string(FieldKey::new("x").unwrap()))
         .build()
         .unwrap();
-    assert!(s.find(&FieldKey::new("x").unwrap()).is_some());
-    assert!(s.find(&FieldKey::new("y").unwrap()).is_none());
+    assert!(s.find_property(&FieldKey::new("x").unwrap()).is_some());
+    assert!(s.find_property(&FieldKey::new("y").unwrap()).is_none());
 }
 
 // ── Sum-type union (SchemaKind::Union) ─────────────────────────────────────
 
 fn sample_union(tagging: SerdeTagging) -> ValidSchema {
     ValidSchema::union(
-        Field::mode(field_key!("auth"))
+        Property::mode(field_key!("auth"))
             .variant(
                 "oauth",
                 "OAuth",
-                Field::object(field_key!("oauth"))
-                    .add(Field::string(field_key!("token")).required()),
+                Property::object(field_key!("oauth"))
+                    .property(Property::string(field_key!("token")).required()),
             )
             .variant_empty("none", "None"),
         tagging,
@@ -49,10 +49,10 @@ fn union_kind_and_tagging_accessors() {
     let u = sample_union(SerdeTagging::External);
     assert_eq!(u.kind(), SchemaKind::Union);
     assert_eq!(u.serde_tagging(), Some(&SerdeTagging::External));
-    // The variants live as the sole root Field::Mode (the marker design),
+    // The variants live as the sole root Property::Mode (the marker design),
     // not in a parallel store.
-    assert_eq!(u.fields().len(), 1);
-    assert!(matches!(u.fields()[0], Field::Mode(_)));
+    assert_eq!(u.properties().len(), 1);
+    assert!(matches!(u.properties()[0], Property::Mode(_)));
 }
 
 // ── first_undeclared_path (closed-set walk) ───────────────────────────────
@@ -60,8 +60,8 @@ fn union_kind_and_tagging_accessors() {
 #[test]
 fn first_undeclared_none_when_every_key_declared() {
     let schema = Schema::builder()
-        .add(Field::string(field_key!("host")))
-        .add(Field::number(field_key!("port")))
+        .property(Property::string(field_key!("host")))
+        .property(Property::number(field_key!("port")))
         .build()
         .unwrap();
     let values = AuthoredValue::from_data(json!({"host": "h", "port": 5432})).unwrap();
@@ -71,7 +71,7 @@ fn first_undeclared_none_when_every_key_declared() {
 #[test]
 fn first_undeclared_flags_top_level_key() {
     let schema = Schema::builder()
-        .add(Field::string(field_key!("host")))
+        .property(Property::string(field_key!("host")))
         .build()
         .unwrap();
     let values = AuthoredValue::from_data(json!({"host": "h", "password": "x"})).unwrap();
@@ -84,7 +84,7 @@ fn first_undeclared_flags_top_level_key() {
 #[test]
 fn first_undeclared_recurses_into_nested_object() {
     let schema = Schema::builder()
-        .add(Field::object(field_key!("tls")).add(Field::string(field_key!("ca"))))
+        .property(Property::object(field_key!("tls")).property(Property::string(field_key!("ca"))))
         .build()
         .unwrap();
     // `ca` is declared; `secret_key` inside the nested object is not — serde
@@ -103,10 +103,9 @@ fn first_undeclared_recurses_into_nested_object() {
 #[test]
 fn first_undeclared_recurses_into_list_items() {
     let schema = Schema::builder()
-        .add(
-            Field::list(field_key!("hosts"))
-                .item(Field::object(field_key!("host")).add(Field::string(field_key!("name")))),
-        )
+        .property(Property::list(field_key!("hosts")).item(
+            Property::object(field_key!("host")).property(Property::string(field_key!("name"))),
+        ))
         .build()
         .unwrap();
     let values =
@@ -189,11 +188,12 @@ fn union_rejects_default_variant() {
     // A tagged union has no default variant — serde always requires the
     // discriminant, and a default would let mode validation accept a value
     // with no selector, breaking the tagged-union contract.
-    let mode = Field::mode(field_key!("auth"))
+    let mode = Property::mode(field_key!("auth"))
         .variant(
             "oauth",
             "OAuth",
-            Field::object(field_key!("oauth")).add(Field::string(field_key!("token")).required()),
+            Property::object(field_key!("oauth"))
+                .property(Property::string(field_key!("token")).required()),
         )
         .default_variant("oauth");
     let err = ValidSchema::union(mode, SerdeTagging::External).unwrap_err();
@@ -208,7 +208,7 @@ fn union_deserialize_fails_closed() {
     let union_wire = serde_json::to_value(sample_union(SerdeTagging::External)).unwrap();
     let record_wire = serde_json::to_value(
         Schema::builder()
-            .add(Field::string(field_key!("x")))
+            .property(Property::string(field_key!("x")))
             .build()
             .unwrap(),
     )
@@ -245,28 +245,31 @@ fn union_deserialize_fails_closed() {
 #[test]
 fn find_by_path_handles_nested_object_and_mode_variant() {
     let schema = Schema::builder()
-        .add(Field::object(FieldKey::new("user").unwrap()).add(Field::string(field_key!("email"))))
-        .add(Field::mode(FieldKey::new("auth").unwrap()).variant(
+        .property(
+            Property::object(FieldKey::new("user").unwrap())
+                .property(Property::string(field_key!("email"))),
+        )
+        .property(Property::mode(FieldKey::new("auth").unwrap()).variant(
             "token",
             "Token",
-            Field::string(field_key!("value")),
+            Property::string(field_key!("value")),
         ))
         .build()
         .unwrap();
 
     assert!(
         schema
-            .find_by_path(&FieldPath::parse("user.email").unwrap())
+            .find_property_by_path(&FieldPath::parse("user.email").unwrap())
             .is_some()
     );
     assert!(
         schema
-            .find_by_path(&FieldPath::parse("auth.token").unwrap())
+            .find_property_by_path(&FieldPath::parse("auth.token").unwrap())
             .is_some()
     );
     assert!(
         schema
-            .find_by_path(&FieldPath::parse("user.missing").unwrap())
+            .find_property_by_path(&FieldPath::parse("user.missing").unwrap())
             .is_none()
     );
 }
@@ -274,25 +277,28 @@ fn find_by_path_handles_nested_object_and_mode_variant() {
 #[test]
 fn find_by_path_handles_list_object_children() {
     let schema = Schema::builder()
-        .add(Field::list(FieldKey::new("items").unwrap()).item(
-            Field::object(FieldKey::new("item").unwrap()).add(Field::string(field_key!("name"))),
-        ))
+        .property(
+            Property::list(FieldKey::new("items").unwrap()).item(
+                Property::object(FieldKey::new("item").unwrap())
+                    .property(Property::string(field_key!("name"))),
+            ),
+        )
         .build()
         .unwrap();
 
     let field = schema
-        .find_by_path(&FieldPath::parse("items.name").unwrap())
+        .find_property_by_path(&FieldPath::parse("items.name").unwrap())
         .expect("list item child should be indexed");
     assert_eq!(field.key().as_str(), "name");
     assert!(
         schema
-            .find_by_path(&FieldPath::parse("items[0].name").unwrap())
+            .find_property_by_path(&FieldPath::parse("items[0].name").unwrap())
             .is_none(),
         "schema paths use the canonical anonymous list-item path"
     );
     assert!(
         schema
-            .find_by_path(&FieldPath::parse("items.missing").unwrap())
+            .find_property_by_path(&FieldPath::parse("items.missing").unwrap())
             .is_none()
     );
 }
@@ -303,7 +309,7 @@ fn root_rule_runs_after_fields() {
     use serde_json::json;
 
     let schema = Schema::builder()
-        .add(Field::string(FieldKey::new("tier").unwrap()))
+        .property(Property::string(FieldKey::new("tier").unwrap()))
         .root_rule(Rule::predicate(Predicate::eq("tier", json!("pro")).unwrap()).unwrap())
         .build()
         .unwrap();
@@ -321,9 +327,9 @@ fn root_rule_error_preserves_validator_field_path() {
     use serde_json::json;
 
     let schema = Schema::builder()
-        .add(
-            Field::object(FieldKey::new("config").unwrap())
-                .add(Field::string(FieldKey::new("tier").unwrap())),
+        .property(
+            Property::object(FieldKey::new("config").unwrap())
+                .property(Property::string(FieldKey::new("tier").unwrap())),
         )
         .root_rule(Rule::predicate(Predicate::eq("/config/tier", json!("pro")).unwrap()).unwrap())
         .build()
@@ -345,7 +351,7 @@ fn valid_schema_serde_roundtrips_root_rules() {
     use serde_json::json;
 
     let schema = Schema::builder()
-        .add(Field::string(FieldKey::new("x").unwrap()))
+        .property(Property::string(FieldKey::new("x").unwrap()))
         .root_rule(Rule::predicate(Predicate::eq("x", json!("a")).unwrap()).unwrap())
         .build()
         .unwrap();
@@ -353,7 +359,7 @@ fn valid_schema_serde_roundtrips_root_rules() {
     let wire = serde_json::to_value(&schema).unwrap();
     let back: ValidSchema = serde_json::from_value(wire).unwrap();
     assert_eq!(schema.root_rules(), back.root_rules());
-    assert_eq!(schema.fields().len(), back.fields().len());
+    assert_eq!(schema.properties().len(), back.properties().len());
 }
 
 #[test]
@@ -362,7 +368,7 @@ fn deserialize_bare_any_is_accepted() {
 
     let decoded: ValidSchema = serde_json::from_value(json!({"kind": "any"})).unwrap();
     assert_eq!(decoded.kind(), SchemaKind::Any);
-    assert!(decoded.fields().is_empty());
+    assert!(decoded.properties().is_empty());
 }
 
 #[test]
@@ -372,7 +378,7 @@ fn deserialize_any_carrying_fields_is_rejected() {
     // Build a real typed schema, then mistag it as `Any` while keeping its
     // `fields`. Accepting this would silently drop every field constraint.
     let typed = Schema::builder()
-        .add(Field::string(field_key!("x")).required())
+        .property(Property::string(field_key!("x")).required())
         .build()
         .unwrap();
     let mut wire = serde_json::to_value(&typed).unwrap();
@@ -392,7 +398,7 @@ fn deserialize_any_carrying_root_rules_is_rejected() {
     use serde_json::json;
 
     let with_rules = Schema::builder()
-        .add(Field::string(field_key!("x")))
+        .property(Property::string(field_key!("x")))
         .root_rule(Rule::predicate(Predicate::eq("x", json!("a")).unwrap()).unwrap())
         .build()
         .unwrap();
@@ -414,9 +420,9 @@ fn list_field_custom_rules_are_enforced() {
     use serde_json::json;
 
     let schema = Schema::builder()
-        .add(
-            Field::list(FieldKey::new("tags").unwrap())
-                .item(Field::string(FieldKey::new("tag").unwrap()))
+        .property(
+            Property::list(FieldKey::new("tags").unwrap())
+                .item(Property::string(FieldKey::new("tag").unwrap()))
                 .with_rule(Rule::max_items(1)),
         )
         .build()
@@ -436,9 +442,9 @@ fn object_field_custom_rules_are_enforced() {
     use serde_json::json;
 
     let schema = Schema::builder()
-        .add(
-            Field::object(FieldKey::new("config").unwrap())
-                .add(Field::boolean(FieldKey::new("enabled").unwrap()))
+        .property(
+            Property::object(FieldKey::new("config").unwrap())
+                .property(Property::boolean(FieldKey::new("enabled").unwrap()))
                 .with_rule(Rule::one_of([json!({"enabled": true})]).unwrap()),
         )
         .build()
@@ -456,7 +462,7 @@ fn select_field_reference_fails_open() {
     // `Select` may carry an array (`multiple`) or an arbitrary option value —
     // never a safe scalar terminal, so a reference into it is opaque.
     let schema = Schema::builder()
-        .add(Field::select(field_key!("country")))
+        .property(Property::select(field_key!("country")))
         .build()
         .unwrap();
     assert_eq!(
@@ -468,7 +474,7 @@ fn select_field_reference_fails_open() {
 #[test]
 fn file_field_reference_fails_open() {
     let schema = Schema::builder()
-        .add(Field::file(field_key!("attachment")))
+        .property(Property::file(field_key!("attachment")))
         .build()
         .unwrap();
     assert_eq!(
@@ -481,7 +487,7 @@ fn file_field_reference_fails_open() {
 fn notice_field_reference_fails_open() {
     // `Notice` produces no runtime value at all.
     let schema = Schema::builder()
-        .add(Field::notice(field_key!("banner")))
+        .property(Property::notice(field_key!("banner")))
         .build()
         .unwrap();
     assert_eq!(
@@ -493,11 +499,11 @@ fn notice_field_reference_fails_open() {
 #[test]
 fn untyped_list_item_reference_fails_open() {
     // An item that is itself opaque (e.g. what a `Vec<serde_json::Value>`
-    // derives to: an empty `Field::Object`) is opaque, not resolved — a
+    // derives to: an empty `Property::Object`) is opaque, not resolved — a
     // valid numeric index still fails open, it never becomes
     // `NonIndexOnList` just because the item is opaque.
     let opaque_item = Schema::builder()
-        .add(Field::list(field_key!("items")).item(Field::object(field_key!("item"))))
+        .property(Property::list(field_key!("items")).item(Property::object(field_key!("item"))))
         .build()
         .unwrap();
     assert_eq!(
@@ -516,7 +522,7 @@ fn untyped_list_item_reference_fails_open() {
     let untyped = ValidSchema::from_inner(ValidSchemaInner {
         policy: SchemaPolicy::PropertiesV2,
         root: RootShape::record(
-            vec![Field::from(Field::list(field_key!("items")))],
+            vec![Property::from(Property::list(field_key!("items")))],
             Vec::new(),
         ),
         index: IndexMap::new(),
@@ -534,7 +540,9 @@ fn missing_object_key_is_opaque_not_an_error() {
     // A declared-absent key under a non-empty `Object` fails open — `HasSchema`
     // is unsealed, so a non-empty `Object` cannot be trusted as exhaustive.
     let schema = Schema::builder()
-        .add(Field::object(field_key!("contact")).add(Field::string(field_key!("email"))))
+        .property(
+            Property::object(field_key!("contact")).property(Property::string(field_key!("email"))),
+        )
         .build()
         .unwrap();
     assert_eq!(
@@ -544,14 +552,14 @@ fn missing_object_key_is_opaque_not_an_error() {
     // The declared key still resolves.
     assert!(matches!(
         schema.walk_reference_path(&reference_path("/contact/email")),
-        PathWalk::Resolved(Field::String(_))
+        PathWalk::Resolved(Property::String(_))
     ));
 }
 
 #[test]
 fn non_index_on_list_hard_rejected() {
     let schema = Schema::builder()
-        .add(Field::list(field_key!("items")).item(Field::string(field_key!("item"))))
+        .property(Property::list(field_key!("items")).item(Property::string(field_key!("item"))))
         .build()
         .unwrap();
     assert_eq!(
@@ -565,7 +573,7 @@ fn non_index_on_list_hard_rejected() {
 #[test]
 fn descend_past_scalar_hard_rejected() {
     let schema = Schema::builder()
-        .add(Field::string(field_key!("name")))
+        .property(Property::string(field_key!("name")))
         .build()
         .unwrap();
     assert_eq!(
@@ -579,7 +587,7 @@ fn descend_past_scalar_hard_rejected() {
 #[test]
 fn root_reference_path_resolves_concrete_record() {
     let schema = Schema::builder()
-        .add(Field::string(field_key!("name")))
+        .property(Property::string(field_key!("name")))
         .build()
         .unwrap();
     assert_eq!(
@@ -624,14 +632,15 @@ fn any_and_union_roots_are_opaque() {
 #[test]
 fn walk_agrees_with_find_by_path_on_plain_paths() {
     let schema = Schema::builder()
-        .add(
-            Field::object(field_key!("contact")).add(Field::string(field_key!("email")).required()),
+        .property(
+            Property::object(field_key!("contact"))
+                .property(Property::string(field_key!("email")).required()),
         )
         .build()
         .unwrap();
     let walked = schema.walk_reference_path(&reference_path("/contact/email"));
     let found = schema
-        .find_by_path(
+        .find_property_by_path(
             &FieldPath::root()
                 .join(field_key!("contact"))
                 .join(field_key!("email")),
@@ -647,8 +656,8 @@ fn single_field_rekeys_producer_leaf_so_explain_assignable_can_pair_it() {
     // must re-key both to the SAME key so `explain_assignable`'s key-based
     // pairing matches them up (a `FieldTypeMismatch`/`Yes`, never a spurious
     // `MissingRequiredField` from a key mismatch).
-    let producer_leaf: Field = Field::string(field_key!("email")).required().into();
-    let consumer_field: Field = Field::string(field_key!("recipient")).required().into();
+    let producer_leaf: Property = Property::string(field_key!("email")).required().into();
+    let consumer_field: Property = Property::string(field_key!("recipient")).required().into();
 
     let output = crate::OutputSchema::new(ValidSchema::single_field(
         field_key!("recipient"),
@@ -667,8 +676,8 @@ fn single_field_rekeys_producer_leaf_so_explain_assignable_can_pair_it() {
 
 #[test]
 fn single_field_type_mismatch_is_reported_under_the_shared_key() {
-    let producer_leaf: Field = Field::number(field_key!("age")).into();
-    let consumer_field: Field = Field::string(field_key!("name")).required().into();
+    let producer_leaf: Property = Property::number(field_key!("age")).into();
+    let consumer_field: Property = Property::string(field_key!("name")).required().into();
 
     let output =
         crate::OutputSchema::new(ValidSchema::single_field(field_key!("name"), producer_leaf));

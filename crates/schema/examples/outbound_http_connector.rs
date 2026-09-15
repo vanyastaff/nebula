@@ -19,7 +19,7 @@ use serde_json::json;
 
 fn main() {
     let schema = build_outbound_http_connector_schema();
-    eprintln!("Schema: {} top-level field(s)", schema.fields().len());
+    eprintln!("Schema: {} top-level field(s)", schema.properties().len());
 
     let full = json!({
         "base_url": "https://hooks.partner.example",

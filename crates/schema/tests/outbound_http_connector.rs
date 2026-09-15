@@ -11,7 +11,7 @@ use serde_json::json;
 #[test]
 fn outbound_schema_builds() {
     let s = build_outbound_http_connector_schema();
-    assert!(s.fields().len() >= 10);
+    assert!(s.properties().len() >= 10);
 }
 
 #[test]

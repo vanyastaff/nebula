@@ -5,7 +5,7 @@ use std::io::{self, Write};
 use serde::{Serialize, Serializer, ser::SerializeMap};
 
 use super::JsonSchemaExportError;
-use crate::{Field, ValidSchema};
+use crate::{Property, ValidSchema};
 
 const MAX_SOURCE_DESCRIPTOR_BYTES: usize = 1024 * 1024;
 const MAX_SERIALIZED_COPY_BYTES: usize = 8 * 1024 * 1024;
@@ -21,7 +21,7 @@ impl ExportBudget {
             policy_version: schema.policy_version(),
             kind: schema.kind(),
             serde_tagging: schema.serde_tagging(),
-            fields: SourceFields(schema.fields()),
+            fields: SourceFields(schema.properties()),
             scalar: schema.scalar_schema(),
             root_rules: if schema.scalar_schema().is_some() {
                 &[]
@@ -120,7 +120,7 @@ impl Write for CountingWriter {
     }
 }
 
-// Field's wire serializer clones its owned mirror, including descendants. This
+// Property's wire serializer clones its owned mirror, including descendants. This
 // private borrowing view instead counts every slot, even omitted defaults, so it
 // conservatively bounds source wire size without allocating that mirror or JSON.
 #[derive(Serialize)]
@@ -133,7 +133,7 @@ struct SourceDescriptor<'a> {
     root_rules: &'a [nebula_validator::Rule],
 }
 
-struct SourceFields<'a>(&'a [Field]);
+struct SourceFields<'a>(&'a [Property]);
 
 impl Serialize for SourceFields<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -141,7 +141,7 @@ impl Serialize for SourceFields<'_> {
     }
 }
 
-struct SourceField<'a>(&'a Field);
+struct SourceField<'a>(&'a Property);
 
 impl Serialize for SourceField<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -174,45 +174,47 @@ impl Serialize for SourceField<'_> {
         }
 
         match self.0 {
-            Field::String(field) => serialize_field!(StringField, field, {
+            Property::String(field) => serialize_field!(StringField, field, {
                 hint => hint, widget => widget,
             }),
-            Field::Secret(field) => serialize_field!(SecretField, field, {
+            Property::Secret(field) => serialize_field!(SecretField, field, {
                 widget => widget, reveal_last => reveal_last,
             }),
-            Field::Number(field) => serialize_field!(NumberField, field, {
+            Property::Number(field) => serialize_field!(NumberField, field, {
                 integer => integer, widget => widget, step => step,
             }),
-            Field::Boolean(field) => serialize_field!(BooleanField, field, { widget => widget }),
-            Field::Select(field) => serialize_field!(SelectField, field, {
+            Property::Boolean(field) => serialize_field!(BooleanField, field, { widget => widget }),
+            Property::Select(field) => serialize_field!(SelectField, field, {
                 options => SourceOptions(options), dynamic => dynamic, loader => loader,
                 depends_on => depends_on, multiple => multiple, allow_custom => allow_custom,
                 searchable => searchable, widget => widget,
             }),
-            Field::Object(field) => serialize_field!(ObjectField, field, {
+            Property::Object(field) => serialize_field!(ObjectField, field, {
                 fields => SourceFields(fields), widget => widget,
             }),
-            Field::List(field) => serialize_field!(ListField, field, {
+            Property::List(field) => serialize_field!(ListField, field, {
                 item => item.as_deref().map(SourceField), min_items => min_items,
                 max_items => max_items, unique => unique, widget => widget,
             }),
-            Field::Mode(field) => serialize_field!(ModeField, field, {
+            Property::Mode(field) => serialize_field!(ModeField, field, {
                 variants => SourceVariants(variants), default_variant => default_variant,
             }),
-            Field::Code(field) => serialize_field!(CodeField, field, {
+            Property::Code(field) => serialize_field!(CodeField, field, {
                 language => language, widget => widget,
             }),
-            Field::File(field) => serialize_field!(FileField, field, {
+            Property::File(field) => serialize_field!(FileField, field, {
                 accept => accept, max_size => max_size, multiple => multiple,
             }),
-            Field::Computed(field) => {
+            Property::Computed(field) => {
                 serialize_field!(ComputedField, field, { returns => returns })
             },
-            Field::Dynamic(field) => serialize_field!(DynamicField, field, {
+            Property::Dynamic(field) => serialize_field!(DynamicField, field, {
                 depends_on => depends_on, loader => loader,
             }),
-            Field::Notice(field) => serialize_field!(NoticeField, field, { severity => severity }),
-            Field::Unknown(_) => self.0.serialize(serializer),
+            Property::Notice(field) => {
+                serialize_field!(NoticeField, field, { severity => severity })
+            },
+            Property::Unknown(_) => self.0.serialize(serializer),
         }
     }
 }
@@ -335,34 +337,39 @@ mod tests {
     fn unelided_field_view_preserves_every_known_field_payload() {
         use crate::field_key;
 
-        let fields: Vec<Field> = vec![
-            Field::string(field_key!("string")).description("\0").into(),
-            Field::secret(field_key!("secret")).into(),
-            Field::number(field_key!("number")).into(),
-            Field::boolean(field_key!("boolean")).into(),
-            Field::select(field_key!("select"))
+        let fields: Vec<Property> = vec![
+            Property::string(field_key!("string"))
+                .description("\0")
+                .into(),
+            Property::secret(field_key!("secret")).into(),
+            Property::number(field_key!("number")).into(),
+            Property::boolean(field_key!("boolean")).into(),
+            Property::select(field_key!("select"))
                 .option("value", "Label")
                 .into(),
-            Field::object(field_key!("object"))
-                .add(Field::string(field_key!("child")))
+            Property::object(field_key!("object"))
+                .property(Property::string(field_key!("child")))
                 .into(),
-            Field::list(field_key!("list"))
-                .item(Field::boolean(field_key!("item")))
+            Property::list(field_key!("list"))
+                .item(Property::boolean(field_key!("item")))
                 .into(),
-            Field::mode(field_key!("mode"))
+            Property::mode(field_key!("mode"))
                 .variant_empty("empty", "Empty")
                 .into(),
-            Field::code(field_key!("code")).into(),
-            Field::file(field_key!("file")).into(),
-            Field::computed(field_key!("computed")).into(),
-            Field::dynamic(field_key!("dynamic")).into(),
-            Field::notice(field_key!("notice")).into(),
+            Property::code(field_key!("code")).into(),
+            Property::file(field_key!("file")).into(),
+            Property::computed(field_key!("computed")).into(),
+            Property::dynamic(field_key!("dynamic")).into(),
+            Property::notice(field_key!("notice")).into(),
         ];
         for field in fields {
             let borrowed = serde_json::to_vec(&SourceField(&field)).unwrap();
             let wire = serde_json::to_vec(&field).unwrap();
             assert!(borrowed.len() >= wire.len(), "{}", field.type_name());
-            assert_eq!(serde_json::from_slice::<Field>(&borrowed).unwrap(), field);
+            assert_eq!(
+                serde_json::from_slice::<Property>(&borrowed).unwrap(),
+                field
+            );
         }
     }
 

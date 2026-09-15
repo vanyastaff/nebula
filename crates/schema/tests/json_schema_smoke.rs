@@ -1,7 +1,7 @@
 //! JSON Schema export smoke test (`schemars` feature). Run with:
 //! `cargo test -p nebula-schema --features schemars json_schema_smoke`
 
-use nebula_schema::{Field, FieldKey, Schema, SelectOption};
+use nebula_schema::{FieldKey, Property, Schema, SelectOption};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 
@@ -11,7 +11,7 @@ fn valid_schema_json_schema_includes_draft_2020_12_and_typed_property() {
     let schema = Schema::builder()
         // Literal-only string so the export keeps a top-level `type: string` (not `anyOf` for
         // expression wrappers).
-        .add(Field::string(key).required().no_expression())
+        .property(Property::string(key).required().no_expression())
         .build()
         .expect("build");
 
@@ -34,9 +34,9 @@ fn valid_schema_json_schema_includes_draft_2020_12_and_typed_property() {
 #[test]
 fn json_schema_extension_snapshot() {
     let schema = Schema::builder()
-        .add(Field::boolean(FieldKey::new("flag").expect("key")))
-        .add(
-            Field::mode(FieldKey::new("auth").expect("key"))
+        .property(Property::boolean(FieldKey::new("flag").expect("key")))
+        .property(
+            Property::mode(FieldKey::new("auth").expect("key"))
                 .variant_empty("none", "None")
                 .default_variant("none"),
         )
@@ -92,32 +92,32 @@ fn json_schema_extension_snapshot() {
 #[test]
 fn json_schema_x_nebula_extension_set_is_frozen() {
     let schema = Schema::builder()
-        .add(
-            Field::string(FieldKey::new("name").expect("key"))
+        .property(
+            Property::string(FieldKey::new("name").expect("key"))
                 .read_alias("legacy_name")
                 .expect("alias")
                 .emit_as("display_name")
                 .expect("emit key"),
         )
-        .add(
-            Field::file(FieldKey::new("avatar").expect("key"))
+        .property(
+            Property::file(FieldKey::new("avatar").expect("key"))
                 .accept("image/png")
                 .max_size(1_048_576),
         )
-        .add(
-            Field::select(FieldKey::new("region").expect("key"))
+        .property(
+            Property::select(FieldKey::new("region").expect("key"))
                 .dynamic()
                 .multiple()
                 .allow_custom(),
         )
-        .add(
-            Field::select(FieldKey::new("provider").expect("key")).extend_options([
+        .property(
+            Property::select(FieldKey::new("provider").expect("key")).extend_options([
                 SelectOption::new(json!("github"), "GitHub"),
                 SelectOption::new(json!("legacy"), "Legacy").disabled(),
             ]),
         )
-        .add(
-            Field::mode(FieldKey::new("auth").expect("key"))
+        .property(
+            Property::mode(FieldKey::new("auth").expect("key"))
                 .variant_empty("none", "None")
                 .default_variant("none"),
         )

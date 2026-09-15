@@ -5,7 +5,7 @@ use nebula_validator::Rule;
 use crate::{
     builder::ObjectBuilder,
     field::{
-        BooleanField, CodeField, Field, ListField, NumberField, SecretField, SelectField,
+        BooleanField, CodeField, ListField, NumberField, Property, SecretField, SelectField,
         StringField,
     },
     key::FieldKey,
@@ -114,9 +114,9 @@ impl ListBuilder {
         self
     }
 
-    /// Set the item schema from an already-built field.
+    /// Set the item schema from an already-built property.
     #[must_use]
-    pub fn item(mut self, item: impl Into<Field>) -> Self {
+    pub fn item(mut self, item: impl Into<Property>) -> Self {
         self.inner = self.inner.item(item);
         self
     }
@@ -197,13 +197,13 @@ impl ListBuilder {
         f: impl FnOnce(ObjectBuilder) -> ObjectBuilder,
     ) -> Self {
         let built = f(ObjectBuilder::new(key));
-        self.inner = self.inner.item(built.into_field());
+        self.inner = self.inner.item(built.into_property());
         self
     }
 
-    /// Consume the builder and wrap the result in the top-level [`Field`] enum.
+    /// Consume the builder and wrap the result in the top-level [`Property`] enum.
     #[must_use]
-    pub fn into_field(self) -> Field {
+    pub fn into_property(self) -> Property {
         self.inner.into()
     }
 }

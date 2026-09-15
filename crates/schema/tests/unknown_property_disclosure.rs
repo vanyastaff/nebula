@@ -4,7 +4,7 @@ use std::sync::{
 };
 
 use nebula_schema::{
-    AuthoredValue, Field, FieldPath, LoaderContext, LoaderRegistry, LoaderResult, Schema,
+    AuthoredValue, FieldPath, LoaderContext, LoaderRegistry, LoaderResult, Property, Schema,
     SelectOption, ValidSchema, ValidationError,
     context::{predicate_context_for, root_predicate_context_for},
     field_key,
@@ -24,7 +24,7 @@ enum Shape {
     InactiveMode,
 }
 
-fn unknown() -> Field {
+fn unknown() -> Property {
     serde_json::from_value(json!({
         "type": KIND,
         "key": "future",
@@ -33,16 +33,16 @@ fn unknown() -> Field {
     .unwrap()
 }
 
-fn scenario(shape: Shape) -> (Field, AuthoredValue, &'static str) {
+fn scenario(shape: Shape) -> (Property, AuthoredValue, &'static str) {
     let (field, input, path) = match shape {
         Shape::Root => (unknown(), json!({"future": PAYLOAD}), "/future"),
         Shape::List => (
-            Field::list(field_key!("items")).item(unknown()).into(),
+            Property::list(field_key!("items")).item(unknown()).into(),
             json!({"items": [PAYLOAD]}),
             "/items/0",
         ),
         Shape::InactiveMode => (
-            Field::mode(field_key!("auth"))
+            Property::mode(field_key!("auth"))
                 .variant_empty("none", "None")
                 .variant("future", "Future", unknown())
                 .into(),
@@ -53,8 +53,8 @@ fn scenario(shape: Shape) -> (Field, AuthoredValue, &'static str) {
     (field, AuthoredValue::from_data(input).unwrap(), path)
 }
 
-fn schema(field: Field, historical: bool) -> ValidSchema {
-    let current = Schema::builder().add(field).build().unwrap();
+fn schema(field: Property, historical: bool) -> ValidSchema {
+    let current = Schema::builder().property(field).build().unwrap();
     if !historical {
         return current;
     }
@@ -128,8 +128,8 @@ async fn raw_schema_loaders_reject_unknown_declarations_without_dispatch(
     let (field, values, path) = scenario(shape);
     let draft: Schema = serde_json::from_value(json!({"fields": [
         field,
-        Field::from(Field::select(field_key!("choice")).dynamic().loader("options")),
-        Field::from(Field::dynamic(field_key!("record")).loader("records"))
+        Property::from(Property::select(field_key!("choice")).dynamic().loader("options")),
+        Property::from(Property::dynamic(field_key!("record")).loader("records"))
     ]}))
     .unwrap();
     let calls = Arc::new(AtomicUsize::new(0));
@@ -183,7 +183,7 @@ fn raw_schema_depth_is_checked_before_recursive_support_scan(
 ) {
     let mut field = unknown();
     for _ in 0..depth {
-        field = Field::list(field_key!("items")).item(field).into();
+        field = Property::list(field_key!("items")).item(field).into();
     }
     let values = AuthoredValue::from_data(json!({"items": PAYLOAD})).unwrap();
     let error = predicate_context_for(&[field], &values).unwrap_err();
@@ -196,9 +196,9 @@ fn raw_schema_depth_is_checked_before_recursive_support_scan(
 fn unindexable_mode_variant_cannot_hide_overdeep_unknown_subtree() {
     let mut field = unknown();
     for _ in 0..=MAX_SCHEMA_DEPTH {
-        field = Field::list(field_key!("items")).item(field).into();
+        field = Property::list(field_key!("items")).item(field).into();
     }
-    let field = Field::mode(field_key!("auth"))
+    let field = Property::mode(field_key!("auth"))
         .variant("", "Unindexable", field)
         .into();
     let values = AuthoredValue::from_data(json!({"auth": PAYLOAD})).unwrap();
@@ -210,10 +210,10 @@ fn unindexable_mode_variant_cannot_hide_overdeep_unknown_subtree() {
 async fn overdeep_raw_schema_loader_stops_before_support_scan_and_dispatch() {
     let mut field = unknown();
     for _ in 0..=MAX_SCHEMA_DEPTH {
-        field = Field::list(field_key!("items")).item(field).into();
+        field = Property::list(field_key!("items")).item(field).into();
     }
     let draft: Schema = serde_json::from_value(json!({"fields": [
-        Field::from(Field::dynamic(field_key!("record")).loader("records")),
+        Property::from(Property::dynamic(field_key!("record")).loader("records")),
         field
     ]}))
     .unwrap();

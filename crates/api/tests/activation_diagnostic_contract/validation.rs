@@ -1,6 +1,6 @@
 //! Actual typed builder and strict schema-validation rejections.
 use nebula_core::{ActionKey, node_key};
-use nebula_schema::{Field, Schema, ValidSchema, ValuePath, field_key};
+use nebula_schema::{Property, Schema, ValidSchema, ValuePath, field_key};
 use nebula_workflow::{
     NodeDefinition, NodeIoSchemas, NodeSchemaResolver, ParamValue, SchemaCheckMode, WorkflowBuilder,
 };
@@ -63,29 +63,32 @@ pub(super) fn observations() -> Vec<ScenarioObservation> {
         let (output, input, reference) = match scenario {
             "port_incompatible" => (
                 Schema::builder()
-                    .add(Field::string(field_key!("value")))
+                    .property(Property::string(field_key!("value")))
                     .build()
                     .unwrap(),
                 Schema::builder()
-                    .add(Field::boolean(field_key!("value")).required())
+                    .property(Property::boolean(field_key!("value")).required())
                     .build()
                     .unwrap(),
                 None,
             ),
             "port_undecidable" => (
                 Schema::builder()
-                    .add(Field::dynamic(field_key!("value")))
+                    .property(Property::dynamic(field_key!("value")))
                     .build()
                     .unwrap(),
                 Schema::builder()
-                    .add(Field::string(field_key!("value")).required())
+                    .property(Property::string(field_key!("value")).required())
                     .build()
                     .unwrap(),
                 None,
             ),
             "reference_path" => (
                 Schema::builder()
-                    .add(Field::list(field_key!("items")).item(Field::string(field_key!("item"))))
+                    .property(
+                        Property::list(field_key!("items"))
+                            .item(Property::string(field_key!("item"))),
+                    )
                     .build()
                     .unwrap(),
                 ValidSchema::empty(),
@@ -93,22 +96,22 @@ pub(super) fn observations() -> Vec<ScenarioObservation> {
             ),
             "reference_incompatible" => (
                 Schema::builder()
-                    .add(Field::string(field_key!("value")))
+                    .property(Property::string(field_key!("value")))
                     .build()
                     .unwrap(),
                 Schema::builder()
-                    .add(Field::boolean(field_key!("input")).required())
+                    .property(Property::boolean(field_key!("input")).required())
                     .build()
                     .unwrap(),
                 Some("/value"),
             ),
             "reference_undecidable" => (
                 Schema::builder()
-                    .add(Field::number(field_key!("value")))
+                    .property(Property::number(field_key!("value")))
                     .build()
                     .unwrap(),
                 Schema::builder()
-                    .add(Field::integer(field_key!("input")).required())
+                    .property(Property::integer(field_key!("input")).required())
                     .build()
                     .unwrap(),
                 Some("/value"),

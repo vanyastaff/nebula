@@ -437,7 +437,7 @@ fn check_reference_edges(
 ) {
     enum ProducerReference<'a> {
         Root,
-        Field(&'a nebula_schema::Field),
+        Property(&'a nebula_schema::Property),
     }
 
     for consumer_node in &definition.nodes {
@@ -491,7 +491,7 @@ fn check_reference_edges(
                     continue;
                 },
                 PathWalk::ResolvedRoot => ProducerReference::Root,
-                PathWalk::Resolved(field) => ProducerReference::Field(field),
+                PathWalk::Resolved(property) => ProducerReference::Property(property),
                 // `PathWalk` is `#[non_exhaustive]`. Only outcomes that the
                 // schema walker explicitly classifies as opaque may fail open;
                 // workflow must understand any future outcome before admitting
@@ -521,7 +521,10 @@ fn check_reference_edges(
             let Ok(consumer_key) = FieldKey::new(param_key.as_str()) else {
                 continue;
             };
-            let Some(consumer_field) = consumer_schemas.input.as_schema().find(&consumer_key)
+            let Some(consumer_field) = consumer_schemas
+                .input
+                .as_schema()
+                .find_property(&consumer_key)
             else {
                 continue;
             };
@@ -533,7 +536,9 @@ fn check_reference_edges(
                 ProducerReference::Root => {
                     explain_root_field_assignable(&producer_schemas.output, consumer_field)
                 },
-                ProducerReference::Field(field) => explain_field_assignable(field, consumer_field),
+                ProducerReference::Property(property) => {
+                    explain_field_assignable(property, consumer_field)
+                },
             };
             match assignability {
                 // Provably compatible: admit in both policy modes.
@@ -692,7 +697,7 @@ mod tests {
 
     use chrono::Utc;
     use nebula_core::{ActionKey, NodeKey, WorkflowId, node_key, port_key};
-    use nebula_schema::{Field, FieldKey, Schema, ValidSchema, ValuePath, schema_of};
+    use nebula_schema::{FieldKey, Property, Schema, ValidSchema, ValuePath, schema_of};
 
     use super::*;
     use crate::{
@@ -1243,11 +1248,11 @@ mod tests {
     fn single_field_schema(key: &str, required: bool) -> ValidSchema {
         let fk = FieldKey::new(key).unwrap();
         let field = if required {
-            Field::string(fk).required()
+            Property::string(fk).required()
         } else {
-            Field::string(fk)
+            Property::string(fk)
         };
-        Schema::builder().add(field).build().unwrap()
+        Schema::builder().property(field).build().unwrap()
     }
 
     /// A resolver that maps `ActionKey` string → `NodeIoSchemas`.
@@ -1644,7 +1649,7 @@ mod tests {
     /// an output that yields an `Unknown` verdict against a typed consumer.
     fn dynamic_field_schema(key: &str) -> ValidSchema {
         Schema::builder()
-            .add(Field::dynamic(FieldKey::new(key).unwrap()))
+            .property(Property::dynamic(FieldKey::new(key).unwrap()))
             .build()
             .unwrap()
     }
@@ -1739,8 +1744,8 @@ mod tests {
     fn incompatible_edge_carries_all_findings() {
         let (def, _, _) = two_node_def();
         let consumer_input = Schema::builder()
-            .add(Field::string(FieldKey::new("a").unwrap()).required())
-            .add(Field::string(FieldKey::new("b").unwrap()).required())
+            .property(Property::string(FieldKey::new("a").unwrap()).required())
+            .property(Property::string(FieldKey::new("b").unwrap()).required())
             .build()
             .unwrap();
         let mut schemas = HashMap::new();
@@ -2177,7 +2182,7 @@ mod tests {
     #[test]
     fn mismatching_scalar_root_reference_is_rejected() {
         let consumer_input = Schema::builder()
-            .add(Field::boolean(FieldKey::new("payload").unwrap()).required())
+            .property(Property::boolean(FieldKey::new("payload").unwrap()).required())
             .build()
             .unwrap();
         let (definition, _, _) = two_node_reference_def("payload", "");
@@ -2234,7 +2239,7 @@ mod tests {
         }
 
         let consumer_input = Schema::builder()
-            .add(Field::boolean(FieldKey::new("greeting").unwrap()).required())
+            .property(Property::boolean(FieldKey::new("greeting").unwrap()).required())
             .build()
             .unwrap();
 
@@ -2274,7 +2279,7 @@ mod tests {
         }
 
         let consumer_input = Schema::builder()
-            .add(Field::integer(FieldKey::new("qty").unwrap()).required())
+            .property(Property::integer(FieldKey::new("qty").unwrap()).required())
             .build()
             .unwrap();
 
@@ -2326,7 +2331,7 @@ mod tests {
 
     /// The consumer field is bound by its serde WIRE key (`"to"`), not the
     /// Rust field identifier (`recipient`) — guards the Q2 binding
-    /// (`consumer_schemas.input.as_schema().find(&FieldKey::new(param_key))`)
+    /// (`consumer_schemas.input.as_schema().find_property(&FieldKey::new(param_key))`)
     /// against regression. The consumer field's type is deliberately wrong
     /// (`bool` vs. the producer's `String`) so a successful wire-key lookup
     /// PRODUCES a hard error: if the binding ever regressed to look up the

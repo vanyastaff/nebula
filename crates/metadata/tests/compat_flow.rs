@@ -8,7 +8,7 @@
 use nebula_metadata::{
     BaseCompatError, BaseMetadata, Metadata, MetadataDraft, validate_base_compat,
 };
-use nebula_schema::{FieldCollector, Schema, ValidSchema, field_key};
+use nebula_schema::{PropertyCollector, Schema, ValidSchema, field_key};
 use pretty_assertions::assert_eq;
 use rstest::rstest;
 use semver::Version;

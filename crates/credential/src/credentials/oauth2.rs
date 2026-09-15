@@ -1081,7 +1081,7 @@ mod tests {
     fn properties_schema_is_admissible() {
         let params = nebula_schema::schema_of::<<OAuth2Credential as Credential>::Properties>()
             .expect("valid OAuth2 schema");
-        assert!(!params.fields().is_empty());
+        assert!(!params.properties().is_empty());
     }
 
     const TEST_CALLBACK: &str = "https://app.example.com/oauth2/callback";

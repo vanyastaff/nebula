@@ -3,7 +3,7 @@
 //! `nebula-validator` must not add a back-door constructor. This pins the
 //! proof-token custody contract referenced by.
 
-use nebula_schema::{AuthoredValue, Field, FieldKey, Schema};
+use nebula_schema::{AuthoredValue, FieldKey, Property, Schema};
 use serde_json::json;
 
 fn fk(s: &str) -> FieldKey {
@@ -16,7 +16,7 @@ fn valid_values_only_minted_by_validate() {
     // return `Err` and a long-enough value makes it `Ok` — a checkable
     // validity boundary that proves minting is gated on validation.
     let schema = Schema::builder()
-        .add(Field::string(fk("name")).min_length(3))
+        .property(Property::string(fk("name")).min_length(3))
         .build()
         .expect("schema builds");
 
@@ -30,8 +30,8 @@ fn valid_values_only_minted_by_validate() {
     // `ValidValues`'s inner field is `pub(crate)`, unreachable from this
     // external integration-test crate).
     assert_eq!(
-        vv.schema().fields().len(),
-        schema.fields().len(),
+        vv.schema().properties().len(),
+        schema.properties().len(),
         "the proof token carries the ValidSchema it was minted from"
     );
 

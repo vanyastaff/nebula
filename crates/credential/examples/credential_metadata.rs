@@ -21,7 +21,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!("Admitted name: {}", admitted.name());
     println!(
         "Canonical schema fields: {}",
-        admitted.schema().fields().len()
+        admitted.schema().properties().len()
     );
 
     let wire = serde_json::to_vec(admitted)?;

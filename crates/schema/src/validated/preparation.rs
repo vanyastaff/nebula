@@ -5,30 +5,30 @@ use serde_json::Value;
 
 use super::ValidSchema;
 use crate::{
-    AuthoredValue, CompiledValue, ExpressionMode, Field, ResolvedValue, ScalarValue, SecretValue,
-    ValidationError, ValidationReport, ValuePath, ValueTree,
+    AuthoredValue, CompiledValue, ExpressionMode, Property, ResolvedValue, ScalarValue,
+    SecretValue, ValidationError, ValidationReport, ValuePath, ValueTree,
 };
 
 /// The declaration governing this exact data node. Inherited expression
 /// prohibitions are tracked separately from a node's permission to execute.
 #[derive(Clone, Copy)]
 pub(super) enum Scope<'a> {
-    Root(&'a [Field]),
-    Field(&'a Field),
+    Root(&'a [Property]),
+    Property(&'a Property),
     Opaque,
 }
 
 #[derive(Clone, Copy)]
 pub(super) enum Properties<'a> {
-    Fields(&'a [Field]),
-    Mode(Option<&'a Field>),
+    Fields(&'a [Property]),
+    Mode(Option<&'a Property>),
     Opaque,
 }
 
 impl<'a> Scope<'a> {
-    pub(super) fn field(self) -> Option<&'a Field> {
+    pub(super) fn field(self) -> Option<&'a Property> {
         match self {
-            Self::Field(field) => Some(field),
+            Self::Property(field) => Some(field),
             _ => None,
         }
     }
@@ -39,14 +39,14 @@ impl<'a> Scope<'a> {
     ) -> Properties<'a> {
         let fields = match self {
             Self::Root(fields) => Some(fields),
-            Self::Field(Field::Object(object)) => Some(object.fields.as_slice()),
+            Self::Property(Property::Object(object)) => Some(object.fields.as_slice()),
             _ => None,
         };
         if let Some(fields) = fields {
             fold_aliases(fields, values);
             return Properties::Fields(fields);
         }
-        if let Self::Field(Field::Mode(mode)) = self {
+        if let Self::Property(Property::Mode(mode)) = self {
             let selected = values.get("mode").and_then(ValueTree::as_str).or_else(|| {
                 (!values.contains_key("mode"))
                     .then_some(mode.default_variant.as_deref())
@@ -64,8 +64,8 @@ impl<'a> Scope<'a> {
 
     pub(super) fn item(self) -> Self {
         match self {
-            Self::Field(Field::List(list)) => {
-                list.item.as_deref().map_or(Self::Opaque, Self::Field)
+            Self::Property(Property::List(list)) => {
+                list.item.as_deref().map_or(Self::Opaque, Self::Property)
             },
             _ => Self::Opaque,
         }
@@ -78,8 +78,8 @@ impl<'a> Properties<'a> {
             Self::Fields(fields) => fields
                 .iter()
                 .find(|field| field.key().as_str() == key)
-                .map_or(Scope::Opaque, Scope::Field),
-            Self::Mode(Some(field)) if key == "value" => Scope::Field(field),
+                .map_or(Scope::Opaque, Scope::Property),
+            Self::Mode(Some(field)) if key == "value" => Scope::Property(field),
             _ => Scope::Opaque,
         }
     }
@@ -87,7 +87,7 @@ impl<'a> Properties<'a> {
 
 /// Canonical key wins; otherwise the first declared alias wins. All aliases
 /// are consumed, including losing aliases that might contain secret data.
-pub(super) fn fold_aliases<V>(fields: &[Field], values: &mut IndexMap<String, V>) {
+pub(super) fn fold_aliases<V>(fields: &[Property], values: &mut IndexMap<String, V>) {
     for field in fields {
         let canonical = field.key().as_str();
         for alias in field.read_aliases() {
@@ -259,7 +259,7 @@ fn prepare_scalar<E>(
         for transformer in field.transformers() {
             value = transformer.apply(&value);
         }
-        if matches!(field, Field::Secret(_))
+        if matches!(field, Property::Secret(_))
             && let Value::String(text) = value
         {
             return Ok(ValueTree::Secret(SecretValue::string(text)));

@@ -167,11 +167,11 @@ pub mod __private {
     #[doc(hidden)]
     pub mod schema {
         pub use nebula_schema::{
-            AuthoredValue, BooleanWidget, ExpressionMode, Field, FieldKey, HasSchema,
-            HasSelectOptions, InputHint, ListWidget, NumberWidget, ObjectWidget, Property,
-            RootShape, Rule, ScalarSchema, Schema, SecretInput, SecretWidget, SelectOption,
-            SelectWidget, SerdeTagging, StringWidget, ValidSchema, ValidationError,
-            ValidationReport, VisibilityMode,
+            AuthoredValue, BooleanWidget, ExpressionMode, FieldKey, HasSchema, HasSelectOptions,
+            InputHint, ListWidget, NumberWidget, ObjectWidget, Property, RootShape, Rule,
+            ScalarSchema, Schema, SecretInput, SecretWidget, SelectOption, SelectWidget,
+            SerdeTagging, StringWidget, ValidSchema, ValidationError, ValidationReport,
+            VisibilityMode,
         };
 
         pub mod error {

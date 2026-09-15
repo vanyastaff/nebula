@@ -1,5 +1,5 @@
 //! Root-rule predicates run against a context scrubbed of
-//! `Field::Secret` (by schema type, recursively) — BUT legal non-secret nested
+//! `Property::Secret` (by schema type, recursively) — BUT legal non-secret nested
 //! values (object / list-item / mode-variant) remain addressable so a
 //! legitimate root guard does NOT fail open.
 //!
@@ -13,7 +13,7 @@
 //!   pushed value carries the plaintext, including retained container nodes.
 
 use nebula_schema::context::root_predicate_context_for;
-use nebula_schema::{AuthoredValue, Field, Schema, field_key};
+use nebula_schema::{AuthoredValue, Property, Schema, field_key};
 use nebula_validator::foundation::FieldPath as ValidatorPath;
 use nebula_validator::{Predicate, Rule};
 use serde_json::json;
@@ -34,12 +34,14 @@ fn any_rule(rules: impl IntoIterator<Item = Rule>) -> Rule {
 fn legal_non_secret_nested_root_predicate_still_fires_after_scrub() {
     // Root guard: if `/policy/region == "eu"` then `dpa` must be set.
     // Encoded as the implication `¬P ∨ Q` = Any[ Not(Eq(region,"eu")), Set(dpa) ].
-    // `region` lives inside a nested non-secret Field::Object and `dpa` is a
+    // `region` lives inside a nested non-secret Property::Object and `dpa` is a
     // sibling non-secret String — NO secret anywhere, so the scrub must keep
     // `/policy/region` addressable (else the guard fails open for all input).
     let schema = Schema::builder()
-        .add(Field::object(field_key!("policy")).add(Field::string(field_key!("region"))))
-        .add(Field::string(field_key!("dpa")))
+        .property(
+            Property::object(field_key!("policy")).property(Property::string(field_key!("region"))),
+        )
+        .property(Property::string(field_key!("dpa")))
         .root_rule(any_rule([
             not_rule(predicate_rule(Predicate::Eq(
                 ValidatorPath::parse("/policy/region").unwrap(),
@@ -80,9 +82,9 @@ fn legal_non_secret_nested_root_predicate_still_fires_after_scrub() {
 fn root_predicate_cannot_read_scrubbed_secret_plaintext() {
     const PLAINTEXT: &str = "s3cr3t-root-plaintext";
 
-    // (1) Top-level Field::Secret with a pre-resolve plaintext literal: the
+    // (1) Top-level Property::Secret with a pre-resolve plaintext literal: the
     // scrubbed root context must NOT expose it under any pointer.
-    let secret_fields = vec![Field::from(Field::secret(field_key!("api_key")))];
+    let secret_fields = vec![Property::from(Property::secret(field_key!("api_key")))];
     let secret_values = AuthoredValue::from_data(json!({ "api_key": PLAINTEXT })).unwrap();
     let ctx = root_predicate_context_for(&secret_fields, &secret_values).unwrap();
     assert!(
@@ -95,13 +97,14 @@ fn root_predicate_cannot_read_scrubbed_secret_plaintext() {
         "redacted Debug must never carry the plaintext"
     );
 
-    // (2) A Field::Object `cfg` whose only child is a Field::Secret. The
+    // (2) A Property::Object `cfg` whose only child is a Property::Secret. The
     // container node MUST stay present (so a legal `Set("/cfg")` presence
     // guard still resolves — dropping it is the fail-open class), but its
     // secret child is stripped, so the node value carries no plaintext and
     // the secret pointer is unreadable.
-    let nested = Field::object(field_key!("cfg")).add(Field::secret(field_key!("the_secret")));
-    let nested_fields = vec![Field::from(nested)];
+    let nested =
+        Property::object(field_key!("cfg")).property(Property::secret(field_key!("the_secret")));
+    let nested_fields = vec![Property::from(nested)];
     let nested_values =
         AuthoredValue::from_data(json!({ "cfg": { "the_secret": PLAINTEXT } })).unwrap();
     let ctx = root_predicate_context_for(&nested_fields, &nested_values).unwrap();
@@ -130,10 +133,10 @@ fn root_predicate_cannot_read_scrubbed_secret_plaintext() {
     // (3) Structural guarantee: a sibling NON-secret leaf next to the secret
     // IS still emitted (proves the scrub is type-targeted, not blanket —
     // it does not over-remove legal context, which would fail open).
-    let mixed = Field::object(field_key!("cfg2"))
-        .add(Field::secret(field_key!("token")))
-        .add(Field::string(field_key!("region")));
-    let mixed_fields = vec![Field::from(mixed)];
+    let mixed = Property::object(field_key!("cfg2"))
+        .property(Property::secret(field_key!("token")))
+        .property(Property::string(field_key!("region")));
+    let mixed_fields = vec![Property::from(mixed)];
     let mixed_values =
         AuthoredValue::from_data(json!({ "cfg2": { "token": PLAINTEXT, "region": "eu" } }))
             .unwrap();
@@ -154,7 +157,7 @@ fn root_predicate_cannot_read_scrubbed_secret_plaintext() {
     );
 }
 
-// A legal root guard keyed on a non-secret WHOLE Field::Object's presence
+// A legal root guard keyed on a non-secret WHOLE Property::Object's presence
 // (`Set("/cfg")`). This resolved under the pre-scrub `from_json` (it stored the
 // object node blob). A leaf-only scrub drops `/cfg` → `Set` is false →
 // `Not(Set)` true → `Any` passes → the guard silently never fires (fail-OPEN).
@@ -162,8 +165,10 @@ fn root_predicate_cannot_read_scrubbed_secret_plaintext() {
 #[test]
 fn legal_whole_object_presence_root_guard_fires_after_scrub() {
     let schema = Schema::builder()
-        .add(Field::object(field_key!("cfg")).add(Field::string(field_key!("region"))))
-        .add(Field::string(field_key!("dpa")))
+        .property(
+            Property::object(field_key!("cfg")).property(Property::string(field_key!("region"))),
+        )
+        .property(Property::string(field_key!("dpa")))
         .root_rule(any_rule([
             not_rule(predicate_rule(Predicate::Set(
                 ValidatorPath::parse("/cfg").unwrap(),
@@ -189,12 +194,12 @@ fn legal_whole_object_presence_root_guard_fires_after_scrub() {
     let _validated = schema.validate(no_cfg).expect("absent cfg must pass");
 }
 
-// Same fail-open class for a non-secret WHOLE Field::List presence guard.
+// Same fail-open class for a non-secret WHOLE Property::List presence guard.
 #[test]
 fn legal_whole_list_presence_root_guard_fires_after_scrub() {
     let schema = Schema::builder()
-        .add(Field::list(field_key!("items")).item(Field::string(field_key!("name"))))
-        .add(Field::string(field_key!("dpa")))
+        .property(Property::list(field_key!("items")).item(Property::string(field_key!("name"))))
+        .property(Property::string(field_key!("dpa")))
         .root_rule(any_rule([
             not_rule(predicate_rule(Predicate::Set(
                 ValidatorPath::parse("/items").unwrap(),
@@ -224,10 +229,10 @@ fn legal_whole_list_presence_root_guard_fires_after_scrub() {
 #[test]
 fn secret_bearing_container_blob_stays_unreadable_after_whole_container_fix() {
     const PLAINTEXT: &str = "s3cr3t-stays-closed";
-    let fields = vec![Field::from(
-        Field::object(field_key!("cfg"))
-            .add(Field::secret(field_key!("api_key")))
-            .add(Field::string(field_key!("region"))),
+    let fields = vec![Property::from(
+        Property::object(field_key!("cfg"))
+            .property(Property::secret(field_key!("api_key")))
+            .property(Property::string(field_key!("region"))),
     )];
     let values =
         AuthoredValue::from_data(json!({ "cfg": { "api_key": PLAINTEXT, "region": "eu" } }))
@@ -267,11 +272,11 @@ fn secret_bearing_container_blob_stays_unreadable_after_whole_container_fix() {
 fn list_item_lookup_exposes_only_declared_non_secret_values() {
     const SECRET: &str = "s3cr3t-indexed-list-item";
     const UNDECLARED: &str = "undeclared-indexed-list-item";
-    let fields = vec![Field::from(
-        Field::list(field_key!("items")).item(
-            Field::object(field_key!("row"))
-                .add(Field::string(field_key!("region")))
-                .add(Field::secret(field_key!("api_key"))),
+    let fields = vec![Property::from(
+        Property::list(field_key!("items")).item(
+            Property::object(field_key!("row"))
+                .property(Property::string(field_key!("region")))
+                .property(Property::secret(field_key!("api_key"))),
         ),
     )];
     let values = AuthoredValue::from_data(json!({
@@ -323,14 +328,14 @@ fn list_item_lookup_exposes_only_declared_non_secret_values() {
 fn legal_presence_guard_on_secret_bearing_list_fires_and_leaks_nothing() {
     const SECRET: &str = "s3cr3t-list-item-key";
     let schema = Schema::builder()
-        .add(
-            Field::list(field_key!("creds")).item(
-                Field::object(field_key!("cred"))
-                    .add(Field::string(field_key!("region")))
-                    .add(Field::secret(field_key!("api_key"))),
+        .property(
+            Property::list(field_key!("creds")).item(
+                Property::object(field_key!("cred"))
+                    .property(Property::string(field_key!("region")))
+                    .property(Property::secret(field_key!("api_key"))),
             ),
         )
-        .add(Field::string(field_key!("dpa")))
+        .property(Property::string(field_key!("dpa")))
         .root_rule(any_rule([
             not_rule(predicate_rule(Predicate::Set(
                 ValidatorPath::parse("/creds").unwrap(),
@@ -361,11 +366,11 @@ fn legal_presence_guard_on_secret_bearing_list_fires_and_leaks_nothing() {
     let _validated = schema.validate(no_creds).expect("absent creds must pass");
 
     // And the stripped list node leaks no secret plaintext.
-    let fields = vec![Field::from(
-        Field::list(field_key!("creds")).item(
-            Field::object(field_key!("cred"))
-                .add(Field::string(field_key!("region")))
-                .add(Field::secret(field_key!("api_key"))),
+    let fields = vec![Property::from(
+        Property::list(field_key!("creds")).item(
+            Property::object(field_key!("cred"))
+                .property(Property::string(field_key!("region")))
+                .property(Property::secret(field_key!("api_key"))),
         ),
     )];
     let ctx = root_predicate_context_for(&fields, &missing_dpa).unwrap();
@@ -386,7 +391,7 @@ fn legal_presence_guard_on_secret_bearing_list_fires_and_leaks_nothing() {
 }
 
 // Bypass via public UNVALIDATED data: a secret-bearing
-// `Field::Object` whose canonical object value carries an
+// `Property::Object` whose canonical object value carries an
 // UNDECLARED sibling key holding secret-shaped plaintext. The secret rides the
 // *defined* container path `/cfg` (the schema builds; `secret.predicate_on_value`
 // only flags secret leaves, not container-path predicates), so the runtime
@@ -398,12 +403,12 @@ fn unvalidated_blob_undeclared_sibling_cannot_smuggle_secret_via_container_path(
 
     // (i) A schema with a root rule keyed on the DEFINED container path builds.
     let schema = Schema::builder()
-        .add(
-            Field::object(field_key!("cfg"))
-                .add(Field::secret(field_key!("api_key")))
-                .add(Field::string(field_key!("region"))),
+        .property(
+            Property::object(field_key!("cfg"))
+                .property(Property::secret(field_key!("api_key")))
+                .property(Property::string(field_key!("region"))),
         )
-        .add(Field::string(field_key!("flag")))
+        .property(Property::string(field_key!("flag")))
         .root_rule(any_rule([
             not_rule(predicate_rule(Predicate::Set(
                 ValidatorPath::parse("/cfg").unwrap(),
@@ -418,10 +423,10 @@ fn unvalidated_blob_undeclared_sibling_cannot_smuggle_secret_via_container_path(
     );
 
     // An undeclared sibling on the canonical object cannot carry plaintext.
-    let fields = vec![Field::from(
-        Field::object(field_key!("cfg"))
-            .add(Field::secret(field_key!("api_key")))
-            .add(Field::string(field_key!("region"))),
+    let fields = vec![Property::from(
+        Property::object(field_key!("cfg"))
+            .property(Property::secret(field_key!("api_key")))
+            .property(Property::string(field_key!("region"))),
     )];
     let mut values = AuthoredValue::object();
     values
@@ -460,11 +465,11 @@ fn unvalidated_blob_undeclared_sibling_cannot_smuggle_secret_via_container_path(
 
     // Symmetric: secret-bearing LIST whose item blob carries an undeclared
     // secret sibling.
-    let list_fields = vec![Field::from(
-        Field::list(field_key!("creds")).item(
-            Field::object(field_key!("cred"))
-                .add(Field::string(field_key!("region")))
-                .add(Field::secret(field_key!("api_key"))),
+    let list_fields = vec![Property::from(
+        Property::list(field_key!("creds")).item(
+            Property::object(field_key!("cred"))
+                .property(Property::string(field_key!("region")))
+                .property(Property::secret(field_key!("api_key"))),
         ),
     )];
     let mut list_values = AuthoredValue::object();
@@ -495,15 +500,15 @@ fn unvalidated_blob_undeclared_sibling_cannot_smuggle_secret_via_container_path(
 #[test]
 fn mode_default_variant_payload_survives_scrub_when_mode_omitted() {
     const SECRET: &str = "s3cr3t-oauth-client";
-    let fields = vec![Field::from(
-        Field::mode(field_key!("auth"))
+    let fields = vec![Property::from(
+        Property::mode(field_key!("auth"))
             .default_variant("oauth")
             .variant(
                 "oauth",
                 "OAuth",
-                Field::object(field_key!("o"))
-                    .add(Field::string(field_key!("client_id")))
-                    .add(Field::secret(field_key!("client_secret"))),
+                Property::object(field_key!("o"))
+                    .property(Property::string(field_key!("client_id")))
+                    .property(Property::secret(field_key!("client_secret"))),
             ),
     )];
     // `mode` OMITTED — `default_variant = "oauth"` applies.

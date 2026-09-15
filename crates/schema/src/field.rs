@@ -257,17 +257,17 @@ macro_rules! define_field {
             /// # Example
             ///
             /// ```rust
-            /// use nebula_schema::{Field, Predicate, RequiredMode, Rule, VisibilityMode, field_key};
+            /// use nebula_schema::{Property, Predicate, RequiredMode, Rule, VisibilityMode, field_key};
             /// use serde_json::json;
             ///
             /// // `api_key` only appears and is only required when
             /// // `auth_type == "api_key"`.
-            /// let field = Field::secret(field_key!("api_key"))
+            /// let field = Property::secret(field_key!("api_key"))
             ///     .active_when(
             ///         Rule::predicate(Predicate::eq("auth_type", json!("api_key")).unwrap())
             ///             .unwrap(),
             ///     )
-            ///     .into_field();
+            ///     .into_property();
             ///
             /// assert!(matches!(field.visible(), VisibilityMode::When(_)));
             /// assert!(matches!(field.required(), RequiredMode::When(_)));
@@ -405,11 +405,6 @@ macro_rules! define_field {
                 self.into()
             }
 
-            /// Finalize this typed declaration using the legacy field-named API.
-            #[must_use]
-            pub fn into_field(self) -> Field {
-                self.into_property()
-            }
         }
     };
 }
@@ -673,7 +668,7 @@ impl SelectField {
 }
 
 define_field!(ObjectField {
-    fields: Vec<Field> = Vec::new(),
+    fields: Vec<Property> = Vec::new(),
     widget: ObjectWidget = ObjectWidget::Inline,
 } expr: ExpressionMode::Allowed);
 
@@ -685,31 +680,27 @@ impl ObjectField {
         self
     }
 
-    /// Append nested field.
+    /// Append nested property.
     #[must_use]
-    #[expect(
-        clippy::should_implement_trait,
-        reason = "builder API mirrors existing add-style schema DSL"
-    )]
-    pub fn add(mut self, field: impl Into<Field>) -> Self {
-        self.fields.push(field.into());
+    pub fn property(mut self, property: impl Into<Property>) -> Self {
+        self.fields.push(property.into());
         self
     }
 
-    /// Append many nested fields at once.
+    /// Append many nested properties at once.
     #[must_use]
-    pub fn add_many<I, F>(mut self, fields: I) -> Self
+    pub fn properties<I, F>(mut self, properties: I) -> Self
     where
         I: IntoIterator<Item = F>,
-        F: Into<Field>,
+        F: Into<Property>,
     {
-        self.fields.extend(fields.into_iter().map(Into::into));
+        self.fields.extend(properties.into_iter().map(Into::into));
         self
     }
 }
 
 define_field!(ListField {
-    item: Option<Box<Field>> = None,
+    item: Option<Box<Property>> = None,
     min_items: Option<u32> = None,
     max_items: Option<u32> = None,
     unique: bool = false,
@@ -726,7 +717,7 @@ impl ListField {
 
     /// Set list item schema.
     #[must_use]
-    pub fn item(mut self, item: impl Into<Field>) -> Self {
+    pub fn item(mut self, item: impl Into<Property>) -> Self {
         self.item = Some(Box::new(item.into()));
         self
     }
@@ -767,7 +758,7 @@ pub struct ModeVariant {
     /// Variant label.
     pub label: String,
     /// Variant payload schema.
-    pub field: Box<Field>,
+    pub field: Box<Property>,
 }
 
 impl ModeField {
@@ -783,7 +774,7 @@ impl ModeField {
         mut self,
         key: impl Into<String>,
         label: impl Into<String>,
-        field: impl Into<Field>,
+        field: impl Into<Property>,
     ) -> Self {
         self.variants.push(ModeVariant {
             key: key.into(),
@@ -805,7 +796,7 @@ impl ModeField {
             key: key.into(),
             label: label.into(),
             field: Box::new(
-                Field::try_string(Self::EMPTY_PLACEHOLDER_KEY)
+                Property::try_string(Self::EMPTY_PLACEHOLDER_KEY)
                     .expect("EMPTY_PLACEHOLDER_KEY is a valid FieldKey")
                     .visible(VisibilityMode::Never)
                     .no_expression()
@@ -979,7 +970,7 @@ pub enum Property {
     /// A field whose `type` discriminator is not known to this version —
     /// preserved for **forward compatibility** (payload in [`UnknownField`]).
     ///
-    /// A `Field`'s wire format is internally tagged by `type` and is persisted /
+    /// A `Property`'s wire format is internally tagged by `type` and is persisted /
     /// exported as an external contract; without this variant an older reader
     /// would fail to deserialize a document a newer writer produced with a new
     /// field kind. Instead the raw object is kept so every key and value
@@ -992,24 +983,17 @@ pub enum Property {
     Unknown(UnknownField),
 }
 
-/// Legacy name for [`Property`].
-///
-/// New authoring APIs should use the full word `Property`. The alias remains so
-/// existing workspace call sites and historical docs can migrate without
-/// changing the canonical schema wire or proof model.
-pub type Field = Property;
-
-/// Payload of [`Field::Unknown`] — an unrecognized field kind preserved for
+/// Payload of [`Property::Unknown`] — an unrecognized field kind preserved for
 /// forward compatibility.
 ///
 /// All fields are **private**: `raw` is the single source of truth that
 /// `Serialize` re-emits, and the recovered `key`/`visible`/`required` are a
 /// read-only derived view of it. Were they writable, an edit would silently
 /// diverge from `raw` (what actually gets serialized) and be lost on the next
-/// read. The sole constructor is `Field`'s `Deserialize` impl, so an external
+/// read. The sole constructor is `Property`'s `Deserialize` impl, so an external
 /// value can never claim a known `type` or desync `raw` from `key`. Read it via
-/// the shared [`Field`] accessors plus [`Field::unknown_type`] /
-/// [`Field::raw_object`]; `#[non_exhaustive]` reserves room for future fields.
+/// the shared [`Property`] accessors plus [`Property::unknown_type`] /
+/// [`Property::raw_object`]; `#[non_exhaustive]` reserves room for future fields.
 #[non_exhaustive]
 #[derive(Clone, PartialEq)]
 pub struct UnknownField {
@@ -1023,7 +1007,7 @@ pub struct UnknownField {
     required: RequiredMode,
     /// The full raw JSON object. Every key and value is preserved; object key
     /// order is normalized (the wire backend sorts keys) — see
-    /// [`Field::raw_object`].
+    /// [`Property::raw_object`].
     raw: serde_json::Map<String, Value>,
 }
 
@@ -1037,14 +1021,14 @@ const REQUIRED_EXPRESSION_MODE: ExpressionMode = ExpressionMode::Required;
 const FORBIDDEN_EXPRESSION_MODE: ExpressionMode = ExpressionMode::Forbidden;
 
 /// The known `type` discriminators — routes deserialization between a known
-/// variant and the forward-compat [`Field::Unknown`] preservation path.
+/// variant and the forward-compat [`Property::Unknown`] preservation path.
 const KNOWN_FIELD_TYPES: [&str; 13] = [
     "string", "secret", "number", "boolean", "select", "object", "list", "mode", "code", "file",
     "computed", "dynamic", "notice",
 ];
 
-/// Private mirror of the *known* [`Field`] variants carrying the derived
-/// `#[serde(tag = "type")]` wire format, so [`Field`]'s custom serde reproduces
+/// Private mirror of the *known* [`Property`] variants carrying the derived
+/// `#[serde(tag = "type")]` wire format, so [`Property`]'s custom serde reproduces
 /// the exact derived shape for known variants and only adds the `Unknown` path.
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -1085,8 +1069,8 @@ impl From<KnownField> for Property {
 }
 
 impl Property {
-    /// Convert a *known* `Field` into its serde mirror (clones the inner struct —
-    /// schema serialization is not a hot path). `None` for [`Field::Unknown`].
+    /// Convert a *known* `Property` into its serde mirror (clones the inner struct —
+    /// schema serialization is not a hot path). `None` for [`Property::Unknown`].
     fn to_known(&self) -> Option<KnownField> {
         Some(match self {
             Self::String(f) => KnownField::String(f.clone()),
@@ -1123,7 +1107,7 @@ impl Serialize for Property {
             known => match known.to_known() {
                 Some(mirror) => mirror.serialize(serializer),
                 None => Err(S::Error::custom(
-                    "Field variant has no KnownField serialization mapping",
+                    "Property variant has no KnownField serialization mapping",
                 )),
             },
         }
@@ -1214,20 +1198,20 @@ impl Property {
     /// # Example
     ///
     /// ```rust
-    /// use nebula_schema::{Field, Schema, field_key};
+    /// use nebula_schema::{Property, Schema, field_key};
     ///
     /// let schema = Schema::builder()
-    ///     .add(Field::string(field_key!("greeting")).required())
+    ///     .property(Property::string(field_key!("greeting")).required())
     ///     .build()
     ///     .unwrap();
-    /// assert!(schema.find(&field_key!("greeting")).is_some());
+    /// assert!(schema.find_property(&field_key!("greeting")).is_some());
     /// ```
     #[must_use]
     pub fn string(key: FieldKey) -> StringField {
         StringField::new(key)
     }
 
-    /// Fallible variant of [`Field::string`] for runtime-provided keys.
+    /// Fallible variant of [`Property::string`] for runtime-provided keys.
     ///
     /// # Errors
     ///
@@ -1243,7 +1227,7 @@ impl Property {
         SecretField::new(key)
     }
 
-    /// Fallible variant of [`Field::secret`] for runtime-provided keys.
+    /// Fallible variant of [`Property::secret`] for runtime-provided keys.
     ///
     /// # Errors
     ///
@@ -1259,7 +1243,7 @@ impl Property {
         NumberField::new(key)
     }
 
-    /// Fallible variant of [`Field::number`] for runtime-provided keys.
+    /// Fallible variant of [`Property::number`] for runtime-provided keys.
     ///
     /// # Errors
     ///
@@ -1275,7 +1259,7 @@ impl Property {
         NumberField::new(key).integer()
     }
 
-    /// Fallible variant of [`Field::integer`] for runtime-provided keys.
+    /// Fallible variant of [`Property::integer`] for runtime-provided keys.
     ///
     /// # Errors
     ///
@@ -1292,11 +1276,11 @@ impl Property {
     /// # Example
     ///
     /// ```rust
-    /// use nebula_schema::{Field, AuthoredValue, Schema, field_key};
+    /// use nebula_schema::{Property, AuthoredValue, Schema, field_key};
     /// use serde_json::json;
     ///
     /// let schema = Schema::builder()
-    ///     .add(Field::boolean(field_key!("enabled")))
+    ///     .property(Property::boolean(field_key!("enabled")))
     ///     .build()
     ///     .unwrap();
     ///
@@ -1308,7 +1292,7 @@ impl Property {
         BooleanField::new(key)
     }
 
-    /// Fallible variant of [`Field::boolean`] for runtime-provided keys.
+    /// Fallible variant of [`Property::boolean`] for runtime-provided keys.
     ///
     /// # Errors
     ///
@@ -1324,7 +1308,7 @@ impl Property {
         SelectField::new(key)
     }
 
-    /// Fallible variant of [`Field::select`] for runtime-provided keys.
+    /// Fallible variant of [`Property::select`] for runtime-provided keys.
     ///
     /// # Errors
     ///
@@ -1340,7 +1324,7 @@ impl Property {
         ObjectField::new(key)
     }
 
-    /// Fallible variant of [`Field::object`] for runtime-provided keys.
+    /// Fallible variant of [`Property::object`] for runtime-provided keys.
     ///
     /// # Errors
     ///
@@ -1356,7 +1340,7 @@ impl Property {
         ListField::new(key)
     }
 
-    /// Fallible variant of [`Field::list`] for runtime-provided keys.
+    /// Fallible variant of [`Property::list`] for runtime-provided keys.
     ///
     /// # Errors
     ///
@@ -1373,7 +1357,7 @@ impl Property {
         ModeField::new(key)
     }
 
-    /// Fallible variant of [`Field::mode`].
+    /// Fallible variant of [`Property::mode`].
     ///
     /// # Errors
     ///
@@ -1389,7 +1373,7 @@ impl Property {
         CodeField::new(key)
     }
 
-    /// Fallible variant of [`Field::code`] for runtime-provided keys.
+    /// Fallible variant of [`Property::code`] for runtime-provided keys.
     ///
     /// # Errors
     ///
@@ -1405,7 +1389,7 @@ impl Property {
         FileField::new(key)
     }
 
-    /// Fallible variant of [`Field::file`] for runtime-provided keys.
+    /// Fallible variant of [`Property::file`] for runtime-provided keys.
     ///
     /// # Errors
     ///
@@ -1421,7 +1405,7 @@ impl Property {
         ComputedField::new(key)
     }
 
-    /// Fallible variant of [`Field::computed`] for runtime-provided keys.
+    /// Fallible variant of [`Property::computed`] for runtime-provided keys.
     ///
     /// # Errors
     ///
@@ -1437,7 +1421,7 @@ impl Property {
         DynamicField::new(key)
     }
 
-    /// Fallible variant of [`Field::dynamic`] for runtime-provided keys.
+    /// Fallible variant of [`Property::dynamic`] for runtime-provided keys.
     ///
     /// # Errors
     ///
@@ -1453,7 +1437,7 @@ impl Property {
         NoticeField::new(key)
     }
 
-    /// Fallible variant of [`Field::notice`] for runtime-provided keys.
+    /// Fallible variant of [`Property::notice`] for runtime-provided keys.
     ///
     /// # Errors
     ///
@@ -1639,7 +1623,7 @@ impl Property {
 
     /// Shared read-aliases accessor — extra keys accepted on ingest.
     ///
-    /// Returns `&[]` for [`Field::Unknown`] (this version cannot enumerate aliases
+    /// Returns `&[]` for [`Property::Unknown`] (this version cannot enumerate aliases
     /// of a future field kind).
     #[inline]
     #[must_use]
@@ -1664,7 +1648,7 @@ impl Property {
 
     /// Output key this field is emitted under on projection (`emit_as`).
     ///
-    /// Returns `None` when no `emit_as` is set or for [`Field::Unknown`].
+    /// Returns `None` when no `emit_as` is set or for [`Property::Unknown`].
     #[inline]
     #[must_use]
     pub fn emit_as(&self) -> Option<&FieldKey> {
@@ -1710,8 +1694,8 @@ impl Property {
         }
     }
 
-    /// The unrecognized `type` discriminator of a [`Field::Unknown`], or `None`
-    /// for any known variant. Unlike [`Field::type_name`] (which collapses every
+    /// The unrecognized `type` discriminator of a [`Property::Unknown`], or `None`
+    /// for any known variant. Unlike [`Property::type_name`] (which collapses every
     /// unknown field to the literal `"unknown"`), this returns the real future
     /// kind a newer writer used — read it to migrate or route a preserved field.
     #[inline]
@@ -1723,7 +1707,7 @@ impl Property {
         }
     }
 
-    /// The preserved raw JSON object of a [`Field::Unknown`], or `None` for any
+    /// The preserved raw JSON object of a [`Property::Unknown`], or `None` for any
     /// known variant. Carries every key and value a newer writer emitted —
     /// including keys this version has no typed slot for — so a migration can
     /// read them. Object key order is normalized (the wire backend sorts keys).

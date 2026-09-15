@@ -1,5 +1,5 @@
 use nebula_schema::{
-    AuthoredValue, Field, ScalarSchema, Schema, SerdeTagging, ValidSchema, VisibilityMode,
+    AuthoredValue, Property, ScalarSchema, Schema, SerdeTagging, ValidSchema, VisibilityMode,
     field_key,
 };
 use serde_json::json;
@@ -70,8 +70,8 @@ fn newtype_payload_extraction_cannot_promote_historical_schema() {
 #[test]
 fn presentation_cannot_waive_current_requiredness() {
     let schema = Schema::builder()
-        .add(
-            Field::string(field_key!("value"))
+        .property(
+            Property::string(field_key!("value"))
                 .required()
                 .visible(VisibilityMode::Never),
         )
@@ -86,16 +86,16 @@ fn presentation_cannot_waive_current_requiredness() {
 #[test]
 fn historical_hidden_required_policy_is_preserved_without_reinterpretation() {
     let current = Schema::builder()
-        .add(
-            Field::string(field_key!("value"))
+        .property(
+            Property::string(field_key!("value"))
                 .required()
                 .visible(VisibilityMode::Never),
         )
-        .add(
-            Field::mode(field_key!("mode")).variant(
+        .property(
+            Property::mode(field_key!("mode")).variant(
                 "hidden",
                 "Hidden",
-                Field::string(field_key!("payload"))
+                Property::string(field_key!("payload"))
                     .required()
                     .visible(VisibilityMode::Never),
             ),
@@ -139,7 +139,7 @@ fn historical_schema_cannot_export_current_contract() {
 #[test]
 fn all_roots_preserve_policy_through_serde_without_promoting_legacy_evidence() {
     let union = ValidSchema::union(
-        Field::mode(field_key!("choice")).variant_empty("none", "None"),
+        Property::mode(field_key!("choice")).variant_empty("none", "None"),
         SerdeTagging::External,
     )
     .unwrap();

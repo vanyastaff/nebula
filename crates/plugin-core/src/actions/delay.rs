@@ -52,7 +52,8 @@ use nebula_action::{
 };
 use nebula_core::action_key;
 use nebula_schema::{
-    Field, HasSchema, Predicate, Rule, Schema, ValidSchema, ValidationReport, ValuePath, field_key,
+    HasSchema, Predicate, Property, Rule, Schema, ValidSchema, ValidationReport, ValuePath,
+    field_key,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -128,19 +129,19 @@ fn build_delay_input_schema() -> Result<ValidSchema, ValidationReport> {
     let requires_until = super::input_schema::admit_rule(Rule::predicate(until_mode))?;
 
     Schema::builder()
-        .add(
-            Field::select(field_key!("mode"))
+        .property(
+            Property::select(field_key!("mode"))
                 .option("for", "For a duration")
                 .option("until", "Until an instant")
                 .required(),
         )
-        .add(
-            Field::integer(field_key!("amount"))
+        .property(
+            Property::integer(field_key!("amount"))
                 .min_int(1)
                 .required_when(requires_for),
         )
-        .add(
-            Field::select(field_key!("unit"))
+        .property(
+            Property::select(field_key!("unit"))
                 .option("milliseconds", "Milliseconds")
                 .option("seconds", "Seconds")
                 .option("minutes", "Minutes")
@@ -149,8 +150,8 @@ fn build_delay_input_schema() -> Result<ValidSchema, ValidationReport> {
                 .option("weeks", "Weeks")
                 .required_when(requires_for_unit),
         )
-        .add(Field::string(field_key!("datetime")).required_when(requires_until))
-        .add(Field::dynamic(field_key!("data")))
+        .property(Property::string(field_key!("datetime")).required_when(requires_until))
+        .property(Property::dynamic(field_key!("data")))
         .build()
 }
 

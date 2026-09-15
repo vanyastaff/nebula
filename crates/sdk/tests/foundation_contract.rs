@@ -156,8 +156,8 @@ pub struct InvalidInput;
 impl HasSchema for InvalidInput {
     fn schema() -> Result<ValidSchema, ValidationReport> {
         Schema::builder()
-            .add(Field::string(field_key!("duplicate")))
-            .add(Field::number(field_key!("duplicate")))
+            .property(Property::string(field_key!("duplicate")))
+            .property(Property::number(field_key!("duplicate")))
             .build()
     }
 }

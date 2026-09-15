@@ -8,13 +8,18 @@
     reason = "example: errors are reported to stderr"
 )]
 
-use nebula_schema::{Field, FieldKey, Schema};
+use nebula_schema::{FieldKey, Property, Schema};
 use serde_json::Value;
 
 fn main() {
     let key = FieldKey::new("name").expect("valid key");
     let schema = Schema::builder()
-        .add(Field::string(key).required().label("Name").no_expression())
+        .property(
+            Property::string(key)
+                .required()
+                .label("Name")
+                .no_expression(),
+        )
         .build()
         .expect("lint");
 

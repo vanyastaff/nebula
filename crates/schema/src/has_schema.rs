@@ -156,15 +156,15 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::{field::Field, key::FieldKey, schema::Schema};
+    use crate::{field::Property, key::FieldKey, schema::Schema};
 
     struct Dummy;
 
     impl HasSchema for Dummy {
         fn schema() -> Result<ValidSchema, ValidationReport> {
             Schema::builder()
-                .add(Field::string(FieldKey::new("name")?).required())
-                .add(Field::number(FieldKey::new("age")?))
+                .property(Property::string(FieldKey::new("name")?).required())
+                .property(Property::number(FieldKey::new("age")?))
                 .build()
         }
     }
@@ -193,9 +193,9 @@ mod tests {
     #[test]
     fn has_schema_returns_valid_schema() {
         let schema = Dummy::schema().unwrap();
-        assert_eq!(schema.fields().len(), 2);
-        assert_eq!(schema.fields()[0].key().as_str(), "name");
-        assert_eq!(schema.fields()[1].key().as_str(), "age");
+        assert_eq!(schema.properties().len(), 2);
+        assert_eq!(schema.properties()[0].key().as_str(), "name");
+        assert_eq!(schema.properties()[1].key().as_str(), "age");
     }
 
     #[test]
@@ -208,7 +208,7 @@ mod tests {
     #[test]
     fn unit_has_null_scalar_schema() {
         let schema = <() as HasSchema>::schema().unwrap();
-        assert_eq!(schema.fields().len(), 0);
+        assert_eq!(schema.properties().len(), 0);
         assert_eq!(
             schema.kind(),
             crate::SchemaKind::Scalar,
@@ -223,7 +223,7 @@ mod tests {
     #[test]
     fn json_value_has_any_schema() {
         let schema = <serde_json::Value as HasSchema>::schema().unwrap();
-        assert_eq!(schema.fields().len(), 0);
+        assert_eq!(schema.properties().len(), 0);
         assert_eq!(
             schema.kind(),
             crate::SchemaKind::Any,

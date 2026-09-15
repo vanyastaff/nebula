@@ -1,4 +1,4 @@
-use nebula_schema::{FieldCollector, Schema};
+use nebula_schema::{PropertyCollector, Schema};
 
 fn main() {
     // `min` belongs to NumberField, not StringField/StringBuilder.

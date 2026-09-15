@@ -9,7 +9,7 @@
 //! - No-alias path: fields without aliases produce no extra wire keys
 
 use nebula_schema::{
-    AuthoredValue, Field, FieldAliases, FieldKey, Schema, SecretValue, ValidValues, ValuePath,
+    AuthoredValue, FieldAliases, FieldKey, Property, Schema, SecretValue, ValidValues, ValuePath,
     ValueTree,
 };
 use serde_json::json;
@@ -34,18 +34,18 @@ fn assert_prepared_secret(values: &ValidValues, pointer: &str, expected: &str) {
 
 #[test]
 fn builder_read_alias_registers_on_field_enum() {
-    let field = Field::string(fk("name"))
+    let field = Property::string(fk("name"))
         .read_alias("display_name")
         .unwrap()
-        .into_field();
-    // Accessor on the Field enum returns the alias slice.
+        .into_property();
+    // Accessor on the Property enum returns the alias slice.
     assert_eq!(field.read_aliases().len(), 1);
     assert_eq!(field.read_aliases()[0].as_str(), "display_name");
 }
 
 #[test]
 fn builder_read_alias_rejects_invalid_key() {
-    let err = Field::string(fk("name"))
+    let err = Property::string(fk("name"))
         .read_alias("has-dash")
         .unwrap_err();
     assert_eq!(err.code(), "alias.invalid_key");
@@ -54,29 +54,33 @@ fn builder_read_alias_rejects_invalid_key() {
 #[test]
 fn builder_read_aliases_bulk_replaces_set() {
     let aliases = FieldAliases::new(["a", "b"]).unwrap();
-    let field = Field::string(fk("name")).read_aliases(aliases).into_field();
+    let field = Property::string(fk("name"))
+        .read_aliases(aliases)
+        .into_property();
     let keys: Vec<&str> = field.read_aliases().iter().map(FieldKey::as_str).collect();
     assert_eq!(keys, ["a", "b"]);
 }
 
 #[test]
 fn builder_emit_as_registers_on_field_enum() {
-    let field = Field::string(fk("internal_name"))
+    let field = Property::string(fk("internal_name"))
         .emit_as("displayName")
         .unwrap()
-        .into_field();
+        .into_property();
     assert_eq!(field.emit_as().map(FieldKey::as_str), Some("displayName"));
 }
 
 #[test]
 fn builder_emit_as_rejects_invalid_key() {
-    let err = Field::string(fk("name")).emit_as("has-dash").unwrap_err();
+    let err = Property::string(fk("name"))
+        .emit_as("has-dash")
+        .unwrap_err();
     assert_eq!(err.code(), "alias.invalid_key");
 }
 
 #[test]
 fn field_enum_without_aliases_returns_empty_slice_and_none() {
-    let field = Field::string(fk("x")).into_field();
+    let field = Property::string(fk("x")).into_property();
     assert!(field.read_aliases().is_empty());
     assert!(field.emit_as().is_none());
 }
@@ -86,8 +90,8 @@ fn field_enum_without_aliases_returns_empty_slice_and_none() {
 #[test]
 fn alias_key_accepted_and_stored_under_canonical_key() {
     let schema = Schema::builder()
-        .add(
-            Field::string(fk("canonical_name"))
+        .property(
+            Property::string(fk("canonical_name"))
                 .read_alias("alias_name")
                 .unwrap(),
         )
@@ -113,7 +117,7 @@ fn alias_key_accepted_and_stored_under_canonical_key() {
 #[test]
 fn canonical_key_wins_over_alias_when_both_submitted() {
     let schema = Schema::builder()
-        .add(Field::string(fk("name")).read_alias("alt_name").unwrap())
+        .property(Property::string(fk("name")).read_alias("alt_name").unwrap())
         .build()
         .unwrap();
 
@@ -139,8 +143,8 @@ fn canonical_key_wins_over_alias_when_both_submitted() {
 #[test]
 fn multiple_aliases_first_present_wins() {
     let schema = Schema::builder()
-        .add(
-            Field::string(fk("target"))
+        .property(
+            Property::string(fk("target"))
                 .read_alias("first_alias")
                 .unwrap()
                 .read_alias("second_alias")
@@ -165,8 +169,8 @@ fn multiple_aliases_first_present_wins() {
 #[test]
 fn required_field_satisfied_via_alias_key() {
     let schema = Schema::builder()
-        .add(
-            Field::string(fk("email"))
+        .property(
+            Property::string(fk("email"))
                 .required()
                 .read_alias("email_address")
                 .unwrap(),
@@ -189,8 +193,8 @@ fn required_field_satisfied_via_alias_key() {
 fn field_validation_runs_on_alias_submitted_value() {
     // min_length constraint must be enforced even when value is submitted via alias.
     let schema = Schema::builder()
-        .add(
-            Field::string(fk("name"))
+        .property(
+            Property::string(fk("name"))
                 .min_length(5)
                 .read_alias("user_name")
                 .unwrap(),
@@ -213,9 +217,12 @@ fn field_validation_runs_on_alias_submitted_value() {
 #[test]
 fn nested_object_alias_is_canonicalized() {
     let schema = Schema::builder()
-        .add(
-            Field::object(fk("user"))
-                .add(Field::string(fk("username")).read_alias("login").unwrap()),
+        .property(
+            Property::object(fk("user")).property(
+                Property::string(fk("username"))
+                    .read_alias("login")
+                    .unwrap(),
+            ),
         )
         .build()
         .unwrap();
@@ -248,7 +255,7 @@ fn secret_via_alias_is_canonicalized_not_stored_under_alias_key() {
     // SECURITY: if alias canonicalization fails, a secret stored under the alias key
     // would bypass the secret-strip in context.rs (which indexes by field.key()).
     let schema = Schema::builder()
-        .add(Field::secret(fk("api_key")).read_alias("token").unwrap())
+        .property(Property::secret(fk("api_key")).read_alias("token").unwrap())
         .build()
         .unwrap();
 
@@ -273,8 +280,8 @@ fn secret_via_alias_is_canonicalized_not_stored_under_alias_key() {
 #[test]
 fn project_emits_emit_as_key_instead_of_canonical_key() {
     let schema = Schema::builder()
-        .add(
-            Field::string(fk("internal_id"))
+        .property(
+            Property::string(fk("internal_id"))
                 .emit_as("externalId")
                 .unwrap(),
         )
@@ -294,7 +301,7 @@ fn project_emits_emit_as_key_instead_of_canonical_key() {
 #[test]
 fn project_emits_canonical_key_when_no_emit_as() {
     let schema = Schema::builder()
-        .add(Field::string(fk("name")))
+        .property(Property::string(fk("name")))
         .build()
         .unwrap();
 
@@ -307,8 +314,8 @@ fn project_emits_canonical_key_when_no_emit_as() {
 #[test]
 fn project_excludes_secret_fields() {
     let schema = Schema::builder()
-        .add(Field::string(fk("name")))
-        .add(Field::secret(fk("password")))
+        .property(Property::string(fk("name")))
+        .property(Property::secret(fk("password")))
         .build()
         .unwrap();
 
@@ -326,7 +333,7 @@ fn project_excludes_secret_fields() {
 #[test]
 fn project_passes_extra_non_schema_keys_through_unchanged() {
     let schema = Schema::builder()
-        .add(Field::string(fk("x")))
+        .property(Property::string(fk("x")))
         .build()
         .unwrap();
 
@@ -340,9 +347,9 @@ fn project_passes_extra_non_schema_keys_through_unchanged() {
 #[test]
 fn project_recurses_into_nested_object_emit_as() {
     let schema = Schema::builder()
-        .add(
-            Field::object(fk("contact")).add(
-                Field::string(fk("phone_number"))
+        .property(
+            Property::object(fk("contact")).property(
+                Property::string(fk("phone_number"))
                     .emit_as("phoneNumber")
                     .unwrap(),
             ),
@@ -367,8 +374,8 @@ fn project_recurses_into_nested_object_emit_as() {
 #[test]
 fn to_wire_json_applies_emit_as_to_validated_output() {
     let schema = Schema::builder()
-        .add(
-            Field::string(fk("internal_field"))
+        .property(
+            Property::string(fk("internal_field"))
                 .emit_as("wireField")
                 .unwrap(),
         )
@@ -394,8 +401,8 @@ fn to_wire_json_applies_emit_as_to_validated_output() {
 #[test]
 fn emit_as_with_matching_read_alias_is_wire_round_trip_stable() {
     let schema = Schema::builder()
-        .add(
-            Field::string(fk("internal"))
+        .property(
+            Property::string(fk("internal"))
                 .read_alias("wire")
                 .unwrap()
                 .emit_as("wire")
@@ -431,7 +438,7 @@ fn emit_as_without_matching_read_alias_is_not_round_trip_stable() {
     // pass-through, never folded). This is why round-trip stability REQUIRES the
     // matching read-alias — the two knobs are independent by design.
     let schema = Schema::builder()
-        .add(Field::string(fk("internal")).emit_as("ext").unwrap())
+        .property(Property::string(fk("internal")).emit_as("ext").unwrap())
         .build()
         .unwrap();
 
@@ -458,9 +465,9 @@ fn emit_as_without_matching_read_alias_is_not_round_trip_stable() {
 
 #[test]
 fn lint_emit_on_secret_emits_error() {
-    // Field::Secret with an emit_as is forbidden (a secret is never emitted on projection output).
+    // Property::Secret with an emit_as is forbidden (a secret is never emitted on projection output).
     let report = Schema::builder()
-        .add(Field::secret(fk("api_key")).emit_as("apiKey").unwrap())
+        .property(Property::secret(fk("api_key")).emit_as("apiKey").unwrap())
         .build()
         .unwrap_err();
     assert!(
@@ -476,7 +483,7 @@ fn lint_emit_on_secret_emits_error() {
 #[test]
 fn lint_read_alias_equal_to_own_key_emits_self_collision() {
     let report = Schema::builder()
-        .add(Field::string(fk("name")).read_alias("name").unwrap())
+        .property(Property::string(fk("name")).read_alias("name").unwrap())
         .build()
         .unwrap_err();
     assert!(
@@ -492,8 +499,8 @@ fn lint_read_alias_equal_to_own_key_emits_self_collision() {
 #[test]
 fn lint_read_alias_equal_to_sibling_canonical_key_emits_scope_collision() {
     let report = Schema::builder()
-        .add(Field::string(fk("name")).read_alias("email").unwrap())
-        .add(Field::string(fk("email")))
+        .property(Property::string(fk("name")).read_alias("email").unwrap())
+        .property(Property::string(fk("email")))
         .build()
         .unwrap_err();
     assert!(
@@ -509,8 +516,8 @@ fn lint_read_alias_equal_to_sibling_canonical_key_emits_scope_collision() {
 #[test]
 fn lint_shared_read_alias_across_sibling_fields_emits_scope_duplicate() {
     let report = Schema::builder()
-        .add(Field::string(fk("a")).read_alias("alt").unwrap())
-        .add(Field::string(fk("b")).read_alias("alt").unwrap())
+        .property(Property::string(fk("a")).read_alias("alt").unwrap())
+        .property(Property::string(fk("b")).read_alias("alt").unwrap())
         .build()
         .unwrap_err();
     assert!(
@@ -527,8 +534,8 @@ fn lint_shared_read_alias_across_sibling_fields_emits_scope_duplicate() {
 fn lint_emit_as_equal_to_sibling_canonical_key_emits_emit_collision() {
     // emit_as "target" collides with the canonical key of the "target" field.
     let report = Schema::builder()
-        .add(Field::string(fk("source")).emit_as("target").unwrap())
-        .add(Field::string(fk("target")))
+        .property(Property::string(fk("source")).emit_as("target").unwrap())
+        .property(Property::string(fk("target")))
         .build()
         .unwrap_err();
     assert!(
@@ -544,8 +551,8 @@ fn lint_emit_as_equal_to_sibling_canonical_key_emits_emit_collision() {
 #[test]
 fn lint_shared_emit_as_across_sibling_fields_emits_emit_scope_duplicate() {
     let report = Schema::builder()
-        .add(Field::string(fk("a")).emit_as("shared_out").unwrap())
-        .add(Field::string(fk("b")).emit_as("shared_out").unwrap())
+        .property(Property::string(fk("a")).emit_as("shared_out").unwrap())
+        .property(Property::string(fk("b")).emit_as("shared_out").unwrap())
         .build()
         .unwrap_err();
     assert!(
@@ -564,8 +571,8 @@ fn lint_read_alias_colliding_with_sibling_emit_as_emits_read_emit_collision() {
     // `a` under "wire", and a later validate folds "wire" into `b` — a wire
     // round-trip silently moves data between the two fields.
     let report = Schema::builder()
-        .add(Field::string(fk("a")).emit_as("wire").unwrap())
-        .add(Field::string(fk("b")).read_alias("wire").unwrap())
+        .property(Property::string(fk("a")).emit_as("wire").unwrap())
+        .property(Property::string(fk("b")).read_alias("wire").unwrap())
         .build()
         .unwrap_err();
     assert!(
@@ -582,8 +589,8 @@ fn lint_read_alias_colliding_with_sibling_emit_as_emits_read_emit_collision() {
 fn lint_read_emit_collision_caught_regardless_of_declaration_order() {
     // Reverse declaration order: the read-alias field comes before the emit_as one.
     let report = Schema::builder()
-        .add(Field::string(fk("b")).read_alias("wire").unwrap())
-        .add(Field::string(fk("a")).emit_as("wire").unwrap())
+        .property(Property::string(fk("b")).read_alias("wire").unwrap())
+        .property(Property::string(fk("a")).emit_as("wire").unwrap())
         .build()
         .unwrap_err();
     assert!(
@@ -600,8 +607,8 @@ fn lint_read_emit_collision_caught_regardless_of_declaration_order() {
 fn lint_same_field_read_and_emit_as_reuse_is_allowed() {
     // A field may read AND emit under the same key — round-trip stable, allowed.
     let result = Schema::builder()
-        .add(
-            Field::string(fk("internal"))
+        .property(
+            Property::string(fk("internal"))
                 .read_alias("wire")
                 .unwrap()
                 .emit_as("wire")
@@ -623,10 +630,10 @@ fn lint_same_field_read_and_emit_as_reuse_is_allowed() {
 fn field_without_aliases_emits_no_extra_wire_keys() {
     // `read_aliases` must be skipped (`skip_serializing_if = "is_empty"`);
     // `emit_as` must be skipped (`skip_serializing_if = "Option::is_none"`).
-    let field = Field::string(fk("name"))
+    let field = Property::string(fk("name"))
         .label("Name")
         .required()
-        .into_field();
+        .into_property();
     let wire = serde_json::to_value(&field).unwrap();
 
     assert!(
@@ -642,8 +649,8 @@ fn field_without_aliases_emits_no_extra_wire_keys() {
 #[test]
 fn schema_without_aliases_round_trips_byte_identical() {
     let schema = Schema::builder()
-        .add(Field::string(fk("x")).required())
-        .add(Field::number(fk("y")))
+        .property(Property::string(fk("x")).required())
+        .property(Property::number(fk("y")))
         .build()
         .unwrap();
 
@@ -684,13 +691,13 @@ fn wire_string(valid: &ValidValues) -> String {
 #[test]
 fn mode_payload_secret_alias_canonicalized_not_leaked() {
     let schema = Schema::builder()
-        .add(
-            Field::mode(fk("auth"))
+        .property(
+            Property::mode(fk("auth"))
                 .variant(
                     "apikey",
                     "API Key",
-                    Field::object(fk("payload")).add(
-                        Field::secret(fk("api_key"))
+                    Property::object(fk("payload")).property(
+                        Property::secret(fk("api_key"))
                             .read_alias("token_alias")
                             .unwrap(),
                     ),
@@ -732,13 +739,13 @@ fn mode_payload_alias_canonicalized_via_default_variant() {
     // `mode` omitted → the active variant comes from `default_variant`; a nested
     // alias must still fold (regression for the default-variant ingest path).
     let schema = Schema::builder()
-        .add(
-            Field::mode(fk("auth"))
+        .property(
+            Property::mode(fk("auth"))
                 .variant(
                     "token",
                     "Token",
-                    Field::object(fk("payload")).add(
-                        Field::string(fk("client_id"))
+                    Property::object(fk("payload")).property(
+                        Property::string(fk("client_id"))
                             .read_alias("clientId")
                             .unwrap(),
                     ),
@@ -767,15 +774,16 @@ fn mode_payload_alias_canonicalized_via_default_variant() {
 fn list_item_mode_payload_secret_alias_not_leaked() {
     // The leak must also be closed through array-of-record bulk-ingest shapes.
     let schema = Schema::builder()
-        .add(
-            Field::list(fk("rows")).item(
-                Field::object(fk("row")).add(
-                    Field::mode(fk("auth"))
+        .property(
+            Property::list(fk("rows")).item(
+                Property::object(fk("row")).property(
+                    Property::mode(fk("auth"))
                         .variant(
                             "apikey",
                             "API Key",
-                            Field::object(fk("cfg"))
-                                .add(Field::secret(fk("api_key")).read_alias("token").unwrap()),
+                            Property::object(fk("cfg")).property(
+                                Property::secret(fk("api_key")).read_alias("token").unwrap(),
+                            ),
                         )
                         .default_variant("apikey"),
                 ),
@@ -813,11 +821,11 @@ fn project_drops_secret_nested_in_list() {
     // A secret nested in a list item must never appear in projection; its
     // non-secret sibling must.
     let schema = Schema::builder()
-        .add(
-            Field::list(fk("creds")).item(
-                Field::object(fk("cred"))
-                    .add(Field::string(fk("user")))
-                    .add(Field::secret(fk("password"))),
+        .property(
+            Property::list(fk("creds")).item(
+                Property::object(fk("cred"))
+                    .property(Property::string(fk("user")))
+                    .property(Property::secret(fk("password"))),
             ),
         )
         .build()
@@ -844,14 +852,14 @@ fn project_drops_secret_nested_in_list() {
 #[test]
 fn project_drops_secret_nested_in_mode_payload() {
     let schema = Schema::builder()
-        .add(
-            Field::mode(fk("auth"))
+        .property(
+            Property::mode(fk("auth"))
                 .variant(
                     "basic",
                     "Basic",
-                    Field::object(fk("payload"))
-                        .add(Field::string(fk("user")))
-                        .add(Field::secret(fk("password"))),
+                    Property::object(fk("payload"))
+                        .property(Property::string(fk("user")))
+                        .property(Property::secret(fk("password"))),
                 )
                 .default_variant("basic"),
         )
@@ -879,10 +887,10 @@ fn project_drops_secret_nested_in_mode_payload() {
 #[test]
 fn project_applies_emit_as_inside_list_items() {
     let schema = Schema::builder()
-        .add(
-            Field::list(fk("rows")).item(
-                Field::object(fk("row")).add(
-                    Field::string(fk("internal_id"))
+        .property(
+            Property::list(fk("rows")).item(
+                Property::object(fk("row")).property(
+                    Property::string(fk("internal_id"))
                         .emit_as("externalId")
                         .unwrap(),
                 ),
@@ -908,13 +916,16 @@ fn project_applies_emit_as_inside_list_items() {
 #[test]
 fn project_applies_emit_as_inside_mode_payload() {
     let schema = Schema::builder()
-        .add(
-            Field::mode(fk("auth"))
+        .property(
+            Property::mode(fk("auth"))
                 .variant(
                     "token",
                     "Token",
-                    Field::object(fk("payload"))
-                        .add(Field::string(fk("client_id")).emit_as("clientId").unwrap()),
+                    Property::object(fk("payload")).property(
+                        Property::string(fk("client_id"))
+                            .emit_as("clientId")
+                            .unwrap(),
+                    ),
                 )
                 .default_variant("token"),
         )
@@ -936,8 +947,8 @@ fn project_extra_key_cannot_clobber_emit_as_output() {
     // INTEGRITY: an attacker-supplied extra key equal to a field's emit_as
     // output name must not overwrite the field's real projected value.
     let schema = Schema::builder()
-        .add(
-            Field::string(fk("internal_id"))
+        .property(
+            Property::string(fk("internal_id"))
                 .emit_as("externalId")
                 .unwrap(),
         )
@@ -965,8 +976,8 @@ fn project_extra_key_cannot_occupy_absent_emit_as_output_slot() {
     // field is ABSENT this submission — an attacker-supplied extra key equal to
     // that output name must not occupy the schema-owned slot.
     let schema = Schema::builder()
-        .add(
-            Field::string(fk("internal_id"))
+        .property(
+            Property::string(fk("internal_id"))
                 .emit_as("externalId")
                 .unwrap(),
         )
@@ -992,9 +1003,9 @@ fn project_extra_key_cannot_occupy_dropped_secret_field_output_slot() {
     // is dropped (wrong-shape blob → over-redacted to nothing) still reserves its
     // output slot; an extra key must not slip into it.
     let schema = Schema::builder()
-        .add(
-            Field::object(fk("creds"))
-                .add(Field::secret(fk("password")))
+        .property(
+            Property::object(fk("creds"))
+                .property(Property::secret(fk("password")))
                 .emit_as("credsOut")
                 .unwrap(),
         )
@@ -1028,7 +1039,7 @@ fn project_on_raw_read_aliased_secret_does_not_leak() {
     // is folded onto the canonical secret key and dropped — even when called
     // directly on raw, never-validated values.
     let schema = Schema::builder()
-        .add(Field::secret(fk("api_key")).read_alias("token").unwrap())
+        .property(Property::secret(fk("api_key")).read_alias("token").unwrap())
         .build()
         .unwrap();
 
@@ -1056,12 +1067,16 @@ fn lint_catches_alias_scope_collision_at_list_of_list_depth() {
     // A read-alias stealing a sibling secret's canonical key two containers deep
     // must still be rejected at build time.
     let report = Schema::builder()
-        .add(
-            Field::list(fk("outer")).item(
-                Field::list(fk("inner")).item(
-                    Field::object(fk("row"))
-                        .add(Field::string(fk("public")).read_alias("api_key").unwrap())
-                        .add(Field::secret(fk("api_key"))),
+        .property(
+            Property::list(fk("outer")).item(
+                Property::list(fk("inner")).item(
+                    Property::object(fk("row"))
+                        .property(
+                            Property::string(fk("public"))
+                                .read_alias("api_key")
+                                .unwrap(),
+                        )
+                        .property(Property::secret(fk("api_key"))),
                 ),
             ),
         )
@@ -1081,14 +1096,14 @@ fn lint_catches_alias_scope_collision_at_list_of_list_depth() {
 #[test]
 fn lint_catches_alias_self_collision_at_mode_of_list_depth() {
     let report = Schema::builder()
-        .add(
-            Field::mode(fk("auth"))
+        .property(
+            Property::mode(fk("auth"))
                 .variant(
                     "v",
                     "V",
-                    Field::list(fk("items")).item(
-                        Field::object(fk("row"))
-                            .add(Field::string(fk("name")).read_alias("name").unwrap()),
+                    Property::list(fk("items")).item(
+                        Property::object(fk("row"))
+                            .property(Property::string(fk("name")).read_alias("name").unwrap()),
                     ),
                 )
                 .default_variant("v"),
@@ -1111,9 +1126,9 @@ fn lint_catches_emit_on_secret_for_bare_list_item() {
     // A bare secret list item is not a scope member, so emit_on_secret must be
     // checked on it directly.
     let report = Schema::builder()
-        .add(
-            Field::list(fk("tokens"))
-                .item(Field::secret(fk("tok")).emit_as("exposedToken").unwrap()),
+        .property(
+            Property::list(fk("tokens"))
+                .item(Property::secret(fk("tok")).emit_as("exposedToken").unwrap()),
         )
         .build()
         .unwrap_err();
@@ -1133,7 +1148,10 @@ fn lint_nested_self_collision_reported_exactly_once() {
     // A single recursion owner: a collision inside a nested object is reported
     // exactly once, not duplicated by a second recursion pass.
     let report = Schema::builder()
-        .add(Field::object(fk("user")).add(Field::string(fk("name")).read_alias("name").unwrap()))
+        .property(
+            Property::object(fk("user"))
+                .property(Property::string(fk("name")).read_alias("name").unwrap()),
+        )
         .build()
         .unwrap_err();
 

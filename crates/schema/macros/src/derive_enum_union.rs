@@ -327,7 +327,7 @@ fn build_variant_call(
                 #crate_path::Property::object(
                     #crate_path::FieldKey::new(#wire_key)?,
                 )
-                #( .add(#field_exprs) )*
+                #( .property(#field_exprs) )*
             };
             Ok(quote! { .variant(#wire_key, #label, #payload) })
         },

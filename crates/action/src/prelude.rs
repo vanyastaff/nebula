@@ -20,7 +20,7 @@ pub use nebula_core::{
     context::{HasCredentials, HasEventBus, HasLogger, HasMetrics, HasResources},
 };
 pub use nebula_credential::CredentialGuard;
-pub use nebula_schema::{Field, Schema, ValidSchema, field_key};
+pub use nebula_schema::{Property, Schema, ValidSchema, field_key};
 
 pub use crate::{
     action::Action,

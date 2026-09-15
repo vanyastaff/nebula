@@ -81,7 +81,7 @@
 // Action traits and types
 pub use nebula_action::{
     Action, ActionContext, ActionEffectContract, ActionError, ActionMetadataDraft, ActionResult,
-    Field, IsolationLevel, RemoteDestinationGuarantee, RemoteEffectDescriptor, RemoteEffectPolicy,
+    IsolationLevel, RemoteDestinationGuarantee, RemoteEffectDescriptor, RemoteEffectPolicy,
     RemoteEffectPolicyBuilder, RemoteEffectPolicyError, Schema, StatelessAction, StreamAction,
     TriggerContext, TriggerEvent, TriggerEventOutcome, TriggerHealthSnapshot, WebhookRequest,
     field_key,
@@ -159,7 +159,7 @@ pub use nebula_resource::{
 // paths prefer a direct (including renamed) leaf dependency, then the SDK's
 // hidden macro namespace.
 // Schema types — Schema/ValidSchema/field_key already re-exported via nebula_action above.
-// Property is the canonical authoring carrier; Field remains available through action
+// Property is the canonical authoring carrier; Property remains available through action
 // compatibility exports.
 pub use nebula_schema::{
     AuthoredValue, BooleanField, CodeField, ComputedField, DynamicField, EnumSelect, Expression,

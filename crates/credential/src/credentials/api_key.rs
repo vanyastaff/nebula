@@ -163,14 +163,19 @@ mod tests {
     fn parameters_contains_server_and_api_key() {
         let params = nebula_schema::schema_of::<<ApiKeyCredential as Credential>::Properties>()
             .expect("valid API key schema");
-        assert!(params.fields().iter().any(|f| f.key().as_str() == "server"));
         assert!(
             params
-                .fields()
+                .properties()
+                .iter()
+                .any(|f| f.key().as_str() == "server")
+        );
+        assert!(
+            params
+                .properties()
                 .iter()
                 .any(|f| f.key().as_str() == "api_key")
         );
-        assert_eq!(params.fields().len(), 2);
+        assert_eq!(params.properties().len(), 2);
     }
 
     #[test]
@@ -178,7 +183,7 @@ mod tests {
         let params = nebula_schema::schema_of::<<ApiKeyCredential as Credential>::Properties>()
             .expect("valid API key schema");
         let server = params
-            .fields()
+            .properties()
             .iter()
             .find(|f| f.key().as_str() == "server")
             .unwrap();

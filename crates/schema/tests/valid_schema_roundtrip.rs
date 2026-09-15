@@ -4,13 +4,13 @@
 //! schemas declared by plugin authors must survive a JSON round-trip without
 //! losing field shape.
 
-use nebula_schema::{Field, Schema, SchemaKind, ValidSchema, field_key};
+use nebula_schema::{Property, Schema, SchemaKind, ValidSchema, field_key};
 
 #[test]
 fn valid_schema_json_roundtrip_preserves_fields() {
     let original = Schema::builder()
-        .add(Field::string(field_key!("name")).required())
-        .add(Field::number(field_key!("age")))
+        .property(Property::string(field_key!("name")).required())
+        .property(Property::number(field_key!("age")))
         .build()
         .unwrap();
 

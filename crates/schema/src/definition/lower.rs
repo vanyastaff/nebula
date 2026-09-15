@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use serde_json::Number;
 
 use crate::{
-    ExpressionMode, Field, ScalarSchema, Schema, ValidSchema, ValidationError, ValidationReport,
+    ExpressionMode, Property, ScalarSchema, Schema, ValidSchema, ValidationError, ValidationReport,
 };
 
 use super::{
@@ -127,12 +127,12 @@ impl Lowerer<'_> {
         self.check_intrinsic_rules(intrinsic_rules)?;
         let mut builder = Schema::builder();
         for property in properties {
-            builder = builder.add(self.lower_property(property)?);
+            builder = builder.property(self.lower_property(property)?);
         }
         builder.build()
     }
 
-    fn lower_property(&self, property: &PropertyUse) -> Result<Field, ValidationReport> {
+    fn lower_property(&self, property: &PropertyUse) -> Result<Property, ValidationReport> {
         if !matches!(property.presence, PresencePolicy::Required) {
             return Err(LowerIssue::Occurrence.into_report());
         }
@@ -156,17 +156,19 @@ impl Lowerer<'_> {
                 if !matches!(property.core.empty_string, EmptyPolicy::Allow) {
                     return Err(LowerIssue::Occurrence.into_report());
                 }
-                Ok(Field::boolean(property.key.clone()).required().into_field())
+                Ok(Property::boolean(property.key.clone())
+                    .required()
+                    .into_property())
             },
             Body::String { intrinsic_rules } => {
                 self.check_intrinsic_rules(intrinsic_rules)?;
                 if !matches!(property.core.empty_string, EmptyPolicy::Reject) {
                     return Err(LowerIssue::Occurrence.into_report());
                 }
-                Ok(Field::string(property.key.clone())
+                Ok(Property::string(property.key.clone())
                     .required()
                     .no_expression()
-                    .into_field())
+                    .into_property())
             },
             Body::Integer(numeric) => {
                 self.check_intrinsic_rules(&numeric.intrinsic_rules)?;
@@ -174,12 +176,12 @@ impl Lowerer<'_> {
                     return Err(LowerIssue::Occurrence.into_report());
                 }
                 let (minimum, maximum) = numeric_bounds(numeric)?;
-                Ok(Field::integer(property.key.clone())
+                Ok(Property::integer(property.key.clone())
                     .required()
                     .no_expression()
                     .min(minimum)
                     .max(maximum)
-                    .into_field())
+                    .into_property())
             },
             Body::Number(numeric) => {
                 self.check_intrinsic_rules(&numeric.intrinsic_rules)?;
@@ -187,12 +189,12 @@ impl Lowerer<'_> {
                     return Err(LowerIssue::Occurrence.into_report());
                 }
                 let (minimum, maximum) = numeric_bounds(numeric)?;
-                Ok(Field::number(property.key.clone())
+                Ok(Property::number(property.key.clone())
                     .required()
                     .no_expression()
                     .min(minimum)
                     .max(maximum)
-                    .into_field())
+                    .into_property())
             },
             Body::Any | Body::Null => Err(LowerIssue::Occurrence.into_report()),
             Body::Bytes => Err(LowerIssue::Bytes.into_report()),

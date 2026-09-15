@@ -1,5 +1,5 @@
 use criterion::{Criterion, black_box};
-use nebula_schema::{Field, FieldKey, Schema};
+use nebula_schema::{FieldKey, Property, Schema};
 use serde_json::json;
 
 fn schema_with_fields(field_count: usize) -> Schema {
@@ -7,7 +7,12 @@ fn schema_with_fields(field_count: usize) -> Schema {
     for index in 0..field_count {
         let key = format!("k_{index}");
         let key = FieldKey::new(key).expect("generated key should be valid");
-        fields.push(Field::string(key).required().min_length(1).into_field());
+        fields.push(
+            Property::string(key)
+                .required()
+                .min_length(1)
+                .into_property(),
+        );
     }
     serde_json::from_value(json!({ "fields": fields }))
         .expect("benchmark schema should deserialize")

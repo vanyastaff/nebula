@@ -2,8 +2,8 @@
 
 use nebula_expression::{EvaluationContext, ExpressionEngine};
 use nebula_schema::{
-    AuthoredValue, CompiledValue, EngineExpressionContext, Expression, ExpressionMode, Field,
-    ProgramSyntax, Schema, ValuePath, field_key,
+    AuthoredValue, CompiledValue, EngineExpressionContext, Expression, ExpressionMode,
+    ProgramSyntax, Property, Schema, ValuePath, field_key,
 };
 use serde_json::json;
 
@@ -66,7 +66,7 @@ fn clones_share_compilation_without_sharing_different_syntax() {
 #[tokio::test]
 async fn required_templates_keep_string_semantics_through_preparation_and_wire() {
     let schema = Schema::builder()
-        .add(Field::string(field_key!("value")).expression_mode(ExpressionMode::Required))
+        .property(Property::string(field_key!("value")).expression_mode(ExpressionMode::Required))
         .build()
         .unwrap();
     let mut authored = AuthoredValue::object();
@@ -107,7 +107,7 @@ async fn required_templates_keep_string_semantics_through_preparation_and_wire()
 #[tokio::test]
 async fn template_result_still_obeys_final_type_validation() {
     let schema = Schema::builder()
-        .add(Field::number(field_key!("value")))
+        .property(Property::number(field_key!("value")))
         .build()
         .unwrap();
     let context = EngineExpressionContext::with_input(json!(null));
@@ -135,11 +135,11 @@ async fn template_result_still_obeys_final_type_validation() {
 #[test]
 fn every_syntax_obeys_forbidden_and_data_only_boundaries() {
     let forbidden = Schema::builder()
-        .add(Field::string(field_key!("value")).no_expression())
+        .property(Property::string(field_key!("value")).no_expression())
         .build()
         .unwrap();
     let allowed = Schema::builder()
-        .add(Field::string(field_key!("value")))
+        .property(Property::string(field_key!("value")))
         .build()
         .unwrap();
     for syntax in [
@@ -199,7 +199,7 @@ fn template_shorthand_keeps_auto_and_data_ingress_keeps_literal() {
 #[tokio::test]
 async fn template_results_remain_data_instead_of_reentering_authoring() {
     let schema = Schema::builder()
-        .add(Field::string(field_key!("value")))
+        .property(Property::string(field_key!("value")))
         .build()
         .unwrap();
     let mut authored = AuthoredValue::object();

@@ -209,7 +209,7 @@ struct StringInput {
 impl HasSchema for StringInput {
     fn schema() -> Result<ValidSchema, nebula_schema::ValidationReport> {
         Schema::builder()
-            .add(nebula_schema::Field::string(field_key!("value")).required())
+            .property(nebula_schema::Property::string(field_key!("value")).required())
             .build()
     }
 }
@@ -223,7 +223,7 @@ struct SecretInput {
 impl HasSchema for SecretInput {
     fn schema() -> Result<ValidSchema, nebula_schema::ValidationReport> {
         Schema::builder()
-            .add(SecretField::new(field_key!("token")))
+            .property(SecretField::new(field_key!("token")))
             .build()
     }
 }

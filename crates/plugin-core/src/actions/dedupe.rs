@@ -81,7 +81,7 @@ pub struct DedupeInput {
     /// Array of JSON objects to deduplicate. Must be a JSON array when present.
     #[serde(default)]
     pub data: Option<Value>,
-    /// Field names whose value-tuple defines element identity. At least one
+    /// Property names whose value-tuple defines element identity. At least one
     /// required; empty `keys` is rejected — use `array.unique` for
     /// whole-value dedup.
     pub keys: Vec<String>,
@@ -94,8 +94,8 @@ impl HasSchema for DedupeInput {
         SCHEMA
             .get_or_init(|| {
                 Schema::builder()
-                    .add(super::input_schema::record_data())
-                    .add(super::input_schema::strings(field_key!("keys")).required())
+                    .property(super::input_schema::record_data())
+                    .property(super::input_schema::strings(field_key!("keys")).required())
                     .root_rule(super::input_schema::array_present(field_key!("data"))?)
                     .build()
             })

@@ -11,7 +11,7 @@ use nebula_core::{
 use nebula_credential::Capabilities;
 use nebula_error::ActivationDiagnostic;
 use nebula_schema::{
-    Assignability, AuthoredValue, Field, FieldKey, InputSchema, OutputSchema, PathWalk,
+    Assignability, AuthoredValue, FieldKey, InputSchema, OutputSchema, PathWalk, Property,
     RequiredMode, RootShape, Schema, SchemaKind, ValidSchema, ValuePath, canonical_json_v1,
     explain_assignable, explain_field_assignable,
 };
@@ -1518,34 +1518,34 @@ fn validate_schema(
     {
         return Err(noncanonical(section));
     }
-    for field in schema.schema.fields() {
+    for field in schema.schema.properties() {
         validate_schema_field(field, section)?;
     }
     Ok(())
 }
 
 fn validate_schema_field(
-    field: &Field,
+    field: &Property,
     section: &'static str,
 ) -> Result<(), ExecutablePlanIntegrityError> {
-    if matches!(field, Field::Unknown(_)) {
+    if matches!(field, Property::Unknown(_)) {
         return Err(noncanonical(section));
     }
     if field_contains_secret(field) && field.default().is_some() {
         return Err(noncanonical(section));
     }
     match field {
-        Field::Object(object) => {
+        Property::Object(object) => {
             for child in &object.fields {
                 validate_schema_field(child, section)?;
             }
         },
-        Field::List(list) => {
+        Property::List(list) => {
             if let Some(item) = list.item.as_deref() {
                 validate_schema_field(item, section)?;
             }
         },
-        Field::Mode(mode) => {
+        Property::Mode(mode) => {
             for variant in &mode.variants {
                 validate_schema_field(&variant.field, section)?;
             }
@@ -1555,12 +1555,12 @@ fn validate_schema_field(
     Ok(())
 }
 
-fn field_contains_secret(field: &Field) -> bool {
+fn field_contains_secret(field: &Property) -> bool {
     match field {
-        Field::Secret(_) => true,
-        Field::Object(object) => object.fields.iter().any(field_contains_secret),
-        Field::List(list) => list.item.as_deref().is_some_and(field_contains_secret),
-        Field::Mode(mode) => mode
+        Property::Secret(_) => true,
+        Property::Object(object) => object.fields.iter().any(field_contains_secret),
+        Property::List(list) => list.item.as_deref().is_some_and(field_contains_secret),
+        Property::Mode(mode) => mode
             .variants
             .iter()
             .any(|variant| field_contains_secret(&variant.field)),
@@ -1875,7 +1875,7 @@ pub(crate) fn validate_parameter_contract(
     let field = action
         .input_schema
         .schema
-        .find(&key)
+        .find_property(&key)
         .ok_or_else(|| noncanonical("nodes.parameters.schema"))?;
     if let RecordedParameterValueV1::Literal { value } = &parameter.value
         && value_populates_secret(field, value)
@@ -1889,7 +1889,7 @@ pub(crate) fn validate_parameter_contract(
         return Ok(());
     }
     let one_field_schema = Schema::builder()
-        .add(field.clone())
+        .property(field.clone())
         .build()
         .map_err(|_| noncanonical("nodes.parameters.schema"))?;
     let mut values = AuthoredValue::object();
@@ -1960,7 +1960,7 @@ pub(crate) fn validate_node_parameters(
         // Omitted reference values cannot stand in for the complete rule input.
         return Err(noncanonical("nodes.parameters.root_rules"));
     }
-    for field in action.input_schema.schema.fields() {
+    for field in action.input_schema.schema.properties() {
         match field.required() {
             RequiredMode::Always if !supplied.contains(field.key().as_str()) => {
                 return Err(noncanonical("nodes.parameters.required"));
@@ -2019,7 +2019,7 @@ pub(crate) fn validate_node_parameters(
     }
 }
 
-fn field_context_depends_on_reference(field: &Field, referenced: &HashSet<&str>) -> bool {
+fn field_context_depends_on_reference(field: &Property, referenced: &HashSet<&str>) -> bool {
     let contextual_rules = match field.required() {
         RequiredMode::When(required) => Some(required),
         _ => None,
@@ -2032,35 +2032,35 @@ fn field_context_depends_on_reference(field: &Field, referenced: &HashSet<&str>)
     }
 
     match field {
-        Field::Object(object) => object
+        Property::Object(object) => object
             .fields
             .iter()
             .any(|child| field_context_depends_on_reference(child, referenced)),
-        Field::List(list) => list
+        Property::List(list) => list
             .item
             .as_deref()
             .is_some_and(|item| field_context_depends_on_reference(item, referenced)),
-        Field::Mode(mode) => mode
+        Property::Mode(mode) => mode
             .variants
             .iter()
             .any(|variant| field_context_depends_on_reference(variant.field.as_ref(), referenced)),
-        Field::Unknown(_) => !referenced.is_empty(),
+        Property::Unknown(_) => !referenced.is_empty(),
         _ => false,
     }
 }
 
-fn field_contains_contextual_policy(field: &Field) -> bool {
+fn field_contains_contextual_policy(field: &Property) -> bool {
     if matches!(field.required(), RequiredMode::When(_)) {
         return true;
     }
 
     match field {
-        Field::Object(object) => object.fields.iter().any(field_contains_contextual_policy),
-        Field::List(list) => list
+        Property::Object(object) => object.fields.iter().any(field_contains_contextual_policy),
+        Property::List(list) => list
             .item
             .as_deref()
             .is_some_and(field_contains_contextual_policy),
-        Field::Mode(mode) => mode
+        Property::Mode(mode) => mode
             .variants
             .iter()
             .any(|variant| field_contains_contextual_policy(variant.field.as_ref())),
@@ -2092,10 +2092,10 @@ fn typed_literal(value: Value) -> Result<AuthoredValue, ExecutablePlanIntegrityE
     AuthoredValue::from_data(value).map_err(|_| noncanonical("nodes.parameters.schema"))
 }
 
-fn value_populates_secret(field: &Field, value: &Value) -> bool {
+fn value_populates_secret(field: &Property, value: &Value) -> bool {
     match field {
-        Field::Secret(_) => true,
-        Field::Object(object) => value.as_object().is_some_and(|values| {
+        Property::Secret(_) => true,
+        Property::Object(object) => value.as_object().is_some_and(|values| {
             object.fields.iter().any(|child| {
                 // Raw records retain shadowed aliases, so every spelling must be checked.
                 std::iter::once(child.key())
@@ -2104,14 +2104,14 @@ fn value_populates_secret(field: &Field, value: &Value) -> bool {
                     .any(|child_value| value_populates_secret(child, child_value))
             })
         }),
-        Field::List(list) => list.item.as_deref().is_some_and(|item| {
+        Property::List(list) => list.item.as_deref().is_some_and(|item| {
             value.as_array().is_some_and(|values| {
                 values
                     .iter()
                     .any(|child_value| value_populates_secret(item, child_value))
             })
         }),
-        Field::Mode(mode) => value.as_object().is_some_and(|envelope| {
+        Property::Mode(mode) => value.as_object().is_some_and(|envelope| {
             let selected = envelope.get("mode").and_then(Value::as_str);
             let payload = envelope.get("value");
             mode.variants.iter().any(|variant| {
@@ -2240,7 +2240,7 @@ pub(crate) fn validate_trigger_configuration(
     if schema.kind() != SchemaKind::Any && schema.first_undeclared_path(&values).is_some() {
         return Err(noncanonical("triggers.configuration.schema"));
     }
-    for field in schema.fields() {
+    for field in schema.properties() {
         if std::iter::once(field.key())
             .chain(field.read_aliases())
             .filter_map(|key| values.get(key.as_str()))
@@ -2512,17 +2512,17 @@ fn validate_reference_schema(
     let consumer_field = consumer_action
         .input_schema
         .schema
-        .find(&consumer_key)
+        .find_property(&consumer_key)
         .ok_or_else(|| noncanonical("nodes.parameters.reference"))?;
     if output_path.is_root() {
-        let Field::Object(object) = consumer_field else {
+        let Property::Object(object) = consumer_field else {
             return Err(noncanonical("nodes.parameters.reference.root"));
         };
         if object.fields.is_empty() {
             return Err(noncanonical("nodes.parameters.reference.root"));
         }
         let consumer_schema = Schema::builder()
-            .add_many(object.fields.clone())
+            .properties(object.fields.clone())
             .build()
             .map_err(|_| noncanonical("nodes.parameters.reference.root"))?;
         let producer = OutputSchema::new(producer_schema.clone());

@@ -23,7 +23,7 @@ an internal technical boundary, not a separately supported downstream API.
 - `src/schema.rs` — `Schema` / `SchemaBuilder` (draft model + `build()` proof-token entry)
 - `src/validated/mod.rs` - schema snapshots and checked `ValidSchema`; `validated/preparation.rs`, `validation.rs`, and `values.rs` own consuming preparation, validator integration, and `ValidValues`/`ResolvedValues` custody
 - `src/value/mod.rs` - `ValueTree<E>`, phase aliases, `ScalarValue`, and RFC6901 `ValuePath`; helpers `value/tree.rs`, `wire.rs`, `tree_canonical.rs`, and `canonical.rs` separate representation, authored serde, tree identity, and durable raw-JSON v1 bytes
-- `src/field.rs` — unified `Field` enum + all field kinds (string/number/secret/select/object/list/mode/computed…)
+- `src/field.rs` — unified `Property` enum + all property kinds (string/number/secret/select/object/list/mode/computed...)
 - `src/lint.rs` — structural lint passes (duplicate keys, cross-field invariants the builder type can't express)
 - `src/has_schema.rs` - checked `HasSchema` / `schema_of` returning `Result<ValidSchema, ValidationReport>`; the sole type-driven Action/Credential/Resource schema path (ADR-0052 P3)
 - `src/expression.rs` - safe authored sources and `ExpressionContext` over retained `CompiledProgram`s
@@ -71,7 +71,7 @@ an internal technical boundary, not a separately supported downstream API.
   It rejects compiled expressions and performs full rules and conditional policies.
 - This crate is NOT a validation-rules engine (that's `nebula-validator`) nor an expression evaluator (resolution delegates to a caller-supplied `ExpressionContext`).
 - The single schema→validator crossing is `validate_rules_with_ctx` + `resolve_field_policies`; rule-failure codes surface validator-native verbatim (`min_length`, `min`, `invalid_format`) — no namespace remap (ADR-0052 P2).
-- Field/root checks share `prepared_predicate_context`; secret subtrees and
+- Property/root checks share `prepared_predicate_context`; secret subtrees and
   expression sources are unavailable, pending paths are supplied separately,
   and whole-container predicates remain supported. Predicate arrays stay opaque
   leaves. Raw wrappers must guard depth before copying and scrub aliases, wrong
@@ -106,8 +106,8 @@ an internal technical boundary, not a separately supported downstream API.
 - `$root.foo` rule references are removed. Reject them with
   `reference.legacy_root` and include the JSON Pointer rewrite (`/foo`).
 - No KDF/hashing here — cryptographic primitives belong to `nebula-crypto`.
-- Declaration construction is strict: `Field::*::new` needs a pre-validated
-  `FieldKey`; use `field_key!(...)` or `Field::try_*`, never panic-on-bad-key
+- Declaration construction is strict: `Property::*::new` needs a pre-validated
+  `FieldKey`; use `field_key!(...)` or `Property::try_*`, never panic-on-bad-key
   helpers. Do not impose declaration-key syntax on arbitrary data properties.
 - `#[deny(clippy::disallowed_macros)]` bans `#[async_trait]`; use the crate's `EvalFuture` (BoxFuture) alias for object-safe async.
 

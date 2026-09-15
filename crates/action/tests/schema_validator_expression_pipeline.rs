@@ -25,7 +25,7 @@ use nebula_action::{
 };
 use nebula_core::{Dependencies, action_key};
 use nebula_schema::{
-    AuthoredValue, EngineExpressionContext, Field, HasSchema, Schema, ValidSchema, field_key,
+    AuthoredValue, EngineExpressionContext, HasSchema, Property, Schema, ValidSchema, field_key,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -46,9 +46,9 @@ struct PipelineInput {
 impl HasSchema for PipelineInput {
     fn schema() -> Result<ValidSchema, nebula_schema::ValidationReport> {
         Schema::builder()
-            .add(Field::string(field_key!("name")).required())
-            .add(Field::number(field_key!("count")).integer())
-            .add(Field::string(field_key!("message")))
+            .property(Property::string(field_key!("name")).required())
+            .property(Property::number(field_key!("count")).integer())
+            .property(Property::string(field_key!("message")))
             .build()
     }
 }

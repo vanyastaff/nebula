@@ -8,7 +8,7 @@ use smallvec::SmallVec;
 
 use crate::{
     error::{ValidationError, ValidationReport},
-    field::{Field, ModeField, ModeVariant, Property},
+    field::{ModeField, ModeVariant, Property},
     key::FieldKey,
     loader::{LoaderContext, LoaderRegistry, LoaderResult},
     option::SelectOption,
@@ -236,7 +236,7 @@ impl<'de> Deserialize<'de> for ValidSchema {
             #[serde(default, deserialize_with = "deserialize_present")]
             serde_tagging: Option<SerdeTagging>,
             #[serde(default, deserialize_with = "deserialize_present")]
-            fields: Option<Vec<Field>>,
+            fields: Option<Vec<Property>>,
             #[serde(default, deserialize_with = "deserialize_present")]
             root_rules: Option<Vec<nebula_validator::Rule>>,
             #[serde(default, deserialize_with = "deserialize_present")]
@@ -271,7 +271,7 @@ impl<'de> Deserialize<'de> for ValidSchema {
         let fields = repr.fields.unwrap_or_default();
         let root_rules = repr.root_rules.unwrap_or_default();
         if repr.kind == SchemaKind::Union {
-            // Fail closed: a union is exactly one required root `Field::Mode`
+            // Fail closed: a union is exactly one required root `Property::Mode`
             // plus a `serde_tagging`. Reconstruct through `ValidSchema::union`
             // so the same lint / index / required-root invariants the in-process
             // constructor enforces also gate wire-loaded unions — a malformed
@@ -293,7 +293,7 @@ impl<'de> Deserialize<'de> for ValidSchema {
                     "union schema must carry exactly one root mode field",
                 ));
             }
-            let Some(Field::Mode(mode)) = fields.into_iter().next() else {
+            let Some(Property::Mode(mode)) = fields.into_iter().next() else {
                 return Err(serde::de::Error::custom(
                     "union schema's root field must be a mode field",
                 ));
@@ -323,7 +323,7 @@ impl<'de> Deserialize<'de> for ValidSchema {
         }
         let mut b = fields.into_iter().fold(
             crate::schema::SchemaBuilder::default(),
-            super::schema::SchemaBuilder::add,
+            super::schema::SchemaBuilder::property,
         );
         for rule in root_rules {
             b = b.root_rule(rule);
@@ -496,7 +496,7 @@ impl ValidSchema {
     /// [`ModeVariant`] per Rust enum variant, its key
     /// the serde wire discriminant; `tagging` records how the enum's wire form
     /// maps onto those keys (see [`SerdeTagging`]). The union is stored as the
-    /// schema's sole **required** root [`Field::Mode`] (see [`SchemaKind::Union`]),
+    /// schema's sole **required** root [`Property::Mode`] (see [`SchemaKind::Union`]),
     /// so it is built through the normal
     /// [`SchemaBuilder`](crate::schema::SchemaBuilder) — running the same field
     /// lint (variant-key validity and uniqueness), index build, and depth/fan-out
@@ -537,7 +537,7 @@ impl ValidSchema {
         // stamps the kind + tagging during construction (no post-build `Arc`
         // surgery, no panic path).
         crate::schema::Schema::builder()
-            .add(mode_field.required())
+            .property(mode_field.required())
             .build_with_policy(Some(tagging), policy)
     }
 
@@ -551,7 +551,7 @@ impl ValidSchema {
     /// `"Variant"` (external) and `{<tag>: "Variant", <content>: payload}` /
     /// `{<tag>: "Variant"}` (adjacent) — into the internal envelope
     /// `{<root>: {"mode": "Variant", "value": payload}}` keyed under the union's sole
-    /// root [`Field::Mode`], driven by the stored [`SerdeTagging`]. This closes the
+    /// root [`Property::Mode`], driven by the stored [`SerdeTagging`]. This closes the
     /// C1 value-layer gap so a derived union validates the serde wire its
     /// `#[derive(Serialize)]` actually emits. All strings and objects remain data,
     /// including template-like strings and objects with a `$expr` property.
@@ -608,7 +608,7 @@ impl ValidSchema {
                 "union schema is missing its root mode field".to_owned(),
             ));
         };
-        let Field::Mode(mode) = root_property else {
+        let Property::Mode(mode) = root_property else {
             return Err(malformed(
                 "union schema's root field is not a mode field".to_owned(),
             ));
@@ -717,7 +717,7 @@ impl ValidSchema {
         if self.kind() != SchemaKind::Union {
             return data;
         }
-        let (Some(Field::Mode(mode)), Some(tagging)) =
+        let (Some(Property::Mode(mode)), Some(tagging)) =
             (self.properties().first(), self.serde_tagging())
         else {
             return data;
@@ -773,7 +773,7 @@ impl ValidSchema {
     /// The path of the first value key that no field of this schema declares —
     /// the closed-set query, walked through nested objects, list
     /// items, and a union's active variant payload (`mode`/`value` are structural
-    /// keys of a [`Field::Mode`] envelope, not flagged). `None` when every key in
+    /// keys of a [`Property::Mode`] envelope, not flagged). `None` when every key in
     /// `values` maps onto a declared field. Paths use RFC6901, preserving arbitrary
     /// property names and empty segments. Read aliases follow preparation's
     /// canonical precedence; opaque field contents are not declared-key scopes.
@@ -823,12 +823,6 @@ impl ValidSchema {
         self.0.root.properties()
     }
 
-    /// Borrow all top-level fields in insertion order.
-    #[must_use]
-    pub fn fields(&self) -> &[Field] {
-        self.properties()
-    }
-
     /// Borrow the build-time flags.
     #[must_use]
     pub fn flags(&self) -> &SchemaFlags {
@@ -853,12 +847,6 @@ impl ValidSchema {
             .find(|property| property.key() == key)
     }
 
-    /// Find a top-level legacy field by key.
-    #[must_use]
-    pub fn find(&self, key: &FieldKey) -> Option<&Field> {
-        self.find_property(key)
-    }
-
     /// Find a property by dotted path using the O(1) index.
     #[must_use]
     pub fn find_property_by_path(&self, path: &FieldPath) -> Option<&Property> {
@@ -866,19 +854,13 @@ impl ValidSchema {
         let mut cur = self.properties().get(*handle.cursor.first()? as usize)?;
         for &step in &handle.cursor[1..] {
             cur = match cur {
-                Field::Object(o) => o.fields.get(step as usize)?,
-                Field::List(l) => l.item.as_deref()?,
-                Field::Mode(m) => &m.variants.get(step as usize)?.field,
+                Property::Object(o) => o.fields.get(step as usize)?,
+                Property::List(l) => l.item.as_deref()?,
+                Property::Mode(m) => &m.variants.get(step as usize)?.field,
                 _ => return None,
             };
         }
         Some(cur)
-    }
-
-    /// Find a field by dotted path using the O(1) index.
-    #[must_use]
-    pub fn find_by_path(&self, path: &FieldPath) -> Option<&Field> {
-        self.find_property_by_path(path)
     }
 
     /// Walk a `Reference` parameter's canonical RFC6901 `output_path` through this
@@ -886,7 +868,7 @@ impl ValidSchema {
     /// TypeDAG, W0 U5).
     ///
     /// Consumes already-decoded [`ValuePath`] segments. This is intentionally
-    /// **not** [`Self::find_by_path`]
+    /// **not** [`Self::find_property_by_path`]
     /// (which index-jumps straight to a leaf and conflates "absent" with "under
     /// an opaque node") — it re-walks field-by-field so opacity can be checked at
     /// every intermediate node, not just the destination.
@@ -903,7 +885,7 @@ impl ValidSchema {
     /// something we cannot reason about" ([`PathWalk::Opaque`], the caller's
     /// fail-open exit) — only the former is ever a hard error.
     ///
-    /// ## Field classification (exhaustive — every arm is deliberate)
+    /// ## Property classification (exhaustive — every arm is deliberate)
     ///
     /// - **Closed scalar leaf** — `String`/`Secret`/`Number`/`Boolean`/`Code`. A
     ///   further segment past one of these is provably wrong:
@@ -916,7 +898,7 @@ impl ValidSchema {
     /// - **Non-empty `Object`** — closed *only* for descending into a key that is
     ///   actually declared; a missing key is [`PathWalk::Opaque`], **never** a
     ///   hard error. [`HasSchema`](crate::HasSchema) is a public, **unsealed**
-    ///   trait with real hand-written impls in the tree, and [`Field::Object`]
+    ///   trait with real hand-written impls in the tree, and [`Property::Object`]
     ///   carries no exhaustiveness marker distinguishing a derive-guaranteed-
     ///   complete object from a possibly-incomplete hand-written one — so a
     ///   non-empty `Object` cannot be trusted as an exhaustive declaration of
@@ -930,7 +912,7 @@ impl ValidSchema {
     ///   required: [`PathResolveError::NonIndexOnList`] otherwise), but its
     ///   `item` is reclassified at the descent step: `None` (untyped) or an
     ///   opaque item (e.g. `Vec<serde_json::Value>`) → [`PathWalk::Opaque`].
-    /// - **`Mode`/`Dynamic`/`Computed`/`Unknown`, or any `Field` variant this
+    /// - **`Mode`/`Dynamic`/`Computed`/`Unknown`, or any `Property` variant this
     ///   version does not yet know about** — opaque, via an explicit wildcard
     ///   arm so a future variant defaults to opaque rather than silently
     ///   becoming hard-errorable.
@@ -969,7 +951,7 @@ impl ValidSchema {
             return PathWalk::Opaque;
         }
         let Some(root_field) = self
-            .fields()
+            .properties()
             .iter()
             .find(|field| field.key().as_str() == root_key.as_ref())
         else {
@@ -994,9 +976,9 @@ impl ValidSchema {
         }
     }
 
-    /// Wrap a single `Field` under a synthetic `key` into a one-field schema, so
+    /// Wrap a single `Property` under a synthetic `key` into a one-field schema, so
     /// [`explain_assignable`](crate::explain_assignable) — which pairs a
-    /// producer/consumer field by [`Field::key`] equality — can be reused at
+    /// producer/consumer field by [`Property::key`] equality — can be reused at
     /// **field granularity**. Crate-private: the only caller is
     /// [`explain_field_assignable`](crate::compat::explain_field_assignable),
     /// which builds these, compares them, and discards them within the same
@@ -1009,9 +991,9 @@ impl ValidSchema {
     /// the consumer parameter key the caller is checking it against. Re-keying
     /// both the producer leaf and the consumer field to the same synthetic key
     /// is what lets the assignability check's key-based field pairing match them
-    /// up. (`Field::Unknown`'s key is private to this module and is left
+    /// up. (`Property::Unknown`'s key is private to this module and is left
     /// un-rekeyed; harmless because every caller gates on the field being
-    /// non-opaque first, and `Field::Unknown` is always opaque — see
+    /// non-opaque first, and `Property::Unknown` is always opaque — see
     /// [`Self::walk_reference_path`].)
     ///
     /// Bypasses the full lint / index-build pipeline `SchemaBuilder::build` runs
@@ -1020,7 +1002,7 @@ impl ValidSchema {
     /// [`Self::fields`]/[`Self::kind`] — never the path index or build-time
     /// flags — so an empty index and default flags are safe for this narrow,
     /// internal, single-comparison use.
-    pub(crate) fn single_field(key: FieldKey, field: Field) -> ValidSchema {
+    pub(crate) fn single_field(key: FieldKey, field: Property) -> ValidSchema {
         Self::from_inner(ValidSchemaInner {
             policy: SchemaPolicy::PropertiesV2,
             root: RootShape::record(vec![rekeyed(field, key)], Vec::new()),
@@ -1126,11 +1108,11 @@ impl ValidSchema {
     /// # Example
     ///
     /// ```rust
-    /// use nebula_schema::{AuthoredValue, Field, Schema, field_key};
+    /// use nebula_schema::{AuthoredValue, Property, Schema, field_key};
     /// use serde_json::json;
     ///
     /// let schema = Schema::builder()
-    ///     .add(Field::string(field_key!("name")).required())
+    ///     .property(Property::string(field_key!("name")).required())
     ///     .build()
     ///     .unwrap();
     /// assert!(schema.validate(AuthoredValue::from_data(json!({})).unwrap()).is_err());
@@ -1197,7 +1179,7 @@ pub enum PathWalk<'a> {
     ResolvedRoot,
     /// Every node from root to leaf was closed (fully, provably typed); here is
     /// the resolved leaf field.
-    Resolved(&'a Field),
+    Resolved(&'a Property),
     /// A provable structural mistake on an otherwise fully-closed path.
     Unresolved(PathResolveError),
     /// The walk hit an opaque node, a missing `Object` key, or an untyped/opaque
@@ -1233,7 +1215,7 @@ pub enum PathResolveError {
 /// [`ValidSchema::walk_reference_path`].
 enum PathStep<'a> {
     /// Advance the walk into this child field.
-    Advance(&'a Field),
+    Advance(&'a Property),
     /// Opacity (or a missing key) — the caller fails open.
     Opaque,
     /// A provable structural mistake.
@@ -1243,7 +1225,7 @@ enum PathStep<'a> {
 /// Whether `field` is opaque **as a landing node** — unknowable without a
 /// runtime value in hand. This is the exhaustive classification
 /// [`ValidSchema::walk_reference_path`] documents in full; the wildcard arm here
-/// is deliberate (not `todo!()`/`unreachable!()`): any `Field` variant this
+/// is deliberate (not `todo!()`/`unreachable!()`): any `Property` variant this
 /// version does not yet recognize defaults to opaque rather than silently
 /// becoming hard-errorable when a new variant is added.
 ///
@@ -1255,25 +1237,25 @@ enum PathStep<'a> {
 /// - Everything else — empty `Object`, `Select`, `File`, `Notice`, `Mode`,
 ///   `Dynamic`, `Computed`, `Unknown`, any future variant — is opaque.
 ///
-/// Public because a caller that already has a single resolved [`Field`] in
+/// Public because a caller that already has a single resolved [`Property`] in
 /// hand (not a whole schema) needs the SAME classification to decide whether
 /// that field is determinable on its own — e.g. `nebula-workflow`'s
 /// `check_reference_edges` applies this to a consumer's declared parameter
 /// field to decide whether the per-field type check
 /// ([`explain_field_assignable`](crate::compat::explain_field_assignable)) can
-/// run at all, or must fail open. Exposing this `&Field -> bool` predicate
+/// run at all, or must fail open. Exposing this `&Property -> bool` predicate
 /// (rather than routing through a synthetic schema) keeps that reuse honest:
 /// no impostor [`ValidSchema`] ever needs to leave this crate for it.
 #[must_use]
-pub fn is_opaque_field_node(field: &Field) -> bool {
+pub fn is_opaque_field_node(field: &Property) -> bool {
     match field {
-        Field::Object(obj) => obj.fields.is_empty(),
-        Field::String(_)
-        | Field::Secret(_)
-        | Field::Number(_)
-        | Field::Boolean(_)
-        | Field::Code(_)
-        | Field::List(_) => false,
+        Property::Object(obj) => obj.fields.is_empty(),
+        Property::String(_)
+        | Property::Secret(_)
+        | Property::Number(_)
+        | Property::Boolean(_)
+        | Property::Code(_)
+        | Property::List(_) => false,
         _ => true,
     }
 }
@@ -1281,9 +1263,9 @@ pub fn is_opaque_field_node(field: &Field) -> bool {
 /// Classify one further path `segment` against `current`, dispatching on
 /// `current`'s kind. See [`ValidSchema::walk_reference_path`] for the full
 /// rationale of each arm.
-fn walk_step<'a>(current: &'a Field, segment: &str) -> PathStep<'a> {
+fn walk_step<'a>(current: &'a Property, segment: &str) -> PathStep<'a> {
     match current {
-        Field::Object(obj) if !obj.fields.is_empty() => {
+        Property::Object(obj) if !obj.fields.is_empty() => {
             match obj.fields.iter().find(|f| f.key().as_str() == segment) {
                 Some(next) => PathStep::Advance(next),
                 // A missing key fails open rather than hard-erroring: `HasSchema`
@@ -1292,7 +1274,7 @@ fn walk_step<'a>(current: &'a Field, segment: &str) -> PathStep<'a> {
                 None => PathStep::Opaque,
             }
         },
-        Field::List(list) => {
+        Property::List(list) => {
             if segment.parse::<usize>().is_err() {
                 return PathStep::Unresolved(PathResolveError::NonIndexOnList {
                     segment: segment.to_owned(),
@@ -1305,15 +1287,15 @@ fn walk_step<'a>(current: &'a Field, segment: &str) -> PathStep<'a> {
                 _ => PathStep::Opaque,
             }
         },
-        Field::String(_)
-        | Field::Secret(_)
-        | Field::Number(_)
-        | Field::Boolean(_)
-        | Field::Code(_) => PathStep::Unresolved(PathResolveError::DescendPastLeaf {
+        Property::String(_)
+        | Property::Secret(_)
+        | Property::Number(_)
+        | Property::Boolean(_)
+        | Property::Code(_) => PathStep::Unresolved(PathResolveError::DescendPastLeaf {
             segment: segment.to_owned(),
         }),
         // Empty `Object`, `Select`, `File`, `Notice`, `Mode`, `Dynamic`,
-        // `Computed`, `Unknown`, or any future `Field` variant: opaque.
+        // `Computed`, `Unknown`, or any future `Property` variant: opaque.
         _ => PathStep::Opaque,
     }
 }
@@ -1321,27 +1303,27 @@ fn walk_step<'a>(current: &'a Field, segment: &str) -> PathStep<'a> {
 /// Re-key `field` to `key`, preserving everything else about it. See
 /// `ValidSchema::single_field` for why the caller needs this rather than a
 /// plain wrap.
-fn rekeyed(mut field: Field, key: FieldKey) -> Field {
+fn rekeyed(mut field: Property, key: FieldKey) -> Property {
     match &mut field {
-        Field::String(f) => f.key = key,
-        Field::Secret(f) => f.key = key,
-        Field::Number(f) => f.key = key,
-        Field::Boolean(f) => f.key = key,
-        Field::Select(f) => f.key = key,
-        Field::Object(f) => f.key = key,
-        Field::List(f) => f.key = key,
-        Field::Mode(f) => f.key = key,
-        Field::Code(f) => f.key = key,
-        Field::File(f) => f.key = key,
-        Field::Computed(f) => f.key = key,
-        Field::Dynamic(f) => f.key = key,
-        Field::Notice(f) => f.key = key,
+        Property::String(f) => f.key = key,
+        Property::Secret(f) => f.key = key,
+        Property::Number(f) => f.key = key,
+        Property::Boolean(f) => f.key = key,
+        Property::Select(f) => f.key = key,
+        Property::Object(f) => f.key = key,
+        Property::List(f) => f.key = key,
+        Property::Mode(f) => f.key = key,
+        Property::Code(f) => f.key = key,
+        Property::File(f) => f.key = key,
+        Property::Computed(f) => f.key = key,
+        Property::Dynamic(f) => f.key = key,
+        Property::Notice(f) => f.key = key,
         // `UnknownField.key` is private to this crate's `field` module, so it
         // cannot be rewritten from here — left as its original key. Never
         // reached in practice: every caller of `single_field` gates on the
-        // field being non-opaque first, and `Field::Unknown` is always opaque
+        // field being non-opaque first, and `Property::Unknown` is always opaque
         // (see `is_opaque_field_node`).
-        Field::Unknown(_) => {},
+        Property::Unknown(_) => {},
     }
     field
 }
@@ -1349,7 +1331,7 @@ fn rekeyed(mut field: Field, key: FieldKey) -> Field {
 /// Project a depth-checked tree. Public raw-input callers check depth first;
 /// proof-token callers already retain a bounded, prepared tree.
 pub(super) fn project_tree<E>(
-    fields: &[Field],
+    fields: &[Property],
     values: &ValueTree<E>,
     expression: &impl Fn(&E) -> serde_json::Value,
 ) -> serde_json::Value {
@@ -1361,7 +1343,7 @@ pub(super) fn project_tree<E>(
 
 /// Borrow a scope through preparation's alias policy without cloning subtrees.
 fn canonical_property_refs<'v, E>(
-    fields: &[Field],
+    fields: &[Property],
     properties: &'v IndexMap<String, ValueTree<E>>,
 ) -> IndexMap<String, &'v ValueTree<E>> {
     let mut canonical = properties
@@ -1373,7 +1355,7 @@ fn canonical_property_refs<'v, E>(
 }
 
 fn project_level<E>(
-    fields: &[Field],
+    fields: &[Property],
     properties: &IndexMap<String, ValueTree<E>>,
     expression: &impl Fn(&E) -> serde_json::Value,
 ) -> serde_json::Value {
@@ -1409,20 +1391,20 @@ fn project_level<E>(
 
 /// Drop declared secrets and malformed secret-bearing containers at every scope.
 fn project_value<E>(
-    field: &Field,
+    field: &Property,
     value: &ValueTree<E>,
     expression: &impl Fn(&E) -> serde_json::Value,
 ) -> Option<serde_json::Value> {
     use serde_json::Value;
 
-    if matches!(field, Field::Secret(_)) || matches!(value, ValueTree::Secret(_)) {
+    if matches!(field, Property::Secret(_)) || matches!(value, ValueTree::Secret(_)) {
         return None;
     }
     match (field, value) {
-        (Field::Object(object), ValueTree::Object(properties)) => {
+        (Property::Object(object), ValueTree::Object(properties)) => {
             Some(project_level(&object.fields, properties, expression))
         },
-        (Field::List(list), ValueTree::List(items)) => match list.item.as_deref() {
+        (Property::List(list), ValueTree::List(items)) => match list.item.as_deref() {
             Some(item_field) => Some(Value::Array(
                 items
                     .iter()
@@ -1431,7 +1413,7 @@ fn project_value<E>(
             )),
             None => Some(value.json_with(expression)),
         },
-        (Field::Mode(mode), ValueTree::Object(properties)) => {
+        (Property::Mode(mode), ValueTree::Object(properties)) => {
             Some(project_mode_object(mode, properties, expression))
         },
         _ if crate::context::field_subtree_has_secret(field) => None,
@@ -1480,12 +1462,12 @@ fn project_mode_object<E>(
 
 enum UndeclaredEntry<'a, E> {
     Level {
-        fields: &'a [Field],
+        fields: &'a [Property],
         properties: &'a IndexMap<String, ValueTree<E>>,
         path: ValuePath,
     },
-    Field {
-        field: &'a Field,
+    Property {
+        field: &'a Property,
         value: &'a ValueTree<E>,
         path: ValuePath,
     },
@@ -1495,7 +1477,7 @@ enum UndeclaredEntry<'a, E> {
 /// Iterative depth-first traversal avoids both a recursive stack overflow and
 /// treating a depth cutoff as evidence that all keys were declared.
 fn first_undeclared_in_level<E>(
-    fields: &[Field],
+    fields: &[Property],
     properties: &IndexMap<String, ValueTree<E>>,
     path: &ValuePath,
 ) -> Option<ValuePath> {
@@ -1519,7 +1501,7 @@ fn first_undeclared_in_level<E>(
                     let child_path = path.push(&key);
                     pending.push(
                         match fields.iter().find(|field| field.key().as_str() == key) {
-                            Some(field) => UndeclaredEntry::Field {
+                            Some(field) => UndeclaredEntry::Property {
                                 field,
                                 value,
                                 path: child_path,
@@ -1529,18 +1511,18 @@ fn first_undeclared_in_level<E>(
                     );
                 }
             },
-            UndeclaredEntry::Field { field, value, path } => match (field, value) {
-                (Field::Object(object), ValueTree::Object(properties)) => {
+            UndeclaredEntry::Property { field, value, path } => match (field, value) {
+                (Property::Object(object), ValueTree::Object(properties)) => {
                     pending.push(UndeclaredEntry::Level {
                         fields: &object.fields,
                         properties,
                         path,
                     });
                 },
-                (Field::List(list), ValueTree::List(items)) => {
+                (Property::List(list), ValueTree::List(items)) => {
                     if let Some(field) = list.item.as_deref() {
                         for (index, value) in items.iter().enumerate().rev() {
-                            pending.push(UndeclaredEntry::Field {
+                            pending.push(UndeclaredEntry::Property {
                                 field,
                                 value,
                                 path: path.push(index.to_string()),
@@ -1548,12 +1530,12 @@ fn first_undeclared_in_level<E>(
                         }
                     }
                 },
-                (Field::Mode(mode), ValueTree::Object(properties)) => {
+                (Property::Mode(mode), ValueTree::Object(properties)) => {
                     let variant = active_mode_variant_for_object(mode, properties);
                     for (key, value) in properties.iter().rev() {
                         if key == MODE_PAYLOAD_KEY {
                             if let Some(variant) = variant {
-                                pending.push(UndeclaredEntry::Field {
+                                pending.push(UndeclaredEntry::Property {
                                     field: &variant.field,
                                     value,
                                     path: path.push(key),
@@ -1579,7 +1561,7 @@ mod value_helper_tests {
     use serde_json::{Value, json};
 
     use super::{SerdeTagging, ValidSchema};
-    use crate::{AuthoredValue, Expression, Field, ResolvedValue, Schema, ValueTree, field_key};
+    use crate::{AuthoredValue, Expression, Property, ResolvedValue, Schema, ValueTree, field_key};
 
     fn assert_data_only(value: &AuthoredValue) {
         let mut pending = vec![value];
@@ -1597,8 +1579,8 @@ mod value_helper_tests {
 
     fn union(tagging: SerdeTagging) -> ValidSchema {
         ValidSchema::union(
-            Field::mode(field_key!("auth"))
-                .variant("data", "Data", Field::object(field_key!("payload")))
+            Property::mode(field_key!("auth"))
+                .variant("data", "Data", Property::object(field_key!("payload")))
                 .variant_empty("none", "None"),
             tagging,
         )
@@ -1673,7 +1655,7 @@ mod value_helper_tests {
     #[test]
     fn undeclared_paths_preserve_empty_and_escaped_keys_across_stages() {
         let schema = Schema::builder()
-            .add(Field::object(field_key!("nested")))
+            .property(Property::object(field_key!("nested")))
             .build()
             .unwrap();
         for key in ["", "/", "~", "a/b~", "\u{e9}"] {
@@ -1700,7 +1682,7 @@ mod value_helper_tests {
     #[test]
     fn undeclared_paths_walk_list_payloads_and_reject_extra_mode_keys() {
         let schema = Schema::builder()
-            .add(Field::list(field_key!("rows")).item(Field::object(field_key!("row"))))
+            .property(Property::list(field_key!("rows")).item(Property::object(field_key!("row"))))
             .build()
             .unwrap();
         let values = AuthoredValue::from_data(json!({"rows": [{"a/b~": true}]})).unwrap();
@@ -1728,19 +1710,19 @@ mod value_helper_tests {
     #[test]
     fn projection_folds_aliases_and_omits_secrets_without_mutating_input() {
         let schema = Schema::builder()
-            .add(
-                Field::object(field_key!("settings"))
+            .property(
+                Property::object(field_key!("settings"))
                     .read_alias("legacy_settings")
                     .unwrap()
-                    .add(
-                        Field::string(field_key!("id"))
+                    .property(
+                        Property::string(field_key!("id"))
                             .read_alias("legacy_id")
                             .unwrap()
                             .emit_as("public_id")
                             .unwrap(),
                     )
-                    .add(
-                        Field::secret(field_key!("token"))
+                    .property(
+                        Property::secret(field_key!("token"))
                             .read_alias("legacy_token")
                             .unwrap(),
                     ),
@@ -1766,8 +1748,8 @@ mod value_helper_tests {
     #[test]
     fn projection_reserves_absent_outputs_and_preserves_expression_envelopes() {
         let schema = Schema::builder()
-            .add(
-                Field::string(field_key!("id"))
+            .property(
+                Property::string(field_key!("id"))
                     .emit_as("public_id")
                     .unwrap(),
             )
@@ -1789,14 +1771,14 @@ mod value_helper_tests {
     #[test]
     fn malformed_mode_selectors_do_not_leak_payload_or_select_defaults() {
         let schema = Schema::builder()
-            .add(
-                Field::mode(field_key!("auth"))
+            .property(
+                Property::mode(field_key!("auth"))
                     .variant(
                         "known",
                         "Known",
-                        Field::object(field_key!("payload"))
-                            .add(Field::string(field_key!("id")))
-                            .add(Field::secret(field_key!("token"))),
+                        Property::object(field_key!("payload"))
+                            .property(Property::string(field_key!("id")))
+                            .property(Property::secret(field_key!("token"))),
                     )
                     .default_variant("known"),
             )

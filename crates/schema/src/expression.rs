@@ -250,10 +250,10 @@ mod tests {
     async fn engine_context_evaluates_input_template() {
         use serde_json::json;
 
-        use crate::{AuthoredValue, Field, Schema, field_key};
+        use crate::{AuthoredValue, Property, Schema, field_key};
 
         let schema = Schema::builder()
-            .add(Field::string(field_key!("greeting")))
+            .property(Property::string(field_key!("greeting")))
             .build()
             .expect("schema builds");
         let values = AuthoredValue::from_template_json(json!({"greeting": "{{ $input.name }}"}))
@@ -268,10 +268,10 @@ mod tests {
     async fn engine_context_renders_inline_template() {
         use serde_json::json;
 
-        use crate::{AuthoredValue, Field, Schema, field_key};
+        use crate::{AuthoredValue, Property, Schema, field_key};
 
         let schema = Schema::builder()
-            .add(Field::string(field_key!("greeting")))
+            .property(Property::string(field_key!("greeting")))
             .build()
             .expect("schema builds");
         let values =

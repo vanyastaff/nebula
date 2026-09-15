@@ -362,7 +362,7 @@ struct LargeRecord {
 
 impl nebula_schema::HasSchema for LargeRecord {
     fn schema() -> Result<nebula_schema::ValidSchema, nebula_schema::ValidationReport> {
-        use nebula_schema::FieldCollector;
+        use nebula_schema::PropertyCollector;
         nebula_schema::Schema::builder()
             .string(nebula_schema::field_key!("value"), |field| {
                 field

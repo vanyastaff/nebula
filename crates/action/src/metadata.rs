@@ -575,7 +575,7 @@ mod tests {
     use std::sync::OnceLock;
 
     use nebula_core::{Dependencies, action_key};
-    use nebula_schema::{FieldCollector, HasSchema, Schema, field_key};
+    use nebula_schema::{HasSchema, PropertyCollector, Schema, field_key};
 
     use super::*;
     use crate::Action;
@@ -644,14 +644,14 @@ mod tests {
             metadata
                 .base()
                 .schema()
-                .fields()
+                .properties()
                 .iter()
                 .any(|field| field.key().as_str() == "value")
         );
         assert!(
             metadata
                 .output_schema()
-                .fields()
+                .properties()
                 .iter()
                 .any(|field| field.key().as_str() == "result")
         );

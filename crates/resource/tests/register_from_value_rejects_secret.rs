@@ -29,7 +29,7 @@ use nebula_resource::{
     resource::{Provider, ResourceConfig, ResourceMetadataDraft},
     topology::resident::ResidentProvider,
 };
-use nebula_schema::{Field, HasSchema, Schema, ValidSchema, field_key};
+use nebula_schema::{HasSchema, Property, Schema, ValidSchema, field_key};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -53,8 +53,8 @@ fn default_port() -> u16 {
 impl HasSchema for DbConfig {
     fn schema() -> Result<ValidSchema, nebula_schema::ValidationReport> {
         Schema::builder()
-            .add(Field::string(field_key!("host")).required())
-            .add(Field::number(field_key!("port")).integer())
+            .property(Property::string(field_key!("host")).required())
+            .property(Property::number(field_key!("port")).integer())
             .build()
     }
 }

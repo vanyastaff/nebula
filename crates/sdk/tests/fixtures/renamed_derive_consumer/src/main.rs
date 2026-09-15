@@ -96,7 +96,7 @@ fn main() {
     .expect("renamed schema and SDK serde derives decode nested payloads");
     assert_eq!(nested.child.name, "nested value");
     let schema = schema_of::<NestedPayload>().unwrap();
-    assert!(schema.find(&field_key!("child")).is_some());
+    assert!(schema.find_property(&field_key!("child")).is_some());
     let scalar = schema_of::<u8>().unwrap();
     let RootShape::Scalar(domain) = scalar.root_shape() else {
         panic!("a primitive must publish a scalar root");
@@ -124,15 +124,15 @@ fn main() {
         authored.get("name").and_then(AuthoredValue::as_str),
         Some("{{ literal }}")
     );
-    assert!(schema.find(&field_key!("name")).is_some());
+    assert!(schema.find_property(&field_key!("name")).is_some());
     let _: CredentialMetadataDraft = ContractCredential::metadata();
     let _: ActionMetadataDraft = <ContractAction as Action>::metadata();
     let _ = ContractPlugin.manifest();
     let _ = ContractConfig { enabled: true }.fingerprint();
     let config = schema_of::<ContractConfig>().expect("named config declares its fields");
     assert!(matches!(
-        config.find(&field_key!("enabled")),
-        Some(Field::Boolean(_))
+        config.find_property(&field_key!("enabled")),
+        Some(Property::Boolean(_))
     ));
     assert!(
         config

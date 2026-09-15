@@ -1,6 +1,6 @@
 use std::assert_matches;
 
-use nebula_schema::{Field, HasSchema, Schema, Transformer, field_key};
+use nebula_schema::{HasSchema, Property, Schema, Transformer, field_key};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -60,8 +60,8 @@ struct NormalizedProperties {
 impl HasSchema for NormalizedProperties {
     fn schema() -> Result<ValidSchema, ValidationReport> {
         Schema::builder()
-            .add(
-                Field::secret(field_key!("token"))
+            .property(
+                Property::secret(field_key!("token"))
                     .required()
                     .read_alias("old_token")?
                     .with_transformer(Transformer::Replace {

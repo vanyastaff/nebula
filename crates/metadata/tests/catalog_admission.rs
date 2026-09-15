@@ -478,7 +478,7 @@ fn manifest_admission_uses_the_same_discovery_chronology_and_field_budgets() {
 
 #[test]
 fn schema_has_a_separate_exact_budget_and_default_transport_can_round_trip_it() {
-    use nebula_schema::{FieldCollector, Schema, field_key};
+    use nebula_schema::{PropertyCollector, Schema, field_key};
     let schema = |description: String| {
         Schema::builder()
             .string(field_key!("field"), |field| field.description(description))

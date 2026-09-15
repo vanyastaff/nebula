@@ -46,7 +46,8 @@ use chrono::{DateTime, Duration, FixedOffset, SecondsFormat};
 use nebula_action::{ActionContext, ActionError, ActionResult, StatelessAction};
 use nebula_core::action_key;
 use nebula_schema::{
-    Field, HasSchema, Predicate, Rule, Schema, ValidSchema, ValidationReport, ValuePath, field_key,
+    HasSchema, Predicate, Property, Rule, Schema, ValidSchema, ValidationReport, ValuePath,
+    field_key,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -220,9 +221,9 @@ impl HasSchema for DateTimeInput {
                     offset_bounds,
                 ]))?;
                 Schema::builder()
-                    .add(super::input_schema::nullable_object_data())
-                    .add(
-                        Field::select(field_key!("op"))
+                    .property(super::input_schema::nullable_object_data())
+                    .property(
+                        Property::select(field_key!("op"))
                             .option("format", "Format")
                             .option("parse", "Parse")
                             .option("add", "Add")
@@ -230,33 +231,33 @@ impl HasSchema for DateTimeInput {
                             .option("diff", "Difference")
                             .required(),
                     )
-                    .add(
-                        Field::string(field_key!("input"))
+                    .property(
+                        Property::string(field_key!("input"))
                             .required_when(selected(&["format", "parse", "add", "subtract"])?),
                     )
-                    .add(
-                        Field::dynamic(field_key!("format"))
+                    .property(
+                        Property::dynamic(field_key!("format"))
                             .description(
                                 "String format; parse also accepts null. An empty string is valid.",
                             )
                             .with_rule(nullable_format)
                             .required_when(selected(&["format"])?),
                     )
-                    .add(
-                        Field::dynamic(field_key!("tz_offset_seconds"))
+                    .property(
+                        Property::dynamic(field_key!("tz_offset_seconds"))
                             .description(
                                 "Nullable i32 UTC offset; serde checks the integer representation.",
                             )
                             .with_rule(nullable_offset),
                     )
-                    .add(
-                        Field::integer(field_key!("amount"))
+                    .property(
+                        Property::integer(field_key!("amount"))
                             .min_int(0)
                             .max_int(i64::MAX)
                             .required_when(selected(&["add", "subtract"])?),
                     )
-                    .add(
-                        Field::select(field_key!("unit"))
+                    .property(
+                        Property::select(field_key!("unit"))
                             .option("milliseconds", "Milliseconds")
                             .option("seconds", "Seconds")
                             .option("minutes", "Minutes")
@@ -265,8 +266,12 @@ impl HasSchema for DateTimeInput {
                             .option("weeks", "Weeks")
                             .required_when(selected(&["add", "subtract", "diff"])?),
                     )
-                    .add(Field::string(field_key!("from")).required_when(selected(&["diff"])?))
-                    .add(Field::string(field_key!("to")).required_when(selected(&["diff"])?))
+                    .property(
+                        Property::string(field_key!("from")).required_when(selected(&["diff"])?),
+                    )
+                    .property(
+                        Property::string(field_key!("to")).required_when(selected(&["diff"])?),
+                    )
                     .build()
             })
             .clone()

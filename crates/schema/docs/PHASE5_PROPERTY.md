@@ -62,7 +62,7 @@ receiver rewriting and hidden companion data types remain outside this contract.
 
 | Owner | Reuse and required responsibility |
 |---|---|
-| schema | HasSchema, PropertyType, schema_type and directional codec contracts, Field, RootShape, checked ValidSchema, value/proof pipeline, serde projections, LoaderRegistry and redacted loader context. |
+| schema | HasSchema, PropertyType, schema_type and directional codec contracts, Property, RootShape, checked ValidSchema, value/proof pipeline, serde projections, LoaderRegistry and redacted loader context. |
 | validator | Rule, Predicate, FieldPath, budgets, pending evaluation; checked Condition refinement and a future presence-policy epoch. |
 | core | Dependencies, SlotField, SlotKind and typed keys; remains condition-free. |
 | action | Action traits, FromWorkflowNode, input preparation, factories, leaf slot declarations and invocation decisions. |
@@ -196,7 +196,7 @@ Sections may appear in any order, at most once per field, across all property
 attributes on that field. Duplicate singleton keys, conflicting modes, unknown
 keys and empty argument lists where a value is required are errors at their spans.
 Property and slot on the same field are incompatible.
-Field attributes are optional; the Rust data domain supplies the baseline.
+Property attributes are optional; the Rust data domain supplies the baseline.
 
 | Section | Accepted keys and argument shapes |
 |---|---|
@@ -239,7 +239,7 @@ make a nullable field non-null. Choose a non-null Rust domain to forbid null.
 ## Serde Is the Wire Authority
 
 `serde(rename)`, `rename_all`, directional rename/rename_all and `alias`
-determine wire identity. Field rename overrides the respective container rule;
+determine wire identity. Property rename overrides the respective container rule;
 without either, serde's field/variant spelling applies, including raw identifiers.
 Aliases are inbound only. Canonical inbound and canonical outbound keys are
 recorded separately and collision-checked within each projection's scope.
@@ -343,7 +343,7 @@ HasSchema alone never establishes codec fidelity. Unsupported codecs belong only
 on the explicit reviewed adapter path above, with checked descriptors/projections;
 validation does not prove arbitrary adapter semantics.
 
-Slots never become Field entries. Independently deriving Serialize/Deserialize
+Slots never become Property entries. Independently deriving Serialize/Deserialize
 on a slot-bearing receiver requires explicit `serde(skip)` for every slot.
 Guard fields without a real Default still cannot derive Deserialize merely by
 being skipped; canonical receivers need no serde derives.
@@ -443,13 +443,13 @@ runtime boundary and cannot provide an alternate author publication path.
 
 ## Trait-Driven Data Domains
 
-Reuse HasSchema for checked root schemas and Field/RootShape for representation.
+Reuse HasSchema for checked root schemas and Property/RootShape for representation.
 Syntax-only matching of type names is insufficient for aliases, generics and
 transparent newtypes. Existing derive rejection of generics and nested scalar
 roots is a migration target, not a universal-inference implementation.
 
 Introduce one schema-owned `PropertyType` field-descriptor trait: it supplies
-`fn property(key: FieldKey, ctx: &mut SchemaBuildContext) -> Result<Field, ValidationReport>`,
+`fn property(key: FieldKey, ctx: &mut SchemaBuildContext) -> Result<Property, ValidationReport>`,
 including the domain/nullability and baseline missing-value policy. The narrow
 schema-owned context enforces construction budgets before descending; it is not
 a schema representation or runtime validation context. HasSchema describes

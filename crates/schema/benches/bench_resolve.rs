@@ -1,11 +1,11 @@
 use criterion::{BatchSize, Criterion, black_box};
-use nebula_schema::{AuthoredValue, Field, Schema, field_key};
+use nebula_schema::{AuthoredValue, Property, Schema, field_key};
 use serde_json::json;
 
 fn bench_resolve_literal_only(c: &mut Criterion) {
     let schema = Schema::builder()
-        .add(Field::string(field_key!("name")))
-        .add(Field::number(field_key!("score")))
+        .property(Property::string(field_key!("name")))
+        .property(Property::number(field_key!("score")))
         .build()
         .expect("schema is valid");
 
@@ -37,15 +37,15 @@ fn bench_resolve_literal_only(c: &mut Criterion) {
 
 fn bench_validate_static(c: &mut Criterion) {
     let schema = Schema::builder()
-        .add(Field::string(field_key!("name")).required())
-        .add(
-            Field::number(field_key!("retries"))
+        .property(Property::string(field_key!("name")).required())
+        .property(
+            Property::number(field_key!("retries"))
                 .min(0)
                 .max(10)
                 .required(),
         )
-        .add(
-            Field::select(field_key!("mode"))
+        .property(
+            Property::select(field_key!("mode"))
                 .option("sync", "Sync")
                 .option("async", "Async"),
         )

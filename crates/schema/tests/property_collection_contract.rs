@@ -2,7 +2,7 @@
 
 use std::assert_matches;
 
-use nebula_schema::{AuthoredValue, Field, HasSchema, RequiredMode, Schema, ValidationReport};
+use nebula_schema::{AuthoredValue, HasSchema, Property, RequiredMode, Schema, ValidationReport};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -124,7 +124,7 @@ fn single_count_bounds_keep_existing_unbounded_side() {
         .expect("decode");
     assert_eq!(minimum.values, Some(vec!["a".to_owned(); 3]));
     let schema = MaximumOnly::schema().expect("full u32 maximum");
-    let Field::List(list) = &schema.fields()[0] else {
+    let Property::List(list) = &schema.properties()[0] else {
         panic!("collection must lower to a list");
     };
     assert_eq!(list.min_items, None);
@@ -208,7 +208,7 @@ fn nested_dto_lists_enforce_counts_uniqueness_and_item_contracts() {
 fn zero_count_minimum_does_not_change_requiredness() {
     for schema in [RequiredItems::schema(), ExplicitRequiredItems::schema()] {
         let schema = schema.expect("required collection");
-        assert_matches!(schema.fields()[0].required(), RequiredMode::Always);
+        assert_matches!(schema.properties()[0].required(), RequiredMode::Always);
     }
     for input in [json!({}), json!({"values": []})] {
         rejects::<RequiredItems>(input.clone(), "required", "/values");

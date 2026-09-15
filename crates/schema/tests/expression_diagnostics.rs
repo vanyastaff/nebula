@@ -11,7 +11,7 @@ fn typed_decode_cause_chain_does_not_publish_input() {
         value: Choice,
     }
     let schema = nebula_schema::Schema::builder()
-        .add(nebula_schema::Field::string(nebula_schema::field_key!(
+        .property(nebula_schema::Property::string(nebula_schema::field_key!(
             "value"
         )))
         .build()

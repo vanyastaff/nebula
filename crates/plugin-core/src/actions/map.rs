@@ -99,8 +99,8 @@ impl HasSchema for MapInput {
         SCHEMA
             .get_or_init(|| {
                 Schema::builder()
-                    .add(super::input_schema::record_data())
-                    .add(
+                    .property(super::input_schema::record_data())
+                    .property(
                         super::json_transform::operations_schema()
                             .description("Required operation array; an empty array is a no-op."),
                     )

@@ -38,7 +38,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    AuthoredValue, SelectOption, ValuePath, error::ValidationError, field::Field,
+    AuthoredValue, SelectOption, ValuePath, error::ValidationError, field::Property,
     path::FieldPath as SchemaPath,
 };
 
@@ -98,14 +98,14 @@ impl LoaderContext {
         self,
         schema: &crate::validated::ValidSchema,
     ) -> Result<RedactedLoaderContext, ValidationError> {
-        self.redacted(schema.fields())
+        self.redacted(schema.properties())
     }
 
     /// Schema and ValidSchema both bind loader input through this boundary.
     #[tracing::instrument(level = "debug", skip_all, fields(field_count = fields.len()))]
     pub(crate) fn redacted(
         mut self,
-        fields: &[Field],
+        fields: &[Property],
     ) -> Result<RedactedLoaderContext, ValidationError> {
         let snapshot = crate::context::redacted_loader_json(fields, &self.values)?;
         self.values = AuthoredValue::from_data(snapshot)?;
@@ -579,7 +579,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        AuthoredValue, Field, ScalarValue, Schema, ValueTree, expression::Expression, field_key,
+        AuthoredValue, Property, ScalarValue, Schema, ValueTree, expression::Expression, field_key,
         secret::SECRET_REDACTED,
     };
 
@@ -809,10 +809,10 @@ mod tests {
     #[test]
     fn with_secrets_redacted_object_nested_and_non_secret_unchanged() {
         let schema = Schema::builder()
-            .add(
-                Field::object(field_key!("config"))
-                    .add(Field::secret(field_key!("api_key")))
-                    .add(Field::string(field_key!("label"))),
+            .property(
+                Property::object(field_key!("config"))
+                    .property(Property::secret(field_key!("api_key")))
+                    .property(Property::string(field_key!("label"))),
             )
             .build()
             .expect("valid schema");
@@ -824,7 +824,7 @@ mod tests {
         }))
         .expect("values");
         let ctx = LoaderContext::new("k", values)
-            .redacted(schema.fields())
+            .redacted(schema.properties())
             .unwrap();
         let config = ctx.0.values.get("config").expect("config");
         let ValueTree::Object(map) = config else {
@@ -838,12 +838,12 @@ mod tests {
     #[test]
     fn with_secrets_redacted_list_of_secrets() {
         let schema = Schema::builder()
-            .add(Field::list(field_key!("tokens")).item(Field::secret(field_key!("t"))))
+            .property(Property::list(field_key!("tokens")).item(Property::secret(field_key!("t"))))
             .build()
             .expect("valid schema");
         let values = AuthoredValue::from_data(json!({ "tokens": ["a", "b"] })).expect("values");
         let ctx = LoaderContext::new("k", values)
-            .redacted(schema.fields())
+            .redacted(schema.properties())
             .unwrap();
         let list = ctx.0.values.get("tokens").expect("tokens");
         let ValueTree::List(items) = list else {
@@ -853,27 +853,27 @@ mod tests {
     }
 
     /// Mode variant payload is an `Object` with a secret leaf and a non-secret sibling
-    /// (exercises the `Field::Mode` + nested `Object` path, not a bare `Field::Secret`
+    /// (exercises the `Property::Mode` + nested `Object` path, not a bare `Property::Secret`
     /// that replaces the entire mode `value` tree with one redacted literal).
     #[test]
     fn with_secrets_redacted_mode_variant_object_with_nested_secret() {
         let schema = Schema::builder()
-            .add(
-                Field::mode(field_key!("auth"))
+            .property(
+                Property::mode(field_key!("auth"))
                     .variant(
                         "oauth",
                         "OAuth",
-                        Field::object(field_key!("creds"))
-                            .add(Field::secret(field_key!("client_secret")))
-                            .add(Field::string(field_key!("client_id"))),
+                        Property::object(field_key!("creds"))
+                            .property(Property::secret(field_key!("client_secret")))
+                            .property(Property::string(field_key!("client_id"))),
                     )
-                    .variant("plain", "Plain", Field::string(field_key!("name"))),
+                    .variant("plain", "Plain", Property::string(field_key!("name"))),
             )
             .build()
             .expect("valid schema");
         // The mode `value` is the unwrapped object payload: same shape as a top-level
         // `Object` field's value (child keys), not `{"creds": { ... }}` — see `redact` +
-        // `Field::Object` matching in `redact_secrets_in_value_for_loader`.
+        // `Property::Object` matching in `redact_secrets_in_value_for_loader`.
         let values = AuthoredValue::from_data(json!({
             "auth": {
                 "mode": "oauth",
@@ -885,7 +885,7 @@ mod tests {
         }))
         .expect("values");
         let ctx = LoaderContext::new("k", values)
-            .redacted(schema.fields())
+            .redacted(schema.properties())
             .unwrap();
         let auth = ctx.0.values.get("auth").expect("auth");
         let ValueTree::Object(map) = auth else {
@@ -905,14 +905,14 @@ mod tests {
     #[test]
     fn with_secrets_redacted_mode_object_without_mode_uses_default_variant() {
         let schema = Schema::builder()
-            .add(
-                Field::mode(field_key!("auth"))
+            .property(
+                Property::mode(field_key!("auth"))
                     .variant(
                         "oauth",
                         "OAuth",
-                        Field::object(field_key!("creds"))
-                            .add(Field::secret(field_key!("client_secret")))
-                            .add(Field::string(field_key!("client_id"))),
+                        Property::object(field_key!("creds"))
+                            .property(Property::secret(field_key!("client_secret")))
+                            .property(Property::string(field_key!("client_id"))),
                     )
                     .default_variant("oauth"),
             )
@@ -929,7 +929,7 @@ mod tests {
         .expect("values");
 
         let ctx = LoaderContext::new("k", values)
-            .redacted(schema.fields())
+            .redacted(schema.properties())
             .unwrap();
         let auth = ctx.0.values.get("auth").expect("auth");
         let ValueTree::Object(map) = auth else {
@@ -947,7 +947,7 @@ mod tests {
     #[test]
     fn with_secrets_redacted_expression_on_secret_is_literal_token() {
         let schema = Schema::builder()
-            .add(Field::secret(field_key!("api_key")))
+            .property(Property::secret(field_key!("api_key")))
             .build()
             .expect("valid schema");
         let mut values = AuthoredValue::object();
@@ -958,7 +958,7 @@ mod tests {
             )
             .unwrap();
         let ctx = LoaderContext::new("k", values)
-            .redacted(schema.fields())
+            .redacted(schema.properties())
             .unwrap();
         let v = ctx.0.values.get("api_key").expect("api_key");
         assert_eq!(*v, redacted_literal());
@@ -971,10 +971,10 @@ mod tests {
         let error = ScalarValue::try_from(json!({"api_key": "PLAINTEXT-LEAK"})).unwrap_err();
         assert_eq!(error.code(), "type_mismatch");
         let schema = Schema::builder()
-            .add(
-                Field::object(field_key!("cfg"))
-                    .add(Field::secret(field_key!("api_key")))
-                    .add(Field::string(field_key!("label"))),
+            .property(
+                Property::object(field_key!("cfg"))
+                    .property(Property::secret(field_key!("api_key")))
+                    .property(Property::string(field_key!("label"))),
             )
             .build()
             .expect("valid schema");
@@ -983,7 +983,7 @@ mod tests {
         }))
         .unwrap();
         let ctx = LoaderContext::new("k", values)
-            .redacted(schema.fields())
+            .redacted(schema.properties())
             .unwrap();
         let cfg = ctx.0.values.get("cfg").expect("cfg");
         assert_eq!(*cfg, redacted_literal());
@@ -997,11 +997,14 @@ mod tests {
     fn with_secrets_redacted_mode_unknown_variant_over_redacts() {
         // The canonical object envelope must redact an unknown variant's payload.
         let schema = Schema::builder()
-            .add(Field::mode(field_key!("auth")).variant(
-                "oauth",
-                "OAuth",
-                Field::object(field_key!("creds")).add(Field::secret(field_key!("client_secret"))),
-            ))
+            .property(
+                Property::mode(field_key!("auth")).variant(
+                    "oauth",
+                    "OAuth",
+                    Property::object(field_key!("creds"))
+                        .property(Property::secret(field_key!("client_secret"))),
+                ),
+            )
             .build()
             .expect("valid schema");
         let values = AuthoredValue::from_data(json!({
@@ -1009,7 +1012,7 @@ mod tests {
         }))
         .unwrap();
         let ctx = LoaderContext::new("k", values)
-            .redacted(schema.fields())
+            .redacted(schema.properties())
             .unwrap();
         let auth = ctx.0.values.get("auth").expect("auth");
         assert_eq!(

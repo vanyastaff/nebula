@@ -3,7 +3,7 @@
 #![cfg(feature = "schemars")]
 
 use nebula_schema::{
-    AuthoredValue, EngineExpressionContext, Field, HasSchema, Predicate, Rule, Schema,
+    AuthoredValue, EngineExpressionContext, HasSchema, Predicate, Property, Rule, Schema,
     SerdeTagging, ValidSchema, ValidationError, ValidationReport, VisibilityMode, field_key,
 };
 use nebula_validator::ValueRule;
@@ -61,7 +61,11 @@ fn assert_parity(schema: &ValidSchema, input: Value, accepted: bool) {
 #[case::escaped_keys(json!({"name": "Ada", "a/b~c": {"0": 4}}))]
 fn root_record_keeps_arbitrary_extra_data(#[case] input: Value) {
     let schema = Schema::builder()
-        .add(Field::string(field_key!("name")).no_expression().required())
+        .property(
+            Property::string(field_key!("name"))
+                .no_expression()
+                .required(),
+        )
         .build()
         .unwrap();
     assert_parity(&schema, input, true);
@@ -73,18 +77,21 @@ fn root_record_keeps_arbitrary_extra_data(#[case] input: Value) {
 #[case::list_item(json!({"rows": [{"id": 2, "extra": {"a~b": false}}]}))]
 fn nested_object_payloads_are_open(#[case] input: Value) {
     let schema = Schema::builder()
-        .add(
-            Field::object(field_key!("config")).add(
-                Field::number(field_key!("count"))
+        .property(
+            Property::object(field_key!("config")).property(
+                Property::number(field_key!("count"))
                     .no_expression()
                     .required(),
             ),
         )
-        .add(Field::object(field_key!("opaque")))
-        .add(
-            Field::list(field_key!("rows")).item(
-                Field::object(field_key!("row"))
-                    .add(Field::number(field_key!("id")).no_expression().required()),
+        .property(Property::object(field_key!("opaque")))
+        .property(
+            Property::list(field_key!("rows")).item(
+                Property::object(field_key!("row")).property(
+                    Property::number(field_key!("id"))
+                        .no_expression()
+                        .required(),
+                ),
             ),
         )
         .build()
@@ -115,12 +122,15 @@ fn empty_record_is_open_but_still_an_object(#[case] input: Value, #[case] accept
 
 fn union_schema(tagging: SerdeTagging) -> ValidSchema {
     ValidSchema::union(
-        Field::mode(field_key!("event"))
+        Property::mode(field_key!("event"))
             .variant(
                 "data",
                 "Data",
-                Field::object(field_key!("payload"))
-                    .add(Field::number(field_key!("id")).no_expression().required()),
+                Property::object(field_key!("payload")).property(
+                    Property::number(field_key!("id"))
+                        .no_expression()
+                        .required(),
+                ),
             )
             .variant_empty("none", "None"),
         tagging,
@@ -177,15 +187,17 @@ fn adjacent_union_has_closed_envelope_and_open_payload(
 #[case::wrong_payload(json!({"auth": {"mode": "data", "value": {"id": "bad"}}}), false)]
 fn mode_has_closed_envelope_and_open_payload(#[case] input: Value, #[case] accepted: bool) {
     let schema = Schema::builder()
-        .add(
-            Field::mode(field_key!("auth"))
+        .property(
+            Property::mode(field_key!("auth"))
                 .no_expression()
                 .variant(
                     "data",
                     "Data",
-                    Field::object(field_key!("payload"))
-                        .required()
-                        .add(Field::number(field_key!("id")).no_expression().required()),
+                    Property::object(field_key!("payload")).required().property(
+                        Property::number(field_key!("id"))
+                            .no_expression()
+                            .required(),
+                    ),
                 )
                 .variant_empty("none", "None"),
         )
@@ -195,14 +207,14 @@ fn mode_has_closed_envelope_and_open_payload(#[case] input: Value, #[case] accep
 }
 
 #[rstest]
-#[case::string(Field::string(field_key!("value")).no_expression().into(), json!("text"))]
-#[case::code(Field::code(field_key!("value")).no_expression().into(), json!("code"))]
-#[case::number(Field::number(field_key!("value")).no_expression().into(), json!(2.5))]
-#[case::integer(Field::number(field_key!("value")).integer().no_expression().into(), json!(2.0))]
-#[case::boolean(Field::boolean(field_key!("value")).into(), json!(false))]
-#[case::file(Field::file(field_key!("value")).no_expression().into(), json!("file.txt"))]
-fn scalar_shapes_match(#[case] field: Field, #[case] value: Value) {
-    let schema = Schema::builder().add(field).build().unwrap();
+#[case::string(Property::string(field_key!("value")).no_expression().into(), json!("text"))]
+#[case::code(Property::code(field_key!("value")).no_expression().into(), json!("code"))]
+#[case::number(Property::number(field_key!("value")).no_expression().into(), json!(2.5))]
+#[case::integer(Property::number(field_key!("value")).integer().no_expression().into(), json!(2.0))]
+#[case::boolean(Property::boolean(field_key!("value")).into(), json!(false))]
+#[case::file(Property::file(field_key!("value")).no_expression().into(), json!("file.txt"))]
+fn scalar_shapes_match(#[case] field: Property, #[case] value: Value) {
+    let schema = Schema::builder().property(field).build().unwrap();
     assert_parity(&schema, json!({"value": value}), true);
     for wrong in [json!({}), json!([]), Value::Null] {
         assert_parity(&schema, json!({"value": wrong}), false);
@@ -217,8 +229,8 @@ fn scalar_shapes_match(#[case] field: Field, #[case] value: Value) {
 #[case::wrong_pattern(json!("aBC"), false)]
 fn checked_pattern_and_length_rules_match(#[case] value: Value, #[case] accepted: bool) {
     let schema = Schema::builder()
-        .add(
-            Field::string(field_key!("value"))
+        .property(
+            Property::string(field_key!("value"))
                 .no_expression()
                 .min_length(2)
                 .max_length(4)
@@ -239,13 +251,13 @@ fn checked_pattern_and_length_rules_match(#[case] value: Value, #[case] accepted
 #[case::wrong_shape(json!({}), false)]
 fn list_shape_and_constraints_match(#[case] value: Value, #[case] accepted: bool) {
     let schema = Schema::builder()
-        .add(
-            Field::list(field_key!("value"))
+        .property(
+            Property::list(field_key!("value"))
                 .no_expression()
                 .min_items(1)
                 .max_items(2)
                 .unique()
-                .item(Field::number(field_key!("item")).no_expression().min(1)),
+                .item(Property::number(field_key!("item")).no_expression().min(1)),
         )
         .build()
         .unwrap();
@@ -264,13 +276,13 @@ fn static_select_shape_and_membership_match(
     #[case] value: Value,
     #[case] accepted: bool,
 ) {
-    let mut field = Field::select(field_key!("value"))
+    let mut field = Property::select(field_key!("value"))
         .option("red", "Red")
         .option("blue", "Blue");
     if multiple {
         field = field.multiple();
     }
-    let schema = Schema::builder().add(field).build().unwrap();
+    let schema = Schema::builder().property(field).build().unwrap();
     assert_parity(&schema, json!({"value": value}), accepted);
 }
 
@@ -286,27 +298,27 @@ fn custom_select_still_enforces_multiplicity(
     #[case] value: Value,
     #[case] accepted: bool,
 ) {
-    let mut field = Field::select(field_key!("value")).allow_custom();
+    let mut field = Property::select(field_key!("value")).allow_custom();
     if multiple {
         field = field.multiple();
     }
-    let schema = Schema::builder().add(field).build().unwrap();
+    let schema = Schema::builder().property(field).build().unwrap();
     assert_parity(&schema, json!({"value": value}), accepted);
 }
 
 #[rstest]
-#[case::string(Field::string(field_key!("value")).no_expression().required().into(), json!("ok"), json!(""))]
-#[case::list(Field::list(field_key!("value")).no_expression().required().item(Field::number(field_key!("item")).no_expression()).into(), json!([1]), json!([]))]
-#[case::multi_select(Field::select(field_key!("value")).multiple().allow_custom().required().into(), json!([1]), json!([]))]
-#[case::single_select(Field::select(field_key!("value")).allow_custom().required().into(), json!("ok"), Value::Null)]
-#[case::file(Field::file(field_key!("value")).no_expression().required().into(), json!("file.txt"), json!(""))]
-#[case::multi_file(Field::file(field_key!("value")).no_expression().multiple().required().into(), json!(["file.txt"]), json!([]))]
+#[case::string(Property::string(field_key!("value")).no_expression().required().into(), json!("ok"), json!(""))]
+#[case::list(Property::list(field_key!("value")).no_expression().required().item(Property::number(field_key!("item")).no_expression()).into(), json!([1]), json!([]))]
+#[case::multi_select(Property::select(field_key!("value")).multiple().allow_custom().required().into(), json!([1]), json!([]))]
+#[case::single_select(Property::select(field_key!("value")).allow_custom().required().into(), json!("ok"), Value::Null)]
+#[case::file(Property::file(field_key!("value")).no_expression().required().into(), json!("file.txt"), json!(""))]
+#[case::multi_file(Property::file(field_key!("value")).no_expression().multiple().required().into(), json!(["file.txt"]), json!([]))]
 fn static_required_checks_presence_and_nonempty_values(
-    #[case] field: Field,
+    #[case] field: Property,
     #[case] valid: Value,
     #[case] empty: Value,
 ) {
-    let schema = Schema::builder().add(field).build().unwrap();
+    let schema = Schema::builder().property(field).build().unwrap();
     assert_parity(&schema, json!({"value": valid}), true);
     assert_parity(&schema, json!({}), false);
     assert_parity(&schema, json!({"value": Value::Null}), false);
@@ -317,9 +329,9 @@ fn static_required_checks_presence_and_nonempty_values(
 fn dynamic_predicates_stay_annotations_not_json_schema_proofs() {
     let condition = Rule::predicate(Predicate::eq("flag", json!(true)).unwrap()).unwrap();
     let schema = Schema::builder()
-        .add(Field::boolean(field_key!("flag")))
-        .add(
-            Field::string(field_key!("value"))
+        .property(Property::boolean(field_key!("flag")))
+        .property(
+            Property::string(field_key!("value"))
                 .no_expression()
                 .required_when(condition.clone()),
         )
@@ -360,8 +372,8 @@ fn numeric_bounds_match_without_integer_rounding(
     #[case] accepted: bool,
 ) {
     let schema = Schema::builder()
-        .add(
-            Field::number(field_key!("value"))
+        .property(
+            Property::number(field_key!("value"))
                 .no_expression()
                 .with_rule(rule),
         )
@@ -377,8 +389,8 @@ fn numeric_bounds_match_without_integer_rounding(
 #[case::null(json!({"value": null}), false)]
 fn hidden_required_field_remains_required(#[case] input: Value, #[case] accepted: bool) {
     let schema = Schema::builder()
-        .add(
-            Field::string(field_key!("value"))
+        .property(
+            Property::string(field_key!("value"))
                 .no_expression()
                 .required()
                 .visible(VisibilityMode::Never),
@@ -389,32 +401,32 @@ fn hidden_required_field_remains_required(#[case] input: Value, #[case] accepted
 }
 
 #[rstest]
-#[case::number_bounds(Field::number(field_key!("value")).no_expression().min(10).min(1).into(), json!(10), json!(5))]
-#[case::list_bounds(Field::list(field_key!("value")).no_expression().item(Field::number(field_key!("item")).no_expression()).min_items(2).with_rule(Rule::min_items(1)).into(), json!([1, 2]), json!([1]))]
-#[case::patterns(Field::string(field_key!("value")).no_expression().with_rule(Rule::pattern("^A").unwrap()).with_rule(Rule::pattern("Z$").unwrap()).into(), json!("AZ"), json!("BZ"))]
-#[case::boolean_rules(Field::boolean(field_key!("value")).with_rule(Rule::one_of(vec![json!(true)]).unwrap()).into(), json!(true), json!(false))]
-#[case::file_rules(Field::file(field_key!("value")).no_expression().with_rule(Rule::min_length(2)).into(), json!("ab"), json!("a"))]
+#[case::number_bounds(Property::number(field_key!("value")).no_expression().min(10).min(1).into(), json!(10), json!(5))]
+#[case::list_bounds(Property::list(field_key!("value")).no_expression().item(Property::number(field_key!("item")).no_expression()).min_items(2).with_rule(Rule::min_items(1)).into(), json!([1, 2]), json!([1]))]
+#[case::patterns(Property::string(field_key!("value")).no_expression().with_rule(Rule::pattern("^A").unwrap()).with_rule(Rule::pattern("Z$").unwrap()).into(), json!("AZ"), json!("BZ"))]
+#[case::boolean_rules(Property::boolean(field_key!("value")).with_rule(Rule::one_of(vec![json!(true)]).unwrap()).into(), json!(true), json!(false))]
+#[case::file_rules(Property::file(field_key!("value")).no_expression().with_rule(Rule::min_length(2)).into(), json!("ab"), json!("a"))]
 fn all_declared_basic_constraints_remain_conjunctive(
-    #[case] field: Field,
+    #[case] field: Property,
     #[case] accepted: Value,
     #[case] rejected: Value,
 ) {
-    let schema = Schema::builder().add(field).build().unwrap();
+    let schema = Schema::builder().property(field).build().unwrap();
     assert_parity(&schema, json!({"value": accepted}), true);
     assert_parity(&schema, json!({"value": rejected}), false);
 }
 
 #[rstest]
-#[case::duplicate_option(Field::select(field_key!("value")).option("red", "Red").option("red", "Alternate label").into(), json!("red"), true)]
-#[case::empty_option_set(Field::select(field_key!("value")).into(), json!("anything"), false)]
-#[case::empty_multi_option_set(Field::select(field_key!("value")).multiple().into(), json!(["anything"]), false)]
-#[case::empty_multi_selection(Field::select(field_key!("value")).multiple().into(), json!([]), true)]
+#[case::duplicate_option(Property::select(field_key!("value")).option("red", "Red").option("red", "Alternate label").into(), json!("red"), true)]
+#[case::empty_option_set(Property::select(field_key!("value")).into(), json!("anything"), false)]
+#[case::empty_multi_option_set(Property::select(field_key!("value")).multiple().into(), json!(["anything"]), false)]
+#[case::empty_multi_selection(Property::select(field_key!("value")).multiple().into(), json!([]), true)]
 fn static_select_membership_is_set_membership(
-    #[case] field: Field,
+    #[case] field: Property,
     #[case] value: Value,
     #[case] accepted: bool,
 ) {
-    let schema = Schema::builder().add(field).build().unwrap();
+    let schema = Schema::builder().property(field).build().unwrap();
     assert_parity(&schema, json!({"value": value}), accepted);
 }
 
@@ -427,13 +439,13 @@ fn static_select_membership_is_set_membership(
 #[case::missing_payload(json!({"auth": {}}), false)]
 fn mode_default_only_supplies_an_absent_selector(#[case] input: Value, #[case] accepted: bool) {
     let schema = Schema::builder()
-        .add(
-            Field::mode(field_key!("auth"))
+        .property(
+            Property::mode(field_key!("auth"))
                 .no_expression()
                 .variant(
                     "token",
                     "Token",
-                    Field::string(field_key!("payload"))
+                    Property::string(field_key!("payload"))
                         .no_expression()
                         .required(),
                 )
@@ -448,11 +460,11 @@ fn mode_default_only_supplies_an_absent_selector(#[case] input: Value, #[case] a
 #[test]
 fn hidden_required_mode_payload_remains_required() {
     let schema = Schema::builder()
-        .add(
-            Field::mode(field_key!("auth")).no_expression().variant(
+        .property(
+            Property::mode(field_key!("auth")).no_expression().variant(
                 "hidden",
                 "Hidden",
-                Field::string(field_key!("payload"))
+                Property::string(field_key!("payload"))
                     .required()
                     .no_expression()
                     .visible(VisibilityMode::Never),
@@ -476,8 +488,8 @@ fn hidden_required_mode_payload_remains_required() {
 #[test]
 fn empty_enum_rule_exports_a_valid_unsatisfiable_constraint() {
     let schema = Schema::builder()
-        .add(
-            Field::boolean(field_key!("value"))
+        .property(
+            Property::boolean(field_key!("value"))
                 .with_rule(Rule::one_of(Vec::<Value>::new()).unwrap()),
         )
         .build()
@@ -491,8 +503,8 @@ fn empty_enum_rule_exports_a_valid_unsatisfiable_constraint() {
 #[test]
 fn required_read_alias_is_checked_and_canonicalized() {
     let schema = Schema::builder()
-        .add(
-            Field::string(field_key!("name"))
+        .property(
+            Property::string(field_key!("name"))
                 .no_expression()
                 .required()
                 .read_alias("legacy")
@@ -514,7 +526,7 @@ fn required_read_alias_is_checked_and_canonicalized() {
 #[tokio::test]
 async fn expression_wrapper_is_an_annotation_boundary_not_a_resolved_proof() {
     let schema = Schema::builder()
-        .add(Field::number(field_key!("value")).min(1))
+        .property(Property::number(field_key!("value")).min(1))
         .build()
         .unwrap();
     let input = json!({"value": {"$expr": "{{ $input.value }}"}});
@@ -563,7 +575,7 @@ proptest! {
 
     #[test]
     fn undeclared_json_keys_do_not_close_records(key in "[^a-z]{0,12}", value in any::<i64>()) {
-        let schema = Schema::builder().add(Field::boolean(field_key!("flag"))).build().unwrap();
+        let schema = Schema::builder().property(Property::boolean(field_key!("flag"))).build().unwrap();
         let input = json!({"flag": true, (key): value});
         let runtime = complete_wire(&schema, input.clone()).unwrap();
         prop_assert_eq!(&runtime, &input);

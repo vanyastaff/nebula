@@ -1,5 +1,5 @@
 use nebula_metadata::{MetadataBuildError, MetadataDraft, RecordedBaseMetadata};
-use nebula_schema::{Field, Schema, ValidSchema, field_key};
+use nebula_schema::{Property, Schema, ValidSchema, field_key};
 use serde_json::json;
 
 #[test]
@@ -21,33 +21,33 @@ fn historical_schema_cannot_bind_fresh_metadata() {
 
 #[test]
 fn unknown_declarations_cannot_bind_fresh_metadata_even_when_inactive() {
-    let unknown: Field = serde_json::from_value(json!({
+    let unknown: Property = serde_json::from_value(json!({
         "type": "vendor.future_kind", "key": "future", "payload": "must-not-leak"
     }))
     .unwrap();
     for (field, path) in [
         (unknown.clone(), "/future"),
         (
-            Field::list(field_key!("items"))
+            Property::list(field_key!("items"))
                 .item(unknown.clone())
                 .into(),
             "/items/0",
         ),
         (
-            Field::list(field_key!("items"))
-                .item(Field::list(field_key!("row")).item(unknown.clone()))
+            Property::list(field_key!("items"))
+                .item(Property::list(field_key!("row")).item(unknown.clone()))
                 .into(),
             "/items/0/0",
         ),
         (
-            Field::mode(field_key!("auth"))
+            Property::mode(field_key!("auth"))
                 .variant_empty("none", "None")
                 .variant("future", "Future", unknown)
                 .into(),
             "/auth/future",
         ),
     ] {
-        let schema = Schema::builder().add(field).build().unwrap();
+        let schema = Schema::builder().property(field).build().unwrap();
         let wire = serde_json::to_value(&schema).unwrap();
         let decoded: ValidSchema = serde_json::from_value(wire.clone()).unwrap();
         assert_eq!(serde_json::to_value(&decoded).unwrap(), wire);

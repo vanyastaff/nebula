@@ -2,7 +2,7 @@
 
 use nebula_validator::Rule;
 
-use crate::{Field, Property, RequiredMode, ValidationError, ValidationReport};
+use crate::{Property, RequiredMode, ValidationError, ValidationReport};
 
 use super::{ScalarSchema, SchemaKind, SerdeTagging};
 
@@ -81,12 +81,6 @@ impl RootShape {
         }
     }
 
-    /// Declared legacy fields. Scalar and unknown roots do not have properties.
-    #[must_use]
-    pub fn fields(&self) -> &[Field] {
-        self.properties()
-    }
-
     /// Rules on the complete submitted value, without synthetic property keys.
     #[must_use]
     pub fn root_rules(&self) -> &[Rule] {
@@ -114,12 +108,6 @@ impl RecordShape {
         &self.properties
     }
 
-    /// The ordered record declarations under the legacy field name.
-    #[must_use]
-    pub fn fields(&self) -> &[Field] {
-        self.properties()
-    }
-
     /// Rules on the whole object.
     #[must_use]
     pub fn root_rules(&self) -> &[Rule] {
@@ -132,12 +120,6 @@ impl UnionShape {
     #[must_use]
     pub fn property(&self) -> &Property {
         &self.property
-    }
-
-    /// The checked root mode declaration under the legacy field name.
-    #[must_use]
-    pub fn field(&self) -> &Field {
-        self.property()
     }
 
     /// The enum's serde tagging convention.

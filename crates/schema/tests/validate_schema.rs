@@ -32,7 +32,7 @@ fn empty_schema_with_extra_values_ok() {
 #[test]
 fn required_field_missing_emits_required() {
     let schema = Schema::builder()
-        .add(Field::string(fk("x")).required())
+        .property(Property::string(fk("x")).required())
         .build()
         .unwrap();
     let values = AuthoredValue::from_template_json(json!({})).unwrap();
@@ -46,7 +46,7 @@ fn required_field_missing_emits_required() {
 #[test]
 fn required_field_null_value_emits_required() {
     let schema = Schema::builder()
-        .add(Field::string(fk("x")).required())
+        .property(Property::string(fk("x")).required())
         .build()
         .unwrap();
     let values = AuthoredValue::from_template_json(json!({"x": null})).unwrap();
@@ -57,7 +57,7 @@ fn required_field_null_value_emits_required() {
 #[test]
 fn required_field_present_ok() {
     let schema = Schema::builder()
-        .add(Field::string(fk("x")).required())
+        .property(Property::string(fk("x")).required())
         .build()
         .unwrap();
     let values = AuthoredValue::from_template_json(json!({"x": "hello"})).unwrap();
@@ -67,7 +67,7 @@ fn required_field_present_ok() {
 #[test]
 fn optional_field_absent_ok() {
     let schema = Schema::builder()
-        .add(Field::string(fk("x")))
+        .property(Property::string(fk("x")))
         .build()
         .unwrap();
     let values = AuthoredValue::from_template_json(json!({})).unwrap();
@@ -80,7 +80,7 @@ fn optional_field_absent_ok() {
 fn expression_in_allowed_field_deferred_not_error() {
     // ExpressionMode::Allowed (default for string) — expression skips value rules.
     let schema = Schema::builder()
-        .add(Field::string(fk("x")).required())
+        .property(Property::string(fk("x")).required())
         .build()
         .unwrap();
     let values = AuthoredValue::from_template_json(json!({"x": "{{ $ctx.value }}"})).unwrap();
@@ -92,7 +92,7 @@ fn expression_in_allowed_field_deferred_not_error() {
 fn expression_in_forbidden_mode_field_emits_error() {
     // BooleanField defaults to ExpressionMode::Forbidden.
     let schema = Schema::builder()
-        .add(Field::boolean(fk("flag")))
+        .property(Property::boolean(fk("flag")))
         .build()
         .unwrap();
     let values = AuthoredValue::from_template_json(json!({"flag": "{{ $x }}"})).unwrap();
@@ -110,7 +110,7 @@ fn expression_in_forbidden_mode_field_emits_error() {
 #[test]
 fn expression_in_explicit_forbidden_string_emits_error() {
     let schema = Schema::builder()
-        .add(Field::string(fk("x")).no_expression())
+        .property(Property::string(fk("x")).no_expression())
         .build()
         .unwrap();
     let values = AuthoredValue::from_template_json(json!({"x": "{{ $y }}"})).unwrap();
@@ -121,8 +121,8 @@ fn expression_in_explicit_forbidden_string_emits_error() {
 #[test]
 fn mode_variant_empty_rejects_expression_in_placeholder() {
     let schema = Schema::builder()
-        .add(
-            Field::mode(fk("m"))
+        .property(
+            Property::mode(fk("m"))
                 .variant_empty("none", "None")
                 .default_variant("none"),
         )
@@ -146,7 +146,11 @@ fn mode_variant_empty_rejects_expression_in_placeholder() {
 #[test]
 fn mode_field_accepts_object_wire_envelope() {
     let schema = Schema::builder()
-        .add(Field::mode(fk("auth")).variant("token", "Token", Field::secret(fk("token"))))
+        .property(Property::mode(fk("auth")).variant(
+            "token",
+            "Token",
+            Property::secret(fk("token")),
+        ))
         .build()
         .unwrap();
 
@@ -161,9 +165,9 @@ fn mode_field_accepts_object_wire_envelope() {
 #[test]
 fn mode_field_uses_default_variant_for_object_wire_envelope_without_mode() {
     let schema = Schema::builder()
-        .add(
-            Field::mode(fk("auth"))
-                .variant("token", "Token", Field::secret(fk("token")))
+        .property(
+            Property::mode(fk("auth"))
+                .variant("token", "Token", Property::secret(fk("token")))
                 .default_variant("token"),
         )
         .build()
@@ -180,10 +184,10 @@ fn mode_field_uses_default_variant_for_object_wire_envelope_without_mode() {
 #[test]
 fn object_field_can_use_mode_and_value_keys_without_mode_coercion() {
     let schema = Schema::builder()
-        .add(
-            Field::object(fk("config"))
-                .add(Field::string(fk("mode")).required())
-                .add(Field::string(fk("value")).required()),
+        .property(
+            Property::object(fk("config"))
+                .property(Property::string(fk("mode")).required())
+                .property(Property::string(fk("value")).required()),
         )
         .build()
         .unwrap();
@@ -199,7 +203,7 @@ fn object_field_can_use_mode_and_value_keys_without_mode_coercion() {
 #[test]
 fn computed_field_literal_emits_expression_required() {
     let schema = Schema::builder()
-        .add(Field::computed(fk("derived")))
+        .property(Property::computed(fk("derived")))
         .build()
         .unwrap();
     let values = AuthoredValue::from_template_json(json!({"derived": "plain"})).unwrap();
@@ -219,12 +223,12 @@ fn computed_field_literal_emits_expression_required() {
 #[test]
 fn computed_field_cannot_disable_expression_requirement() {
     let schema = Schema::builder()
-        .add(Field::computed(fk("derived")).no_expression())
+        .property(Property::computed(fk("derived")).no_expression())
         .build()
         .unwrap();
 
     assert_eq!(
-        schema.fields()[0].expression(),
+        schema.properties()[0].expression(),
         &ExpressionMode::Required,
         "computed field must remain expression-required"
     );
@@ -244,12 +248,12 @@ fn computed_field_cannot_disable_expression_requirement() {
 #[test]
 fn notice_field_cannot_enable_expression_mode() {
     let schema = Schema::builder()
-        .add(Field::notice(fk("banner")).expression_mode(ExpressionMode::Allowed))
+        .property(Property::notice(fk("banner")).expression_mode(ExpressionMode::Allowed))
         .build()
         .unwrap();
 
     assert_eq!(
-        schema.fields()[0].expression(),
+        schema.properties()[0].expression(),
         &ExpressionMode::Forbidden,
         "notice field must keep expression-forbidden invariant"
     );
@@ -286,8 +290,14 @@ fn computed_and_notice_expression_modes_are_normalized_after_deserialize() {
     }))
     .expect("schema JSON should deserialize");
 
-    assert_eq!(schema.fields()[0].expression(), &ExpressionMode::Required);
-    assert_eq!(schema.fields()[1].expression(), &ExpressionMode::Forbidden);
+    assert_eq!(
+        schema.properties()[0].expression(),
+        &ExpressionMode::Required
+    );
+    assert_eq!(
+        schema.properties()[1].expression(),
+        &ExpressionMode::Forbidden
+    );
 }
 
 #[test]
@@ -304,8 +314,11 @@ fn computed_field_ignores_removed_expression_source_key() {
         }]
     }))
     .expect("a legacy computed field carrying expression_source still parses");
-    assert_eq!(schema.fields()[0].key().as_str(), "calc");
-    assert_eq!(schema.fields()[0].expression(), &ExpressionMode::Required);
+    assert_eq!(schema.properties()[0].key().as_str(), "calc");
+    assert_eq!(
+        schema.properties()[0].expression(),
+        &ExpressionMode::Required
+    );
 }
 
 // ── Type mismatch ────────────────────────────────────────────────────────────
@@ -313,7 +326,7 @@ fn computed_field_ignores_removed_expression_source_key() {
 #[test]
 fn string_field_number_value_emits_type_mismatch() {
     let schema = Schema::builder()
-        .add(Field::string(fk("name")))
+        .property(Property::string(fk("name")))
         .build()
         .unwrap();
     let values = AuthoredValue::from_template_json(json!({"name": 42})).unwrap();
@@ -324,7 +337,7 @@ fn string_field_number_value_emits_type_mismatch() {
 #[test]
 fn number_field_string_value_emits_type_mismatch() {
     let schema = Schema::builder()
-        .add(Field::number(fk("n")))
+        .property(Property::number(fk("n")))
         .build()
         .unwrap();
     let values = AuthoredValue::from_template_json(json!({"n": "not a number"})).unwrap();
@@ -335,7 +348,7 @@ fn number_field_string_value_emits_type_mismatch() {
 #[test]
 fn boolean_field_string_emits_type_mismatch() {
     let schema = Schema::builder()
-        .add(Field::boolean(fk("ok")))
+        .property(Property::boolean(fk("ok")))
         .build()
         .unwrap();
     let values = AuthoredValue::from_template_json(json!({"ok": "yes"})).unwrap();
@@ -348,7 +361,7 @@ fn boolean_field_string_emits_type_mismatch() {
 #[test]
 fn length_max_rule_violated() {
     let schema = Schema::builder()
-        .add(Field::string(fk("name")).max_length(5))
+        .property(Property::string(fk("name")).max_length(5))
         .build()
         .unwrap();
     let values = AuthoredValue::from_template_json(json!({"name": "toolongvalue"})).unwrap();
@@ -369,7 +382,7 @@ fn length_max_rule_violated() {
 #[test]
 fn length_max_rule_satisfied() {
     let schema = Schema::builder()
-        .add(Field::string(fk("name")).max_length(10))
+        .property(Property::string(fk("name")).max_length(10))
         .build()
         .unwrap();
     let values = AuthoredValue::from_template_json(json!({"name": "alice"})).unwrap();
@@ -381,7 +394,7 @@ fn length_max_rule_satisfied() {
 #[test]
 fn valid_values_exposes_warnings_empty_by_default() {
     let schema = Schema::builder()
-        .add(Field::string(fk("x")))
+        .property(Property::string(fk("x")))
         .build()
         .unwrap();
     let values = AuthoredValue::from_template_json(json!({"x": "hi"})).unwrap();
@@ -392,7 +405,7 @@ fn valid_values_exposes_warnings_empty_by_default() {
 #[test]
 fn valid_values_raw_matches_input() {
     let schema = Schema::builder()
-        .add(Field::string(fk("x")))
+        .property(Property::string(fk("x")))
         .build()
         .unwrap();
     let values = AuthoredValue::from_template_json(json!({"x": "hi"})).unwrap();
@@ -412,7 +425,7 @@ fn valid_values_raw_matches_input() {
 #[test]
 fn nested_required_field_missing_emits_required() {
     let schema = Schema::builder()
-        .add(Field::object(fk("user")).add(Field::string(fk("email")).required()))
+        .property(Property::object(fk("user")).property(Property::string(fk("email")).required()))
         .build()
         .unwrap();
     // Provide user object but without email.
@@ -424,7 +437,7 @@ fn nested_required_field_missing_emits_required() {
 #[test]
 fn nested_required_field_present_ok() {
     let schema = Schema::builder()
-        .add(Field::object(fk("user")).add(Field::string(fk("email")).required()))
+        .property(Property::object(fk("user")).property(Property::string(fk("email")).required()))
         .build()
         .unwrap();
     let values = AuthoredValue::from_template_json(json!({"user": {"email": "a@b.com"}})).unwrap();
@@ -436,8 +449,8 @@ fn nested_required_field_present_ok() {
 #[test]
 fn multi_select_with_scalar_value_emits_type_mismatch() {
     let schema = Schema::builder()
-        .add(
-            Field::select(fk("tags"))
+        .property(
+            Property::select(fk("tags"))
                 .multiple()
                 .option("a", "A")
                 .option("b", "B"),
@@ -456,8 +469,8 @@ fn multi_select_with_scalar_value_emits_type_mismatch() {
 #[test]
 fn single_select_with_array_value_emits_type_mismatch() {
     let schema = Schema::builder()
-        .add(
-            Field::select(fk("choice"))
+        .property(
+            Property::select(fk("choice"))
                 .option("a", "A")
                 .option("b", "B"),
         )
@@ -477,7 +490,7 @@ fn single_select_with_array_value_emits_type_mismatch() {
 #[test]
 fn required_string_empty_emits_required() {
     let schema = Schema::builder()
-        .add(Field::string(fk("name")).required())
+        .property(Property::string(fk("name")).required())
         .build()
         .unwrap();
     let values = AuthoredValue::from_template_json(json!({"name": ""})).unwrap();
@@ -488,7 +501,7 @@ fn required_string_empty_emits_required() {
 #[test]
 fn required_secret_empty_emits_required() {
     let schema = Schema::builder()
-        .add(Field::secret(fk("token")).required())
+        .property(Property::secret(fk("token")).required())
         .build()
         .unwrap();
     let values = AuthoredValue::from_template_json(json!({"token": ""})).unwrap();
@@ -499,9 +512,9 @@ fn required_secret_empty_emits_required() {
 #[test]
 fn required_list_empty_emits_required() {
     let schema = Schema::builder()
-        .add(
-            Field::list(fk("items"))
-                .item(Field::string(fk("it")))
+        .property(
+            Property::list(fk("items"))
+                .item(Property::string(fk("it")))
                 .required(),
         )
         .build()
@@ -514,9 +527,9 @@ fn required_list_empty_emits_required() {
 #[test]
 fn list_unique_duplicate_emits_items_unique() {
     let schema = Schema::builder()
-        .add(
-            Field::list(fk("items"))
-                .item(Field::string(fk("it")))
+        .property(
+            Property::list(fk("items"))
+                .item(Property::string(fk("it")))
                 .unique(),
         )
         .build()
@@ -536,9 +549,9 @@ fn list_unique_duplicate_emits_items_unique() {
 #[test]
 fn list_unique_distinct_values_ok() {
     let schema = Schema::builder()
-        .add(
-            Field::list(fk("items"))
-                .item(Field::string(fk("it")))
+        .property(
+            Property::list(fk("items"))
+                .item(Property::string(fk("it")))
                 .unique(),
         )
         .build()
@@ -553,9 +566,9 @@ fn list_unique_distinct_values_ok() {
 #[test]
 fn list_unique_treats_int_and_float_as_duplicate() {
     let schema = Schema::builder()
-        .add(
-            Field::list(fk("items"))
-                .item(Field::number(fk("it")))
+        .property(
+            Property::list(fk("items"))
+                .item(Property::number(fk("it")))
                 .unique(),
         )
         .build()
@@ -575,7 +588,7 @@ fn list_unique_treats_int_and_float_as_duplicate() {
 #[test]
 fn required_multi_file_empty_array_emits_required() {
     let schema = Schema::builder()
-        .add(Field::file(fk("uploads")).multiple().required())
+        .property(Property::file(fk("uploads")).multiple().required())
         .build()
         .unwrap();
     let values = AuthoredValue::from_template_json(json!({"uploads": []})).unwrap();
@@ -586,7 +599,7 @@ fn required_multi_file_empty_array_emits_required() {
 #[test]
 fn required_code_empty_emits_required() {
     let schema = Schema::builder()
-        .add(Field::code(fk("script")).required())
+        .property(Property::code(fk("script")).required())
         .build()
         .unwrap();
     let values = AuthoredValue::from_template_json(json!({"script": ""})).unwrap();
@@ -597,7 +610,7 @@ fn required_code_empty_emits_required() {
 #[test]
 fn required_single_file_empty_string_emits_required() {
     let schema = Schema::builder()
-        .add(Field::file(fk("upload")).required())
+        .property(Property::file(fk("upload")).required())
         .build()
         .unwrap();
     let values = AuthoredValue::from_template_json(json!({"upload": ""})).unwrap();
@@ -608,8 +621,8 @@ fn required_single_file_empty_string_emits_required() {
 #[test]
 fn required_multi_select_empty_array_emits_required() {
     let schema = Schema::builder()
-        .add(
-            Field::select(fk("tags"))
+        .property(
+            Property::select(fk("tags"))
                 .multiple()
                 .option("a", "A")
                 .required(),
@@ -627,8 +640,8 @@ fn multi_select_with_expression_item_forbidden_emits_expression_forbidden() {
     // whose list contains an expression placeholder must be rejected at
     // validate-time — otherwise `resolve` would silently evaluate it.
     let schema = Schema::builder()
-        .add(
-            Field::select(fk("tags"))
+        .property(
+            Property::select(fk("tags"))
                 .multiple()
                 .option("a", "A")
                 .option("b", "B"),
@@ -653,7 +666,7 @@ fn multi_select_with_expression_item_forbidden_emits_expression_forbidden() {
 #[test]
 fn required_string_single_char_ok() {
     let schema = Schema::builder()
-        .add(Field::string(fk("name")).required())
+        .property(Property::string(fk("name")).required())
         .build()
         .unwrap();
     let values = AuthoredValue::from_template_json(json!({"name": "a"})).unwrap();
@@ -663,8 +676,8 @@ fn required_string_single_char_ok() {
 #[test]
 fn multi_select_with_array_of_valid_options_ok() {
     let schema = Schema::builder()
-        .add(
-            Field::select(fk("tags"))
+        .property(
+            Property::select(fk("tags"))
                 .multiple()
                 .option("a", "A")
                 .option("b", "B"),
@@ -678,8 +691,11 @@ fn multi_select_with_array_of_valid_options_ok() {
 #[test]
 fn root_rule_error_path_snapshot() {
     let schema = Schema::builder()
-        .add(Field::object(fk("config")).add(Field::string(fk("tier"))))
-        .add(Field::list(fk("items")).item(Field::object(fk("row")).add(Field::string(fk("name")))))
+        .property(Property::object(fk("config")).property(Property::string(fk("tier"))))
+        .property(
+            Property::list(fk("items"))
+                .item(Property::object(fk("row")).property(Property::string(fk("name")))),
+        )
         .root_rule(
             Rule::predicate(Predicate::eq("/config/tier", json!("pro")).unwrap())
                 .expect("bounded root predicate"),
@@ -741,9 +757,9 @@ fn nested_required_when_is_enforced_not_fail_open() {
     // Rule::evaluate flat-key path silently returned false for the nested
     // path → field was NOT enforced (fail-open). It must now be enforced.
     let schema = Schema::builder()
-        .add(Field::object(fk("auth")).add(Field::string(fk("mode"))))
-        .add(
-            Field::string(fk("secret_token")).required_when(
+        .property(Property::object(fk("auth")).property(Property::string(fk("mode"))))
+        .property(
+            Property::string(fk("secret_token")).required_when(
                 Rule::predicate(Predicate::Eq(
                     ValidatorPath::parse("/auth/mode").unwrap(),
                     json!("oauth"),
@@ -779,9 +795,9 @@ fn middle_skipped_field_does_not_shift_plan_to_field_mapping() {
     // Both f_first and f_last get too-short values. If plan<->field shifts by
     // the skipped middle, the error paths land on the wrong fields.
     let schema = Schema::builder()
-        .add(Field::string(fk("f_first")).min_length(5))
-        .add(Field::string(fk("f_mid")).visible(VisibilityMode::Never))
-        .add(Field::string(fk("f_last")).min_length(5))
+        .property(Property::string(fk("f_first")).min_length(5))
+        .property(Property::string(fk("f_mid")).visible(VisibilityMode::Never))
+        .property(Property::string(fk("f_last")).min_length(5))
         .build()
         .expect("schema builds");
 
@@ -813,8 +829,8 @@ fn hidden_present_required_empty_emits_single_required() {
     // emits the single `required` for this Presence != Active corner. Pins
     // exactly-one `required` on the field path.
     let schema = Schema::builder()
-        .add(
-            Field::string(fk("secret_slot"))
+        .property(
+            Property::string(fk("secret_slot"))
                 .visible(VisibilityMode::Never)
                 .required(),
         )

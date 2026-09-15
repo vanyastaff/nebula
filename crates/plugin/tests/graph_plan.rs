@@ -15,7 +15,9 @@ use nebula_plugin::{
     ExecutablePlanRevision, PlanRegistryCompatibilityError, Plugin, PluginRegistry,
     RecordedExecutablePlanRevisionV1, ResolvedPlugin, RuntimeContractVersion,
 };
-use nebula_schema::{Field, ObjectField, Schema, SecretField, ValidSchema, ValuePath, field_key};
+use nebula_schema::{
+    ObjectField, Property, Schema, SecretField, ValidSchema, ValuePath, field_key,
+};
 use nebula_workflow::{NodeDefinition, ParamValue, WorkflowBuilder};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -299,7 +301,7 @@ fn intrinsic_error_edge_uses_runtime_payload_schema_and_survives_record_roundtri
         "demo.source",
         ValidSchema::empty(),
         Schema::builder()
-            .add(Field::string(field_key!("success_only")).required())
+            .property(Property::string(field_key!("success_only")).required())
             .build()
             .unwrap(),
         nebula_action::effect::ActionEffectContract::NoExternalEffects,
@@ -316,7 +318,7 @@ fn intrinsic_error_edge_uses_runtime_payload_schema_and_survives_record_roundtri
     let incompatible = ContractAction::with_contract(
         "demo.incompatible",
         Schema::builder()
-            .add(Field::string(field_key!("success_only")).required())
+            .property(Property::string(field_key!("success_only")).required())
             .build()
             .unwrap(),
         ValidSchema::empty(),
@@ -604,7 +606,7 @@ fn compatibility_detects_flavor_and_unfingerprinted_contract_drift() {
     ));
 
     let changed_schema = Schema::builder()
-        .add(Field::string(field_key!("message")))
+        .property(Property::string(field_key!("message")))
         .build()
         .expect("fixture schema is valid");
     let same_ids_but_changed_contract = frozen(changed_schema, 0x55);
@@ -626,7 +628,7 @@ fn compatibility_detects_flavor_and_unfingerprinted_contract_drift() {
 fn recorded_templates_use_template_grammar_and_preserve_parameter_bytes() {
     let registry = frozen(
         Schema::builder()
-            .add(Field::string(field_key!("value")))
+            .property(Property::string(field_key!("value")))
             .build()
             .unwrap(),
         0x87,
@@ -657,7 +659,7 @@ fn recorded_templates_use_template_grammar_and_preserve_parameter_bytes() {
 fn recorded_expression_auto_priority_does_not_make_malformed_templates_valid() {
     let registry = frozen(
         Schema::builder()
-            .add(Field::string(field_key!("value")))
+            .property(Property::string(field_key!("value")))
             .build()
             .unwrap(),
         0x89,
@@ -689,7 +691,7 @@ fn recorded_expression_auto_priority_does_not_make_malformed_templates_valid() {
 #[test]
 fn compiler_validates_the_complete_parameter_set_and_redacts_secret_payloads() {
     let required_schema = Schema::builder()
-        .add(Field::string(field_key!("value")).required())
+        .property(Property::string(field_key!("value")).required())
         .build()
         .expect("fixture schema is valid");
     let registry = frozen(required_schema, 0x61);
@@ -705,7 +707,7 @@ fn compiler_validates_the_complete_parameter_set_and_redacts_secret_payloads() {
     }));
 
     let literal_schema = Schema::builder()
-        .add(Field::string(field_key!("value")).no_expression())
+        .property(Property::string(field_key!("value")).no_expression())
         .build()
         .expect("fixture schema is valid");
     let literal_registry = frozen(literal_schema, 0x63);
@@ -730,7 +732,9 @@ fn compiler_validates_the_complete_parameter_set_and_redacts_secret_payloads() {
 
     const SECRET_PAYLOAD: &str = "must-never-appear-in-a-diagnostic";
     let secret_schema = Schema::builder()
-        .add(ObjectField::new(field_key!("value")).add(SecretField::new(field_key!("token"))))
+        .property(
+            ObjectField::new(field_key!("value")).property(SecretField::new(field_key!("token"))),
+        )
         .build()
         .expect("fixture schema is valid");
     let secret_registry = frozen(secret_schema, 0x66);
@@ -758,7 +762,7 @@ fn execution_graph_preserves_recorded_runtime_configuration() {
 
     let registry = frozen(
         Schema::builder()
-            .add(Field::string(field_key!("value")))
+            .property(Property::string(field_key!("value")))
             .build()
             .unwrap(),
         0x73,
@@ -824,7 +828,7 @@ fn execution_graph_preserves_recorded_runtime_configuration() {
 #[test]
 fn execution_graph_preserves_parameter_variants_and_canonical_reference_ports() {
     let schema = Schema::builder()
-        .add(Field::string(field_key!("value")))
+        .property(Property::string(field_key!("value")))
         .build()
         .unwrap();
     let action = ContractAction::with_contract(

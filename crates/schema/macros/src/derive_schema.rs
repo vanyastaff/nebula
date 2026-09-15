@@ -320,7 +320,7 @@ fn nested_field_expr(
                         .message("nested record root rules require an explicit field declaration")
                         .build().into());
                 }
-                let #binding = #crate_path::Property::object(#key).add_many(record.properties().iter().cloned());
+                let #binding = #crate_path::Property::object(#key).properties(record.properties().iter().cloned());
                 #decorated
             }
             #crate_path::RootShape::Scalar(_) | #crate_path::RootShape::Union(_) => {

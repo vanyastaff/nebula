@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    Field, LoaderContext, LoaderRegistry, LoaderResult, Property, SelectOption,
+    LoaderContext, LoaderRegistry, LoaderResult, Property, SelectOption,
     error::{ValidationError, ValidationReport},
     field_tree::{mode_variant_path, walk_schema_fields},
     path::{FieldPath, PathSegment},
@@ -71,22 +71,10 @@ impl Schema {
             .find(|property| property.key().as_str() == key)
     }
 
-    /// Find a legacy field by key (string slice).
-    #[must_use]
-    pub fn find(&self, key: &str) -> Option<&Field> {
-        self.find_property(key)
-    }
-
     /// Borrow all top-level properties in insertion order.
     #[must_use]
     pub const fn properties(&self) -> &[Property] {
         self.properties.as_slice()
-    }
-
-    /// Borrow all top-level fields in insertion order.
-    #[must_use]
-    pub const fn fields(&self) -> &[Field] {
-        self.properties()
     }
 
     /// Run static lint checks for schema structure and references.
@@ -356,21 +344,6 @@ impl SchemaBuilder {
         self
     }
 
-    /// Append a legacy field to the builder.
-    ///
-    /// New authoring surfaces should prefer [`SchemaBuilder::property`]. The
-    /// stored carrier is [`Property`]; this method remains as a compatibility
-    /// spelling while workspace consumers migrate.
-    #[expect(
-        clippy::should_implement_trait,
-        reason = "builder API mirrors add-style schema DSL"
-    )]
-    #[must_use]
-    pub fn add(mut self, field: impl Into<Field>) -> Self {
-        self.properties.push(field.into());
-        self
-    }
-
     /// Attach a schema-level rule evaluated against the full submitted value
     /// object after per-field validation succeeds.
     ///
@@ -402,23 +375,11 @@ impl SchemaBuilder {
         self
     }
 
-    /// Append many legacy fields at once.
-    ///
-    /// New authoring surfaces should prefer [`SchemaBuilder::properties`].
-    #[must_use]
-    pub fn add_many<I, F>(self, fields: I) -> Self
-    where
-        I: IntoIterator<Item = F>,
-        F: Into<Field>,
-    {
-        self.properties(fields)
-    }
-
-    /// Append a group of fields that share a common label and optional
+    /// Append a group of properties that share a common label and optional
     /// `visible_when` / `required_when` conditions.
     ///
     /// ```rust
-    /// use nebula_schema::{FieldCollector, Schema, StringWidget, field_key};
+    /// use nebula_schema::{PropertyCollector, Schema, StringWidget, field_key};
     /// use nebula_validator::{Predicate, Rule};
     ///
     /// let rule = Rule::predicate(Predicate::eq("method", "POST").unwrap()).unwrap();
@@ -431,7 +392,7 @@ impl SchemaBuilder {
     ///     .unwrap()
     ///     .build()
     ///     .unwrap();
-    /// assert_eq!(schema.fields().len(), 2);
+    /// assert_eq!(schema.properties().len(), 2);
     /// ```
     pub fn group(
         mut self,
@@ -439,7 +400,7 @@ impl SchemaBuilder {
         f: impl FnOnce(crate::builder::GroupBuilder) -> crate::builder::GroupBuilder,
     ) -> Result<Self, nebula_validator::RuleBuildError> {
         let builder = f(crate::builder::GroupBuilder::new(name));
-        self.properties.extend(builder.into_fields()?);
+        self.properties.extend(builder.into_properties()?);
         Ok(self)
     }
 
@@ -447,12 +408,6 @@ impl SchemaBuilder {
     #[must_use]
     pub fn staged_properties(&self) -> &[Property] {
         &self.properties
-    }
-
-    /// Borrow the fields currently staged on the builder.
-    #[must_use]
-    pub fn fields(&self) -> &[Field] {
-        self.staged_properties()
     }
 
     /// Run lint passes and produce a validated runtime schema.
@@ -532,9 +487,9 @@ impl SchemaBuilder {
     }
 }
 
-impl crate::builder::FieldCollector for SchemaBuilder {
-    fn push_field(mut self, field: Field) -> Self {
-        self.properties.push(field);
+impl crate::builder::PropertyCollector for SchemaBuilder {
+    fn push_property(mut self, property: Property) -> Self {
+        self.properties.push(property);
         self
     }
 }
@@ -823,7 +778,7 @@ fn validate_property_subtree_limits(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Field, FieldKey, FieldPath};
+    use crate::{FieldKey, FieldPath, Property};
 
     fn fk(s: &str) -> FieldKey {
         FieldKey::new(s).unwrap()
@@ -832,7 +787,7 @@ mod tests {
     #[test]
     fn build_empty_schema_ok() {
         let s = Schema::builder().build().unwrap();
-        assert_eq!(s.fields().len(), 0);
+        assert_eq!(s.properties().len(), 0);
     }
 
     #[test]
@@ -855,8 +810,8 @@ mod tests {
     #[test]
     fn build_detects_duplicate_key() {
         let r = Schema::builder()
-            .add(Field::string(fk("x")))
-            .add(Field::number(fk("x")))
+            .property(Property::string(fk("x")))
+            .property(Property::number(fk("x")))
             .build();
         let err = r.unwrap_err();
         assert!(err.errors().any(|e| e.code() == "duplicate_key"));
@@ -865,18 +820,18 @@ mod tests {
     #[test]
     fn build_finds_field_by_key() {
         let s = Schema::builder()
-            .add(Field::string(fk("a")))
+            .property(Property::string(fk("a")))
             .build()
             .unwrap();
         let key = FieldKey::new("a").unwrap();
-        assert!(s.find(&key).is_some());
+        assert!(s.find_property(&key).is_some());
     }
 
     #[test]
     fn schema_flags_track_depth() {
         let s = Schema::builder()
-            .add(Field::string(fk("a")))
-            .add(Field::number(fk("b")))
+            .property(Property::string(fk("a")))
+            .property(Property::number(fk("b")))
             .build()
             .unwrap();
         assert_eq!(s.flags().max_depth, 1);
@@ -885,52 +840,54 @@ mod tests {
     #[test]
     fn loader_key_rejects_invalid_field_key_for_select() {
         let schema = Schema::builder()
-            .add(Field::select(fk("select_field")))
+            .property(Property::select(fk("select_field")))
             .build()
             .expect("valid schema");
-        let err = resolve_select_loader_key(schema.fields(), "bad-key").unwrap_err();
+        let err = resolve_select_loader_key(schema.properties(), "bad-key").unwrap_err();
         assert_eq!(err.code(), "invalid_key");
     }
 
     #[test]
     fn loader_key_rejects_invalid_field_key_for_dynamic() {
         let schema = Schema::builder()
-            .add(Field::dynamic(fk("dynamic_field")))
+            .property(Property::dynamic(fk("dynamic_field")))
             .build()
             .expect("valid schema");
-        let err = resolve_dynamic_loader_key(schema.fields(), "bad-key").unwrap_err();
+        let err = resolve_dynamic_loader_key(schema.properties(), "bad-key").unwrap_err();
         assert_eq!(err.code(), "invalid_key");
     }
 
     #[test]
     fn build_rejects_schema_depth_beyond_index_limits() {
-        fn nested_object(depth: usize) -> Field {
-            let mut current: Field = Field::string(fk("leaf")).into();
+        fn nested_object(depth: usize) -> Property {
+            let mut current: Property = Property::string(fk("leaf")).into();
             for i in (0..depth).rev() {
                 let key = FieldKey::new(format!("n{i}")).expect("generated key");
-                current = Field::object(key).add(current).into();
+                current = Property::object(key).property(current).into();
             }
             current
         }
 
-        let result = Schema::builder().add(nested_object(260)).build();
+        let result = Schema::builder().property(nested_object(260)).build();
         let report = result.expect_err("deep schema should be rejected");
         assert!(report.errors().any(|e| e.code() == "schema.depth_limit"));
     }
 
     #[test]
     fn build_rejects_schema_just_beyond_max_depth() {
-        fn nested_object(depth: usize) -> Field {
-            let mut current: Field = Field::string(fk("leaf")).into();
+        fn nested_object(depth: usize) -> Property {
+            let mut current: Property = Property::string(fk("leaf")).into();
             for i in (0..depth).rev() {
-                current = Field::object(fk(&format!("n{i}"))).add(current).into();
+                current = Property::object(fk(&format!("n{i}")))
+                    .property(current)
+                    .into();
             }
             current
         }
         // One level past the explicit cap must be rejected (pins MAX_SCHEMA_DEPTH,
         // not just the old u8::MAX backstop).
         let result = Schema::builder()
-            .add(nested_object(usize::from(MAX_SCHEMA_DEPTH) + 2))
+            .property(nested_object(usize::from(MAX_SCHEMA_DEPTH) + 2))
             .build();
         let report = result.expect_err("over-deep schema should be rejected");
         assert!(report.errors().any(|e| e.code() == "schema.depth_limit"));
@@ -944,10 +901,12 @@ mod tests {
         // rejected by the build-time depth guard rather than recursing unbounded
         // through the lint passes. Schema-tree analogue of value.rs's
         // `field_value_deserialize_rejects_deeply_nested_input`.
-        fn nested_object(depth: usize) -> Field {
-            let mut current: Field = Field::string(fk("leaf")).into();
+        fn nested_object(depth: usize) -> Property {
+            let mut current: Property = Property::string(fk("leaf")).into();
             for i in (0..depth).rev() {
-                current = Field::object(fk(&format!("n{i}"))).add(current).into();
+                current = Property::object(fk(&format!("n{i}")))
+                    .property(current)
+                    .into();
             }
             current
         }
@@ -970,15 +929,15 @@ mod tests {
         // descend non-object list items, not just `List<Object>`. A list-only
         // deep schema would otherwise bypass MAX_SCHEMA_DEPTH and still drive the
         // unbounded lint/validate/promote recursion.
-        fn nested_list(depth: usize) -> Field {
-            let mut current: Field = Field::string(fk("leaf")).into();
+        fn nested_list(depth: usize) -> Property {
+            let mut current: Property = Property::string(fk("leaf")).into();
             for i in (0..depth).rev() {
-                current = Field::list(fk(&format!("l{i}"))).item(current).into();
+                current = Property::list(fk(&format!("l{i}"))).item(current).into();
             }
             current
         }
         let result = Schema::builder()
-            .add(nested_list(usize::from(MAX_SCHEMA_DEPTH) + 5))
+            .property(nested_list(usize::from(MAX_SCHEMA_DEPTH) + 5))
             .build();
         let report = result.expect_err("deep list-of-lists must be rejected");
         assert!(
@@ -992,10 +951,12 @@ mod tests {
         // `Schema::lint()` runs `lint_tree` directly; it must apply the same
         // depth guard so a `Schema` built/deserialized outside the builder cannot
         // enter the unbounded lint recursion.
-        fn nested_object(depth: usize) -> Field {
-            let mut current: Field = Field::string(fk("leaf")).into();
+        fn nested_object(depth: usize) -> Property {
+            let mut current: Property = Property::string(fk("leaf")).into();
             for i in (0..depth).rev() {
-                current = Field::object(fk(&format!("n{i}"))).add(current).into();
+                current = Property::object(fk(&format!("n{i}")))
+                    .property(current)
+                    .into();
             }
             current
         }
@@ -1012,15 +973,18 @@ mod tests {
     #[test]
     fn build_rejects_mode_variant_list_item_index_overflow() {
         let too_many_fields = (0..(usize::from(u16::MAX) + 2))
-            .map(|i| Field::string(fk(&format!("f{i}"))))
+            .map(|i| Property::string(fk(&format!("f{i}"))))
             .collect::<Vec<_>>();
 
         let result = Schema::builder()
-            .add(Field::mode(fk("payload")).variant(
-                "bulk",
-                "Bulk",
-                Field::list(fk("items")).item(Field::object(fk("item")).add_many(too_many_fields)),
-            ))
+            .property(
+                Property::mode(fk("payload")).variant(
+                    "bulk",
+                    "Bulk",
+                    Property::list(fk("items"))
+                        .item(Property::object(fk("item")).properties(too_many_fields)),
+                ),
+            )
             .build();
 
         let report = result.expect_err("mode variant list item overflow should be rejected");
@@ -1034,9 +998,9 @@ mod tests {
     fn build_deduplicates_select_depends_on_for_runtime_schema() {
         let dep = FieldPath::parse("team_id").unwrap();
         let schema = Schema::builder()
-            .add(Field::string(fk("team_id")))
-            .add(
-                Field::select(fk("workspace"))
+            .property(Property::string(fk("team_id")))
+            .property(
+                Property::select(fk("workspace"))
                     .dynamic()
                     .loader("workspace_loader")
                     .depends_on(dep.clone())
@@ -1045,8 +1009,10 @@ mod tests {
             .build()
             .expect("schema should build");
 
-        let field = schema.find(&fk("workspace")).expect("field must exist");
-        let Field::Select(select) = field else {
+        let field = schema
+            .find_property(&fk("workspace"))
+            .expect("field must exist");
+        let Property::Select(select) = field else {
             panic!("expected select field");
         };
         assert_eq!(select.depends_on.len(), 1);
@@ -1056,10 +1022,10 @@ mod tests {
     fn build_deduplicates_nested_dynamic_depends_on_for_runtime_schema() {
         let dep = FieldPath::parse("team_id").unwrap();
         let schema = Schema::builder()
-            .add(Field::string(fk("team_id")))
-            .add(
-                Field::object(fk("container")).add(
-                    Field::dynamic(fk("resource"))
+            .property(Property::string(fk("team_id")))
+            .property(
+                Property::object(fk("container")).property(
+                    Property::dynamic(fk("resource"))
                         .loader("resource_loader")
                         .depends_on(dep.clone())
                         .depends_on(dep),
@@ -1070,9 +1036,9 @@ mod tests {
 
         let path = FieldPath::parse("container.resource").unwrap();
         let field = schema
-            .find_by_path(&path)
+            .find_property_by_path(&path)
             .expect("nested field should be indexed");
-        let Field::Dynamic(dynamic) = field else {
+        let Property::Dynamic(dynamic) = field else {
             panic!("expected dynamic field");
         };
         assert_eq!(dynamic.depends_on.len(), 1);
@@ -1081,8 +1047,8 @@ mod tests {
     #[test]
     fn build_deduplicates_rules_and_transformers_for_runtime_schema() {
         let schema = Schema::builder()
-            .add(
-                Field::string(fk("name"))
+            .property(
+                Property::string(fk("name"))
                     .min_length(3)
                     .min_length(3)
                     .with_transformer(crate::Transformer::Trim)
@@ -1091,8 +1057,8 @@ mod tests {
             .build()
             .expect("schema should build");
 
-        let field = schema.find(&fk("name")).expect("field must exist");
-        let Field::String(string) = field else {
+        let field = schema.find_property(&fk("name")).expect("field must exist");
+        let Property::String(string) = field else {
             panic!("expected string field");
         };
         assert_eq!(string.rules.len(), 1);
@@ -1102,9 +1068,9 @@ mod tests {
     #[test]
     fn build_deduplicates_nested_rules_and_transformers_for_runtime_schema() {
         let schema = Schema::builder()
-            .add(
-                Field::object(fk("container")).add(
-                    Field::number(fk("count"))
+            .property(
+                Property::object(fk("container")).property(
+                    Property::number(fk("count"))
                         .min(1)
                         .min(1)
                         .with_transformer(crate::Transformer::Trim)
@@ -1116,9 +1082,9 @@ mod tests {
 
         let path = FieldPath::parse("container.count").unwrap();
         let field = schema
-            .find_by_path(&path)
+            .find_property_by_path(&path)
             .expect("nested field should be indexed");
-        let Field::Number(number) = field else {
+        let Property::Number(number) = field else {
             panic!("expected number field");
         };
         assert_eq!(number.rules.len(), 1);

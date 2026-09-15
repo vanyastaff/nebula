@@ -87,7 +87,7 @@ macro_rules! input_contract {
                 let schema = <$input>::schema().unwrap();
                 assert_eq!(schema.kind(), SchemaKind::Record);
                 assert_eq!(
-                    schema.fields().iter().map(|field| field.key().as_str()).collect::<Vec<_>>(),
+                    schema.properties().iter().map(|field| field.key().as_str()).collect::<Vec<_>>(),
                     vec![$($field),+],
                 );
                 assert!(schema.ptr_eq(&<$input>::schema().unwrap()));

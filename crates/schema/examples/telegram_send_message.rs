@@ -21,7 +21,7 @@ use serde_json::json;
 
 fn main() {
     let schema = build_telegram_send_message_schema();
-    eprintln!("Schema: {} top-level field(s)", schema.fields().len());
+    eprintln!("Schema: {} top-level field(s)", schema.properties().len());
 
     let with_keyboard = json!({
         "api_key": "1234567890:AAHevabcdefghijklmnopqrstuvwxyz12",

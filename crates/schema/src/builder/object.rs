@@ -3,8 +3,8 @@
 use nebula_validator::Rule;
 
 use crate::{
-    builder::FieldCollector,
-    field::{Field, ObjectField},
+    builder::PropertyCollector,
+    field::{ObjectField, Property},
     key::FieldKey,
     mode::{ExpressionMode, RequiredMode, VisibilityMode},
     widget::ObjectWidget,
@@ -93,38 +93,36 @@ impl ObjectBuilder {
         self
     }
 
-    /// Append an already-built field.
+    /// Append an already-built property.
     #[must_use]
-    #[expect(
-        clippy::should_implement_trait,
-        reason = "builder API mirrors add-style schema DSL"
-    )]
-    pub fn add(mut self, field: impl Into<Field>) -> Self {
-        self.inner = self.inner.add(field);
+    pub fn property(mut self, property: impl Into<Property>) -> Self {
+        self.inner = self.inner.property(property);
         self
     }
 
-    /// Append many already-built fields at once.
+    /// Append many already-built properties at once.
     #[must_use]
-    pub fn add_many<I, F>(mut self, fields: I) -> Self
+    pub fn properties<I, F>(mut self, properties: I) -> Self
     where
         I: IntoIterator<Item = F>,
-        F: Into<Field>,
+        F: Into<Property>,
     {
-        self.inner.fields.extend(fields.into_iter().map(Into::into));
+        self.inner
+            .fields
+            .extend(properties.into_iter().map(Into::into));
         self
     }
 
-    /// Consume the builder and wrap the result in the top-level [`Field`] enum.
+    /// Consume the builder and wrap the result in the top-level [`Property`] enum.
     #[must_use]
-    pub fn into_field(self) -> Field {
+    pub fn into_property(self) -> Property {
         self.inner.into()
     }
 }
 
-impl FieldCollector for ObjectBuilder {
-    fn push_field(mut self, field: Field) -> Self {
-        self.inner.fields.push(field);
+impl PropertyCollector for ObjectBuilder {
+    fn push_property(mut self, property: Property) -> Self {
+        self.inner.fields.push(property);
         self
     }
 }

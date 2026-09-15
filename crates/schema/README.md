@@ -111,8 +111,6 @@ when the current node is a list.
 - `Schema::builder()`, `SchemaBuilder::property`, and
   `SchemaBuilder::properties` accumulate draft semantic properties; `build()`
   runs structural lint and returns `Result<ValidSchema, ValidationReport>`.
-  `Field` and `.add(...)` remain legacy carriers while in-workspace callers
-  migrate to property-first wording.
   `Schema::lint()` reports errors and advisory warnings without producing proof.
 - `HasSchema::schema()` and `schema_of::<T>()` return
   `Result<ValidSchema, ValidationReport>`. Derived implementations cache either
@@ -182,7 +180,7 @@ Old empty record snapshots remain records, never implicitly become `null`.
 - Rules and conditional policies cross into `nebula-validator` through
   `validate_rules_with_ctx` and `resolve_field_policies`. Validator-native rule
   codes are preserved; data paths use RFC6901.
-- Field and root checks share a prepared predicate context. Schema secrets,
+- Property and root checks share a prepared predicate context. Schema secrets,
   explicit secret nodes, and expression sources are unavailable there; pending
   expression paths are supplied separately. Containers remain addressable and
   predicate arrays remain opaque leaves.
@@ -236,7 +234,7 @@ every family already has complete derive support.
 | Text | String shape, checked patterns, length, URL and email rules. Markdown, rich text and temporal input hints do not add format validation. |
 | Numbers and boolean | Integer/number/boolean shapes and checked numeric bounds. Currency and step-oriented widgets carry no financial semantics. |
 | Choice and modes | Static single/multiple selection, mode payloads, root externally/adjacently tagged unions. Nested derived unions still require explicit supported declarations. |
-| Collections | Field-level lists, item rules, uniqueness and nested objects. `#[property(validate(items(min = 1, max = 8), unique))]` constrains supplied lists without changing optional absence. Graph documents describe arrays and typed dictionaries; unsupported lowering rejects them. Root arrays never acquire synthetic wrapper fields. |
+| Collections | Property-level lists, item rules, uniqueness and nested objects. `#[property(validate(items(min = 1, max = 8), unique))]` constrains supplied lists without changing optional absence. Graph documents describe arrays and typed dictionaries; unsupported lowering rejects them. Root arrays never acquire synthetic wrapper fields. |
 | Secrets | Protected value storage, redacted diagnostics, explicit trusted decoding through `SecretInput`. A password widget alone provides no protection. |
 | Defaults and conditions | Existing defaults are annotations, not automatic input materialization; construction checks cover only supported field kinds and literal rules. Required conditions use checked validator rules; `#[property]` does not yet expose the full condition grammar. |
 | Files and blobs | Existing `FileField` checks an opaque string or string-list shape. `accept` and `max_size` are hints; no admitted blob metadata, storage handoff, MIME verification or content-size proof exists yet. Inline bytes are not implied. |

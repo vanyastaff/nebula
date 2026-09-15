@@ -9,8 +9,8 @@
 //! verdicts. Metadata revision compatibility remains a separate contract.
 
 use crate::{
-    Field, FieldKey, InputSchema, OutputSchema, RequiredMode, RootShape, ScalarKind, ScalarSchema,
-    SchemaKind, SerdeTagging, ValidSchema, field::ModeField,
+    FieldKey, InputSchema, OutputSchema, Property, RequiredMode, RootShape, ScalarKind,
+    ScalarSchema, SchemaKind, SerdeTagging, ValidSchema, field::ModeField,
 };
 use nebula_validator::{DiagnosticDisclosure, ValueRule};
 use serde_json::{Number, Value};
@@ -35,9 +35,9 @@ pub enum SchemaIncompat {
         /// Key of the missing required field.
         key: FieldKey,
     },
-    /// A field present on both sides has incompatible types (different `Field`
+    /// A field present on both sides has incompatible types (different `Property`
     /// variants). The `producer` and `consumer` strings are the
-    /// [`Field::type_name`] values — `"string"`, `"number"`, etc.
+    /// [`Property::type_name`] values — `"string"`, `"number"`, etc.
     #[error(
         "field `{key}` type mismatch: producer has `{producer}`, consumer expects `{consumer}`"
     )]
@@ -149,7 +149,7 @@ pub enum SchemaIncompat {
 /// Identical context-free value rules already on the producer are proven
 /// without execution. Context-dependent or other unanalysed rules stay unknown.
 ///
-/// # Field Contracts
+/// # Property Contracts
 ///
 /// Record matching retains the established structural field contract:
 /// required consumer fields must exist, extra producer fields are ignored,
@@ -167,13 +167,13 @@ pub enum SchemaIncompat {
 ///
 /// ```rust
 /// use nebula_schema::{
-///     Assignability, Field, InputSchema, OutputSchema, Schema, UnknownReason,
+///     Assignability, Property, InputSchema, OutputSchema, Schema, UnknownReason,
 ///     ValidSchema, explain_assignable, field_key,
 /// };
 ///
 /// let consumer = InputSchema::new(
 ///     Schema::builder()
-///         .add(Field::string(field_key!("name")).required())
+///         .property(Property::string(field_key!("name")).required())
 ///         .build()?,
 /// );
 /// let producer = OutputSchema::new(consumer.as_schema().clone());
@@ -193,9 +193,9 @@ pub fn explain_assignable(producer: &OutputSchema, consumer: &InputSchema) -> As
     explain_assignable_core(producer.as_schema(), consumer.as_schema())
 }
 
-/// Field-granularity counterpart to [`explain_assignable`]: is `producer_leaf`
+/// Property-granularity counterpart to [`explain_assignable`]: is `producer_leaf`
 /// assignable where `consumer_leaf` is expected, when a caller has two
-/// individual resolved [`Field`]s in hand rather than two whole schemas (e.g.
+/// individual resolved [`Property`]s in hand rather than two whole schemas (e.g.
 /// `nebula-workflow`'s per-field `Reference`-parameter check, which resolves a
 /// single producer field and a single consumer field, not their enclosing
 /// schemas).
@@ -210,22 +210,27 @@ pub fn explain_assignable(producer: &OutputSchema, consumer: &InputSchema) -> As
 /// crosses a crate boundary as a value someone could mistake for a
 /// fully-built schema.
 ///
-/// A [`Field::Unknown`] leaf is handled BEFORE that synthetic-schema
+/// A [`Property::Unknown`] leaf is handled BEFORE that synthetic-schema
 /// machinery runs, not after: `ValidSchema::single_field`'s re-keying
 /// (`rekeyed`) cannot rewrite an `Unknown` field's private key (see its own
-/// doc comment), so a `Field::Unknown` producer or consumer leaf whose
+/// doc comment), so a `Property::Unknown` producer or consumer leaf whose
 /// original key differs from the other side's key would fail to pair up
 /// under the shared synthetic key — surfacing as a spurious
 /// `No(MissingRequiredField)` (required consumer field) or a spurious `Yes`
 /// (optional consumer field), rather than the correct "this version cannot
 /// reason about an unrecognized field kind" verdict.
 #[must_use]
-pub fn explain_field_assignable(producer_leaf: &Field, consumer_leaf: &Field) -> Assignability {
-    // `Field::Unknown` is opaque on either side (mirrors `collect_pair`'s own
-    // same-key `Field::Unknown` handling a few lines below) — decide this
+pub fn explain_field_assignable(
+    producer_leaf: &Property,
+    consumer_leaf: &Property,
+) -> Assignability {
+    // `Property::Unknown` is opaque on either side (mirrors `collect_pair`'s own
+    // same-key `Property::Unknown` handling a few lines below) — decide this
     // before building any synthetic schema, since the re-key that machinery
     // relies on cannot reach an `Unknown` field's key.
-    if matches!(producer_leaf, Field::Unknown(_)) || matches!(consumer_leaf, Field::Unknown(_)) {
+    if matches!(producer_leaf, Property::Unknown(_))
+        || matches!(consumer_leaf, Property::Unknown(_))
+    {
         return Assignability::Unknown(vec![UnknownReason::OpaqueFieldKind {
             key: consumer_leaf.key().clone(),
         }]);
@@ -258,7 +263,7 @@ pub fn explain_field_assignable(producer_leaf: &Field, consumer_leaf: &Field) ->
 ))]
 pub fn explain_root_field_assignable(
     producer_root: &OutputSchema,
-    consumer_field: &Field,
+    consumer_field: &Property,
 ) -> Assignability {
     let producer_schema = producer_root.as_schema();
     if !producer_schema.has_current_policy() {
@@ -270,8 +275,8 @@ pub fn explain_root_field_assignable(
             return Assignability::Unknown(vec![UnknownReason::OpaqueProducer]);
         },
         RootShape::Record(producer_record) => match consumer_field {
-            Field::Object(consumer_object) => collect_fields(
-                producer_record.fields(),
+            Property::Object(consumer_object) => collect_fields(
+                producer_record.properties(),
                 &consumer_object.fields,
                 true,
                 &mut findings,
@@ -297,15 +302,15 @@ pub fn explain_root_field_assignable(
     findings.into_verdict()
 }
 
-fn collect_root_scalar_field(producer: &ScalarSchema, consumer: &Field, findings: &mut Explain) {
+fn collect_root_scalar_field(producer: &ScalarSchema, consumer: &Property, findings: &mut Explain) {
     let is_compatible = matches!(
         (producer.kind(), consumer),
-        (ScalarKind::String, Field::String(_))
-            | (ScalarKind::Boolean, Field::Boolean(_))
-            | (ScalarKind::Integer, Field::Number(_))
+        (ScalarKind::String, Property::String(_))
+            | (ScalarKind::Boolean, Property::Boolean(_))
+            | (ScalarKind::Integer, Property::Number(_))
             | (
                 ScalarKind::Number,
-                Field::Number(crate::NumberField { integer: false, .. })
+                Property::Number(crate::NumberField { integer: false, .. })
             )
     );
     if is_compatible {
@@ -315,7 +320,7 @@ fn collect_root_scalar_field(producer: &ScalarSchema, consumer: &Field, findings
         (producer.kind(), consumer),
         (
             ScalarKind::Number,
-            Field::Number(crate::NumberField { integer: true, .. })
+            Property::Number(crate::NumberField { integer: true, .. })
         )
     ) {
         findings.unknown.push(UnknownReason::NumberWidening {
@@ -403,7 +408,7 @@ pub enum UnknownReason {
         /// Key of the number field.
         key: FieldKey,
     },
-    /// A matched pair where at least one side is a [`Field::Unknown`] — a field
+    /// A matched pair where at least one side is a [`Property::Unknown`] — a field
     /// kind this version does not recognize. Its value contract is opaque, so
     /// compatibility can be neither proven nor refuted: an older reader cannot
     /// reason about a newer writer's field kind. Routed to `Unknown` (a strict
@@ -485,7 +490,12 @@ pub(crate) fn explain_assignable_core(
             collect_scalar(producer, consumer, &mut findings);
         },
         (RootShape::Record(producer), RootShape::Record(consumer)) => {
-            collect_fields(producer.fields(), consumer.fields(), true, &mut findings);
+            collect_fields(
+                producer.properties(),
+                consumer.properties(),
+                true,
+                &mut findings,
+            );
         },
         (RootShape::Union(_), RootShape::Union(_)) => {
             return union_assignability(producer, consumer);
@@ -609,8 +619,8 @@ impl Explain {
 /// undecidable reason into `acc` in depth-first, consumer-field order; it never
 /// early-returns, so the caller always sees the full picture.
 fn collect_fields(
-    producer_fields: &[Field],
-    consumer_fields: &[Field],
+    producer_fields: &[Property],
+    consumer_fields: &[Property],
     strict: bool,
     acc: &mut Explain,
 ) {
@@ -627,7 +637,7 @@ fn collect_fields(
 
     for consumer_field in consumer_fields {
         // Notice fields are display-only (not data flow) — skip entirely.
-        if matches!(consumer_field, Field::Notice(_)) {
+        if matches!(consumer_field, Property::Notice(_)) {
             continue;
         }
 
@@ -659,15 +669,15 @@ fn collect_fields(
 /// pushed).
 fn collect_pair(
     key: &FieldKey,
-    producer_field: &Field,
-    consumer_field: &Field,
+    producer_field: &Property,
+    consumer_field: &Property,
     strict: bool,
     acc: &mut Explain,
 ) {
     // Dynamic/Computed on either side: loader/expression-backed, concrete shape
     // unknown until runtime — not statically provable in either direction.
-    if matches!(producer_field, Field::Dynamic(_) | Field::Computed(_))
-        || matches!(consumer_field, Field::Dynamic(_) | Field::Computed(_))
+    if matches!(producer_field, Property::Dynamic(_) | Property::Computed(_))
+        || matches!(consumer_field, Property::Dynamic(_) | Property::Computed(_))
     {
         acc.unknown
             .push(UnknownReason::DynamicLoaderBacked { key: key.clone() });
@@ -680,14 +690,16 @@ fn collect_pair(
     // emit a misleading `Yes` (or, against a known kind, a hard `No`). The opaque
     // contract is genuinely undecidable here — route it to `Unknown`, symmetric
     // with the `Dynamic`/`Computed` guard above.
-    if matches!(producer_field, Field::Unknown(_)) || matches!(consumer_field, Field::Unknown(_)) {
+    if matches!(producer_field, Property::Unknown(_))
+        || matches!(consumer_field, Property::Unknown(_))
+    {
         acc.unknown
             .push(UnknownReason::OpaqueFieldKind { key: key.clone() });
         return;
     }
 
     match (producer_field, consumer_field) {
-        (Field::File(p), Field::File(c)) => {
+        (Property::File(p), Property::File(c)) => {
             if p.multiple != c.multiple {
                 acc.incompat.push(SchemaIncompat::CardinalityMismatch {
                     key: key.clone(),
@@ -696,7 +708,7 @@ fn collect_pair(
                 });
             }
         },
-        (Field::Select(p), Field::Select(c)) => {
+        (Property::Select(p), Property::Select(c)) => {
             if p.multiple != c.multiple {
                 acc.incompat.push(SchemaIncompat::CardinalityMismatch {
                     key: key.clone(),
@@ -705,12 +717,12 @@ fn collect_pair(
                 });
             }
         },
-        (Field::Object(producer_obj), Field::Object(consumer_obj)) => {
+        (Property::Object(producer_obj), Property::Object(consumer_obj)) => {
             let mut sub = Explain::default();
             collect_fields(&producer_obj.fields, &consumer_obj.fields, strict, &mut sub);
             acc.wrap_nested(key, sub);
         },
-        (Field::List(producer_list), Field::List(consumer_list)) => {
+        (Property::List(producer_list), Property::List(consumer_list)) => {
             match (&producer_list.item, &consumer_list.item) {
                 // Producer item untyped but consumer item typed: in the strict
                 // (kind-aware) path this is an opaque producer that cannot be
@@ -742,7 +754,7 @@ fn collect_pair(
                 },
             }
         },
-        (Field::Number(p), Field::Number(c)) => {
+        (Property::Number(p), Property::Number(c)) => {
             // int→float widening is safe (provably Yes). float→int narrowing may
             // lose precision — but a float producer could still only ever emit
             // integral values, so it is not provably wrong: Unknown, not No.
@@ -751,7 +763,7 @@ fn collect_pair(
                     .push(UnknownReason::NumberWidening { key: key.clone() });
             }
         },
-        (Field::Mode(producer_mode), Field::Mode(consumer_mode)) => {
+        (Property::Mode(producer_mode), Property::Mode(consumer_mode)) => {
             collect_mode_variants(key, producer_mode, consumer_mode, strict, acc);
         },
         // All other pairs: same type_name = compatible; different = type mismatch.
@@ -826,13 +838,13 @@ fn collect_mode_variants(
 
 /// Assignability for two checked tagged unions.
 ///
-/// - **Union → Union:** route the two schemas' sole root [`Field::Mode`] (the
+/// - **Union → Union:** route the two schemas' sole root [`Property::Mode`] (the
 ///   marker design's variant carrier) through [`collect_mode_variants`] — the
 ///   *same* producer-variant-containment + covariant-payload rule a nested `Mode`
 ///   field uses, so there is one declarative sum-type judgment, not two.
 fn union_assignability(producer: &ValidSchema, consumer: &ValidSchema) -> Assignability {
-    if let (Some(Field::Mode(producer_mode)), Some(Field::Mode(consumer_mode))) =
-        (producer.fields().first(), consumer.fields().first())
+    if let (Some(Property::Mode(producer_mode)), Some(Property::Mode(consumer_mode))) =
+        (producer.properties().first(), consumer.properties().first())
     {
         // Serde tagging is part of schema identity: two unions with matching
         // variant keys but different tagging (external vs adjacent) have different
@@ -846,7 +858,7 @@ fn union_assignability(producer: &ValidSchema, consumer: &ValidSchema) -> Assign
         }
         // Label findings by the consumer's root mode key; both roots are the
         // union's sole field by construction (`ValidSchema::union`).
-        let root_key = consumer.fields()[0].key();
+        let root_key = consumer.properties()[0].key();
         let mut acc = Explain::default();
         collect_mode_variants(root_key, producer_mode, consumer_mode, true, &mut acc);
         return acc.into_verdict();
@@ -866,7 +878,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::Field;
+    use crate::Property;
 
     fn fk(s: &str) -> FieldKey {
         FieldKey::new(s).unwrap()
@@ -877,9 +889,9 @@ mod tests {
     /// [`explain_assignable`], which distinguishes concrete records from Any.
     /// Retained here to exercise the shared per-field matching logic (type
     /// mismatch, cardinality, nesting) and the gradual empty-producer escape
-    /// directly on `&[Field]` without building a `ValidSchema` per case. Mirrors
+    /// directly on `&[Property]` without building a `ValidSchema` per case. Mirrors
     /// the binary mapping: `Yes`/`Unknown` ⇒ `Ok`, `No` ⇒ first incompatibility.
-    fn is_assignable(producer: &[Field], consumer: &[Field]) -> Result<(), SchemaIncompat> {
+    fn is_assignable(producer: &[Property], consumer: &[Property]) -> Result<(), SchemaIncompat> {
         match explain_slice(producer, consumer, false) {
             Assignability::Yes | Assignability::Unknown(_) => Ok(()),
             Assignability::No(incompats) => match incompats.into_iter().next() {
@@ -890,7 +902,7 @@ mod tests {
     }
 
     /// Test-only collect-all over raw slices, with explicit `strict` control.
-    fn explain_slice(producer: &[Field], consumer: &[Field], strict: bool) -> Assignability {
+    fn explain_slice(producer: &[Property], consumer: &[Property], strict: bool) -> Assignability {
         let mut acc = Explain::default();
         collect_fields(producer, consumer, strict, &mut acc);
         acc.into_verdict()
@@ -909,13 +921,13 @@ mod tests {
     #[test]
     fn compatible_with_extra_producer_field() {
         let producer = [
-            Field::string(fk("name")).required().into(),
-            Field::number(fk("score")).into(),
-            Field::boolean(fk("extra")).into(), // producer-only, ignored
+            Property::string(fk("name")).required().into(),
+            Property::number(fk("score")).into(),
+            Property::boolean(fk("extra")).into(), // producer-only, ignored
         ];
         let consumer = [
-            Field::string(fk("name")).required().into(),
-            Field::number(fk("score")).into(),
+            Property::string(fk("name")).required().into(),
+            Property::number(fk("score")).into(),
         ];
         assert_eq!(is_assignable(&producer, &consumer), Ok(()));
     }
@@ -924,10 +936,10 @@ mod tests {
 
     #[test]
     fn missing_required_field_returns_error() {
-        let producer = [Field::number(fk("score")).into()];
+        let producer = [Property::number(fk("score")).into()];
         let consumer = [
-            Field::string(fk("name")).required().into(),
-            Field::number(fk("score")).into(),
+            Property::string(fk("name")).required().into(),
+            Property::number(fk("score")).into(),
         ];
         assert_eq!(
             is_assignable(&producer, &consumer),
@@ -939,8 +951,8 @@ mod tests {
 
     #[test]
     fn type_mismatch_on_shared_field_returns_error() {
-        let producer = [Field::number(fk("value")).required().into()];
-        let consumer = [Field::string(fk("value")).required().into()];
+        let producer = [Property::number(fk("value")).required().into()];
+        let consumer = [Property::string(fk("value")).required().into()];
         assert_eq!(
             is_assignable(&producer, &consumer),
             Err(SchemaIncompat::FieldTypeMismatch {
@@ -955,10 +967,10 @@ mod tests {
 
     #[test]
     fn optional_consumer_field_absent_is_ok() {
-        let producer = [Field::string(fk("name")).required().into()];
+        let producer = [Property::string(fk("name")).required().into()];
         let consumer = [
-            Field::string(fk("name")).required().into(),
-            Field::number(fk("optional_score")).into(), // optional, absent in producer
+            Property::string(fk("name")).required().into(),
+            Property::number(fk("optional_score")).into(), // optional, absent in producer
         ];
         assert_eq!(is_assignable(&producer, &consumer), Ok(()));
     }
@@ -971,10 +983,12 @@ mod tests {
         use nebula_validator::Predicate;
 
         let rule = Rule::predicate(Predicate::eq("mode", json!("advanced")).unwrap()).unwrap();
-        let producer = [Field::string(fk("name")).required().into()];
+        let producer = [Property::string(fk("name")).required().into()];
         let consumer = [
-            Field::string(fk("name")).required().into(),
-            Field::string(fk("advanced_opt")).required_when(rule).into(),
+            Property::string(fk("name")).required().into(),
+            Property::string(fk("advanced_opt"))
+                .required_when(rule)
+                .into(),
         ];
         assert_eq!(is_assignable(&producer, &consumer), Ok(()));
     }
@@ -983,13 +997,13 @@ mod tests {
 
     #[test]
     fn nested_object_missing_required_returns_error() {
-        let producer = [Field::object(fk("config"))
-            .add(Field::string(fk("host")).required())
+        let producer = [Property::object(fk("config"))
+            .property(Property::string(fk("host")).required())
             // "port" absent from producer's config
             .into()];
-        let consumer = [Field::object(fk("config"))
-            .add(Field::string(fk("host")).required())
-            .add(Field::number(fk("port")).required())
+        let consumer = [Property::object(fk("config"))
+            .property(Property::string(fk("host")).required())
+            .property(Property::number(fk("port")).required())
             .into()];
         // Both outer fields are Object — recurse; inner check finds "port"
         // missing → NestedIncompat wrapping MissingRequiredField.
@@ -1006,11 +1020,11 @@ mod tests {
 
     #[test]
     fn nested_object_field_type_mismatch_returns_nested_incompat() {
-        let producer = [Field::object(fk("config"))
-            .add(Field::number(fk("port")).required()) // number in producer
+        let producer = [Property::object(fk("config"))
+            .property(Property::number(fk("port")).required()) // number in producer
             .into()];
-        let consumer = [Field::object(fk("config"))
-            .add(Field::string(fk("port")).required()) // string in consumer
+        let consumer = [Property::object(fk("config"))
+            .property(Property::string(fk("port")).required()) // string in consumer
             .into()];
         assert_eq!(
             is_assignable(&producer, &consumer),
@@ -1029,13 +1043,13 @@ mod tests {
 
     #[test]
     fn nested_object_fully_compatible_is_ok() {
-        let producer = [Field::object(fk("config"))
-            .add(Field::string(fk("host")).required())
-            .add(Field::number(fk("port")).required())
+        let producer = [Property::object(fk("config"))
+            .property(Property::string(fk("host")).required())
+            .property(Property::number(fk("port")).required())
             .into()];
-        let consumer = [Field::object(fk("config"))
-            .add(Field::string(fk("host")).required())
-            .add(Field::number(fk("port")).required())
+        let consumer = [Property::object(fk("config"))
+            .property(Property::string(fk("host")).required())
+            .property(Property::number(fk("port")).required())
             .into()];
         assert_eq!(is_assignable(&producer, &consumer), Ok(()));
     }
@@ -1044,11 +1058,11 @@ mod tests {
 
     #[test]
     fn list_compatible_item_types_is_ok() {
-        let producer = [Field::list(fk("tags"))
-            .item(Field::string(fk("tag")))
+        let producer = [Property::list(fk("tags"))
+            .item(Property::string(fk("tag")))
             .into()];
-        let consumer = [Field::list(fk("tags"))
-            .item(Field::string(fk("tag")))
+        let consumer = [Property::list(fk("tags"))
+            .item(Property::string(fk("tag")))
             .into()];
         assert_eq!(is_assignable(&producer, &consumer), Ok(()));
     }
@@ -1057,12 +1071,12 @@ mod tests {
 
     #[test]
     fn list_mismatched_item_types_returns_nested_incompat() {
-        let producer = [Field::list(fk("values"))
-            .item(Field::string(fk("item")))
+        let producer = [Property::list(fk("values"))
+            .item(Property::string(fk("item")))
             .required()
             .into()];
-        let consumer = [Field::list(fk("values"))
-            .item(Field::number(fk("item")))
+        let consumer = [Property::list(fk("values"))
+            .item(Property::number(fk("item")))
             .required()
             .into()];
         // Outer NestedIncompat is keyed by the list field (`values`); the inner
@@ -1084,7 +1098,7 @@ mod tests {
 
     #[test]
     fn empty_producer_satisfies_typed_consumer() {
-        let consumer = [Field::string(fk("name")).required().into()];
+        let consumer = [Property::string(fk("name")).required().into()];
         assert_eq!(is_assignable(&[], &consumer), Ok(()));
     }
 
@@ -1092,8 +1106,8 @@ mod tests {
 
     #[test]
     fn dynamic_producer_field_satisfies_typed_required_consumer() {
-        let producer = [Field::dynamic(fk("name")).into()];
-        let consumer = [Field::string(fk("name")).required().into()];
+        let producer = [Property::dynamic(fk("name")).into()];
+        let consumer = [Property::string(fk("name")).required().into()];
         assert_eq!(is_assignable(&producer, &consumer), Ok(()));
     }
 
@@ -1101,7 +1115,7 @@ mod tests {
 
     #[test]
     fn empty_consumer_accepts_any_producer() {
-        let producer = [Field::string(fk("name")).required().into()];
+        let producer = [Property::string(fk("name")).required().into()];
         assert_eq!(is_assignable(&producer, &[]), Ok(()));
     }
 
@@ -1109,10 +1123,10 @@ mod tests {
 
     #[test]
     fn notice_consumer_field_ignored() {
-        let producer = [Field::string(fk("name")).required().into()];
+        let producer = [Property::string(fk("name")).required().into()];
         let consumer = [
-            Field::string(fk("name")).required().into(),
-            Field::notice(fk("tip")).into(), // absent in producer, but ignored
+            Property::string(fk("name")).required().into(),
+            Property::notice(fk("tip")).into(), // absent in producer, but ignored
         ];
         assert_eq!(is_assignable(&producer, &consumer), Ok(()));
     }
@@ -1122,11 +1136,11 @@ mod tests {
     #[test]
     fn extra_producer_fields_ignored() {
         let producer = [
-            Field::string(fk("name")).required().into(),
-            Field::number(fk("extra_a")).into(),
-            Field::boolean(fk("extra_b")).into(),
+            Property::string(fk("name")).required().into(),
+            Property::number(fk("extra_a")).into(),
+            Property::boolean(fk("extra_b")).into(),
         ];
-        let consumer = [Field::string(fk("name")).required().into()];
+        let consumer = [Property::string(fk("name")).required().into()];
         assert_eq!(is_assignable(&producer, &consumer), Ok(()));
     }
 
@@ -1135,8 +1149,11 @@ mod tests {
     #[test]
     fn file_single_to_multiple_returns_cardinality_mismatch() {
         // producer: single file; consumer expects multiple files
-        let producer = [Field::file(fk("attachment")).required().into()];
-        let consumer = [Field::file(fk("attachment")).multiple().required().into()];
+        let producer = [Property::file(fk("attachment")).required().into()];
+        let consumer = [Property::file(fk("attachment"))
+            .multiple()
+            .required()
+            .into()];
         assert_eq!(
             is_assignable(&producer, &consumer),
             Err(SchemaIncompat::CardinalityMismatch {
@@ -1151,8 +1168,14 @@ mod tests {
 
     #[test]
     fn file_multiple_to_multiple_is_ok() {
-        let producer = [Field::file(fk("attachment")).multiple().required().into()];
-        let consumer = [Field::file(fk("attachment")).multiple().required().into()];
+        let producer = [Property::file(fk("attachment"))
+            .multiple()
+            .required()
+            .into()];
+        let consumer = [Property::file(fk("attachment"))
+            .multiple()
+            .required()
+            .into()];
         assert_eq!(is_assignable(&producer, &consumer), Ok(()));
     }
 
@@ -1161,8 +1184,8 @@ mod tests {
     #[test]
     fn select_cardinality_mismatch_returns_error() {
         // producer: multi-select; consumer: single-select
-        let producer = [Field::select(fk("tags")).multiple().required().into()];
-        let consumer = [Field::select(fk("tags")).required().into()];
+        let producer = [Property::select(fk("tags")).multiple().required().into()];
+        let consumer = [Property::select(fk("tags")).required().into()];
         assert_eq!(
             is_assignable(&producer, &consumer),
             Err(SchemaIncompat::CardinalityMismatch {
@@ -1177,8 +1200,8 @@ mod tests {
 
     #[test]
     fn select_same_cardinality_is_ok() {
-        let producer = [Field::select(fk("tags")).multiple().required().into()];
-        let consumer = [Field::select(fk("tags")).multiple().required().into()];
+        let producer = [Property::select(fk("tags")).multiple().required().into()];
+        let consumer = [Property::select(fk("tags")).multiple().required().into()];
         assert_eq!(is_assignable(&producer, &consumer), Ok(()));
     }
 
@@ -1187,7 +1210,7 @@ mod tests {
     /// Build a single-required-field record `ValidSchema`.
     fn required_record(key: &str) -> ValidSchema {
         crate::Schema::builder()
-            .add(Field::string(fk(key)).required())
+            .property(Property::string(fk(key)).required())
             .build()
             .unwrap()
     }
@@ -1239,8 +1262,8 @@ mod tests {
     #[test]
     fn compatible_records_via_schema_entry_is_ok() {
         let producer = crate::Schema::builder()
-            .add(Field::string(fk("name")).required())
-            .add(Field::number(fk("extra")))
+            .property(Property::string(fk("name")).required())
+            .property(Property::number(fk("extra")))
             .build()
             .unwrap();
         let consumer = required_record("name");
@@ -1280,9 +1303,9 @@ mod tests {
     /// mode escapes it, proving the assertion is `strict`-specific.
     #[test]
     fn strict_rejects_empty_nested_object_producer() {
-        let producer = [Field::object(fk("config")).into()]; // empty inner object
-        let consumer = [Field::object(fk("config"))
-            .add(Field::string(fk("host")).required())
+        let producer = [Property::object(fk("config")).into()]; // empty inner object
+        let consumer = [Property::object(fk("config"))
+            .property(Property::string(fk("host")).required())
             .into()];
 
         assert_eq!(
@@ -1306,11 +1329,11 @@ mod tests {
     /// (`item`), the outer is the list (`items`).
     #[test]
     fn strict_rejects_empty_nested_list_item_producer() {
-        let producer = [Field::list(fk("items"))
-            .item(Field::object(fk("item")))
+        let producer = [Property::list(fk("items"))
+            .item(Property::object(fk("item")))
             .into()];
-        let consumer = [Field::list(fk("items"))
-            .item(Field::object(fk("item")).add(Field::string(fk("id")).required()))
+        let consumer = [Property::list(fk("items"))
+            .item(Property::object(fk("item")).property(Property::string(fk("id")).required()))
             .into()];
 
         assert_eq!(
@@ -1339,8 +1362,8 @@ mod tests {
     fn explain_collects_all_incompatibilities() {
         let producer = required_record("present");
         let consumer = crate::Schema::builder()
-            .add(Field::string(fk("missing_a")).required())
-            .add(Field::string(fk("missing_b")).required())
+            .property(Property::string(fk("missing_a")).required())
+            .property(Property::string(fk("missing_b")).required())
             .build()
             .unwrap();
         match explain_assignable(&producer, &consumer) {
@@ -1394,7 +1417,7 @@ mod tests {
     /// strict ⇒ `Unknown(NestedUnknown { items, OpaqueProducer })`, gradual ⇒
     /// `Yes` (producer-side escape preserved).
     ///
-    /// Driven via `explain_slice` on raw `Field`s, not `explain_assignable`: a
+    /// Driven via `explain_slice` on raw `Property`s, not `explain_assignable`: a
     /// built `ValidSchema` can never carry an item-less list (the builder lint
     /// rejects it — `lint.rs` `missing_item_schema`), so this case is
     /// unreachable through the public `ValidSchema` API. The `collect_pair` core
@@ -1402,9 +1425,9 @@ mod tests {
     /// empty-producer rule), and the gradual slice form does reach it.
     #[test]
     fn explain_untyped_producer_list_item_is_unknown_for_typed_consumer() {
-        let p = [Field::list(fk("items")).into()];
-        let c = [Field::list(fk("items"))
-            .item(Field::string(fk("item")))
+        let p = [Property::list(fk("items")).into()];
+        let c = [Property::list(fk("items"))
+            .item(Property::string(fk("item")))
             .into()];
 
         assert_eq!(
@@ -1421,7 +1444,7 @@ mod tests {
     #[test]
     fn explain_dynamic_field_is_unknown_not_ok() {
         let producer = crate::Schema::builder()
-            .add(Field::dynamic(fk("name")))
+            .property(Property::dynamic(fk("name")))
             .build()
             .unwrap();
         let consumer = required_record("name");
@@ -1431,7 +1454,7 @@ mod tests {
         );
     }
 
-    /// A `Field::Unknown` on either side is opaque: even two of the *same* future
+    /// A `Property::Unknown` on either side is opaque: even two of the *same* future
     /// kind are `Unknown(OpaqueFieldKind)`, never a misleading `Yes` — this
     /// version cannot prove an unrecognized kind's value contract.
     #[test]
@@ -1478,7 +1501,7 @@ mod tests {
         )
         .expect("Unknown producer schema");
         let consumer = crate::Schema::builder()
-            .add(Field::string(fk("bio")))
+            .property(Property::string(fk("bio")))
             .build()
             .unwrap();
         assert_eq!(
@@ -1492,11 +1515,11 @@ mod tests {
     #[test]
     fn explain_number_widening_is_directional() {
         let int_producer = crate::Schema::builder()
-            .add(Field::number(fk("n")).integer())
+            .property(Property::number(fk("n")).integer())
             .build()
             .unwrap();
         let float_consumer = crate::Schema::builder()
-            .add(Field::number(fk("n")))
+            .property(Property::number(fk("n")))
             .build()
             .unwrap();
         // int -> float: safe widening.
@@ -1515,12 +1538,12 @@ mod tests {
     #[test]
     fn explain_no_dominates_unknown() {
         let producer = crate::Schema::builder()
-            .add(Field::dynamic(fk("d")))
+            .property(Property::dynamic(fk("d")))
             .build()
             .unwrap();
         let consumer = crate::Schema::builder()
-            .add(Field::dynamic(fk("d")))
-            .add(Field::string(fk("required_missing")).required())
+            .property(Property::dynamic(fk("d")))
+            .property(Property::string(fk("required_missing")).required())
             .build()
             .unwrap();
         match explain_assignable(&producer, &consumer) {
@@ -1540,7 +1563,7 @@ mod tests {
     fn explain_mode_identical_is_yes() {
         let mode_schema = || {
             crate::Schema::builder()
-                .add(Field::mode(fk("m")).variant("v", "V", Field::string(fk("x"))))
+                .property(Property::mode(fk("m")).variant("v", "V", Property::string(fk("x"))))
                 .build()
                 .unwrap()
         };
@@ -1556,16 +1579,20 @@ mod tests {
     #[test]
     fn explain_mode_extra_producer_variant_is_unhandled() {
         let producer = crate::Schema::builder()
-            .add(
-                Field::mode(fk("auth"))
-                    .variant("api_key", "API key", Field::string(fk("key")))
-                    .variant("oauth", "OAuth", Field::string(fk("token"))),
+            .property(
+                Property::mode(fk("auth"))
+                    .variant("api_key", "API key", Property::string(fk("key")))
+                    .variant("oauth", "OAuth", Property::string(fk("token"))),
             )
             .build()
             .unwrap();
         // Consumer handles only `api_key` — it cannot handle the producer's `oauth`.
         let consumer = crate::Schema::builder()
-            .add(Field::mode(fk("auth")).variant("api_key", "API key", Field::string(fk("key"))))
+            .property(Property::mode(fk("auth")).variant(
+                "api_key",
+                "API key",
+                Property::string(fk("key")),
+            ))
             .build()
             .unwrap();
         assert_eq!(
@@ -1583,14 +1610,18 @@ mod tests {
     #[test]
     fn explain_mode_extra_consumer_variant_is_yes() {
         let producer = crate::Schema::builder()
-            .add(Field::mode(fk("auth")).variant("api_key", "API key", Field::string(fk("key"))))
+            .property(Property::mode(fk("auth")).variant(
+                "api_key",
+                "API key",
+                Property::string(fk("key")),
+            ))
             .build()
             .unwrap();
         let consumer = crate::Schema::builder()
-            .add(
-                Field::mode(fk("auth"))
-                    .variant("api_key", "API key", Field::string(fk("key")))
-                    .variant("oauth", "OAuth", Field::string(fk("token"))),
+            .property(
+                Property::mode(fk("auth"))
+                    .variant("api_key", "API key", Property::string(fk("key")))
+                    .variant("oauth", "OAuth", Property::string(fk("token"))),
             )
             .build()
             .unwrap();
@@ -1603,11 +1634,11 @@ mod tests {
     #[test]
     fn explain_mode_variant_payload_mismatch_is_nested() {
         let producer = crate::Schema::builder()
-            .add(Field::mode(fk("m")).variant("v", "V", Field::number(fk("x"))))
+            .property(Property::mode(fk("m")).variant("v", "V", Property::number(fk("x"))))
             .build()
             .unwrap();
         let consumer = crate::Schema::builder()
-            .add(Field::mode(fk("m")).variant("v", "V", Field::string(fk("x"))))
+            .property(Property::mode(fk("m")).variant("v", "V", Property::string(fk("x"))))
             .build()
             .unwrap();
         assert_eq!(
@@ -1628,11 +1659,11 @@ mod tests {
     #[test]
     fn explain_mode_dynamic_payload_bubbles_unknown() {
         let producer = crate::Schema::builder()
-            .add(Field::mode(fk("m")).variant("v", "V", Field::dynamic(fk("x"))))
+            .property(Property::mode(fk("m")).variant("v", "V", Property::dynamic(fk("x"))))
             .build()
             .unwrap();
         let consumer = crate::Schema::builder()
-            .add(Field::mode(fk("m")).variant("v", "V", Field::string(fk("x"))))
+            .property(Property::mode(fk("m")).variant("v", "V", Property::string(fk("x"))))
             .build()
             .unwrap();
         assert_eq!(
@@ -1650,13 +1681,13 @@ mod tests {
     #[test]
     fn explain_nested_object_unknown_preserves_path() {
         let producer = crate::Schema::builder()
-            .add(Field::object(fk("config")).add(Field::dynamic(fk("d"))))
+            .property(Property::object(fk("config")).property(Property::dynamic(fk("d"))))
             .build()
             .unwrap();
         // Consumer's nested `d` is optional, so the only finding is the Unknown
         // (no MissingRequiredField to dominate it).
         let consumer = crate::Schema::builder()
-            .add(Field::object(fk("config")).add(Field::string(fk("d"))))
+            .property(Property::object(fk("config")).property(Property::string(fk("d"))))
             .build()
             .unwrap();
         assert_eq!(
@@ -1673,16 +1704,16 @@ mod tests {
     #[test]
     fn explain_nested_list_unknown_preserves_path() {
         let producer = crate::Schema::builder()
-            .add(
-                Field::list(fk("items"))
-                    .item(Field::object(fk("item")).add(Field::dynamic(fk("d")))),
+            .property(
+                Property::list(fk("items"))
+                    .item(Property::object(fk("item")).property(Property::dynamic(fk("d")))),
             )
             .build()
             .unwrap();
         let consumer = crate::Schema::builder()
-            .add(
-                Field::list(fk("items"))
-                    .item(Field::object(fk("item")).add(Field::string(fk("d")))),
+            .property(
+                Property::list(fk("items"))
+                    .item(Property::object(fk("item")).property(Property::string(fk("d")))),
             )
             .build()
             .unwrap();
@@ -1704,13 +1735,13 @@ mod tests {
     #[test]
     fn explain_no_dominates_unknown_across_containers() {
         let producer = crate::Schema::builder()
-            .add(Field::object(fk("a"))) // empty — can't satisfy a's required child
-            .add(Field::object(fk("b")).add(Field::dynamic(fk("d"))))
+            .property(Property::object(fk("a"))) // empty — can't satisfy a's required child
+            .property(Property::object(fk("b")).property(Property::dynamic(fk("d"))))
             .build()
             .unwrap();
         let consumer = crate::Schema::builder()
-            .add(Field::object(fk("a")).add(Field::string(fk("need")).required()))
-            .add(Field::object(fk("b")).add(Field::string(fk("d"))))
+            .property(Property::object(fk("a")).property(Property::string(fk("need")).required()))
+            .property(Property::object(fk("b")).property(Property::string(fk("d"))))
             .build()
             .unwrap();
         assert_eq!(
@@ -1755,8 +1786,8 @@ mod tests {
         let prev = OutputSchema::new(required_record("result"));
         let wider = OutputSchema::new(
             crate::Schema::builder()
-                .add(Field::string(fk("result")).required())
-                .add(Field::string(fk("extra")).required())
+                .property(Property::string(fk("result")).required())
+                .property(Property::string(fk("extra")).required())
                 .build()
                 .unwrap(),
         );
@@ -1804,9 +1835,9 @@ mod tests {
 
     /// An external-tagged union whose variants each carry a string payload.
     fn ext_union(variant_keys: &[&str]) -> ValidSchema {
-        let mut mode = Field::mode(fk("u"));
+        let mut mode = Property::mode(fk("u"));
         for key in variant_keys {
-            mode = mode.variant(*key, *key, Field::string(fk("x")));
+            mode = mode.variant(*key, *key, Property::string(fk("x")));
         }
         ValidSchema::union(mode, SerdeTagging::External).expect("union builds")
     }
@@ -1849,12 +1880,12 @@ mod tests {
     #[test]
     fn union_variant_payload_mismatch_is_nested_no() {
         let producer = ValidSchema::union(
-            Field::mode(fk("u")).variant("a", "a", Field::number(fk("x"))),
+            Property::mode(fk("u")).variant("a", "a", Property::number(fk("x"))),
             SerdeTagging::External,
         )
         .unwrap();
         let consumer = ValidSchema::union(
-            Field::mode(fk("u")).variant("a", "a", Field::string(fk("x"))),
+            Property::mode(fk("u")).variant("a", "a", Property::string(fk("x"))),
             SerdeTagging::External,
         )
         .unwrap();
@@ -1927,7 +1958,7 @@ mod tests {
     fn union_tagging_mismatch_is_rejected() {
         let external = ext_union(&["a"]); // SerdeTagging::External
         let adjacent = ValidSchema::union(
-            Field::mode(fk("u")).variant("a", "a", Field::string(fk("x"))),
+            Property::mode(fk("u")).variant("a", "a", Property::string(fk("x"))),
             SerdeTagging::Adjacent {
                 tag: "t".to_owned(),
                 content: "c".to_owned(),
@@ -1948,9 +1979,9 @@ mod tests {
     #[test]
     fn union_findings_preserve_producer_variant_order() {
         let producer = ValidSchema::union(
-            Field::mode(fk("u"))
-                .variant("a", "a", Field::number(fk("x")))
-                .variant("b", "b", Field::string(fk("y"))),
+            Property::mode(fk("u"))
+                .variant("a", "a", Property::number(fk("x")))
+                .variant("b", "b", Property::string(fk("y"))),
             SerdeTagging::External,
         )
         .unwrap();
@@ -2017,8 +2048,8 @@ mod tests {
     /// succeeds, exactly as it would if the two keys already matched.
     #[test]
     fn field_assignable_pairs_leaves_under_different_keys() {
-        let producer_leaf: Field = Field::string(fk("email")).required().into();
-        let consumer_leaf: Field = Field::string(fk("recipient")).required().into();
+        let producer_leaf: Property = Property::string(fk("email")).required().into();
+        let consumer_leaf: Property = Property::string(fk("recipient")).required().into();
 
         assert_eq!(
             explain_field_assignable(&producer_leaf, &consumer_leaf),
@@ -2029,8 +2060,8 @@ mod tests {
     #[test]
     fn record_root_is_assignable_to_matching_object_field() {
         let producer = OutputSchema::new(required_record("name"));
-        let consumer: Field = Field::object(fk("payload"))
-            .add(Field::string(fk("name")).required())
+        let consumer: Property = Property::object(fk("payload"))
+            .property(Property::string(fk("name")).required())
             .into();
 
         assert_eq!(
@@ -2042,7 +2073,7 @@ mod tests {
     #[test]
     fn record_root_is_not_assignable_to_scalar_field() {
         let producer = OutputSchema::new(required_record("name"));
-        let consumer: Field = Field::string(fk("payload")).into();
+        let consumer: Property = Property::string(fk("payload")).into();
 
         assert!(matches!(
             explain_root_field_assignable(&producer, &consumer),
@@ -2063,8 +2094,8 @@ mod tests {
         let string_root = OutputSchema::new(
             ValidSchema::scalar(ScalarSchema::string()).expect("string root is valid"),
         );
-        let string_field: Field = Field::string(fk("payload")).into();
-        let number_field: Field = Field::number(fk("payload")).into();
+        let string_field: Property = Property::string(fk("payload")).into();
+        let number_field: Property = Property::number(fk("payload")).into();
 
         assert_eq!(
             explain_root_field_assignable(&string_root, &string_field),
@@ -2080,8 +2111,8 @@ mod tests {
     /// `FieldTypeMismatch` under the consumer's own key.
     #[test]
     fn field_assignable_type_mismatch_is_no() {
-        let producer_leaf: Field = Field::number(fk("age")).into();
-        let consumer_leaf: Field = Field::string(fk("name")).required().into();
+        let producer_leaf: Property = Property::number(fk("age")).into();
+        let consumer_leaf: Property = Property::string(fk("name")).required().into();
 
         match explain_field_assignable(&producer_leaf, &consumer_leaf) {
             Assignability::No(incompats) => {
@@ -2099,8 +2130,8 @@ mod tests {
     /// leniency the schema-level check applies.
     #[test]
     fn field_assignable_float_to_int_is_unknown() {
-        let producer_leaf: Field = Field::number(fk("amount")).into();
-        let consumer_leaf: Field = Field::integer(fk("qty")).required().into();
+        let producer_leaf: Property = Property::number(fk("amount")).into();
+        let consumer_leaf: Property = Property::integer(fk("qty")).required().into();
 
         assert_eq!(
             explain_field_assignable(&producer_leaf, &consumer_leaf),
@@ -2108,12 +2139,12 @@ mod tests {
         );
     }
 
-    /// A `Field::Unknown` producer leaf at a key DIFFERENT from the required
+    /// A `Property::Unknown` producer leaf at a key DIFFERENT from the required
     /// consumer leaf it is checked against must still report
     /// `Unknown(OpaqueFieldKind)` — not a spurious `No(MissingRequiredField)`.
     ///
     /// `ValidSchema::single_field`'s re-key (`rekeyed`) cannot rewrite an
-    /// `Unknown` field's private key, so without the early `Field::Unknown`
+    /// `Unknown` field's private key, so without the early `Property::Unknown`
     /// check in `explain_field_assignable`, the producer's synthetic
     /// one-field schema would keep the leaf's ORIGINAL key (`"bio"`) instead
     /// of the consumer's key (`"recipient_email"`) — the two synthetic
@@ -2124,14 +2155,14 @@ mod tests {
         let unknown_schema: ValidSchema =
             serde_json::from_value(json!({"fields": [{"type": "richtext", "key": "bio"}]}))
                 .expect("Unknown producer schema");
-        let producer_leaf = unknown_schema.fields()[0].clone();
+        let producer_leaf = unknown_schema.properties()[0].clone();
         assert!(
-            matches!(producer_leaf, Field::Unknown(_)),
-            "sanity: leaf must be Field::Unknown"
+            matches!(producer_leaf, Property::Unknown(_)),
+            "sanity: leaf must be Property::Unknown"
         );
         assert_eq!(producer_leaf.key().as_str(), "bio");
 
-        let consumer_leaf: Field = Field::string(fk("recipient_email")).required().into();
+        let consumer_leaf: Property = Property::string(fk("recipient_email")).required().into();
 
         assert_eq!(
             explain_field_assignable(&producer_leaf, &consumer_leaf),

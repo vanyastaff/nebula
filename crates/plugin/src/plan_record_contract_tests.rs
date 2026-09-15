@@ -2,7 +2,7 @@ use super::*;
 use nebula_core::{
     ExecutablePlanRevisionId, PluginSetId, WorkerFlavorRevisionId, WorkflowId, WorkflowVersionId,
 };
-use nebula_schema::{Field, ModeField, ObjectField, Schema, SecretField, ValuePath, field_key};
+use nebula_schema::{ModeField, ObjectField, Property, Schema, SecretField, ValuePath, field_key};
 use serde_json::{Value, json};
 use std::assert_matches;
 
@@ -454,9 +454,9 @@ fn credential_binding_record(
 }
 
 fn object_with_secret_default(default: Value) -> ValidSchema {
-    let field = Field::from(
+    let field = Property::from(
         ObjectField::new(field_key!("auth"))
-            .add(SecretField::new(field_key!("token")))
+            .property(SecretField::new(field_key!("token")))
             .default(default),
     );
     serde_json::from_value(json!({ "fields": [serde_json::to_value(field).unwrap()] }))
@@ -464,7 +464,7 @@ fn object_with_secret_default(default: Value) -> ValidSchema {
 }
 
 fn mode_with_secret_default(default: Value) -> ValidSchema {
-    let field = Field::from(
+    let field = Property::from(
         ModeField::new(field_key!("auth"))
             .variant("token", "Token", SecretField::new(field_key!("token")))
             .default(default),
@@ -763,10 +763,10 @@ fn scalar_schema_descriptor_versions_and_mixed_shapes_fail_closed() {
 #[test]
 fn scalar_compiler_does_not_relabel_legacy_record_any_or_union_schema_wire() {
     let union = ValidSchema::union(
-        Field::mode(field_key!("choice")).variant(
+        Property::mode(field_key!("choice")).variant(
             "text",
             "Text",
-            Field::string(field_key!("text")),
+            Property::string(field_key!("text")),
         ),
         nebula_schema::SerdeTagging::External,
     )
@@ -897,7 +897,7 @@ fn resealed_error_references_cannot_read_success_only_fields() {
         nebula_schema::schema_of::<nebula_workflow::ErrorPortPayload>()
             .expect("valid test catalog definition");
     record.content.actions[0].output_schema.schema = Schema::builder()
-        .add(Field::string(nebula_schema::field_key!("success_only")).required())
+        .property(Property::string(nebula_schema::field_key!("success_only")).required())
         .build()
         .unwrap();
     let nodes = ["source", "target"].map(|id| {
@@ -1055,7 +1055,7 @@ fn explicit_literals_are_not_reclassified_as_expressions() {
     let mut literal = fixture_record();
     literal.content.actions[0].input_schema = recorded_schema(
         Schema::builder()
-            .add(Field::string(field_key!("value")).no_expression())
+            .property(Property::string(field_key!("value")).no_expression())
             .build()
             .expect("fixture schema is valid"),
     );
@@ -1087,9 +1087,9 @@ fn parameter_validation_rejects_invalid_nested_values_and_secret_literals() {
     let mut nested = fixture_record();
     nested.content.actions[0].input_schema = recorded_schema(
         Schema::builder()
-            .add(
+            .property(
                 ObjectField::new(field_key!("config"))
-                    .add(Field::string(field_key!("name")).required()),
+                    .property(Property::string(field_key!("name")).required()),
             )
             .build()
             .expect("fixture schema is valid"),
@@ -1110,7 +1110,10 @@ fn parameter_validation_rejects_invalid_nested_values_and_secret_literals() {
     let mut secret = fixture_record();
     secret.content.actions[0].input_schema = recorded_schema(
         Schema::builder()
-            .add(ObjectField::new(field_key!("auth")).add(SecretField::new(field_key!("token"))))
+            .property(
+                ObjectField::new(field_key!("auth"))
+                    .property(SecretField::new(field_key!("token"))),
+            )
             .build()
             .expect("fixture schema is valid"),
     );
@@ -1141,12 +1144,12 @@ fn recorded_literals_reject_secret_read_aliases(#[case] value: Value) {
     let mut record = fixture_record();
     record.content.actions[0].input_schema = recorded_schema(
         Schema::builder()
-            .add(
-                ObjectField::new(field_key!("auth")).add(
+            .property(
+                ObjectField::new(field_key!("auth")).property(
                     ObjectField::new(field_key!("nested"))
                         .read_alias(field_key!("legacy_nested"))
                         .unwrap()
-                        .add(
+                        .property(
                             SecretField::new(field_key!("token"))
                                 .read_alias(field_key!("legacy_token"))
                                 .unwrap(),
@@ -1178,7 +1181,7 @@ fn trigger_configuration_rejects_a_secret_read_alias() {
     let mut action = minimal_action(empty_dependencies());
     action.input_schema = recorded_schema(
         Schema::builder()
-            .add(
+            .property(
                 SecretField::new(field_key!("token"))
                     .read_alias(field_key!("legacy_token"))
                     .unwrap(),
@@ -1216,7 +1219,7 @@ fn node_parameter_set_cannot_bypass_required_fields_or_root_rules() {
     let mut missing = fixture_record();
     missing.content.actions[0].input_schema = recorded_schema(
         Schema::builder()
-            .add(Field::string(field_key!("name")).required())
+            .property(Property::string(field_key!("name")).required())
             .build()
             .expect("fixture schema is valid"),
     );
@@ -1231,7 +1234,7 @@ fn node_parameter_set_cannot_bypass_required_fields_or_root_rules() {
     let mut root_rules = fixture_record();
     root_rules.content.actions[0].input_schema = recorded_schema(
         Schema::builder()
-            .add(Field::string(field_key!("name")))
+            .property(Property::string(field_key!("name")))
             .root_rule(
                 nebula_schema::Rule::predicate(
                     nebula_schema::Predicate::eq("name", json!("expected"))
@@ -1284,9 +1287,9 @@ fn root_rule_record(
         .then_some(crate::plan_effect::RecordedActionEffectV1::NoExternalEffects);
     record.content.actions[0].input_schema = recorded_schema(
         Schema::builder()
-            .add(
-                Field::list(field_key!("data"))
-                    .item(Field::dynamic(field_key!("item")))
+            .property(
+                Property::list(field_key!("data"))
+                    .item(Property::dynamic(field_key!("item")))
                     .expression_mode(nebula_schema::ExpressionMode::Allowed),
             )
             .root_rule(rule)
@@ -1719,13 +1722,16 @@ fn empty_reference_path_means_whole_output_and_requires_a_durable_edge() {
     let mut record = fixture_record();
     record.content.actions[0].input_schema = recorded_schema(
         Schema::builder()
-            .add(ObjectField::new(field_key!("payload")).add(Field::string(field_key!("value"))))
+            .property(
+                ObjectField::new(field_key!("payload"))
+                    .property(Property::string(field_key!("value"))),
+            )
             .build()
             .expect("fixture consumer schema is valid"),
     );
     record.content.actions[0].output_schema = recorded_schema(
         Schema::builder()
-            .add(Field::string(field_key!("value")))
+            .property(Property::string(field_key!("value")))
             .build()
             .expect("fixture producer schema is valid"),
     );

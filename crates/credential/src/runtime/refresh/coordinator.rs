@@ -108,7 +108,7 @@ pub enum ConfigError {
     /// A duration used as a lease or Tokio interval was zero.
     #[error("config field {field} must be greater than zero")]
     ZeroDuration {
-        /// Field whose zero value would make lease semantics invalid or panic
+        /// Property whose zero value would make lease semantics invalid or panic
         /// `tokio::time::interval`.
         field: &'static str,
     },

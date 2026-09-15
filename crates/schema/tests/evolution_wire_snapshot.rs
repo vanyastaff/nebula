@@ -1,19 +1,19 @@
 //! Schema-evolution gate (C13): golden snapshots that **freeze the serde wire
 //! representation** of the schema-definition types.
 //!
-//! `Field` is `#[serde(tag = "type")]` and is re-exported as a real external
+//! `Property` is `#[serde(tag = "type")]` and is re-exported as a real external
 //! contract (`nebula-api`'s public-schema projection consumes it), so a renamed
 //! variant, a renamed field, or a changed type is a **silent** wire break that
 //! no compiler catches. Any such change diffs a snapshot below and fails CI
 //! until a maintainer consciously accepts it (`cargo insta review`).
 //!
 //! Backward/forward-compatibility rule this gate enforces by review:
-//! - new `Field` variants are only safe because the enum is `#[non_exhaustive]`
+//! - new `Property` variants are only safe because the enum is `#[non_exhaustive]`
 //!   (an old reader must not be required to match them exhaustively);
 //! - new struct fields must be `Option` / `#[serde(default)]` with
 //!   `skip_serializing_if`, so a document written by an older version still
 //!   deserializes and a document written by a newer version still round-trips;
-//! - a `type` an old reader does not recognize deserializes to `Field::Unknown`
+//! - a `type` an old reader does not recognize deserializes to `Property::Unknown`
 //!   and is preserved key-for-key (see `unknown_field_type_preserved`), so a
 //!   newer writer's field kind never fails to read on an older deployment.
 //!
@@ -21,20 +21,20 @@
 //! writer vectors freeze policy v2; reading old bytes must not upgrade their policy.
 
 use nebula_schema::{
-    AuthoredValue, Field, FieldPath, Predicate, Rule, Schema, SerdeTagging, ValidSchema,
+    AuthoredValue, FieldPath, Predicate, Property, Rule, Schema, SerdeTagging, ValidSchema,
     ValidationError, ValidationReport, VisibilityMode, field_key,
 };
 use serde_json::json;
 
-/// Every `Field` variant's wire shape (the `type` tag + each struct's
+/// Every `Property` variant's wire shape (the `type` tag + each struct's
 /// non-skipped fields). A renamed variant / field / type tag diffs here.
 #[test]
 fn field_variants_wire_format() {
-    let variants: Vec<Field> = vec![
+    let variants: Vec<Property> = vec![
         // A fully-decorated field freezes the SHARED serde keys that are skipped
         // when default (`label`/`description`/`placeholder`/`default`/`group`/
         // `visible`/`rules`), so renaming any of them also diffs this snapshot.
-        Field::string(field_key!("s"))
+        Property::string(field_key!("s"))
             .label("Display Name")
             .description("A fully-described field")
             .placeholder("type here")
@@ -47,24 +47,24 @@ fn field_variants_wire_format() {
             )
             .required()
             .into(),
-        Field::secret(field_key!("sec")).into(),
-        Field::number(field_key!("n")).integer().into(),
-        Field::boolean(field_key!("b")).into(),
-        Field::select(field_key!("sel")).option("a", "A").into(),
-        Field::object(field_key!("o"))
-            .add(Field::string(field_key!("inner")))
+        Property::secret(field_key!("sec")).into(),
+        Property::number(field_key!("n")).integer().into(),
+        Property::boolean(field_key!("b")).into(),
+        Property::select(field_key!("sel")).option("a", "A").into(),
+        Property::object(field_key!("o"))
+            .property(Property::string(field_key!("inner")))
             .into(),
-        Field::list(field_key!("l"))
-            .item(Field::string(field_key!("it")))
+        Property::list(field_key!("l"))
+            .item(Property::string(field_key!("it")))
             .into(),
-        Field::mode(field_key!("m"))
-            .variant("v", "V", Field::string(field_key!("x")))
+        Property::mode(field_key!("m"))
+            .variant("v", "V", Property::string(field_key!("x")))
             .into(),
-        Field::code(field_key!("c")).into(),
-        Field::file(field_key!("f")).multiple().into(),
-        Field::computed(field_key!("comp")).into(),
-        Field::dynamic(field_key!("d")).into(),
-        Field::notice(field_key!("not")).into(),
+        Property::code(field_key!("c")).into(),
+        Property::file(field_key!("f")).multiple().into(),
+        Property::computed(field_key!("comp")).into(),
+        Property::dynamic(field_key!("d")).into(),
+        Property::notice(field_key!("not")).into(),
     ];
     insta::assert_json_snapshot!(variants);
 }
@@ -100,12 +100,12 @@ fn valid_schema_wire_format() {
 #[test]
 fn current_valid_schema_wire_format() {
     let schema = Schema::builder()
-        .add(Field::string(field_key!("name")).required())
-        .add(Field::number(field_key!("age")))
-        .add(
-            Field::object(field_key!("address"))
-                .add(Field::string(field_key!("city")))
-                .add(Field::string(field_key!("zip")).required()),
+        .property(Property::string(field_key!("name")).required())
+        .property(Property::number(field_key!("age")))
+        .property(
+            Property::object(field_key!("address"))
+                .property(Property::string(field_key!("city")))
+                .property(Property::string(field_key!("zip")).required()),
         )
         .build()
         .unwrap();
@@ -143,12 +143,12 @@ fn union_schema_wire_format() {
 #[test]
 fn current_union_schema_wire_format() {
     let external = ValidSchema::union(
-        Field::mode(field_key!("auth"))
+        Property::mode(field_key!("auth"))
             .variant(
                 "oauth",
                 "OAuth",
-                Field::object(field_key!("oauth"))
-                    .add(Field::secret(field_key!("token")).required()),
+                Property::object(field_key!("oauth"))
+                    .property(Property::secret(field_key!("token")).required()),
             )
             .variant_empty("none", "None"),
         SerdeTagging::External,
@@ -158,11 +158,12 @@ fn current_union_schema_wire_format() {
     insta::assert_json_snapshot!("current_union_schema_external_wire_format", external);
 
     let adjacent = ValidSchema::union(
-        Field::mode(field_key!("event"))
+        Property::mode(field_key!("event"))
             .variant(
                 "click",
                 "Click",
-                Field::object(field_key!("click")).add(Field::number(field_key!("x")).required()),
+                Property::object(field_key!("click"))
+                    .property(Property::number(field_key!("x")).required()),
             )
             .variant_empty("noop", "No-op"),
         SerdeTagging::Adjacent {
@@ -193,7 +194,7 @@ fn field_values_wire_format() {
 }
 
 /// Forward compatibility: a field whose `type` this version does not know
-/// deserializes to `Field::Unknown` and re-serializes with every key and value
+/// deserializes to `Property::Unknown` and re-serializes with every key and value
 /// preserved, including novel keys (`toolbar`). The snapshot freezes this
 /// preservation so a future change that *drops or renames* a preserved key diffs
 /// here and fails CI. (Key *order* is normalized by serde_json — the snapshot is
@@ -207,9 +208,9 @@ fn unknown_field_type_preserved() {
         "visible": { "kind": "never" },
         "toolbar": ["bold", "italic"]
     });
-    let field: Field =
+    let field: Property =
         serde_json::from_value(future_field.clone()).expect("unknown type deserializes");
-    assert!(matches!(field, Field::Unknown(_)));
+    assert!(matches!(field, Property::Unknown(_)));
     assert_eq!(
         serde_json::to_value(&field).unwrap(),
         future_field,
@@ -256,9 +257,9 @@ fn validation_report_wire_format() {
 fn literal_extension_fixture() -> ValidSchema {
     let enabled = Rule::predicate(Predicate::eq("/enabled", json!(true)).unwrap()).unwrap();
     Schema::builder()
-        .add(Field::boolean(field_key!("enabled")))
-        .add(
-            Field::string(field_key!("name"))
+        .property(Property::boolean(field_key!("enabled")))
+        .property(
+            Property::string(field_key!("name"))
                 .no_expression()
                 .required()
                 .min_length(3)
@@ -273,67 +274,67 @@ fn literal_extension_fixture() -> ValidSchema {
                 .emit_as("display_name")
                 .unwrap(),
         )
-        .add(
-            Field::file(field_key!("avatar"))
+        .property(
+            Property::file(field_key!("avatar"))
                 .no_expression()
                 .accept("image/png")
                 .max_size(1_048_576),
         )
-        .add(
-            Field::file(field_key!("attachments"))
+        .property(
+            Property::file(field_key!("attachments"))
                 .no_expression()
                 .multiple()
                 .accept("application/pdf,image/*")
                 .max_size(0),
         )
-        .add(
-            Field::select(field_key!("regions"))
+        .property(
+            Property::select(field_key!("regions"))
                 .dynamic()
                 .multiple()
                 .allow_custom(),
         )
-        .add(Field::select(field_key!("provider")).extend_options([
+        .property(Property::select(field_key!("provider")).extend_options([
             nebula_schema::SelectOption::new(json!("current"), "Current"),
             nebula_schema::SelectOption::new(json!("legacy"), "Legacy").disabled(),
         ]))
-        .add(
-            Field::select(field_key!("tags"))
+        .property(
+            Property::select(field_key!("tags"))
                 .multiple()
                 .extend_options([
                     nebula_schema::SelectOption::new(json!("stable"), "Stable"),
                     nebula_schema::SelectOption::new(json!("retired"), "Retired").disabled(),
                 ]),
         )
-        .add(
-            Field::mode(field_key!("auth"))
+        .property(
+            Property::mode(field_key!("auth"))
                 .no_expression()
                 .variant_empty("none", "None")
                 .variant(
                     "token",
                     "Token",
-                    Field::string(field_key!("token"))
+                    Property::string(field_key!("token"))
                         .required()
                         .no_expression(),
                 )
                 .default_variant("none"),
         )
-        .add(
-            Field::object(field_key!("profile"))
+        .property(
+            Property::object(field_key!("profile"))
                 .no_expression()
-                .add(Field::string(field_key!("note")).no_expression()),
+                .property(Property::string(field_key!("note")).no_expression()),
         )
-        .add(
-            Field::list(field_key!("labels"))
+        .property(
+            Property::list(field_key!("labels"))
                 .no_expression()
-                .item(Field::string(field_key!("label")).no_expression()),
+                .item(Property::string(field_key!("label")).no_expression()),
         )
-        .add(
-            Field::string(field_key!("conditional"))
+        .property(
+            Property::string(field_key!("conditional"))
                 .no_expression()
                 .active_when(enabled.clone()),
         )
-        .add(
-            Field::string(field_key!("hidden"))
+        .property(
+            Property::string(field_key!("hidden"))
                 .no_expression()
                 .required()
                 .visible(VisibilityMode::Never),
@@ -357,13 +358,16 @@ fn json_schema_literal_extensions() {
 #[test]
 fn json_schema_expression_modes() {
     let schema = Schema::builder()
-        .add(
-            Field::string(field_key!("literal"))
+        .property(
+            Property::string(field_key!("literal"))
                 .no_expression()
                 .min_length(2),
         )
-        .add(Field::string(field_key!("template")).min_length(2))
-        .add(Field::computed(field_key!("computed")).returns(nebula_schema::ComputedReturn::Number))
+        .property(Property::string(field_key!("template")).min_length(2))
+        .property(
+            Property::computed(field_key!("computed"))
+                .returns(nebula_schema::ComputedReturn::Number),
+        )
         .build()
         .expect("expression mode fixture has valid declarations");
     let exported = schema

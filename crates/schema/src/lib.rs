@@ -1,7 +1,7 @@
 //! `nebula-schema` — schema definition system for Nebula workflow surfaces.
 //!
 //! This crate provides:
-//! - Typed property definitions and the legacy `Field` alias.
+//! - Typed property definitions through the `Property` enum and per-family builders.
 //! - `Schema` builder with structural lint passes via `Schema::lint`.
 //! - Schema-time validation via `ValidSchema::validate` returning a `ValidValues` proof-token.
 //! - Consuming expression resolution or data-only completion returning `ResolvedValues`.
@@ -20,12 +20,12 @@
 //! # Quick start
 //!
 //! ```rust
-//! use nebula_schema::{Field, AuthoredValue, Schema, field_key};
+//! use nebula_schema::{Property, AuthoredValue, Schema, field_key};
 //! use serde_json::json;
 //!
 //! let schema = Schema::builder()
-//!     .add(Field::string(field_key!("name")).required())
-//!     .add(Field::number(field_key!("age")))
+//!     .property(Property::string(field_key!("name")).required())
+//!     .property(Property::number(field_key!("age")))
 //!     .build()
 //!     .expect("schema is valid");
 //!
@@ -46,25 +46,25 @@
 //! use serde_json::json;
 //!
 //! let schema = Schema::builder()
-//!     .add(
-//!         Field::select(field_key!("auth_type"))
+//!     .property(
+//!         Property::select(field_key!("auth_type"))
 //!             .option("api_key", "API key")
 //!             .option("oauth2", "OAuth2")
 //!             .required(),
 //!     )
-//!     .add(
-//!         Field::secret(field_key!("api_key")).active_when(
+//!     .property(
+//!         Property::secret(field_key!("api_key")).active_when(
 //!             Rule::predicate(Predicate::eq("auth_type", json!("api_key")).unwrap()).unwrap(),
 //!         ),
 //!     )
-//!     .add(
-//!         Field::string(field_key!("client_id")).active_when(
+//!     .property(
+//!         Property::string(field_key!("client_id")).active_when(
 //!             Rule::predicate(Predicate::eq("auth_type", json!("oauth2")).unwrap()).unwrap(),
 //!         ),
 //!     )
 //!     .build()
 //!     .expect("schema is valid");
-//! assert_eq!(schema.fields().len(), 3);
+//! assert_eq!(schema.properties().len(), 3);
 //! ```
 //!
 //! # Struct-level rules (`#[schema(...)]` on `#[derive(Schema)]`)
@@ -75,11 +75,11 @@
 //! [`ValidSchema::validate`](crate::ValidSchema::validate).
 //!
 //! ```rust
-//! use nebula_schema::{Field, AuthoredValue, Schema, Predicate, Rule, field_key};
+//! use nebula_schema::{Property, AuthoredValue, Schema, Predicate, Rule, field_key};
 //! use serde_json::json;
 //!
 //! let schema = Schema::builder()
-//!     .add(Field::string(field_key!("tier")))
+//!     .property(Property::string(field_key!("tier")))
 //!     .root_rule(Rule::predicate(Predicate::eq("tier", json!("pro")).unwrap()).unwrap())
 //!     .build()
 //!     .unwrap();
@@ -132,7 +132,7 @@
 //! }
 //! ```
 //!
-//! # Field aliases
+//! # Property aliases
 //!
 //! `#[serde(alias = "..")]` keys become **read-aliases**: serde deserializes them
 //! and the schema accepts them as input, folding each onto the canonical key (so
@@ -178,7 +178,7 @@
 // works from external crates, integration tests, doctests, and lib tests.
 extern crate self as nebula_schema;
 
-/// Field alias container — extra accepted input keys (read-aliases) and the optional output key remap (`emit_as`).
+/// Property alias container — extra accepted input keys (read-aliases) and the optional output key remap (`emit_as`).
 pub mod alias;
 /// Typed-closure builder DSL (leaf aliases + Object/List/Group composite builders).
 pub mod builder;
@@ -196,7 +196,7 @@ pub mod directed;
 pub mod error;
 /// Expression wrapper and [`ExpressionContext`] trait.
 pub mod expression;
-/// Typed field definitions and wrappers.
+/// Typed property definitions and wrappers.
 pub mod field;
 /// Internal schema tree traversal helpers.
 pub(crate) mod field_tree;
@@ -207,7 +207,7 @@ pub mod input_hint;
 /// JSON Schema export (`schemars` feature).
 #[cfg(feature = "schemars")]
 pub mod json_schema;
-/// Strongly typed field identifiers.
+/// Strongly typed declaration identifiers.
 pub mod key;
 /// Static schema lint diagnostics.
 pub mod lint;
@@ -217,7 +217,7 @@ pub mod loader;
 pub mod mode;
 /// Select-option models.
 pub mod option;
-/// Typed references to schema fields.
+/// Typed references to schema declarations.
 pub mod path;
 /// Common imports for schema-definition code.
 pub mod prelude;
@@ -234,13 +234,13 @@ pub mod transformer;
 pub mod validated;
 /// Runtime value wrappers and wire-format helpers.
 pub mod value;
-/// Typed widget hints by field family.
+/// Typed widget hints by property family.
 pub mod widget;
 
 pub use alias::FieldAliases;
 pub use builder::{
-    BooleanBuilder, CodeBuilder, FieldCollector, GroupBuilder, ListBuilder, NumberBuilder,
-    ObjectBuilder, SecretBuilder, SelectBuilder, StringBuilder,
+    BooleanBuilder, CodeBuilder, GroupBuilder, ListBuilder, NumberBuilder, ObjectBuilder,
+    PropertyCollector, SecretBuilder, SelectBuilder, StringBuilder,
 };
 pub use commitment::{CommitmentId, CommitmentKey};
 pub use compat::{
@@ -262,7 +262,7 @@ pub use expression::{
     CompiledProgram, EngineExpressionContext, EvalFuture, Expression, ExpressionContext,
     ProgramSyntax,
 };
-/// Discriminated field: one of several payload shapes (auth scheme, body kind, etc.).
+/// Discriminated property: one of several payload shapes (auth scheme, body kind, etc.).
 ///
 /// # JSON wire format
 ///
@@ -271,16 +271,16 @@ pub use expression::{
 /// - **`mode`**: the variant’s string key.
 /// - **`value`** (optional): the payload for that variant.
 ///
-/// When `value` is present, it matches the `field` you pass to [`ModeField::variant`]. The
-/// shape depends on that child field:
+/// When `value` is present, it matches the property you pass to [`ModeField::variant`]. The
+/// shape depends on that child property:
 ///
 /// - If the child is an [`ObjectField`], `value` is a JSON object whose keys are the nested
-///   fields (each key must be a valid [`FieldKey`] string).
+///   properties (each key must be a valid [`FieldKey`] string).
 /// - If the child is a [`ListField`], `value` is a **JSON array** of list items. There is no
 ///   outer wrapper key around the list: each array element is validated with the `item`
-///   schema, and that schema’s outer `Field` key (if the item is an `ObjectField`) is not
+///   schema, and that schema's outer `Property` key (if the item is an `ObjectField`) is not
 ///   re-emitted as an extra wrapper in the wire.
-/// - For scalar leaf families, `value` is the JSON the field type expects, for example
+/// - For scalar leaf families, `value` is the JSON the property type expects, for example
 ///   [`StringField`], [`SecretField`], [`CodeField`], [`NumberField`], [`BooleanField`],
 ///   [`SelectField`], and [`FileField`] (per-field options, such as `multiple`, apply as
 ///   usual).
@@ -297,9 +297,9 @@ pub use expression::{
 /// and non-required.
 pub use field::ModeField;
 pub use field::{
-    BooleanField, CodeField, ComputedField, ComputedReturn, DynamicField, Field, FileField,
-    ListField, ModeVariant, NoticeField, NoticeSeverity, NumberField, ObjectField, Property,
-    SecretField, SelectField, StringField, UnknownField,
+    BooleanField, CodeField, ComputedField, ComputedReturn, DynamicField, FileField, ListField,
+    ModeVariant, NoticeField, NoticeSeverity, NumberField, ObjectField, Property, SecretField,
+    SelectField, StringField, UnknownField,
 };
 /// Typed reference to a declared property location.
 ///
@@ -398,7 +398,7 @@ pub mod __private {
         payload: crate::ValidSchema,
         enum_name: &str,
         variant: &str,
-    ) -> ::core::result::Result<crate::Field, crate::error::ValidationReport> {
+    ) -> ::core::result::Result<crate::Property, crate::error::ValidationReport> {
         payload.ensure_current_semantics()?;
         if payload.kind() != crate::SchemaKind::Record {
             return ::core::result::Result::Err(crate::error::ValidationReport::from(
@@ -420,8 +420,8 @@ pub mod __private {
                 .build().into());
         }
         ::core::result::Result::Ok(
-            crate::Field::object(wire_key)
-                .add_many(payload.fields().iter().cloned())
+            crate::Property::object(wire_key)
+                .properties(payload.properties().iter().cloned())
                 .into(),
         )
     }

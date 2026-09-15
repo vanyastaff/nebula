@@ -47,7 +47,7 @@
 //! If `data` is anything other than a JSON object or `null`, every case
 //! evaluation returns a Fatal error. `null` and absent `data` normalize to `{}`.
 //!
-//! ## Field scoping
+//! ## Property scoping
 //!
 //! `case.condition.field` is a top-level key in `data`, not a JSON pointer.
 //! A dot in the field name is literal.
@@ -63,7 +63,7 @@ use nebula_action::{
     port_key,
 };
 use nebula_core::action_key;
-use nebula_schema::{Field, HasSchema, Schema, ValidSchema, ValidationReport, field_key};
+use nebula_schema::{HasSchema, Property, Schema, ValidSchema, ValidationReport, field_key};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::instrument;
@@ -106,12 +106,12 @@ impl HasSchema for SwitchInput {
         SCHEMA
             .get_or_init(|| {
                 Schema::builder()
-                    .add(super::input_schema::nullable_object_data())
-                    .add(
-                        Field::list(field_key!("cases")).item(
-                            Field::object(field_key!("item"))
-                                .add(super::input_schema::condition(field_key!("condition")))
-                                .add(Field::string(field_key!("port")).required()),
+                    .property(super::input_schema::nullable_object_data())
+                    .property(
+                        Property::list(field_key!("cases")).item(
+                            Property::object(field_key!("item"))
+                                .property(super::input_schema::condition(field_key!("condition")))
+                                .property(Property::string(field_key!("port")).required()),
                         ),
                     )
                     .build()

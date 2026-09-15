@@ -6,12 +6,12 @@
 //! consumer is a *compile* error rather than a silent logic bug: direction is
 //! enforced by the type system, not by discipline.
 //!
-//! The polarity lives on the **schema** (the port), not on every [`Field`] — a
+//! The polarity lives on the **schema** (the port), not on every [`Property`] — a
 //! field is the same shape whether read or written; only the schema as a whole
 //! has a dataflow direction. The newtype is `#[repr(transparent)]` and serde-
 //! transparent, so it is zero-cost and does not change the wire format.
 //!
-//! [`Field`]: crate::Field
+//! [`Property`]: crate::Property
 
 use core::marker::PhantomData;
 

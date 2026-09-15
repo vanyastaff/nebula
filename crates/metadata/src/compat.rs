@@ -98,7 +98,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use nebula_schema::{FieldCollector, Schema, ValidSchema, field_key};
+    use nebula_schema::{PropertyCollector, Schema, ValidSchema, field_key};
     use semver::Version;
 
     use super::{BaseCompatError, validate_base_compat};

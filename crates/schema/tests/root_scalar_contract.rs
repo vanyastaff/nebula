@@ -139,7 +139,7 @@ fn scalar_rules_are_not_lost_when_the_root_has_no_fields() {
             .root_rule(Rule::value(ValueRule::MinLength(3)).expect("bounded scalar root rule")),
     )
     .unwrap();
-    assert!(schema.fields().is_empty());
+    assert!(schema.properties().is_empty());
     assert_eq!(schema.root_rules().len(), 1);
     let report = schema
         .validate(AuthoredValue::from_data(json!("ab")).unwrap())
@@ -252,7 +252,7 @@ fn nested_scalar_roots_are_rejected_instead_of_erased() {
 #[test]
 fn derived_any_fields_are_dynamic_and_preserve_opaque_data() {
     let schema = schema_of::<NestedUnknown>().unwrap();
-    assert_matches!(schema.fields()[0], nebula_schema::Field::Dynamic(_));
+    assert_matches!(schema.properties()[0], nebula_schema::Property::Dynamic(_));
     assert_eq!(
         schema.walk_reference_path(&ValuePath::from_pointer("/inner/arbitrary/path").unwrap()),
         PathWalk::Opaque
@@ -267,10 +267,13 @@ fn derived_any_fields_are_dynamic_and_preserve_opaque_data() {
         roundtrip(NestedUnknown { inner: value });
     }
     let list_schema = schema_of::<UnknownList>().unwrap();
-    let nebula_schema::Field::List(list) = &list_schema.fields()[0] else {
+    let nebula_schema::Property::List(list) = &list_schema.properties()[0] else {
         panic!("expected list");
     };
-    assert_matches!(list.item.as_deref(), Some(nebula_schema::Field::Dynamic(_)));
+    assert_matches!(
+        list.item.as_deref(),
+        Some(nebula_schema::Property::Dynamic(_))
+    );
     roundtrip(UnknownList {
         items: vec![
             Value::Null,

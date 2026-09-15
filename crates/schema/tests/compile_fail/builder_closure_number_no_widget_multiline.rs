@@ -1,4 +1,4 @@
-use nebula_schema::{FieldCollector, Schema, StringWidget};
+use nebula_schema::{PropertyCollector, Schema, StringWidget};
 
 fn main() {
     // StringWidget::Multiline is specific to StringField; NumberField takes NumberWidget.

@@ -35,7 +35,7 @@ struct TypedEchoOutput {
 
 impl nebula_schema::HasSchema for TypedEchoOutput {
     fn schema() -> Result<nebula_action::ValidSchema, nebula_schema::ValidationReport> {
-        use nebula_schema::{FieldCollector, Schema, field_key};
+        use nebula_schema::{PropertyCollector, Schema, field_key};
         Schema::builder()
             .string(
                 field_key!("message"),
@@ -52,7 +52,7 @@ struct TypedEchoInput {
 
 impl nebula_schema::HasSchema for TypedEchoInput {
     fn schema() -> Result<nebula_action::ValidSchema, nebula_schema::ValidationReport> {
-        use nebula_schema::{FieldCollector, Schema, field_key};
+        use nebula_schema::{PropertyCollector, Schema, field_key};
         Schema::builder()
             .string(field_key!("text"), nebula_schema::StringBuilder::required)
             .build()
@@ -244,7 +244,7 @@ async fn instance_factory_stamps_output_schema_from_action_output_type() {
     let output_schema = factory.metadata().output_schema();
     assert!(
         output_schema
-            .fields()
+            .properties()
             .iter()
             .any(|f| f.key().as_str() == "message"),
         "InstanceFactory must stamp output_schema from A::Output — `message` field missing; \

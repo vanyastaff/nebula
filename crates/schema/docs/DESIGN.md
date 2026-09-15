@@ -40,8 +40,8 @@ canonical version are independent protocols.
 `ValidSchema` owns one `RootShape`. `Any` deliberately provides no shape proof;
 `Scalar` carries a checked null/boolean/string/integer/number domain; `Record`
 owns declarations and root rules; `Union` owns a required mode and its serde
-tagging. Field indexes are derived accelerators, not another root description.
-`SchemaKind`, fields, and tagging cannot disagree inside an admitted schema.
+tagging. Property indexes are derived accelerators, not another root description.
+`SchemaKind`, properties, and tagging cannot disagree inside an admitted schema.
 
 `()` and unit structs use the null domain. Empty braced structs use an empty
 record, which still requires an object. Primitive `HasSchema` implementations
@@ -121,7 +121,7 @@ Canonical input wins over read aliases; otherwise the first declared alias
 wins. Every alias is consumed, including losing aliases that may carry secrets.
 Transforms run once for each newly prepared scalar or secret. Existing literal
 siblings are not transformed again during resolution; newly evaluated subtrees
-receive their own preparation once. Field transformer metadata remains intact.
+receive their own preparation once. Property transformer metadata remains intact.
 
 Expression permission belongs to the exact declaration, not its ancestors.
 Opaque or undeclared descendants cannot acquire code capability merely because
@@ -133,7 +133,7 @@ returned by the evaluator remain data and cannot trigger another evaluation.
 Derived authoring accepts structured `#[property(...)]` on data fields.
 `display(...)` records presentation annotations, `input(...)` records
 requiredness, expression policy and secret protection, and `validate(...)`
-records value rules. The macro lowers these sections to the existing `Field`
+records value rules. The macro lowers these sections to the existing `Property`
 runtime representation and rejects unimplemented Phase-5 sections such as
 `options(...)` rather than silently treating them as hints. Legacy `#[field]`
 and `#[validate]` remain for current in-workspace declarations, but new code
@@ -243,7 +243,7 @@ ordinary `Debug`, `Display`, and JSON serialization redact protected material.
 `Expression` and `CompiledProgram` diagnostic output does not print source.
 Authored serialization and explicit source access are not diagnostic surfaces.
 
-Field and root rules share `prepared_predicate_context` after preparation.
+Property and root rules share `prepared_predicate_context` after preparation.
 Schema-declared secrets and explicit `Secret` nodes are scrubbed recursively,
 including under arbitrary keys. Expressions are unavailable; pending paths are
 supplied separately through the validator context. Safe whole containers remain

@@ -323,7 +323,7 @@ fn input_error(node_key: &NodeKey, report: ValidationReport, message: &'static s
 #[cfg(test)]
 mod tests {
     use nebula_core::node_key;
-    use nebula_schema::{Field, FieldKey, PathWalk, Schema, ValidSchema, ValuePath};
+    use nebula_schema::{FieldKey, PathWalk, Property, Schema, ValidSchema, ValuePath};
     use proptest::prelude::*;
     use serde_json::json;
 
@@ -373,7 +373,7 @@ mod tests {
     #[tokio::test]
     async fn literal_resolution_passthrough() {
         let schema = Schema::builder()
-            .add(Field::string(FieldKey::new("url").unwrap()))
+            .property(Property::string(FieldKey::new("url").unwrap()))
             .build()
             .unwrap();
         let outputs = DashMap::new();
@@ -392,7 +392,7 @@ mod tests {
     #[tokio::test]
     async fn expression_resolution_evaluates() {
         let schema = Schema::builder()
-            .add(Field::number(FieldKey::new("count").unwrap()).integer())
+            .property(Property::number(FieldKey::new("count").unwrap()).integer())
             .build()
             .unwrap();
         let outputs = DashMap::new();
@@ -412,7 +412,7 @@ mod tests {
     #[tokio::test]
     async fn expression_resolution_observes_cancellation_before_evaluation() {
         let schema = Schema::builder()
-            .add(Field::number(FieldKey::new("count").unwrap()).integer())
+            .property(Property::number(FieldKey::new("count").unwrap()).integer())
             .build()
             .unwrap();
         let outputs = DashMap::new();
@@ -496,7 +496,7 @@ mod tests {
     #[tokio::test]
     async fn template_resolution_renders() {
         let schema = Schema::builder()
-            .add(Field::string(FieldKey::new("greeting").unwrap()))
+            .property(Property::string(FieldKey::new("greeting").unwrap()))
             .build()
             .unwrap();
         let outputs = DashMap::new();
@@ -516,9 +516,9 @@ mod tests {
     #[tokio::test]
     async fn reference_resolution_looks_up_output() {
         let schema = Schema::builder()
-            .add(
-                Field::object(FieldKey::new("input").unwrap())
-                    .add(Field::string(FieldKey::new("data").unwrap())),
+            .property(
+                Property::object(FieldKey::new("input").unwrap())
+                    .property(Property::string(FieldKey::new("data").unwrap())),
             )
             .build()
             .unwrap();
@@ -538,7 +538,7 @@ mod tests {
     #[tokio::test]
     async fn reference_with_path_navigates_output() {
         let schema = Schema::builder()
-            .add(Field::number(FieldKey::new("val").unwrap()).integer())
+            .property(Property::number(FieldKey::new("val").unwrap()).integer())
             .build()
             .unwrap();
         let source_id = node_key!("source");
@@ -634,7 +634,7 @@ mod tests {
     #[tokio::test]
     async fn reference_to_missing_node_returns_error() {
         let schema = Schema::builder()
-            .add(Field::object(FieldKey::new("data").unwrap()))
+            .property(Property::object(FieldKey::new("data").unwrap()))
             .build()
             .unwrap();
         let missing_id = node_key!("missing");
@@ -653,7 +653,7 @@ mod tests {
     #[tokio::test]
     async fn expression_eval_failure_returns_error() {
         let schema = Schema::builder()
-            .add(Field::number(FieldKey::new("bad").unwrap()))
+            .property(Property::number(FieldKey::new("bad").unwrap()))
             .build()
             .unwrap();
         let outputs = DashMap::new();
@@ -673,7 +673,7 @@ mod tests {
     #[tokio::test]
     async fn template_parse_failure_returns_error() {
         let schema = Schema::builder()
-            .add(Field::string(FieldKey::new("bad").unwrap()))
+            .property(Property::string(FieldKey::new("bad").unwrap()))
             .build()
             .unwrap();
         let outputs = DashMap::new();
@@ -693,7 +693,7 @@ mod tests {
         use std::error::Error as StdError;
 
         let schema = Schema::builder()
-            .add(Field::number(FieldKey::new("bad").unwrap()))
+            .property(Property::number(FieldKey::new("bad").unwrap()))
             .build()
             .unwrap();
         let outputs = DashMap::new();
@@ -737,7 +737,7 @@ mod tests {
         // Reference-to-missing-node is a string-only failure: no typed upstream.
         // Verify `source: None` and that the chain terminates cleanly.
         let schema = Schema::builder()
-            .add(Field::object(FieldKey::new("data").unwrap()))
+            .property(Property::object(FieldKey::new("data").unwrap()))
             .build()
             .unwrap();
         let outputs = DashMap::new();
@@ -766,10 +766,10 @@ mod tests {
 
     fn reference_path_schema() -> ValidSchema {
         Schema::builder()
-            .add(
-                Field::list(FieldKey::new("items").unwrap()).item(
-                    Field::object(FieldKey::new("item").unwrap())
-                        .add(Field::string(FieldKey::new("name").unwrap())),
+            .property(
+                Property::list(FieldKey::new("items").unwrap()).item(
+                    Property::object(FieldKey::new("item").unwrap())
+                        .property(Property::string(FieldKey::new("name").unwrap())),
                 ),
             )
             .build()

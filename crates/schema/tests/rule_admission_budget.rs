@@ -1,4 +1,4 @@
-use nebula_schema::{Field, Schema, field_key};
+use nebula_schema::{Property, Schema, field_key};
 use nebula_validator::{MAX_RULE_DEPTH, Rule, RuleBuildError};
 
 fn boundary_rule() -> Rule {
@@ -23,7 +23,7 @@ fn over_limit_rule_cannot_reach_schema_admission() {
 #[test]
 fn schema_builder_accepts_rule_at_depth_boundary() {
     let result = Schema::builder()
-        .add(Field::string(field_key!("email")).with_rule(boundary_rule()))
+        .property(Property::string(field_key!("email")).with_rule(boundary_rule()))
         .build();
     assert!(
         result.is_ok(),
