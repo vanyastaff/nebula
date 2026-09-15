@@ -2,7 +2,7 @@
 //!
 //! The derive path needs two decisions per struct field:
 //!
-//! 1. Which `Field::*` constructor to emit.
+//! 1. Which `Property::*` constructor to emit.
 //! 2. Whether to mark the resulting field `required` by default (i.e. is it wrapped in
 //!    `Option<T>`?).
 //!

@@ -199,7 +199,7 @@ pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
         &input,
         quote! {
             #crate_path::Schema::builder()
-                #( .add(#field_exprs) )*
+                #( .property(#field_exprs) )*
                 #( #root_rule_tokens )*
                 .build()
         },
@@ -311,7 +311,7 @@ fn nested_field_expr(
         nested_schema.ensure_current_semantics()?;
         match nested_schema.root_shape() {
             #crate_path::RootShape::Any => {
-                let #binding = #crate_path::Field::dynamic(#key);
+                let #binding = #crate_path::Property::dynamic(#key);
                 #decorated
             }
             #crate_path::RootShape::Record(record) => {
@@ -320,7 +320,7 @@ fn nested_field_expr(
                         .message("nested record root rules require an explicit field declaration")
                         .build().into());
                 }
-                let #binding = #crate_path::Field::object(#key).add_many(record.fields().iter().cloned());
+                let #binding = #crate_path::Property::object(#key).add_many(record.properties().iter().cloned());
                 #decorated
             }
             #crate_path::RootShape::Scalar(_) | #crate_path::RootShape::Union(_) => {
@@ -639,13 +639,13 @@ pub(crate) fn build_field_expr(
     // schema's string-shaped Secret field.
     let mut expr = match inner {
         FieldKind::String | FieldKind::UserDefined(_) if field_attr.secret => quote! {
-            #crate_path::Field::secret(#key)
+            #crate_path::Property::secret(#key)
         },
         FieldKind::String => quote! {
-            #crate_path::Field::string(#key)
+            #crate_path::Property::string(#key)
         },
         FieldKind::Boolean => quote! {
-            #crate_path::Field::boolean(#key)
+            #crate_path::Property::boolean(#key)
         },
         FieldKind::IntegerNumber(ty) => integer_field_expr(ty, &key, crate_path),
         FieldKind::FloatNumber(ty) => float_field_expr(ty, &key, crate_path),
@@ -658,7 +658,7 @@ pub(crate) fn build_field_expr(
             ));
         },
         FieldKind::UserDefined(ty) if field_attr.enum_select => quote! {
-            #crate_path::Field::select(#key).extend_options(
+            #crate_path::Property::select(#key).extend_options(
                 <#ty as #crate_path::HasSelectOptions>::select_options(),
             )
         },
@@ -830,7 +830,7 @@ pub(crate) fn build_field_expr(
         };
     }
 
-    let decorated = quote! { #expr.into_field() };
+    let decorated = quote! { #expr.into_property() };
     if field_attr.secret {
         let secret_type = secret_leaf_type(field_type);
         return Ok(quote! {{
@@ -988,7 +988,7 @@ fn ensure_enum_select_validate_attrs(
 
 fn integer_field_expr(ty: &Type, key: &TokenStream2, crate_path: &TokenStream2) -> TokenStream2 {
     quote! {
-        #crate_path::Field::integer(#key).min(<#ty>::MIN).max(<#ty>::MAX)
+        #crate_path::Property::integer(#key).min(<#ty>::MIN).max(<#ty>::MAX)
     }
 }
 
@@ -1000,7 +1000,7 @@ fn float_field_expr(ty: &Type, key: &TokenStream2, crate_path: &TokenStream2) ->
                 .build())?
     });
     let [minimum, maximum] = bounds;
-    quote! { #crate_path::Field::number(#key).min(#minimum).max(#maximum) }
+    quote! { #crate_path::Property::number(#key).min(#minimum).max(#maximum) }
 }
 
 fn list_field_expr(
@@ -1020,8 +1020,8 @@ fn list_field_expr(
         #crate_path::FieldKey::new(#item_key_str)?
     };
     let item_expr = match item_kind {
-        FieldKind::String => quote! { #crate_path::Field::string(#item_key) },
-        FieldKind::Boolean => quote! { #crate_path::Field::boolean(#item_key) },
+        FieldKind::String => quote! { #crate_path::Property::string(#item_key) },
+        FieldKind::Boolean => quote! { #crate_path::Property::boolean(#item_key) },
         FieldKind::IntegerNumber(ty) => integer_field_expr(ty, &item_key, crate_path),
         FieldKind::FloatNumber(ty) => float_field_expr(ty, &item_key, crate_path),
         FieldKind::UserDefined(ty) => {
@@ -1030,10 +1030,10 @@ fn list_field_expr(
                 ty,
                 &item_key,
                 &binding,
-                &quote! { #binding.into_field() },
+                &quote! { #binding.into_property() },
                 crate_path,
             );
-            return Ok(quote! { #crate_path::Field::list(#key).item(#item) });
+            return Ok(quote! { #crate_path::Property::list(#key).item(#item) });
         },
         FieldKind::List(_) | FieldKind::Optional(_) => {
             return Err(syn::Error::new_spanned(
@@ -1052,7 +1052,7 @@ fn list_field_expr(
         },
     };
     Ok(quote! {
-        #crate_path::Field::list(#key).item(#item_expr.into_field())
+        #crate_path::Property::list(#key).item(#item_expr.into_property())
     })
 }
 

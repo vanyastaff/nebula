@@ -1,7 +1,7 @@
 //! Implementation of `#[derive(Schema)]` for payload-carrying enums.
 //!
 //! A Rust enum becomes a tagged-union schema (`SchemaKind::Union`): one
-//! variant per enum variant, stored as the schema's sole root `Field::Mode`
+//! variant per enum variant, stored as the schema's sole root `Property::Mode`
 //! (the marker design — see `nebula_schema::SchemaKind::Union`). The variant wire
 //! keys and the recorded `SerdeTagging` reproduce serde's exact wire shape so
 //! the schema variant key always equals the wire key (the C1 invariant the whole
@@ -38,7 +38,7 @@ use crate::{
     type_infer::{FieldKind, classify},
 };
 
-/// Root key of the union's sole `Field::Mode`. Internal — *not* a wire key (the
+/// Root key of the union's sole `Property::Mode`. Internal — *not* a wire key (the
 /// wire discriminants are the variant keys); it only exists because every field
 /// needs a `FieldKey`. A leading underscore is a valid key and signals "synthetic".
 const UNION_ROOT_KEY: &str = "_nebula_union";
@@ -161,7 +161,7 @@ pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     Ok(cached_schema_impl(
         input,
         quote! {
-            let mut __mode = #crate_path::Field::mode(
+            let mut __mode = #crate_path::Property::mode(
                 #crate_path::FieldKey::new(#UNION_ROOT_KEY)?,
             );
             #( __mode = __mode #variant_calls; )*
@@ -324,7 +324,7 @@ fn build_variant_call(
                 )?);
             }
             let payload = quote! {
-                #crate_path::Field::object(
+                #crate_path::Property::object(
                     #crate_path::FieldKey::new(#wire_key)?,
                 )
                 #( .add(#field_exprs) )*
