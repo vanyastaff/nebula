@@ -1,0 +1,508 @@
+---
+source: crates/schema/tests/evolution_wire_snapshot.rs
+expression: exported
+---
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "allOf": [
+    {
+      "anyOf": [
+        {
+          "required": [
+            "name"
+          ]
+        },
+        {
+          "required": [
+            "legacy_name"
+          ]
+        },
+        {
+          "required": [
+            "old_name"
+          ]
+        }
+      ]
+    }
+  ],
+  "properties": {
+    "attachments": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array",
+      "x-nebula-expression-mode": "forbidden",
+      "x-nebula-field-kind": "file",
+      "x-nebula-file-accept": "application/pdf,image/*",
+      "x-nebula-file-max-size": 0,
+      "x-nebula-required-mode": "never",
+      "x-nebula-resolved-value-schema": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "x-nebula-visibility-mode": "always"
+    },
+    "auth": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "mode": {
+              "const": "none"
+            },
+            "value": {
+              "type": "string",
+              "x-nebula-expression-mode": "forbidden",
+              "x-nebula-field-kind": "string",
+              "x-nebula-required-mode": "never",
+              "x-nebula-resolved-value-schema": {
+                "type": "string"
+              },
+              "x-nebula-visibility-mode": "never"
+            }
+          },
+          "required": [],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "mode": {
+              "const": "token"
+            },
+            "value": {
+              "minLength": 1,
+              "not": {
+                "type": "null"
+              },
+              "type": "string",
+              "x-nebula-expression-mode": "forbidden",
+              "x-nebula-field-kind": "string",
+              "x-nebula-required-mode": "always",
+              "x-nebula-resolved-value-schema": {
+                "minLength": 1,
+                "not": {
+                  "type": "null"
+                },
+                "type": "string"
+              },
+              "x-nebula-visibility-mode": "always"
+            }
+          },
+          "required": [
+            "mode",
+            "value"
+          ],
+          "type": "object"
+        }
+      ],
+      "x-nebula-expression-mode": "forbidden",
+      "x-nebula-field-kind": "mode",
+      "x-nebula-mode-default-variant": "none",
+      "x-nebula-required-mode": "never",
+      "x-nebula-resolved-value-schema": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "mode": {
+                "const": "none"
+              },
+              "value": {
+                "type": "string",
+                "x-nebula-expression-mode": "forbidden",
+                "x-nebula-field-kind": "string",
+                "x-nebula-required-mode": "never",
+                "x-nebula-resolved-value-schema": {
+                  "type": "string"
+                },
+                "x-nebula-visibility-mode": "never"
+              }
+            },
+            "required": [],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "mode": {
+                "const": "token"
+              },
+              "value": {
+                "minLength": 1,
+                "not": {
+                  "type": "null"
+                },
+                "type": "string",
+                "x-nebula-expression-mode": "forbidden",
+                "x-nebula-field-kind": "string",
+                "x-nebula-required-mode": "always",
+                "x-nebula-resolved-value-schema": {
+                  "minLength": 1,
+                  "not": {
+                    "type": "null"
+                  },
+                  "type": "string"
+                },
+                "x-nebula-visibility-mode": "always"
+              }
+            },
+            "required": [
+              "mode",
+              "value"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "x-nebula-visibility-mode": "always"
+    },
+    "avatar": {
+      "type": "string",
+      "x-nebula-expression-mode": "forbidden",
+      "x-nebula-field-kind": "file",
+      "x-nebula-file-accept": "image/png",
+      "x-nebula-file-max-size": 1048576,
+      "x-nebula-required-mode": "never",
+      "x-nebula-resolved-value-schema": {
+        "type": "string"
+      },
+      "x-nebula-visibility-mode": "always"
+    },
+    "conditional": {
+      "type": "string",
+      "x-nebula-expression-mode": "forbidden",
+      "x-nebula-field-kind": "string",
+      "x-nebula-required-mode": "when",
+      "x-nebula-resolved-value-schema": {
+        "type": "string"
+      },
+      "x-nebula-visibility-mode": "when"
+    },
+    "enabled": {
+      "type": "boolean",
+      "x-nebula-expression-mode": "forbidden",
+      "x-nebula-field-kind": "boolean",
+      "x-nebula-required-mode": "never",
+      "x-nebula-resolved-value-schema": {
+        "type": "boolean"
+      },
+      "x-nebula-visibility-mode": "always"
+    },
+    "hidden": {
+      "minLength": 1,
+      "not": {
+        "type": "null"
+      },
+      "type": "string",
+      "x-nebula-expression-mode": "forbidden",
+      "x-nebula-field-kind": "string",
+      "x-nebula-required-mode": "always",
+      "x-nebula-resolved-value-schema": {
+        "minLength": 1,
+        "not": {
+          "type": "null"
+        },
+        "type": "string"
+      },
+      "x-nebula-visibility-mode": "never"
+    },
+    "labels": {
+      "items": {
+        "type": "string",
+        "x-nebula-expression-mode": "forbidden",
+        "x-nebula-field-kind": "string",
+        "x-nebula-required-mode": "never",
+        "x-nebula-resolved-value-schema": {
+          "type": "string"
+        },
+        "x-nebula-visibility-mode": "always"
+      },
+      "type": "array",
+      "x-nebula-expression-mode": "forbidden",
+      "x-nebula-field-kind": "list",
+      "x-nebula-required-mode": "never",
+      "x-nebula-resolved-value-schema": {
+        "items": {
+          "type": "string",
+          "x-nebula-expression-mode": "forbidden",
+          "x-nebula-field-kind": "string",
+          "x-nebula-required-mode": "never",
+          "x-nebula-resolved-value-schema": {
+            "type": "string"
+          },
+          "x-nebula-visibility-mode": "always"
+        },
+        "type": "array"
+      },
+      "x-nebula-visibility-mode": "always"
+    },
+    "legacy_name": {
+      "allOf": [
+        {
+          "minLength": 1
+        }
+      ],
+      "default": "Example",
+      "description": "Literal name with inbound aliases",
+      "maxLength": 32,
+      "minLength": 3,
+      "not": {
+        "type": "null"
+      },
+      "title": "Display name",
+      "type": "string",
+      "x-nebula-emit-as": "display_name",
+      "x-nebula-expression-mode": "forbidden",
+      "x-nebula-field-kind": "string",
+      "x-nebula-read-aliases": [
+        "legacy_name",
+        "old_name"
+      ],
+      "x-nebula-required-mode": "always",
+      "x-nebula-resolved-value-schema": {
+        "allOf": [
+          {
+            "minLength": 1
+          }
+        ],
+        "maxLength": 32,
+        "minLength": 3,
+        "not": {
+          "type": "null"
+        },
+        "type": "string"
+      },
+      "x-nebula-visibility-mode": "always"
+    },
+    "name": {
+      "allOf": [
+        {
+          "minLength": 1
+        }
+      ],
+      "default": "Example",
+      "description": "Literal name with inbound aliases",
+      "maxLength": 32,
+      "minLength": 3,
+      "not": {
+        "type": "null"
+      },
+      "title": "Display name",
+      "type": "string",
+      "x-nebula-emit-as": "display_name",
+      "x-nebula-expression-mode": "forbidden",
+      "x-nebula-field-kind": "string",
+      "x-nebula-read-aliases": [
+        "legacy_name",
+        "old_name"
+      ],
+      "x-nebula-required-mode": "always",
+      "x-nebula-resolved-value-schema": {
+        "allOf": [
+          {
+            "minLength": 1
+          }
+        ],
+        "maxLength": 32,
+        "minLength": 3,
+        "not": {
+          "type": "null"
+        },
+        "type": "string"
+      },
+      "x-nebula-visibility-mode": "always"
+    },
+    "old_name": {
+      "allOf": [
+        {
+          "minLength": 1
+        }
+      ],
+      "default": "Example",
+      "description": "Literal name with inbound aliases",
+      "maxLength": 32,
+      "minLength": 3,
+      "not": {
+        "type": "null"
+      },
+      "title": "Display name",
+      "type": "string",
+      "x-nebula-emit-as": "display_name",
+      "x-nebula-expression-mode": "forbidden",
+      "x-nebula-field-kind": "string",
+      "x-nebula-read-aliases": [
+        "legacy_name",
+        "old_name"
+      ],
+      "x-nebula-required-mode": "always",
+      "x-nebula-resolved-value-schema": {
+        "allOf": [
+          {
+            "minLength": 1
+          }
+        ],
+        "maxLength": 32,
+        "minLength": 3,
+        "not": {
+          "type": "null"
+        },
+        "type": "string"
+      },
+      "x-nebula-visibility-mode": "always"
+    },
+    "profile": {
+      "additionalProperties": true,
+      "properties": {
+        "note": {
+          "type": "string",
+          "x-nebula-expression-mode": "forbidden",
+          "x-nebula-field-kind": "string",
+          "x-nebula-required-mode": "never",
+          "x-nebula-resolved-value-schema": {
+            "type": "string"
+          },
+          "x-nebula-visibility-mode": "always"
+        }
+      },
+      "type": "object",
+      "x-nebula-expression-mode": "forbidden",
+      "x-nebula-field-kind": "object",
+      "x-nebula-required-mode": "never",
+      "x-nebula-resolved-value-schema": {
+        "additionalProperties": true,
+        "properties": {
+          "note": {
+            "type": "string",
+            "x-nebula-expression-mode": "forbidden",
+            "x-nebula-field-kind": "string",
+            "x-nebula-required-mode": "never",
+            "x-nebula-resolved-value-schema": {
+              "type": "string"
+            },
+            "x-nebula-visibility-mode": "always"
+          }
+        },
+        "type": "object"
+      },
+      "x-nebula-visibility-mode": "always"
+    },
+    "provider": {
+      "anyOf": [
+        {
+          "const": "current",
+          "title": "Current"
+        },
+        {
+          "const": "legacy",
+          "title": "Legacy",
+          "x-nebula-disabled": true
+        }
+      ],
+      "type": [
+        "null",
+        "boolean",
+        "number",
+        "string",
+        "object"
+      ],
+      "x-nebula-expression-mode": "forbidden",
+      "x-nebula-field-kind": "select",
+      "x-nebula-required-mode": "never",
+      "x-nebula-resolved-value-schema": {
+        "anyOf": [
+          {
+            "const": "current",
+            "title": "Current"
+          },
+          {
+            "const": "legacy",
+            "title": "Legacy",
+            "x-nebula-disabled": true
+          }
+        ],
+        "type": [
+          "null",
+          "boolean",
+          "number",
+          "string",
+          "object"
+        ]
+      },
+      "x-nebula-select-allow-custom": false,
+      "x-nebula-select-dynamic": false,
+      "x-nebula-select-multiple": false,
+      "x-nebula-visibility-mode": "always"
+    },
+    "regions": {
+      "items": {},
+      "type": "array",
+      "x-nebula-expression-mode": "forbidden",
+      "x-nebula-field-kind": "select",
+      "x-nebula-required-mode": "never",
+      "x-nebula-resolved-value-schema": {
+        "items": {},
+        "type": "array"
+      },
+      "x-nebula-select-allow-custom": true,
+      "x-nebula-select-dynamic": true,
+      "x-nebula-select-multiple": true,
+      "x-nebula-visibility-mode": "always"
+    },
+    "tags": {
+      "items": {
+        "anyOf": [
+          {
+            "const": "stable",
+            "title": "Stable"
+          },
+          {
+            "const": "retired",
+            "title": "Retired",
+            "x-nebula-disabled": true
+          }
+        ]
+      },
+      "type": "array",
+      "x-nebula-expression-mode": "forbidden",
+      "x-nebula-field-kind": "select",
+      "x-nebula-required-mode": "never",
+      "x-nebula-resolved-value-schema": {
+        "items": {
+          "anyOf": [
+            {
+              "const": "stable",
+              "title": "Stable"
+            },
+            {
+              "const": "retired",
+              "title": "Retired",
+              "x-nebula-disabled": true
+            }
+          ]
+        },
+        "type": "array"
+      },
+      "x-nebula-select-allow-custom": false,
+      "x-nebula-select-dynamic": false,
+      "x-nebula-select-multiple": true,
+      "x-nebula-visibility-mode": "always"
+    }
+  },
+  "required": [
+    "hidden"
+  ],
+  "type": "object",
+  "x-nebula-root-rules": [
+    {
+      "eq": [
+        "/enabled",
+        true
+      ]
+    }
+  ],
+  "x-nebula-schema-version": 2
+}

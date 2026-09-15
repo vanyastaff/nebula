@@ -1,4 +1,4 @@
-//! Field alias container — extra accepted input keys (read-aliases) and
+//! Property alias container — extra accepted input keys (read-aliases) and
 //! the optional output key remap (`emit_as`).
 //!
 //! This is a pure storage type; canonicalization is enforced at ingest in

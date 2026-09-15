@@ -23,7 +23,7 @@ use nebula_action::{
     TerminationReason, ValidationReason, port_key, testing::TestContextBuilder,
 };
 use nebula_core::{Dependencies, action_key};
-use nebula_schema::{FieldCollector, HasSchema, Schema, StringBuilder, ValidSchema, field_key};
+use nebula_schema::{HasSchema, PropertyCollector, Schema, StringBuilder, ValidSchema, field_key};
 
 // ── Test helpers ───────────────────────────────────────────────────────────
 
@@ -946,7 +946,7 @@ fn control_action_adapter_stamps_output_schema_from_action_output_type() {
 
     assert!(
         output_schema
-            .fields()
+            .properties()
             .iter()
             .any(|f| f.key().as_str() == "selected"),
         "ControlActionAdapter must stamp output_schema from A::Output — \

@@ -1,0 +1,5 @@
+error: #[schema(...)] is not supported on enums; implement HasSchema explicitly for enum-level rules or reserved keys
+ --> tests/compile_fail/property_union_schema_custom.rs:4:1
+  |
+4 | #[schema(custom = "validate")]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

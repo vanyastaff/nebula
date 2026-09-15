@@ -58,9 +58,9 @@ pub enum RetryHintCode {
 pub enum ValidationReason {
     /// Required field missing from input.
     MissingField,
-    /// Field present but wrong type (e.g., string where `u64` expected).
+    /// Property present but wrong type (e.g., string where `u64` expected).
     WrongType,
-    /// Field out of allowed range or enum.
+    /// Property out of allowed range or enum.
     OutOfRange,
     /// Input bytes are not valid JSON.
     MalformedJson,

@@ -1,7 +1,7 @@
 //! Root-shape assignability must prove a producer fits the consumer contract.
 
 use nebula_schema::{
-    Assignability, Field, InputSchema, OutputSchema, ScalarKind, ScalarSchema, Schema,
+    Assignability, InputSchema, OutputSchema, Property, ScalarKind, ScalarSchema, Schema,
     SchemaIncompat, SchemaKind, SerdeTagging, UnknownReason, ValidSchema, explain_assignable,
     field_key,
 };
@@ -16,17 +16,17 @@ fn verdict(producer: ValidSchema, consumer: ValidSchema) -> Assignability {
 
 fn record() -> ValidSchema {
     Schema::builder()
-        .add(Field::string(field_key!("name")).required())
+        .property(Property::string(field_key!("name")).required())
         .build()
         .unwrap()
 }
 
 fn union() -> ValidSchema {
     ValidSchema::union(
-        Field::mode(field_key!("choice")).variant(
+        Property::mode(field_key!("choice")).variant(
             "text",
             "Text",
-            Field::string(field_key!("text")),
+            Property::string(field_key!("text")),
         ),
         SerdeTagging::External,
     )
@@ -228,7 +228,7 @@ fn unproven_root_rules_are_not_a_compatible_contract() {
     );
 
     let consumer = Schema::builder()
-        .add(Field::string(field_key!("name")).required())
+        .property(Property::string(field_key!("name")).required())
         .root_rule(
             Rule::predicate(Predicate::eq("/name", json!("private-rule-marker")).unwrap())
                 .expect("bounded root predicate"),
@@ -257,7 +257,7 @@ fn identical_value_rules_can_be_proven_without_rule_execution() {
 #[test]
 fn structural_no_dominates_unproven_root_rules() {
     let consumer = Schema::builder()
-        .add(Field::string(field_key!("name")).required())
+        .property(Property::string(field_key!("name")).required())
         .root_rule(
             Rule::predicate(Predicate::eq("/name", json!("private-rule-marker")).unwrap())
                 .expect("bounded root predicate"),

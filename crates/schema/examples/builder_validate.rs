@@ -9,14 +9,14 @@
     reason = "example: errors are reported to stderr"
 )]
 
-use nebula_schema::{AuthoredValue, Field, Schema, field_key};
+use nebula_schema::{AuthoredValue, Property, Schema, field_key};
 use serde_json::json;
 
 fn main() {
     let schema = Schema::builder()
-        .add(Field::string(field_key!("name")).required())
-        .add(
-            Field::number(field_key!("retries"))
+        .property(Property::string(field_key!("name")).required())
+        .property(
+            Property::number(field_key!("retries"))
                 .default(json!(3))
                 .label("Retries"),
         )
@@ -35,5 +35,8 @@ fn main() {
         valid.values().to_json(),
         json!({"name": "demo", "retries": 1})
     );
-    eprintln!("OK: validated {} top-level field(s)", schema.fields().len());
+    eprintln!(
+        "OK: validated {} top-level field(s)",
+        schema.properties().len()
+    );
 }

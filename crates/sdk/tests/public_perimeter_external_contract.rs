@@ -384,15 +384,20 @@ fn macro_private_surface_matches_the_explicit_allowlist() {
             }
             pub mod schema {
                 pub use nebula_schema::{
-                    AuthoredValue, ExpressionMode, Field, FieldKey, HasSchema, HasSelectOptions, InputHint,
-                    RootShape, Rule, ScalarSchema, Schema, SelectOption, SerdeTagging, StringWidget,
-                    ValidSchema, ValidationError, ValidationReport,
+                    AuthoredValue, BooleanWidget, ExpressionMode, FieldKey, HasSchema,
+                    HasSelectOptions, InputHint, ListWidget, NumberWidget, ObjectWidget, Property,
+                    RootShape, Rule, ScalarSchema, Schema, SecretInput, SecretWidget, SelectOption,
+                    SelectWidget, SerdeTagging, StringWidget, ValidSchema, ValidationError, ValidationReport,
+                    VisibilityMode,
                 };
                 pub mod error {
                     pub use nebula_schema::error::ValidationReport;
                 }
                 pub mod __private {
-                    pub use nebula_schema::__private::{serde_json, tracing, union_newtype_payload};
+                    pub use nebula_schema::__private::{
+                        LiteralFieldKey, field_key_from_validated_literal, serde_json, tracing,
+                        union_newtype_payload,
+                    };
                 }
             }
             pub mod validator {

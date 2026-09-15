@@ -209,7 +209,7 @@ pub enum WorkflowError {
     /// blocked until workflow handles their semantics explicitly.
     ///
     /// This is a **correctness-only** check: a `Reference` into a
-    /// `Field::Secret` producer field is not distinguished from any other
+    /// `Property::Secret` producer field is not distinguished from any other
     /// reference here (see the W0 U5 plan's framing — secret exfiltration via
     /// parameter references is a separate, filed, not-yet-built initiative).
     ///

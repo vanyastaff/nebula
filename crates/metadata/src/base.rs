@@ -273,6 +273,7 @@ impl<K> MetadataDraft<K> {
         K: Serialize,
     {
         self.validate()?;
+        schema.ensure_current_semantics()?;
         bounded::check_serialized(
             &schema,
             bounded::SCHEMA_BYTES,

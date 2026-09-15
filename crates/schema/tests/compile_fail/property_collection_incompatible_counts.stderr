@@ -1,0 +1,5 @@
+error: items/unique validation applies only to list properties
+ --> tests/compile_fail/property_collection_incompatible_counts.rs:6:5
+  |
+6 |     values: String,
+  |     ^^^^^^

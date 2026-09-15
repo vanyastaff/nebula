@@ -228,9 +228,9 @@ const SCENARIOS: &[ScenarioRule] = &[
         &["INVALID_COMPILED_RECORD"],
     ),
     rule(
-        "registry_compatibility.legacy_compiler_1",
-        Boundary::Compatibility,
-        &["UNSUPPORTED_EFFECT_PROTOCOL"],
+        "plan_integrity.legacy_compiler_1",
+        Boundary::Plan,
+        &["UNSUPPORTED_SCHEMA_POLICY"],
     ),
     rule(
         "plan_integrity.unsupported_compiler_2",

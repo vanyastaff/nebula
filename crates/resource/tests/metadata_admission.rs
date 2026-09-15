@@ -201,7 +201,7 @@ fn factory_binds_and_caches_the_canonical_config_schema_once() {
     assert_eq!(first.base().name(), "Metadata probe");
     assert_eq!(first.base().tags(), ["metadata", "resource"]);
     assert_eq!(first.base().schema().kind(), SchemaKind::Record);
-    assert!(first.base().schema().fields().is_empty());
+    assert!(first.base().schema().properties().is_empty());
 }
 
 #[test]

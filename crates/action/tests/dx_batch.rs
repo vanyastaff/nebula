@@ -28,7 +28,7 @@ struct NumberList {
 
 impl HasSchema for NumberList {
     fn schema() -> Result<ValidSchema, nebula_schema::ValidationReport> {
-        use nebula_schema::{FieldCollector, Schema, field_key};
+        use nebula_schema::{PropertyCollector, Schema, field_key};
         Schema::builder()
             .list(field_key!("numbers"), |l| {
                 l.item_number(field_key!("n"), nebula_schema::NumberBuilder::integer)

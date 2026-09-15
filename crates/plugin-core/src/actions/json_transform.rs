@@ -41,7 +41,7 @@ use std::sync::OnceLock;
 use nebula_action::{ActionContext, ActionError, ActionResult, StatelessAction};
 use nebula_core::action_key;
 use nebula_schema::{
-    Field, HasSchema, ListField, Schema, ValidSchema, ValidationReport, field_key,
+    HasSchema, ListField, Property, Schema, ValidSchema, ValidationReport, field_key,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -148,8 +148,8 @@ impl HasSchema for JsonTransformInput {
         SCHEMA
             .get_or_init(|| {
                 Schema::builder()
-                    .add(super::input_schema::nullable_object_data())
-                    .add(operations_schema())
+                    .property(super::input_schema::nullable_object_data())
+                    .property(operations_schema())
                     .build()
             })
             .clone()
@@ -160,21 +160,21 @@ impl HasSchema for JsonTransformInput {
 /// Presence of variant-specific fields stays with serde, preserving valid empty
 /// strings and arrays that form-style `required` would otherwise reject.
 pub(super) fn operations_schema() -> ListField {
-    Field::list(field_key!("operations")).item(
-        Field::object(field_key!("item"))
+    Property::list(field_key!("operations")).item(
+        Property::object(field_key!("item"))
             .description("Tagged transform; variant-specific field presence is checked by serde.")
-            .add(
-                Field::select(field_key!("op"))
+            .property(
+                Property::select(field_key!("op"))
                     .option("pick", "Pick")
                     .option("omit", "Omit")
                     .option("rename", "Rename")
                     .option("flatten", "Flatten")
                     .required(),
             )
-            .add(super::input_schema::strings(field_key!("fields")))
-            .add(Field::string(field_key!("from")))
-            .add(Field::string(field_key!("to")))
-            .add(Field::string(field_key!("separator"))),
+            .property(super::input_schema::strings(field_key!("fields")))
+            .property(Property::string(field_key!("from")))
+            .property(Property::string(field_key!("to")))
+            .property(Property::string(field_key!("separator"))),
     )
 }
 

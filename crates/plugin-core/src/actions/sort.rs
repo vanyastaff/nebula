@@ -66,7 +66,7 @@ use std::sync::OnceLock;
 
 use nebula_action::{ActionContext, ActionError, ActionResult, StatelessAction};
 use nebula_core::action_key;
-use nebula_schema::{Field, HasSchema, Schema, ValidSchema, ValidationReport, field_key};
+use nebula_schema::{HasSchema, Property, Schema, ValidSchema, ValidationReport, field_key};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::instrument;
@@ -161,16 +161,16 @@ impl HasSchema for SortInput {
         static SCHEMA: OnceLock<Result<ValidSchema, ValidationReport>> = OnceLock::new();
         SCHEMA.get_or_init(|| {
             Schema::builder()
-                .add(super::input_schema::record_data())
-                .add(Field::list(field_key!("keys")).required().item(
-                    Field::object(field_key!("item"))
+                .property(super::input_schema::record_data())
+                .property(Property::list(field_key!("keys")).required().item(
+                    Property::object(field_key!("item"))
                         .description("Sort key; serde requires field while allowing the empty JSON key.")
-                        .add(Field::string(field_key!("field")))
-                        .add(Field::select(field_key!("order"))
+                        .property(Property::string(field_key!("field")))
+                        .property(Property::select(field_key!("order"))
                             .option("asc", "Ascending").option("desc", "Descending"))
-                        .add(Field::select(field_key!("nulls"))
+                        .property(Property::select(field_key!("nulls"))
                             .option("greatest", "Greatest").option("first", "First").option("last", "Last"))
-                        .add(Field::boolean(field_key!("case_insensitive"))),
+                        .property(Property::boolean(field_key!("case_insensitive"))),
                 ))
                 .root_rule(super::input_schema::array_present(field_key!("data"))?)
                 .build()

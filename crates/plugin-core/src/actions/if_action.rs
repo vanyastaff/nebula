@@ -61,7 +61,7 @@
 //!
 //! The `value` field is ignored for `truthy`.
 //!
-//! ## Field scoping
+//! ## Property scoping
 //!
 //! `condition.field` is a **top-level key** in `data`, not a JSON pointer.
 //! A dot character in the field name is literal — `"a.b"` refers to a
@@ -115,8 +115,8 @@ impl HasSchema for IfInput {
         SCHEMA
             .get_or_init(|| {
                 Schema::builder()
-                    .add(super::input_schema::nullable_object_data())
-                    .add(super::input_schema::condition(field_key!("condition")))
+                    .property(super::input_schema::nullable_object_data())
+                    .property(super::input_schema::condition(field_key!("condition")))
                     .build()
             })
             .clone()

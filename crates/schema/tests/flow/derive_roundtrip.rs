@@ -16,7 +16,7 @@ struct Demo {
 #[test]
 fn derive_schema_custom_and_validate() {
     let schema = Demo::schema().unwrap();
-    assert_eq!(schema.fields().len(), 1);
+    assert_eq!(schema.properties().len(), 1);
     assert_eq!(schema.root_rules().len(), 1);
 
     let values = AuthoredValue::from_data(json!({"name": "ada"})).unwrap();

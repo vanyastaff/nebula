@@ -392,6 +392,7 @@ async fn records_actual_compiler_and_http_diagnostics() {
             "PLUGIN_PLAN_INTEGRITY",
             &[
                 "UNSUPPORTED_FORMAT",
+                "UNSUPPORTED_SCHEMA_POLICY",
                 "NON_CANONICAL",
                 "CONVERTERS_UNSUPPORTED",
                 "REVISION_ID_MISMATCH",
@@ -410,7 +411,6 @@ async fn records_actual_compiler_and_http_diagnostics() {
         (
             "PLUGIN_PLAN_COMPATIBILITY",
             &[
-                "UNSUPPORTED_EFFECT_PROTOCOL",
                 "PLUGIN_SET_MISMATCH",
                 "WORKER_FLAVOR_MISMATCH",
                 "CONTRACT_MISMATCH",
@@ -537,6 +537,13 @@ fn checked_record_observations() -> Vec<ScenarioObservation> {
                 input["canonical_hash_version"] = json!(1);
                 for action in input["content"]["actions"].as_array_mut().unwrap() {
                     action.as_object_mut().unwrap().remove("effect_contract");
+                    for key in ["input_schema", "output_schema"] {
+                        let recorded_schema = &mut action[key];
+                        let definition = recorded_schema["schema"].as_object_mut().unwrap();
+                        definition.remove("policy_version");
+                        let scalar = definition.get("kind") == Some(&json!("scalar"));
+                        recorded_schema["schema_wire_version"] = json!(if scalar { 2 } else { 1 });
+                    }
                 }
             },
             "plugin_set_mismatch" => {
@@ -555,35 +562,37 @@ fn checked_record_observations() -> Vec<ScenarioObservation> {
         rehash_record(&mut input);
         let record: RecordedExecutablePlanRevisionV1 =
             serde_json::from_value(input.clone()).unwrap();
-        let (observation, expected_code) = if scenario == "unsupported_compiler_2" {
-            let rejection = ExecutablePlanRevision::try_from(record).unwrap_err();
-            (
-                observe_rejection(
-                    "plan_integrity.unsupported_compiler_2",
-                    &input,
-                    Boundary::PlanIntegrity,
-                    &rejection,
-                ),
-                "PLUGIN_PLAN_INTEGRITY:UNSUPPORTED_FORMAT".to_owned(),
-            )
-        } else {
-            let checked = ExecutablePlanRevision::try_from(record).unwrap();
-            let rejection = checked.validate_against(&registry).unwrap_err();
-            let code = if scenario == "legacy_compiler_1" {
-                "UNSUPPORTED_EFFECT_PROTOCOL".to_owned()
+        let (observation, expected_code) =
+            if matches!(scenario, "legacy_compiler_1" | "unsupported_compiler_2") {
+                let rejection = ExecutablePlanRevision::try_from(record).unwrap_err();
+                (
+                    observe_rejection(
+                        &format!("plan_integrity.{scenario}"),
+                        &input,
+                        Boundary::PlanIntegrity,
+                        &rejection,
+                    ),
+                    if scenario == "legacy_compiler_1" {
+                        "PLUGIN_PLAN_INTEGRITY:UNSUPPORTED_SCHEMA_POLICY"
+                    } else {
+                        "PLUGIN_PLAN_INTEGRITY:UNSUPPORTED_FORMAT"
+                    }
+                    .to_owned(),
+                )
             } else {
-                scenario.to_ascii_uppercase()
+                let checked = ExecutablePlanRevision::try_from(record).unwrap();
+                let rejection = checked.validate_against(&registry).unwrap_err();
+                let code = scenario.to_ascii_uppercase();
+                (
+                    observe_rejection(
+                        &format!("registry_compatibility.{scenario}"),
+                        &input,
+                        Boundary::RegistryCompatibility,
+                        &rejection,
+                    ),
+                    format!("PLUGIN_PLAN_COMPATIBILITY:{code}"),
+                )
             };
-            (
-                observe_rejection(
-                    &format!("registry_compatibility.{scenario}"),
-                    &input,
-                    Boundary::RegistryCompatibility,
-                    &rejection,
-                ),
-                format!("PLUGIN_PLAN_COMPATIBILITY:{code}"),
-            )
-        };
         assert_eq!(observation.events[0].code, expected_code);
         observations.push(observation);
     }

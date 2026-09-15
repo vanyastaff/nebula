@@ -1,22 +1,22 @@
 use nebula_schema::{
-    AuthoredValue, BooleanWidget, ExpressionMode, Field, NumberWidget, RequiredMode, Schema,
+    AuthoredValue, BooleanWidget, ExpressionMode, NumberWidget, Property, RequiredMode, Schema,
     SecretWidget, SelectWidget, StringWidget, Transformer, ValidSchema, VisibilityMode, field_key,
 };
 use serde_json::json;
 
-fn raw_schema(fields: impl IntoIterator<Item = Field>) -> Schema {
-    let fields: Vec<Field> = fields.into_iter().collect();
+fn raw_schema(fields: impl IntoIterator<Item = Property>) -> Schema {
+    let fields: Vec<Property> = fields.into_iter().collect();
     serde_json::from_value(json!({ "fields": fields })).expect("raw schema from field list")
 }
 
 #[test]
 fn builds_typed_fields_with_rules() {
-    let field = Field::string(field_key!("name"))
+    let field = Property::string(field_key!("name"))
         .label("Name")
         .required()
         .min_length(2)
         .max_length(32)
-        .into_field();
+        .into_property();
 
     assert_eq!(field.key().as_str(), "name");
     assert_eq!(field.rules().len(), 2);
@@ -25,19 +25,19 @@ fn builds_typed_fields_with_rules() {
 
 #[test]
 fn supports_select_and_number_builders() {
-    let select = Field::select(field_key!("mode"))
+    let select = Property::select(field_key!("mode"))
         .widget(SelectWidget::Combobox)
         .option("a", "Option A")
         .multiple()
         .searchable()
-        .into_field();
+        .into_property();
 
-    let number = Field::number(field_key!("retries"))
+    let number = Property::number(field_key!("retries"))
         .integer()
         .widget(NumberWidget::Stepper)
         .min(0)
         .max(10)
-        .into_field();
+        .into_property();
 
     assert_eq!(select.key().as_str(), "mode");
     assert_eq!(number.key().as_str(), "retries");
@@ -45,15 +45,15 @@ fn supports_select_and_number_builders() {
 
 #[test]
 fn try_field_constructors_reject_invalid_keys() {
-    let err = Field::try_string("bad-key").expect_err("invalid key should fail");
+    let err = Property::try_string("bad-key").expect_err("invalid key should fail");
     assert_eq!(err.code(), "invalid_key");
-    assert!(Field::try_dynamic(" also bad ").is_err());
+    assert!(Property::try_dynamic(" also bad ").is_err());
 }
 
 #[test]
 fn try_field_constructors_accept_valid_keys() {
-    let string = Field::try_string("name").expect("valid key");
-    let select = Field::try_select("mode").expect("valid key");
+    let string = Property::try_string("name").expect("valid key");
+    let select = Property::try_select("mode").expect("valid key");
     assert_eq!(string.key().as_str(), "name");
     assert_eq!(select.key().as_str(), "mode");
 }
@@ -61,28 +61,28 @@ fn try_field_constructors_accept_valid_keys() {
 #[test]
 fn schema_add_and_find_work() {
     let schema = raw_schema(vec![
-        Field::string(field_key!("name"))
+        Property::string(field_key!("name"))
             .widget(StringWidget::Plain)
             .into(),
-        Field::secret(field_key!("api_key"))
+        Property::secret(field_key!("api_key"))
             .widget(SecretWidget::Plain)
             .into(),
-        Field::boolean(field_key!("enabled"))
+        Property::boolean(field_key!("enabled"))
             .widget(BooleanWidget::Toggle)
             .into(),
     ]);
 
     assert_eq!(schema.len(), 3);
     assert!(!schema.is_empty());
-    assert!(schema.find("api_key").is_some());
-    assert!(schema.find("missing").is_none());
+    assert!(schema.find_property("api_key").is_some());
+    assert!(schema.find_property("missing").is_none());
 }
 
 #[test]
 fn schema_builder_rejects_duplicate_key() {
     let result = Schema::builder()
-        .add(Field::string(field_key!("name")).min_length(2))
-        .add(Field::string(field_key!("name")).min_length(10))
+        .property(Property::string(field_key!("name")).min_length(2))
+        .property(Property::string(field_key!("name")).min_length(10))
         .build();
 
     let err = result.expect_err("duplicate key should cause build to fail");
@@ -92,7 +92,7 @@ fn schema_builder_rejects_duplicate_key() {
 #[test]
 fn serde_roundtrip_field_and_schema() {
     let schema = raw_schema(vec![
-        Field::string(field_key!("username"))
+        Property::string(field_key!("username"))
             .visible_when(
                 nebula_validator::Rule::predicate(
                     nebula_validator::Predicate::eq("enabled", json!(true)).unwrap(),
@@ -105,7 +105,7 @@ fn serde_roundtrip_field_and_schema() {
 
     let encoded = serde_json::to_value(&schema).expect("schema serializes");
     let decoded: Schema = serde_json::from_value(encoded).expect("schema deserializes");
-    let field = decoded.find("username").expect("field exists");
+    let field = decoded.find_property("username").expect("field exists");
 
     assert!(matches!(field.visible(), VisibilityMode::When(_)));
     assert!(matches!(field.required(), RequiredMode::Always));
@@ -114,7 +114,7 @@ fn serde_roundtrip_field_and_schema() {
 #[test]
 fn validate_reports_missing_required() {
     let schema = Schema::builder()
-        .add(Field::string(field_key!("username")).required())
+        .property(Property::string(field_key!("username")).required())
         .build()
         .expect("valid schema");
     let values = AuthoredValue::object();
@@ -127,11 +127,11 @@ fn validate_reports_missing_required() {
 }
 
 #[test]
-fn validate_applies_visibility_and_rules() {
+fn validate_applies_requiredness_and_rules_independently_of_visibility() {
     let schema = Schema::builder()
-        .add(Field::boolean(field_key!("enabled")).required())
-        .add(
-            Field::string(field_key!("api_key"))
+        .property(Property::boolean(field_key!("enabled")).required())
+        .property(
+            Property::string(field_key!("api_key"))
                 .visible_when(
                     nebula_validator::Rule::predicate(
                         nebula_validator::Predicate::eq("enabled", json!(true)).unwrap(),
@@ -151,7 +151,25 @@ fn validate_applies_visibility_and_rules() {
             AuthoredValue::from_template_json(json!(false)).unwrap(),
         )
         .expect("test-only known-good key");
-    assert!(schema.validate(values.clone()).is_ok());
+    let report = schema.validate(values.clone()).unwrap_err();
+    assert!(
+        report
+            .errors()
+            .any(|error| error.code() == "required" && error.path().to_string() == "/api_key")
+    );
+
+    values
+        .insert(
+            "api_key".to_string(),
+            AuthoredValue::from_data(json!("abc")).unwrap(),
+        )
+        .unwrap();
+    let report = schema.validate(values.clone()).unwrap_err();
+    assert!(
+        report
+            .errors()
+            .any(|error| error.path().to_string() == "/api_key")
+    );
 
     values
         .insert(
@@ -173,9 +191,9 @@ fn validate_applies_visibility_and_rules() {
 #[test]
 fn validate_enforces_scalar_type_mismatches() {
     let schema = Schema::builder()
-        .add(Field::string(field_key!("name")).required())
-        .add(Field::number(field_key!("retries")).required())
-        .add(Field::boolean(field_key!("enabled")).required())
+        .property(Property::string(field_key!("name")).required())
+        .property(Property::number(field_key!("retries")).required())
+        .property(Property::boolean(field_key!("enabled")).required())
         .build()
         .expect("valid schema");
     let mut values = AuthoredValue::object();
@@ -220,8 +238,8 @@ fn validate_enforces_scalar_type_mismatches() {
 #[test]
 fn validate_applies_transformers_before_rules() {
     let schema = Schema::builder()
-        .add(
-            Field::string(field_key!("api_key"))
+        .property(
+            Property::string(field_key!("api_key"))
                 .with_transformer(Transformer::Trim)
                 .with_rule(nebula_validator::Rule::max_length(6)),
         )
@@ -241,8 +259,8 @@ fn validate_applies_transformers_before_rules() {
 #[test]
 fn validate_enforces_file_value_shape() {
     let schema = Schema::builder()
-        .add(Field::file(field_key!("single")).required())
-        .add(Field::file(field_key!("many")).multiple().required())
+        .property(Property::file(field_key!("single")).required())
+        .property(Property::file(field_key!("many")).multiple().required())
         .build()
         .expect("valid schema");
     let mut values = AuthoredValue::object();
@@ -278,42 +296,42 @@ fn serde_roundtrip_supports_all_field_variants() {
     use nebula_schema::InputHint;
 
     let schema = raw_schema(vec![
-        Field::string(field_key!("s")).into(),
-        Field::secret(field_key!("sec")).into(),
-        Field::number(field_key!("n")).into(),
-        Field::boolean(field_key!("b")).into(),
-        Field::select(field_key!("sel")).option("a", "A").into(),
-        Field::object(field_key!("obj"))
-            .add(Field::string(field_key!("child")))
+        Property::string(field_key!("s")).into(),
+        Property::secret(field_key!("sec")).into(),
+        Property::number(field_key!("n")).into(),
+        Property::boolean(field_key!("b")).into(),
+        Property::select(field_key!("sel")).option("a", "A").into(),
+        Property::object(field_key!("obj"))
+            .property(Property::string(field_key!("child")))
             .into(),
-        Field::list(field_key!("list"))
-            .item(Field::string(field_key!("item")))
+        Property::list(field_key!("list"))
+            .item(Property::string(field_key!("item")))
             .into(),
-        Field::mode(field_key!("mode"))
-            .variant("simple", "Simple", Field::string(field_key!("payload")))
+        Property::mode(field_key!("mode"))
+            .variant("simple", "Simple", Property::string(field_key!("payload")))
             .into(),
-        Field::code(field_key!("code")).into(),
+        Property::code(field_key!("code")).into(),
         // Date/DateTime/Time/Color → StringField with hint (replaces removed variants)
-        Field::string(field_key!("date"))
+        Property::string(field_key!("date"))
             .hint(InputHint::Date)
             .into(),
-        Field::string(field_key!("datetime"))
+        Property::string(field_key!("datetime"))
             .hint(InputHint::DateTime)
             .into(),
-        Field::string(field_key!("time"))
+        Property::string(field_key!("time"))
             .hint(InputHint::Time)
             .into(),
-        Field::string(field_key!("color_field"))
+        Property::string(field_key!("color_field"))
             .hint(InputHint::Color)
             .into(),
-        Field::file(field_key!("file")).into(),
+        Property::file(field_key!("file")).into(),
         // Hidden → visible(Never) on any field
-        Field::string(field_key!("hidden_field"))
+        Property::string(field_key!("hidden_field"))
             .visible(VisibilityMode::Never)
             .into(),
-        Field::computed(field_key!("computed")).into(),
-        Field::dynamic(field_key!("dynamic")).into(),
-        Field::notice(field_key!("notice")).into(),
+        Property::computed(field_key!("computed")).into(),
+        Property::dynamic(field_key!("dynamic")).into(),
+        Property::notice(field_key!("notice")).into(),
     ]);
 
     let encoded = serde_json::to_value(&schema).expect("serialize full variant schema");
@@ -321,15 +339,15 @@ fn serde_roundtrip_supports_all_field_variants() {
 
     // 13 unique keys (the 5 removed variants are now represented as string fields with hints)
     assert_eq!(decoded.len(), 18);
-    assert!(decoded.find("computed").is_some());
-    assert!(decoded.find("notice").is_some());
+    assert!(decoded.find_property("computed").is_some());
+    assert!(decoded.find_property("notice").is_some());
 }
 
-// ── Forward-compatible `Field::Unknown` preservation ─────────────────────────
+// ── Forward-compatible `Property::Unknown` preservation ─────────────────────────
 //
 // A field document a *newer* writer produced may carry a `type` this version
 // does not know. Rather than failing the whole read, the unrecognized field is
-// preserved as `Field::Unknown` — every key and value is kept (object key order
+// preserved as `Property::Unknown` — every key and value is kept (object key order
 // is normalized by the wire backend), while the shared `key`/`visible`/`required`
 // are recovered so the editor can still place it.
 
@@ -349,11 +367,11 @@ fn future_field_json() -> serde_json::Value {
 #[test]
 fn unknown_field_type_round_trips_structurally() {
     let original = future_field_json();
-    let field: Field =
+    let field: Property =
         serde_json::from_value(original.clone()).expect("an unrecognized type deserializes");
     assert!(
-        matches!(field, Field::Unknown(_)),
-        "an unrecognized `type` must deserialize to Field::Unknown, got {field:?}"
+        matches!(field, Property::Unknown(_)),
+        "an unrecognized `type` must deserialize to Property::Unknown, got {field:?}"
     );
 
     // Every key and value survives (incl. the novel `toolbar`); compared as JSON
@@ -368,7 +386,7 @@ fn unknown_field_type_round_trips_structurally() {
 
 #[test]
 fn unknown_field_recovers_shared_fields_and_is_opaque() {
-    let field: Field = serde_json::from_value(future_field_json()).expect("deserializes");
+    let field: Property = serde_json::from_value(future_field_json()).expect("deserializes");
 
     // Recovered so the editor can place and toggle the field.
     assert_eq!(field.key().as_str(), "bio");
@@ -391,7 +409,7 @@ fn unknown_field_recovers_shared_fields_and_is_opaque() {
 
 #[test]
 fn unknown_field_accessors_expose_real_kind_and_raw() {
-    let field: Field = serde_json::from_value(future_field_json()).expect("deserializes");
+    let field: Property = serde_json::from_value(future_field_json()).expect("deserializes");
 
     // `type_name()` collapses to "unknown"; `unknown_type()` keeps the real kind.
     assert_eq!(
@@ -409,7 +427,7 @@ fn unknown_field_accessors_expose_real_kind_and_raw() {
     );
 
     // Known variants return `None` from both accessors.
-    let known = Field::string(field_key!("name")).into_field();
+    let known = Property::string(field_key!("name")).into_property();
     assert!(known.unknown_type().is_none());
     assert!(known.raw_object().is_none());
 }
@@ -420,7 +438,7 @@ fn unknown_field_without_valid_key_is_a_hard_error() {
     // corrupt and the editor could not place the field — so a missing/invalid key
     // is a hard error even on the forward-compat path.
     let missing_key = json!({ "type": "richtext", "label": "no key" });
-    let err = serde_json::from_value::<Field>(missing_key).expect_err("missing key must error");
+    let err = serde_json::from_value::<Property>(missing_key).expect_err("missing key must error");
     assert!(
         err.to_string().contains("key"),
         "the error should name the missing key, got: {err}"
@@ -428,7 +446,7 @@ fn unknown_field_without_valid_key_is_a_hard_error() {
 
     let invalid_key = json!({ "type": "richtext", "key": "not a valid key" });
     assert!(
-        serde_json::from_value::<Field>(invalid_key).is_err(),
+        serde_json::from_value::<Property>(invalid_key).is_err(),
         "a syntactically invalid key must error"
     );
 }
@@ -438,8 +456,8 @@ fn unknown_field_with_non_string_type_reports_type_not_missing() {
     // A present-but-non-string `type` is a wrong-type error, not a missing field —
     // the diagnostic must not mislead by saying "missing field `type`".
     let non_string_type = json!({ "type": 42, "key": "bio" });
-    let err =
-        serde_json::from_value::<Field>(non_string_type).expect_err("non-string type must error");
+    let err = serde_json::from_value::<Property>(non_string_type)
+        .expect_err("non-string type must error");
     let message = err.to_string();
     assert!(
         message.contains("string"),
@@ -461,7 +479,7 @@ fn unknown_field_defaults_unreadable_shared_fields_yet_preserves_raw() {
         "key": "bio",
         "visible": { "kind": "some_future_mode", "threshold": 3 }
     });
-    let field: Field = serde_json::from_value(original.clone())
+    let field: Property = serde_json::from_value(original.clone())
         .expect("an unparseable `visible` must not fail the read");
 
     assert!(
@@ -480,7 +498,7 @@ fn known_field_type_with_bad_payload_errors_instead_of_degrading_to_unknown() {
     // A *recognized* type with a malformed body is corruption, not forward-compat;
     // it must error rather than silently become an opaque Unknown that hides the bug.
     let bad_string = json!({ "type": "string", "key": "name", "rules": "not-an-array" });
-    let result = serde_json::from_value::<Field>(bad_string);
+    let result = serde_json::from_value::<Property>(bad_string);
     assert!(
         result.is_err(),
         "a known type with a bad payload must error, not preserve as Unknown: {result:?}"
@@ -493,7 +511,7 @@ fn unknown_field_survives_full_valid_schema_build() {
     // known one must pass the build/lint passes and be retrievable — the
     // forward-compat acceptance path. The known field is serialized from a real
     // builder so its wire shape (hint/widget/…) is complete.
-    let known = serde_json::to_value(Field::string(field_key!("name")).into_field())
+    let known = serde_json::to_value(Property::string(field_key!("name")).into_property())
         .expect("known field serializes");
     let valid: ValidSchema = serde_json::from_value(json!({
         "fields": [known, { "type": "richtext", "key": "bio", "toolbar": ["bold"] }]
@@ -501,22 +519,21 @@ fn unknown_field_survives_full_valid_schema_build() {
     .expect("a schema document with an Unknown field builds");
 
     let bio = valid
-        .find(&field_key!("bio"))
+        .find_property(&field_key!("bio"))
         .expect("the Unknown field is retained in the built schema");
-    assert!(matches!(bio, Field::Unknown(_)));
+    assert!(matches!(bio, Property::Unknown(_)));
     assert_eq!(bio.unknown_type(), Some("richtext"));
 }
 
 #[test]
-fn unknown_field_value_is_accepted_but_required_mode_still_enforced() {
-    // An opaque Unknown field type-checks nothing (accepts any value), yet the
-    // recovered `required` mode is still enforced like any other field.
+fn unknown_field_cannot_admit_supplied_or_absent_values() {
+    // Historical kind metadata is readable, but never an unchecked value domain.
     let valid: ValidSchema = serde_json::from_value(json!({
+        "policy_version": 2,
         "fields": [{ "type": "richtext", "key": "bio", "required": { "kind": "always" } }]
     }))
     .expect("a required Unknown field builds");
 
-    // Any shape of value passes — there is no value contract to check.
     let mut values = AuthoredValue::object();
     values
         .insert(
@@ -524,19 +541,19 @@ fn unknown_field_value_is_accepted_but_required_mode_still_enforced() {
             AuthoredValue::from_template_json(json!({ "blocks": [1, 2, 3] })).unwrap(),
         )
         .expect("test-only known-good key");
-    assert!(
-        valid.validate(values.clone()).is_ok(),
-        "an opaque Unknown field accepts an arbitrary value"
-    );
-
-    // But a required Unknown field with no value still reports `required`.
-    let report = valid
-        .validate(AuthoredValue::object())
-        .expect_err("a required Unknown field with no value must fail");
-    assert!(
-        report.errors().any(|e| e.code() == "required"),
-        "required-mode is enforced even for an opaque field"
-    );
+    for input in [values, AuthoredValue::object()] {
+        let report = valid
+            .validate(input)
+            .expect_err("unsupported kinds cannot admit input");
+        let errors: Vec<_> = report
+            .errors()
+            .map(|error| (error.code(), error.path().to_string()))
+            .collect();
+        assert_eq!(
+            errors,
+            [("schema.unsupported_property_kind", "/bio".to_owned())]
+        );
+    }
 }
 
 #[test]
@@ -544,15 +561,15 @@ fn unknown_field_nested_in_object_is_preserved() {
     // The recursion through Object::fields preserves a nested unknown kind. Build
     // a real object (so its own wire shape is complete), then splice an unknown
     // child into its `fields` to exercise the nested-deserialize path.
-    let object = Field::object(field_key!("config"))
-        .add(Field::string(field_key!("placeholder")))
-        .into_field();
+    let object = Property::object(field_key!("config"))
+        .property(Property::string(field_key!("placeholder")))
+        .into_property();
     let mut document = serde_json::to_value(&object).expect("object serializes");
     document["fields"] = json!([{ "type": "richtext", "key": "bio", "toolbar": ["bold"] }]);
 
-    let field: Field = serde_json::from_value(document.clone())
+    let field: Property = serde_json::from_value(document.clone())
         .expect("an object containing a nested unknown kind deserializes");
-    assert!(matches!(field, Field::Object(_)));
+    assert!(matches!(field, Property::Object(_)));
     assert_eq!(
         serde_json::to_value(&field).expect("re-serializes"),
         document,

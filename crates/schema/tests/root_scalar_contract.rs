@@ -139,7 +139,7 @@ fn scalar_rules_are_not_lost_when_the_root_has_no_fields() {
             .root_rule(Rule::value(ValueRule::MinLength(3)).expect("bounded scalar root rule")),
     )
     .unwrap();
-    assert!(schema.fields().is_empty());
+    assert!(schema.properties().is_empty());
     assert_eq!(schema.root_rules().len(), 1);
     let report = schema
         .validate(AuthoredValue::from_data(json!("ab")).unwrap())
@@ -161,24 +161,24 @@ fn scalar_rules_are_not_lost_when_the_root_has_no_fields() {
 
 #[test]
 fn scalar_wire_is_versioned_without_changing_historical_roots() {
-    assert_eq!(
-        serde_json::to_string(&ValidSchema::empty()).unwrap(),
-        r#"{"fields":[]}"#
-    );
-    assert_eq!(
-        serde_json::to_string(&ValidSchema::any()).unwrap(),
-        r#"{"kind":"any","fields":[]}"#
-    );
+    for wire in [
+        r#"{"fields":[]}"#,
+        r#"{"kind":"any","fields":[]}"#,
+        r#"{"kind":"scalar","scalar":{"version":1,"type":"integer","minimum":-128,"maximum":127}}"#,
+    ] {
+        let historical = serde_json::from_str::<ValidSchema>(wire).unwrap();
+        assert_eq!(serde_json::to_string(&historical).unwrap(), wire);
+        assert!(historical.ensure_current_semantics().is_err());
+    }
     let schema = schema_of::<i8>().unwrap();
-    let wire =
-        r#"{"kind":"scalar","scalar":{"version":1,"type":"integer","minimum":-128,"maximum":127}}"#;
+    let wire = r#"{"policy_version":2,"kind":"scalar","scalar":{"version":1,"type":"integer","minimum":-128,"maximum":127}}"#;
     assert_eq!(serde_json::to_string(&schema).unwrap(), wire);
     assert_eq!(serde_json::from_str::<ValidSchema>(wire).unwrap(), schema);
-    assert_eq!(
+    assert_ne!(
         serde_json::from_str::<ValidSchema>(r#"{"fields":[]}"#).unwrap(),
         ValidSchema::empty()
     );
-    assert_eq!(nebula_schema::SCHEMA_WIRE_VERSION, 1);
+    assert_eq!(nebula_schema::SCHEMA_WIRE_VERSION, 2);
 }
 
 #[test]
@@ -252,7 +252,7 @@ fn nested_scalar_roots_are_rejected_instead_of_erased() {
 #[test]
 fn derived_any_fields_are_dynamic_and_preserve_opaque_data() {
     let schema = schema_of::<NestedUnknown>().unwrap();
-    assert_matches!(schema.fields()[0], nebula_schema::Field::Dynamic(_));
+    assert_matches!(schema.properties()[0], nebula_schema::Property::Dynamic(_));
     assert_eq!(
         schema.walk_reference_path(&ValuePath::from_pointer("/inner/arbitrary/path").unwrap()),
         PathWalk::Opaque
@@ -267,10 +267,13 @@ fn derived_any_fields_are_dynamic_and_preserve_opaque_data() {
         roundtrip(NestedUnknown { inner: value });
     }
     let list_schema = schema_of::<UnknownList>().unwrap();
-    let nebula_schema::Field::List(list) = &list_schema.fields()[0] else {
+    let nebula_schema::Property::List(list) = &list_schema.properties()[0] else {
         panic!("expected list");
     };
-    assert_matches!(list.item.as_deref(), Some(nebula_schema::Field::Dynamic(_)));
+    assert_matches!(
+        list.item.as_deref(),
+        Some(nebula_schema::Property::Dynamic(_))
+    );
     roundtrip(UnknownList {
         items: vec![
             Value::Null,

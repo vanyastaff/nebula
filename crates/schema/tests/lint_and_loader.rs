@@ -1,11 +1,11 @@
 use nebula_schema::{
-    AuthoredValue, Field, FieldPath, LoaderContext, LoaderRegistry, LoaderResult, Schema,
+    AuthoredValue, FieldPath, LoaderContext, LoaderRegistry, LoaderResult, Property, Schema,
     ValidationReport, field_key,
 };
 use serde_json::json;
 
-fn raw_schema(fields: impl IntoIterator<Item = Field>) -> Schema {
-    let fields: Vec<Field> = fields.into_iter().collect();
+fn raw_schema(fields: impl IntoIterator<Item = Property>) -> Schema {
+    let fields: Vec<Property> = fields.into_iter().collect();
     serde_json::from_value(json!({ "fields": fields })).expect("raw schema from field list")
 }
 
@@ -26,8 +26,8 @@ fn has_warning(report: &ValidationReport, code: &str, path_prefix: &str) -> bool
 #[test]
 fn lint_schema_reports_dangling_refs_and_structural_issues() {
     let schema = raw_schema(vec![
-        Field::string(field_key!("toggle")).into(),
-        Field::string(field_key!("name"))
+        Property::string(field_key!("toggle")).into(),
+        Property::string(field_key!("name"))
             .visible_when(
                 nebula_validator::Rule::predicate(
                     nebula_validator::Predicate::eq("missing", json!(true)).unwrap(),
@@ -37,13 +37,13 @@ fn lint_schema_reports_dangling_refs_and_structural_issues() {
             .with_rule(nebula_validator::Rule::min_length(5))
             .with_rule(nebula_validator::Rule::max_length(2))
             .into(),
-        Field::select(field_key!("region"))
+        Property::select(field_key!("region"))
             .dynamic()
             .loader("regions_loader")
             .depends_on(FieldPath::parse("unknown_ref").unwrap())
             .into(),
-        Field::mode(field_key!("auth"))
-            .variant("token", "", Field::secret(field_key!("token")))
+        Property::mode(field_key!("auth"))
+            .variant("token", "", Property::secret(field_key!("token")))
             .default_variant("missing_variant")
             .into(),
     ]);
@@ -76,15 +76,42 @@ fn lint_schema_reports_dangling_refs_and_structural_issues() {
     );
 }
 
+#[test]
+fn root_rule_legacy_reference_fails_with_json_pointer_rewrite() {
+    let report = Schema::builder()
+        .property(Property::string(field_key!("tier")))
+        .root_rule(
+            nebula_validator::Rule::predicate(
+                nebula_validator::Predicate::eq("$root.tier", json!("pro")).unwrap(),
+            )
+            .expect("bounded rule"),
+        )
+        .build()
+        .expect_err("legacy root reference must block schema admission");
+
+    let issue = report
+        .errors()
+        .find(|issue| issue.code() == "reference.legacy_root")
+        .expect("legacy root reference diagnostic");
+    assert_eq!(
+        issue
+            .params()
+            .iter()
+            .find(|(key, _)| key.as_ref() == "suggested")
+            .and_then(|(_, value)| value.as_str()),
+        Some("/tier")
+    );
+}
+
 #[tokio::test]
 async fn loader_registry_resolves_select_and_dynamic_loaders() {
     let schema = raw_schema(vec![
-        Field::select(field_key!("workspace"))
+        Property::select(field_key!("workspace"))
             .dynamic()
             .loader("workspace_loader")
             .depends_on(FieldPath::parse("team_id").unwrap())
             .into(),
-        Field::dynamic(field_key!("resource"))
+        Property::dynamic(field_key!("resource"))
             .loader("resource_loader")
             .depends_on(FieldPath::parse("workspace").unwrap())
             .into(),
@@ -136,15 +163,15 @@ async fn loader_registry_resolves_select_and_dynamic_loaders() {
 #[tokio::test]
 async fn valid_schema_loader_apis_resolve_loaders() {
     let schema = Schema::builder()
-        .add(Field::string(field_key!("team_id")))
-        .add(
-            Field::select(field_key!("workspace"))
+        .property(Property::string(field_key!("team_id")))
+        .property(
+            Property::select(field_key!("workspace"))
                 .dynamic()
                 .loader("workspace_loader")
                 .depends_on(FieldPath::parse("team_id").unwrap()),
         )
-        .add(
-            Field::dynamic(field_key!("resource"))
+        .property(
+            Property::dynamic(field_key!("resource"))
                 .loader("resource_loader")
                 .depends_on(FieldPath::parse("workspace").unwrap()),
         )
@@ -179,13 +206,13 @@ async fn valid_schema_loader_apis_resolve_loaders() {
 #[tokio::test]
 async fn nested_schema_loader_apis_resolve_object_paths() {
     let schema = raw_schema(vec![
-        Field::object(field_key!("config"))
-            .add(
-                Field::select(field_key!("workspace"))
+        Property::object(field_key!("config"))
+            .property(
+                Property::select(field_key!("workspace"))
                     .dynamic()
                     .loader("workspace_loader"),
             )
-            .add(Field::dynamic(field_key!("resource")).loader("resource_loader"))
+            .property(Property::dynamic(field_key!("resource")).loader("resource_loader"))
             .into(),
     ]);
 
@@ -231,10 +258,10 @@ async fn nested_schema_loader_apis_resolve_object_paths() {
 #[tokio::test]
 async fn nested_schema_loader_apis_resolve_list_item_paths() {
     let schema = raw_schema(vec![
-        Field::list(field_key!("rows"))
+        Property::list(field_key!("rows"))
             .item(
-                Field::object(field_key!("row")).add(
-                    Field::select(field_key!("workspace"))
+                Property::object(field_key!("row")).property(
+                    Property::select(field_key!("workspace"))
                         .dynamic()
                         .loader("workspace_loader"),
                 ),
@@ -277,12 +304,12 @@ async fn nested_schema_loader_apis_resolve_list_item_paths() {
 #[tokio::test]
 async fn nested_valid_schema_loader_api_resolves_mode_variant_paths() {
     let schema = Schema::builder()
-        .add(
-            Field::mode(field_key!("auth")).variant(
+        .property(
+            Property::mode(field_key!("auth")).variant(
                 "oauth",
                 "OAuth",
-                Field::object(field_key!("creds"))
-                    .add(Field::dynamic(field_key!("resource")).loader("resource_loader")),
+                Property::object(field_key!("creds"))
+                    .property(Property::dynamic(field_key!("resource")).loader("resource_loader")),
             ),
         )
         .build()
@@ -310,9 +337,9 @@ async fn nested_valid_schema_loader_api_resolves_mode_variant_paths() {
 #[tokio::test]
 async fn nested_loader_errors_anchor_to_nested_path() {
     let schema = raw_schema(vec![
-        Field::object(field_key!("config"))
-            .add(
-                Field::select(field_key!("workspace"))
+        Property::object(field_key!("config"))
+            .property(
+                Property::select(field_key!("workspace"))
                     .dynamic()
                     .loader("missing_workspace_loader"),
             )
@@ -337,9 +364,9 @@ async fn nested_loader_errors_anchor_to_nested_path() {
 #[tokio::test]
 async fn top_level_loader_string_api_rejects_nested_paths() {
     let schema = raw_schema(vec![
-        Field::object(field_key!("config"))
-            .add(
-                Field::select(field_key!("workspace"))
+        Property::object(field_key!("config"))
+            .property(
+                Property::select(field_key!("workspace"))
                     .dynamic()
                     .loader("workspace_loader"),
             )
@@ -362,7 +389,7 @@ async fn top_level_loader_string_api_rejects_nested_paths() {
 #[tokio::test]
 async fn loader_registry_reports_missing_loader_registration() {
     let schema = raw_schema(vec![
-        Field::select(field_key!("region"))
+        Property::select(field_key!("region"))
             .dynamic()
             .loader("missing_loader")
             .into(),
@@ -379,7 +406,7 @@ async fn loader_registry_reports_missing_loader_registration() {
 #[tokio::test]
 async fn load_select_options_unknown_key_emits_field_not_found() {
     let schema = raw_schema(vec![
-        Field::select(field_key!("region"))
+        Property::select(field_key!("region"))
             .dynamic()
             .loader("x")
             .into(),
@@ -396,7 +423,7 @@ async fn load_select_options_unknown_key_emits_field_not_found() {
 
 #[tokio::test]
 async fn load_select_options_wrong_field_type_emits_type_mismatch() {
-    let schema = raw_schema(vec![Field::string(field_key!("email")).into()]);
+    let schema = raw_schema(vec![Property::string(field_key!("email")).into()]);
     let registry = LoaderRegistry::new();
     let context = LoaderContext::new("email", AuthoredValue::object());
     let error = schema
@@ -426,7 +453,7 @@ async fn load_select_options_wrong_field_type_emits_type_mismatch() {
 #[tokio::test]
 async fn load_select_options_without_loader_emits_missing_config() {
     let schema = raw_schema(vec![
-        Field::select(field_key!("region"))
+        Property::select(field_key!("region"))
             .option("us", "US")
             .into(),
     ]);
@@ -442,7 +469,7 @@ async fn load_select_options_without_loader_emits_missing_config() {
 
 #[tokio::test]
 async fn load_dynamic_records_wrong_field_type_emits_type_mismatch() {
-    let schema = raw_schema(vec![Field::number(field_key!("count")).into()]);
+    let schema = raw_schema(vec![Property::number(field_key!("count")).into()]);
     let registry = LoaderRegistry::new();
     let context = LoaderContext::new("count", AuthoredValue::object());
     let error = schema
@@ -463,7 +490,7 @@ async fn load_dynamic_records_wrong_field_type_emits_type_mismatch() {
 #[tokio::test]
 async fn load_dynamic_records_unknown_key_emits_field_not_found() {
     let schema = raw_schema(vec![
-        Field::dynamic(field_key!("resource"))
+        Property::dynamic(field_key!("resource"))
             .loader("loader_x")
             .into(),
     ]);
@@ -479,7 +506,7 @@ async fn load_dynamic_records_unknown_key_emits_field_not_found() {
 
 #[tokio::test]
 async fn load_dynamic_records_without_loader_emits_missing_config() {
-    let schema = raw_schema(vec![Field::dynamic(field_key!("resource")).into()]);
+    let schema = raw_schema(vec![Property::dynamic(field_key!("resource")).into()]);
     let registry = LoaderRegistry::new();
     let context = LoaderContext::new("resource", AuthoredValue::object());
     let error = schema
@@ -493,7 +520,7 @@ async fn load_dynamic_records_without_loader_emits_missing_config() {
 #[test]
 fn lint_schema_detects_visibility_cycles() {
     let schema = raw_schema(vec![
-        Field::string(field_key!("a"))
+        Property::string(field_key!("a"))
             .visible_when(
                 nebula_validator::Rule::predicate(
                     nebula_validator::Predicate::eq("b", json!(true)).unwrap(),
@@ -501,7 +528,7 @@ fn lint_schema_detects_visibility_cycles() {
                 .expect("bounded visibility rule"),
             )
             .into(),
-        Field::string(field_key!("b"))
+        Property::string(field_key!("b"))
             .visible_when(
                 nebula_validator::Rule::predicate(
                     nebula_validator::Predicate::eq("a", json!(true)).unwrap(),
@@ -526,9 +553,9 @@ fn lint_schema_detects_visibility_cycles() {
 #[test]
 fn runtime_validation_still_works_with_linted_schema() {
     let schema = Schema::builder()
-        .add(Field::boolean(field_key!("enabled")).required())
-        .add(
-            Field::string(field_key!("name"))
+        .property(Property::boolean(field_key!("enabled")).required())
+        .property(
+            Property::string(field_key!("name"))
                 .required_when(
                     nebula_validator::Rule::predicate(
                         nebula_validator::Predicate::eq("enabled", json!(true)).unwrap(),
@@ -555,11 +582,11 @@ fn runtime_validation_still_works_with_linted_schema() {
 #[test]
 fn lint_schema_reports_rule_incompatible_warnings() {
     let schema = raw_schema(vec![
-        Field::number(field_key!("retries"))
+        Property::number(field_key!("retries"))
             .with_rule(nebula_validator::Rule::pattern("^\\d+$").unwrap())
             .with_rule(nebula_validator::Rule::email())
             .into(),
-        Field::string(field_key!("name"))
+        Property::string(field_key!("name"))
             .with_rule(
                 nebula_validator::Rule::value(nebula_validator::ValueRule::Min(
                     serde_json::Number::from(1),
@@ -567,7 +594,7 @@ fn lint_schema_reports_rule_incompatible_warnings() {
                 .expect("bounded incompatible value rule"),
             )
             .into(),
-        Field::boolean(field_key!("flag"))
+        Property::boolean(field_key!("flag"))
             .with_rule(
                 nebula_validator::Rule::all([
                     nebula_validator::Rule::max_length(10),
@@ -597,11 +624,11 @@ fn lint_schema_reports_rule_incompatible_warnings() {
 #[test]
 fn lint_schema_accepts_compatible_rule_types() {
     let schema = raw_schema(vec![
-        Field::string(field_key!("title"))
+        Property::string(field_key!("title"))
             .min_length(3)
             .with_rule(nebula_validator::Rule::url())
             .into(),
-        Field::number(field_key!("timeout"))
+        Property::number(field_key!("timeout"))
             .with_rule(
                 nebula_validator::Rule::value(nebula_validator::ValueRule::Min(
                     serde_json::Number::from(1),
@@ -609,11 +636,11 @@ fn lint_schema_accepts_compatible_rule_types() {
                 .expect("bounded numeric rule"),
             )
             .into(),
-        Field::list(field_key!("tags"))
-            .item(Field::string(field_key!("tag")))
+        Property::list(field_key!("tags"))
+            .item(Property::string(field_key!("tag")))
             .with_rule(nebula_validator::Rule::min_items(1))
             .into(),
-        Field::select(field_key!("regions"))
+        Property::select(field_key!("regions"))
             .multiple()
             .with_rule(nebula_validator::Rule::max_items(3))
             .into(),
@@ -641,11 +668,11 @@ fn lint_schema_accepts_compatible_rule_types() {
 #[test]
 fn lint_treats_blank_loader_key_as_missing_loader() {
     let schema = raw_schema(vec![
-        Field::select(field_key!("region"))
+        Property::select(field_key!("region"))
             .dynamic()
             .loader("   ")
             .into(),
-        Field::dynamic(field_key!("resource")).loader("").into(),
+        Property::dynamic(field_key!("resource")).loader("").into(),
     ]);
 
     let report = schema.lint();
@@ -663,7 +690,7 @@ fn lint_treats_blank_loader_key_as_missing_loader() {
 fn lint_reports_duplicate_depends_on_entries() {
     let dependency = FieldPath::parse("team_id").unwrap();
     let schema = raw_schema(vec![
-        Field::select(field_key!("workspace"))
+        Property::select(field_key!("workspace"))
             .dynamic()
             .loader("workspace_loader")
             .depends_on(dependency.clone())
@@ -685,7 +712,7 @@ fn lint_reports_duplicate_depends_on_entries() {
 #[tokio::test]
 async fn load_select_options_blank_loader_emits_missing_config() {
     let schema = raw_schema(vec![
-        Field::select(field_key!("region"))
+        Property::select(field_key!("region"))
             .dynamic()
             .loader(" ")
             .into(),
@@ -702,7 +729,7 @@ async fn load_select_options_blank_loader_emits_missing_config() {
 #[tokio::test]
 async fn load_dynamic_records_blank_loader_emits_missing_config() {
     let schema = raw_schema(vec![
-        Field::dynamic(field_key!("resource")).loader(" ").into(),
+        Property::dynamic(field_key!("resource")).loader(" ").into(),
     ]);
     let registry = LoaderRegistry::new();
     let context = LoaderContext::new("resource", AuthoredValue::object());
@@ -717,14 +744,14 @@ async fn load_dynamic_records_blank_loader_emits_missing_config() {
 fn loader_dependency_cycle_detected() {
     // region depends_on cloud_provider, cloud_provider depends_on region -> cycle
     let schema = Schema::builder()
-        .add(
-            Field::select(field_key!("region"))
+        .property(
+            Property::select(field_key!("region"))
                 .dynamic()
                 .loader("region_loader")
                 .depends_on(FieldPath::parse("cloud_provider").unwrap()),
         )
-        .add(
-            Field::select(field_key!("cloud_provider"))
+        .property(
+            Property::select(field_key!("cloud_provider"))
                 .dynamic()
                 .loader("cloud_loader")
                 .depends_on(FieldPath::parse("region").unwrap()),
@@ -749,13 +776,13 @@ fn loader_dependency_no_cycle() {
     // cloud_provider has no depends_on, region depends_on cloud_provider -> no cycle
     // The build itself succeeds without a loader_dependency_cycle error.
     let result = Schema::builder()
-        .add(
-            Field::select(field_key!("cloud_provider"))
+        .property(
+            Property::select(field_key!("cloud_provider"))
                 .dynamic()
                 .loader("cloud_loader"),
         )
-        .add(
-            Field::select(field_key!("region"))
+        .property(
+            Property::select(field_key!("region"))
                 .dynamic()
                 .loader("region_loader")
                 .depends_on(FieldPath::parse("cloud_provider").unwrap()),
@@ -776,20 +803,20 @@ fn loader_dependency_no_cycle() {
 fn loader_dependency_transitive_cycle() {
     // A depends_on B, B depends_on C, C depends_on A -> transitive cycle
     let schema = Schema::builder()
-        .add(
-            Field::select(field_key!("a"))
+        .property(
+            Property::select(field_key!("a"))
                 .dynamic()
                 .loader("loader_a")
                 .depends_on(FieldPath::parse("b").unwrap()),
         )
-        .add(
-            Field::select(field_key!("b"))
+        .property(
+            Property::select(field_key!("b"))
                 .dynamic()
                 .loader("loader_b")
                 .depends_on(FieldPath::parse("c").unwrap()),
         )
-        .add(
-            Field::select(field_key!("c"))
+        .property(
+            Property::select(field_key!("c"))
                 .dynamic()
                 .loader("loader_c")
                 .depends_on(FieldPath::parse("a").unwrap()),
@@ -813,7 +840,7 @@ fn loader_dependency_transitive_cycle() {
 fn select_options_consistent_types_ok() {
     // All string options — no warning expected.
     let schema = raw_schema(vec![
-        Field::select(field_key!("color"))
+        Property::select(field_key!("color"))
             .option(json!("red"), "Red")
             .option(json!("green"), "Green")
             .option(json!("blue"), "Blue")
@@ -835,7 +862,7 @@ fn select_options_consistent_types_ok() {
 fn select_options_mixed_types_warns() {
     // Mix of string and number option values — should warn.
     let schema = raw_schema(vec![
-        Field::select(field_key!("mixed"))
+        Property::select(field_key!("mixed"))
             .option(json!("alpha"), "Alpha")
             .option(json!(1), "One")
             .into(),
@@ -856,7 +883,7 @@ fn select_options_mixed_types_warns() {
 fn select_options_complex_value_without_multiple_warns() {
     // Non-multiple select with an array option value — should warn.
     let schema = raw_schema(vec![
-        Field::select(field_key!("tags"))
+        Property::select(field_key!("tags"))
             .option(json!(["a", "b"]), "Tags A+B")
             .option(json!(["c"]), "Tag C")
             .into(),
@@ -877,7 +904,7 @@ fn select_options_complex_value_without_multiple_warns() {
 fn select_options_multiple_with_array_values_ok() {
     // Multiple select with array option values — consistent type, no warning expected.
     let schema = raw_schema(vec![
-        Field::select(field_key!("tags"))
+        Property::select(field_key!("tags"))
             .option(json!(["a", "b"]), "Tags A+B")
             .option(json!(["c", "d"]), "Tags C+D")
             .multiple()
@@ -899,7 +926,7 @@ fn select_options_multiple_with_array_values_ok() {
 fn select_single_option_complex_type_warns() {
     // Non-multiple select with a single option whose value is an array — should warn.
     let schema = raw_schema(vec![
-        Field::select(field_key!("data"))
+        Property::select(field_key!("data"))
             .option(json!(["x", "y"]), "X and Y")
             .into(),
     ]);
@@ -920,9 +947,9 @@ fn value_predicate_targeting_secret_is_rejected() {
     // A value-comparing predicate (`Eq`) that reads a secret's plaintext as a
     // visibility discriminant must be rejected at schema-build time.
     let report = Schema::builder()
-        .add(Field::secret(field_key!("api_key")))
-        .add(
-            Field::string(field_key!("region")).visible_when(
+        .property(Property::secret(field_key!("api_key")))
+        .property(
+            Property::string(field_key!("region")).visible_when(
                 nebula_validator::Rule::predicate(nebula_validator::Predicate::Eq(
                     nebula_validator::foundation::FieldPath::parse("api_key").unwrap(),
                     json!("prod-key"),
@@ -950,9 +977,9 @@ fn presence_predicate_on_secret_is_allowed() {
     // A presence-only predicate (`Set`) never reads the secret value, so it
     // stays legal as a visibility discriminant.
     Schema::builder()
-        .add(Field::secret(field_key!("api_key")))
-        .add(
-            Field::string(field_key!("region")).visible_when(
+        .property(Property::secret(field_key!("api_key")))
+        .property(
+            Property::string(field_key!("region")).visible_when(
                 nebula_validator::Rule::predicate(nebula_validator::Predicate::Set(
                     nebula_validator::foundation::FieldPath::parse("api_key").unwrap(),
                 ))
@@ -965,12 +992,14 @@ fn presence_predicate_on_secret_is_allowed() {
 
 #[test]
 fn nested_value_predicate_targeting_secret_is_rejected() {
-    // The secret-key collection recurses `Field::Object`, so a value predicate
+    // The secret-key collection recurses `Property::Object`, so a value predicate
     // targeting a *nested* secret (`/auth/api_key`) is also flagged.
     let report = Schema::builder()
-        .add(Field::object(field_key!("auth")).add(Field::secret(field_key!("api_key"))))
-        .add(
-            Field::string(field_key!("region")).visible_when(
+        .property(
+            Property::object(field_key!("auth")).property(Property::secret(field_key!("api_key"))),
+        )
+        .property(
+            Property::string(field_key!("region")).visible_when(
                 nebula_validator::Rule::predicate(nebula_validator::Predicate::Eq(
                     nebula_validator::foundation::FieldPath::parse("/auth/api_key").unwrap(),
                     json!("x"),
@@ -999,12 +1028,11 @@ fn value_predicate_targeting_list_item_secret_is_rejected() {
     // under the list path (`/items/api_key`). A value predicate on a secret
     // nested in a list item must be flagged just like an object-nested secret.
     let report = Schema::builder()
-        .add(
-            Field::list(field_key!("items"))
-                .item(Field::object(field_key!("row")).add(Field::secret(field_key!("api_key")))),
-        )
-        .add(
-            Field::string(field_key!("region")).visible_when(
+        .property(Property::list(field_key!("items")).item(
+            Property::object(field_key!("row")).property(Property::secret(field_key!("api_key"))),
+        ))
+        .property(
+            Property::string(field_key!("region")).visible_when(
                 nebula_validator::Rule::predicate(nebula_validator::Predicate::Eq(
                     nebula_validator::foundation::FieldPath::parse("/items/api_key").unwrap(),
                     json!("x"),
@@ -1032,13 +1060,13 @@ fn value_predicate_targeting_mode_variant_secret_is_rejected() {
     // A mode variant payload is addressable under `mode.variant`. A secret
     // payload (`/auth/token`) targeted by a value predicate must be flagged.
     let report = Schema::builder()
-        .add(Field::mode(field_key!("auth")).variant(
+        .property(Property::mode(field_key!("auth")).variant(
             "token",
             "Token",
-            Field::secret(field_key!("token")),
+            Property::secret(field_key!("token")),
         ))
-        .add(
-            Field::string(field_key!("region")).visible_when(
+        .property(
+            Property::string(field_key!("region")).visible_when(
                 nebula_validator::Rule::predicate(nebula_validator::Predicate::Eq(
                     nebula_validator::foundation::FieldPath::parse("/auth/token").unwrap(),
                     json!("x"),
@@ -1066,7 +1094,7 @@ fn root_value_predicate_targeting_secret_is_rejected() {
     // Root rules operate on the whole submitted value; the same prohibition
     // that applies to field-level visibility/required rules applies here.
     let report = Schema::builder()
-        .add(Field::secret(field_key!("api_key")))
+        .property(Property::secret(field_key!("api_key")))
         .root_rule(
             nebula_validator::Rule::predicate(nebula_validator::Predicate::Eq(
                 nebula_validator::foundation::FieldPath::parse("api_key").unwrap(),
@@ -1094,7 +1122,7 @@ fn root_presence_predicate_on_secret_is_allowed() {
     // A presence-only root predicate (`Set`) never reads the secret value,
     // so it stays legal exactly as at field level.
     Schema::builder()
-        .add(Field::secret(field_key!("api_key")))
+        .property(Property::secret(field_key!("api_key")))
         .root_rule(
             nebula_validator::Rule::predicate(nebula_validator::Predicate::Set(
                 nebula_validator::foundation::FieldPath::parse("api_key").unwrap(),
@@ -1114,10 +1142,9 @@ fn root_value_predicate_on_list_indexed_secret_is_rejected() {
     // the predicate would slip into the unscrubbed `run_root_rules`, reading
     // the secret plaintext. It must be rejected at `build()`.
     let report = Schema::builder()
-        .add(
-            Field::list(field_key!("items"))
-                .item(Field::object(field_key!("row")).add(Field::secret(field_key!("token")))),
-        )
+        .property(Property::list(field_key!("items")).item(
+            Property::object(field_key!("row")).property(Property::secret(field_key!("token"))),
+        ))
         .root_rule(
             nebula_validator::Rule::predicate(nebula_validator::Predicate::Eq(
                 nebula_validator::foundation::FieldPath::parse("/items/0/token").unwrap(),
@@ -1150,15 +1177,15 @@ fn root_value_predicate_on_mode_secret_under_list_is_rejected() {
     // collapse the `/0/` instance segment so the predicate is rejected before
     // it can reach the unscrubbed root-rule context.
     let report = Schema::builder()
-        .add(
-            Field::list(field_key!("items")).item(Field::object(field_key!("row")).add(
-                Field::mode(field_key!("auth")).variant(
+        .property(Property::list(field_key!("items")).item(
+            Property::object(field_key!("row")).property(
+                Property::mode(field_key!("auth")).variant(
                     "token",
                     "Token",
-                    Field::secret(field_key!("creds")),
+                    Property::secret(field_key!("creds")),
                 ),
-            )),
-        )
+            ),
+        ))
         .root_rule(
             nebula_validator::Rule::predicate(nebula_validator::Predicate::Eq(
                 nebula_validator::foundation::FieldPath::parse("/items/0/auth/token").unwrap(),
@@ -1187,10 +1214,9 @@ fn root_presence_predicate_on_list_indexed_secret_is_allowed() {
     // nested-secret path never reads the value, so it stays legal — the guard
     // widening must not over-reject presence predicates.
     Schema::builder()
-        .add(
-            Field::list(field_key!("items"))
-                .item(Field::object(field_key!("row")).add(Field::secret(field_key!("token")))),
-        )
+        .property(Property::list(field_key!("items")).item(
+            Property::object(field_key!("row")).property(Property::secret(field_key!("token"))),
+        ))
         .root_rule(
             nebula_validator::Rule::predicate(nebula_validator::Predicate::Set(
                 nebula_validator::foundation::FieldPath::parse("/items/0/token").unwrap(),
@@ -1211,11 +1237,11 @@ fn no_payload_mode_variant_without_forbidden_expression_is_rejected() {
     // smuggle `{"mode":"flag","value":{"$expr":"…"}}` through the hidden
     // placeholder; the build MUST refuse such a schema.
     let placeholder =
-        Field::string(nebula_schema::FieldKey::new(ModeField::EMPTY_PLACEHOLDER_KEY).unwrap())
+        Property::string(nebula_schema::FieldKey::new(ModeField::EMPTY_PLACEHOLDER_KEY).unwrap())
             .visible(nebula_schema::VisibilityMode::Never);
 
     let err = Schema::builder()
-        .add(Field::mode(field_key!("auth")).variant("flag", "Flag", placeholder))
+        .property(Property::mode(field_key!("auth")).variant("flag", "Flag", placeholder))
         .build()
         .expect_err("no-payload variant placeholder that allows expressions must be rejected");
 
@@ -1234,7 +1260,7 @@ fn variant_empty_builds_clean() {
     // The canonical no-payload constructor pins `.no_expression()`
     // (ExpressionMode::Forbidden), so the lint finds nothing.
     let schema = Schema::builder()
-        .add(Field::mode(field_key!("auth")).variant_empty("none", "None"))
+        .property(Property::mode(field_key!("auth")).variant_empty("none", "None"))
         .build();
     assert!(
         schema.is_ok(),

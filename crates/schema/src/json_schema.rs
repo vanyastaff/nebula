@@ -11,9 +11,14 @@ use std::{error::Error as StdError, fmt};
 
 use serde_json::{Map, Value};
 
+#[path = "export_budget.rs"]
+mod export_budget;
+
+use export_budget::ExportBudget;
+
 use crate::{
     field::{
-        ComputedReturn, Field, ListField, ModeField, ModeVariant, NumberField, ObjectField,
+        ComputedReturn, ListField, ModeField, ModeVariant, NumberField, ObjectField, Property,
         SelectField,
     },
     mode::{ExpressionMode, RequiredMode, VisibilityMode},
@@ -27,6 +32,19 @@ const DRAFT_2020_12: &str = "https://json-schema.org/draft/2020-12/schema";
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum JsonSchemaExportError {
+    /// The unelided borrowed source descriptor exceeds its serialized-byte budget.
+    SourceBudgetExceeded,
+    /// Cumulative serialized inputs to expansion copies exceed their byte budget.
+    CopyBudgetExceeded,
+    /// A source descriptor could not be measured safely, including excessive JSON depth.
+    BudgetSerialization,
+    /// Historical evidence cannot describe a current validation contract.
+    UnsupportedPolicy,
+    /// A preserved declaration has no validation or export semantics in this reader.
+    UnsupportedPropertyKind {
+        /// Declaration path; anonymous list items use index zero.
+        path: crate::ValuePath,
+    },
     /// Failed to serialize a root-level rule into JSON.
     RootRuleSerialization {
         /// Index of the root rule in `ValidSchema::root_rules()`.
@@ -41,6 +59,21 @@ pub enum JsonSchemaExportError {
 impl fmt::Display for JsonSchemaExportError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::SourceBudgetExceeded => {
+                f.write_str("JSON Schema source descriptor exceeds the export budget")
+            },
+            Self::CopyBudgetExceeded => {
+                f.write_str("JSON Schema expansion copies exceed the export budget")
+            },
+            Self::BudgetSerialization => {
+                f.write_str("JSON Schema export budget measurement failed")
+            },
+            Self::UnsupportedPolicy => {
+                f.write_str("historical schema policy cannot export a current contract")
+            },
+            Self::UnsupportedPropertyKind { path } => {
+                write!(f, "unsupported property kind at schema declaration {path}")
+            },
             Self::RootRuleSerialization { index, source } => {
                 write!(
                     f,
@@ -57,6 +90,11 @@ impl fmt::Display for JsonSchemaExportError {
 impl StdError for JsonSchemaExportError {
     fn source(&self) -> Option<&(dyn StdError + 'static)> {
         match self {
+            Self::SourceBudgetExceeded
+            | Self::CopyBudgetExceeded
+            | Self::BudgetSerialization
+            | Self::UnsupportedPropertyKind { .. }
+            | Self::UnsupportedPolicy => None,
             Self::RootRuleSerialization { source, .. } | Self::InvalidSchema(source) => {
                 Some(source)
             },
@@ -77,6 +115,12 @@ impl crate::validated::ValidSchema {
     /// runtime obligations. Defaults and aliases carry metadata, but JSON Schema
     /// does not perform transformation, alias precedence, or secret handling.
     /// Export acceptance never replaces `validate` followed by full resolution.
+    /// Every root identifies its definition/export writer contract with
+    /// `x-nebula-schema-version`; generic validators do not enforce that marker.
+    /// Export separately limits unelided source-descriptor JSON to 1 MiB and
+    /// cumulative expansion-copy inputs to 8 MiB, measured before copying.
+    /// These are not exact final-output size or heap limits. Defaults/options
+    /// must fit the 64-level JSON value-depth limit for safe measurement.
     ///
     /// Integer domains include in-range integral JSON floats. Runtime preparation
     /// normalizes those to integers before typed decoding; JSON Schema validates
@@ -84,30 +128,47 @@ impl crate::validated::ValidSchema {
     ///
     /// # Errors
     ///
-    /// Returns [`JsonSchemaExportError`] when root rules cannot be serialized or
-    /// when the generated JSON value cannot be converted to `schemars::Schema`.
+    /// Returns [`JsonSchemaExportError`] for unsupported policy/kinds, exhausted
+    /// export budgets, failed source measurement, root-rule
+    /// serialization failure, or an invalid generated `schemars::Schema`.
     #[tracing::instrument(
         level = "debug",
         target = "nebula_schema::json_schema",
         skip(self),
         fields(
             root_kind = ?self.kind(),
-            field_count = self.fields().len(),
+            schema_wire_version = crate::SCHEMA_WIRE_VERSION,
+            field_count = self.properties().len(),
             root_rule_count = self.root_rules().len(),
         )
     )]
     pub fn json_schema(&self) -> Result<schemars::Schema, JsonSchemaExportError> {
-        match self.root_shape() {
+        if let Some(path) = crate::field_tree::unsupported_property_path(self.properties()) {
+            tracing::debug!(code = "schema.unsupported_property_kind", %path,
+                "unsupported declaration rejected before JSON Schema export");
+            return Err(JsonSchemaExportError::UnsupportedPropertyKind { path });
+        }
+        self.ensure_current_semantics()
+            .map_err(|_| JsonSchemaExportError::UnsupportedPolicy)?;
+        let mut budget = ExportBudget::for_schema(self)?;
+        let mut exported = match self.root_shape() {
             // A tagged union exports as a `oneOf` faithful to its serde tagging —
             // not as a record wrapping the internal `{mode,value}` envelope.
-            RootShape::Union(_) => schema_for_union(self),
-            RootShape::Record(record) => schema_for_fields(record.fields(), record.root_rules()),
+            RootShape::Union(_) => schema_for_union(self, &mut budget),
+            RootShape::Record(record) => {
+                schema_for_fields(record.properties(), record.root_rules(), &mut budget)
+            },
             RootShape::Scalar(scalar) => schema_for_scalar(scalar),
             RootShape::Any => schemars::Schema::try_from(serde_json::json!({
                 "$schema": DRAFT_2020_12,
             }))
             .map_err(JsonSchemaExportError::InvalidSchema),
-        }
+        }?;
+        exported.insert(
+            "x-nebula-schema-version".to_owned(),
+            Value::from(crate::SCHEMA_WIRE_VERSION),
+        );
+        Ok(exported)
     }
 }
 
@@ -146,25 +207,26 @@ fn schema_for_scalar(scalar: &ScalarSchema) -> Result<schemars::Schema, JsonSche
 ///   content key, and a top-level `discriminator: { propertyName: "<tag>" }` is
 ///   emitted.
 ///
-/// The union's variants live in its sole root [`Field::Mode`] (the marker design);
+/// The union's variants live in its sole root [`Property::Mode`] (the marker design);
 /// unit variants are recognized by the [`ModeField::EMPTY_PLACEHOLDER_KEY`] payload
 /// that [`ModeField::variant_empty`] installs.
 fn schema_for_union(
     schema: &crate::validated::ValidSchema,
+    budget: &mut ExportBudget,
 ) -> Result<schemars::Schema, JsonSchemaExportError> {
-    let Some(Field::Mode(mode)) = schema.fields().first() else {
+    let Some(Property::Mode(mode)) = schema.properties().first() else {
         // Unreachable for schemas built by `ValidSchema::union` / its deserialize
-        // (both guarantee one root `Field::Mode`); fall back to the record export
+        // (both guarantee one root `Property::Mode`); fall back to the record export
         // rather than panic on a malformed value.
-        return schema_for_fields(schema.fields(), schema.root_rules());
+        return schema_for_fields(schema.properties(), schema.root_rules(), budget);
     };
     let tagging = schema.serde_tagging().unwrap_or(&SerdeTagging::External);
 
     let branches: Vec<Value> = mode
         .variants
         .iter()
-        .map(|variant| union_variant_branch(variant, tagging))
-        .collect();
+        .map(|variant| union_variant_branch(variant, tagging, budget))
+        .collect::<Result<_, _>>()?;
 
     let mut root = Map::new();
     root.insert(
@@ -174,16 +236,20 @@ fn schema_for_union(
     root.insert("oneOf".to_owned(), Value::Array(branches));
     if let SerdeTagging::Adjacent { tag, .. } = tagging {
         let mut discriminator = Map::new();
-        discriminator.insert("propertyName".to_owned(), Value::String(tag.clone()));
+        discriminator.insert("propertyName".to_owned(), Value::String(budget.copy(tag)?));
         root.insert("discriminator".to_owned(), Value::Object(discriminator));
     }
     schemars::Schema::try_from(Value::Object(root)).map_err(JsonSchemaExportError::InvalidSchema)
 }
 
 /// One JSON-Schema `oneOf` branch for a union variant under the given tagging.
-fn union_variant_branch(variant: &ModeVariant, tagging: &SerdeTagging) -> Value {
+fn union_variant_branch(
+    variant: &ModeVariant,
+    tagging: &SerdeTagging,
+    budget: &mut ExportBudget,
+) -> Result<Value, JsonSchemaExportError> {
     let is_unit = variant.field.key().as_str() == ModeField::EMPTY_PLACEHOLDER_KEY;
-    match tagging {
+    Ok(match tagging {
         SerdeTagging::External if is_unit => {
             // serde external unit variant: the bare string `"Variant"`.
             let mut branch = Map::new();
@@ -193,7 +259,10 @@ fn union_variant_branch(variant: &ModeVariant, tagging: &SerdeTagging) -> Value 
         SerdeTagging::External => {
             // serde external data variant: `{ "Variant": payload }`.
             let mut props = Map::new();
-            props.insert(variant.key.clone(), field_schema_value(&variant.field));
+            props.insert(
+                variant.key.clone(),
+                field_schema_value(&variant.field, budget)?,
+            );
             let mut branch = primitive_schema("object");
             branch.insert("properties".to_owned(), Value::Object(props));
             branch.insert(
@@ -207,12 +276,15 @@ fn union_variant_branch(variant: &ModeVariant, tagging: &SerdeTagging) -> Value 
             let mut props = Map::new();
             let mut tag_const = Map::new();
             tag_const.insert("const".to_owned(), Value::String(variant.key.clone()));
-            props.insert(tag.clone(), Value::Object(tag_const));
-            let mut required = vec![Value::String(tag.clone())];
+            props.insert(budget.copy(tag)?, Value::Object(tag_const));
+            let mut required = vec![Value::String(budget.copy(tag)?)];
             if !is_unit {
                 // serde emits the content key for every data variant.
-                props.insert(content.clone(), field_schema_value(&variant.field));
-                required.push(Value::String(content.clone()));
+                props.insert(
+                    budget.copy(content)?,
+                    field_schema_value(&variant.field, budget)?,
+                );
+                required.push(Value::String(budget.copy(content)?));
             }
             let mut branch = primitive_schema("object");
             branch.insert("properties".to_owned(), Value::Object(props));
@@ -220,12 +292,13 @@ fn union_variant_branch(variant: &ModeVariant, tagging: &SerdeTagging) -> Value 
             branch.insert("additionalProperties".to_owned(), Value::Bool(false));
             Value::Object(branch)
         },
-    }
+    })
 }
 
 fn schema_for_fields(
-    fields: &[Field],
+    fields: &[Property],
     root_rules: &[nebula_validator::Rule],
+    budget: &mut ExportBudget,
 ) -> Result<schemars::Schema, JsonSchemaExportError> {
     let mut root = Map::new();
     root.insert(
@@ -235,7 +308,7 @@ fn schema_for_fields(
     root.insert("type".to_owned(), Value::String("object".to_owned()));
     root.insert(
         "properties".to_owned(),
-        Value::Object(properties_for_fields(fields)),
+        Value::Object(properties_for_fields(fields, budget)?),
     );
 
     apply_required_constraints(fields, &mut root);
@@ -261,41 +334,42 @@ fn apply_root_rule_annotations(
     Ok(())
 }
 
-fn properties_for_fields(fields: &[Field]) -> Map<String, Value> {
+fn properties_for_fields(
+    fields: &[Property],
+    budget: &mut ExportBudget,
+) -> Result<Map<String, Value>, JsonSchemaExportError> {
     let mut out = Map::with_capacity(fields.len());
     for field in fields {
-        let value = field_schema_value(field);
+        let value = field_schema_value(field, budget)?;
         // Read-aliases are accepted input keys (folded to the canonical key at
         // ingest), so expose each as a typed property too. Aliases are lint-guaranteed
         // disjoint from canonical keys and from each other, so this never
         // collides. The value schema is shared (the alias carries the same
         // contract as the canonical key).
         for alias in field.read_aliases() {
-            out.insert(alias.as_str().to_owned(), value.clone());
+            out.insert(alias.as_str().to_owned(), budget.copy(&value)?);
         }
         out.insert(field.key().as_str().to_owned(), value);
     }
-    out
+    Ok(out)
 }
 
 /// Emit `required` (and, for required fields with read-aliases, an `allOf` of
 /// `anyOf`-required clauses) into `target`.
 ///
-/// An always-visible required field with no aliases is a flat `required` entry.
-/// Hidden fields may be omitted; conditional visibility stays runtime-owned.
+/// An unconditionally required field with no aliases is a flat `required` entry.
+/// Visibility is presentation metadata and does not change property presence.
 /// A required field satisfiable via a read-alias instead becomes
 /// `anyOf: [{required:[canonical]}, {required:[alias]}, …]`, because a flat
 /// `required: [canonical]` would reject an alias-only submission that `validate`
 /// accepts (it canonicalizes the alias before the required check). The exported
 /// schema must never reject input `validate` would accept.
-fn apply_required_constraints(fields: &[Field], target: &mut Map<String, Value>) {
+fn apply_required_constraints(fields: &[Property], target: &mut Map<String, Value>) {
     let mut flat_required: Vec<Value> = Vec::new();
     let mut any_of_clauses: Vec<Value> = Vec::new();
 
     for field in fields {
-        if !matches!(field.required(), RequiredMode::Always)
-            || !matches!(field.visible(), VisibilityMode::Always)
-        {
+        if !matches!(field.required(), RequiredMode::Always) {
             continue;
         }
         let aliases = field.read_aliases();
@@ -332,42 +406,45 @@ fn required_clause(key: &str) -> Map<String, Value> {
     clause
 }
 
-fn field_schema_value(field: &Field) -> Value {
+fn field_schema_value(
+    field: &Property,
+    budget: &mut ExportBudget,
+) -> Result<Value, JsonSchemaExportError> {
     let mut core_schema = match field {
-        Field::String(_) | Field::Code(_) => string_like_schema(),
-        Field::Secret(_) => {
+        Property::String(_) | Property::Code(_) => string_like_schema(),
+        Property::Secret(_) => {
             let mut s = string_like_schema();
             s.insert("writeOnly".to_owned(), Value::Bool(true));
             s
         },
-        Field::Number(f) => number_schema(f),
-        Field::Boolean(_) => primitive_schema("boolean"),
-        Field::Select(f) => select_schema(f),
-        Field::Object(f) => object_schema(f),
-        Field::List(f) => list_schema(f),
-        Field::Mode(f) => mode_schema(f),
-        Field::File(f) => file_schema(f.multiple),
-        Field::Computed(f) => computed_schema(f.returns),
+        Property::Number(f) => number_schema(f),
+        Property::Boolean(_) => primitive_schema("boolean"),
+        Property::Select(f) => select_schema(f),
+        Property::Object(f) => object_schema(f, budget)?,
+        Property::List(f) => list_schema(f, budget)?,
+        Property::Mode(f) => mode_schema(f, budget)?,
+        Property::File(f) => file_schema(f.multiple),
+        Property::Computed(f) => computed_schema(f.returns),
         // Runtime-only payload from loader; keep intentionally permissive.
-        Field::Dynamic(_) => Map::new(),
+        Property::Dynamic(_) => Map::new(),
         // Display-only field in UI forms; no value contract.
-        Field::Notice(_) => {
+        Property::Notice(_) => {
             let mut s = Map::new();
             s.insert("readOnly".to_owned(), Value::Bool(true));
             s
         },
         // Forward-compat field of an unknown future kind; this version cannot
         // describe its value contract, so emit a permissive (empty) schema.
-        Field::Unknown(_) => Map::new(),
+        Property::Unknown(_) => Map::new(),
     };
 
     apply_value_rules(&mut core_schema, field.rules());
     apply_required_value_constraints(field, &mut core_schema);
-    let mut schema = apply_expression_mode(core_schema, *field.expression());
+    let mut schema = apply_expression_mode(core_schema, *field.expression(), budget)?;
     apply_common_keywords(field, &mut schema);
     apply_contract_keywords(field, &mut schema);
     apply_alias_keywords(field, &mut schema);
-    Value::Object(schema)
+    Ok(Value::Object(schema))
 }
 
 /// Emit alias metadata for a field.
@@ -379,7 +456,7 @@ fn field_schema_value(field: &Field) -> Value {
 ///   `to_wire_json`. The exported document is an INPUT schema keyed on canonical
 ///   names, so the `emit_as` key is metadata only — an output validator reads this
 ///   to learn the projected key without the input contract misrepresenting it.
-fn apply_alias_keywords(field: &Field, schema: &mut Map<String, Value>) {
+fn apply_alias_keywords(field: &Property, schema: &mut Map<String, Value>) {
     let read_aliases = field.read_aliases();
     if !read_aliases.is_empty() {
         schema.insert(
@@ -400,24 +477,24 @@ fn apply_alias_keywords(field: &Field, schema: &mut Map<String, Value>) {
     }
 }
 
-fn apply_common_keywords(field: &Field, schema: &mut Map<String, Value>) {
+fn apply_common_keywords(field: &Property, schema: &mut Map<String, Value>) {
     let (label, description, default) = match field {
-        Field::String(f) => (&f.label, &f.description, &f.default),
-        Field::Secret(f) => (&f.label, &f.description, &f.default),
-        Field::Number(f) => (&f.label, &f.description, &f.default),
-        Field::Boolean(f) => (&f.label, &f.description, &f.default),
-        Field::Select(f) => (&f.label, &f.description, &f.default),
-        Field::Object(f) => (&f.label, &f.description, &f.default),
-        Field::List(f) => (&f.label, &f.description, &f.default),
-        Field::Mode(f) => (&f.label, &f.description, &f.default),
-        Field::Code(f) => (&f.label, &f.description, &f.default),
-        Field::File(f) => (&f.label, &f.description, &f.default),
-        Field::Computed(f) => (&f.label, &f.description, &f.default),
-        Field::Dynamic(f) => (&f.label, &f.description, &f.default),
-        Field::Notice(f) => (&f.label, &f.description, &f.default),
+        Property::String(f) => (&f.label, &f.description, &f.default),
+        Property::Secret(f) => (&f.label, &f.description, &f.default),
+        Property::Number(f) => (&f.label, &f.description, &f.default),
+        Property::Boolean(f) => (&f.label, &f.description, &f.default),
+        Property::Select(f) => (&f.label, &f.description, &f.default),
+        Property::Object(f) => (&f.label, &f.description, &f.default),
+        Property::List(f) => (&f.label, &f.description, &f.default),
+        Property::Mode(f) => (&f.label, &f.description, &f.default),
+        Property::Code(f) => (&f.label, &f.description, &f.default),
+        Property::File(f) => (&f.label, &f.description, &f.default),
+        Property::Computed(f) => (&f.label, &f.description, &f.default),
+        Property::Dynamic(f) => (&f.label, &f.description, &f.default),
+        Property::Notice(f) => (&f.label, &f.description, &f.default),
         // An unknown future field has no typed label/description/default slots;
         // its decorations (if any) live opaquely in `raw`. Skip common keywords.
-        Field::Unknown(_) => return,
+        Property::Unknown(_) => return,
     };
 
     if let Some(title) = label {
@@ -499,21 +576,30 @@ fn select_item_schema_map(field: &SelectField) -> Map<String, Value> {
     item
 }
 
-fn object_schema(field: &ObjectField) -> Map<String, Value> {
+fn object_schema(
+    field: &ObjectField,
+    budget: &mut ExportBudget,
+) -> Result<Map<String, Value>, JsonSchemaExportError> {
     let mut out = primitive_schema("object");
     out.insert(
         "properties".to_owned(),
-        Value::Object(properties_for_fields(&field.fields)),
+        Value::Object(properties_for_fields(&field.fields, budget)?),
     );
     apply_required_constraints(&field.fields, &mut out);
     out.insert("additionalProperties".to_owned(), Value::Bool(true));
-    out
+    Ok(out)
 }
 
-fn list_schema(field: &ListField) -> Map<String, Value> {
+fn list_schema(
+    field: &ListField,
+    budget: &mut ExportBudget,
+) -> Result<Map<String, Value>, JsonSchemaExportError> {
     let mut out = primitive_schema("array");
     if let Some(item) = &field.item {
-        out.insert("items".to_owned(), field_schema_value(item.as_ref()));
+        out.insert(
+            "items".to_owned(),
+            field_schema_value(item.as_ref(), budget)?,
+        );
     }
     if let Some(min) = field.min_items {
         out.insert("minItems".to_owned(), Value::from(min));
@@ -524,10 +610,13 @@ fn list_schema(field: &ListField) -> Map<String, Value> {
     if field.unique {
         out.insert("uniqueItems".to_owned(), Value::Bool(true));
     }
-    out
+    Ok(out)
 }
 
-fn mode_schema(field: &ModeField) -> Map<String, Value> {
+fn mode_schema(
+    field: &ModeField,
+    budget: &mut ExportBudget,
+) -> Result<Map<String, Value>, JsonSchemaExportError> {
     let mut out = Map::new();
     let mut branches = Vec::with_capacity(field.variants.len());
     for variant in &field.variants {
@@ -541,10 +630,11 @@ fn mode_schema(field: &ModeField) -> Map<String, Value> {
         let mut mode_const = Map::new();
         mode_const.insert("const".to_owned(), Value::String(variant.key.clone()));
         props.insert("mode".to_owned(), Value::Object(mode_const));
-        props.insert("value".to_owned(), field_schema_value(&variant.field));
-        if matches!(variant.field.required(), RequiredMode::Always)
-            && matches!(variant.field.visible(), VisibilityMode::Always)
-        {
+        props.insert(
+            "value".to_owned(),
+            field_schema_value(&variant.field, budget)?,
+        );
+        if matches!(variant.field.required(), RequiredMode::Always) {
             required.push(Value::String("value".to_owned()));
         }
 
@@ -554,7 +644,7 @@ fn mode_schema(field: &ModeField) -> Map<String, Value> {
         branches.push(Value::Object(branch));
     }
     out.insert("oneOf".to_owned(), Value::Array(branches));
-    out
+    Ok(out)
 }
 
 fn file_schema(multiple: bool) -> Map<String, Value> {
@@ -575,22 +665,22 @@ fn computed_schema(returns: ComputedReturn) -> Map<String, Value> {
     }
 }
 
-fn apply_required_value_constraints(field: &Field, schema: &mut Map<String, Value>) {
+fn apply_required_value_constraints(field: &Property, schema: &mut Map<String, Value>) {
     if !matches!(field.required(), RequiredMode::Always) {
         return;
     }
     // Requiredness also rejects empty supplied values, including on hidden
-    // fields. Only property presence itself depends on visibility.
+    // fields. Presentation visibility does not alter the required contract.
     insert_constraint(schema, "not", serde_json::json!({"type": "null"}));
     let minimum = match field {
-        Field::String(_) | Field::Secret(_) | Field::Code(_) => Some("minLength"),
-        Field::List(_) => Some("minItems"),
-        Field::File(file) => Some(if file.multiple {
+        Property::String(_) | Property::Secret(_) | Property::Code(_) => Some("minLength"),
+        Property::List(_) => Some("minItems"),
+        Property::File(file) => Some(if file.multiple {
             "minItems"
         } else {
             "minLength"
         }),
-        Field::Select(select) if select.multiple => Some("minItems"),
+        Property::Select(select) if select.multiple => Some("minItems"),
         _ => None,
     };
     if let Some(keyword) = minimum {
@@ -640,16 +730,20 @@ fn insert_constraint(schema: &mut Map<String, Value>, keyword: &str, constraint:
     schema.insert("allOf".to_owned(), Value::Array(conjunction));
 }
 
-fn apply_expression_mode(core: Map<String, Value>, mode: ExpressionMode) -> Map<String, Value> {
+fn apply_expression_mode(
+    core: Map<String, Value>,
+    mode: ExpressionMode,
+    budget: &mut ExportBudget,
+) -> Result<Map<String, Value>, JsonSchemaExportError> {
     // The `x-nebula-resolved-value-schema` extension is always emitted (regardless
     // of expression mode) so that UI / downstream consumers have a stable shape:
     // they can read the post-resolution value schema without branching on mode.
-    match mode {
+    Ok(match mode {
         ExpressionMode::Forbidden => {
             // No expression wrapper — the JSON-Schema-Draft 2020-12 part IS the
             // resolved-value schema; expose both as the same map so consumers
             // can rely on the extension key being present.
-            let mut out = core.clone();
+            let mut out = budget.copy(&core)?;
             out.insert(
                 "x-nebula-resolved-value-schema".to_owned(),
                 Value::Object(core),
@@ -661,7 +755,7 @@ fn apply_expression_mode(core: Map<String, Value>, mode: ExpressionMode) -> Map<
             out.insert(
                 "anyOf".to_owned(),
                 Value::Array(vec![
-                    Value::Object(core.clone()),
+                    Value::Object(budget.copy(&core)?),
                     Value::Object(expression_wrapper_schema()),
                 ]),
             );
@@ -679,7 +773,7 @@ fn apply_expression_mode(core: Map<String, Value>, mode: ExpressionMode) -> Map<
             );
             wrapper
         },
-    }
+    })
 }
 
 fn expression_wrapper_schema() -> Map<String, Value> {
@@ -695,7 +789,7 @@ fn expression_wrapper_schema() -> Map<String, Value> {
     wrapper
 }
 
-fn apply_contract_keywords(field: &Field, schema: &mut Map<String, Value>) {
+fn apply_contract_keywords(field: &Property, schema: &mut Map<String, Value>) {
     // For an `Unknown` field, `type_name()` collapses to the literal "unknown";
     // emit the real future discriminator so the exported contract stays accurate.
     let field_kind = field.unknown_type().unwrap_or_else(|| field.type_name());
@@ -738,7 +832,7 @@ fn apply_contract_keywords(field: &Field, schema: &mut Map<String, Value>) {
         ),
     );
 
-    if let Field::File(f) = field {
+    if let Property::File(f) = field {
         if let Some(accept) = &f.accept {
             schema.insert(
                 "x-nebula-file-accept".to_owned(),
@@ -749,7 +843,7 @@ fn apply_contract_keywords(field: &Field, schema: &mut Map<String, Value>) {
             schema.insert("x-nebula-file-max-size".to_owned(), Value::from(max_size));
         }
     }
-    if let Field::Select(f) = field {
+    if let Property::Select(f) = field {
         schema.insert("x-nebula-select-dynamic".to_owned(), Value::Bool(f.dynamic));
         schema.insert(
             "x-nebula-select-multiple".to_owned(),
@@ -760,7 +854,7 @@ fn apply_contract_keywords(field: &Field, schema: &mut Map<String, Value>) {
             Value::Bool(f.allow_custom),
         );
     }
-    if let Field::Mode(f) = field
+    if let Property::Mode(f) = field
         && let Some(default_variant) = &f.default_variant
     {
         schema.insert(
@@ -774,17 +868,17 @@ fn apply_contract_keywords(field: &Field, schema: &mut Map<String, Value>) {
 mod tests {
     use serde_json::{Value, json};
 
-    use crate::{Field, FieldKey, Schema, SerdeTagging, ValidSchema};
+    use crate::{FieldKey, Property, Schema, SerdeTagging, ValidSchema};
 
     #[test]
     fn exports_basic_object_shape_and_required() {
         let schema = Schema::builder()
-            .add(
-                Field::string(FieldKey::new("name").expect("static key"))
+            .property(
+                Property::string(FieldKey::new("name").expect("static key"))
                     .required()
                     .min_length(2),
             )
-            .add(Field::secret(
+            .property(Property::secret(
                 FieldKey::new("password").expect("static key"),
             ))
             .build()
@@ -826,17 +920,17 @@ mod tests {
     #[test]
     fn exports_mode_as_one_of_branches() {
         let schema = Schema::builder()
-            .add(
-                Field::mode(FieldKey::new("auth").expect("static key"))
+            .property(
+                Property::mode(FieldKey::new("auth").expect("static key"))
                     .variant(
                         "none",
                         "None",
-                        Field::notice(FieldKey::new("n").expect("static key")),
+                        Property::notice(FieldKey::new("n").expect("static key")),
                     )
                     .variant(
                         "token",
                         "Token",
-                        Field::secret(FieldKey::new("token").expect("static key")).required(),
+                        Property::secret(FieldKey::new("token").expect("static key")).required(),
                     ),
             )
             .build()
@@ -867,12 +961,12 @@ mod tests {
     #[test]
     fn mode_json_schema_does_not_export_removed_dynamic_flag() {
         let schema = Schema::builder()
-            .add(
-                Field::mode(FieldKey::new("auth").expect("static key"))
+            .property(
+                Property::mode(FieldKey::new("auth").expect("static key"))
                     .variant(
                         "token",
                         "Token",
-                        Field::secret(FieldKey::new("token").expect("static key")),
+                        Property::secret(FieldKey::new("token").expect("static key")),
                     )
                     .default_variant("token"),
             )
@@ -893,7 +987,7 @@ mod tests {
     #[test]
     fn exports_allowed_expression_mode_with_any_of() {
         let schema = Schema::builder()
-            .add(Field::dynamic(
+            .property(Property::dynamic(
                 FieldKey::new("runtime").expect("static key"),
             ))
             .build()
@@ -907,14 +1001,14 @@ mod tests {
     #[test]
     fn exports_number_rules_and_expression_wrapper_contract() {
         let schema = Schema::builder()
-            .add(
-                Field::number(FieldKey::new("count").expect("static key"))
+            .property(
+                Property::number(FieldKey::new("count").expect("static key"))
                     .min(1)
                     .max(10)
                     .with_rule(nebula_validator::Rule::greater_than(2)),
             )
-            .add(
-                Field::computed(FieldKey::new("total").expect("static key"))
+            .property(
+                Property::computed(FieldKey::new("total").expect("static key"))
                     .returns(crate::field::ComputedReturn::Number),
             )
             .build()
@@ -957,7 +1051,9 @@ mod tests {
     #[test]
     fn resolved_value_schema_extension_is_emitted_for_forbidden_mode() {
         let schema = Schema::builder()
-            .add(Field::boolean(FieldKey::new("flag").expect("static key")))
+            .property(Property::boolean(
+                FieldKey::new("flag").expect("static key"),
+            ))
             .build()
             .expect("valid schema");
 
@@ -977,8 +1073,8 @@ mod tests {
     #[test]
     fn read_alias_is_an_accepted_property_with_metadata() {
         let schema = Schema::builder()
-            .add(
-                Field::string(FieldKey::new("internal_id").expect("static key"))
+            .property(
+                Property::string(FieldKey::new("internal_id").expect("static key"))
                     .read_alias("externalId")
                     .expect("valid alias"),
             )
@@ -1002,8 +1098,8 @@ mod tests {
     #[test]
     fn emit_as_is_metadata_only_input_property_stays_canonical() {
         let schema = Schema::builder()
-            .add(
-                Field::string(FieldKey::new("internal_id").expect("static key"))
+            .property(
+                Property::string(FieldKey::new("internal_id").expect("static key"))
                     .emit_as("externalId")
                     .expect("valid emit_as key"),
             )
@@ -1027,8 +1123,8 @@ mod tests {
     #[test]
     fn required_field_with_read_alias_uses_any_of_not_flat_required() {
         let schema = Schema::builder()
-            .add(
-                Field::string(FieldKey::new("email").expect("static key"))
+            .property(
+                Property::string(FieldKey::new("email").expect("static key"))
                     .required()
                     .read_alias("emailAddress")
                     .expect("valid alias"),
@@ -1056,12 +1152,13 @@ mod tests {
     #[test]
     fn exports_external_union_as_oneof_with_unit_string_const() {
         let schema = ValidSchema::union(
-            Field::mode(FieldKey::new("auth").expect("static key"))
+            Property::mode(FieldKey::new("auth").expect("static key"))
                 .variant(
                     "oauth",
                     "OAuth",
-                    Field::object(FieldKey::new("oauth").expect("static key"))
-                        .add(Field::secret(FieldKey::new("token").expect("static key")).required()),
+                    Property::object(FieldKey::new("oauth").expect("static key")).property(
+                        Property::secret(FieldKey::new("token").expect("static key")).required(),
+                    ),
                 )
                 .variant_empty("none", "None"),
             SerdeTagging::External,
@@ -1095,12 +1192,13 @@ mod tests {
     #[test]
     fn exports_adjacent_union_with_discriminator_and_omitted_unit_content() {
         let schema = ValidSchema::union(
-            Field::mode(FieldKey::new("event").expect("static key"))
+            Property::mode(FieldKey::new("event").expect("static key"))
                 .variant(
                     "click",
                     "Click",
-                    Field::object(FieldKey::new("click").expect("static key"))
-                        .add(Field::number(FieldKey::new("x").expect("static key")).required()),
+                    Property::object(FieldKey::new("click").expect("static key")).property(
+                        Property::number(FieldKey::new("x").expect("static key")).required(),
+                    ),
                 )
                 .variant_empty("noop", "No-op"),
             SerdeTagging::Adjacent {
@@ -1137,7 +1235,7 @@ mod tests {
     #[test]
     fn required_field_without_alias_stays_flat_required() {
         let schema = Schema::builder()
-            .add(Field::string(FieldKey::new("name").expect("static key")).required())
+            .property(Property::string(FieldKey::new("name").expect("static key")).required())
             .build()
             .expect("valid schema");
 

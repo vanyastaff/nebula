@@ -1,0 +1,5 @@
+error: input flag `required` does not accept arguments
+ --> tests/compile_fail/property_parenthesized_flag.rs:5:22
+  |
+5 |     #[property(input(required(false)))]
+  |                      ^^^^^^^^

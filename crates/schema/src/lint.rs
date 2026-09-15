@@ -7,7 +7,7 @@ use nebula_validator::{
 };
 
 use crate::{
-    Field, FieldPath, ListField, ModeField, RequiredMode, VisibilityMode,
+    FieldPath, ListField, ModeField, Property, RequiredMode, VisibilityMode,
     error::{ValidationError, ValidationReport},
     field_tree::{defined_field_paths, walk_schema_fields},
     path::PathSegment,
@@ -18,26 +18,38 @@ fn has_nonempty_loader_key(loader: Option<&str>) -> bool {
     loader.is_some_and(|key| !key.trim().is_empty())
 }
 
-/// Advisory lint: `$root.foo` rule references still resolve but JSON Pointer is preferred.
-fn lint_legacy_root_reference(field_ref: &str, path: &FieldPath, report: &mut ValidationReport) {
-    let Some(rest) = field_ref.strip_prefix("$root.") else {
-        return;
+/// Hard lint: `$root.foo` rule references are removed; JSON Pointer is required.
+fn lint_legacy_root_reference(
+    field_ref: &str,
+    path: &FieldPath,
+    report: &mut ValidationReport,
+) -> bool {
+    let rest = if let Some(rest) = field_ref.strip_prefix("$root.") {
+        rest
+    } else if let Some(rest) = field_ref.strip_prefix("/$root/") {
+        rest
+    } else {
+        return false;
     };
     if rest.split('.').any(str::is_empty) {
-        return;
+        return false;
     }
-    let suggested = format!("/{}", rest.replace('.', "/"));
+    let suggested = if field_ref.starts_with('/') {
+        format!("/{rest}")
+    } else {
+        format!("/{}", rest.replace('.', "/"))
+    };
     report.push(
         ValidationError::builder("reference.legacy_root")
             .at(path.clone())
-            .warn()
             .param("reference", serde_json::Value::String(field_ref.to_owned()))
             .param("suggested", serde_json::Value::String(suggested.clone()))
             .message(format!(
-                "rule reference `{field_ref}` uses legacy `$root.` syntax; prefer JSON Pointer `{suggested}`"
+                "rule reference `{field_ref}` uses removed `$root.` syntax; rewrite it as JSON Pointer `{suggested}`"
             ))
             .build(),
     );
+    true
 }
 
 /// Build-time lint entry point used by `SchemaBuilder::build()`.
@@ -50,7 +62,7 @@ fn lint_legacy_root_reference(field_ref: &str, path: &FieldPath, report: &mut Va
     skip(fields, report),
     fields(field_count = fields.len(), prefix = %prefix)
 )]
-pub(crate) fn lint_tree(fields: &[Field], prefix: &FieldPath, report: &mut ValidationReport) {
+pub(crate) fn lint_tree(fields: &[Property], prefix: &FieldPath, report: &mut ValidationReport) {
     if !lint_field_rule_budgets(fields, report) {
         return;
     }
@@ -74,10 +86,10 @@ pub(crate) fn lint_tree(fields: &[Field], prefix: &FieldPath, report: &mut Valid
 
 /// Lint schema-level rules against the complete field tree.
 ///
-/// Field-level rule linting has local-scope semantics. Root rules operate on
+/// Property-level rule linting has local-scope semantics. Root rules operate on
 /// the submitted value object as a whole, so their field references must be
 /// checked against the global schema path set.
-pub(crate) fn lint_root_rules(rules: &[Rule], fields: &[Field], report: &mut ValidationReport) {
+pub(crate) fn lint_root_rules(rules: &[Rule], fields: &[Property], report: &mut ValidationReport) {
     if rules.is_empty() {
         return;
     }
@@ -88,7 +100,7 @@ pub(crate) fn lint_root_rules(rules: &[Rule], fields: &[Field], report: &mut Val
     // SECURITY (defence-in-depth, not advisory): root-rule evaluation (inlined
     // in `ValidSchema::validate`) builds its `PredicateContext` via the
     // scrubbed root-predicate-context builder, so a value-comparing predicate
-    // cannot read a `Field::Secret` plaintext at runtime. This build-time lint
+    // cannot read a `Property::Secret` plaintext at runtime. This build-time lint
     // is the
     // additive outer boundary: it rejects such a predicate at `build()` so the
     // schema is refused before it can ever be evaluated, independent of the
@@ -109,14 +121,16 @@ pub(crate) fn lint_root_rules(rules: &[Rule], fields: &[Field], report: &mut Val
         let mut refs = Vec::new();
         rule.field_references(&mut refs);
         for field_ref in refs {
-            lint_legacy_root_reference(field_ref, &FieldPath::root(), report);
+            if lint_legacy_root_reference(field_ref, &FieldPath::root(), report) {
+                continue;
+            }
             let Some(target) = resolve_rule_dependency(field_ref) else {
                 report.push(
                     ValidationError::builder("dangling_reference")
                         .at(FieldPath::root())
                         .param("reference", serde_json::Value::String(field_ref.to_owned()))
                         .message(format!(
-                            "root rule reference `{field_ref}` must be a JSON Pointer path (for example `/foo/bar`) or legacy `$root.foo` path"
+                            "root rule reference `{field_ref}` must be a JSON Pointer path (for example `/foo/bar`)"
                         ))
                         .build(),
                 );
@@ -137,14 +151,14 @@ pub(crate) fn lint_root_rules(rules: &[Rule], fields: &[Field], report: &mut Val
     }
 }
 
-fn lint_field_rule_budgets(fields: &[Field], report: &mut ValidationReport) -> bool {
+fn lint_field_rule_budgets(fields: &[Property], report: &mut ValidationReport) -> bool {
     let mut admitted = true;
     walk_schema_fields(fields, |node| {
-        admitted &= lint_rule_budgets(node.field.rules(), &node.path, report);
-        if let Some(rule) = field_visible_rule(node.field) {
+        admitted &= lint_rule_budgets(node.property.rules(), &node.path, report);
+        if let Some(rule) = field_visible_rule(node.property) {
             admitted &= lint_rule_budget(rule, &node.path, report);
         }
-        if let Some(rule) = field_required_rule(node.field) {
+        if let Some(rule) = field_required_rule(node.property) {
             admitted &= lint_rule_budget(rule, &node.path, report);
         }
     });
@@ -183,7 +197,7 @@ fn rule_budget_error(path: &FieldPath, error: RuleBuildError) -> ValidationError
 }
 
 fn lint_fields_new(
-    fields: &[Field],
+    fields: &[Property],
     prefix: &FieldPath,
     root_keys: &HashSet<&str>,
     report: &mut ValidationReport,
@@ -197,7 +211,7 @@ fn lint_fields_new(
         lint_contradictory_rules_new(field.rules(), &path, report);
         lint_default_type(field, &path, report);
         match field {
-            Field::Select(select) => lint_select_field(
+            Property::Select(select) => lint_select_field(
                 select,
                 field.key().as_str(),
                 &path,
@@ -205,7 +219,7 @@ fn lint_fields_new(
                 root_keys,
                 report,
             ),
-            Field::Dynamic(dynamic) => lint_dynamic_field(
+            Property::Dynamic(dynamic) => lint_dynamic_field(
                 dynamic,
                 field.key().as_str(),
                 &path,
@@ -213,22 +227,22 @@ fn lint_fields_new(
                 root_keys,
                 report,
             ),
-            Field::List(list) => {
+            Property::List(list) => {
                 lint_list_new(list, &path, root_keys, report);
             },
-            Field::Object(obj) => {
+            Property::Object(obj) => {
                 lint_fields_new(&obj.fields, &path, root_keys, report);
             },
-            Field::Mode(mode) => {
+            Property::Mode(mode) => {
                 lint_mode_new(mode, &path, root_keys, report);
             },
-            Field::Notice(notice) => lint_notice_field(notice, &path, report),
+            Property::Notice(notice) => lint_notice_field(notice, &path, report),
             _ => {},
         }
     }
 }
 
-fn lint_default_type(field: &Field, path: &FieldPath, report: &mut ValidationReport) {
+fn lint_default_type(field: &Property, path: &FieldPath, report: &mut ValidationReport) {
     use serde_json::Value;
 
     let default = match field.default() {
@@ -241,13 +255,13 @@ fn lint_default_type(field: &Field, path: &FieldPath, report: &mut ValidationRep
         return;
     }
 
-    // `Field::Secret` MUST NOT carry a non-null `default`. A default value
+    // `Property::Secret` MUST NOT carry a non-null `default`. A default value
     // hard-codes plaintext into the schema definition; secrets must originate
     // from the credential setup form, not from a catalog manifest. (See the
     // `Deserialize` impl on `SecretString` — it rejects wire reconstruction
     // for the same reason.) Surface this as an error rather than silently
     // letting plaintext drift into shared schema storage.
-    if matches!(field, Field::Secret(_)) {
+    if matches!(field, Property::Secret(_)) {
         report.push(
             ValidationError::builder("secret.default_forbidden")
                 .at(path.clone())
@@ -262,10 +276,10 @@ fn lint_default_type(field: &Field, path: &FieldPath, report: &mut ValidationRep
     }
 
     let ok = match field {
-        Field::String(_) | Field::Secret(_) | Field::Code(_) => {
+        Property::String(_) | Property::Secret(_) | Property::Code(_) => {
             matches!(default, Value::String(_))
         },
-        Field::Number(num) => {
+        Property::Number(num) => {
             if let Value::Number(n) = default {
                 if num.integer {
                     // integer fields must have a default with no fractional part
@@ -277,8 +291,8 @@ fn lint_default_type(field: &Field, path: &FieldPath, report: &mut ValidationRep
                 false
             }
         },
-        Field::Boolean(_) => matches!(default, Value::Bool(_)),
-        Field::Select(select) => {
+        Property::Boolean(_) => matches!(default, Value::Bool(_)),
+        Property::Select(select) => {
             // dynamic selects or selects with no static options: allow any scalar
             // (or array for multiple selects).
             if select.dynamic || select.options.is_empty() {
@@ -315,9 +329,9 @@ fn lint_default_type(field: &Field, path: &FieldPath, report: &mut ValidationRep
                 select.options.iter().any(|opt| &opt.value == default)
             }
         },
-        Field::List(_) => matches!(default, Value::Array(_)),
-        Field::Object(_) => matches!(default, Value::Object(_)),
-        Field::Mode(_) => {
+        Property::List(_) => matches!(default, Value::Array(_)),
+        Property::Object(_) => matches!(default, Value::Object(_)),
+        Property::Mode(_) => {
             // mode default must be an object with a "mode" key and
             // only "mode" and optionally "value" keys (no extras)
             if let Value::Object(map) = default {
@@ -328,11 +342,11 @@ fn lint_default_type(field: &Field, path: &FieldPath, report: &mut ValidationRep
         },
         // File, Computed, Dynamic, Notice, Unknown: skip default type validation
         // (`Unknown` is opaque — this version cannot type-check its default).
-        Field::File(_)
-        | Field::Computed(_)
-        | Field::Dynamic(_)
-        | Field::Notice(_)
-        | Field::Unknown(_) => return,
+        Property::File(_)
+        | Property::Computed(_)
+        | Property::Dynamic(_)
+        | Property::Notice(_)
+        | Property::Unknown(_) => return,
     };
 
     if !ok {
@@ -348,8 +362,137 @@ fn lint_default_type(field: &Field, path: &FieldPath, report: &mut ValidationRep
     }
 }
 
+/// Current construction forbids secret values in defaults at every declaration depth.
+/// Historical decoding retains its original lint contract and explicit wire evidence.
+#[tracing::instrument(level = "debug", skip_all, fields(field_count = fields.len()))]
+pub(crate) fn lint_current_secret_defaults(
+    fields: &[Property],
+    prefix: &FieldPath,
+    report: &mut ValidationReport,
+) {
+    let mut pending: Vec<_> = fields
+        .iter()
+        .map(|field| (field, prefix.clone().join(field.key().clone()), false))
+        .collect();
+    while let Some((field, path, anonymous)) = pending.pop() {
+        // Ordinary scope secrets already receive the historical direct-default lint.
+        if (anonymous || !matches!(field, Property::Secret(_)))
+            && field
+                .default()
+                .is_some_and(|default| default_contains_secret(field, default))
+        {
+            tracing::debug!(code = "secret.default_forbidden", %path,
+                "secret-bearing declaration default rejected");
+            report.push(
+                ValidationError::builder("secret.default_forbidden")
+                    .at(path.clone())
+                    .message("defaults must not contain values for declared secret fields")
+                    .build(),
+            );
+        }
+        match field {
+            Property::Object(object) => pending.extend(
+                object
+                    .fields
+                    .iter()
+                    .map(|child| (child, path.clone().join(child.key().clone()), false)),
+            ),
+            Property::List(list) => pending.extend(
+                list.item
+                    .as_deref()
+                    .map(|item| (item, path.clone().join(0_usize), true)),
+            ),
+            Property::Mode(mode) => pending.extend(mode.variants.iter().filter_map(|variant| {
+                // Invalid variant keys already block the structural lint; no index proof exists.
+                crate::FieldKey::new(&variant.key)
+                    .ok()
+                    .map(|key| (variant.field.as_ref(), path.clone().join(key), true))
+            })),
+            Property::String(_)
+            | Property::Secret(_)
+            | Property::Number(_)
+            | Property::Boolean(_)
+            | Property::Select(_)
+            | Property::Code(_)
+            | Property::File(_)
+            | Property::Computed(_)
+            | Property::Dynamic(_)
+            | Property::Notice(_)
+            | Property::Unknown(_) => {},
+        }
+    }
+}
+
+fn default_contains_secret(field: &Property, default: &serde_json::Value) -> bool {
+    use serde_json::Value;
+
+    let mut pending = vec![(field, default)];
+    while let Some((field, default)) = pending.pop() {
+        if default.is_null() {
+            continue;
+        }
+        match (field, default) {
+            (Property::Secret(_), _) => return true,
+            (Property::Object(object), Value::Object(values)) => {
+                for child in &object.fields {
+                    // Losing aliases remain in exported defaults, unlike prepared input.
+                    pending.extend(
+                        std::iter::once(child.key())
+                            .chain(child.read_aliases())
+                            .filter_map(|key| values.get(key.as_str()))
+                            .map(|value| (child, value)),
+                    );
+                }
+            },
+            (Property::List(list), Value::Array(values)) => {
+                if let Some(item) = list.item.as_deref() {
+                    pending.extend(values.iter().map(|value| (item, value)));
+                }
+            },
+            (Property::Mode(mode), Value::Object(values)) => {
+                let Some(value) = values.get("value").filter(|value| !value.is_null()) else {
+                    continue;
+                };
+                let selected = match values.get("mode") {
+                    None => mode.default_variant.as_deref(),
+                    Some(Value::String(key)) => Some(key.as_str()),
+                    Some(_) => None,
+                };
+                if let Some(variant) = mode
+                    .variants
+                    .iter()
+                    .find(|variant| Some(variant.key.as_str()) == selected)
+                {
+                    pending.push((&variant.field, value));
+                } else if crate::context::field_subtree_has_secret(field) {
+                    return true;
+                }
+            },
+            (Property::Object(_) | Property::List(_) | Property::Mode(_), _) => {
+                if crate::context::field_subtree_has_secret(field) {
+                    return true;
+                }
+            },
+            (
+                Property::String(_)
+                | Property::Number(_)
+                | Property::Boolean(_)
+                | Property::Select(_)
+                | Property::Code(_)
+                | Property::File(_)
+                | Property::Computed(_)
+                | Property::Dynamic(_)
+                | Property::Notice(_)
+                | Property::Unknown(_),
+                _,
+            ) => {},
+        }
+    }
+    false
+}
+
 fn lint_duplicate_keys_in_scope(
-    fields: &[Field],
+    fields: &[Property],
     prefix: &FieldPath,
     report: &mut ValidationReport,
 ) {
@@ -368,15 +511,15 @@ fn lint_duplicate_keys_in_scope(
     }
 }
 
-/// Emit `alias.emit_on_secret` if a `Field::Secret` carries an `emit_as` key.
+/// Emit `alias.emit_on_secret` if a `Property::Secret` carries an `emit_as` key.
 ///
 /// A secret is never emitted on projection output, so an `emit_as` on it is
 /// always a mistake. This is a per-field (unary) check, so it is enforced
-/// wherever a `Field` appears — a scope member, a bare list item, or a
+/// wherever a `Property` appears — a scope member, a bare list item, or a
 /// mode-variant payload — not only at the top scope level. A no-op for any
 /// non-secret field.
-fn lint_secret_emit_as(field: &Field, path: &FieldPath, report: &mut ValidationReport) {
-    if matches!(field, Field::Secret(_)) && field.emit_as().is_some() {
+fn lint_secret_emit_as(field: &Property, path: &FieldPath, report: &mut ValidationReport) {
+    if matches!(field, Property::Secret(_)) && field.emit_as().is_some() {
         report.push(
             ValidationError::builder("alias.emit_on_secret")
                 .at(path.clone())
@@ -400,7 +543,7 @@ fn lint_secret_emit_as(field: &Field, path: &FieldPath, report: &mut ValidationR
 /// - `alias.emit_scope_duplicate`: two fields share the same `emit_as` key.
 /// - `alias.read_emit_collision`: one field's read-alias equals another field's `emit_as` key —
 ///   a wire round-trip would move data between the two fields (same-field reuse is allowed).
-/// - `alias.emit_on_secret`: a `Field::Secret` has an `emit_as` set (forbidden) —
+/// - `alias.emit_on_secret`: a `Property::Secret` has an `emit_as` set (forbidden) —
 ///   via `lint_secret_emit_as`, also enforced on bare list items / mode payloads.
 ///
 /// Checks a single field-scope only; `lint_fields_new` drives the descent into
@@ -409,7 +552,7 @@ fn lint_secret_emit_as(field: &Field, path: &FieldPath, report: &mut ValidationR
 /// must reach every scope `canonicalize_aliases` folds, or a collision at depth
 /// would silently mis-route a value at ingest with no build-time guard.
 fn lint_alias_collisions_in_scope(
-    fields: &[Field],
+    fields: &[Property],
     prefix: &FieldPath,
     report: &mut ValidationReport,
 ) {
@@ -424,7 +567,7 @@ fn lint_alias_collisions_in_scope(
         let field_key_str = field.key().as_str();
         let field_path = prefix.clone().join(field.key().clone());
 
-        // alias.emit_on_secret: Field::Secret must not carry an emit_as key.
+        // alias.emit_on_secret: Property::Secret must not carry an emit_as key.
         lint_secret_emit_as(field, &field_path, report);
 
         // Read-alias collision checks.
@@ -549,7 +692,7 @@ fn lint_alias_collisions_in_scope(
 }
 
 fn lint_field_rules(
-    field: &Field,
+    field: &Property,
     path: &FieldPath,
     local_keys: &HashSet<&str>,
     root_keys: &HashSet<&str>,
@@ -758,9 +901,9 @@ fn lint_list_new(
         lint_secret_emit_as(item_field, path, report);
     }
     match list.item.as_deref() {
-        Some(Field::Object(obj)) => lint_fields_new(&obj.fields, path, root_keys, report),
-        Some(Field::List(inner)) => lint_list_new(inner, path, root_keys, report),
-        Some(Field::Mode(inner)) => lint_mode_new(inner, path, root_keys, report),
+        Some(Property::Object(obj)) => lint_fields_new(&obj.fields, path, root_keys, report),
+        Some(Property::List(inner)) => lint_list_new(inner, path, root_keys, report),
+        Some(Property::Mode(inner)) => lint_mode_new(inner, path, root_keys, report),
         _ => {},
     }
 }
@@ -830,9 +973,9 @@ fn lint_mode_new(
             // write_on_secret on it directly (no-op for non-secret payloads).
             lint_secret_emit_as(variant.field.as_ref(), &vpath, report);
             match variant.field.as_ref() {
-                Field::Object(obj) => lint_fields_new(&obj.fields, &vpath, root_keys, report),
-                Field::List(inner) => lint_list_new(inner, &vpath, root_keys, report),
-                Field::Mode(inner) => lint_mode_new(inner, &vpath, root_keys, report),
+                Property::Object(obj) => lint_fields_new(&obj.fields, &vpath, root_keys, report),
+                Property::List(inner) => lint_list_new(inner, &vpath, root_keys, report),
+                Property::Mode(inner) => lint_mode_new(inner, &vpath, root_keys, report),
                 _ => {},
             }
         }
@@ -913,8 +1056,10 @@ fn lint_rule_refs_new(
     let mut refs = Vec::new();
     rule.field_references(&mut refs);
     for field_ref in refs {
-        lint_legacy_root_reference(field_ref, path, report);
-        // Field-level refs intentionally validate only referenced_root_key
+        if lint_legacy_root_reference(field_ref, path, report) {
+            continue;
+        }
+        // Property-level refs intentionally validate only referenced_root_key
         // against root_keys; lint_root_rules uses defined_field_paths for full
         // paths because root-level rules have global schema semantics.
         let Some(root_key) = referenced_root_key(field_ref) else {
@@ -922,7 +1067,7 @@ fn lint_rule_refs_new(
                 ValidationError::builder("dangling_reference")
                     .at(path.clone())
                     .message(format!(
-                        "rule reference `{field_ref}` must be a JSON Pointer path (for example `/foo/bar`) or legacy `$root.foo` path"
+                        "rule reference `{field_ref}` must be a JSON Pointer path (for example `/foo/bar`)"
                     ))
                     .build(),
             );
@@ -943,7 +1088,7 @@ fn lint_rule_refs_new(
 }
 
 fn lint_rule_compat_new(
-    field: &Field,
+    field: &Property,
     rules: &[Rule],
     path: &FieldPath,
     report: &mut ValidationReport,
@@ -954,7 +1099,7 @@ fn lint_rule_compat_new(
 }
 
 fn lint_single_compat_new(
-    field: &Field,
+    field: &Property,
     rule: &Rule,
     path: &FieldPath,
     report: &mut ValidationReport,
@@ -1042,41 +1187,41 @@ fn lint_contradictory_rules_new(rules: &[Rule], path: &FieldPath, report: &mut V
     }
 }
 
-const fn field_visible_rule(field: &Field) -> Option<&Rule> {
+const fn field_visible_rule(field: &Property) -> Option<&Rule> {
     match field.visible() {
         VisibilityMode::Always | VisibilityMode::Never => None,
         VisibilityMode::When(rule) => Some(rule),
     }
 }
 
-const fn field_required_rule(field: &Field) -> Option<&Rule> {
+const fn field_required_rule(field: &Property) -> Option<&Rule> {
     match field.required() {
         RequiredMode::Never | RequiredMode::Always => None,
         RequiredMode::When(rule) => Some(rule),
     }
 }
 
-const fn supports_string_rules(field: &Field) -> bool {
+const fn supports_string_rules(field: &Property) -> bool {
     matches!(
         field,
-        Field::String(_) | Field::Secret(_) | Field::Code(_) | Field::File(_)
+        Property::String(_) | Property::Secret(_) | Property::Code(_) | Property::File(_)
     )
 }
 
-const fn supports_number_rules(field: &Field) -> bool {
-    matches!(field, Field::Number(_))
+const fn supports_number_rules(field: &Property) -> bool {
+    matches!(field, Property::Number(_))
 }
 
-const fn supports_collection_rules(field: &Field) -> bool {
+const fn supports_collection_rules(field: &Property) -> bool {
     match field {
-        Field::List(_) => true,
-        Field::Select(select) => select.multiple,
-        Field::File(file) => file.multiple,
+        Property::List(_) => true,
+        Property::Select(select) => select.multiple,
+        Property::File(file) => file.multiple,
         _ => false,
     }
 }
 
-const fn field_type_name(field: &Field) -> &'static str {
+const fn field_type_name(field: &Property) -> &'static str {
     field.type_name()
 }
 
@@ -1202,13 +1347,13 @@ fn push_rule_edges_for_rule(
 }
 
 fn append_rule_edges(
-    fields: &[Field],
+    fields: &[Property],
     defined: &HashSet<FieldPath>,
     edges: &mut Vec<(FieldPath, FieldPath)>,
-    rule_for: fn(&Field) -> Option<&Rule>,
+    rule_for: fn(&Property) -> Option<&Rule>,
 ) {
     walk_schema_fields(fields, |node| {
-        if let Some(rule) = rule_for(node.field) {
+        if let Some(rule) = rule_for(node.property) {
             push_rule_edges_for_rule(&node.path, rule, defined, edges);
         }
     });
@@ -1262,7 +1407,7 @@ fn find_cycle_edge(adj: &HashMap<FieldPath, Vec<FieldPath>>) -> Option<(FieldPat
 }
 
 fn lint_visibility_cycles_new(
-    fields: &[Field],
+    fields: &[Property],
     _prefix: &FieldPath,
     report: &mut ValidationReport,
 ) {
@@ -1277,7 +1422,11 @@ fn lint_visibility_cycles_new(
     }
 }
 
-fn lint_required_cycles_new(fields: &[Field], _prefix: &FieldPath, report: &mut ValidationReport) {
+fn lint_required_cycles_new(
+    fields: &[Property],
+    _prefix: &FieldPath,
+    report: &mut ValidationReport,
+) {
     let defined = defined_field_paths(fields);
 
     let mut edges: Vec<(FieldPath, FieldPath)> = Vec::new();
@@ -1308,11 +1457,13 @@ fn emit_loader_dependency_cycle_on_edge(
 /// per dependency: `field_path -> dependency_path`.
 /// This models "this field's loader depends on the value of that field".
 /// A cycle in this graph means two (or more) loaders mutually depend on each other.
-fn collect_loader_dependency_edges(fields: &[Field], edges: &mut Vec<(FieldPath, FieldPath)>) {
+fn collect_loader_dependency_edges(fields: &[Property], edges: &mut Vec<(FieldPath, FieldPath)>) {
     walk_schema_fields(fields, |node| {
-        let depends_on: Option<&[FieldPath]> = match node.field {
-            Field::Select(select) if !select.depends_on.is_empty() => Some(&select.depends_on),
-            Field::Dynamic(dynamic) if !dynamic.depends_on.is_empty() => Some(&dynamic.depends_on),
+        let depends_on: Option<&[FieldPath]> = match node.property {
+            Property::Select(select) if !select.depends_on.is_empty() => Some(&select.depends_on),
+            Property::Dynamic(dynamic) if !dynamic.depends_on.is_empty() => {
+                Some(&dynamic.depends_on)
+            },
             _ => None,
         };
 
@@ -1328,7 +1479,7 @@ fn collect_loader_dependency_edges(fields: &[Field], edges: &mut Vec<(FieldPath,
 }
 
 fn lint_loader_dependency_cycles(
-    fields: &[Field],
+    fields: &[Property],
     _prefix: &FieldPath,
     report: &mut ValidationReport,
 ) {
@@ -1357,7 +1508,7 @@ fn lint_loader_dependency_cycles(
 /// Kind of an addressable leaf yielded by [`walk_addressable_paths`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AddressableKind {
-    /// A `Field::Secret` leaf — its plaintext must never enter a predicate
+    /// A `Property::Secret` leaf — its plaintext must never enter a predicate
     /// context (secret-value-predicate lint keys these).
     Secret,
     /// A non-secret scalar leaf (String/Number/Bool/Select/… — anything that
@@ -1369,15 +1520,15 @@ pub(crate) enum AddressableKind {
 /// field tree exactly as the field-tree walker names paths, invoking `visit`
 /// once per addressable *leaf* with its key-segment vector and kind:
 ///
-/// - `Field::Object` — descended (the object node itself is not a leaf);
+/// - `Property::Object` — descended (the object node itself is not a leaf);
 ///   children extend the object's path.
-/// - `Field::List` whose `item` is a `Field::Object` — descended with children
+/// - `Property::List` whose `item` is a `Property::Object` — descended with children
 ///   sitting **directly under the list path** (list items are anonymous, so no
 ///   index segment); other item shapes are not path-addressable and skipped.
-/// - `Field::Mode` — each variant payload is visited **at** the variant path
+/// - `Property::Mode` — each variant payload is visited **at** the variant path
 ///   (`segs + variant.key`), not under the payload field's own key; variant
 ///   keys that cannot form a path segment are skipped.
-/// - `Field::Secret` → `AddressableKind::Secret`.
+/// - `Property::Secret` → `AddressableKind::Secret`.
 /// - any other field → a scalar leaf → `AddressableKind::NonSecretLeaf`.
 ///
 /// Segments come from [`crate::key::FieldKey::as_str`], matching the unescaped
@@ -1388,33 +1539,33 @@ pub(crate) enum AddressableKind {
 /// keeping the addressable-path invariant single-owned (the root
 /// cause was two owners of one invariant drifting).
 pub(crate) fn walk_addressable_paths(
-    fields: &[Field],
+    fields: &[Property],
     visit: &mut dyn FnMut(&[String], AddressableKind),
 ) {
     // Record (and recurse) one field already resolved to `segs`. `segs` is the
     // field's own addressable path, so children must extend it (Object/List)
     // or, for mode variants, the payload is visited *at* the variant path.
     fn walk_field(
-        field: &Field,
+        field: &Property,
         segs: &[String],
         visit: &mut dyn FnMut(&[String], AddressableKind),
     ) {
         match field {
-            Field::Secret(_) => {
+            Property::Secret(_) => {
                 visit(segs, AddressableKind::Secret);
             },
-            Field::Object(obj) => {
+            Property::Object(obj) => {
                 walk_scope(obj.fields.as_slice(), segs, visit);
             },
-            Field::List(list) => {
+            Property::List(list) => {
                 // List items are anonymous: an object item's children sit
                 // directly under the list path, exactly as the field-tree
                 // walker yields them. Non-object items are not path-addressable.
-                if let Some(Field::Object(obj)) = list.item.as_deref() {
+                if let Some(Property::Object(obj)) = list.item.as_deref() {
                     walk_scope(obj.fields.as_slice(), segs, visit);
                 }
             },
-            Field::Mode(mode) => {
+            Property::Mode(mode) => {
                 for variant in &mode.variants {
                     // Skip variant keys that cannot form a path segment, just
                     // as the field-tree walker (via mode_variant_path) does.
@@ -1438,7 +1589,7 @@ pub(crate) fn walk_addressable_paths(
     }
 
     fn walk_scope(
-        fields: &[Field],
+        fields: &[Property],
         prefix: &[String],
         visit: &mut dyn FnMut(&[String], AddressableKind),
     ) {
@@ -1454,15 +1605,15 @@ pub(crate) fn walk_addressable_paths(
 
 // ── Secret value-predicate lint ───────────────────────────────────────────────
 
-/// Recursively collect the segment vector of every `Field::Secret` reachable
+/// Recursively collect the segment vector of every `Property::Secret` reachable
 /// by a predicate `FieldPath`. Thin filter over [`walk_addressable_paths`] (the
 /// single owner of the addressable-path invariant) keeping only the `Secret`
-/// leaves; the traversal — `Field::Object`, a `Field::List` whose item is an
+/// leaves; the traversal — `Property::Object`, a `Property::List` whose item is an
 /// object (children under the list path; list items are anonymous), each
-/// `Field::Mode` variant payload (addressable under `mode.variant`) — is
+/// `Property::Mode` variant payload (addressable under `mode.variant`) — is
 /// defined there. Paths the field-tree walker cannot name (e.g. a list whose
 /// item is a bare scalar) stay non-addressable and are intentionally skipped.
-fn collect_secret_pointer_segments(fields: &[Field]) -> HashSet<Vec<String>> {
+fn collect_secret_pointer_segments(fields: &[Property]) -> HashSet<Vec<String>> {
     let mut out = HashSet::new();
     walk_addressable_paths(fields, &mut |segs, kind| {
         if kind == AddressableKind::Secret {
@@ -1510,7 +1661,7 @@ fn normalized_predicate_key_segments(predicate: &Predicate) -> Option<Vec<String
 }
 
 /// Walk a rule tree, flagging every value-comparing predicate whose target
-/// path is a `Field::Secret`. Recurses `Logic` children and `Described` inner
+/// path is a `Property::Secret`. Recurses `Logic` children and `Described` inner
 /// rules so a buried predicate is still caught.
 fn walk_rule_for_secret_value_predicates(
     rule: &Rule,
@@ -1560,7 +1711,7 @@ fn walk_rule_for_secret_value_predicates(
 
 /// Reject a schema where any value-comparing predicate (`Eq`/`Ne`/`Gt`/`Gte`/
 /// `Lt`/`Lte`/`IsTrue`/`IsFalse`/`Contains`/`Matches`/`In`) targets a
-/// `Field::Secret` path. A secret's plaintext must never be a visibility or
+/// `Property::Secret` path. A secret's plaintext must never be a visibility or
 /// required discriminant. Presence-only predicates (`Set`/`Empty`) stay legal.
 ///
 /// The secret-key collection mirrors the addressable-path construction of
@@ -1568,17 +1719,17 @@ fn walk_rule_for_secret_value_predicates(
 /// and the predicate target is also matched after index normalization, so a
 /// secret addressed through a concrete list instance (`/items/0/api_key`) or
 /// a mode variant payload is flagged just like `/auth/api_key`.
-fn lint_secret_predicate_on_value(fields: &[Field], report: &mut ValidationReport) {
+fn lint_secret_predicate_on_value(fields: &[Property], report: &mut ValidationReport) {
     let secrets = collect_secret_pointer_segments(fields);
     if secrets.is_empty() {
         return;
     }
 
     walk_schema_fields(fields, |node| {
-        if let Some(rule) = field_visible_rule(node.field) {
+        if let Some(rule) = field_visible_rule(node.property) {
             walk_rule_for_secret_value_predicates(rule, &secrets, &node.path, report);
         }
-        if let Some(rule) = field_required_rule(node.field) {
+        if let Some(rule) = field_required_rule(node.property) {
             walk_rule_for_secret_value_predicates(rule, &secrets, &node.path, report);
         }
     });
@@ -1607,11 +1758,11 @@ fn lint_secret_predicate_on_value(fields: &[Field], report: &mut ValidationRepor
 /// nested inside an object, list-item object, or another mode variant is covered
 /// at any depth.
 fn lint_mode_no_payload_variant_must_forbid_expression(
-    fields: &[Field],
+    fields: &[Property],
     report: &mut ValidationReport,
 ) {
     walk_schema_fields(fields, |node| {
-        let Field::Mode(mode) = node.field else {
+        let Property::Mode(mode) = node.property else {
             return;
         };
         for variant in &mode.variants {
@@ -1641,9 +1792,9 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::{FieldKey, error::ValidationReport, field::Field, field_key, path::FieldPath};
+    use crate::{FieldKey, error::ValidationReport, field::Property, field_key, path::FieldPath};
 
-    fn run(fields: &[Field]) -> ValidationReport {
+    fn run(fields: &[Property]) -> ValidationReport {
         let mut report = ValidationReport::new();
         lint_tree(fields, &FieldPath::root(), &mut report);
         report
@@ -1656,8 +1807,8 @@ mod tests {
     #[test]
     fn detects_duplicate_key() {
         let fields = vec![
-            Field::string(FieldKey::new("x").unwrap()).into_field(),
-            Field::number(FieldKey::new("x").unwrap()).into_field(),
+            Property::string(FieldKey::new("x").unwrap()).into_property(),
+            Property::number(FieldKey::new("x").unwrap()).into_property(),
         ];
         let report = run(&fields);
         assert!(report.errors().any(|e| e.code() == "duplicate_key"));
@@ -1666,8 +1817,8 @@ mod tests {
     #[test]
     fn passes_clean_fields() {
         let fields = vec![
-            Field::string(FieldKey::new("a").unwrap()).into_field(),
-            Field::number(FieldKey::new("b").unwrap()).into_field(),
+            Property::string(FieldKey::new("a").unwrap()).into_property(),
+            Property::number(FieldKey::new("b").unwrap()).into_property(),
         ];
         let report = run(&fields);
         assert!(!report.has_errors());
@@ -1676,7 +1827,7 @@ mod tests {
     #[test]
     fn root_rule_rejects_unknown_field_reference() {
         let result = crate::Schema::builder()
-            .add(Field::string(FieldKey::new("tier").unwrap()))
+            .property(Property::string(FieldKey::new("tier").unwrap()))
             .root_rule(predicate_rule(
                 Predicate::eq("/missing", json!("pro")).unwrap(),
             ))
@@ -1692,9 +1843,9 @@ mod tests {
     #[test]
     fn root_rule_accepts_nested_field_reference() {
         let result = crate::Schema::builder()
-            .add(
-                Field::object(FieldKey::new("config").unwrap())
-                    .add(Field::string(FieldKey::new("tier").unwrap())),
+            .property(
+                Property::object(FieldKey::new("config").unwrap())
+                    .property(Property::string(FieldKey::new("tier").unwrap())),
             )
             .root_rule(predicate_rule(
                 Predicate::eq("/config/tier", json!("pro")).unwrap(),
@@ -1707,10 +1858,10 @@ mod tests {
     #[test]
     fn root_rule_accepts_list_object_child_reference() {
         let result = crate::Schema::builder()
-            .add(
-                Field::list(FieldKey::new("items").unwrap()).item(
-                    Field::object(FieldKey::new("row").unwrap())
-                        .add(Field::string(FieldKey::new("name").unwrap())),
+            .property(
+                Property::list(FieldKey::new("items").unwrap()).item(
+                    Property::object(FieldKey::new("row").unwrap())
+                        .property(Property::string(FieldKey::new("name").unwrap())),
                 ),
             )
             .root_rule(predicate_rule(
@@ -1723,7 +1874,7 @@ mod tests {
 
     #[test]
     fn detects_missing_item_schema() {
-        let fields = vec![Field::list(FieldKey::new("items").unwrap()).into_field()];
+        let fields = vec![Property::list(FieldKey::new("items").unwrap()).into_property()];
         let report = run(&fields);
         assert!(report.errors().any(|e| e.code() == "missing_item_schema"));
     }
@@ -1731,9 +1882,9 @@ mod tests {
     #[test]
     fn detects_invalid_default_variant() {
         let fields = vec![
-            Field::mode(FieldKey::new("m").unwrap())
+            Property::mode(FieldKey::new("m").unwrap())
                 .default_variant("nonexistent")
-                .into_field(),
+                .into_property(),
         ];
         let report = run(&fields);
         assert!(
@@ -1746,10 +1897,14 @@ mod tests {
     #[test]
     fn detects_duplicate_variant() {
         let fields = vec![
-            Field::mode(FieldKey::new("m").unwrap())
-                .variant("v1", "V1", Field::string(FieldKey::new("x").unwrap()))
-                .variant("v1", "V1 again", Field::string(FieldKey::new("y").unwrap()))
-                .into_field(),
+            Property::mode(FieldKey::new("m").unwrap())
+                .variant("v1", "V1", Property::string(FieldKey::new("x").unwrap()))
+                .variant(
+                    "v1",
+                    "V1 again",
+                    Property::string(FieldKey::new("y").unwrap()),
+                )
+                .into_property(),
         ];
         let report = run(&fields);
         assert!(report.errors().any(|e| e.code() == "duplicate_variant"));
@@ -1758,13 +1913,13 @@ mod tests {
     #[test]
     fn detects_invalid_mode_variant_key() {
         let fields = vec![
-            Field::mode(FieldKey::new("m").unwrap())
+            Property::mode(FieldKey::new("m").unwrap())
                 .variant(
                     "oauth-token",
                     "OAuth",
-                    Field::string(FieldKey::new("x").unwrap()),
+                    Property::string(FieldKey::new("x").unwrap()),
                 )
-                .into_field(),
+                .into_property(),
         ];
         let report = run(&fields);
         assert!(report.errors().any(|e| e.code() == "invalid_key"));
@@ -1773,12 +1928,12 @@ mod tests {
     #[test]
     fn detects_visibility_cycle_between_top_level_fields() {
         let fields = vec![
-            Field::string(FieldKey::new("a").unwrap())
+            Property::string(FieldKey::new("a").unwrap())
                 .visible_when(predicate_rule(Predicate::eq("/b", json!("on")).unwrap()))
-                .into_field(),
-            Field::string(FieldKey::new("b").unwrap())
+                .into_property(),
+            Property::string(FieldKey::new("b").unwrap())
                 .visible_when(predicate_rule(Predicate::eq("/a", json!("on")).unwrap()))
-                .into_field(),
+                .into_property(),
         ];
         let report = run(&fields);
         assert!(
@@ -1793,20 +1948,20 @@ mod tests {
 
     #[test]
     fn detects_visibility_cycle_inside_nested_object() {
-        let outer = Field::object(field_key!("outer"))
-            .add(
-                Field::string(field_key!("x"))
+        let outer = Property::object(field_key!("outer"))
+            .property(
+                Property::string(field_key!("x"))
                     .visible_when(predicate_rule(
                         Predicate::eq("/outer/y", json!(true)).unwrap(),
                     ))
-                    .into_field(),
+                    .into_property(),
             )
-            .add(
-                Field::string(field_key!("y"))
+            .property(
+                Property::string(field_key!("y"))
                     .visible_when(predicate_rule(
                         Predicate::eq("/outer/x", json!(true)).unwrap(),
                     ))
-                    .into_field(),
+                    .into_property(),
             );
         let report = run(&[outer.into()]);
         assert!(
@@ -1822,12 +1977,12 @@ mod tests {
     #[test]
     fn acyclic_visibility_rules_do_not_error() {
         let fields = vec![
-            Field::string(field_key!("toggle")).into_field(),
-            Field::string(field_key!("detail"))
+            Property::string(field_key!("toggle")).into_property(),
+            Property::string(field_key!("detail"))
                 .visible_when(predicate_rule(
                     Predicate::eq("/toggle", json!(true)).unwrap(),
                 ))
-                .into_field(),
+                .into_property(),
         ];
         let report = run(&fields);
         assert!(!report.errors().any(|e| e.code() == "visibility_cycle"));
@@ -1836,25 +1991,25 @@ mod tests {
     #[test]
     fn detects_visibility_cycle_with_list_index_reference() {
         let fields = vec![
-            Field::list(field_key!("items"))
+            Property::list(field_key!("items"))
                 .item(
-                    Field::object(field_key!("row"))
-                        .add(
-                            Field::string(field_key!("x"))
+                    Property::object(field_key!("row"))
+                        .property(
+                            Property::string(field_key!("x"))
                                 .visible_when(predicate_rule(
                                     Predicate::eq("/items/0/y", json!(true)).unwrap(),
                                 ))
-                                .into_field(),
+                                .into_property(),
                         )
-                        .add(
-                            Field::string(field_key!("y"))
+                        .property(
+                            Property::string(field_key!("y"))
                                 .visible_when(predicate_rule(
                                     Predicate::eq("/items/0/x", json!(true)).unwrap(),
                                 ))
-                                .into_field(),
+                                .into_property(),
                         ),
                 )
-                .into_field(),
+                .into_property(),
         ];
 
         let report = run(&fields);
@@ -1871,16 +2026,16 @@ mod tests {
     #[test]
     fn pointer_refs_in_nested_scope_are_checked_against_root_keys() {
         let fields = vec![
-            Field::object(field_key!("outer"))
-                .add(
-                    Field::string(field_key!("x"))
+            Property::object(field_key!("outer"))
+                .property(
+                    Property::string(field_key!("x"))
                         .visible_when(predicate_rule(
                             Predicate::eq("/outer/y", json!(true)).unwrap(),
                         ))
-                        .into_field(),
+                        .into_property(),
                 )
-                .into_field(),
-            Field::string(field_key!("top")).into_field(),
+                .into_property(),
+            Property::string(field_key!("top")).into_property(),
         ];
 
         let report = run(&fields);
@@ -1897,18 +2052,18 @@ mod tests {
     #[test]
     fn detects_visibility_cycle_through_mode_variant_payload() {
         let fields = vec![
-            Field::string(field_key!("a"))
+            Property::string(field_key!("a"))
                 .visible_when(predicate_rule(Predicate::eq("/m/v", json!(true)).unwrap()))
-                .into_field(),
-            Field::mode(field_key!("m"))
+                .into_property(),
+            Property::mode(field_key!("m"))
                 .variant(
                     "v",
                     "Variant",
-                    Field::string(field_key!("payload"))
+                    Property::string(field_key!("payload"))
                         .visible_when(predicate_rule(Predicate::eq("/a", json!(true)).unwrap()))
-                        .into_field(),
+                        .into_property(),
                 )
-                .into_field(),
+                .into_property(),
         ];
 
         let report = run(&fields);
@@ -1925,12 +2080,12 @@ mod tests {
     #[test]
     fn detects_required_cycle_between_top_level_fields() {
         let fields = vec![
-            Field::string(field_key!("a"))
+            Property::string(field_key!("a"))
                 .required_when(predicate_rule(Predicate::eq("/b", json!(true)).unwrap()))
-                .into_field(),
-            Field::string(field_key!("b"))
+                .into_property(),
+            Property::string(field_key!("b"))
                 .required_when(predicate_rule(Predicate::eq("/a", json!(true)).unwrap()))
-                .into_field(),
+                .into_property(),
         ];
 
         let report = run(&fields);
@@ -1946,20 +2101,20 @@ mod tests {
 
     #[test]
     fn detects_required_cycle_inside_nested_object() {
-        let outer = Field::object(field_key!("outer"))
-            .add(
-                Field::string(field_key!("x"))
+        let outer = Property::object(field_key!("outer"))
+            .property(
+                Property::string(field_key!("x"))
                     .required_when(predicate_rule(
                         Predicate::eq("/outer/y", json!(true)).unwrap(),
                     ))
-                    .into_field(),
+                    .into_property(),
             )
-            .add(
-                Field::string(field_key!("y"))
+            .property(
+                Property::string(field_key!("y"))
                     .required_when(predicate_rule(
                         Predicate::eq("/outer/x", json!(true)).unwrap(),
                     ))
-                    .into_field(),
+                    .into_property(),
             );
 
         let report = run(&[outer.into()]);
@@ -1976,25 +2131,25 @@ mod tests {
     #[test]
     fn detects_required_cycle_with_list_index_reference() {
         let fields = vec![
-            Field::list(field_key!("items"))
+            Property::list(field_key!("items"))
                 .item(
-                    Field::object(field_key!("row"))
-                        .add(
-                            Field::string(field_key!("x"))
+                    Property::object(field_key!("row"))
+                        .property(
+                            Property::string(field_key!("x"))
                                 .required_when(predicate_rule(
                                     Predicate::eq("/items/0/y", json!(true)).unwrap(),
                                 ))
-                                .into_field(),
+                                .into_property(),
                         )
-                        .add(
-                            Field::string(field_key!("y"))
+                        .property(
+                            Property::string(field_key!("y"))
                                 .required_when(predicate_rule(
                                     Predicate::eq("/items/0/x", json!(true)).unwrap(),
                                 ))
-                                .into_field(),
+                                .into_property(),
                         ),
                 )
-                .into_field(),
+                .into_property(),
         ];
 
         let report = run(&fields);
@@ -2011,18 +2166,18 @@ mod tests {
     #[test]
     fn detects_required_cycle_through_mode_variant_payload() {
         let fields = vec![
-            Field::string(field_key!("a"))
+            Property::string(field_key!("a"))
                 .required_when(predicate_rule(Predicate::eq("/m/v", json!(true)).unwrap()))
-                .into_field(),
-            Field::mode(field_key!("m"))
+                .into_property(),
+            Property::mode(field_key!("m"))
                 .variant(
                     "v",
                     "Variant",
-                    Field::string(field_key!("payload"))
+                    Property::string(field_key!("payload"))
                         .required_when(predicate_rule(Predicate::eq("/a", json!(true)).unwrap()))
-                        .into_field(),
+                        .into_property(),
                 )
-                .into_field(),
+                .into_property(),
         ];
 
         let report = run(&fields);
@@ -2039,14 +2194,14 @@ mod tests {
     #[test]
     fn detects_visibility_and_required_cycles_independently() {
         let fields = vec![
-            Field::string(field_key!("a"))
+            Property::string(field_key!("a"))
                 .visible_when(predicate_rule(Predicate::eq("/b", json!(true)).unwrap()))
                 .required_when(predicate_rule(Predicate::eq("/b", json!(true)).unwrap()))
-                .into_field(),
-            Field::string(field_key!("b"))
+                .into_property(),
+            Property::string(field_key!("b"))
                 .visible_when(predicate_rule(Predicate::eq("/a", json!(true)).unwrap()))
                 .required_when(predicate_rule(Predicate::eq("/a", json!(true)).unwrap()))
-                .into_field(),
+                .into_property(),
         ];
 
         let report = run(&fields);
@@ -2072,9 +2227,9 @@ mod tests {
     fn secret_field_with_default_emits_secret_default_forbidden() {
         use serde_json::json;
         let fields = vec![
-            Field::secret(FieldKey::new("api_key").unwrap())
+            Property::secret(FieldKey::new("api_key").unwrap())
                 .default(json!("hardcoded-token"))
-                .into_field(),
+                .into_property(),
         ];
         let report = run(&fields);
         assert!(
@@ -2092,9 +2247,9 @@ mod tests {
     #[test]
     fn secret_field_without_default_passes_lint() {
         let fields = vec![
-            Field::secret(FieldKey::new("api_key").unwrap())
+            Property::secret(FieldKey::new("api_key").unwrap())
                 .required()
-                .into_field(),
+                .into_property(),
         ];
         let report = run(&fields);
         assert!(
@@ -2108,27 +2263,27 @@ mod tests {
     }
 
     #[test]
-    fn legacy_root_rule_reference_emits_advisory_warning() {
-        let mut report = ValidationReport::new();
-        lint_legacy_root_reference("$root.tier", &FieldPath::root(), &mut report);
-        assert!(
-            report
-                .warnings()
-                .any(|e| e.code() == "reference.legacy_root"),
-            "expected legacy root reference warning, got {:?}",
-            report
-                .iter()
-                .map(|e| (e.code(), e.severity()))
-                .collect::<Vec<_>>()
-        );
-        let warning = report
-            .warnings()
-            .find(|e| e.code() == "reference.legacy_root")
-            .expect("warning");
-        assert_eq!(
-            warning.params()[1].1.as_str(),
-            Some("/tier"),
-            "suggested JSON Pointer"
-        );
+    fn legacy_root_rule_reference_is_a_hard_error_with_pointer_rewrite() {
+        for field_ref in ["$root.tier", "/$root/tier"] {
+            let mut report = ValidationReport::new();
+            lint_legacy_root_reference(field_ref, &FieldPath::root(), &mut report);
+            assert!(
+                report.errors().any(|e| e.code() == "reference.legacy_root"),
+                "expected legacy root reference error, got {:?}",
+                report
+                    .iter()
+                    .map(|e| (e.code(), e.severity()))
+                    .collect::<Vec<_>>()
+            );
+            let error = report
+                .errors()
+                .find(|e| e.code() == "reference.legacy_root")
+                .expect("error");
+            assert_eq!(
+                error.params()[1].1.as_str(),
+                Some("/tier"),
+                "suggested JSON Pointer"
+            );
+        }
     }
 }

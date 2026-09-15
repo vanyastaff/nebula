@@ -5,7 +5,7 @@
 //! assertions instead of `main`.
 
 use nebula_schema::{
-    AuthoredValue, CompiledProgram, EvalFuture, ExpressionContext, Field, Schema, field_key,
+    AuthoredValue, CompiledProgram, EvalFuture, ExpressionContext, Property, Schema, field_key,
 };
 use serde_json::json;
 
@@ -20,8 +20,8 @@ impl ExpressionContext for Ctx {
 #[tokio::test]
 async fn e2e_happy_path_validate_then_resolve() {
     let schema = Schema::builder()
-        .add(Field::string(field_key!("name")).required())
-        .add(Field::number(field_key!("count")))
+        .property(Property::string(field_key!("name")).required())
+        .property(Property::number(field_key!("count")))
         .build()
         .expect("schema lints");
 
@@ -39,7 +39,7 @@ async fn e2e_happy_path_validate_then_resolve() {
 #[test]
 fn e2e_fast_path_no_expressions_uses_booleans() {
     let schema = Schema::builder()
-        .add(Field::boolean(field_key!("flag")))
+        .property(Property::boolean(field_key!("flag")))
         .build()
         .expect("build");
 

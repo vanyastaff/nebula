@@ -1,0 +1,7 @@
+error: duplicate property setting `input(required)`
+ --> tests/compile_fail/property_mixed_required.rs:3:10
+  |
+3 | #[derive(Schema)]
+  |          ^^^^^^
+  |
+  = note: this error originates in the derive macro `Schema` (in Nightly builds, run with -Z macro-backtrace for more info)

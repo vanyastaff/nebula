@@ -1,19 +1,19 @@
 use criterion::{Criterion, black_box};
-use nebula_schema::{AuthoredValue, Field, MAX_EXPRESSION_TEXT_BYTES, Schema, field_key};
+use nebula_schema::{AuthoredValue, MAX_EXPRESSION_TEXT_BYTES, Property, Schema, field_key};
 use serde_json::json;
 
 fn sample_schema() -> Schema {
     serde_json::from_value(json!({
         "fields": [
-            Field::string(field_key!("username")).required().min_length(3).into_field(),
-            Field::secret(field_key!("api_key")).required().reveal_last(4).into_field(),
-            Field::list(field_key!("tags")).item(Field::string(field_key!("tag"))).into_field(),
-            Field::object(field_key!("config")).add(Field::boolean(field_key!("enabled"))).into_field(),
-            Field::mode(field_key!("auth")).variant(
+            Property::string(field_key!("username")).required().min_length(3).into_property(),
+            Property::secret(field_key!("api_key")).required().reveal_last(4).into_property(),
+            Property::list(field_key!("tags")).item(Property::string(field_key!("tag"))).into_property(),
+            Property::object(field_key!("config")).property(Property::boolean(field_key!("enabled"))).into_property(),
+            Property::mode(field_key!("auth")).variant(
                 "none",
                 "None",
-                Field::string(field_key!("none")).visible(nebula_schema::VisibilityMode::Never),
-            ).into_field()
+                Property::string(field_key!("none")).visible(nebula_schema::VisibilityMode::Never),
+            ).into_property()
         ]
     }))
     .expect("benchmark schema should deserialize")

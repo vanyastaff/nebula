@@ -12,7 +12,7 @@ use nebula_core::{Dependencies, action_key, node_key};
 use nebula_engine::{ActionRegistry, ExecutionResult};
 use nebula_execution::context::ExecutionBudget;
 use nebula_schema::{
-    Field, HasSchema, Rule, Schema, Transformer, ValidSchema, ValidationReport, field_key,
+    HasSchema, Property, Rule, Schema, Transformer, ValidSchema, ValidationReport, field_key,
 };
 use nebula_workflow::{NodeDefinition, ParamValue};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -42,7 +42,11 @@ struct ForbiddenInput {
 impl HasSchema for ForbiddenInput {
     fn schema() -> Result<ValidSchema, ValidationReport> {
         Schema::builder()
-            .add(Field::number(field_key!("value")).integer().no_expression())
+            .property(
+                Property::number(field_key!("value"))
+                    .integer()
+                    .no_expression(),
+            )
             .build()
     }
 }
@@ -54,7 +58,7 @@ struct OpaqueInput(Value);
 impl HasSchema for OpaqueInput {
     fn schema() -> Result<ValidSchema, ValidationReport> {
         Schema::builder()
-            .add(Field::object(field_key!("payload")))
+            .property(Property::object(field_key!("payload")))
             .build()
     }
 }
@@ -92,8 +96,8 @@ impl HasSchema for IterationInput {
 impl HasSchema for TransformedInput {
     fn schema() -> Result<ValidSchema, ValidationReport> {
         Schema::builder()
-            .add(
-                Field::string(field_key!("label"))
+            .property(
+                Property::string(field_key!("label"))
                     .required()
                     .read_alias("legacy_label")?
                     .with_transformer(Transformer::regex("^.(.*)$", 1)?)
@@ -101,8 +105,8 @@ impl HasSchema for TransformedInput {
                         Rule::one_of([json!("ready")]).expect("bounded fixture rule must admit"),
                     ),
             )
-            .add(
-                Field::string(field_key!("literal"))
+            .property(
+                Property::string(field_key!("literal"))
                     .required()
                     .with_transformer(Transformer::regex("^.(.*)$", 1)?),
             )

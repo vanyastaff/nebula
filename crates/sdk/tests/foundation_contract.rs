@@ -50,7 +50,7 @@ fn curated_schemas_preserve_scalar_unit_and_record_roots() {
         assert_eq!(scalar.kind(), ScalarKind::Null);
         assert_eq!(
             to_value(&schema).expect("schema serializes"),
-            json!({"kind": "scalar", "scalar": {"version": 1, "type": "null"}})
+            json!({"policy_version": 2, "kind": "scalar", "scalar": {"version": 1, "type": "null"}})
         );
     }
 
@@ -156,8 +156,8 @@ pub struct InvalidInput;
 impl HasSchema for InvalidInput {
     fn schema() -> Result<ValidSchema, ValidationReport> {
         Schema::builder()
-            .add(Field::string(field_key!("duplicate")))
-            .add(Field::number(field_key!("duplicate")))
+            .property(Property::string(field_key!("duplicate")))
+            .property(Property::number(field_key!("duplicate")))
             .build()
     }
 }

@@ -19,6 +19,44 @@ use crate::{error::ValidationError, path::FieldPath};
 #[serde(transparent)]
 pub struct FieldKey(Arc<str>);
 
+/// Checked static literal used by generated code before allocating a key.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy)]
+pub struct LiteralFieldKey(&'static str);
+
+impl LiteralFieldKey {
+    /// Check a static literal without allocating or panicking.
+    #[must_use]
+    pub const fn parse(value: &'static str) -> Option<Self> {
+        if key_error(value).is_some() {
+            None
+        } else {
+            Some(Self(value))
+        }
+    }
+}
+
+const fn key_error(value: &str) -> Option<&'static str> {
+    let bytes = value.as_bytes();
+    if bytes.is_empty() {
+        return Some("key cannot be empty");
+    }
+    if bytes.len() > 64 {
+        return Some("key max 64 chars");
+    }
+    if !bytes[0].is_ascii_alphabetic() && bytes[0] != b'_' {
+        return Some("key must start with letter or underscore");
+    }
+    let mut index = 1;
+    while index < bytes.len() {
+        if !bytes[index].is_ascii_alphanumeric() && bytes[index] != b'_' {
+            return Some("key must be ASCII alphanumeric or underscore");
+        }
+        index += 1;
+    }
+    None
+}
+
 impl FieldKey {
     /// Build a field key from a candidate string.
     ///
@@ -33,27 +71,15 @@ impl FieldKey {
     /// Returns `invalid_key` when the candidate string violates key format constraints.
     pub fn new(value: impl AsRef<str>) -> Result<Self, ValidationError> {
         let value = value.as_ref();
-        let bytes = value.as_bytes();
-
-        if value.is_empty() {
-            return Err(Self::err(value, "key cannot be empty"));
-        }
-        // Valid keys are ASCII-only (checked below), so byte length equals char count.
-        if bytes.len() > 64 {
-            return Err(Self::err(value, "key max 64 chars"));
-        }
-        let first = bytes[0] as char;
-        if !first.is_ascii_alphabetic() && first != '_' {
-            return Err(Self::err(value, "key must start with letter or underscore"));
-        }
-        if !value.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-            return Err(Self::err(
-                value,
-                "key must be ASCII alphanumeric or underscore",
-            ));
+        if let Some(message) = key_error(value) {
+            return Err(Self::err(value, message));
         }
 
         Ok(Self(Arc::from(value)))
+    }
+
+    pub(crate) fn from_validated_literal(value: LiteralFieldKey) -> Self {
+        Self(Arc::from(value.0))
     }
 
     /// Borrow the key as `&str`.

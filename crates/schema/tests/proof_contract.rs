@@ -1,7 +1,7 @@
 //! Custody boundaries between authoring, pending checks, and usable runtime data.
 
 use nebula_schema::{
-    AuthoredValue, EngineExpressionContext, ExpressionMode, Field, Predicate, Rule, Schema,
+    AuthoredValue, EngineExpressionContext, ExpressionMode, Predicate, Property, Rule, Schema,
     SecretValue, Transformer, ValidSchema, ValuePath, ValueTree, field_key, schema_of,
 };
 use serde::{Deserialize, Deserializer};
@@ -28,11 +28,11 @@ impl<'de> Deserialize<'de> for TestSecret {
 #[test]
 fn uniqueness_keeps_numeric_equivalence_inside_secret_bearing_items() {
     let schema = Schema::builder()
-        .add(
-            Field::list(field_key!("items")).unique().item(
-                Field::object(field_key!("item"))
-                    .add(Field::secret(field_key!("token")))
-                    .add(Field::number(field_key!("number"))),
+        .property(
+            Property::list(field_key!("items")).unique().item(
+                Property::object(field_key!("item"))
+                    .property(Property::secret(field_key!("token")))
+                    .property(Property::number(field_key!("number"))),
             ),
         )
         .build()
@@ -68,9 +68,9 @@ fn uniqueness_keeps_numeric_equivalence_inside_secret_bearing_items() {
 #[tokio::test]
 async fn conditional_requiredness_is_pending_until_its_expression_is_known() {
     let schema = Schema::builder()
-        .add(Field::boolean(field_key!("enabled")).expression_mode(ExpressionMode::Allowed))
-        .add(
-            Field::string(field_key!("token")).required_when(
+        .property(Property::boolean(field_key!("enabled")).expression_mode(ExpressionMode::Allowed))
+        .property(
+            Property::string(field_key!("token")).required_when(
                 Rule::predicate(Predicate::eq("enabled", json!(true)).unwrap())
                     .expect("bounded requiredness rule"),
             ),
@@ -115,7 +115,7 @@ async fn conditional_requiredness_is_pending_until_its_expression_is_known() {
 #[tokio::test]
 async fn a_predicate_on_an_expression_is_not_a_predicate_on_missing_data() {
     let schema = Schema::builder()
-        .add(Field::string(field_key!("tier")))
+        .property(Property::string(field_key!("tier")))
         .root_rule(
             Rule::predicate(Predicate::Ne(
                 ValuePath::from_pointer("/tier").unwrap(),
@@ -146,7 +146,7 @@ async fn a_predicate_on_an_expression_is_not_a_predicate_on_missing_data() {
 #[test]
 fn data_only_completion_rejects_admitted_programs() {
     let schema = Schema::builder()
-        .add(Field::string(field_key!("value")))
+        .property(Property::string(field_key!("value")))
         .build()
         .unwrap();
     let input = AuthoredValue::from_template_json(json!({"value": "{{ $input.value }}"})).unwrap();
@@ -220,8 +220,8 @@ fn explicit_secret_decoding_uses_the_schema_union_and_alias_contract() {
 #[test]
 fn data_only_secret_normalization_is_retained_exactly_once() {
     let schema = Schema::builder()
-        .add(
-            Field::secret(field_key!("token"))
+        .property(
+            Property::secret(field_key!("token"))
                 .read_alias("legacy_token")
                 .unwrap()
                 .with_transformer(Transformer::Replace {

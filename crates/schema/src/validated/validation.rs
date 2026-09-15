@@ -18,8 +18,8 @@ use zeroize::Zeroize;
 
 use super::{RootShape, ValidSchema};
 use crate::{
-    Field, RequiredMode, SecretValue, SelectOption, ValidationError, ValidationReport, ValuePath,
-    ValueTree, VisibilityMode,
+    Property, RequiredMode, SecretValue, SelectOption, ValidationError, ValidationReport,
+    ValuePath, ValueTree,
     commitment::{CommitmentKey, write_secret_commitment},
 };
 
@@ -38,9 +38,9 @@ pub enum PendingValidation {
         /// The missing input or phase that prevents a complete verdict.
         reason: DeferredReason,
     },
-    /// Visibility or requiredness depends on unresolved context.
+    /// Requiredness depends on unresolved context.
     Policy {
-        /// Field whose conditional policy awaits input.
+        /// Property whose conditional policy awaits input.
         path: ValuePath,
     },
 }
@@ -76,7 +76,7 @@ pub(super) fn validate_tree<E>(
 ) -> CheckResult {
     let context = predicate_context.or_else(|| {
         schema.has_contextual_rules().then(|| {
-            crate::context::prepared_predicate_context(schema.fields(), values)
+            crate::context::prepared_predicate_context(schema.properties(), values)
                 .with_pending_paths(expression_paths.iter().cloned())
         })
     });
@@ -100,7 +100,7 @@ pub(super) fn validate_tree<E>(
         RootShape::Record(_) | RootShape::Union(_) => match values {
             ValueTree::Object(values) => checks.level(
                 schema
-                    .fields()
+                    .properties()
                     .iter()
                     .map(|field| Entry {
                         field,
@@ -112,13 +112,13 @@ pub(super) fn validate_tree<E>(
             _ => checks.type_error(&path, "object"),
         },
     }
-    checks.rules(schema.root_rules(), values, &path, schema.fields());
+    checks.rules(schema.root_rules(), values, &path, schema.properties());
     checks.result.predicate_context = checks.context.take();
     checks.result
 }
 
 struct Entry<'a, E> {
-    field: &'a Field,
+    field: &'a Property,
     value: Option<&'a ValueTree<E>>,
     path: ValuePath,
 }
@@ -129,11 +129,7 @@ impl Checks {
             entries.iter().map(|entry| {
                 FieldPolicyDecl::new(
                     &entry.path,
-                    match entry.field.visible() {
-                        VisibilityMode::Always => VisibilityPolicy::Always,
-                        VisibilityMode::Never => VisibilityPolicy::Never,
-                        VisibilityMode::When(rule) => VisibilityPolicy::When(rule),
-                    },
+                    VisibilityPolicy::Always,
                     match entry.field.required() {
                         RequiredMode::Never => RequiredPolicy::Optional,
                         RequiredMode::Always => RequiredPolicy::Always,
@@ -181,7 +177,7 @@ impl Checks {
         }
     }
 
-    fn field<E>(&mut self, field: &Field, value: &ValueTree<E>, path: &ValuePath) {
+    fn field<E>(&mut self, field: &Property, value: &ValueTree<E>, path: &ValuePath) {
         if matches!(value, ValueTree::Expression(_)) {
             self.result
                 .pending
@@ -189,19 +185,19 @@ impl Checks {
             return;
         }
         match field {
-            Field::String(_) | Field::Code(_) => {
+            Property::String(_) | Property::Code(_) => {
                 if value.as_str().is_none() {
                     self.type_error(path, "string");
                     return;
                 }
             },
-            Field::Secret(_) => {
+            Property::Secret(_) => {
                 if !matches!(value, ValueTree::Secret(_)) {
                     self.type_error(path, "secret string");
                     return;
                 }
             },
-            Field::Number(number) => {
+            Property::Number(number) => {
                 let Some(Value::Number(value)) = value.as_literal() else {
                     self.type_error(path, "number");
                     return;
@@ -215,13 +211,13 @@ impl Checks {
                     return;
                 }
             },
-            Field::Boolean(_) => {
+            Property::Boolean(_) => {
                 if !value.as_literal().is_some_and(Value::is_boolean) {
                     self.type_error(path, "boolean");
                     return;
                 }
             },
-            Field::Object(object) => {
+            Property::Object(object) => {
                 let ValueTree::Object(values) = value else {
                     self.type_error(path, "object");
                     return;
@@ -238,9 +234,9 @@ impl Checks {
                         .collect(),
                 );
             },
-            Field::List(list) => self.list(list, value, path),
-            Field::Mode(mode) => self.mode(mode, value, path),
-            Field::Select(select) => {
+            Property::List(list) => self.list(list, value, path),
+            Property::Mode(mode) => self.mode(mode, value, path),
+            Property::Select(select) => {
                 if select.multiple != matches!(value, ValueTree::List(_)) {
                     self.type_error(
                         path,
@@ -265,7 +261,7 @@ impl Checks {
                     }
                 }
             },
-            Field::File(file) => {
+            Property::File(file) => {
                 let correct = if file.multiple {
                     matches!(value, ValueTree::List(items) if items.iter().all(|value| value.as_str().is_some()))
                 } else {
@@ -283,7 +279,10 @@ impl Checks {
                     return;
                 }
             },
-            Field::Computed(_) | Field::Dynamic(_) | Field::Notice(_) | Field::Unknown(_) => {},
+            Property::Computed(_)
+            | Property::Dynamic(_)
+            | Property::Notice(_)
+            | Property::Unknown(_) => {},
         }
         self.rules(field.rules(), value, path, std::slice::from_ref(field));
     }
@@ -401,7 +400,7 @@ impl Checks {
         rules: &[Rule],
         value: &ValueTree<E>,
         path: &ValuePath,
-        declarations: &[Field],
+        declarations: &[Property],
     ) {
         if rules.is_empty() {
             return;
@@ -490,7 +489,7 @@ fn predicate_context(context: Option<&PredicateContext>) -> &PredicateContext {
     context.unwrap_or(&EMPTY_CONTEXT)
 }
 
-fn absent_for_required<E>(field: &Field, value: Option<&ValueTree<E>>) -> bool {
+fn absent_for_required<E>(field: &Property, value: Option<&ValueTree<E>>) -> bool {
     let Some(value) = value else {
         return true;
     };
@@ -498,14 +497,14 @@ fn absent_for_required<E>(field: &Field, value: Option<&ValueTree<E>>) -> bool {
         return true;
     }
     match (field, value) {
-        (Field::Secret(_), ValueTree::Secret(secret)) => secret.is_empty(),
-        (Field::String(_) | Field::Secret(_) | Field::Code(_), _) => {
+        (Property::Secret(_), ValueTree::Secret(secret)) => secret.is_empty(),
+        (Property::String(_) | Property::Secret(_) | Property::Code(_), _) => {
             value.as_str().is_some_and(str::is_empty)
         },
-        (Field::File(file), _) if !file.multiple => value.as_str().is_some_and(str::is_empty),
-        (Field::File(file), ValueTree::List(items)) if file.multiple => items.is_empty(),
-        (Field::Select(select), ValueTree::List(items)) if select.multiple => items.is_empty(),
-        (Field::List(_), ValueTree::List(items)) => items.is_empty(),
+        (Property::File(file), _) if !file.multiple => value.as_str().is_some_and(str::is_empty),
+        (Property::File(file), ValueTree::List(items)) if file.multiple => items.is_empty(),
+        (Property::Select(select), ValueTree::List(items)) if select.multiple => items.is_empty(),
+        (Property::List(_), ValueTree::List(items)) => items.is_empty(),
         _ => false,
     }
 }

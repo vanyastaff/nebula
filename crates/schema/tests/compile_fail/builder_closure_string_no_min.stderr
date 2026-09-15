@@ -7,11 +7,7 @@ error[E0599]: the method `min` exists for struct `StringBuilder`, but its trait 
  ::: src/field.rs
   |
   | /         pub struct $name {
-  | |             /// Stable field key.
-  | |             pub key: FieldKey,
-  | |             /// Human-readable label.
-... |
-  | |             $(pub $extra: $ty,)*
+  | |             $($(#[$attribute])* pub $field: $ty,)*
   | |         }
   | |_________- doesn't satisfy `StringBuilder: Iterator` or `StringBuilder: Ord`
   |

@@ -1,9 +1,8 @@
 use nebula_schema::{
     AddressSpaceCommitment, AuthoredValue, DeclarationAddress, DeclarationUse, DefinitionKey,
-    DefinitionMemberKey, Field, MAX_GRAPH_DEFINITIONS, MAX_GRAPH_DIAGNOSTICS,
-    MAX_GRAPH_DOCUMENT_BYTES, MAX_GRAPH_IDENTIFIER_BYTES, MAX_GRAPH_REFERENCES, STANDARD_CODES,
-    ScalarSchema, Schema, SchemaAdmissionError, SchemaGraphDocument, SemanticCommitment,
-    ValidSchema, field_key,
+    DefinitionMemberKey, MAX_GRAPH_DEFINITIONS, MAX_GRAPH_DIAGNOSTICS, MAX_GRAPH_DOCUMENT_BYTES,
+    MAX_GRAPH_IDENTIFIER_BYTES, MAX_GRAPH_REFERENCES, Property, STANDARD_CODES, ScalarSchema,
+    Schema, SchemaAdmissionError, SchemaGraphDocument, SemanticCommitment, ValidSchema, field_key,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -2376,10 +2375,14 @@ fn lower_flat_required_scalar_record_to_legacy_valid_schema_when_exact() {
     );
     let lowered = lowered(graph);
     let expected = Schema::builder()
-        .add(Field::string(field_key!("name")).required().no_expression())
-        .add(Field::boolean(field_key!("enabled")).required())
-        .add(
-            Field::integer(field_key!("count"))
+        .property(
+            Property::string(field_key!("name"))
+                .required()
+                .no_expression(),
+        )
+        .property(Property::boolean(field_key!("enabled")).required())
+        .property(
+            Property::integer(field_key!("count"))
                 .required()
                 .no_expression()
                 .min(0)

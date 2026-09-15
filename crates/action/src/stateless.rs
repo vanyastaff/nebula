@@ -177,7 +177,7 @@ mod tests {
 
     impl HasSchema for AddInput {
         fn schema() -> Result<ValidSchema, nebula_schema::ValidationReport> {
-            use nebula_schema::{FieldCollector, Schema, field_key};
+            use nebula_schema::{PropertyCollector, Schema, field_key};
             Schema::builder()
                 .integer(field_key!("a"), |n| n)
                 .integer(field_key!("b"), |n| n)
@@ -192,7 +192,7 @@ mod tests {
 
     impl HasSchema for AddOutput {
         fn schema() -> Result<ValidSchema, nebula_schema::ValidationReport> {
-            use nebula_schema::{FieldCollector, Schema, field_key};
+            use nebula_schema::{PropertyCollector, Schema, field_key};
             Schema::builder().integer(field_key!("sum"), |n| n).build()
         }
     }

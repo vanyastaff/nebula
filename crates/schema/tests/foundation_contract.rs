@@ -1,23 +1,23 @@
 //! Contracts at the authored-input, expression-result, and schema boundaries.
 
 use nebula_schema::{
-    AuthoredValue, EngineExpressionContext, ExpressionMode, Field, ScalarValue, Schema,
+    AuthoredValue, EngineExpressionContext, ExpressionMode, Property, ScalarValue, Schema,
     Transformer, field_key,
 };
 use rstest::rstest;
 use serde_json::{Value, json};
 
 #[rstest]
-#[case::string(Field::string(field_key!("value")).into())]
-#[case::secret(Field::secret(field_key!("value")).into())]
-#[case::code(Field::code(field_key!("value")).into())]
-#[case::number(Field::number(field_key!("value")).into())]
-#[case::boolean(Field::boolean(field_key!("value")).into())]
+#[case::string(Property::string(field_key!("value")).into())]
+#[case::secret(Property::secret(field_key!("value")).into())]
+#[case::code(Property::code(field_key!("value")).into())]
+#[case::number(Property::number(field_key!("value")).into())]
+#[case::boolean(Property::boolean(field_key!("value")).into())]
 fn scalar_fields_reject_structured_values(
-    #[case] field: Field,
+    #[case] field: Property,
     #[values(json!({}), json!([]))] value: Value,
 ) {
-    let schema = Schema::builder().add(field).build().unwrap();
+    let schema = Schema::builder().property(field).build().unwrap();
     let values = AuthoredValue::from_template_json(json!({"value": value})).unwrap();
 
     let report = schema.validate(values).unwrap_err();
@@ -31,7 +31,7 @@ fn scalar_fields_reject_structured_values(
 #[test]
 fn literal_json_list_cannot_bypass_item_validation() {
     let schema = Schema::builder()
-        .add(Field::list(field_key!("items")).item(Field::number(field_key!("item"))))
+        .property(Property::list(field_key!("items")).item(Property::number(field_key!("item"))))
         .build()
         .unwrap();
     assert!(ScalarValue::try_from(json!(["wrong"])).is_err());
@@ -51,8 +51,8 @@ fn literal_json_list_cannot_bypass_item_validation() {
 #[tokio::test]
 async fn required_expression_is_checked_as_data_after_evaluation() {
     let schema = Schema::builder()
-        .add(
-            Field::number(field_key!("value"))
+        .property(
+            Property::number(field_key!("value"))
                 .expression_mode(ExpressionMode::Required)
                 .min(1),
         )
@@ -71,7 +71,7 @@ async fn required_expression_is_checked_as_data_after_evaluation() {
 #[tokio::test]
 async fn required_expression_still_checks_the_result_type() {
     let schema = Schema::builder()
-        .add(Field::number(field_key!("value")).expression_mode(ExpressionMode::Required))
+        .property(Property::number(field_key!("value")).expression_mode(ExpressionMode::Required))
         .build()
         .unwrap();
     let values =
@@ -94,15 +94,15 @@ async fn required_expression_still_checks_the_result_type() {
 #[tokio::test]
 async fn expression_object_is_checked_recursively_without_reinterpreting_strings() {
     let schema = Schema::builder()
-        .add(
-            Field::object(field_key!("config"))
+        .property(
+            Property::object(field_key!("config"))
                 .expression_mode(ExpressionMode::Allowed)
-                .add(
-                    Field::string(field_key!("template"))
+                .property(
+                    Property::string(field_key!("template"))
                         .no_expression()
                         .required(),
                 )
-                .add(Field::number(field_key!("count")).required()),
+                .property(Property::number(field_key!("count")).required()),
         )
         .build()
         .unwrap();
@@ -124,10 +124,10 @@ async fn expression_object_is_checked_recursively_without_reinterpreting_strings
 #[tokio::test]
 async fn expression_list_cannot_bypass_item_validation() {
     let schema = Schema::builder()
-        .add(
-            Field::list(field_key!("items"))
+        .property(
+            Property::list(field_key!("items"))
                 .expression_mode(ExpressionMode::Allowed)
-                .item(Field::number(field_key!("item"))),
+                .item(Property::number(field_key!("item"))),
         )
         .build()
         .unwrap();
@@ -155,8 +155,8 @@ async fn normalization_retains_transformations_and_does_not_repeat_them() {
         to: "aa".into(),
     };
     let schema = Schema::builder()
-        .add(Field::string(field_key!("literal")).with_transformer(replacement.clone()))
-        .add(Field::string(field_key!("evaluated")).with_transformer(replacement))
+        .property(Property::string(field_key!("literal")).with_transformer(replacement.clone()))
+        .property(Property::string(field_key!("evaluated")).with_transformer(replacement))
         .build()
         .unwrap();
     let values = AuthoredValue::from_template_json(json!({
@@ -183,7 +183,7 @@ async fn normalization_retains_transformations_and_does_not_repeat_them() {
 #[test]
 fn validated_secret_material_is_already_redacted() {
     let schema = Schema::builder()
-        .add(Field::secret(field_key!("token")).required())
+        .property(Property::secret(field_key!("token")).required())
         .build()
         .unwrap();
     let values =

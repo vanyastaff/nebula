@@ -2,8 +2,8 @@ use std::convert::Infallible;
 
 use nebula_expression::CompiledProgram;
 use nebula_schema::{
-    AuthoredValue, Expression, Field, LoaderContext, LoaderRegistry, LoaderResult, ResolvedValue,
-    Schema, SecretValue, ValidSchema, ValuePath, ValueTree,
+    AuthoredValue, Expression, LoaderContext, LoaderRegistry, LoaderResult, Property,
+    ResolvedValue, Schema, SecretValue, ValidSchema, ValuePath, ValueTree,
     context::{predicate_context_for, root_predicate_context_for},
     field_key,
     secret::SECRET_REDACTED,
@@ -18,16 +18,16 @@ fn context_value<'a>(context: &'a PredicateContext, pointer: &str) -> Option<&'a
 }
 
 fn secret_object() -> nebula_schema::ObjectField {
-    Field::object(field_key!("credentials"))
-        .add(
-            Field::secret(field_key!("token"))
+    Property::object(field_key!("credentials"))
+        .property(
+            Property::secret(field_key!("token"))
                 .read_alias("old_token")
                 .unwrap()
                 .read_alias("older_token")
                 .unwrap(),
         )
-        .add(
-            Field::string(field_key!("region"))
+        .property(
+            Property::string(field_key!("region"))
                 .read_alias("area")
                 .unwrap(),
         )
@@ -35,15 +35,15 @@ fn secret_object() -> nebula_schema::ObjectField {
 
 fn aliased_schema() -> ValidSchema {
     Schema::builder()
-        .add(
-            Field::object(field_key!("config"))
+        .property(
+            Property::object(field_key!("config"))
                 .read_alias("legacy_config")
                 .unwrap()
-                .add(secret_object().read_alias("legacy_credentials").unwrap()),
+                .property(secret_object().read_alias("legacy_credentials").unwrap()),
         )
-        .add(Field::list(field_key!("rows")).item(secret_object()))
-        .add(
-            Field::mode(field_key!("auth"))
+        .property(Property::list(field_key!("rows")).item(secret_object()))
+        .property(
+            Property::mode(field_key!("auth"))
                 .read_alias("legacy_auth")
                 .unwrap()
                 .variant("oauth", "OAuth", secret_object())
@@ -72,8 +72,8 @@ fn raw_contexts_fold_all_aliases_through_objects_lists_and_modes() {
     .unwrap();
 
     for context in [
-        predicate_context_for(schema.fields(), &values).unwrap(),
-        root_predicate_context_for(schema.fields(), &values).unwrap(),
+        predicate_context_for(schema.properties(), &values).unwrap(),
+        root_predicate_context_for(schema.properties(), &values).unwrap(),
     ] {
         assert_eq!(
             context_value(&context, "/config"),
@@ -107,8 +107,8 @@ fn raw_contexts_fold_all_aliases_through_objects_lists_and_modes() {
 
 #[test]
 fn canonical_input_wins_and_first_declared_alias_wins_otherwise() {
-    let fields = vec![Field::from(
-        Field::string(field_key!("region"))
+    let fields = vec![Property::from(
+        Property::string(field_key!("region"))
             .read_alias("first")
             .unwrap()
             .read_alias("second")
@@ -126,8 +126,8 @@ fn canonical_input_wins_and_first_declared_alias_wins_otherwise() {
 }
 
 fn assert_generic_context<E>(expression: Option<E>) {
-    let fields = vec![Field::from(
-        Field::secret(field_key!("token"))
+    let fields = vec![Property::from(
+        Property::secret(field_key!("token"))
             .read_alias("old_token")
             .unwrap(),
     )];
@@ -224,7 +224,7 @@ fn malformed_secret_containers_and_unknown_modes_are_unavailable() {
             }
         }))
         .unwrap();
-        let context = predicate_context_for(schema.fields(), &values).unwrap();
+        let context = predicate_context_for(schema.properties(), &values).unwrap();
         assert_eq!(context_value(&context, "/config"), None);
         assert_eq!(context_value(&context, "/rows"), None);
         assert_eq!(context_value(&context, "/auth/value"), None);
@@ -302,7 +302,7 @@ fn loader_snapshot_redacts_aliased_expression_sources_and_preserves_literal_data
 #[tokio::test]
 async fn schema_dispatch_never_receives_code_or_explicit_secret_nodes() {
     let schema = Schema::builder()
-        .add(Field::dynamic(field_key!("field")).loader("capture"))
+        .property(Property::dynamic(field_key!("field")).loader("capture"))
         .build()
         .unwrap();
     let registry = LoaderRegistry::new().register_record("capture", |context| async move {
@@ -342,22 +342,22 @@ async fn schema_loader_entrypoints_bind_secret_redaction(
     #[case] options: bool,
 ) {
     let fields = vec![
-        Field::from(
-            Field::secret(field_key!("token"))
+        Property::from(
+            Property::secret(field_key!("token"))
                 .read_alias("old_token")
                 .unwrap(),
         ),
-        Field::from(
-            Field::select(field_key!("choice"))
+        Property::from(
+            Property::select(field_key!("choice"))
                 .dynamic()
                 .loader("options"),
         ),
-        Field::from(Field::dynamic(field_key!("record")).loader("records")),
+        Property::from(Property::dynamic(field_key!("record")).loader("records")),
     ];
     let draft: Schema = serde_json::from_value(json!({"fields": fields})).unwrap();
     let schema = fields
         .into_iter()
-        .fold(Schema::builder(), nebula_schema::SchemaBuilder::add)
+        .fold(Schema::builder(), nebula_schema::SchemaBuilder::property)
         .build()
         .unwrap();
     let registry = LoaderRegistry::new()
@@ -516,7 +516,7 @@ fn raw_boundaries_accept_exact_depth_limit() {
 #[tokio::test]
 async fn registry_errors_preserve_arbitrary_rfc6901_paths() {
     let schema = Schema::builder()
-        .add(Field::dynamic(field_key!("record")).loader("missing"))
+        .property(Property::dynamic(field_key!("record")).loader("missing"))
         .build()
         .unwrap();
     let registry = LoaderRegistry::new();

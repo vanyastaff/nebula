@@ -1,22 +1,22 @@
-use nebula_schema::{AuthoredValue, Field, Schema, field_key};
+use nebula_schema::{AuthoredValue, Property, Schema, field_key};
 use serde_json::json;
 
 fn telegram_send_message_schema() -> nebula_schema::ValidSchema {
     Schema::builder()
-        .add(
-            Field::select(field_key!("resource"))
+        .property(
+            Property::select(field_key!("resource"))
                 .option("message", "Message")
                 .option("chat", "Chat")
                 .required(),
         )
-        .add(
-            Field::select(field_key!("operation"))
+        .property(
+            Property::select(field_key!("operation"))
                 .option("sendMessage", "Send Message")
                 .option("sendPhoto", "Send Photo")
                 .required(),
         )
-        .add(
-            Field::string(field_key!("text"))
+        .property(
+            Property::string(field_key!("text"))
                 .min_length(1)
                 .max_length(4096)
                 .active_when(
@@ -26,8 +26,8 @@ fn telegram_send_message_schema() -> nebula_schema::ValidSchema {
                     .expect("bounded prototype visibility rule"),
                 ),
         )
-        .add(
-            Field::secret(field_key!("api_key"))
+        .property(
+            Property::secret(field_key!("api_key"))
                 .required()
                 .min_length(20)
                 .reveal_last(4),
@@ -38,27 +38,27 @@ fn telegram_send_message_schema() -> nebula_schema::ValidSchema {
 
 fn http_request_schema() -> nebula_schema::ValidSchema {
     Schema::builder()
-        .add(
-            Field::select(field_key!("method"))
+        .property(
+            Property::select(field_key!("method"))
                 .option("GET", "GET")
                 .option("POST", "POST")
                 .option("PUT", "PUT")
                 .required(),
         )
-        .add(Field::string(field_key!("url")).required().url())
-        .add(
-            Field::mode(field_key!("auth"))
+        .property(Property::string(field_key!("url")).required().url())
+        .property(
+            Property::mode(field_key!("auth"))
                 // "hidden" role: use VisibilityMode::Never (hidden variant removed)
                 .variant(
                     "none",
                     "None",
-                    Field::string(field_key!("none_payload"))
+                    Property::string(field_key!("none_payload"))
                         .visible(nebula_schema::VisibilityMode::Never),
                 )
                 .variant(
                     "bearer",
                     "Bearer",
-                    Field::secret(field_key!("token")).required().min_length(8),
+                    Property::secret(field_key!("token")).required().min_length(8),
                 )
                 .default_variant("none"),
         )
@@ -68,21 +68,21 @@ fn http_request_schema() -> nebula_schema::ValidSchema {
 
 fn oauth2_credential_schema() -> nebula_schema::ValidSchema {
     Schema::builder()
-        .add(
-            Field::select(field_key!("grant_type"))
+        .property(
+            Property::select(field_key!("grant_type"))
                 .option("client_credentials", "Client Credentials")
                 .option("authorization_code", "Authorization Code")
                 .required(),
         )
-        .add(
-            Field::secret(field_key!("client_secret"))
+        .property(
+            Property::secret(field_key!("client_secret"))
                 .required()
                 .multiline()
                 .reveal_last(4),
         )
-        .add(
-            Field::list(field_key!("scopes"))
-                .item(Field::string(field_key!("scope")).min_length(1))
+        .property(
+            Property::list(field_key!("scopes"))
+                .item(Property::string(field_key!("scope")).min_length(1))
                 .min_items(1)
                 .max_items(20),
         )
@@ -92,10 +92,10 @@ fn oauth2_credential_schema() -> nebula_schema::ValidSchema {
 
 fn nested_object_schema() -> nebula_schema::ValidSchema {
     Schema::builder()
-        .add(
-            Field::object(field_key!("config"))
-                .add(Field::string(field_key!("host")).required())
-                .add(Field::number(field_key!("port")).required()),
+        .property(
+            Property::object(field_key!("config"))
+                .property(Property::string(field_key!("host")).required())
+                .property(Property::number(field_key!("port")).required()),
         )
         .build()
         .expect("valid nested schema")

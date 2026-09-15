@@ -52,7 +52,7 @@ use std::sync::OnceLock;
 
 use nebula_action::{ActionContext, ActionError, ActionResult, StatelessAction};
 use nebula_core::action_key;
-use nebula_schema::{Field, HasSchema, Schema, ValidSchema, ValidationReport, field_key};
+use nebula_schema::{HasSchema, Property, Schema, ValidSchema, ValidationReport, field_key};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::instrument;
@@ -136,18 +136,18 @@ impl HasSchema for ArrayInput {
         static SCHEMA: OnceLock<Result<ValidSchema, ValidationReport>> = OnceLock::new();
         SCHEMA.get_or_init(|| {
             Schema::builder()
-                .add(Field::list(field_key!("data"))
+                .property(Property::list(field_key!("data"))
                     .description("Required array of arbitrary JSON values; an empty array is valid.")
-                    .item(Field::dynamic(field_key!("item"))))
-                .add(Field::list(field_key!("operations")).item(
-                    Field::object(field_key!("item"))
+                    .item(Property::dynamic(field_key!("item"))))
+                .property(Property::list(field_key!("operations")).item(
+                    Property::object(field_key!("item"))
                         .description("Tagged array operation; variant-specific field presence is checked by serde.")
-                        .add(Field::select(field_key!("op"))
+                        .property(Property::select(field_key!("op"))
                             .option("chunk", "Chunk").option("flatten", "Flatten")
                             .option("take", "Take").option("skip", "Skip").required())
-                        .add(Field::integer(field_key!("size")).min_int(1).max(usize::MAX))
-                        .add(Field::integer(field_key!("depth")).min_int(0).max(usize::MAX))
-                        .add(Field::integer(field_key!("count")).min_int(0).max(usize::MAX)),
+                        .property(Property::integer(field_key!("size")).min_int(1).max(usize::MAX))
+                        .property(Property::integer(field_key!("depth")).min_int(0).max(usize::MAX))
+                        .property(Property::integer(field_key!("count")).min_int(0).max(usize::MAX)),
                 ))
                 .root_rule(super::input_schema::array_present(field_key!("data"))?)
                 .build()

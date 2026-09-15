@@ -66,7 +66,7 @@ pub trait NodeSchemaResolver: Send + Sync {
 
 #[cfg(test)]
 mod tests {
-    use nebula_schema::{Field, FieldKey, Schema, ValidSchema};
+    use nebula_schema::{FieldKey, Property, Schema, ValidSchema};
 
     use super::*;
 
@@ -74,11 +74,11 @@ mod tests {
     fn schema_with_field(key: &str, required: bool) -> ValidSchema {
         let fk = FieldKey::new(key).unwrap();
         let field = if required {
-            Field::string(fk).required()
+            Property::string(fk).required()
         } else {
-            Field::string(fk)
+            Property::string(fk)
         };
-        Schema::builder().add(field).build().unwrap()
+        Schema::builder().property(field).build().unwrap()
     }
 
     struct StubResolver {

@@ -13,7 +13,7 @@ use nebula_action::{
 };
 use nebula_core::{Dependencies, action_key, node_key};
 use nebula_schema::{
-    AuthoredValue, Field, HasSchema, Predicate, Rule, Schema, Transformer, ValidSchema,
+    AuthoredValue, HasSchema, Predicate, Property, Rule, Schema, Transformer, ValidSchema,
     ValidationReport, field_key,
 };
 use nebula_workflow::NodeDefinition;
@@ -49,8 +49,8 @@ fn deserialize_literal<'de, D: serde::Deserializer<'de>>(
 impl HasSchema for PreparedInput {
     fn schema() -> Result<ValidSchema, ValidationReport> {
         Schema::builder()
-            .add(
-                Field::string(field_key!("label"))
+            .property(
+                Property::string(field_key!("label"))
                     .required()
                     .read_alias("legacy_label")?
                     .with_transformer(Transformer::Trim)
@@ -59,13 +59,13 @@ impl HasSchema for PreparedInput {
                         Rule::one_of([json!("ready")]).expect("single bounded rule must admit"),
                     ),
             )
-            .add(
-                Field::secret(field_key!("token"))
+            .property(
+                Property::secret(field_key!("token"))
                     .required()
                     .read_alias("legacy_token")?,
             )
-            .add(Field::boolean(field_key!("approved")).required())
-            .add(Field::string(field_key!("literal")).required())
+            .property(Property::boolean(field_key!("approved")).required())
+            .property(Property::string(field_key!("literal")).required())
             .root_rule(
                 Rule::predicate(Predicate::eq("/approved", json!(true)).unwrap())
                     .expect("single bounded predicate must admit"),
@@ -494,10 +494,10 @@ async fn adapters_require_the_complete_schema_not_just_the_field_types(
     adapter: IngressPath,
 ) {
     let foreign_schema = Schema::builder()
-        .add(Field::string(field_key!("label")).required())
-        .add(Field::secret(field_key!("token")).required())
-        .add(Field::boolean(field_key!("approved")).required())
-        .add(Field::string(field_key!("literal")).required())
+        .property(Property::string(field_key!("label")).required())
+        .property(Property::secret(field_key!("token")).required())
+        .property(Property::boolean(field_key!("approved")).required())
+        .property(Property::string(field_key!("literal")).required())
         .build()
         .unwrap();
     let proof = foreign_schema

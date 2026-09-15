@@ -117,7 +117,7 @@ impl ExpressionContext for CountingLargeResultCtx {
 #[tokio::test]
 async fn aggregate_result_budget_stops_before_resolving_later_expressions() {
     let schema = Schema::builder()
-        .add(Field::list(field_key!("items")).item(Field::string(field_key!("item"))))
+        .property(Property::list(field_key!("items")).item(Property::string(field_key!("item"))))
         .build()
         .unwrap();
     let authored = AuthoredValue::from_template_json(json!({
@@ -155,7 +155,7 @@ async fn aggregate_result_budget_stops_before_resolving_later_expressions() {
 async fn fast_path_no_expressions() {
     // Schema where all fields are ExpressionMode::Forbidden — uses_expressions = false.
     let schema = Schema::builder()
-        .add(Field::boolean(field_key!("flag")))
+        .property(Property::boolean(field_key!("flag")))
         .build()
         .unwrap();
 
@@ -178,7 +178,7 @@ async fn fast_path_no_expressions() {
 #[tokio::test]
 async fn expression_resolves_to_literal() {
     let schema = Schema::builder()
-        .add(Field::number(field_key!("n")))
+        .property(Property::number(field_key!("n")))
         .build()
         .unwrap();
 
@@ -196,7 +196,7 @@ async fn expression_resolves_to_literal() {
 #[tokio::test]
 async fn literal_values_pass_through() {
     let schema = Schema::builder()
-        .add(Field::string(field_key!("s")))
+        .property(Property::string(field_key!("s")))
         .build()
         .unwrap();
 
@@ -216,7 +216,7 @@ async fn literal_values_pass_through() {
 #[tokio::test]
 async fn expression_evaluation_failure_returns_report() {
     let schema = Schema::builder()
-        .add(Field::string(field_key!("x")))
+        .property(Property::string(field_key!("x")))
         .build()
         .unwrap();
 
@@ -237,7 +237,7 @@ async fn expression_evaluation_failure_returns_report() {
 #[tokio::test]
 async fn expression_type_mismatch_returns_expression_type_mismatch() {
     let schema = Schema::builder()
-        .add(Field::string(field_key!("x")))
+        .property(Property::string(field_key!("x")))
         .build()
         .unwrap();
 
@@ -268,7 +268,9 @@ async fn expression_type_mismatch_returns_expression_type_mismatch() {
 #[tokio::test]
 async fn expression_type_mismatch_in_nested_object_is_remapped() {
     let schema = Schema::builder()
-        .add(Field::object(field_key!("user")).add(Field::string(field_key!("name"))))
+        .property(
+            Property::object(field_key!("user")).property(Property::string(field_key!("name"))),
+        )
         .build()
         .unwrap();
 
@@ -302,7 +304,7 @@ async fn expression_type_mismatch_in_nested_object_is_remapped() {
 #[tokio::test]
 async fn expression_type_mismatch_in_list_item_is_remapped() {
     let schema = Schema::builder()
-        .add(Field::list(field_key!("tags")).item(Field::string(field_key!("_item"))))
+        .property(Property::list(field_key!("tags")).item(Property::string(field_key!("_item"))))
         .build()
         .unwrap();
 
@@ -337,8 +339,8 @@ async fn expression_type_mismatch_in_list_item_is_remapped() {
 #[tokio::test]
 async fn expression_type_mismatch_remap_is_scoped_to_failing_sibling() {
     let schema = Schema::builder()
-        .add(Field::string(field_key!("a")))
-        .add(Field::number(field_key!("b")))
+        .property(Property::string(field_key!("a")))
+        .property(Property::number(field_key!("b")))
         .build()
         .unwrap();
 
@@ -379,10 +381,10 @@ async fn expression_type_mismatch_remap_is_scoped_to_failing_sibling() {
 #[tokio::test]
 async fn nested_object_expressions_resolve() {
     let schema = Schema::builder()
-        .add(
-            Field::object(field_key!("user"))
-                .add(Field::string(field_key!("name")))
-                .add(Field::string(field_key!("email"))),
+        .property(
+            Property::object(field_key!("user"))
+                .property(Property::string(field_key!("name")))
+                .property(Property::string(field_key!("email"))),
         )
         .build()
         .unwrap();
@@ -416,7 +418,7 @@ async fn nested_object_expressions_resolve() {
 #[tokio::test]
 async fn list_items_with_expressions_resolve() {
     let schema = Schema::builder()
-        .add(Field::list(field_key!("tags")).item(Field::string(field_key!("_item"))))
+        .property(Property::list(field_key!("tags")).item(Property::string(field_key!("_item"))))
         .build()
         .unwrap();
 
@@ -453,8 +455,8 @@ async fn list_items_with_expressions_resolve() {
 #[tokio::test]
 async fn multiple_expressions_all_resolve() {
     let schema = Schema::builder()
-        .add(Field::string(field_key!("a")))
-        .add(Field::string(field_key!("b")))
+        .property(Property::string(field_key!("a")))
+        .property(Property::string(field_key!("b")))
         .build()
         .unwrap();
 
@@ -479,7 +481,7 @@ async fn multiple_expressions_all_resolve() {
 #[tokio::test]
 async fn into_json_works_after_resolution() {
     let schema = Schema::builder()
-        .add(Field::string(field_key!("name")))
+        .property(Property::string(field_key!("name")))
         .build()
         .unwrap();
 
@@ -494,7 +496,7 @@ async fn into_json_works_after_resolution() {
 #[tokio::test]
 async fn into_typed_deserializes_successfully() {
     let schema = Schema::builder()
-        .add(Field::string(field_key!("name")))
+        .property(Property::string(field_key!("name")))
         .build()
         .unwrap();
 
@@ -514,7 +516,7 @@ async fn into_typed_deserializes_successfully() {
 #[tokio::test]
 async fn into_typed_returns_type_mismatch_on_deserialize_failure() {
     let schema = Schema::builder()
-        .add(Field::string(field_key!("name")))
+        .property(Property::string(field_key!("name")))
         .build()
         .unwrap();
 
@@ -529,7 +531,7 @@ async fn into_typed_returns_type_mismatch_on_deserialize_failure() {
 #[tokio::test]
 async fn secret_field_promotes_and_resolved_get_sanitizes_json() {
     let schema = Schema::builder()
-        .add(Field::secret(field_key!("api_key")).required())
+        .property(Property::secret(field_key!("api_key")).required())
         .build()
         .unwrap();
 
@@ -560,7 +562,7 @@ async fn secret_field_promotes_and_resolved_get_sanitizes_json() {
 #[tokio::test]
 async fn into_typed_rejects_secret_material_by_default() {
     let schema = Schema::builder()
-        .add(Field::secret(field_key!("api_key")).required())
+        .property(Property::secret(field_key!("api_key")).required())
         .build()
         .unwrap();
 
@@ -581,12 +583,13 @@ async fn into_typed_rejects_secret_material_by_default() {
 #[tokio::test]
 async fn resolve_promotes_mode_object_envelope_secrets_via_default_variant() {
     let schema = Schema::builder()
-        .add(
-            Field::mode(field_key!("auth"))
+        .property(
+            Property::mode(field_key!("auth"))
                 .variant(
                     "token",
                     "Token",
-                    Field::object(field_key!("payload")).add(Field::secret(field_key!("api_key"))),
+                    Property::object(field_key!("payload"))
+                        .property(Property::secret(field_key!("api_key"))),
                 )
                 .default_variant("token")
                 .required(),
@@ -627,11 +630,11 @@ async fn resolved_expression_object_folds_aliases_and_protects_secrets() {
     }
 
     let schema = Schema::builder()
-        .add(
-            Field::object(field_key!("creds"))
+        .property(
+            Property::object(field_key!("creds"))
                 .expression_mode(ExpressionMode::Allowed)
-                .add(
-                    Field::secret(field_key!("api_key"))
+                .property(
+                    Property::secret(field_key!("api_key"))
                         .read_alias("token_alias")
                         .unwrap(),
                 ),
@@ -705,37 +708,42 @@ async fn resolved_expression_object_folds_aliases_and_protects_secrets() {
 
 #[rstest::rstest]
 #[case::declared_child(
-    Field::object(field_key!("payload"))
+    Property::object(field_key!("payload"))
         .no_expression()
-        .add(Field::string(field_key!("child")))
+        .property(Property::string(field_key!("child")))
         .into(),
     json!({"payload": {"child": {"$expr": "{{ $x }}"}}}),
+    "expression.forbidden",
     "/payload/child",
 )]
 #[case::hidden_extra(
-    Field::object(field_key!("payload")).no_expression().into(),
+    Property::object(field_key!("payload")).no_expression().into(),
     json!({"payload": {"extra": [{"$expr": "{{ $x }}"}]}}),
+    "expression.forbidden",
     "/payload/extra/0",
 )]
 #[case::declared_list_item(
-    Field::list(field_key!("payload"))
+    Property::list(field_key!("payload"))
         .no_expression()
-        .item(Field::string(field_key!("item")))
+        .item(Property::string(field_key!("item")))
         .into(),
     json!({"payload": [{"$expr": "{{ $x }}"}]}),
+    "expression.forbidden",
     "/payload/0",
 )]
 #[case::opaque_field(
     serde_json::from_value(json!({"type": "future_widget", "key": "payload"})).unwrap(),
     json!({"payload": {"extra": [{"$expr": "{{ $x }}"}]}}),
-    "/payload/extra/0",
+    "schema.unsupported_property_kind",
+    "/payload",
 )]
 fn forbidden_subtrees_reject_expressions_in_declared_children_and_hidden_data(
-    #[case] field: Field,
+    #[case] field: Property,
     #[case] input: serde_json::Value,
+    #[case] code: &str,
     #[case] pointer: &str,
 ) {
-    let schema = Schema::builder().add(field).build().unwrap();
+    let schema = Schema::builder().property(field).build().unwrap();
     let values = AuthoredValue::from_template_json(input).unwrap();
     let report = schema
         .validate(values)
@@ -744,5 +752,5 @@ fn forbidden_subtrees_reject_expressions_in_declared_children_and_hidden_data(
         .errors()
         .map(|error| (error.code(), error.path().to_string()))
         .collect();
-    assert_eq!(errors, [("expression.forbidden", pointer.to_owned())]);
+    assert_eq!(errors, [(code, pointer.to_owned())]);
 }

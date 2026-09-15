@@ -87,10 +87,10 @@ impl nebula_schema::HasSchema for PgConfig {
         // Type declarations authorize expressions; the custom ResourceConfig
         // validator below owns the non-empty host policy exercised by this fixture.
         nebula_schema::Schema::builder()
-            .add(nebula_schema::Field::string(nebula_schema::field_key!(
+            .property(nebula_schema::Property::string(nebula_schema::field_key!(
                 "host"
             )))
-            .add(nebula_schema::Field::number(nebula_schema::field_key!("port")).integer())
+            .property(nebula_schema::Property::number(nebula_schema::field_key!("port")).integer())
             .build()
     }
 }

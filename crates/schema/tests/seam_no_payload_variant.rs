@@ -13,7 +13,7 @@
 //! proves the realistic smuggle against the *safe* shape never escapes either.
 
 use nebula_schema::mode::VisibilityMode;
-use nebula_schema::{AuthoredValue, Field, Schema, field_key};
+use nebula_schema::{AuthoredValue, Property, Schema, field_key};
 use serde_json::json;
 
 fn codes(report: &nebula_schema::ValidationReport) -> Vec<(String, String)> {
@@ -33,7 +33,7 @@ fn visible_no_payload_variant_object_expr_payload_is_rejected_at_validate() {
     // This is independent of the build-time lint (the schema is valid; the
     // runtime path is what fails closed here).
     let schema = Schema::builder()
-        .add(Field::mode(field_key!("auth")).variant_empty("none", "None"))
+        .property(Property::mode(field_key!("auth")).variant_empty("none", "None"))
         .build()
         .expect("variant_empty schema builds (placeholder forbids expressions)");
 
@@ -60,7 +60,7 @@ fn no_payload_variant_string_marker_payload_is_rejected_at_validate() {
     // an expression-marker string into `AuthoredValue::Expression` too, so the
     // no-payload placeholder must reject this form as well.
     let schema = Schema::builder()
-        .add(Field::mode(field_key!("auth")).variant_empty("none", "None"))
+        .property(Property::mode(field_key!("auth")).variant_empty("none", "None"))
         .build()
         .expect("variant_empty schema builds");
 
@@ -87,9 +87,9 @@ fn nested_no_payload_variant_expr_payload_is_rejected_at_validate() {
     // the nested mode and still reject the smuggled expression at the hidden
     // placeholder.
     let schema = Schema::builder()
-        .add(
-            Field::object(field_key!("outer"))
-                .add(Field::mode(field_key!("auth")).variant_empty("none", "None")),
+        .property(
+            Property::object(field_key!("outer"))
+                .property(Property::mode(field_key!("auth")).variant_empty("none", "None")),
         )
         .build()
         .expect("nested variant_empty schema builds");
@@ -116,8 +116,8 @@ fn hidden_no_payload_variant_literal_payload_still_builds_and_resolves() {
     // `value` (the legitimate shape) validates and resolves cleanly. The guard
     // must reject only smuggled expressions, not the normal no-payload form.
     let schema = Schema::builder()
-        .add(
-            Field::mode(field_key!("auth"))
+        .property(
+            Property::mode(field_key!("auth"))
                 .visible(VisibilityMode::Never)
                 .variant_empty("none", "None"),
         )

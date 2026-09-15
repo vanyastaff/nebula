@@ -10,7 +10,7 @@
 )]
 
 use nebula_schema::{
-    AuthoredValue, CompiledProgram, EvalFuture, ExpressionContext, Field, Schema, field_key,
+    AuthoredValue, CompiledProgram, EvalFuture, ExpressionContext, Property, Schema, field_key,
 };
 use serde_json::json;
 
@@ -26,8 +26,8 @@ impl ExpressionContext for ConstJson {
 #[tokio::main]
 async fn main() {
     let schema = Schema::builder()
-        .add(Field::boolean(field_key!("enabled")))
-        .add(Field::number(field_key!("n")))
+        .property(Property::boolean(field_key!("enabled")))
+        .property(Property::number(field_key!("n")))
         .build()
         .expect("lint");
 

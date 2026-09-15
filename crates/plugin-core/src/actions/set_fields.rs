@@ -26,7 +26,7 @@ use std::sync::OnceLock;
 
 use nebula_action::{ActionContext, ActionError, ActionResult, StatelessAction};
 use nebula_core::action_key;
-use nebula_schema::{Field, HasSchema, Schema, ValidSchema, ValidationReport, field_key};
+use nebula_schema::{HasSchema, Property, Schema, ValidSchema, ValidationReport, field_key};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tracing::instrument;
@@ -73,12 +73,12 @@ impl HasSchema for SetFieldsInput {
         static SCHEMA: OnceLock<Result<ValidSchema, ValidationReport>> = OnceLock::new();
         SCHEMA.get_or_init(|| {
             Schema::builder()
-                .add(super::input_schema::nullable_object_data())
-                .add(Field::list(field_key!("assignments")).item(
-                    Field::object(field_key!("item"))
+                .property(super::input_schema::nullable_object_data())
+                .property(Property::list(field_key!("assignments")).item(
+                    Property::object(field_key!("item"))
                         .description("Assignment; serde requires both keys while allowing empty names and null values.")
-                        .add(Field::string(field_key!("name")))
-                        .add(Field::dynamic(field_key!("value"))),
+                        .property(Property::string(field_key!("name")))
+                        .property(Property::dynamic(field_key!("value"))),
                 ))
                 .build()
         }).clone()

@@ -14,20 +14,20 @@ use serde_json::json;
 
 fn main() {
     let schema = Schema::builder()
-        .add(
-            Field::select(field_key!("auth_type"))
+        .property(
+            Property::select(field_key!("auth_type"))
                 .option("api_key", "API key")
                 .option("oauth2", "OAuth2")
                 .required(),
         )
-        .add(
-            Field::secret(field_key!("api_key")).active_when(
+        .property(
+            Property::secret(field_key!("api_key")).active_when(
                 Rule::predicate(Predicate::eq("auth_type", json!("api_key")).expect("predicate"))
                     .expect("bounded API key visibility rule"),
             ),
         )
-        .add(
-            Field::string(field_key!("client_id")).active_when(
+        .property(
+            Property::string(field_key!("client_id")).active_when(
                 Rule::predicate(Predicate::eq("auth_type", json!("oauth2")).expect("predicate"))
                     .expect("bounded OAuth visibility rule"),
             ),
@@ -66,6 +66,6 @@ fn main() {
 
     eprintln!(
         "OK: conditional schema has {} field(s)",
-        schema.fields().len()
+        schema.properties().len()
     );
 }

@@ -2,7 +2,7 @@
 //!
 //! Raw boundaries check depth before traversing or copying input. Projection
 //! folds read aliases without cloning authored expressions or secret material.
-//! Field and root rules share the same whole-container predicate context.
+//! Property and root rules share the same whole-container predicate context.
 
 use std::collections::{HashMap, HashSet};
 
@@ -12,7 +12,8 @@ use serde_json::Value;
 
 use crate::{
     ValidationError,
-    field::{Field, ModeField},
+    field::{ModeField, Property},
+    field_tree::ensure_supported_properties,
     key::FieldKey,
     secret::SECRET_REDACTED,
     value::{ValuePath, ValueTree},
@@ -26,13 +27,16 @@ use crate::{
 /// # Errors
 ///
 /// Returns `recursion_limit` before copying input deeper than the value limit.
+/// Rejects over-deep declarations with `schema.depth_limit` and unknown kinds
+/// with `schema.unsupported_property_kind` before deriving a snapshot.
 #[doc(hidden)]
 #[tracing::instrument(level = "debug", skip_all, fields(field_count = fields.len()))]
 pub fn predicate_context_for<E>(
-    fields: &[Field],
+    fields: &[Property],
     values: &ValueTree<E>,
 ) -> Result<PredicateContext, ValidationError> {
     values.check_depth(&ValuePath::root(), 0)?;
+    ensure_supported_properties(fields)?;
     Ok(prepared_predicate_context(fields, values))
 }
 
@@ -41,9 +45,11 @@ pub fn predicate_context_for<E>(
 /// # Errors
 ///
 /// Returns `recursion_limit` before copying input deeper than the value limit.
+/// Rejects over-deep declarations with `schema.depth_limit` and unknown kinds
+/// with `schema.unsupported_property_kind` before deriving a snapshot.
 #[doc(hidden)]
 pub fn root_predicate_context_for<E>(
-    fields: &[Field],
+    fields: &[Property],
     values: &ValueTree<E>,
 ) -> Result<PredicateContext, ValidationError> {
     predicate_context_for(fields, values)
@@ -51,11 +57,11 @@ pub fn root_predicate_context_for<E>(
 
 /// Build the single field/root rule context after canonical preparation.
 ///
-/// The caller owns the depth proof and supplies pending expression paths to
-/// the validator separately. No source text or redaction marker is observable.
+/// The caller owns the depth and declaration-support proofs and supplies pending
+/// expression paths separately. No source text or redaction marker is observable.
 #[tracing::instrument(level = "debug", skip_all, fields(field_count = fields.len()))]
 pub(crate) fn prepared_predicate_context<E>(
-    fields: &[Field],
+    fields: &[Property],
     values: &ValueTree<E>,
 ) -> PredicateContext {
     PredicateContext::from_json(project_root(fields, values, Projection::Predicates))
@@ -63,10 +69,11 @@ pub(crate) fn prepared_predicate_context<E>(
 
 /// Materialize a bounded loader snapshot without exposing expression sources.
 pub(crate) fn redacted_loader_json<E>(
-    fields: &[Field],
+    fields: &[Property],
     values: &ValueTree<E>,
 ) -> Result<Value, ValidationError> {
     values.check_depth(&ValuePath::root(), 0)?;
+    ensure_supported_properties(fields)?;
     Ok(project_root(fields, values, Projection::Loader))
 }
 
@@ -89,7 +96,7 @@ impl Projection {
     }
 }
 
-fn project_root<E>(fields: &[Field], values: &ValueTree<E>, projection: Projection) -> Value {
+fn project_root<E>(fields: &[Property], values: &ValueTree<E>, projection: Projection) -> Value {
     if let ValueTree::Object(values) = values {
         Value::Object(project_scope(fields, values, projection, false))
     } else if fields.iter().any(field_subtree_has_secret) {
@@ -100,14 +107,14 @@ fn project_root<E>(fields: &[Field], values: &ValueTree<E>, projection: Projecti
 }
 
 /// Inspect raw schema trees without recursion, including inactive mode variants.
-pub(crate) fn field_subtree_has_secret(field: &Field) -> bool {
+pub(crate) fn field_subtree_has_secret(field: &Property) -> bool {
     let mut pending = vec![field];
     while let Some(field) = pending.pop() {
         match field {
-            Field::Secret(_) => return true,
-            Field::Object(object) => pending.extend(&object.fields),
-            Field::List(list) => pending.extend(list.item.as_deref()),
-            Field::Mode(mode) => {
+            Property::Secret(_) => return true,
+            Property::Object(object) => pending.extend(&object.fields),
+            Property::List(list) => pending.extend(list.item.as_deref()),
+            Property::Mode(mode) => {
                 pending.extend(mode.variants.iter().map(|variant| variant.field.as_ref()));
             },
             _ => {},
@@ -117,11 +124,11 @@ pub(crate) fn field_subtree_has_secret(field: &Field) -> bool {
 }
 
 fn project_value<E>(
-    field: Option<&Field>,
+    field: Option<&Property>,
     value: &ValueTree<E>,
     projection: Projection,
 ) -> Option<Value> {
-    if matches!(field, Some(Field::Secret(_)))
+    if matches!(field, Some(Property::Secret(_)))
         || matches!(value, ValueTree::Secret(_) | ValueTree::Expression(_))
     {
         return projection.unavailable();
@@ -129,10 +136,10 @@ fn project_value<E>(
 
     let secret_bearing = field.is_some_and(field_subtree_has_secret);
     match (field, value) {
-        (Some(Field::Object(object)), ValueTree::Object(values)) => Some(Value::Object(
+        (Some(Property::Object(object)), ValueTree::Object(values)) => Some(Value::Object(
             project_scope(&object.fields, values, projection, secret_bearing),
         )),
-        (Some(Field::List(list)), ValueTree::List(values)) => Some(Value::Array(
+        (Some(Property::List(list)), ValueTree::List(values)) => Some(Value::Array(
             values
                 .iter()
                 .map(|value| {
@@ -140,13 +147,12 @@ fn project_value<E>(
                 })
                 .collect(),
         )),
-        (Some(Field::Mode(mode)), ValueTree::Object(values)) => Some(Value::Object(project_mode(
-            mode,
-            values,
-            projection,
-            secret_bearing,
-        ))),
-        (Some(Field::Object(_) | Field::List(_) | Field::Mode(_)), _) if secret_bearing => {
+        (Some(Property::Mode(mode)), ValueTree::Object(values)) => Some(Value::Object(
+            project_mode(mode, values, projection, secret_bearing),
+        )),
+        (Some(Property::Object(_) | Property::List(_) | Property::Mode(_)), _)
+            if secret_bearing =>
+        {
             projection.unavailable()
         },
         (_, ValueTree::Literal(value)) => Some(value.as_json().clone()),
@@ -171,12 +177,12 @@ fn project_value<E>(
 /// Select canonical input first, otherwise the first declared alias. Losing
 /// aliases are never copied, even when their values have a different shape.
 fn project_scope<E>(
-    fields: &[Field],
+    fields: &[Property],
     values: &IndexMap<String, ValueTree<E>>,
     projection: Projection,
     secret_bearing: bool,
 ) -> serde_json::Map<String, Value> {
-    let by_key: HashMap<&str, &Field> = fields
+    let by_key: HashMap<&str, &Property> = fields
         .iter()
         .map(|field| (field.key().as_str(), field))
         .collect();
@@ -252,7 +258,7 @@ mod tests {
 
     #[test]
     fn literal_field_is_visible_to_predicates() {
-        let fields = vec![Field::from(Field::string(field_key!("name")))];
+        let fields = vec![Property::from(Property::string(field_key!("name")))];
         let values = AuthoredValue::from_data(json!({"name": "alice"})).unwrap();
         let ctx = predicate_context_for(&fields, &values).unwrap();
         assert_eq!(
@@ -263,9 +269,9 @@ mod tests {
 
     #[test]
     fn pre_resolve_plaintext_secret_is_scrubbed_by_schema_type() {
-        // A Field::Secret holding a pre-resolve plaintext Literal MUST NOT
+        // A Property::Secret holding a pre-resolve plaintext Literal MUST NOT
         // enter the predicate context. The old runtime-tag scrub failed this.
-        let fields = vec![Field::from(Field::secret(field_key!("api_key")))];
+        let fields = vec![Property::from(Property::secret(field_key!("api_key")))];
         let values = AuthoredValue::from_data(json!({"api_key": "s3cr3t-plaintext"})).unwrap();
         let ctx = predicate_context_for(&fields, &values).unwrap();
         assert!(
@@ -280,8 +286,9 @@ mod tests {
         // secret data is still a wrong shape and must be excluded.
         let error = ScalarValue::try_from(json!({"the_secret": "PLAINTEXT-LEAK"})).unwrap_err();
         assert_eq!(error.code(), "type_mismatch");
-        let obj = Field::object(field_key!("cfg")).add(Field::secret(field_key!("the_secret")));
-        let fields = vec![Field::from(obj)];
+        let obj = Property::object(field_key!("cfg"))
+            .property(Property::secret(field_key!("the_secret")));
+        let fields = vec![Property::from(obj)];
         let values = AuthoredValue::from_data(json!({
             "cfg": json!({"the_secret": "PLAINTEXT-LEAK"}).to_string()
         }))
@@ -317,7 +324,7 @@ mod tests {
         // Even for NON-secret fields that are legitimately in the context,
         // Debug prints neither keys nor values (only a count). Pins the full
         // "no keys, no values" redaction guarantee.
-        let fields = vec![Field::from(Field::string(field_key!("region")))];
+        let fields = vec![Property::from(Property::string(field_key!("region")))];
         let values = AuthoredValue::from_data(json!({"region": "eu-secret-marker"})).unwrap();
         let ctx = predicate_context_for(&fields, &values).unwrap();
         let dbg = format!("{ctx:?}");

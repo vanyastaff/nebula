@@ -45,10 +45,16 @@ pub fn field_key(input: TokenStream) -> TokenStream {
 
     let crate_path = crate_path();
 
-    let out = quote! {
-        #crate_path::FieldKey::new(#lit)
-            .expect("field_key! validated at compile time")
-    };
+    let out = quote! {{
+        const __NEBULA_KEY: #crate_path::__private::LiteralFieldKey =
+            match #crate_path::__private::LiteralFieldKey::parse(#lit) {
+                ::core::option::Option::Some(key) => key,
+                ::core::option::Option::None => {
+                    ::core::panic!("schema macro and runtime key validation disagree")
+                }
+            };
+        #crate_path::__private::field_key_from_validated_literal(__NEBULA_KEY)
+    }};
     nebula_macro_support::paths::resolve_generated_crate_paths(out).into()
 }
 
@@ -63,6 +69,8 @@ pub fn field_key(input: TokenStream) -> TokenStream {
 /// `#[derive(EnumSelect)]` instead.)
 ///
 /// Supported attributes:
+/// - `#[property(...)]` — structured Phase-5 property sections:
+///   `display(...)`, `input(...)`, and `validate(...)`.
 /// - `#[field(...)]` — label/description/placeholder/default/hint/secret/
 ///   multiline/no_expression/expression_required/enum_select/skip/group.
 /// - `#[validate(...)]` — required/length(min,max)/range(min..=max)/ pattern/url/email.
@@ -75,7 +83,7 @@ pub fn field_key(input: TokenStream) -> TokenStream {
 ///   key: `rename` / `rename_all` rename the field or variant, `skip` /
 ///   `skip_deserializing` drop it, `tag` / `content` select adjacent enum tagging.
 ///   `#[serde(flatten)]` is rejected (splicing is a follow-up).
-#[proc_macro_derive(Schema, attributes(field, validate, schema))]
+#[proc_macro_derive(Schema, attributes(property, field, validate, schema))]
 pub fn derive_schema(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let tokens = derive_schema::expand(input).unwrap_or_else(|error| error.to_compile_error());
@@ -86,7 +94,7 @@ pub fn derive_schema(input: TokenStream) -> TokenStream {
 /// Variant names become catalog values following serde (`rename` / `rename_all`,
 /// else `snake_case`); `#[serde(skip)]` drops a variant. Use
 /// `#[field(label = "...")]` to override the display label.
-#[proc_macro_derive(EnumSelect, attributes(field))]
+#[proc_macro_derive(EnumSelect, attributes(property, field))]
 pub fn derive_enum_select(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let tokens = derive_enum::expand(input).unwrap_or_else(|error| error.to_compile_error());

@@ -65,7 +65,7 @@ automatic runtime shutdown schedule.
 
 Shared authored fields have an exact canonical JSON budget of 32 KiB, including
 escaping and excluding schema bytes. The bound input schema has a separate
-2 MiB budget. Field and collection limits also apply. Same-version changes to
+2 MiB budget. Property and collection limits also apply. Same-version changes to
 categories, links, notices, or leaf extras invalidate old recorded evidence.
 Admission also meters the complete canonical leaf record against the 4 MiB
 default decoder ceiling, including the action output schema and all leaf extras,
@@ -88,17 +88,25 @@ compiler projects selected identity, schema, dependency, and execution fields;
 it does not serialize `BaseMetadata` or `DeprecationNotice`. This catalog migration
 does not change compiler epochs, durable hashes, or historical frozen plan bytes.
 
-### Phase-5 authoring target (implementation pending)
+### Phase-5 authoring target
 
 [`crates/schema/docs/PHASE5_PROPERTY.md`](../crates/schema/docs/PHASE5_PROPERTY.md)
 specifies the revised target contract for separate value and slot grammars with
-explicit associated data types. Implementation is pending.
+explicit associated data types.
 
-**Current implementation:** value derives use the existing `#[field(...)]` /
-`#[validate(...)]` helpers; integration fields use `#[credential(...)]` /
-`#[resource(...)]` for slots. The schema-free draft/admission lifecycle above
-already exists. The new grammar and remaining builder parity below are targets,
-not shipped APIs.
+**Current implementation:** schema value derives accept structured
+`#[property(display(...), input(...), validate(...))]` and still accept the
+existing `#[field(...)]` / `#[validate(...)]` helpers for in-workspace
+declarations. Integration fields use `#[credential(...)]` / `#[resource(...)]`
+for slots. The schema-free draft/admission lifecycle above already exists.
+Fresh schemas carry policy v2: presentation visibility never suppresses value
+requirements. Historical schemas retain their original wire representation but
+cannot grant fresh input, metadata or plan authority. Phase-indexed value trees
+no longer advertise a `HasSchema` baseline; associated DTOs declare the contract,
+with `serde_json::Value` reserved for an intentional opaque JSON input.
+`schema_type`, directional codec evidence, checked condition v2, slot grammar,
+options-provider admission and trigger output gates remain targets, not shipped
+APIs.
 
 **Target authoring:** `#[property(display(...), input(...), validate(...),
 options(...))]` describes values only; the blocks are optional according to the
@@ -490,7 +498,7 @@ Besides the **integration** reference crates (§3.6–§3.9), the workspace ship
 - **`nebula-core`** — shared identifiers and keys (`ExecutionId`, `ActionKey`, `CredentialKey`, …), scope levels, context and accessor traits, guards, dependency declaration types, observability identity types, **auth types** (`AuthScheme`, `AuthPattern`), **role/permission enums** (`OrgRole`, `WorkspaceRole`, `Permission`), **multi-tenant context** (`TenantContext`, `ResolvedIds`), and **slug validation** (`Slug`, `SlugKind`) — the **cross-cutting vocabulary** every crate shares. `AuthScheme` and `AuthPattern` are **canonical in `nebula-core`**, re-exported by `nebula-credential` for discoverability. Other credential-domain types (**`SecretString`**, **`CredentialEvent`**, …) live in **`nebula-credential`** (see §3.7) — see `crates/core/README.md`.
 - **`nebula-error`** — **`Classify`**, **`NebulaError`**, categories/codes, structured details — **one** error taxonomy at boundaries instead of ad hoc strings.
 - **`nebula-resilience`** — composable **pipelines** (retry, timeout, circuit breaker, bulkhead, …); pairs with **`ActionError`** / retry hints in **`nebula-action`** (§3.8).
-- **`nebula-validator`** — programmatic validators + declarative **`Rule`**; **`nebula-schema`** embeds rules in **`Field`** definitions. Paths are complete RFC 6901 pointers, including root and array indices. Invalid regex/range configurations fail during construction, and deferred rules remain explicit until full evaluation.
+- **`nebula-validator`** — programmatic validators + declarative **`Rule`**; **`nebula-schema`** embeds rules in **`Property`** definitions. Paths are complete RFC 6901 pointers, including root and array indices. Invalid regex/range configurations fail during construction, and deferred rules remain explicit until full evaluation.
 - **`nebula-log`** — structured **`tracing`** pipeline (init, sinks, layers, reload). Cargo features `telemetry` (OpenTelemetry OTLP tracing exporter) and `sentry` ship the distributed-tracing/error-reporting integrations; both are off by default.
 - **`nebula-metrics`** — the single metrics path: lock-free in-memory primitives (`MetricsRegistry`, `Counter`, `Gauge`, `Histogram`, label interning) **plus** `nebula_*` naming, label-safety guards, and Prometheus-style export. Absorbs the former `nebula-telemetry` metric-primitives crate (ADR-0046).
 - **`nebula-eventbus`** — typed **broadcast** bus for ephemeral observations and wake hints. Domain event types live in owning crates, and consumers must tolerate loss, duplication, and reordering. Durable commands and business facts use persisted state or explicit outbox/inbox ports; this bus is never authoritative transport.

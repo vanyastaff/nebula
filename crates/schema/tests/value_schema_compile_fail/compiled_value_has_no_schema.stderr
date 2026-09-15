@@ -1,0 +1,21 @@
+error[E0277]: the trait bound `ValueTree<CompiledProgram>: HasSchema` is not satisfied
+ --> tests/value_schema_compile_fail/compiled_value_has_no_schema.rs:4:31
+  |
+4 |     let _schema = schema_of::<CompiledValue>();
+  |                               ^^^^^^^^^^^^^ the trait `HasSchema` is not implemented for `ValueTree<CompiledProgram>`
+  |
+  = help: the following other types implement trait `HasSchema`:
+            ()
+            bool
+            f32
+            f64
+            i128
+            i16
+            i32
+            i64
+          and $N others
+note: required by a bound in `schema_of`
+ --> src/has_schema.rs
+  |
+  | pub fn schema_of<T: HasSchema>() -> Result<ValidSchema, ValidationReport> {
+  |                     ^^^^^^^^^ required by this bound in `schema_of`

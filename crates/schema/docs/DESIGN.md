@@ -2,7 +2,7 @@
 
 | Property | Contract |
 |----------|----------|
-| Status | Frontier internal API; incompatible changes are possible |
+| Status | Frontier while property semantics and authoring coverage are completed |
 | Layer | Core, subject to the workspace dependency map |
 | Owns | Schema definitions, canonical value trees, preparation, proof custody, schema-aware projections |
 | Delegates | Rules and conditional policies to `nebula-validator`; compilation and evaluation to `nebula-expression` |
@@ -10,8 +10,8 @@
 
 ## Ownership
 
-`nebula-schema` supplies the typed-configuration model shared by Actions,
-Credentials, and Resources (canon L1-3.5). It owns `Schema`, field declarations,
+`nebula-schema` supplies the typed-property model shared by Actions,
+Credentials, and Resources (canon L1-3.5). It owns `Schema`, property declarations,
 structural lint, phase-indexed values, schema-bound proofs, secret wrappers,
 option/record loader interfaces, and optional JSON Schema export.
 
@@ -22,13 +22,26 @@ not be added here. Consumers decide when validated data is persisted and which
 trusted boundary may expose protected material. This design does not claim
 that any particular consumer has adopted the complete pipeline.
 
+Forms, CLIs, API payloads, webhooks, credential setup, resource configuration,
+SDK authoring and future visual property panels are projections from the same
+admitted contract. Visibility, disabled state, grouping, widget selection and
+client-side validation never authorize an operation or waive validation.
+
+This rule is enforced by schema policy v2. Fresh definitions serialize
+`policy_version: 2`; absent markers identify historical v1 definitions whose
+bytes remain readable and unchanged. Historical definitions cannot validate
+new values, produce current exports, or regain factory/compiler authority by
+being decoded. Policy versions participate in complete schema equality.
+The writer version, plugin schema envelope version, graph version and value
+canonical version are independent protocols.
+
 ## One tree, separate proofs
 
 `ValidSchema` owns one `RootShape`. `Any` deliberately provides no shape proof;
 `Scalar` carries a checked null/boolean/string/integer/number domain; `Record`
 owns declarations and root rules; `Union` owns a required mode and its serde
-tagging. Field indexes are derived accelerators, not another root description.
-`SchemaKind`, fields, and tagging cannot disagree inside an admitted schema.
+tagging. Property indexes are derived accelerators, not another root description.
+`SchemaKind`, properties, and tagging cannot disagree inside an admitted schema.
 
 `()` and unit structs use the null domain. Empty braced structs use an empty
 record, which still requires an object. Primitive `HasSchema` implementations
@@ -36,6 +49,11 @@ declare their known types and exact numeric bounds rather than advertising
 `Any`. Preparation preserves lossless integral-number normalization, and final
 validation rechecks the scalar domain and rules. Scalar roots do not acquire
 expression permission through a synthetic declaration.
+
+Root arrays are not lowered into fake wrapper properties. Existing list support
+is field-level. Until `RootShape` gains a first-class root-list container, any
+lowering boundary that receives a root array must fail closed rather than
+changing the input shape.
 
 `ValueTree<E>` has exactly five variants:
 
@@ -60,6 +78,16 @@ These aliases control representation, not proof. A caller can construct a
 data-only tree without validating it. Only `ValidValues` and `ResolvedValues`
 certify the appropriate checks against an immutable `ValidSchema` snapshot;
 neither proof has a public constructor or a deserialization bypass (L1-4.5).
+
+The phase aliases do not implement `HasSchema`. A phase describes expression
+capabilities, not the contract for a user's input. `serde_json::Value` explicitly
+advertises `Any` when an opaque JSON contract is intentional.
+
+Unknown property declarations are retained for historical serialization and
+conservative compatibility analysis. They cannot yield value proof or JSON
+Schema export. A complete declaration walk checks object properties, anonymous
+list items and all mode variants before input preparation; absence or an
+inactive mode does not bypass support checks.
 
 ## Checked transitions
 
@@ -93,7 +121,7 @@ Canonical input wins over read aliases; otherwise the first declared alias
 wins. Every alias is consumed, including losing aliases that may carry secrets.
 Transforms run once for each newly prepared scalar or secret. Existing literal
 siblings are not transformed again during resolution; newly evaluated subtrees
-receive their own preparation once. Field transformer metadata remains intact.
+receive their own preparation once. Property transformer metadata remains intact.
 
 Expression permission belongs to the exact declaration, not its ancestors.
 Opaque or undeclared descendants cannot acquire code capability merely because
@@ -101,6 +129,21 @@ their parent permits expressions. A parent's `Forbidden` restriction does apply
 to its whole subtree; a child cannot reopen that restriction. `ExpressionMode::Required` rejects authored
 literals with `expression.required`. Template-like strings or `$expr` objects
 returned by the evaluator remain data and cannot trigger another evaluation.
+
+Derived authoring accepts structured `#[property(...)]` on data fields.
+`display(...)` records presentation annotations, `input(...)` records
+requiredness, expression policy and secret protection, and `validate(...)`
+records value rules. The macro lowers these sections to the existing `Property`
+runtime representation and rejects unimplemented Phase-5 sections such as
+`options(...)` rather than silently treating them as hints. Legacy `#[field]`
+and `#[validate]` remain for current in-workspace declarations, but new code
+should use the property grammar.
+
+Duplicate settings, conflicting expression modes, inapplicable validation rules,
+arguments on boolean flags and property attributes on unsupported locations are
+compile errors. In particular, skipping a field or moving a secret annotation
+onto an enum variant cannot silently erase its protection. `non_empty` combines
+with compatible length bounds and does not make an optional property required.
 
 `Transformer::regex(pattern, group)` and `RegexCapture::new(pattern, group)`
 return `Result<_, ValidationError>`. The capture-specific configuration owns a
@@ -113,9 +156,10 @@ unmatched optional groups retain the original string; non-strings pass through.
 
 ## Data paths and schema paths
 
-`FieldKey` is a checked schema identifier. `FieldPath` and `PathSegment` address
-declarations and indexed schema locations using forms such as `items[0].name`.
-They remain appropriate for schema lookup, not arbitrary JSON traversal.
+`FieldKey` is a checked schema identifier for one declaration. `PropertyRef`
+(`FieldPath` during the migration window) and `PathSegment` address declarations
+and indexed schema locations using forms such as `items[0].name`. They remain
+appropriate for schema lookup, not arbitrary JSON traversal.
 
 `ValuePath` is the RFC6901 data path, re-exported from the validator foundation.
 Data errors, pending obligations, and tree lookup use this type. The root is
@@ -128,6 +172,10 @@ keys remain keys. Lists require canonical decimal indices without leading zeros.
 `insert(key, tree)` returns `Result<Option<Self>, ValidationError>` and rejects
 non-object receivers. Key insertion grants neither schema admission nor proof.
 Data property names need not satisfy `FieldKey` syntax.
+
+Rule references use JSON Pointer for root-relative data paths. The historical
+`$root.foo` syntax is removed and produces `reference.legacy_root` with the
+rewrite (`/foo`) in diagnostic params.
 
 ## Wire, views, and identities
 
@@ -142,7 +190,7 @@ There are independent contracts, not interchangeable serialization helpers:
 | Schema projection | `project`/`to_wire_json` apply output aliases and omit secrets; not proof or authored persistence |
 | Tree canonical encoding | Version 2 content-addressing; expression and literal identities stay distinct |
 | Durable raw JSON encoding | `canonical_json_v1` retains the existing JSON-v1 byte contract |
-| Schema-definition serde | Historical record/union/unknown v1 bytes; scalar roots have a separately versioned descriptor |
+| Schema-definition serde | Current policy-v2 marker; historical v1 bytes preserved as evidence; scalar descriptors retain their own version |
 
 Authored v2 has this shape:
 
@@ -195,7 +243,7 @@ ordinary `Debug`, `Display`, and JSON serialization redact protected material.
 `Expression` and `CompiledProgram` diagnostic output does not print source.
 Authored serialization and explicit source access are not diagnostic surfaces.
 
-Field and root rules share `prepared_predicate_context` after preparation.
+Property and root rules share `prepared_predicate_context` after preparation.
 Schema-declared secrets and explicit `Secret` nodes are scrubbed recursively,
 including under arbitrary keys. Expressions are unavailable; pending paths are
 supplied separately through the validator context. Safe whole containers remain
@@ -245,19 +293,22 @@ execution stays centralized at `validate_rules_with_ctx` and
 
 ## Module map and checks
 
-- [PHASE5_PROPERTY.md](PHASE5_PROPERTY.md): revised target design; implementation
-  pending. Value-only `#[property(display(...), input(...), validate(...), options(...))]`
+- [PHASE5_PROPERTY.md](PHASE5_PROPERTY.md): revised target design. The
+  `#[property(display(...), input(...), validate(...))]` value primitive is
+  implemented for `#[derive(Schema)]`; `schema_type`, directional codec
+  evidence, validator Condition v2, slots, options providers and trigger output
+  gates remain target contracts until their owners ship code and tests.
+  Value-only `#[property(display(...), input(...), validate(...), options(...))]`
   describes explicit `Input` / `Output` / `Properties` / `Config` data types.
   `schema_type(input)`, `schema_type(output)` or `schema_type(input, output)` owns
   real Serde derives plus Schema and recursive InputCodec/OutputCodec evidence;
   raw Schema remains descriptive without codec evidence. Custom codecs use reviewed
   adapters; defaults additionally require their field's encoding direction.
   Separate `#[slot(...)]` dependencies stay outside `HasSchema` and persisted values.
-  Current `#[field(...)]` /
-  `#[validate(...)]` helpers remain the implementation baseline. Target presentation
-  must not affect value requiredness or grant slot authority; semantic decoupling
-  requires a future versioned migration. Full schema equality remains conservative
-  and includes UI fields; root shapes and exact-schema proof boundaries are unchanged.
+  Current `#[field(...)]` / `#[validate(...)]` helpers remain accepted for
+  existing declarations. Presentation must not affect value requiredness or
+  grant slot authority. Full schema equality remains conservative and includes
+  UI fields; root shapes and exact-schema proof boundaries are unchanged.
 - `schema.rs`, `field.rs`, `builder/`, and `lint.rs`: definitions, construction,
   checked keys, aliases, and bounded structural lint.
 - `value/mod.rs`, `tree.rs`, `wire.rs`, `tree_canonical.rs`, and `canonical.rs`
@@ -268,8 +319,10 @@ execution stays centralized at `validate_rules_with_ctx` and
 - `expression.rs`, `context.rs`, `loader.rs`, `secret.rs`, and `transformer.rs`:
   evaluation adapters, safe projections, loader boundaries, and checked primitives.
 - `has_schema.rs` and `macros/`: checked schema discovery and derives.
-- `json_schema.rs`: optional Draft 2020-12 export with `x-nebula-*` extensions;
-  exported metadata does not replace validation or runtime proof.
+- `json_schema.rs`: optional Draft 2020-12 export with versioned
+  `x-nebula-*` extensions. [JSON_SCHEMA_EXTENSIONS.md](JSON_SCHEMA_EXTENSIONS.md)
+  is the extension registry. Exported metadata does not replace validation or
+  runtime proof.
 
 The [agent guide](../AGENTS.md) maps changed contracts to focused tests and
 commands. [README](../README.md) summarizes the API; [CHANGELOG](../CHANGELOG.md)

@@ -30,7 +30,7 @@
 //! - `"loader.missing_config"` — `load_select_options_without_loader_emits_missing_config`.
 
 use nebula_schema::{
-    AuthoredValue, CompiledProgram, EvalFuture, ExpressionContext, Field, FieldKey, Schema,
+    AuthoredValue, CompiledProgram, EvalFuture, ExpressionContext, FieldKey, Property, Schema,
     ValidationError, ValidationReport, field_key,
 };
 use serde_json::json;
@@ -43,8 +43,8 @@ fn has_code(r: &ValidationReport, code: &str) -> bool {
     r.errors().any(|e| e.code() == code)
 }
 
-fn raw_schema(fields: impl IntoIterator<Item = Field>) -> Schema {
-    let fields: Vec<Field> = fields.into_iter().collect();
+fn raw_schema(fields: impl IntoIterator<Item = Property>) -> Schema {
+    let fields: Vec<Property> = fields.into_iter().collect();
     serde_json::from_value(json!({ "fields": fields })).expect("raw schema from field list")
 }
 
@@ -53,7 +53,7 @@ fn raw_schema(fields: impl IntoIterator<Item = Field>) -> Schema {
 #[test]
 fn emits_required() {
     let schema = Schema::builder()
-        .add(Field::string(field_key!("x")).required())
+        .property(Property::string(field_key!("x")).required())
         .build()
         .unwrap();
     let vs = AuthoredValue::from_data(json!({})).unwrap();
@@ -68,7 +68,7 @@ fn emits_required() {
 #[test]
 fn emits_type_mismatch_string() {
     let schema = Schema::builder()
-        .add(Field::string(field_key!("x")))
+        .property(Property::string(field_key!("x")))
         .build()
         .unwrap();
     let vs = AuthoredValue::from_data(json!({"x": 42})).unwrap();
@@ -83,7 +83,7 @@ fn emits_type_mismatch_string() {
 #[test]
 fn emits_type_mismatch_number() {
     let schema = Schema::builder()
-        .add(Field::number(field_key!("x")))
+        .property(Property::number(field_key!("x")))
         .build()
         .unwrap();
     let vs = AuthoredValue::from_data(json!({"x": "not_a_number"})).unwrap();
@@ -94,7 +94,7 @@ fn emits_type_mismatch_number() {
 #[test]
 fn emits_type_mismatch_boolean() {
     let schema = Schema::builder()
-        .add(Field::boolean(field_key!("x")))
+        .property(Property::boolean(field_key!("x")))
         .build()
         .unwrap();
     let vs = AuthoredValue::from_data(json!({"x": "yes"})).unwrap();
@@ -107,7 +107,7 @@ fn emits_type_mismatch_boolean() {
 #[test]
 fn emits_min_length() {
     let schema = Schema::builder()
-        .add(Field::string(field_key!("x")).min_length(5))
+        .property(Property::string(field_key!("x")).min_length(5))
         .build()
         .unwrap();
     let vs = AuthoredValue::from_data(json!({"x": "hi"})).unwrap();
@@ -122,7 +122,7 @@ fn emits_min_length() {
 #[test]
 fn emits_max_length() {
     let schema = Schema::builder()
-        .add(Field::string(field_key!("x")).max_length(3))
+        .property(Property::string(field_key!("x")).max_length(3))
         .build()
         .unwrap();
     let vs = AuthoredValue::from_data(json!({"x": "abcdef"})).unwrap();
@@ -139,7 +139,7 @@ fn emits_max_length() {
 #[test]
 fn emits_min() {
     let schema = Schema::builder()
-        .add(Field::number(field_key!("x")).min(10))
+        .property(Property::number(field_key!("x")).min(10))
         .build()
         .unwrap();
     let vs = AuthoredValue::from_data(json!({"x": 3})).unwrap();
@@ -154,7 +154,7 @@ fn emits_min() {
 #[test]
 fn emits_max() {
     let schema = Schema::builder()
-        .add(Field::number(field_key!("x")).max(10))
+        .property(Property::number(field_key!("x")).max(10))
         .build()
         .unwrap();
     let vs = AuthoredValue::from_data(json!({"x": 99})).unwrap();
@@ -174,7 +174,11 @@ fn emits_max() {
 #[test]
 fn emits_invalid_format_for_pattern() {
     let schema = Schema::builder()
-        .add(Field::string(field_key!("x")).pattern("^[a-z]+$").unwrap())
+        .property(
+            Property::string(field_key!("x"))
+                .pattern("^[a-z]+$")
+                .unwrap(),
+        )
         .build()
         .unwrap();
     let vs = AuthoredValue::from_data(json!({"x": "HI"})).unwrap();
@@ -189,7 +193,7 @@ fn emits_invalid_format_for_pattern() {
 #[test]
 fn emits_invalid_format_for_url() {
     let schema = Schema::builder()
-        .add(Field::string(field_key!("x")).url())
+        .property(Property::string(field_key!("x")).url())
         .build()
         .unwrap();
     let vs = AuthoredValue::from_data(json!({"x": "not-a-url"})).unwrap();
@@ -204,7 +208,7 @@ fn emits_invalid_format_for_url() {
 #[test]
 fn emits_invalid_format_for_email() {
     let schema = Schema::builder()
-        .add(Field::string(field_key!("x")).email())
+        .property(Property::string(field_key!("x")).email())
         .build()
         .unwrap();
     let vs = AuthoredValue::from_data(json!({"x": "not-an-email"})).unwrap();
@@ -221,9 +225,9 @@ fn emits_invalid_format_for_email() {
 #[test]
 fn emits_items_min() {
     let schema = Schema::builder()
-        .add(
-            Field::list(field_key!("xs"))
-                .item(Field::string(fk("_item")))
+        .property(
+            Property::list(field_key!("xs"))
+                .item(Property::string(fk("_item")))
                 .min_items(3),
         )
         .build()
@@ -240,9 +244,9 @@ fn emits_items_min() {
 #[test]
 fn emits_items_max() {
     let schema = Schema::builder()
-        .add(
-            Field::list(field_key!("xs"))
-                .item(Field::string(fk("_item")))
+        .property(
+            Property::list(field_key!("xs"))
+                .item(Property::string(fk("_item")))
                 .max_items(2),
         )
         .build()
@@ -259,9 +263,9 @@ fn emits_items_max() {
 #[test]
 fn emits_items_unique() {
     let schema = Schema::builder()
-        .add(
-            Field::list(field_key!("xs"))
-                .item(Field::string(fk("_item")))
+        .property(
+            Property::list(field_key!("xs"))
+                .item(Property::string(fk("_item")))
                 .unique(),
         )
         .build()
@@ -278,8 +282,8 @@ fn emits_items_unique() {
 #[test]
 fn emits_option_invalid() {
     let schema = Schema::builder()
-        .add(
-            Field::select(field_key!("color"))
+        .property(
+            Property::select(field_key!("color"))
                 .option("red", "Red")
                 .option("blue", "Blue"),
         )
@@ -299,7 +303,7 @@ fn emits_option_invalid() {
 #[test]
 fn emits_mode_invalid() {
     let schema = Schema::builder()
-        .add(Field::mode(field_key!("m")).variant("a", "A", Field::string(fk("val"))))
+        .property(Property::mode(field_key!("m")).variant("a", "A", Property::string(fk("val"))))
         .build()
         .unwrap();
     let vs = AuthoredValue::from_data(json!({"m": {"mode": "nonexistent"}})).unwrap();
@@ -314,7 +318,7 @@ fn emits_mode_invalid() {
 #[test]
 fn emits_mode_required() {
     let schema = Schema::builder()
-        .add(Field::mode(field_key!("m")).variant("a", "A", Field::string(fk("val"))))
+        .property(Property::mode(field_key!("m")).variant("a", "A", Property::string(fk("val"))))
         .build()
         .unwrap();
     let vs = AuthoredValue::from_data(json!({
@@ -337,7 +341,7 @@ fn emits_mode_required() {
 fn emits_expression_forbidden() {
     // BooleanField has ExpressionMode::Forbidden by default.
     let schema = Schema::builder()
-        .add(Field::boolean(field_key!("flag")))
+        .property(Property::boolean(field_key!("flag")))
         .build()
         .unwrap();
     let vs = AuthoredValue::from_template_json(json!({"flag": "{{ $x }}"})).unwrap();
@@ -348,7 +352,7 @@ fn emits_expression_forbidden() {
 #[test]
 fn emits_expression_required() {
     let schema = Schema::builder()
-        .add(Field::computed(field_key!("derived")))
+        .property(Property::computed(field_key!("derived")))
         .build()
         .unwrap();
     let vs = AuthoredValue::from_data(json!({"derived": "literal"})).unwrap();
@@ -363,7 +367,7 @@ fn emits_expression_required() {
 #[test]
 fn emits_expression_parse() {
     let schema = Schema::builder()
-        .add(Field::number(field_key!("n")))
+        .property(Property::number(field_key!("n")))
         .build()
         .unwrap();
     let values = AuthoredValue::from_template_json(json!({"n": {"$expr": "{{ 1 + }}"}})).unwrap();
@@ -401,7 +405,7 @@ impl ExpressionContext for ConstCtx {
 #[tokio::test]
 async fn emits_expression_runtime() {
     let schema = Schema::builder()
-        .add(Field::string(field_key!("x")))
+        .property(Property::string(field_key!("x")))
         .build()
         .unwrap();
     let values = AuthoredValue::from_template_json(json!({"x": {"$expr": "{{ $bad }}"}})).unwrap();
@@ -420,7 +424,7 @@ async fn emits_expression_runtime() {
 #[tokio::test]
 async fn emits_expression_type_mismatch() {
     let schema = Schema::builder()
-        .add(Field::string(field_key!("x")))
+        .property(Property::string(field_key!("x")))
         .build()
         .unwrap();
     let values = AuthoredValue::from_template_json(json!({"x": {"$expr": "{{ $n }}"}})).unwrap();
@@ -451,10 +455,10 @@ fn emits_invalid_key() {
 #[test]
 fn emits_invalid_key_for_mode_variant_path_segment() {
     let report = Schema::builder()
-        .add(Field::mode(field_key!("auth")).variant(
+        .property(Property::mode(field_key!("auth")).variant(
             "oauth-token",
             "OAuth",
-            Field::string(fk("token")),
+            Property::string(fk("token")),
         ))
         .build()
         .unwrap_err();
@@ -464,8 +468,8 @@ fn emits_invalid_key_for_mode_variant_path_segment() {
 #[test]
 fn emits_duplicate_key() {
     let report = Schema::builder()
-        .add(Field::string(fk("x")))
-        .add(Field::number(fk("x")))
+        .property(Property::string(fk("x")))
+        .property(Property::number(fk("x")))
         .build()
         .unwrap_err();
     assert!(
@@ -482,7 +486,7 @@ fn emits_duplicate_key() {
 fn emits_missing_item_schema() {
     // A List field with no item schema.
     let report = Schema::builder()
-        .add(Field::list(field_key!("xs")))
+        .property(Property::list(field_key!("xs")))
         .build()
         .unwrap_err();
     assert!(
@@ -498,7 +502,7 @@ fn emits_missing_item_schema() {
 #[test]
 fn emits_invalid_default_variant() {
     let report = Schema::builder()
-        .add(Field::mode(field_key!("m")).default_variant("nonexistent"))
+        .property(Property::mode(field_key!("m")).default_variant("nonexistent"))
         .build()
         .unwrap_err();
     assert!(has_code(&report, "invalid_default_variant"));
@@ -507,10 +511,10 @@ fn emits_invalid_default_variant() {
 #[test]
 fn emits_duplicate_variant() {
     let report = Schema::builder()
-        .add(
-            Field::mode(field_key!("m"))
-                .variant("v", "V one", Field::string(fk("x")))
-                .variant("v", "V two", Field::string(fk("y"))),
+        .property(
+            Property::mode(field_key!("m"))
+                .variant("v", "V one", Property::string(fk("x")))
+                .variant("v", "V two", Property::string(fk("y"))),
         )
         .build()
         .unwrap_err();
@@ -521,7 +525,7 @@ fn emits_duplicate_variant() {
 fn emits_schema_index_overflow() {
     let mut builder = Schema::builder();
     for i in 0..(usize::from(u16::MAX) + 2) {
-        builder = builder.add(Field::string(fk(&format!("f{i}"))));
+        builder = builder.property(Property::string(fk(&format!("f{i}"))));
     }
     let report = builder.build().unwrap_err();
     assert!(has_code(&report, "schema.index_overflow"));
@@ -529,21 +533,23 @@ fn emits_schema_index_overflow() {
 
 #[test]
 fn emits_schema_depth_limit() {
-    let mut leaf = Field::string(field_key!("leaf")).into_field();
+    let mut leaf = Property::string(field_key!("leaf")).into_property();
     for i in 0..usize::from(u8::MAX) {
-        leaf = Field::object(fk(&format!("n{i}"))).add(leaf).into_field();
+        leaf = Property::object(fk(&format!("n{i}")))
+            .property(leaf)
+            .into_property();
     }
 
-    let report = Schema::builder().add(leaf).build().unwrap_err();
+    let report = Schema::builder().property(leaf).build().unwrap_err();
     assert!(has_code(&report, "schema.depth_limit"));
 }
 
 #[test]
 fn emits_secret_default_forbidden() {
-    // Defaults on Field::Secret hard-code plaintext into the schema and
+    // Defaults on Property::Secret hard-code plaintext into the schema and
     // are blocked by lint at build time.
     let report = Schema::builder()
-        .add(Field::secret(field_key!("api_key")).default(json!("hardcoded-token")))
+        .property(Property::secret(field_key!("api_key")).default(json!("hardcoded-token")))
         .build()
         .unwrap_err();
     assert!(
@@ -578,7 +584,11 @@ fn emits_recursion_limit_on_deeply_nested_value_input() {
 fn emits_rule_contradictory() {
     // min_length > max_length → rule.contradictory error.
     let report = Schema::builder()
-        .add(Field::string(field_key!("x")).min_length(10).max_length(5))
+        .property(
+            Property::string(field_key!("x"))
+                .min_length(10)
+                .max_length(5),
+        )
         .build()
         .unwrap_err();
     assert!(
@@ -597,9 +607,9 @@ fn emits_self_dependency() {
     let field = DynamicField::new(field_key!("deps"))
         .loader("my_loader")
         .depends_on(path)
-        .into_field();
+        .into_property();
 
-    let report = Schema::builder().add(field).build().unwrap_err();
+    let report = Schema::builder().property(field).build().unwrap_err();
     assert!(
         has_code(&report, "self_dependency"),
         "codes: {:?}",
@@ -619,10 +629,10 @@ fn emits_visibility_cycle() {
         .expect("bounded visibility rule");
 
     let schema = raw_schema(vec![
-        Field::string(fk("a"))
+        Property::string(fk("a"))
             .visible_when(rule_a_references_b)
             .into(),
-        Field::string(fk("b"))
+        Property::string(fk("b"))
             .visible_when(rule_b_references_a)
             .into(),
     ]);
@@ -646,10 +656,10 @@ fn emits_required_cycle() {
         .expect("bounded requiredness rule");
 
     let schema = raw_schema(vec![
-        Field::string(fk("a"))
+        Property::string(fk("a"))
             .required_when(rule_a_references_b)
             .into(),
-        Field::string(fk("b"))
+        Property::string(fk("b"))
             .required_when(rule_b_references_a)
             .into(),
     ]);
@@ -672,7 +682,7 @@ fn emits_dangling_reference() {
     ))
     .expect("bounded dangling-reference rule");
     let report = Schema::builder()
-        .add(Field::string(field_key!("x")).visible_when(rule_unknown))
+        .property(Property::string(field_key!("x")).visible_when(rule_unknown))
         .build()
         .unwrap_err();
     assert!(
@@ -686,7 +696,7 @@ fn emits_dangling_reference() {
 
 #[test]
 fn emits_missing_loader_warning() {
-    let schema = raw_schema(vec![Field::select(fk("s")).dynamic().into()]);
+    let schema = raw_schema(vec![Property::select(fk("s")).dynamic().into()]);
     let lint = schema.lint();
     assert!(
         lint.has_warnings(),
@@ -704,11 +714,11 @@ fn emits_missing_loader_warning() {
 #[test]
 fn emits_loader_without_dynamic_warning() {
     // A select with a loader key but dynamic=false → loader_without_dynamic.
-    use nebula_schema::{Field, SelectField};
+    use nebula_schema::{Property, SelectField};
     let mut sf = SelectField::new(field_key!("s2"));
     sf.dynamic = false;
     sf.loader = Some("my_loader".into());
-    let schema = raw_schema(vec![Field::Select(sf)]);
+    let schema = raw_schema(vec![Property::Select(sf)]);
     let lint = schema.lint();
     assert!(
         lint.warnings()
@@ -724,7 +734,7 @@ fn emits_loader_without_dynamic_warning() {
 fn emits_duplicate_dependency_warning() {
     let dep = nebula_schema::FieldPath::parse("team_id").unwrap();
     let schema = raw_schema(vec![
-        Field::select(fk("workspace"))
+        Property::select(fk("workspace"))
             .dynamic()
             .loader("workspace_loader")
             .depends_on(dep.clone())
@@ -745,14 +755,14 @@ fn emits_duplicate_dependency_warning() {
 fn emits_missing_variant_label_warning() {
     // mode variant with empty label → missing_variant_label warning.
     let result = Schema::builder()
-        .add(Field::mode(field_key!("m")).variant("v", "", Field::string(fk("x"))))
+        .property(Property::mode(field_key!("m")).variant("v", "", Property::string(fk("x"))))
         .build();
     match result {
         Ok(schema) => {
             // Warning is advisory — build succeeded. Verify via lint().
             let lint = raw_schema(vec![
-                Field::mode(fk("m"))
-                    .variant("v", "", Field::string(fk("x")))
+                Property::mode(fk("m"))
+                    .variant("v", "", Property::string(fk("x")))
                     .into(),
             ])
             .lint();
@@ -778,11 +788,11 @@ fn emits_missing_variant_label_warning() {
 #[test]
 fn emits_notice_misuse() {
     // NoticeField with required=Always → notice.misuse warning via lint_tree/SchemaBuilder.
-    use nebula_schema::{Field, NoticeField, RequiredMode};
+    use nebula_schema::{NoticeField, Property, RequiredMode};
 
     let mut nf = NoticeField::new(field_key!("n"));
     nf.required = RequiredMode::Always;
-    let schema = raw_schema(vec![Field::Notice(nf)]);
+    let schema = raw_schema(vec![Property::Notice(nf)]);
     let lint = schema.lint();
     assert!(
         lint.warnings().any(|d| d.code() == "notice.misuse"),
@@ -796,10 +806,10 @@ fn emits_notice_misuse() {
 #[test]
 fn emits_notice_missing_description() {
     // NoticeField without description → notice_missing_description warning.
-    use nebula_schema::{Field, NoticeField};
+    use nebula_schema::{NoticeField, Property};
 
     let nf = NoticeField::new(field_key!("info"));
-    let schema = raw_schema(vec![Field::Notice(nf)]);
+    let schema = raw_schema(vec![Property::Notice(nf)]);
     let lint = schema.lint();
     assert!(
         lint.warnings()
@@ -816,7 +826,7 @@ fn emits_rule_incompatible_warning() {
     use nebula_validator::Rule;
 
     let schema = raw_schema(vec![
-        Field::number(fk("n"))
+        Property::number(fk("n"))
             .with_rule(Rule::pattern("^[0-9]+$").unwrap())
             .into(),
     ]);

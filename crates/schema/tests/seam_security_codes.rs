@@ -8,7 +8,7 @@
 //! and `expression.required` (an expression-only field rejecting a literal).
 //! These flow through the single crossing unchanged.
 
-use nebula_schema::{AuthoredValue, Field, Schema, field_key};
+use nebula_schema::{AuthoredValue, Property, Schema, field_key};
 use serde_json::json;
 
 fn codes(r: &nebula_schema::ValidationReport) -> Vec<String> {
@@ -18,7 +18,7 @@ fn codes(r: &nebula_schema::ValidationReport) -> Vec<String> {
 #[test]
 fn required_code_is_invariant_through_single_crossing() {
     let schema = Schema::builder()
-        .add(Field::string(field_key!("x")).required())
+        .property(Property::string(field_key!("x")).required())
         .build()
         .unwrap();
     let vs = AuthoredValue::from_template_json(json!({})).unwrap();
@@ -35,7 +35,7 @@ fn expression_forbidden_code_is_invariant() {
     // BooleanField has ExpressionMode::Forbidden by default; a `{{ }}`
     // literal must be rejected with the exact `expression.forbidden` code.
     let schema = Schema::builder()
-        .add(Field::boolean(field_key!("flag")))
+        .property(Property::boolean(field_key!("flag")))
         .build()
         .unwrap();
     let vs = AuthoredValue::from_template_json(json!({"flag": "{{ $x }}"})).unwrap();
@@ -52,7 +52,7 @@ fn expression_required_code_is_invariant() {
     // ComputedField is ExpressionMode::Required; a literal must be rejected
     // with the exact `expression.required` code.
     let schema = Schema::builder()
-        .add(Field::computed(field_key!("derived")))
+        .property(Property::computed(field_key!("derived")))
         .build()
         .unwrap();
     let vs = AuthoredValue::from_template_json(json!({"derived": "literal"})).unwrap();

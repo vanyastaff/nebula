@@ -3,7 +3,7 @@
 use std::fmt;
 
 use nebula_schema::{
-    AuthoredValue, Field, Schema, SecretInput, SerdeTagging, ValidSchema, field_key, schema_of,
+    AuthoredValue, Property, Schema, SecretInput, SerdeTagging, ValidSchema, field_key, schema_of,
 };
 use serde::de::{Unexpected, Visitor};
 use serde::{Deserialize, Deserializer};
@@ -140,15 +140,15 @@ struct ProjectedCredentialInput {
 #[test]
 fn typed_secret_projection_honors_emit_as_and_read_alias() {
     let schema = Schema::builder()
-        .add(
-            Field::string(field_key!("name"))
+        .property(
+            Property::string(field_key!("name"))
                 .read_alias("legacy_name")
                 .unwrap()
                 .emit_as("wire_name")
                 .unwrap(),
         )
-        .add(
-            Field::secret(field_key!("token"))
+        .property(
+            Property::secret(field_key!("token"))
                 .read_alias("legacy_token")
                 .unwrap(),
         )
@@ -191,24 +191,24 @@ enum NestedCredentialInput {
 #[test]
 fn typed_secret_projection_recurses_through_union_payloads() {
     let schema = ValidSchema::union(
-        Field::mode(field_key!("_nebula_union")).variant(
+        Property::mode(field_key!("_nebula_union")).variant(
             "Token",
             "Token",
-            Field::object(field_key!("token_payload"))
-                .add(
-                    Field::object(field_key!("settings"))
+            Property::object(field_key!("token_payload"))
+                .property(
+                    Property::object(field_key!("settings"))
                         .read_alias("legacy_settings")
                         .unwrap()
-                        .add(
-                            Field::string(field_key!("name"))
+                        .property(
+                            Property::string(field_key!("name"))
                                 .read_alias("legacy_name")
                                 .unwrap()
                                 .emit_as("wire_name")
                                 .unwrap(),
                         ),
                 )
-                .add(
-                    Field::secret(field_key!("token"))
+                .property(
+                    Property::secret(field_key!("token"))
                         .read_alias("legacy_token")
                         .unwrap(),
                 ),
@@ -262,11 +262,14 @@ struct NestedModePayload {
 #[test]
 fn typed_secret_projection_recurses_through_nested_mode_payloads() {
     let schema = Schema::builder()
-        .add(Field::mode(field_key!("auth")).variant(
-            "token",
-            "Token",
-            Field::object(field_key!("token_payload")).add(Field::secret(field_key!("token"))),
-        ))
+        .property(
+            Property::mode(field_key!("auth")).variant(
+                "token",
+                "Token",
+                Property::object(field_key!("token_payload"))
+                    .property(Property::secret(field_key!("token"))),
+            ),
+        )
         .build()
         .unwrap();
     let resolved = schema

@@ -63,16 +63,16 @@ struct PipelineInput(serde_json::Value);
 
 impl nebula_schema::HasSchema for PipelineInput {
     fn schema() -> Result<nebula_schema::ValidSchema, nebula_schema::ValidationReport> {
-        use nebula_schema::{Field, Schema, field_key};
+        use nebula_schema::{Property, Schema, field_key};
 
         // Each scenario supplies a subset of these declared optional fields.
         Schema::builder()
-            .add(Field::string(field_key!("name")))
-            .add(Field::number(field_key!("timestamp")).integer())
-            .add(Field::number(field_key!("count")).integer())
-            .add(Field::string(field_key!("greeting")))
-            .add(Field::number(field_key!("static_value")).integer())
-            .add(Field::number(field_key!("value")))
+            .property(Property::string(field_key!("name")))
+            .property(Property::number(field_key!("timestamp")).integer())
+            .property(Property::number(field_key!("count")).integer())
+            .property(Property::string(field_key!("greeting")))
+            .property(Property::number(field_key!("static_value")).integer())
+            .property(Property::number(field_key!("value")))
             .build()
     }
 }

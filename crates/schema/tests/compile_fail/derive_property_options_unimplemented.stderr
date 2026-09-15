@@ -1,0 +1,5 @@
+error: `#[property(options(...))]` requires the checked loader/option-provider contract and is not implemented by this derive yet
+ --> tests/compile_fail/derive_property_options_unimplemented.rs:5:16
+  |
+5 |     #[property(options(source = crate::load_regions))]
+  |                ^^^^^^^

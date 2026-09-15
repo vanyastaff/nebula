@@ -1,6 +1,6 @@
 use std::error::Error;
 
-use nebula_schema::{Field, Transformer, field_key, transformer::RegexCapture};
+use nebula_schema::{Property, Transformer, field_key, transformer::RegexCapture};
 use proptest::prelude::*;
 use serde_json::{Value, json};
 
@@ -167,8 +167,8 @@ fn regex_debug_omits_pattern_but_wire_retains_it() {
 #[test]
 fn schema_field_wire_preserves_checked_transformer_metadata() {
     let transformer = Transformer::regex("^prefix=([0-9]+)$", 1).unwrap();
-    let field = Field::from(
-        Field::string(field_key!("identifier"))
+    let field = Property::from(
+        Property::string(field_key!("identifier"))
             .with_transformer(Transformer::Trim)
             .with_transformer(transformer.clone()),
     );
@@ -180,19 +180,19 @@ fn schema_field_wire_preserves_checked_transformer_metadata() {
             {"kind": "regex", "pattern": "^prefix=([0-9]+)$", "group": 1}
         ])
     );
-    let restored: Field = serde_json::from_value(wire.clone()).unwrap();
+    let restored: Property = serde_json::from_value(wire.clone()).unwrap();
     assert_eq!(restored.transformers(), &[Transformer::Trim, transformer]);
     assert_eq!(serde_json::to_value(restored).unwrap(), wire);
 }
 
 #[test]
 fn schema_field_cannot_deserialize_an_invalid_regex_transformer() {
-    let field = Field::from(Field::string(field_key!("identifier")));
+    let field = Property::from(Property::string(field_key!("identifier")));
     let mut wire = serde_json::to_value(field).unwrap();
     wire["transformers"] = json!([{
         "kind": "regex", "pattern": "private-pattern-marker(", "group": 0
     }]);
-    let error = serde_json::from_value::<Field>(wire).unwrap_err();
+    let error = serde_json::from_value::<Property>(wire).unwrap_err();
     assert!(error.to_string().contains("transformer.invalid_pattern"));
     assert!(!error.to_string().contains("private-pattern-marker"));
 }

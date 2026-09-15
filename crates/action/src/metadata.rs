@@ -315,6 +315,9 @@ impl ActionMetadataDraft {
             nebula_schema::schema_of::<A::Input>().map_err(MetadataBuildError::from)?;
         let output_schema =
             nebula_schema::schema_of::<A::Output>().map_err(MetadataBuildError::from)?;
+        output_schema
+            .ensure_current_semantics()
+            .map_err(MetadataBuildError::from)?;
         let metadata = ActionMetadata {
             base: self.base.bind_schema(input_schema)?,
             inputs: self.inputs.into_boxed_slice(),
@@ -572,7 +575,7 @@ mod tests {
     use std::sync::OnceLock;
 
     use nebula_core::{Dependencies, action_key};
-    use nebula_schema::{FieldCollector, HasSchema, Schema, field_key};
+    use nebula_schema::{HasSchema, PropertyCollector, Schema, field_key};
 
     use super::*;
     use crate::Action;
@@ -641,14 +644,14 @@ mod tests {
             metadata
                 .base()
                 .schema()
-                .fields()
+                .properties()
                 .iter()
                 .any(|field| field.key().as_str() == "value")
         );
         assert!(
             metadata
                 .output_schema()
-                .fields()
+                .properties()
                 .iter()
                 .any(|field| field.key().as_str() == "result")
         );
@@ -685,5 +688,21 @@ mod tests {
         );
         assert!(encoded["base"].get("schema").is_some());
         assert!(encoded.get("output_schema").is_some());
+    }
+
+    #[test]
+    fn action_readmission_requires_input_and_output_policy_equality() {
+        let current = admitted();
+        for pointer in ["/base/schema", "/output_schema"] {
+            let mut wire = serde_json::to_value(&current).unwrap();
+            wire.pointer_mut(pointer)
+                .unwrap()
+                .as_object_mut()
+                .unwrap()
+                .remove("policy_version");
+            let recorded: RecordedActionMetadata = serde_json::from_value(wire.clone()).unwrap();
+            assert_eq!(serde_json::to_value(&recorded).unwrap(), wire);
+            assert!(recorded.readmit_against(&current).is_err());
+        }
     }
 }

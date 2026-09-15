@@ -1,8 +1,8 @@
 ---
 name: Schema, metadata and slot authoring
 status: proposed
-implementation: not shipped
-last-reviewed: 2026-09-12
+implementation: property value primitive partially shipped
+last-reviewed: 2026-09-15
 related:
   - ../../../docs/INTEGRATION_MODEL.md
   - DESIGN.md
@@ -19,7 +19,13 @@ related:
 
 This is the proposed implementation contract for revising design-only PR1027.
 The user authorizes a breaking architectural redesign, superseding issue 992's
-earlier ratify-only restriction. This document does not ship any implementation.
+earlier ratify-only restriction. The structured
+`#[property(display(...), input(...), validate(...))]` value primitive has
+landed in `#[derive(Schema)]`; the codec, slot, condition, options and trigger
+contracts below remain target designs until their owners ship code and tests.
+Current schema policy v2 separates visibility from validation but retains legacy
+required-value null/empty checks. The presence-only policy proposed below is a
+different, unshipped contract and must receive a newer policy and wire version.
 The private design vault was unavailable: ADR text is unverified and unmodified.
 Private ADR-0108 remains unverified; only its preceding summary was available.
 
@@ -56,8 +62,8 @@ receiver rewriting and hidden companion data types remain outside this contract.
 
 | Owner | Reuse and required responsibility |
 |---|---|
-| schema | HasSchema, PropertyType, schema_type and directional codec contracts, Field, RootShape, checked ValidSchema, value/proof pipeline, serde projections, LoaderRegistry and redacted loader context. |
-| validator | Rule, Predicate, FieldPath, budgets, pending evaluation; checked Condition refinement and policy semantic v2. |
+| schema | HasSchema, PropertyType, schema_type and directional codec contracts, Property, RootShape, checked ValidSchema, value/proof pipeline, serde projections, LoaderRegistry and redacted loader context. |
+| validator | Rule, Predicate, FieldPath, budgets, pending evaluation; checked Condition refinement and a future presence-policy epoch. |
 | core | Dependencies, SlotField, SlotKind and typed keys; remains condition-free. |
 | action | Action traits, FromWorkflowNode, input preparation, factories, leaf slot declarations and invocation decisions. |
 | resource | Provider, ResourceConfig, resource leases, SlotCell generations, slot rotation and resource leaf declarations. |
@@ -190,11 +196,11 @@ Sections may appear in any order, at most once per field, across all property
 attributes on that field. Duplicate singleton keys, conflicting modes, unknown
 keys and empty argument lists where a value is required are errors at their spans.
 Property and slot on the same field are incompatible.
-Field attributes are optional; the Rust data domain supplies the baseline.
+Property attributes are optional; the Rust data domain supplies the baseline.
 
 | Section | Accepted keys and argument shapes |
 |---|---|
-| display | `label = "..."`, `description = "..."`, `placeholder = "..."`, `hint = "..."`, `group = "..."`, `example = literal`, `widget = token`, `hidden`, `visible_when(C)`. |
+| display | `label = "..."`, `description = "..."`, `placeholder = "..."`, `hint = "..."`, `group = "..."`, `widget = token`, `hidden`; `example = literal` and `visible_when(C)` fail closed until schema-owned storage and checked conditions land. |
 | input | `required`, `required_when(C)`, `expressions = allowed\|forbidden\|required`, `secret`. |
 | validate | `non_empty`, `length(min = n, max = n)`, `range(min = number, max = number)`, `pattern = "..."`, `url`, `email`. Either bound may be omitted, but not both. |
 | options | `source = RustPath`, `depends_on(reference, ...)`, `mode = closed\|suggestions`. Source is required; mode defaults to suggestions. |
@@ -233,7 +239,7 @@ make a nullable field non-null. Choose a non-null Rust domain to forbid null.
 ## Serde Is the Wire Authority
 
 `serde(rename)`, `rename_all`, directional rename/rename_all and `alias`
-determine wire identity. Field rename overrides the respective container rule;
+determine wire identity. Property rename overrides the respective container rule;
 without either, serde's field/variant spelling applies, including raw identifiers.
 Aliases are inbound only. Canonical inbound and canonical outbound keys are
 recorded separately and collision-checked within each projection's scope.
@@ -337,7 +343,7 @@ HasSchema alone never establishes codec fidelity. Unsupported codecs belong only
 on the explicit reviewed adapter path above, with checked descriptors/projections;
 validation does not prove arbitrary adapter semantics.
 
-Slots never become Field entries. Independently deriving Serialize/Deserialize
+Slots never become Property entries. Independently deriving Serialize/Deserialize
 on a slot-bearing receiver requires explicit `serde(skip)` for every slot.
 Guard fields without a real Default still cannot derive Deserialize merely by
 being skipped; canonical receivers need no serde derives.
@@ -437,13 +443,13 @@ runtime boundary and cannot provide an alternate author publication path.
 
 ## Trait-Driven Data Domains
 
-Reuse HasSchema for checked root schemas and Field/RootShape for representation.
+Reuse HasSchema for checked root schemas and Property/RootShape for representation.
 Syntax-only matching of type names is insufficient for aliases, generics and
 transparent newtypes. Existing derive rejection of generics and nested scalar
 roots is a migration target, not a universal-inference implementation.
 
 Introduce one schema-owned `PropertyType` field-descriptor trait: it supplies
-`fn property(key: FieldKey, ctx: &mut SchemaBuildContext) -> Result<Field, ValidationReport>`,
+`fn property(key: FieldKey, ctx: &mut SchemaBuildContext) -> Result<Property, ValidationReport>`,
 including the domain/nullability and baseline missing-value policy. The narrow
 schema-owned context enforces construction budgets before descending; it is not
 a schema representation or runtime validation context. HasSchema describes
@@ -494,7 +500,8 @@ mutual and generic recursion fixtures must fail without a hang or stack overflow
 
 ## Presence, Nullability and Defaults
 
-Policy semantic v2 defines required as key presence after normalization/defaults.
+The proposed presence policy defines required as key presence after normalization/defaults.
+It is not current schema policy v2, which still rejects required null/empty values.
 Type/domain decides nullability; non_empty separately rejects empty strings or
 collections. Display state never changes any of these decisions.
 Baseline omission is allowed for Option or a supported serde fallback; otherwise
@@ -550,7 +557,9 @@ empty values. Complete all pending obligations before trusted typed decode.
 Serde must not supply additional undeclared values after the proof: supported
 default paths are already materialized, while omitted Option decodes to None.
 Schema export's default annotation never performs this mutation.
-`display(example = literal)` is a non-mutating suggestion, never a fallback.
+When schema-owned example storage lands, `display(example = literal)` must stay
+a non-mutating suggestion, never a fallback. The current derive rejects it until
+that storage exists.
 Unknown fields, invalid data and unsupported codec output cannot become accepted
 by serde dropping them; schema rejection precedes decoder invocation.
 
@@ -784,8 +793,9 @@ scheme version or capability requirement invalidates stale evidence.
 
 This requires a new plugin compiler epoch and versioned binding/schema records,
 not mutation of RecordedBindingContractV1. Existing epoch 1/3 schema-envelope-v1
-and epoch 4 scalar-envelope-v2 rules stay closed. Choose a new schema envelope
-version for policy-v2 definitions; envelope v2 is already used for scalar roots.
+and epoch 4 scalar-envelope-v2 rules stay closed. Current epoch 5 uses schema
+envelope v3 for policy-v2 definitions. The proposed presence, codec and slot
+contracts need newer epochs; no existing envelope may acquire those meanings.
 Preserve old plan/hash golden bytes and canonical_json_v1. Add new-epoch golden
 records plus negative dependency-closure, candidate drift and readmission tests.
 
@@ -939,12 +949,14 @@ not publisher trust; tenant availability and trust remain host-owned projections
 
 ## Versioning and Breaking Migration
 
-Introduce an explicit schema policy semantic v2 envelope, conceptually
-`{ policy_version: 2, schema_wire_version: N, definition: ... }`.
-This envelope identifies admission semantics, independently of encoded shape.
+Current definitions identify schema policy v2 and wire version 2; plugin plans
+carry them in envelope v3 under compiler epoch 5. The presence-only, nullable,
+default-materializing and directional contracts proposed here require newer
+policy, definition-wire and owning catalog-envelope versions.
+The policy identifies admission semantics, independently of encoded shape.
 Policy version alone must change even when definition bytes would be identical.
 Adding nullable/condition/default/projection fields to durable definitions also
-requires a SCHEMA_WIRE_VERSION bump from historical v1; v2 is the target here.
+requires a SCHEMA_WIRE_VERSION bump beyond current v2.
 That schema crate constant is not the plugin's schema-envelope discriminator:
 plugin envelope v2 already identifies scalar roots and cannot be repurposed.
 Do not label new definition fields as policy-only metadata to avoid that bump.
@@ -953,7 +965,7 @@ Catalog slot/options extensions have their own integration catalog version.
 Historical schema wire v1, authored-value wire, tree canonical formats and
 canonical_json_v1 are distinct contracts. Preserve all prior persisted bytes and
 canonical_json_v1 encoding. New admission rejects unsupported old policy
-envelopes explicitly; it never silently reinterprets them as v2.
+envelopes explicitly; it never silently reinterprets them as the new policy.
 Migration creates new versioned definitions and requires fresh admission;
 old stored records remain evidence, not automatically upgraded proof tokens.
 
@@ -1201,7 +1213,7 @@ Each issue must update its original scope to this contract before implementation
 
 1. **1018:** constructor/SDK parity for existing metadata drafts; no new icon inventory.
 2. **Metadata evolution prerequisite:** after 1018, implement shared category/link/reference/schedule contracts, bounded admission, evidence and compatibility rules; specify the mandatory catalog envelope. Leaf tasks consume this foundation and extend existing derived projections; the Plugin prerequisite completes export/readmission integration. Localization services and static topology export are deferred.
-3. **Validator prerequisite:** Condition refinement, presence semantics, budgets and policy-v2 contract; independent of metadata/schema imports.
+3. **Validator prerequisite:** Condition refinement, presence semantics, budgets and a new presence-policy contract; independent of metadata/schema imports. Current schema policy v2 must not be reinterpreted.
 4. **995:** schema-codegen package and gates, schema_type ownership, recursive directional codec contracts and reviewed adapter path, grammar, descriptors, projections, defaults, conditions/options and versioned admission; consumes the validator prerequisite.
 5. **994, contract subtask:** leaf slot declarations and prepared-input port signatures over core; consumes 995, keeps a single projected declaration source. Separate this from 994's later end-to-end production wiring.
 6. **997 / 998 and a resource follow-up:** action, credential and resource implementation after the declaration/codec contracts, including all-family protected-output admission and actual outbound validation. The action task derives exact `Action::Output` schema/codec evidence, treats `ExpectedOutput` as informational, removes PollAction::Event, types trigger/webhook outcomes with Self::Output and implements per-call/batch validation before erasure/publication across checked and explicit trusted adapters, with runtime-owned item/encoded-byte caps, bounded serialization and overflow counter tests. Issue 999 is already closed; scope a new resource task instead of treating it as unfinished. No dependency on final SDK exports.

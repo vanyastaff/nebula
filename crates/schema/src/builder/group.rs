@@ -1,24 +1,24 @@
-//! Typed-closure builder for grouped fields with shared visible/required rules.
+//! Typed-closure builder for grouped properties with shared visible/required rules.
 //!
-//! A group is not a single [`Field`] — it is a collection
-//! of sibling fields that share a common label prefix and common
+//! A group is not a single [`Property`] — it is a collection
+//! of sibling properties that share a common label prefix and common
 //! `visible_when` / `required_when` conditions. At finish time each child
 //! inherits the shared conditions (AND-composed with any per-child condition).
 
 use nebula_validator::{Rule, RuleBuildError};
 
 use crate::{
-    builder::FieldCollector,
-    field::Field,
+    builder::PropertyCollector,
+    field::Property,
     mode::{RequiredMode, VisibilityMode},
 };
 
-/// Builder that accumulates grouped child fields with shared conditions.
+/// Builder that accumulates grouped child properties with shared conditions.
 pub struct GroupBuilder {
     name: String,
     visible_when: Option<Rule>,
     required_when: Option<Rule>,
-    fields: Vec<Field>,
+    properties: Vec<Property>,
 }
 
 impl GroupBuilder {
@@ -28,7 +28,7 @@ impl GroupBuilder {
             name: name.into(),
             visible_when: None,
             required_when: None,
-            fields: Vec::new(),
+            properties: Vec::new(),
         }
     }
 
@@ -52,38 +52,38 @@ impl GroupBuilder {
         self
     }
 
-    /// Consume the group and return its children with shared conditions applied.
+    /// Consume the group and return its child properties with shared conditions applied.
     ///
     /// # Errors
     /// Returns the exhausted rule budget when composing shared and child conditions.
-    pub fn into_fields(self) -> Result<Vec<Field>, RuleBuildError> {
+    pub fn into_properties(self) -> Result<Vec<Property>, RuleBuildError> {
         let Self {
             name,
             visible_when,
             required_when,
-            fields,
+            properties,
         } = self;
-        fields
+        properties
             .into_iter()
             .map(|field| apply_group(field, &name, visible_when.as_ref(), required_when.as_ref()))
             .collect()
     }
 }
 
-impl FieldCollector for GroupBuilder {
-    fn push_field(mut self, field: Field) -> Self {
-        self.fields.push(field);
+impl PropertyCollector for GroupBuilder {
+    fn push_property(mut self, property: Property) -> Self {
+        self.properties.push(property);
         self
     }
 }
 
-/// Apply shared group label + shared visible/required conditions to a field.
+/// Apply shared group label + shared visible/required conditions to a property.
 fn apply_group(
-    field: Field,
+    field: Property,
     group: &str,
     visible_when: Option<&Rule>,
     required_when: Option<&Rule>,
-) -> Result<Field, RuleBuildError> {
+) -> Result<Property, RuleBuildError> {
     let mut field = field;
     set_group(&mut field, group);
     if let Some(rule) = visible_when {
@@ -100,54 +100,54 @@ fn apply_group(
 macro_rules! for_each_field {
     ($field:expr, $mutation:expr) => {
         match $field {
-            Field::String(inner) => {
+            Property::String(inner) => {
                 $mutation(&mut inner.group, &mut inner.visible, &mut inner.required)
             },
-            Field::Secret(inner) => {
+            Property::Secret(inner) => {
                 $mutation(&mut inner.group, &mut inner.visible, &mut inner.required)
             },
-            Field::Number(inner) => {
+            Property::Number(inner) => {
                 $mutation(&mut inner.group, &mut inner.visible, &mut inner.required)
             },
-            Field::Boolean(inner) => {
+            Property::Boolean(inner) => {
                 $mutation(&mut inner.group, &mut inner.visible, &mut inner.required)
             },
-            Field::Select(inner) => {
+            Property::Select(inner) => {
                 $mutation(&mut inner.group, &mut inner.visible, &mut inner.required)
             },
-            Field::Object(inner) => {
+            Property::Object(inner) => {
                 $mutation(&mut inner.group, &mut inner.visible, &mut inner.required)
             },
-            Field::List(inner) => {
+            Property::List(inner) => {
                 $mutation(&mut inner.group, &mut inner.visible, &mut inner.required)
             },
-            Field::Mode(inner) => {
+            Property::Mode(inner) => {
                 $mutation(&mut inner.group, &mut inner.visible, &mut inner.required)
             },
-            Field::Code(inner) => {
+            Property::Code(inner) => {
                 $mutation(&mut inner.group, &mut inner.visible, &mut inner.required)
             },
-            Field::File(inner) => {
+            Property::File(inner) => {
                 $mutation(&mut inner.group, &mut inner.visible, &mut inner.required)
             },
-            Field::Computed(inner) => {
+            Property::Computed(inner) => {
                 $mutation(&mut inner.group, &mut inner.visible, &mut inner.required)
             },
-            Field::Dynamic(inner) => {
+            Property::Dynamic(inner) => {
                 $mutation(&mut inner.group, &mut inner.visible, &mut inner.required)
             },
-            Field::Notice(inner) => {
+            Property::Notice(inner) => {
                 $mutation(&mut inner.group, &mut inner.visible, &mut inner.required)
             },
             // A forward-compat `Unknown` field has no typed `group` slot and is
             // never produced by the authoring builder (only by deserialization),
             // so group/visibility/required composition is a no-op for it.
-            Field::Unknown(_) => {},
+            Property::Unknown(_) => {},
         }
     };
 }
 
-fn set_group(field: &mut Field, group: &str) {
+fn set_group(field: &mut Property, group: &str) {
     for_each_field!(field, |g: &mut Option<String>,
                             _v: &mut VisibilityMode,
                             _r: &mut RequiredMode| {
@@ -157,7 +157,7 @@ fn set_group(field: &mut Field, group: &str) {
     });
 }
 
-fn set_visible(field: &mut Field, rule: &Rule) -> Result<(), RuleBuildError> {
+fn set_visible(field: &mut Property, rule: &Rule) -> Result<(), RuleBuildError> {
     let mut result = Ok(());
     for_each_field!(field, |_g: &mut Option<String>,
                             v: &mut VisibilityMode,
@@ -169,7 +169,7 @@ fn set_visible(field: &mut Field, rule: &Rule) -> Result<(), RuleBuildError> {
     result
 }
 
-fn set_required(field: &mut Field, rule: &Rule) -> Result<(), RuleBuildError> {
+fn set_required(field: &mut Property, rule: &Rule) -> Result<(), RuleBuildError> {
     let mut result = Ok(());
     for_each_field!(field, |_g: &mut Option<String>,
                             _v: &mut VisibilityMode,

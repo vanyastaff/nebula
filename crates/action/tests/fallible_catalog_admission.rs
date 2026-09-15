@@ -111,3 +111,38 @@ fn output_schema_failure_prevents_factory_construction() {
     assert!(!format!("{error}: {error:?}").contains("authored_private_output_schema_text"));
     assert_eq!(OUTPUT_SCHEMA_CALLS.load(Ordering::SeqCst), 1);
 }
+
+#[derive(serde::Serialize)]
+struct HistoricalOutput;
+
+impl HasSchema for HistoricalOutput {
+    fn schema() -> Result<ValidSchema, ValidationReport> {
+        Ok(serde_json::from_value(serde_json::json!({
+            "kind": "scalar", "scalar": {"version": 1, "type": "null"}
+        }))
+        .expect("historical scalar evidence decodes"))
+    }
+}
+
+#[derive(Action)]
+#[action(key = "test.historical_output", name = "Historical output", description = "Policy admission probe", input = UnitInput, output = HistoricalOutput)]
+struct HistoricalOutputAction;
+
+impl StatelessAction for HistoricalOutputAction {
+    async fn execute(
+        &self,
+        (): (),
+        _: &(impl ActionContext + ?Sized),
+    ) -> Result<ActionResult<HistoricalOutput>, ActionError> {
+        Ok(ActionResult::success(HistoricalOutput))
+    }
+}
+
+#[test]
+fn historical_output_schema_cannot_acquire_factory_authority() {
+    let Err(error) = GenericStatelessFactory::<HistoricalOutputAction>::new() else {
+        panic!("historical output schema cannot produce a factory");
+    };
+    assert_matches!(&error, ActionMetadataAdmissionError::Schema(MetadataBuildError::Schema(report))
+        if report.errors().any(|error| error.code() == "schema.unsupported_policy"));
+}

@@ -11,7 +11,7 @@ use zeroize::Zeroizing;
 
 use super::{MODE_PAYLOAD_KEY, MODE_SELECTOR_KEY, SchemaKind, SerdeTagging, ValidSchema};
 use crate::{
-    Field, ResolvedValue, SecretValue, ValidationError, ValuePath, ValueTree, field::ModeField,
+    Property, ResolvedValue, SecretValue, ValidationError, ValuePath, ValueTree, field::ModeField,
 };
 
 #[derive(Clone, Copy)]
@@ -57,7 +57,7 @@ pub(super) fn decode<T: DeserializeOwned>(
     let path = ValuePath::root();
     let tree = match values {
         ValueTree::Object(properties) => {
-            project_sensitive_level(schema.fields(), properties, disclosure, &path)?
+            project_sensitive_level(schema.properties(), properties, disclosure, &path)?
         },
         _ => build_sensitive_tree(values, disclosure, &path)?,
     };
@@ -71,7 +71,7 @@ pub(super) fn decode<T: DeserializeOwned>(
 }
 
 fn project_sensitive_level<'a>(
-    fields: &'a [Field],
+    fields: &'a [Property],
     properties: &'a indexmap::IndexMap<String, ResolvedValue>,
     disclosure: SecretDisclosure,
     path: &ValuePath,
@@ -107,7 +107,7 @@ fn project_sensitive_level<'a>(
 }
 
 fn property_for_field<'a>(
-    field: &Field,
+    field: &Property,
     properties: &'a indexmap::IndexMap<String, ResolvedValue>,
 ) -> Option<&'a ResolvedValue> {
     properties.get(field.key().as_str()).or_else(|| {
@@ -119,16 +119,16 @@ fn property_for_field<'a>(
 }
 
 fn project_sensitive_field<'a>(
-    field: &'a Field,
+    field: &'a Property,
     value: &'a ResolvedValue,
     disclosure: SecretDisclosure,
     path: &ValuePath,
 ) -> Result<SensitiveValue<'a>, ValidationError> {
     match (field, value) {
-        (Field::Object(object), ValueTree::Object(properties)) => {
+        (Property::Object(object), ValueTree::Object(properties)) => {
             project_sensitive_level(&object.fields, properties, disclosure, path)
         },
-        (Field::List(list), ValueTree::List(items)) if let Some(item) = list.item.as_deref() => {
+        (Property::List(list), ValueTree::List(items)) if let Some(item) = list.item.as_deref() => {
             items
                 .iter()
                 .enumerate()
@@ -138,7 +138,7 @@ fn project_sensitive_field<'a>(
                 .collect::<Result<_, _>>()
                 .map(SensitiveValue::List)
         },
-        (Field::Mode(mode), ValueTree::Object(properties)) => {
+        (Property::Mode(mode), ValueTree::Object(properties)) => {
             project_sensitive_mode(mode, properties, disclosure, path)
         },
         _ => build_sensitive_tree(value, disclosure, path),
@@ -256,8 +256,8 @@ fn project_root_union_wire<'a>(
     if schema.kind() != SchemaKind::Union {
         return tree;
     }
-    let (Some(Field::Mode(mode)), Some(tagging)) =
-        (schema.fields().first(), schema.serde_tagging())
+    let (Some(Property::Mode(mode)), Some(tagging)) =
+        (schema.properties().first(), schema.serde_tagging())
     else {
         return tree;
     };

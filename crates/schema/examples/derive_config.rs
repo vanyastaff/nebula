@@ -23,7 +23,7 @@ struct DemoConfig {
 fn main() {
     let schema = DemoConfig::schema().expect("derived schema lints");
     assert_eq!(
-        schema.fields().len(),
+        schema.properties().len(),
         1,
         "one struct field → one top-level field"
     );

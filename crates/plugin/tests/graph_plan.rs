@@ -15,7 +15,9 @@ use nebula_plugin::{
     ExecutablePlanRevision, PlanRegistryCompatibilityError, Plugin, PluginRegistry,
     RecordedExecutablePlanRevisionV1, ResolvedPlugin, RuntimeContractVersion,
 };
-use nebula_schema::{Field, ObjectField, Schema, SecretField, ValidSchema, ValuePath, field_key};
+use nebula_schema::{
+    ObjectField, Property, Schema, SecretField, ValidSchema, ValuePath, field_key,
+};
 use nebula_workflow::{NodeDefinition, ParamValue, WorkflowBuilder};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -200,6 +202,13 @@ fn readable_legacy_plans_do_not_gain_implicit_execution_permission() {
     record.as_object_mut().unwrap().remove("claimed_id");
     for action in record["content"]["actions"].as_array_mut().unwrap() {
         action.as_object_mut().unwrap().remove("effect_contract");
+        for slot in ["input_schema", "output_schema"] {
+            action[slot]["schema_wire_version"] = serde_json::json!(1);
+            action[slot]["schema"]
+                .as_object_mut()
+                .unwrap()
+                .remove("policy_version");
+        }
     }
     let canonical = nebula_schema::canonical_json_v1(&record).unwrap();
     let domain = b"nebula.executable-plan.graph.v1";
@@ -213,16 +222,17 @@ fn readable_legacy_plans_do_not_gain_implicit_execution_permission() {
     let digest: [u8; 32] = hash.finalize().into();
     record["claimed_id"] =
         serde_json::to_value(nebula_core::ExecutablePlanRevisionId::from_bytes(digest)).unwrap();
-    let recorded: RecordedExecutablePlanRevisionV1 = serde_json::from_value(record).unwrap();
-    let legacy = ExecutablePlanRevision::try_from(recorded).unwrap();
+    let recorded: RecordedExecutablePlanRevisionV1 =
+        serde_json::from_value(record.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&recorded).unwrap(), record);
     assert!(matches!(
-        legacy.validate_against(&registry),
-        Err(PlanRegistryCompatibilityError::UnsupportedEffectProtocol)
+        ExecutablePlanRevision::try_from(recorded),
+        Err(nebula_plugin::ExecutablePlanIntegrityError::UnsupportedSchemaPolicy)
     ));
 }
 
 #[test]
-fn graph_v3_records_remain_executable_against_identical_legacy_contracts() {
+fn graph_v3_records_remain_evidence_without_current_execution_authority() {
     use sha2::{Digest, Sha256};
     let registry = frozen(ValidSchema::empty(), 0x82);
     let plan = registry
@@ -231,6 +241,15 @@ fn graph_v3_records_remain_executable_against_identical_legacy_contracts() {
     let mut record = serde_json::to_value(RecordedExecutablePlanRevisionV1::from(&plan)).unwrap();
     record["compiler_version"] = serde_json::json!(3);
     record["canonical_hash_version"] = serde_json::json!(2);
+    for action in record["content"]["actions"].as_array_mut().unwrap() {
+        for slot in ["input_schema", "output_schema"] {
+            action[slot]["schema_wire_version"] = serde_json::json!(1);
+            action[slot]["schema"]
+                .as_object_mut()
+                .unwrap()
+                .remove("policy_version");
+        }
+    }
     record.as_object_mut().unwrap().remove("claimed_id");
     let canonical = nebula_schema::canonical_json_v1(&record).unwrap();
     let domain = b"nebula.executable-plan.graph.v2";
@@ -245,15 +264,16 @@ fn graph_v3_records_remain_executable_against_identical_legacy_contracts() {
     record["claimed_id"] =
         serde_json::to_value(nebula_core::ExecutablePlanRevisionId::from_bytes(digest)).unwrap();
     let encoded = serde_json::to_vec(&record).unwrap();
-    let legacy =
-        ExecutablePlanRevision::try_from_recorded_v1(serde_json::from_slice(&encoded).unwrap())
-            .unwrap();
-    legacy.validate_against(&registry).unwrap();
-    assert_eq!(
-        serde_json::to_value(RecordedExecutablePlanRevisionV1::from(&legacy)).unwrap(),
-        record
+    let legacy: RecordedExecutablePlanRevisionV1 = serde_json::from_slice(&encoded).unwrap();
+    assert_eq!(serde_json::to_value(&legacy).unwrap(), record);
+    std::assert_matches!(
+        ExecutablePlanRevision::try_from(legacy),
+        Err(nebula_plugin::ExecutablePlanIntegrityError::UnsupportedSchemaPolicy)
     );
-    assert_ne!(legacy.id(), plan.id());
+    assert_ne!(
+        nebula_core::ExecutablePlanRevisionId::from_bytes(digest),
+        plan.id()
+    );
 }
 
 #[test]
@@ -281,7 +301,7 @@ fn intrinsic_error_edge_uses_runtime_payload_schema_and_survives_record_roundtri
         "demo.source",
         ValidSchema::empty(),
         Schema::builder()
-            .add(Field::string(field_key!("success_only")).required())
+            .property(Property::string(field_key!("success_only")).required())
             .build()
             .unwrap(),
         nebula_action::effect::ActionEffectContract::NoExternalEffects,
@@ -298,7 +318,7 @@ fn intrinsic_error_edge_uses_runtime_payload_schema_and_survives_record_roundtri
     let incompatible = ContractAction::with_contract(
         "demo.incompatible",
         Schema::builder()
-            .add(Field::string(field_key!("success_only")).required())
+            .property(Property::string(field_key!("success_only")).required())
             .build()
             .unwrap(),
         ValidSchema::empty(),
@@ -471,7 +491,7 @@ fn newly_compiled_plan_records_explicit_effect_protocol() {
         .compile_graph_v1(WorkflowVersionId::new(), &workflow)
         .unwrap();
     let record = serde_json::to_value(RecordedExecutablePlanRevisionV1::from(&plan)).unwrap();
-    assert_eq!(record["compiler_version"], 4);
+    assert_eq!(record["compiler_version"], 5);
     assert_eq!(record["canonical_hash_version"], 3);
     assert_eq!(
         record["content"]["actions"][0]["effect_contract"],
@@ -490,12 +510,12 @@ fn scalar_contracts_roundtrip_under_the_new_epoch_without_named_parameters() {
             .compile_graph_v1(WorkflowVersionId::new(), &workflow_with_variables(&[]))
             .unwrap();
         let wire = serde_json::to_value(RecordedExecutablePlanRevisionV1::from(&plan)).unwrap();
-        assert_eq!(wire["compiler_version"], 4);
+        assert_eq!(wire["compiler_version"], 5);
         assert_eq!(wire["canonical_hash_version"], 3);
         assert_eq!(
             wire["content"]["actions"][0]["input_schema"],
             serde_json::json!({
-                "schema_wire_version": 2, "schema": schema,
+                "schema_wire_version": 3, "schema": schema,
             })
         );
         let loaded =
@@ -586,7 +606,7 @@ fn compatibility_detects_flavor_and_unfingerprinted_contract_drift() {
     ));
 
     let changed_schema = Schema::builder()
-        .add(Field::string(field_key!("message")))
+        .property(Property::string(field_key!("message")))
         .build()
         .expect("fixture schema is valid");
     let same_ids_but_changed_contract = frozen(changed_schema, 0x55);
@@ -608,7 +628,7 @@ fn compatibility_detects_flavor_and_unfingerprinted_contract_drift() {
 fn recorded_templates_use_template_grammar_and_preserve_parameter_bytes() {
     let registry = frozen(
         Schema::builder()
-            .add(Field::string(field_key!("value")))
+            .property(Property::string(field_key!("value")))
             .build()
             .unwrap(),
         0x87,
@@ -639,7 +659,7 @@ fn recorded_templates_use_template_grammar_and_preserve_parameter_bytes() {
 fn recorded_expression_auto_priority_does_not_make_malformed_templates_valid() {
     let registry = frozen(
         Schema::builder()
-            .add(Field::string(field_key!("value")))
+            .property(Property::string(field_key!("value")))
             .build()
             .unwrap(),
         0x89,
@@ -671,7 +691,7 @@ fn recorded_expression_auto_priority_does_not_make_malformed_templates_valid() {
 #[test]
 fn compiler_validates_the_complete_parameter_set_and_redacts_secret_payloads() {
     let required_schema = Schema::builder()
-        .add(Field::string(field_key!("value")).required())
+        .property(Property::string(field_key!("value")).required())
         .build()
         .expect("fixture schema is valid");
     let registry = frozen(required_schema, 0x61);
@@ -687,7 +707,7 @@ fn compiler_validates_the_complete_parameter_set_and_redacts_secret_payloads() {
     }));
 
     let literal_schema = Schema::builder()
-        .add(Field::string(field_key!("value")).no_expression())
+        .property(Property::string(field_key!("value")).no_expression())
         .build()
         .expect("fixture schema is valid");
     let literal_registry = frozen(literal_schema, 0x63);
@@ -712,7 +732,9 @@ fn compiler_validates_the_complete_parameter_set_and_redacts_secret_payloads() {
 
     const SECRET_PAYLOAD: &str = "must-never-appear-in-a-diagnostic";
     let secret_schema = Schema::builder()
-        .add(ObjectField::new(field_key!("value")).add(SecretField::new(field_key!("token"))))
+        .property(
+            ObjectField::new(field_key!("value")).property(SecretField::new(field_key!("token"))),
+        )
         .build()
         .expect("fixture schema is valid");
     let secret_registry = frozen(secret_schema, 0x66);
@@ -740,7 +762,7 @@ fn execution_graph_preserves_recorded_runtime_configuration() {
 
     let registry = frozen(
         Schema::builder()
-            .add(Field::string(field_key!("value")))
+            .property(Property::string(field_key!("value")))
             .build()
             .unwrap(),
         0x73,
@@ -806,7 +828,7 @@ fn execution_graph_preserves_recorded_runtime_configuration() {
 #[test]
 fn execution_graph_preserves_parameter_variants_and_canonical_reference_ports() {
     let schema = Schema::builder()
-        .add(Field::string(field_key!("value")))
+        .property(Property::string(field_key!("value")))
         .build()
         .unwrap();
     let action = ContractAction::with_contract(

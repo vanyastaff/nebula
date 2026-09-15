@@ -11,7 +11,7 @@ use serde_json::json;
 #[test]
 fn telegram_send_message_schema_builds() {
     let s = build_telegram_send_message_schema();
-    assert_eq!(s.fields().len(), 8);
+    assert_eq!(s.properties().len(), 8);
 }
 
 #[test]

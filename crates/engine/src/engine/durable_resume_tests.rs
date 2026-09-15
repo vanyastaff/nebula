@@ -66,7 +66,7 @@ async fn recorded_union_internal_parameters_reach_typed_action(
 ) {
     let (engine, calls, node) = union_echo_fixture();
     let schema = nebula_schema::schema_of::<RecordedUnionInput>().unwrap();
-    let node = node.with_parameter(schema.fields()[0].key().as_str(), parameter);
+    let node = node.with_parameter(schema.properties()[0].key().as_str(), parameter);
     let workflow = make_workflow(vec![node], vec![]);
     let stores = TestStores::new();
     let result = stores

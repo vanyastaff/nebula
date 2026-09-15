@@ -1,4 +1,4 @@
-//! Secret material types for `Field::Secret`.
+//! Secret material types for `Property::Secret`.
 //!
 //! `SecretValue` is **not** encryption-at-rest, and **not** a key-derivation
 //! layer — both belong to `nebula-credential` / storage, which own the
@@ -114,14 +114,14 @@ impl Serialize for SecretString {
 // `SecretString` deliberately rejects deserialization. Secret material must
 // **never** be reconstructed from wire bytes that the schema layer sees:
 //
-// - Schema definitions (`Field::Secret`) flow over `serde` for catalog / plugin manifests; allowing
+// - Schema definitions (`Property::Secret`) flow over `serde` for catalog / plugin manifests; allowing
 //   `SecretString` here would let a default value or a leaked test fixture round-trip plaintext
 //   through schema storage.
 // - Declared secret values are introduced by consuming preparation (via `SecretValue::string`),
 //   not by parsing wire JSON.
 //
 // As a result, `Schema` definitions must NOT contain a `default` for a
-// `Field::Secret`; the lint pass in `crate::lint` enforces this with the
+// `Property::Secret`; the lint pass in `crate::lint` enforces this with the
 // `secret.default_forbidden` code (Severity::Error). To populate a secret
 // field, configure it via the credential setup form.
 impl<'de> Deserialize<'de> for SecretString {

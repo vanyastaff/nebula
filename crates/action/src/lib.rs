@@ -158,7 +158,7 @@ pub use nebula_metadata::{
     Icon, MetadataBuildError, MetadataError, MetadataName, MetadataVersion, metadata_name,
 };
 pub use nebula_resource::ResourceRef;
-pub use nebula_schema::{Field, Schema, ValidSchema, field_key};
+pub use nebula_schema::{Property, Schema, ValidSchema, field_key};
 pub use output::{
     ActionOutput, BinaryData, BinaryStorage, CacheInfo, Cost, DataReference, DeferredOutput,
     DeferredRetryConfig, ExpectedOutput, OutputEnvelope, OutputMeta, OutputOrigin, PollTarget,

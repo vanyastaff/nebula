@@ -4,13 +4,13 @@
 //! schemas declared by plugin authors must survive a JSON round-trip without
 //! losing field shape.
 
-use nebula_schema::{Field, Schema, SchemaKind, ValidSchema, field_key};
+use nebula_schema::{Property, Schema, SchemaKind, ValidSchema, field_key};
 
 #[test]
 fn valid_schema_json_roundtrip_preserves_fields() {
     let original = Schema::builder()
-        .add(Field::string(field_key!("name")).required())
-        .add(Field::number(field_key!("age")))
+        .property(Property::string(field_key!("name")).required())
+        .property(Property::number(field_key!("age")))
         .build()
         .unwrap();
 
@@ -31,10 +31,14 @@ fn valid_schema_empty_roundtrip() {
 
     assert_eq!(empty, decoded);
 
-    // Lock wire shape: protocol-version 3 consumers rely on this exact JSON
-    // for zero-field schemas. The empty *record* must stay `kind`-less so it
-    // round-trips unchanged through readers that pre-date `SchemaKind`.
-    assert_eq!(json, r#"{"fields":[]}"#);
+    // Fresh definitions identify their policy without changing the root kind.
+    assert_eq!(json, r#"{"policy_version":2,"fields":[]}"#);
+    let historical: ValidSchema = serde_json::from_str(r#"{"fields":[]}"#).unwrap();
+    assert_eq!(
+        serde_json::to_string(&historical).unwrap(),
+        r#"{"fields":[]}"#
+    );
+    assert_ne!(historical, empty);
     assert_eq!(empty.kind(), SchemaKind::Record);
 }
 
@@ -45,7 +49,13 @@ fn valid_schema_any_roundtrip_preserves_kind() {
     let json = serde_json::to_string(&any).expect("serialize");
     // Unlike the empty record, the gradual `Any` carries an explicit `kind`
     // tag so it does not decode back as an empty record.
-    assert_eq!(json, r#"{"kind":"any","fields":[]}"#);
+    assert_eq!(json, r#"{"policy_version":2,"kind":"any","fields":[]}"#);
+    let historical: ValidSchema = serde_json::from_str(r#"{"kind":"any","fields":[]}"#).unwrap();
+    assert_eq!(
+        serde_json::to_string(&historical).unwrap(),
+        r#"{"kind":"any","fields":[]}"#
+    );
+    assert_ne!(historical, any);
 
     let decoded: ValidSchema = serde_json::from_str(&json).expect("deserialize");
     assert_eq!(decoded.kind(), SchemaKind::Any);

@@ -1,5 +1,5 @@
 use nebula_schema::{
-    ExpressionMode, Field, HasSchema, Rule, Schema, Transformer, ValidSchema, ValidationReport,
+    ExpressionMode, HasSchema, Property, Rule, Schema, Transformer, ValidSchema, ValidationReport,
     field_key,
 };
 use nebula_workflow::ParamValue;
@@ -17,19 +17,19 @@ struct TransformedRemoteInput {
 impl HasSchema for TransformedRemoteInput {
     fn schema() -> Result<ValidSchema, ValidationReport> {
         Schema::builder()
-            .add(
-                Field::string(field_key!("label"))
+            .property(
+                Property::string(field_key!("label"))
                     .expression_mode(ExpressionMode::Required)
                     .with_transformer(Transformer::regex("^.(.*)$", 1)?)
                     .with_rule(
                         Rule::one_of([json!("ready")]).expect("bounded fixture rule must admit"),
                     ),
             )
-            .add(
-                Field::string(field_key!("literal"))
+            .property(
+                Property::string(field_key!("literal"))
                     .with_transformer(Transformer::regex("^.(.*)$", 1)?),
             )
-            .add(Field::secret(field_key!("token")).required())
+            .property(Property::secret(field_key!("token")).required())
             .build()
     }
 }
@@ -42,7 +42,7 @@ struct BoundedAmountInput {
 impl HasSchema for BoundedAmountInput {
     fn schema() -> Result<ValidSchema, ValidationReport> {
         Schema::builder()
-            .add(Field::number(field_key!("amount")).integer().min(8))
+            .property(Property::number(field_key!("amount")).integer().min(8))
             .build()
     }
 }
@@ -69,7 +69,7 @@ struct SerdeRejectingRemoteInput {
 impl HasSchema for SerdeRejectingRemoteInput {
     fn schema() -> Result<ValidSchema, ValidationReport> {
         Schema::builder()
-            .add(Field::number(field_key!("amount")).integer().min(8))
+            .property(Property::number(field_key!("amount")).integer().min(8))
             .build()
     }
 }

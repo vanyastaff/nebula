@@ -7,7 +7,7 @@ use nebula_metadata::{
     MetadataDecodeLimits, MetadataDraft, MetadataError, PluginDependency, PluginManifest,
     RecordedBaseMetadata, check_json_record, decode_json_reader, decode_json_slice,
 };
-use nebula_schema::{Field, Rule, Schema, ValidSchema, field_key};
+use nebula_schema::{Property, Rule, Schema, ValidSchema, field_key};
 use semver::{Version, VersionReq};
 use serde::de::DeserializeOwned;
 use serde_json::json;
@@ -69,11 +69,13 @@ fn manifest_with_33_dependency_comparators_cannot_admit_undecodable_json() {
 
 #[test]
 fn schema_with_64_nested_objects_cannot_admit_undecodable_json() {
-    let mut field: Field = Field::object(field_key!("nested")).into();
+    let mut field: Property = Property::object(field_key!("nested")).into();
     for _ in 1..64 {
-        field = Field::object(field_key!("nested")).add(field).into();
+        field = Property::object(field_key!("nested"))
+            .property(field)
+            .into();
     }
-    let schema = Schema::builder().add(field).build().unwrap();
+    let schema = Schema::builder().property(field).build().unwrap();
     let wire = serde_json::to_vec(&json!({"schema": schema})).unwrap();
     assert!(serde_json::from_slice::<serde_json::Value>(&wire).is_err());
     let admitted = MetadataDraft::try_new("example".to_owned(), "Example", "")
@@ -171,7 +173,7 @@ fn nested_defaults_obey_exact_parser_depth_boundary() {
     let mut rejected = 0;
     for depth in 115..=130 {
         let schema = Schema::builder()
-            .add(Field::object(field_key!("value")).default(nested_value(depth)))
+            .property(Property::object(field_key!("value")).default(nested_value(depth)))
             .build()
             .unwrap();
         if verify_schema_roundtrip(schema) {
@@ -192,13 +194,15 @@ fn schema_nesting_and_rule_operand_depth_share_one_record_limit() {
     let mut accepted = 0;
     let mut rejected = 0;
     for depth in 20..=40 {
-        let mut field: Field = Field::object(field_key!("value"))
+        let mut field: Property = Property::object(field_key!("value"))
             .with_rule(rule.clone())
             .into();
         for _ in 0..depth {
-            field = Field::object(field_key!("nested")).add(field).into();
+            field = Property::object(field_key!("nested"))
+                .property(field)
+                .into();
         }
-        let schema = Schema::builder().add(field).build().unwrap();
+        let schema = Schema::builder().property(field).build().unwrap();
         if verify_schema_roundtrip(schema) {
             accepted += 1;
         } else {

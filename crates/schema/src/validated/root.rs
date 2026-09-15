@@ -1,8 +1,8 @@
-//! Authoritative root shapes; field indexes are derived, never a second shape.
+//! Authoritative root shapes; property indexes are derived, never a second shape.
 
 use nebula_validator::Rule;
 
-use crate::{Field, RequiredMode, ValidationError, ValidationReport};
+use crate::{Property, RequiredMode, ValidationError, ValidationReport};
 
 use super::{ScalarSchema, SchemaKind, SerdeTagging};
 
@@ -22,37 +22,40 @@ pub enum RootShape {
 /// Checked record contents. Construction belongs to the schema builder.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RecordShape {
-    fields: Vec<Field>,
+    properties: Vec<Property>,
     root_rules: Vec<Rule>,
 }
 
-/// Checked union contents. The single field is always a required mode.
+/// Checked union contents. The single property is always a required mode.
 #[derive(Debug, Clone, PartialEq)]
 pub struct UnionShape {
-    field: Box<Field>,
+    property: Box<Property>,
     tagging: SerdeTagging,
 }
 
 impl RootShape {
-    pub(crate) fn record(fields: Vec<Field>, root_rules: Vec<Rule>) -> Self {
-        Self::Record(RecordShape { fields, root_rules })
+    pub(crate) fn record(properties: Vec<Property>, root_rules: Vec<Rule>) -> Self {
+        Self::Record(RecordShape {
+            properties,
+            root_rules,
+        })
     }
 
     pub(crate) fn union(
-        mut fields: Vec<Field>,
+        mut properties: Vec<Property>,
         tagging: SerdeTagging,
     ) -> Result<Self, ValidationReport> {
-        if fields.len() != 1 {
+        if properties.len() != 1 {
             return Err(invalid_union());
         }
-        let Some(field @ Field::Mode(_)) = fields.pop() else {
+        let Some(property @ Property::Mode(_)) = properties.pop() else {
             return Err(invalid_union());
         };
-        if field.required() != &RequiredMode::Always {
+        if property.required() != &RequiredMode::Always {
             return Err(invalid_union());
         }
         Ok(Self::Union(UnionShape {
-            field: Box::new(field),
+            property: Box::new(property),
             tagging,
         }))
     }
@@ -68,12 +71,12 @@ impl RootShape {
         }
     }
 
-    /// Declared fields. Scalar and unknown roots do not have properties.
+    /// Declared properties. Scalar and unknown roots do not have properties.
     #[must_use]
-    pub fn fields(&self) -> &[Field] {
+    pub fn properties(&self) -> &[Property] {
         match self {
-            Self::Record(record) => record.fields(),
-            Self::Union(union) => std::slice::from_ref(union.field.as_ref()),
+            Self::Record(record) => record.properties(),
+            Self::Union(union) => std::slice::from_ref(union.property.as_ref()),
             Self::Any | Self::Scalar(_) => &[],
         }
     }
@@ -101,8 +104,8 @@ impl RootShape {
 impl RecordShape {
     /// The ordered record declarations.
     #[must_use]
-    pub fn fields(&self) -> &[Field] {
-        &self.fields
+    pub fn properties(&self) -> &[Property] {
+        &self.properties
     }
 
     /// Rules on the whole object.
@@ -115,8 +118,8 @@ impl RecordShape {
 impl UnionShape {
     /// The checked root mode declaration.
     #[must_use]
-    pub fn field(&self) -> &Field {
-        &self.field
+    pub fn property(&self) -> &Property {
+        &self.property
     }
 
     /// The enum's serde tagging convention.

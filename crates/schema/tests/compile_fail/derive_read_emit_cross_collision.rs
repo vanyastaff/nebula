@@ -1,6 +1,6 @@
 use nebula_schema::Schema;
 
-// Field `a` emits under `wire` (emit_as) while field `b` reads `wire`
+// Property `a` emits under `wire` (emit_as) while field `b` reads `wire`
 // (serde alias): a wire round-trip would move data between the two fields.
 #[derive(Schema, serde::Deserialize)]
 #[allow(dead_code)]

@@ -1,7 +1,7 @@
 //! Integration tests for the typed-closure builder DSL.
 
 use nebula_schema::{
-    AuthoredValue, Field, FieldCollector, GroupBuilder, InputHint, RequiredMode, Schema,
+    AuthoredValue, GroupBuilder, InputHint, Property, PropertyCollector, RequiredMode, Schema,
     StringWidget, VisibilityMode, field_key,
 };
 use nebula_validator::{Predicate, Rule};
@@ -25,8 +25,8 @@ fn closure_string_produces_equivalent_schema() {
         .unwrap();
 
     let via_direct = Schema::builder()
-        .add(
-            Field::string(field_key!("name"))
+        .property(
+            Property::string(field_key!("name"))
                 .label("Name")
                 .required()
                 .min_length(1)
@@ -45,8 +45,8 @@ fn closure_number_integer_flag_applied() {
         .integer(field_key!("count"), |n| n.min(0_i64).max(100_i64))
         .build()
         .unwrap();
-    match &schema.fields()[0] {
-        Field::Number(n) => {
+    match &schema.properties()[0] {
+        Property::Number(n) => {
             assert!(n.integer);
             assert!(n.rules.len() >= 2);
         },
@@ -60,8 +60,8 @@ fn closure_boolean_chainable() {
         .boolean(field_key!("flag"), |b| b.label("Flag").no_expression())
         .build()
         .unwrap();
-    match &schema.fields()[0] {
-        Field::Boolean(b) => {
+    match &schema.properties()[0] {
+        Property::Boolean(b) => {
             assert_eq!(b.label.as_deref(), Some("Flag"));
             assert!(matches!(
                 b.expression,
@@ -83,8 +83,8 @@ fn closure_nested_object_holds_children() {
         .build()
         .unwrap();
 
-    match &schema.fields()[0] {
-        Field::Object(obj) => {
+    match &schema.properties()[0] {
+        Property::Object(obj) => {
             assert_eq!(obj.fields.len(), 2);
             assert_eq!(obj.fields[0].key().as_str(), "name");
             assert_eq!(obj.fields[1].key().as_str(), "age");
@@ -104,13 +104,13 @@ fn closure_list_item_via_closure() {
         .build()
         .unwrap();
 
-    match &schema.fields()[0] {
-        Field::List(list) => {
+    match &schema.properties()[0] {
+        Property::List(list) => {
             assert_eq!(list.min_items, Some(1));
             assert_eq!(list.max_items, Some(10));
             assert!(list.item.is_some());
             match list.item.as_deref().unwrap() {
-                Field::String(s) => assert_eq!(s.key.as_str(), "entry"),
+                Property::String(s) => assert_eq!(s.key.as_str(), "entry"),
                 other => panic!("expected String item, got {other:?}"),
             }
         },
@@ -137,7 +137,7 @@ fn builder_full_example_from_spec() {
         .build()
         .unwrap();
 
-    assert_eq!(schema.fields().len(), 3);
+    assert_eq!(schema.properties().len(), 3);
     let values = AuthoredValue::from_template_json(
         json!({ "url": "https://x.test/", "timeout": 5, "verbose": false }),
     )
@@ -160,20 +160,20 @@ fn group_propagates_visible_when_to_children() {
         .unwrap();
 
     // Group children are flattened into the top-level schema fields.
-    assert_eq!(schema.fields().len(), 3);
+    assert_eq!(schema.properties().len(), 3);
     // First is the ungrouped `method`; the next two are grouped.
-    let body = &schema.fields()[1];
-    let content_length = &schema.fields()[2];
+    let body = &schema.properties()[1];
+    let content_length = &schema.properties()[2];
 
     match body {
-        Field::String(s) => {
+        Property::String(s) => {
             assert_eq!(s.group.as_deref(), Some("body_section"));
             assert!(matches!(s.visible, VisibilityMode::When(_)));
         },
         other => panic!("expected grouped StringField, got {other:?}"),
     }
     match content_length {
-        Field::Number(n) => {
+        Property::Number(n) => {
             assert_eq!(n.group.as_deref(), Some("body_section"));
             assert!(matches!(n.visible, VisibilityMode::When(_)));
         },
@@ -195,9 +195,9 @@ fn group_propagates_required_when_to_children() {
         .build()
         .unwrap();
 
-    for f in schema.fields().iter().skip(1) {
+    for f in schema.properties().iter().skip(1) {
         match f {
-            Field::String(s) => {
+            Property::String(s) => {
                 assert_eq!(s.group.as_deref(), Some("details"));
                 assert!(matches!(s.required, RequiredMode::When(_)));
             },
@@ -222,8 +222,8 @@ fn group_composes_existing_child_visible_when() {
         .unwrap();
 
     // The grouped `x` is the third field (after `section` and `mode`).
-    match &schema.fields()[2] {
-        Field::String(s) => match &s.visible {
+    match &schema.properties()[2] {
+        Property::String(s) => match &s.visible {
             VisibilityMode::When(rule) => {
                 // The composed rule must mention both field paths.
                 let mut references = Vec::new();
@@ -260,8 +260,8 @@ fn group_required_when_composes_with_always_and_never_children() {
         .build()
         .unwrap();
 
-    match &schema.fields()[1] {
-        Field::String(s) => {
+    match &schema.properties()[1] {
+        Property::String(s) => {
             assert!(
                 matches!(s.required, RequiredMode::Always),
                 "an explicitly-required child must stay Always after group compose"
@@ -269,8 +269,8 @@ fn group_required_when_composes_with_always_and_never_children() {
         },
         other => panic!("expected StringField, got {other:?}"),
     }
-    match &schema.fields()[2] {
-        Field::String(s) => {
+    match &schema.properties()[2] {
+        Property::String(s) => {
             assert!(
                 matches!(s.required, RequiredMode::When(_)),
                 "an optional child must flip to When(..) after group compose"
@@ -292,14 +292,14 @@ fn group_preserves_explicit_child_group_label() {
         .unwrap();
 
     // Child without an explicit `.group(..)` inherits the group label.
-    match &schema.fields()[0] {
-        Field::String(s) => assert_eq!(s.group.as_deref(), Some("outer")),
+    match &schema.properties()[0] {
+        Property::String(s) => assert_eq!(s.group.as_deref(), Some("outer")),
         other => panic!("expected StringField, got {other:?}"),
     }
     // Child with its own `.group("inner")` is preserved — `set_group`'s
     // None-guard must not overwrite it.
-    match &schema.fields()[1] {
-        Field::String(s) => assert_eq!(s.group.as_deref(), Some("inner")),
+    match &schema.properties()[1] {
+        Property::String(s) => assert_eq!(s.group.as_deref(), Some("inner")),
         other => panic!("expected StringField, got {other:?}"),
     }
 }

@@ -7,7 +7,7 @@ use std::{
 };
 
 use nebula_schema::{
-    AuthoredValue, Field, ResolvedValues, Schema, SecretValue, ValidSchema, ValidationReport,
+    AuthoredValue, Property, ResolvedValues, Schema, SecretValue, ValidSchema, ValidationReport,
     ValuePath, VisibilityMode, field_key,
 };
 use nebula_validator::{Predicate, Rule, RuleOperands};
@@ -51,10 +51,10 @@ fn resolve(schema: &ValidSchema, input: AuthoredValue) -> Result<ResolvedValues,
 
 fn object_schema(rule: Rule) -> ValidSchema {
     Schema::builder()
-        .add(
-            Field::object(field_key!("auth"))
-                .add(Field::secret(field_key!("token")))
-                .add(Field::number(field_key!("count")))
+        .property(
+            Property::object(field_key!("auth"))
+                .property(Property::secret(field_key!("token")))
+                .property(Property::number(field_key!("count")))
                 .with_rule(rule),
         )
         .build()
@@ -112,8 +112,8 @@ fn assert_payload_hidden(report: &ValidationReport) {
 #[case::wrong_root(json!(SECRET))]
 fn malformed_declared_secrets_never_escape_aggregate_error_causes(#[case] wire: Value) {
     let schema = Schema::builder()
-        .add(
-            Field::secret(field_key!("token"))
+        .property(
+            Property::secret(field_key!("token"))
                 .read_alias("old_token")
                 .unwrap(),
         )
@@ -135,19 +135,19 @@ fn malformed_declared_secrets_never_escape_aggregate_error_causes(#[case] wire: 
 fn malformed_secret_containers_seal_field_and_root_rules(#[case] wire: Value) {
     let rejects = one_of_rule([json!(false)]);
     let schema = Schema::builder()
-        .add(
-            Field::object(field_key!("auth"))
-                .add(Field::secret(field_key!("token")))
+        .property(
+            Property::object(field_key!("auth"))
+                .property(Property::secret(field_key!("token")))
                 .with_rule(rejects.clone()),
         )
-        .add(
-            Field::list(field_key!("tokens"))
-                .item(Field::secret(field_key!("token")))
+        .property(
+            Property::list(field_key!("tokens"))
+                .item(Property::secret(field_key!("token")))
                 .with_rule(rejects.clone()),
         )
-        .add(
-            Field::mode(field_key!("choice"))
-                .variant("token", "Token", Field::secret(field_key!("token")))
+        .property(
+            Property::mode(field_key!("choice"))
+                .variant("token", "Token", Property::secret(field_key!("token")))
                 .with_rule(rejects.clone()),
         )
         .root_rule(rejects)
@@ -162,7 +162,7 @@ fn malformed_secret_containers_seal_field_and_root_rules(#[case] wire: Value) {
 fn hidden_malformed_secrets_still_fail_without_exposing_their_payload() {
     let wire = json!({"token": {"nested": SECRET}});
     let schema = Schema::builder()
-        .add(Field::secret(field_key!("token")).visible(VisibilityMode::Never))
+        .property(Property::secret(field_key!("token")).visible(VisibilityMode::Never))
         .root_rule(one_of_rule([json!({})]))
         .build()
         .unwrap();
@@ -176,7 +176,7 @@ fn hidden_malformed_secrets_still_fail_without_exposing_their_payload() {
 fn secret_declarations_require_full_rule_access_preflight_even_when_absent() {
     let wire = json!({});
     let schema = Schema::builder()
-        .add(Field::secret(field_key!("token")))
+        .property(Property::secret(field_key!("token")))
         .root_rule(any_rule([
             one_of_rule([wire.clone()]),
             custom_rule("UNSUPPORTED_CALLBACK"),
@@ -199,7 +199,7 @@ fn secret_declarations_require_full_rule_access_preflight_even_when_absent() {
 #[test]
 fn root_equality_rejects_redaction_as_secret_data() {
     let schema = Schema::builder()
-        .add(Field::secret(field_key!("token")))
+        .property(Property::secret(field_key!("token")))
         .root_rule(one_of_rule([json!({"token": MARKER})]))
         .build()
         .unwrap();
@@ -215,7 +215,7 @@ fn root_equality_rejects_redaction_as_secret_data() {
 #[test]
 fn root_equality_accepts_actual_secret_data() {
     let schema = Schema::builder()
-        .add(Field::secret(field_key!("token")))
+        .property(Property::secret(field_key!("token")))
         .root_rule(one_of_rule([json!({"token": SECRET})]))
         .build()
         .unwrap();
@@ -268,9 +268,9 @@ fn literal_redaction_marker_remains_an_ordinary_possible_secret() {
 #[case::too_many(Rule::max_items(1), false)]
 fn list_rules_validate_real_items(#[case] rule: Rule, #[case] accepted: bool) {
     let schema = Schema::builder()
-        .add(
-            Field::list(field_key!("tokens"))
-                .item(Field::secret(field_key!("token")))
+        .property(
+            Property::list(field_key!("tokens"))
+                .item(Property::secret(field_key!("token")))
                 .with_rule(rule),
         )
         .build()
@@ -312,10 +312,10 @@ fn every_composite_error_surface_is_sealed(#[case] rule: Rule) {
 #[test]
 fn value_rules_and_predicates_use_different_views() {
     let schema = Schema::builder()
-        .add(
-            Field::object(field_key!("auth"))
-                .add(Field::secret(field_key!("token")))
-                .add(Field::number(field_key!("count"))),
+        .property(
+            Property::object(field_key!("auth"))
+                .property(Property::secret(field_key!("token")))
+                .property(Property::number(field_key!("count"))),
         )
         .root_rule(all_rule([
             one_of_rule([json!({"auth": {"token": SECRET, "count": 3}})]),
@@ -345,7 +345,7 @@ fn value_rules_and_predicates_use_different_views() {
 #[test]
 fn non_secret_predicate_diagnostics_keep_their_path_and_message() {
     let schema = Schema::builder()
-        .add(Field::number(field_key!("count")))
+        .property(Property::number(field_key!("count")))
         .root_rule(described_rule(
             predicate_rule(Predicate::eq("/count", json!(3)).unwrap()),
             "expected {expected}",
@@ -373,8 +373,8 @@ fn non_secret_predicate_diagnostics_keep_their_path_and_message() {
 #[test]
 fn protected_root_predicate_keeps_its_non_secret_error_path() {
     let schema = Schema::builder()
-        .add(Field::secret(field_key!("token")))
-        .add(Field::number(field_key!("count")))
+        .property(Property::secret(field_key!("token")))
+        .property(Property::number(field_key!("count")))
         .root_rule(predicate_rule(Predicate::eq("/count", json!(3)).unwrap()))
         .build()
         .unwrap();
@@ -392,7 +392,9 @@ fn protected_root_predicate_keeps_its_non_secret_error_path() {
 #[case::marker(MARKER, false)]
 fn select_membership_does_not_compare_redaction(#[case] allowed: &str, #[case] accepted: bool) {
     let schema = Schema::builder()
-        .add(Field::select(field_key!("choice")).option(json!({"token": allowed}), "Option"))
+        .property(
+            Property::select(field_key!("choice")).option(json!({"token": allowed}), "Option"),
+        )
         .build()
         .unwrap();
     let mut choice = AuthoredValue::object();
@@ -430,9 +432,9 @@ fn unsupported_execution_cannot_mint_a_secret_proof(#[case] rule: Rule) {
 
 fn unique_schema() -> ValidSchema {
     Schema::builder()
-        .add(
-            Field::list(field_key!("items"))
-                .item(Field::object(field_key!("item")))
+        .property(
+            Property::list(field_key!("items"))
+                .item(Property::object(field_key!("item")))
                 .unique(),
         )
         .build()

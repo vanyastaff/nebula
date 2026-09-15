@@ -1,21 +1,25 @@
 use criterion::{BatchSize, Criterion, black_box};
 use nebula_schema::{
-    AuthoredValue, Field, FieldKey, LoaderContext, LoaderRegistry, LoaderResult, Predicate, Rule,
-    Schema, field_key,
+    AuthoredValue, FieldKey, LoaderContext, LoaderRegistry, LoaderResult, Predicate, Property,
+    Rule, Schema, field_key,
 };
 use serde_json::json;
 
 fn sample_schema() -> nebula_schema::ValidSchema {
     Schema::builder()
-        .add(Field::string(field_key!("name")).required().min_length(2))
-        .add(
-            Field::number(field_key!("retries"))
+        .property(
+            Property::string(field_key!("name"))
+                .required()
+                .min_length(2),
+        )
+        .property(
+            Property::number(field_key!("retries"))
                 .min(0)
                 .max(10)
                 .required(),
         )
-        .add(
-            Field::select(field_key!("mode"))
+        .property(
+            Property::select(field_key!("mode"))
                 .option("sync", "Sync")
                 .option("async", "Async"),
         )
@@ -59,17 +63,21 @@ fn bench_validate_static(c: &mut Criterion) {
 /// Nested fields exercise preparation and validation across object boundaries.
 fn nested_schema() -> nebula_schema::ValidSchema {
     Schema::builder()
-        .add(
-            Field::object(field_key!("user"))
-                .add(Field::string(field_key!("name")).required().min_length(2))
-                .add(Field::string(field_key!("email")))
-                .add(Field::number(field_key!("age")).min(0).max(120))
+        .property(
+            Property::object(field_key!("user"))
+                .property(
+                    Property::string(field_key!("name"))
+                        .required()
+                        .min_length(2),
+                )
+                .property(Property::string(field_key!("email")))
+                .property(Property::number(field_key!("age")).min(0).max(120))
                 .required(),
         )
-        .add(
-            Field::object(field_key!("settings"))
-                .add(Field::boolean(field_key!("notify")))
-                .add(Field::string(field_key!("locale"))),
+        .property(
+            Property::object(field_key!("settings"))
+                .property(Property::boolean(field_key!("notify")))
+                .property(Property::string(field_key!("locale"))),
         )
         .build()
         .expect("valid nested bench schema")
@@ -110,22 +118,22 @@ fn bench_validate_nested(c: &mut Criterion) {
 
 fn contextual_nested_fixture() -> (nebula_schema::ValidSchema, AuthoredValue) {
     const LEVELS: usize = 16;
-    let mut field = Field::boolean(field_key!("enabled")).into_field();
+    let mut field = Property::boolean(field_key!("enabled")).into_property();
     let mut value = json!({"enabled": true});
     let mut segments = Vec::with_capacity(LEVELS + 1);
     for level in (0..LEVELS).rev() {
         let key = format!("level_{level}");
         segments.push(key.clone());
-        field = Field::object(FieldKey::new(&key).expect("valid generated field key"))
-            .add(field)
-            .into_field();
+        field = Property::object(FieldKey::new(&key).expect("valid generated field key"))
+            .property(field)
+            .into_property();
         value = json!({key: value});
     }
     segments.reverse();
     segments.push("enabled".to_owned());
     let predicate_path = format!("/{}", segments.join("/"));
     let schema = Schema::builder()
-        .add(field)
+        .property(field)
         .root_rule(
             Rule::predicate(
                 Predicate::eq(predicate_path, json!(true)).expect("valid generated predicate path"),
@@ -157,7 +165,7 @@ fn bench_validate_nested_contextual(c: &mut Criterion) {
 
 fn bench_loader_rejects_oversized_page(c: &mut Criterion) {
     let schema = Schema::builder()
-        .add(Field::dynamic(field_key!("records")).loader("oversized"))
+        .property(Property::dynamic(field_key!("records")).loader("oversized"))
         .build()
         .expect("valid loader bench schema");
     let first = "a".repeat(600_000);

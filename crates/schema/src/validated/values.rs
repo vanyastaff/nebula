@@ -220,7 +220,7 @@ impl ValidValues {
     #[must_use]
     pub fn to_wire_json(&self) -> Value {
         let data = super::project_tree(
-            self.schema.fields(),
+            self.schema.properties(),
             &self.values,
             &|program| serde_json::json!({crate::EXPRESSION_KEY: program.source()}),
         );
@@ -251,7 +251,7 @@ impl ValidValues {
         let mut budget = ResolutionBudget::default();
         let values = resolve_node(
             self.values,
-            Scope::Root(self.schema.fields()),
+            Scope::Root(self.schema.properties()),
             ValuePath::root(),
             0,
             context,
@@ -534,12 +534,9 @@ impl ResolvedValues {
     /// Project output aliases and union tagging while omitting secret fields.
     #[must_use]
     pub fn to_wire_json(&self) -> Value {
-        let data =
-            super::project_tree(
-                self.schema.fields(),
-                &self.values,
-                &|&impossible| match impossible {},
-            );
+        let data = super::project_tree(self.schema.properties(), &self.values, &|&impossible| {
+            match impossible {}
+        });
         self.schema.raw_values_to_wire(data)
     }
 

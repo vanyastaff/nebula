@@ -17,7 +17,6 @@ use crate::{
     error::{ValidationError, ValidationReport},
     option::SelectOption,
     validated::{ScalarSchema, ValidSchema},
-    value::ValueTree,
 };
 
 /// Types that expose a canonical [`ValidSchema`].
@@ -76,14 +75,6 @@ pub trait HasSelectOptions {
 /// expected shape out-of-band. Use a concrete typed struct with
 /// `#[derive(Schema)]` to get a real schema.
 impl HasSchema for serde_json::Value {
-    fn schema() -> Result<ValidSchema, ValidationReport> {
-        Ok(ValidSchema::any())
-    }
-}
-
-/// Dynamic data trees advertise no fixed shape. This does not grant expression
-/// admission; an `Any` schema has no expression-permitting declarations.
-impl<E> HasSchema for ValueTree<E> {
     fn schema() -> Result<ValidSchema, ValidationReport> {
         Ok(ValidSchema::any())
     }
@@ -165,16 +156,15 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::AuthoredValue;
-    use crate::{field::Field, key::FieldKey, schema::Schema};
+    use crate::{field::Property, key::FieldKey, schema::Schema};
 
     struct Dummy;
 
     impl HasSchema for Dummy {
         fn schema() -> Result<ValidSchema, ValidationReport> {
             Schema::builder()
-                .add(Field::string(FieldKey::new("name")?).required())
-                .add(Field::number(FieldKey::new("age")?))
+                .property(Property::string(FieldKey::new("name")?).required())
+                .property(Property::number(FieldKey::new("age")?))
                 .build()
         }
     }
@@ -203,9 +193,9 @@ mod tests {
     #[test]
     fn has_schema_returns_valid_schema() {
         let schema = Dummy::schema().unwrap();
-        assert_eq!(schema.fields().len(), 2);
-        assert_eq!(schema.fields()[0].key().as_str(), "name");
-        assert_eq!(schema.fields()[1].key().as_str(), "age");
+        assert_eq!(schema.properties().len(), 2);
+        assert_eq!(schema.properties()[0].key().as_str(), "name");
+        assert_eq!(schema.properties()[1].key().as_str(), "age");
     }
 
     #[test]
@@ -218,7 +208,7 @@ mod tests {
     #[test]
     fn unit_has_null_scalar_schema() {
         let schema = <() as HasSchema>::schema().unwrap();
-        assert_eq!(schema.fields().len(), 0);
+        assert_eq!(schema.properties().len(), 0);
         assert_eq!(
             schema.kind(),
             crate::SchemaKind::Scalar,
@@ -233,19 +223,12 @@ mod tests {
     #[test]
     fn json_value_has_any_schema() {
         let schema = <serde_json::Value as HasSchema>::schema().unwrap();
-        assert_eq!(schema.fields().len(), 0);
+        assert_eq!(schema.properties().len(), 0);
         assert_eq!(
             schema.kind(),
             crate::SchemaKind::Any,
             "untyped JSON advertises the gradual `Any`, not an empty record"
         );
-    }
-
-    #[test]
-    fn field_values_has_any_schema() {
-        let schema = <AuthoredValue as HasSchema>::schema().unwrap();
-        assert_eq!(schema.fields().len(), 0);
-        assert_eq!(schema.kind(), crate::SchemaKind::Any);
     }
 
     #[test]
@@ -273,7 +256,7 @@ mod tests {
         let unit_a = <() as HasSchema>::schema().unwrap();
         let unit_b = <() as HasSchema>::schema().unwrap();
         let any_a = <serde_json::Value as HasSchema>::schema().unwrap();
-        let any_b = <AuthoredValue as HasSchema>::schema().unwrap();
+        let any_b = <serde_json::Value as HasSchema>::schema().unwrap();
 
         // Each constructor returns a shared, cached `Arc`.
         assert!(unit_a.ptr_eq(&unit_b), "`()` schema is cached");

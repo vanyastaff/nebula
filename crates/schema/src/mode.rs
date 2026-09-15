@@ -8,10 +8,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum VisibilityMode {
-    /// Field is always visible (default).
+    /// Property is always visible (default).
     #[default]
     Always,
-    /// Never visible — replaces the removed `Field::Hidden`.
+    /// Never visible — replaces the removed `Property::Hidden`.
     Never,
     /// Visible only when rule evaluates true.
     When(Rule),
@@ -30,12 +30,12 @@ impl VisibilityMode {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RequiredMode {
-    /// Field is optional (default).
+    /// Property is optional (default).
     #[default]
     Never,
-    /// Field is always required.
+    /// Property is always required.
     Always,
-    /// Field is required only when rule evaluates to true.
+    /// Property is required only when rule evaluates to true.
     When(Rule),
 }
 

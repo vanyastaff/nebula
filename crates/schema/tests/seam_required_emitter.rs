@@ -3,7 +3,7 @@
 //! validated (a smuggled expression in a no-payload mode-variant placeholder
 //! must not escape to resolve). The carve-out is moved, not deleted.
 use nebula_schema::mode::VisibilityMode;
-use nebula_schema::{AuthoredValue, Field, Schema, field_key};
+use nebula_schema::{AuthoredValue, Property, Schema, field_key};
 use serde_json::json;
 
 #[test]
@@ -14,8 +14,8 @@ fn hidden_mode_present_expr_payload_is_rejected_not_skipped() {
     // expression. Post-fold (validator sole emitter) the hidden+present field
     // MUST still be structurally validated → expression.forbidden.
     let schema = Schema::builder()
-        .add(
-            Field::mode(field_key!("auth"))
+        .property(
+            Property::mode(field_key!("auth"))
                 .visible(VisibilityMode::Never)
                 .variant_empty("flag", "Flag"),
         )
@@ -51,10 +51,10 @@ fn hidden_object_present_expr_child_is_still_validated() {
     // in the nested child must still be rejected — the gate must recurse into
     // a hidden-but-present container, not skip it.
     let schema = Schema::builder()
-        .add(
-            Field::object(field_key!("cfg"))
+        .property(
+            Property::object(field_key!("cfg"))
                 .visible(VisibilityMode::Never)
-                .add(Field::string(field_key!("token")).no_expression()),
+                .property(Property::string(field_key!("token")).no_expression()),
         )
         .build()
         .expect("schema builds");
@@ -77,10 +77,10 @@ fn hidden_list_present_expr_item_is_still_validated() {
     // A hidden List whose item forbids expressions. A submitted expression in
     // an item must still be rejected (hidden-but-present list recursion).
     let schema = Schema::builder()
-        .add(
-            Field::list(field_key!("rows"))
+        .property(
+            Property::list(field_key!("rows"))
                 .visible(VisibilityMode::Never)
-                .item(Field::string(field_key!("v")).no_expression()),
+                .item(Property::string(field_key!("v")).no_expression()),
         )
         .build()
         .expect("schema builds");
@@ -108,11 +108,11 @@ fn hidden_required_object_present_expr_child_is_validated_not_required_absent() 
     // stop recursing, and reopen the smuggled-expression fail-open — this test
     // is the tripwire.
     let schema = Schema::builder()
-        .add(
-            Field::object(field_key!("cfg"))
+        .property(
+            Property::object(field_key!("cfg"))
                 .visible(VisibilityMode::Never)
                 .required()
-                .add(Field::string(field_key!("token")).no_expression()),
+                .property(Property::string(field_key!("token")).no_expression()),
         )
         .build()
         .expect("schema builds");
@@ -138,11 +138,11 @@ fn hidden_required_empty_collection_emits_exactly_one_required() {
     // `required` (validator is the sole emitter; the deleted gate-side builder
     // must not be reintroduced anywhere).
     let schema = Schema::builder()
-        .add(
-            Field::list(field_key!("rows"))
+        .property(
+            Property::list(field_key!("rows"))
                 .visible(VisibilityMode::Never)
                 .required()
-                .item(Field::string(field_key!("v"))),
+                .item(Property::string(field_key!("v"))),
         )
         .build()
         .expect("schema builds");

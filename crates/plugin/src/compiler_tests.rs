@@ -12,7 +12,9 @@ use nebula_core::{
     ArtifactSetDigest, Dependencies, PluginKey, WorkflowId, WorkflowVersionId, node_key,
 };
 use nebula_metadata::PluginManifest;
-use nebula_schema::{Field, ObjectField, Schema, SecretField, ValidSchema, ValuePath, field_key};
+use nebula_schema::{
+    ObjectField, Property, Schema, SecretField, ValidSchema, ValuePath, field_key,
+};
 use nebula_workflow::{NodeDefinition, ParamValue, WorkflowBuilder};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -283,19 +285,19 @@ fn mode_equals(expected: &str) -> nebula_schema::Rule {
 fn conditional_input_schema() -> ValidSchema {
     let for_mode = mode_equals("for");
     Schema::builder()
-        .add(
-            Field::select(field_key!("mode"))
+        .property(
+            Property::select(field_key!("mode"))
                 .option("for", "For a duration")
                 .option("until", "Until an instant")
                 .required(),
         )
-        .add(
-            Field::integer(field_key!("amount"))
+        .property(
+            Property::integer(field_key!("amount"))
                 .min_int(1)
                 .required_when(for_mode.clone()),
         )
-        .add(
-            Field::select(field_key!("unit"))
+        .property(
+            Property::select(field_key!("unit"))
                 .option("milliseconds", "Milliseconds")
                 .option("seconds", "Seconds")
                 .required_when(for_mode),
@@ -311,7 +313,7 @@ fn reference_discriminator_error(
     identity_byte: u8,
 ) -> PlanCompilationError {
     let mode_output = Schema::builder()
-        .add(Field::string(field_key!("mode")))
+        .property(Property::string(field_key!("mode")))
         .build()
         .expect("fixture output schema is valid");
     let registry = frozen(vec![
@@ -491,7 +493,7 @@ fn diagnostics_are_stably_sorted_and_payload_free() {
 #[test]
 fn tagged_literal_is_not_reclassified_but_expression_is_rejected() {
     let input_schema = Schema::builder()
-        .add(Field::string(field_key!("value")).no_expression())
+        .property(Property::string(field_key!("value")).no_expression())
         .build()
         .expect("fixture schema is valid");
     let registry = frozen(vec![action_factory(
@@ -547,7 +549,7 @@ fn gradual_any_accepts_canonical_arbitrary_parameters() {
 #[test]
 fn gradual_any_accepts_a_whole_output_reference_under_an_arbitrary_key() {
     let output_schema = Schema::builder()
-        .add(Field::string(field_key!("value")))
+        .property(Property::string(field_key!("value")))
         .build()
         .expect("fixture output schema is valid");
     let registry = frozen(vec![
@@ -588,7 +590,7 @@ fn gradual_any_accepts_a_whole_output_reference_under_an_arbitrary_key() {
 #[test]
 fn gradual_any_accepts_an_existing_authored_path_under_an_arbitrary_key() {
     let output_schema = Schema::builder()
-        .add(Field::string(field_key!("value")))
+        .property(Property::string(field_key!("value")))
         .build()
         .expect("fixture output schema is valid");
     let registry = frozen(vec![
@@ -675,7 +677,7 @@ fn conditional_parameter_contract_rejects_a_value_outside_the_field_rules() {
 #[test]
 fn conditional_parameter_contract_rejects_a_reference_backed_discriminator() {
     let mode_output = Schema::builder()
-        .add(Field::string(field_key!("mode")))
+        .property(Property::string(field_key!("mode")))
         .build()
         .expect("fixture output schema is valid");
     let registry = frozen(vec![
@@ -722,14 +724,14 @@ fn conditional_parameter_contract_rejects_a_reference_backed_discriminator() {
 
 #[test]
 fn nested_object_condition_cannot_depend_on_a_reference_backed_discriminator() {
-    let schema = Schema::builder()
-        .add(Field::string(field_key!("mode")).required())
-        .add(
-            Field::object(field_key!("config"))
-                .add(Field::string(field_key!("token")).required_when(mode_equals("advanced"))),
-        )
-        .build()
-        .expect("fixture nested-object schema is valid");
+    let schema =
+        Schema::builder()
+            .property(Property::string(field_key!("mode")).required())
+            .property(Property::object(field_key!("config")).property(
+                Property::string(field_key!("token")).required_when(mode_equals("advanced")),
+            ))
+            .build()
+            .expect("fixture nested-object schema is valid");
 
     let error = reference_discriminator_error(schema, "config", json!({}), 0x6f);
     assert!(error.diagnostics().iter().any(|diagnostic| {
@@ -741,13 +743,12 @@ fn nested_object_condition_cannot_depend_on_a_reference_backed_discriminator() {
 #[test]
 fn nested_list_condition_cannot_depend_on_a_reference_backed_discriminator() {
     let schema = Schema::builder()
-        .add(Field::string(field_key!("mode")).required())
-        .add(
-            Field::list(field_key!("items"))
-                .item(Field::object(field_key!("item")).add(
-                    Field::string(field_key!("token")).required_when(mode_equals("advanced")),
-                )),
-        )
+        .property(Property::string(field_key!("mode")).required())
+        .property(Property::list(field_key!("items")).item(
+            Property::object(field_key!("item")).property(
+                Property::string(field_key!("token")).required_when(mode_equals("advanced")),
+            ),
+        ))
         .build()
         .expect("fixture nested-list schema is valid");
 
@@ -761,7 +762,9 @@ fn nested_list_condition_cannot_depend_on_a_reference_backed_discriminator() {
 #[test]
 fn nested_secret_parameter_is_rejected_without_payload_disclosure() {
     let input_schema = Schema::builder()
-        .add(ObjectField::new(field_key!("auth")).add(SecretField::new(field_key!("token"))))
+        .property(
+            ObjectField::new(field_key!("auth")).property(SecretField::new(field_key!("token"))),
+        )
         .build()
         .expect("fixture schema is valid");
     let registry = frozen(vec![action_factory(
@@ -801,7 +804,7 @@ fn nested_secret_parameter_is_rejected_without_payload_disclosure() {
 #[test]
 fn trigger_secret_configuration_is_rejected_at_exact_path() {
     let trigger_schema = Schema::builder()
-        .add(SecretField::new(field_key!("token")))
+        .property(SecretField::new(field_key!("token")))
         .build()
         .expect("fixture schema is valid");
     let registry = frozen(vec![
@@ -914,7 +917,7 @@ fn scalar_flow_edges_use_root_assignability_and_retain_empty_parameter_maps() {
 #[test]
 fn reference_alias_is_normalized_and_bad_contract_has_exact_path() {
     let value_schema = Schema::builder()
-        .add(Field::string(field_key!("value")))
+        .property(Property::string(field_key!("value")))
         .build()
         .expect("fixture schema is valid");
     let registry = frozen(vec![
