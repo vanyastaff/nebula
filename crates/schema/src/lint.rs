@@ -154,11 +154,11 @@ pub(crate) fn lint_root_rules(rules: &[Rule], fields: &[Field], report: &mut Val
 fn lint_field_rule_budgets(fields: &[Field], report: &mut ValidationReport) -> bool {
     let mut admitted = true;
     walk_schema_fields(fields, |node| {
-        admitted &= lint_rule_budgets(node.field.rules(), &node.path, report);
-        if let Some(rule) = field_visible_rule(node.field) {
+        admitted &= lint_rule_budgets(node.property.rules(), &node.path, report);
+        if let Some(rule) = field_visible_rule(node.property) {
             admitted &= lint_rule_budget(rule, &node.path, report);
         }
-        if let Some(rule) = field_required_rule(node.field) {
+        if let Some(rule) = field_required_rule(node.property) {
             admitted &= lint_rule_budget(rule, &node.path, report);
         }
     });
@@ -1353,7 +1353,7 @@ fn append_rule_edges(
     rule_for: fn(&Field) -> Option<&Rule>,
 ) {
     walk_schema_fields(fields, |node| {
-        if let Some(rule) = rule_for(node.field) {
+        if let Some(rule) = rule_for(node.property) {
             push_rule_edges_for_rule(&node.path, rule, defined, edges);
         }
     });
@@ -1455,7 +1455,7 @@ fn emit_loader_dependency_cycle_on_edge(
 /// A cycle in this graph means two (or more) loaders mutually depend on each other.
 fn collect_loader_dependency_edges(fields: &[Field], edges: &mut Vec<(FieldPath, FieldPath)>) {
     walk_schema_fields(fields, |node| {
-        let depends_on: Option<&[FieldPath]> = match node.field {
+        let depends_on: Option<&[FieldPath]> = match node.property {
             Field::Select(select) if !select.depends_on.is_empty() => Some(&select.depends_on),
             Field::Dynamic(dynamic) if !dynamic.depends_on.is_empty() => Some(&dynamic.depends_on),
             _ => None,
@@ -1720,10 +1720,10 @@ fn lint_secret_predicate_on_value(fields: &[Field], report: &mut ValidationRepor
     }
 
     walk_schema_fields(fields, |node| {
-        if let Some(rule) = field_visible_rule(node.field) {
+        if let Some(rule) = field_visible_rule(node.property) {
             walk_rule_for_secret_value_predicates(rule, &secrets, &node.path, report);
         }
-        if let Some(rule) = field_required_rule(node.field) {
+        if let Some(rule) = field_required_rule(node.property) {
             walk_rule_for_secret_value_predicates(rule, &secrets, &node.path, report);
         }
     });
@@ -1756,7 +1756,7 @@ fn lint_mode_no_payload_variant_must_forbid_expression(
     report: &mut ValidationReport,
 ) {
     walk_schema_fields(fields, |node| {
-        let Field::Mode(mode) = node.field else {
+        let Field::Mode(mode) = node.property else {
             return;
         };
         for variant in &mode.variants {
