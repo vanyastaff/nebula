@@ -158,16 +158,17 @@ pub use nebula_resource::{
 // Derive names are re-exported from their respective domain crates. Generated
 // paths prefer a direct (including renamed) leaf dependency, then the SDK's
 // hidden macro namespace.
-// Schema types — Field/Schema/ValidSchema/field_key already re-exported via nebula_action
-// above.
+// Schema types — Schema/ValidSchema/field_key already re-exported via nebula_action above.
+// Property is the canonical authoring carrier; Field remains available through action
+// compatibility exports.
 pub use nebula_schema::{
     AuthoredValue, BooleanField, CodeField, ComputedField, DynamicField, EnumSelect, Expression,
     ExpressionMode, FieldKey, FieldPath, FileField, HasSchema, HasSelectOptions, InputHint,
     ListField, LoaderContext, LoaderRegistry, ModeField, NoticeField, NumberField, ObjectField,
-    Predicate, ProgramSyntax, RecordShape, RequiredMode, RootShape, Rule, ScalarKind, ScalarSchema,
-    ScalarValue, SchemaBuilder, SchemaKind, SecretField, SelectField, SelectOption, SerdeTagging,
-    Severity, StringField, Transformer, UnionShape, UnknownField, ValidSchema, ValidationError,
-    ValidationReport, ValuePath, VisibilityMode, schema_of,
+    Predicate, ProgramSyntax, Property, RecordShape, RequiredMode, RootShape, Rule, ScalarKind,
+    ScalarSchema, ScalarValue, SchemaBuilder, SchemaKind, SecretField, SelectField, SelectOption,
+    SerdeTagging, Severity, StringField, Transformer, UnionShape, UnknownField, ValidSchema,
+    ValidationError, ValidationReport, ValuePath, VisibilityMode, schema_of,
 };
 pub use nebula_validator::Validator;
 // Validator traits
