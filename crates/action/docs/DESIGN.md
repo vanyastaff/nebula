@@ -53,7 +53,7 @@
 | `ActionFactory` + `Generic{Stateless,Stateful,Trigger,Resource,Control}Factory` | `src/factory.rs:53,69-497` |
 | `FromWorkflowNode` (async slot-binding фабрика; тело генерит derive) | `src/from_workflow_node.rs:61` |
 | `ActionError` + `RetryHintCode` (retryable vs fatal), `ValidationReason` | `src/error.rs:154,31,58` |
-| `ActionMetadata`, `ActionKind`, `CheckpointPolicy`, `IsolationLevel` | `src/metadata.rs:131,48,83,13` |
+| `ActionMetadata`, `ActionKind`, `IsolationLevel` | `src/metadata.rs` |
 | `ActionResult<T>`, `TerminationReason`, `WaitCondition`, `BranchKey` | `src/result.rs:40,195,297` |
 | `ActionOutput<T>`, `OutputEnvelope`, `DeferredOutput` | `src/output.rs` |
 | `ActionContext`/`TriggerContext` + `ActionRuntimeContext`/`TriggerRuntimeContext` | `src/context.rs:81,108,144,397` |
@@ -133,9 +133,9 @@ Dev: `nebula-credential-macros`, `nebula-expression`, `trybuild`, `insta`, `rste
 3. **Legacy path-space.** `lib.rs:60` / `handler.rs` — handler-трейты живут в доменных файлах, но
    ре-экспортируются через `handler::*` «for backwards compatibility». Четыре прод-пути сознательно остаются
    на legacy handler-поверхности (webhook routing, plugin discovery, SDK runtime, EventSource adapter).
-4. **`CheckpointPolicy` поле-без-enforcement.** Поле `checkpoint_policy: CheckpointPolicy` (default `Inherit`)
-   теперь есть в `ActionMetadata`; движок ещё НЕ исполняет non-`Inherit` каденции — это persisted-намерение,
-   не runtime-гарантия. Документировать именно так («есть поле, enforcement не провязан»).
+4. **Stateful checkpoint recovery.** Публичный `CheckpointPolicy` удалён вместе с setter/getter:
+   неподдерживаемые режимы нельзя объявить через API. Внутренние итерации stateful action пока
+   не имеют production checkpoint sink; сохранение результата узла не даёт им SQL durability.
 5. **План-идентификаторы в Cargo.toml.** Строки 56 («Phase 9 / Task 9.1») и 63 («Closes Stage-4 review I3»)
    нарушают правило «no plan IDs in committed code».
 6. **`zeroize` не через workspace.** `Cargo.toml:33,65` — локальный пин `1.8.2`, тогда как остальные deps
@@ -182,8 +182,14 @@ Dev: `nebula-credential-macros`, `nebula-expression`, `trybuild`, `insta`, `rste
 - **Согласовать re-export-блок credential** (`lib.rs:132`) с пост-0092 топологией: после коллапса credential-крейтов
   проверить, что `CredentialGuard`/`CredentialRef` приходят из единого `nebula-credential`, и нет ли осиротевших путей
   к удалённым `credential-runtime`/`builtin`.
-- **`CheckpointPolicy`-решение:** поле введено в `ActionMetadata` (default `Inherit`); остаётся провязать
-  non-`Inherit` каденции через движок — до этого держать доки честными («persisted, not yet enforced»).
+- **Checkpoint contract:** публичный выбор cadence удалён. Поле `checkpoint_policy` остаётся
+  приватным wire evidence: новые metadata и планы записывают `inherit`, исторические значения
+  сохраняются при чтении, но non-default не проходят readmission, registry compatibility и
+  scheduler projection. Будущий selector требует полноценного scheduling/recovery контракта.
+- **Retry contract:** `ActionResult::Retry` намеренно отсутствует. Внутренний retry интеграции
+  оборачивает outbound call через resilience; повтор узла выполняет engine после typed retryable
+  failure по `NodeDefinition.retry_policy` / `WorkflowConfig.retry_policy`. Retry hint не даёт
+  дополнительных попыток или полномочий на внешний эффект.
 - **Риск bind-population:** `FromWorkflowNode` готов как consumer-конец, но producer (прод-резолвер
   credential→slot) — frontier на стороне `nebula-resource`/`nebula-credential`. Пока producer не зрелый,
   end-to-end slot-binding нельзя считать закрытым со стороны action.

@@ -4,9 +4,7 @@ use std::any::TypeId;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::time::Duration;
 
-use nebula_action::{
-    ActionKind, CheckpointPolicy, FlowKind, InputPort, IsolationLevel, OutputPort,
-};
+use nebula_action::{ActionKind, FlowKind, InputPort, IsolationLevel, OutputPort};
 use nebula_core::{
     ActionKey, CredentialKey, Dependencies, ExecutablePlanRevisionId, PluginKey, ResourceKey,
     SlotKind, WorkflowVersionId,
@@ -400,7 +398,6 @@ pub(crate) enum ContractProjectionError {
     InvalidEffectDeclaration,
     ActionKind,
     Isolation,
-    CheckpointPolicy,
     InputPort,
     OutputPort,
     AuthPattern,
@@ -468,7 +465,7 @@ fn project_action_snapshot(
         version: record_semver(metadata.base().version()),
         kind: project_action_kind(metadata.kind())?,
         isolation: project_isolation(metadata.isolation_level())?,
-        checkpoint_policy: project_checkpoint_policy(metadata.checkpoint_policy())?,
+        checkpoint_policy: RecordedCheckpointPolicyV1::Inherit,
         max_concurrent: metadata.max_concurrent().map(core::num::NonZeroU32::get),
         inputs: inputs.into_boxed_slice(),
         outputs: outputs.into_boxed_slice(),
@@ -531,18 +528,6 @@ fn project_isolation(
         IsolationLevel::None => Ok(RecordedIsolationV1::None),
         IsolationLevel::CapabilityGated => Ok(RecordedIsolationV1::CapabilityGated),
         _ => Err(ContractProjectionError::Isolation),
-    }
-}
-
-fn project_checkpoint_policy(
-    policy: CheckpointPolicy,
-) -> Result<RecordedCheckpointPolicyV1, ContractProjectionError> {
-    match policy {
-        CheckpointPolicy::Inherit => Ok(RecordedCheckpointPolicyV1::Inherit),
-        CheckpointPolicy::OnePass => Ok(RecordedCheckpointPolicyV1::OnePass),
-        CheckpointPolicy::Stepwise => Ok(RecordedCheckpointPolicyV1::Stepwise),
-        CheckpointPolicy::ForcedHandoff => Ok(RecordedCheckpointPolicyV1::ForcedHandoff),
-        _ => Err(ContractProjectionError::CheckpointPolicy),
     }
 }
 

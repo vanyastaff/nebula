@@ -498,9 +498,9 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
 name = "aws-lc-rs"
-version = "1.17.3"
+version = "1.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "00bdb5da18dac48ca2cc7cd4a98e533e8635a58e2361d13a1a4ee3888e0d72f1"
+checksum = "b281d307588d634de920874890732659e2e7672f72b5e10e81badc1a8a83621e"
 dependencies = [
  "aws-lc-sys",
  "untrusted 0.7.1",
@@ -509,9 +509,9 @@ dependencies = [
 
 [[package]]
 name = "aws-lc-sys"
-version = "0.43.0"
+version = "0.45.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "43103168cc76fe62678a375e722fc9cb3a0146159ac5828bc4f0dfd755c2224c"
+checksum = "9bff6c3b54fad79a2e60b8102caf565819711497c1f5f092f49508e2f5c31b27"
 dependencies = [
  "cc",
  "cmake",
@@ -3001,7 +3001,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-action"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "async-trait",
  "base64",
@@ -3041,7 +3041,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-action-macros"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "nebula-macro-support",
  "proc-macro2",
@@ -3052,7 +3052,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-api"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "argon2",
  "async-trait",
@@ -3125,7 +3125,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-core"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "chrono",
  "codspeed-criterion-compat",
@@ -3144,7 +3144,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-credential"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "ahash",
  "arc-swap",
@@ -3191,7 +3191,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-credential-macros"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "nebula-macro-support",
  "proc-macro2",
@@ -3201,7 +3201,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-crypto"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -3214,7 +3214,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-engine"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "async-channel",
  "async-trait",
@@ -3268,14 +3268,14 @@ dependencies = [
 
 [[package]]
 name = "nebula-env"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
 name = "nebula-error"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "insta",
  "nebula-error-macros",
@@ -3288,7 +3288,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-error-macros"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3297,7 +3297,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-eventbus"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "codspeed-criterion-compat",
  "futures-core",
@@ -3313,7 +3313,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-examples"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3341,7 +3341,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-execution"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "chrono",
  "insta",
@@ -3360,7 +3360,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-expression"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "chrono",
  "chrono-tz",
@@ -3384,7 +3384,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-log"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -3417,7 +3417,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-macro-support"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -3427,7 +3427,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-metadata"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "chrono",
  "domain-key",
@@ -3449,7 +3449,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-metrics"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "dashmap",
  "insta",
@@ -3468,7 +3468,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-orchestrator"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "async-trait",
  "nebula-core",
@@ -3487,7 +3487,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-plugin"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "async-trait",
  "indexmap",
@@ -3516,7 +3516,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-plugin-core"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "chrono",
  "nebula-action",
@@ -3539,7 +3539,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-plugin-macros"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "nebula-macro-support",
  "proc-macro2",
@@ -3550,7 +3550,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-resilience"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "codspeed-criterion-compat",
  "fastrand",
@@ -3569,7 +3569,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-resource"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -3603,7 +3603,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-resource-macros"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "nebula-core",
  "nebula-macro-support",
@@ -3614,7 +3614,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-schema"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "blake3",
  "codspeed-criterion-compat",
@@ -3644,7 +3644,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-schema-macros"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "heck",
  "nebula-macro-support",
@@ -3655,7 +3655,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-sdk"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3683,7 +3683,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-server"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -3726,7 +3726,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-storage"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "assert_fs",
  "async-trait",
@@ -3762,14 +3762,14 @@ dependencies = [
 
 [[package]]
 name = "nebula-storage-loom-probe"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "loom",
 ]
 
 [[package]]
 name = "nebula-storage-port"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3786,7 +3786,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-tenancy"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "async-trait",
  "nebula-core",
@@ -3799,7 +3799,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-validator"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "codspeed-criterion-compat",
  "insta",
@@ -3820,7 +3820,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-validator-macros"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "nebula-macro-support",
  "proc-macro2",
@@ -3831,7 +3831,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-worker"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3857,7 +3857,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-worker-bin"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "chrono",
  "nebula-core",
@@ -3885,7 +3885,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-workflow"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "chrono",
  "insta",
@@ -3903,7 +3903,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-xtask"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "cargo_metadata",
  "clap",
@@ -5331,9 +5331,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.42"
+version = "0.23.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3c54fcab019b409d04215d3a17cb438fd7fbf192ee61461f20f4fe18704bc138"
+checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
 dependencies = [
  "aws-lc-rs",
  "log",
@@ -5396,9 +5396,9 @@ checksum = "f87165f0995f63a9fbeea62b64d10b4d9d8e78ec6d7d51fb2125fda7bb36788f"
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.13"
+version = "0.103.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "61c429a8649f110dddef65e2a5ad240f747e85f7758a6bccc7e5777bd33f756e"
+checksum = "0527518605e68109d875e248ea259b6758801cf165e4b2c2733ae3b51f12535a"
 dependencies = [
  "aws-lc-rs",
  "ring",

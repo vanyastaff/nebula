@@ -299,6 +299,46 @@ fn resource_binding_record(selector: &str) -> RecordedExecutablePlanRevisionV1 {
     record
 }
 
+#[test]
+fn historical_checkpoint_policies_are_readable_but_cannot_project() {
+    for policy in [
+        RecordedCheckpointPolicyV1::OnePass,
+        RecordedCheckpointPolicyV1::Stepwise,
+        RecordedCheckpointPolicyV1::ForcedHandoff,
+    ] {
+        for trigger_only in [false, true] {
+            let mut record = fixture_record();
+            if trigger_only {
+                let mut trigger = minimal_action(empty_dependencies());
+                trigger.key = "demo.trigger".into();
+                trigger.kind = RecordedActionKindV1::Trigger;
+                trigger.checkpoint_policy = policy.clone();
+                record.content.actions = vec![record.content.actions[0].clone(), trigger].into();
+                record.content.triggers = vec![RecordedTriggerV1 {
+                    id: "start".into(),
+                    plugin_key: "demo".into(),
+                    action_key: "demo.trigger".into(),
+                    action_version: recorded_semver(1, 0, 0),
+                    configuration: json!({}),
+                }]
+                .into();
+            } else {
+                record.content.actions[0].checkpoint_policy = policy.clone();
+            }
+            reseal(&mut record);
+            let wire = serde_json::to_vec(&record).expect("historical record serializes");
+            let decoded = serde_json::from_slice(&wire).expect("historical record decodes");
+            let plan = ExecutablePlanRevision::try_from_recorded_v1(decoded)
+                .expect("historical checkpoint tags pass structural integrity");
+            assert_eq!(serde_json::to_vec(plan.recorded()).unwrap(), wire);
+            assert_matches!(
+                plan.execution_graph(),
+                Err(crate::ExecutionGraphProjectionError::UnsupportedCheckpointPolicy)
+            );
+        }
+    }
+}
+
 fn credential_binding_record(
     selector: &str,
     required_capability_bits: u8,

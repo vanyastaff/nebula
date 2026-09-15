@@ -1008,7 +1008,8 @@ impl ExecutablePlanRevision {
     /// # Errors
     ///
     /// Returns [`crate::ExecutionGraphProjectionError`] if a recorded value cannot
-    /// be represented on this runtime platform. This grants no tenant authority.
+    /// be represented on this runtime platform or an action or trigger requests an
+    /// unsupported checkpoint policy. This grants no tenant authority.
     #[tracing::instrument(skip_all, fields(plan_revision_id = %self.id()), err)]
     pub fn execution_graph(
         &self,

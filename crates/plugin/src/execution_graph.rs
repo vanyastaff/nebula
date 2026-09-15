@@ -9,8 +9,8 @@ use nebula_workflow::{
 };
 
 use crate::plan::{
-    RecordedDurationV1, RecordedErrorStrategyV1, RecordedNodeV1, RecordedParameterValueV1,
-    RecordedRetryV1, RecordedWorkflowConfigV1,
+    RecordedCheckpointPolicyV1, RecordedDurationV1, RecordedErrorStrategyV1, RecordedNodeV1,
+    RecordedParameterValueV1, RecordedRetryV1, RecordedWorkflowConfigV1,
 };
 use crate::{ExecutablePlanRevision, PlanBindingRequirement};
 
@@ -32,6 +32,9 @@ pub enum ExecutionGraphProjectionError {
     /// A recorded duration cannot be represented by the runtime.
     #[error("recorded execution graph contains an invalid duration")]
     InvalidDuration,
+    /// A recorded action or trigger requests an unsupported checkpoint cadence.
+    #[error("recorded execution graph requests an unsupported checkpoint policy")]
+    UnsupportedCheckpointPolicy,
 }
 
 /// Immutable scheduler input projected only from an integrity-checked plan.
@@ -57,6 +60,13 @@ impl ExecutableGraph {
         plan: &ExecutablePlanRevision,
     ) -> Result<Self, ExecutionGraphProjectionError> {
         let content = &plan.recorded().content;
+        if content
+            .actions
+            .iter()
+            .any(|action| action.checkpoint_policy != RecordedCheckpointPolicyV1::Inherit)
+        {
+            return Err(ExecutionGraphProjectionError::UnsupportedCheckpointPolicy);
+        }
         let nodes = content
             .nodes
             .iter()

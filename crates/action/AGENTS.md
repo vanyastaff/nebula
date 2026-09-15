@@ -33,7 +33,7 @@
 - `Action: Sized` is **not** object-safe — never write `dyn Action`; engine dispatch goes through `Arc<dyn ActionFactory>` + `Box<dyn XxxHandle>`.
 - No `schema` method — `Input`/`Output: HasSchema` is the single source of truth; read via `nebula_schema::schema_of::<A::Input>()` (ADR-0052 P3). Don't add per-trait `*_schema`.
 - Action structs hold **only** slot fields (`#[resource]`/`#[credential]`); user form data lives on a separate `Self::Input` companion struct. `#[credential]` slots hold `CredentialGuard<C::Scheme>`, not `CredentialGuard<C>`.
-- `CheckpointPolicy` is a field on `ActionMetadata` (`checkpoint_policy`, default `Inherit`); engine enforcement of non-`Inherit` cadences is not yet wired — treat a non-default policy as declared intent, not a runtime guarantee.
+- Action authors cannot select checkpoint cadence. The private serialized `checkpoint_policy` field preserves historical evidence; fresh factories stamp `inherit`, and non-default historical values cannot readmit. Never restore a public selector without complete runtime and recovery support.
 - Durable compilation requires an explicit `ActionEffectContract`; the default `Undeclared` is rejected. Remote-effect factories use the execution-owned effect protocol, not generic dispatch or retry hints as invocation authority. See `tests/deferred_recovery.rs` and the engine's `effect_protocol` suite.
 - This crate is NOT the execution driver (the engine dispatches in-process), execution state machine (`nebula-execution`), schema system (`nebula-schema`), or engine retry layer; process/WASM isolation is a canon §12.6 / ADR-0091 non-goal.
 - `WebhookAction::config()` defaults to `SignaturePolicy::Required` (fail-closed); secret material never flows through the dyn `TriggerHandler` surface.
@@ -49,4 +49,4 @@
 ## See also
 
 - `README.md` — full design (v4 surface, migration recipe, contract/canon invariants)
-- ADR-0081 (consolidates ADR-0042/0043/0044/0045); [docs/INTEGRATION_MODEL.md](../../docs/INTEGRATION_MODEL.md) §`nebula-action` (CheckpointPolicy status); [docs/PRODUCT_CANON.md](../../docs/PRODUCT_CANON.md) §3.5/§11.3/§13.4/§13.5
+- ADR-0081 (consolidates ADR-0042/0043/0044/0045); [docs/INTEGRATION_MODEL.md](../../docs/INTEGRATION_MODEL.md) §`nebula-action` (checkpoint and retry contracts); [docs/PRODUCT_CANON.md](../../docs/PRODUCT_CANON.md) §3.5/§11.3/§13.4/§13.5

@@ -209,7 +209,7 @@ Generic factories (`GenericStatelessFactory<A>`, `GenericStatefulFactory<A>`, �
 - `Context`, `ActionContext`, `TriggerContext`, `ActionContextExt` — execution context traits + extension helpers (`acquire_resource_by_id`, `resolve_credential_by_id`).
 - `Dependencies`, `SlotField`, `SlotKind` (re-exported from `nebula-core`) — declarative slot metadata.
 - `WebhookConfig`, `SignaturePolicy`, `RequiredPolicy`, `SignatureScheme` — ADR-0022 signature enforcement.
-- `IsolationLevel`, `ActionKind`, `CheckpointPolicy` — in-process capability gating, node-taxonomy classification (also drives UI grouping / validation / audit), and checkpoint cadence.
+- `IsolationLevel`, `ActionKind` — in-process capability gating and node-taxonomy classification (also drives UI grouping / validation / audit).
 - `TestContextBuilder`, `StatefulTestHarness`, `TriggerTestHarness`, `SpyEmitter`, `SpyLogger`, `SpyScheduler` — testing utilities.
 
 ### Macros
@@ -282,7 +282,28 @@ The examples deliberately wire slot resolution manually (no `#[derive(Action)]`)
   until the exact durable prepared record is confirmed, while outcome uncertainty uses only
   ledger reads and exact frozen-evidence recommit. The current local key guard alone does not
   satisfy this bar.
-- **CheckpointPolicy status** — `ActionMetadata` carries a `checkpoint_policy: CheckpointPolicy` field, alongside `IsolationLevel` and the node-taxonomy `kind: ActionKind`. It defaults to `CheckpointPolicy::Inherit` (defer to the engine's execution-wide cadence). The field is a stable persisted shape; engine enforcement of non-`Inherit` cadences is not yet wired — treat a non-default policy as declared intent, not a runtime guarantee. `docs/INTEGRATION_MODEL.md` and `docs/MATURITY.md` track the enforcement timeline.
+- **Checkpoint boundaries** are owned by runtime control. The durable graph profile commits processed node outcomes, waits, retries, and completion through fenced execution-state transitions. Internal stateful iterations do not acquire SQL durability from action metadata.
+
+### Checkpoint and retry migration
+
+`CheckpointPolicy`, `ActionMetadataDraft::with_checkpoint_policy`, and
+`ActionMetadata::checkpoint_policy` are removed, including SDK re-exports.
+Remove these imports and setter calls. The former `OnePass`, `Stepwise`, and
+`ForcedHandoff` choices had no runtime enforcement; there is no replacement
+authoring selector until their scheduling and recovery contracts exist.
+
+Serialized metadata retains `checkpoint_policy` as private historical evidence.
+Fresh factory admission writes `"inherit"`. Historical values still decode and
+reserialize exactly, but non-default records fail fresh-definition readmission.
+Likewise, historical plans remain readable while non-default action cadence
+prevents registry compatibility and scheduler projection. Readability does not
+make these plans resumable; recompilation creates a newly admitted contract.
+
+`ActionResult::Retry` is intentionally absent. Integration-internal retry may wrap
+an outbound call with resilience; engine redispatch follows the operator's
+`NodeDefinition.retry_policy` or `WorkflowConfig.retry_policy` after a typed
+retryable failure. Existing retry hints do not grant additional attempts or
+remote-effect authority. These layers own different retry boundaries.
 
 ## Non-goals
 
@@ -304,14 +325,14 @@ See `docs/MATURITY.md` row for `nebula-action`.
 
 - API stability: `frontier` — Variant A trait shape (Sized + type Input/Output + static metadata + slot-binding derive + FromWorkflowNode factory + ActionHandle dispatch) shipped under M6 / §M11 (2026-04-29). The factory spine (`ActionFactory` → `ActionHandle`) is the sole engine dispatch path as of D0 (ADR-0098 PR3); `XxxHandler` dyn traits remain for SDK harnesses and event sources that operate outside the workflow-node dispatch loop.
 - `#![forbid(unsafe_code)]`, `#![warn(missing_docs)]` enforced.
-- `CheckpointPolicy`: persisted on `ActionMetadata` (`checkpoint_policy`, default `Inherit`); engine enforcement of non-`Inherit` cadences not yet wired end-to-end.
+- Action-authored checkpoint cadence is absent; historical non-default evidence is readable but cannot readmit or project into an executable graph.
 - DX specializations (`PaginatedAction`, `BatchAction`, `WebhookAction`, `PollAction`) are implemented and tested; cross-action-type integration tests: partial.
 
 ## Related
 
 - Canon: `docs/PRODUCT_CANON.md` §3.5 (action trait family; adding a trait = canon revision), §11.2 (in-action and operator-declared retry layers), §11.3 (remote effects and local dedup), §12.6 (WASM non-goal), §13.4 (trigger delivery), §13.5 (non-idempotent side effects).
 - ADR-0081 (M6 binding cascade — consolidates ADR-0042/0043/0044/0045).
-- Integration model: `docs/INTEGRATION_MODEL.md` §`nebula-action` (including `CheckpointPolicy` status note).
+- Integration model: `docs/INTEGRATION_MODEL.md` §`nebula-action` (checkpoint and retry contracts).
 - In-process plugin registry: `crates/plugin/README.md` — `Plugin` trait + `PluginRegistry` (ADR-0091).
 - Siblings: `nebula-schema` (`ValidSchema` + `#[derive(Schema)]` for `Self::Input`), `nebula-credential` (`CredentialGuard` slot fields), `nebula-resource` (`ResourceGuard` slot fields, `ResourceAction`), `nebula-resilience` (retry/timeout/circuit-breaker inside actions).
 - Resource sharing across nodes/workflows: see `crates/resource/README.md` "Shared resource pattern" — when multiple actions or workflows acquire the same `Resource` at the same scope, the manager dedupes by `(R::key(), ScopeLevel)` so a single `Resource::create` call serves every acquirer (e.g. one `TelegramBot` client for ten workflows).

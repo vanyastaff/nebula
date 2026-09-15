@@ -51,19 +51,13 @@ pub enum ActionKind {
     Resource,
 }
 
-/// Requested checkpoint cadence.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+/// Historical wire tags retained for exact evidence round-trips.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-#[non_exhaustive]
-pub enum CheckpointPolicy {
-    /// Defer to engine policy.
-    #[default]
+enum RecordedCheckpointPolicy {
     Inherit,
-    /// Checkpoint after completion.
     OnePass,
-    /// Request a checkpoint after each step.
     Stepwise,
-    /// Force a durable scheduler handoff.
     ForcedHandoff,
 }
 
@@ -128,7 +122,6 @@ pub struct ActionMetadataDraft {
     inputs: Vec<InputPort>,
     outputs: Vec<OutputPort>,
     isolation_level: IsolationLevel,
-    checkpoint_policy: CheckpointPolicy,
     effect_contract: ActionEffectContract,
     max_concurrent: Option<NonZeroU32>,
 }
@@ -162,7 +155,6 @@ impl ActionMetadataDraft {
             inputs: port::default_input_ports(),
             outputs: port::default_output_ports(),
             isolation_level: IsolationLevel::None,
-            checkpoint_policy: CheckpointPolicy::Inherit,
             effect_contract: ActionEffectContract::Undeclared,
             max_concurrent: None,
         }
@@ -293,12 +285,6 @@ impl ActionMetadataDraft {
         self
     }
 
-    /// Select the requested checkpoint cadence.
-    pub fn with_checkpoint_policy(mut self, checkpoint_policy: CheckpointPolicy) -> Self {
-        self.checkpoint_policy = checkpoint_policy;
-        self
-    }
-
     /// Declare external-effect authority.
     pub fn with_effect_contract(mut self, effect_contract: ActionEffectContract) -> Self {
         self.effect_contract = effect_contract;
@@ -335,7 +321,7 @@ impl ActionMetadataDraft {
             outputs: self.outputs.into_boxed_slice(),
             isolation_level: self.isolation_level,
             kind,
-            checkpoint_policy: self.checkpoint_policy,
+            checkpoint_policy: RecordedCheckpointPolicy::Inherit,
             effect_contract: self.effect_contract,
             max_concurrent: self.max_concurrent,
             output_schema,
@@ -352,6 +338,14 @@ impl ActionMetadataDraft {
 /// fn requires_deserialize<T: serde::de::DeserializeOwned>() {}
 /// requires_deserialize::<nebula_action::ActionMetadata>();
 /// ```
+///
+/// Per-action checkpoint cadence is not an executable metadata capability.
+///
+/// ```compile_fail
+/// fn inspect(metadata: &nebula_action::ActionMetadata) {
+///     let _ = metadata.checkpoint_policy();
+/// }
+/// ```
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ActionMetadata {
@@ -360,7 +354,7 @@ pub struct ActionMetadata {
     outputs: Box<[OutputPort]>,
     isolation_level: IsolationLevel,
     kind: ActionKind,
-    checkpoint_policy: CheckpointPolicy,
+    checkpoint_policy: RecordedCheckpointPolicy,
     effect_contract: ActionEffectContract,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     max_concurrent: Option<NonZeroU32>,
@@ -404,12 +398,6 @@ impl ActionMetadata {
     #[must_use]
     pub const fn kind(&self) -> ActionKind {
         self.kind
-    }
-
-    /// Requested checkpoint cadence.
-    #[must_use]
-    pub const fn checkpoint_policy(&self) -> CheckpointPolicy {
-        self.checkpoint_policy
     }
 
     /// Declared external-effect authority.
@@ -476,7 +464,7 @@ pub struct RecordedActionMetadata {
     outputs: Box<[OutputPort]>,
     isolation_level: IsolationLevel,
     kind: ActionKind,
-    checkpoint_policy: CheckpointPolicy,
+    checkpoint_policy: RecordedCheckpointPolicy,
     effect_contract: ActionEffectContract,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     max_concurrent: Option<NonZeroU32>,
@@ -494,7 +482,7 @@ impl<'de> Deserialize<'de> for RecordedActionMetadata {
             outputs: Box<[OutputPort]>,
             isolation_level: IsolationLevel,
             kind: ActionKind,
-            checkpoint_policy: CheckpointPolicy,
+            checkpoint_policy: RecordedCheckpointPolicy,
             effect_contract: ActionEffectContract,
             #[serde(default)]
             max_concurrent: Option<NonZeroU32>,
