@@ -5,7 +5,9 @@
 //! each import individually.
 //!
 //! Covers:
-//! - All 13 `Field` variants (`StringField`, `SecretField`, `NumberField`, `BooleanField`,
+//! - The property authoring surface (`Property`, `PropertyRef`) plus the legacy
+//!   `Field` carrier during migration.
+//! - All 13 property variants (`StringField`, `SecretField`, `NumberField`, `BooleanField`,
 //!   `SelectField`, `ObjectField`, `ListField`, `ModeField`, `CodeField`, `FileField`,
 //!   `ComputedField`, `DynamicField`, `NoticeField`) and their associated enums (`ComputedReturn`,
 //!   `ModeVariant`, `NoticeSeverity`).
@@ -26,11 +28,12 @@ pub use crate::{
     ComputedReturn, DynamicField, EvalFuture, Expression, ExpressionContext, ExpressionMode, Field,
     FieldKey, FieldPath, FileField, HasSchema, HasSelectOptions, InputHint, ListField,
     LoaderContext, LoaderRegistry, ModeField, ModeVariant, NoticeField, NoticeSeverity,
-    NumberField, ObjectField, PendingValidation, ProgramSyntax, RedactedLoaderContext,
-    RequiredMode, ResolvedValue, ResolvedValues, RootShape, ScalarKind, ScalarSchema, ScalarValue,
-    Schema, SchemaBuilder, SecretField, SecretInput, SecretValue, SecretWire, SelectField,
-    SelectOption, Severity, StringField, Transformer, ValidSchema, ValidValues, ValidationError,
-    ValidationReport, ValuePath, ValueTree, VisibilityMode, builder::FieldCollector, field_key,
+    NumberField, ObjectField, PendingValidation, ProgramSyntax, Property, PropertyRef,
+    RedactedLoaderContext, RequiredMode, ResolvedValue, ResolvedValues, RootShape, ScalarKind,
+    ScalarSchema, ScalarValue, Schema, SchemaBuilder, SecretField, SecretInput, SecretValue,
+    SecretWire, SelectField, SelectOption, Severity, StringField, Transformer, ValidSchema,
+    ValidValues, ValidationError, ValidationReport, ValuePath, ValueTree, VisibilityMode,
+    builder::FieldCollector, field_key,
 };
 
 #[cfg(test)]
@@ -52,6 +55,8 @@ mod coverage_smoke {
         fn _g(_: &SelectField, _: &ObjectField, _: &ListField, _: &ModeField) {}
         fn _h(_: &CodeField, _: &FileField, _: &ComputedField, _: &DynamicField) {}
         fn _i(_: &NoticeField) {}
+        let _: Option<Property> = None;
+        let _: Option<PropertyRef> = None;
         // Field-variant companions.
         let _: Option<NoticeSeverity> = None;
         let _: Option<ComputedReturn> = None;

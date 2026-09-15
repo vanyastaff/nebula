@@ -301,6 +301,17 @@ pub use field::{
     ListField, ModeVariant, NoticeField, NoticeSeverity, NumberField, ObjectField, SecretField,
     SelectField, StringField, UnknownField,
 };
+/// Canonical semantic property declaration.
+///
+/// `Property` is the public authoring name for a typed input/configuration
+/// declaration. The current carrier is [`Field`] so existing canonical wire,
+/// validation, proof, and serde compatibility remain unchanged while the API
+/// migrates away from field-first wording.
+pub type Property = Field;
+/// Typed reference to a declared property location.
+///
+/// This is a schema-declaration address, not a runtime JSON value path.
+pub type PropertyRef = FieldPath;
 pub use has_schema::{HasSchema, HasSelectOptions, schema_of};
 pub use input_hint::InputHint;
 #[cfg(feature = "schemars")]

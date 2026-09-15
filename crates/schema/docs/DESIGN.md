@@ -156,9 +156,10 @@ unmatched optional groups retain the original string; non-strings pass through.
 
 ## Data paths and schema paths
 
-`FieldKey` is a checked schema identifier. `FieldPath` and `PathSegment` address
-declarations and indexed schema locations using forms such as `items[0].name`.
-They remain appropriate for schema lookup, not arbitrary JSON traversal.
+`FieldKey` is a checked schema identifier for one declaration. `PropertyRef`
+(`FieldPath` during the migration window) and `PathSegment` address declarations
+and indexed schema locations using forms such as `items[0].name`. They remain
+appropriate for schema lookup, not arbitrary JSON traversal.
 
 `ValuePath` is the RFC6901 data path, re-exported from the validator foundation.
 Data errors, pending obligations, and tree lookup use this type. The root is

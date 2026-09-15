@@ -77,10 +77,11 @@ interpreted according to a `ModeField`, not a separate tree variant.
   an RFC6901 JSON Pointer. Data keys may be empty, numeric, Unicode, or contain
   dots, slashes, tildes, and brackets.
 
-`FieldKey` and schema `FieldPath` still identify declarations and indexed schema
-locations such as `items[0].name`. They are not restrictions on JSON property
-names. Data diagnostics use `ValuePath`: `""` is the root, `/` is the empty key,
-and `/a~1b/~0` addresses keys `a/b` then `~`. Numeric segments index a list only
+`PropertyRef` (currently the same carrier as schema `FieldPath`) identifies
+declarations and indexed schema locations such as `items[0].name`. `FieldKey`
+still names one declaration. Neither restricts JSON property names. Data
+diagnostics use `ValuePath`: `""` is the root, `/` is the empty key, and
+`/a~1b/~0` addresses keys `a/b` then `~`. Numeric segments index a list only
 when the current node is a list.
 
 ## Construction APIs
@@ -107,14 +108,17 @@ when the current node is a list.
 - `ValidSchema::scalar(ScalarSchema)` builds a checked scalar root without a
   synthetic field key. Scalar roots admit data only, and their rules still run
   through the same staged validation pipeline.
-- `Schema::builder()` and `SchemaBuilder::add` accumulate draft fields;
-  `build()` runs structural lint and returns `Result<ValidSchema, ValidationReport>`.
+- `Schema::builder()`, `SchemaBuilder::property`, and
+  `SchemaBuilder::properties` accumulate draft semantic properties; `build()`
+  runs structural lint and returns `Result<ValidSchema, ValidationReport>`.
+  `Field` and `.add(...)` remain legacy carriers while in-workspace callers
+  migrate to property-first wording.
   `Schema::lint()` reports errors and advisory warnings without producing proof.
 - `HasSchema::schema()` and `schema_of::<T>()` return
   `Result<ValidSchema, ValidationReport>`. Derived implementations cache either
   the checked schema or its construction report, not a panic fallback.
-- `Field` builders require a checked `FieldKey`; use `field_key!("name")` for
-  static names or `Field::try_*` for fallible dynamic construction.
+- `Property` builders require a checked `FieldKey`; use `field_key!("name")`
+  for static names or the fallible dynamic constructors for runtime keys.
 - `Transformer::regex(pattern, group)` returns `Result<Transformer, ValidationError>`.
   The `Regex(RegexCapture)` variant contains a compiled pattern and checked
   capture index. Construction and serde reject malformed patterns or unavailable

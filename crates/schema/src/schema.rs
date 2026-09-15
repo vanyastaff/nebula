@@ -329,7 +329,17 @@ pub struct SchemaBuilder {
 }
 
 impl SchemaBuilder {
-    /// Append a field to the builder.
+    /// Append a semantic property to the builder.
+    #[must_use]
+    pub fn property(self, property: impl Into<Field>) -> Self {
+        self.add(property)
+    }
+
+    /// Append a legacy field to the builder.
+    ///
+    /// New authoring surfaces should prefer [`SchemaBuilder::property`]. The
+    /// stored carrier remains [`Field`] until the legacy field-named API is
+    /// retired from the public surface.
     #[expect(
         clippy::should_implement_trait,
         reason = "builder API mirrors add-style schema DSL"
@@ -355,17 +365,31 @@ impl SchemaBuilder {
         self
     }
 
-    /// Append many fields at once — accepts `Vec<Field>`, `[Field; N]`,
-    /// iterators, and anything `Into<Field>` per item. Preferred over
-    /// chaining `.add(...)` for statically known bulk additions.
+    /// Append many semantic properties at once.
+    ///
+    /// Accepts `Vec<Property>`, `[Property; N]`, iterators, and anything
+    /// `Into<Field>` per item. Preferred over chaining `.property(...)` for
+    /// statically known bulk additions.
     #[must_use]
-    pub fn add_many<I, F>(mut self, fields: I) -> Self
+    pub fn properties<I, F>(mut self, properties: I) -> Self
     where
         I: IntoIterator<Item = F>,
         F: Into<Field>,
     {
-        self.fields.extend(fields.into_iter().map(Into::into));
+        self.fields.extend(properties.into_iter().map(Into::into));
         self
+    }
+
+    /// Append many legacy fields at once.
+    ///
+    /// New authoring surfaces should prefer [`SchemaBuilder::properties`].
+    #[must_use]
+    pub fn add_many<I, F>(self, fields: I) -> Self
+    where
+        I: IntoIterator<Item = F>,
+        F: Into<Field>,
+    {
+        self.properties(fields)
     }
 
     /// Append a group of fields that share a common label and optional
