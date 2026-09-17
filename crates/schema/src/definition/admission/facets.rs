@@ -19,7 +19,9 @@ use super::super::{
 
 use super::shape::presence_is_always_required;
 
-use super::{check_condition, check_intrinsic_rules, check_numeric, check_rules, check_selector};
+use super::rules::{
+    check_condition, check_intrinsic_rules, check_numeric, check_rules, check_selector,
+};
 
 pub(super) fn check_facet_applicability(
     graph: &DraftGraph,
