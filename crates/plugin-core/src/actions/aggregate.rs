@@ -60,7 +60,7 @@
 //!
 //! The action is **pure** — no I/O, no credentials, no resources.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
 use nebula_action::{ActionContext, ActionError, ActionResult, StatelessAction};
@@ -260,6 +260,58 @@ impl HasSchema for AggregateInput {
     }
 }
 
+// ── Input validation ──────────────────────────────────────────────────────────
+
+/// The input array, or a Fatal error naming what was given instead.
+///
+/// Absent, `null`, and non-array `data` are all authoring mistakes — there is no
+/// implicit empty array, because aggregating a non-array is never intended.
+fn validated_elements(data: Option<&Value>) -> Result<&[Value], ActionError> {
+    match data {
+        Some(Value::Array(elements)) => Ok(elements),
+        Some(Value::Null) | None => Err(ActionError::fatal(
+            "aggregate: `data` must be a JSON array, got null",
+        )),
+        Some(other) => Err(ActionError::fatal(format!(
+            "aggregate: `data` must be a JSON array, got {}",
+            other.type_name_str()
+        ))),
+    }
+}
+
+/// Reject the authoring mistakes that make the aggregation meaningless.
+///
+/// A duplicate `out` key and an `out` key colliding with a `group_by` field are
+/// both silent-overwrite bugs — the second overwrites the row's group key with
+/// an aggregation result — so both fail closed before any element is read.
+fn validate_authoring(input: &AggregateInput) -> Result<(), ActionError> {
+    if input.aggregations.is_empty() {
+        return Err(ActionError::fatal(
+            "aggregate: at least one aggregation is required",
+        ));
+    }
+
+    let mut seen_output_keys: HashSet<&str> = HashSet::with_capacity(input.aggregations.len());
+    for output_key in input.aggregations.iter().map(Aggregation::out_key) {
+        if !seen_output_keys.insert(output_key) {
+            return Err(ActionError::fatal(format!(
+                "aggregate: duplicate out key `{output_key}` in aggregations"
+            )));
+        }
+    }
+
+    for aggregation in &input.aggregations {
+        let output_key = aggregation.out_key();
+        if input.group_by.iter().any(|field| field == output_key) {
+            return Err(ActionError::fatal(format!(
+                "aggregate: aggregation output `{output_key}` collides with a group_by field"
+            )));
+        }
+    }
+
+    Ok(())
+}
+
 // ── Per-group accumulator ─────────────────────────────────────────────────────
 
 /// Running state for a single aggregation function over a single group.
@@ -273,7 +325,7 @@ enum Accumulator {
         row_count: u64,
     },
     CountDistinct {
-        distinct_serialized: std::collections::HashSet<String>,
+        distinct_serialized: HashSet<String>,
     },
     /// Preserves integer type when all values are integers. Upgrades to
     /// `SumFloat` on the first floating-point value encountered.
@@ -332,7 +384,7 @@ impl Accumulator {
         match aggregation {
             Aggregation::Count { .. } => Accumulator::Count { row_count: 0 },
             Aggregation::CountDistinct { .. } => Accumulator::CountDistinct {
-                distinct_serialized: std::collections::HashSet::new(),
+                distinct_serialized: HashSet::new(),
             },
             Aggregation::Sum { .. } => Accumulator::SumInt { integer_total: 0 },
             Aggregation::Avg { .. } => Accumulator::Avg {
@@ -447,7 +499,7 @@ impl Accumulator {
 
     /// COUNT DISTINCT — skip null/missing (documented behavior).
     fn feed_count_distinct(
-        distinct_serialized: &mut std::collections::HashSet<String>,
+        distinct_serialized: &mut HashSet<String>,
         element: &Value,
         field: &str,
     ) {
@@ -718,6 +770,195 @@ fn numeric_addend_or_dirty<'element>(
     }
 }
 
+// ── Grouping ──────────────────────────────────────────────────────────────────
+
+/// One group's identity: the canonical JSON of its `group_by` values, and the
+/// values themselves.
+///
+/// Groups are compared by `serialized` — canonical serialization preserves JSON
+/// type, so `1` and `"1"` are different groups — and a summary row reports
+/// `field_values`, so rows are built from the original values rather than by
+/// parsing the key back.
+#[derive(Debug)]
+struct GroupKey {
+    serialized: String,
+    field_values: Vec<Value>,
+}
+
+impl GroupKey {
+    /// Build a key from a group's `group_by` values, in declaration order.
+    ///
+    /// No values means the one group every element belongs to when `group_by` is
+    /// empty. The canonical form is derived here and nowhere else, so the two
+    /// fields cannot disagree.
+    fn from_values(field_values: Vec<Value>) -> Result<Self, ActionError> {
+        // `field_values` holds only cloned JSON values, so serialization cannot
+        // fail in practice; the error is propagated rather than unwrapped.
+        let serialized = serde_json::to_string(&field_values).map_err(|e| {
+            ActionError::fatal(format!("aggregate: failed to serialize group key: {e}"))
+        })?;
+
+        Ok(Self {
+            serialized,
+            field_values,
+        })
+    }
+
+    /// Read `group_by` off `element`, failing closed when a named field is
+    /// absent — a synthetic key would silently merge unrelated rows.
+    fn from_element(element: &Value, group_by: &[String]) -> Result<Self, ActionError> {
+        let field_values = group_by
+            .iter()
+            .map(|group_field| {
+                element.get(group_field.as_str()).cloned().ok_or_else(|| {
+                    ActionError::fatal(format!(
+                        "aggregate: group_by field `{group_field}` missing on an element"
+                    ))
+                })
+            })
+            .collect::<Result<Vec<Value>, ActionError>>()?;
+
+        Self::from_values(field_values)
+    }
+}
+
+/// One group: the values of its `group_by` fields, and the running accumulators
+/// of its aggregations.
+#[derive(Debug)]
+struct Group {
+    field_values: Vec<Value>,
+    accumulators: Vec<Accumulator>,
+}
+
+/// The groups of one aggregation run, in first-seen order.
+///
+/// First-seen order *is* the output row order. `index_by_serialized` is derived
+/// state: `append_group` is its only writer and records a position in the same
+/// step it appends the group, so a recorded position always indexes the group it
+/// was recorded for. The layout a row needs — the `group_by` field names and
+/// each accumulator's output key — is read from `input` rather than passed
+/// alongside, so a row cannot be assembled from a different authoring than the
+/// groups were built from.
+#[derive(Debug)]
+struct GroupedElements<'a> {
+    input: &'a AggregateInput,
+    groups: Vec<Group>,
+    index_by_serialized: HashMap<String, usize>,
+}
+
+impl<'a> GroupedElements<'a> {
+    fn new(input: &'a AggregateInput) -> Self {
+        Self {
+            input,
+            groups: Vec::new(),
+            index_by_serialized: HashMap::new(),
+        }
+    }
+
+    /// The accumulators of `key`'s group, creating the group — with one fresh
+    /// accumulator per aggregation — the first time the key is seen.
+    fn accumulators_for(&mut self, key: GroupKey) -> &mut [Accumulator] {
+        let index = if let Some(existing) = self.index_by_serialized.get(&key.serialized).copied() {
+            existing
+        } else {
+            self.append_group(key)
+        };
+
+        &mut self.groups[index].accumulators
+    }
+
+    /// Append `key`'s group with fresh accumulators, and return its position.
+    fn append_group(&mut self, key: GroupKey) -> usize {
+        let index = self.groups.len();
+        self.index_by_serialized.insert(key.serialized, index);
+        self.groups.push(Group {
+            field_values: key.field_values,
+            accumulators: self
+                .input
+                .aggregations
+                .iter()
+                .map(Accumulator::new)
+                .collect(),
+        });
+        index
+    }
+
+    /// One summary row per group, in first-seen order.
+    ///
+    /// Each group's accumulators were built one-per-aggregation from this same
+    /// input, so the group-by values and the aggregated outputs together fill the
+    /// row exactly — and `validate_authoring` has already rejected `out` keys
+    /// that collide with a `group_by` field, so neither overwrites the other.
+    fn summary_rows(self) -> Result<Vec<Value>, ActionError> {
+        let mut summary_rows = Vec::with_capacity(self.groups.len());
+
+        for group in self.groups {
+            let mut summary_row = serde_json::Map::new();
+
+            for (group_field, field_value) in self.input.group_by.iter().zip(&group.field_values) {
+                summary_row.insert(group_field.clone(), field_value.clone());
+            }
+
+            // `finalize` fails on float overflow (sum/avg → non-finite).
+            for (accumulator, aggregation) in
+                group.accumulators.into_iter().zip(&self.input.aggregations)
+            {
+                summary_row.insert(aggregation.out_key().to_owned(), accumulator.finalize()?);
+            }
+
+            summary_rows.push(Value::Object(summary_row));
+        }
+
+        Ok(summary_rows)
+    }
+}
+
+/// Partition `elements` into first-seen-order groups and feed each element to
+/// its group's accumulators.
+///
+/// Empty input is not the same as no groups: with `group_by` empty it still
+/// yields the one global group, whose fresh accumulators report their zero state
+/// (`count` 0, `sum` 0, `avg` null, …). With `group_by` non-empty, no elements
+/// means no groups, and so no rows.
+fn group_and_accumulate<'a>(
+    elements: &[Value],
+    input: &'a AggregateInput,
+) -> Result<GroupedElements<'a>, ActionError> {
+    let mut grouped = GroupedElements::new(input);
+
+    if elements.is_empty() {
+        if input.group_by.is_empty() {
+            // Creating the group is the whole effect; there is no element to feed.
+            let _ = grouped.accumulators_for(GroupKey::from_values(Vec::new())?);
+        }
+        return Ok(grouped);
+    }
+
+    for element in elements {
+        // `Value::get` on a non-object returns `None` silently, so the group-key
+        // read and every field read would misfire without this explicit guard.
+        if !element.is_object() {
+            return Err(ActionError::fatal(format!(
+                "aggregate: every array element must be a JSON object, got {}",
+                element.type_name_str()
+            )));
+        }
+
+        let key = if input.group_by.is_empty() {
+            GroupKey::from_values(Vec::new())?
+        } else {
+            GroupKey::from_element(element, &input.group_by)?
+        };
+
+        let accumulators = grouped.accumulators_for(key);
+        for (accumulator, aggregation) in accumulators.iter_mut().zip(&input.aggregations) {
+            accumulator.feed(element, aggregation, input.on_error)?;
+        }
+    }
+
+    Ok(grouped)
+}
+
 // ── Action ────────────────────────────────────────────────────────────────────
 
 /// Pure action that reduces a JSON array of objects to grouped summaries.
@@ -790,177 +1031,12 @@ impl StatelessAction for Aggregate {
         input: AggregateInput,
         _ctx: &(impl ActionContext + ?Sized),
     ) -> Result<ActionResult<Value>, ActionError> {
-        // ── 1. Validate data ──────────────────────────────────────────────────
-        let elements: Vec<Value> = match input.data {
-            Some(Value::Array(arr)) => arr,
-            Some(Value::Null) | None => {
-                return Err(ActionError::fatal(
-                    "aggregate: `data` must be a JSON array, got null",
-                ));
-            },
-            Some(other) => {
-                return Err(ActionError::fatal(format!(
-                    "aggregate: `data` must be a JSON array, got {}",
-                    other.type_name_str()
-                )));
-            },
-        };
-
+        let elements = validated_elements(input.data.as_ref())?;
         tracing::Span::current().record("element_count", elements.len());
+        validate_authoring(&input)?;
 
-        // ── 2. Validate aggregations non-empty ────────────────────────────────
-        if input.aggregations.is_empty() {
-            return Err(ActionError::fatal(
-                "aggregate: at least one aggregation is required",
-            ));
-        }
-
-        // ── 3. Reject duplicate `out` keys (authoring error) ─────────────────
-        {
-            let mut seen_output_keys: HashMap<&str, ()> = HashMap::new();
-            for aggregation in &input.aggregations {
-                let output_key = aggregation.out_key();
-                if seen_output_keys.insert(output_key, ()).is_some() {
-                    return Err(ActionError::fatal(format!(
-                        "aggregate: duplicate out key `{output_key}` in aggregations"
-                    )));
-                }
-            }
-        }
-
-        // ── 3b. Reject aggregation `out` keys that collide with group_by fields ─
-        //
-        // A collision silently overwrites the group key in the output row with
-        // the aggregation result. Fail-closed is the correct policy here: the
-        // author almost certainly made a naming mistake.
-        for aggregation in &input.aggregations {
-            let output_key = aggregation.out_key();
-            if input.group_by.iter().any(|f| f == output_key) {
-                return Err(ActionError::fatal(format!(
-                    "aggregate: aggregation output `{output_key}` collides with a group_by field"
-                )));
-            }
-        }
-
-        // ── 4. Partition elements into groups and accumulate ──────────────────
-        //
-        // `group_insertion_order` tracks first-seen group keys so output rows
-        // are in deterministic first-seen order, not HashMap iteration order.
-        // `group_accumulators` maps serialized group key → per-aggregation state.
-        //
-        // When `group_by` is empty, all elements land in one global group keyed
-        // by the canonical empty-array string "[]".
-
-        // A serialized JSON array of the group-by field values, used as a
-        // HashMap key. Canonical serde_json serialization preserves type
-        // distinctions (1 ≠ "1").
-        type SerializedGroupKey = String;
-
-        let ungrouped_key: SerializedGroupKey = "[]".to_owned();
-
-        let mut group_insertion_order: Vec<SerializedGroupKey> = Vec::new();
-        let mut group_accumulators: HashMap<SerializedGroupKey, Vec<Accumulator>> = HashMap::new();
-
-        if elements.is_empty() {
-            // Short-circuit: no elements means no groups (grouped) or one zeroed
-            // row (ungrouped).
-            if input.group_by.is_empty() {
-                group_insertion_order.push(ungrouped_key.clone());
-                group_accumulators.insert(
-                    ungrouped_key,
-                    input.aggregations.iter().map(Accumulator::new).collect(),
-                );
-            }
-            // Grouped + empty input → no groups → output is [].
-        } else {
-            for element in &elements {
-                // Guard: every element must be a JSON object.
-                // `Value::get` on a non-object returns `None` silently, so group-key
-                // reads and field reads would misfire without this explicit check.
-                if !element.is_object() {
-                    return Err(ActionError::fatal(format!(
-                        "aggregate: every array element must be a JSON object, got {}",
-                        element.type_name_str()
-                    )));
-                }
-
-                // Build the serialized group key for this element.
-                let group_key: SerializedGroupKey = if input.group_by.is_empty() {
-                    ungrouped_key.clone()
-                } else {
-                    let mut key_values: Vec<Value> = Vec::with_capacity(input.group_by.len());
-                    for group_field in &input.group_by {
-                        match element.get(group_field.as_str()) {
-                            Some(field_value) => key_values.push(field_value.clone()),
-                            None => {
-                                return Err(ActionError::fatal(format!(
-                                    "aggregate: group_by field `{group_field}` \
-                                     missing on an element"
-                                )));
-                            },
-                        }
-                    }
-                    // `key_values` contains only cloned JSON Values — serialization
-                    // should not fail, but we propagate any error rather than panic.
-                    serde_json::to_string(&Value::Array(key_values)).map_err(|e| {
-                        ActionError::fatal(format!("aggregate: failed to serialize group key: {e}"))
-                    })?
-                };
-
-                // Initialize accumulators on first encounter with this group key.
-                if !group_accumulators.contains_key(&group_key) {
-                    group_insertion_order.push(group_key.clone());
-                    group_accumulators.insert(
-                        group_key.clone(),
-                        input.aggregations.iter().map(Accumulator::new).collect(),
-                    );
-                }
-
-                // Advance each accumulator with this element.
-                // `group_insertion_order` and `group_accumulators` are kept in sync:
-                // every key pushed to `group_insertion_order` has a corresponding
-                // entry in `group_accumulators` inserted in the same branch above.
-                let accumulators = group_accumulators.get_mut(&group_key).ok_or_else(|| {
-                    ActionError::fatal(
-                        "aggregate: internal — group accumulator missing for inserted key",
-                    )
-                })?;
-                for (accumulator, aggregation) in accumulators.iter_mut().zip(&input.aggregations) {
-                    accumulator.feed(element, aggregation, input.on_error)?;
-                }
-            }
-        }
-
-        // ── 5. Emit one output row per group in first-seen order ──────────────
-        let mut summary_rows: Vec<Value> = Vec::with_capacity(group_insertion_order.len());
-
-        for group_key in group_insertion_order {
-            // `group_key` came from `group_insertion_order`, which only holds keys
-            // that were simultaneously inserted into `group_accumulators`.
-            let accumulators = group_accumulators.remove(&group_key).ok_or_else(|| {
-                ActionError::fatal("aggregate: internal — group key missing from accumulators")
-            })?;
-
-            let mut summary_row = serde_json::Map::new();
-
-            // Inject the group-by field values first (before aggregation outputs).
-            if !input.group_by.is_empty() {
-                let key_values: Vec<Value> = serde_json::from_str(&group_key).map_err(|e| {
-                    ActionError::fatal(format!("aggregate: failed to parse group key: {e}"))
-                })?;
-                for (group_field, field_value) in input.group_by.iter().zip(key_values) {
-                    summary_row.insert(group_field.clone(), field_value);
-                }
-            }
-
-            // Inject each aggregation's output value.
-            // `finalize` returns Err on float overflow (sum/avg → non-finite).
-            for (accumulator, aggregation) in accumulators.into_iter().zip(&input.aggregations) {
-                summary_row.insert(aggregation.out_key().to_owned(), accumulator.finalize()?);
-            }
-
-            summary_rows.push(Value::Object(summary_row));
-        }
+        let grouped = group_and_accumulate(elements, &input)?;
+        let summary_rows = grouped.summary_rows()?;
 
         Ok(ActionResult::success(Value::Array(summary_rows)))
     }
@@ -1815,6 +1891,161 @@ mod tests {
         assert!(
             matches!(err, ActionError::Fatal { .. }),
             "aggregation out key colliding with group_by field must be Fatal; got: {err:?}"
+        );
+    }
+
+    // ── Authoring-error precedence and messages ──────────────────────────────
+
+    /// The message a `Fatal` rejection carries.
+    ///
+    /// Every authoring rejection is a `Fatal` whose message is its whole value —
+    /// it names the offending key or field for the author — so these tests
+    /// assert the message, not just the variant.
+    fn fatal_message(err: &ActionError) -> String {
+        std::error::Error::source(err)
+            .expect("a Fatal ActionError must retain its message as its source")
+            .to_string()
+    }
+
+    fn count(out: &str) -> Aggregation {
+        Aggregation::Count { out: out.into() }
+    }
+
+    fn input(
+        data: Option<Value>,
+        group_by: &[&str],
+        aggregations: Vec<Aggregation>,
+    ) -> AggregateInput {
+        AggregateInput {
+            data,
+            group_by: group_by.iter().map(|field| (*field).to_owned()).collect(),
+            aggregations,
+            on_error: OnError::Fail,
+        }
+    }
+
+    /// Which authoring mistake an input with several is reported for, and the
+    /// message it carries.
+    ///
+    /// Precedence is load-bearing and invisible in the happy path: an input with
+    /// more than one mistake must still be reported for the same one it was
+    /// reported for before the grouping code was restructured. In particular the
+    /// duplicate-`out` pass sweeps every aggregation before the collision pass
+    /// sweeps any, so an input that is both duplicate and colliding reports the
+    /// duplicate — merging those two passes would silently change the message.
+    ///
+    /// RED witness: swapping the two sweeps, or reading group keys before
+    /// guarding that an element is an object, reports a different message here.
+    #[tokio::test]
+    async fn authoring_errors_report_the_first_failure_in_order() {
+        let cases: Vec<(&str, AggregateInput, &str)> = vec![
+            (
+                "typed data outranks empty aggregations",
+                input(Some(json!({"x": 1})), &[], vec![]),
+                "aggregate: `data` must be a JSON array, got object",
+            ),
+            (
+                "null data outranks empty aggregations",
+                input(Some(Value::Null), &[], vec![]),
+                "aggregate: `data` must be a JSON array, got null",
+            ),
+            (
+                "absent data outranks empty aggregations",
+                input(None, &[], vec![]),
+                "aggregate: `data` must be a JSON array, got null",
+            ),
+            (
+                "empty aggregations",
+                input(Some(json!([])), &[], vec![]),
+                "aggregate: at least one aggregation is required",
+            ),
+            (
+                "duplicate out key outranks a group_by collision",
+                input(
+                    Some(json!([{"n": 1}])),
+                    &["n"],
+                    vec![count("n"), count("n")],
+                ),
+                "aggregate: duplicate out key `n` in aggregations",
+            ),
+            (
+                "duplicate out key",
+                input(
+                    Some(json!([{"n": 1}])),
+                    &[],
+                    vec![count("n"), count("total"), count("n")],
+                ),
+                "aggregate: duplicate out key `n` in aggregations",
+            ),
+            (
+                "out key colliding with a group_by field",
+                input(
+                    Some(json!([{"region": "west"}])),
+                    &["region"],
+                    vec![count("region")],
+                ),
+                "aggregate: aggregation output `region` collides with a group_by field",
+            ),
+            (
+                "non-object element outranks a missing group_by field",
+                input(Some(json!([1])), &["region"], vec![count("n")]),
+                "aggregate: every array element must be a JSON object, got number",
+            ),
+            (
+                "missing group_by field",
+                input(Some(json!([{"x": 1}])), &["region"], vec![count("n")]),
+                "aggregate: group_by field `region` missing on an element",
+            ),
+        ];
+
+        for (label, case_input, expected) in cases {
+            let err = run(case_input)
+                .await
+                .expect_err("every case must be rejected before a row is emitted");
+            assert!(
+                matches!(err, ActionError::Fatal { .. }),
+                "{label}: expected Fatal; got: {err:?}"
+            );
+            assert_eq!(fatal_message(&err), expected, "{label}");
+        }
+    }
+
+    /// Group identity is the canonical JSON of the group-by values, so JSON type
+    /// survives: `1`, `"1"`, and `1.0` are three groups, not one.
+    ///
+    /// This is the property the whole grouping design rests on — rows are keyed
+    /// by canonical bytes and then report the original values — and it has no
+    /// other pin in the suite.
+    ///
+    /// RED witness: keying groups on a display string, or comparing the values
+    /// loosely, merges `1` into `"1"` and reports four rows with `n: 3` here.
+    #[tokio::test]
+    async fn group_keys_distinguish_json_types() {
+        let input = input(
+            Some(json!([
+                {"k": 1},
+                {"k": "1"},
+                {"k": 1.0},
+                {"k": true},
+                {"k": null},
+                {"k": "1"}
+            ])),
+            &["k"],
+            vec![count("n")],
+        );
+
+        let rows = extract_output(run(input).await.unwrap());
+
+        assert_eq!(
+            rows,
+            json!([
+                {"k": 1, "n": 1},
+                {"k": "1", "n": 2},
+                {"k": 1.0, "n": 1},
+                {"k": true, "n": 1},
+                {"k": null, "n": 1}
+            ]),
+            "each JSON type keeps its own group, in first-seen order"
         );
     }
 }
