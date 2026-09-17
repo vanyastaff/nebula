@@ -28,6 +28,22 @@ fn parse_hex_pair(d1: char, d2: char) -> ExpressionResult<u8> {
     Ok(((hi << 4) | lo) as u8)
 }
 
+/// Read the two hex digits following `\x` and push the decoded byte as a `char`.
+fn read_hex_byte_escape<I: Iterator<Item = char>>(
+    chars: &mut I,
+    result: &mut String,
+) -> ExpressionResult<()> {
+    let d1 = chars.next().ok_or_else(|| {
+        ExpressionError::expression_syntax_error("Truncated \\x escape: expected 2 hex digits")
+    })?;
+    let d2 = chars.next().ok_or_else(|| {
+        ExpressionError::expression_syntax_error("Truncated \\x escape: expected 2 hex digits")
+    })?;
+    let value = parse_hex_pair(d1, d2)?;
+    result.push(value as char);
+    Ok(())
+}
+
 /// Parse a hex code-point string (1–6 digits, no `0x` prefix) into a `char`.
 fn parse_codepoint(hex: &str) -> ExpressionResult<char> {
     let cp = u32::from_str_radix(hex, 16).map_err(|_| {
@@ -381,20 +397,7 @@ impl<'a> Lexer<'a> {
                 '\\' => result.push('\\'),
                 '"' => result.push('"'),
                 '\'' => result.push('\''),
-                'x' => {
-                    let d1 = chars.next().ok_or_else(|| {
-                        ExpressionError::expression_syntax_error(
-                            "Truncated \\x escape: expected 2 hex digits",
-                        )
-                    })?;
-                    let d2 = chars.next().ok_or_else(|| {
-                        ExpressionError::expression_syntax_error(
-                            "Truncated \\x escape: expected 2 hex digits",
-                        )
-                    })?;
-                    let value = parse_hex_pair(d1, d2)?;
-                    result.push(value as char);
-                },
+                'x' => read_hex_byte_escape(&mut chars, &mut result)?,
                 'u' => {
                     if chars.peek() == Some(&'{') {
                         chars.next(); // consume '{'
