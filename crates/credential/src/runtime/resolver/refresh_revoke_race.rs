@@ -10,8 +10,8 @@ use chrono::Utc;
 use nebula_core::auth::{AuthPattern, EgressShape, RefreshStrategyKind};
 use nebula_storage_port::SecretBytes;
 use nebula_storage_port::store::{
-    ClaimAttempt, ClaimToken, ExpiredClaim, HeartbeatError, RefreshClaimError,
-    RefreshClaimStore, ReplicaId,
+    ClaimAttempt, ClaimToken, ExpiredClaim, HeartbeatError, RefreshClaimError, RefreshClaimStore,
+    ReplicaId,
 };
 use nebula_storage_port::{
     CredentialAlreadyExistsKey, CredentialCommit, CredentialCreate, CredentialMaterialEpoch,
@@ -51,8 +51,7 @@ impl RefreshClaimStore for StubClaimRepo {
         ttl: Duration,
     ) -> Result<ClaimAttempt, RefreshClaimError> {
         let acquired_at = Utc::now();
-        let ttl =
-            chrono::Duration::from_std(ttl).expect("test refresh-claim TTL is representable");
+        let ttl = chrono::Duration::from_std(ttl).expect("test refresh-claim TTL is representable");
         Ok(ClaimAttempt::Acquired(
             nebula_storage_port::store::RefreshClaim {
                 credential_id: credential_id.to_owned(),
@@ -67,11 +66,7 @@ impl RefreshClaimStore for StubClaimRepo {
             },
         ))
     }
-    async fn heartbeat(
-        &self,
-        _token: &ClaimToken,
-        _ttl: Duration,
-    ) -> Result<(), HeartbeatError> {
+    async fn heartbeat(&self, _token: &ClaimToken, _ttl: Duration) -> Result<(), HeartbeatError> {
         Ok(())
     }
     async fn release(&self, _token: ClaimToken) -> Result<(), RefreshClaimError> {
@@ -130,8 +125,7 @@ impl RefreshClaimStore for StatefulClaimRepo {
         self.try_claim_count.fetch_add(1, Ordering::SeqCst);
         self.try_claim_seen.notify_one();
         let acquired_at = Utc::now();
-        let ttl =
-            chrono::Duration::from_std(ttl).expect("test refresh-claim TTL is representable");
+        let ttl = chrono::Duration::from_std(ttl).expect("test refresh-claim TTL is representable");
         if self
             .active
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -157,11 +151,7 @@ impl RefreshClaimStore for StatefulClaimRepo {
         ))
     }
 
-    async fn heartbeat(
-        &self,
-        _token: &ClaimToken,
-        _ttl: Duration,
-    ) -> Result<(), HeartbeatError> {
+    async fn heartbeat(&self, _token: &ClaimToken, _ttl: Duration) -> Result<(), HeartbeatError> {
         if self.active.load(Ordering::SeqCst) {
             Ok(())
         } else {
@@ -205,12 +195,9 @@ impl RefreshTransport for StubTransport {
     fn post_token<'a>(
         &'a self,
         _request: TokenPostRequest,
-    ) -> Pin<
-        Box<dyn Future<Output = Result<TokenPostResponse, RefreshTransportError>> + Send + 'a>,
-    > {
-        Box::pin(async {
-            unreachable!("default-feature refresh performs no OAuth2 token POST")
-        })
+    ) -> Pin<Box<dyn Future<Output = Result<TokenPostResponse, RefreshTransportError>> + Send + 'a>>
+    {
+        Box::pin(async { unreachable!("default-feature refresh performs no OAuth2 token POST") })
     }
 }
 
@@ -221,11 +208,7 @@ impl AcquisitionTransport for UnusedAcquisitionTransport {
         &'a self,
         _request: TokenPostRequest,
     ) -> Pin<
-        Box<
-            dyn Future<Output = Result<TokenPostResponse, AcquisitionTransportError>>
-                + Send
-                + 'a,
-        >,
+        Box<dyn Future<Output = Result<TokenPostResponse, AcquisitionTransportError>> + Send + 'a>,
     > {
         Box::pin(async { Err(AcquisitionTransportError::Send) })
     }
@@ -242,11 +225,7 @@ impl crate::DynPendingStateStore for UnusedPendingStore {
         _data: Zeroizing<Vec<u8>>,
         _expires_in: Duration,
     ) -> Pin<
-        Box<
-            dyn Future<Output = Result<crate::PendingToken, crate::PendingStoreError>>
-                + Send
-                + 'a,
-        >,
+        Box<dyn Future<Output = Result<crate::PendingToken, crate::PendingStoreError>> + Send + 'a>,
     > {
         Box::pin(async { Err(crate::PendingStoreError::NotFound) })
     }
@@ -255,11 +234,7 @@ impl crate::DynPendingStateStore for UnusedPendingStore {
         &'a self,
         _token: &'a crate::PendingToken,
     ) -> Pin<
-        Box<
-            dyn Future<Output = Result<Zeroizing<Vec<u8>>, crate::PendingStoreError>>
-                + Send
-                + 'a,
-        >,
+        Box<dyn Future<Output = Result<Zeroizing<Vec<u8>>, crate::PendingStoreError>> + Send + 'a>,
     > {
         Box::pin(async { Err(crate::PendingStoreError::NotFound) })
     }
@@ -271,11 +246,7 @@ impl crate::DynPendingStateStore for UnusedPendingStore {
         _owner_id: &'a str,
         _session_id: &'a str,
     ) -> Pin<
-        Box<
-            dyn Future<Output = Result<Zeroizing<Vec<u8>>, crate::PendingStoreError>>
-                + Send
-                + 'a,
-        >,
+        Box<dyn Future<Output = Result<Zeroizing<Vec<u8>>, crate::PendingStoreError>> + Send + 'a>,
     > {
         Box::pin(async { Err(crate::PendingStoreError::NotFound) })
     }
@@ -287,11 +258,7 @@ impl crate::DynPendingStateStore for UnusedPendingStore {
         _owner_id: &'a str,
         _session_id: &'a str,
     ) -> Pin<
-        Box<
-            dyn Future<Output = Result<Zeroizing<Vec<u8>>, crate::PendingStoreError>>
-                + Send
-                + 'a,
-        >,
+        Box<dyn Future<Output = Result<Zeroizing<Vec<u8>>, crate::PendingStoreError>> + Send + 'a>,
     > {
         Box::pin(async { Err(crate::PendingStoreError::NotFound) })
     }
@@ -299,8 +266,7 @@ impl crate::DynPendingStateStore for UnusedPendingStore {
     fn delete<'a>(
         &'a self,
         _token: &'a crate::PendingToken,
-    ) -> Pin<Box<dyn Future<Output = Result<(), crate::PendingStoreError>> + Send + 'a>>
-    {
+    ) -> Pin<Box<dyn Future<Output = Result<(), crate::PendingStoreError>> + Send + 'a>> {
         Box::pin(async { Ok(()) })
     }
 }
@@ -340,9 +306,8 @@ impl RefreshTransport for ScriptedOAuthTransport {
     fn post_token<'a>(
         &'a self,
         _request: TokenPostRequest,
-    ) -> Pin<
-        Box<dyn Future<Output = Result<TokenPostResponse, RefreshTransportError>> + Send + 'a>,
-    > {
+    ) -> Pin<Box<dyn Future<Output = Result<TokenPostResponse, RefreshTransportError>> + Send + 'a>>
+    {
         self.calls.fetch_add(1, Ordering::SeqCst);
         let result = self.result;
         Box::pin(async move {
@@ -440,10 +405,7 @@ impl ScriptedStore {
         }
     }
 
-    fn failing_replace(
-        row: StoredCredential,
-        replace_error: CredentialPersistenceError,
-    ) -> Self {
+    fn failing_replace(row: StoredCredential, replace_error: CredentialPersistenceError) -> Self {
         Self {
             owner: test_owner(),
             row: Mutex::new(row),
@@ -985,10 +947,7 @@ impl Credential for TestCred {
 impl Refreshable for TestCred {
     const REFRESH_POLICY: RefreshPolicy = RefreshPolicy::DEFAULT;
 
-    async fn refresh(
-        state: &mut TestState,
-        attempt: RefreshAttempt<'_>,
-    ) -> crate::RefreshReport {
+    async fn refresh(state: &mut TestState, attempt: RefreshAttempt<'_>) -> crate::RefreshReport {
         let original_token = state.token.clone();
         let completed = attempt
             .dispatch(|| async move {
@@ -1088,14 +1047,10 @@ impl Credential for LocalRefreshCred {
 }
 
 impl Refreshable for LocalRefreshCred {
-    const REFRESH_EXECUTION_MODE: crate::RefreshExecutionMode =
-        crate::RefreshExecutionMode::Local;
+    const REFRESH_EXECUTION_MODE: crate::RefreshExecutionMode = crate::RefreshExecutionMode::Local;
     const REFRESH_POLICY: RefreshPolicy = RefreshPolicy::DEFAULT;
 
-    async fn refresh(
-        state: &mut TestState,
-        attempt: RefreshAttempt<'_>,
-    ) -> crate::RefreshReport {
+    async fn refresh(state: &mut TestState, attempt: RefreshAttempt<'_>) -> crate::RefreshReport {
         LOCAL_REFRESH_CALLS.fetch_add(1, Ordering::SeqCst);
         state.token = "local-refreshed".to_owned();
         attempt.local_refresh_completed()
@@ -1155,8 +1110,7 @@ impl Credential for VersionTwoCred {
 }
 
 impl Refreshable for VersionTwoCred {
-    const REFRESH_EXECUTION_MODE: crate::RefreshExecutionMode =
-        crate::RefreshExecutionMode::Local;
+    const REFRESH_EXECUTION_MODE: crate::RefreshExecutionMode = crate::RefreshExecutionMode::Local;
 
     async fn refresh(
         state: &mut VersionTwoState,
@@ -1211,10 +1165,7 @@ impl Credential for ProviderModeLocalCompletionCred {
 impl Refreshable for ProviderModeLocalCompletionCred {
     const REFRESH_POLICY: RefreshPolicy = RefreshPolicy::DEFAULT;
 
-    async fn refresh(
-        state: &mut TestState,
-        attempt: RefreshAttempt<'_>,
-    ) -> crate::RefreshReport {
+    async fn refresh(state: &mut TestState, attempt: RefreshAttempt<'_>) -> crate::RefreshReport {
         MODE_MISMATCH_REFRESH_CALLS.fetch_add(1, Ordering::SeqCst);
         state.token = "must-not-commit".to_owned();
         attempt.local_refresh_completed()
@@ -1262,10 +1213,7 @@ impl Credential for SameKeyNonOAuthCred {
 }
 
 impl Refreshable for SameKeyNonOAuthCred {
-    async fn refresh(
-        state: &mut TestState,
-        attempt: RefreshAttempt<'_>,
-    ) -> crate::RefreshReport {
+    async fn refresh(state: &mut TestState, attempt: RefreshAttempt<'_>) -> crate::RefreshReport {
         if attempt.context().refresh_transport().is_none() {
             return attempt.outcome_unknown();
         }
@@ -1330,10 +1278,7 @@ impl Credential for CancellationAwareCred {
 }
 
 impl Refreshable for CancellationAwareCred {
-    async fn refresh(
-        state: &mut TestState,
-        attempt: RefreshAttempt<'_>,
-    ) -> crate::RefreshReport {
+    async fn refresh(state: &mut TestState, attempt: RefreshAttempt<'_>) -> crate::RefreshReport {
         if attempt.context().refresh_transport().is_none() {
             return attempt.outcome_unknown();
         }
@@ -1840,12 +1785,9 @@ fn oauth_service_with_runtime(
     )
     .expect("default coordinator config is valid");
     let observer: Arc<dyn crate::CredentialObserver> = Arc::new(crate::NoopObserver::new());
-    let resolver = CredentialResolver::with_dependencies(
-        Arc::clone(&store_port),
-        Arc::new(coord),
-        transport,
-    )
-    .with_event_bus(observer.event_bus());
+    let resolver =
+        CredentialResolver::with_dependencies(Arc::clone(&store_port), Arc::new(coord), transport)
+            .with_event_bus(observer.event_bus());
 
     let pending = crate::ErasedPendingStore::new(Arc::new(UnusedPendingStore));
     let mut ops = crate::DispatchOps::new();
@@ -1946,10 +1888,7 @@ async fn request_cancellation_after_provider_start_does_not_abort_owned_refresh(
         let resolver = Arc::clone(&resolver);
         async move {
             resolver
-                .resolve_with_refresh::<CancellationAwareCred>(
-                    &test_selector(),
-                    &request_context,
-                )
+                .resolve_with_refresh::<CancellationAwareCred>(&test_selector(), &request_context)
                 .await
         }
     });
@@ -3521,14 +3460,10 @@ impl Credential for MismatchedPolicyCred {
 }
 
 impl Refreshable for MismatchedPolicyCred {
-    const REFRESH_EXECUTION_MODE: crate::RefreshExecutionMode =
-        crate::RefreshExecutionMode::Local;
+    const REFRESH_EXECUTION_MODE: crate::RefreshExecutionMode = crate::RefreshExecutionMode::Local;
     const REFRESH_POLICY: RefreshPolicy = RefreshPolicy::DEFAULT;
 
-    async fn refresh(
-        state: &mut TestState,
-        attempt: RefreshAttempt<'_>,
-    ) -> crate::RefreshReport {
+    async fn refresh(state: &mut TestState, attempt: RefreshAttempt<'_>) -> crate::RefreshReport {
         state.token = "refreshed".to_owned();
         attempt.local_refresh_completed()
     }
@@ -3632,8 +3567,7 @@ async fn envelope_schema_fingerprint_mismatch_refuses_with_distinct_error() {
         row_with_payload(
             Zeroizing::new(envelope_payload(
                 Some(
-                    <TestState as StateWireFingerprint>::SCHEMA_FINGERPRINT
-                        ^ 0x0000_0000_0000_0001,
+                    <TestState as StateWireFingerprint>::SCHEMA_FINGERPRINT ^ 0x0000_0000_0000_0001,
                 ),
                 None,
                 None,

@@ -1,9 +1,9 @@
 use std::sync::OnceLock;
 
 use nebula_action::{
-    ActionRuntimeContext, FromWorkflowNode, InstanceFactory, TriggerRuntimeContext,
-    action::Action, context::CredentialContextExt, error::ActionError,
-    metadata::ActionMetadataDraft, stateful::StatefulAction, stateless::StatelessAction,
+    ActionRuntimeContext, FromWorkflowNode, InstanceFactory, TriggerRuntimeContext, action::Action,
+    context::CredentialContextExt, error::ActionError, metadata::ActionMetadataDraft,
+    stateful::StatefulAction, stateless::StatelessAction,
 };
 use nebula_core::{
     BaseContext, Dependencies, action_key,
@@ -155,9 +155,7 @@ fn make_runtime(registry: Arc<ActionRegistry>) -> ActionRuntime {
 /// Build a runtime with a metrics registry we hand back to the caller,
 /// so tests can assert on counters/histograms that the runtime wrote
 /// through its private `metrics` field.
-fn make_runtime_with_metrics(
-    registry: Arc<ActionRegistry>,
-) -> (ActionRuntime, MetricsRegistry) {
+fn make_runtime_with_metrics(registry: Arc<ActionRegistry>) -> (ActionRuntime, MetricsRegistry) {
     let runner = Arc::new(InProcessRunner::new());
     let metrics = MetricsRegistry::new();
     let rt = ActionRuntime::try_new(
@@ -220,8 +218,7 @@ async fn generic_dispatch_rejects_undeclared_effect_before_action_code() {
         .expect("typed fixture metadata admits"),
     );
     let (runtime, metrics) = make_runtime_with_metrics(Arc::new(ActionRegistry::new()));
-    let node =
-        NodeDefinition::new(node_key!("test"), "Guard", "test", "owner_required").unwrap();
+    let node = NodeDefinition::new(node_key!("test"), "Guard", "test", "owner_required").unwrap();
     let result = runtime
         .run_factory(
             "test.owner_required",
@@ -507,8 +504,8 @@ async fn execute_uses_runner_for_capability_gated() {
         .expect("valid test catalog definition");
 
     let metrics = MetricsRegistry::new();
-    let rt = ActionRuntime::try_new(registry, runner, DataPassingPolicy::default(), metrics)
-        .unwrap();
+    let rt =
+        ActionRuntime::try_new(registry, runner, DataPassingPolicy::default(), metrics).unwrap();
 
     let result = rt
         .execute_action(
@@ -567,11 +564,7 @@ async fn spill_to_blob_succeeds_with_storage() {
 
     #[async_trait::async_trait]
     impl BlobStorage for FakeBlobStorage {
-        async fn write(
-            &self,
-            data: &[u8],
-            content_type: &str,
-        ) -> Result<BlobRef, RuntimeError> {
+        async fn write(&self, data: &[u8], content_type: &str) -> Result<BlobRef, RuntimeError> {
             Ok(BlobRef {
                 uri: "mem://test/blob-1".into(),
                 size_bytes: data.len() as u64,
@@ -817,9 +810,7 @@ async fn collection_children_respect_reject_limit() {
             Ok(AR::Success {
                 output: ActionOutput::Collection(vec![
                     ActionOutput::Value(serde_json::json!("ok")),
-                    ActionOutput::Value(serde_json::json!(
-                        "this payload is larger than 16 bytes"
-                    )),
+                    ActionOutput::Value(serde_json::json!("this payload is larger than 16 bytes")),
                 ]),
             })
         }
