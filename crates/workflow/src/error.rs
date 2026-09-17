@@ -458,12 +458,30 @@ fn join_or_sentinel<T: std::fmt::Display>(items: &[T]) -> String {
     join_display(items)
 }
 
-/// Build one diagnostic, falling back to a complete but coarse one.
+/// Code for the final coarse diagnostic, used when the caller-supplied code
+/// itself cannot be admitted (blank, or over the field bound). Named with the
+/// `WORKFLOW:` prefix so it reads as one of the crate's codes while honestly
+/// signalling that the specific code was lost.
 ///
-/// Every call site supplies five non-empty values, so construction cannot
-/// legitimately fail. The fallback exists because a rejection that reports
-/// nothing is worse than one that reports a coarse code: a caller must never
-/// receive an empty diagnostic list.
+/// Const-asserted so the tail construction in [`diagnostic`] cannot fail: the
+/// bound is checked at compile time because `str::trim` is not const-callable,
+/// so the non-empty half is proven on bytes, not on trimmed characters.
+const FALLBACK_CODE: &str = "WORKFLOW:UNREPORTABLE";
+const _: () = assert!(
+    FALLBACK_CODE.len() <= nebula_error::MAX_DIAGNOSTIC_FIELD_BYTES && !FALLBACK_CODE.is_empty(),
+    "the fixed fallback diagnostic code must be non-empty and bounded",
+);
+
+/// Build one diagnostic, falling back to progressively coarser but always
+/// complete ones.
+///
+/// The tiers, in order: the specific diagnostic; a coarse `/workflow` report
+/// that keeps the specific code (reachable — a blank non-code field, e.g. an
+/// empty author key, is designed degradation, not a lost report); and a
+/// coarse report under the fixed [`FALLBACK_CODE`], for the one case the
+/// first two cannot cover, a code that is itself blank or over the field
+/// bound. A rejection that reports nothing is worse than one that reports a
+/// coarse code, so a caller must never receive an empty diagnostic list.
 fn diagnostic(
     code: &str,
     path: String,
@@ -481,7 +499,16 @@ fn diagnostic(
                 "repair the reported workflow element",
             )
         })
-        .unwrap_or_else(|| unreachable!("the fallback diagnostic uses non-empty constants"))
+        .or_else(|| {
+            nebula_error::ActivationDiagnostic::new(
+                FALLBACK_CODE,
+                "/workflow",
+                "<contract>",
+                "<unavailable>",
+                "repair the reported workflow element",
+            )
+        })
+        .expect("the final fallback is const-asserted non-empty and bounded, so its construction cannot fail")
 }
 
 /// Path to one node's parameter, or to the node when the parameter is unknown.
@@ -824,6 +851,54 @@ mod activation_diagnostic_tests {
             "two rejections must not answer to the same code"
         );
         assert!(codes.iter().all(|code| code.starts_with("WORKFLOW:")));
+    }
+
+    /// A code the contract refuses must still produce a reportable diagnostic.
+    ///
+    /// Provenance: reached through `diagnostic()` directly — every current
+    /// call site passes a short literal, but the parameter is caller-shaped
+    /// `&str`, so an over-long code is a real (if prospective) input. The
+    /// fallback chain must end in the fixed unreportable code, not in a
+    /// re-passed failing code.
+    #[test]
+    fn an_over_long_code_falls_back_to_the_fixed_unreportable_code() {
+        let over_long = "X".repeat(nebula_error::MAX_DIAGNOSTIC_FIELD_BYTES + 1);
+        let reported = diagnostic(
+            &over_long,
+            "/nodes".to_owned(),
+            "a well-formed action key".to_owned(),
+            "bad key".to_owned(),
+            "keys must be dotted",
+        );
+
+        assert_eq!(reported.code(), FALLBACK_CODE);
+        assert_eq!(reported.path(), "/workflow");
+        assert_eq!(reported.actual(), "<unavailable>");
+    }
+
+    /// Provenance: call site `WorkflowError::InvalidActionKey` in
+    /// `activation_diagnostics` (this file) — an empty author key reaches the
+    /// `actual` field, the primary construction refuses it, and the coarse
+    /// tier reports with the SPECIFIC code preserved. That degradation is
+    /// designed behavior, so this pin must stay green through any rework of
+    /// the fallback chain.
+    #[test]
+    fn a_blank_actual_keeps_the_specific_code_on_the_coarse_fallback() {
+        let reported = WorkflowError::InvalidActionKey {
+            key: String::new(),
+            reason: "keys must be dotted".to_owned(),
+        }
+        .activation_diagnostics();
+
+        assert_eq!(
+            reported.len(),
+            1,
+            "the degraded coarse path must emit exactly one diagnostic, no duplicate alongside it"
+        );
+        let only = reported.first().expect("one diagnostic is reported");
+        assert_eq!(only.code(), "WORKFLOW:INVALID_ACTION_KEY");
+        assert_eq!(only.path(), "/workflow");
+        assert_eq!(only.actual(), "<unavailable>");
     }
 
     /// The path points at the element the author has to change, so a UI can
