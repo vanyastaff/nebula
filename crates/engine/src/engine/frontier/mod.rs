@@ -25,12 +25,12 @@ use self::wake::WakeReason;
 ///
 /// Bundles the edge maps, the ready queue, both timer heaps, the in-flight
 /// task set, and the state that is borrowed across loop iterations
-/// (`exec_state`, `outputs`, `repo_version`, `resume_rx`), so the planned
-/// per-stage extractions (`drain_due_retries`, `drain_due_wait_wakes`,
+/// (`exec_state`, `outputs`, `repo_version`, `resume_rx`), so the per-stage
+/// extractions (`drain_due_retries`, `drain_due_wait_wakes`,
 /// `drain_ready_nodes`, `await_frontier_wake`, the success/failure arm
-/// handlers) can each take `&mut FrontierCtx` plus step-local arguments
+/// handlers) each take `&mut FrontierCtx` plus step-local arguments
 /// instead of 15-20 loose parameters. Private to this module: the stage
-/// functions land in this same `frontier/` directory module.
+/// functions live in this same `frontier/` directory module.
 struct FrontierCtx<'a> {
     /// Execution state across the whole loop; borrowed because the caller
     /// reads the final state after `run_frontier` returns.

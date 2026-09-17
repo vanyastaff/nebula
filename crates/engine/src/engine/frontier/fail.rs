@@ -80,10 +80,10 @@ impl WorkflowEngine {
         // Mirror [`WakeReason::Cancel`]: mark the node `Cancelled`, drain in-flight
         // bookkeeping, and exit without a synthetic `failed_node`.
         //
-        // **Match the runtime-wrapped variant too.** `execute_action_with_node`
-        // returns `Err(e)` which the caller wraps as `EngineError::Runtime(e)`
-        // (see this file's `execute_action` future — `Err(e) => …
-        // Err(EngineError::Runtime(e))`). So an in-flight action that picks up
+        // **Match the runtime-wrapped variant too.** The node task's dispatch
+        // wraps the runtime's `RuntimeError` as `EngineError::Runtime(e)`
+        // (`execute_resolved_action(..).map_err(EngineError::Runtime)` in
+        // `spawn_node`'s factory path, `engine/mod.rs`). So an in-flight action that picks up
         // cancel via the token surfaces here as
         // `EngineError::Runtime(RuntimeError::ActionError(ActionError::Cancelled))`,
         // **not** the bare `EngineError::Action(...)` variant. Missing that arm
