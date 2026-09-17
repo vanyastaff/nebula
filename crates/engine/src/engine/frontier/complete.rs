@@ -30,9 +30,10 @@ impl WorkflowEngine {
     ///     (fail-closed), an over-budget partial output at park time, or a
     ///     `park_node` rejection; `cancel_token` is cancelled before each.
     ///   - `Err(e)` — the arm's checkpoint-failure sites (park-token mint,
-    ///     park checkpoint, success checkpoint; all cancel first) and the two
-    ///     bare-`?` propagations (`record_node_attempt`,
-    ///     `action_checkpoint`), which propagate WITHOUT a cancel — exactly
+    ///     park checkpoint, success checkpoint; all cancel first) and the
+    ///     bare-`?` propagations (`record_node_attempt` at the success
+    ///     checkpoint; `action_checkpoint` at both the park and the success
+    ///     checkpoint args), which propagate WITHOUT a cancel — exactly
     ///     as in the inline arm (`determine_final_status` keys `Cancelled`
     ///     on `cancel_token.is_cancelled`).
     #[expect(

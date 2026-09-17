@@ -235,7 +235,7 @@ impl WorkflowEngine {
             };
 
             // Asymmetry preserved: runtime warns on rejection, setup path
-            // silent (deliberate; observability question tracked out of band).
+            // silent (deliberate).
             if let RetryDecision::Retry { delay } = setup_decision {
                 let attempt_number = ctx
                     .exec_state
