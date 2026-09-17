@@ -581,15 +581,8 @@ pub(crate) fn build_field_expr(
         crate_path,
     )?;
 
-    if let Some(label) = &field_attr.label {
-        expr = quote! { #expr.label(#label) };
-    }
-    if let Some(desc) = &field_attr.description {
-        expr = quote! { #expr.description(#desc) };
-    }
-    if let Some(placeholder) = &field_attr.placeholder {
-        expr = quote! { #expr.placeholder(#placeholder) };
-    }
+    expr = apply_presentation_decorators(expr, field_attr, crate_path);
+
     if let Some(default) = &field_attr.default {
         if field_attr.enum_select {
             match default {
@@ -621,12 +614,6 @@ pub(crate) fn build_field_expr(
         }
         let hint_ident = input_hint_ident(hint, field_name)?;
         expr = quote! { #expr.hint(#crate_path::InputHint::#hint_ident) };
-    }
-    if let Some(group) = &field_attr.group {
-        expr = quote! { #expr.group(#group) };
-    }
-    if field_attr.hidden {
-        expr = quote! { #expr.visible(#crate_path::VisibilityMode::Never) };
     }
     if let Some(widget) = field_attr.widget {
         expr = apply_property_widget(
@@ -811,6 +798,33 @@ fn base_property_expr(
             ));
         },
     })
+}
+
+/// Presentation stage: apply the display-only decorators (`label`, `description`,
+/// `placeholder`, `group`, `hidden`) in attribute order. Infallible — these are
+/// verbatim pass-through builder calls with no validation.
+fn apply_presentation_decorators(
+    expr: TokenStream2,
+    field_attr: &FieldAttrs,
+    crate_path: &TokenStream2,
+) -> TokenStream2 {
+    let mut expr = expr;
+    if let Some(label) = &field_attr.label {
+        expr = quote! { #expr.label(#label) };
+    }
+    if let Some(desc) = &field_attr.description {
+        expr = quote! { #expr.description(#desc) };
+    }
+    if let Some(placeholder) = &field_attr.placeholder {
+        expr = quote! { #expr.placeholder(#placeholder) };
+    }
+    if let Some(group) = &field_attr.group {
+        expr = quote! { #expr.group(#group) };
+    }
+    if field_attr.hidden {
+        expr = quote! { #expr.visible(#crate_path::VisibilityMode::Never) };
+    }
+    expr
 }
 
 fn apply_property_widget(
