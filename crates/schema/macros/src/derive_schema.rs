@@ -587,22 +587,7 @@ pub(crate) fn build_field_expr(
 
     expr = apply_display_decorators(expr, field_attr, inner, field_name, crate_path)?;
 
-    if field_attr.no_expression {
-        expr = quote! { #expr.no_expression() };
-    }
-    if field_attr.expression_required {
-        expr = quote! {
-            #expr.expression_mode(#crate_path::ExpressionMode::Required)
-        };
-    }
-    if let Some(mode) = field_attr.expressions {
-        let mode = match mode {
-            PropertyExpressionMode::Allowed => quote! { Allowed },
-            PropertyExpressionMode::Forbidden => quote! { Forbidden },
-            PropertyExpressionMode::Required => quote! { Required },
-        };
-        expr = quote! { #expr.expression_mode(#crate_path::ExpressionMode::#mode) };
-    }
+    expr = apply_expression_policy(expr, field_attr, crate_path);
 
     // Required: mark when `#[validate(required)]` or the Rust type is not Option.
     if validate.required || !optional {
@@ -669,16 +654,7 @@ pub(crate) fn build_field_expr(
         expr = quote! { #expr.with_rule(#crate_path::Rule::email()) };
     }
 
-    for alias in read_aliases {
-        expr = quote! {
-            #expr.read_alias(#alias)?
-        };
-    }
-    if let Some(emit_as) = &field_attr.emit_as {
-        expr = quote! {
-            #expr.emit_as(#emit_as)?
-        };
-    }
+    expr = apply_alias_decorators(expr, field_attr, read_aliases);
 
     let decorated = quote! { #expr.into_property() };
     if field_attr.secret {
@@ -702,6 +678,55 @@ pub(crate) fn build_field_expr(
         ));
     }
     Ok(decorated)
+}
+
+/// Expression-policy stage: apply the `no_expression`, `expression_required`,
+/// and `expressions = ..` decorators in attribute declaration order. Infallible.
+fn apply_expression_policy(
+    builder: TokenStream2,
+    field_attr: &FieldAttrs,
+    crate_path: &TokenStream2,
+) -> TokenStream2 {
+    let mut builder = builder;
+    if field_attr.no_expression {
+        builder = quote! { #builder.no_expression() };
+    }
+    if field_attr.expression_required {
+        builder = quote! {
+            #builder.expression_mode(#crate_path::ExpressionMode::Required)
+        };
+    }
+    if let Some(mode) = field_attr.expressions {
+        let mode = match mode {
+            PropertyExpressionMode::Allowed => quote! { Allowed },
+            PropertyExpressionMode::Forbidden => quote! { Forbidden },
+            PropertyExpressionMode::Required => quote! { Required },
+        };
+        builder = quote! { #builder.expression_mode(#crate_path::ExpressionMode::#mode) };
+    }
+    builder
+}
+
+/// Alias stage: chain the field's read-aliases and its `emit_as` output key.
+/// The trailing `?` in the quoted tokens is generated-code fallibility inside
+/// the emitted property constructor, not macro control flow. Infallible.
+fn apply_alias_decorators(
+    builder: TokenStream2,
+    field_attr: &FieldAttrs,
+    read_aliases: &[String],
+) -> TokenStream2 {
+    let mut builder = builder;
+    for alias in read_aliases {
+        builder = quote! {
+            #builder.read_alias(#alias)?
+        };
+    }
+    if let Some(emit_as) = &field_attr.emit_as {
+        builder = quote! {
+            #builder.emit_as(#emit_as)?
+        };
+    }
+    builder
 }
 
 /// Base property construction: match the field's leaf kind to the initial property
