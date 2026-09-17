@@ -167,7 +167,11 @@ impl WorkflowBuilder {
     ///
     /// # Errors
     ///
-    /// Returns an error if the workflow is invalid (e.g., references to non-existent nodes).
+    /// Returns an error if the workflow is invalid: a node id that is not a
+    /// valid [`NodeKey`] (non-empty after whitespace-trimming, at most 64
+    /// characters, ASCII letters, digits, `_`, `-`, `.` only, no trailing
+    /// separator, no consecutive identical separators), a duplicate node id,
+    /// or a reference to a non-existent node.
     pub fn build(self) -> crate::Result<WorkflowDefinition> {
         use chrono::Utc;
 
@@ -181,21 +185,37 @@ impl WorkflowBuilder {
             }
         }
 
-        // Stable mapping between user-facing node ids and typed ids.
+        // Node ids become typed `NodeKey`s, so every id must satisfy the
+        // domain-key rules up front. Fail fast instead of silently renaming:
+        // a synthetic `node_{i}` fallback both hides the authoring error and
+        // collides with a user node genuinely named `node_{i}`.
+        let node_key_error = |id: &str| {
+            crate::Error::workflow(format!(
+                "Invalid node id: '{id}' — node keys must be non-empty (surrounding whitespace is \
+                 trimmed), at most 64 characters, use only ASCII letters, digits, '_', '-', or '.', \
+                 not end in a separator, and have no consecutive identical separators ('__', '--', '..')"
+            ))
+        };
+        for node in &self.nodes {
+            if NodeKey::new(&node.id).is_err() {
+                return Err(node_key_error(&node.id));
+            }
+        }
+
+        // Stable mapping between user-facing node ids and typed ids. The
+        // validation loop above rejects every id a `NodeKey::new` could
+        // reject, so this pass cannot fail in practice — but it stays
+        // fallible and propagates through the same error rather than
+        // unwrapping on a fallback.
         let node_id_by_name: HashMap<String, NodeKey> = self
             .nodes
             .iter()
-            .enumerate()
-            .map(|(i, node)| {
-                let key = NodeKey::new(&node.id).unwrap_or_else(|_| {
-                    // Node id is not a valid key (e.g. contains uppercase or special
-                    // chars). Generate a unique fallback so nodes never collide.
-                    let fallback = format!("node_{i}");
-                    NodeKey::new(&fallback).unwrap()
-                });
-                (node.id.clone(), key)
+            .map(|node| {
+                NodeKey::new(&node.id)
+                    .map(|key| (node.id.clone(), key))
+                    .map_err(|_| node_key_error(&node.id))
             })
-            .collect();
+            .collect::<crate::Result<HashMap<_, _>>>()?;
 
         // Validate all edge references.
         for (from, to) in &self.connections {
@@ -307,6 +327,40 @@ mod tests {
             .build();
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn build_rejects_invalid_node_id() {
+        for invalid in ["My Node!", "trailing_", "a__b", ""] {
+            let result = WorkflowBuilder::new("test")
+                .add_node(invalid, "core", "echo")
+                .build();
+
+            let err = result.expect_err("build must reject node ids that are not valid NodeKeys");
+            let message = err.to_string();
+            assert!(
+                message.contains(invalid),
+                "error must name the offending id {invalid:?}: {message}"
+            );
+            assert!(
+                message.contains("letters, digits"),
+                "error must state the allowed-key rule: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn build_accepts_node_ids_node_key_accepts() {
+        // `NodeKey::new` trims surrounding whitespace and preserves case, so
+        // these ids are valid as-is — build must keep them, not rename them.
+        for (id, expected_key) in [("FetchUsers", "FetchUsers"), ("  extract  ", "extract")] {
+            let workflow = WorkflowBuilder::new("test")
+                .add_node(id, "core", "echo")
+                .build()
+                .expect("id is a valid NodeKey, so build must succeed");
+            assert_eq!(workflow.nodes[0].id.as_str(), expected_key);
+            assert_eq!(workflow.nodes[0].name, id);
+        }
     }
 
     #[test]
