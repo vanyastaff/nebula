@@ -751,7 +751,7 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
     /// The single resolver-side decode of persisted state. Every resolution
     /// path funnels through here, and every envelope check (unsupported
     /// version, axis disagreement, kind tag, schema fingerprint) runs inside
-    /// [`decode_state_payload`] — the one fail-closed choke point
+    /// [`crate::state_envelope::decode_state_payload`] — the one fail-closed choke point
     /// (ADR-0107 Seam 2). Legacy pre-envelope rows fall back to a direct
     /// decode (the ordered migration); corrupt bytes keep their
     /// `Deserialize` classification.

@@ -9,13 +9,13 @@
 //! the schema fingerprint and a self-describing record inside the encrypted
 //! body.
 //!
-//! # Decode contract ([`decode_state_payload`])
+//! # Decode contract ([`crate::state_envelope::decode_state_payload`])
 //!
 //! Every persisted-state decode site in this crate funnels through
-//! [`decode_state_payload`] — the single fail-closed choke point. Check
+//! [`crate::state_envelope::decode_state_payload`] — the single fail-closed choke point. Check
 //! order:
 //!
-//! 1. `plaintext.len() >` [`MAX_STATE_PLAINTEXT_BYTES`] →
+//! 1. `plaintext.len() >` [`crate::state_envelope::MAX_STATE_PLAINTEXT_BYTES`] →
 //!    [`StateEnvelopeError::StateTooLarge`] — the resource bound fires before
 //!    any parse or materialization.
 //! 2. Parse as an envelope. On parse failure, or a missing required field,
@@ -29,9 +29,9 @@
 //! 4. `interface_version != state_version` (the row's axis) → [`StateEnvelopeError::VersionAxesDisagree`].
 //! 5. `kind_tag != state_kind` (the row's axis) → [`StateEnvelopeError::KindMismatch`].
 //! 6. `schema_fingerprint != S::SCHEMA_FINGERPRINT` → [`StateEnvelopeError::SchemaFingerprintMismatch`].
-//! 7. Otherwise the body is returned as the opaque [`StateBody`], a **borrowed
+//! 7. Otherwise the body is returned as the opaque [`crate::state_envelope::StateBody`], a **borrowed
 //!    raw fragment** of the plaintext — no `serde_json::Value` materializes
-//!    for the secret body bytes on either path. [`StateBody::into_state`]
+//!    for the secret body bytes on either path. [`crate::state_envelope::StateBody::into_state`]
 //!    typed-decodes directly from the borrowed slice, the only place the body
 //!    is parsed.
 //!
@@ -62,7 +62,7 @@
 //! practice — but it is inherent to the decode-order fallback and documented
 //! here rather than papered over.
 //!
-//! # Encode contract ([`encode_state_payload`])
+//! # Encode contract ([`crate::state_envelope::encode_state_payload`])
 //!
 //! `interface_version` = `S::VERSION` (the same value the row's
 //! `state_version` column records — the two axes must agree and the decode
@@ -197,7 +197,7 @@ pub enum StateEnvelopeError {
 /// hands the validated plaintext slice through directly, the envelope path
 /// hands the raw fragment the envelope parse captured. Opaque outside this
 /// module: only [`decode_state_payload`] produces it and only
-/// [`StateBody::into_state`] consumes it, so typed reinterpretation of
+/// [`crate::state_envelope::StateBody::into_state`] consumes it, so typed reinterpretation of
 /// generic state stays confined to the wire-format owner (the architecture
 /// ratchet in `tests/refresh_routing_architecture.rs` forbids the resolver
 /// from round-tripping generic state through a cleartext `serde_json::Value`).
