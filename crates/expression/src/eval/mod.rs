@@ -1115,21 +1115,10 @@ impl Evaluator {
                 // Find matching closing parenthesis
                 match Self::find_group_end(&chars, i + 1) {
                     Some(end) => {
-                        i = end;
-
-                        // Check if group is followed by a quantifier
-                        if i < len && (chars[i] == '+' || chars[i] == '*') {
-                            // Check if the group contains a quantifier
-                            let group_content: String =
-                                chars[group_start + 1..i - 1].iter().collect();
-                            if group_content.contains('+')
-                                || group_content.contains('*')
-                                || group_content.contains('{')
-                            {
-                                // Nested quantifiers detected - potentially dangerous
-                                return true;
-                            }
+                        if Self::group_quantified_dangerously(&chars, group_start, end) {
+                            return true;
                         }
+                        i = end;
                     },
                     // Unbalanced group: the scan ran past end of input, so
                     // the caller's loop could not find another '(' in the
@@ -1168,6 +1157,28 @@ impl Evaluator {
         }
 
         if depth == 0 { Some(i) } else { None }
+    }
+
+    /// `true` when the group ending at `group_end` is followed by `+` or `*`
+    /// and its content itself contains a quantifier.
+    #[cfg(feature = "regex")]
+    fn group_quantified_dangerously(chars: &[char], group_start: usize, group_end: usize) -> bool {
+        let len = chars.len();
+
+        // Check if group is followed by a quantifier
+        if group_end < len && (chars[group_end] == '+' || chars[group_end] == '*') {
+            // Check if the group contains a quantifier
+            let group_content: String = chars[group_start + 1..group_end - 1].iter().collect();
+            if group_content.contains('+')
+                || group_content.contains('*')
+                || group_content.contains('{')
+            {
+                // Nested quantifiers detected - potentially dangerous
+                return true;
+            }
+        }
+
+        false
     }
 
     #[cfg(not(feature = "regex"))]
