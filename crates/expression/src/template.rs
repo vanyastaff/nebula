@@ -229,13 +229,7 @@ impl Template {
             // Look for opening {{
             if matches!(token, TemplateToken::Open) {
                 // Save any accumulated static content
-                if !current_static.is_empty() {
-                    parts.push(TemplatePart::Static {
-                        content: Arc::from(current_static.as_str()),
-                        position: static_start,
-                    });
-                    current_static.clear();
-                }
+                Self::flush_static(&mut parts, &mut current_static, static_start);
 
                 let expr_start = Position::new(line, column, i);
 
@@ -357,14 +351,24 @@ impl Template {
         }
 
         // Add any remaining static content
+        Self::flush_static(&mut parts, &mut current_static, static_start);
+
+        Ok(parts)
+    }
+
+    /// Push any accumulated static content as a `Static` part and reset the buffer
+    fn flush_static(
+        parts: &mut Vec<TemplatePart>,
+        current_static: &mut String,
+        static_start: Position,
+    ) {
         if !current_static.is_empty() {
             parts.push(TemplatePart::Static {
                 content: Arc::from(current_static.as_str()),
                 position: static_start,
             });
+            current_static.clear();
         }
-
-        Ok(parts)
     }
 
     /// Check if the template contains any expressions
