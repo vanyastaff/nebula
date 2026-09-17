@@ -66,6 +66,34 @@ enum JsonContainer {
     Object { items: usize },
 }
 
+/// Count one value appearing in value position inside the innermost array
+/// (a scalar, string, or nested opener) and preflight the output limits it
+/// consumes. The closing bracket and the comma keep the array waiting for
+/// its next entry, so neither counts.
+fn count_array_value(
+    containers: &mut [JsonContainer],
+    nodes: &mut usize,
+    output: crate::BuiltinOutputBuilder,
+    byte: u8,
+) -> ExpressionResult<()> {
+    let Some(JsonContainer::Array {
+        expects_value,
+        items,
+    }) = containers.last_mut()
+    else {
+        return Ok(());
+    };
+    if !*expects_value || byte == b']' || byte == b',' {
+        return Ok(());
+    }
+    *expects_value = false;
+    *items = items.saturating_add(1);
+    *nodes = nodes.saturating_add(1);
+    output.ensure_collection_items(*items)?;
+    output.ensure_value_nodes(*nodes)?;
+    output.ensure_value_depth(containers.len().saturating_add(1))
+}
+
 fn preflight_json_structure(
     source: &str,
     output: crate::BuiltinOutputBuilder,
@@ -97,21 +125,7 @@ fn preflight_json_structure(
             continue;
         }
 
-        if let Some(JsonContainer::Array {
-            expects_value,
-            items,
-        }) = containers.last_mut()
-            && *expects_value
-            && byte != b']'
-            && byte != b','
-        {
-            *expects_value = false;
-            *items = items.saturating_add(1);
-            nodes = nodes.saturating_add(1);
-            output.ensure_collection_items(*items)?;
-            output.ensure_value_nodes(nodes)?;
-            output.ensure_value_depth(containers.len().saturating_add(1))?;
-        }
+        count_array_value(&mut containers, &mut nodes, output, byte)?;
 
         match byte {
             b'"' => in_string = true,
