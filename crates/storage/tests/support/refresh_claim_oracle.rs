@@ -39,6 +39,16 @@ use nebula_storage::credential::{
 /// The reconciliation role's error type, under a name that reads in case bodies.
 type AdjudicationError = RefreshClaimAdjudicationError;
 
+/// SHA-256 of an evidence note, computed the way the adapters digest it.
+///
+/// The oracle pins digests against this independent computation, so a shared
+/// case fails if a backend starts storing (or returning) a different identity.
+fn evidence_digest(evidence: &str) -> [u8; 32] {
+    use sha2::{Digest as _, Sha256};
+
+    Sha256::digest(evidence.as_bytes()).into()
+}
+
 /// Everything a shared case needs from a backend, beyond the two port roles.
 ///
 /// Implementors hold one backend and one isolated namespace. The three clock-
@@ -225,6 +235,9 @@ async fn sweep_accounts_poison(
 }
 
 /// Record `decision` for `credential` and require that this call recorded it.
+///
+/// Pins the success shape on every path that writes: the digest reported is the
+/// digest of the evidence this call just stored.
 async fn adjudicate_fresh(
     fixture: &impl RefreshClaimFixture,
     credential: &CredentialId,
@@ -240,6 +253,11 @@ async fn adjudicate_fresh(
         "the first decision for a poisoned claim must be recorded, not reported as a recommit"
     );
     assert_eq!(recorded.decision, decision);
+    assert_eq!(
+        recorded.evidence_digest,
+        evidence_digest(evidence),
+        "a recording call must report the digest of the evidence it stored"
+    );
     recorded
 }
 
@@ -1255,6 +1273,11 @@ pub(crate) async fn recommitting_the_same_adjudication_is_a_no_op_that_adds_no_i
         "the recommit must return the recorded resolution"
     );
     assert_eq!(
+        recommit.evidence_digest,
+        evidence_digest(evidence),
+        "the recommit must report the matched digest on record"
+    );
+    assert_eq!(
         fixture.incident_count(&credential).await,
         1,
         "an idempotent recommit must not write a second incident"
@@ -1332,6 +1355,12 @@ pub(crate) async fn recommit_of_an_older_resolution_is_a_no_op_not_a_conflict(
         "the recommit answers with the resolution it matched"
     );
     assert_eq!(
+        recommit.evidence_digest,
+        evidence_digest(older_evidence),
+        "a superseded replay must report the digest of the pair it matched, \
+         not the newest resolution's"
+    );
+    assert_eq!(
         fixture.incident_count(&credential).await,
         2,
         "an idempotent recommit must not write a third incident"
@@ -1362,8 +1391,13 @@ pub(crate) async fn a_conflicting_adjudication_is_refused(
                 evidence
             )
             .await,
-        Err(AdjudicationError::EvidenceConflict),
-        "the same evidence cannot be turned into the opposite decision"
+        Err(AdjudicationError::EvidenceConflict {
+            recorded_digest,
+            recorded_decision,
+        }) if recorded_digest == evidence_digest(evidence)
+            && recorded_decision == RefreshOutcomeDecision::ProviderApplied,
+        "the same evidence cannot be turned into the opposite decision, and the \
+         refusal must name the pair on record"
     );
     std::assert_matches!(
         fixture
@@ -1373,8 +1407,13 @@ pub(crate) async fn a_conflicting_adjudication_is_refused(
                 "a different reconciliation query reached the same conclusion"
             )
             .await,
-        Err(AdjudicationError::EvidenceConflict),
-        "different evidence for a decided incident is a conflict"
+        Err(AdjudicationError::EvidenceConflict {
+            recorded_digest,
+            recorded_decision,
+        }) if recorded_digest == evidence_digest(evidence)
+            && recorded_decision == RefreshOutcomeDecision::ProviderApplied,
+        "different evidence for a decided incident is a conflict, and the \
+         refusal must name the pair on record"
     );
 
     // Reconciliation resolves an unknown outcome; it does not overrule a

@@ -253,6 +253,7 @@ impl TestGateway {
                 Ok(CredentialGatewayResult::Reconciled {
                     decision: adjudication.decision,
                     changed: adjudication.changed,
+                    evidence_digest: adjudication.evidence_digest,
                 })
             },
             _ => Err(CredentialGatewayError::Internal),

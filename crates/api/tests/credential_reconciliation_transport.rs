@@ -107,6 +107,7 @@ use nebula_storage_port::store::{
 use nebula_storage_port::{CredentialPersistence, CredentialPersistenceError};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken;
 use tower::ServiceExt;
 use zeroize::{Zeroize, ZeroizeOnDrop};
@@ -777,6 +778,104 @@ async fn reconcile_refuses_a_second_observation_that_disagrees() {
     assert_eq!(
         recommitted["changed"], false,
         "a recommit records nothing new and must say so: {recommitted}"
+    );
+}
+
+// ── The digest is on the wire: the retry identity a lost ack needs ──────────
+
+/// The success response carries the hex digest of the evidence on record.
+///
+/// The digest is the durable half of the reconciliation retry identity: a
+/// client that lost the first acknowledgement can confirm its original
+/// evidence matches what is on record, and repeating the exact request then
+/// comes back as a `changed = false` no-op rather than a 409.
+#[tokio::test]
+async fn reconcile_success_reports_the_digest_of_the_evidence_on_record() {
+    let fixture = ProbeFixture::new().await;
+    fixture.poison().await;
+
+    let body = json!({ "decision": "provider_not_applied", "evidence": EVIDENCE });
+    let (status, reconciled) = fixture.send(&fixture.reconcile_uri(), &body).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "an operator decision must be recordable: {reconciled}"
+    );
+    let recorded_digest = hex::encode(Sha256::digest(EVIDENCE.as_bytes()));
+    assert_eq!(
+        reconciled["evidence_digest"], recorded_digest,
+        "the success response must carry the hex digest of the evidence just \
+         recorded: {reconciled}"
+    );
+
+    // The no-op recommit carries the same digest: the identity on record does
+    // not change when nothing new is written.
+    let (status, repeated) = fixture.send(&fixture.reconcile_uri(), &body).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "an identical recommit is a no-op success: {repeated}"
+    );
+    assert_eq!(repeated["changed"], false, "{repeated}");
+    assert_eq!(
+        repeated["evidence_digest"], recorded_digest,
+        "the recommit must report the digest on record, unchanged: {repeated}"
+    );
+}
+
+/// The conflict problem document carries the recorded pair, so a client can
+/// confirm what its evidence disagreed with.
+///
+/// The `evidence_digest` extension is the digest of the evidence on record —
+/// pinning that it *differs* from the digest of the evidence the client just
+/// sent is the point of this case. A disagreement is permanent by design: the
+/// pair is the identity, so no later submission can overwrite what is on
+/// record.
+#[tokio::test]
+async fn conflict_problem_reports_the_recorded_digest_and_decision() {
+    let fixture = ProbeFixture::new().await;
+    fixture.poison().await;
+
+    let recorded = json!({ "decision": "provider_applied", "evidence": EVIDENCE });
+    let (status, response) = fixture.send(&fixture.reconcile_uri(), &recorded).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the first observation is the operator's remedy: {response}"
+    );
+
+    let disagreeing_evidence = "second operator note: the support ticket was reassigned";
+    let disagreeing = json!({
+        "decision": "provider_applied",
+        "evidence": disagreeing_evidence,
+    });
+    let (status, problem) = fixture.send(&fixture.reconcile_uri(), &disagreeing).await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "a disagreeing evidence must refuse: {problem}"
+    );
+    assert_eq!(
+        problem_type(&problem),
+        RECONCILIATION_CONFLICT_TYPE,
+        "the refusal must be the conflict problem: {problem}"
+    );
+
+    let recorded_digest = hex::encode(Sha256::digest(EVIDENCE.as_bytes()));
+    let request_digest = hex::encode(Sha256::digest(disagreeing_evidence.as_bytes()));
+    assert_ne!(
+        recorded_digest, request_digest,
+        "the two fixture notes must digest differently, or the case would pin nothing"
+    );
+    assert_eq!(
+        problem["evidence_digest"], recorded_digest,
+        "the conflict problem must name the digest on record, which differs \
+         from the request's own: {problem}"
+    );
+    assert_eq!(
+        problem["recorded_decision"], "provider_applied",
+        "the conflict problem must name the recorded decision in its wire \
+         spelling: {problem}"
     );
 }
 

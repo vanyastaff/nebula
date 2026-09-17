@@ -261,6 +261,10 @@ pub enum CredentialGatewayResult {
         /// `(evidence digest, decision)` pair was already on record — a
         /// superseded replay, which is a success, not a conflict.
         changed: bool,
+        /// SHA-256 of the evidence whose resolution is on record — the durable
+        /// half of the reconciliation retry identity, secret-free, so a client
+        /// that lost an acknowledgement can confirm what is on record.
+        evidence_digest: [u8; 32],
     },
 }
 
@@ -284,10 +288,15 @@ impl fmt::Debug for CredentialGatewayResult {
                 .debug_tuple("Acquisition")
                 .field(acquisition)
                 .finish(),
-            Self::Reconciled { decision, changed } => formatter
+            Self::Reconciled {
+                decision,
+                changed,
+                evidence_digest,
+            } => formatter
                 .debug_struct("Reconciled")
                 .field("decision", decision)
                 .field("changed", changed)
+                .field("evidence_digest", evidence_digest)
                 .finish(),
         }
     }
@@ -484,9 +493,16 @@ pub enum CredentialGatewayError {
     ///
     /// A caller that repeats its *own* request does not get this: an identical
     /// pair is a no-op reported as success. This error means two different
-    /// operator observations disagree about the same claim.
+    /// operator observations disagree about the same claim. The recorded pair
+    /// rides along so a client can confirm what is on record against its own
+    /// evidence; the digest is the conflict identity and is not secret.
     #[error("credential refresh claim already records a different reconciliation decision")]
-    ReconciliationConflict,
+    ReconciliationConflict {
+        /// SHA-256 of the recorded evidence this request conflicted with.
+        recorded_digest: [u8; 32],
+        /// The recorded decision this request conflicted with.
+        recorded_decision: RefreshOutcomeDecision,
+    },
     /// The supplied evidence was rejected — empty, or beyond the adjudicator's
     /// byte bound.
     #[error("reconciliation evidence was rejected")]
@@ -527,7 +543,13 @@ impl From<RefreshClaimAdjudicationError> for CredentialGatewayError {
             RefreshClaimAdjudicationError::Storage => Self::Unavailable,
             RefreshClaimAdjudicationError::InvalidEvidence => Self::ReconciliationEvidenceInvalid,
             RefreshClaimAdjudicationError::NotPoisoned => Self::ReconciliationNotRequired,
-            RefreshClaimAdjudicationError::EvidenceConflict => Self::ReconciliationConflict,
+            RefreshClaimAdjudicationError::EvidenceConflict {
+                recorded_digest,
+                recorded_decision,
+            } => Self::ReconciliationConflict {
+                recorded_digest,
+                recorded_decision,
+            },
             _ => Self::Internal,
         }
     }
@@ -654,14 +676,22 @@ mod tests {
         // of the three reconcile-specific failures collapse into one another or
         // into `Internal`: a caller that cannot tell "nothing to reconcile"
         // from "your evidence contradicts the record" cannot act on either.
+        // The conflict row also pins that the recorded pair is carried across,
+        // not stripped by the mapping.
         for (error, expected) in [
             (
                 RefreshClaimAdjudicationError::NotPoisoned,
                 CredentialGatewayError::ReconciliationNotRequired,
             ),
             (
-                RefreshClaimAdjudicationError::EvidenceConflict,
-                CredentialGatewayError::ReconciliationConflict,
+                RefreshClaimAdjudicationError::EvidenceConflict {
+                    recorded_digest: [7u8; 32],
+                    recorded_decision: RefreshOutcomeDecision::ProviderApplied,
+                },
+                CredentialGatewayError::ReconciliationConflict {
+                    recorded_digest: [7u8; 32],
+                    recorded_decision: RefreshOutcomeDecision::ProviderApplied,
+                },
             ),
             (
                 RefreshClaimAdjudicationError::InvalidEvidence,

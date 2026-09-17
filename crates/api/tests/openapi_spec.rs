@@ -295,12 +295,14 @@ async fn credential_reconcile_publishes_its_contract() {
     // its property set is pinned exactly. `changed` is the one distinction a
     // client needs, which is why the response carries no always-true
     // `reconciled: bool`; nothing else in the tree would notice that flag
-    // coming back.
+    // coming back. `evidence_digest` is the durable half of the reconciliation
+    // retry identity (hex SHA-256 of the evidence on record), so a client that
+    // lost the first acknowledgement can confirm what is on record.
     let (response_properties, _) = component_property_sets(&spec, "ReconcileCredentialResponse");
     assert_eq!(
         response_properties,
-        HashSet::from(["decision", "changed", "message"]),
-        "the reconcile success must stay exactly decision/changed/message: {response_properties:?}"
+        HashSet::from(["decision", "changed", "message", "evidence_digest"]),
+        "the reconcile success must stay exactly decision/changed/message/evidence_digest: {response_properties:?}"
     );
 
     let description = response

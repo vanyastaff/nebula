@@ -347,27 +347,28 @@ impl RefreshClaimAdjudicator for InMemoryRefreshClaimRepo {
             // carries none — so the rule is an exact match over what the
             // credential has already decided: this pair on record is the
             // idempotent recommit, a set without it contradicts every decision
-            // on record, and an empty set has nothing to adjudicate.
-            let mut resolved_incidents = events.iter().filter(|event| {
-                event.credential_id == *credential_id && event.adjudication.is_some()
-            });
-            if resolved_incidents.next().is_none() {
-                return Err(RepoAdjudicationError::NotPoisoned);
-            }
-            let recommitted_pair = events
+            // on record, and an empty set has nothing to adjudicate. The ring
+            // is append-only in chronological order, so the newest resolution
+            // on record is the last resolved event: that is the pair a
+            // refusal names, since a set has no single incident to point at.
+            let resolved: Vec<&SentinelAdjudication> = events
                 .iter()
                 .filter(|event| event.credential_id == *credential_id)
                 .filter_map(|event| event.adjudication.as_ref())
-                .any(|recorded| {
-                    recorded.evidence_digest == digest && recorded.decision == decision
-                });
-            if !recommitted_pair {
-                return Err(RepoAdjudicationError::EvidenceConflict);
-            }
-            return Ok(RefreshAdjudication {
-                decision,
-                changed: false,
+                .collect();
+            let Some(newest) = resolved.last() else {
+                return Err(RepoAdjudicationError::NotPoisoned);
+            };
+            let recommitted_pair = resolved.iter().any(|recorded| {
+                recorded.evidence_digest == digest && recorded.decision == decision
             });
+            if !recommitted_pair {
+                return Err(RepoAdjudicationError::EvidenceConflict {
+                    recorded_digest: newest.evidence_digest,
+                    recorded_decision: newest.decision,
+                });
+            }
+            return Ok(RefreshAdjudication::new(decision, false, digest));
         };
 
         // An incident that already carries a resolution decides this recommit,
@@ -423,10 +424,7 @@ impl RefreshClaimAdjudicator for InMemoryRefreshClaimRepo {
                 });
             },
         }
-        Ok(RefreshAdjudication {
-            decision,
-            changed: true,
-        })
+        Ok(RefreshAdjudication::new(decision, true, digest))
     }
 }
 

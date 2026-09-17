@@ -311,6 +311,7 @@ impl ServerCredentialGateway {
                 CredentialGatewayResult::Reconciled {
                     decision: adjudication.decision,
                     changed: adjudication.changed,
+                    evidence_digest: adjudication.evidence_digest,
                 }
             },
             _ => return Err(CredentialGatewayError::Internal),
@@ -553,6 +554,7 @@ mod tests {
         RefreshAdjudication, RefreshClaimAdjudicationError, RefreshClaimAdjudicator,
         RefreshOutcomeDecision,
     };
+    use sha2::{Digest, Sha256};
 
     use super::*;
 
@@ -871,10 +873,14 @@ mod tests {
                 decision,
                 evidence.to_owned(),
             ));
-            Ok(RefreshAdjudication {
+            Ok(RefreshAdjudication::new(
                 decision,
-                changed: true,
-            })
+                true,
+                // The digest the production adapters would have recorded for
+                // this evidence, so the gateway-forwarding assertion pins a
+                // real identity rather than a placeholder.
+                Sha256::digest(evidence.as_bytes()).into(),
+            ))
         }
     }
 
@@ -989,15 +995,17 @@ mod tests {
             .await
             .expect("reconcile reaches the adjudicator");
 
+        let expected_digest: [u8; 32] = Sha256::digest(b"provider support ticket 4417").into();
         assert!(
             matches!(
                 result,
                 CredentialGatewayResult::Reconciled {
                     decision: RefreshOutcomeDecision::ProviderApplied,
                     changed: true,
-                }
+                    evidence_digest,
+                } if evidence_digest == expected_digest
             ),
-            "expected a successful reconciliation, got {result:?}"
+            "expected a successful reconciliation forwarding the recorded digest, got {result:?}"
         );
         assert_eq!(
             recorded
@@ -1036,8 +1044,14 @@ mod tests {
                 CredentialGatewayError::ReconciliationNotRequired,
             ),
             (
-                RefreshClaimAdjudicationError::EvidenceConflict,
-                CredentialGatewayError::ReconciliationConflict,
+                RefreshClaimAdjudicationError::EvidenceConflict {
+                    recorded_digest: [0x5eu8; 32],
+                    recorded_decision: RefreshOutcomeDecision::ProviderApplied,
+                },
+                CredentialGatewayError::ReconciliationConflict {
+                    recorded_digest: [0x5eu8; 32],
+                    recorded_decision: RefreshOutcomeDecision::ProviderApplied,
+                },
             ),
             (
                 RefreshClaimAdjudicationError::InvalidEvidence,

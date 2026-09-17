@@ -68,6 +68,7 @@ use nebula_storage_port::{
         ClaimAttempt, RefreshClaimAdjudicator, RefreshClaimStore, RefreshOutcomeDecision, ReplicaId,
     },
 };
+use sha2::{Digest, Sha256};
 use sqlx::SqlitePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
@@ -361,12 +362,15 @@ async fn reconciliation_clears_the_poison_and_the_claim_becomes_acquirable() {
         .await
         .expect("a poisoned claim is adjudicable");
 
+    let expected_digest: [u8; 32] = Sha256::digest(EVIDENCE.as_bytes()).into();
     assert_matches!(
         result,
         CredentialGatewayResult::Reconciled {
             decision: RefreshOutcomeDecision::ProviderApplied,
             changed: true,
-        }
+            evidence_digest,
+        } if evidence_digest == expected_digest,
+        "the reconcile must report the recorded decision and the digest of the evidence just recorded"
     );
 
     // The resolution itself, as durable state rather than as the command's own
@@ -428,12 +432,15 @@ async fn repeating_the_same_reconciliation_is_a_no_op_success() {
         )
         .await
         .expect("an identical replay is a success");
+    let expected_digest: [u8; 32] = Sha256::digest(EVIDENCE.as_bytes()).into();
     assert_matches!(
         replay,
         CredentialGatewayResult::Reconciled {
             decision: RefreshOutcomeDecision::ProviderNotApplied,
             changed: false,
-        }
+            evidence_digest,
+        } if evidence_digest == expected_digest,
+        "an identical replay must be the no-op success carrying the matched digest on record"
     );
 
     // Two commands, two observations, one state.
@@ -445,6 +452,83 @@ async fn repeating_the_same_reconciliation_is_a_no_op_success() {
             .expect("acceptance audit lock")
             .len(),
         2
+    );
+}
+
+#[tokio::test]
+async fn a_conflicting_observation_reports_the_recorded_pair() {
+    // A disagreeing second observation is a permanent conflict, and the error
+    // must carry the pair on record so a client can confirm what its evidence
+    // disagreed with. The no-poison branch answers this case, on the real
+    // SQLite adapter: the recorded resolution, not the retained poison, is
+    // what the refusal compares against.
+    let fixture = ReconciliationFixture::new().await;
+    let credential = fixture.create(&fixture.scope()).await;
+    fixture.poison(&credential).await;
+
+    let recorded = fixture
+        .reconcile(
+            &credential,
+            RefreshOutcomeDecision::ProviderApplied,
+            EVIDENCE,
+        )
+        .await
+        .expect("the first observation is recorded");
+    assert_matches!(
+        recorded,
+        CredentialGatewayResult::Reconciled { changed: true, .. }
+    );
+
+    let disagreeing_evidence = "second operator note: the support ticket was reassigned";
+    let conflict = fixture
+        .reconcile(
+            &credential,
+            RefreshOutcomeDecision::ProviderApplied,
+            disagreeing_evidence,
+        )
+        .await
+        .expect_err("a disagreeing evidence must refuse, not overwrite");
+
+    let expected_recorded_digest: [u8; 32] = Sha256::digest(EVIDENCE.as_bytes()).into();
+    let expected_request_digest: [u8; 32] = Sha256::digest(disagreeing_evidence.as_bytes()).into();
+    assert_ne!(
+        expected_recorded_digest, expected_request_digest,
+        "the two fixture notes must digest differently, or the case would pin nothing"
+    );
+    let CredentialGatewayError::ReconciliationConflict {
+        recorded_digest,
+        recorded_decision,
+    } = conflict
+    else {
+        panic!("a disagreeing evidence must refuse as a reconciliation conflict, got {conflict:?}");
+    };
+    assert_eq!(
+        recorded_decision,
+        RefreshOutcomeDecision::ProviderApplied,
+        "the conflict must name the recorded decision"
+    );
+    assert_eq!(
+        recorded_digest, expected_recorded_digest,
+        "the conflict must name the recorded digest on record"
+    );
+    assert_ne!(
+        recorded_digest, expected_request_digest,
+        "the recorded digest must differ from the request's own"
+    );
+
+    // A disagreement is permanent and changes nothing: the recorded pair is
+    // still accepted as the identical no-op.
+    let recommit = fixture
+        .reconcile(
+            &credential,
+            RefreshOutcomeDecision::ProviderApplied,
+            EVIDENCE,
+        )
+        .await
+        .expect("the recorded pair is still the authorized no-op");
+    assert_matches!(
+        recommit,
+        CredentialGatewayResult::Reconciled { changed: false, .. }
     );
 }
 
@@ -614,6 +698,7 @@ async fn another_scopes_credential_cannot_be_reconciled_and_keeps_its_poison() {
         CredentialGatewayResult::Reconciled {
             decision: RefreshOutcomeDecision::ProviderApplied,
             changed: true,
+            ..
         }
     );
     assert_matches!(

@@ -75,15 +75,18 @@ pub(crate) fn validate_adjudication_evidence(
 ///
 /// Shared by all three adapters so the idempotency rule is stated once: the
 /// same `(digest, decision)` pair is a no-op that reports
-/// [`RefreshAdjudication::changed`] `false`, and any mismatch is refused
-/// rather than silently overwriting an operator's earlier decision.
+/// [`RefreshAdjudication::changed`] `false` carrying the digest on record, and
+/// any mismatch is refused rather than silently overwriting an operator's
+/// earlier decision, with the recorded pair riding on the error so a client
+/// can name what its evidence disagreed with.
 ///
 /// # Errors
 ///
 /// [`RefreshClaimAdjudicationError::EvidenceConflict`] when the recorded pair
 /// differs, and [`RefreshClaimAdjudicationError::Storage`] when an incident
-/// carries a resolution timestamp but no decodable decision — that is a
-/// corrupted row, not a caller mistake.
+/// carries a resolution timestamp but no decodable decision or a digest that
+/// is not 32 bytes — both are corrupted rows, not caller mistakes (only the
+/// adapters write the columns, always with a SHA-256 and a wire decision).
 pub(crate) fn adjudicate_against_recorded_resolution(
     recorded_digest: &[u8],
     recorded_decision: Option<&str>,
@@ -94,13 +97,20 @@ pub(crate) fn adjudicate_against_recorded_resolution(
     else {
         return Err(RefreshClaimAdjudicationError::Storage);
     };
-    if recorded_digest != requested_digest || recorded_decision != requested_decision {
-        return Err(RefreshClaimAdjudicationError::EvidenceConflict);
+    let Ok(recorded_digest) = <[u8; 32]>::try_from(recorded_digest) else {
+        return Err(RefreshClaimAdjudicationError::Storage);
+    };
+    if &recorded_digest != requested_digest || recorded_decision != requested_decision {
+        return Err(RefreshClaimAdjudicationError::EvidenceConflict {
+            recorded_digest,
+            recorded_decision,
+        });
     }
-    Ok(RefreshAdjudication {
-        decision: recorded_decision,
-        changed: false,
-    })
+    Ok(RefreshAdjudication::new(
+        recorded_decision,
+        false,
+        recorded_digest,
+    ))
 }
 
 /// Maps a SQL driver error into the closed backend-error variant at the

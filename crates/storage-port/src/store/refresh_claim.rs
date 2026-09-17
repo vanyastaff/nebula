@@ -7,7 +7,13 @@
 //! `RefreshInFlight` row is durable poison, and reclaim accounting is a single
 //! atomic port operation so evidence cannot be overwritten or recorded twice.
 //! Errors are a closed, payload-free taxonomy so driver diagnostics and
-//! persisted identifiers cannot cross the adapter boundary.
+//! persisted identifiers cannot cross the adapter boundary. The one persisted
+//! identifier allowed to cross is the recorded evidence digest, a SHA-256 that
+//! is the durable half of the reconciliation retry identity: secret-free, so
+//! it is exposed through [`RefreshAdjudication::evidence_digest`] and the
+//! recorded pair on
+//! [`RefreshClaimAdjudicationError::EvidenceConflict`] so a client that lost an
+//! acknowledgement can confirm what is on record.
 //!
 //! # Writer inventory (sole-management-writer enforcement)
 //!
@@ -335,6 +341,11 @@ impl RefreshOutcomeDecision {
 }
 
 /// Recorded result of one reconciliation.
+///
+/// Read the fields by destructuring; the struct is [`non_exhaustive`] so a
+/// future field addition cannot break downstream record literals, and the
+/// error taxonomy's `Display` stays payload-free.
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RefreshAdjudication {
     /// The decision now on record for the credential.
@@ -345,6 +356,34 @@ pub struct RefreshAdjudication {
     /// record for the same incident and this call was a no-op — the
     /// idempotent-recommit case. A second incident row is never written.
     pub changed: bool,
+    /// SHA-256 of the evidence whose resolution is on record.
+    ///
+    /// The digest on record, returned in every success arm: on a recording
+    /// call it is the digest of the evidence just stored; on the idempotent
+    /// recommit the equality guard proved the recorded digest is byte-equal to
+    /// the request's own. The durable half of the reconciliation retry
+    /// identity, so a client holding its original evidence can confirm what is
+    /// on record. The wire spelling is lowercase hex.
+    pub evidence_digest: [u8; 32],
+}
+
+impl RefreshAdjudication {
+    /// Construct a recorded reconciliation result.
+    ///
+    /// The only way a crate outside `nebula-storage-port` can build one, since
+    /// the struct is [`non_exhaustive`].
+    #[must_use]
+    pub const fn new(
+        decision: RefreshOutcomeDecision,
+        changed: bool,
+        evidence_digest: [u8; 32],
+    ) -> Self {
+        Self {
+            decision,
+            changed,
+            evidence_digest,
+        }
+    }
 }
 
 /// Maximum byte length of an adjudication evidence note.
@@ -384,8 +423,21 @@ pub enum RefreshClaimAdjudicationError {
     NotPoisoned,
     /// A resolution is already on record for the incident this claim resolves,
     /// and the recommitted evidence or decision differs from it.
+    ///
+    /// The payload stays out of `Display` — the taxonomy's payload-free
+    /// discipline is unchanged — but the pair the comparison refused against
+    /// is the one persisted identifier this port exposes: a client that lost
+    /// the recorded identity cannot otherwise name what is on record. In the
+    /// claim-keyed comparison it is the incident's own recorded resolution; in
+    /// the resolved-set comparison it is the newest resolution on record for
+    /// the credential.
     #[error("refresh claim adjudication conflicts with the recorded resolution")]
-    EvidenceConflict,
+    EvidenceConflict {
+        /// SHA-256 of the recorded evidence this request conflicted with.
+        recorded_digest: [u8; 32],
+        /// The recorded decision this request conflicted with.
+        recorded_decision: RefreshOutcomeDecision,
+    },
 }
 
 /// Privileged reconciliation of a poisoned refresh claim.
@@ -411,8 +463,9 @@ pub trait RefreshClaimAdjudicator: Send + Sync + 'static {
     /// resolution on record, or changes nothing.
     ///
     /// Repeating the same evidence and decision is idempotent and returns the
-    /// recorded decision with [`RefreshAdjudication::changed`] `false`. The
-    /// same evidence with a different decision, or different evidence for an
+    /// recorded decision with [`RefreshAdjudication::changed`] `false` and the
+    /// digest on record in [`RefreshAdjudication::evidence_digest`]. The same
+    /// evidence with a different decision, or different evidence for an
     /// already-resolved incident, returns
     /// [`RefreshClaimAdjudicationError::EvidenceConflict`] — reconciliation
     /// resolves an unknown outcome, it does not overrule a recorded one.
@@ -503,7 +556,10 @@ mod tests {
                 "refresh claim is not poisoned",
             ),
             (
-                RefreshClaimAdjudicationError::EvidenceConflict,
+                RefreshClaimAdjudicationError::EvidenceConflict {
+                    recorded_digest: [0u8; 32],
+                    recorded_decision: RefreshOutcomeDecision::ProviderApplied,
+                },
                 "refresh claim adjudication conflicts with the recorded resolution",
             ),
         ] {
@@ -512,7 +568,7 @@ mod tests {
                 RefreshClaimAdjudicationError::AcknowledgementUnknown => {},
                 RefreshClaimAdjudicationError::InvalidEvidence => {},
                 RefreshClaimAdjudicationError::NotPoisoned => {},
-                RefreshClaimAdjudicationError::EvidenceConflict => {},
+                RefreshClaimAdjudicationError::EvidenceConflict { .. } => {},
             }
             assert_eq!(error.to_string(), expected);
         }

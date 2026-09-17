@@ -549,6 +549,14 @@ pub struct ReconcileCredentialResponse {
     /// recommit of an already-recorded `(decision, evidence)` pair: a success,
     /// not a conflict.
     pub changed: bool,
+    /// SHA-256 of the evidence whose resolution is on record, lowercase hex.
+    ///
+    /// The durable half of the reconciliation retry identity — the conflict
+    /// identity the record is keyed on. A digest, not a secret, so it is
+    /// visible in `Debug`; a client holding its original evidence can confirm
+    /// what is on record and repeat the exact request for a `changed: false`
+    /// no-op instead of a 409.
+    pub evidence_digest: String,
     /// Human-readable result message.
     pub message: String,
 }

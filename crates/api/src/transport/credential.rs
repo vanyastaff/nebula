@@ -171,8 +171,12 @@ fn map_gateway_err(err: CredentialGatewayError, cred: &str) -> ApiError {
         CredentialGatewayError::ReconciliationNotRequired => {
             ApiError::CredentialReconciliationNotRequired
         },
-        CredentialGatewayError::ReconciliationConflict => {
-            ApiError::CredentialReconciliationConflict
+        CredentialGatewayError::ReconciliationConflict {
+            recorded_digest,
+            recorded_decision,
+        } => ApiError::CredentialReconciliationConflict {
+            recorded_digest: digest_hex(&recorded_digest),
+            recorded_decision: recorded_decision.as_str().to_owned(),
         },
         CredentialGatewayError::ReconciliationEvidenceInvalid => ApiError::Validation {
             detail: "reconciliation evidence was rejected".to_owned(),
@@ -642,6 +646,7 @@ pub async fn reconcile_credential(
     let CredentialGatewayResult::Reconciled {
         decision: port_decision,
         changed,
+        evidence_digest,
     } = result
     else {
         return Err(ApiError::Internal(
@@ -656,12 +661,28 @@ pub async fn reconcile_credential(
     Ok(ReconcileCredentialResponse {
         decision: CredentialReconcileDecisionV1::from_port(port_decision),
         changed,
+        evidence_digest: digest_hex(&evidence_digest),
         message: if changed {
             "provider outcome recorded; the credential can be refreshed again".to_owned()
         } else {
             "identical decision was already on record; nothing changed".to_owned()
         },
     })
+}
+
+/// Lowercase hex of a 32-byte evidence digest — the wire spelling of the
+/// reconciliation retry identity on the success response and the conflict
+/// problem's `evidence_digest` extension.
+///
+/// Inline rather than a `hex` dependency: one `String` result and no hex-crate
+/// edge on the api library surface (the same shape as the idempotency cache
+/// key).
+fn digest_hex(digest: &[u8; 32]) -> String {
+    let mut encoded = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        encoded.push_str(&format!("{byte:02x}"));
+    }
+    encoded
 }
 
 // ── Acquisition (resolve / continue) ─────────────────────────────────────────
@@ -812,6 +833,7 @@ mod tests {
         InMemoryControlQueue, InMemoryExecutionStore, InMemoryJournalReader,
         InMemoryNodeResultStore, InMemoryWorkflowStore, InMemoryWorkflowVersionStore,
     };
+    use nebula_storage_port::store::RefreshOutcomeDecision;
 
     /// 32 `0x42` bytes, base64 — a valid AES-256 key fixture (mirrors the
     /// factory's dev key). Not a secret: a fixed test constant.
@@ -1315,9 +1337,27 @@ mod tests {
             map_gateway_err(CredentialGatewayError::ReconciliationNotRequired, "cred_x"),
             ApiError::CredentialReconciliationNotRequired
         );
-        assert_matches!(
-            map_gateway_err(CredentialGatewayError::ReconciliationConflict, "cred_x"),
-            ApiError::CredentialReconciliationConflict
+        let ApiError::CredentialReconciliationConflict {
+            recorded_digest,
+            recorded_decision,
+        } = map_gateway_err(
+            CredentialGatewayError::ReconciliationConflict {
+                recorded_digest: [0xabu8; 32],
+                recorded_decision: RefreshOutcomeDecision::ProviderApplied,
+            },
+            "cred_x",
+        )
+        else {
+            panic!("a reconciliation conflict must map to the conflict error");
+        };
+        assert_eq!(
+            recorded_digest,
+            "ab".repeat(32),
+            "the conflict must carry the recorded digest as lowercase hex"
+        );
+        assert_eq!(
+            recorded_decision, "provider_applied",
+            "the conflict must carry the recorded decision in its wire spelling"
         );
         assert_matches!(
             map_gateway_err(
@@ -1359,7 +1399,10 @@ mod tests {
             CredentialGatewayError::RefreshReconciliationRequired,
             CredentialGatewayError::RevokeReconciliationRequired,
             CredentialGatewayError::ReconciliationNotRequired,
-            CredentialGatewayError::ReconciliationConflict,
+            CredentialGatewayError::ReconciliationConflict {
+                recorded_digest: [0xabu8; 32],
+                recorded_decision: RefreshOutcomeDecision::ProviderApplied,
+            },
             CredentialGatewayError::ReconciliationEvidenceInvalid,
             CredentialGatewayError::Internal,
         ] {

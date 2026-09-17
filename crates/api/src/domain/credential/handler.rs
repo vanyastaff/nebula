@@ -393,6 +393,14 @@ pub async fn revoke_credential(
 /// Requires `credentials:reconcile`, deliberately not `credentials:write`:
 /// recording what a provider did is a different authority from changing what
 /// the credential is.
+///
+/// The success response carries `evidence_digest`, the lowercase-hex SHA-256
+/// of the evidence on record — the durable half of the reconciliation retry
+/// identity — so a client that lost the first acknowledgement can confirm its
+/// original evidence matches what is on record and repeat the exact request for
+/// a `changed = false` no-op. The conflict problem names the recorded pair as
+/// `evidence_digest` and `recorded_decision` extensions for the same
+/// confirmation.
 #[utoipa::path(
     post,
     path = "/orgs/{org}/workspaces/{ws}/credentials/{cred}/reconcile",
@@ -405,12 +413,12 @@ pub async fn revoke_credential(
     ),
     request_body = ReconcileCredentialRequest,
     responses(
-        (status = 200, description = "Reconciliation result: the decision on record and whether this call recorded it (`changed = false` is an idempotent recommit of an identical decision and evidence pair, and is a success).", body = ReconcileCredentialResponse),
+        (status = 200, description = "Reconciliation result: the decision on record, whether this call recorded it (`changed = false` is an idempotent recommit of an identical decision and evidence pair, and is a success), and `evidence_digest`, the lowercase-hex SHA-256 of the evidence on record.", body = ReconcileCredentialResponse),
         (status = 400, description = "Invalid credential identifier, or the submitted evidence was rejected (empty, or beyond the adjudicator's byte bound).", body = ProblemDetails),
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
         (status = 404, description = "Credential does not exist in this workspace.", body = ProblemDetails),
-        (status = 409, description = "One of two refusals of the submitted decision, or a lost acknowledgement. `API:CREDENTIAL_RECONCILIATION_NOT_REQUIRED`: the credential has no retained refresh claim to adjudicate and no recorded resolution, so there is nothing to reconcile. `API:CREDENTIAL_RECONCILIATION_CONFLICT`: the claim already records a different decision and evidence pair, so two operator observations disagree. `API:OUTCOME_UNKNOWN`: the adjudication may have committed but its acknowledgement was lost, and repeating the identical request is safe.", body = ProblemDetails, content_type = "application/problem+json"),
+        (status = 409, description = "One of two refusals of the submitted decision, or a lost acknowledgement. `API:CREDENTIAL_RECONCILIATION_NOT_REQUIRED`: the credential has no retained refresh claim to adjudicate and no recorded resolution, so there is nothing to reconcile. `API:CREDENTIAL_RECONCILIATION_CONFLICT`: the claim already records a different decision and evidence pair, so two operator observations disagree; the problem document's `evidence_digest` and `recorded_decision` extensions name the recorded pair, so a client holding its original evidence can confirm what is on record. `API:OUTCOME_UNKNOWN`: the adjudication may have committed but its acknowledgement was lost, and repeating the identical request is safe.", body = ProblemDetails, content_type = "application/problem+json"),
         (status = 503, description = "Credential authority or persistence is temporarily unavailable.", body = ProblemDetails),
     ),
 )]
