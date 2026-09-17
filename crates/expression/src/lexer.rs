@@ -431,7 +431,7 @@ impl<'a> Lexer<'a> {
     /// - `\n`, `\t`, `\r` — control characters
     /// - `\\`, `\"`, `\'` — literal backslash / quote
     /// - `\xNN` — exactly two hex digits, byte (`\x41` → `A`)
-    /// - `\uNNNN` — exactly four hex digits, BMP code point (`é` → `é`)
+    /// - `\uNNNN` — exactly four hex digits, BMP code point (`\\u00E9` → `é`)
     /// - `\u{...}` — 1-6 hex digits, full Unicode code point (`\u{1F642}` → `🙂`)
     ///
     /// Unknown escapes (e.g. `\q`) pass through verbatim for backward
@@ -453,6 +453,10 @@ impl<'a> Lexer<'a> {
                 continue;
             }
             let Some(escaped) = chars.next() else {
+                // Deferred (unproven reachability): this branch appears
+                // unreachable from `read_string`, which consumes the
+                // character after every `\` it scans. Kept as a defensive
+                // error path; do not delete without a reachability proof.
                 return Err(ExpressionError::expression_syntax_error(
                     "Trailing backslash in string literal",
                 ));
