@@ -490,8 +490,11 @@ impl Accumulator {
                     // because f64's 53-bit mantissa cannot represent every
                     // integer exactly. serde_json itself parses integer
                     // literals exactly (u64/i64) whenever they fit, and falls
-                    // back to f64 only for literals with a decimal point, an
-                    // exponent, or more digits than u64 holds — so this
+                    // back to f64 for literals with a decimal point, an
+                    // exponent, more digits than u64 holds, or a negative
+                    // value below i64::MIN whose magnitude still fits u64
+                    // (all give as_i64() == None but as_f64() == Some, so the
+                    // upgrade path below handles them identically) — so this
                     // upgrade deliberately trades the i64 total's exactness
                     // for the f64 arithmetic the sum now uses.
                     let prior = if let Accumulator::SumInt { integer_total } = &*acc {
@@ -1570,6 +1573,42 @@ mod tests {
         assert!(
             matches!(err, ActionError::Fatal { .. }),
             "float sum overflow must be Fatal, not silent 0; got: {err:?}"
+        );
+    }
+
+    // ── FIX 1b: i64 sum overflow → Fatal ─────────────────────────────────────
+    //
+    // Pin the integer path's `checked_add` guard: two i64 values whose sum
+    // exceeds i64::MAX must fail, exactly like the float path above — never
+    // wrap silently.
+    //
+    // RED witness: an unchecked `+` would wrap (debug: panic; release: wrap to
+    // a wrong negative total) and `unwrap_err()` would panic on the Ok result.
+    #[tokio::test]
+    async fn i64_sum_overflow_is_fatal() {
+        let input = AggregateInput {
+            data: Some(json!([
+                {"x": i64::MAX},
+                {"x": 1}
+            ])),
+            group_by: vec![],
+            aggregations: vec![Aggregation::Sum {
+                field: "x".into(),
+                out: "total".into(),
+            }],
+            on_error: OnError::Fail,
+        };
+        let err = run(input).await.unwrap_err();
+        assert!(
+            matches!(err, ActionError::Fatal { .. }),
+            "i64 sum overflow must be Fatal, not a wrapped total; got: {err:?}"
+        );
+        let message = std::error::Error::source(&err)
+            .map(ToString::to_string)
+            .expect("fatal i64-sum-overflow error must retain its source");
+        assert!(
+            message.contains("aggregate: sum overflow"),
+            "i64 sum overflow must name the overflow; got: {message}"
         );
     }
 
