@@ -23,12 +23,10 @@ use crate::{
 #[derive(Schema, Deserialize)]
 pub struct BasicAuthProperties {
     /// Username for HTTP Basic authentication.
-    #[field(label = "Username")]
-    #[validate(required)]
+    #[property(display(label = "Username"), input(required))]
     pub username: String,
     /// Password for HTTP Basic authentication.
-    #[field(secret, label = "Password")]
-    #[validate(required)]
+    #[property(display(label = "Password"), input(secret, required))]
     pub password: SecretString,
 }
 

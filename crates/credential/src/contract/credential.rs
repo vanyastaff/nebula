@@ -89,8 +89,7 @@ use crate::{
 ///
 /// #[derive(Deserialize, nebula_schema::Schema)]
 /// struct SlackBotProperties {
-///     #[field(secret)]
-///     #[validate(required)]
+///     #[property(input(secret, required))]
 ///     bot_token: SecretString,
 /// }
 ///

@@ -21,18 +21,17 @@ use crate::{
 /// actual auth material conversion to
 /// [`SecretToken`] happens in [`Credential::resolve`](crate::Credential::resolve).
 ///
-/// The `#[field(secret)]` declaration requires the field type to implement
-/// `nebula_schema::SecretInput`; credential [`SecretString`]
+/// The `#[property(input(secret))]` declaration requires the field type to
+/// implement `nebula_schema::SecretInput`; credential [`SecretString`]
 /// satisfies that contract and keeps plaintext in zeroizing memory after the
 /// trusted typed decode.
 #[derive(Schema, Deserialize)]
 pub struct ApiKeyProperties {
     /// Optional base URL of the service (e.g. `https://api.example.com`).
-    #[field(label = "Server URL", placeholder = "https://api.example.com")]
+    #[property(display(label = "Server URL", placeholder = "https://api.example.com"))]
     pub server: Option<String>,
     /// Secret API token or personal access token.
-    #[field(secret, label = "API Key")]
-    #[validate(required)]
+    #[property(display(label = "API Key"), input(secret, required))]
     pub api_key: SecretString,
 }
 

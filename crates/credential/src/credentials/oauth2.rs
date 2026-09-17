@@ -271,12 +271,14 @@ pub enum OAuth2Properties {
 #[derive(Schema, Deserialize)]
 pub struct OAuth2ClientProperties {
     /// OAuth2 client identifier.
-    #[field(label = "Client ID")]
-    #[validate(required, length(max = 4096))]
+    #[property(
+        display(label = "Client ID"),
+        input(required),
+        validate(length(max = 4096))
+    )]
     pub client_id: String,
     /// OAuth2 client secret retained in zeroizing memory.
-    #[field(secret, label = "Client Secret")]
-    #[validate(required)]
+    #[property(display(label = "Client Secret"), input(secret, required))]
     pub client_secret: SecretString,
 }
 
@@ -286,17 +288,21 @@ pub struct OAuth2AuthorizationCodeProperties {
     /// OAuth2 client identity and secret.
     pub client: OAuth2ClientProperties,
     /// Authorization endpoint URL.
-    #[validate(required, url, length(max = 8192))]
+    #[property(input(required), validate(url, length(max = 8192)))]
     pub auth_url: String,
     /// Token endpoint URL.
-    #[validate(required, url, length(max = 8192))]
+    #[property(input(required), validate(url, length(max = 8192)))]
     pub token_url: String,
     /// Requested scopes.
     pub scopes: Option<Vec<String>>,
     /// Registered callback URI.
-    #[validate(required, url, length(max = 8192))]
+    #[property(input(required), validate(url, length(max = 8192)))]
     pub redirect_uri: String,
     /// Explicit client-authentication placement.
+    // The property grammar has no enum-select equivalent: `PropertyAttrs::apply_to`
+    // never writes `enum_select`, and `#[property(options(...))]` is rejected at
+    // apply time, so this site keeps the legacy `#[field(enum_select)]` until the
+    // schema-side follow-up grows one.
     #[field(enum_select)]
     pub auth_style: AuthStyle,
 }
@@ -307,11 +313,13 @@ pub struct OAuth2ClientCredentialsProperties {
     /// OAuth2 client identity and secret.
     pub client: OAuth2ClientProperties,
     /// Token endpoint URL.
-    #[validate(required, url, length(max = 8192))]
+    #[property(input(required), validate(url, length(max = 8192)))]
     pub token_url: String,
     /// Requested scopes.
     pub scopes: Option<Vec<String>>,
     /// Explicit client-authentication placement.
+    // Same enum-select residue as `OAuth2AuthorizationCodeProperties::auth_style`:
+    // the property grammar has no equivalent yet.
     #[field(enum_select)]
     pub auth_style: AuthStyle,
 }
