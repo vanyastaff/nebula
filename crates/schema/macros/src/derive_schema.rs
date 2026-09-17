@@ -550,9 +550,13 @@ fn enforce_alias_constraints(
 
 /// Build the token-stream expression that produces a `Field` for one struct field.
 ///
-/// Stages, in order: attribute compatibility, base property, presentation,
-/// default/display, expression policy, validation, aliases, and finalize
-/// (secret assert / nested dispatch).
+/// The derive parses `#[field]` into a struct, so source-attribute order is lost;
+/// decorators are emitted in this fixed pipeline order, matching the base derive:
+///
+/// attribute-compatibility gauntlet -> base property -> presentation
+/// (`label` / `description` / `placeholder`) -> default -> display
+/// (`hint` / `group` / `hidden` / `widget` / `multiline`) -> expression policy ->
+/// validation -> aliases -> finalize (secret assert / nested dispatch).
 pub(crate) fn build_field_expr(
     field: FieldContext<'_>,
     kind: &FieldKind,
@@ -585,7 +589,7 @@ pub(crate) fn build_field_expr(
         crate_path,
     )?;
 
-    property_builder = apply_presentation_decorators(property_builder, field_attr, crate_path);
+    property_builder = apply_presentation_decorators(property_builder, field_attr);
 
     property_builder =
         apply_default_decorator(property_builder, field_attr, inner, field_name, crate_path)?;
@@ -596,8 +600,14 @@ pub(crate) fn build_field_expr(
     property_builder = apply_expression_policy(property_builder, field_attr, crate_path);
 
     let required = validate.required || !optional;
-    property_builder =
-        apply_validation_decorators(property_builder, field_attr, validate, inner, required);
+    property_builder = apply_validation_decorators(
+        property_builder,
+        field_attr,
+        validate,
+        inner,
+        required,
+        crate_path,
+    );
 
     property_builder = apply_alias_decorators(property_builder, field_attr, read_aliases);
 
@@ -626,19 +636,19 @@ pub(crate) fn build_field_expr(
 }
 
 /// Expression-policy stage: apply the `no_expression`, `expression_required`,
-/// and `expressions = ..` decorators in attribute declaration order. Infallible.
+/// and `expressions = ..` decorators, in the fixed pipeline order. Infallible.
 fn apply_expression_policy(
-    builder: TokenStream2,
+    property_builder: TokenStream2,
     field_attr: &FieldAttrs,
     crate_path: &TokenStream2,
 ) -> TokenStream2 {
-    let mut builder = builder;
+    let mut property_builder = property_builder;
     if field_attr.no_expression {
-        builder = quote! { #builder.no_expression() };
+        property_builder = quote! { #property_builder.no_expression() };
     }
     if field_attr.expression_required {
-        builder = quote! {
-            #builder.expression_mode(#crate_path::ExpressionMode::Required)
+        property_builder = quote! {
+            #property_builder.expression_mode(#crate_path::ExpressionMode::Required)
         };
     }
     if let Some(mode) = field_attr.expressions {
@@ -647,9 +657,10 @@ fn apply_expression_policy(
             PropertyExpressionMode::Forbidden => quote! { Forbidden },
             PropertyExpressionMode::Required => quote! { Required },
         };
-        builder = quote! { #builder.expression_mode(#crate_path::ExpressionMode::#mode) };
+        property_builder =
+            quote! { #property_builder.expression_mode(#crate_path::ExpressionMode::#mode) };
     }
-    builder
+    property_builder
 }
 
 /// Validation stage: layer the required-mark, item/length/range rules, and the
@@ -657,37 +668,37 @@ fn apply_expression_policy(
 /// pattern tokens is generated-code fallibility inside the emitted property
 /// builder, not macro control flow. Infallible.
 fn apply_validation_decorators(
-    builder: TokenStream2,
+    property_builder: TokenStream2,
     field_attr: &FieldAttrs,
     validate: &ValidateAttrs,
     inner: &FieldKind,
     required: bool,
+    crate_path: &TokenStream2,
 ) -> TokenStream2 {
-    // The derive pipeline passes the same canonical path it got from
-    // `crate::crate_path()`; it is a constant, so tokens match byte-for-byte.
-    let crate_path = crate::crate_path();
-    let mut builder = builder;
+    let mut property_builder = property_builder;
     // Required: mark when `#[validate(required)]` or the Rust type is not Option.
     if required {
-        builder = quote! { #builder.required() };
+        property_builder = quote! { #property_builder.required() };
     }
 
     if let Some(min) = validate.min_items {
-        builder = quote! { #builder.min_items(#min) };
+        property_builder = quote! { #property_builder.min_items(#min) };
     }
     if let Some(max) = validate.max_items {
-        builder = quote! { #builder.max_items(#max) };
+        property_builder = quote! { #property_builder.max_items(#max) };
     }
     if validate.unique {
-        builder = quote! { #builder.unique() };
+        property_builder = quote! { #property_builder.unique() };
     }
 
     // Length rules apply to String / Secret.
     if let Some(min) = validate.min_length {
-        builder = quote! { #builder.with_rule(#crate_path::Rule::min_length(#min)) };
+        property_builder =
+            quote! { #property_builder.with_rule(#crate_path::Rule::min_length(#min)) };
     }
     if let Some(max) = validate.max_length {
-        builder = quote! { #builder.with_rule(#crate_path::Rule::max_length(#max)) };
+        property_builder =
+            quote! { #property_builder.with_rule(#crate_path::Rule::max_length(#max)) };
     }
 
     // Range rules apply to Number.
@@ -697,7 +708,7 @@ fn apply_validation_decorators(
             FieldKind::IntegerNumber(_) | FieldKind::FloatNumber(_)
         )
     {
-        builder = quote! { #builder.min(#min) };
+        property_builder = quote! { #property_builder.min(#min) };
     }
     if let Some(max) = validate.max
         && matches!(
@@ -705,10 +716,10 @@ fn apply_validation_decorators(
             FieldKind::IntegerNumber(_) | FieldKind::FloatNumber(_)
         )
     {
-        builder = match max {
-            RangeUpperBound::Included(max) => quote! { #builder.max(#max) },
+        property_builder = match max {
+            RangeUpperBound::Included(max) => quote! { #property_builder.max(#max) },
             RangeUpperBound::Excluded(max) => {
-                quote! { #builder.with_rule(#crate_path::Rule::less_than(#max)) }
+                quote! { #property_builder.with_rule(#crate_path::Rule::less_than(#max)) }
             },
         };
     }
@@ -716,8 +727,8 @@ fn apply_validation_decorators(
     if let Some(pattern) = &validate.pattern
         && (field_attr.secret || matches!(inner, FieldKind::String))
     {
-        builder = quote! {
-            #builder.with_rule(#crate_path::Rule::pattern(#pattern).map_err(|error| {
+        property_builder = quote! {
+            #property_builder.with_rule(#crate_path::Rule::pattern(#pattern).map_err(|error| {
                 #crate_path::ValidationError::builder("schema.invalid_pattern")
                     .message("field pattern is invalid")
                     .source(error)
@@ -726,34 +737,34 @@ fn apply_validation_decorators(
         };
     }
     if validate.url && (field_attr.secret || matches!(inner, FieldKind::String)) {
-        builder = quote! { #builder.with_rule(#crate_path::Rule::url()) };
+        property_builder = quote! { #property_builder.with_rule(#crate_path::Rule::url()) };
     }
     if validate.email && (field_attr.secret || matches!(inner, FieldKind::String)) {
-        builder = quote! { #builder.with_rule(#crate_path::Rule::email()) };
+        property_builder = quote! { #property_builder.with_rule(#crate_path::Rule::email()) };
     }
-    builder
+    property_builder
 }
 
 /// Alias stage: chain the field's read-aliases and its `emit_as` output key.
 /// The trailing `?` in the quoted tokens is generated-code fallibility inside
 /// the emitted property constructor, not macro control flow. Infallible.
 fn apply_alias_decorators(
-    builder: TokenStream2,
+    property_builder: TokenStream2,
     field_attr: &FieldAttrs,
     read_aliases: &[String],
 ) -> TokenStream2 {
-    let mut builder = builder;
+    let mut property_builder = property_builder;
     for alias in read_aliases {
-        builder = quote! {
-            #builder.read_alias(#alias)?
+        property_builder = quote! {
+            #property_builder.read_alias(#alias)?
         };
     }
     if let Some(emit_as) = &field_attr.emit_as {
-        builder = quote! {
-            #builder.emit_as(#emit_as)?
+        property_builder = quote! {
+            #property_builder.emit_as(#emit_as)?
         };
     }
-    builder
+    property_builder
 }
 
 /// Base property construction: match the field's leaf kind to the initial property
@@ -810,13 +821,12 @@ fn base_property_expr(
     })
 }
 
-/// Presentation stage: apply the display-only decorators (`label`, `description`,
-/// `placeholder`, `group`, `hidden`) in attribute order. Infallible — these are
+/// Presentation stage: apply the display-only decorators `label`, `description`,
+/// and `placeholder`, in the fixed pipeline order. Infallible — these are
 /// verbatim pass-through builder calls with no validation.
 fn apply_presentation_decorators(
     property_builder: TokenStream2,
     field_attr: &FieldAttrs,
-    crate_path: &TokenStream2,
 ) -> TokenStream2 {
     let mut property_builder = property_builder;
     if let Some(label) = &field_attr.label {
@@ -827,12 +837,6 @@ fn apply_presentation_decorators(
     }
     if let Some(placeholder) = &field_attr.placeholder {
         property_builder = quote! { #property_builder.placeholder(#placeholder) };
-    }
-    if let Some(group) = &field_attr.group {
-        property_builder = quote! { #property_builder.group(#group) };
-    }
-    if field_attr.hidden {
-        property_builder = quote! { #property_builder.visible(#crate_path::VisibilityMode::Never) };
     }
     property_builder
 }
@@ -909,35 +913,36 @@ fn apply_property_widget(
 /// fields the default must be a wire-variant string; otherwise the literal is
 /// lowered per the field kind.
 fn apply_default_decorator(
-    builder: TokenStream2,
+    property_builder: TokenStream2,
     field_attr: &FieldAttrs,
     inner: &FieldKind,
     field_name: &Ident,
     crate_path: &TokenStream2,
 ) -> syn::Result<TokenStream2> {
-    let mut builder = builder;
+    let mut property_builder = property_builder;
     if let Some(default) = &field_attr.default {
         if field_attr.enum_select {
-            builder = apply_enum_select_default(builder, default, field_name, crate_path)?;
+            property_builder =
+                apply_enum_select_default(property_builder, default, field_name, crate_path)?;
         } else {
             let default_tokens = default_lit_tokens(default, inner, field_name, crate_path)?;
-            builder = quote! { #builder.default(#default_tokens) };
+            property_builder = quote! { #property_builder.default(#default_tokens) };
         }
     }
-    Ok(builder)
+    Ok(property_builder)
 }
 
 /// `#[field(enum_select)]` default: only a string literal matching the wire
 /// JSON of one variant is accepted.
 fn apply_enum_select_default(
-    builder: TokenStream2,
+    property_builder: TokenStream2,
     default: &DefaultLit,
     field_name: &Ident,
     crate_path: &TokenStream2,
 ) -> syn::Result<TokenStream2> {
     match default {
         DefaultLit::Str(s) => Ok(quote! {
-            #builder.default(
+            #property_builder.default(
                 #crate_path::__private::serde_json::Value::String(#s.to_owned())
             )
         }),
@@ -948,16 +953,16 @@ fn apply_enum_select_default(
     }
 }
 
-/// Display stage: apply the remaining presentation decorators — `hint`, the
-/// `widget` selector, and the `multiline` shorthand — in attribute order.
+/// Display stage: apply the `hint`, `group`, `hidden`, `widget`, and `multiline`
+/// decorators, in the fixed pipeline order.
 fn apply_display_decorators(
-    builder: TokenStream2,
+    property_builder: TokenStream2,
     field_attr: &FieldAttrs,
     inner: &FieldKind,
     field_name: &Ident,
     crate_path: &TokenStream2,
 ) -> syn::Result<TokenStream2> {
-    let mut builder = builder;
+    let mut property_builder = property_builder;
     if let Some(hint) = &field_attr.hint {
         if field_attr.enum_select {
             return Err(syn::Error::new_spanned(
@@ -966,11 +971,17 @@ fn apply_display_decorators(
             ));
         }
         let hint_ident = input_hint_ident(hint, field_name)?;
-        builder = quote! { #builder.hint(#crate_path::InputHint::#hint_ident) };
+        property_builder = quote! { #property_builder.hint(#crate_path::InputHint::#hint_ident) };
+    }
+    if let Some(group) = &field_attr.group {
+        property_builder = quote! { #property_builder.group(#group) };
+    }
+    if field_attr.hidden {
+        property_builder = quote! { #property_builder.visible(#crate_path::VisibilityMode::Never) };
     }
     if let Some(widget) = field_attr.widget {
-        builder = apply_property_widget(
-            builder,
+        property_builder = apply_property_widget(
+            property_builder,
             widget,
             inner,
             field_attr.enum_select,
@@ -980,9 +991,10 @@ fn apply_display_decorators(
         )?;
     }
     if field_attr.multiline && matches!(inner, FieldKind::String) && !field_attr.secret {
-        builder = quote! { #builder.widget(#crate_path::StringWidget::Multiline) };
+        property_builder =
+            quote! { #property_builder.widget(#crate_path::StringWidget::Multiline) };
     }
-    Ok(builder)
+    Ok(property_builder)
 }
 
 fn ensure_value_rule_applicability(
@@ -1525,5 +1537,46 @@ mod property_contract_tests {
                 "not supported on enums",
             );
         }
+    }
+
+    #[test]
+    fn decorator_emission_order_matches_pipeline() {
+        // Source-attribute order is deliberately REVERSED relative to the
+        // pipeline: the derive parses `#[field]`/`#[property]` into a struct, so
+        // emitted decorator order must be the fixed pipeline order regardless of
+        // how the attributes are written.
+        let input = syn::parse_str(
+            "struct C { \
+             #[property(display(hidden, group = \"G\", hint = \"text\", \
+             placeholder = \"P\", description = \"D\", label = \"L\"))] \
+             #[field(default = \"x\")] \
+             x: String }",
+        )
+        .expect("test declaration");
+        let output = expand(input).expect("decorated field must expand");
+        // `quote!` separates tokens with spaces; collapse them so method-call
+        // markers are searchable as written.
+        let rendered = output.to_string().replace(' ', "");
+        let mut cursor = 0;
+        let mut positions = Vec::new();
+        for marker in [
+            ".label(",
+            ".description(",
+            ".placeholder(",
+            ".default(",
+            ".hint(",
+            ".group(",
+            ".visible(",
+        ] {
+            let start = rendered[cursor..]
+                .find(marker)
+                .unwrap_or_else(|| panic!("marker `{marker}` not found in generated tokens"));
+            positions.push(cursor + start);
+            cursor += start + marker.len();
+        }
+        assert!(
+            positions.windows(2).all(|window| window[0] < window[1]),
+            "decorator markers are not in strictly increasing order: {positions:?}"
+        );
     }
 }
