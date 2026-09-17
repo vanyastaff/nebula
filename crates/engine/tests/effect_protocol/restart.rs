@@ -116,12 +116,18 @@ fn assert_failed_effect(
 ) {
     assert_eq!(result.status, ExecutionStatus::Failed);
     let expected = nebula_engine::EngineError::Effect(expected).to_string();
-    assert_eq!(
-        result
-            .node_errors
-            .get(&node_key!("send"))
-            .map(String::as_str),
-        Some(expected.as_str())
+    let error = result
+        .node_errors
+        .get(&node_key!("send"))
+        .map(String::as_str)
+        .expect("a failed effect must leave a durable error record");
+    assert!(
+        error.starts_with("ENGINE:EFFECT_"),
+        "the record must carry a typed effect code, got: {error}"
+    );
+    assert!(
+        error.contains(&expected),
+        "the engine's own message must survive, got: {error}"
     );
 }
 

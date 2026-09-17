@@ -409,12 +409,18 @@ async fn reconciliation_rejection_is_terminal_without_reinvocation() {
             code: nebula_action::effect::EffectFailureCode::Rejected,
         })
         .to_string();
-    assert_eq!(
-        result
-            .node_errors
-            .get(&node_key!("send"))
-            .map(String::as_str),
-        Some(expected.as_str())
+    let error = result
+        .node_errors
+        .get(&node_key!("send"))
+        .map(String::as_str)
+        .expect("a rejected effect must leave a durable error record");
+    assert!(
+        error.starts_with("ENGINE:EFFECT_REJECTED: "),
+        "the record must carry the effect-rejection code, got: {error}"
+    );
+    assert!(
+        error.contains(&expected),
+        "the engine's own message must survive, got: {error}"
     );
 }
 

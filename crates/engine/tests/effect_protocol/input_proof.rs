@@ -122,7 +122,8 @@ async fn remote_raw_input_is_rejected_before_effect_preparation_or_invocation() 
     assert_eq!(result.status, ExecutionStatus::Failed);
     assert_eq!(
         result.node_errors[&node_key!("send")],
-        "parameter resolution failed for node send, param 'amount': input schema validation failed"
+        "ENGINE:PARAM_RESOLUTION: parameter resolution failed for node send, param 'amount': \
+         input schema validation failed"
     );
     assert!(fixture.provider.prepared_inputs.lock().is_empty());
     assert!(fixture.provider.calls.lock().is_empty());

@@ -20,7 +20,7 @@ futures = { workspace = true }
 nebula-action-macros = { path = "macros" }
 nebula-core = { path = "../core" }
 nebula-credential = { path = "../credential" }
-nebula-error = { workspace = true }
+nebula-error = { workspace = true, features = ["serde_json"] }
 nebula-metadata = { path = "../metadata" }
 nebula-schema = { path = "../schema" }
 nebula-resource = { path = "../resource" }

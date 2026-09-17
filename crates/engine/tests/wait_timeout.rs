@@ -916,6 +916,139 @@ async fn signal_wait_with_timeout_fires_error_port_on_timeout() {
     );
 }
 
+/// **W-S2b — the OnError payload a wait timeout routes is the durable envelope's
+/// full `Display`, identically to the action-failure path.**
+///
+/// The timeout branch hands `route_failure_edges` the failure text that the
+/// following checkpoint captures durably as the OnError handler's input payload
+/// (`outputs[wait_node]` — the value `load_all_outputs` replays for a crashed
+/// OnError successor). That text is taken from `durable_error_envelope`, the
+/// same bounded, control-character-escaped seam `mark_node_failed` uses for the
+/// node's own durable record, instead of the engine error's bare `Display`.
+///
+/// Observed contract: the staged payload names the failed node, its `error`
+/// text is **exactly** that node's durable record (the envelope's `Display`,
+/// which renders `code: message`), and the same text reaches the error-port
+/// handler. The action-failure branch of the same frontier routes the same
+/// projection, so an OnError handler parses one payload shape whichever failure
+/// fired.
+///
+/// **Falsifiability.** Reverting the projection at the `frontier.rs` timeout
+/// branch to the message half alone — or to the raw `engine_err.to_string()`,
+/// which is textually equal to it for this framework-authored message —
+/// prefixes nothing and drops the `RUNTIME:WAIT_TIMED_OUT: ` code, so the
+/// equality against the node's durable record flips → RED. What the test still
+/// does not prove is the text's *provenance* (that it came from the envelope
+/// rather than a hand-built string of the same bytes); no assertion available at
+/// this site does, which is why the unit-level provenance gate lives in
+/// `crates/engine/src/engine/tests.rs`.
+#[tokio::test]
+async fn wait_timeout_on_error_payload_carries_the_durable_envelope_display() {
+    let main_count = Arc::new(AtomicU32::new(0));
+    let error_count = Arc::new(AtomicU32::new(0));
+    let timeout = Duration::from_millis(120);
+    let registry = build_registry(timeout, &main_count, &error_count);
+    let engine = Arc::new(make_engine(registry));
+    let wf = Arc::new(make_workflow(/* with_error_port */ true, timeout));
+
+    let engine_h = Arc::clone(&engine);
+    let wf_h = Arc::clone(&wf);
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        tokio::spawn(async move {
+            engine_h
+                .execute_workflow(
+                    &nebula_engine::store_seam::single_tenant_scope(),
+                    &wf_h,
+                    serde_json::json!(null),
+                    nebula_execution::context::ExecutionBudget::default(),
+                )
+                .await
+        }),
+    )
+    .await
+    .expect("execution must settle after the timeout fires")
+    .unwrap()
+    .unwrap();
+
+    // Non-vacuity: the timeout fired and the error port handled it, so the
+    // payload read below was staged by THIS path and is not a default.
+    assert_eq!(
+        error_count.load(Ordering::SeqCst),
+        1,
+        "the error-port handler must run on a wait timeout"
+    );
+    assert_eq!(
+        main_count.load(Ordering::SeqCst),
+        0,
+        "the main-port branch must not run on a wait timeout"
+    );
+
+    let wait_node = node_key!("wait_node");
+    let staged_payload = result.node_outputs.get(&wait_node).unwrap_or_else(|| {
+        panic!(
+            "the timeout must stage the OnError payload under the failed node; \
+             node_outputs holds: {:?}",
+            result.node_outputs.keys().collect::<Vec<_>>()
+        )
+    });
+    let payload: nebula_workflow::ErrorPortPayload = serde_json::from_value(staged_payload.clone())
+        .expect("the staged OnError payload must decode as ErrorPortPayload");
+    assert_eq!(
+        payload.node_id,
+        wait_node.to_string(),
+        "the payload must name the node that failed"
+    );
+
+    let wait_record = result.node_errors.get(&wait_node).unwrap_or_else(|| {
+        panic!(
+            "the failed wait node must carry a durable failure record; node_errors holds: {:?}",
+            result.node_errors
+        )
+    });
+    let (record_code, record_message) = wait_record.split_once(": ").unwrap_or_else(|| {
+        panic!("the durable record must render `code: message`; got: {wait_record}")
+    });
+    assert_eq!(
+        record_code, "RUNTIME:WAIT_TIMED_OUT",
+        "the durable record must carry the typed wait-timeout code"
+    );
+
+    // The fix's invariant: one text, two durable surfaces. The payload carries
+    // the envelope's full `Display` (`code: message`) — the same projection the
+    // action-failure branch routes — so it is byte-identical to the node's
+    // durable record, not merely to its message half.
+    assert_eq!(
+        payload.error.as_str(),
+        wait_record.as_str(),
+        "the OnError payload's text must be the durable envelope's full display, not a \
+         separately built string"
+    );
+    assert!(
+        record_message.contains("timed out after") && payload.error.contains("without a Resume"),
+        "the payload must carry the framework's timeout message verbatim; got: {}",
+        payload.error
+    );
+
+    // The payload is not merely staged — it is what the handler actually read.
+    let handler_input = result
+        .node_outputs
+        .get(&node_key!("error_node"))
+        .unwrap_or_else(|| {
+            panic!(
+                "the error-port handler must have completed and produced an output; \
+                 node_outputs holds: {:?}",
+                result.node_outputs.keys().collect::<Vec<_>>()
+            )
+        });
+    let delivered_to_handler = handler_input.to_string();
+    assert!(
+        delivered_to_handler.contains(payload.error.as_str()),
+        "the same payload text must reach the error-port handler; handler read: \
+         {delivered_to_handler}"
+    );
+}
+
 /// **W-S2b — Resume before the timeout completes the main port and the timer is
 /// discarded.**
 ///

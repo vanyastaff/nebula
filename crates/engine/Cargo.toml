@@ -20,7 +20,7 @@ test-util = []
 
 [dependencies]
 nebula-core = { path = "../core" }
-nebula-error = { workspace = true, features = ["derive"] }
+nebula-error = { workspace = true, features = ["derive", "serde_json"] }
 nebula-action = { path = "../action" }
 nebula-expression = { path = "../expression" }
 nebula-schema = { path = "../schema" }

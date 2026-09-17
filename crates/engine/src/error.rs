@@ -412,6 +412,26 @@ pub enum EngineError {
     },
 }
 
+/// The subset of `EngineError::code`'s literal table that the frontier's
+/// `setup_refusal` call sites also need.
+///
+/// `EngineError::code` is a hand-written match (a derive can't see it), so
+/// these `pub(crate) const`s let both sides name the same code string once
+/// instead of drifting apart if one side's literal is edited without the
+/// other. Covers exactly the codes `setup_refusal` currently constructs; the
+/// rest of `EngineError::code`'s table has no second consumer and stays
+/// inline.
+pub(crate) mod codes {
+    pub(crate) const PARAM_RESOLUTION: &str = "ENGINE:PARAM_RESOLUTION";
+    pub(crate) const NODE_NOT_FOUND: &str = "ENGINE:NODE_NOT_FOUND";
+    pub(crate) const EXACT_FACTORY_UNAVAILABLE: &str = "ENGINE:EXACT_FACTORY_UNAVAILABLE";
+    pub(crate) const UNSUPPORTED_RECORDED_SEMANTICS: &str = "ENGINE:UNSUPPORTED_RECORDED_SEMANTICS";
+    pub(crate) const EXACT_GRAPH_PROJECTION: &str = "ENGINE:EXACT_GRAPH_PROJECTION";
+    pub(crate) const CONTRACT_BUNDLE_INTEGRITY: &str = "ENGINE:CONTRACT_BUNDLE_INTEGRITY";
+    pub(crate) const MISSING_EXACT_RUNTIME: &str = "ENGINE:MISSING_EXACT_RUNTIME";
+    pub(crate) const FRONTIER_INTEGRITY: &str = "ENGINE:FRONTIER_INTEGRITY";
+}
+
 impl EngineError {
     /// The typed [`ActionError`] this engine error carries, if any.
     ///
@@ -509,30 +529,30 @@ impl nebula_error::Classify for EngineError {
             Self::ExecutionRead { .. } => "ENGINE:EXECUTION_READ",
             Self::ControlStartHandoff { .. } => "ENGINE:CONTROL_START_HANDOFF",
             Self::ControlStartVersionConflict { .. } => "ENGINE:CONTROL_START_VERSION_CONFLICT",
-            Self::MissingExactRuntime => "ENGINE:MISSING_EXACT_RUNTIME",
+            Self::MissingExactRuntime => codes::MISSING_EXACT_RUNTIME,
             Self::MissingRevisionPins => "ENGINE:MISSING_REVISION_PINS",
             Self::ExactRevision { .. } => "ENGINE:EXACT_REVISION",
-            Self::ExactGraphProjection { .. } => "ENGINE:EXACT_GRAPH_PROJECTION",
+            Self::ExactGraphProjection { .. } => codes::EXACT_GRAPH_PROJECTION,
             Self::InvalidRecordedExecution => "ENGINE:INVALID_RECORDED_EXECUTION",
             Self::MissingContractBundle => "ENGINE:MISSING_CONTRACT_BUNDLE",
             Self::InvalidRecordedContract => "ENGINE:INVALID_RECORDED_CONTRACT",
             Self::InvalidRecordedCheckpoint => "ENGINE:INVALID_RECORDED_CHECKPOINT",
             Self::CheckpointPayloadLimit => "ENGINE:CHECKPOINT_PAYLOAD_LIMIT",
-            Self::ContractBundleIntegrity { .. } => "ENGINE:CONTRACT_BUNDLE_INTEGRITY",
+            Self::ContractBundleIntegrity { .. } => codes::CONTRACT_BUNDLE_INTEGRITY,
             Self::ContractBundleIntegrityV2 { .. } => "ENGINE:CONTRACT_BUNDLE_INTEGRITY_V2",
             Self::ContractBundleRead { .. } => "ENGINE:CONTRACT_BUNDLE_READ",
-            Self::ExactFactoryUnavailable => "ENGINE:EXACT_FACTORY_UNAVAILABLE",
+            Self::ExactFactoryUnavailable => codes::EXACT_FACTORY_UNAVAILABLE,
             Self::UnresolvedPlanBindings => "ENGINE:UNRESOLVED_PLAN_BINDINGS",
-            Self::UnsupportedRecordedSemantics => "ENGINE:UNSUPPORTED_RECORDED_SEMANTICS",
+            Self::UnsupportedRecordedSemantics => codes::UNSUPPORTED_RECORDED_SEMANTICS,
             Self::InvalidRecordedBudget => "ENGINE:INVALID_RECORDED_BUDGET",
             Self::PersistentStartRequiresAcceptance => {
                 "ENGINE:PERSISTENT_START_REQUIRES_ACCEPTANCE"
             },
-            Self::NodeNotFound { .. } => "ENGINE:NODE_NOT_FOUND",
+            Self::NodeNotFound { .. } => codes::NODE_NOT_FOUND,
             Self::PlanningFailed(_) => "ENGINE:PLANNING_FAILED",
             Self::NodeFailed { .. } => "ENGINE:NODE_FAILED",
             Self::Cancelled => "ENGINE:CANCELLED",
-            Self::ParameterResolution { .. } => "ENGINE:PARAM_RESOLUTION",
+            Self::ParameterResolution { .. } => codes::PARAM_RESOLUTION,
             Self::ParameterValidation { .. } => "ENGINE:PARAM_VALIDATION",
             Self::EdgeEvaluationFailed { .. } => "ENGINE:EDGE_EVAL",
             Self::UndeclaredOutputPort { .. } => "ENGINE:UNDECLARED_OUTPUT_PORT",
@@ -545,7 +565,7 @@ impl nebula_error::Classify for EngineError {
             Self::Execution(e) => return nebula_error::Classify::code(e),
             Self::Action(e) => return nebula_error::Classify::code(e),
             Self::TaskPanicked(_) => "ENGINE:TASK_PANICKED",
-            Self::FrontierIntegrity { .. } => "ENGINE:FRONTIER_INTEGRITY",
+            Self::FrontierIntegrity { .. } => codes::FRONTIER_INTEGRITY,
             Self::CheckpointFailed { .. } => "ENGINE:CHECKPOINT_FAILED",
             Self::CasConflict { .. } => "ENGINE:CAS_CONFLICT",
             Self::Leased { .. } => "ENGINE:LEASED",

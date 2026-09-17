@@ -48,6 +48,7 @@
 
 use std::{future::Future, sync::Arc, time::Duration};
 
+use nebula_error::decode::value_free_decode_summary;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
@@ -364,7 +365,7 @@ where
                 ActionError::validation(
                     "turn_state",
                     ValidationReason::StateDeserialization,
-                    Some(e.to_string()),
+                    Some(value_free_decode_summary(&e)),
                 )
             })?;
 

@@ -13,6 +13,7 @@ use crate::{
     attempt::NodeAttempt,
     context::ExecutionBudget,
     error::ExecutionError,
+    error_envelope::ErrorEnvelope,
     idempotency::IdempotencyKey,
     output::{ExecutionOutput, NodeOutput},
     status::{ExecutionStatus, ExecutionTerminationReason},
@@ -40,11 +41,11 @@ pub enum AttemptOutcome {
         output_bytes: u64,
     },
     /// The action surfaced an error before producing a result.
-    /// Carries the error message for the audit log.
+    /// Carries the failure record for the audit log.
     Failure {
-        /// Error string captured from the failing attempt
-        /// (`EngineError::to_string()`).
-        error: String,
+        /// Failure record for the failed attempt. Typed and bounded — the
+        /// staging shape handed to [`NodeAttempt::complete_failure`].
+        error: ErrorEnvelope,
     },
 }
 
@@ -149,9 +150,14 @@ pub struct NodeExecutionState {
     /// When this node reached a terminal state.
     #[serde(default)]
     pub completed_at: Option<DateTime<Utc>>,
-    /// Error message if the node failed.
+    /// Failure record if the node failed.
+    ///
+    /// Durable carrier: this rides inside the persisted `ExecutionState`, so it
+    /// holds a typed [`ErrorEnvelope`] rather than the failing action's own text.
+    /// A row written before the envelope existed fails to decode instead of
+    /// resurrecting that text — see [`ErrorEnvelope`].
     #[serde(default)]
-    pub error_message: Option<String>,
+    pub error_message: Option<ErrorEnvelope>,
     /// Wall-clock instant at which the engine should dispatch the next
     /// retry attempt for this node.
     ///
@@ -1046,10 +1052,14 @@ impl ExecutionState {
     }
 
     /// Move a node to `Failed` for a setup-time failure (parameter
-    /// resolution, missing node definition, etc.) and record the error
-    /// message. Handles both first-dispatch Pending-state failures and
+    /// resolution, missing node definition, etc.) and record the failure
+    /// record. Handles both first-dispatch Pending-state failures and
     /// retry-path failures where the node is already Failed or
     /// Retrying.
+    ///
+    /// The caller supplies a typed [`ErrorEnvelope`], not a message string:
+    /// this value is persisted, so it must not carry the failing action's own
+    /// text (see [`ErrorEnvelope`]).
     ///
     /// Uses `override_node_state` because Pending → Failed is not a
     /// valid forward transition — setup fails before the node has
@@ -1062,11 +1072,11 @@ impl ExecutionState {
     pub fn mark_setup_failed(
         &mut self,
         node_key: NodeKey,
-        error_message: impl Into<String>,
+        error: ErrorEnvelope,
     ) -> Result<(), ExecutionError> {
         self.override_node_state(node_key.clone(), NodeState::Failed)?;
         if let Some(ns) = self.node_states.get_mut(&node_key) {
-            ns.error_message = Some(error_message.into());
+            ns.error_message = Some(error);
         }
         Ok(())
     }
@@ -1167,6 +1177,7 @@ impl ExecutionState {
 #[cfg(test)]
 mod tests {
     use nebula_core::node_key;
+    use nebula_error::{ErrorCategory, ErrorCode};
 
     use super::*;
 
@@ -1447,17 +1458,29 @@ mod tests {
         assert_eq!(state.version, v0 + 1);
     }
 
+    /// A failure record standing in for one the engine would build.
+    fn failure(message: &str) -> ErrorEnvelope {
+        ErrorEnvelope::new(
+            ErrorCode::new("ENGINE:NODE_FAILED"),
+            ErrorCategory::Internal,
+            false,
+        )
+        .with_redacted_message(message)
+    }
+
     #[test]
     fn mark_setup_failed_records_error_and_bumps_version() {
         let (mut state, n1, _n2) = make_state();
         let v0 = state.version;
         state
-            .mark_setup_failed(n1.clone(), "param resolution: missing credential")
+            .mark_setup_failed(n1.clone(), failure("param resolution: missing credential"))
             .unwrap();
         let ns = state.node_state(n1).unwrap();
         assert_eq!(ns.state, NodeState::Failed);
         assert_eq!(
-            ns.error_message.as_deref(),
+            ns.error_message
+                .as_ref()
+                .and_then(ErrorEnvelope::redacted_message),
             Some("param resolution: missing credential")
         );
         assert_eq!(state.version, v0 + 1);
@@ -1605,7 +1628,7 @@ mod tests {
             .record_node_attempt(
                 n1.clone(),
                 AttemptOutcome::Failure {
-                    error: "boom".to_owned(),
+                    error: failure("boom"),
                 },
             )
             .unwrap();
@@ -1655,7 +1678,7 @@ mod tests {
             .record_node_attempt(
                 ghost,
                 AttemptOutcome::Failure {
-                    error: "boom".to_owned(),
+                    error: failure("boom"),
                 },
             )
             .expect_err("unknown node must error");
@@ -1706,7 +1729,7 @@ mod tests {
         // Stamp failure-only fields the way `mark_node_failed` /
         // `transition_to(Failed)` would.
         if let Some(ns) = state.node_states.get_mut(&n1) {
-            ns.error_message = Some("boom".to_owned());
+            ns.error_message = Some(failure("boom"));
             // `completed_at` is set by `transition_to(Failed)` so
             // we expect it to already be `Some` here.
             assert!(ns.completed_at.is_some());
@@ -1972,6 +1995,72 @@ mod tests {
         });
         let ns: NodeExecutionState = serde_json::from_value(legacy).unwrap();
         assert!(ns.next_attempt_at.is_none());
+    }
+
+    /// `ExecutionState` is the blob persisted in the `executions.state` row. A
+    /// node failure recorded before the envelope existed holds a bare error
+    /// string, so an old row must fail closed rather than hand that text back as
+    /// a decode success.
+    ///
+    /// **Falsifiability**: give `error_message` its pre-envelope `String` type →
+    /// the decode below succeeds and the assert fails. The non-vacuity assert
+    /// pins that the downgrade landed on the failed node, so a wrong map key
+    /// cannot make this pass by refusing a state that was never downgraded.
+    /// The control decode (the un-downgraded wire, same `from_str` path) is
+    /// what makes that falsifiability real: `node_states`' key type (`NodeKey`,
+    /// an external `domain_key` type) only implements `Deserialize` for a
+    /// borrowed `&str`, so `serde_json::from_value` fails to decode *any*
+    /// `ExecutionState` with a non-empty `node_states` map, downgraded or not.
+    /// Without the control, this test would pass for that unrelated reason
+    /// even if the downgrade detection were deleted entirely — decoding
+    /// through `from_str` (which reads the borrowed `&str` straight out of the
+    /// input buffer) is what makes the failure below attributable to the bare
+    /// string rather than to `from_value`'s map-key limitation.
+    ///
+    /// Dropping the version check in `EnvelopeVersion`'s `Deserialize` is *not*
+    /// an alternative downgrade for this fixture, and would not fail it: the
+    /// bare string is refused one step earlier, when the record is decoded as a
+    /// map, before any version is read. That gate has its own fixtures —
+    /// `unknown_version_is_refused_with_the_versions_named` and
+    /// `legacy_bare_string_record_is_refused` in `error_envelope.rs`.
+    #[test]
+    fn legacy_state_row_with_a_bare_error_message_fails_to_decode() {
+        let (mut state, n1, _n2) = make_state();
+        state
+            .mark_setup_failed(n1.clone(), failure("boom"))
+            .expect("state must accept a setup failure");
+
+        let mut wire = serde_json::to_value(&state).unwrap();
+        let key = serde_json::to_value(&n1)
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let persisted = wire["node_states"][&key]["error_message"].clone();
+        assert!(
+            persisted.is_object(),
+            "fixture must persist a typed record, got: {persisted:?}"
+        );
+
+        // Control: the un-downgraded wire must decode `Ok` on the exact path
+        // (`from_str`) the downgraded wire is decoded on below.
+        let control = serde_json::from_str::<ExecutionState>(&wire.to_string());
+        assert!(
+            control.is_ok(),
+            "the un-downgraded wire must decode via from_str: {control:?}"
+        );
+
+        wire["node_states"][&key]["error_message"] =
+            serde_json::json!("provider said: token abc123");
+
+        let decoded = serde_json::from_str::<ExecutionState>(&wire.to_string());
+
+        let err = decoded.expect_err("a bare error_message is not an envelope");
+        let message = err.to_string();
+        assert!(
+            message.contains("ErrorEnvelope"),
+            "the refusal must name the type it refused to decode as, got: {message}"
+        );
     }
 
     /// W-S2b — `park_node` stamps the (`next_attempt_at`, `wait_wake`) pair

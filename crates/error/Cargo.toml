@@ -17,6 +17,10 @@ documentation.workspace = true
 workspace = true
 optional = true
 
+[dependencies.serde_json]
+workspace = true
+optional = true
+
 [dependencies.nebula-error-macros]
 path = "macros"
 optional = true
@@ -25,6 +29,10 @@ optional = true
 default = []
 serde = ["dep:serde"]
 derive = ["dep:nebula-error-macros"]
+# Value-free `serde_json::Error` summarization (`decode` module), the single
+# copy every consuming crate depends on — see `decode`'s doc for why the
+# helper lives here instead of in each consumer.
+serde_json = ["dep:serde_json"]
 
 [dev-dependencies]
 serde_json = { workspace = true }

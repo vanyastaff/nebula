@@ -2946,3 +2946,195 @@ async fn cancel_of_cancelling_no_live_runner_finalizes_to_cancelled() {
         "all parked nodes must be terminal after the cancel finalization"
     );
 }
+
+// ── A body this build cannot decode must not re-publish its own bytes ─────────
+
+/// Provider text a row written before the typed failure envelope carries in its
+/// stored body. Long and structured, so a substring match cannot false-positive
+/// on unrelated engine output.
+const MARKER: &str = "MARKER-9f3a-secret";
+
+impl SignalHarness {
+    /// Replace the persisted body with `body`, leaving the `status` field
+    /// readable.
+    ///
+    /// This is the shape a row written before the typed execution-state contract
+    /// has (or one a future build writes): the control-dispatch status read still
+    /// succeeds, so a Resume/Cancel is delivered to the engine's own state load
+    /// and fails there. The substituted body stands in for the pre-envelope
+    /// provider text such a row carried — the value a decode error would quote
+    /// back if its own `Display` were interpolated into the refusal.
+    async fn persist_undecodable_body(&self, execution_id: ExecutionId, body: serde_json::Value) {
+        let scope = nebula_engine::store_seam::single_tenant_scope();
+        let id = execution_id.to_string();
+        let token = self
+            .stores
+            .execution
+            .acquire_lease(&scope, &id, "test-corrupt-body", Duration::from_secs(30))
+            .await
+            .unwrap()
+            .expect("lease must be free for the simulated corrupt-body write");
+        let record = self
+            .stores
+            .execution
+            .get(&scope, &id)
+            .await
+            .unwrap()
+            .expect("execution row must exist");
+        let mut state = record.state;
+        state
+            .as_object_mut()
+            .expect("a pinned execution state is a JSON object")
+            .insert("node_states".to_owned(), body);
+        let batch = TransitionBatch::builder()
+            .scope(scope.clone())
+            .execution_id(&id)
+            .expected_version(record.version)
+            .fencing(token)
+            .new_state(state)
+            .build()
+            .unwrap();
+        assert!(matches!(
+            self.stores.execution.commit(batch).await.unwrap(),
+            TransitionOutcome::Applied { .. }
+        ));
+        self.stores
+            .execution
+            .release_lease(&scope, &id, token)
+            .await
+            .unwrap();
+    }
+}
+
+/// The `Deferred` reason a dispatch returned, asserting the variant.
+///
+/// `Deferred` — not `Rejected`/`Internal` — is what an engine state load that
+/// fails produces, and its reason is the text the control consumer logs and the
+/// `ResumeDeferred` event carries. That string is the surface these tests hold to
+/// the absence rule.
+fn deferred_reason(outcome: Result<(), ControlDispatchError>, context: &str) -> String {
+    match outcome {
+        Err(ControlDispatchError::Deferred(reason)) => reason,
+        other => panic!("{context}: expected a Deferred dispatch outcome, got {other:?}"),
+    }
+}
+
+/// **A Resume of a row whose body does not decode must not re-publish the stored
+/// value.**
+///
+/// `satisfy_signal_waits` loads the persisted state as an `ExecutionState` and
+/// refuses with a `PlanningFailed` when the row is not this build's shape. A
+/// `serde_json` decode error renders the offending value **quoted and uncapped**
+/// (`invalid type: string "<the stored string>", expected a map`), and on a
+/// pre-envelope row that value IS the provider text the typed failure envelope
+/// exists to remove. The refusal must therefore be a fixed, framework-authored
+/// phrase naming the row and the shape mismatch — never the decode error's
+/// `Display`.
+///
+/// The reachable surface is the `Deferred` reason the dispatch returns; it is
+/// logged by the control consumer and emitted on `ResumeDeferred`. (The same
+/// `satisfy` error is NOT acked into the control-queue row: `Deferred` is
+/// deliberately the variant that writes neither `mark_completed` nor
+/// `mark_failed`, so the row redelivers instead.)
+///
+/// **Falsifiability**: restore `{e}` in the `satisfy_signal_waits` decode
+/// `map_err` → the reason quotes the marker → both the phrase assertion and the
+/// absence assertion flip → RED.
+#[tokio::test]
+async fn resume_of_a_row_whose_body_does_not_decode_never_quotes_the_stored_value() {
+    let harness = SignalHarness::new().await;
+    let workflow_id = harness.persist_signal_workflow().await;
+    let execution_id = harness.persist_created_execution(workflow_id).await;
+    let scope = nebula_engine::store_seam::single_tenant_scope();
+
+    harness
+        .dispatch
+        .dispatch_start(&scope, execution_id)
+        .await
+        .expect("dispatch_start must park the signal node");
+    assert_eq!(
+        harness.persisted_status(execution_id).await,
+        ExecutionStatus::Paused,
+        "the signal wait must be parked and Paused before the body is corrupted"
+    );
+
+    harness
+        .persist_undecodable_body(
+            execution_id,
+            serde_json::json!(format!("provider rejected token {MARKER}")),
+        )
+        .await;
+
+    let reason = deferred_reason(
+        harness
+            .dispatch
+            .dispatch_resume(&scope, execution_id, None)
+            .await,
+        "dispatch_resume",
+    );
+
+    // Non-vacuity: the reason must be this path's own refusal — the read must
+    // have reached `satisfy_signal_waits` and failed in its state load — so an
+    // unrelated deferral (or an ack-drop) cannot pass for the right reason.
+    assert!(
+        reason.contains("satisfy_signal_waits"),
+        "the deferral must name the satisfy path that refused: {reason}"
+    );
+    assert!(
+        reason.contains("does not decode as this build"),
+        "the deferral must carry the value-free shape mismatch phrase: {reason}"
+    );
+    assert!(
+        !reason.contains(MARKER),
+        "a decode failure must not re-publish the stored value it refused: {reason}"
+    );
+    assert_eq!(
+        harness.persisted_status(execution_id).await,
+        ExecutionStatus::Paused,
+        "the satisfy did not land, so the execution must be untouched"
+    );
+}
+
+/// **A Cancel of a row whose body does not decode must not re-publish the stored
+/// value either** — the second `PlanningFailed` decode site
+/// (`cancel_dangling_nodes`), reached by the no-live-runner cancel path.
+///
+/// **Falsifiability**: restore `{e}` in the `cancel_dangling_nodes` decode
+/// `map_err` → the reason quotes the marker → RED.
+#[tokio::test]
+async fn cancel_of_a_row_whose_body_does_not_decode_never_quotes_the_stored_value() {
+    let harness = SignalHarness::new().await;
+    let workflow_id = harness.persist_signal_workflow().await;
+    let execution_id = harness.persist_created_execution(workflow_id).await;
+    let scope = nebula_engine::store_seam::single_tenant_scope();
+
+    harness
+        .dispatch
+        .dispatch_start(&scope, execution_id)
+        .await
+        .expect("dispatch_start must park the signal node");
+    harness
+        .persist_undecodable_body(
+            execution_id,
+            serde_json::json!(format!("provider rejected token {MARKER}")),
+        )
+        .await;
+
+    let reason = deferred_reason(
+        harness.dispatch.dispatch_cancel(&scope, execution_id).await,
+        "dispatch_cancel",
+    );
+
+    assert!(
+        reason.contains("cancel_dangling_nodes"),
+        "the deferral must name the cleanup path that refused: {reason}"
+    );
+    assert!(
+        reason.contains("does not decode as this build"),
+        "the deferral must carry the value-free shape mismatch phrase: {reason}"
+    );
+    assert!(
+        !reason.contains(MARKER),
+        "a decode failure must not re-publish the stored value it refused: {reason}"
+    );
+}

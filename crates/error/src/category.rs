@@ -53,6 +53,58 @@ pub enum ErrorCategory {
 }
 
 impl ErrorCategory {
+    /// Every variant, in declaration order.
+    ///
+    /// `Self::named`'s `match` is what keeps this list honest: it has no
+    /// wildcard arm, so a variant added to the enum without a matching arm
+    /// there fails to **compile**, not merely to pass a round-trip test.
+    /// This crate's own tests and `tests/serde.rs`'s `all_categories_roundtrip`
+    /// iterate this list rather than each keeping a separate hand copy,
+    /// which can silently fall behind the enum as it grows.
+    ///
+    /// A slice, not an array: the enum is `#[non_exhaustive]` so that adding a
+    /// variant is not a breaking change, and an array length in the public
+    /// type would make it one.
+    pub const ALL: &[ErrorCategory] = &[
+        Self::named(Self::NotFound),
+        Self::named(Self::Validation),
+        Self::named(Self::Authentication),
+        Self::named(Self::Authorization),
+        Self::named(Self::Conflict),
+        Self::named(Self::RateLimit),
+        Self::named(Self::Timeout),
+        Self::named(Self::Exhausted),
+        Self::named(Self::Cancelled),
+        Self::named(Self::Internal),
+        Self::named(Self::External),
+        Self::named(Self::Unsupported),
+        Self::named(Self::Unavailable),
+        Self::named(Self::DataTooLarge),
+    ];
+
+    /// Identity function whose only purpose is its exhaustive `match`: with
+    /// no wildcard arm, adding a variant to the enum without an arm here is
+    /// a compile error, which is what [`Self::ALL`] leans on to stay
+    /// complete.
+    const fn named(category: Self) -> Self {
+        match category {
+            Self::NotFound => category,
+            Self::Validation => category,
+            Self::Authentication => category,
+            Self::Authorization => category,
+            Self::Conflict => category,
+            Self::RateLimit => category,
+            Self::Timeout => category,
+            Self::Exhausted => category,
+            Self::Cancelled => category,
+            Self::Internal => category,
+            Self::External => category,
+            Self::Unsupported => category,
+            Self::Unavailable => category,
+            Self::DataTooLarge => category,
+        }
+    }
+
     /// Whether this category is retryable by default.
     ///
     /// Returns `true` for transient failures that may succeed on retry:
@@ -163,42 +215,63 @@ impl serde::Serialize for ErrorCategory {
 #[cfg(feature = "serde")]
 impl<'de> serde::Deserialize<'de> for ErrorCategory {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let s = <&str>::deserialize(deserializer)?;
-        match s {
-            "not_found" => Ok(Self::NotFound),
-            "validation" => Ok(Self::Validation),
-            "authentication" => Ok(Self::Authentication),
-            "authorization" => Ok(Self::Authorization),
-            "conflict" => Ok(Self::Conflict),
-            "rate_limit" => Ok(Self::RateLimit),
-            "timeout" => Ok(Self::Timeout),
-            "exhausted" => Ok(Self::Exhausted),
-            "cancelled" => Ok(Self::Cancelled),
-            "internal" => Ok(Self::Internal),
-            "external" => Ok(Self::External),
-            "unsupported" => Ok(Self::Unsupported),
-            "unavailable" => Ok(Self::Unavailable),
-            "data_too_large" => Ok(Self::DataTooLarge),
-            other => Err(serde::de::Error::unknown_variant(
-                other,
-                &[
-                    "not_found",
-                    "validation",
-                    "authentication",
-                    "authorization",
-                    "conflict",
-                    "rate_limit",
-                    "timeout",
-                    "exhausted",
-                    "cancelled",
-                    "internal",
-                    "external",
-                    "unsupported",
-                    "unavailable",
-                    "data_too_large",
-                ],
-            )),
+        /// Matches the wire string against the known category names.
+        ///
+        /// `visit_str` (not `<&str>::deserialize`) so a caller decoding from an
+        /// already-owned buffer — `serde_json::from_value`, `serde_yaml`, any
+        /// format whose deserializer cannot hand back a borrow into transient
+        /// storage — still succeeds. `Visitor::visit_borrowed_str`'s default
+        /// implementation forwards to `visit_str`, so the borrowed-input path
+        /// stays zero-alloc: no owned `String` is built either way.
+        struct CategoryVisitor;
+
+        impl serde::de::Visitor<'_> for CategoryVisitor {
+            type Value = ErrorCategory;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a snake_case error category string")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                match v {
+                    "not_found" => Ok(ErrorCategory::NotFound),
+                    "validation" => Ok(ErrorCategory::Validation),
+                    "authentication" => Ok(ErrorCategory::Authentication),
+                    "authorization" => Ok(ErrorCategory::Authorization),
+                    "conflict" => Ok(ErrorCategory::Conflict),
+                    "rate_limit" => Ok(ErrorCategory::RateLimit),
+                    "timeout" => Ok(ErrorCategory::Timeout),
+                    "exhausted" => Ok(ErrorCategory::Exhausted),
+                    "cancelled" => Ok(ErrorCategory::Cancelled),
+                    "internal" => Ok(ErrorCategory::Internal),
+                    "external" => Ok(ErrorCategory::External),
+                    "unsupported" => Ok(ErrorCategory::Unsupported),
+                    "unavailable" => Ok(ErrorCategory::Unavailable),
+                    "data_too_large" => Ok(ErrorCategory::DataTooLarge),
+                    other => Err(serde::de::Error::unknown_variant(
+                        other,
+                        &[
+                            "not_found",
+                            "validation",
+                            "authentication",
+                            "authorization",
+                            "conflict",
+                            "rate_limit",
+                            "timeout",
+                            "exhausted",
+                            "cancelled",
+                            "internal",
+                            "external",
+                            "unsupported",
+                            "unavailable",
+                            "data_too_large",
+                        ],
+                    )),
+                }
+            }
         }
+
+        deserializer.deserialize_str(CategoryVisitor)
     }
 }
 
@@ -311,27 +384,56 @@ mod tests {
         }
     }
 
+    /// `as_str` must give every variant a distinct, non-empty name: a blank
+    /// or colliding name would make two categories indistinguishable on the
+    /// wire and in logs.
     #[test]
-    fn as_str_round_trips_all_variants() {
-        let all = [
-            ErrorCategory::NotFound,
-            ErrorCategory::Validation,
-            ErrorCategory::Authentication,
-            ErrorCategory::Authorization,
-            ErrorCategory::Conflict,
-            ErrorCategory::RateLimit,
-            ErrorCategory::Timeout,
-            ErrorCategory::Exhausted,
-            ErrorCategory::Cancelled,
-            ErrorCategory::Internal,
-            ErrorCategory::External,
-            ErrorCategory::Unsupported,
-            ErrorCategory::Unavailable,
-            ErrorCategory::DataTooLarge,
-        ];
-        for cat in &all {
-            // as_str should produce a non-empty string
-            assert!(!cat.as_str().is_empty());
+    fn as_str_names_every_variant_with_a_distinct_string() {
+        let mut names = std::collections::HashSet::new();
+        for category in ErrorCategory::ALL {
+            let name = category.as_str();
+            assert!(!name.is_empty(), "{category:?}");
+            assert!(names.insert(name), "duplicate as_str() name: {name}");
         }
+        assert_eq!(names.len(), ErrorCategory::ALL.len());
+    }
+
+    /// Every variant must decode back to itself through both `Deserialize`
+    /// entry points: `from_str` (a source-text deserializer) and
+    /// `from_value` (an already-owned `Value`, which cannot hand back a
+    /// borrow — see `category_decodes_from_an_owned_value`). Iterates
+    /// [`ErrorCategory::ALL`] rather than a hand copy, so a variant added to
+    /// the enum is covered here without editing this test.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn every_variant_round_trips_through_from_str_and_from_value() {
+        for category in ErrorCategory::ALL.iter().copied() {
+            let json = serde_json::to_string(&category).expect("encodes");
+            let via_str: ErrorCategory =
+                serde_json::from_str(&json).expect("from_str decodes a valid category");
+            assert_eq!(via_str, category, "from_str round-trip for {category:?}");
+
+            let value = serde_json::to_value(category).expect("encodes to a Value");
+            let via_value: ErrorCategory =
+                serde_json::from_value(value).expect("from_value decodes a valid category");
+            assert_eq!(
+                via_value, category,
+                "from_value round-trip for {category:?}"
+            );
+        }
+    }
+
+    /// `serde_json::from_value` hands the deserializer an already-owned
+    /// `Value`, which cannot yield a borrow into a transient buffer the way
+    /// `from_str` can. Red-on-revert: with the `Deserialize` impl back to
+    /// `<&str>::deserialize`, this fails with "invalid type: string
+    /// \"internal\", expected a borrowed string" — the exact failure that made
+    /// `serde_json::from_value::<ErrorEnvelope>` refuse every valid envelope.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn category_decodes_from_an_owned_value() {
+        let decoded: ErrorCategory =
+            serde_json::from_value(serde_json::json!("internal")).expect("owned value decodes");
+        assert_eq!(decoded, ErrorCategory::Internal);
     }
 }
