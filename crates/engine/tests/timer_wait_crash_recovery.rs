@@ -32,8 +32,9 @@
 
 use std::{
     collections::HashMap,
+    io::{self, Write},
     sync::{
-        Arc, OnceLock,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicU32, Ordering},
     },
     time::Duration,
@@ -60,6 +61,7 @@ use nebula_storage_port::{
 use nebula_workflow::{
     CURRENT_SCHEMA_VERSION, Connection, NodeDefinition, Version, WorkflowConfig, WorkflowDefinition,
 };
+use tracing_subscriber::fmt::MakeWriter;
 
 mod exact_fixture;
 
@@ -149,7 +151,7 @@ impl StatelessAction for CountingDownstream {
 // ── Shared store bundle ───────────────────────────────────────────────────────
 
 struct CrashRecoveryStores {
-    frozen: std::sync::Mutex<Option<Arc<nebula_plugin::FrozenPluginRegistry>>>,
+    frozen: Mutex<Option<Arc<nebula_plugin::FrozenPluginRegistry>>>,
     execution: Arc<InMemoryExecutionStore>,
     journal: Arc<nebula_storage::InMemoryJournalReader>,
     node_results: Arc<nebula_storage::InMemoryNodeResultStore>,
@@ -164,7 +166,7 @@ impl CrashRecoveryStores {
         let journal = Arc::new(nebula_storage::InMemoryJournalReader::new(&execution));
         let versions = InMemoryWorkflowVersionStore::new();
         Self {
-            frozen: std::sync::Mutex::new(None),
+            frozen: Mutex::new(None),
             execution,
             journal,
             node_results: Arc::new(nebula_storage::InMemoryNodeResultStore::new()),
@@ -587,5 +589,128 @@ async fn durable_timer_scanner_recovers_crashed_timer_without_resume() {
         stores.persisted_status(execution_id).await,
         ExecutionStatus::Completed,
         "the execution must reach Completed after the scanner wakes the stranded timer"
+    );
+}
+
+// ── Observability of a skipped row ────────────────────────────────────────────
+
+/// Text a row written before the typed failure envelope carries in its body. Long
+/// and structured, so a substring match cannot false-positive on engine output.
+const MARKER: &str = "MARKER-9f3a-secret";
+
+#[derive(Clone, Default)]
+struct CaptureBuf(Arc<Mutex<Vec<u8>>>);
+
+impl CaptureBuf {
+    fn as_string(&self) -> String {
+        let captured = self.0.lock().expect("capture buffer poisoned");
+        String::from_utf8_lossy(&captured).into_owned()
+    }
+}
+
+impl Write for CaptureBuf {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0
+            .lock()
+            .expect("capture buffer poisoned")
+            .extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> MakeWriter<'a> for CaptureBuf {
+    type Writer = CaptureBuf;
+    fn make_writer(&'a self) -> Self::Writer {
+        self.clone()
+    }
+}
+
+/// Install a subscriber that writes every event on this thread to `sink`, for as
+/// long as the returned guard lives.
+///
+/// The sweep runs on the caller's own task — the skip path spawns nothing — so a
+/// thread-scoped default captures its events without the process-wide global
+/// install the spawned-task redaction gates need. Deliberately not an `async fn`:
+/// the guard must be held across the awaited sweep, and the subscriber belongs
+/// beside that call, not inside the swept future.
+fn capture_events(sink: CaptureBuf) -> tracing::subscriber::DefaultGuard {
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(sink)
+        .with_max_level(tracing::Level::TRACE)
+        .finish();
+    tracing::subscriber::set_default(subscriber)
+}
+
+/// **A row whose stored state does not decode is skipped observably, not
+/// silently.**
+///
+/// `sweep_overdue_timers` decodes every listed row as an `ExecutionState` and
+/// `continue`s when a row is not this build's shape. That skip used to be silent,
+/// so an operator could not tell why an overdue execution stopped being re-driven.
+/// It now emits a `WARN` naming the row and the shape mismatch.
+///
+/// The message must stay value-free: `serde_json`'s decode error renders the
+/// offending value quoted and uncapped, and on a row written before the typed
+/// failure envelope that value IS the pre-envelope provider text. [`MARKER`]
+/// stands in for that text and must reach neither the log nor anything else.
+///
+/// **Falsifiability**: remove the `tracing::warn!` from the decode-failure arm →
+/// the capture holds no line for this row → the observability assertion fails →
+/// RED.
+#[tokio::test]
+async fn durable_timer_scanner_logs_a_row_whose_state_does_not_decode() {
+    let stores = CrashRecoveryStores::new();
+    let scope = nebula_engine::store_seam::single_tenant_scope();
+
+    // A row whose stored body is a bare JSON string — the pre-envelope shape —
+    // carrying text the engine must never re-publish.
+    let undecodable_id = ExecutionId::new();
+    stores
+        .execution
+        .create(
+            &scope,
+            &undecodable_id.to_string(),
+            &nebula_core::WorkflowId::new().to_string(),
+            serde_json::json!(format!("provider rejected token {MARKER}")),
+        )
+        .await
+        .expect("the in-memory store admits a row with any body");
+
+    let engine = stores
+        .attach(make_engine(
+            &stores,
+            build_registry(TIMER_DURATION, &Arc::new(AtomicU32::new(0))),
+        ))
+        .with_lease_ttl(LEASE_TTL)
+        .with_lease_heartbeat_interval(HEARTBEAT);
+
+    let sink = CaptureBuf::default();
+    let _capture = capture_events(sink.clone());
+    let redriven = engine
+        .sweep_overdue_timers()
+        .await
+        .expect("an undecodable row must not abort the sweep");
+
+    assert_eq!(
+        redriven, 0,
+        "a row that cannot be decoded cannot be re-driven, and the sweep must still return"
+    );
+
+    let captured = sink.as_string();
+    assert!(
+        captured.contains(&undecodable_id.to_string()),
+        "the skip must name the row an operator has to investigate: {captured}"
+    );
+    assert!(
+        captured.contains("does not decode as this build's execution-state shape"),
+        "the skip must say why the row was dropped: {captured}"
+    );
+    assert!(
+        !captured.contains(MARKER),
+        "the skip must not re-publish the value it refused: {captured}"
     );
 }

@@ -30,24 +30,12 @@ fn error_code_roundtrip() {
 
 #[test]
 fn all_categories_roundtrip() {
-    let categories = [
-        ErrorCategory::NotFound,
-        ErrorCategory::Validation,
-        ErrorCategory::Authentication,
-        ErrorCategory::Authorization,
-        ErrorCategory::Conflict,
-        ErrorCategory::RateLimit,
-        ErrorCategory::Timeout,
-        ErrorCategory::Exhausted,
-        ErrorCategory::Cancelled,
-        ErrorCategory::Internal,
-        ErrorCategory::External,
-        ErrorCategory::Unsupported,
-    ];
-    for cat in categories {
-        let json = serde_json::to_string(&cat).unwrap();
+    // Iterates `ErrorCategory::ALL` rather than a hand copy, so this covers
+    // every variant even as the enum grows, and cannot silently drop one.
+    for cat in ErrorCategory::ALL {
+        let json = serde_json::to_string(cat).unwrap();
         let back: ErrorCategory = serde_json::from_str(&json).unwrap();
-        assert_eq!(back, cat, "roundtrip failed for {cat:?}");
+        assert_eq!(back, *cat, "roundtrip failed for {cat:?}");
     }
 }
 

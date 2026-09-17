@@ -199,7 +199,8 @@ fn assert_input_rejected(result: &ExecutionResult, calls: usize) {
     let error = &result.node_errors[&node_key!("root")];
     assert_eq!(
         error,
-        "parameter resolution failed for node root, param '': input schema validation failed"
+        "ENGINE:PARAM_RESOLUTION: parameter resolution failed for node root, param '': \
+         input schema validation failed"
     );
     assert_eq!(calls, 0);
 }

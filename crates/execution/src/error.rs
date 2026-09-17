@@ -40,8 +40,17 @@ pub enum ExecutionError {
     DuplicateIdempotencyKey(String),
 
     /// A serialization or deserialization error.
+    ///
+    /// The inner `serde_json::Error` is kept as the typed `#[source]`/`#[from]`
+    /// cause but is deliberately absent from `Display`: a raw decode error's
+    /// `Display` quotes the value it choked on, and the engine's
+    /// `durable_error_envelope` persists an `EngineError`'s top-level
+    /// `Display` without walking `.source()` — so an interpolated value here
+    /// would reach `executions.state` and the journal the same way the
+    /// #1016 envelope exists to prevent. No producer constructs this variant
+    /// today, but the type must not carry that footgun for the next one that does.
     #[classify(category = "internal", code = "EXECUTION:SERIALIZATION")]
-    #[error("serialization: {0}")]
+    #[error("serialization failed")]
     Serialization(#[from] serde_json::Error),
 
     /// The execution was cancelled.
@@ -91,11 +100,25 @@ mod tests {
         assert_eq!(err.to_string(), "plan validation: no nodes in workflow");
     }
 
+    /// The decode error's own text is not published: only the framework-
+    /// authored constant phrase reaches `Display`, and the marker proves the
+    /// premise that a raw `serde_json::Error` would otherwise quote it.
     #[test]
-    fn from_serde_error() {
-        let serde_err = serde_json::from_str::<String>("not valid json").unwrap_err();
+    fn from_serde_error_does_not_publish_the_decoders_own_text() {
+        const MARKER: &str = "MARKER-9f3a-secret";
+        let serde_err = serde_json::from_value::<bool>(serde_json::json!(MARKER))
+            .expect_err("a string is not a bool");
+        assert!(
+            serde_err.to_string().contains(MARKER),
+            "premise: the raw decode error quotes the source text: {serde_err}"
+        );
+
         let err = ExecutionError::from(serde_err);
-        assert!(err.to_string().starts_with("serialization:"));
+        assert_eq!(err.to_string(), "serialization failed");
+        assert!(!err.to_string().contains(MARKER), "{err}");
+
+        // The typed cause still chains, for anything that walks `.source()`.
+        assert!(std::error::Error::source(&err).is_some());
     }
 
     #[test]

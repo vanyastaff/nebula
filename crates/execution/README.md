@@ -17,7 +17,7 @@ attempt replay/dedup. Without a shared model, the engine orchestrator and
 the storage layer each invent their own state representation, producing the "two truths"
 anti-pattern canon §14 forbids. `nebula-execution` is that shared model. It defines the
 8-state `ExecutionStatus` machine with validated transitions, the `JournalEntry` type that
-backs the durable `execution_journal` table, the `IdempotencyKey` shape, and the
+describes the durable journal's event shape, the `IdempotencyKey` shape, and the
 `ExecutionPlan` that the engine derives from the workflow DAG. It deliberately does not own a
 repository interface — persistence is `nebula-storage::ExecutionRepo`'s job.
 
@@ -26,8 +26,9 @@ repository interface — persistence is `nebula-storage::ExecutionRepo`'s job.
 **Execution State Machine + Journal + Local Replay Identity.**
 
 Patterns:
-- *Write-Ahead Log* (DDIA ch 3, 11) — `JournalEntry` backs the `execution_journal`
-  append-only durable timeline.
+- *Write-Ahead Log* (DDIA ch 3, 11) — `JournalEntry` describes the append-only durable
+  timeline's event shape. The type has no production writer yet: `nebula-engine` never fills
+  `TransitionBatch::journal(...)`.
 - *Local replay/dedup identity* — `IdempotencyKey` shape
   `{execution_id}:{node_id}:{attempt}` is deterministic for one attempt. It is not a remote
   operation identity and does not make a provider effect atomic with Nebula persistence.
@@ -61,8 +62,9 @@ Patterns:
 - `ExecutionContext` — lightweight runtime context: `execution_id`, `ExecutionBudget`, optional
   `W3cTraceContext` for M3.5 distributed trace propagation across async boundaries.
 - `ExecutionResult` — post-execution summary: status, timing, node counts, outputs.
-- `JournalEntry` — audit log entry type. Each entry is appended to the durable
-  `execution_journal` table via `ExecutionRepo::append_journal`.
+- `JournalEntry` — audit log entry type; its `error` field is a typed `ErrorEnvelope`, never
+  free text. No production path appends one yet: `port_execution_journal` rows are written
+  through `nebula_storage_port::dto::JournalEntry` with an opaque `payload`.
 - `NodeOutput`, `ExecutionOutput` — node output data with metadata.
 - `NodeAttempt` — individual attempt tracking (attempt number, started/finished timestamps,
   node status). Used as the shape of attempt-keyed output rows by
@@ -106,8 +108,11 @@ Patterns:
   reconciliation confirms the exact durable prepared record and ID; outcome uncertainty permits
   only ledger reads and exact frozen-evidence recommit.
 
-- **[L2-§11.5]** `JournalEntry` type backs the durable `execution_journal` (append-only,
-  replayable). Seam: `crates/storage/src/execution_repo.rs` — `ExecutionRepo::append_journal`.
+- **[L2-§11.5]** `JournalEntry` describes the durable journal's append-only, replayable event
+  shape; its `error` field carries a typed `ErrorEnvelope`. The seam this section used to name
+  (`crates/storage/src/execution_repo.rs`, `ExecutionRepo::append_journal`) does not exist in
+  the tree. The live seam is `port_execution_journal` through
+  `nebula_storage_port::dto::JournalEntry`.
   Checkpoint state is best-effort: a checkpoint write failure logs and does not abort; work
   since the last successful checkpoint may be replayed or lost.
 
@@ -131,7 +136,7 @@ Patterns:
 
 - Not the engine orchestrator — see `nebula-engine` (drives these types).
 - Not the storage implementation — see `nebula-storage` (`ExecutionRepo`, `executions`
-  table, `execution_journal`, `execution_control_queue`). The `ExecutionControlQueue`
+  table, `port_execution_journal`, `execution_control_queue`). The `ExecutionControlQueue`
   (durable outbox for cancel/dispatch signals) and the `Transactional Outbox` pattern live
   in `nebula-storage`, not here.
 - Not a retry scheduler — this crate records the state shapes; `nebula-engine` drives
@@ -180,7 +185,7 @@ behavior by itself.
 | Artifact | Status | Notes |
 |---|---|---|
 | `executions` row + state JSON | **Durable** (CAS via `ExecutionRepo`) | Source of truth |
-| `execution_journal` | **Durable** (append-only) | Replayable history |
+| `port_execution_journal` | **Durable** (append-only) | Replayable history; written via `nebula_storage_port::dto::JournalEntry`. The legacy `execution_journal` table has no writer |
 | `execution_control_queue` | **Durable** (outbox) | At-least-once cancel/dispatch |
 | `stateful_checkpoints` | **Best-effort** | Failure logs, does not abort; may replay |
 | `executions.lease_holder` / `lease_expires_at` (Layer 1) | **Durable + enforced** (M2.2, ADR-0008/0015) | Heartbeat-driven; multi-runner takeover via TTL expiry |

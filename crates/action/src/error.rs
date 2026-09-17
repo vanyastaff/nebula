@@ -222,13 +222,26 @@ pub enum ActionError {
     ///
     /// # Security
     ///
-    /// `detail` may originate from untrusted input (e.g. a
-    /// `serde_json::Error` message quoting the offending value). The
-    /// framework sanitizes it at construction via
+    /// `detail` is framework-authored **by construction**: construct it either
+    /// from a compile-time constant of this crate, or — when describing a decode
+    /// failure — through [`nebula_error::decode::value_free_decode_summary`].
+    /// A producer MUST NOT
+    /// interpolate a foreign error's `Display`, nor any value derived from
+    /// untrusted input: this variant's `Display` renders `detail`, and that
+    /// `Display` is what reaches log lines, spans, API bodies, and the durable
+    /// execution error record. Canon L2 forbids secrets in error strings.
+    ///
+    /// The framework sanitizes `detail` at construction via
     /// [`ActionError::validation`]:
     /// - control characters are escaped as `\uXXXX` (no newlines / carriage returns / tabs / nulls
     ///   survive — this defeats log injection)
     /// - length is capped at [`MAX_VALIDATION_DETAIL`] bytes
+    ///
+    /// Sanitizing is **not** redacting: `serde_json`'s `invalid type: string "…"`
+    /// keeps its quotation marks and the quoted value through both steps, so a
+    /// payload that has been escaped and capped is still a payload that has been
+    /// published. That is why the *value* must never reach `detail` in the first
+    /// place, rather than being filtered on the way out.
     ///
     /// `field` is `&'static str` by design: it is the one piece of
     /// the error that will always appear in logs, so it MUST be a
@@ -533,10 +546,15 @@ impl ActionError {
     /// - `field` — a compile-time constant identifying the input area that failed. MUST NOT be user
     ///   input — this is the one part of the error that will always appear in logs.
     /// - `reason` — categorical classification for log aggregation and metrics.
-    /// - `detail` — optional free-form context. May contain fragments of untrusted input (e.g. a
-    ///   `serde_json::Error` message). The framework escapes control characters as `\uXXXX` and
-    ///   truncates to [`MAX_VALIDATION_DETAIL`] bytes before storing, so log injection via
-    ///   newlines/ANSI/null bytes is not possible through this path.
+    /// - `detail` — optional free-form context that MUST be framework-authored. Write a static
+    ///   diagnostic, or describe a decode failure via
+    ///   [`nebula_error::decode::value_free_decode_summary`]. Never pass a
+    ///   foreign error's `Display`, nor any fragment of untrusted input: `Display` renders this
+    ///   text, and that rendering reaches logs, spans, API bodies, and the durable execution error
+    ///   record (canon L2). The framework escapes control characters as `\uXXXX` and truncates to
+    ///   [`MAX_VALIDATION_DETAIL`] bytes before storing, so log injection via newlines/ANSI/null
+    ///   bytes is not possible through this path — but sanitizing is not redacting, so escaping a
+    ///   quoted value does not make it safe to publish.
     ///
     /// # Examples
     ///

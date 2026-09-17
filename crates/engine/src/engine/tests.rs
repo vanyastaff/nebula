@@ -2665,7 +2665,14 @@ async fn setup_failure_persists_before_final_checkpoint() {
         .override_node_state(b.clone(), NodeState::Failed)
         .unwrap();
     if let Some(ns) = crashed_state.node_states.get_mut(&b) {
-        ns.error_message = Some("parameter resolution failed: template parse error".into());
+        ns.error_message = Some(
+            ErrorEnvelope::new(
+                nebula_error::ErrorCode::new("ENGINE:PARAM_RESOLUTION"),
+                nebula_error::ErrorCategory::Internal,
+                false,
+            )
+            .with_redacted_message("parameter resolution failed: template parse error"),
+        );
     }
     crashed_state.checkpoint.as_mut().unwrap().insert(
         b.clone(),
@@ -3224,9 +3231,39 @@ async fn on_error_payload_is_persisted_before_checkpoint_commits() {
         "persisted payload must carry node_id for the OnError \
              handler; got {persisted:?}"
     );
+    let error_field = error_field.expect("persisted payload must carry an error field");
     assert!(
-        error_field.is_some_and(|s| s.contains("intentional failure")),
-        "persisted payload must carry the error message; got {persisted:?}"
+        !error_field.contains("intentional failure"),
+        "the failed action's own text must not reach the persisted OnError payload; \
+         got {persisted:?}"
+    );
+
+    // Non-vacuity: an empty `error_field` would satisfy the `!contains(...)`
+    // check above without the payload actually carrying A's durable failure
+    // record. Pin it against the node's own durable record instead (mirrors
+    // `wait_timeout_on_error_payload_carries_the_durable_envelope_display` in
+    // `crates/engine/tests/wait_timeout.rs`): the payload's text must be
+    // byte-identical to `node_errors[&a]`, and split as `code: message` with
+    // FailHandler's own code — not empty, and not some other node's record.
+    let node_a_record = result.node_errors.get(&a).unwrap_or_else(|| {
+        panic!(
+            "the failed node must carry a durable failure record; node_errors holds: {:?}",
+            result.node_errors
+        )
+    });
+    assert_eq!(
+        error_field,
+        node_a_record.as_str(),
+        "the OnError payload's error text must be the durable envelope's full display, \
+         not a separately built string"
+    );
+    let (record_code, _record_message) = node_a_record.split_once(": ").unwrap_or_else(|| {
+        panic!("the durable record must render `code: message`; got: {node_a_record}")
+    });
+    assert_eq!(
+        record_code, "ACTION:FATAL",
+        "FailHandler fails with ActionError::fatal(\"intentional failure\"), so the durable \
+         record must carry the action's own code, not a generic runtime one"
     );
 }
 
@@ -4115,9 +4152,12 @@ async fn credential_refresh_failure_surfaces_as_typed_error() {
         node_err.contains("credential refresh failed"),
         "expected typed CredentialRefreshFailed in error, got: {node_err}"
     );
+    // The credential store's own text reached this string through the error's source
+    // chain, which the durable record deliberately does not walk. Naming *which*
+    // credential refusal occurred is the open follow-up on `durable_error_envelope`.
     assert!(
-        node_err.contains("credential store down"),
-        "expected source string preserved in error, got: {node_err}"
+        !node_err.contains("credential store down"),
+        "the credential store's text must not reach the record, got: {node_err}"
     );
 
     // (4) Construct the variant directly and confirm classifier
@@ -4287,8 +4327,15 @@ async fn credential_access_denied_without_declaration() {
         .get(&node_key!("probe"))
         .expect("failed node must carry an error message");
     assert!(
-        err.contains("credential not configured"),
-        "a missing durable manifest must fail closed, got: {err}"
+        // Falling back to `NoopCredentialAccessor` (no declaration bound the
+        // action to a real accessor) surfaces `CoreError::CredentialNotConfigured`,
+        // which `ActionError`'s `From<CoreError>` impl has no dedicated arm for
+        // and so maps through `fatal_from` — code `ACTION:FATAL`. A pin on the
+        // wrapper's constant `RUNTIME:ACTION_ERROR` would be pinning the bug
+        // `durable_error_envelope` fixed (the durable record silently taking
+        // the wrapper's classification instead of the action's own).
+        err.starts_with("ACTION:FATAL"),
+        "a missing durable manifest must fail closed with a typed code, got: {err}"
     );
 }
 
@@ -4349,8 +4396,12 @@ async fn credential_access_denied_for_mismatched_key() {
         .get(&node_key!("probe"))
         .expect("failed node must carry an error message");
     assert!(
-        err.contains("credential not configured"),
-        "an unbound credential key must fail closed, got: {err}"
+        // Same fail-closed path as `credential_access_denied_without_declaration`:
+        // a mismatched key never gets a real accessor wired in, so the
+        // `NoopCredentialAccessor` fallback's `CoreError::CredentialNotConfigured`
+        // maps through `ActionError::fatal_from` to `ACTION:FATAL`.
+        err.starts_with("ACTION:FATAL"),
+        "an unbound credential key must fail closed with a typed code, got: {err}"
     );
 }
 
@@ -4480,12 +4531,16 @@ async fn setup_failure_checkpoints_execution_state() {
         Some("failed"),
         "node state should be persisted as failed after setup failure (issue #321)"
     );
-    let err_msg = state_json
+    let err_record = state_json
         .pointer(&format!("/node_states/{n1}/error_message"))
-        .and_then(|v| v.as_str());
+        .expect("setup-failure record should be persisted");
     assert!(
-        err_msg.is_some(),
-        "setup-failure error message should be persisted, got state: {state_json}"
+        err_record.is_object(),
+        "the durable failure carrier is a typed record, not a bare string, got state: {state_json}"
+    );
+    assert!(
+        err_record.get("code").and_then(|v| v.as_str()).is_some(),
+        "the persisted record must carry a machine-readable code, got: {err_record}"
     );
 }
 
@@ -6347,17 +6402,109 @@ fn mark_node_failed_does_not_stamp_error_on_a_non_failed_node() {
     );
 }
 
+/// The durable failure record is the boundary that keeps a failed action's own
+/// text out of storage, logs, and API bodies.
+///
+/// `ActionError::fatal` puts its payload in the error's **source** chain —
+/// `ActionErrorSource` forwards `Display` to whatever `dyn Error` the action
+/// supplied — so a record built by walking that chain publishes the provider's
+/// text, and whatever secret the provider chose to quote. This test fails if
+/// that walk ever comes back.
 #[test]
-fn durable_error_message_includes_each_source_once_and_stays_bounded() {
-    let error = EngineError::Action(ActionError::fatal(
-        "x".repeat(MAX_DURABLE_ERROR_MESSAGE_BYTES * 2),
+fn durable_failure_record_keeps_the_actions_own_text_out_of_every_surface() {
+    const MARKER: &str = "MARKER-9f3a-secret";
+    let error = EngineError::Action(ActionError::fatal(format!(
+        "provider rejected token {MARKER}"
+    )));
+
+    // The fixture has to actually expose the marker through the source chain, or the
+    // assertions below would pass for the wrong reason.
+    use std::error::Error as _;
+
+    let mut sources = String::new();
+    let mut current = error.source();
+    while let Some(source) = current {
+        sources.push_str(&source.to_string());
+        current = source.source();
+    }
+    assert!(
+        sources.contains(MARKER),
+        "fixture must reach the marker through the source chain: {sources}"
+    );
+
+    let envelope = durable_error_envelope(&error);
+
+    // 1. The record itself. This exact value is what `port_executions.state` and
+    //    `port_execution_journal.payload` persist, since both columns are opaque JSON.
+    let record = serde_json::to_string(&envelope).expect("record is serializable");
+    assert!(!record.contains(MARKER), "durable record leaked: {record}");
+    assert_eq!(envelope.code().as_str(), "ACTION:FATAL");
+    assert_eq!(envelope.category(), nebula_error::ErrorCategory::Internal);
+
+    // 2. The journal entry shape.
+    let entry = nebula_execution::JournalEntry::NodeFailed {
+        timestamp: Utc::now(),
+        node_key: nebula_core::node_key!("n1"),
+        error: envelope.clone(),
+    };
+    let journal = entry.to_json().expect("journal entry is serializable");
+    assert!(!journal.contains(MARKER), "journal entry leaked: {journal}");
+
+    // 3. The rendered projection. `ExecutionResult.node_errors` stores this string and
+    //    `tracing`'s `%` field renders it, so it covers the API body and the span.
+    let rendered = envelope.to_string();
+    assert!(
+        !rendered.contains(MARKER),
+        "rendered projection leaked: {rendered}"
+    );
+
+    // The engine's own words still reach the record, so the fix redacts rather than
+    // hollowing out the diagnosis.
+    assert!(
+        envelope
+            .redacted_message()
+            .is_some_and(|message| message.contains("fatal action failure")),
+        "the framework-authored diagnostic must survive: {envelope:?}"
+    );
+}
+
+/// A `RuntimeError::ActionError`-wrapped failure must be recorded under the
+/// wrapped action's own classification, not `RuntimeError::ActionError`'s
+/// constant `#[classify(category = "external", code = "RUNTIME:ACTION_ERROR",
+/// retryable = false)]` derive metadata.
+///
+/// Red-on-revert: with the `as_action_error` branch in `durable_error_envelope`
+/// removed, both records below read code `RUNTIME:ACTION_ERROR`, category
+/// `External`, and `is_retryable() == false` — silently misreporting the
+/// retryable action as non-retryable and the validation failure's category.
+#[test]
+fn durable_record_of_a_runtime_wrapped_action_error_carries_the_actions_own_classification() {
+    let retryable = EngineError::Runtime(crate::runtime::RuntimeError::ActionError(
+        ActionError::retryable("x"),
     ));
+    let envelope = durable_error_envelope(&retryable);
+    assert_eq!(envelope.code().as_str(), "ACTION:RETRYABLE");
+    assert_eq!(envelope.category(), nebula_error::ErrorCategory::External);
+    assert!(
+        envelope.is_retryable(),
+        "an ActionError::Retryable wrapped in RuntimeError::ActionError must stay retryable \
+         in the durable record: {envelope:?}"
+    );
 
-    let message = durable_error_message(&error);
-
-    assert!(message.len() <= MAX_DURABLE_ERROR_MESSAGE_BYTES);
-    assert_eq!(message.matches("fatal action failure").count(), 1);
-    assert!(message.ends_with('…'));
+    let validation = EngineError::Runtime(crate::runtime::RuntimeError::ActionError(
+        ActionError::validation(
+            "email",
+            nebula_action::ValidationReason::MissingField,
+            None::<String>,
+        ),
+    ));
+    let envelope = durable_error_envelope(&validation);
+    assert_eq!(envelope.code().as_str(), "ACTION:VALIDATION");
+    assert_eq!(envelope.category(), nebula_error::ErrorCategory::Validation);
+    assert!(
+        !envelope.is_retryable(),
+        "an ActionError::Validation is not retryable: {envelope:?}"
+    );
 }
 
 // ── P1#1 resume_live channel mechanics (ADR-0099 W-S2b) ──────────────────

@@ -15,7 +15,7 @@
 - `src/status.rs` — `ExecutionStatus` 8-state enum (`Created`…`TimedOut`), plus terminal reasons; serialized state names are persisted contracts.
 - `src/transition.rs` — validates state-machine transition *legality* only (persistence/CAS is storage's job).
 - `src/state.rs` — `ExecutionState` / `NodeExecutionState`, serialized into the `executions` row (largest module).
-- `src/journal.rs` — `JournalEntry`, backs the append-only `execution_journal` table.
+- `src/journal.rs` — `JournalEntry` enum (9 event kinds) whose `error` field is a typed `ErrorEnvelope`. No production writer yet: `nebula-engine` never fills `TransitionBatch::journal(...)`, and `port_execution_journal` rows go through `nebula_storage_port::dto::JournalEntry` with an opaque `payload`.
 - `src/idempotency.rs` — `IdempotencyKey` shape `{execution_id}:{node_id}:{attempt}` (format only; dedup lives in storage).
 - `src/revision.rs` — default-public workflow-version and worker-flavor revision-pin aggregate.
 - `src/bundle.rs` — immutable Graph-v1 execution-contract bundle, canonical structural

@@ -8,6 +8,7 @@
 //! through `use super::*`.
 
 use super::*;
+use nebula_error::ErrorCode;
 
 impl WorkflowEngine {
     /// Execute all reachable nodes using a frontier-based approach.
@@ -288,11 +289,26 @@ impl WorkflowEngine {
                         timeout_ms,
                     };
                     let engine_err = EngineError::Runtime(timed_out);
-                    let err_str = engine_err.to_string();
+                    // The failure text below is handed to `route_failure_edges`,
+                    // whose OnError input payload the following checkpoint
+                    // captures durably — so it takes its text from the same
+                    // bounded, control-character-escaped envelope seam as the
+                    // node's own failure record (`mark_node_failed`), instead of
+                    // a raw `Display` that bypassed it.
+                    //
+                    // The projection is the envelope's full `Display` (`code:
+                    // message`), matching the action-failure branch below, so an
+                    // OnError handler parses ONE payload shape regardless of
+                    // which failure fired — not the message half on one path and
+                    // the code-prefixed form on the other.
                     // `Waiting → Failed` is the W-S2b timeout edge. A
                     // WaitTimedOut is terminal and bypasses the retry decision
                     // entirely (it never counts against the retry budget).
-                    mark_node_failed(exec_state, node_key.clone(), &engine_err);
+                    // `mark_node_failed` builds the envelope once; reuse its
+                    // return for the projection below instead of a second
+                    // `durable_error_envelope` build over the same message.
+                    let err_str =
+                        mark_node_failed(exec_state, node_key.clone(), &engine_err).to_string();
                     if let Some(ns) = exec_state.node_states.get_mut(&node_key) {
                         // Resolved wait: drop the timer pair so the now-`Failed`
                         // node carries no stale wake metadata.
@@ -564,10 +580,21 @@ impl WorkflowEngine {
                 // record_attempt → classify → apply recovery → route
                 // (stages OnError payload into outputs) → checkpoint
                 // (durably commits state + staged payload) → emit.
-                let err_msg = exec_state
+                let err_envelope = exec_state
                     .node_state(node_key.clone())
                     .and_then(|ns| ns.error_message.clone())
-                    .unwrap_or_else(|| "parameter resolution failed".to_string());
+                    .unwrap_or_else(|| {
+                        setup_refusal(
+                            ErrorCode::new(crate::error::codes::PARAM_RESOLUTION),
+                            "parameter resolution failed",
+                        )
+                    });
+
+                // In-process projection for the event, retry, and OnError-payload
+                // surfaces, which are plain strings by contract. Safe to derive from the
+                // record: `Display` renders only the typed code and the bounded,
+                // engine-authored message, never the failed action's own text.
+                let err_msg = err_envelope.to_string();
 
                 // Push the failure attempt record so retry-decision
                 // and idempotency_key see the same attempt count.
@@ -579,7 +606,7 @@ impl WorkflowEngine {
                 let setup_attempt_recorded = match exec_state.record_node_attempt(
                     node_key.clone(),
                     AttemptOutcome::Failure {
-                        error: err_msg.clone(),
+                        error: err_envelope,
                     },
                 ) {
                     Ok(_) => true,
@@ -1848,8 +1875,13 @@ impl WorkflowEngine {
                     // Phase 1 of the next loop iteration; that runs
                     // after checkpoint. Nothing external observes a
                     // state the store has not committed.
-                    mark_node_failed(exec_state, node_key.clone(), err);
-                    let err_str = durable_error_message(err);
+                    // `mark_node_failed` builds the envelope once; reuse its
+                    // return below instead of a second `durable_error_envelope`
+                    // build over the same message.
+                    let err_envelope = mark_node_failed(exec_state, node_key.clone(), err);
+                    // In-process projection for the event, retry, and OnError-payload
+                    // surfaces, which are plain strings by contract.
+                    let err_str = err_envelope.to_string();
 
                     // Push the failure attempt record so idempotency
                     // key, retry-decision, and post-mortem audit all
@@ -1863,7 +1895,7 @@ impl WorkflowEngine {
                     let failure_attempt_recorded = match exec_state.record_node_attempt(
                         node_key.clone(),
                         AttemptOutcome::Failure {
-                            error: err_str.clone(),
+                            error: err_envelope,
                         },
                     ) {
                         Ok(_) => true,
@@ -2108,7 +2140,10 @@ impl WorkflowEngine {
             // state (issues #300, #321).
             let _ = exec_state.mark_setup_failed(
                 node_key.clone(),
-                format!("node {node_key} is not in the workflow's node map"),
+                setup_refusal(
+                    ErrorCode::new(crate::error::codes::NODE_NOT_FOUND),
+                    format!("node {node_key} is not in the workflow's node map"),
+                ),
             );
             return false;
         };
@@ -2127,7 +2162,8 @@ impl WorkflowEngine {
                         EngineError::Runtime(crate::runtime::RuntimeError::ActionNotFound {
                             key: action_key,
                         });
-                    let _ = exec_state.mark_setup_failed(node_key.clone(), error.to_string());
+                    let _ = exec_state
+                        .mark_setup_failed(node_key.clone(), durable_error_envelope(&error));
                     return false;
                 };
                 NodeFactoryDispatch::DirectRegistry { factory }
@@ -2136,7 +2172,10 @@ impl WorkflowEngine {
                 let Some(factory) = factories.get(&node_key) else {
                     let _ = exec_state.mark_setup_failed(
                         node_key.clone(),
-                        "exact factory witness is missing a graph node".to_owned(),
+                        setup_refusal(
+                            ErrorCode::new(crate::error::codes::EXACT_FACTORY_UNAVAILABLE),
+                            "exact factory witness is missing a graph node",
+                        ),
                     );
                     return false;
                 };
@@ -2147,21 +2186,30 @@ impl WorkflowEngine {
                     Ok(nebula_plugin::PlanActionEffectContract::LegacyUndeclared) => {
                         let _ = exec_state.mark_setup_failed(
                             node_key.clone(),
-                            "legacy executable plan has no action effect declaration",
+                            setup_refusal(
+                                ErrorCode::new(crate::error::codes::UNSUPPORTED_RECORDED_SEMANTICS),
+                                "legacy executable plan has no action effect declaration",
+                            ),
                         );
                         return false;
                     },
                     Ok(nebula_plugin::PlanActionEffectContract::UnknownAction) => {
                         let _ = exec_state.mark_setup_failed(
                             node_key.clone(),
-                            "executable plan does not contain the requested action",
+                            setup_refusal(
+                                ErrorCode::new(crate::error::codes::EXACT_GRAPH_PROJECTION),
+                                "executable plan does not contain the requested action",
+                            ),
                         );
                         return false;
                     },
                     Err(_) => {
                         let _ = exec_state.mark_setup_failed(
                             node_key.clone(),
-                            "recorded action effect declaration failed integrity validation",
+                            setup_refusal(
+                                ErrorCode::new(crate::error::codes::CONTRACT_BUNDLE_INTEGRITY),
+                                "recorded action effect declaration failed integrity validation",
+                            ),
                         );
                         return false;
                     },
@@ -2169,7 +2217,10 @@ impl WorkflowEngine {
                 let Some(action_version) = node_def.interface_version.clone() else {
                     let _ = exec_state.mark_setup_failed(
                         node_key.clone(),
-                        "recorded action version is unavailable",
+                        setup_refusal(
+                            ErrorCode::new(crate::error::codes::MISSING_EXACT_RUNTIME),
+                            "recorded action version is unavailable",
+                        ),
                     );
                     return false;
                 };
@@ -2212,7 +2263,7 @@ impl WorkflowEngine {
                 // `override_node_state` (Pending → Failed is not a
                 // valid forward transition) and bumps the parent
                 // version for CAS readers (issues #255, #300).
-                let _ = exec_state.mark_setup_failed(node_key.clone(), e.to_string());
+                let _ = exec_state.mark_setup_failed(node_key.clone(), durable_error_envelope(&e));
                 return false;
             },
         };
@@ -2227,7 +2278,10 @@ impl WorkflowEngine {
         if let Err(err) = exec_state.start_node_attempt(node_key.clone()) {
             let _ = exec_state.mark_setup_failed(
                 node_key.clone(),
-                format!("cannot start node attempt: {err}"),
+                setup_refusal(
+                    ErrorCode::new(crate::error::codes::FRONTIER_INTEGRITY),
+                    format!("cannot start node attempt: {err}"),
+                ),
             );
             return false;
         }
@@ -2238,8 +2292,13 @@ impl WorkflowEngine {
             .and_then(|state| u64::try_from(state.attempt_count()).ok())
             .and_then(|count| count.checked_add(1))
         else {
-            let _ = exec_state
-                .mark_setup_failed(node_key.clone(), "node attempt generation is invalid");
+            let _ = exec_state.mark_setup_failed(
+                node_key.clone(),
+                setup_refusal(
+                    ErrorCode::new(crate::error::codes::FRONTIER_INTEGRITY),
+                    "node attempt generation is invalid",
+                ),
+            );
             return false;
         };
         let runtime = self.runtime.clone();
