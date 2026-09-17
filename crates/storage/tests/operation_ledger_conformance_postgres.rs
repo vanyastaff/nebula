@@ -2,8 +2,10 @@
 //!
 //! PostgreSQL is a deployment backend, so its absence is a job failure, never a
 //! silent substitution. With `NEBULA_REQUIRE_POSTGRES=1` and no `DATABASE_URL`,
-//! every case fails; without it a developer without a database sees the cases
-//! report the backend was unreachable and assert nothing.
+//! every case fails; without it a developer without a database still sees every
+//! case fail loudly naming the unreachable backend. A green run of this runner
+//! therefore always means the cases ran against a live database — a run that
+//! asserts nothing cannot look green.
 
 #![cfg(feature = "postgres")]
 
@@ -18,8 +20,8 @@ use tokio::sync::OnceCell;
 
 static SCHEMA_READY: OnceCell<()> = OnceCell::const_new();
 
-/// Connect to `DATABASE_URL` and apply the ordered migration catalog, or report
-/// that PostgreSQL is unreachable.
+/// Connect to `DATABASE_URL` and apply the ordered migration catalog, or return
+/// `None`, which every case turns into a loud failure naming the backend.
 ///
 /// The oracle folds a per-process namespace into every execution identity, so
 /// cases share one database without meeting an earlier run's slots.
@@ -72,7 +74,11 @@ async fn exact_read_does_not_wait_for_a_concurrent_row_writer() {
     use nebula_storage_port::store::OperationLedger;
 
     let Some(pool) = pool().await else {
-        return;
+        panic!(
+            "exact_read_does_not_wait_for_a_concurrent_row_writer: backend unreachable — the \
+             case cannot run and must fail rather than pass unchecked; reach the backend (set \
+             DATABASE_URL for postgres) or run without this feature"
+        );
     };
     let ledger = PgOperationLedger::new(pool.clone());
     let executions = nebula_storage::postgres::PgExecutionStore::new(pool.clone());
@@ -113,7 +119,11 @@ async fn legacy_upgrade_never_grants_and_terminal_evidence_survives_reopen() {
     use std::borrow::Cow;
     use std::str::FromStr;
     let Some(admin) = pool().await else {
-        return;
+        panic!(
+            "legacy_upgrade_never_grants_and_terminal_evidence_survives_reopen: backend \
+             unreachable — the case cannot run and must fail rather than pass unchecked; \
+             reach the backend (set DATABASE_URL for postgres) or run without this feature"
+        );
     };
     let schema = format!("ledger_upgrade_{}", uuid::Uuid::new_v4().simple());
     // The identifier contains only the fixed prefix and generated UUID hex.

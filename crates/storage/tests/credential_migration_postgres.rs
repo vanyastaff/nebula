@@ -5,7 +5,8 @@
 //! lifecycle transition and `0039 -> 0040` material-epoch/retry-gate transition
 //! without disturbing a developer database or racing other storage integration
 //! tests. As with the rest of the PostgreSQL suite, an absent `DATABASE_URL`
-//! skips cleanly while a configured but unusable database fails.
+//! fails loudly naming the backend while a configured but unusable database
+//! fails.
 
 #![cfg(feature = "postgres")]
 
@@ -719,8 +720,11 @@ async fn exercise_0040_migration(pool: &PgPool) -> TestResult<Migration0040Evide
 #[tokio::test]
 async fn postgres_0040_backfills_material_epoch_and_closes_retry_gate_shape() {
     let Some(database) = IsolatedDatabase::connect().await else {
-        eprintln!("DATABASE_URL not set — skipping");
-        return;
+        panic!(
+            "postgres_0040_backfills_material_epoch_and_closes_retry_gate_shape: backend \
+             unreachable — the case cannot run and must fail rather than pass unchecked; \
+             reach the backend (set DATABASE_URL for postgres) or run without this feature"
+        );
     };
 
     let outcome = exercise_0040_migration(&database.pool).await;
@@ -783,8 +787,11 @@ async fn postgres_0040_backfills_material_epoch_and_closes_retry_gate_shape() {
 #[tokio::test]
 async fn postgres_0038_to_0039_preserves_live_rows_and_converts_tombstones() {
     let Some(database) = IsolatedDatabase::connect().await else {
-        eprintln!("DATABASE_URL not set — skipping");
-        return;
+        panic!(
+            "postgres_0038_to_0039_preserves_live_rows_and_converts_tombstones: backend \
+             unreachable — the case cannot run and must fail rather than pass unchecked; \
+             reach the backend (set DATABASE_URL for postgres) or run without this feature"
+        );
     };
 
     let outcome = exercise_migration(&database.pool).await;
@@ -910,8 +917,11 @@ async fn postgres_0038_to_0039_preserves_live_rows_and_converts_tombstones() {
 #[tokio::test]
 async fn failed_0039_rolls_back_completely_and_can_retry_cleanly() -> TestResult<()> {
     let Some(database) = IsolatedDatabase::connect().await else {
-        eprintln!("DATABASE_URL not set — skipping");
-        return Ok(());
+        panic!(
+            "failed_0039_rolls_back_completely_and_can_retry_cleanly: backend unreachable — \
+             the case cannot run and must fail rather than pass unchecked; reach the backend \
+             (set DATABASE_URL for postgres) or run without this feature"
+        );
     };
     MIGRATOR.run_to(38, &database.pool).await?;
     sqlx::query("DROP INDEX idx_credentials_owner_name")

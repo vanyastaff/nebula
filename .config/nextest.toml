@@ -31,7 +31,19 @@ fail-fast = false
 # The runtime-repair scenario binary intentionally fails until the repair
 # tasks make each named case green. Ordinary/default and all-feature runs must
 # never absorb that evidence-only binary.
-default-filter = 'not binary(=runtime_repair_red_scenarios)'
+# Same rule, same reason, for the postgres-evidence binaries: every case in
+# them needs a live PostgreSQL, and their honest behavior without one is a loud
+# failure (a silently passing run asserted nothing, which is why their skip
+# paths were removed). A developer without a database must be able to run the
+# default gate green, so these binaries are excluded from the default profile
+# only. Their evidence is collected where the database lives: the CI
+# `postgres-conformance` job (`--profile ci`, live PostgreSQL,
+# `NEBULA_REQUIRE_POSTGRES=1`) and the pre-push gate's explicit
+# `DATABASE_URL`-gated runs (`--profile agent`). Both profiles carry their own
+# `default-filter` and are not affected by this list; when a new
+# postgres-only evidence binary is added, add it here and to the CI allowlist
+# in `.github/workflows/test-matrix.yml` in the same change.
+default-filter = 'not binary(=runtime_repair_red_scenarios) & not binary(/(refresh_claim|turn_handoff|revision_catalog|operation_ledger|credential_lifecycle|credential_migration|credential_schema_admission|resource_fanout|schema_setup)_(postgres|conformance_postgres|migration_postgres)/) & not binary(=pg_idempotency) & not binary(=postgres_control_queue_atomicity)'
 
 # Assign the trybuild binaries to the serialized group for EVERY profile
 # (default / ci / agent inherit default-profile overrides). Filter mirrors the

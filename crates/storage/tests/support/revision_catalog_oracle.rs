@@ -508,10 +508,12 @@ pub(crate) async fn drain_of_an_unknown_revision_is_unavailable(
 /// Generate one `#[tokio::test]` per shared case against `$catalog`.
 ///
 /// `$catalog` is an async expression yielding `Option<impl
-/// ExactRevisionCatalog>`; `None` means this backend is not reachable in the
-/// current environment and the case reports that rather than asserting against
-/// a substitute. Each case receives a distinct seed so the cases stay
-/// independent while sharing one durable store.
+/// ExactRevisionCatalog>`; `None` is a hard failure naming the unreachable
+/// backend, never a silent pass: a case body that returns early is counted as a
+/// pass, so a backend the case cannot run against has to fail loudly instead.
+/// A green run therefore means every case ran against a live backend. Each case
+/// receives a distinct seed so the cases stay independent while sharing one
+/// durable store.
 ///
 /// The including file must declare this module as `oracle`.
 #[macro_export]
@@ -582,11 +584,12 @@ macro_rules! revision_catalog_case {
         #[tokio::test]
         async fn $case() {
             let Some(catalog) = $catalog.await else {
-                eprintln!(concat!(
+                panic!(concat!(
                     stringify!($case),
-                    ": backend unreachable in this environment"
+                    ": backend unreachable — the case cannot run and must fail rather than \
+                     pass unchecked; reach the backend (set DATABASE_URL for postgres) or run \
+                     without this feature"
                 ));
-                return;
             };
             oracle::$case(&catalog, $seed).await;
         }

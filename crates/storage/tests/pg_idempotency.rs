@@ -1,7 +1,8 @@
 //! Postgres integration tests for [`PgIdempotencyStore`] (durable idempotent-replay cache).
 //!
-//! Mirrors the existing storage test convention: skip silently when
-//! `DATABASE_URL` is absent, fail loudly when it is set but unparsable.
+//! Mirrors the existing storage test convention: fail loudly naming the
+//! unreachable backend when `DATABASE_URL` is absent, fail loudly when it is
+//! set but unparsable.
 //! Each test scopes its rows to a randomly-generated cache key so
 //! parallel runs do not collide on the `cache_key` PRIMARY KEY.
 //!
@@ -27,7 +28,15 @@ static SCHEMA_READY: OnceCell<()> = OnceCell::const_new();
 async fn pool() -> Option<PgPool> {
     let url = match std::env::var("DATABASE_URL") {
         Ok(url) => url,
-        Err(std::env::VarError::NotPresent) => return None,
+        Err(std::env::VarError::NotPresent) => {
+            assert_ne!(
+                std::env::var("NEBULA_REQUIRE_POSTGRES").as_deref(),
+                Ok("1"),
+                "DATABASE_URL must be set when NEBULA_REQUIRE_POSTGRES=1: \
+                 PostgreSQL is a deployment backend and is never substituted"
+            );
+            return None;
+        },
         Err(err) => panic!("DATABASE_URL is set but invalid: {err}"),
     };
     let pool = PgPoolOptions::new()
@@ -72,8 +81,11 @@ fn record(body: &[u8], fingerprint: u8) -> CachedRecord {
 #[tokio::test]
 async fn round_trip_put_get_returns_equal_record() {
     let Some(pool) = pool().await else {
-        eprintln!("DATABASE_URL not set — skipping");
-        return;
+        panic!(
+            "round_trip_put_get_returns_equal_record: backend unreachable — the case cannot \
+             run and must fail rather than pass unchecked; reach the backend (set \
+             DATABASE_URL for postgres) or run without this feature"
+        );
     };
     let repo = PgIdempotencyStore::new(pool);
     let key = random_cache_key("rt");
@@ -101,8 +113,11 @@ async fn round_trip_put_get_returns_equal_record() {
 #[tokio::test]
 async fn concurrent_first_writer_wins() {
     let Some(pool) = pool().await else {
-        eprintln!("DATABASE_URL not set — skipping");
-        return;
+        panic!(
+            "concurrent_first_writer_wins: backend unreachable — the case cannot run and \
+             must fail rather than pass unchecked; reach the backend (set DATABASE_URL for \
+             postgres) or run without this feature"
+        );
     };
     let repo = PgIdempotencyStore::new(pool);
     let key = random_cache_key("cfww");
@@ -137,8 +152,11 @@ async fn concurrent_first_writer_wins() {
 #[tokio::test]
 async fn body_mismatch_race_keeps_first_record() {
     let Some(pool) = pool().await else {
-        eprintln!("DATABASE_URL not set — skipping");
-        return;
+        panic!(
+            "body_mismatch_race_keeps_first_record: backend unreachable — the case cannot \
+             run and must fail rather than pass unchecked; reach the backend (set \
+             DATABASE_URL for postgres) or run without this feature"
+        );
     };
     let repo = PgIdempotencyStore::new(pool);
     let key = random_cache_key("bmr");
@@ -164,8 +182,11 @@ async fn body_mismatch_race_keeps_first_record() {
 #[tokio::test]
 async fn ttl_expiry_drops_row_after_evict_expired() {
     let Some(pool) = pool().await else {
-        eprintln!("DATABASE_URL not set — skipping");
-        return;
+        panic!(
+            "ttl_expiry_drops_row_after_evict_expired: backend unreachable — the case cannot \
+             run and must fail rather than pass unchecked; reach the backend (set \
+             DATABASE_URL for postgres) or run without this feature"
+        );
     };
     let repo = PgIdempotencyStore::new(pool.clone());
     let key = random_cache_key("ttl");

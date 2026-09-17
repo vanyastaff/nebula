@@ -116,7 +116,11 @@ async fn wait_until_advisory_lock_is_held(pool: &PgPool, lock_key: i64) {
 #[tokio::test]
 async fn nonempty_unledgered_database_is_rejected_without_mutation() -> TestResult<()> {
     let Some(database) = IsolatedSchema::connect().await else {
-        return Ok(());
+        panic!(
+            "nonempty_unledgered_database_is_rejected_without_mutation: backend unreachable — the \
+             case cannot run and must fail rather than pass unchecked; reach the backend (set \
+             DATABASE_URL for postgres) or run without this feature"
+        );
     };
     sqlx::query("CREATE TABLE unrelated (value TEXT NOT NULL)")
         .execute(&database.pool)
@@ -165,7 +169,12 @@ async fn nonempty_unledgered_database_is_rejected_without_mutation() -> TestResu
 #[tokio::test]
 async fn abort_while_migration_blocked_releases_setup_lock_and_retry_succeeds() -> TestResult<()> {
     let Some(database) = IsolatedSchema::connect().await else {
-        return Ok(());
+        panic!(
+            "abort_while_migration_blocked_releases_setup_lock_and_retry_succeeds: \
+             backend unreachable — the case cannot run and must fail rather than \
+             pass unchecked; reach the backend (set DATABASE_URL for postgres) or run \
+             without this feature"
+        );
     };
     MIGRATOR.run_to(40, &database.pool).await?;
 

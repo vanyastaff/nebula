@@ -234,7 +234,12 @@ async fn insert_semantically_invalid_current_record(pool: &PgPool) -> TestResult
 async fn catalog_setup_ignores_credential_semantics_but_ready_store_rejects_unchanged()
 -> TestResult<()> {
     let Some(database) = IsolatedSchema::connect().await else {
-        return Ok(());
+        panic!(
+            "catalog_setup_ignores_credential_semantics_but_ready_store_rejects_unchanged: \
+             backend unreachable — the case cannot run and must fail rather than \
+             pass unchecked; reach the backend (set DATABASE_URL for postgres) or run \
+             without this feature"
+        );
     };
     let pool = database.raw_pool().await;
     init_schema(&pool).await?;
@@ -265,7 +270,12 @@ async fn catalog_setup_ignores_credential_semantics_but_ready_store_rejects_unch
 async fn catalog_setup_rejects_pre_0040_prefix_without_crossing_credential_boundary()
 -> TestResult<()> {
     let Some(database) = IsolatedSchema::connect().await else {
-        return Ok(());
+        panic!(
+            "catalog_setup_rejects_pre_0040_prefix_without_crossing_credential_boundary: \
+             backend unreachable — the case cannot run and must fail rather than \
+             pass unchecked; reach the backend (set DATABASE_URL for postgres) or run \
+             without this feature"
+        );
     };
     let pool = database.raw_pool().await;
     MIGRATOR.run_to(38, &pool).await?;
@@ -293,7 +303,11 @@ async fn catalog_setup_rejects_pre_0040_prefix_without_crossing_credential_bound
 #[tokio::test]
 async fn fresh_and_canonical_0038_schemas_are_admitted() -> TestResult<()> {
     let Some(fresh) = IsolatedSchema::connect().await else {
-        return Ok(());
+        panic!(
+            "fresh_and_canonical_0038_schemas_are_admitted: backend unreachable — the case \
+             cannot run and must fail rather than pass unchecked; reach the backend (set \
+             DATABASE_URL for postgres) or run without this feature"
+        );
     };
     let ready = PgCredentialPersistence::connect_with(fresh.options.clone()).await?;
     drop(ready);
@@ -306,7 +320,11 @@ async fn fresh_and_canonical_0038_schemas_are_admitted() -> TestResult<()> {
     fresh.cleanup().await;
 
     let Some(upgrade) = IsolatedSchema::connect().await else {
-        return Ok(());
+        panic!(
+            "fresh_and_canonical_0038_schemas_are_admitted: backend unreachable — the case \
+             cannot run and must fail rather than pass unchecked; reach the backend (set \
+             DATABASE_URL for postgres) or run without this feature"
+        );
     };
     let pool = upgrade.raw_pool().await;
     MIGRATOR.run_to(38, &pool).await?;
@@ -342,7 +360,11 @@ async fn fresh_and_canonical_0038_schemas_are_admitted() -> TestResult<()> {
 #[tokio::test]
 async fn ownerless_legacy_schema_is_rejected_without_migration() -> TestResult<()> {
     let Some(database) = IsolatedSchema::connect().await else {
-        return Ok(());
+        panic!(
+            "ownerless_legacy_schema_is_rejected_without_migration: backend unreachable — the \
+             case cannot run and must fail rather than pass unchecked; reach the backend (set \
+             DATABASE_URL for postgres) or run without this feature"
+        );
     };
     let pool = database.raw_pool().await;
     MIGRATOR.run_to(38, &pool).await?;
@@ -413,7 +435,12 @@ async fn release_rejection_matrix_preserves_postgres_logical_state() -> TestResu
         "duplicate-projected-name",
     ] {
         let Some(database) = IsolatedSchema::connect().await else {
-            return Ok(());
+            panic!(
+                "release_rejection_matrix_preserves_postgres_logical_state: backend unreachable \
+                 — the \
+                 case cannot run and must fail rather than pass unchecked; reach the backend \
+                 (set DATABASE_URL for postgres) or run without this feature"
+            );
         };
         let pool = database.raw_pool().await;
         if case == "below-floor" {
@@ -710,7 +737,11 @@ async fn release_rejection_matrix_preserves_postgres_logical_state() -> TestResu
 #[tokio::test]
 async fn concurrent_fresh_starters_serialize_the_schema_transition() -> TestResult<()> {
     let Some(database) = IsolatedSchema::connect().await else {
-        return Ok(());
+        panic!(
+            "concurrent_fresh_starters_serialize_the_schema_transition: backend unreachable — the \
+             case cannot run and must fail rather than pass unchecked; reach the backend (set \
+             DATABASE_URL for postgres) or run without this feature"
+        );
     };
     let lock_pool = database.raw_pool().await;
     let mut lock_connection = lock_pool.acquire().await?;
@@ -774,7 +805,11 @@ async fn concurrent_fresh_starters_serialize_the_schema_transition() -> TestResu
 #[tokio::test]
 async fn current_schema_rejects_same_named_dummy_constraint() -> TestResult<()> {
     let Some(database) = IsolatedSchema::connect().await else {
-        return Ok(());
+        panic!(
+            "current_schema_rejects_same_named_dummy_constraint: backend unreachable — the \
+             case cannot run and must fail rather than pass unchecked; reach the backend (set \
+             DATABASE_URL for postgres) or run without this feature"
+        );
     };
     drop(PgCredentialPersistence::connect_with(database.options.clone()).await?);
     let pool = database.raw_pool().await;
@@ -805,7 +840,11 @@ async fn current_schema_rejects_same_named_dummy_constraint() -> TestResult<()> 
 #[tokio::test]
 async fn current_schema_rejects_missing_claim_incident_uniqueness() -> TestResult<()> {
     let Some(database) = IsolatedSchema::connect().await else {
-        return Ok(());
+        panic!(
+            "current_schema_rejects_missing_claim_incident_uniqueness: backend unreachable — the \
+             case cannot run and must fail rather than pass unchecked; reach the backend (set \
+             DATABASE_URL for postgres) or run without this feature"
+        );
     };
     drop(PgCredentialPersistence::connect_with(database.options.clone()).await?);
     let pool = database.raw_pool().await;
@@ -838,7 +877,11 @@ async fn current_schema_rejects_missing_claim_incident_uniqueness() -> TestResul
 #[tokio::test]
 async fn current_schema_rejects_column_and_index_drift() -> TestResult<()> {
     let Some(column_drift) = IsolatedSchema::connect().await else {
-        return Ok(());
+        panic!(
+            "current_schema_rejects_column_and_index_drift: backend unreachable — the case \
+             cannot run and must fail rather than pass unchecked; reach the backend (set \
+             DATABASE_URL for postgres) or run without this feature"
+        );
     };
     drop(PgCredentialPersistence::connect_with(column_drift.options.clone()).await?);
     let pool = column_drift.raw_pool().await;
@@ -858,7 +901,11 @@ async fn current_schema_rejects_column_and_index_drift() -> TestResult<()> {
     column_drift.cleanup().await;
 
     let Some(index_drift) = IsolatedSchema::connect().await else {
-        return Ok(());
+        panic!(
+            "current_schema_rejects_column_and_index_drift: backend unreachable — the case \
+             cannot run and must fail rather than pass unchecked; reach the backend (set \
+             DATABASE_URL for postgres) or run without this feature"
+        );
     };
     drop(PgCredentialPersistence::connect_with(index_drift.options.clone()).await?);
     let pool = index_drift.raw_pool().await;
@@ -885,7 +932,11 @@ async fn current_schema_rejects_column_and_index_drift() -> TestResult<()> {
     index_drift.cleanup().await;
 
     let Some(ledger_drift) = IsolatedSchema::connect().await else {
-        return Ok(());
+        panic!(
+            "current_schema_rejects_column_and_index_drift: backend unreachable — the case \
+             cannot run and must fail rather than pass unchecked; reach the backend (set \
+             DATABASE_URL for postgres) or run without this feature"
+        );
     };
     drop(PgCredentialPersistence::connect_with(ledger_drift.options.clone()).await?);
     let pool = ledger_drift.raw_pool().await;
@@ -908,7 +959,11 @@ async fn current_schema_rejects_column_and_index_drift() -> TestResult<()> {
 #[tokio::test]
 async fn unledgered_sequence_is_not_misclassified_as_fresh() -> TestResult<()> {
     let Some(database) = IsolatedSchema::connect().await else {
-        return Ok(());
+        panic!(
+            "unledgered_sequence_is_not_misclassified_as_fresh: backend unreachable — the \
+             case cannot run and must fail rather than pass unchecked; reach the backend (set \
+             DATABASE_URL for postgres) or run without this feature"
+        );
     };
     let pool = database.raw_pool().await;
     sqlx::query("CREATE SEQUENCE existing_user_sequence")

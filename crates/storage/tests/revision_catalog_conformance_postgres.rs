@@ -3,8 +3,10 @@
 //! PostgreSQL is a deployment backend, so its absence is a job failure, never a
 //! silent substitution by SQLite or the in-memory reference model. With
 //! `NEBULA_REQUIRE_POSTGRES=1` and no `DATABASE_URL`, every case fails; without
-//! that variable a developer without a database sees the cases report that the
-//! backend was unreachable and assert nothing.
+//! it a developer without a database still sees every case fail loudly naming
+//! the unreachable backend. A green run of this runner therefore always means
+//! the cases ran against a live database — a run that asserts nothing cannot
+//! look green.
 //!
 //! Run locally via:
 //!   DATABASE_URL=postgres://... cargo nextest run \
@@ -38,8 +40,8 @@ fn registry() -> nebula_metrics::MetricsRegistry {
 
 static SCHEMA_READY: OnceCell<()> = OnceCell::const_new();
 
-/// Connect to `DATABASE_URL` and apply the ordered migration catalog, or report
-/// that PostgreSQL is unreachable.
+/// Connect to `DATABASE_URL` and apply the ordered migration catalog, or return
+/// `None`, which every case turns into a loud failure naming the backend.
 ///
 /// The oracle folds a per-process namespace into every identity, so cases share
 /// one database without meeting an earlier run's immutable revisions.
@@ -91,8 +93,11 @@ revision_catalog_conformance_suite!(catalog());
 #[tokio::test]
 async fn a_durably_corrupted_plan_body_is_reported_as_corruption() {
     let Some(pool) = pool().await else {
-        eprintln!("PostgreSQL unreachable in this environment");
-        return;
+        panic!(
+            "a_durably_corrupted_plan_body_is_reported_as_corruption: backend unreachable — \
+             the case cannot run and must fail rather than pass unchecked; reach the backend \
+             (set DATABASE_URL for postgres) or run without this feature"
+        );
     };
     let catalog = PgPlanFlavorCatalog::new(pool.clone(), &registry());
     let record = oracle::pair(0x40, 0, "v1");
@@ -124,8 +129,11 @@ async fn a_durably_corrupted_plan_body_is_reported_as_corruption() {
 #[tokio::test]
 async fn the_schema_refuses_a_record_format_the_catalog_cannot_read() {
     let Some(pool) = pool().await else {
-        eprintln!("PostgreSQL unreachable in this environment");
-        return;
+        panic!(
+            "the_schema_refuses_a_record_format_the_catalog_cannot_read: backend \
+             unreachable — the case cannot run and must fail rather than pass unchecked; \
+             reach the backend (set DATABASE_URL for postgres) or run without this feature"
+        );
     };
     let catalog = PgPlanFlavorCatalog::new(pool.clone(), &registry());
     let record = oracle::pair(0x41, 0, "v1");

@@ -46,8 +46,11 @@ fn unique(_label: &str) -> String {
 #[tokio::test]
 async fn a_queued_flavor_must_match_the_execution_live_reference() {
     let Some(fixture) = Fixture::new().await else {
-        eprintln!("PostgreSQL unreachable in this environment");
-        return;
+        panic!(
+            "a_queued_flavor_must_match_the_execution_live_reference: backend unreachable — \
+             the case cannot run and must fail rather than pass unchecked; reach the backend \
+             (set DATABASE_URL for postgres) or run without this feature"
+        );
     };
     let scope = scope();
     let execution = unique("flavor-mismatch");
@@ -77,10 +80,18 @@ fn scope() -> Scope {
 #[tokio::test]
 async fn recovery_scans_are_isolated_between_fixtures() {
     let Some(first) = Fixture::new().await else {
-        return;
+        panic!(
+            "recovery_scans_are_isolated_between_fixtures: backend unreachable — the case \
+             cannot run and must fail rather than pass unchecked; reach the backend (set \
+             DATABASE_URL for postgres) or run without this feature"
+        );
     };
     let Some(second) = Fixture::new().await else {
-        return;
+        panic!(
+            "recovery_scans_are_isolated_between_fixtures: backend unreachable — the case \
+             cannot run and must fail rather than pass unchecked; reach the backend (set \
+             DATABASE_URL for postgres) or run without this feature"
+        );
     };
     let scope = scope();
     let execution = unique("recovery-isolation");
@@ -234,8 +245,11 @@ impl Fixture {
 #[tokio::test]
 async fn accepting_a_turn_acknowledges_the_claim_in_one_commit() {
     let Some(fixture) = Fixture::new().await else {
-        eprintln!("PostgreSQL unreachable in this environment");
-        return;
+        panic!(
+            "accepting_a_turn_acknowledges_the_claim_in_one_commit: backend unreachable — \
+             the case cannot run and must fail rather than pass unchecked; reach the backend \
+             (set DATABASE_URL for postgres) or run without this feature"
+        );
     };
     let scope = scope();
     let execution = &unique("accept");
@@ -266,8 +280,11 @@ async fn accepting_a_turn_acknowledges_the_claim_in_one_commit() {
 #[tokio::test]
 async fn a_superseded_claim_cannot_accept_the_turn() {
     let Some(fixture) = Fixture::new().await else {
-        eprintln!("PostgreSQL unreachable in this environment");
-        return;
+        panic!(
+            "a_superseded_claim_cannot_accept_the_turn: backend unreachable — the case \
+             cannot run and must fail rather than pass unchecked; reach the backend (set \
+             DATABASE_URL for postgres) or run without this feature"
+        );
     };
     let scope = scope();
     let execution = &unique("superseded");
@@ -338,8 +355,11 @@ async fn a_superseded_claim_cannot_accept_the_turn() {
 #[tokio::test]
 async fn a_live_foreign_lease_blocks_the_turn_without_acknowledging_the_row() {
     let Some(fixture) = Fixture::new().await else {
-        eprintln!("PostgreSQL unreachable in this environment");
-        return;
+        panic!(
+            "a_live_foreign_lease_blocks_the_turn_without_acknowledging_the_row: backend \
+             unreachable — the case cannot run and must fail rather than pass unchecked; \
+             reach the backend (set DATABASE_URL for postgres) or run without this feature"
+        );
     };
     let scope = scope();
     let execution = &unique("contended");
@@ -374,8 +394,11 @@ async fn a_live_foreign_lease_blocks_the_turn_without_acknowledging_the_row() {
 #[tokio::test]
 async fn a_foreign_tenant_cannot_accept_the_turn() {
     let Some(fixture) = Fixture::new().await else {
-        eprintln!("PostgreSQL unreachable in this environment");
-        return;
+        panic!(
+            "a_foreign_tenant_cannot_accept_the_turn: backend unreachable — the case cannot \
+             run and must fail rather than pass unchecked; reach the backend (set \
+             DATABASE_URL for postgres) or run without this feature"
+        );
     };
     let scope = scope();
     let execution = &unique("tenant");
@@ -417,8 +440,11 @@ async fn a_foreign_tenant_cannot_accept_the_turn() {
 #[tokio::test]
 async fn a_claim_token_cannot_be_paired_with_another_execution() {
     let Some(fixture) = Fixture::new().await else {
-        eprintln!("PostgreSQL unreachable in this environment");
-        return;
+        panic!(
+            "a_claim_token_cannot_be_paired_with_another_execution: backend unreachable — \
+             the case cannot run and must fail rather than pass unchecked; reach the backend \
+             (set DATABASE_URL for postgres) or run without this feature"
+        );
     };
     let scope = scope();
     let claimed = unique("claimed");
