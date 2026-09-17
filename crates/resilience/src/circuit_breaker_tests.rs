@@ -529,9 +529,9 @@ fn invalid_failure_rate_threshold_rejected() {
 /// Pins constructor validity of the `Default` impl — the config the L1
 /// refresh fallback in `crates/credential` reaches for when its static
 /// config is rejected. If `CircuitBreakerConfig::default()` stopped
-/// satisfying `validate()`, that fallback would panic at
-/// `CircuitBreaker::new` instead of degrading gracefully, so this pins
-/// the invariant the fallback relies on.
+/// satisfying `validate()`, that fallback would hit its nested
+/// `unwrap_or_else`'s `unreachable!` (l1.rs) instead of degrading
+/// gracefully, so this pins the invariant the fallback relies on.
 #[test]
 fn default_config_is_constructor_valid() {
     assert!(
