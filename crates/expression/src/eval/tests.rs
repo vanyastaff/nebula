@@ -345,6 +345,19 @@ fn test_redos_escaped_quantifier_inside_group_is_true_by_design() {
 
 #[test]
 #[cfg(feature = "regex")]
+fn test_redos_unbalanced_groups_are_not_dangerous() {
+    // A group that never closes makes `find_group_end` return `None`,
+    // and the detector's `None => break` arm must stop the scan there —
+    // unbalanced groups are invalid regex shapes the engine will refuse
+    // later, not ReDoS shapes, so none of these is flagged dangerous.
+    assert!(!Evaluator::is_potentially_dangerous_regex("((("));
+    assert!(!Evaluator::is_potentially_dangerous_regex("(("));
+    assert!(!Evaluator::is_potentially_dangerous_regex("(a"));
+    assert!(!Evaluator::is_potentially_dangerous_regex("(a+"));
+}
+
+#[test]
+#[cfg(feature = "regex")]
 fn regex_cache_keeps_hot_pattern_under_load() {
     // ROADMAP #590: under the previous `keys().next()` eviction the hot
     // pattern could be thrown out because HashMap iteration order is
