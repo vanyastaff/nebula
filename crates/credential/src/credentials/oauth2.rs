@@ -26,7 +26,7 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 use super::oauth2_config;
 use crate::{
     CredentialContext, CredentialPolicy, CredentialState, PendingState, RefreshAttempt,
-    RefreshReport, RefreshStrategy, RevokeStrategy, SecretString,
+    RefreshReport, RefreshStrategy, RevokeStrategy, SecretString, StateWireFingerprint,
     error::{
         CredentialError, ProviderErrorContext, ProviderErrorKind, RefreshDiagnosticCode,
         RefreshErrorKind, RefreshFailureSpec, RetryAdvice, SecretFreeMessage,
@@ -58,7 +58,7 @@ use crate::{
 /// fields (token type, expiry, scopes, auth-style enum) carry
 /// `#[zeroize(skip)]`. `token_url` is scrubbed because provider-routing query
 /// parameters can contain tenant or credential-adjacent values.
-#[derive(Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
+#[derive(Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop, StateWireFingerprint)]
 pub struct OAuth2State {
     /// Current access token.
     #[serde(with = "crate::serde_secret")]

@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-use crate::{AuthScheme, SecretString, SharedKeyFamily, identity_state};
+use crate::{AuthScheme, SecretString, SharedKeyFamily, StateWireFingerprint, identity_state};
 
 /// A pre-shared symmetric key, optionally paired with an identity hint.
 ///
@@ -20,7 +20,9 @@ use crate::{AuthScheme, SecretString, SharedKeyFamily, identity_state};
 ///
 /// let key = SharedKey::new(SecretString::new("base64-encoded-key==")).with_identity("device-001");
 /// ```
-#[derive(Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop, AuthScheme)]
+#[derive(
+    Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop, AuthScheme, StateWireFingerprint,
+)]
 #[auth_scheme(pattern = SharedSecret, family = SharedKeyFamily, sensitive)]
 pub struct SharedKey {
     #[serde(with = "crate::serde_secret")]

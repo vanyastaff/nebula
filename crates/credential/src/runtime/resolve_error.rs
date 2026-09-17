@@ -13,6 +13,7 @@ use crate::error::{
     SecretFreeMessage,
 };
 use crate::resolve::ReauthReason;
+use crate::state_envelope::StateEnvelopeError;
 use crate::{CredentialPersistenceError, StoredCredential};
 
 /// Map a [`ResolveError`] onto the public [`CredentialError`] returned by the
@@ -49,8 +50,16 @@ pub(crate) fn resolve_error_to_credential_error(err: ResolveError) -> Credential
             )))
         },
         // Permanent data-integrity / configuration faults — no better on retry.
+        // The envelope choke-point failures are here as DISTINCT variants, not
+        // collapsed into Deserialize/KindMismatch/Internal: a stored shape this
+        // build cannot understand is a permanent, observable refusal.
         ResolveError::Deserialize { .. }
         | ResolveError::KindMismatch { .. }
+        | ResolveError::UnknownSchemaVersion { .. }
+        | ResolveError::StateVersionAxesDisagree { .. }
+        | ResolveError::EnvelopeKindMismatch { .. }
+        | ResolveError::SchemaFingerprintMismatch { .. }
+        | ResolveError::StateTooLarge { .. }
         | ResolveError::ExternalSourceNotWired => CredentialError::InvalidInput,
         // Permanent store faults for a specific row — missing or already
         // existing. Retrying will not change the outcome.
@@ -271,6 +280,130 @@ pub enum ResolveError {
         /// The scheme family pattern that rejected it.
         family_pattern: String,
     },
+    /// Stored state's shape version is newer than this build supports — from
+    /// the envelope's `interface_version`, or the row's `state_version` on the
+    /// legacy decode path. Fail closed: the row is left untouched.
+    #[error(
+        "credential {credential_id}: stored state version {stored_version} is newer than the \
+         version this build supports ({supported_version})"
+    )]
+    UnknownSchemaVersion {
+        /// Credential identifier.
+        credential_id: String,
+        /// Version recorded by the producer.
+        stored_version: u32,
+        /// This build's supported maximum for the state type.
+        supported_version: u32,
+    },
+    /// The envelope's `interface_version` disagrees with the row's
+    /// `state_version` axis — the two must agree (the envelope carries the
+    /// same value the row column records).
+    #[error(
+        "credential {credential_id}: state envelope version {envelope_version} disagrees with \
+         the stored row's state_version {row_version}"
+    )]
+    StateVersionAxesDisagree {
+        /// Credential identifier.
+        credential_id: String,
+        /// The envelope's `interface_version`.
+        envelope_version: u32,
+        /// The row column's `state_version`.
+        row_version: u32,
+    },
+    /// The envelope's `kind_tag` is not the kind this reader was invoked for.
+    /// The found value is deliberately not echoed — only the expected kind.
+    #[error(
+        "credential {credential_id}: stored state kind does not match the expected kind \
+         {expected}"
+    )]
+    EnvelopeKindMismatch {
+        /// Credential identifier.
+        credential_id: String,
+        /// Expected state kind (`CredentialState::KIND`).
+        expected: &'static str,
+    },
+    /// The envelope's schema fingerprint is not this build's fingerprint for
+    /// the state type — the stored wire shape is not the shape this build
+    /// understands. Fail closed before deserialization.
+    #[error(
+        "credential {credential_id}: stored state schema fingerprint {stored:#018x} does not \
+         match the fingerprint this build expects ({expected:#018x})"
+    )]
+    SchemaFingerprintMismatch {
+        /// Credential identifier.
+        credential_id: String,
+        /// This build's `SCHEMA_FINGERPRINT`.
+        expected: u64,
+        /// The fingerprint read from the envelope.
+        stored: u64,
+    },
+    /// The stored state's decrypted plaintext exceeds the reader's bound
+    /// (state_envelope::MAX_STATE_PLAINTEXT_BYTES), refused before any parse.
+    /// Fail closed: the row is left untouched.
+    #[error(
+        "credential {credential_id}: stored state plaintext is {bytes} bytes, above the \
+         supported bound of {limit} bytes"
+    )]
+    StateTooLarge {
+        /// Credential identifier.
+        credential_id: String,
+        /// The plaintext length observed.
+        bytes: usize,
+        /// The reader's bound.
+        limit: usize,
+    },
+}
+
+/// Map a state-envelope choke-point failure onto the resolve error taxonomy.
+///
+/// [`StateEnvelopeError::LegacyStateParseFailed`] maps to
+/// [`ResolveError::Deserialize`] — a corrupt non-envelope row keeps the
+/// pre-envelope classification. The envelope checks map to distinct variants
+/// so the refusal is observable as a shape/version/fingerprint/size mismatch,
+/// never collapsed into `Deserialize` or `KindMismatch`.
+pub(crate) fn envelope_error_to_resolve_error(
+    credential_id: String,
+    error: StateEnvelopeError,
+) -> ResolveError {
+    match error {
+        StateEnvelopeError::UnknownSchemaVersion {
+            stored_version,
+            supported_version,
+        } => ResolveError::UnknownSchemaVersion {
+            credential_id,
+            stored_version,
+            supported_version,
+        },
+        StateEnvelopeError::VersionAxesDisagree {
+            envelope_version,
+            row_version,
+        } => ResolveError::StateVersionAxesDisagree {
+            credential_id,
+            envelope_version,
+            row_version,
+        },
+        StateEnvelopeError::KindMismatch { expected } => ResolveError::EnvelopeKindMismatch {
+            credential_id,
+            expected,
+        },
+        StateEnvelopeError::SchemaFingerprintMismatch { expected, stored } => {
+            ResolveError::SchemaFingerprintMismatch {
+                credential_id,
+                expected,
+                stored,
+            }
+        },
+        StateEnvelopeError::StateTooLarge { bytes, limit } => ResolveError::StateTooLarge {
+            credential_id,
+            bytes,
+            limit,
+        },
+        StateEnvelopeError::LegacyStateParseFailed => ResolveError::Deserialize {
+            credential_id,
+            reason: "stored state is neither a valid state envelope nor legacy state JSON"
+                .to_owned(),
+        },
+    }
 }
 
 /// Fail-closed tombstone gate for the scoped resolution path.
@@ -354,6 +487,27 @@ mod tests {
                 credential_id: "cred_x".to_owned(),
                 expected: "a".to_owned(),
                 actual: "b".to_owned(),
+            },
+            // The four envelope choke-point refusals are permanent — the
+            // stored shape will never match this build on retry.
+            ResolveError::UnknownSchemaVersion {
+                credential_id: "cred_x".to_owned(),
+                stored_version: 9,
+                supported_version: 1,
+            },
+            ResolveError::StateVersionAxesDisagree {
+                credential_id: "cred_x".to_owned(),
+                envelope_version: 2,
+                row_version: 1,
+            },
+            ResolveError::EnvelopeKindMismatch {
+                credential_id: "cred_x".to_owned(),
+                expected: "oauth2",
+            },
+            ResolveError::SchemaFingerprintMismatch {
+                credential_id: "cred_x".to_owned(),
+                expected: 0x1234_5678_9abc_def0,
+                stored: 0xdead_beef_dead_beef,
             },
             ResolveError::ExternalSourceNotWired,
             ResolveError::Store(CredentialPersistenceError::NotFound),
@@ -578,6 +732,127 @@ mod tests {
         assert!(
             !matches!(mapped, CredentialError::Provider(_)),
             "F3 violation must not be mapped to a provider error (would trigger retries)"
+        );
+    }
+
+    #[test]
+    fn envelope_check_failures_map_to_distinct_resolve_errors() {
+        // Each envelope choke-point check keeps its own ResolveError variant —
+        // none collapses into Deserialize/KindMismatch.
+        let mapped = envelope_error_to_resolve_error(
+            "cred_x".to_owned(),
+            StateEnvelopeError::UnknownSchemaVersion {
+                stored_version: 9,
+                supported_version: 1,
+            },
+        );
+        assert!(
+            matches!(
+                &mapped,
+                ResolveError::UnknownSchemaVersion {
+                    credential_id,
+                    stored_version: 9,
+                    supported_version: 1,
+                } if credential_id == "cred_x"
+            ),
+            "unknown version must keep its variant, got {mapped:?}"
+        );
+
+        let mapped = envelope_error_to_resolve_error(
+            "cred_x".to_owned(),
+            StateEnvelopeError::VersionAxesDisagree {
+                envelope_version: 2,
+                row_version: 1,
+            },
+        );
+        assert!(
+            matches!(
+                &mapped,
+                ResolveError::StateVersionAxesDisagree {
+                    credential_id,
+                    envelope_version: 2,
+                    row_version: 1,
+                } if credential_id == "cred_x"
+            ),
+            "axis disagreement must keep its variant, got {mapped:?}"
+        );
+
+        let mapped = envelope_error_to_resolve_error(
+            "cred_x".to_owned(),
+            StateEnvelopeError::KindMismatch { expected: "oauth2" },
+        );
+        assert!(
+            matches!(
+                &mapped,
+                ResolveError::EnvelopeKindMismatch {
+                    credential_id,
+                    expected: "oauth2",
+                } if credential_id == "cred_x"
+            ),
+            "envelope kind mismatch must not collapse into row KindMismatch, got {mapped:?}"
+        );
+
+        let mapped = envelope_error_to_resolve_error(
+            "cred_x".to_owned(),
+            StateEnvelopeError::SchemaFingerprintMismatch {
+                expected: 0xaaaa,
+                stored: 0xbbbb,
+            },
+        );
+        assert!(
+            matches!(
+                &mapped,
+                ResolveError::SchemaFingerprintMismatch {
+                    credential_id,
+                    expected: 0xaaaa,
+                    stored: 0xbbbb,
+                } if credential_id == "cred_x"
+            ),
+            "fingerprint mismatch must keep its variant, got {mapped:?}"
+        );
+
+        let mapped = envelope_error_to_resolve_error(
+            "cred_x".to_owned(),
+            StateEnvelopeError::StateTooLarge {
+                bytes: 1_048_577,
+                limit: 1_048_576,
+            },
+        );
+        assert!(
+            matches!(
+                &mapped,
+                ResolveError::StateTooLarge {
+                    credential_id,
+                    bytes: 1_048_577,
+                    limit: 1_048_576,
+                } if credential_id == "cred_x"
+            ),
+            "an oversized plaintext must keep its variant, got {mapped:?}"
+        );
+        let mapped = resolve_error_to_credential_error(mapped);
+        assert!(
+            matches!(mapped, CredentialError::InvalidInput),
+            "an oversized stored plaintext is a permanent, non-retryable refusal, got {mapped:?}"
+        );
+    }
+
+    #[test]
+    fn corrupt_legacy_payload_keeps_deserialize_classification() {
+        // A non-envelope payload that also fails legacy JSON parse keeps the
+        // pre-envelope classification — envelope checks are not implicated.
+        let mapped = envelope_error_to_resolve_error(
+            "cred_x".to_owned(),
+            StateEnvelopeError::LegacyStateParseFailed,
+        );
+        assert!(
+            matches!(
+                &mapped,
+                ResolveError::Deserialize {
+                    credential_id,
+                    ..
+                } if credential_id == "cred_x"
+            ),
+            "corrupt legacy bytes must map to Deserialize, got {mapped:?}"
         );
     }
 }

@@ -190,9 +190,11 @@ Dev: `nebula-credential-macros`, `nebula-expression`, `trybuild`, `insta`, `rste
   оборачивает outbound call через resilience; повтор узла выполняет engine после typed retryable
   failure по `NodeDefinition.retry_policy` / `WorkflowConfig.retry_policy`. Retry hint не даёт
   дополнительных попыток или полномочий на внешний эффект.
-- **Риск bind-population:** `FromWorkflowNode` готов как consumer-конец, но producer (прод-резолвер
-  credential→slot) — frontier на стороне `nebula-resource`/`nebula-credential`. Пока producer не зрелый,
-  end-to-end slot-binding нельзя считать закрытым со стороны action.
+- **Риск bind-population:** `FromWorkflowNode` готов как consumer-конец. Credential-сторона
+  producer'а закрыта 2026-09-13 (`CredentialSlotResolver` вызывается на execution-пути engine);
+  открыт остаётся resource-half — прод-резолвер на стороне `nebula-resource` (`register_and_bind`
+  живых вызывающих не получил). Пока resource-producer не зрелый, end-to-end slot-binding
+  нельзя считать закрытым со стороны action.
 - **Phase-5 revised proposal, implementation pending** —
   [контракт](../../schema/docs/PHASE5_PROPERTY.md) сохраняет явные `Input` / `Output`,
   `execute(&self, input, ...)`, `FromWorkflowNode` и существующие behavior families.

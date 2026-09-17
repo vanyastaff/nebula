@@ -4,7 +4,7 @@
 |-------|-------|
 | **Status** | Partial — самый нагруженный, load-bearing крейт (`engine.rs` ~9.8k строк, признан в AGENTS.md «largest, load-bearing») |
 | **Layer** | Composition root / оркестратор исполнения workflow (L2 control-plane) |
-| **Redesign role** | **Затронут с обеих сторон.** Credential: после ADR-0092 runtime (resolver/refresh/lease/rotation-state) уехал в `nebula-credential`; последний остаток credential-модуля — `default_in_memory_coordinator()` — удалён (sole-management-writer), в engine остались только accessor-мосты. Resource: engine — место будущего bind-population (M12.4); `rotation.rs` ре-экспортирует fan-out из `nebula-resource`. |
+| **Redesign role** | **Затронут с обеих сторон.** Credential: после ADR-0092 runtime (resolver/refresh/lease/rotation-state) уехал в `nebula-credential`; последний остаток credential-модуля — `default_in_memory_coordinator()` — удалён (sole-management-writer), а credential-сторона bind-population (M12.4) закрыта 2026-09-13: `CredentialSlotResolver` подключён через `with_credential_resolver` и вызывается на execution-пути. Resource: из bind-population открыт resource-half (`register_and_bind` живых вызывающих не получил); `rotation.rs` в дереве отсутствует — при возвращении ротации fan-out shim должен жить в `nebula-resource`. |
 | **Related** | ADR-0092, ADR-0088, ADR-0008 (control plane), ADR-0016 (cancellation), ADR-0068 (layered retry), ADR-0050, PRODUCT_CANON §10/§11.1/§11.2/§12.2/§12.5 |
 
 ---

@@ -153,6 +153,9 @@ pub mod runtime;
 pub(crate) mod service;
 /// Credential snapshot.
 pub(crate) mod snapshot;
+/// Version-envelope wire format for persisted credential state — the single
+/// fail-closed decode/write choke point (ADR-0107 Seam 2).
+pub(crate) mod state_envelope;
 
 // ── Root re-exports ─────────────────────────────────────────────────────────
 // Commonly-used types available directly as `nebula_credential::TypeName`.
@@ -167,7 +170,7 @@ pub use contract::{
     AnyCredential, Capabilities, CompletedDispatch, CompletedResponseProof, Credential,
     CredentialRegistry, CredentialState, Dynamic, Interactive, NoPendingState, PendingState,
     PendingToken, RefreshAttempt, RefreshDispatchError, RefreshExecutionMode, RefreshReport,
-    Refreshable, RegisterError, Revocable, Testable, compute_capabilities,
+    Refreshable, RegisterError, Revocable, StateWireFingerprint, Testable, compute_capabilities,
 };
 // Resolve types
 pub use contract::{
@@ -193,10 +196,11 @@ pub use nebula_core::{CredentialId, CredentialKey, credential_key};
 // (schema-of properties: `Self::Properties: HasSchema` is the single source of truth).
 pub use nebula_schema::schema_of;
 // Authoring macros. `credential` is the canonical ADR-0088 D1 attribute macro
-// (one-impl-block authoring); `AuthScheme` derives the scheme's `AuthPattern`.
+// (one-impl-block authoring); `AuthScheme` derives the scheme's `AuthPattern`;
+// `StateWireFingerprint` derives the wire-shape fingerprint const.
 // (The legacy `#[derive(Credential)]` was removed — the attribute macro covers
 // every case and infers capabilities from method presence.)
-pub use nebula_credential_macros::{AuthScheme, credential};
+pub use nebula_credential_macros::{AuthScheme, StateWireFingerprint, credential};
 // Opt-out built-in (lives at root, not under credentials::, because it has
 // no Input form and is never registered in CredentialRegistry — it's a
 // Resource-side type marker per credential isolation).
@@ -273,6 +277,7 @@ pub use crate::{
     },
     record::CredentialRecord,
     snapshot::{CredentialSnapshot, SnapshotError},
+    state_envelope::StateEnvelopeError,
 };
 
 // CredentialService facade (ADR-0092, relocated from nebula-credential-runtime).
@@ -308,7 +313,7 @@ pub mod prelude {
         CredentialRegistry, CredentialService, CredentialState, DeprecationNotice, Dynamic,
         ExternalScheme, Icon, Interactive, MaturityLevel, PublicScheme, RefreshAttempt,
         RefreshExecutionMode, RefreshReport, Refreshable, Revocable, SecretString, SensitiveScheme,
-        Testable, credential, credential_key, schema_of,
+        StateWireFingerprint, Testable, credential, credential_key, schema_of,
     };
 }
 

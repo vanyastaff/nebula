@@ -94,7 +94,7 @@ use nebula_credential::runtime::{
 use nebula_credential::{
     CredentialContext, CredentialMetadataDraft, CredentialRegistry, CredentialService, DispatchOps,
     ErasedPendingStore, NoopObserver, RefreshAttempt, RefreshReport, SecretString, StateSource,
-    identity_state, register_refreshable_ops, register_runtime_ops,
+    StateWireFingerprint, identity_state, register_refreshable_ops, register_runtime_ops,
 };
 use nebula_schema::Schema;
 use nebula_storage::credential::{
@@ -164,7 +164,7 @@ impl SchemeFamily for ProbeFamily {
 
 /// Stored state == projected scheme (identity). Holds material, so it is
 /// `Sensitive`; `generation` lets `refresh` produce visibly rotated bytes.
-#[derive(Serialize, Deserialize, Clone, Zeroize, ZeroizeOnDrop)]
+#[derive(Serialize, Deserialize, Clone, Zeroize, ZeroizeOnDrop, StateWireFingerprint)]
 struct ProbeScheme {
     token: String,
     generation: u32,

@@ -18,12 +18,12 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::{
     Credential, CredentialContext, CredentialError, CredentialMetadataDraft, CredentialState,
-    StaticResolveResult,
+    StateWireFingerprint, StaticResolveResult,
 };
 
 /// State for [`NoCredential`]. Carries no data — it is the type-level marker
 /// the credential subsystem hands resources that don't bind any auth material.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, StateWireFingerprint)]
 pub struct NoCredentialState;
 
 impl Zeroize for NoCredentialState {

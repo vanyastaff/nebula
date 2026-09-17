@@ -42,5 +42,5 @@ pub use resolve::{
     StaticResolveResult, TestFailureCode, TestResult, UserInput,
 };
 pub use revocable::Revocable;
-pub use state::CredentialState;
+pub use state::{CredentialState, StateWireFingerprint};
 pub use testable::Testable;
