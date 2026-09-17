@@ -344,91 +344,23 @@ impl Accumulator {
                 *row_count += 1;
             },
 
-            // COUNT DISTINCT — skip null/missing (documented behavior).
             (
                 Accumulator::CountDistinct {
                     distinct_serialized,
                 },
                 Aggregation::CountDistinct { field, .. },
             ) => {
-                if let Some(field_value) = element.get(field.as_str())
-                    && !field_value.is_null()
-                {
-                    // Serialize to string for set membership; serde_json
-                    // produces a canonical representation that distinguishes
-                    // types (1 != "1" != 1.0).
-                    distinct_serialized.insert(field_value.to_string());
-                }
+                Self::feed_count_distinct(distinct_serialized, element, field);
             },
 
-            // SUM (integer path) — preserves i64 when all values are integers;
-            // upgrades to SumFloat on the first u64-only or floating-point value.
-            //
-            // Matching on `v.is_number()` then trying i64 first (covers both i64
-            // and all integers ≤ i64::MAX) then falling through to as_f64 (covers
-            // u64 > i64::MAX and genuine floats — serde_json's as_f64 returns Some
-            // for any Number) avoids any expect/unreachable in library code.
             (acc @ Accumulator::SumInt { .. }, Aggregation::Sum { field, out }) => {
-                match element.get(field.as_str()) {
-                    Some(v) if v.is_number() => {
-                        if let Some(addend) = v.as_i64() {
-                            // Fast path: i64-representable integer — stay integer.
-                            if let Accumulator::SumInt { integer_total } = acc {
-                                *integer_total = integer_total
-                                    .checked_add(addend)
-                                    .ok_or_else(|| ActionError::fatal("aggregate: sum overflow"))?;
-                            }
-                        } else if let Some(addend) = v.as_f64() {
-                            // Upgrade path: u64 above i64::MAX, or a float literal.
-                            // i64 → f64: precision may degrade for very large integers,
-                            // but JSON numbers with that many digits are already f64-lossy
-                            // at parse time, so no additional precision is lost here.
-                            let prior = if let Accumulator::SumInt { integer_total } = &*acc {
-                                *integer_total as f64
-                            } else {
-                                0.0 // unreachable: arm guard `acc @ SumInt` holds
-                            };
-                            *acc = Accumulator::SumFloat {
-                                float_total: prior + addend,
-                            };
-                        } else {
-                            // is_number() true but neither i64 nor f64 representable —
-                            // treat as a dirty value (subject to on_error policy).
-                            return apply_dirty_value_policy(
-                                field,
-                                out,
-                                v.type_name_str(),
-                                dirty_value_policy,
-                            );
-                        }
-                    },
-                    Some(v) if v.is_null() => {
-                        return apply_dirty_value_policy(field, out, "null", dirty_value_policy);
-                    },
-                    None => {
-                        return apply_dirty_value_policy(field, out, "missing", dirty_value_policy);
-                    },
-                    Some(v) => {
-                        return apply_dirty_value_policy(
-                            field,
-                            out,
-                            v.type_name_str(),
-                            dirty_value_policy,
-                        );
-                    },
-                }
+                Self::feed_sum_int(acc, element, field, out, dirty_value_policy)?;
             },
 
-            // SUM (float path) — reached after the first float caused an upgrade.
             (Accumulator::SumFloat { float_total }, Aggregation::Sum { field, out }) => {
-                if let Some((_, addend)) =
-                    numeric_addend_or_dirty(element, field.as_str(), out, dirty_value_policy)?
-                {
-                    *float_total += addend;
-                }
+                Self::feed_sum_float(float_total, element, field, out, dirty_value_policy)?;
             },
 
-            // AVG
             (
                 Accumulator::Avg {
                     running_sum,
@@ -436,76 +368,30 @@ impl Accumulator {
                 },
                 Aggregation::Avg { field, out },
             ) => {
-                if let Some((_, addend)) =
-                    numeric_addend_or_dirty(element, field.as_str(), out, dirty_value_policy)?
-                {
-                    *running_sum += addend;
-                    *contributing_count += 1;
-                }
+                Self::feed_avg(
+                    running_sum,
+                    contributing_count,
+                    element,
+                    field,
+                    out,
+                    dirty_value_policy,
+                )?;
             },
 
-            // MIN
             (Accumulator::Min { current_min }, Aggregation::Min { field, out }) => {
-                // `as_f64_strict` is the numeric-type guard only; the actual
-                // min is decided by exact comparison so large integers survive.
-                if let Some((field_value, _)) =
-                    numeric_addend_or_dirty(element, field.as_str(), out, dirty_value_policy)?
-                {
-                    let is_new_minimum = match current_min.as_ref() {
-                        None => true,
-                        Some(prior) => compare_ordered(field_value, prior)?.is_lt(),
-                    };
-                    if is_new_minimum {
-                        *current_min = Some(field_value.clone());
-                    }
-                }
+                Self::feed_min(current_min, element, field, out, dirty_value_policy)?;
             },
 
-            // MAX
             (Accumulator::Max { current_max }, Aggregation::Max { field, out }) => {
-                // `as_f64_strict` is the numeric-type guard only; the actual
-                // max is decided by exact comparison so large integers survive.
-                if let Some((field_value, _)) =
-                    numeric_addend_or_dirty(element, field.as_str(), out, dirty_value_policy)?
-                {
-                    let is_new_maximum = match current_max.as_ref() {
-                        None => true,
-                        Some(prior) => compare_ordered(field_value, prior)?.is_gt(),
-                    };
-                    if is_new_maximum {
-                        *current_max = Some(field_value.clone());
-                    }
-                }
+                Self::feed_max(current_max, element, field, out, dirty_value_policy)?;
             },
 
-            // COLLECT — skip null/missing (documented).
             (Accumulator::Collect { collected_values }, Aggregation::Collect { field, .. }) => {
-                if let Some(field_value) = element.get(field.as_str())
-                    && !field_value.is_null()
-                {
-                    collected_values.push(field_value.clone());
-                }
+                Self::feed_collect(collected_values, element, field);
             },
 
-            // JOIN — skip null/missing (documented). A non-null, non-string
-            // value is a *dirty value* subject to `on_error` (Fatal under
-            // `fail`, skipped under `skip`), exactly like the numeric
-            // aggregations — it is NOT silently dropped, and numbers are NOT
-            // coerced to strings (that would be a hidden type mutation; see
-            // `as_f64_strict`).
             (Accumulator::Join { joined_parts, .. }, Aggregation::Join { field, out, .. }) => {
-                match element.get(field.as_str()) {
-                    None | Some(Value::Null) => {},
-                    Some(Value::String(string_value)) => joined_parts.push(string_value.clone()),
-                    Some(other) => {
-                        return apply_dirty_value_policy(
-                            field,
-                            out,
-                            other.type_name_str(),
-                            dirty_value_policy,
-                        );
-                    },
-                }
+                Self::feed_join(joined_parts, element, field, out, dirty_value_policy)?;
             },
 
             // Every (Accumulator, Aggregation) pair is constructed in
@@ -517,6 +403,183 @@ impl Accumulator {
                     "aggregate: internal — accumulator variant does not match aggregation variant; \
                      callers must zip the same aggregation list used in Accumulator::new",
                 ));
+            },
+        }
+        Ok(())
+    }
+
+    /// COUNT DISTINCT — skip null/missing (documented behavior).
+    fn feed_count_distinct(
+        distinct_serialized: &mut std::collections::HashSet<String>,
+        element: &Value,
+        field: &str,
+    ) {
+        if let Some(field_value) = element.get(field)
+            && !field_value.is_null()
+        {
+            // Serialize to string for set membership; serde_json
+            // produces a canonical representation that distinguishes
+            // types (1 != "1" != 1.0).
+            distinct_serialized.insert(field_value.to_string());
+        }
+    }
+
+    /// SUM (integer path) — preserves i64 when all values are integers;
+    /// upgrades to SumFloat on the first u64-only or floating-point value.
+    ///
+    /// Matching on `v.is_number()` then trying i64 first (covers both i64
+    /// and all integers ≤ i64::MAX) then falling through to as_f64 (covers
+    /// u64 > i64::MAX and genuine floats — serde_json's as_f64 returns Some
+    /// for any Number) avoids any expect/unreachable in library code.
+    fn feed_sum_int(
+        acc: &mut Accumulator,
+        element: &Value,
+        field: &str,
+        out: &str,
+        policy: OnError,
+    ) -> Result<(), ActionError> {
+        match element.get(field) {
+            Some(v) if v.is_number() => {
+                if let Some(addend) = v.as_i64() {
+                    // Fast path: i64-representable integer — stay integer.
+                    if let Accumulator::SumInt { integer_total } = acc {
+                        *integer_total = integer_total
+                            .checked_add(addend)
+                            .ok_or_else(|| ActionError::fatal("aggregate: sum overflow"))?;
+                    }
+                } else if let Some(addend) = v.as_f64() {
+                    // Upgrade path: u64 above i64::MAX, or a float literal.
+                    // i64 → f64: precision may degrade for very large integers,
+                    // but JSON numbers with that many digits are already f64-lossy
+                    // at parse time, so no additional precision is lost here.
+                    let prior = if let Accumulator::SumInt { integer_total } = &*acc {
+                        *integer_total as f64
+                    } else {
+                        0.0 // unreachable: arm guard `acc @ SumInt` holds
+                    };
+                    *acc = Accumulator::SumFloat {
+                        float_total: prior + addend,
+                    };
+                } else {
+                    // is_number() true but neither i64 nor f64 representable —
+                    // treat as a dirty value (subject to on_error policy).
+                    return apply_dirty_value_policy(field, out, v.type_name_str(), policy);
+                }
+            },
+            Some(v) if v.is_null() => {
+                return apply_dirty_value_policy(field, out, "null", policy);
+            },
+            None => {
+                return apply_dirty_value_policy(field, out, "missing", policy);
+            },
+            Some(v) => {
+                return apply_dirty_value_policy(field, out, v.type_name_str(), policy);
+            },
+        }
+        Ok(())
+    }
+
+    /// SUM (float path) — reached after the first float caused an upgrade.
+    fn feed_sum_float(
+        float_total: &mut f64,
+        element: &Value,
+        field: &str,
+        out: &str,
+        policy: OnError,
+    ) -> Result<(), ActionError> {
+        if let Some((_, addend)) = numeric_addend_or_dirty(element, field, out, policy)? {
+            *float_total += addend;
+        }
+        Ok(())
+    }
+
+    /// AVG — advance the running mean state with one numeric element.
+    fn feed_avg(
+        running_sum: &mut f64,
+        contributing_count: &mut u64,
+        element: &Value,
+        field: &str,
+        out: &str,
+        policy: OnError,
+    ) -> Result<(), ActionError> {
+        if let Some((_, addend)) = numeric_addend_or_dirty(element, field, out, policy)? {
+            *running_sum += addend;
+            *contributing_count += 1;
+        }
+        Ok(())
+    }
+
+    /// MIN — replace the running minimum when the element is numerically lower.
+    fn feed_min(
+        current_min: &mut Option<Value>,
+        element: &Value,
+        field: &str,
+        out: &str,
+        policy: OnError,
+    ) -> Result<(), ActionError> {
+        // `as_f64_strict` is the numeric-type guard only; the actual
+        // min is decided by exact comparison so large integers survive.
+        if let Some((field_value, _)) = numeric_addend_or_dirty(element, field, out, policy)? {
+            let is_new_minimum = match current_min.as_ref() {
+                None => true,
+                Some(prior) => compare_ordered(field_value, prior)?.is_lt(),
+            };
+            if is_new_minimum {
+                *current_min = Some(field_value.clone());
+            }
+        }
+        Ok(())
+    }
+
+    /// MAX — replace the running maximum when the element is numerically higher.
+    fn feed_max(
+        current_max: &mut Option<Value>,
+        element: &Value,
+        field: &str,
+        out: &str,
+        policy: OnError,
+    ) -> Result<(), ActionError> {
+        // `as_f64_strict` is the numeric-type guard only; the actual
+        // max is decided by exact comparison so large integers survive.
+        if let Some((field_value, _)) = numeric_addend_or_dirty(element, field, out, policy)? {
+            let is_new_maximum = match current_max.as_ref() {
+                None => true,
+                Some(prior) => compare_ordered(field_value, prior)?.is_gt(),
+            };
+            if is_new_maximum {
+                *current_max = Some(field_value.clone());
+            }
+        }
+        Ok(())
+    }
+
+    /// COLLECT — skip null/missing (documented).
+    fn feed_collect(collected_values: &mut Vec<Value>, element: &Value, field: &str) {
+        if let Some(field_value) = element.get(field)
+            && !field_value.is_null()
+        {
+            collected_values.push(field_value.clone());
+        }
+    }
+
+    /// JOIN — skip null/missing (documented). A non-null, non-string
+    /// value is a *dirty value* subject to `on_error` (Fatal under
+    /// `fail`, skipped under `skip`), exactly like the numeric
+    /// aggregations — it is NOT silently dropped, and numbers are NOT
+    /// coerced to strings (that would be a hidden type mutation; see
+    /// `as_f64_strict`).
+    fn feed_join(
+        joined_parts: &mut Vec<String>,
+        element: &Value,
+        field: &str,
+        out: &str,
+        policy: OnError,
+    ) -> Result<(), ActionError> {
+        match element.get(field) {
+            None | Some(Value::Null) => {},
+            Some(Value::String(string_value)) => joined_parts.push(string_value.clone()),
+            Some(other) => {
+                return apply_dirty_value_policy(field, out, other.type_name_str(), policy);
             },
         }
         Ok(())
