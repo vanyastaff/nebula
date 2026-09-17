@@ -131,7 +131,10 @@ struct ExpressionEnd {
 /// `from` is the index of the first character after the opening `{{`, at
 /// `start_line`/`start_column`. Returns the index of the closing braces'
 /// first `}` together with the line/column of the character just before them,
-/// or `None` when the source exhausts without a closing `}}`.
+/// or `None` when the source exhausts without a closing `}}`. The returned
+/// position excludes the braces themselves because the scan returns as soon as
+/// `}}` is recognised — before the per-character line/column update runs on
+/// them — so the caller must add 2 to the column.
 fn find_expression_end(
     chars: &[char],
     from: usize,
@@ -139,15 +142,15 @@ fn find_expression_end(
     start_column: usize,
 ) -> Option<ExpressionEnd> {
     let len = chars.len();
-    let mut j = from;
+    let mut scan = from;
     let mut object_depth = 0_usize;
     let mut quote = None;
     let mut escaped = false;
     let mut end_line = start_line;
     let mut end_column = start_column;
 
-    while j < len {
-        let character = chars[j];
+    while scan < len {
+        let character = chars[scan];
         if let Some(delimiter) = quote {
             if escaped {
                 escaped = false;
@@ -161,9 +164,9 @@ fn find_expression_end(
                 '\'' | '"' => quote = Some(character),
                 '{' => object_depth += 1,
                 '}' if object_depth > 0 => object_depth -= 1,
-                '}' if chars.get(j + 1) == Some(&'}') => {
+                '}' if chars.get(scan + 1) == Some(&'}') => {
                     return Some(ExpressionEnd {
-                        index: j,
+                        index: scan,
                         line: end_line,
                         column: end_column,
                     });
@@ -171,46 +174,46 @@ fn find_expression_end(
                 _ => {},
             }
         }
-        if chars[j] == '\n' {
+        if character == '\n' {
             end_line += 1;
             end_column = 1;
         } else {
             end_column += 1;
         }
-        j += 1;
+        scan += 1;
     }
     None
 }
 
 /// Strip the whitespace-control markers around an expression body.
 ///
-/// `expr_start_idx` is the index of the first character after the opening `{{`
-/// and `expr_end_idx` the index of the closing braces' first `}`. A leading
+/// `content_start` is the index of the first character after the opening `{{`
+/// and `content_end` the index of the closing braces' first `}`. A leading
 /// `-` (`{{-`) or a trailing `-` before the closing braces (`-}}`) sets the
 /// corresponding strip flag and narrows the body on that side. Returns
-/// `(expr_start_idx, expr_end_idx, strip_left, strip_right)`.
+/// `(content_start, content_end, strip_left, strip_right)`.
 fn parse_strip_markers(
     chars: &[char],
-    mut expr_start_idx: usize,
-    mut expr_end_idx: usize,
+    mut content_start: usize,
+    mut content_end: usize,
 ) -> (usize, usize, bool, bool) {
     let len = chars.len();
     let mut strip_left = false;
     let mut strip_right = false;
 
     // Check for {{- (strip left)
-    if expr_start_idx < len && chars[expr_start_idx] == '-' {
+    if content_start < len && chars[content_start] == '-' {
         strip_left = true;
-        expr_start_idx += 1;
+        content_start += 1;
     }
 
     // Check for -}} (strip right)
-    if expr_end_idx > 0 && chars[expr_end_idx - 1] == '-' {
+    if content_end > 0 && chars[content_end - 1] == '-' {
         strip_right = true;
-        expr_end_idx -= 1;
+        content_end -= 1;
     }
 
-    (expr_start_idx, expr_end_idx, strip_left, strip_right)
+    (content_start, content_end, strip_left, strip_right)
 }
 
 /// Enforce the expression-count limit (DoS protection).
@@ -327,16 +330,21 @@ impl Template {
 
         let chars: Vec<char> = source.chars().collect();
         let len = chars.len();
-        let mut i = 0;
+        let mut char_index = 0;
         let mut byte_offset = 0;
         let mut line = 1;
         let mut column = 1;
 
-        while i < len {
+        // `char_index` counts characters; it feeds `Position::offset` (a
+        // 0-based *character* offset) and indexes `chars`. `byte_offset`
+        // counts bytes and slices `source.as_bytes()` for token lookahead.
+        // The two stay in lockstep only because every advance below adds the
+        // UTF-8 width of exactly the characters stepped over.
+        while char_index < len {
             let token = template_token(&source.as_bytes()[byte_offset..]);
             if let TemplateToken::Escaped { width, text } = token {
                 current_static.push_str(text);
-                i += width;
+                char_index += width;
                 byte_offset += width;
                 column += width;
                 continue;
@@ -346,14 +354,15 @@ impl Template {
                 // Save any accumulated static content
                 Self::flush_static(&mut parts, &mut current_static, static_start);
 
-                let expr_start = Position::new(line, column, i);
+                let expression_start = Position::new(line, column, char_index);
 
                 // Find closing }}
-                let Some(end) = find_expression_end(&chars, i + 2, line, column + 2) else {
+                let Some(end) = find_expression_end(&chars, char_index + 2, line, column + 2)
+                else {
                     // Unclosed {{ - this is an error
                     let formatted_error = format_template_error(
                         source,
-                        expr_start,
+                        expression_start,
                         "Unclosed '{{' - expected closing '}}'",
                         None,
                     );
@@ -361,20 +370,20 @@ impl Template {
                 };
 
                 // Check for whitespace control markers
-                let j = end.index;
-                let expr_line = end.line;
-                let expr_column = end.column;
-                let (expr_start_idx, expr_end_idx, strip_left, strip_right) =
-                    parse_strip_markers(&chars, i + 2, j);
+                let closing_index = end.index;
+                let closing_line = end.line;
+                let closing_column = end.column;
+                let (content_start, content_end, strip_left, strip_right) =
+                    parse_strip_markers(&chars, char_index + 2, closing_index);
 
                 // Extract the expression content (without whitespace markers)
-                let expr_content: String = chars[expr_start_idx..expr_end_idx].iter().collect();
-                let full_length = j + 2 - i;
+                let expr_content: String = chars[content_start..content_end].iter().collect();
+                let expression_length = closing_index + 2 - char_index;
 
                 parts.push(TemplatePart::Expression {
                     content: Arc::from(expr_content.as_str()),
-                    position: expr_start,
-                    length: full_length,
+                    position: expression_start,
+                    length: expression_length,
                     strip_left,
                     strip_right,
                 });
@@ -383,22 +392,22 @@ impl Template {
                 enforce_expression_count(&parts)?;
 
                 // Update position tracking
-                byte_offset += chars[i..j + 2]
+                byte_offset += chars[char_index..closing_index + 2]
                     .iter()
                     .map(|character| character.len_utf8())
                     .sum::<usize>();
-                i = j + 2;
-                line = expr_line;
-                column = expr_column + 2;
-                static_start = Position::new(line, column, i);
+                char_index = closing_index + 2;
+                line = closing_line;
+                column = closing_column + 2;
+                static_start = Position::new(line, column, char_index);
             } else {
                 // Regular character
-                current_static.push(chars[i]);
-                byte_offset += chars[i].len_utf8();
-                i += 1;
+                current_static.push(chars[char_index]);
+                byte_offset += chars[char_index].len_utf8();
+                char_index += 1;
 
                 // Track newlines
-                if chars[i - 1] == '\n' {
+                if chars[char_index - 1] == '\n' {
                     line += 1;
                     column = 1;
                 } else {
