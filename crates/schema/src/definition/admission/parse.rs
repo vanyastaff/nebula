@@ -16,7 +16,7 @@ use super::super::{
     },
 };
 
-use super::{RejectionRule, parse_rejection_rule, parse_rule};
+use super::check::{RejectionRule, parse_rejection_rule, parse_rule};
 
 pub(super) fn parse_document(raw: &Value) -> Result<DraftGraph, AdmissionIssue> {
     let root_object = object(raw)?;
