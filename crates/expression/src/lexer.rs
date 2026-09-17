@@ -533,17 +533,7 @@ impl<'a> Lexer<'a> {
 
         if matches!(self.current_char(), Some('e' | 'E')) {
             is_float = true;
-            self.advance();
-            if matches!(self.current_char(), Some('+' | '-')) {
-                self.advance();
-            }
-            let exponent_start = self.position;
-            while self.current_char().is_some_and(|ch| ch.is_ascii_digit()) {
-                self.advance();
-            }
-            if self.position == exponent_start {
-                return Err(ExpressionError::syntax_error("Missing exponent digits"));
-            }
+            self.read_exponent()?;
         }
 
         let end_pos = self.position;
@@ -574,6 +564,23 @@ impl<'a> Lexer<'a> {
                 })
                 .map_err(|_| ExpressionError::expression_syntax_error("Invalid integer literal"))
         }
+    }
+
+    /// Read the exponent part after an `e`/`E` marker: the optional sign and
+    /// at least one digit. The caller has already consumed the marker.
+    fn read_exponent(&mut self) -> ExpressionResult<()> {
+        self.advance();
+        if matches!(self.current_char(), Some('+' | '-')) {
+            self.advance();
+        }
+        let exponent_start = self.position;
+        while self.current_char().is_some_and(|ch| ch.is_ascii_digit()) {
+            self.advance();
+        }
+        if self.position == exponent_start {
+            return Err(ExpressionError::syntax_error("Missing exponent digits"));
+        }
+        Ok(())
     }
 
     /// Read an identifier or keyword
