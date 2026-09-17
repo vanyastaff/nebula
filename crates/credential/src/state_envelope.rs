@@ -176,7 +176,7 @@ pub enum StateEnvelopeError {
     /// envelope-refusal category.
     #[error("stored credential state is neither a valid state envelope nor legacy state JSON")]
     LegacyStateParseFailed,
-    /// The decrypted plaintext exceeds [`MAX_STATE_PLAINTEXT_BYTES`]. Checked
+    /// The decrypted plaintext exceeds `MAX_STATE_PLAINTEXT_BYTES`. Checked
     /// before any parse or materialization, so an oversized stored body is
     /// refused without touching it.
     #[error(
@@ -186,7 +186,7 @@ pub enum StateEnvelopeError {
     StateTooLarge {
         /// The plaintext length observed.
         bytes: usize,
-        /// [`MAX_STATE_PLAINTEXT_BYTES`].
+        /// `MAX_STATE_PLAINTEXT_BYTES`.
         limit: usize,
     },
 }

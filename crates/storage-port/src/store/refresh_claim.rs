@@ -342,7 +342,7 @@ impl RefreshOutcomeDecision {
 
 /// Recorded result of one reconciliation.
 ///
-/// Read the fields by destructuring; the struct is [`non_exhaustive`] so a
+/// Read the fields by destructuring; the struct is `#[non_exhaustive]` so a
 /// future field addition cannot break downstream record literals, and the
 /// error taxonomy's `Display` stays payload-free.
 #[non_exhaustive]
@@ -371,7 +371,7 @@ impl RefreshAdjudication {
     /// Construct a recorded reconciliation result.
     ///
     /// The only way a crate outside `nebula-storage-port` can build one, since
-    /// the struct is [`non_exhaustive`].
+    /// the struct is `#[non_exhaustive]`.
     #[must_use]
     pub const fn new(
         decision: RefreshOutcomeDecision,
