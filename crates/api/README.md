@@ -15,8 +15,7 @@ Provides the HTTP entry point for Nebula. Translates REST
 requests into calls against typed port traits (`WorkflowStore`,
 `WorkflowVersionStore`, `ExecutionStore`, `NodeResultStore`,
 `ExecutionJournalReader`, `ControlQueue`, plus `OrgResolver`,
-`WorkspaceResolver`, `SessionStore`,
-`MembershipStore`). Some handlers currently own transition/enqueue orchestration
+`WorkspaceResolver`, `MembershipStore`). Some handlers currently own transition/enqueue orchestration
 through those ports; they do not call a production-installed engine consumer.
 The crate also hosts the `transport::webhook` subsystem, which handles inbound trigger
 delivery and per-endpoint lifecycle management.
@@ -71,8 +70,10 @@ status — no new ad-hoc 500s for business-logic errors. Includes variants:
 `RateLimited`, `TenantMismatch`.
 - `CursorParams` / `PaginatedResponse<T>` — cursor-based pagination
 infrastructure (opaque base64-encoded cursors).
-- Port traits: `OrgResolver`, `WorkspaceResolver`, `SessionStore`,
-`MembershipStore` — tenant resolution and session management ports.
+- Port traits: `OrgResolver`, `WorkspaceResolver`, `MembershipStore`,
+`AuthBackend` — tenant resolution, membership, and auth ports (the
+session surface is `AuthBackend`; the older `SessionStore` trait is
+replaced, see `domain/auth/backend/provider.rs`).
 - `AuthContext` — authenticated request context extracted by `middleware::auth`.
 - `transport::webhook::WebhookTransport` — activate/activate_slug/deactivate/router
 for inbound webhook triggers; mounted on `/webhooks/*` (programmatic) and
@@ -839,7 +840,7 @@ src/
 ├── lib.rs              # Crate root, public re-exports
 ├── app.rs              # build_app: OpenApiRouter merge + split_for_parts + middleware stack + serve()
 ├── state.rs            # AppState (builder) + API-tier port traits (OrgResolver/WorkspaceResolver/
-│                       # MembershipStore/SessionStore/AuthBackend etc.)
+│                       # MembershipStore/AuthBackend etc.)
 ├── openapi/
 │   └── mod.rs          # OpenApiDoc + spec assembly
 ├── telemetry_init.rs   # init_api_telemetry()

@@ -81,9 +81,9 @@ Patterns:
 - **[L2-§11.1]** `nebula-execution` defines the state machine; `ExecutionStore` in
   `nebula-storage-port` is the **single source of truth** for persisted execution state
   (implemented by the adapters in `nebula-storage`).
-  Transitions use optimistic CAS on `version` plus the lease `FencingToken`. No handler may mutate
-  execution state
-  except through `ExecutionStore::commit` on a `TransitionBatch`. Seam:
+  Transitions use optimistic CAS on `version` plus the lease `FencingToken`. No
+  handler may mutate execution state except through `ExecutionStore::commit` on a
+  `TransitionBatch`. Seam:
   `crates/storage-port/src/store/execution.rs`.
   The `transition` module in this crate validates state-machine legality; storage enforces
   persistence and CAS.

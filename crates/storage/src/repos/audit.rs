@@ -10,7 +10,8 @@ use crate::{
 /// High-level audit log — security and compliance trail.
 ///
 /// Spec 16 layer 8 + spec 18. Append-only; retention is plan-configurable
-/// (default 90 days). Separate from `execution_journal` which tracks
+/// (default 90 days). Separate from `port_execution_journal` (the legacy
+/// `execution_journal` table; no production writer yet, #1013), which tracks
 /// per-run step events.
 pub trait AuditRepo: Send + Sync {
     /// Append an audit entry.

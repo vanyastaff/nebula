@@ -215,8 +215,11 @@ slot/tenant authority; semantic decoupling требует будущей version
   `register_and_bind` (`nebula_resource::factory`) получил живой вызывающий путь (quiesce-контракт
   есть; единственный вызов — `WorkflowEngine::register_resource_and_bind`, под non-default
   `rotation` и сам никем не вызывается).
-- **Схлопнуть двойной store seam.** Убрать legacy `ExecutionRepo`-ветку (`engine.rs:1127/1231/1727`),
-  оставив только spec-16 storage-port; это снимает половину «store-port если сконфигурирован, иначе…».
+- **Схлопнуть двойной store seam — закрыто (ADR-0072).** Двойной seam схлопнут: остался только
+  spec-16 storage-port (`ExecutionStore::acquire_lease` / `commit`, CAS на `version` +
+  `FencingToken`); legacy `ExecutionRepo`-ветка удалена — без сконфигурированных store'ов движок
+  работает без lease (`Ok(None)`). Бывшие якоря `engine.rs:1127/1231/1727` мертвы — `engine.rs`
+  декомпозирован в `crates/engine/src/engine/`; см. item 5 §6 выше.
 - **Legacy action-dispatch путь удалён (ADR-0098 D0, PR3).** Registry и runtime теперь
   factory-only; `legacy_register_*_with_metadata` и `ActionHandler`-fallback ликвидированы.
 - **Переселить cross-layer мосты.** `credential_accessor.rs` / `resource_accessor.rs` архитектурно

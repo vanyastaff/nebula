@@ -51,7 +51,11 @@ below is the planned event shape (the closed `JournalEntry` variant set in
 `crates/execution/src/journal.rs`); journal queries return nothing until that writer
 lands.
 
-Every durable event appended to `port_execution_journal` follows this shape:
+Every durable event appended to `port_execution_journal` follows this shape. The
+sketch below is a planned envelope, not the current variant fields — each
+`nebula_execution::journal::JournalEntry` variant today carries only `timestamp`
+(and `node_key`-family fields), and the persisted wire row is the opaque
+`{seq, payload}` pair described above:
 
 ```jsonc
 {

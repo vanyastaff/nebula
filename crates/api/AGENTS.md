@@ -25,7 +25,7 @@
 
 - `src/lib.rs` — crate root, public re-exports (`build_app`, `AppState`, `ApiConfig`, `ApiError`)
 - `src/app.rs` — `build_app`: OpenApiRouter merge + `split_for_parts` + full middleware stack + `serve()`
-- `src/state.rs` — `AppState` builder + API-tier port traits (`OrgResolver`/`WorkspaceResolver`/`MembershipStore`/`SessionStore`/`AuthBackend`)
+- `src/state.rs` — `AppState` builder + API-tier port traits (`OrgResolver`/`WorkspaceResolver`/`MembershipStore`/`AuthBackend`)
 - `src/error/mod.rs` — `ApiError` (§12.4 RFC 9457 seam, `#[non_exhaustive]`)
 - `src/transport/oauth/{egress,error,runtime}.rs` — private Plane-A HTTP policy,
   closed internal failures, and the opaque `OAuthIdentityRuntime`; only the runtime and its

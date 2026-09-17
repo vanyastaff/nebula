@@ -150,7 +150,7 @@ The Rust patterns that make this invariant easy to uphold: sealed traits, typest
 
 **[L1]** Durable is not enough — runs must be explainable. Execution state, append-only journal, structured errors, and metrics let an operator answer what happened and why a run failed without reading Rust source.
 
-**[L1]** Observability is a first-class contract, not polish. SLIs, SLOs, structured event schema for `execution_journal`, and the core analysis loop live in `docs/OBSERVABILITY.md`.
+**[L1]** Observability is a first-class contract, not polish. SLIs, SLOs, structured event schema for `port_execution_journal` (the legacy `execution_journal` table has no writer), and the core analysis loop live in `docs/OBSERVABILITY.md`.
 
 **[L2]** Where a feature is still thin (e.g. lease enforcement at §11.6), say so — do not imply full auditability from partial signals.
 
