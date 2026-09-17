@@ -16,7 +16,8 @@ use super::super::{
     },
 };
 
-use super::{AdmissionFailure, StructuralShape, body_shape, occurrence_shape};
+use super::AdmissionFailure;
+use super::shape::{StructuralShape, body_shape, occurrence_shape};
 
 pub(super) enum RejectionRule {
     Allow,
