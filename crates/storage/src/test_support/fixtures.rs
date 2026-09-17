@@ -14,14 +14,16 @@ use crate::rows::*;
 pub fn random_id() -> Vec<u8> {
     use std::{
         sync::atomic::{AtomicU64, Ordering},
-        time::{SystemTime, UNIX_EPOCH},
+        time::{Duration, SystemTime, UNIX_EPOCH},
     };
 
     static COUNTER: AtomicU64 = AtomicU64::new(0);
 
+    // A pre-epoch wall clock (broken environment) would make
+    // `duration_since(UNIX_EPOCH)` fail; degrade to zero instead of panicking.
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap()
+        .unwrap_or(Duration::ZERO)
         .as_nanos();
     let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
 
