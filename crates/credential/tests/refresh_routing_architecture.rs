@@ -6,7 +6,7 @@
 
 #[test]
 fn resolver_has_no_key_routing_or_value_round_trip() {
-    let source = include_str!("../src/runtime/resolver.rs");
+    let source = include_str!("../src/runtime/resolver/mod.rs");
     let production = source
         .split_once("\n#[cfg(test)]\nmod refresh_revoke_race")
         .map_or(source, |(production, _tests)| production);
