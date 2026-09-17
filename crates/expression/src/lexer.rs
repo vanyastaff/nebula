@@ -96,6 +96,33 @@ fn read_unicode_brace_escape<I: Iterator<Item = char>>(
     Ok(())
 }
 
+/// Read the `\uNNNN` fixed-4-digit form and push the decoded BMP code
+/// point as a `char`. The caller has consumed the `u` and peeked at the
+/// next char, which is not `{`.
+fn read_unicode_bmp_escape<I: Iterator<Item = char>>(
+    chars: &mut I,
+    result: &mut String,
+) -> ExpressionResult<()> {
+    let mut hex = String::with_capacity(4);
+    for _ in 0..4 {
+        match chars.next() {
+            Some(c) if c.is_ascii_hexdigit() => hex.push(c),
+            Some(c) => {
+                return Err(ExpressionError::expression_syntax_error(format!(
+                    "Invalid hex digit '{c}' in \\uNNNN escape"
+                )));
+            },
+            None => {
+                return Err(ExpressionError::expression_syntax_error(
+                    "Truncated \\uNNNN escape: expected 4 hex digits",
+                ));
+            },
+        }
+    }
+    result.push(parse_codepoint(&hex)?);
+    Ok(())
+}
+
 /// Lexer for tokenizing expression strings
 pub struct Lexer<'a> {
     input: &'a str,
@@ -438,29 +465,10 @@ impl<'a> Lexer<'a> {
                 '"' => result.push('"'),
                 '\'' => result.push('\''),
                 'x' => read_hex_byte_escape(&mut chars, &mut result)?,
-                'u' => {
-                    if chars.peek() == Some(&'{') {
-                        read_unicode_brace_escape(&mut chars, &mut result)?;
-                    } else {
-                        let mut hex = String::with_capacity(4);
-                        for _ in 0..4 {
-                            match chars.next() {
-                                Some(c) if c.is_ascii_hexdigit() => hex.push(c),
-                                Some(c) => {
-                                    return Err(ExpressionError::expression_syntax_error(format!(
-                                        "Invalid hex digit '{c}' in \\uNNNN escape"
-                                    )));
-                                },
-                                None => {
-                                    return Err(ExpressionError::expression_syntax_error(
-                                        "Truncated \\uNNNN escape: expected 4 hex digits",
-                                    ));
-                                },
-                            }
-                        }
-                        result.push(parse_codepoint(&hex)?);
-                    }
+                'u' if chars.peek() == Some(&'{') => {
+                    read_unicode_brace_escape(&mut chars, &mut result)?;
                 },
+                'u' => read_unicode_bmp_escape(&mut chars, &mut result)?,
                 other => result.push(other),
             }
         }
