@@ -12,8 +12,10 @@ related: [nebula-storage, nebula-runtime, nebula-engine, nebula-plugin, nebula-m
 ## Purpose
 
 Provides the HTTP entry point for Nebula. Translates REST
-requests into calls against typed port traits (`WorkflowRepo`, `ExecutionRepo`,
-`ControlQueueRepo`, `OrgResolver`, `WorkspaceResolver`, `SessionStore`,
+requests into calls against typed port traits (`WorkflowStore`,
+`WorkflowVersionStore`, `ExecutionStore`, `NodeResultStore`,
+`ExecutionJournalReader`, `ControlQueue`, plus `OrgResolver`,
+`WorkspaceResolver`, `SessionStore`,
 `MembershipStore`). Some handlers currently own transition/enqueue orchestration
 through those ports; they do not call a production-installed engine consumer.
 The crate also hosts the `transport::webhook` subsystem, which handles inbound trigger

@@ -29,8 +29,10 @@
 //!   (programmatic + slug-routed surfaces, webhook activation):
 //!   `WebhookTransport`, `WebhookKey`, `WebhookRateLimiter`,
 //!   `EndpointProviderImpl`, storage bootstrap, lifecycle subscriber.
-//! - `state` — `AppState` holds port trait references: `WorkflowRepo`, `ExecutionRepo`,
-//!   `ControlQueueRepo`, `OrgResolver`, `WorkspaceResolver`, `AuthBackend`, `MembershipStore`.
+//! - `state` — `AppState` holds port trait references: `WorkflowStore`,
+//!   `WorkflowVersionStore`, `ExecutionStore`, `NodeResultStore`,
+//!   `ExecutionJournalReader`, `ControlQueue` (spec-16 storage ports), plus
+//!   `OrgResolver`, `WorkspaceResolver`, `AuthBackend`, `MembershipStore`.
 //! - `config` — `ApiConfig` with sub-configs (`TlsConfig`, `CorsConfig`,
 //!   `VersioningConfig`, `PaginationConfig`) / `JwtSecret`; startup fails hard on a missing or
 //!   short secret — no `Default` impl (honest capability operational honesty).
