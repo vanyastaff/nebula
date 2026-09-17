@@ -705,7 +705,7 @@ fn workflow_requires_digest_pinned_postgres_credential_conformance() {
         "credential_lifecycle_postgres",
         "credential_migration_postgres",
         "credential_schema_admission_postgres",
-        "refresh_claim_pg_integration",
+        "refresh_claim_conformance_postgres",
     ] {
         assert!(
             workflow.contains(isolated_suite),

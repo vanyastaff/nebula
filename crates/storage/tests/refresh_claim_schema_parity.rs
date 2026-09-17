@@ -1,6 +1,6 @@
-//! Schema parity check for refresh-claim migrations 0022, 0023, and the
-//! incident-identity extension in 0039, plus the structural retry gate in
-//! 0040.
+//! Schema parity check for refresh-claim migrations 0022, 0023, the
+//! incident-identity extension in 0039, the structural retry gate in 0040,
+//! and the operator reconciliation record in 0053.
 //!
 //! Both SQLite and Postgres dialects must define the same tables with the
 //! same logical column names. The driver-specific types differ
@@ -207,6 +207,59 @@ fn credential_refresh_retry_gate_is_paired_and_closed() {
             && pg.contains("refresh_retry_not_before TIMESTAMPTZ"),
         "retry deadlines must use each backend's canonical clock representation"
     );
+}
+
+#[test]
+fn reconciliation_record_is_paired_and_optional_in_both_dialects() {
+    let sqlite = read("migrations/sqlite/0053_credential_reconciliation_decisions.sql");
+    let pg = read("migrations/postgres/0053_credential_reconciliation_decisions.sql");
+
+    for (backend, migration) in [("SQLite", &sqlite), ("Postgres", &pg)] {
+        for column in [
+            "adjudicated_at",
+            "adjudication_decision",
+            "adjudication_evidence",
+            "adjudication_evidence_digest",
+        ] {
+            assert!(
+                migration.contains(&format!("ADD COLUMN {column} ")),
+                "{backend} 0053 must add `{column}` to the incident relation"
+            );
+        }
+        assert_eq!(
+            migration
+                .matches("ALTER TABLE credential_sentinel_events")
+                .count(),
+            4,
+            "{backend} 0053 must extend only the incident relation"
+        );
+        assert!(
+            !migration.contains("NOT NULL"),
+            "{backend} every reconciliation column must stay optional: NULL is the \
+             fail-closed `no provider outcome is known` state, and pre-0053 incidents \
+             must stay unresolved"
+        );
+    }
+
+    for (backend, migration, digest_type) in
+        [("SQLite", &sqlite, "BLOB"), ("Postgres", &pg, "BYTEA")]
+    {
+        assert!(
+            migration.contains(&format!("adjudication_evidence_digest {digest_type}")),
+            "{backend} must store the evidence digest as {digest_type}"
+        );
+    }
+    assert!(
+        sqlite.contains("adjudicated_at INTEGER") && pg.contains("adjudicated_at TIMESTAMPTZ"),
+        "the reconciliation instant must use each backend's canonical clock representation"
+    );
+    for closed_code in ["provider_applied", "provider_not_applied"] {
+        assert!(
+            !sqlite.contains(closed_code) && !pg.contains(closed_code),
+            "`{closed_code}` belongs to `RefreshOutcomeDecision`, not to a database CHECK: \
+             the column records the decision, the enum closes its spelling"
+        );
+    }
 }
 
 #[test]

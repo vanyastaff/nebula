@@ -9,11 +9,19 @@
 use std::{collections::BTreeMap, fmt, sync::Arc};
 
 use async_trait::async_trait;
-use nebula_core::{CredentialId, CredentialKey, ServiceAccountId, UserId, WorkflowId};
-use nebula_storage_port::Scope;
+use nebula_core::{CredentialId, CredentialKey, Permission, ServiceAccountId, UserId, WorkflowId};
+use nebula_storage_port::{
+    Scope,
+    store::{
+        RefreshAdjudication, RefreshClaimAdjudicationError, RefreshClaimAdjudicator,
+        RefreshOutcomeDecision,
+    },
+};
 use serde_json::Value;
 use thiserror::Error;
 
+use crate::audit::{AuditEvent, AuditOperation, AuditResult, AuditSink};
+use crate::metrics::CredentialMetrics;
 use crate::resolve::{TestResult, UserInput};
 use crate::{CredentialDisplay, CredentialServiceError};
 
@@ -97,6 +105,34 @@ pub enum CredentialOperation {
     Resolve,
     /// Continue an acquisition flow.
     ContinueResolve,
+    /// Resolve a poisoned refresh claim with an operator outcome decision.
+    Reconcile,
+}
+
+impl CredentialOperation {
+    /// The core permission that authorizes this operation.
+    ///
+    /// Total on purpose, and deliberately not an `Option`. The first-party
+    /// authority used to map this enum with a `_ => None` wildcard consumed as
+    /// a denial, so a variant added without a decision was denied in
+    /// production by the same value a real policy denial produces — silent, and
+    /// indistinguishable in a test that only asserts the denial. Returning a
+    /// permission makes the mapping a compile-time decision at the site that
+    /// owns the operation.
+    #[must_use]
+    pub const fn rbac_permission(self) -> Permission {
+        match self {
+            Self::Get | Self::List => Permission::CredentialRead,
+            Self::Create
+            | Self::Update
+            | Self::Test
+            | Self::Refresh
+            | Self::Resolve
+            | Self::ContinueResolve => Permission::CredentialWrite,
+            Self::Delete | Self::Revoke => Permission::CredentialDelete,
+            Self::Reconcile => Permission::CredentialReconcile,
+        }
+    }
 }
 
 /// One-call tenant-authorization outcome.
@@ -234,6 +270,25 @@ pub enum CredentialCommand {
         /// Opaque Plane-A authentication binding for pending state.
         authentication_binding: CredentialAuthenticationBinding,
     },
+    /// Resolve a poisoned refresh claim with the provider outcome an operator
+    /// established.
+    ///
+    /// The command carries the evidence the operator observed, never an
+    /// incident identity or a reconciliation token: the resolved set of a
+    /// credential is a many-incident set, so no single incident can be named on
+    /// the path that must accept a replay, and identity is therefore the wrong
+    /// anchor. `(decision, evidence digest)` is what the durable adjudication
+    /// compares.
+    Reconcile {
+        /// Credential whose refresh claim is poisoned.
+        credential_id: CredentialId,
+        /// What the provider side did for the unobserved refresh.
+        decision: RefreshOutcomeDecision,
+        /// Operator-supplied, secret-free note recording why the outcome is now
+        /// known. Digested and persisted on the incident row; never rendered by
+        /// `Debug`.
+        evidence: String,
+    },
 }
 
 impl CredentialCommand {
@@ -249,6 +304,7 @@ impl CredentialCommand {
             Self::Revoke { .. } => CredentialOperation::Revoke,
             Self::Resolve { .. } => CredentialOperation::Resolve,
             Self::ContinueResolve { .. } => CredentialOperation::ContinueResolve,
+            Self::Reconcile { .. } => CredentialOperation::Reconcile,
         }
     }
 }
@@ -280,6 +336,9 @@ pub enum CredentialCommandResult {
     /// Acquisition result. Pending bearer material remains redacted by its
     /// own `Debug` implementation.
     Acquisition(Acquisition),
+    /// Reconciliation result: the decision now on record for the credential,
+    /// and whether this call recorded it.
+    Reconciled(RefreshAdjudication),
 }
 
 impl fmt::Debug for CredentialCommandResult {
@@ -298,6 +357,10 @@ impl fmt::Debug for CredentialCommandResult {
                 .debug_tuple("Acquisition")
                 .field(acquisition)
                 .finish(),
+            Self::Reconciled(adjudication) => formatter
+                .debug_tuple("Reconciled")
+                .field(adjudication)
+                .finish(),
         }
     }
 }
@@ -312,23 +375,55 @@ pub enum CredentialControllerError {
     /// The credential bounded context rejected the authorized operation.
     #[error(transparent)]
     Service(#[from] CredentialServiceError),
+    /// Privileged reconciliation was refused or could not be recorded.
+    ///
+    /// A separate arm from [`CredentialControllerError::Service`]: adjudication
+    /// resolves an operator decision about an unobservable provider outcome and
+    /// has its own closed taxonomy, which the credential service knows nothing
+    /// about.
+    #[error(transparent)]
+    Adjudication(#[from] RefreshClaimAdjudicationError),
 }
 
 /// Authority-bound credential command controller.
 pub struct CredentialController {
     service: Arc<CredentialService>,
     authority: Arc<dyn CredentialTenantAuthority>,
+    adjudicator: Arc<dyn RefreshClaimAdjudicator>,
+    audit_sink: Option<Arc<dyn AuditSink>>,
 }
 
 impl CredentialController {
-    /// Bind one credential service to one tenant authority for the lifetime of
-    /// the controller.
+    /// Bind one credential service, one tenant authority, and the privileged
+    /// reconciliation seam for the lifetime of the controller.
+    ///
+    /// The adjudicator is a mandatory constructor argument rather than an
+    /// optional field: an unwired adjudicator must not turn into a runtime
+    /// surprise on the one path that clears a fail-closed poison state.
+    /// `audit_sink` is optional in the shape the refresh coordinator already
+    /// uses (`with_audit_sink`): without a sink, audit emission is a no-op and
+    /// the tracing and metric surfaces still observe.
+    ///
+    /// Adding the adjudicator took this signature from two parameters to four,
+    /// and that break is deliberate: a builder or a defaulted field would have
+    /// left the four in-repo construction sites compiling with no adjudicator —
+    /// each failing closed at runtime on the one command that must not. The
+    /// sites are `apps/server`'s composition root, its credential runtime
+    /// (two), and the API command port's testkit. No SDK consumer is affected:
+    /// the SDK facade re-exports derive-related items only, not this type.
     #[must_use]
     pub fn new(
         service: Arc<CredentialService>,
         authority: Arc<dyn CredentialTenantAuthority>,
+        adjudicator: Arc<dyn RefreshClaimAdjudicator>,
+        audit_sink: Option<Arc<dyn AuditSink>>,
     ) -> Self {
-        Self { service, authority }
+        Self {
+            service,
+            authority,
+            adjudicator,
+            audit_sink,
+        }
     }
 
     /// Authorize and execute one management command.
@@ -458,8 +553,127 @@ impl CredentialController {
                         .await?,
                 )
             },
+            CredentialCommand::Reconcile {
+                credential_id,
+                decision,
+                evidence,
+            } => CredentialCommandResult::Reconciled(
+                self.reconcile(&scope, &credential_id, decision, &evidence)
+                    .await?,
+            ),
         };
         Ok(result)
+    }
+
+    /// Adjudicate one poisoned refresh claim, with the span, the outcome
+    /// counter, and the audit observation the privileged path owes its
+    /// operators.
+    ///
+    /// Everything after the adjudication is non-authoritative by contract: the
+    /// incident row the adjudicator writes is the durable record, so a sink or
+    /// emitter failure is logged and never converts a recorded decision into an
+    /// error the caller could retry against different evidence.
+    #[tracing::instrument(
+        level = "debug",
+        name = "credential.reconcile",
+        // `evidence` is operator prose. It is persisted, digested, on the
+        // incident row; broadcasting it to every trace consumer would leak an
+        // operator note far beyond the review it exists for.
+        skip_all,
+        fields(
+            credential_id = %credential_id,
+            decision = decision.as_str(),
+            outcome = tracing::field::Empty,
+        )
+    )]
+    async fn reconcile(
+        &self,
+        scope: &TenantScope,
+        credential_id: &CredentialId,
+        decision: RefreshOutcomeDecision,
+        evidence: &str,
+    ) -> Result<RefreshAdjudication, CredentialControllerError> {
+        // The adjudication port carries no scope operand, so this arm is the
+        // one place the caller's tenant meets the credential being reconciled.
+        // Without this read, a workspace admin of one workspace could clear
+        // another workspace's poison given its credential id — every other arm
+        // of `execute_authorized` reaches the store through the scoped service,
+        // and this one would be the exception.
+        //
+        // The read is the owner-scoped one every sibling arm uses, so ownership
+        // is a query predicate (`WHERE id = ?1 AND owner_id = ?2 AND
+        // record_state = 'live'`) rather than a comparison after the fetch.
+        // That is what keeps it clear of the post-read tenant check the
+        // credential design rules out, and it is why the check-then-act is
+        // sound: `owner_id` is immutable — nothing in the workspace writes it —
+        // so the ownership proven here cannot be transferred to another tenant
+        // between this read and the adjudication.
+        //
+        // One consequence to read as intended rather than as a regression: a
+        // claim row can outlive a credential that is no longer live.
+        // `credential_refresh_claims` carries no foreign key to `credentials`
+        // and no cascade, nothing removes a claim row but the clear and sweep
+        // paths, and credential deletion is a `record_state` transition rather
+        // than a `DELETE`. A credential tombstoned while its claim row stands is
+        // therefore `NotFound` here where the unscoped adjudicator would have
+        // cleared the poison. Fail-closed, and what the sibling arms already
+        // answer in the same state.
+        self.service.get(scope, &credential_id.to_string()).await?;
+
+        let adjudication = self
+            .adjudicator
+            .adjudicate(credential_id, decision, evidence)
+            .await;
+        let outcome = if adjudication.is_ok() {
+            CredentialMetrics::OUTCOME_SUCCESS
+        } else {
+            CredentialMetrics::OUTCOME_FAILURE
+        };
+        tracing::Span::current().record("outcome", outcome);
+        self.count_reconciliation(outcome);
+        let adjudication = adjudication?;
+        self.record_reconciliation_audit(credential_id);
+        Ok(adjudication)
+    }
+
+    /// Increment the reconciliation counter, when a metrics emitter is wired.
+    ///
+    /// Bound to the service's observer rather than a process-global registry:
+    /// the credential crate emits every other operation counter through the
+    /// same seam, so an unwired emitter is one configuration to diagnose rather
+    /// than two.
+    fn count_reconciliation(&self, outcome: &'static str) {
+        let Some(metrics) = self.service.observer.metrics() else {
+            return;
+        };
+        metrics.counter(
+            CredentialMetrics::RECONCILE_TOTAL,
+            1,
+            &[(CredentialMetrics::LABEL_OUTCOME, outcome)],
+        );
+    }
+
+    /// Emit the audit observation for a recorded reconciliation.
+    ///
+    /// The `AuditSink` is non-transactional by its own contract, so this runs
+    /// after the adjudication committed and its failure stays an observation.
+    fn record_reconciliation_audit(&self, credential_id: &CredentialId) {
+        let Some(sink) = self.audit_sink.as_deref() else {
+            return;
+        };
+        let event = AuditEvent {
+            timestamp: chrono::Utc::now(),
+            credential_id: credential_id.to_string(),
+            operation: AuditOperation::Reconcile,
+            result: AuditResult::Success,
+        };
+        if let Err(error) = sink.record(&event) {
+            tracing::warn!(
+                ?error,
+                cred = %credential_id,
+                "credential audit sink failed for Reconcile"
+            );
+        }
     }
 }
 

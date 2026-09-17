@@ -34,9 +34,9 @@ use crate::CredentialPersistenceError;
 ///
 /// - `record` must not block the calling task for extended periods.
 /// - Implementations must never inspect or log credential data.
-/// - Returning `Err(CredentialPersistenceError)` asks the wrapping `AuditLayer`
-///   to emit bounded failure telemetry. It never changes the persistence
-///   result.
+/// - Returning `Err(CredentialPersistenceError)` asks the caller to emit
+///   bounded failure telemetry. It never changes the authoritative result,
+///   whether that is a persistence result or a recorded adjudication.
 pub trait AuditSink: Send + Sync {
     /// Record an audit event.
     ///
@@ -45,8 +45,20 @@ pub trait AuditSink: Send + Sync {
     /// Return an error when the event cannot be accepted by this sink. The
     /// sink's own contract determines whether acceptance means durable
     /// persistence, an outbox append, or structured-log delivery.
-    /// The wrapping `AuditLayer` observes the error through bounded telemetry
-    /// and preserves the authoritative persistence result.
+    ///
+    /// A sink whose acceptance means durable persistence does not thereby
+    /// become the authoritative audit for [`AuditOperation::Reconcile`]: the
+    /// authoritative record for that operation is the incident row the
+    /// adjudicator commits in the same transaction as the decision. The
+    /// durable sink earns no extra standing for it, and a sink that merely logs
+    /// loses none. U3 delivers transactional audit for this operation only;
+    /// every other operation still relies on the interim observation.
+    ///
+    /// The caller observes the error through bounded telemetry and preserves
+    /// the authoritative result. Two callers exist: the wrapping `AuditLayer`,
+    /// for which that result is the persistence outcome, and the credential
+    /// controller on the reconciliation path, for which it is the adjudication
+    /// already committed to the claim row.
     fn record(&self, event: &AuditEvent) -> Result<(), CredentialPersistenceError>;
 }
 
@@ -68,11 +80,13 @@ pub struct AuditEvent {
 /// Type of credential store operation.
 ///
 /// Variants without payloads describe `CredentialPersistence` operations
-/// flowing through `AuditLayer`. Variants prefixed `RefreshCoord*`
+/// flowing through `AuditLayer`, with one exception: [`AuditOperation::Reconcile`]
+/// is not a persistence operation at all and is emitted by the credential
+/// controller once an adjudication has committed. Variants prefixed `RefreshCoord*`
 /// describe events emitted by the engine's two-tier refresh coordinator
 /// (sub-spec `docs/INTEGRATION_MODEL.md` (credential refresh coordinator)
 /// §6) and carry their structured payload as enum fields. The same
-/// [`AuditSink`] receives both families so operators reuse one sink
+/// [`AuditSink`] receives every family so operators reuse one sink
 /// implementation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -116,6 +130,19 @@ pub enum AuditOperation {
         /// arm's stable identifier).
         reason: String,
     },
+    /// A poisoned refresh claim on the credential was adjudicated with an
+    /// operator's provider-outcome decision.
+    ///
+    /// Payload-free: the decision and its evidence digest are durably recorded
+    /// on the sentinel incident row, which is the authoritative and
+    /// transactional record for this operation. This event is the
+    /// non-authoritative observation emitted after the adjudication committed.
+    ///
+    /// Appended rather than grouped with the persistence operations above:
+    /// this enum is `#[non_exhaustive]` and its discriminants are part of the
+    /// published surface, so a variant inserted mid-enum renumbers every
+    /// later one in a consuming build.
+    Reconcile,
 }
 
 /// Outcome of an audited operation.

@@ -319,7 +319,7 @@ jobs:
             execution_state_bounds \
             operation_ledger_conformance_postgres \
             postgres_control_queue_atomicity \
-            refresh_claim_pg_integration \
+            refresh_claim_conformance_postgres \
             resource_fanout_conformance_postgres \
             revision_catalog_conformance_postgres \
             revision_catalog_migration_postgres \

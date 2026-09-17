@@ -130,6 +130,25 @@ const CURRENT_SENTINEL_EVENT_COLUMNS: [ExpectedColumn; 6] = [
     column("claim_id", "uuid", true, None),
 ];
 
+/// 0053 adds the reconciliation decision to the incident relation.
+const RECONCILED_SENTINEL_EVENT_COLUMNS: [ExpectedColumn; 10] = [
+    column(
+        "id",
+        "int8",
+        false,
+        Some("nextval('credential_sentinel_events_id_seq'::regclass)"),
+    ),
+    column("credential_id", "text", false, None),
+    column("detected_at", "timestamptz", false, None),
+    column("crashed_holder", "text", false, None),
+    column("generation", "int8", false, None),
+    column("claim_id", "uuid", true, None),
+    column("adjudicated_at", "timestamptz", true, None),
+    column("adjudication_decision", "text", true, None),
+    column("adjudication_evidence", "text", true, None),
+    column("adjudication_evidence_digest", "bytea", true, None),
+];
+
 #[derive(sqlx::FromRow)]
 struct ColumnShape {
     name: String,
@@ -219,8 +238,11 @@ async fn observe(
         if !relation_exists(connection, "credential_sentinel_events").await? {
             return unsupported(AdmissionReason::InvalidSentinelEventsRelation);
         }
-        validate_sentinel_events_relation(connection, latest.is_some_and(|version| version >= 39))
-            .await?;
+        validate_sentinel_events_relation(
+            connection,
+            latest.ok_or(CredentialStoreStartupError::Unavailable)?,
+        )
+        .await?;
     }
     let credentials =
         if credentials_exists && latest_is_supported && latest.is_some_and(|version| version >= 30)
@@ -414,9 +436,11 @@ async fn validate_credentials_relation(
 
 async fn validate_sentinel_events_relation(
     connection: &mut PgConnection,
-    current: bool,
+    latest: i64,
 ) -> Result<(), CredentialStoreStartupError> {
-    let expected = if current {
+    let expected = if latest >= 53 {
+        &RECONCILED_SENTINEL_EVENT_COLUMNS[..]
+    } else if latest >= 39 {
         &CURRENT_SENTINEL_EVENT_COLUMNS[..]
     } else {
         &LEGACY_SENTINEL_EVENT_COLUMNS[..]
@@ -463,7 +487,7 @@ async fn validate_sentinel_events_relation(
         &["uuid_ops"],
         "0",
     );
-    let expected = if current {
+    let expected = if latest >= 39 {
         vec![expected[0], current_identity, expected[1]]
     } else {
         expected.to_vec()

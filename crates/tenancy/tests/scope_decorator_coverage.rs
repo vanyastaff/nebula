@@ -155,6 +155,11 @@ const INTENTIONALLY_UNSCOPED_PORTS: &[&str] = &[
     "PlanFlavorCatalogAdmin",
     "PlanFlavorCatalogWriter",
     "QuotaStore",
+    // Adjudication is a privileged operator decision over one credential, keyed
+    // by a ULID credential id and authorized at the composition root. It has no
+    // caller-supplied `&Scope` to substitute, and substituting one would let a
+    // tenant clear another tenant's retained poison.
+    "RefreshClaimAdjudicator",
     "RefreshClaimStore",
     // Deployment recovery discovers work across scopes and returns only the
     // authoritative scope stored with each claimed row. It is never exposed

@@ -121,6 +121,34 @@ Every credential adapter must obey these laws:
 reference/conformance adapters, and audit/encryption/cache decorators implement this contract.
 `nebula-tenancy` intentionally does not implement a credential decorator.
 
+### Refresh-claim adjudication seam
+
+`RefreshClaimAdjudicator` is the second object-safe contract over a claim store, beside
+`RefreshClaimStore`, and carries the same `Arc<dyn …>` consumption rule. It exposes one mutation:
+`adjudicate(credential_id, decision, evidence)` records the provider outcome that resolves a
+*poisoned* claim (an expired `sentinel=1` row the claim store answers as outcome-unknown) and
+clears the poison in the same operation. Clearing the poison and writing the resolution are atomic:
+a call either leaves the claim acquirable *and* the resolution on record, or changes nothing.
+
+`RefreshAdjudication { decision, changed }` is the recorded result. `changed: false` is the
+idempotent recommit of an identical `(evidence digest, decision)` pair — a superseded replay, which
+is a success and not a conflict. `RefreshClaimAdjudicationError` is `#[non_exhaustive]` and closed;
+its five outcomes are `Storage`, `AcknowledgementUnknown`, `InvalidEvidence`, `NotPoisoned`, and
+`EvidenceConflict`, where `NotPoisoned` means the credential is neither poisoned nor already
+resolved. Evidence is bounded by `MAX_ADJUDICATION_EVIDENCE_BYTES`; the operator's note is stored
+verbatim on the incident row and digested in addition, and that digest is the identity a recommit
+is compared against.
+
+Two properties belong to this port's boundary and are recorded here rather than left to a reader:
+
+- **No `Scope` operand.** Adjudication is addressed by typed credential ID alone, so it cannot be
+  scope-keyed and no `nebula-tenancy` decorator can substitute a bound scope for the caller's. The
+  port is not a policy check; the tenant gate is the command layer's, decided in
+  `nebula-credential`'s controller before the port is reached.
+- **Not part of `CredentialPersistence`.** Adjudication writes a claim-store incident row, not
+  credential material, so it stays a separate contract and does not widen the credential
+  persistence surface.
+
 ## General tenant isolation
 
 For ordinary `Scope`-taking stores, `nebula-tenancy` resolves an authenticated binding and exposes
