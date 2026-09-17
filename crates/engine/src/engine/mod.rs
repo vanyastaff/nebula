@@ -1629,7 +1629,7 @@ impl WorkflowEngine {
     /// detect stolen / expired leases and refuse to persist further
     /// state (a durability invariant).
     ///
-    /// Returns `Ok(None)` when no `execution_repo` is configured — in
+    /// Returns `Ok(None)` when no storage stores are configured — in
     /// that mode the engine is a single-process library with no
     /// coordination seam, and the caller proceeds without a lease.
     async fn acquire_and_heartbeat_lease(
@@ -1641,11 +1641,11 @@ impl WorkflowEngine {
         let holder = self.instance_id.to_string();
         let (ttl, heartbeat_interval) = self.execution_lease_policy();
 
-        // Dual-dispatch lease acquisition: spec-16 port (returns the
-        // fencing token threaded into every commit) when stores are
-        // configured, else the legacy `ExecutionRepo` (holder-string
-        // lease, no fencing). A live lease held by another runner
-        // surfaces as `EngineError::Leased` on both paths.
+        // Lease acquisition on the port store (`ExecutionStore::acquire_lease`
+        // returns the fencing token threaded into every commit). When no
+        // stores are configured — single-process library mode — no lease is
+        // taken and the caller gets `Ok(None)`. A live lease held by another
+        // runner surfaces as `EngineError::Leased`.
         let backend: crate::store_seam::LeaseBackend = if let Some(stores) = self.stores.clone() {
             let token = stores
                 .execution

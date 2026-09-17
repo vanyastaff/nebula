@@ -6,8 +6,9 @@
 //!
 //! Workflow execution orchestrator. Builds an `ExecutionPlan` from a workflow
 //! DAG, resolves node inputs from predecessor outputs, transitions execution
-//! state through `ExecutionRepo` (CAS on `version`), and
-//! delegates action dispatch to `nebula-runtime`.
+//! state through `ExecutionStore` (CAS on `version` plus the lease
+//! `FencingToken` on every commit), and delegates action dispatch to
+//! `nebula-runtime`.
 //!
 //! Canon names this crate as the location of the `execution_control_queue`
 //! consumer (`ControlConsumer`, see [`control_consumer`]). Implementation status:
@@ -54,7 +55,7 @@
 //! ## Canon
 //!
 //! - golden path (orchestrator schedules activated workflows).
-//! - execution authority via `ExecutionRepo`.
+//! - execution authority via `ExecutionStore`.
 //! - durable control plane; engine owns the `execution_control_queue` consumer.
 //!
 //! See `crates/engine/README.md` for known open debts (budget ephemerality,

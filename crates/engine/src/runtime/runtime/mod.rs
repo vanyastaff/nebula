@@ -89,9 +89,11 @@ impl StatefulCheckpoint {
 /// Engine-provided hook the runtime uses to persist stateful iteration
 /// state.
 ///
-/// The runtime does not depend on `nebula-storage` directly — the engine
-/// implements this trait backed by `ExecutionRepo::{save,load,delete}_stateful_checkpoint`
-/// and injects it into `execute_action_with_checkpoint`.
+/// The runtime does not depend on any storage crate directly — hosts that
+/// want durable stateful resume implement this trait over their persistence
+/// seam; the storage-port `CheckpointStore::{save,load}_stateful_checkpoint`
+/// methods are the matching seam, and `clear` has no port counterpart (the
+/// host maps it onto its own store).
 ///
 /// Methods return [`ActionError`] for sink-transport/serialization failures.
 ///

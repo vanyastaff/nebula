@@ -160,7 +160,9 @@ pub trait ControlDispatch: Send + Sync {
     /// must supply a real dispatch.
     ///
     /// **Idempotency (critical):** double-start re-runs the workflow twice.
-    /// Implementations must guard via CAS on `ExecutionRepo::transition` —
+    /// Implementations must guard via the durable CAS on
+    /// `ExecutionStore::commit` (CAS on `version` plus the lease
+    /// `FencingToken`) —
     /// a `Start` arriving for an already-running or already-terminal
     /// execution must be `Ok()`, not a second run.
     async fn dispatch_start(
@@ -245,7 +247,9 @@ pub trait ControlDispatch: Send + Sync {
     /// identity; `None` arms every signal wait.
     ///
     /// **Idempotency (critical):** double-resume starts the workflow twice.
-    /// Implementations must guard via CAS on `ExecutionRepo::transition` —
+    /// Implementations must guard via the durable CAS on
+    /// `ExecutionStore::commit` (CAS on `version` plus the lease
+    /// `FencingToken`) —
     /// a `Resume` arriving for an already-running or already-terminal
     /// execution must be `Ok()`, not a second start.
     async fn dispatch_resume(
