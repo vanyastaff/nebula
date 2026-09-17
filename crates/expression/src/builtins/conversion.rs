@@ -66,27 +66,31 @@ enum JsonContainer {
     Object { items: usize },
 }
 
-/// Count one value appearing in value position inside the innermost array
-/// (a scalar, string, or nested opener) and preflight the output limits it
-/// consumes. The closing bracket and the comma keep the array waiting for
-/// its next entry, so neither counts.
-fn count_array_value(
+/// Count one entry of the innermost container and preflight the output
+/// limits it consumes: a value in value position inside an array (a scalar,
+/// string, or nested opener), or an object key at its `:`. The array's
+/// closing bracket and comma keep it waiting for its next entry, so neither
+/// counts.
+fn count_container_entry(
     containers: &mut [JsonContainer],
     nodes: &mut usize,
     output: crate::BuiltinOutputBuilder,
     byte: u8,
 ) -> ExpressionResult<()> {
-    let Some(JsonContainer::Array {
-        expects_value,
-        items,
-    }) = containers.last_mut()
-    else {
+    let Some(innermost) = containers.last_mut() else {
         return Ok(());
     };
-    if !*expects_value || byte == b']' || byte == b',' {
-        return Ok(());
-    }
-    *expects_value = false;
+    let items = match innermost {
+        JsonContainer::Array {
+            expects_value,
+            items,
+        } if *expects_value && byte != b']' && byte != b',' => {
+            *expects_value = false;
+            items
+        },
+        JsonContainer::Object { items } if byte == b':' => items,
+        _ => return Ok(()),
+    };
     *items = items.saturating_add(1);
     *nodes = nodes.saturating_add(1);
     output.ensure_collection_items(*items)?;
@@ -125,7 +129,7 @@ fn preflight_json_structure(
             continue;
         }
 
-        count_array_value(&mut containers, &mut nodes, output, byte)?;
+        count_container_entry(&mut containers, &mut nodes, output, byte)?;
 
         match byte {
             b'"' => in_string = true,
@@ -146,15 +150,6 @@ fn preflight_json_structure(
             b',' => {
                 if let Some(JsonContainer::Array { expects_value, .. }) = containers.last_mut() {
                     *expects_value = true;
-                }
-            },
-            b':' => {
-                if let Some(JsonContainer::Object { items }) = containers.last_mut() {
-                    *items = items.saturating_add(1);
-                    nodes = nodes.saturating_add(1);
-                    output.ensure_collection_items(*items)?;
-                    output.ensure_value_nodes(nodes)?;
-                    output.ensure_value_depth(containers.len().saturating_add(1))?;
                 }
             },
             _ => {},
