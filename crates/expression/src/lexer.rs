@@ -56,6 +56,37 @@ fn parse_codepoint(hex: &str) -> ExpressionResult<char> {
     })
 }
 
+/// Materialize a float literal: parse the scanned text as `f64`, reject
+/// non-finite results, and build the `Float` token.
+fn parse_float_literal(num_str: &str, span: Span) -> ExpressionResult<Token<'static>> {
+    num_str
+        .parse::<f64>()
+        .map_err(|_| ExpressionError::expression_syntax_error("Invalid float literal"))
+        .and_then(|f| {
+            if f.is_finite() {
+                Ok(Token::new(TokenKind::Float(f), span))
+            } else {
+                Err(ExpressionError::NonFiniteNumber {
+                    operation: "float literal",
+                })
+            }
+        })
+}
+
+/// Materialize an integer literal: try `i64` first, then the `u64`
+/// fallback for values above `i64::MAX`, and build the token.
+fn parse_integer_literal(num_str: &str, span: Span) -> ExpressionResult<Token<'static>> {
+    num_str
+        .parse::<i64>()
+        .map(|i| Token::new(TokenKind::Integer(i), span))
+        .or_else(|_| {
+            num_str
+                .parse::<u64>()
+                .map(|n| Token::new(TokenKind::UnsignedInteger(n), span))
+        })
+        .map_err(|_| ExpressionError::expression_syntax_error("Invalid integer literal"))
+}
+
 /// Read the `\u{...}` brace form and push the decoded code point as a
 /// `char`. Consumes the opening `{`; the caller has only peeked at it.
 fn read_unicode_brace_escape<I: Iterator<Item = char>>(
@@ -541,28 +572,9 @@ impl<'a> Lexer<'a> {
         let span = Span::new(start_pos, end_pos);
 
         if is_float {
-            num_str
-                .parse::<f64>()
-                .map_err(|_| ExpressionError::expression_syntax_error("Invalid float literal"))
-                .and_then(|f| {
-                    if f.is_finite() {
-                        Ok(Token::new(TokenKind::Float(f), span))
-                    } else {
-                        Err(ExpressionError::NonFiniteNumber {
-                            operation: "float literal",
-                        })
-                    }
-                })
+            parse_float_literal(num_str, span)
         } else {
-            num_str
-                .parse::<i64>()
-                .map(|i| Token::new(TokenKind::Integer(i), span))
-                .or_else(|_| {
-                    num_str
-                        .parse::<u64>()
-                        .map(|n| Token::new(TokenKind::UnsignedInteger(n), span))
-                })
-                .map_err(|_| ExpressionError::expression_syntax_error("Invalid integer literal"))
+            parse_integer_literal(num_str, span)
         }
     }
 
