@@ -67,13 +67,11 @@ impl<T> BoundedStreamBuffer<T> {
 
     /// Push an item according to configured overflow policy.
     pub async fn push(&self, item: T) -> Result<PushOutcome, RuntimeError> {
-        let mut item = Some(item);
-
         loop {
             let mut queue = self.inner.queue.lock().await;
 
             if queue.len() < self.inner.capacity {
-                queue.push_back(item.take().expect("item available"));
+                queue.push_back(item);
                 self.inner.not_empty.notify_one();
                 return Ok(PushOutcome::Accepted);
             }
@@ -95,7 +93,7 @@ impl<T> BoundedStreamBuffer<T> {
                 },
                 Overflow::DropOldest => {
                     let _ = queue.pop_front();
-                    queue.push_back(item.take().expect("item available"));
+                    queue.push_back(item);
                     self.inner.not_empty.notify_one();
                     return Ok(PushOutcome::AcceptedAfterDropOldest);
                 },
