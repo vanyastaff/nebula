@@ -13,8 +13,9 @@ use nebula_core::TenantContext;
 use super::dto::{
     ContinueResolveRequest, ContinueResolveResponse, CreateCredentialRequest, CredentialResponse,
     CredentialTypeInfo, ListCredentialTypesResponse, ListCredentialsQuery, ListCredentialsResponse,
-    RefreshCredentialResponse, ResolveCredentialRequest, ResolveCredentialResponse,
-    RevokeCredentialResponse, TestCredentialResponse, UpdateCredentialRequest,
+    ReconcileCredentialRequest, ReconcileCredentialResponse, RefreshCredentialResponse,
+    ResolveCredentialRequest, ResolveCredentialResponse, RevokeCredentialResponse,
+    TestCredentialResponse, UpdateCredentialRequest,
 };
 use crate::{
     domain::shared::AckResponse,
@@ -375,6 +376,58 @@ pub async fn revoke_credential(
     let scope = crate::middleware::tenancy::request_scope(&tenant)?;
     let response =
         crate::transport::credential::revoke_credential(&state, &principal, &scope, &cred).await?;
+    Ok(Json(response))
+}
+
+/// POST /orgs/{org}/workspaces/{ws}/credentials/{cred}/reconcile — record the provider outcome of
+/// an ambiguous refresh.
+///
+/// The operator remedy for a credential whose refresh claim was retained as
+/// poison: the refresh route answers 409 for it and does so indefinitely, and
+/// this command is what retires the incident so a later refresh can acquire a
+/// claim again. Delegates to `CredentialController::reconcile`, which
+/// re-authorizes the caller's tenant against the credential before adjudicating
+/// — the adjudication port takes no scope operand, so that read is the
+/// authority this route depends on rather than duplicates.
+///
+/// Requires `credentials:reconcile`, deliberately not `credentials:write`:
+/// recording what a provider did is a different authority from changing what
+/// the credential is.
+#[utoipa::path(
+    post,
+    path = "/orgs/{org}/workspaces/{ws}/credentials/{cred}/reconcile",
+    tag = "workspaces.credentials",
+    security(("bearer" = [])),
+    params(
+        ("org" = String, Path, description = "Organisation slug or `org_<ULID>`."),
+        ("ws" = String, Path, description = "Workspace slug or `ws_<ULID>`."),
+        ("cred" = String, Path, description = "Credential identifier (`cred_<ULID>`)."),
+    ),
+    request_body = ReconcileCredentialRequest,
+    responses(
+        (status = 200, description = "Reconciliation result: the decision on record and whether this call recorded it (`changed = false` is an idempotent recommit of an identical decision and evidence pair, and is a success).", body = ReconcileCredentialResponse),
+        (status = 400, description = "Invalid credential identifier, or the submitted evidence was rejected (empty, or beyond the adjudicator's byte bound).", body = ProblemDetails),
+        (status = 401, description = "Authentication required.", body = ProblemDetails),
+        (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
+        (status = 404, description = "Credential does not exist in this workspace.", body = ProblemDetails),
+        (status = 409, description = "One of two refusals of the submitted decision, or a lost acknowledgement. `API:CREDENTIAL_RECONCILIATION_NOT_REQUIRED`: the credential has no retained refresh claim to adjudicate and no recorded resolution, so there is nothing to reconcile. `API:CREDENTIAL_RECONCILIATION_CONFLICT`: the claim already records a different decision and evidence pair, so two operator observations disagree. `API:OUTCOME_UNKNOWN`: the adjudication may have committed but its acknowledgement was lost, and repeating the identical request is safe.", body = ProblemDetails, content_type = "application/problem+json"),
+        (status = 503, description = "Credential authority or persistence is temporarily unavailable.", body = ProblemDetails),
+    ),
+)]
+pub async fn reconcile_credential(
+    State(state): State<AppState>,
+    Extension(principal): Extension<AuthenticatedPrincipal>,
+    Extension(tenant): Extension<TenantContext>,
+    Path((_org, _ws, cred)): Path<(String, String, String)>,
+    Json(request): Json<ReconcileCredentialRequest>,
+) -> ApiResult<Json<ReconcileCredentialResponse>> {
+    validate_credential_id(&cred)?;
+
+    let scope = crate::middleware::tenancy::request_scope(&tenant)?;
+    let response = crate::transport::credential::reconcile_credential(
+        &state, &principal, &scope, &cred, &request,
+    )
+    .await?;
     Ok(Json(response))
 }
 

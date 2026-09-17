@@ -245,8 +245,8 @@ Credential coordination — durable refresh claim (П2 / ADR-0041):
   `mark_sentinel` MUST validate the unexpired `ClaimToken`. `reclaim_stuck` atomically records
   the poisoned generation's sentinel event exactly once while retaining the row; only expired
   Normal rows are deleted. Event deduplication is keyed by the claim UUID, never by a reusable
-  generation, holder, or timestamp. Explicit owner-qualified reconciliation is the sole future
-  path that may clear poison. Seam: `crates/storage/src/credential/refresh_claim/`.
+  generation, holder, or timestamp. Explicit owner-qualified reconciliation is the sole path that
+  may clear poison. Seam: `crates/storage/src/credential/refresh_claim/`.
 
 ## Non-goals
 

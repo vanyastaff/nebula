@@ -10,13 +10,19 @@ use std::{collections::BTreeMap, fmt, num::NonZeroU64, sync::Arc};
 use async_trait::async_trait;
 use nebula_core::{CredentialId, CredentialKey, ServiceAccountId, UserId, WorkflowId};
 use nebula_credential::{
-    Acquisition, AuthorizationDecision, CredentialActor, CredentialAuthenticationBinding,
-    CredentialAuthorizationError, CredentialCommand, CredentialCommandResult, CredentialController,
-    CredentialControllerError, CredentialDisplay, CredentialDisplayPatch, CredentialOperation,
-    CredentialService, CredentialServiceError, CredentialTenantAuthority, InteractionRequest,
-    TestFailureCode, UserInput,
+    Acquisition, AuditSink, AuthorizationDecision, CredentialActor,
+    CredentialAuthenticationBinding, CredentialAuthorizationError, CredentialCommand,
+    CredentialCommandResult, CredentialController, CredentialControllerError, CredentialDisplay,
+    CredentialDisplayPatch, CredentialOperation, CredentialService, CredentialServiceError,
+    CredentialTenantAuthority, InteractionRequest, TestFailureCode, UserInput,
 };
-use nebula_storage_port::Scope;
+use nebula_storage_port::{
+    Scope,
+    store::{
+        RefreshAdjudication, RefreshClaimAdjudicationError, RefreshClaimAdjudicator,
+        RefreshOutcomeDecision,
+    },
+};
 
 use super::{
     CredentialCommandGateway, CredentialGatewayAcquisition, CredentialGatewayCommand,
@@ -35,12 +41,56 @@ use crate::{
 /// The adapter still routes every command through [`CredentialController`];
 /// only tenant policy is simplified to `Allow` because API tests already
 /// isolate policy behavior in the auth/RBAC middleware suites.
+///
+/// The controller's reconciliation seam is filled with a refusing stand-in.
+/// Suites that never send [`CredentialGatewayCommand::Reconcile`] do not need a
+/// claim store, and a stand-in that refuses is the only honest default here:
+/// accepting an adjudication would clear a fail-closed poison state on the
+/// strength of a test adapter. A suite that exercises reconciliation calls
+/// [`test_gateway_from_service_with_reconciliation`] instead.
 pub fn test_gateway_from_service(
     service: Arc<CredentialService>,
 ) -> Arc<dyn CredentialCommandGateway> {
+    test_gateway_from_service_with_reconciliation(service, Arc::new(RefusingAdjudicator), None)
+}
+
+/// Build the test-only gateway with the reconciliation seam supplied.
+///
+/// `adjudicator` is the real claim store's adjudication port; `audit_sink`
+/// observes `AuditOperation::Reconcile` when a suite asserts the emitted event.
+pub fn test_gateway_from_service_with_reconciliation(
+    service: Arc<CredentialService>,
+    adjudicator: Arc<dyn RefreshClaimAdjudicator>,
+    audit_sink: Option<Arc<dyn AuditSink>>,
+) -> Arc<dyn CredentialCommandGateway> {
     let authority: Arc<dyn CredentialTenantAuthority> = Arc::new(TestAuthority);
-    let controller = Arc::new(CredentialController::new(service, authority));
+    let controller = Arc::new(CredentialController::new(
+        service,
+        authority,
+        adjudicator,
+        audit_sink,
+    ));
     Arc::new(TestGateway { controller })
+}
+
+/// Reconciliation seam for suites that never reconcile.
+///
+/// Refuses with [`RefreshClaimAdjudicationError::NotPoisoned`] — the truthful
+/// answer for a gateway holding no claim store — rather than reporting a
+/// success no store ever recorded.
+#[derive(Debug)]
+struct RefusingAdjudicator;
+
+#[async_trait]
+impl RefreshClaimAdjudicator for RefusingAdjudicator {
+    async fn adjudicate(
+        &self,
+        _credential_id: &CredentialId,
+        _decision: RefreshOutcomeDecision,
+        _evidence: &str,
+    ) -> Result<RefreshAdjudication, RefreshClaimAdjudicationError> {
+        Err(RefreshClaimAdjudicationError::NotPoisoned)
+    }
 }
 
 #[derive(Debug)]
@@ -165,6 +215,15 @@ impl TestGateway {
                     authentication_binding,
                 }
             },
+            CredentialGatewayCommand::Reconcile {
+                credential_id,
+                decision,
+                evidence,
+            } => CredentialCommand::Reconcile {
+                credential_id: Self::credential_id(&credential_id)?,
+                decision,
+                evidence,
+            },
         })
     }
 
@@ -190,6 +249,12 @@ impl TestGateway {
             CredentialCommandResult::Acquisition(acquisition) => Ok(
                 CredentialGatewayResult::Acquisition(map_acquisition(acquisition)?),
             ),
+            CredentialCommandResult::Reconciled(adjudication) => {
+                Ok(CredentialGatewayResult::Reconciled {
+                    decision: adjudication.decision,
+                    changed: adjudication.changed,
+                })
+            },
             _ => Err(CredentialGatewayError::Internal),
         }
     }
@@ -305,6 +370,12 @@ fn map_interaction(
     }
 }
 
+/// Map the adjudication port's taxonomy onto the gateway's.
+///
+/// The adjudication arm delegates to the `From` impl in
+/// [`crate::ports::credential_command`], which is now the single copy of this
+/// classification. It used to be duplicated here, and the two copies had to
+/// stay in step by hand.
 fn map_controller_error(error: CredentialControllerError) -> CredentialGatewayError {
     match error {
         CredentialControllerError::Authorization(error) => match error {
@@ -315,6 +386,7 @@ fn map_controller_error(error: CredentialControllerError) -> CredentialGatewayEr
             _ => CredentialGatewayError::Internal,
         },
         CredentialControllerError::Service(error) => map_service_error(error),
+        CredentialControllerError::Adjudication(error) => error.into(),
         _ => CredentialGatewayError::Internal,
     }
 }

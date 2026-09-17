@@ -10,7 +10,10 @@ use std::{collections::BTreeMap, fmt, num::NonZeroU64};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use nebula_storage_port::Scope;
+use nebula_storage_port::{
+    Scope,
+    store::{RefreshClaimAdjudicationError, RefreshOutcomeDecision},
+};
 use thiserror::Error;
 
 use crate::{
@@ -65,6 +68,23 @@ pub enum CredentialGatewayCommand {
     Resolve(ResolveCredentialRequest),
     /// Continue credential acquisition.
     ContinueResolve(ContinueResolveRequest),
+    /// Resolve an ambiguous provider outcome on a poisoned refresh claim.
+    ///
+    /// Carries the evidence the caller observed, never an incident identity:
+    /// the poisoned claim admits at most one incident, so the caller has no
+    /// incident to name and the digest of `evidence` is the anchor instead.
+    Reconcile {
+        /// Credential whose poisoned refresh claim is being adjudicated.
+        credential_id: String,
+        /// The provider outcome the caller asserts it observed.
+        decision: RefreshOutcomeDecision,
+        /// Operator prose describing what was observed. The adjudicator bounds
+        /// its length and digests it, and records both: the note is stored
+        /// verbatim alongside the digest, so the digest anchors the exact
+        /// bytes rather than replacing the prose. The byte bound limits length,
+        /// not sensitivity.
+        evidence: String,
+    },
 }
 
 impl CredentialGatewayCommand {
@@ -82,6 +102,7 @@ impl CredentialGatewayCommand {
             Self::Revoke { .. } => "revoke",
             Self::Resolve(_) => "resolve",
             Self::ContinueResolve(_) => "continue_resolve",
+            Self::Reconcile { .. } => "reconcile",
         }
     }
 }
@@ -232,6 +253,15 @@ pub enum CredentialGatewayResult {
     Revoked,
     /// Credential acquisition result.
     Acquisition(CredentialGatewayAcquisition),
+    /// A poisoned refresh claim was adjudicated.
+    Reconciled {
+        /// The provider outcome now durably on record for the claim.
+        decision: RefreshOutcomeDecision,
+        /// Whether this call changed the record. `false` means the identical
+        /// `(evidence digest, decision)` pair was already on record — a
+        /// superseded replay, which is a success, not a conflict.
+        changed: bool,
+    },
 }
 
 impl fmt::Debug for CredentialGatewayResult {
@@ -253,6 +283,11 @@ impl fmt::Debug for CredentialGatewayResult {
             Self::Acquisition(acquisition) => formatter
                 .debug_tuple("Acquisition")
                 .field(acquisition)
+                .finish(),
+            Self::Reconciled { decision, changed } => formatter
+                .debug_struct("Reconciled")
+                .field("decision", decision)
+                .field("changed", changed)
                 .finish(),
         }
     }
@@ -434,6 +469,68 @@ pub enum CredentialGatewayError {
     /// Internal invariant or composition failure.
     #[error("credential command failed internally")]
     Internal,
+    /// The credential has no poisoned refresh claim to adjudicate, and no
+    /// recorded resolution for it at all.
+    ///
+    /// Distinct from [`Self::Forbidden`]: the caller is authorized, and the
+    /// credential is not in the state the command names. The trigger is that
+    /// it was never poisoned, not that a reconciliation already succeeded: a
+    /// caller that repeats a reconciliation already on record is answered by
+    /// the no-op success path that [`Self::ReconciliationConflict`] describes.
+    #[error("credential has no refresh claim requiring reconciliation")]
+    ReconciliationNotRequired,
+    /// The poisoning claim already records a different `(evidence, decision)`
+    /// pair, so this request contradicts durable state.
+    ///
+    /// A caller that repeats its *own* request does not get this: an identical
+    /// pair is a no-op reported as success. This error means two different
+    /// operator observations disagree about the same claim.
+    #[error("credential refresh claim already records a different reconciliation decision")]
+    ReconciliationConflict,
+    /// The supplied evidence was rejected — empty, or beyond the adjudicator's
+    /// byte bound.
+    #[error("reconciliation evidence was rejected")]
+    ReconciliationEvidenceInvalid,
+}
+
+/// Classification of an adjudication failure into this port's taxonomy.
+///
+/// Defined once, in the crate that owns [`CredentialGatewayError`]: the
+/// mapping's only safety property is that its arms stay in step with
+/// [`RefreshClaimAdjudicationError`]'s variants, and until now two
+/// content-identical copies carried it, with nothing to enforce that they
+/// agreed.
+///
+/// The wildcard is forced, and is the residue of this shape rather than an
+/// oversight: `RefreshClaimAdjudicationError` is `#[non_exhaustive]`, so a
+/// cross-crate match cannot be exhaustive. The backstop is
+/// `nebula-storage-port`'s own in-crate
+/// `every_adjudication_error_variant_renders_its_message`, which holds an
+/// exhaustive match over the same five variants and so breaks that crate's
+/// test-target build on a sixth — forcing the author of a new variant into the
+/// owning crate rather than into this crate's arms. It is not a guarantee
+/// about this wildcard: that test is `#[cfg(test)]`, so `cargo check -p
+/// nebula-storage-port` compiles a sixth variant unmapped, and the variant would
+/// land here as [`CredentialGatewayError::Internal`]. Closing that properly
+/// needs a total, non-`Option` classification defined in the defining crate,
+/// the shape `CredentialOperation::rbac_permission` uses; it is not available
+/// here without adding a public classification type to `nebula-storage-port`.
+///
+/// Fail-closed either way: an unrecognised adjudication failure never reads as
+/// a success.
+impl From<RefreshClaimAdjudicationError> for CredentialGatewayError {
+    fn from(error: RefreshClaimAdjudicationError) -> Self {
+        match error {
+            // Retryable: the commit may or may not have landed, and a recommit
+            // of the same pair is idempotent, so `OutcomeUnknown` is exact.
+            RefreshClaimAdjudicationError::AcknowledgementUnknown => Self::OutcomeUnknown,
+            RefreshClaimAdjudicationError::Storage => Self::Unavailable,
+            RefreshClaimAdjudicationError::InvalidEvidence => Self::ReconciliationEvidenceInvalid,
+            RefreshClaimAdjudicationError::NotPoisoned => Self::ReconciliationNotRequired,
+            RefreshClaimAdjudicationError::EvidenceConflict => Self::ReconciliationConflict,
+            _ => Self::Internal,
+        }
+    }
 }
 
 /// Object-safe authenticated credential command seam.
@@ -452,7 +549,7 @@ pub trait CredentialCommandGateway: fmt::Debug + Send + Sync {
 #[cfg(feature = "test-util")]
 mod testkit;
 #[cfg(feature = "test-util")]
-pub use testkit::test_gateway_from_service;
+pub use testkit::{test_gateway_from_service, test_gateway_from_service_with_reconciliation};
 
 #[cfg(test)]
 mod tests {
@@ -469,6 +566,48 @@ mod tests {
             tags: None,
         });
         assert!(!format!("{command:?}").contains(CANARY));
+    }
+
+    #[test]
+    fn reconcile_command_debug_redacts_operator_evidence() {
+        // Evidence is operator prose and may quote a provider ticket, so it is
+        // payload: the command's `Debug` renders the operation label only.
+        const CANARY: &str = "api-gateway-evidence-never-debug";
+        let command = CredentialGatewayCommand::Reconcile {
+            credential_id: "cred_safe".to_owned(),
+            decision: RefreshOutcomeDecision::ProviderApplied,
+            evidence: CANARY.to_owned(),
+        };
+        let debug = format!("{command:?}");
+        assert!(!debug.contains(CANARY));
+        assert!(debug.contains("reconcile"));
+    }
+
+    #[test]
+    fn reconcile_command_carries_exactly_evidence_and_a_decision() {
+        // The field set is the contract: the poisoned claim admits at most one
+        // incident, so a caller has no incident to name and there is no
+        // incident field to fill. Adding one — an incident id, a
+        // reconciliation token — would be the identity this design rejects,
+        // and it would have to be added here first.
+        const EVIDENCE: &str = "provider support ticket 4417: the call never reached the API";
+        let command = CredentialGatewayCommand::Reconcile {
+            credential_id: "cred_safe".to_owned(),
+            decision: RefreshOutcomeDecision::ProviderNotApplied,
+            evidence: EVIDENCE.to_owned(),
+        };
+        assert_eq!(command.operation(), "reconcile");
+        let CredentialGatewayCommand::Reconcile {
+            credential_id,
+            decision,
+            evidence,
+        } = command
+        else {
+            panic!("constructed as Reconcile above");
+        };
+        assert_eq!(credential_id, "cred_safe");
+        assert_eq!(decision, RefreshOutcomeDecision::ProviderNotApplied);
+        assert_eq!(evidence, EVIDENCE);
     }
 
     #[test]
@@ -507,6 +646,43 @@ mod tests {
         assert_eq!(never.clone(), never);
         assert_eq!(after.clone(), after);
         assert_ne!(never, after);
+    }
+
+    #[test]
+    fn adjudication_failures_keep_their_own_gateway_error() {
+        // Every known variant, with its exact mapping. The point is that no two
+        // of the three reconcile-specific failures collapse into one another or
+        // into `Internal`: a caller that cannot tell "nothing to reconcile"
+        // from "your evidence contradicts the record" cannot act on either.
+        for (error, expected) in [
+            (
+                RefreshClaimAdjudicationError::NotPoisoned,
+                CredentialGatewayError::ReconciliationNotRequired,
+            ),
+            (
+                RefreshClaimAdjudicationError::EvidenceConflict,
+                CredentialGatewayError::ReconciliationConflict,
+            ),
+            (
+                RefreshClaimAdjudicationError::InvalidEvidence,
+                CredentialGatewayError::ReconciliationEvidenceInvalid,
+            ),
+            (
+                RefreshClaimAdjudicationError::Storage,
+                CredentialGatewayError::Unavailable,
+            ),
+            (
+                RefreshClaimAdjudicationError::AcknowledgementUnknown,
+                CredentialGatewayError::OutcomeUnknown,
+            ),
+        ] {
+            let rendered = format!("{error:?}");
+            assert_eq!(
+                CredentialGatewayError::from(error),
+                expected,
+                "wrong gateway error for {rendered}"
+            );
+        }
     }
 
     #[test]

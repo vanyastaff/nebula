@@ -416,6 +416,8 @@ impl ServerRuntime {
             let credential_controller = Arc::new(CredentialController::new(
                 Arc::clone(&credential_service),
                 credential_authority,
+                Arc::clone(&credential_runtime.adjudicator),
+                Some(Arc::clone(&credential_runtime.audit_sink)),
             ));
             let credential_gateway = Arc::new(ServerCredentialGateway::new(credential_controller));
             state = state.with_credential_gateway(credential_gateway);

@@ -303,6 +303,33 @@ pub enum ApiError {
     #[classify(category = "internal", code = "API:NOT_IMPLEMENTED")]
     #[error("Not implemented: {0}")]
     NotImplemented(String),
+
+    /// The credential holds no poisoned refresh claim to adjudicate (409).
+    ///
+    /// Distinct from the generic [`Self::Conflict`]: the caller is authorized
+    /// and the credential is not in the state the command names, and a client
+    /// has to tell that apart from a contradictory decision before it can act.
+    #[classify(
+        category = "conflict",
+        code = "API:CREDENTIAL_RECONCILIATION_NOT_REQUIRED",
+        retryable = false
+    )]
+    #[error("Credential has no refresh claim requiring reconciliation")]
+    CredentialReconciliationNotRequired,
+
+    /// The refresh claim already records a different `(evidence, decision)`
+    /// pair than the one submitted (409).
+    ///
+    /// A caller that repeats its own request does not get this: an identical
+    /// pair is a no-op success. This means two operator observations disagree
+    /// about the same claim.
+    #[classify(
+        category = "conflict",
+        code = "API:CREDENTIAL_RECONCILIATION_CONFLICT",
+        retryable = false
+    )]
+    #[error("Credential refresh claim already records a different reconciliation decision")]
+    CredentialReconciliationConflict,
 }
 
 /// Project a [`nebula_tenancy::TenancyError`] (raised when a request's
@@ -389,6 +416,12 @@ impl ApiError {
             },
             Self::CredentialRevokeReconciliationRequired => {
                 credential_problem(CredentialProblem::RevokeReconciliationRequired)
+            },
+            Self::CredentialReconciliationNotRequired => {
+                credential_problem(CredentialProblem::ReconciliationNotRequired)
+            },
+            Self::CredentialReconciliationConflict => {
+                credential_problem(CredentialProblem::ReconciliationConflict)
             },
             Self::RateLimitExceeded => standard_problem(
                 StatusCode::TOO_MANY_REQUESTS,
@@ -553,6 +586,8 @@ enum CredentialProblem {
     RefreshRetryDelayed,
     RefreshReconciliationRequired,
     RevokeReconciliationRequired,
+    ReconciliationNotRequired,
+    ReconciliationConflict,
 }
 
 fn credential_problem(error: CredentialProblem) -> (StatusCode, ProblemDetails) {
@@ -581,6 +616,16 @@ fn credential_problem(error: CredentialProblem) -> (StatusCode, ProblemDetails) 
             "credential-revoke-reconciliation-required",
             "Credential Revoke Reconciliation Required",
             "The revoke outcome is known, but durable local finalization definitely failed. Do not retry automatically; reconcile credential state.",
+        ),
+        CredentialProblem::ReconciliationNotRequired => (
+            "credential-reconciliation-not-required",
+            "Credential Reconciliation Not Required",
+            "The credential has no poisoned refresh claim to adjudicate. A repeated reconciliation of a decision already on record is reported as success instead.",
+        ),
+        CredentialProblem::ReconciliationConflict => (
+            "credential-reconciliation-conflict",
+            "Credential Reconciliation Conflict",
+            "The refresh claim already records a different evidence and decision pair. Repeating an identical request is a no-op success; this response means a recorded resolution disagrees with the request.",
         ),
     };
     conflict_problem(problem_type, title, detail)
@@ -1277,5 +1322,43 @@ mod tests {
         let response = error.into_response();
         assert_eq!(response.status(), StatusCode::CONFLICT);
         assert!(!response.headers().contains_key(header::RETRY_AFTER));
+    }
+
+    #[test]
+    fn reconcile_refusals_are_distinguishable_fixed_non_retryable_409s() {
+        use nebula_error::Classify;
+
+        // The two refusals call for different next steps — "nothing to
+        // adjudicate" is terminal for the request, while a conflicting decision
+        // means the operator has to read what is already on record — so each
+        // carries its own code and problem type instead of sharing the generic
+        // conflict response and being told apart only by free-text detail.
+        for (error, code, problem_type, title) in [
+            (
+                ApiError::CredentialReconciliationNotRequired,
+                "API:CREDENTIAL_RECONCILIATION_NOT_REQUIRED",
+                "https://nebula.dev/problems/credential-reconciliation-not-required",
+                "Credential Reconciliation Not Required",
+            ),
+            (
+                ApiError::CredentialReconciliationConflict,
+                "API:CREDENTIAL_RECONCILIATION_CONFLICT",
+                "https://nebula.dev/problems/credential-reconciliation-conflict",
+                "Credential Reconciliation Conflict",
+            ),
+        ] {
+            let (status, problem) = error.to_problem_details();
+            assert_eq!(status, StatusCode::CONFLICT, "wrong status for {code}");
+            assert_eq!(error.category(), nebula_error::ErrorCategory::Conflict);
+            assert_eq!(error.code().as_str(), code);
+            assert!(!error.is_retryable(), "wrong retryability for {code}");
+            assert_eq!(error.retry_hint(), None);
+            assert_eq!(problem.type_uri, problem_type);
+            assert_eq!(problem.title, title);
+
+            let response = error.into_response();
+            assert_eq!(response.status(), StatusCode::CONFLICT);
+            assert!(!response.headers().contains_key(header::RETRY_AFTER));
+        }
     }
 }

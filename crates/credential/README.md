@@ -230,8 +230,9 @@ wired to a hardened injected transport.
   periodic poison-accounting sweep for its complete serving lifecycle.
 - A lost database acknowledgement after commit is `OutcomeUnknown`. K2 never replays it
   automatically. An expired provider-side-effect claim remains durable fail-closed poison, and
-  elapsed TTL never grants replay authority. Explicit reconciliation and safe operation
-  replay/idempotency belong to K3.
+  elapsed TTL never grants replay authority. Owner-qualified reconciliation ships as the credential
+  reconcile command, and the operator decision it records is what authorizes the credential's use
+  again; safe operation replay/idempotency belongs to K3.
 - Interim audit is non-authoritative observation. It cannot make a confirmed mutation fail;
   atomic audit/outbox evidence belongs to K3.
 - Tombstoning clears current live material but does not claim historical erasure from database

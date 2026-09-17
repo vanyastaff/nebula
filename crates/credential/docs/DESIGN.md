@@ -3,7 +3,7 @@
 | Field | Value |
 |---|---|
 | Status | Current implementation boundary; pre-1.0 |
-| Reviewed | 2026-07-23 |
+| Reviewed | 2026-09-16 |
 | Layer | Core/shared infrastructure |
 
 ## Bounded contexts
@@ -56,6 +56,45 @@ membership source returns unavailable; a valid snapshot with no organization mem
 Workflow/system actors fail closed until durable provenance policy is implemented. The route's
 Access Kernel guard remains responsible for the separate token-grant check.
 
+### Reconciliation seam
+
+`CredentialCommand::Reconcile` resolves one *poisoned* refresh claim (an expired `sentinel=1` row
+that `try_claim` answers as outcome-unknown) with the provider outcome an operator has established
+off-platform. It carries the credential, the `RefreshOutcomeDecision`, and an operator note, and
+never an incident identity: the poisoned claim admits at most one incident, so the caller has no
+incident to name and the digest of the note is the anchor instead.
+
+The controller holds the seam as a constructor dependency, `Arc<dyn RefreshClaimAdjudicator>`
+(`nebula-storage-port`), beside its optional `Arc<dyn AuditSink>`. Neither is a service method:
+reconciliation writes a claim-store incident row, not credential material, so it must not widen
+`CredentialPersistence` or `CredentialService`.
+
+Authority is layered, and the layers have different standing:
+
+- the **adjudicator's incident row** is the authoritative, transactional record — clearing the
+  poison and writing the resolution are one operation;
+- the **`AuditOperation::Reconcile` event** is a non-authoritative observation emitted after that
+  commit: its failure is logged and never converts a recorded decision into an error the caller
+  could retry against different evidence. The `nebula.credential.reconcile_total` counter
+  (labelled `outcome`) is never emitted, because no metrics emitter is wired at the composition
+  root and the seam's only implementor discards every sample, so it has no failure to log;
+- the **tenant gate** is the controller's own `CredentialTenantAuthority` decision, reached through
+  `CredentialOperation::Reconcile` → `Permission::CredentialReconcile` → `credentials:reconcile`.
+  The adjudication port takes no `Scope` operand, so it cannot be scope-keyed and no decorator can
+  stand in for this gate.
+
+Reconciliation is deliberately **not** guarded by `CredentialWrite`: that permission would hand the
+privileged seam to every credential writer. It sits at the administrator tier with the other
+privileged operations: `CredentialReconcile` maps to `WorkspaceRole::WorkspaceAdmin`, and
+`TenantContext::require` checks the workspace role before the org branch, so this permission never
+reaches an org gate. An org admin passes the workspace gate by implication, since `OrgAdmin` and
+`OrgOwner` imply `WorkspaceAdmin` in every workspace.
+
+Repeating an identical `(evidence digest, decision)` pair is a success with `changed: false`, not a
+conflict: it is the idempotent recommit of a superseded replay. Different evidence or a different
+decision for an already-resolved incident is `EvidenceConflict` — reconciliation resolves an
+unknown outcome, it does not overrule a recorded one.
+
 ## Persistence boundary
 
 `CredentialSelector` is `(CredentialOwner, CredentialId)` with private fields and accessors.
@@ -103,10 +142,10 @@ successful response, and an opaque integration error are likewise
 grant survived. Exact `invalid_grant` is instead persisted as `reauth_required`; missing local
 refresh material is classified separately and performs no transport dispatch. Ambiguous and
 post-provider outcomes are non-retryable to the originating caller. This is storm containment, not
-provider-side exactly-once: explicit, authorized reconciliation of poisoned operations remains K3
-work, and elapsed time alone never grants replay authority. A live critical task with no exact
-disposition deliberately keeps heartbeating fail-closed;
-cancelling it cannot prove the provider did not consume the grant.
+provider-side exactly-once: explicit, authorized reconciliation of poisoned operations now ships as
+the owner-qualified credential reconcile command, and elapsed time alone never grants replay
+authority. A live critical task with no exact disposition deliberately keeps heartbeating
+fail-closed; cancelling it cannot prove the provider did not consume the grant.
 
 The authenticated management `refresh` and `revoke` commands use the same owned L1/L2 boundary.
 Their erased integration closures are invoked at most once: an opaque error after entry is
@@ -219,9 +258,52 @@ shared metadata authoring foundation is tracked in the
 ## Remaining design work
 
 - **K3:** make the controller plus semantic idempotency/operation ledger the sole management writer;
-  add an explicit reconciliation command that can resolve durable `OutcomeUnknown` poison and
-  authorize safe replay when evidence permits, plus transactional audit/outbox evidence, versioned
-  state envelopes, and durable cross-aggregate convergence.
+  transactional audit/outbox evidence, versioned state envelopes, and durable cross-aggregate
+  convergence. Owner-qualified reconciliation of durable `OutcomeUnknown` poison now ships as the
+  credential reconcile command, and the operator decision it records is what authorizes the
+  credential's use again.
 - **K4:** provide supported membership/deployment wiring and finish curated SDK
   `client`/`embedded` façades without exposing internal authority. Production credential adapters
   already live in `apps/server`; the API-side factory is an unsupported test fixture only.
+
+### ADR-0088 status, updated 2026-09-16
+
+Each item carries the ADR's own state as of 2026-06-12, then what the tree shows now.
+
+- **D1 — ADR: "partial"; `#[credential]` attr + `CredentialPolicy` shipped, OAuth2 still a
+  monolithic type, no shared `OAuth2Protocol` module yet.** Now: the derive half is complete in a
+  second sense the ADR did not record, because the `#[credential]` macro synthesizes
+  `CredentialLifecycle::policy` (`crates/credential/macros/src/credential_attr.rs`). The residue the
+  ADR names is unchanged: no `OAuth2Protocol` module, and `OAuth2Credential` remains one `impl` block
+  that hand-writes `policy` because its strategy is state-dependent.
+- **D2 — ADR: "partial"; "runtime does not yet route policy-first in all paths".** Now: it routes
+  policy-first in **no** production path, so the ADR's hedge understates the gap. `C::policy` has one
+  production-code call site (`src/runtime/resolver.rs`), and no in-repo path reaches it: the sole
+  caller of `CredentialResolver::resolve_with_refresh` is `CredentialResolver::scheme_factory`, and
+  its only entry, `CredentialService::scheme_factory` (`src/service/slot.rs:519`), has no callers.
+  The capability
+  sub-traits plus the durable `reauth_required` bit are the gate (`src/service/slot.rs:73-81`).
+  **Recorded as a deliberate cut, not pending wiring:** the production seam is type-erased
+  (`CredentialSlotResolver::resolve_slot` returns an `ErasedCredentialGuard`), so routing a policy
+  through it needs a new erased port and red-to-green evidence, which is a design change rather than
+  a documentation one. So 1.0 ships the capability traits as the governing model. The dead public
+  entries stay `pub` pending the 1.0 API decision; deprecating or closing
+  `CredentialService::scheme_factory` and `resolve_with_refresh` is a design action this section
+  records and leaves open. The authoring
+  obligation survives the cut: an author must still hand-write `fn policy` where the synthesized
+  value would be wrong.
+- **D6 — ADR: "seam exists, producer is a frontier gap (M12.4)".** Now: split. The credential
+  slot-resolution path landed 2026-09-13 with `CredentialSlotResolver` (`src/service/slot.rs:268`).
+  The crate carries two impls of it, and the one the engine's execution path reaches is
+  `CredentialProjectionRuntime` (`src/service/projection.rs:44`), wired through
+  `with_credential_resolver`. Production plan-binding resolution landed in the same commit in
+  `apps/server` (`ServerExecutionBindingResolver`). The resource **reverse-index** producer is still
+  absent: `register_and_bind` has one caller, `WorkflowEngine::register_resource_and_bind`
+  (`crates/engine/src/engine/mod.rs:1017`), which is itself uncalled and compiled only under the
+  non-default `rotation` feature, so no live path reaches it. That half stays a real gap.
+
+ADR-0088 lives in the maintainers' private design vault rather than this repository, so its own
+2026-06-12 status table cannot be amended here. What this section does instead is put the residue
+where the ADR's own text sends the reader: its pointer names this file for the forward design that
+completes the unfinished D1/D2/D6 work, and the entries above are what the reader finds there. The
+ADR's table is therefore the older of the two.

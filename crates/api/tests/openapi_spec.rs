@@ -230,6 +230,154 @@ async fn credential_revoke_publishes_reconciliation_contract() {
 }
 
 #[tokio::test]
+async fn credential_reconcile_publishes_its_contract() {
+    let spec = fetch_spec_json().await;
+    let operation = spec
+        .pointer(
+            "/paths/~1api~1v1~1orgs~1{org}~1workspaces~1{ws}~1credentials~1{cred}~1reconcile/post",
+        )
+        .expect("credential reconcile operation must be published");
+
+    // The decision vocabulary is API-owned and deliberately frozen: these two
+    // spellings are the durable `adjudication_decision` values, and a client
+    // generated from this spec must be able to send them byte-for-byte. A third
+    // outcome is a new wire version, not a new array element
+    // (`domain/credential/dto.rs`, and its drift test against the port's
+    // `as_str()`).
+    let decision = spec
+        .pointer("/components/schemas/CredentialReconcileDecisionV1/enum")
+        .and_then(Value::as_array)
+        .expect("the decision enum must be published as a closed component schema");
+    assert_eq!(
+        decision,
+        &vec![
+            Value::String("provider_applied".to_owned()),
+            Value::String("provider_not_applied".to_owned()),
+        ],
+        "the published decision spellings are the durable ones: {decision:?}"
+    );
+
+    let schema_ref = operation
+        .pointer("/requestBody/content/application~1json/schema/$ref")
+        .and_then(Value::as_str)
+        .expect("the reconcile request body must reference a component schema");
+    assert!(
+        schema_ref.ends_with("/ReconcileCredentialRequest"),
+        "the reconcile request body must be typed: {schema_ref}"
+    );
+
+    // The request is the conflict identity: the adjudicator keys its recorded
+    // resolution on the `(evidence, decision)` pair, so dropping the required
+    // `evidence` would let a client name a decision with no identity behind it.
+    let (_, request_required) = component_property_sets(&spec, "ReconcileCredentialRequest");
+    assert_eq!(
+        request_required,
+        HashSet::from(["decision", "evidence"]),
+        "the reconcile request must require the whole conflict identity: {request_required:?}"
+    );
+
+    let response = operation
+        .get("responses")
+        .and_then(Value::as_object)
+        .expect("credential reconcile must publish typed responses")
+        .get("200")
+        .expect("credential reconcile must publish its success response");
+    let schema_ref = response
+        .pointer("/content/application~1json/schema/$ref")
+        .and_then(Value::as_str)
+        .expect("the reconcile success must reference a component schema");
+    assert!(
+        schema_ref.ends_with("/ReconcileCredentialResponse"),
+        "the reconcile success must be typed: {schema_ref}"
+    );
+
+    // The success body is the whole client contract for an accepted decision, so
+    // its property set is pinned exactly. `changed` is the one distinction a
+    // client needs, which is why the response carries no always-true
+    // `reconciled: bool`; nothing else in the tree would notice that flag
+    // coming back.
+    let (response_properties, _) = component_property_sets(&spec, "ReconcileCredentialResponse");
+    assert_eq!(
+        response_properties,
+        HashSet::from(["decision", "changed", "message"]),
+        "the reconcile success must stay exactly decision/changed/message: {response_properties:?}"
+    );
+
+    let description = response
+        .get("description")
+        .and_then(Value::as_str)
+        .expect("the reconcile success must describe `changed`");
+    assert!(
+        description.contains("changed = false"),
+        "the reconcile success must document the idempotent recommit rather than \
+         leaving `changed` unexplained: {response}"
+    );
+
+    // Both refusals travel as one 409 carrying two distinct problem types; a
+    // client that could not tell them apart cannot decide whether to stop or to
+    // look at the credential's recorded resolution. Different evidence is not a
+    // way out of either: the recorded resolution is keyed on the
+    // `(evidence, decision)` pair, so a changed evidence returns this same 409
+    // forever, and only repeating the identical request is a safe no-op.
+    let conflict = operation
+        .get("responses")
+        .and_then(Value::as_object)
+        .expect("credential reconcile must publish typed responses")
+        .get("409")
+        .expect("credential reconcile conflicts must remain HTTP 409");
+    let schema_ref = conflict
+        .pointer("/content/application~1problem+json/schema/$ref")
+        .and_then(Value::as_str)
+        .expect("credential reconcile conflict must use the shared ProblemDetails schema");
+    assert!(
+        schema_ref.ends_with("/ProblemDetails"),
+        "credential reconcile conflict must remain RFC 9457: {conflict}"
+    );
+    let description = conflict
+        .get("description")
+        .and_then(Value::as_str)
+        .expect("credential reconcile conflict must describe its closed outcomes");
+    // The published spellings are the classifier's own codes, so the `API:`
+    // prefix is part of the assertion: a bare name matches inside any longer
+    // code that contains it, which would let one refusal stand in for another.
+    for refusal_code in [
+        "API:CREDENTIAL_RECONCILIATION_NOT_REQUIRED",
+        "API:CREDENTIAL_RECONCILIATION_CONFLICT",
+        "API:OUTCOME_UNKNOWN",
+    ] {
+        assert!(
+            description.contains(refusal_code),
+            "the reconcile 409 must publish `{refusal_code}` as a distinguishable outcome: {conflict}"
+        );
+    }
+}
+
+/// The published property names and required set of one component schema.
+fn component_property_sets<'a>(
+    spec: &'a Value,
+    schema_name: &str,
+) -> (HashSet<&'a str>, HashSet<&'a str>) {
+    let schema = spec
+        .pointer(&format!("/components/schemas/{schema_name}"))
+        .unwrap_or_else(|| panic!("`{schema_name}` must be published as a component schema"));
+    let properties: HashSet<&str> = schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .unwrap_or_else(|| panic!("`{schema_name}` must publish its properties: {schema}"))
+        .keys()
+        .map(String::as_str)
+        .collect();
+    let required: HashSet<&str> = schema
+        .get("required")
+        .and_then(Value::as_array)
+        .unwrap_or_else(|| panic!("`{schema_name}` must publish its required set: {schema}"))
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    (properties, required)
+}
+
+#[tokio::test]
 async fn identity_oauth_provider_and_mfa_continuation_are_typed_closed_contracts() {
     let spec = fetch_spec_json().await;
     let paths = spec
@@ -669,6 +817,14 @@ async fn selected_operations_publish_expected_permissions() {
             "post",
             "/api/v1/orgs/{org}/workspaces/{ws}/credentials/{cred}/revoke",
             "credentials:delete",
+        ),
+        // Reconciliation carries its own authority: recording what a provider
+        // did to a claim is not a credential write, so it must not inherit
+        // `credentials:write` from the lifecycle routes above it.
+        (
+            "post",
+            "/api/v1/orgs/{org}/workspaces/{ws}/credentials/{cred}/reconcile",
+            "credentials:reconcile",
         ),
     ] {
         assert_eq!(

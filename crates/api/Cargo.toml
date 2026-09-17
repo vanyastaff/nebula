@@ -167,6 +167,12 @@ pretty_assertions = { workspace = true }
 rstest = { workspace = true }
 static_assertions = { workspace = true }
 wiremock = { workspace = true }
+# The credential store classifies anything but the exact `sqlite::memory:`
+# string as file-backed, so a `file:`-form URL leaves a `<name>-setup-lock`
+# sidecar beside the database name it is given. The reconciliation acceptance
+# test names its file-backed database inside a temporary directory, so it
+# needs `tempfile` to own that directory and remove the sidecar with it.
+tempfile = { workspace = true }
 # Private OAuth egress policy tests generate an ephemeral CA/leaf pair and
 # terminate TLS locally. They exercise the production rustls client policy;
 # no certificate-verification bypass is compiled.
