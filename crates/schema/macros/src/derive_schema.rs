@@ -583,52 +583,10 @@ pub(crate) fn build_field_expr(
 
     expr = apply_presentation_decorators(expr, field_attr, crate_path);
 
-    if let Some(default) = &field_attr.default {
-        if field_attr.enum_select {
-            match default {
-                DefaultLit::Str(s) => {
-                    expr = quote! {
-                        #expr.default(
-                            #crate_path::__private::serde_json::Value::String(#s.to_owned())
-                        )
-                    };
-                },
-                _ => {
-                    return Err(syn::Error::new_spanned(
-                        field_name,
-                        "#[field(default = ..)] on `#[field(enum_select)]` fields expects a string literal matching the wire JSON for one variant (for example `\"get\"` for `HttpMethod::Get`).",
-                    ));
-                },
-            }
-        } else {
-            let default_tokens = default_lit_tokens(default, inner, field_name, crate_path)?;
-            expr = quote! { #expr.default(#default_tokens) };
-        }
-    }
-    if let Some(hint) = &field_attr.hint {
-        if field_attr.enum_select {
-            return Err(syn::Error::new_spanned(
-                field_name,
-                "`#[field(hint = ...)]` is not applicable to `#[field(enum_select)]` fields",
-            ));
-        }
-        let hint_ident = input_hint_ident(hint, field_name)?;
-        expr = quote! { #expr.hint(#crate_path::InputHint::#hint_ident) };
-    }
-    if let Some(widget) = field_attr.widget {
-        expr = apply_property_widget(
-            expr,
-            widget,
-            inner,
-            field_attr.enum_select,
-            field_attr.secret,
-            field_name,
-            crate_path,
-        )?;
-    }
-    if field_attr.multiline && matches!(inner, FieldKind::String) && !field_attr.secret {
-        expr = quote! { #expr.widget(#crate_path::StringWidget::Multiline) };
-    }
+    expr = apply_default_decorator(expr, field_attr, inner, field_name, crate_path)?;
+
+    expr = apply_display_decorators(expr, field_attr, inner, field_name, crate_path)?;
+
     if field_attr.no_expression {
         expr = quote! { #expr.no_expression() };
     }
@@ -893,6 +851,86 @@ fn apply_property_widget(
             "`display(widget = list)` applies only to list properties",
         )),
     }
+}
+
+/// Default stage: apply `#[field(default = ..)]`. On `#[field(enum_select)]`
+/// fields the default must be a wire-variant string; otherwise the literal is
+/// lowered per the field kind.
+fn apply_default_decorator(
+    builder: TokenStream2,
+    field_attr: &FieldAttrs,
+    inner: &FieldKind,
+    field_name: &Ident,
+    crate_path: &TokenStream2,
+) -> syn::Result<TokenStream2> {
+    let mut builder = builder;
+    if let Some(default) = &field_attr.default {
+        if field_attr.enum_select {
+            builder = apply_enum_select_default(builder, default, field_name, crate_path)?;
+        } else {
+            let default_tokens = default_lit_tokens(default, inner, field_name, crate_path)?;
+            builder = quote! { #builder.default(#default_tokens) };
+        }
+    }
+    Ok(builder)
+}
+
+/// `#[field(enum_select)]` default: only a string literal matching the wire
+/// JSON of one variant is accepted.
+fn apply_enum_select_default(
+    builder: TokenStream2,
+    default: &DefaultLit,
+    field_name: &Ident,
+    crate_path: &TokenStream2,
+) -> syn::Result<TokenStream2> {
+    match default {
+        DefaultLit::Str(s) => Ok(quote! {
+            #builder.default(
+                #crate_path::__private::serde_json::Value::String(#s.to_owned())
+            )
+        }),
+        _ => Err(syn::Error::new_spanned(
+            field_name,
+            "#[field(default = ..)] on `#[field(enum_select)]` fields expects a string literal matching the wire JSON for one variant (for example `\"get\"` for `HttpMethod::Get`).",
+        )),
+    }
+}
+
+/// Display stage: apply the remaining presentation decorators — `hint`, the
+/// `widget` selector, and the `multiline` shorthand — in attribute order.
+fn apply_display_decorators(
+    builder: TokenStream2,
+    field_attr: &FieldAttrs,
+    inner: &FieldKind,
+    field_name: &Ident,
+    crate_path: &TokenStream2,
+) -> syn::Result<TokenStream2> {
+    let mut builder = builder;
+    if let Some(hint) = &field_attr.hint {
+        if field_attr.enum_select {
+            return Err(syn::Error::new_spanned(
+                field_name,
+                "`#[field(hint = ...)]` is not applicable to `#[field(enum_select)]` fields",
+            ));
+        }
+        let hint_ident = input_hint_ident(hint, field_name)?;
+        builder = quote! { #builder.hint(#crate_path::InputHint::#hint_ident) };
+    }
+    if let Some(widget) = field_attr.widget {
+        builder = apply_property_widget(
+            builder,
+            widget,
+            inner,
+            field_attr.enum_select,
+            field_attr.secret,
+            field_name,
+            crate_path,
+        )?;
+    }
+    if field_attr.multiline && matches!(inner, FieldKind::String) && !field_attr.secret {
+        builder = quote! { #builder.widget(#crate_path::StringWidget::Multiline) };
+    }
+    Ok(builder)
 }
 
 fn ensure_value_rule_applicability(
