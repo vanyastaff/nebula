@@ -214,17 +214,20 @@ Credential coordination — durable refresh claim (П2 / ADR-0041):
   `crates/storage-port/src/store/operation_ledger.rs`.
 
 - **[L2-§11.5]** `TransitionBatch::journal` backs the durable `port_execution_journal`
-  (append-only, replayable) and is committed with the state transition. `CheckpointStore`
+  (append-only, replayable) and is committed with the state transition. No production caller
+  fills the batch's journal rows yet (#1013); the legacy `execution_journal` table has no
+  INSERT writer. `CheckpointStore`
   remains **best-effort**: a checkpoint write failure may log and not abort execution; work
   since the last checkpoint may be replayed or lost. Seams:
   `crates/storage-port/src/batch.rs` and `crates/storage-port/src/store/checkpoint.rs`.
 
-- **[ADR-0009]** Resume-persistence schema foundation. `ExecutionRepo::set_workflow_input` /
-  `get_workflow_input` persist the workflow trigger payload alongside the execution row
+- **[ADR-0009]** Resume-persistence schema foundation. `NodeResultStore::set_workflow_input` /
+  `get_workflow_input` (`crates/storage-port/src/store/node_result.rs`) persist the workflow
+  trigger payload alongside the execution row
   (issue #311). `save_node_result` / `load_node_result` / `load_all_results` persist the full
   `ActionResult<Value>` variant per node attempt (issue #299) so resume can replay edge
   decisions through `evaluate_edge` (foundation for #324, #336). `NodeResultRecord` carries a
-  `schema_version`; an unknown version surfaces as `ExecutionRepoError::UnknownSchemaVersion`
+  `schema_version`; an unknown version surfaces as `StorageError::UnknownSchemaVersion`
   rather than a silent fall-back. Engine consumers land in downstream chips B2 / B3 / B4.
 
 - **[L2-§12.2]** The `execution_control_queue` outbox is written in the **same logical
@@ -418,7 +421,7 @@ model — they keep live consumers (the API idempotency middleware, the
 | Artifact | Status | Notes |
 |---|---|---|
 | `port_executions` row + state JSON | **Durable** (CAS via `ExecutionStore` + `TransitionBatch`) | Source of truth |
-| `port_execution_journal` (append-only) | **Durable** | Replayable history; appended in the same commit as state |
+| `port_execution_journal` (append-only) | **Durable** | Replayable history; appended in the same commit as state. No production writer yet (#1013) — `TransitionBatch::journal` rows have no producer, and the legacy `execution_journal` table has no INSERT writer |
 | `port_control_queue` (outbox) | **Durable** | At-least-once cancel/dispatch; written in the same `TransitionBatch` (§12.2) |
 | stateful checkpoints | **Best-effort** | Write failure logs, does not abort; may replay |
 | lease holder / expiry + `fencing_generation` | **Durable + enforced** (ADR-0072) | `acquire_lease` → `FencingToken`; a superseded holder is rejected even on a matching CAS version. Verified by `crates/engine/tests/lease_takeover.rs`, the loom probe at `crates/storage-loom-probe/src/lease_handoff.rs`, and the conformance lease cases |

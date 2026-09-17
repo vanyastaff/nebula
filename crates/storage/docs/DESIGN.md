@@ -169,9 +169,11 @@ SQLite/Postgres, под Mutex в InMemory).
 5. **Legacy-алиасы refresh_claim.** `RefreshClaimStore as RefreshClaimRepo`,
    `RefreshClaimError as RepoError` (`src/credential/refresh_claim/mod.rs:37-41`) —
    rename-on-import ради исторических путей потребителей.
-6. **Стейл README §ADR-0009** (README.md:99-105): ссылается на
-   `ExecutionRepo::set_workflow_input` / `ExecutionRepoError::UnknownSchemaVersion`, хотя
-   сам README (56-57, 142-143) объявляет `ExecutionRepo` удалённым по ADR-0072.
+6. **Стейл README §ADR-0009 — закрыт.** Ссылки на
+   `ExecutionRepo::set_workflow_input` / `ExecutionRepoError::UnknownSchemaVersion`
+   заменены на `NodeResultStore::set_workflow_input` /
+   `StorageError::UnknownSchemaVersion`; долговое замечание оставлено как
+   история.
 7. **AGENTS.md:37** «Cross-crate calls go through nebula-eventbus» — у крейта нет dep на
    eventbus; правило-копипаста из корневого AGENTS.md.
 8. **Postgres runtime un-verified.** Pg-адаптер + identity-стора compile-verified и

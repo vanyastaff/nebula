@@ -20,10 +20,11 @@ use crate::error::StorageError;
 /// This also matches the other `#[async_trait]` port repos the API
 /// layer holds as `Arc<dyn …>` (e.g. `ControlQueueRepo`).
 /// `ResourceRepo` had no impls when written,
-/// so the choice is non-breaking. (The sibling RPITIT
-/// `repos::WorkflowRepo` / `repos::ExecutionRepo` are spec-16
-/// planned/experimental and are *not* used as `dyn` anywhere — they are
-/// not a precedent for a `dyn`-held RPITIT trait, which stable does not
+/// so the choice is non-breaking. (The RPITIT
+/// `repos::WorkflowRepo` / `repos::ExecutionRepo` siblings named by
+/// spec-16 were deleted as never-implemented placeholders — see
+/// `crates/storage/README.md` §The port boundary; they are not a
+/// precedent for a `dyn`-held RPITIT trait, which stable does not
 /// permit.)
 #[async_trait]
 pub trait ResourceRepo: Send + Sync {
@@ -48,7 +49,7 @@ pub trait ResourceRepo: Send + Sync {
     /// compare-and-swap (the post-CAS value, i.e. `actual + 1`); it is
     /// what callers must surface. `resource.version` supplied by the
     /// caller is advisory only and MUST NOT be trusted as the new value;
-    /// this mirrors `WorkflowRepo`'s store-owned increment.
+    /// the store owns the increment.
     async fn update(
         &self,
         resource: &ResourceEntry,

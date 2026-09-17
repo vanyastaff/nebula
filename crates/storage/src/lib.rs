@@ -48,7 +48,9 @@
 //!
 //! - CAS transitions via the port `ExecutionStore` commit path.
 //! - Per-attempt idempotency via the port `IdempotencyGuard`.
-//! - Journal (`append_journal`) and checkpoint (`save_stateful_checkpoint`).
+//! - Journal rows appended in the same commit as state (`TransitionBatch::journal`,
+//!   persisted to `port_execution_journal`) and checkpoint
+//!   (`save_stateful_checkpoint`).
 //! - Outbox atomicity: `execution_control_queue` writes share the same operation as state
 //!   transitions.
 //! - Local path: SQLite is the default; `test_support` provides `sqlite_memory_*` helpers for
