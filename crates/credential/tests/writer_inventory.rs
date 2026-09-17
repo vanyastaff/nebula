@@ -41,6 +41,12 @@
 //!   execution plane has its own `.release`/`.reclaim_stuck`) are not part of
 //!   the claim-store inventory.
 //!
+//! A file that a walked directory reaches only through a `#[cfg(test)]`-gated
+//! `mod` is test code wherever its tests sit. The walk still reads it — the
+//! no-module-macro rule is directory-wide and may not skip a file — but it
+//! contributes no production surface, the same exclusion an inline
+//! `#[cfg(test)]` subtree already gets.
+//!
 //! Known limitation (documented, not enforced): module-level macros
 //! (`identity_state!`, `bitflags!`) legitimately exist in `crates/credential`
 //! sources, so macro-generated code is invisible to this parse. The six write
@@ -139,6 +145,10 @@ struct Site {
 struct InventoryVisitor {
     current_file: PathBuf,
     current_set: ParseSetKind,
+    /// Set by the parse-set loop: this file is reachable only through a
+    /// `#[cfg(test)]`-gated `mod`, so it is test code and holds no production
+    /// surface (see [`cfg_test_declared_files`]).
+    current_file_is_test_only: bool,
     impl_stack: Vec<ImplContext>,
     fn_stack: Vec<String>,
     write_calls: Vec<WriteCall>,
@@ -501,9 +511,11 @@ impl InventoryVisitor {
     /// evidence. Engine files are parsed for the pub-item check (assertion (e))
     /// only: the engine's execution plane has write-shaped method calls of its
     /// own (`.release` on the execution backend, `.reclaim_stuck` on the
-    /// control queue) that are not claim-store writes.
+    /// control queue) that are not claim-store writes. Test files contribute
+    /// nothing: a write in a test is a test writing through the port, not a
+    /// production call site the inventory is counting.
     fn inventories_write_surface(&self) -> bool {
-        !matches!(self.current_set, ParseSetKind::Engine)
+        !matches!(self.current_set, ParseSetKind::Engine) && !self.current_file_is_test_only
     }
 
     /// Record a write call site with the classification context both syntaxes
@@ -587,8 +599,12 @@ impl<'ast> Visit<'ast> for InventoryVisitor {
             .map(|(path, _)| last_path_ident(path).unwrap_or_else(|| "<unnamed>".to_owned()));
         // Assertion (c) data: the adapters' inherent (non-trait) impls may
         // only expose constructors. Trait methods belong to the port surface
-        // and are not inventoried here.
-        if trait_.is_none() && ADAPTER_TYPES.contains(&self_ty.as_str()) {
+        // and are not inventoried here. An impl written in a test file is the
+        // test's own helper, not the adapter's public surface.
+        if trait_.is_none()
+            && !self.current_file_is_test_only
+            && ADAPTER_TYPES.contains(&self_ty.as_str())
+        {
             for impl_item in &item.items {
                 if let syn::ImplItem::Fn(method) = impl_item
                     && matches!(method.vis, syn::Visibility::Public(_))
@@ -804,7 +820,9 @@ impl<'ast> Visit<'ast> for InventoryVisitor {
 /// Used for the adapter directory (held to the no-module-macro rule, which
 /// must see every file in it, and to rename-without-update robustness) and
 /// for the engine surface walk (assertion (e) checks every file under
-/// `crates/engine/src`).
+/// `crates/engine/src`). Test files are in the result too: whether they carry
+/// production surface is decided per file by [`cfg_test_declared_files`], not
+/// by leaving them out of the walk.
 fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -822,10 +840,19 @@ fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 /// The file a file-backed `mod` declaration names, honoring `#[path = "..."]`.
+///
+/// `#[path = ".."]` is a name-value attribute, so the string is read from
+/// `Meta::NameValue`: `Attribute::parse_args` parses only list-style
+/// arguments and would fail here, leaving the name-based fallback to resolve a
+/// `#[path]`-renamed file to whatever `<name>.rs` happens to exist.
 fn mod_target_file(parent_dir: &Path, module: &syn::ItemMod) -> PathBuf {
     for attr in &module.attrs {
         if attr.path().is_ident("path")
-            && let Ok(path) = attr.parse_args::<syn::LitStr>()
+            && let syn::Meta::NameValue(name_value) = &attr.meta
+            && let syn::Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Str(path),
+                ..
+            }) = &name_value.value
         {
             return parent_dir.join(path.value());
         }
@@ -835,6 +862,38 @@ fn mod_target_file(parent_dir: &Path, module: &syn::ItemMod) -> PathBuf {
         return default_file;
     }
     parent_dir.join(module.ident.to_string()).join("mod.rs")
+}
+
+/// The files that a `#[cfg(test)]`-gated file-backed `mod` declaration in
+/// `files` names.
+///
+/// A directory walk cannot tell a test file from a production one — the gate
+/// sits on the declaration, in a sibling file — so the walk's results are
+/// filtered through this set. It is derived from declarations rather than
+/// from file names on purpose: a renamed test file that no declaration names
+/// anymore drops out of the set and is inventoried as production again, which
+/// fails loudly instead of quietly shrinking what the inventory sees.
+fn cfg_test_declared_files<'a>(files: impl IntoIterator<Item = &'a Path>) -> BTreeSet<PathBuf> {
+    let mut test_only = BTreeSet::new();
+    for file in files {
+        let Ok(source) = std::fs::read_to_string(file) else {
+            continue;
+        };
+        let Ok(syntax) = syn::parse_file(&source) else {
+            continue;
+        };
+        let parent_dir = file.parent().unwrap_or_else(|| Path::new("."));
+        for item in &syntax.items {
+            let syn::Item::Mod(module) = item else {
+                continue;
+            };
+            if module.content.is_some() || !has_cfg_test_attr(&module.attrs) {
+                continue;
+            }
+            test_only.insert(mod_target_file(parent_dir, module));
+        }
+    }
+    test_only
 }
 
 /// The production file set of the credential crate, derived from the crate's
@@ -925,6 +984,11 @@ fn sole_management_writer_inventory() {
         files.push((ParseSetKind::Engine, file));
     }
 
+    // Files a walked directory reaches only through a `#[cfg(test)]`-gated
+    // `mod`: the walk reads them (the no-module-macro rule is directory-wide)
+    // but they carry no production surface.
+    let test_only = cfg_test_declared_files(files.iter().map(|(_, file)| file.as_path()));
+
     let mut visitor = InventoryVisitor::default();
     // The composition binding the design fixes as the adjudicator's owner;
     // `let` aliases and typed parameters of the runtime join the set as the
@@ -942,6 +1006,7 @@ fn sole_management_writer_inventory() {
                 file.display()
             )
         });
+        visitor.current_file_is_test_only = test_only.contains(&file);
         visitor.current_file = file;
         visitor.current_set = set;
         visitor.visit_file(&syntax);
