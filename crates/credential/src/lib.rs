@@ -90,8 +90,9 @@ extern crate self as nebula_credential;
 pub mod contract;
 /// Built-in credential type implementations.
 pub mod credentials;
-/// Credential lifecycle as data — `CredentialPolicy` / `RefreshStrategy` /
-/// `RevokeStrategy` (ADR-0088 D2: capabilities are data, not sub-traits).
+/// Credential lifecycle policy types — `CredentialPolicy` / `RefreshStrategy` /
+/// `RevokeStrategy` (ADR-0088 D2). The routing model is cut; the capability
+/// sub-traits govern.
 pub(crate) mod lifecycle;
 /// Credential operation metrics — counter names and label helpers.
 pub(crate) mod metrics;
@@ -243,7 +244,8 @@ pub use secrets::{
     SecretBox, SecretString, generate_code_challenge, generate_pkce_verifier,
     generate_random_state, secret_from_string,
 };
-// Lifecycle policy types (ADR-0088 D2): capabilities as data, not sub-traits.
+// Lifecycle policy types (ADR-0088 D2). The routing model is cut; the capability sub-traits still
+// govern, and these types remain the authoring surface.
 pub use lifecycle::{
     CredentialLifecycle, CredentialPolicy, Decision, LeaseRef, RefreshStrategy,
     RefreshStrategyKind, RevokeStrategy, SchemeId,

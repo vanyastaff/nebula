@@ -293,9 +293,10 @@
 //!   64-bit `DefaultHasher` barrier defect ([#684], **closed** —
 //!   structurally fixed here via the collision-free `SlotIdentity`
 //!   structural set) and the pooled revoke→recycle TOCTOU were not
-//!   reachable in production (this crate is `frontier`; there is no
-//!   production credential→slot resolver), which is why seam-coupled
-//!   remediation was acceptable over a standalone hotfix.
+//!   reachable in production (this crate is `frontier`; the credential→slot
+//!   resolver that landed 2026-09-13 populates credential slots, and the
+//!   resource-side caller this defect needs is still absent), which is why
+//!   seam-coupled remediation was acceptable over a standalone hotfix.
 //!
 //! ## Consumer-migration history (honest record)
 //!

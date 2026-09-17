@@ -322,7 +322,8 @@ pub struct OAuth2ClientCredentialsProperties {
 // capability impls.
 // The hand-written `policy()` is relocated verbatim because OAuth2's refresh
 // strategy is state-dependent (`RefreshToken` while a refresh token is held,
-// else `ReAcquire`) — the macro's synthesized policy cannot read live state.
+// else `ReAcquire`), and the macro's synthesized policy emits a constant
+// `RefreshStrategy`.
 // The `initiate_authorization_code` building block stays in its own inherent
 // `impl` block below. It is not part of the credential contract and does not
 // imply a public provider-specific HTTP kickoff surface.
@@ -521,8 +522,10 @@ impl OAuth2Credential {
     // can renew non-interactively), otherwise `ReAcquire` (the refresh path
     // returns `ReauthRequired`). Provider revocation is not implemented; expiry
     // is the access token's inline `expires_at`. The hand-written `policy` is kept
-    // (not macro-synthesized) precisely because the refresh strategy depends on
-    // live state, which the macro's synthesized default cannot read.
+    // (not macro-synthesized) because the strategy depends on live state: the
+    // synthesized default reads state for its expiry but emits a constant
+    // `RefreshStrategy`, so it cannot express the `RefreshToken`/`ReAcquire` split
+    // above.
     fn policy(state: &OAuth2State) -> CredentialPolicy {
         CredentialPolicy {
             expires_at: state.expires_at,
