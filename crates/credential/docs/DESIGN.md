@@ -257,11 +257,11 @@ shared metadata authoring foundation is tracked in the
 
 ## Remaining design work
 
-- **K3:** make the controller plus semantic idempotency/operation ledger the sole management writer;
-  transactional audit/outbox evidence, versioned state envelopes, and durable cross-aggregate
-  convergence. Owner-qualified reconciliation of durable `OutcomeUnknown` poison now ships as the
-  credential reconcile command, and the operator decision it records is what authorizes the
-  credential's use again.
+- **Recorded follow-ups (former K3 residue):** transactional audit/outbox evidence to replace
+  the trace-only audit; durable cross-aggregate convergence; the durable sentinel-to-reauth
+  command. The K3 gate itself is closed: owner-qualified reconciliation ships as the credential
+  reconcile command, `CredentialController` is the sole management writer, and persisted state
+  carries the ADR-0107 version envelope.
 - **K4:** provide supported membership/deployment wiring and finish curated SDK
   `client`/`embedded` façades without exposing internal authority. Production credential adapters
   already live in `apps/server`; the API-side factory is an unsupported test fixture only.
