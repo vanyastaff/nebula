@@ -569,70 +569,7 @@ pub(crate) fn build_field_expr(
     let inner = kind.inner();
     let nested_binding = Ident::new("__nebula_nested_field", Span::mixed_site());
 
-    if field_attr.enum_select && field_attr.secret {
-        return Err(syn::Error::new_spanned(
-            field_name,
-            "`#[field(enum_select)]` cannot be combined with `#[field(secret)]`",
-        ));
-    }
-    if field_attr.no_expression && field_attr.expression_required {
-        return Err(syn::Error::new_spanned(
-            field_name,
-            "`#[field(no_expression)]` and `#[field(expression_required)]` are contradictory: \
-             pick exactly one expression-mode attribute",
-        ));
-    }
-    if field_attr.secret && field_attr.multiline {
-        return Err(syn::Error::new_spanned(
-            field_name,
-            "`#[field(multiline)]` does not apply to secret fields — secret values are always \
-             rendered as masked single-line input",
-        ));
-    }
-    if field_attr.secret && field_attr.default.is_some() {
-        return Err(syn::Error::new_spanned(
-            field_name,
-            "`#[field(default = ..)]` on a secret field hard-codes plaintext into the schema; \
-             configure the value via the credential setup form instead",
-        ));
-    }
-    if field_attr.secret && field_attr.emit_as.is_some() {
-        return Err(syn::Error::new_spanned(
-            field_name,
-            "`#[field(emit_as = ..)]` cannot be set on a secret field — a secret is never \
-             emitted on projection output, so an `emit_as` for it would never apply",
-        ));
-    }
-    if field_attr.enum_select && matches!(kind, FieldKind::List(_)) {
-        return Err(syn::Error::new_spanned(
-            field_name,
-            "`#[field(enum_select)]` on `Vec<...>` is not supported yet — build the list field manually or omit `enum_select`",
-        ));
-    }
-    if field_attr.enum_select && !matches!(inner, FieldKind::UserDefined(_)) {
-        return Err(syn::Error::new_spanned(
-            field_name,
-            "`#[field(enum_select)]` only applies to enums (or `Option<Enum>`) that implement `HasSelectOptions` via `#[derive(EnumSelect)]`",
-        ));
-    }
-    if field_attr.enum_select {
-        ensure_enum_select_validate_attrs(field_name, validate)?;
-    }
-    if field_attr.enum_select && field_attr.multiline {
-        return Err(syn::Error::new_spanned(
-            field_name,
-            "`#[field(multiline)]` applies only to string fields, not to `#[field(enum_select)]`",
-        ));
-    }
-
-    if field_attr.secret && !matches!(inner, FieldKind::String | FieldKind::UserDefined(_)) {
-        return Err(syn::Error::new_spanned(
-            field_name,
-            "`#[field(secret)]` requires a string-like type implementing `SecretInput`, or `Option` of one",
-        ));
-    }
-
-    ensure_value_rule_applicability(field_name, inner, field_attr, validate)?;
+    ensure_field_attr_combinations(field_name, kind, field_attr, validate)?;
 
     // A secret property's Rust leaf type is checked below against the explicit
     // `SecretInput` contract. Both String and user-defined wrappers map to the
@@ -983,6 +920,84 @@ fn ensure_enum_select_validate_attrs(
              URL, email, pattern, length, and range rules apply to string or number fields",
         ));
     }
+    Ok(())
+}
+
+/// The attribute-compatibility gauntlet: every early-return pairing/exclusivity check
+/// on `#[field]`/`#[validate]` combinations, run before any field expression is built.
+fn ensure_field_attr_combinations(
+    field_name: &Ident,
+    kind: &FieldKind,
+    field_attr: &FieldAttrs,
+    validate: &ValidateAttrs,
+) -> syn::Result<()> {
+    let inner = kind.inner();
+
+    if field_attr.enum_select && field_attr.secret {
+        return Err(syn::Error::new_spanned(
+            field_name,
+            "`#[field(enum_select)]` cannot be combined with `#[field(secret)]`",
+        ));
+    }
+    if field_attr.no_expression && field_attr.expression_required {
+        return Err(syn::Error::new_spanned(
+            field_name,
+            "`#[field(no_expression)]` and `#[field(expression_required)]` are contradictory: \
+             pick exactly one expression-mode attribute",
+        ));
+    }
+    if field_attr.secret && field_attr.multiline {
+        return Err(syn::Error::new_spanned(
+            field_name,
+            "`#[field(multiline)]` does not apply to secret fields — secret values are always \
+             rendered as masked single-line input",
+        ));
+    }
+    if field_attr.secret && field_attr.default.is_some() {
+        return Err(syn::Error::new_spanned(
+            field_name,
+            "`#[field(default = ..)]` on a secret field hard-codes plaintext into the schema; \
+             configure the value via the credential setup form instead",
+        ));
+    }
+    if field_attr.secret && field_attr.emit_as.is_some() {
+        return Err(syn::Error::new_spanned(
+            field_name,
+            "`#[field(emit_as = ..)]` cannot be set on a secret field — a secret is never \
+             emitted on projection output, so an `emit_as` for it would never apply",
+        ));
+    }
+    if field_attr.enum_select && matches!(kind, FieldKind::List(_)) {
+        return Err(syn::Error::new_spanned(
+            field_name,
+            "`#[field(enum_select)]` on `Vec<...>` is not supported yet — build the list field manually or omit `enum_select`",
+        ));
+    }
+    if field_attr.enum_select && !matches!(inner, FieldKind::UserDefined(_)) {
+        return Err(syn::Error::new_spanned(
+            field_name,
+            "`#[field(enum_select)]` only applies to enums (or `Option<Enum>`) that implement `HasSelectOptions` via `#[derive(EnumSelect)]`",
+        ));
+    }
+    if field_attr.enum_select {
+        ensure_enum_select_validate_attrs(field_name, validate)?;
+    }
+    if field_attr.enum_select && field_attr.multiline {
+        return Err(syn::Error::new_spanned(
+            field_name,
+            "`#[field(multiline)]` applies only to string fields, not to `#[field(enum_select)]`",
+        ));
+    }
+
+    if field_attr.secret && !matches!(inner, FieldKind::String | FieldKind::UserDefined(_)) {
+        return Err(syn::Error::new_spanned(
+            field_name,
+            "`#[field(secret)]` requires a string-like type implementing `SecretInput`, or `Option` of one",
+        ));
+    }
+
+    ensure_value_rule_applicability(field_name, inner, field_attr, validate)?;
+
     Ok(())
 }
 
