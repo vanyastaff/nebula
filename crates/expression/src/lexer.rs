@@ -742,6 +742,21 @@ mod tests {
     }
 
     #[test]
+    fn lexer_rejects_truncated_unicode_bmp_escape() {
+        // Only three hex digits before the closing quote — the `\uNNNN`
+        // loop runs out of input and must error, not push a partial value.
+        let err = lex_string_err(r#""\u0E9""#);
+        assert!(err.contains("Truncated \\uNNNN escape"), "got: {err}");
+    }
+
+    #[test]
+    fn lexer_rejects_empty_braced_unicode_escape() {
+        // `\u{}` has no hex digits at all — the brace form requires 1-6.
+        let err = lex_string_err(r#""\u{}""#);
+        assert!(err.contains("Empty \\u{} escape"), "got: {err}");
+    }
+
+    #[test]
     fn lexer_rejects_surrogate_codepoint() {
         // U+D800 is a low surrogate, not a valid Unicode scalar value.
         let err = lex_string_err(r#""\u{D800}""#);
