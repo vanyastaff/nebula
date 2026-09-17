@@ -115,6 +115,73 @@ fn template_token(bytes: &[u8]) -> TemplateToken {
     }
 }
 
+/// The end of an expression body found by [`find_expression_end`].
+struct ExpressionEnd {
+    /// Index of the first `}` of the closing `}}`.
+    index: usize,
+    /// Line and column of the last character before the closing `}}`; the two
+    /// brace characters themselves are excluded, so the caller adds 2.
+    line: usize,
+    column: usize,
+}
+
+/// Scan for the closing `}}` of an expression body, tracking quoted spans and
+/// nested `{`/`}` object braces.
+///
+/// `from` is the index of the first character after the opening `{{`, at
+/// `start_line`/`start_column`. Returns the index of the closing braces'
+/// first `}` together with the line/column of the character just before them,
+/// or `None` when the source exhausts without a closing `}}`.
+fn find_expression_end(
+    chars: &[char],
+    from: usize,
+    start_line: usize,
+    start_column: usize,
+) -> Option<ExpressionEnd> {
+    let len = chars.len();
+    let mut j = from;
+    let mut object_depth = 0_usize;
+    let mut quote = None;
+    let mut escaped = false;
+    let mut end_line = start_line;
+    let mut end_column = start_column;
+
+    while j < len {
+        let character = chars[j];
+        if let Some(delimiter) = quote {
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == delimiter {
+                quote = None;
+            }
+        } else {
+            match character {
+                '\'' | '"' => quote = Some(character),
+                '{' => object_depth += 1,
+                '}' if object_depth > 0 => object_depth -= 1,
+                '}' if chars.get(j + 1) == Some(&'}') => {
+                    return Some(ExpressionEnd {
+                        index: j,
+                        line: end_line,
+                        column: end_column,
+                    });
+                },
+                _ => {},
+            }
+        }
+        if chars[j] == '\n' {
+            end_line += 1;
+            end_column = 1;
+        } else {
+            end_column += 1;
+        }
+        j += 1;
+    }
+    None
+}
+
 /// Detect an unescaped template opener without parsing or evaluating the source.
 ///
 /// Neither a closing delimiter nor a `$` sigil is required: malformed syntax
@@ -234,97 +301,7 @@ impl Template {
                 let expr_start = Position::new(line, column, i);
 
                 // Find closing }}
-                let mut j = i + 2;
-                let mut object_depth = 0_usize;
-                let mut quote = None;
-                let mut escaped = false;
-                let mut closed = false;
-                let mut expr_line = line;
-                let mut expr_column = column + 2;
-
-                while j < len {
-                    let character = chars[j];
-                    if let Some(delimiter) = quote {
-                        if escaped {
-                            escaped = false;
-                        } else if character == '\\' {
-                            escaped = true;
-                        } else if character == delimiter {
-                            quote = None;
-                        }
-                    } else {
-                        match character {
-                            '\'' | '"' => quote = Some(character),
-                            '{' => object_depth += 1,
-                            '}' if object_depth > 0 => object_depth -= 1,
-                            '}' if chars.get(j + 1) == Some(&'}') => {
-                                closed = true;
-                                break;
-                            },
-                            _ => {},
-                        }
-                    }
-                    if chars[j] == '\n' {
-                        expr_line += 1;
-                        expr_column = 1;
-                    } else {
-                        expr_column += 1;
-                    }
-                    j += 1;
-                }
-
-                if closed {
-                    // Check for whitespace control markers
-                    let mut expr_start_idx = i + 2;
-                    let mut expr_end_idx = j;
-                    let mut strip_left = false;
-                    let mut strip_right = false;
-
-                    // Check for {{- (strip left)
-                    if expr_start_idx < len && chars[expr_start_idx] == '-' {
-                        strip_left = true;
-                        expr_start_idx += 1;
-                    }
-
-                    // Check for -}} (strip right)
-                    if expr_end_idx > 0 && chars[expr_end_idx - 1] == '-' {
-                        strip_right = true;
-                        expr_end_idx -= 1;
-                    }
-
-                    // Extract the expression content (without whitespace markers)
-                    let expr_content: String = chars[expr_start_idx..expr_end_idx].iter().collect();
-                    let full_length = j + 2 - i;
-
-                    parts.push(TemplatePart::Expression {
-                        content: Arc::from(expr_content.as_str()),
-                        position: expr_start,
-                        length: full_length,
-                        strip_left,
-                        strip_right,
-                    });
-
-                    // Check expression count limit (DoS protection)
-                    let expr_count = parts
-                        .iter()
-                        .filter(|p| matches!(p, TemplatePart::Expression { .. }))
-                        .count();
-                    if expr_count > MAX_TEMPLATE_EXPRESSIONS {
-                        return Err(ExpressionError::expression_parse_error(format!(
-                            "Template contains too many expressions: {expr_count} (max {MAX_TEMPLATE_EXPRESSIONS})"
-                        )));
-                    }
-
-                    // Update position tracking
-                    byte_offset += chars[i..j + 2]
-                        .iter()
-                        .map(|character| character.len_utf8())
-                        .sum::<usize>();
-                    i = j + 2;
-                    line = expr_line;
-                    column = expr_column + 2;
-                    static_start = Position::new(line, column, i);
-                } else {
+                let Some(end) = find_expression_end(&chars, i + 2, line, column + 2) else {
                     // Unclosed {{ - this is an error
                     let formatted_error = format_template_error(
                         source,
@@ -333,7 +310,61 @@ impl Template {
                         None,
                     );
                     return Err(ExpressionError::expression_parse_error(formatted_error));
+                };
+
+                // Check for whitespace control markers
+                let j = end.index;
+                let expr_line = end.line;
+                let expr_column = end.column;
+                let mut expr_start_idx = i + 2;
+                let mut expr_end_idx = j;
+                let mut strip_left = false;
+                let mut strip_right = false;
+
+                // Check for {{- (strip left)
+                if expr_start_idx < len && chars[expr_start_idx] == '-' {
+                    strip_left = true;
+                    expr_start_idx += 1;
                 }
+
+                // Check for -}} (strip right)
+                if expr_end_idx > 0 && chars[expr_end_idx - 1] == '-' {
+                    strip_right = true;
+                    expr_end_idx -= 1;
+                }
+
+                // Extract the expression content (without whitespace markers)
+                let expr_content: String = chars[expr_start_idx..expr_end_idx].iter().collect();
+                let full_length = j + 2 - i;
+
+                parts.push(TemplatePart::Expression {
+                    content: Arc::from(expr_content.as_str()),
+                    position: expr_start,
+                    length: full_length,
+                    strip_left,
+                    strip_right,
+                });
+
+                // Check expression count limit (DoS protection)
+                let expr_count = parts
+                    .iter()
+                    .filter(|p| matches!(p, TemplatePart::Expression { .. }))
+                    .count();
+                if expr_count > MAX_TEMPLATE_EXPRESSIONS {
+                    return Err(ExpressionError::expression_parse_error(format!(
+                        "Template contains too many expressions: {expr_count} (max {MAX_TEMPLATE_EXPRESSIONS})"
+                    )));
+                }
+
+                // Update position tracking
+                byte_offset += chars[i..j + 2]
+                    .iter()
+                    .map(|character| character.len_utf8())
+                    .sum::<usize>();
+                i = j + 2;
+                line = expr_line;
+                column = expr_column + 2;
+                static_start = Position::new(line, column, i);
             } else {
                 // Regular character
                 current_static.push(chars[i]);
