@@ -303,7 +303,7 @@ fn nested_field_expr(
     ty: &Type,
     key: &TokenStream2,
     binding: &Ident,
-    decorated: &TokenStream2,
+    field_property: &TokenStream2,
     crate_path: &TokenStream2,
 ) -> TokenStream2 {
     quote! {{
@@ -312,7 +312,7 @@ fn nested_field_expr(
         match nested_schema.root_shape() {
             #crate_path::RootShape::Any => {
                 let #binding = #crate_path::Property::dynamic(#key);
-                #decorated
+                #field_property
             }
             #crate_path::RootShape::Record(record) => {
                 if !record.root_rules().is_empty() {
@@ -321,7 +321,7 @@ fn nested_field_expr(
                         .build().into());
                 }
                 let #binding = #crate_path::Property::object(#key).properties(record.properties().iter().cloned());
-                #decorated
+                #field_property
             }
             #crate_path::RootShape::Scalar(_) | #crate_path::RootShape::Union(_) => {
                 return ::core::result::Result::Err(#crate_path::ValidationError::builder("derive.unsupported_nested_root")
@@ -549,6 +549,10 @@ fn enforce_alias_constraints(
 }
 
 /// Build the token-stream expression that produces a `Field` for one struct field.
+///
+/// Stages, in order: attribute compatibility, base property, presentation,
+/// default/display, expression policy, validation, aliases, and finalize
+/// (secret assert / nested dispatch).
 pub(crate) fn build_field_expr(
     field: FieldContext<'_>,
     kind: &FieldKind,
@@ -571,7 +575,7 @@ pub(crate) fn build_field_expr(
 
     ensure_field_attr_combinations(field_name, kind, field_attr, validate)?;
 
-    let mut expr = base_property_expr(
+    let mut property_builder = base_property_expr(
         &key,
         key_str,
         inner,
@@ -581,26 +585,29 @@ pub(crate) fn build_field_expr(
         crate_path,
     )?;
 
-    expr = apply_presentation_decorators(expr, field_attr, crate_path);
+    property_builder = apply_presentation_decorators(property_builder, field_attr, crate_path);
 
-    expr = apply_default_decorator(expr, field_attr, inner, field_name, crate_path)?;
+    property_builder =
+        apply_default_decorator(property_builder, field_attr, inner, field_name, crate_path)?;
 
-    expr = apply_display_decorators(expr, field_attr, inner, field_name, crate_path)?;
+    property_builder =
+        apply_display_decorators(property_builder, field_attr, inner, field_name, crate_path)?;
 
-    expr = apply_expression_policy(expr, field_attr, crate_path);
+    property_builder = apply_expression_policy(property_builder, field_attr, crate_path);
 
     let required = validate.required || !optional;
-    expr = apply_validation_decorators(expr, field_attr, validate, inner, required);
+    property_builder =
+        apply_validation_decorators(property_builder, field_attr, validate, inner, required);
 
-    expr = apply_alias_decorators(expr, field_attr, read_aliases);
+    property_builder = apply_alias_decorators(property_builder, field_attr, read_aliases);
 
-    let decorated = quote! { #expr.into_property() };
+    let field_property = quote! { #property_builder.into_property() };
     if field_attr.secret {
         let secret_type = secret_leaf_type(field_type);
         return Ok(quote! {{
             fn __nebula_assert_secret_input<T: #crate_path::SecretInput>() {}
             __nebula_assert_secret_input::<#secret_type>();
-            #decorated
+            #field_property
         }});
     }
     if let FieldKind::UserDefined(ty) = inner
@@ -611,11 +618,11 @@ pub(crate) fn build_field_expr(
             ty,
             &key,
             &nested_binding,
-            &decorated,
+            &field_property,
             crate_path,
         ));
     }
-    Ok(decorated)
+    Ok(field_property)
 }
 
 /// Expression-policy stage: apply the `no_expression`, `expression_required`,
@@ -807,31 +814,31 @@ fn base_property_expr(
 /// `placeholder`, `group`, `hidden`) in attribute order. Infallible — these are
 /// verbatim pass-through builder calls with no validation.
 fn apply_presentation_decorators(
-    expr: TokenStream2,
+    property_builder: TokenStream2,
     field_attr: &FieldAttrs,
     crate_path: &TokenStream2,
 ) -> TokenStream2 {
-    let mut expr = expr;
+    let mut property_builder = property_builder;
     if let Some(label) = &field_attr.label {
-        expr = quote! { #expr.label(#label) };
+        property_builder = quote! { #property_builder.label(#label) };
     }
     if let Some(desc) = &field_attr.description {
-        expr = quote! { #expr.description(#desc) };
+        property_builder = quote! { #property_builder.description(#desc) };
     }
     if let Some(placeholder) = &field_attr.placeholder {
-        expr = quote! { #expr.placeholder(#placeholder) };
+        property_builder = quote! { #property_builder.placeholder(#placeholder) };
     }
     if let Some(group) = &field_attr.group {
-        expr = quote! { #expr.group(#group) };
+        property_builder = quote! { #property_builder.group(#group) };
     }
     if field_attr.hidden {
-        expr = quote! { #expr.visible(#crate_path::VisibilityMode::Never) };
+        property_builder = quote! { #property_builder.visible(#crate_path::VisibilityMode::Never) };
     }
-    expr
+    property_builder
 }
 
 fn apply_property_widget(
-    expr: TokenStream2,
+    property_builder: TokenStream2,
     widget: PropertyWidget,
     inner: &FieldKind,
     enum_select: bool,
@@ -841,15 +848,15 @@ fn apply_property_widget(
 ) -> syn::Result<TokenStream2> {
     let unsupported = |message: &str| syn::Error::new_spanned(field_name, message);
     match widget {
-        PropertyWidget::Auto => Ok(expr),
+        PropertyWidget::Auto => Ok(property_builder),
         PropertyWidget::Text if matches!(inner, FieldKind::String) && !secret => {
-            Ok(quote! { #expr.widget(#crate_path::StringWidget::Plain) })
+            Ok(quote! { #property_builder.widget(#crate_path::StringWidget::Plain) })
         },
         PropertyWidget::Textarea if matches!(inner, FieldKind::String) && !secret => {
-            Ok(quote! { #expr.widget(#crate_path::StringWidget::Multiline) })
+            Ok(quote! { #property_builder.widget(#crate_path::StringWidget::Multiline) })
         },
         PropertyWidget::Password if secret => {
-            Ok(quote! { #expr.widget(#crate_path::SecretWidget::Plain) })
+            Ok(quote! { #property_builder.widget(#crate_path::SecretWidget::Plain) })
         },
         PropertyWidget::Number
             if matches!(
@@ -857,22 +864,22 @@ fn apply_property_widget(
                 FieldKind::IntegerNumber(_) | FieldKind::FloatNumber(_)
             ) =>
         {
-            Ok(quote! { #expr.widget(#crate_path::NumberWidget::Plain) })
+            Ok(quote! { #property_builder.widget(#crate_path::NumberWidget::Plain) })
         },
         PropertyWidget::Checkbox if matches!(inner, FieldKind::Boolean) => {
-            Ok(quote! { #expr.widget(#crate_path::BooleanWidget::Checkbox) })
+            Ok(quote! { #property_builder.widget(#crate_path::BooleanWidget::Checkbox) })
         },
         PropertyWidget::Radio if matches!(inner, FieldKind::Boolean) => {
-            Ok(quote! { #expr.widget(#crate_path::BooleanWidget::Radio) })
+            Ok(quote! { #property_builder.widget(#crate_path::BooleanWidget::Radio) })
         },
         PropertyWidget::Select if enum_select && matches!(inner, FieldKind::UserDefined(_)) => {
-            Ok(quote! { #expr.widget(#crate_path::SelectWidget::Dropdown) })
+            Ok(quote! { #property_builder.widget(#crate_path::SelectWidget::Dropdown) })
         },
         PropertyWidget::Radio if enum_select && matches!(inner, FieldKind::UserDefined(_)) => {
-            Ok(quote! { #expr.widget(#crate_path::SelectWidget::Radio) })
+            Ok(quote! { #property_builder.widget(#crate_path::SelectWidget::Radio) })
         },
         PropertyWidget::List if matches!(inner, FieldKind::List(_)) => {
-            Ok(quote! { #expr.widget(#crate_path::ListWidget::Plain) })
+            Ok(quote! { #property_builder.widget(#crate_path::ListWidget::Plain) })
         },
         PropertyWidget::Text | PropertyWidget::Textarea => Err(unsupported(
             "`display(widget = text|textarea)` applies only to non-secret text properties",
