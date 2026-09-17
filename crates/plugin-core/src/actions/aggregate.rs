@@ -421,29 +421,10 @@ impl Accumulator {
 
             // SUM (float path) — reached after the first float caused an upgrade.
             (Accumulator::SumFloat { float_total }, Aggregation::Sum { field, out }) => {
-                match element.get(field.as_str()) {
-                    Some(field_value) => match as_f64_strict(field_value) {
-                        Some(addend) => *float_total += addend,
-                        None if field_value.is_null() => {
-                            return apply_dirty_value_policy(
-                                field,
-                                out,
-                                "null",
-                                dirty_value_policy,
-                            );
-                        },
-                        None => {
-                            return apply_dirty_value_policy(
-                                field,
-                                out,
-                                field_value.type_name_str(),
-                                dirty_value_policy,
-                            );
-                        },
-                    },
-                    None => {
-                        return apply_dirty_value_policy(field, out, "missing", dirty_value_policy);
-                    },
+                if let Some((_, addend)) =
+                    numeric_addend_or_dirty(element, field.as_str(), out, dirty_value_policy)?
+                {
+                    *float_total += addend;
                 }
             },
 
@@ -454,100 +435,46 @@ impl Accumulator {
                     contributing_count,
                 },
                 Aggregation::Avg { field, out },
-            ) => match element.get(field.as_str()) {
-                Some(field_value) => match as_f64_strict(field_value) {
-                    Some(addend) => {
-                        *running_sum += addend;
-                        *contributing_count += 1;
-                    },
-                    None if field_value.is_null() => {
-                        return apply_dirty_value_policy(field, out, "null", dirty_value_policy);
-                    },
-                    None => {
-                        return apply_dirty_value_policy(
-                            field,
-                            out,
-                            field_value.type_name_str(),
-                            dirty_value_policy,
-                        );
-                    },
-                },
-                None => return apply_dirty_value_policy(field, out, "missing", dirty_value_policy),
+            ) => {
+                if let Some((_, addend)) =
+                    numeric_addend_or_dirty(element, field.as_str(), out, dirty_value_policy)?
+                {
+                    *running_sum += addend;
+                    *contributing_count += 1;
+                }
             },
 
             // MIN
             (Accumulator::Min { current_min }, Aggregation::Min { field, out }) => {
-                match element.get(field.as_str()) {
-                    // `as_f64_strict` is the numeric-type guard only; the actual
-                    // min is decided by exact comparison so large integers survive.
-                    Some(field_value) => match as_f64_strict(field_value) {
-                        Some(_) => {
-                            let is_new_minimum = match current_min.as_ref() {
-                                None => true,
-                                Some(prior) => compare_ordered(field_value, prior)?.is_lt(),
-                            };
-                            if is_new_minimum {
-                                *current_min = Some(field_value.clone());
-                            }
-                        },
-                        None if field_value.is_null() => {
-                            return apply_dirty_value_policy(
-                                field,
-                                out,
-                                "null",
-                                dirty_value_policy,
-                            );
-                        },
-                        None => {
-                            return apply_dirty_value_policy(
-                                field,
-                                out,
-                                field_value.type_name_str(),
-                                dirty_value_policy,
-                            );
-                        },
-                    },
-                    None => {
-                        return apply_dirty_value_policy(field, out, "missing", dirty_value_policy);
-                    },
+                // `as_f64_strict` is the numeric-type guard only; the actual
+                // min is decided by exact comparison so large integers survive.
+                if let Some((field_value, _)) =
+                    numeric_addend_or_dirty(element, field.as_str(), out, dirty_value_policy)?
+                {
+                    let is_new_minimum = match current_min.as_ref() {
+                        None => true,
+                        Some(prior) => compare_ordered(field_value, prior)?.is_lt(),
+                    };
+                    if is_new_minimum {
+                        *current_min = Some(field_value.clone());
+                    }
                 }
             },
 
             // MAX
             (Accumulator::Max { current_max }, Aggregation::Max { field, out }) => {
-                match element.get(field.as_str()) {
-                    // `as_f64_strict` is the numeric-type guard only; the actual
-                    // max is decided by exact comparison so large integers survive.
-                    Some(field_value) => match as_f64_strict(field_value) {
-                        Some(_) => {
-                            let is_new_maximum = match current_max.as_ref() {
-                                None => true,
-                                Some(prior) => compare_ordered(field_value, prior)?.is_gt(),
-                            };
-                            if is_new_maximum {
-                                *current_max = Some(field_value.clone());
-                            }
-                        },
-                        None if field_value.is_null() => {
-                            return apply_dirty_value_policy(
-                                field,
-                                out,
-                                "null",
-                                dirty_value_policy,
-                            );
-                        },
-                        None => {
-                            return apply_dirty_value_policy(
-                                field,
-                                out,
-                                field_value.type_name_str(),
-                                dirty_value_policy,
-                            );
-                        },
-                    },
-                    None => {
-                        return apply_dirty_value_policy(field, out, "missing", dirty_value_policy);
-                    },
+                // `as_f64_strict` is the numeric-type guard only; the actual
+                // max is decided by exact comparison so large integers survive.
+                if let Some((field_value, _)) =
+                    numeric_addend_or_dirty(element, field.as_str(), out, dirty_value_policy)?
+                {
+                    let is_new_maximum = match current_max.as_ref() {
+                        None => true,
+                        Some(prior) => compare_ordered(field_value, prior)?.is_gt(),
+                    };
+                    if is_new_maximum {
+                        *current_max = Some(field_value.clone());
+                    }
                 }
             },
 
@@ -661,6 +588,42 @@ fn apply_dirty_value_policy(
              set on_error=skip to ignore"
         ))),
         OnError::Skip => Ok(()),
+    }
+}
+
+/// Extract the numeric addend for a numeric aggregation arm, or route a dirty
+/// value (missing / null / non-numeric) through the `on_error` policy.
+///
+/// `Ok(Some((field_value, addend)))` = the element carries a number (the exact
+/// `Value` is returned next to the `f64` so min/max can compare and clone it
+/// type-preserving); `Ok(None)` = a dirty value was skipped under
+/// `OnError::Skip` (do not advance); `Err` = it failed under `OnError::Fail`.
+fn numeric_addend_or_dirty<'element>(
+    element: &'element Value,
+    field_name: &str,
+    output_key: &str,
+    policy: OnError,
+) -> Result<Option<(&'element Value, f64)>, ActionError> {
+    if let Some(field_value) = element.get(field_name) {
+        match as_f64_strict(field_value) {
+            Some(addend) => Ok(Some((field_value, addend))),
+            None if field_value.is_null() => {
+                apply_dirty_value_policy(field_name, output_key, "null", policy)?;
+                Ok(None)
+            },
+            None => {
+                apply_dirty_value_policy(
+                    field_name,
+                    output_key,
+                    field_value.type_name_str(),
+                    policy,
+                )?;
+                Ok(None)
+            },
+        }
+    } else {
+        apply_dirty_value_policy(field_name, output_key, "missing", policy)?;
+        Ok(None)
     }
 }
 
