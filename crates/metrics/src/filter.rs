@@ -110,15 +110,12 @@ impl LabelAllowlist {
                 let mut guard = cached_spurs
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                if guard.is_none() {
-                    *guard = Some(
-                        key_strings
-                            .iter()
-                            .map(|k| interner.intern(k.as_str()))
-                            .collect(),
-                    );
-                }
-                let allowed = guard.as_ref().expect("cached allow-list spurs");
+                let allowed = guard.get_or_insert_with(|| {
+                    key_strings
+                        .iter()
+                        .map(|k| interner.intern(k.as_str()))
+                        .collect()
+                });
                 interner.filter_label_set_by_spur(labels, allowed)
             },
         }

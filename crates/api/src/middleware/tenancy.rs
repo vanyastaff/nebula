@@ -87,14 +87,14 @@ async fn resolve_path_ids(state: &AppState, path: &str) -> Result<Option<Resolve
 
     // Resolve org
     let org_segment = segments[3];
-    ids.org_id = Some(resolve_org(state, org_segment).await?);
+    let org_id = resolve_org(state, org_segment).await?;
+    ids.org_id = Some(org_id);
 
     // Check for /workspaces/{ws}/...
     // segments: api/v1/orgs/{org}/workspaces/{ws}/...
     // Index:     0   1    2    3       4       5
     if segments.len() >= 6 && segments[4] == "workspaces" {
         let ws_segment = segments[5];
-        let org_id = ids.org_id.expect("org_id just resolved");
         ids.workspace_id = Some(resolve_workspace(state, org_id, ws_segment).await?);
 
         // Check for nested resource identifiers:

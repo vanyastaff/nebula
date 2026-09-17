@@ -615,22 +615,17 @@ impl PlanFlavorCatalogAdmin for InMemoryPlanFlavorCatalog {
 
         let mut released = 0_u64;
         for owner in expired {
-            let reference = state
-                .revision_catalog
-                .references
-                .get(&owner)
-                .expect("expired owner was collected from the same lock")
-                .reference;
-            let (window_id, retain_until) = match state.revision_catalog.references.get(&owner) {
-                Some(row) => match row.state {
-                    RevisionReferenceState::Rollback {
-                        window_id,
-                        retain_until,
-                    } => (window_id, retain_until),
-                    _ => continue,
-                },
-                None => continue,
-            };
+            let (reference, window_id, retain_until) =
+                match state.revision_catalog.references.get(&owner) {
+                    Some(row) => match row.state {
+                        RevisionReferenceState::Rollback {
+                            window_id,
+                            retain_until,
+                        } => (row.reference, window_id, retain_until),
+                        _ => continue,
+                    },
+                    None => continue,
+                };
             match transition_reference_locked(
                 &mut state,
                 OwningReferenceTransition::ReleaseRollback {
