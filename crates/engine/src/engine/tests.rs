@@ -1219,7 +1219,7 @@ async fn diamond_with_mixed_conditions() {
     assert!(d_output.is_object());
 }
 
-// -- ExecutionRepo persistence tests --
+// -- ExecutionStore persistence tests --
 
 #[tokio::test]
 async fn persists_execution_state_on_success() {

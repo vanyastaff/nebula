@@ -742,7 +742,7 @@ async fn dispatch_cancel_aborts_running_execution() {
         .expect("dispatch_cancel succeeds");
 
     // The spawned run must complete quickly once the cancel fires. The
-    // InMemoryExecutionRepo does not enforce a separate Cancelled status on
+    // InMemoryExecutionStore does not enforce a separate Cancelled status on
     // CAS without a prior external transition, so we assert the broader
     // invariant: the run finishes in a terminal state promptly (no 30s sleep).
     let result = tokio::time::timeout(Duration::from_secs(5), run_handle)
