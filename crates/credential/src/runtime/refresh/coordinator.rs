@@ -1000,7 +1000,7 @@ impl RefreshCoordinator {
         // expiry burst would issue 200 concurrent IdP POSTs, recreating
         // the cascading-429 / refresh-storm pattern the cap is meant to
         // prevent. Only the legacy `String`-id path
-        // (`resolver.rs::refresh_via_l1_only`) consumed permits, so
+        // (`resolver/mod.rs::refresh_via_l1_only`) consumed permits, so
         // typed callers were unprotected.
         //
         // Acquired AFTER `try_refresh` (Winner-only -- Waiters already

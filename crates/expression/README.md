@@ -171,7 +171,7 @@ nebula-expression/
     ├── ast.rs            # Expression AST node types
     ├── program.rs        # Immutable compiled expressions/templates
     ├── limits.rs         # Shared compilation and allocation bounds
-    ├── eval.rs           # AST evaluator (Evaluator, EvalFrame)
+    ├── eval/             # AST evaluator (Evaluator, EvalFrame)
     ├── builtins.rs       # BuiltinFunction registry
     ├── context.rs        # EvaluationContext + builder
     ├── template.rs       # Template / MaybeTemplate

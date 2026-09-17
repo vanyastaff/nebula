@@ -344,6 +344,6 @@ pub(crate) fn flatten(
 }
 
 // Note: some, every, find, find_index, group_by, flat_map are higher-order
-// functions implemented in the evaluator (eval.rs). They require lambda
+// functions implemented in the evaluator (eval/mod.rs). They require lambda
 // arguments and are dispatched via try_higher_order_function before reaching
 // the builtin registry.

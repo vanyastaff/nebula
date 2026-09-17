@@ -13,7 +13,7 @@
 //! | `schema.unsupported_property_kind` | A declaration has an unknown secret policy |
 //!
 //! Lint-time warnings (`missing_loader`, `loader_without_dynamic`) are emitted
-//! by the lint pass in `lint.rs`, not here.
+//! by the lint pass in `lint/mod.rs`, not here.
 //!
 //! # Resource bounds (what this layer does and does NOT enforce)
 //!

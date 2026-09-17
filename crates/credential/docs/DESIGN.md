@@ -278,7 +278,7 @@ Each item carries the ADR's own state as of 2026-06-12, then what the tree shows
   that hand-writes `policy` because its strategy is state-dependent.
 - **D2 — ADR: "partial"; "runtime does not yet route policy-first in all paths".** Now: it routes
   policy-first in **no** production path, so the ADR's hedge understates the gap. `C::policy` has one
-  production-code call site (`src/runtime/resolver.rs`), and no in-repo path reaches it: the sole
+  production-code call site (`src/runtime/resolver/mod.rs`), and no in-repo path reaches it: the sole
   caller of `CredentialResolver::resolve_with_refresh` is `CredentialResolver::scheme_factory`, and
   its only entry, `CredentialService::scheme_factory` (`src/service/slot.rs:519`), has no callers.
   The capability

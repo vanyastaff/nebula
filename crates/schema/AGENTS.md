@@ -24,7 +24,7 @@ an internal technical boundary, not a separately supported downstream API.
 - `src/validated/mod.rs` - schema snapshots and checked `ValidSchema`; `validated/preparation.rs`, `validation.rs`, and `values.rs` own consuming preparation, validator integration, and `ValidValues`/`ResolvedValues` custody
 - `src/value/mod.rs` - `ValueTree<E>`, phase aliases, `ScalarValue`, and RFC6901 `ValuePath`; helpers `value/tree.rs`, `wire.rs`, `tree_canonical.rs`, and `canonical.rs` separate representation, authored serde, tree identity, and durable raw-JSON v1 bytes
 - `src/field.rs` — unified `Property` enum + all property kinds (string/number/secret/select/object/list/mode/computed...)
-- `src/lint.rs` — structural lint passes (duplicate keys, cross-field invariants the builder type can't express)
+- `src/lint/mod.rs` — structural lint passes (duplicate keys, cross-field invariants the builder type can't express)
 - `src/has_schema.rs` - checked `HasSchema` / `schema_of` returning `Result<ValidSchema, ValidationReport>`; the sole type-driven Action/Credential/Resource schema path (ADR-0052 P3)
 - `src/expression.rs` - safe authored sources and `ExpressionContext` over retained `CompiledProgram`s
 - `src/context.rs` / `src/loader.rs` - prepared predicate context and bounded, schema-aware redacted loader snapshots

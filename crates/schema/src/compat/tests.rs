@@ -542,7 +542,7 @@ fn explain_any_producer_into_empty_record_consumer_is_unknown() {
 ///
 /// Driven via `explain_slice` on raw `Property`s, not `explain_assignable`: a
 /// built `ValidSchema` can never carry an item-less list (the builder lint
-/// rejects it — `lint.rs` `missing_item_schema`), so this case is
+/// rejects it — `lint/mod.rs` `missing_item_schema`), so this case is
 /// unreachable through the public `ValidSchema` API. The `collect_pair` core
 /// is kept total/correct for it regardless (mirrors the record-level
 /// empty-producer rule), and the gradual slice form does reach it.

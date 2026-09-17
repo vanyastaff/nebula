@@ -1,12 +1,12 @@
 //! Resolution error taxonomy and the fail-closed owner / tombstone gates.
 //!
-//! Split out of `resolver.rs` (behaviour-preserving code motion — no logic
+//! Split out of `resolver/mod.rs` (behaviour-preserving code motion — no logic
 //! change): the [`ResolveError`] enum, its mapping onto the public
 //! [`CredentialError`](crate::error::CredentialError), and the structural
 //! tombstone gate that the scoped resolution path uses to fail closed after a
 //! concurrent revoke. Owner isolation is enforced by the owner-qualified
 //! persistence selector, not metadata. Kept in the
-//! `runtime` module so `resolver.rs` reaches the `pub(crate)` gate fns.
+//! `runtime` module so `resolver/mod.rs` reaches the `pub(crate)` gate fns.
 
 use crate::error::{
     CredentialError, ProviderErrorContext, ProviderErrorKind, RefreshNotAppliedContext,

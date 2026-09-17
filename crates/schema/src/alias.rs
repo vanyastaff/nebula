@@ -2,7 +2,7 @@
 //! the optional output key remap (`emit_as`).
 //!
 //! This is a pure storage type; canonicalization is enforced at ingest in
-//! `validated.rs` and collision checks run at lint time in `lint.rs`.
+//! `validated.rs` and collision checks run at lint time in `lint/mod.rs`.
 
 use serde::{Deserialize, Serialize};
 

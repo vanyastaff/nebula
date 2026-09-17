@@ -53,13 +53,13 @@ including malformed unescaped openers. See README for escape rules and hard boun
 | `parse_expression(source)` — delegates to the auto compiler and discards the program | `lib.rs` |
 | `BuiltinFunction` (alias); `BuiltinRegistry` | `builtins.rs:32 / 37` |
 | `BuiltinOutput`; `BuiltinOutputBuilder`; `BuiltinOutputBound`; `BuiltinOutputLimits` | `builtins/output.rs`; `policy.rs` |
-| `BuiltinView<'_>` — policy queries and work charging, no evaluator re-entry | `eval.rs` |
+| `BuiltinView<'_>` — policy queries and work charging, no evaluator re-entry | `eval/mod.rs` |
 | `ErrorFormatter` / `format_template_error` | `error_formatter.rs:28 / 183` |
 | `value_utils` — pub-хелперы коэрции (`is_truthy:48`, `to_integer:73`, `char_count:106`, …) | `value_utils.rs` |
 | Re-export `serde_json::Value`; `prelude` | `lib.rs:103 / 148` |
 
 doc-hidden, но pub: `ast` (`Expr`/`BinaryOp`), `lexer`, `parser`, `token`, `span`, `interner`,
-`Evaluator` (`eval.rs:182`) — помечены «advanced use, may change».
+`Evaluator` (`eval/mod.rs:182`) — помечены «advanced use, may change».
 
 ## 3. Зависимости и зависимые
 
@@ -74,7 +74,7 @@ doc-hidden, но pub: `ast` (`Expr`/`BinaryOp`), `lexer`, `parser`, `token`, `sp
 ## 4. Внутренняя архитектура
 
 Фронтенд: `lexer.rs`/`token.rs` → `parser.rs` → `ast.rs` (+ `span.rs` для позиций),
-`interner.rs` дедуплицирует идентификаторы. `eval.rs` — AST-walker `Evaluator`/`EvalFrame`;
+`interner.rs` дедуплицирует идентификаторы. `eval/mod.rs` — AST-walker `Evaluator`/`EvalFrame`;
 higher-order комбинаторы (`filter`/`map`/`reduce`/`group_by`/…) идут через `eval_with_frame`
 с фреймом вызывающего, builtin'ы получают только `BuiltinView` (без доступа к рекурсивному
 eval). `engine.rs` оркестрирует два moka-LRU кэша (expr-AST + template) и статистику.

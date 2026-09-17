@@ -27,7 +27,7 @@ warns against: rules enforced by review eventually drift, and "all
 builtins are first-party" is one PR away from being false.
 
 **Structural fix (landed).** `BuiltinRegistry::call` now wraps the
-evaluator in `BuiltinView<'_>` (defined in `crates/expression/src/eval.rs`)
+evaluator in `BuiltinView<'_>` (defined in `crates/expression/src/eval/mod.rs`)
 and hands that view to the registered function instead of `&Evaluator`.
 The view exposes only policy-query methods — `is_strict_mode`,
 `strict_conversions_enabled`, `max_json_parse_length` — so the
@@ -43,7 +43,7 @@ These combinators are NOT registered through `BuiltinRegistry`, so
 they bypass the `BuiltinView` boundary entirely.
 
 **Files.**
-- Type-enforced boundary: `crates/expression/src/eval.rs`
+- Type-enforced boundary: `crates/expression/src/eval/mod.rs`
   (`BuiltinView`, `BuiltinRegistry::call` dispatch).
 - Public type alias: `crates/expression/src/builtins.rs`
   (`BuiltinFunction`).

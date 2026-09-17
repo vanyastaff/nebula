@@ -24,7 +24,7 @@
 - `src/contract/` — `Credential` base trait + capability sub-traits (`Interactive`/`Refreshable`/`Revocable`/`Testable`/`Dynamic`), `CredentialRegistry`, resolve types.
 - `src/scheme/` — `AuthScheme` base + `SensitiveScheme`/`PublicScheme` dichotomy (§15.5) + 9 built-in scheme types.
 - `src/secrets/` — `SecretString`, `CredentialGuard`, `SchemeGuard`/`SchemeFactory` refresh surface, PKCE helpers (AES-GCM crypto moved out, see below).
-- `src/runtime/resolver.rs` — `CredentialResolver` (cached handles, `scheme_factory`, `resolve_with_refresh`).
+- `src/runtime/resolver/mod.rs` — `CredentialResolver` (cached handles, `scheme_factory`, `resolve_with_refresh`).
 - `src/service/facade.rs` — `CredentialService` (`resolve_for_slot`, `scheme_factory` for §15.7 resource pools).
 - `src/service/controller.rs` — one-decision authority boundary; `src/service/crud.rs` — semantic mutations and property validation.
 - `src/lifecycle.rs` — capabilities-as-data (`CredentialPolicy`/`RefreshStrategy`/`RevokeStrategy`, ADR-0088 D2).

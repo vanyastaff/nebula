@@ -31,10 +31,10 @@ pub mod error;
 pub mod queue;
 pub mod registry;
 pub mod runner;
-// guard-justified: module_inception is intentional — runtime/runtime.rs carries ActionRuntime; kept stable for external callers
+// guard-justified: module_inception is intentional — runtime/runtime/mod.rs carries ActionRuntime; kept stable for external callers
 #[expect(
     clippy::module_inception,
-    reason = "runtime/runtime.rs carries ActionRuntime; kept stable for external callers"
+    reason = "runtime/runtime/mod.rs carries ActionRuntime; kept stable for external callers"
 )]
 pub mod runtime;
 pub mod stream_backpressure;

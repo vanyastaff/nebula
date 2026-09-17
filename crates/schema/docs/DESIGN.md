@@ -309,7 +309,7 @@ execution stays centralized at `validate_rules_with_ctx` and
   existing declarations. Presentation must not affect value requiredness or
   grant slot authority. Full schema equality remains conservative and includes
   UI fields; root shapes and exact-schema proof boundaries are unchanged.
-- `schema.rs`, `field.rs`, `builder/`, and `lint.rs`: definitions, construction,
+- `schema.rs`, `field.rs`, `builder/`, and `lint/mod.rs`: definitions, construction,
   checked keys, aliases, and bounded structural lint.
 - `value/mod.rs`, `tree.rs`, `wire.rs`, `tree_canonical.rs`, and `canonical.rs`
   under `value/`: phase-indexed representation, authored serde, tree identity,
