@@ -64,7 +64,6 @@ pub mod binding_resolver;
 pub mod control_consumer;
 pub mod control_dispatch;
 mod control_trace;
-pub mod credential;
 pub mod credential_accessor;
 pub mod daemon;
 mod effect_driver;
@@ -102,8 +101,10 @@ pub use control_consumer::{
 pub use control_dispatch::EngineControlDispatch;
 // Credential runtime types (`CredentialResolver`, `ResolveResponse`, …) live in
 // `nebula_credential::runtime` (ADR-0092); consumers import them from there.
-// Only the storage-bound `default_in_memory_coordinator` stays engine-owned,
-// reachable as `nebula_engine::credential::default_in_memory_coordinator`.
+// The engine holds no credential module and no claim-store constructor:
+// `CredentialController` is the sole management writer of refresh-claim state,
+// and test/desktop composition builds its `InMemoryRefreshClaimRepo` +
+// `RefreshCoordinator` where it is used.
 pub use credential_accessor::EngineCredentialAccessor;
 pub use daemon::{
     AnyDaemonHandle, Daemon, DaemonConfig, DaemonError, DaemonRegistry, DaemonRuntime,

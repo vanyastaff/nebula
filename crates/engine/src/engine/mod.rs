@@ -867,7 +867,7 @@ impl WorkflowEngine {
             .is_err()
         {
             tracing::debug!(
-                target: "nebula_engine::credential::rotation",
+                target: "nebula_engine",
                 "spawn_resource_rotation_fanout called again; fan-out driver \
                  already running — no second subscriber spawned (idempotent)"
             );

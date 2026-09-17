@@ -17,15 +17,19 @@ use std::sync::Arc;
 
 use nebula_credential::runtime::{
     AcquisitionTransport, CredentialResolver, LeaseLifecycle, LeaseLifecycleConfig,
-    RefreshTransport,
+    RefreshCoordConfig, RefreshCoordinator, RefreshTransport,
 };
 use nebula_credential::{
     Capabilities, CredentialObserver, CredentialRegistry, CredentialService,
     CredentialServiceError, DispatchOps, ErasedPendingStore, StateSource,
 };
-use nebula_engine::credential::default_in_memory_coordinator;
-use nebula_storage::credential::{AuditLayer, AuditSink, EncryptionLayer, KeyProvider};
-use nebula_storage_port::CredentialPersistence;
+use nebula_storage::credential::{
+    AuditLayer, AuditSink, EncryptionLayer, InMemoryRefreshClaimRepo, KeyProvider,
+};
+use nebula_storage_port::{
+    CredentialPersistence,
+    store::{RefreshClaimStore, ReplicaId},
+};
 use tokio_util::sync::CancellationToken;
 
 /// Builder for [`CredentialService`]. Construct via [`Self::new`] (all
@@ -147,9 +151,18 @@ impl<B: CredentialPersistence + 'static> CredentialServiceBuilder<B> {
         let persistence: Arc<dyn CredentialPersistence> = Arc::new(encrypted);
         let layered = AuditLayer::new(Arc::clone(&persistence), self.audit_sink);
         let store: Arc<dyn CredentialPersistence> = Arc::new(layered);
+        // Sole-management-writer discipline: the builder composes its own
+        // coordinator over an `InMemoryRefreshClaimRepo`, and no crate outside
+        // `nebula-credential` holds a direct claim-store writer surface — the
+        // engine exposes no claim-store constructor.
+        let claim_repo: Arc<dyn RefreshClaimStore> = Arc::new(InMemoryRefreshClaimRepo::new());
         let refresh_coordinator = Arc::new(
-            default_in_memory_coordinator()
-                .map_err(|e| CredentialServiceError::Internal(e.to_string()))?,
+            RefreshCoordinator::new_with(
+                claim_repo,
+                ReplicaId::new("nebula-api-credential-builder"),
+                RefreshCoordConfig::default(),
+            )
+            .map_err(|e| CredentialServiceError::Internal(e.to_string()))?,
         );
         let resolver = CredentialResolver::with_dependencies(
             Arc::clone(&store),
