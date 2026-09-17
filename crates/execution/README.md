@@ -19,7 +19,8 @@ anti-pattern canon §14 forbids. `nebula-execution` is that shared model. It def
 8-state `ExecutionStatus` machine with validated transitions, the `JournalEntry` type that
 describes the durable journal's event shape, the `IdempotencyKey` shape, and the
 `ExecutionPlan` that the engine derives from the workflow DAG. It deliberately does not own a
-repository interface — persistence is `nebula-storage::ExecutionRepo`'s job.
+repository interface — persistence is the storage-port `ExecutionStore`'s job
+(implemented by `nebula-storage`).
 
 ## Role
 
@@ -33,7 +34,8 @@ Patterns:
   `{execution_id}:{node_id}:{attempt}` is deterministic for one attempt. It is not a remote
   operation identity and does not make a provider effect atomic with Nebula persistence.
 - *Optimistic Concurrency Control* (DDIA ch 7) — `ExecutionStatus` transitions are guarded
-  by CAS on `version` in `nebula-storage::ExecutionRepo::transition`.
+  by CAS on `version` plus the lease `FencingToken` in
+  `nebula_storage_port::store::ExecutionStore::commit`.
 
 ## Public API
 
@@ -68,7 +70,7 @@ Patterns:
 - `NodeOutput`, `ExecutionOutput` — node output data with metadata.
 - `NodeAttempt` — individual attempt tracking (attempt number, started/finished timestamps,
   node status). Used as the shape of attempt-keyed output rows by
-  `nebula-storage::ExecutionRepo::save_node_output`.
+  `nebula_storage_port::store::NodeResultStore::save_node_output`.
 - `IdempotencyKey` — deterministic local replay key
   `{execution_id}:{node_id}:{attempt}`. The local check-and-mark enforcement lives in storage;
   the key changes across retries and is distinct from the future stable remote `OperationId`.
@@ -76,10 +78,13 @@ Patterns:
 
 ## Contract
 
-- **[L2-§11.1]** `nebula-execution` defines the state machine; `ExecutionRepo` in
-  `nebula-storage` is the **single source of truth** for persisted execution state.
-  Transitions use optimistic CAS on `version`. No handler may mutate execution state
-  except through `ExecutionRepo::transition`. Seam: `crates/storage/src/execution_repo.rs`.
+- **[L2-§11.1]** `nebula-execution` defines the state machine; `ExecutionStore` in
+  `nebula-storage-port` is the **single source of truth** for persisted execution state
+  (implemented by the adapters in `nebula-storage`).
+  Transitions use optimistic CAS on `version` plus the lease `FencingToken`. No handler may mutate
+  execution state
+  except through `ExecutionStore::commit` on a `TransitionBatch`. Seam:
+  `crates/storage-port/src/store/execution.rs`.
   The `transition` module in this crate validates state-machine legality; storage enforces
   persistence and CAS.
 
@@ -135,7 +140,8 @@ Patterns:
 ## Non-goals
 
 - Not the engine orchestrator — see `nebula-engine` (drives these types).
-- Not the storage implementation — see `nebula-storage` (`ExecutionRepo`, `executions`
+- Not the storage implementation — see `nebula-storage-port` (`ExecutionStore`, `CheckpointStore`,
+  port traits) and `nebula-storage` (adapters backing the `executions`
   table, `port_execution_journal`, `execution_control_queue`). The `ExecutionControlQueue`
   (durable outbox for cancel/dispatch signals) and the `Transactional Outbox` pattern live
   in `nebula-storage`, not here.
@@ -166,7 +172,7 @@ See `docs/MATURITY.md` row for `nebula-execution`.
 ## Related
 
 - Canon: `docs/PRODUCT_CANON.md` §11.1, §11.2, §11.3, §11.5, §12.2.
-- Siblings: `nebula-storage` (persists via `ExecutionRepo`), `nebula-engine` (drives),
+- Siblings: `nebula-storage` (persists via the `ExecutionStore` port), `nebula-engine` (drives),
   `nebula-workflow` (DAG → `ExecutionPlan`), `nebula-resilience` (in-action retry).
 
 ## Appendix
@@ -184,7 +190,7 @@ behavior by itself.
 
 | Artifact | Status | Notes |
 |---|---|---|
-| `executions` row + state JSON | **Durable** (CAS via `ExecutionRepo`) | Source of truth |
+| `executions` row + state JSON | **Durable** (CAS via `ExecutionStore::commit`) | Source of truth |
 | `port_execution_journal` | **Durable** (append-only) | Replayable history; written via `nebula_storage_port::dto::JournalEntry`. The legacy `execution_journal` table has no writer |
 | `execution_control_queue` | **Durable** (outbox) | At-least-once cancel/dispatch |
 | `stateful_checkpoints` | **Best-effort** | Failure logs, does not abort; may replay |
@@ -215,7 +221,8 @@ only — Layer 1 is enforced today.
 ### Architecture notes
 
 - Clean separation of types vs persistence: this crate defines the state machine and types;
-  `nebula-storage::ExecutionRepo` persists them. Canon §11.1 makes the persistence layer
+  the storage-port `ExecutionStore` (implemented by `nebula-storage`) persists them. Canon §11.1
+  makes the persistence layer
   authoritative — this crate deliberately does not own a repository interface.
 - No cross-layer dependencies: only `nebula-core`, `nebula-error`, `nebula-workflow`.
   No imports from engine, runtime, storage, or API.
