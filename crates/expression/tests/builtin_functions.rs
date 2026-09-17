@@ -152,6 +152,86 @@ fn parse_json_preflights_output_nodes_without_counting_string_punctuation() {
 }
 
 #[test]
+fn parse_json_preflights_object_keys_as_collection_items() {
+    let policy = EvaluationPolicy::new()
+        .with_max_eval_steps(permissive_step_limit())
+        .with_max_builtin_output_collection_items(output_bound(1));
+    let engine = ExpressionEngine::new().with_policy(policy);
+
+    let error = engine
+        .evaluate(
+            r#"parse_json('{"a": 1, "b": 2}')"#,
+            &EvaluationContext::new(),
+        )
+        .unwrap_err();
+    assert_output_limit(error, BuiltinOutputLimit::CollectionItems);
+
+    let permissive_keys = EvaluationPolicy::new()
+        .with_max_eval_steps(permissive_step_limit())
+        .with_max_builtin_output_collection_items(output_bound(2));
+    assert_eq!(
+        ExpressionEngine::new()
+            .with_policy(permissive_keys)
+            .evaluate(
+                r#"parse_json('{"a": 1, "b": 2}')"#,
+                &EvaluationContext::new()
+            )
+            .unwrap(),
+        json!({"a": 1, "b": 2})
+    );
+}
+
+#[test]
+fn parse_json_preflights_container_depth() {
+    // One-level depth bound: the second level ([1 ...]) must trip during the
+    // preflight scan itself, so the source is deliberately invalid JSON --
+    // otherwise serde_json's own output measure would enforce the same bound
+    // and mask which check fired.
+    let depth_one = ExpressionEngine::new().with_policy(
+        EvaluationPolicy::new()
+            .with_max_eval_steps(permissive_step_limit())
+            .with_max_builtin_output_depth(output_bound(1)),
+    );
+
+    let error = depth_one
+        .evaluate("parse_json('[1, 2')", &EvaluationContext::new())
+        .unwrap_err();
+    assert_output_limit(error, BuiltinOutputLimit::ValueDepth);
+
+    let depth_two = ExpressionEngine::new().with_policy(
+        EvaluationPolicy::new()
+            .with_max_eval_steps(permissive_step_limit())
+            .with_max_builtin_output_depth(output_bound(2)),
+    );
+    assert_eq!(
+        depth_two
+            .evaluate("parse_json('[1]')", &EvaluationContext::new())
+            .unwrap(),
+        json!([1])
+    );
+}
+
+#[test]
+fn parse_json_accepts_whitespace_only_source() {
+    let policy = EvaluationPolicy::new()
+        .with_max_eval_steps(permissive_step_limit())
+        .with_max_builtin_output_nodes(output_bound(1));
+    let engine = ExpressionEngine::new().with_policy(policy);
+
+    for source in ["''", "'   '"] {
+        let error = engine
+            .evaluate(&format!("parse_json({source})"), &EvaluationContext::new())
+            .unwrap_err();
+        // The whitespace-only early return must surface serde_json's parse
+        // error, never a builtin output limit.
+        assert!(
+            error.to_string().contains("Failed to parse JSON"),
+            "whitespace-only source must not trip an output bound, got {error:?}"
+        );
+    }
+}
+
+#[test]
 fn central_output_validation_covers_non_expanding_builtins() {
     let policy = EvaluationPolicy::new()
         .with_max_eval_steps(permissive_step_limit())
