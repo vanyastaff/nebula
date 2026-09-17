@@ -7,7 +7,7 @@ error[E0308]: arguments to this function are incorrect
    |                                expected `&DirectedSchema<nebula_schema::Output>`, found `&DirectedSchema<Input>`
    |
 note: function defined here
-  --> src/compat.rs
+  --> src/compat/mod.rs
    |
    | pub fn explain_assignable(producer: &OutputSchema, consumer: &InputSchema) -> Assignability {
    |        ^^^^^^^^^^^^^^^^^^
