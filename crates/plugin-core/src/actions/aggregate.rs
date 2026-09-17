@@ -304,6 +304,29 @@ enum Accumulator {
     },
 }
 
+/// Which end of the ordering a MIN/MAX accumulator tracks.
+///
+/// The MIN and MAX feed paths are identical except for the comparison
+/// direction; this enum names that difference instead of duplicating the body.
+#[derive(Debug, Clone, Copy)]
+enum ExtremeSide {
+    /// MIN — a candidate wins when it orders strictly *before* the prior value.
+    Min,
+    /// MAX — a candidate wins when it orders strictly *after* the prior value.
+    Max,
+}
+
+impl ExtremeSide {
+    /// Whether a candidate ordering against the prior value makes the
+    /// candidate the new extreme.
+    fn wins(self, candidate_vs_prior: std::cmp::Ordering) -> bool {
+        match self {
+            ExtremeSide::Min => candidate_vs_prior.is_lt(),
+            ExtremeSide::Max => candidate_vs_prior.is_gt(),
+        }
+    }
+}
+
 impl Accumulator {
     fn new(aggregation: &Aggregation) -> Self {
         match aggregation {
@@ -379,11 +402,25 @@ impl Accumulator {
             },
 
             (Accumulator::Min { current_min }, Aggregation::Min { field, out }) => {
-                Self::feed_min(current_min, element, field, out, dirty_value_policy)?;
+                Self::feed_extreme(
+                    current_min,
+                    element,
+                    field,
+                    out,
+                    ExtremeSide::Min,
+                    dirty_value_policy,
+                )?;
             },
 
             (Accumulator::Max { current_max }, Aggregation::Max { field, out }) => {
-                Self::feed_max(current_max, element, field, out, dirty_value_policy)?;
+                Self::feed_extreme(
+                    current_max,
+                    element,
+                    field,
+                    out,
+                    ExtremeSide::Max,
+                    dirty_value_policy,
+                )?;
             },
 
             (Accumulator::Collect { collected_values }, Aggregation::Collect { field, .. }) => {
@@ -450,8 +487,13 @@ impl Accumulator {
                 } else if let Some(addend) = v.as_f64() {
                     // Upgrade path: u64 above i64::MAX, or a float literal.
                     // i64 → f64: precision may degrade for very large integers,
-                    // but JSON numbers with that many digits are already f64-lossy
-                    // at parse time, so no additional precision is lost here.
+                    // because f64's 53-bit mantissa cannot represent every
+                    // integer exactly. serde_json itself parses integer
+                    // literals exactly (u64/i64) whenever they fit, and falls
+                    // back to f64 only for literals with a decimal point, an
+                    // exponent, or more digits than u64 holds — so this
+                    // upgrade deliberately trades the i64 total's exactness
+                    // for the f64 arithmetic the sum now uses.
                     let prior = if let Accumulator::SumInt { integer_total } = &*acc {
                         *integer_total as f64
                     } else {
@@ -509,45 +551,28 @@ impl Accumulator {
         Ok(())
     }
 
-    /// MIN — replace the running minimum when the element is numerically lower.
-    fn feed_min(
-        current_min: &mut Option<Value>,
+    /// MIN/MAX — replace the running extreme when the element orders past it.
+    ///
+    /// The two aggregations are identical except for the comparison direction,
+    /// which `side` names; with no prior extreme the first value is taken
+    /// unconditionally.
+    fn feed_extreme(
+        current_extreme: &mut Option<Value>,
         element: &Value,
         field: &str,
         out: &str,
+        side: ExtremeSide,
         policy: OnError,
     ) -> Result<(), ActionError> {
         // `as_f64_strict` is the numeric-type guard only; the actual
-        // min is decided by exact comparison so large integers survive.
+        // min/max is decided by exact comparison so large integers survive.
         if let Some((field_value, _)) = numeric_addend_or_dirty(element, field, out, policy)? {
-            let is_new_minimum = match current_min.as_ref() {
+            let is_new_extreme = match current_extreme.as_ref() {
                 None => true,
-                Some(prior) => compare_ordered(field_value, prior)?.is_lt(),
+                Some(prior) => side.wins(compare_ordered(field_value, prior)?),
             };
-            if is_new_minimum {
-                *current_min = Some(field_value.clone());
-            }
-        }
-        Ok(())
-    }
-
-    /// MAX — replace the running maximum when the element is numerically higher.
-    fn feed_max(
-        current_max: &mut Option<Value>,
-        element: &Value,
-        field: &str,
-        out: &str,
-        policy: OnError,
-    ) -> Result<(), ActionError> {
-        // `as_f64_strict` is the numeric-type guard only; the actual
-        // max is decided by exact comparison so large integers survive.
-        if let Some((field_value, _)) = numeric_addend_or_dirty(element, field, out, policy)? {
-            let is_new_maximum = match current_max.as_ref() {
-                None => true,
-                Some(prior) => compare_ordered(field_value, prior)?.is_gt(),
-            };
-            if is_new_maximum {
-                *current_max = Some(field_value.clone());
+            if is_new_extreme {
+                *current_extreme = Some(field_value.clone());
             }
         }
         Ok(())
