@@ -54,3 +54,42 @@ jobs:
           tool: zizmor
       - name: Audit workflows (high severity blocks)
         run: zizmor --no-progress --min-severity high .github/workflows/
+
+  # ── Duplicate-code detector (report-only) ────────────────────────────────
+  # Readability & Design Standard (AGENTS.md): AST-level similarity across
+  # `crates/` and `apps/`. Non-blocking while the existing src duplication is
+  # worked down; the artifact and step summary are the review reference. To
+  # become a growth gate after the hotspot cleanup.
+  duplicate-code:
+    name: duplicate code (report)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install similarity-rs (pinned release, SHA-verified)
+        run: |
+          cd "$(mktemp -d)"
+          curl -fsSLO https://github.com/mizchi/similarity/releases/download/v0.5.0/similarity-v0.5.0-x86_64-unknown-linux-gnu.tar.gz
+          curl -fsSLO https://github.com/mizchi/similarity/releases/download/v0.5.0/SHA256SUMS.txt
+          sha256sum --check --ignore-missing SHA256SUMS.txt
+          tar xzf similarity-v0.5.0-x86_64-unknown-linux-gnu.tar.gz
+          sudo install similarity-v0.5.0-x86_64-unknown-linux-gnu/similarity-rs /usr/local/bin/
+
+      - name: Detect duplicate code across crates
+        run: |
+          similarity-rs crates apps --min-lines 10 > duplicate-report.txt || true
+          {
+            echo "## Duplicate-code report (report-only)"
+            echo
+            echo "\`--min-lines 10\`; full listing in the \`duplicate-report\` artifact."
+            tail -n 1 duplicate-report.txt
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: duplicate-report
+          path: duplicate-report.txt
