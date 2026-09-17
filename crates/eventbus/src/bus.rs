@@ -171,7 +171,6 @@ impl<E: Clone + Send> EventBus<E> {
         E: Clone,
     {
         let deadline = tokio::time::Instant::now() + timeout;
-        let mut event = Some(event);
         let mut backoff = std::time::Duration::from_micros(50);
         const MAX_BACKOFF: std::time::Duration = std::time::Duration::from_millis(1);
 
@@ -181,13 +180,7 @@ impl<E: Clone + Send> EventBus<E> {
             }
 
             if self.sender.len() < self.buffer_size {
-                let event = event
-                    .take()
-                    .expect("event should only be consumed once when capacity is available");
-                return match self.sender.send(event) {
-                    Ok(_) => PublishOutcome::Sent,
-                    Err(_) => PublishOutcome::DroppedNoSubscribers,
-                };
+                break;
             }
 
             if tokio::time::Instant::now() >= deadline {
@@ -196,6 +189,11 @@ impl<E: Clone + Send> EventBus<E> {
 
             tokio::time::sleep(backoff).await;
             backoff = (backoff * 2).min(MAX_BACKOFF);
+        }
+
+        match self.sender.send(event) {
+            Ok(_) => PublishOutcome::Sent,
+            Err(_) => PublishOutcome::DroppedNoSubscribers,
         }
     }
 
