@@ -317,6 +317,34 @@ fn test_redos_escaped_characters() {
 
 #[test]
 #[cfg(feature = "regex")]
+fn test_redos_nested_parens_inside_group_are_scanned() {
+    // The matching-parenthesis scan must track depth, so a group whose
+    // content is itself a parenthesized group is inspected as a whole:
+    // "(a+)" inside the outer group carries a quantifier, "(abc)" does not.
+    assert!(Evaluator::is_potentially_dangerous_regex("((a+))+"));
+    assert!(!Evaluator::is_potentially_dangerous_regex("((abc))"));
+}
+
+#[test]
+#[cfg(feature = "regex")]
+fn test_redos_quantified_nested_group_is_dangerous() {
+    // Quantifier directly on a nested group whose inner group is quantified:
+    // catastrophic backtracking shape ((a+))+
+    assert!(Evaluator::is_potentially_dangerous_regex("((a+))+"));
+}
+
+#[test]
+#[cfg(feature = "regex")]
+fn test_redos_escaped_quantifier_inside_group_is_true_by_design() {
+    // The heuristic is deliberately char-based: it inspects the raw
+    // characters of the group content without unescaping them, so the
+    // escaped '+' inside (a\+)+ is counted as a real quantifier and the
+    // pattern is flagged. A known false positive, pinned as-is.
+    assert!(Evaluator::is_potentially_dangerous_regex(r"(a\+)+"));
+}
+
+#[test]
+#[cfg(feature = "regex")]
 fn regex_cache_keeps_hot_pattern_under_load() {
     // ROADMAP #590: under the previous `keys().next()` eviction the hot
     // pattern could be thrown out because HashMap iteration order is
