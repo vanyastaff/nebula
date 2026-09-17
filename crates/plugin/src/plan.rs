@@ -2287,6 +2287,40 @@ fn validate_connections(
     }
     let mut adjacency: HashMap<&str, Vec<&str>> = HashMap::new();
     for connection in connections {
+        let resolved = ResolvedConnection::resolve(connection, nodes, actions, epoch)?;
+        resolved.validate_from_port()?;
+        resolved.validate_to_port()?;
+        adjacency
+            .entry(resolved.connection.from_node.as_str())
+            .or_default()
+            .push(resolved.connection.to_node.as_str());
+    }
+    validate_support_port_cardinality(connections, nodes, actions)?;
+    if graph_has_cycle(nodes.keys().copied(), &adjacency) {
+        return Err(noncanonical("connections.cycle"));
+    }
+    validate_parameter_references(nodes, actions, connections, epoch)
+}
+
+/// A recorded connection resolved against the graph it belongs to: both
+/// endpoints are declared nodes carrying a declared action, and the edge is not
+/// a self-loop. Its two port rules are the whole contract of an edge.
+struct ResolvedConnection<'a> {
+    connection: &'a RecordedConnectionV1,
+    source_action: &'a RecordedActionV1,
+    target_action: &'a RecordedActionV1,
+    /// The edge leaves the epoch's intrinsic error port instead of a declared
+    /// output, and so carries the runtime error payload rather than the source's.
+    intrinsic_error: bool,
+}
+
+impl<'a> ResolvedConnection<'a> {
+    fn resolve(
+        connection: &'a RecordedConnectionV1,
+        nodes: &HashMap<&str, &'a RecordedNodeV1>,
+        actions: &HashMap<&str, &'a RecordedActionV1>,
+        epoch: PlanEpoch,
+    ) -> Result<Self, ExecutablePlanIntegrityError> {
         if connection.from_node.parse::<NodeKey>().is_err()
             || connection.to_node.parse::<NodeKey>().is_err()
             || PortKey::try_from(connection.from_port.as_str()).is_err()
@@ -2310,109 +2344,145 @@ fn validate_connections(
         let target_action = actions
             .get(target.action_key.as_str())
             .ok_or_else(|| noncanonical("connections.to_action"))?;
-        let intrinsic_error =
-            epoch.supports_intrinsic_error_port() && connection.from_port == INTRINSIC_ERROR_PORT;
-        if intrinsic_error && connection.to_port.is_some() {
+        Ok(Self {
+            connection,
+            source_action,
+            target_action,
+            intrinsic_error: epoch.supports_intrinsic_error_port()
+                && connection.from_port == INTRINSIC_ERROR_PORT,
+        })
+    }
+
+    /// The edge must leave the `main` flow output of the source action — the
+    /// only port a plan may route from. The intrinsic error port is supplied by
+    /// the epoch rather than declared by an action, so it is exempt.
+    fn validate_from_port(&self) -> Result<(), ExecutablePlanIntegrityError> {
+        if self.intrinsic_error {
+            return Ok(());
+        }
+        let declared = self
+            .source_action
+            .outputs
+            .iter()
+            .find(|port| output_port_key(port) == self.connection.from_port)
+            .ok_or_else(|| noncanonical("connections.from_port"))?;
+        if !matches!(
+            declared,
+            RecordedOutputPortV1::Flow {
+                key,
+                flow_kind: RecordedFlowKindV1::Main,
+            } if key == DEFAULT_OUTPUT_PORT
+        ) {
+            return Err(noncanonical("connections.from_port"));
+        }
+        Ok(())
+    }
+
+    /// A named target port must be a `support` input that admits the source
+    /// action; an unnamed one is the target action's implicit flow input.
+    fn validate_to_port(&self) -> Result<(), ExecutablePlanIntegrityError> {
+        // The error port is a flow port: it feeds the implicit flow input and
+        // can never name a support port.
+        if self.intrinsic_error && self.connection.to_port.is_some() {
             return Err(noncanonical("connections.to_port"));
         }
-        if !intrinsic_error {
-            let source_port = source_action
-                .outputs
+        match self.connection.to_port.as_deref() {
+            Some(port) => self.validate_support_port(port),
+            None => self.validate_flow_input(),
+        }
+    }
+
+    fn validate_support_port(&self, port: &str) -> Result<(), ExecutablePlanIntegrityError> {
+        let declared = self
+            .target_action
+            .inputs
+            .iter()
+            .find(|input| input_port_key(input) == port)
+            .ok_or_else(|| noncanonical("connections.to_port"))?;
+        let RecordedInputPortV1::Support {
+            allowed_node_types,
+            allowed_tags,
+            ..
+        } = declared
+        else {
+            return Err(noncanonical("connections.to_port"));
+        };
+        // A tag filter selects at runtime by tags the plan does not record, so
+        // the edge could not be certified against it.
+        if allowed_tags.is_some() {
+            return Err(noncanonical("connections.to_port.tag_filter"));
+        }
+        if allowed_node_types.as_deref().is_some_and(|allowed| {
+            !allowed
                 .iter()
-                .find(|port| output_port_key(port) == connection.from_port)
-                .ok_or_else(|| noncanonical("connections.from_port"))?;
-            if !matches!(
-                source_port,
-                RecordedOutputPortV1::Flow {
-                    key,
-                    flow_kind: RecordedFlowKindV1::Main,
-                } if key == DEFAULT_OUTPUT_PORT
-            ) {
-                return Err(noncanonical("connections.from_port"));
-            }
+                .any(|key| key == self.source_action.key.as_str())
+        }) {
+            return Err(noncanonical("connections.to_port.filter"));
         }
-        match connection.to_port.as_deref() {
-            Some(port) => {
-                let target_port = target_action
-                    .inputs
-                    .iter()
-                    .find(|input| input_port_key(input) == port)
-                    .ok_or_else(|| noncanonical("connections.to_port"))?;
-                let RecordedInputPortV1::Support {
-                    allowed_node_types,
-                    allowed_tags,
-                    ..
-                } = target_port
-                else {
-                    return Err(noncanonical("connections.to_port"));
-                };
-                if allowed_tags.is_some() {
-                    return Err(noncanonical("connections.to_port.tag_filter"));
-                }
-                if allowed_node_types.as_deref().is_some_and(|allowed| {
-                    !allowed.iter().any(|key| key == source.action_key.as_str())
-                }) {
-                    return Err(noncanonical("connections.to_port.filter"));
-                }
-            },
-            None => {
-                if target_action
-                    .inputs
-                    .iter()
-                    .filter(|input| matches!(input, RecordedInputPortV1::Flow { .. }))
-                    .count()
-                    != 1
-                {
-                    return Err(noncanonical("connections.to_port"));
-                }
-            },
-        }
-        if connection.to_port.is_none() {
-            let producer = OutputSchema::new(if intrinsic_error {
-                nebula_schema::schema_of::<nebula_workflow::ErrorPortPayload>()
-                    .map_err(nebula_metadata::MetadataBuildError::from)?
-            } else {
-                source_action.output_schema.schema.clone()
-            });
-            let consumer = InputSchema::new(target_action.input_schema.schema.clone());
-            if !matches!(explain_assignable(&producer, &consumer), Assignability::Yes) {
-                return Err(noncanonical("connections.schema"));
-            }
-        }
-        adjacency
-            .entry(connection.from_node.as_str())
-            .or_default()
-            .push(connection.to_node.as_str());
+        Ok(())
     }
-    validate_support_port_cardinality(connections, nodes, actions)?;
-    if graph_has_cycle(nodes.keys().copied(), &adjacency) {
-        return Err(noncanonical("connections.cycle"));
+
+    /// The implicit flow edge: the target action must take exactly one flow
+    /// input, and the payload handed to it must be assignable to that input.
+    fn validate_flow_input(&self) -> Result<(), ExecutablePlanIntegrityError> {
+        let flow_inputs = self
+            .target_action
+            .inputs
+            .iter()
+            .filter(|input| matches!(input, RecordedInputPortV1::Flow { .. }))
+            .count();
+        if flow_inputs != 1 {
+            return Err(noncanonical("connections.to_port"));
+        }
+        let producer = OutputSchema::new(if self.intrinsic_error {
+            nebula_schema::schema_of::<nebula_workflow::ErrorPortPayload>()
+                .map_err(nebula_metadata::MetadataBuildError::from)?
+        } else {
+            self.source_action.output_schema.schema.clone()
+        });
+        let consumer = InputSchema::new(self.target_action.input_schema.schema.clone());
+        if !matches!(explain_assignable(&producer, &consumer), Assignability::Yes) {
+            return Err(noncanonical("connections.schema"));
+        }
+        Ok(())
     }
+}
+
+/// A parameter that reads another node's output is only meaningful when an edge
+/// actually carries that output to the reading node.
+fn validate_parameter_references(
+    nodes: &HashMap<&str, &RecordedNodeV1>,
+    actions: &HashMap<&str, &RecordedActionV1>,
+    connections: &[RecordedConnectionV1],
+    epoch: PlanEpoch,
+) -> Result<(), ExecutablePlanIntegrityError> {
     for node in nodes.values() {
         for parameter in &node.parameters {
-            if let RecordedParameterValueV1::Reference {
+            let RecordedParameterValueV1::Reference {
                 node_key,
                 output_path,
             } = &parameter.value
-            {
-                let source = nodes
-                    .get(node_key.as_str())
-                    .ok_or_else(|| noncanonical("nodes.parameters.reference"))?;
-                if !connections.iter().any(|connection| {
-                    connection.from_node == *node_key && connection.to_node == node.id
-                }) {
-                    return Err(noncanonical("nodes.parameters.reference"));
-                }
-                validate_reference_contract(
-                    parameter,
-                    output_path,
-                    source,
-                    node,
-                    actions,
-                    connections,
-                    epoch,
-                )?;
+            else {
+                continue;
+            };
+            let source = nodes
+                .get(node_key.as_str())
+                .ok_or_else(|| noncanonical("nodes.parameters.reference"))?;
+            let carried = connections.iter().any(|connection| {
+                connection.from_node == *node_key && connection.to_node == node.id
+            });
+            if !carried {
+                return Err(noncanonical("nodes.parameters.reference"));
             }
+            validate_reference_contract(
+                parameter,
+                output_path,
+                source,
+                node,
+                actions,
+                connections,
+                epoch,
+            )?;
         }
     }
     Ok(())

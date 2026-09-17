@@ -1582,6 +1582,48 @@ fn tag_filtered_support_ports_are_recordable_but_not_certifiable_edges() {
 }
 
 #[test]
+fn support_port_node_type_filters_admit_only_their_declared_actions() {
+    let support_port = |allowed: &str| RecordedInputPortV1::Support {
+        key: "model".into(),
+        required: false,
+        multi: false,
+        allowed_node_types: Some(vec![allowed.into()].into_boxed_slice()),
+        allowed_tags: None,
+    };
+
+    let mut record = fixture_record();
+    record.content.actions[0].inputs = vec![
+        RecordedInputPortV1::Flow { key: "in".into() },
+        support_port("demo.echo"),
+    ]
+    .into_boxed_slice();
+    reseal(&mut record);
+    ExecutablePlanRevision::try_from(record.clone())
+        .expect("an unused node-type filter remains an exact contract fact");
+
+    record.content.nodes = vec![minimal_node("source"), minimal_node("target")].into_boxed_slice();
+    record.content.connections = vec![RecordedConnectionV1 {
+        from_node: "source".into(),
+        from_port: "out".into(),
+        to_node: "target".into(),
+        to_port: Some("model".into()),
+    }]
+    .into_boxed_slice();
+    reseal(&mut record);
+    ExecutablePlanRevision::try_from(record.clone())
+        .expect("the filter admits the action both nodes declare");
+
+    record.content.actions[0].inputs[1] = support_port("demo.other");
+    reseal(&mut record);
+    assert!(matches!(
+        ExecutablePlanRevision::try_from(record),
+        Err(ExecutablePlanIntegrityError::NonCanonical {
+            section: "connections.to_port.filter"
+        })
+    ));
+}
+
+#[test]
 fn binding_integrity_rejects_unknown_bits_and_duplicate_site_slot() {
     let unknown_bits = credential_binding_record("primary", 0b1000_0000);
     assert!(matches!(
