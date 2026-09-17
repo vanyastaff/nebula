@@ -412,7 +412,7 @@ pub enum EngineError {
     },
 }
 
-/// The subset of [`EngineError::code`]'s literal table that the frontier's
+/// The subset of `EngineError::code`'s literal table that the frontier's
 /// `setup_refusal` call sites also need.
 ///
 /// `EngineError::code` is a hand-written match (a derive can't see it), so
