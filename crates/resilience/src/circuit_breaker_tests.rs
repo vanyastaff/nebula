@@ -526,6 +526,24 @@ fn invalid_failure_rate_threshold_rejected() {
     assert!(result.is_err());
 }
 
+/// Pins constructor validity of the `Default` impl — the config the L1
+/// refresh fallback in `crates/credential` reaches for when its static
+/// config is rejected. If `CircuitBreakerConfig::default()` stopped
+/// satisfying `validate()`, that fallback would panic at
+/// `CircuitBreaker::new` instead of degrading gracefully, so this pins
+/// the invariant the fallback relies on.
+#[test]
+fn default_config_is_constructor_valid() {
+    assert!(
+        CircuitBreakerConfig::default().validate().is_ok(),
+        "the Default impl must produce a config that passes validate()"
+    );
+    assert!(
+        CircuitBreaker::new(CircuitBreakerConfig::default()).is_ok(),
+        "the Default impl config must be accepted by CircuitBreaker::new"
+    );
+}
+
 #[test]
 fn sliding_window_stats_reflect_window() {
     let cb = CircuitBreaker::new(CircuitBreakerConfig {
