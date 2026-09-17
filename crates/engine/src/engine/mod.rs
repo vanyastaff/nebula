@@ -388,7 +388,7 @@ pub struct WorkflowEngine {
     ///
     /// Wired by the composition root via
     /// [`Self::with_credential_reclaim_sweep`] when the deployment has a
-    /// durable [`nebula_storage::credential::RefreshClaimRepo`] (Postgres
+    /// durable [`nebula_storage_port::store::RefreshClaimStore`] (Postgres
     /// or SQLite). Single-replica desktop mode without sentinel-event
     /// recording leaves this `None`.
     credential_reclaim_sweep: Option<nebula_credential::runtime::ReclaimSweepHandle>,
