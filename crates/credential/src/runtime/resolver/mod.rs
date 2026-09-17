@@ -375,7 +375,8 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
         C::State: StateWireFingerprint,
     {
         self.ensure_source_wired()?;
-        for reevaluation in 0..=MAX_COORDINATED_REEVALUATIONS {
+        let mut reevaluation = 0;
+        loop {
             let credential_id = selector.credential_id();
             let credential_id_text = credential_id.to_string();
             let stored = self.load_and_verify::<C>(selector).await?;
@@ -457,19 +458,19 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
                 .await?
             {
                 CoordinatedResolve::Resolved(handle) => return Ok(handle),
-                CoordinatedResolve::Reevaluate if reevaluation < MAX_COORDINATED_REEVALUATIONS => {
-                    continue;
-                },
-                CoordinatedResolve::Reevaluate => {
+                CoordinatedResolve::Reevaluate if reevaluation >= MAX_COORDINATED_REEVALUATIONS => {
                     return Err(ResolveError::Refresh {
                         credential_id: credential_id_text,
                         reason: "credential state kept changing during coordinated refresh"
                             .to_owned(),
                     });
                 },
+                CoordinatedResolve::Reevaluate => {
+                    reevaluation += 1;
+                    continue;
+                },
             }
         }
-        unreachable!("the bounded coordinated re-evaluation loop always returns")
     }
 
     /// Two-tier coordinated refresh path for a typed [`CredentialId`].
