@@ -10,7 +10,32 @@
 //! other loop phase stays in `super`, which awaits it inline — never
 //! spawned or raced (it holds only borrows).
 
-use super::*;
+use std::{cmp::Reverse, sync::atomic::Ordering, time::Instant};
+
+use chrono::{DateTime, Utc};
+use nebula_action::ActionResult;
+use nebula_action::result::WaitCondition;
+use nebula_core::NodeKey;
+use nebula_core::id::ExecutionId;
+use nebula_execution::ExecutionStatus;
+use nebula_execution::context::ExecutionBudget;
+use nebula_execution::output::ExecutionOutput;
+use nebula_execution::state::{AttemptOutcome, ExecutionState, WaitSignal, WaitWake};
+use nebula_storage_port::Scope;
+use nebula_storage_port::dto::resume_token::{ResumeTokenRow, ResumeTokenWaitKind};
+use nebula_workflow::DependencyGraph;
+use secrecy::SecretString;
+use tokio_util::sync::CancellationToken;
+
+use crate::engine::checkpoint::action_checkpoint;
+use crate::engine::{
+    WorkflowEngine, extract_primary_output, map_termination_reason, mark_node_completed,
+    mark_node_failed, mint_park_token, process_outgoing_edges,
+};
+use crate::error::EngineError;
+use crate::event::ExecutionEvent;
+
+use super::FrontierCtx;
 
 impl WorkflowEngine {
     /// Process one successfully joined node task (Phase 3 of the
@@ -436,7 +461,7 @@ impl WorkflowEngine {
                             scope,
                             execution_id,
                             node_key.clone(),
-                            Some(checkpoint::action_checkpoint(&action_result)?),
+                            Some(action_checkpoint(&action_result)?),
                             ctx.outputs,
                             ctx.exec_state,
                             ctx.repo_version,
@@ -551,7 +576,7 @@ impl WorkflowEngine {
                 scope,
                 execution_id,
                 node_key.clone(),
-                Some(checkpoint::action_checkpoint(&action_result)?),
+                Some(action_checkpoint(&action_result)?),
                 ctx.outputs,
                 ctx.exec_state,
                 ctx.repo_version,

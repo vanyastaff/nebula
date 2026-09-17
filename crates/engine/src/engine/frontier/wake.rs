@@ -7,9 +7,25 @@
 //! set, the cancel token, and the live Resume channel. It reports which arm
 //! won as a [`WakeReason`], carrying the arm's payload (the join result, or
 //! the dequeued `ResumeRequest`). The post-wake control flow — every side
-//! effect and loop transition — stays in the loop body in `super`.
+//! effect and loop transition — stays in the loop body in `super`, which
+//! resolves through this module's explicit imports.
 
-use super::*;
+use std::{
+    cmp::Reverse,
+    future::Future,
+    pin::Pin,
+    time::{Duration, Instant},
+};
+
+use nebula_action::ActionResult;
+use nebula_core::NodeKey;
+use nebula_execution::context::ExecutionBudget;
+use tokio_util::sync::CancellationToken;
+
+use crate::engine::{ResumeRequest, WorkflowEngine};
+use crate::error::EngineError;
+
+use super::FrontierCtx;
 
 /// Output of the `join_next` arm: one completed in-flight task, or `None`
 /// when the `JoinSet` drained mid-iteration.

@@ -7,9 +7,35 @@
 //! which the Phase 1 drain in `super::dispatch` handles. An `impl
 //! WorkflowEngine` method in a child module, so it keeps full access to the
 //! engine's private fields, sibling methods, helper free functions, and types
-//! through `use super::*`.
+//! through this module's explicit imports.
 
-use super::*;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+
+use dashmap::DashMap;
+use nebula_action::ActionResult;
+use nebula_action::capability::default_resource_accessor;
+use nebula_core::NodeKey;
+use nebula_core::accessor::{CredentialAccessor, ResourceAccessor};
+use nebula_core::id::{ExecutionId, WorkflowId};
+use nebula_credential::default_credential_accessor;
+use nebula_error::ErrorCode;
+use nebula_execution::state::ExecutionState;
+use nebula_storage_port::Scope;
+use nebula_workflow::DependencyGraph;
+use tokio::sync::Semaphore;
+use tokio::task::JoinSet;
+use tokio_util::sync::CancellationToken;
+
+use crate::credential_accessor::EngineCredentialAccessor;
+use crate::engine::{
+    FactoryDispatch, NodeFactoryDispatch, NodeTask, WorkflowEngine, durable_error_envelope,
+    resolve_node_input_with_support, setup_refusal,
+};
+use crate::error::EngineError;
+use crate::resolver::NodeInputRequest;
+use crate::resource_accessor::EngineResourceAccessor;
+use crate::scoped_resources::LayeredResourceAccessor;
 
 impl WorkflowEngine {
     /// Spawn a single node into the JoinSet.

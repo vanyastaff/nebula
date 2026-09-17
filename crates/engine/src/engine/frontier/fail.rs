@@ -9,7 +9,27 @@
 //! own node; every other loop phase stays in `super`, which awaits it inline
 //! — never spawned or raced (it holds only borrows).
 
-use super::*;
+use std::{cmp::Reverse, collections::HashMap};
+
+use nebula_action::ActionError;
+use nebula_core::NodeKey;
+use nebula_core::id::ExecutionId;
+use nebula_execution::state::AttemptOutcome;
+use nebula_storage_port::Scope;
+use nebula_workflow::{DependencyGraph, NodeState};
+use tokio_util::sync::CancellationToken;
+
+use crate::engine::checkpoint::failure_checkpoint;
+use crate::engine::outcome::{
+    FailureOutcome, RetryDecision, apply_failure_recovery, classify_failure,
+    compute_retry_decision, effective_retry_policy, error_is_terminal, next_retry_at,
+    route_failure_edges,
+};
+use crate::engine::{WorkflowEngine, drain_pending_to_cancelled, mark_node_failed};
+use crate::error::EngineError;
+use crate::event::{ExecutionEvent, NodeFailedDetails};
+
+use super::FrontierCtx;
 
 impl WorkflowEngine {
     /// Process one failed node task (Phase 3 of the
@@ -319,11 +339,7 @@ impl WorkflowEngine {
                 scope,
                 execution_id,
                 node_key.clone(),
-                Some(checkpoint::failure_checkpoint(
-                    outcome,
-                    ctx.outputs,
-                    &node_key,
-                )),
+                Some(failure_checkpoint(outcome, ctx.outputs, &node_key)),
                 ctx.outputs,
                 ctx.exec_state,
                 ctx.repo_version,

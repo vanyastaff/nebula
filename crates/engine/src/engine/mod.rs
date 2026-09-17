@@ -19,24 +19,20 @@ use std::{
 
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
-use nebula_action::{
-    ActionError, ActionResult, capability::default_resource_accessor, result::WaitCondition,
-};
+use nebula_action::{ActionError, ActionResult};
 use nebula_core::{
     NodeKey, PortKey, ResourceKey,
     accessor::{Clock, CredentialAccessor, ResourceAccessor, SystemClock},
     id::{ExecutionId, InstanceId, WorkflowId},
     node_key,
 };
-use nebula_credential::default_credential_accessor;
 // ScopeLevel removed from ActionContext
 // use nebula_core::scope::ScopeLevel;
-use nebula_execution::output::ExecutionOutput;
 use nebula_execution::{
     ErrorEnvelope, ExecutionStatus,
     context::ExecutionBudget,
     plan::ExecutionPlan,
-    state::{AttemptOutcome, ExecutionState, WaitSignal, WaitWake},
+    state::{ExecutionState, WaitSignal, WaitWake},
     status::ExecutionTerminationReason,
 };
 use nebula_expression::ExpressionEngine;
@@ -67,15 +63,12 @@ use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 use crate::{
-    credential_accessor::EngineCredentialAccessor,
     error::EngineError,
     event::{ExecutionEvent, NodeFailedDetails},
-    resolver::{NodeInputRequest, ParamResolver},
+    resolver::ParamResolver,
     resource::ResourceActivatorRegistry,
-    resource_accessor::EngineResourceAccessor,
     result::ExecutionResult,
     runtime::ActionRuntime,
-    scoped_resources::LayeredResourceAccessor,
 };
 
 /// Type alias for the optional event sender.

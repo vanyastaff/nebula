@@ -7,10 +7,10 @@
 //! Split out of `engine.rs` as part of the god-module decomposition (audit
 //! 🔴-1). These remain `impl WorkflowEngine` methods in child modules, so they
 //! keep full access to the engine's private fields, sibling methods, helper
-//! free functions, and types through `use super::*`.
+//! free functions, and types through their own explicit `use` imports
+//! (resolved against this module and its `super` scope).
 
 use super::*;
-use nebula_error::ErrorCode;
 
 mod complete;
 mod dispatch;

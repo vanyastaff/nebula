@@ -7,7 +7,36 @@
 //! staging). Awaited inline by the loop body in `super` — never spawned or
 //! raced.
 
-use super::*;
+use std::{
+    cmp::Reverse,
+    collections::HashMap,
+    sync::Arc,
+    time::{Duration, Instant},
+};
+
+use nebula_core::NodeKey;
+use nebula_core::id::{ExecutionId, WorkflowId};
+use nebula_error::ErrorCode;
+use nebula_execution::context::ExecutionBudget;
+use nebula_execution::state::AttemptOutcome;
+use nebula_storage_port::Scope;
+use nebula_workflow::{DependencyGraph, NodeState};
+use tokio::sync::Semaphore;
+use tokio_util::sync::CancellationToken;
+
+use crate::engine::checkpoint::failure_checkpoint;
+use crate::engine::outcome::{
+    RetryDecision, apply_failure_recovery, classify_failure, compute_retry_decision,
+    effective_retry_policy, next_retry_at, route_failure_edges,
+};
+use crate::engine::{
+    FactoryDispatch, WorkflowEngine, check_budget, mark_node_skipped, process_outgoing_edges,
+    setup_refusal,
+};
+use crate::error::EngineError;
+use crate::event::{ExecutionEvent, NodeFailedDetails};
+
+use super::FrontierCtx;
 
 impl WorkflowEngine {
     /// Drain the ready queue → dispatch into the join set (Phase 1 of the
@@ -323,11 +352,7 @@ impl WorkflowEngine {
                     scope,
                     execution_id,
                     node_key.clone(),
-                    Some(checkpoint::failure_checkpoint(
-                        outcome,
-                        ctx.outputs,
-                        &node_key,
-                    )),
+                    Some(failure_checkpoint(outcome, ctx.outputs, &node_key)),
                     ctx.outputs,
                     ctx.exec_state,
                     ctx.repo_version,

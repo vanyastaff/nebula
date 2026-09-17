@@ -10,7 +10,22 @@
 //! the loop body in `super`, which awaits Phase 0b inline — it is never
 //! spawned or raced.
 
-use super::*;
+use std::cmp::Reverse;
+
+use nebula_core::NodeKey;
+use nebula_core::id::ExecutionId;
+use nebula_execution::state::WaitWake;
+use nebula_storage_port::Scope;
+use nebula_workflow::{DependencyGraph, NodeState};
+use tokio_util::sync::CancellationToken;
+
+use crate::engine::checkpoint::{checkpoint_output, failure_checkpoint};
+use crate::engine::outcome::{FailureOutcome, route_failure_edges};
+use crate::engine::{WorkflowEngine, mark_node_failed, process_outgoing_edges};
+use crate::error::EngineError;
+use crate::event::ExecutionEvent;
+
+use super::FrontierCtx;
 
 impl WorkflowEngine {
     /// Drain due retries from `ctx.retry_heap` into `ctx.ready_queue`.
@@ -274,7 +289,7 @@ impl WorkflowEngine {
                         scope,
                         execution_id,
                         node_key.clone(),
-                        Some(checkpoint::failure_checkpoint(
+                        Some(failure_checkpoint(
                             FailureOutcome::Fail,
                             ctx.outputs,
                             &node_key,
@@ -342,7 +357,7 @@ impl WorkflowEngine {
                                     .checkpoint
                                     .as_ref()
                                     .and_then(|checkpoint| checkpoint.nodes().get(&node_key))
-                                    .map(checkpoint::checkpoint_output)
+                                    .map(checkpoint_output)
                                     .transpose()?
                                     .flatten(),
                             }),

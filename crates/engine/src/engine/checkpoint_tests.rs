@@ -1,3 +1,5 @@
+use nebula_action::result::WaitCondition;
+
 use super::*;
 
 #[tokio::test]
