@@ -320,7 +320,11 @@ pub struct SmtpEmailConfig {
 /// with no diagnostic.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
-#[non_exhaustive]
+// Exhaustively matched by the composition root (apps/server's
+// execution-store selection). Intentionally NOT `#[non_exhaustive]`: the crate
+// is `publish = false` and every consumer is in-repo, so a new variant should
+// be a compile error at the composition root's match, not a runtime
+// `unreachable!` behind a forced wildcard arm.
 pub enum ExecutionBackendKind {
     /// Process-local in-memory adapters. Dev default; execution state is lost
     /// on restart and cannot be shared across processes.

@@ -23,9 +23,6 @@ pub(crate) async fn build_execution_stores(
         ExecutionBackendKind::Postgres => {
             build_postgres_execution_stores(explicit_postgres_dsn, metrics).await
         },
-        _ => unreachable!(
-            "unrecognised ExecutionBackendKind variant; add its execution-store composition"
-        ),
     }
 }
 
