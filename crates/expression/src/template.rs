@@ -213,6 +213,23 @@ fn parse_strip_markers(
     (expr_start_idx, expr_end_idx, strip_left, strip_right)
 }
 
+/// Enforce the expression-count limit (DoS protection).
+///
+/// The count covers the parts parsed so far, so this must be called after the
+/// expression part has been pushed.
+fn enforce_expression_count(parts: &[TemplatePart]) -> ExpressionResult<()> {
+    let expr_count = parts
+        .iter()
+        .filter(|p| matches!(p, TemplatePart::Expression { .. }))
+        .count();
+    if expr_count > MAX_TEMPLATE_EXPRESSIONS {
+        return Err(ExpressionError::expression_parse_error(format!(
+            "Template contains too many expressions: {expr_count} (max {MAX_TEMPLATE_EXPRESSIONS})"
+        )));
+    }
+    Ok(())
+}
+
 /// Detect an unescaped template opener without parsing or evaluating the source.
 ///
 /// Neither a closing delimiter nor a `$` sigil is required: malformed syntax
@@ -363,15 +380,7 @@ impl Template {
                 });
 
                 // Check expression count limit (DoS protection)
-                let expr_count = parts
-                    .iter()
-                    .filter(|p| matches!(p, TemplatePart::Expression { .. }))
-                    .count();
-                if expr_count > MAX_TEMPLATE_EXPRESSIONS {
-                    return Err(ExpressionError::expression_parse_error(format!(
-                        "Template contains too many expressions: {expr_count} (max {MAX_TEMPLATE_EXPRESSIONS})"
-                    )));
-                }
+                enforce_expression_count(&parts)?;
 
                 // Update position tracking
                 byte_offset += chars[i..j + 2]
