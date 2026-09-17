@@ -10,6 +10,88 @@
 use super::*;
 use nebula_error::ErrorCode;
 
+/// Shared, loop-local state of the [`WorkflowEngine::run_frontier`] loop.
+///
+/// Bundles the edge maps, the ready queue, both timer heaps, the in-flight
+/// task set, and the state that is borrowed across loop iterations
+/// (`exec_state`, `outputs`, `repo_version`, `resume_rx`), so the planned
+/// per-stage extractions (`drain_due_retries`, `drain_due_wait_wakes`,
+/// `drain_ready_nodes`, `await_frontier_wake`, the success/failure arm
+/// handlers) can each take `&mut FrontierCtx` plus step-local arguments
+/// instead of 15-20 loose parameters. Private to this module: the stage
+/// functions land in this same `frontier/` directory module.
+struct FrontierCtx<'a> {
+    /// Execution state across the whole loop; borrowed because the caller
+    /// reads the final state after `run_frontier` returns.
+    exec_state: &'a mut ExecutionState,
+    /// Per-node outputs, shared with in-flight node tasks behind `Arc` in
+    /// the caller.
+    outputs: &'a Arc<DashMap<NodeKey, serde_json::Value>>,
+    /// Optimistic-concurrency version threaded through every checkpoint CAS.
+    repo_version: &'a mut u64,
+    /// Live Resume channel; a fresh `recv()` is armed per select! iteration.
+    resume_rx: &'a mut mpsc::Receiver<ResumeRequest>,
+    /// Set once the Resume channel closes so the `recv()` select! arm is
+    /// permanently disabled (avoids a busy-spin on `Ready(None)`).
+    resume_rx_closed: bool,
+    /// Edges activated per source node (resume-pre-populated).
+    activated_edges: HashMap<NodeKey, HashSet<NodeKey>>,
+    /// Resolved-incoming-edge count per target node (resume-pre-populated).
+    resolved_edges: HashMap<NodeKey, usize>,
+    /// Incoming-edge count that gates each node's readiness.
+    required_count: HashMap<NodeKey, usize>,
+    /// Nodes whose predecessors have all resolved and at least one edge has
+    /// been activated.
+    ready_queue: VecDeque<NodeKey>,
+    /// Nodes parked in `WaitingRetry`, keyed by next attempt time.
+    retry_heap: BinaryHeap<Reverse<(DateTime<Utc>, NodeKey)>>,
+    /// Nodes parked in `Waiting` with a timer, keyed by wake deadline.
+    wait_heap: BinaryHeap<Reverse<(DateTime<Utc>, NodeKey)>>,
+    /// In-flight node tasks and their results.
+    join_set: JoinSet<(
+        NodeKey,
+        Result<ActionResult<serde_json::Value>, EngineError>,
+    )>,
+    /// Side map from tokio task id to node key for panic attribution (#301).
+    task_nodes: HashMap<tokio::task::Id, NodeKey>,
+    /// Shared `$node` expression outputs handed to spawned tasks.
+    shared_expression_outputs: Arc<DashMap<NodeKey, Arc<serde_json::Value>>>,
+    /// Running output-byte total shared with in-flight tasks for the
+    /// budget guard.
+    total_output_bytes: Arc<AtomicU64>,
+}
+
+impl<'a> FrontierCtx<'a> {
+    /// Bundle the borrowed state and start with empty containers. The
+    /// caller seeds the heaps from `exec_state` and the ready queue from
+    /// `seed_nodes` before entering the loop.
+    fn new(
+        exec_state: &'a mut ExecutionState,
+        outputs: &'a Arc<DashMap<NodeKey, serde_json::Value>>,
+        repo_version: &'a mut u64,
+        resume_rx: &'a mut mpsc::Receiver<ResumeRequest>,
+    ) -> Self {
+        let total_output_bytes = Arc::new(AtomicU64::new(exec_state.total_output_bytes));
+        Self {
+            exec_state,
+            outputs,
+            repo_version,
+            resume_rx,
+            resume_rx_closed: false,
+            activated_edges: HashMap::new(),
+            resolved_edges: HashMap::new(),
+            required_count: HashMap::new(),
+            ready_queue: VecDeque::new(),
+            retry_heap: BinaryHeap::new(),
+            wait_heap: BinaryHeap::new(),
+            join_set: JoinSet::new(),
+            task_nodes: HashMap::new(),
+            shared_expression_outputs: Arc::new(DashMap::new()),
+            total_output_bytes,
+        }
+    }
+}
+
 impl WorkflowEngine {
     /// Execute all reachable nodes using a frontier-based approach.
     ///
@@ -53,24 +135,21 @@ impl WorkflowEngine {
         initial_activated: HashMap<NodeKey, HashSet<NodeKey>>,
         initial_resolved: HashMap<NodeKey, usize>,
     ) -> Result<Option<(NodeKey, String)>, EngineError> {
-        let shared_expression_outputs = Arc::new(DashMap::new());
-        let total_output_bytes = Arc::new(AtomicU64::new(exec_state.total_output_bytes));
+        let mut ctx = FrontierCtx::new(exec_state, outputs, repo_version, resume_rx);
+
         // Precompute how many incoming edges each node has
-        let required_count: HashMap<NodeKey, usize> = node_map
+        ctx.required_count = node_map
             .keys()
             .map(|nid| (nid.clone(), graph.incoming_connections(nid.clone()).len()))
             .collect();
 
         // Track edge resolution state (pre-populated for resume)
-        let mut activated_edges = initial_activated;
-        let mut resolved_edges = initial_resolved;
-
-        // Queue of nodes ready to execute
-        let mut ready_queue: VecDeque<NodeKey> = VecDeque::new();
+        ctx.activated_edges = initial_activated;
+        ctx.resolved_edges = initial_resolved;
 
         // Seed with the provided nodes (entry nodes for fresh; frontier for resume)
         for node_key in seed_nodes {
-            ready_queue.push_back(node_key);
+            ctx.ready_queue.push_back(node_key);
         }
 
         // Min-heap (via `Reverse`) of `(next_attempt_at, NodeKey)` for
@@ -79,17 +158,16 @@ impl WorkflowEngine {
         // next when the current frontier is otherwise idle"; cancel /
         // terminate / budget guards run AFTER the timer fires so a
         // cancelled execution does not silently re-dispatch a node.
-        let mut retry_heap: BinaryHeap<Reverse<(DateTime<Utc>, NodeKey)>> = BinaryHeap::new();
-
+        //
         // Resume seeding: any node already in `WaitingRetry` from a
         // prior run (its `next_attempt_at` survived via JSONB) needs
         // to land on the heap before the loop starts. Otherwise a
         // resumed retry would silently never re-dispatch.
-        for (key, ns) in &exec_state.node_states {
+        for (key, ns) in &ctx.exec_state.node_states {
             if ns.state == NodeState::WaitingRetry
                 && let Some(when) = ns.next_attempt_at
             {
-                retry_heap.push(Reverse((when, key.clone())));
+                ctx.retry_heap.push(Reverse((when, key.clone())));
             }
         }
 
@@ -100,37 +178,32 @@ impl WorkflowEngine {
         // restarted. Signal-only parked nodes (webhook/approval/execution
         // with no timeout) are NOT on this heap; they stay parked until
         // a `Resume` signal arrives (built separately).
-        let mut wait_heap: BinaryHeap<Reverse<(DateTime<Utc>, NodeKey)>> = BinaryHeap::new();
-
+        //
         // Resume seeding for `Waiting` nodes: a crashed engine may have
         // persisted a node in `Waiting` with a `next_attempt_at` timer;
         // re-seed the heap so the wake fires without requiring a fresh
         // `ActionResult::Wait` dispatch.
-        for (key, ns) in &exec_state.node_states {
+        for (key, ns) in &ctx.exec_state.node_states {
             if ns.state == NodeState::Waiting
                 && let Some(when) = ns.next_attempt_at
             {
-                wait_heap.push(Reverse((when, key.clone())));
+                ctx.wait_heap.push(Reverse((when, key.clone())));
             }
         }
 
-        // In-flight tasks + a side map from tokio task id → NodeKey so
-        // that panics (where the inner future's `(NodeKey, _)` payload
-        // is lost) can still be attributed to the real node instead
-        // of a synthesized placeholder (issue #301).
-        let mut join_set: JoinSet<(
-            NodeKey,
-            Result<ActionResult<serde_json::Value>, EngineError>,
-        )> = JoinSet::new();
-        let mut task_nodes: HashMap<tokio::task::Id, NodeKey> = HashMap::new();
-
-        // Disarms the `resume_rx.recv()` select! arm after the first `None`
-        // (channel closed). Without this guard the arm would poll `Ready(None)`
-        // on every iteration — a busy-spin for the full run duration. This
-        // fires immediately on the replay path (the Sender is dropped at the
-        // `RunningEntry` construction site) and also defends against any
-        // premature drop of the Running registration in the execute path.
-        let mut resume_rx_closed = false;
+        // `ctx.join_set` holds the in-flight node tasks; `ctx.task_nodes`
+        // is the side map from tokio task id → NodeKey so that panics
+        // (where the inner future's `(NodeKey, _)` payload is lost) can
+        // still be attributed to the real node instead of a synthesized
+        // placeholder (issue #301).
+        //
+        // `ctx.resume_rx_closed` disarms the `resume_rx.recv()` select!
+        // arm after the first `None` (channel closed). Without this guard
+        // the arm would poll `Ready(None)` on every iteration — a
+        // busy-spin for the full run duration. This fires immediately on
+        // the replay path (the Sender is dropped at the `RunningEntry`
+        // construction site) and also defends against any premature drop
+        // of the Running registration in the execute path.
 
         // Main frontier loop
         loop {
@@ -145,11 +218,11 @@ impl WorkflowEngine {
             // Phase 1's `spawn_node` then performs `Ready → Running`
             // via `start_node_attempt`.
             let now_drain = self.clock.now();
-            while let Some(Reverse((when, _))) = retry_heap.peek() {
+            while let Some(Reverse((when, _))) = ctx.retry_heap.peek() {
                 if *when > now_drain {
                     break;
                 }
-                let Some(Reverse((_, node_key))) = retry_heap.pop() else {
+                let Some(Reverse((_, node_key))) = ctx.retry_heap.pop() else {
                     // Unreachable: peek-then-pop on a single-threaded
                     // owner cannot lose the entry. Surface defensively
                     // rather than panic so a future refactor can't
@@ -161,16 +234,20 @@ impl WorkflowEngine {
                     );
                     break;
                 };
-                let still_parked = exec_state
+                let still_parked = ctx
+                    .exec_state
                     .node_state(node_key.clone())
                     .is_some_and(|ns| ns.state == NodeState::WaitingRetry);
                 if still_parked {
-                    match exec_state.transition_node(node_key.clone(), NodeState::Ready) {
+                    match ctx
+                        .exec_state
+                        .transition_node(node_key.clone(), NodeState::Ready)
+                    {
                         Ok(()) => {
-                            if let Some(ns) = exec_state.node_states.get_mut(&node_key) {
+                            if let Some(ns) = ctx.exec_state.node_states.get_mut(&node_key) {
                                 ns.next_attempt_at = None;
                             }
-                            ready_queue.push_back(node_key.clone());
+                            ctx.ready_queue.push_back(node_key.clone());
                             tracing::debug!(
                                 target = "engine::frontier",
                                 %execution_id,
@@ -218,14 +295,14 @@ impl WorkflowEngine {
             //     `RuntimeError::WaitTimedOut`) and route its outgoing edges
             //     through the failure path (OnError / Skip / FailFast).
             let now_wait_drain = self.clock.now();
-            while let Some(Reverse((when, _))) = wait_heap.peek() {
+            while let Some(Reverse((when, _))) = ctx.wait_heap.peek() {
                 if *when > now_wait_drain {
                     break;
                 }
                 // Capture the deadline from the POPPED tuple (owned), not the
                 // peek reference, so we may mutate `wait_heap` again below
                 // while still using it for the timeout-ms reconstruction.
-                let Some(Reverse((deadline, node_key))) = wait_heap.pop() else {
+                let Some(Reverse((deadline, node_key))) = ctx.wait_heap.pop() else {
                     // Unreachable: peek-then-pop on a single-threaded
                     // owner cannot lose the entry. Surface defensively
                     // rather than panic (hot-path safety).
@@ -241,7 +318,8 @@ impl WorkflowEngine {
                 // so a stale `(deadline, key)` entry for a node a Resume
                 // already re-armed `Completion` is read as a completion, not a
                 // timeout — never double-routed.
-                let parked_wake = exec_state
+                let parked_wake = ctx
+                    .exec_state
                     .node_state(node_key.clone())
                     .filter(|ns| ns.state == NodeState::Waiting)
                     .map(|ns| ns.wait_wake);
@@ -274,7 +352,8 @@ impl WorkflowEngine {
                     // recovery (both fields are persisted) and is an
                     // observability value, not a control input — a small
                     // over-estimate (the node's pre-park run time) is acceptable.
-                    let timeout_ms = exec_state
+                    let timeout_ms = ctx
+                        .exec_state
                         .node_state(node_key.clone())
                         .and_then(|ns| ns.started_at)
                         .map(|started| {
@@ -308,8 +387,8 @@ impl WorkflowEngine {
                     // return for the projection below instead of a second
                     // `durable_error_envelope` build over the same message.
                     let err_str =
-                        mark_node_failed(exec_state, node_key.clone(), &engine_err).to_string();
-                    if let Some(ns) = exec_state.node_states.get_mut(&node_key) {
+                        mark_node_failed(ctx.exec_state, node_key.clone(), &engine_err).to_string();
+                    if let Some(ns) = ctx.exec_state.node_states.get_mut(&node_key) {
                         // Resolved wait: drop the timer pair so the now-`Failed`
                         // node carries no stale wake metadata.
                         ns.clear_wait_timer();
@@ -332,12 +411,12 @@ impl WorkflowEngine {
                         &err_str,
                         error_strategy,
                         graph,
-                        outputs,
-                        &mut activated_edges,
-                        &mut resolved_edges,
-                        &required_count,
-                        &mut ready_queue,
-                        exec_state,
+                        ctx.outputs,
+                        &mut ctx.activated_edges,
+                        &mut ctx.resolved_edges,
+                        &ctx.required_count,
+                        &mut ctx.ready_queue,
+                        ctx.exec_state,
                     );
                     // Durably commit the `Failed` transition (+ any OnError
                     // payload routing already staged) before any observer sees
@@ -349,12 +428,12 @@ impl WorkflowEngine {
                             node_key.clone(),
                             Some(checkpoint::failure_checkpoint(
                                 FailureOutcome::Fail,
-                                outputs,
+                                ctx.outputs,
                                 &node_key,
                             )),
-                            outputs,
-                            exec_state,
-                            repo_version,
+                            ctx.outputs,
+                            ctx.exec_state,
+                            ctx.repo_version,
                             fencing,
                             vec![],
                         )
@@ -390,9 +469,12 @@ impl WorkflowEngine {
                     continue;
                 }
                 // ── Completion path (Completion / legacy None) ──
-                match exec_state.transition_node(node_key.clone(), NodeState::Completed) {
+                match ctx
+                    .exec_state
+                    .transition_node(node_key.clone(), NodeState::Completed)
+                {
                     Ok(()) => {
-                        if let Some(ns) = exec_state.node_states.get_mut(&node_key) {
+                        if let Some(ns) = ctx.exec_state.node_states.get_mut(&node_key) {
                             // Resolved wait: drop the timer pair on the now-
                             // `Completed` node.
                             ns.clear_wait_timer();
@@ -407,7 +489,8 @@ impl WorkflowEngine {
                                 execution_id,
                                 node_key.clone(),
                                 Some(nebula_execution::NodeCheckpoint::TimerCompleted {
-                                    partial_output: exec_state
+                                    partial_output: ctx
+                                        .exec_state
                                         .checkpoint
                                         .as_ref()
                                         .and_then(|checkpoint| checkpoint.nodes().get(&node_key))
@@ -415,9 +498,9 @@ impl WorkflowEngine {
                                         .transpose()?
                                         .flatten(),
                                 }),
-                                outputs,
-                                exec_state,
-                                repo_version,
+                                ctx.outputs,
+                                ctx.exec_state,
+                                ctx.repo_version,
                                 fencing,
                                 vec![],
                             )
@@ -444,11 +527,11 @@ impl WorkflowEngine {
                             None, // no live `ActionResult` for this synthetic completion
                             None,
                             graph,
-                            &mut activated_edges,
-                            &mut resolved_edges,
-                            &required_count,
-                            &mut ready_queue,
-                            exec_state,
+                            &mut ctx.activated_edges,
+                            &mut ctx.resolved_edges,
+                            &ctx.required_count,
+                            &mut ctx.ready_queue,
+                            ctx.exec_state,
                         );
                     },
                     Err(err) => {
@@ -474,27 +557,30 @@ impl WorkflowEngine {
             // first would drop the node and strand it as `Ready`,
             // tripping frontier integrity (CAS on version).
             while !cancel_token.is_cancelled()
-                && let Some(node_key) = ready_queue.pop_front()
+                && let Some(node_key) = ctx.ready_queue.pop_front()
             {
                 // Check budget limits before dispatching
-                if let Some(violation) =
-                    check_budget(budget, started, elapsed_before_turn, &total_output_bytes)
-                {
+                if let Some(violation) = check_budget(
+                    budget,
+                    started,
+                    elapsed_before_turn,
+                    &ctx.total_output_bytes,
+                ) {
                     cancel_token.cancel();
                     return Ok(Some((node_key, violation)));
                 }
 
                 // Preserve the explicit disabled-node bypass through the main edge.
                 if node_map.get(&node_key).is_some_and(|nd| !nd.enabled) {
-                    mark_node_skipped(exec_state, node_key.clone());
+                    mark_node_skipped(ctx.exec_state, node_key.clone());
                     self.checkpoint_node(
                         scope,
                         execution_id,
                         node_key.clone(),
                         Some(nebula_execution::NodeCheckpoint::Bypassed {}),
-                        outputs,
-                        exec_state,
-                        repo_version,
+                        ctx.outputs,
+                        ctx.exec_state,
+                        ctx.repo_version,
                         fencing,
                         vec![],
                     )
@@ -504,11 +590,11 @@ impl WorkflowEngine {
                         None,
                         None, // not failed
                         graph,
-                        &mut activated_edges,
-                        &mut resolved_edges,
-                        &required_count,
-                        &mut ready_queue,
-                        exec_state,
+                        &mut ctx.activated_edges,
+                        &mut ctx.resolved_edges,
+                        &ctx.required_count,
+                        &mut ctx.ready_queue,
+                        ctx.exec_state,
                     );
                     continue;
                 }
@@ -522,13 +608,13 @@ impl WorkflowEngine {
                             scope,
                             execution_id,
                             node_key.clone(),
-                            outputs,
-                            exec_state,
+                            ctx.outputs,
+                            ctx.exec_state,
                             graph,
-                            &mut activated_edges,
-                            &mut resolved_edges,
-                            &required_count,
-                            &mut ready_queue,
+                            &mut ctx.activated_edges,
+                            &mut ctx.resolved_edges,
+                            &ctx.required_count,
+                            &mut ctx.ready_queue,
                         )
                         .await
                 {
@@ -542,17 +628,17 @@ impl WorkflowEngine {
                     node_map,
                     &factory_dispatch,
                     graph,
-                    outputs,
-                    &shared_expression_outputs,
+                    ctx.outputs,
+                    &ctx.shared_expression_outputs,
                     semaphore,
                     cancel_token,
-                    exec_state,
+                    ctx.exec_state,
                     execution_id,
                     workflow_id,
                     input,
-                    &activated_edges,
-                    &mut join_set,
-                    &mut task_nodes,
+                    &ctx.activated_edges,
+                    &mut ctx.join_set,
+                    &mut ctx.task_nodes,
                 );
                 if spawned {
                     let action_key = node_map
@@ -580,7 +666,8 @@ impl WorkflowEngine {
                 // record_attempt → classify → apply recovery → route
                 // (stages OnError payload into outputs) → checkpoint
                 // (durably commits state + staged payload) → emit.
-                let err_envelope = exec_state
+                let err_envelope = ctx
+                    .exec_state
                     .node_state(node_key.clone())
                     .and_then(|ns| ns.error_message.clone())
                     .unwrap_or_else(|| {
@@ -603,7 +690,7 @@ impl WorkflowEngine {
                 // running `compute_retry_decision` against a stale
                 // `attempts.len()` — that would let `max_attempts`
                 // be bypassed and risk an idempotency-key collision.
-                let setup_attempt_recorded = match exec_state.record_node_attempt(
+                let setup_attempt_recorded = match ctx.exec_state.record_node_attempt(
                     node_key.clone(),
                     AttemptOutcome::Failure {
                         error: err_envelope,
@@ -637,7 +724,7 @@ impl WorkflowEngine {
                     // never started", so no fatal short-circuit applies.
                     compute_retry_decision(
                         &node_key,
-                        exec_state,
+                        ctx.exec_state,
                         setup_retry_policy.as_ref(),
                         false,
                     )
@@ -646,12 +733,14 @@ impl WorkflowEngine {
                 };
 
                 if let RetryDecision::Retry { delay } = setup_decision {
-                    let attempt_number = exec_state
+                    let attempt_number = ctx
+                        .exec_state
                         .node_states
                         .get(&node_key)
                         .map_or(1, |ns| ns.attempt_count() as u32);
                     let next_at = next_retry_at(execution_id, &node_key, delay, self.clock.now());
-                    if exec_state
+                    if ctx
+                        .exec_state
                         .schedule_node_retry(node_key.clone(), next_at)
                         .is_ok()
                     {
@@ -663,9 +752,9 @@ impl WorkflowEngine {
                                 Some(nebula_execution::NodeCheckpoint::Failed {
                                     error_port_output: None,
                                 }),
-                                outputs,
-                                exec_state,
-                                repo_version,
+                                ctx.outputs,
+                                ctx.exec_state,
+                                ctx.repo_version,
                                 fencing,
                                 vec![],
                             )
@@ -674,7 +763,7 @@ impl WorkflowEngine {
                             cancel_token.cancel();
                             return Err(e);
                         }
-                        retry_heap.push(Reverse((next_at, node_key.clone())));
+                        ctx.retry_heap.push(Reverse((next_at, node_key.clone())));
                         tracing::info!(
                             target = "engine::retry",
                             %execution_id,
@@ -682,7 +771,7 @@ impl WorkflowEngine {
                             attempt = attempt_number,
                             delay_ms = delay.as_millis() as u64,
                             next_attempt_at = %next_at,
-                            total_retries = exec_state.total_retries,
+                            total_retries = ctx.exec_state.total_retries,
                             "retry scheduled (setup-failure path)"
                         );
                         self.emit_event(ExecutionEvent::NodeRetryScheduled {
@@ -698,7 +787,7 @@ impl WorkflowEngine {
 
                 let outcome = classify_failure(error_strategy);
                 if let Err(e) =
-                    apply_failure_recovery(outcome, node_key.clone(), exec_state, outputs)
+                    apply_failure_recovery(outcome, node_key.clone(), ctx.exec_state, ctx.outputs)
                 {
                     cancel_token.cancel();
                     return Err(e);
@@ -717,12 +806,12 @@ impl WorkflowEngine {
                     &err_msg,
                     error_strategy,
                     graph,
-                    outputs,
-                    &mut activated_edges,
-                    &mut resolved_edges,
-                    &required_count,
-                    &mut ready_queue,
-                    exec_state,
+                    ctx.outputs,
+                    &mut ctx.activated_edges,
+                    &mut ctx.resolved_edges,
+                    &ctx.required_count,
+                    &mut ctx.ready_queue,
+                    ctx.exec_state,
                 );
 
                 if let Err(e) = self
@@ -730,10 +819,14 @@ impl WorkflowEngine {
                         scope,
                         execution_id,
                         node_key.clone(),
-                        Some(checkpoint::failure_checkpoint(outcome, outputs, &node_key)),
-                        outputs,
-                        exec_state,
-                        repo_version,
+                        Some(checkpoint::failure_checkpoint(
+                            outcome,
+                            ctx.outputs,
+                            &node_key,
+                        )),
+                        ctx.outputs,
+                        ctx.exec_state,
+                        ctx.repo_version,
                         fencing,
                         vec![],
                     )
@@ -743,7 +836,8 @@ impl WorkflowEngine {
                     return Err(e);
                 }
 
-                if exec_state
+                if ctx
+                    .exec_state
                     .node_state(node_key.clone())
                     .is_some_and(|ns| ns.state == NodeState::Failed)
                 {
@@ -775,9 +869,9 @@ impl WorkflowEngine {
             // that are not on any heap). A clean (non-cancelled) finish
             // still exits via the empty-heap break below.
             if cancel_token.is_cancelled() {
-                join_set.abort_all();
-                while join_set.join_next_with_id().await.is_some() {}
-                task_nodes.clear();
+                ctx.join_set.abort_all();
+                while ctx.join_set.join_next_with_id().await.is_some() {}
+                ctx.task_nodes.clear();
                 // Tear down parked retries (WaitingRetry → Cancelled),
                 // parked wait nodes (Waiting → Cancelled, incl. signal
                 // waits not on `wait_heap`), AND the ready_queue
@@ -788,10 +882,10 @@ impl WorkflowEngine {
                 // would stay non-terminal after the loop exits, tripping
                 // the frontier integrity check.
                 drain_pending_to_cancelled(
-                    &mut retry_heap,
-                    &mut wait_heap,
-                    &mut ready_queue,
-                    exec_state,
+                    &mut ctx.retry_heap,
+                    &mut ctx.wait_heap,
+                    &mut ctx.ready_queue,
+                    ctx.exec_state,
                     execution_id,
                 );
                 break;
@@ -800,7 +894,7 @@ impl WorkflowEngine {
             // Exit only when join_set, retry_heap, AND wait_heap are
             // all drained — a non-empty heap with an empty join_set
             // is a legal "everything paused for a timer" state.
-            if join_set.is_empty() && retry_heap.is_empty() && wait_heap.is_empty() {
+            if ctx.join_set.is_empty() && ctx.retry_heap.is_empty() && ctx.wait_heap.is_empty() {
                 break;
             }
 
@@ -823,11 +917,12 @@ impl WorkflowEngine {
             // Compute the sleep until the next retry timer fires. If
             // `retry_heap` is empty, sleep forever (the join_set / cancel
             // / wall-clock arms still drive the select).
-            let next_retry_in: Option<Duration> = retry_heap.peek().map(|Reverse((when, _))| {
-                when.signed_duration_since(self.clock.now())
-                    .to_std()
-                    .unwrap_or(Duration::ZERO)
-            });
+            let next_retry_in: Option<Duration> =
+                ctx.retry_heap.peek().map(|Reverse((when, _))| {
+                    when.signed_duration_since(self.clock.now())
+                        .to_std()
+                        .unwrap_or(Duration::ZERO)
+                });
             let retry_sleep_fut = async {
                 if let Some(d) = next_retry_in {
                     tokio::time::sleep(d).await;
@@ -839,7 +934,7 @@ impl WorkflowEngine {
 
             // Compute the sleep until the earliest parked-wait timer fires.
             // This drives Phase 0b drains when `join_set` is otherwise idle.
-            let next_wait_in: Option<Duration> = wait_heap.peek().map(|Reverse((when, _))| {
+            let next_wait_in: Option<Duration> = ctx.wait_heap.peek().map(|Reverse((when, _))| {
                 when.signed_duration_since(self.clock.now())
                     .to_std()
                     .unwrap_or(Duration::ZERO)
@@ -858,7 +953,7 @@ impl WorkflowEngine {
             // wall-clock). Pre-pin a boxed future per branch so `select!`
             // never has to enter an `unreachable!()` placeholder — library
             // code must not panic on hot paths (hot-path safety).
-            let join_set_empty = join_set.is_empty();
+            let join_set_empty = ctx.join_set.is_empty();
 
             type JoinedResult = Option<
                 Result<
@@ -890,7 +985,7 @@ impl WorkflowEngine {
                 if join_set_empty {
                     Box::pin(std::future::pending::<JoinedResult>())
                 } else {
-                    Box::pin(join_set.join_next_with_id())
+                    Box::pin(ctx.join_set.join_next_with_id())
                 };
 
             // `mpsc::Receiver::recv()` is cancellation-safe in this `select!`:
@@ -914,7 +1009,7 @@ impl WorkflowEngine {
                 () = &mut wait_sleep_fut, if next_wait_in.is_some() => WakeReason::WaitTimer,
                 () = &mut sleep_fut => WakeReason::WallClock,
                 () = cancel_token.cancelled() => WakeReason::Cancel,
-                maybe_req = resume_rx.recv(), if !resume_rx_closed => match maybe_req {
+                maybe_req = ctx.resume_rx.recv(), if !ctx.resume_rx_closed => match maybe_req {
                     Some(req) => WakeReason::ResumeSignalled(req),
                     None => WakeReason::ResumeChannelClosed,
                 },
@@ -953,8 +1048,8 @@ impl WorkflowEngine {
                                 scope,
                                 execution_id,
                                 &control,
-                                exec_state,
-                                repo_version,
+                                ctx.exec_state,
+                                ctx.repo_version,
                                 fence,
                             )
                             .await
@@ -977,13 +1072,13 @@ impl WorkflowEngine {
                         ));
                         let now = self.clock.now();
                         let armed_set: HashSet<&NodeKey> = armed.iter().collect();
-                        let retained: Vec<_> = std::mem::take(&mut wait_heap)
+                        let retained: Vec<_> = std::mem::take(&mut ctx.wait_heap)
                             .into_iter()
                             .filter(|Reverse((_, key))| !armed_set.contains(key))
                             .collect();
-                        wait_heap.extend(retained);
+                        ctx.wait_heap.extend(retained);
                         for node in armed {
-                            wait_heap.push(Reverse((now, node)));
+                            ctx.wait_heap.push(Reverse((now, node)));
                         }
                         continue;
                     }
@@ -1025,8 +1120,11 @@ impl WorkflowEngine {
                     // later, finds the node non-`Waiting`, and is skipped — the
                     // race-safety the Phase-0b state re-read guarantees.
                     let now = self.clock.now();
-                    let to_arm =
-                        arm_signal_waits_under_lease(exec_state, req.resume_target.as_ref(), now);
+                    let to_arm = arm_signal_waits_under_lease(
+                        ctx.exec_state,
+                        req.resume_target.as_ref(),
+                        now,
+                    );
                     if to_arm.is_empty() {
                         // Spurious, already-armed, or no-match wake — nothing to
                         // do. Ack as `NothingToArm` (the caller may ack the row; a
@@ -1043,8 +1141,8 @@ impl WorkflowEngine {
                     // Bump the version once so the checkpoint CAS advances and
                     // any reader observes the arm. (`set_node_state`/direct field
                     // writes do not bump; mirror the satisfy path's single bump.)
-                    exec_state.version += 1;
-                    exec_state.updated_at = now;
+                    ctx.exec_state.version += 1;
+                    ctx.exec_state.updated_at = now;
                     // The single checkpoint below carries ALL armed nodes but is
                     // attributed to `to_arm[0]` (a checkpoint takes one key).
                     // Log the full armed set so a checkpoint failure with N>1
@@ -1069,9 +1167,9 @@ impl WorkflowEngine {
                             // first armed node as the checkpoint's attribution key.
                             to_arm[0].clone(),
                             None,
-                            outputs,
-                            exec_state,
-                            repo_version,
+                            ctx.outputs,
+                            ctx.exec_state,
+                            ctx.repo_version,
                             fencing,
                             vec![],
                         )
@@ -1098,13 +1196,13 @@ impl WorkflowEngine {
                     // state re-read); it removes a spurious wait until the old
                     // deadline.
                     let armed: HashSet<&NodeKey> = to_arm.iter().collect();
-                    let retained: Vec<_> = std::mem::take(&mut wait_heap)
+                    let retained: Vec<_> = std::mem::take(&mut ctx.wait_heap)
                         .into_iter()
                         .filter(|Reverse((_, key))| !armed.contains(key))
                         .collect();
-                    wait_heap.extend(retained);
+                    ctx.wait_heap.extend(retained);
                     for node_key in to_arm {
-                        wait_heap.push(Reverse((now, node_key.clone())));
+                        ctx.wait_heap.push(Reverse((now, node_key.clone())));
                         tracing::info!(
                             target = "engine::wait",
                             %execution_id,
@@ -1124,7 +1222,7 @@ impl WorkflowEngine {
                     // the `Ready(None)` that a closed channel returns every poll.
                     // Loop back so the other arms keep driving the frontier.
                     // No `ack` to honor — `recv()` returned `None`, not a request.
-                    resume_rx_closed = true;
+                    ctx.resume_rx_closed = true;
                     tracing::trace!(
                         target = "engine::wait",
                         %execution_id,
@@ -1134,14 +1232,14 @@ impl WorkflowEngine {
                 },
                 WakeReason::WallClock => {
                     cancel_token.cancel();
-                    join_set.abort_all();
-                    while join_set.join_next_with_id().await.is_some() {}
-                    task_nodes.clear();
+                    ctx.join_set.abort_all();
+                    while ctx.join_set.join_next_with_id().await.is_some() {}
+                    ctx.task_nodes.clear();
                     drain_pending_to_cancelled(
-                        &mut retry_heap,
-                        &mut wait_heap,
-                        &mut ready_queue,
-                        exec_state,
+                        &mut ctx.retry_heap,
+                        &mut ctx.wait_heap,
+                        &mut ctx.ready_queue,
+                        ctx.exec_state,
                         execution_id,
                     );
                     return Ok(Some((
@@ -1150,14 +1248,14 @@ impl WorkflowEngine {
                     )));
                 },
                 WakeReason::Cancel => {
-                    join_set.abort_all();
-                    while join_set.join_next_with_id().await.is_some() {}
-                    task_nodes.clear();
+                    ctx.join_set.abort_all();
+                    while ctx.join_set.join_next_with_id().await.is_some() {}
+                    ctx.task_nodes.clear();
                     drain_pending_to_cancelled(
-                        &mut retry_heap,
-                        &mut wait_heap,
-                        &mut ready_queue,
-                        exec_state,
+                        &mut ctx.retry_heap,
+                        &mut ctx.wait_heap,
+                        &mut ctx.ready_queue,
+                        ctx.exec_state,
                         execution_id,
                     );
                     break;
@@ -1167,21 +1265,21 @@ impl WorkflowEngine {
             // Phase 3: Process the completed task
             match join_result {
                 Ok((task_id, (node_key, Ok(action_result)))) => {
-                    task_nodes.remove(&task_id);
-                    if let Some(state) = exec_state.node_states.get_mut(&node_key) {
+                    ctx.task_nodes.remove(&task_id);
+                    if let Some(state) = ctx.exec_state.node_states.get_mut(&node_key) {
                         state.current_output = None;
                     }
                     // Replace only this owner-processed node's projection. A
                     // prior Wait partial must not survive an outputless result.
                     if let Some(output) = extract_primary_output(&action_result) {
-                        outputs.insert(node_key.clone(), output);
+                        ctx.outputs.insert(node_key.clone(), output);
                     } else {
-                        outputs.remove(&node_key);
+                        ctx.outputs.remove(&node_key);
                     }
                     // A replacement or removal invalidates the prior immutable
                     // snapshot. The next expression admission validates the
                     // complete borrowed `$node` view before cloning it once.
-                    shared_expression_outputs.remove(&node_key);
+                    ctx.shared_expression_outputs.remove(&node_key);
 
                     // Park path: action returned `ActionResult::Wait`.
                     //
@@ -1252,7 +1350,7 @@ impl WorkflowEngine {
                                         "explicit timeout on a TIMER WaitCondition is ambiguous \
                                          (two competing deadlines); marking node Failed"
                                     );
-                                    mark_node_failed(exec_state, node_key.clone(), &engine_err);
+                                    mark_node_failed(ctx.exec_state, node_key.clone(), &engine_err);
                                     cancel_token.cancel();
                                     return Ok(Some((node_key.clone(), engine_err.to_string())));
                                 }
@@ -1261,7 +1359,7 @@ impl WorkflowEngine {
                                 // turn a TIMER wait into a signal-driven indefinite park
                                 // that a generic `Resume` could satisfy — wrong semantics.
                                 let fail_unschedulable =
-                                    |exec_state: &mut ExecutionState, reason: String| {
+                                    |park_state: &mut ExecutionState, reason: String| {
                                         let engine_err = EngineError::Runtime(
                                             crate::runtime::error::RuntimeError::WaitConditionNotSupported {
                                                 condition_kind: reason,
@@ -1275,7 +1373,7 @@ impl WorkflowEngine {
                                             "timer WaitCondition cannot be scheduled; marking \
                                              node Failed (fail-closed)"
                                         );
-                                        mark_node_failed(exec_state, node_key.clone(), &engine_err);
+                                        mark_node_failed(park_state, node_key.clone(), &engine_err);
                                         cancel_token.cancel();
                                         engine_err.to_string()
                                     };
@@ -1285,7 +1383,7 @@ impl WorkflowEngine {
                                         let Ok(chrono_dur) = chrono::Duration::from_std(*duration)
                                         else {
                                             let msg = fail_unschedulable(
-                                                exec_state,
+                                                ctx.exec_state,
                                                 format!(
                                                     "Duration wait not representable: {duration:?}"
                                                 ),
@@ -1294,7 +1392,7 @@ impl WorkflowEngine {
                                         };
                                         let Some(when) = now.checked_add_signed(chrono_dur) else {
                                             let msg = fail_unschedulable(
-                                                exec_state,
+                                                ctx.exec_state,
                                                 "Duration wait overflows the scheduler timestamp"
                                                     .to_owned(),
                                             );
@@ -1327,7 +1425,7 @@ impl WorkflowEngine {
                                                 },
                                             );
                                             mark_node_failed(
-                                                exec_state,
+                                                ctx.exec_state,
                                                 node_key.clone(),
                                                 &engine_err,
                                             );
@@ -1348,7 +1446,7 @@ impl WorkflowEngine {
                                                 },
                                             );
                                             mark_node_failed(
-                                                exec_state,
+                                                ctx.exec_state,
                                                 node_key.clone(),
                                                 &engine_err,
                                             );
@@ -1386,7 +1484,7 @@ impl WorkflowEngine {
                                     "unrecognised WaitCondition variant; marking node Failed \
                                      (fail-closed — a Resume must not satisfy an unclassified wait)"
                                 );
-                                mark_node_failed(exec_state, node_key.clone(), &engine_err);
+                                mark_node_failed(ctx.exec_state, node_key.clone(), &engine_err);
                                 cancel_token.cancel();
                                 return Ok(Some((node_key.clone(), engine_err.to_string())));
                             },
@@ -1436,12 +1534,14 @@ impl WorkflowEngine {
                         //
                         // If the partial output is over-budget, fail the node (do NOT
                         // park) so the downstream child is never dispatched.
-                        let partial_output_bytes: u64 = outputs
+                        let partial_output_bytes: u64 = ctx
+                            .outputs
                             .get(&node_key)
                             .and_then(|v| serde_json::to_string(v.value()).ok())
                             .map_or(0, |s| s.len() as u64);
                         if partial_output_bytes > 0 {
-                            let new_total = total_output_bytes
+                            let new_total = ctx
+                                .total_output_bytes
                                 .fetch_add(partial_output_bytes, Ordering::Relaxed)
                                 + partial_output_bytes;
                             if let Some(max_bytes) = budget.max_output_bytes
@@ -1462,17 +1562,17 @@ impl WorkflowEngine {
                                 // Restore the counter — the node is being failed, not
                                 // committed, so its bytes should not count against the
                                 // budget for the remaining nodes.
-                                total_output_bytes
+                                ctx.total_output_bytes
                                     .fetch_sub(partial_output_bytes, Ordering::Relaxed);
                                 mark_node_failed(
-                                    exec_state,
+                                    ctx.exec_state,
                                     node_key.clone(),
                                     &EngineError::BudgetExceeded(budget_err.to_owned()),
                                 );
                                 cancel_token.cancel();
                                 return Ok(Some((node_key.clone(), budget_err.to_owned())));
                             }
-                            exec_state.total_output_bytes = new_total;
+                            ctx.exec_state.total_output_bytes = new_total;
                         }
 
                         // Mint a resume token for signal-park conditions
@@ -1512,7 +1612,7 @@ impl WorkflowEngine {
                             Some(WaitSignal::Execution { .. } | _) | None => None,
                         };
 
-                        match exec_state.park_node(
+                        match ctx.exec_state.park_node(
                             node_key.clone(),
                             wake_at,
                             wait_wake,
@@ -1539,12 +1639,13 @@ impl WorkflowEngine {
                                 // live loop on the timeout timer (W-S2b). Its Resume
                                 // arrives through the live-frontier resume channel.
                                 if wake_at.is_none()
-                                    && join_set.is_empty()
-                                    && ready_queue.is_empty()
-                                    && retry_heap.is_empty()
-                                    && wait_heap.is_empty()
+                                    && ctx.join_set.is_empty()
+                                    && ctx.ready_queue.is_empty()
+                                    && ctx.retry_heap.is_empty()
+                                    && ctx.wait_heap.is_empty()
                                 {
-                                    let _ = exec_state.transition_status(ExecutionStatus::Paused);
+                                    let _ =
+                                        ctx.exec_state.transition_status(ExecutionStatus::Paused);
                                 }
 
                                 // Resolve the minted token (if any) or propagate
@@ -1577,9 +1678,9 @@ impl WorkflowEngine {
                                         execution_id,
                                         node_key.clone(),
                                         Some(checkpoint::action_checkpoint(&action_result)?),
-                                        outputs,
-                                        exec_state,
-                                        repo_version,
+                                        ctx.outputs,
+                                        ctx.exec_state,
+                                        ctx.repo_version,
                                         fencing,
                                         resume_tokens,
                                     )
@@ -1595,7 +1696,7 @@ impl WorkflowEngine {
                                 // None`) are never pushed; their node stays `Waiting`
                                 // until a Resume command's durable satisfy-CAS arms it.
                                 if let Some(when) = wake_at {
-                                    wait_heap.push(Reverse((when, node_key.clone())));
+                                    ctx.wait_heap.push(Reverse((when, node_key.clone())));
                                 }
                                 self.emit_event(ExecutionEvent::NodeParked {
                                     execution_id,
@@ -1632,15 +1733,17 @@ impl WorkflowEngine {
                         }
                     }
 
-                    mark_node_completed(exec_state, node_key.clone());
+                    mark_node_completed(ctx.exec_state, node_key.clone());
 
                     // Track output size for budget enforcement.
                     let mut output_bytes: u64 = 0;
-                    if let Some(output) = outputs.get(&node_key) {
+                    if let Some(output) = ctx.outputs.get(&node_key) {
                         output_bytes =
                             serde_json::to_string(output.value()).map_or(0, |s| s.len() as u64);
-                        total_output_bytes.fetch_add(output_bytes, Ordering::Relaxed);
-                        exec_state.total_output_bytes = total_output_bytes.load(Ordering::Relaxed);
+                        ctx.total_output_bytes
+                            .fetch_add(output_bytes, Ordering::Relaxed);
+                        ctx.exec_state.total_output_bytes =
+                            ctx.total_output_bytes.load(Ordering::Relaxed);
                     }
                     // Capture an explicit-termination signal BEFORE the
                     // checkpoint so that the same CAS-write durably
@@ -1652,8 +1755,9 @@ impl WorkflowEngine {
                     let terminate_was_first_set =
                         if let ActionResult::Terminate { reason } = &action_result {
                             let exec_reason = map_termination_reason(node_key.clone(), reason);
-                            let was_first =
-                                exec_state.set_terminated_by(node_key.clone(), exec_reason.clone());
+                            let was_first = ctx
+                                .exec_state
+                                .set_terminated_by(node_key.clone(), exec_reason.clone());
                             tracing::info!(
                                 target = "engine::frontier",
                                 execution_id = %execution_id,
@@ -1667,10 +1771,11 @@ impl WorkflowEngine {
                             false
                         };
 
-                    let success_payload = outputs
+                    let success_payload = ctx
+                        .outputs
                         .get(&node_key)
                         .map_or_else(|| serde_json::Value::Null, |output| output.value().clone());
-                    let attempt = exec_state.record_node_attempt(
+                    let attempt = ctx.exec_state.record_node_attempt(
                         node_key.clone(),
                         AttemptOutcome::Success {
                             output: ExecutionOutput::inline(success_payload),
@@ -1691,9 +1796,9 @@ impl WorkflowEngine {
                             execution_id,
                             node_key.clone(),
                             Some(checkpoint::action_checkpoint(&action_result)?),
-                            outputs,
-                            exec_state,
-                            repo_version,
+                            ctx.outputs,
+                            ctx.exec_state,
+                            ctx.repo_version,
                             fencing,
                             vec![],
                         )
@@ -1721,7 +1826,7 @@ impl WorkflowEngine {
                                  terminated_by to avoid event-vs-audit \
                                  divergence"
                             );
-                            exec_state.clear_terminated_by();
+                            ctx.exec_state.clear_terminated_by();
                         }
                         cancel_token.cancel();
                         return Err(e);
@@ -1749,11 +1854,11 @@ impl WorkflowEngine {
                         Some(&action_result),
                         None, // not failed
                         graph,
-                        &mut activated_edges,
-                        &mut resolved_edges,
-                        &required_count,
-                        &mut ready_queue,
-                        exec_state,
+                        &mut ctx.activated_edges,
+                        &mut ctx.resolved_edges,
+                        &ctx.required_count,
+                        &mut ctx.ready_queue,
+                        ctx.exec_state,
                     );
 
                     // ROADMAP §M0.3: signal `cancel_token` ONLY after the
@@ -1774,16 +1879,16 @@ impl WorkflowEngine {
                     }
                 },
                 Ok((task_id, (node_key, Err(ref err)))) => {
-                    task_nodes.remove(&task_id);
+                    ctx.task_nodes.remove(&task_id);
                     if let EngineError::Effect(effect) = err
                         && effect.is_deferred()
                     {
                         cancel_token.cancel();
                         return Err(EngineError::Effect(*effect));
                     }
-                    outputs.remove(&node_key);
+                    ctx.outputs.remove(&node_key);
 
-                    if let Some(state) = exec_state.node_states.get_mut(&node_key) {
+                    if let Some(state) = ctx.exec_state.node_states.get_mut(&node_key) {
                         state.current_output = None;
                     }
 
@@ -1820,18 +1925,19 @@ impl WorkflowEngine {
                             "node returned cooperative cancel under active cancel token; \
                              tearing down frontier (not Failed)"
                         );
-                        if exec_state
+                        if ctx
+                            .exec_state
                             .transition_node(node_key.clone(), NodeState::Cancelled)
                             .is_ok()
                         {
-                            join_set.abort_all();
-                            while join_set.join_next_with_id().await.is_some() {}
-                            task_nodes.clear();
+                            ctx.join_set.abort_all();
+                            while ctx.join_set.join_next_with_id().await.is_some() {}
+                            ctx.task_nodes.clear();
                             drain_pending_to_cancelled(
-                                &mut retry_heap,
-                                &mut wait_heap,
-                                &mut ready_queue,
-                                exec_state,
+                                &mut ctx.retry_heap,
+                                &mut ctx.wait_heap,
+                                &mut ctx.ready_queue,
+                                ctx.exec_state,
                                 execution_id,
                             );
                             break;
@@ -1878,7 +1984,7 @@ impl WorkflowEngine {
                     // `mark_node_failed` builds the envelope once; reuse its
                     // return below instead of a second `durable_error_envelope`
                     // build over the same message.
-                    let err_envelope = mark_node_failed(exec_state, node_key.clone(), err);
+                    let err_envelope = mark_node_failed(ctx.exec_state, node_key.clone(), err);
                     // In-process projection for the event, retry, and OnError-payload
                     // surfaces, which are plain strings by contract.
                     let err_str = err_envelope.to_string();
@@ -1892,7 +1998,7 @@ impl WorkflowEngine {
                     // `attempts.len()` — that path could bypass
                     // `max_attempts` (loop forever when no global cap
                     // is set) or collide idempotency keys on resume.
-                    let failure_attempt_recorded = match exec_state.record_node_attempt(
+                    let failure_attempt_recorded = match ctx.exec_state.record_node_attempt(
                         node_key.clone(),
                         AttemptOutcome::Failure {
                             error: err_envelope,
@@ -1924,7 +2030,7 @@ impl WorkflowEngine {
                             .cloned();
                         compute_retry_decision(
                             &node_key,
-                            exec_state,
+                            ctx.exec_state,
                             retry_policy_resolved.as_ref(),
                             error_is_terminal(err),
                         )
@@ -1933,13 +2039,17 @@ impl WorkflowEngine {
                     };
 
                     if let RetryDecision::Retry { delay } = decision {
-                        let attempt_number = exec_state
+                        let attempt_number = ctx
+                            .exec_state
                             .node_states
                             .get(&node_key)
                             .map_or(1, |ns| ns.attempt_count() as u32);
                         let next_at =
                             next_retry_at(execution_id, &node_key, delay, self.clock.now());
-                        match exec_state.schedule_node_retry(node_key.clone(), next_at) {
+                        match ctx
+                            .exec_state
+                            .schedule_node_retry(node_key.clone(), next_at)
+                        {
                             Ok(()) => {
                                 // Persist the WaitingRetry transition,
                                 // `next_attempt_at`, and the global
@@ -1952,9 +2062,9 @@ impl WorkflowEngine {
                                         Some(nebula_execution::NodeCheckpoint::Failed {
                                             error_port_output: None,
                                         }),
-                                        outputs,
-                                        exec_state,
-                                        repo_version,
+                                        ctx.outputs,
+                                        ctx.exec_state,
+                                        ctx.repo_version,
                                         fencing,
                                         vec![],
                                     )
@@ -1963,7 +2073,7 @@ impl WorkflowEngine {
                                     cancel_token.cancel();
                                     return Err(e);
                                 }
-                                retry_heap.push(Reverse((next_at, node_key.clone())));
+                                ctx.retry_heap.push(Reverse((next_at, node_key.clone())));
                                 tracing::info!(
                                     target = "engine::retry",
                                     %execution_id,
@@ -1971,7 +2081,7 @@ impl WorkflowEngine {
                                     attempt = attempt_number,
                                     delay_ms = delay.as_millis() as u64,
                                     next_attempt_at = %next_at,
-                                    total_retries = exec_state.total_retries,
+                                    total_retries = ctx.exec_state.total_retries,
                                     "retry scheduled (Layer 2 / NodeDefinition.retry_policy)"
                                 );
                                 self.emit_event(ExecutionEvent::NodeRetryScheduled {
@@ -2004,9 +2114,12 @@ impl WorkflowEngine {
 
                     // ── Finalize path (no retry / retry exhausted) ──
                     let outcome = classify_failure(error_strategy);
-                    if let Err(e) =
-                        apply_failure_recovery(outcome, node_key.clone(), exec_state, outputs)
-                    {
+                    if let Err(e) = apply_failure_recovery(
+                        outcome,
+                        node_key.clone(),
+                        ctx.exec_state,
+                        ctx.outputs,
+                    ) {
                         cancel_token.cancel();
                         return Err(e);
                     }
@@ -2017,12 +2130,12 @@ impl WorkflowEngine {
                         &err_str,
                         error_strategy,
                         graph,
-                        outputs,
-                        &mut activated_edges,
-                        &mut resolved_edges,
-                        &required_count,
-                        &mut ready_queue,
-                        exec_state,
+                        ctx.outputs,
+                        &mut ctx.activated_edges,
+                        &mut ctx.resolved_edges,
+                        &ctx.required_count,
+                        &mut ctx.ready_queue,
+                        ctx.exec_state,
                     );
 
                     if let Err(e) = self
@@ -2030,10 +2143,14 @@ impl WorkflowEngine {
                             scope,
                             execution_id,
                             node_key.clone(),
-                            Some(checkpoint::failure_checkpoint(outcome, outputs, &node_key)),
-                            outputs,
-                            exec_state,
-                            repo_version,
+                            Some(checkpoint::failure_checkpoint(
+                                outcome,
+                                ctx.outputs,
+                                &node_key,
+                            )),
+                            ctx.outputs,
+                            ctx.exec_state,
+                            ctx.repo_version,
                             fencing,
                             vec![],
                         )
@@ -2065,7 +2182,7 @@ impl WorkflowEngine {
                     // report a phantom node and lose the identity of
                     // the actually-panicked task (issue #301).
                     let task_id = join_err.id();
-                    let panicked_node = task_nodes.remove(&task_id);
+                    let panicked_node = ctx.task_nodes.remove(&task_id);
                     let err_msg = join_err.to_string();
                     tracing::error!(
                         ?task_id,
@@ -2080,9 +2197,9 @@ impl WorkflowEngine {
                             execution_id,
                             node_key.clone(),
                             &err_msg,
-                            outputs,
-                            exec_state,
-                            repo_version,
+                            ctx.outputs,
+                            ctx.exec_state,
+                            ctx.repo_version,
                             fencing,
                         )
                         .await?;
