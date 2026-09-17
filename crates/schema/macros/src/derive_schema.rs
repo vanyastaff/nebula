@@ -589,70 +589,8 @@ pub(crate) fn build_field_expr(
 
     expr = apply_expression_policy(expr, field_attr, crate_path);
 
-    // Required: mark when `#[validate(required)]` or the Rust type is not Option.
-    if validate.required || !optional {
-        expr = quote! { #expr.required() };
-    }
-
-    if let Some(min) = validate.min_items {
-        expr = quote! { #expr.min_items(#min) };
-    }
-    if let Some(max) = validate.max_items {
-        expr = quote! { #expr.max_items(#max) };
-    }
-    if validate.unique {
-        expr = quote! { #expr.unique() };
-    }
-
-    // Length rules apply to String / Secret.
-    if let Some(min) = validate.min_length {
-        expr = quote! { #expr.with_rule(#crate_path::Rule::min_length(#min)) };
-    }
-    if let Some(max) = validate.max_length {
-        expr = quote! { #expr.with_rule(#crate_path::Rule::max_length(#max)) };
-    }
-
-    // Range rules apply to Number.
-    if let Some(min) = validate.min
-        && matches!(
-            inner,
-            FieldKind::IntegerNumber(_) | FieldKind::FloatNumber(_)
-        )
-    {
-        expr = quote! { #expr.min(#min) };
-    }
-    if let Some(max) = validate.max
-        && matches!(
-            inner,
-            FieldKind::IntegerNumber(_) | FieldKind::FloatNumber(_)
-        )
-    {
-        expr = match max {
-            RangeUpperBound::Included(max) => quote! { #expr.max(#max) },
-            RangeUpperBound::Excluded(max) => {
-                quote! { #expr.with_rule(#crate_path::Rule::less_than(#max)) }
-            },
-        };
-    }
-
-    if let Some(pattern) = &validate.pattern
-        && (field_attr.secret || matches!(inner, FieldKind::String))
-    {
-        expr = quote! {
-            #expr.with_rule(#crate_path::Rule::pattern(#pattern).map_err(|error| {
-                #crate_path::ValidationError::builder("schema.invalid_pattern")
-                    .message("field pattern is invalid")
-                    .source(error)
-                    .build()
-            })?)
-        };
-    }
-    if validate.url && (field_attr.secret || matches!(inner, FieldKind::String)) {
-        expr = quote! { #expr.with_rule(#crate_path::Rule::url()) };
-    }
-    if validate.email && (field_attr.secret || matches!(inner, FieldKind::String)) {
-        expr = quote! { #expr.with_rule(#crate_path::Rule::email()) };
-    }
+    let required = validate.required || !optional;
+    expr = apply_validation_decorators(expr, field_attr, validate, inner, required);
 
     expr = apply_alias_decorators(expr, field_attr, read_aliases);
 
@@ -703,6 +641,88 @@ fn apply_expression_policy(
             PropertyExpressionMode::Required => quote! { Required },
         };
         builder = quote! { #builder.expression_mode(#crate_path::ExpressionMode::#mode) };
+    }
+    builder
+}
+
+/// Validation stage: layer the required-mark, item/length/range rules, and the
+/// pattern/url/email rules onto the builder. The trailing `?` in the quoted
+/// pattern tokens is generated-code fallibility inside the emitted property
+/// builder, not macro control flow. Infallible.
+fn apply_validation_decorators(
+    builder: TokenStream2,
+    field_attr: &FieldAttrs,
+    validate: &ValidateAttrs,
+    inner: &FieldKind,
+    required: bool,
+) -> TokenStream2 {
+    // The derive pipeline passes the same canonical path it got from
+    // `crate::crate_path()`; it is a constant, so tokens match byte-for-byte.
+    let crate_path = crate::crate_path();
+    let mut builder = builder;
+    // Required: mark when `#[validate(required)]` or the Rust type is not Option.
+    if required {
+        builder = quote! { #builder.required() };
+    }
+
+    if let Some(min) = validate.min_items {
+        builder = quote! { #builder.min_items(#min) };
+    }
+    if let Some(max) = validate.max_items {
+        builder = quote! { #builder.max_items(#max) };
+    }
+    if validate.unique {
+        builder = quote! { #builder.unique() };
+    }
+
+    // Length rules apply to String / Secret.
+    if let Some(min) = validate.min_length {
+        builder = quote! { #builder.with_rule(#crate_path::Rule::min_length(#min)) };
+    }
+    if let Some(max) = validate.max_length {
+        builder = quote! { #builder.with_rule(#crate_path::Rule::max_length(#max)) };
+    }
+
+    // Range rules apply to Number.
+    if let Some(min) = validate.min
+        && matches!(
+            inner,
+            FieldKind::IntegerNumber(_) | FieldKind::FloatNumber(_)
+        )
+    {
+        builder = quote! { #builder.min(#min) };
+    }
+    if let Some(max) = validate.max
+        && matches!(
+            inner,
+            FieldKind::IntegerNumber(_) | FieldKind::FloatNumber(_)
+        )
+    {
+        builder = match max {
+            RangeUpperBound::Included(max) => quote! { #builder.max(#max) },
+            RangeUpperBound::Excluded(max) => {
+                quote! { #builder.with_rule(#crate_path::Rule::less_than(#max)) }
+            },
+        };
+    }
+
+    if let Some(pattern) = &validate.pattern
+        && (field_attr.secret || matches!(inner, FieldKind::String))
+    {
+        builder = quote! {
+            #builder.with_rule(#crate_path::Rule::pattern(#pattern).map_err(|error| {
+                #crate_path::ValidationError::builder("schema.invalid_pattern")
+                    .message("field pattern is invalid")
+                    .source(error)
+                    .build()
+            })?)
+        };
+    }
+    if validate.url && (field_attr.secret || matches!(inner, FieldKind::String)) {
+        builder = quote! { #builder.with_rule(#crate_path::Rule::url()) };
+    }
+    if validate.email && (field_attr.secret || matches!(inner, FieldKind::String)) {
+        builder = quote! { #builder.with_rule(#crate_path::Rule::email()) };
     }
     builder
 }
