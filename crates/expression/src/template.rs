@@ -182,6 +182,37 @@ fn find_expression_end(
     None
 }
 
+/// Strip the whitespace-control markers around an expression body.
+///
+/// `expr_start_idx` is the index of the first character after the opening `{{`
+/// and `expr_end_idx` the index of the closing braces' first `}`. A leading
+/// `-` (`{{-`) or a trailing `-` before the closing braces (`-}}`) sets the
+/// corresponding strip flag and narrows the body on that side. Returns
+/// `(expr_start_idx, expr_end_idx, strip_left, strip_right)`.
+fn parse_strip_markers(
+    chars: &[char],
+    mut expr_start_idx: usize,
+    mut expr_end_idx: usize,
+) -> (usize, usize, bool, bool) {
+    let len = chars.len();
+    let mut strip_left = false;
+    let mut strip_right = false;
+
+    // Check for {{- (strip left)
+    if expr_start_idx < len && chars[expr_start_idx] == '-' {
+        strip_left = true;
+        expr_start_idx += 1;
+    }
+
+    // Check for -}} (strip right)
+    if expr_end_idx > 0 && chars[expr_end_idx - 1] == '-' {
+        strip_right = true;
+        expr_end_idx -= 1;
+    }
+
+    (expr_start_idx, expr_end_idx, strip_left, strip_right)
+}
+
 /// Detect an unescaped template opener without parsing or evaluating the source.
 ///
 /// Neither a closing delimiter nor a `$` sigil is required: malformed syntax
@@ -316,22 +347,8 @@ impl Template {
                 let j = end.index;
                 let expr_line = end.line;
                 let expr_column = end.column;
-                let mut expr_start_idx = i + 2;
-                let mut expr_end_idx = j;
-                let mut strip_left = false;
-                let mut strip_right = false;
-
-                // Check for {{- (strip left)
-                if expr_start_idx < len && chars[expr_start_idx] == '-' {
-                    strip_left = true;
-                    expr_start_idx += 1;
-                }
-
-                // Check for -}} (strip right)
-                if expr_end_idx > 0 && chars[expr_end_idx - 1] == '-' {
-                    strip_right = true;
-                    expr_end_idx -= 1;
-                }
+                let (expr_start_idx, expr_end_idx, strip_left, strip_right) =
+                    parse_strip_markers(&chars, i + 2, j);
 
                 // Extract the expression content (without whitespace markers)
                 let expr_content: String = chars[expr_start_idx..expr_end_idx].iter().collect();
