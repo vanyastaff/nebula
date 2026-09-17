@@ -990,6 +990,39 @@ mod tests {
         }
     }
 
+    /// A trailing `.` after a complete integer is not part of the number:
+    /// the number read stops at the integer and the `.` lexes as a
+    /// standalone `Dot` token (`1.` → `Integer(1)`, `Dot`, `Eof`).
+    #[test]
+    fn trailing_dot_is_not_part_of_the_number() {
+        let mut lexer = Lexer::new("1.");
+        let tokens = lexer.tokenize().unwrap();
+        let kinds: Vec<_> = tokens.iter().map(|t| &t.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![&TokenKind::Integer(1), &TokenKind::Dot, &TokenKind::Eof]
+        );
+        // Spans must tile the input in order: integer [0,1), dot [1,2),
+        // eof [2,2).
+        assert_eq!(tokens[0].span, Span::new(0, 1));
+        assert_eq!(tokens[1].span, Span::new(1, 2));
+        assert_eq!(tokens[2].span, Span::new(2, 2));
+    }
+
+    /// An exponent marker (with or without a sign) that is not followed by
+    /// any digit is a syntax error, not a partial float.
+    #[test]
+    fn missing_exponent_digits_is_a_syntax_error() {
+        for src in ["1e", "1e+"] {
+            let mut lexer = Lexer::new(src);
+            let err = lexer
+                .tokenize()
+                .expect_err("expected missing-exponent lex failure")
+                .to_string();
+            assert!(err.contains("Missing exponent digits"), "got: {err}");
+        }
+    }
+
     #[test]
     fn test_utf8_identifiers() {
         let mut lexer = Lexer::new("hello world");
