@@ -28,7 +28,8 @@ plugin-registry — и рискует разойтись с canon §12.2 control
   `nebula-runtime` поглощён как `src/runtime/`.
 
 **ЯВНО НЕ делает** (Non-goals из README):
-- не storage-реализация — это `nebula-storage` (`ExecutionRepo`, backends);
+- не storage-реализация — это `nebula-storage-port` (порт-трейты) и `nebula-storage`
+  (in-memory / PostgreSQL адаптеры);
 - не исполнитель экшенов как таковой — диспатч живёт в поглощённом `runtime/`, но контракт экшена
   принадлежит `nebula-action`;
 - не изолятор плагинов — плагины регистрируются и работают in-process через `nebula-plugin`
@@ -137,8 +138,10 @@ broadcast через eventbus. Control-plane (`ControlConsumer`) идёт пар
    строка ниже о нём осталась от периода, когда shim ещё существовал.
 4. **Legacy-путь регистрации экшенов удалён (ADR-0098 D0, PR3).** Registry и runtime
    работают через единый factory-spine (`ActionFactory` → `ActionHandle`).
-5. **Legacy ExecutionRepo vs spec-16 store.** `engine.rs:1127,1231,1727` — ветвление «store-port если
-   сконфигурирован, иначе legacy ExecutionRepo»; двойной seam ещё не схлопнут.
+5. **Legacy ExecutionRepo vs spec-16 store.** Двойной seam схлопнут (ADR-0072): остался только
+   spec-16 port-стore — `ExecutionStore::acquire_lease` / `commit` (CAS на `version` +
+   `FencingToken`); legacy-ветка отсутствует — без сконфигурированных store'ов движок работает
+   без lease (`Ok(None)`).
 6. **`engine.rs` ~9.8k строк** — монолит, признан в AGENTS.md «largest, load-bearing»; декомпозиция
    откладывается.
 7. **TODO `engine.rs:1086`** — warning-лог при failure cleanup'а prior run.

@@ -154,9 +154,10 @@ empty record remains an object contract, even when a live factory with the same
 key now declares unit `null`; incompatible live contracts are rejected without
 rewriting the stored plan or selecting a replacement revision.
 
-- **[L2-§11.1]** Execution state transitions go through `ExecutionRepo::transition` (CAS on
-  `version`). No handler inside the engine mutates execution state in-memory or invents a
-  parallel lifecycle. Seam: `crates/storage/src/execution_repo.rs — ExecutionRepo::transition`.
+- **[L2-§11.1]** Execution state transitions go through `ExecutionStore::commit` (CAS on
+  `version` plus the lease `FencingToken`; the batch carries state + outbox + journal in one
+  transaction). No handler inside the engine mutates execution state in-memory or invents a
+  parallel lifecycle. Seam: `crates/storage-port/src/store/execution.rs — ExecutionStore::commit`.
 
 - **[L2-§12.2]** The engine owns the `execution_control_queue` consumer
   implementation (`ControlConsumer`; wiring decisions in ADR-0008).
@@ -176,7 +177,8 @@ rewriting the stored plan or selecting a replacement revision.
 
 ## Non-goals
 
-- Not a storage implementation — see `nebula-storage` (`ExecutionRepo`, storage backends).
+- Not a storage implementation — see `nebula-storage-port` (store traits) and
+  `nebula-storage` (in-memory / PostgreSQL adapters).
 - Not an action dispatcher — delegated to `nebula-runtime`.
 - Not a plugin isolator — plugins register and run in-process via `nebula-plugin` (ADR-0091).
 - Not an expression evaluator — see `nebula-expression`.
@@ -240,7 +242,7 @@ See `docs/MATURITY.md` row for `nebula-engine`.
 |---|---|---|
 | `executions.lease_holder` / `lease_expires_at` (Layer 1) heartbeat enforcement across runner restarts not verified by integration tests — `crates/execution/README.md:138` warned `Schema may precede enforcement / Do not imply lease safety` | ROADMAP §M2.2 | Engine integration tests in `crates/engine/tests/lease_takeover.rs` (heartbeat-loss takeover, cancel redeliver, replay lease-less invariant); PG integration in `crates/storage/tests/execution_lease_pg_integration.rs` (8 tests covering `acquire_lease` / `renew_lease` / `release_lease` semantics + multi-runner takeover); loom probe at `crates/storage-loom-probe/src/lease_handoff.rs` + `tests/lease_handoff_loom.rs` (3 exhaustive scheduling models); chaos test at `crates/storage/tests/execution_lease_chaos.rs` (high-contention holder-uniqueness invariant) |
 | Sprint E Layer-2 schema (`claimed_by` / `claimed_until` + indexes from `migrations/postgres/0011_executions.sql`) and the planned `repos::ExecutionRepo` trait in `crates/storage/src/repos/execution.rs` lacked inline boundary documentation — research agents could re-misclassify them as legacy | ROADMAP §M2.2 / T1' | Module-level `//!` note in `crates/storage/src/repos/execution.rs` cross-references `lib.rs:65-87` Layer-2 docs and ROADMAP "Out of scope for 1.0"; header comments in both `migrations/{postgres,sqlite}/0011_executions.sql` flag the lease columns + indexes as Sprint E (1.1) scaffolding |
-| Lease lifecycle methods on `PgExecutionRepo` and `InMemoryExecutionRepo` ran silently — no tracing on acquire / renew / release outcomes | ROADMAP §M2.2 / T10 | `tracing::debug!` on success, `tracing::warn!` on contention / holder-mismatch, `tracing::error!` on `renew_lease` rejected (signals heartbeat loss to operators) — added on `acquire_lease` / `renew_lease` / `release_lease` of `PgExecutionRepo` (`crates/storage/src/backend/pg_execution.rs`) and `InMemoryExecutionRepo` (`crates/storage/src/execution_repo.rs`) at parity, all under `target=nebula_storage::lease` |
+| Lease lifecycle methods on the execution-store adapters (pre-ADR-0072 names: `PgExecutionRepo` / `InMemoryExecutionRepo`) ran silently — no tracing on acquire / renew / release outcomes. **Historical row:** those types were renamed by ADR-0072; the live adapters are `PgExecutionStore` (`crates/storage/src/postgres/execution.rs`) and `InMemoryExecutionStore` (`crates/storage/src/inmem/execution.rs`), implementing the port trait in `crates/storage-port/src/store/execution.rs` | ROADMAP §M2.2 / T10 | `tracing::debug!` on success, `tracing::warn!` on contention / holder-mismatch, `tracing::error!` on `renew_lease` rejected (signals heartbeat loss to operators) — on `acquire_lease` / `renew_lease` / `release_lease` at parity across both adapters, under `target=nebula_storage::lease` |
 
 **Layer 2 lease enforcement remains scoped to Sprint E (1.1)** per the
 ROADMAP "Out of scope for 1.0" entry — M2.2 closes Layer 1 only.
