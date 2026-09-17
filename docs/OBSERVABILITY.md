@@ -53,8 +53,9 @@ lands.
 
 Every durable event appended to `port_execution_journal` follows this shape. The
 sketch below is a planned envelope, not the current variant fields — each
-`nebula_execution::journal::JournalEntry` variant today carries only `timestamp`
-(and `node_key`-family fields), and the persisted wire row is the opaque
+`nebula_execution::journal::JournalEntry` variant today carries `timestamp`
+plus a few typed fields (node_key, error, reason, status, output_bytes),
+and the persisted wire row is the opaque
 `{seq, payload}` pair described above:
 
 ```jsonc

@@ -23,7 +23,8 @@ use crate::error::StorageError;
 /// so the choice is non-breaking. (The RPITIT
 /// `repos::WorkflowRepo` / `repos::ExecutionRepo` siblings named by
 /// spec-16 were deleted as never-implemented placeholders — see
-/// `crates/storage/README.md` §The port boundary; they are not a
+/// `crates/storage/README.md` §"Single storage architecture — the
+/// spec-16 port (ADR-0072)"; they are not a
 /// precedent for a `dyn`-held RPITIT trait, which stable does not
 /// permit.)
 #[async_trait]
