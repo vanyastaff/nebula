@@ -810,6 +810,28 @@ Line 3: Done",
     }
 
     #[test]
+    fn test_template_expression_count_limit() {
+        // Characterization test for the DoS guard in `Template::parse`
+        // (MAX_TEMPLATE_EXPRESSIONS = 1000). `Template::new` runs
+        // `parse` first, then `CompiledProgram::from_template_parts`,
+        // which carries no count limit of its own — so at exactly
+        // 1000 expressions the limit check passes and the program
+        // layer compiles the template successfully (today's observed
+        // outcome, pinned here), while 1001 trips the parse error.
+        let source = vec!["{{ 1 }}"; 1001].join(" ");
+        let result = Template::new(source.as_str());
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Template contains too many expressions: 1001 (max 1000)")
+        );
+
+        let at_limit = vec!["{{ 1 }}"; 1000].join(" ");
+        let template = Template::new(at_limit.as_str()).expect("1000 expressions must compile");
+        assert_eq!(template.expression_count(), 1000);
+    }
+
+    #[test]
     fn test_whitespace_parse_markers() {
         let template = Template::new("{{- $input -}}").unwrap();
 
