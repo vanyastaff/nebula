@@ -12,7 +12,8 @@
 //! - `RefreshInFlight` -- provider outcome is unknown. The repository records
 //!   one durable sentinel event atomically but retains the claim row as
 //!   fail-closed poison. The sweep only evaluates the already-recorded count;
-//!   it never authorizes provider replay. Explicit reconciliation is K3.
+//!   it never authorizes provider replay. Explicit owner-qualified reconciliation
+//!   is a separate operator command.
 //!
 //! The storage boundary makes repeated and concurrent sweeps idempotent:
 //! normal rows are deleted at most once, while each poisoned

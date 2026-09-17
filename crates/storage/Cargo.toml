@@ -110,6 +110,11 @@ msgpack-storage = ["dep:rmp-serde"]
 # without widening the library's feature surface; the package is already in
 # the graph, so this adds nothing to the lockfile.
 hex = { workspace = true }
+# The conformance oracle computes the evidence digest independently of the
+# adapters, so a shared case fails if a backend starts returning a different
+# identity. Already a library dependency, so this adds nothing to the
+# lockfile.
+sha2 = { workspace = true }
 # `testing` feature provides EnvGuard for the env-provider integration test.
 nebula-env = { workspace = true, features = ["testing"] }
 tokio = { workspace = true, features = ["full", "test-util"] }

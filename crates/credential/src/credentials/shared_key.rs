@@ -16,8 +16,7 @@ use crate::{
 #[derive(Schema, Deserialize)]
 pub struct SharedKeyProperties {
     /// The pre-shared symmetric key material.
-    #[field(secret, label = "Pre-shared key")]
-    #[validate(required)]
+    #[property(display(label = "Pre-shared key"), input(secret, required))]
     pub key: SecretString,
 }
 

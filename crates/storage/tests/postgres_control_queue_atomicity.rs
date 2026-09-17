@@ -28,7 +28,11 @@ fn database_url() -> Option<String> {
 #[tokio::test]
 async fn decoding_failure_rolls_back_every_claimed_row() {
     let Some(url) = database_url() else {
-        return;
+        panic!(
+            "decoding_failure_rolls_back_every_claimed_row: backend unreachable — the case \
+             cannot run and must fail rather than pass unchecked; reach the backend (set \
+             DATABASE_URL for postgres) or run without this feature"
+        );
     };
     let pool = postgres_schema::connect_with_private_schema(&url, "control_claim_atomicity")
         .await

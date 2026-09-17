@@ -45,6 +45,16 @@ pub fn permission_scope(permission: Permission) -> &'static str {
         Permission::CredentialRead => "credentials:read",
         Permission::CredentialWrite => "credentials:write",
         Permission::CredentialDelete => "credentials:delete",
+        // Mintable on purpose, and load-bearing rather than cosmetic. A PAT
+        // carries a permission set, never a workspace role: `require_permission`
+        // checks the tenant role *and* the auth grant, so minting this scope
+        // grants nothing on its own. The tenant check is against the *effective*
+        // workspace role, so an org admin reaches the permission without
+        // workspace membership. The mapping has to exist all the same, because
+        // `protected()` asserts a non-`UNSUPPORTED` scope at router
+        // construction — a reconcile route panics without it. Session-only is
+        // not expressible in this grant model.
+        Permission::CredentialReconcile => "credentials:reconcile",
         Permission::ResourceRead => "resources:read",
         Permission::ResourceWrite => "resources:write",
         Permission::ResourceDelete => "resources:delete",
@@ -73,6 +83,7 @@ pub fn permission_from_scope(scope: &str) -> Result<Permission, ScopeParseError>
         "credentials:read" => Ok(Permission::CredentialRead),
         "credentials:write" => Ok(Permission::CredentialWrite),
         "credentials:delete" => Ok(Permission::CredentialDelete),
+        "credentials:reconcile" => Ok(Permission::CredentialReconcile),
         "resources:read" => Ok(Permission::ResourceRead),
         "resources:write" => Ok(Permission::ResourceWrite),
         "resources:delete" => Ok(Permission::ResourceDelete),
@@ -200,6 +211,20 @@ mod tests {
         assert_eq!(
             permission_scope(Permission::WorkspaceMemberRead),
             UNSUPPORTED_PERMISSION_SCOPE
+        );
+    }
+
+    #[test]
+    fn credential_reconciliation_scope_is_mapped_deliberately() {
+        // Both directions: a variant that nobody maps here is silently
+        // unmintable for PAT clients while staying reachable in-process.
+        assert_eq!(
+            permission_scope(Permission::CredentialReconcile),
+            "credentials:reconcile"
+        );
+        assert_eq!(
+            permission_from_scope("credentials:reconcile"),
+            Ok(Permission::CredentialReconcile)
         );
     }
 

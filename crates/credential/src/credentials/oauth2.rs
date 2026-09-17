@@ -26,7 +26,7 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 use super::oauth2_config;
 use crate::{
     CredentialContext, CredentialPolicy, CredentialState, PendingState, RefreshAttempt,
-    RefreshReport, RefreshStrategy, RevokeStrategy, SecretString,
+    RefreshReport, RefreshStrategy, RevokeStrategy, SecretString, StateWireFingerprint,
     error::{
         CredentialError, ProviderErrorContext, ProviderErrorKind, RefreshDiagnosticCode,
         RefreshErrorKind, RefreshFailureSpec, RetryAdvice, SecretFreeMessage,
@@ -58,7 +58,7 @@ use crate::{
 /// fields (token type, expiry, scopes, auth-style enum) carry
 /// `#[zeroize(skip)]`. `token_url` is scrubbed because provider-routing query
 /// parameters can contain tenant or credential-adjacent values.
-#[derive(Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
+#[derive(Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop, StateWireFingerprint)]
 pub struct OAuth2State {
     /// Current access token.
     #[serde(with = "crate::serde_secret")]
@@ -271,12 +271,14 @@ pub enum OAuth2Properties {
 #[derive(Schema, Deserialize)]
 pub struct OAuth2ClientProperties {
     /// OAuth2 client identifier.
-    #[field(label = "Client ID")]
-    #[validate(required, length(max = 4096))]
+    #[property(
+        display(label = "Client ID"),
+        input(required),
+        validate(length(max = 4096))
+    )]
     pub client_id: String,
     /// OAuth2 client secret retained in zeroizing memory.
-    #[field(secret, label = "Client Secret")]
-    #[validate(required)]
+    #[property(display(label = "Client Secret"), input(secret, required))]
     pub client_secret: SecretString,
 }
 
@@ -286,17 +288,21 @@ pub struct OAuth2AuthorizationCodeProperties {
     /// OAuth2 client identity and secret.
     pub client: OAuth2ClientProperties,
     /// Authorization endpoint URL.
-    #[validate(required, url, length(max = 8192))]
+    #[property(input(required), validate(url, length(max = 8192)))]
     pub auth_url: String,
     /// Token endpoint URL.
-    #[validate(required, url, length(max = 8192))]
+    #[property(input(required), validate(url, length(max = 8192)))]
     pub token_url: String,
     /// Requested scopes.
     pub scopes: Option<Vec<String>>,
     /// Registered callback URI.
-    #[validate(required, url, length(max = 8192))]
+    #[property(input(required), validate(url, length(max = 8192)))]
     pub redirect_uri: String,
     /// Explicit client-authentication placement.
+    // The property grammar has no enum-select equivalent: `PropertyAttrs::apply_to`
+    // never writes `enum_select`, and `#[property(options(...))]` is rejected at
+    // apply time, so this site keeps the legacy `#[field(enum_select)]` until the
+    // schema-side follow-up grows one.
     #[field(enum_select)]
     pub auth_style: AuthStyle,
 }
@@ -307,11 +313,13 @@ pub struct OAuth2ClientCredentialsProperties {
     /// OAuth2 client identity and secret.
     pub client: OAuth2ClientProperties,
     /// Token endpoint URL.
-    #[validate(required, url, length(max = 8192))]
+    #[property(input(required), validate(url, length(max = 8192)))]
     pub token_url: String,
     /// Requested scopes.
     pub scopes: Option<Vec<String>>,
     /// Explicit client-authentication placement.
+    // Same enum-select residue as `OAuth2AuthorizationCodeProperties::auth_style`:
+    // the property grammar has no equivalent yet.
     #[field(enum_select)]
     pub auth_style: AuthStyle,
 }
@@ -322,7 +330,8 @@ pub struct OAuth2ClientCredentialsProperties {
 // capability impls.
 // The hand-written `policy()` is relocated verbatim because OAuth2's refresh
 // strategy is state-dependent (`RefreshToken` while a refresh token is held,
-// else `ReAcquire`) — the macro's synthesized policy cannot read live state.
+// else `ReAcquire`), and the macro's synthesized policy emits a constant
+// `RefreshStrategy`.
 // The `initiate_authorization_code` building block stays in its own inherent
 // `impl` block below. It is not part of the credential contract and does not
 // imply a public provider-specific HTTP kickoff surface.
@@ -521,8 +530,10 @@ impl OAuth2Credential {
     // can renew non-interactively), otherwise `ReAcquire` (the refresh path
     // returns `ReauthRequired`). Provider revocation is not implemented; expiry
     // is the access token's inline `expires_at`. The hand-written `policy` is kept
-    // (not macro-synthesized) precisely because the refresh strategy depends on
-    // live state, which the macro's synthesized default cannot read.
+    // (not macro-synthesized) because the strategy depends on live state: the
+    // synthesized default reads state for its expiry but emits a constant
+    // `RefreshStrategy`, so it cannot express the `RefreshToken`/`ReAcquire` split
+    // above.
     fn policy(state: &OAuth2State) -> CredentialPolicy {
         CredentialPolicy {
             expires_at: state.expires_at,

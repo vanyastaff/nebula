@@ -79,6 +79,18 @@ impl TenantContext {
         } else {
             // Org-level permission — check org_role
             // OrgAdmin+ can do most org ops; OrgOwner for destructive ops
+            //
+            // Only permissions with no workspace mapping reach this branch, so
+            // the workspace-scoped credential permissions listed below are
+            // dead here: `required_workspace_role` maps all four of them
+            // (`permission.rs`), and the branch above answers every mapped
+            // permission before the org check. An org
+            // admin reaches them through the workspace gate instead, because
+            // `role.rs` resolves `OrgAdmin` and `OrgOwner` to
+            // `WorkspaceAdmin`. They stay listed because this match is
+            // exhaustive over `Permission` and carries no wildcard; a `_` arm
+            // would classify every future permission as org-admin without
+            // anyone deciding that.
             let required = match permission {
                 Permission::OrgRead | Permission::MemberRead => OrgRole::OrgMember,
                 Permission::OrgUpdate
@@ -97,6 +109,7 @@ impl TenantContext {
                 | Permission::CredentialRead
                 | Permission::CredentialWrite
                 | Permission::CredentialDelete
+                | Permission::CredentialReconcile
                 | Permission::ResourceRead
                 | Permission::ResourceWrite
                 | Permission::ResourceDelete

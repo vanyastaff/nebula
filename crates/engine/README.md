@@ -131,18 +131,6 @@ configuration, and process lifecycle.
   accepts only explicitly declared `NoExternalEffects` factories.
 - `ExecutionEvent` — broadcast event type emitted via `nebula-eventbus`.
 - `EngineCredentialAccessor` — scoped credential accessor injected into action contexts.
-- `credential` module — **bridge + test-harness only** (ADR-0092). The runtime
-  itself (`CredentialResolver`, `execute_resolve`, `execute_continue`,
-  `ResolveResponse`, `ExecutorError`, `RefreshCoordinator`, lease, rotation-state)
-  was relocated to `nebula_credential::runtime`; this module **re-exports** those
-  for backward-compatible `nebula_engine::credential::*` import paths and adds
-  `default_in_memory_coordinator()` (constructs `InMemoryRefreshClaimRepo` from
-  `nebula-storage` for tests / single-replica desktop mode). The resolver is
-  generic over the concrete credential type `C` and calls `C::project(&state)`
-  directly, so no type-erased projection registry is needed (the former
-  `StateProjectionRegistry` was vestigial and removed in ADR-0088 D3; capability +
-  metadata live solely on `nebula_credential::CredentialRegistry`). The per-slot
-  rotation **fan-out** moved to `nebula-resource`.
 - `EngineResourceAccessor` — scoped resource accessor injected into action contexts.
 - `NodeOutput` — per-node output threaded between execution levels.
 - `DEFAULT_EVENT_CHANNEL_CAPACITY` — default backpressure bound for the event channel.

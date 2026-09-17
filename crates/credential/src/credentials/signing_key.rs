@@ -16,12 +16,10 @@ use crate::{
 #[derive(Schema, Deserialize)]
 pub struct SigningKeyProperties {
     /// The signing secret (HMAC key, webhook signing secret).
-    #[field(secret, label = "Signing key")]
-    #[validate(required)]
+    #[property(display(label = "Signing key"), input(secret, required))]
     pub key: SecretString,
     /// Algorithm identifier (e.g. `hmac-sha256`, `sigv4`).
-    #[field(label = "Algorithm")]
-    #[validate(required)]
+    #[property(display(label = "Algorithm"), input(required))]
     pub algorithm: String,
 }
 

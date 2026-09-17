@@ -32,7 +32,6 @@ nebula-eventbus = { path = "../eventbus" }
 nebula-resource = { path = "../resource" }
 nebula-resilience = { path = "../resilience" }
 nebula-storage-port = { path = "../storage-port" }
-nebula-storage = { path = "../storage", features = ["credential-in-memory"] }
 nebula-metrics = { path = "../metrics" }
 nebula-orchestrator = { path = "../orchestrator" }
 
@@ -66,8 +65,12 @@ zeroize = { version = "1.8.2", features = ["zeroize_derive"] }
 # Dev-only: the credential moat tests build a real durable store backed by a
 # unique in-memory SQLite database (`SqliteCredentialPersistence::connect_memory`),
 # so the resolver exercises the same CAS path as production. `sqlite` is enough;
-# the nebula test-util feature was removed from nebula-storage (ADR-0092 step 8).
-nebula-storage = { path = "../storage", features = ["sqlite", "postgres"] }
+# `credential-in-memory` covers `InMemoryPendingStore` in the pending-lifecycle
+# integration tests. The nebula test-util feature was removed from nebula-storage
+# (ADR-0092 step 8); the production lib links no nebula-storage because the
+# engine holds no claim-store constructor — `CredentialController` is the sole
+# management writer of refresh-claim state.
+nebula-storage = { path = "../storage", features = ["credential-in-memory", "sqlite", "postgres"] }
 sqlx = { workspace = true, features = ["sqlite", "postgres", "runtime-tokio"] }
 tempfile = { workspace = true }
 # Used by the W-S2b ack-gating tests' fault-injecting `ExecutionStore` wrapper.

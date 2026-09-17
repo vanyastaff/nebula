@@ -1,21 +1,29 @@
-//! Credential lifecycle as DATA (ADR-0088 D2).
+//! Credential lifecycle: what governs, and what is cut (ADR-0088 D2).
 //!
-//! Replaces the five capability sub-traits
-//! (`Interactive`/`Refreshable`/`Revocable`/`Testable`/`Dynamic`) with a single
-//! [`CredentialPolicy`] value that a credential's state declares. The
-//! credential/secret field (AWS, Vault, GCP, Azure, k8s, SPIFFE) is unanimous:
-//! capabilities are **data, not trait bounds** — a Vault dynamic secret is
-//! leased *and* refreshable *and* revocable *and* expiring at once, so
-//! orthogonal capability traits are the wrong model.
+//! **What governs today** is the five capability sub-traits
+//! (`Interactive`/`Refreshable`/`Revocable`/`Testable`/`Dynamic`) plus the durable
+//! `reauth_required` bit. Production slot resolution reads the registered capability
+//! set and rejects on `MissingCapabilities` or `ReauthRequired` before any material is
+//! decrypted (`crate::service::slot`).
 //!
-//! The engine reads the policy a protocol computes from state and drives the
-//! matching path; one OAuth2 protocol returns [`RefreshStrategy::RefreshToken`]
-//! when a refresh token is present and [`RefreshStrategy::ReAcquire`] when it is
-//! not — no separate trait, no compile-time capability lie.
+//! **What is cut** is [`CredentialPolicy`] as the routing model. The type ships, and the
+//! `#[credential]` macro derives [`CredentialLifecycle`] for every annotated credential,
+//! but the only code that consults a policy is `CredentialResolver::resolve_with_refresh`
+//! (`crate::runtime::resolver`), whose sole caller is `CredentialResolver::scheme_factory`
+//! and whose only entry, `CredentialService::scheme_factory` (`crate::service::slot`), has
+//! no callers. So no live production path reaches it. The `Protocol` trait that would
+//! compute a policy from state, and the migration off the sub-traits, remain unwritten.
+//! 1.0 ships the capability traits as the governing model, and this cut is deliberate
+//! rather than pending.
 //!
-//! These are the foundational policy types. The `Protocol` trait that produces a
-//! [`CredentialPolicy`] from state, and the migration off the sub-traits, land in
-//! later steps of the ADR-0088 sequence; nothing consumes these yet.
+//! **What an author must still write.** The macro synthesizes
+//! [`RefreshStrategy::RefreshToken`] for a credential with `fn refresh`, and
+//! [`RefreshStrategy::Static`] otherwise, so hand-write `fn policy` in three cases: a
+//! leased (`Dynamic`) credential, where the macro rejects the omission outright; a
+//! credential whose refresh strategy depends on live state, where the synthesized policy
+//! emits a constant strategy; and one whose `AuthScheme::Family` declares a refresh class
+//! other than the synthesized one, where the F3 containment guard in `resolve_with_refresh`
+//! rejects the wrong policy at runtime.
 
 use std::time::Duration;
 
@@ -115,7 +123,7 @@ pub enum Decision {
     Dead,
 }
 
-/// The lifecycle policy a credential declares — **capabilities as data**.
+/// The lifecycle policy a credential declares — **the authoring surface, not the gate**.
 ///
 /// Expiry is three orthogonal cases (ADR-0088 D3): an inline [`Self::expires_at`]
 /// (AWS STS / SPIFFE), an external renewable [`Self::lease`] (Vault), and
@@ -123,8 +131,8 @@ pub enum Decision {
 /// from the projected token). Renewal is a per-credential capability, never
 /// universal.
 ///
-/// A `CredentialPolicy` is **computed** from state by a protocol; it is not
-/// itself persisted (hence no `Serialize`).
+/// A `CredentialPolicy` is **computed** from state by
+/// [`CredentialLifecycle::policy`]; it is not itself persisted (hence no `Serialize`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CredentialPolicy {
     /// Inline absolute expiry, if the material carries one.
@@ -297,10 +305,16 @@ impl CredentialPolicy {
 
 /// A credential type's lifecycle policy, computed from its stored state.
 ///
-/// The `#[nebula::credential]` macro (ADR-0088 D1) will derive this — the
-/// [`RefreshStrategy`] / [`RevokeStrategy`] from which capability methods the
+/// The `#[nebula::credential]` macro (ADR-0088 D1) derives this impl, taking the
+/// [`RefreshStrategy`] and [`RevokeStrategy`] from the capability methods the
 /// author wrote, so the policy data cannot disagree with the compile-gated
-/// capability impls. Until the macro lands, credentials implement it by hand.
+/// capability impls. Hand-write `fn policy` in three cases the synthesized value
+/// cannot cover: a leased (`Dynamic`) credential, where the macro rejects the
+/// omission outright; a credential whose refresh strategy depends on live state,
+/// where the synthesized policy emits a constant strategy; and a credential whose
+/// `AuthScheme::Family` declares a refresh class other than the synthesized
+/// [`RefreshStrategy::RefreshToken`], where the F3 containment guard in
+/// `resolve_with_refresh` rejects the wrong policy at runtime.
 ///
 /// The policy is *computed*, never persisted, so it can reflect live state (e.g.
 /// an OAuth2 credential reporting [`RefreshStrategy::RefreshToken`] only while it

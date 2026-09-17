@@ -43,8 +43,9 @@ pub use journal::ExecutionJournalReader;
 pub use node_result::NodeResultStore;
 pub use operation_ledger::{OperationLedger, OperationLedgerAdjudicator};
 pub use refresh_claim::{
-    ClaimAttempt, ClaimToken, ExpiredClaim, HeartbeatError, RefreshClaim, RefreshClaimError,
-    RefreshClaimStore, ReplicaId, SentinelState,
+    ClaimAttempt, ClaimToken, ExpiredClaim, HeartbeatError, MAX_ADJUDICATION_EVIDENCE_BYTES,
+    RefreshAdjudication, RefreshClaim, RefreshClaimAdjudicationError, RefreshClaimAdjudicator,
+    RefreshClaimError, RefreshClaimStore, RefreshOutcomeDecision, ReplicaId, SentinelState,
 };
 pub use resource_subscription::{
     ResourceEventFanoutStore, ResourceExecutionHandoffStore, ResourceRuntimeRecovery,

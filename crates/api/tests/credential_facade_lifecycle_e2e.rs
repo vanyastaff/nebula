@@ -39,8 +39,9 @@ use nebula_credential::resolve::StaticResolveResult;
 use nebula_credential::{
     CredentialContext, CredentialDisplay, CredentialMetadataDraft, CredentialRegistry,
     CredentialService, CredentialServiceError, DispatchOps, ErasedPendingStore, RefreshAttempt,
-    RefreshReport, SecretString, TenantScope, ValidatedCredentialBindingError, identity_state,
-    register_refreshable_ops, register_revocable_ops, register_runtime_ops,
+    RefreshReport, SecretString, StateWireFingerprint, TenantScope,
+    ValidatedCredentialBindingError, identity_state, register_refreshable_ops,
+    register_revocable_ops, register_runtime_ops,
 };
 use nebula_schema::Schema;
 use nebula_storage::credential::EnvKeyProvider;
@@ -90,7 +91,7 @@ impl SchemeFamily for TestRefreshFamily {
 /// Stored state == projected scheme (identity). Holds the secret bytes so it is
 /// `Sensitive` (zeroized on drop); `generation` lets `refresh` produce visibly
 /// rotated material.
-#[derive(Serialize, Deserialize, Clone, Zeroize, ZeroizeOnDrop)]
+#[derive(Serialize, Deserialize, Clone, Zeroize, ZeroizeOnDrop, StateWireFingerprint)]
 struct TestScheme {
     token: String,
     generation: u32,

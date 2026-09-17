@@ -26,7 +26,7 @@ use nebula_storage::credential::{
 };
 use nebula_storage_port::{
     CredentialPersistence, CredentialPersistenceError,
-    store::{RefreshClaimStore, ReplicaId},
+    store::{RefreshClaimAdjudicator, RefreshClaimStore, ReplicaId},
 };
 use thiserror::Error;
 use uuid::Uuid;
@@ -56,6 +56,12 @@ impl CredentialDatabaseBackend {
 pub(crate) struct CredentialRuntime {
     pub(crate) service: Arc<CredentialService>,
     pub(crate) catalog: Arc<dyn CredentialSchemaPort>,
+    /// Privileged reconciliation seam, sharing this runtime's claim storage so
+    /// the adjudicator clears the same poison row `try_claim` reads.
+    pub(crate) adjudicator: Arc<dyn RefreshClaimAdjudicator>,
+    /// The runtime's audit sink, so `AuditOperation::Reconcile` reaches the same
+    /// sink as every other credential operation rather than a second one.
+    pub(crate) audit_sink: Arc<dyn AuditSink>,
     /// Retains the sole periodic poison-accounting owner for the full server
     /// lifecycle. Drop aborts the task during shutdown.
     _reclaim_sweep: ReclaimSweepHandle,
@@ -126,10 +132,11 @@ pub(crate) async fn compose_memory_service(
     let store = SqliteCredentialPersistence::connect_memory()
         .await
         .map_err(CredentialCompositionError::Store)?;
-    let claim_repo: Arc<dyn RefreshClaimStore> = Arc::new(store.refresh_claim_repo());
+    let (claim_repo, adjudicator) = shared_claim_repo(store.refresh_claim_repo());
     let runtime = compose_runtime(
         store,
         claim_repo,
+        adjudicator,
         key_provider,
         Arc::new(MetricsRegistry::new()),
     )?;
@@ -152,14 +159,20 @@ async fn compose_first_party_runtime_for_database(
             let store = SqliteCredentialPersistence::connect(database_url)
                 .await
                 .map_err(CredentialCompositionError::Store)?;
-            let claim_repo: Arc<dyn RefreshClaimStore> = Arc::new(store.refresh_claim_repo());
+            let (claim_repo, adjudicator) = shared_claim_repo(store.refresh_claim_repo());
             // Database URLs can carry credentials or tenant-specific
             // filesystem paths. Record only the closed backend class.
             tracing::info!(
                 backend = backend.as_str(),
                 "credential durable store opened"
             );
-            compose_runtime(store, claim_repo, key_provider, metrics_registry)
+            compose_runtime(
+                store,
+                claim_repo,
+                adjudicator,
+                key_provider,
+                metrics_registry,
+            )
         },
         CredentialDatabaseBackend::Postgres => {
             #[cfg(feature = "postgres")]
@@ -167,12 +180,18 @@ async fn compose_first_party_runtime_for_database(
                 let store = PgCredentialPersistence::connect(database_url)
                     .await
                     .map_err(CredentialCompositionError::Store)?;
-                let claim_repo: Arc<dyn RefreshClaimStore> = Arc::new(store.refresh_claim_repo());
+                let (claim_repo, adjudicator) = shared_claim_repo(store.refresh_claim_repo());
                 tracing::info!(
                     backend = backend.as_str(),
                     "credential durable store opened"
                 );
-                compose_runtime(store, claim_repo, key_provider, metrics_registry)
+                compose_runtime(
+                    store,
+                    claim_repo,
+                    adjudicator,
+                    key_provider,
+                    metrics_registry,
+                )
             }
             #[cfg(not(feature = "postgres"))]
             {
@@ -214,6 +233,7 @@ fn classify_credential_database(
 fn compose_runtime<P>(
     raw_store: P,
     claim_repo: Arc<dyn RefreshClaimStore>,
+    adjudicator: Arc<dyn RefreshClaimAdjudicator>,
     key_provider: Arc<dyn KeyProvider>,
     metrics_registry: Arc<MetricsRegistry>,
 ) -> Result<CredentialRuntime, CredentialCompositionError>
@@ -294,8 +314,33 @@ where
     Ok(CredentialRuntime {
         service,
         catalog,
+        adjudicator,
+        audit_sink,
         _reclaim_sweep: reclaim_sweep,
     })
+}
+
+/// Build the claim store and its adjudication seam over **one** adapter
+/// instance.
+///
+/// `refresh_claim_repo()` clones a pool handle, so two calls are two handles
+/// onto one store rather than two stores. Both trait objects below are unsizing
+/// coercions of one `Arc`, which is what guarantees the adjudicator clears the
+/// very row `try_claim` reads. Every backend supplies its own repo here: sqlite
+/// and postgres from their admitted pool, and the in-memory composition case —
+/// `compose_memory_service` and the composition test fixtures — from
+/// `SqliteCredentialPersistence::connect_memory`, a SQLite **in-memory
+/// database** whose repo is `SqliteRefreshClaimRepo`. `InMemoryRefreshClaimRepo`
+/// exists, but this path does not build it.
+fn shared_claim_repo<R>(repo: R) -> (Arc<dyn RefreshClaimStore>, Arc<dyn RefreshClaimAdjudicator>)
+where
+    R: RefreshClaimStore + RefreshClaimAdjudicator + 'static,
+{
+    let repo = Arc::new(repo);
+    (
+        Arc::clone(&repo) as Arc<dyn RefreshClaimStore>,
+        repo as Arc<dyn RefreshClaimAdjudicator>,
+    )
 }
 
 fn server_replica_id() -> ReplicaId {
@@ -392,12 +437,13 @@ mod tests {
         let store = SqliteCredentialPersistence::connect_memory()
             .await
             .expect("ready in-memory credential store");
-        let claim_repo: Arc<dyn RefreshClaimStore> = Arc::new(store.refresh_claim_repo());
+        let (claim_repo, adjudicator) = shared_claim_repo(store.refresh_claim_repo());
         let key_provider: Arc<dyn KeyProvider> =
             Arc::new(EnvKeyProvider::from_base64(TEST_KEY_BASE64).expect("valid fixed test key"));
         let runtime = compose_runtime(
             store,
             claim_repo,
+            adjudicator,
             key_provider,
             Arc::new(MetricsRegistry::new()),
         )

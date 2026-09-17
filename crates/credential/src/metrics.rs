@@ -26,6 +26,13 @@ impl CredentialMetrics {
     /// Total credential refresh failures.
     pub const REFRESH_FAILED_TOTAL: &'static str = "nebula.credential.refresh_failed_total";
 
+    /// Total privileged reconciliation attempts, labelled by [`Self::LABEL_OUTCOME`].
+    ///
+    /// One counter with two outcomes rather than two series, so the failure
+    /// ratio is a single query on the one path that clears a fail-closed poison
+    /// state.
+    pub const RECONCILE_TOTAL: &'static str = "nebula.credential.reconcile_total";
+
     /// Total credential connectivity tests.
     pub const TEST_TOTAL: &'static str = "nebula.credential.test_total";
 
@@ -77,6 +84,12 @@ impl CredentialMetrics {
 
     /// Label: refresh failure reason.
     pub const LABEL_FAILURE_REASON: &'static str = "reason";
+
+    /// Label value: the operation completed.
+    pub const OUTCOME_SUCCESS: &'static str = "success";
+
+    /// Label value: the operation was refused or failed.
+    pub const OUTCOME_FAILURE: &'static str = "failure";
 
     /// Label: external provider name (e.g. `"vault"`).
     pub const LABEL_PROVIDER: &'static str = "provider";

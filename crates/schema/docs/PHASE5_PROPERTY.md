@@ -688,6 +688,7 @@ the current action lazy expansion already resolves before Lazy::with_value.
 | Action | ResourceGuard<R> | Required lease for Provider R. |
 | Action | Option<ResourceGuard<R>> | Inactive or optional resource dependency, with independent active binding policy. |
 | Resource | CredentialSlot<S> / SlotCell<CredentialGuard<S>> | Generation-stamped cell of projected auth scheme S; binding controls absence. |
+| Credential | `Properties` DTO — `#[derive(Schema)]`, value-only `#[property(...)]` fields | Explicit, canonical setup-form shape declared via `type Properties`; consumer `#[slot(credential, ...)]` dependencies stay outside properties. |
 
 S consistently means the auth Scheme, never a Credential implementation type.
 Preserve credential-owned guards and resource-owned CredentialSlot/SlotCell.

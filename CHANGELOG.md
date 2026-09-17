@@ -11,6 +11,15 @@ changes are expected between minor releases — call them out here.
 
 ### Breaking
 
+- **Credential reconciliation advances development packages to 0.12.0 in
+  lockstep.** `CredentialController::new` takes the adjudicator and audit-sink
+  dependencies it needs for the reconciliation command (two additional
+  parameters); `RefreshClaimError` is now `#[non_exhaustive]`; and the
+  engine's `credential` module with its `default_in_memory_coordinator`
+  constructor is removed — `CredentialController` is the sole management
+  writer of refresh-claim state, and test/desktop composition builds its
+  in-memory coordinator where it is used. Exact-version SDK consumers and
+  renamed leaf fixtures must continue to update all Nebula pins together.
 - **Free-text error strings leave durable execution state and the journal,
   advancing the workspace to 0.11.0 in lockstep.** `ErrorEnvelope` replaces the
   `String` in `NodeAttempt::error`, `AttemptOutcome::Failure::error`,
@@ -473,6 +482,16 @@ let admitted = recorded.readmit_against(fresh)?;
 
 ### Added
 
+- **Credential reconciliation command.** A poisoned refresh claim (an expired
+  in-flight row the claim store answers as outcome-unknown) is now resolvable
+  through `CredentialController::reconcile` over the HTTP route, gated by the
+  new `credentials:reconcile` permission. The operator decision and evidence
+  note are recorded on the sentinel incident; the `(evidence digest, decision)`
+  pair is the recommit identity, so an identical recommit is an idempotent
+  no-op and a conflicting observation is refused. The response and the 409
+  problem-details expose the evidence digest, so a client that lost its
+  acknowledgement can confirm what is on record. The claim store's `release`
+  now refuses (`ReleaseRefused`) while an unresolved incident is on record.
 - **Durable runtime authority.** Exact bundle, plan, and flavor identity now
   governs the whole execution lifecycle rather than being merely recorded. A
   workflow activation binds a compiled executable plan to a compatible frozen

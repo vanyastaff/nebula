@@ -1436,70 +1436,110 @@ macro_rules! optional_resource_fanout_conformance_suite {
         #[tokio::test]
         async fn exact_identity_and_scope_isolation() {
             let Some((store, _control)) = $factory.await else {
-                return;
+                panic!(
+                    "exact_identity_and_scope_isolation: backend unreachable — the case cannot run and must fail \
+                     rather than pass unchecked; reach the backend (set DATABASE_URL for \
+                     postgres) or run without this feature"
+                );
             };
             oracle::exact_identity_and_scope_isolation(store).await;
         }
         #[tokio::test]
         async fn global_recovery_claims_cross_scope_in_sequence() {
             let Some((store, _control)) = $factory.await else {
-                return;
+                panic!(
+                    "global_recovery_claims_cross_scope_in_sequence: backend unreachable — the case cannot run and must fail \
+                     rather than pass unchecked; reach the backend (set DATABASE_URL for \
+                     postgres) or run without this feature"
+                );
             };
             oracle::global_recovery_claims_cross_scope_in_sequence(store).await;
         }
         #[tokio::test]
         async fn global_recovery_takeover_fences_stale_tokens() {
             let Some((store, _control)) = $factory.await else {
-                return;
+                panic!(
+                    "global_recovery_takeover_fences_stale_tokens: backend unreachable — the case cannot run and must fail \
+                     rather than pass unchecked; reach the backend (set DATABASE_URL for \
+                     postgres) or run without this feature"
+                );
             };
             oracle::global_recovery_takeover_fences_stale_tokens(store).await;
         }
         #[tokio::test]
         async fn concurrent_global_recovery_claims_are_disjoint() {
             let Some((store, _control)) = $factory.await else {
-                return;
+                panic!(
+                    "concurrent_global_recovery_claims_are_disjoint: backend unreachable — the case cannot run and must fail \
+                     rather than pass unchecked; reach the backend (set DATABASE_URL for \
+                     postgres) or run without this feature"
+                );
             };
             oracle::concurrent_global_recovery_claims_are_disjoint(store).await;
         }
         #[tokio::test]
         async fn subscription_put_and_cas_states() {
             let Some((store, _control)) = $factory.await else {
-                return;
+                panic!(
+                    "subscription_put_and_cas_states: backend unreachable — the case cannot run and must fail \
+                     rather than pass unchecked; reach the backend (set DATABASE_URL for \
+                     postgres) or run without this feature"
+                );
             };
             oracle::subscription_put_and_cas_states(store).await;
         }
         #[tokio::test]
         async fn event_snapshot_replay_conflict_and_zero_subscriber() {
             let Some((store, _control)) = $factory.await else {
-                return;
+                panic!(
+                    "event_snapshot_replay_conflict_and_zero_subscriber: backend unreachable — the case cannot run and must fail \
+                     rather than pass unchecked; reach the backend (set DATABASE_URL for \
+                     postgres) or run without this feature"
+                );
             };
             oracle::event_snapshot_replay_conflict_and_zero_subscriber(store).await;
         }
         #[tokio::test]
         async fn source_token_liveness_and_exact_expiry() {
             let Some((store, control)) = $factory.await else {
-                return;
+                panic!(
+                    "source_token_liveness_and_exact_expiry: backend unreachable — the case cannot run and must fail \
+                     rather than pass unchecked; reach the backend (set DATABASE_URL for \
+                     postgres) or run without this feature"
+                );
             };
             oracle::source_token_liveness_and_exact_expiry(store, &control).await;
         }
         #[tokio::test]
         async fn source_release_preserves_generation() {
             let Some((store, _control)) = $factory.await else {
-                return;
+                panic!(
+                    "source_release_preserves_generation: backend unreachable — the case cannot run and must fail \
+                     rather than pass unchecked; reach the backend (set DATABASE_URL for \
+                     postgres) or run without this feature"
+                );
             };
             oracle::source_release_preserves_generation(store).await;
         }
         #[tokio::test]
         async fn concurrent_sibling_completions_terminalize_parent() {
             let Some((store, _control)) = $factory.await else {
-                return;
+                panic!(
+                    "concurrent_sibling_completions_terminalize_parent: backend unreachable — the case cannot run and must fail \
+                     rather than pass unchecked; reach the backend (set DATABASE_URL for \
+                     postgres) or run without this feature"
+                );
             };
             oracle::concurrent_sibling_completions_terminalize_parent(store).await;
         }
         #[tokio::test]
         async fn delivery_claim_lifecycle() {
             let Some((store, control)) = $factory.await else {
-                return;
+                panic!(
+                    "delivery_claim_lifecycle: backend unreachable — the case cannot run and must fail \
+                     rather than pass unchecked; reach the backend (set DATABASE_URL for \
+                     postgres) or run without this feature"
+                );
             };
             oracle::delivery_claim_lifecycle(store, &control).await;
         }
@@ -1507,35 +1547,55 @@ macro_rules! optional_resource_fanout_conformance_suite {
         #[tokio::test]
         async fn delivered_completion_creates_exact_recoverable_handoff() {
             let Some((store, _control)) = $factory.await else {
-                return;
+                panic!(
+                    "delivered_completion_creates_exact_recoverable_handoff: backend unreachable — the case cannot run and must fail \
+                     rather than pass unchecked; reach the backend (set DATABASE_URL for \
+                     postgres) or run without this feature"
+                );
             };
             oracle::delivered_completion_creates_exact_recoverable_handoff(store).await;
         }
         #[tokio::test]
         async fn delivered_completion_rechecks_subscription() {
             let Some((store, _control)) = $factory.await else {
-                return;
+                panic!(
+                    "delivered_completion_rechecks_subscription: backend unreachable — the case cannot run and must fail \
+                     rather than pass unchecked; reach the backend (set DATABASE_URL for \
+                     postgres) or run without this feature"
+                );
             };
             oracle::delivered_completion_rechecks_subscription(store).await;
         }
         #[tokio::test]
         async fn reconciliation_pages_are_stable_and_exclusive() {
             let Some((store, _control)) = $factory.await else {
-                return;
+                panic!(
+                    "reconciliation_pages_are_stable_and_exclusive: backend unreachable — the case cannot run and must fail \
+                     rather than pass unchecked; reach the backend (set DATABASE_URL for \
+                     postgres) or run without this feature"
+                );
             };
             oracle::reconciliation_pages_are_stable_and_exclusive(store).await;
         }
         #[tokio::test]
         async fn barrier_contention_has_single_winners() {
             let Some((store, _control)) = $factory.await else {
-                return;
+                panic!(
+                    "barrier_contention_has_single_winners: backend unreachable — the case cannot run and must fail \
+                     rather than pass unchecked; reach the backend (set DATABASE_URL for \
+                     postgres) or run without this feature"
+                );
             };
             oracle::barrier_contention_has_single_winners(store).await;
         }
         #[tokio::test]
         async fn opaque_debug_contract() {
             let Some((store, _control)) = $factory.await else {
-                return;
+                panic!(
+                    "opaque_debug_contract: backend unreachable — the case cannot run and must fail \
+                     rather than pass unchecked; reach the backend (set DATABASE_URL for \
+                     postgres) or run without this feature"
+                );
             };
             oracle::opaque_debug_contract(&store);
         }

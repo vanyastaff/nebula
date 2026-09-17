@@ -41,11 +41,12 @@ use nebula_storage_port::Scope;
 use crate::{
     domain::credential::dto::{
         ContinueResolveRequest, ContinueResolveResponse, CreateCredentialRequest,
-        CredentialCapabilities, CredentialResponse, CredentialSummary, CredentialTestFailureCodeV1,
-        CredentialTypeInfo, ListCredentialTypesResponse, ListCredentialsQuery,
-        ListCredentialsResponse, RefreshCredentialResponse, ResolveCredentialRequest,
-        ResolveCredentialResponse, RevokeCredentialResponse, TestCredentialResponse,
-        UpdateCredentialRequest,
+        CredentialCapabilities, CredentialReconcileDecisionV1, CredentialResponse,
+        CredentialSummary, CredentialTestFailureCodeV1, CredentialTypeInfo,
+        ListCredentialTypesResponse, ListCredentialsQuery, ListCredentialsResponse,
+        ReconcileCredentialRequest, ReconcileCredentialResponse, RefreshCredentialResponse,
+        ResolveCredentialRequest, ResolveCredentialResponse, RevokeCredentialResponse,
+        TestCredentialResponse, UpdateCredentialRequest,
     },
     error::{ApiError, ApiResult},
     middleware::auth::AuthenticatedPrincipal,
@@ -159,6 +160,27 @@ fn map_gateway_err(err: CredentialGatewayError, cred: &str) -> ApiError {
         },
         CredentialGatewayError::RevokeReconciliationRequired => {
             ApiError::CredentialRevokeReconciliationRequired
+        },
+        // 409 for both: the credential exists and the caller is authorized, so
+        // neither is a 404 and neither is a 403 — the request contradicts the
+        // claim's durable state. Each gets its own variant and problem type,
+        // following the two reconciliation-required siblings above: the two
+        // refusals are acted on differently, so a client that could only read
+        // them apart from a free-text `detail` had no contractual way to tell
+        // them apart at all.
+        CredentialGatewayError::ReconciliationNotRequired => {
+            ApiError::CredentialReconciliationNotRequired
+        },
+        CredentialGatewayError::ReconciliationConflict {
+            recorded_digest,
+            recorded_decision,
+        } => ApiError::CredentialReconciliationConflict {
+            recorded_digest: digest_hex(&recorded_digest),
+            recorded_decision: recorded_decision.as_str().to_owned(),
+        },
+        CredentialGatewayError::ReconciliationEvidenceInvalid => ApiError::Validation {
+            detail: "reconciliation evidence was rejected".to_owned(),
+            errors: vec![],
         },
         CredentialGatewayError::Forbidden => {
             ApiError::Forbidden("credential command is not authorized".to_owned())
@@ -583,6 +605,86 @@ pub async fn revoke_credential(
     })
 }
 
+/// Record the provider outcome for a refresh whose local result is unknown.
+///
+/// This is the only shipped caller that can clear a **retained poison**: when a
+/// refresh's claim expires in flight, `RefreshClaimStore::release` refuses to
+/// delete the row while an unresolved incident exists
+/// (`crates/storage-port/src/store/refresh_claim.rs:211-227`) and the refresh
+/// coordinator swallows that refusal
+/// (`crates/credential/src/runtime/refresh/coordinator.rs:520-539`), so
+/// `try_claim` answers `OutcomeUnknown` for that credential from then on and
+/// the refresh route answers 409 forever. Recording the decision is what
+/// retires the incident and lets the next refresh acquire a claim again.
+///
+/// Authority is not duplicated here: the caller's `scope` is passed through
+/// unchanged and no ownership check is added, so the credential controller's
+/// read at `crates/credential/src/service/controller.rs:597-620` stays the one
+/// place a caller's tenant meets the credential being reconciled. The port
+/// takes no scope operand, which is exactly why that read has to remain the
+/// single authority.
+#[tracing::instrument(skip_all, fields(cred.id = %cred))]
+pub async fn reconcile_credential(
+    state: &AppState,
+    principal: &AuthenticatedPrincipal,
+    scope: &Scope,
+    cred: &str,
+    request: &ReconcileCredentialRequest,
+) -> ApiResult<ReconcileCredentialResponse> {
+    let result = gateway(state)?
+        .execute(
+            principal,
+            scope,
+            CredentialGatewayCommand::Reconcile {
+                credential_id: cred.to_owned(),
+                decision: request.decision.to_port(),
+                evidence: request.evidence.clone(),
+            },
+        )
+        .await
+        .map_err(|e| map_gateway_err(e, cred))?;
+    let CredentialGatewayResult::Reconciled {
+        decision: port_decision,
+        changed,
+        evidence_digest,
+    } = result
+    else {
+        return Err(ApiError::Internal(
+            "credential gateway returned an invalid reconcile result".to_owned(),
+        ));
+    };
+    // `changed: false` is the idempotent recommit of an identical
+    // `(decision, evidence)` pair already on record for the same incident. It
+    // is reported as success with an honest message, not folded into a
+    // conflict: the caller's intent is satisfied either way, and the only thing
+    // they can act on differently is whether this call wrote.
+    Ok(ReconcileCredentialResponse {
+        decision: CredentialReconcileDecisionV1::from_port(port_decision),
+        changed,
+        evidence_digest: digest_hex(&evidence_digest),
+        message: if changed {
+            "provider outcome recorded; the credential can be refreshed again".to_owned()
+        } else {
+            "identical decision was already on record; nothing changed".to_owned()
+        },
+    })
+}
+
+/// Lowercase hex of a 32-byte evidence digest — the wire spelling of the
+/// reconciliation retry identity on the success response and the conflict
+/// problem's `evidence_digest` extension.
+///
+/// Inline rather than a `hex` dependency: one `String` result and no hex-crate
+/// edge on the api library surface (the same shape as the idempotency cache
+/// key).
+fn digest_hex(digest: &[u8; 32]) -> String {
+    let mut encoded = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        encoded.push_str(&format!("{byte:02x}"));
+    }
+    encoded
+}
+
 // ── Acquisition (resolve / continue) ─────────────────────────────────────────
 
 /// Map an API-owned gateway acquisition onto the wire response.
@@ -719,7 +821,7 @@ pub async fn get_credential_type(state: &AppState, key: &str) -> ApiResult<Crede
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{assert_matches, sync::Arc};
 
     use super::*;
     use crate::ports::credential_command::{
@@ -731,6 +833,7 @@ mod tests {
         InMemoryControlQueue, InMemoryExecutionStore, InMemoryJournalReader,
         InMemoryNodeResultStore, InMemoryWorkflowStore, InMemoryWorkflowVersionStore,
     };
+    use nebula_storage_port::store::RefreshOutcomeDecision;
 
     /// 32 `0x42` bytes, base64 — a valid AES-256 key fixture (mirrors the
     /// factory's dev key). Not a secret: a fixed test constant.
@@ -900,6 +1003,24 @@ mod tests {
         ));
         assert!(matches!(
             revoke_credential(&s, &principal, &scope, "cred_x").await,
+            Err(ApiError::ServiceUnavailable(_))
+        ));
+        // Reconciliation is an operator remedy, not a credential write, but it
+        // still needs the service behind it: with no gateway there is nothing
+        // that could record a provider outcome, and answering 200 would tell an
+        // operator the conflict is settled when no claim was ever touched.
+        assert!(matches!(
+            reconcile_credential(
+                &s,
+                &principal,
+                &scope,
+                "cred_x",
+                &ReconcileCredentialRequest {
+                    decision: CredentialReconcileDecisionV1::ProviderNotApplied,
+                    evidence: "e".into(),
+                }
+            )
+            .await,
             Err(ApiError::ServiceUnavailable(_))
         ));
         // create/resolve hit the schema-port gate first (also absent here)
@@ -1212,6 +1333,39 @@ mod tests {
             ),
             ApiError::CredentialRevokeReconciliationRequired
         ));
+        assert_matches!(
+            map_gateway_err(CredentialGatewayError::ReconciliationNotRequired, "cred_x"),
+            ApiError::CredentialReconciliationNotRequired
+        );
+        let ApiError::CredentialReconciliationConflict {
+            recorded_digest,
+            recorded_decision,
+        } = map_gateway_err(
+            CredentialGatewayError::ReconciliationConflict {
+                recorded_digest: [0xabu8; 32],
+                recorded_decision: RefreshOutcomeDecision::ProviderApplied,
+            },
+            "cred_x",
+        )
+        else {
+            panic!("a reconciliation conflict must map to the conflict error");
+        };
+        assert_eq!(
+            recorded_digest,
+            "ab".repeat(32),
+            "the conflict must carry the recorded digest as lowercase hex"
+        );
+        assert_eq!(
+            recorded_decision, "provider_applied",
+            "the conflict must carry the recorded decision in its wire spelling"
+        );
+        assert_matches!(
+            map_gateway_err(
+                CredentialGatewayError::ReconciliationEvidenceInvalid,
+                "cred_x"
+            ),
+            ApiError::Validation { .. }
+        );
         assert!(matches!(
             map_gateway_err(CredentialGatewayError::Internal, "cred_x"),
             ApiError::Internal(_)
@@ -1244,6 +1398,12 @@ mod tests {
             CredentialGatewayError::OutcomeUnknown,
             CredentialGatewayError::RefreshReconciliationRequired,
             CredentialGatewayError::RevokeReconciliationRequired,
+            CredentialGatewayError::ReconciliationNotRequired,
+            CredentialGatewayError::ReconciliationConflict {
+                recorded_digest: [0xabu8; 32],
+                recorded_decision: RefreshOutcomeDecision::ProviderApplied,
+            },
+            CredentialGatewayError::ReconciliationEvidenceInvalid,
             CredentialGatewayError::Internal,
         ] {
             let api_error = map_gateway_err(gateway_error, "cred_safe");

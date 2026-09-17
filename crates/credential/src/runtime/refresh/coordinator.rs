@@ -363,7 +363,8 @@ pub enum RefreshDisposition<T> {
     /// The enclosed error is exact, yet another replica must not immediately
     /// repeat the refresh against stale authoritative state. Like an unknown
     /// acknowledgement, this retains the sentinel claim. Expiry converts it
-    /// into durable poison; explicit reconcile authority is K3 work.
+    /// into durable poison, which only an owner-qualified reconciliation
+    /// command may clear.
     RetryUnsafe(T),
     /// Provider dispatch or persistence commit completed without an exact
     /// acknowledgement.
@@ -521,8 +522,15 @@ impl RefreshLease {
             tokio::spawn(async move {
                 if let Err(error) = repo.release(token).await {
                     // A release failure never changes an already-confirmed
-                    // outcome. Replaying provider work would be less safe than
-                    // waiting for claim expiry.
+                    // outcome. This branch is `finalization ==
+                    // ClaimFinalization::Release`, which both the pre-provider
+                    // cleanup sites and the post-provider state-disposition
+                    // sites choose, so the error carries no provider outcome of
+                    // its own: only `ReleaseRefused` means the sweep already
+                    // accounted the claim's incident. That refusal leaves the
+                    // row poison until `adjudicate` records the provider
+                    // outcome, and waiting for claim expiry cannot clear it
+                    // because the retained row outlives its expiry.
                     tracing::warn!(
                         ?error,
                         "L2 claim release after exact refresh disposition failed"
@@ -552,6 +560,8 @@ impl Drop for RefreshLease {
             // Panic/runtime cancellation after the sentinel boundary has no
             // trustworthy commit disposition. Releasing here would allow an
             // immediate blind replay, so retain the row exactly like an
+            // `OutcomeUnknown` disposition does, leaving the claim durable
+            // poison until `adjudicate` records the provider outcome.
             tracing::warn!(
                 "provider/persistence task dropped without an exact disposition; \
                  retaining refresh claim as durable poison"

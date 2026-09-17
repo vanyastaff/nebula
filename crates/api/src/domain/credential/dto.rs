@@ -10,6 +10,7 @@
 
 use std::{collections::HashMap, fmt};
 
+use nebula_storage_port::store::RefreshOutcomeDecision;
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
@@ -461,6 +462,105 @@ pub struct RevokeCredentialResponse {
     pub message: String,
 }
 
+// --- Reconciliation ---
+
+/// Version 1 wire vocabulary for the provider outcome an operator has
+/// established for a refresh whose claim expired in flight.
+///
+/// The API owns this vocabulary instead of serializing the port's
+/// [`RefreshOutcomeDecision`], which carries no serde derive. The two spellings
+/// are the same bytes on purpose: the durable `adjudication_decision` column
+/// stores the port spelling, so a drift here would record a decision this route
+/// accepted as a row storage can no longer decode. The unit test
+/// `reconcile_decision_wire_spelling_matches_the_durable_port_spelling` pins
+/// that equality, and it is the only thing that does. Frozen for the same
+/// reason: a third outcome is a new version, never a rename of these two.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CredentialReconcileDecisionV1 {
+    /// The provider did apply the refresh; the refreshed material is durable
+    /// and the credential may be refreshed again.
+    ProviderApplied,
+    /// The provider never applied the refresh; the previously stored material
+    /// stands and the credential may be refreshed again.
+    ProviderNotApplied,
+}
+
+impl CredentialReconcileDecisionV1 {
+    /// The port decision this wire value names.
+    #[must_use]
+    pub const fn to_port(self) -> RefreshOutcomeDecision {
+        match self {
+            Self::ProviderApplied => RefreshOutcomeDecision::ProviderApplied,
+            Self::ProviderNotApplied => RefreshOutcomeDecision::ProviderNotApplied,
+        }
+    }
+
+    /// The wire value naming `decision`.
+    ///
+    /// Two total arms and no wildcard, which is the point: the port enum is not
+    /// `#[non_exhaustive]`, so a third provider outcome breaks this build
+    /// instead of silently classifying as one of the two on a command that
+    /// decides whether a credential may be used again.
+    #[must_use]
+    pub const fn from_port(decision: RefreshOutcomeDecision) -> Self {
+        match decision {
+            RefreshOutcomeDecision::ProviderApplied => Self::ProviderApplied,
+            RefreshOutcomeDecision::ProviderNotApplied => Self::ProviderNotApplied,
+        }
+    }
+}
+
+/// Request body for reconciling a credential's retained refresh claim.
+///
+/// Reconciliation is an operator evidence command, not a credential mutation:
+/// it records what the provider did for a refresh whose local outcome is
+/// unknown, which is the only thing that clears the retained poison a refused
+/// `release` leaves behind.
+#[derive(Clone, Deserialize, ToSchema)]
+pub struct ReconcileCredentialRequest {
+    /// The provider outcome the operator has established.
+    pub decision: CredentialReconcileDecisionV1,
+    /// Operator note justifying the decision. Audited durable text, never
+    /// credential material; the credential adapter caps its length.
+    pub evidence: String,
+}
+
+impl fmt::Debug for ReconcileCredentialRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ReconcileCredentialRequest")
+            .field("decision", &self.decision)
+            .field("evidence", &REDACTED)
+            .finish()
+    }
+}
+
+/// Response from reconciling a credential's retained refresh claim.
+///
+/// A 200 means the decision is on record, so there is deliberately no
+/// `reconciled: bool` — a flag that is always `true` would only blur the one
+/// distinction a client needs, which is `changed`.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct ReconcileCredentialResponse {
+    /// The provider outcome now on record for the credential.
+    pub decision: CredentialReconcileDecisionV1,
+    /// Whether this call recorded the decision. `false` is the idempotent
+    /// recommit of an already-recorded `(decision, evidence)` pair: a success,
+    /// not a conflict.
+    pub changed: bool,
+    /// SHA-256 of the evidence whose resolution is on record, lowercase hex.
+    ///
+    /// The durable half of the reconciliation retry identity — the conflict
+    /// identity the record is keyed on. A digest, not a secret, so it is
+    /// visible in `Debug`; a client holding its original evidence can confirm
+    /// what is on record and repeat the exact request for a `changed: false`
+    /// no-op instead of a 409.
+    pub evidence_digest: String,
+    /// Human-readable result message.
+    pub message: String,
+}
+
 // --- Type discovery ---
 
 /// Metadata and schema for a registered credential type.
@@ -595,6 +695,24 @@ mod tests {
     }
 
     #[test]
+    fn reconcile_request_debug_redacts_evidence() {
+        let request = ReconcileCredentialRequest {
+            decision: CredentialReconcileDecisionV1::ProviderApplied,
+            evidence: SECRET_CANARY.to_owned(),
+        };
+
+        let debug = format!("{request:?}");
+        assert!(
+            !debug.contains(SECRET_CANARY),
+            "reconcile request Debug must not expose the operator evidence: {debug}"
+        );
+        assert!(
+            debug.contains("ProviderApplied"),
+            "the decision is not sensitive and should remain visible: {debug}"
+        );
+    }
+
+    #[test]
     fn pending_response_debug_redacts_token_and_interaction_payload() {
         let response = ResolveCredentialResponse::Pending {
             pending_token: SECRET_CANARY.to_owned(),
@@ -633,6 +751,36 @@ mod tests {
             assert!(
                 !debug.contains(SECRET_CANARY),
                 "test response Debug must not expose its platform message: {debug}"
+            );
+        }
+    }
+
+    #[test]
+    fn reconcile_decision_wire_spelling_matches_the_durable_port_spelling() {
+        // Iterating the port's variants is the point: the wire spelling is not
+        // an independent choice, it is the durable spelling. What catches a
+        // *third* variant is the exhaustiveness of `from_port`, not this array.
+        let port_variants = [
+            RefreshOutcomeDecision::ProviderApplied,
+            RefreshOutcomeDecision::ProviderNotApplied,
+        ];
+
+        for port in port_variants {
+            let wire = serde_json::to_value(CredentialReconcileDecisionV1::from_port(port))
+                .expect("wire decision must serialize");
+            assert_eq!(
+                wire,
+                serde_json::Value::String(port.as_str().to_owned()),
+                "the wire spelling of {port:?} must be byte-identical to the durable \
+                 adjudication spelling the port's as_str() writes to the adjudication_decision \
+                 column: a drift either records a decision storage cannot decode or renames an \
+                 already-persisted row"
+            );
+            assert_eq!(
+                serde_json::from_value::<CredentialReconcileDecisionV1>(wire.clone())
+                    .expect("every spelling this route emits must also decode"),
+                CredentialReconcileDecisionV1::from_port(port),
+                "the wire vocabulary must round-trip, so a client can send back what it was told"
             );
         }
     }

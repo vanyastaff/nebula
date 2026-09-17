@@ -1323,6 +1323,13 @@ mod tests {
         assert!(!is_transient_sqlite_lock(&sqlx::Error::WorkerCrashed));
     }
 
+    ///
+    /// Head 0053 adds the operator reconciliation record to credential sentinel
+    /// incidents. Every column is nullable and NULL for incidents recorded
+    /// earlier, which stays the fail-closed "no provider outcome is known"
+    /// state, so the migration neither resolves a legacy incident nor changes
+    /// the sentinel-event count; the floor remains at 0040.
+    ///
     /// Head 0052 adds a default-empty credential-binding document to resource
     /// definitions. Existing rows could not persist bindings before this
     /// migration, so the empty backfill does not infer or fabricate credential
@@ -1350,9 +1357,9 @@ mod tests {
     fn new_catalog_head_requires_explicit_admission_policy_review() {
         assert_eq!(GENERAL_CATALOG_SUPPORTED_FLOOR, 40);
         #[cfg(feature = "sqlite")]
-        assert_eq!(catalog::catalog_head(&super::SQLITE_MIGRATOR), 52);
+        assert_eq!(catalog::catalog_head(&super::SQLITE_MIGRATOR), 53);
         #[cfg(feature = "postgres")]
-        assert_eq!(catalog::catalog_head(&super::POSTGRES_MIGRATOR), 52);
+        assert_eq!(catalog::catalog_head(&super::POSTGRES_MIGRATOR), 53);
     }
 
     /// The setup guard must never hold a descriptor on the database file.

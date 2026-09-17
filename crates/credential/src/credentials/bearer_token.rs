@@ -17,8 +17,7 @@ use crate::{
 #[derive(Schema, Deserialize)]
 pub struct BearerTokenProperties {
     /// The opaque bearer token (API key, PAT, session token).
-    #[field(secret, label = "Token")]
-    #[validate(required)]
+    #[property(display(label = "Token"), input(secret, required))]
     pub token: SecretString,
 }
 

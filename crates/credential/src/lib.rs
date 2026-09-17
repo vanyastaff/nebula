@@ -90,8 +90,9 @@ extern crate self as nebula_credential;
 pub mod contract;
 /// Built-in credential type implementations.
 pub mod credentials;
-/// Credential lifecycle as data — `CredentialPolicy` / `RefreshStrategy` /
-/// `RevokeStrategy` (ADR-0088 D2: capabilities are data, not sub-traits).
+/// Credential lifecycle policy types — `CredentialPolicy` / `RefreshStrategy` /
+/// `RevokeStrategy` (ADR-0088 D2). The routing model is cut; the capability
+/// sub-traits govern.
 pub(crate) mod lifecycle;
 /// Credential operation metrics — counter names and label helpers.
 pub(crate) mod metrics;
@@ -152,6 +153,9 @@ pub mod runtime;
 pub(crate) mod service;
 /// Credential snapshot.
 pub(crate) mod snapshot;
+/// Version-envelope wire format for persisted credential state — the single
+/// fail-closed decode/write choke point (ADR-0107 Seam 2).
+pub(crate) mod state_envelope;
 
 // ── Root re-exports ─────────────────────────────────────────────────────────
 // Commonly-used types available directly as `nebula_credential::TypeName`.
@@ -166,7 +170,7 @@ pub use contract::{
     AnyCredential, Capabilities, CompletedDispatch, CompletedResponseProof, Credential,
     CredentialRegistry, CredentialState, Dynamic, Interactive, NoPendingState, PendingState,
     PendingToken, RefreshAttempt, RefreshDispatchError, RefreshExecutionMode, RefreshReport,
-    Refreshable, RegisterError, Revocable, Testable, compute_capabilities,
+    Refreshable, RegisterError, Revocable, StateWireFingerprint, Testable, compute_capabilities,
 };
 // Resolve types
 pub use contract::{
@@ -192,10 +196,11 @@ pub use nebula_core::{CredentialId, CredentialKey, credential_key};
 // (schema-of properties: `Self::Properties: HasSchema` is the single source of truth).
 pub use nebula_schema::schema_of;
 // Authoring macros. `credential` is the canonical ADR-0088 D1 attribute macro
-// (one-impl-block authoring); `AuthScheme` derives the scheme's `AuthPattern`.
+// (one-impl-block authoring); `AuthScheme` derives the scheme's `AuthPattern`;
+// `StateWireFingerprint` derives the wire-shape fingerprint const.
 // (The legacy `#[derive(Credential)]` was removed — the attribute macro covers
 // every case and infers capabilities from method presence.)
-pub use nebula_credential_macros::{AuthScheme, credential};
+pub use nebula_credential_macros::{AuthScheme, StateWireFingerprint, credential};
 // Opt-out built-in (lives at root, not under credentials::, because it has
 // no Input form and is never registered in CredentialRegistry — it's a
 // Resource-side type marker per credential isolation).
@@ -243,7 +248,8 @@ pub use secrets::{
     SecretBox, SecretString, generate_code_challenge, generate_pkce_verifier,
     generate_random_state, secret_from_string,
 };
-// Lifecycle policy types (ADR-0088 D2): capabilities as data, not sub-traits.
+// Lifecycle policy types (ADR-0088 D2). The routing model is cut; the capability sub-traits still
+// govern, and these types remain the authoring surface.
 pub use lifecycle::{
     CredentialLifecycle, CredentialPolicy, Decision, LeaseRef, RefreshStrategy,
     RefreshStrategyKind, RevokeStrategy, SchemeId,
@@ -271,6 +277,7 @@ pub use crate::{
     },
     record::CredentialRecord,
     snapshot::{CredentialSnapshot, SnapshotError},
+    state_envelope::StateEnvelopeError,
 };
 
 // CredentialService facade (ADR-0092, relocated from nebula-credential-runtime).
@@ -306,7 +313,7 @@ pub mod prelude {
         CredentialRegistry, CredentialService, CredentialState, DeprecationNotice, Dynamic,
         ExternalScheme, Icon, Interactive, MaturityLevel, PublicScheme, RefreshAttempt,
         RefreshExecutionMode, RefreshReport, Refreshable, Revocable, SecretString, SensitiveScheme,
-        Testable, credential, credential_key, schema_of,
+        StateWireFingerprint, Testable, credential, credential_key, schema_of,
     };
 }
 

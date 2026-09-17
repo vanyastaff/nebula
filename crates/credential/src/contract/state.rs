@@ -34,6 +34,22 @@ pub trait CredentialState:
     }
 }
 
+/// Compile-time identity of a credential state type's serde wire shape.
+///
+/// Implemented by `#[derive(StateWireFingerprint)]`; `SCHEMA_FINGERPRINT` is
+/// an FNV-1a 64 hash over the wire-shape projection (field names as
+/// authored, Option-ness, declaration order, type tokens as written — never
+/// authored annotations, labels, descriptions, or values). See the derive
+/// documentation for the exact projection contract.
+///
+/// The fingerprint rides in the persisted-state envelope (ADR-0107 Seam 2)
+/// so a reader can fail closed before deserialization when the stored wire
+/// shape is not the shape this build understands.
+pub trait StateWireFingerprint: CredentialState {
+    /// FNV-1a 64 over the serde wire-shape projection of this state type.
+    const SCHEMA_FINGERPRINT: u64;
+}
+
 /// Opt-in macro: make an `AuthScheme` also usable as `CredentialState`.
 ///
 /// For static credentials where stored state = consumer-facing auth

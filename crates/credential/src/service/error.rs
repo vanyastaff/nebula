@@ -10,7 +10,7 @@ use std::fmt;
 
 use thiserror::Error;
 
-use crate::{ReauthReason, RefreshNotAppliedContext, RetryAdvice};
+use crate::{ReauthReason, RefreshNotAppliedContext, RetryAdvice, StateEnvelopeError};
 
 /// One secret-safe credential validation issue.
 ///
@@ -359,6 +359,15 @@ pub enum CredentialServiceError {
     /// Persisted state cannot be projected through its registered credential type.
     #[error("credential slot state is invalid")]
     InvalidSlotState,
+
+    /// The persisted state's envelope failed a fail-closed check (unsupported
+    /// schema version, envelope/row version-axis disagreement, kind tag, or
+    /// schema fingerprint). Distinct from [`Self::InvalidSlotState`] and
+    /// [`Self::Internal`] on purpose: a stored shape this build cannot
+    /// understand is an observable, permanent refusal, never a corrupt-row or
+    /// internal fault.
+    #[error("stored credential state was refused by the state-envelope check: {0}")]
+    StateEnvelopeRefused(StateEnvelopeError),
 }
 
 impl fmt::Debug for CredentialServiceError {
@@ -382,7 +391,8 @@ impl nebula_error::Classify for CredentialServiceError {
             | Self::PendingExpired
             | Self::SessionRequired { .. }
             | Self::ReauthRequired { .. }
-            | Self::ScopeViolation { .. } => ErrorCategory::Validation,
+            | Self::ScopeViolation { .. }
+            | Self::StateEnvelopeRefused(_) => ErrorCategory::Validation,
             Self::IdAlreadyExists | Self::NameAlreadyExists | Self::VersionExhausted => {
                 ErrorCategory::Conflict
             },
@@ -440,6 +450,7 @@ impl nebula_error::Classify for CredentialServiceError {
             },
             Self::ExternalSourceNotWired { .. } => "CREDENTIAL_SERVICE:EXTERNAL_NOT_WIRED",
             Self::InvalidSlotState => "CREDENTIAL_SERVICE:INVALID_SLOT_STATE",
+            Self::StateEnvelopeRefused(_) => "CREDENTIAL_SERVICE:STATE_ENVELOPE_REFUSED",
             Self::Internal(_) => "CREDENTIAL_SERVICE:INTERNAL",
             Self::Cancelled => "CREDENTIAL_SERVICE:CANCELLED",
             Self::ScopeViolation { .. } => "CREDENTIAL_SERVICE:SCOPE_VIOLATION",

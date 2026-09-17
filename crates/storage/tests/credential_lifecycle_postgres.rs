@@ -1,7 +1,8 @@
 //! PostgreSQL acceptance coverage for the structural credential lifecycle.
 //!
-//! Every test owns an isolated schema. An absent `DATABASE_URL` skips cleanly;
-//! a configured but unusable database remains a hard failure.
+//! Every test owns an isolated schema. An absent `DATABASE_URL` fails loudly
+//! naming the backend; a configured but unusable database remains a hard
+//! failure.
 
 #![cfg(feature = "postgres")]
 
@@ -156,8 +157,11 @@ fn version(value: i64) -> CredentialVersion {
 #[tokio::test]
 async fn postgres_lifecycle_enforces_precedence_cas_and_terminal_visibility() -> TestResult<()> {
     let Some(database) = IsolatedDatabase::connect().await else {
-        eprintln!("DATABASE_URL not set — skipping");
-        return Ok(());
+        panic!(
+            "postgres_lifecycle_enforces_precedence_cas_and_terminal_visibility: backend \
+             unreachable — the case cannot run and must fail rather than pass unchecked; \
+             reach the backend (set DATABASE_URL for postgres) or run without this feature"
+        );
     };
     let store = PgCredentialPersistence::connect_with(database.options.clone()).await?;
     let owner_a = owner("tenant-a");
@@ -518,8 +522,11 @@ async fn postgres_lifecycle_enforces_precedence_cas_and_terminal_visibility() ->
 #[tokio::test]
 async fn postgres_concurrent_mutations_have_one_linear_winner() -> TestResult<()> {
     let Some(database) = IsolatedDatabase::connect().await else {
-        eprintln!("DATABASE_URL not set — skipping");
-        return Ok(());
+        panic!(
+            "postgres_concurrent_mutations_have_one_linear_winner: backend unreachable — the \
+             case cannot run and must fail rather than pass unchecked; reach the backend (set \
+             DATABASE_URL for postgres) or run without this feature"
+        );
     };
     let store = PgCredentialPersistence::connect_with(database.options.clone()).await?;
     let credential_owner = owner("tenant-concurrency");
@@ -756,8 +763,11 @@ async fn postgres_concurrent_mutations_have_one_linear_winner() -> TestResult<()
 #[tokio::test]
 async fn postgres_does_not_retry_an_ambiguous_database_failure() -> TestResult<()> {
     let Some(database) = IsolatedDatabase::connect().await else {
-        eprintln!("DATABASE_URL not set — skipping");
-        return Ok(());
+        panic!(
+            "postgres_does_not_retry_an_ambiguous_database_failure: backend unreachable — \
+             the case cannot run and must fail rather than pass unchecked; reach the backend \
+             (set DATABASE_URL for postgres) or run without this feature"
+        );
     };
     let store = PgCredentialPersistence::connect_with(database.options.clone()).await?;
     let credential_owner = owner("tenant-retry");

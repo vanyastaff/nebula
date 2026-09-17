@@ -18,15 +18,17 @@ use crate::runtime::refresh::{
     persist_retry_gate,
 };
 use crate::runtime::resolve_error::{
-    ResolveError, reject_tombstoned, resolve_error_to_credential_error,
+    ResolveError, envelope_error_to_resolve_error, reject_tombstoned,
+    resolve_error_to_credential_error,
 };
+use crate::state_envelope::{decode_state_payload, encode_state_payload};
 use crate::{
     Credential, CredentialContext, CredentialEvent, CredentialHandle, CredentialId,
     CredentialLifecycle, CredentialMaterialTransition, CredentialPersistence,
     CredentialPersistenceError, CredentialReplacement, CredentialSelector, CredentialState,
     Decision, LAST_VALIDATED_AT_METADATA_KEY, RefreshAttempt, RefreshNotAppliedContext,
-    RefreshRetryAdmission, Refreshable, SchemeFactory, SchemeGuard, StoredCredential,
-    StoredLiveCredential,
+    RefreshRetryAdmission, Refreshable, SchemeFactory, SchemeGuard, StateWireFingerprint,
+    StoredCredential, StoredLiveCredential,
     contract::{RefreshReauthPhase, RefreshReportKind},
     resolve::ReauthReason,
 };
@@ -242,6 +244,7 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
         S: CredentialPersistence + 'static,
         C: Refreshable + CredentialLifecycle,
         C::Scheme: zeroize::Zeroize + Clone + Send + Sync + 'static,
+        C::State: StateWireFingerprint,
     {
         let resolver = self.clone();
         SchemeFactory::new(move || {
@@ -287,6 +290,7 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
     ) -> Result<CredentialHandle<C::Scheme>, ResolveError>
     where
         C: Credential,
+        C::State: StateWireFingerprint,
     {
         self.ensure_source_wired()?;
         let credential_id = selector.credential_id();
@@ -318,6 +322,7 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
     ) -> Result<CredentialHandle<C::Scheme>, ResolveError>
     where
         C: Credential,
+        C::State: StateWireFingerprint,
     {
         self.ensure_source_wired()?;
         // The port applies the complete owner-bound selector before returning a
@@ -367,6 +372,7 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
     where
         S: 'static,
         C: Refreshable + CredentialLifecycle,
+        C::State: StateWireFingerprint,
     {
         self.ensure_source_wired()?;
         for reevaluation in 0..=MAX_COORDINATED_REEVALUATIONS {
@@ -477,6 +483,7 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
     where
         S: 'static,
         C: Refreshable + CredentialLifecycle,
+        C::State: StateWireFingerprint,
     {
         let credential_id = selector.credential_id();
         let credential_id_text = credential_id.to_string();
@@ -741,6 +748,13 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
         Ok(stored)
     }
 
+    /// The single resolver-side decode of persisted state. Every resolution
+    /// path funnels through here, and every envelope check (unsupported
+    /// version, axis disagreement, kind tag, schema fingerprint) runs inside
+    /// [`crate::state_envelope::decode_state_payload`] — the one fail-closed choke point
+    /// (ADR-0107 Seam 2). Legacy pre-envelope rows fall back to a direct
+    /// decode (the ordered migration); corrupt bytes keep their
+    /// `Deserialize` classification.
     fn deserialize<C>(
         &self,
         credential_id: CredentialId,
@@ -748,11 +762,19 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
     ) -> Result<C::State, ResolveError>
     where
         C: Credential,
+        C::State: StateWireFingerprint,
     {
-        serde_json::from_slice(stored.data()).map_err(|_| ResolveError::Deserialize {
-            credential_id: credential_id.to_string(),
-            reason: "stored credential state is invalid".to_owned(),
-        })
+        let body = decode_state_payload::<C::State>(
+            stored.data(),
+            stored.state_kind(),
+            stored.state_version(),
+        )
+        .map_err(|error| envelope_error_to_resolve_error(credential_id.to_string(), error))?;
+        body.into_state::<C::State>()
+            .map_err(|_| ResolveError::Deserialize {
+                credential_id: credential_id.to_string(),
+                reason: "stored credential state is invalid".to_owned(),
+            })
     }
 
     async fn perform_refresh<C>(
@@ -764,6 +786,7 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
     ) -> RefreshDisposition<Result<CredentialHandle<C::Scheme>, ResolveError>>
     where
         C: Refreshable,
+        C::State: StateWireFingerprint,
     {
         let credential_id = selector.credential_id();
         let credential_id_text = credential_id.to_string();
@@ -888,11 +911,12 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
     ) -> RefreshDisposition<Result<CredentialHandle<C::Scheme>, ResolveError>>
     where
         C: Refreshable,
+        C::State: StateWireFingerprint,
     {
         let credential_id = selector.credential_id();
         let credential_id_text = credential_id.to_string();
         let data = match crate::serde_secret::expose_for_serialization(|| {
-            serde_json::to_vec(&state)
+            encode_state_payload(&state)
         }) {
             Ok(data) => data,
             Err(_) if phase == RefreshCommitPhase::ProviderConfirmed => {
@@ -923,7 +947,14 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
             expected_version,
             data.into(),
             stored.state_kind().to_owned(),
-            stored.state_version(),
+            // The row's `state_version` axis must advance to the version the
+            // writing build stamped in the envelope (`interface_version` =
+            // `C::State::VERSION`). Stamping the stored axis instead would
+            // leave a legacy row (axis < VERSION) with an envelope whose
+            // interface_version disagrees with the row — the next read
+            // refuses it as VersionAxesDisagree, poisoning exactly the
+            // migration path the envelope exists to serve.
+            <C::State as CredentialState>::VERSION,
             stored.name().map(str::to_owned),
             state.expires_at(),
             false,
@@ -1911,7 +1942,7 @@ mod refresh_revoke_race {
         }
     }
 
-    #[derive(Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
+    #[derive(Serialize, Deserialize, Zeroize, ZeroizeOnDrop, StateWireFingerprint)]
     struct TestState {
         token: String,
     }
@@ -2087,6 +2118,76 @@ mod refresh_revoke_race {
     impl CredentialLifecycle for LocalRefreshCred {
         fn policy(state: &TestState) -> CredentialPolicy {
             TestCred::policy(state)
+        }
+    }
+
+    /// Regression credential whose state type's `VERSION` is ahead of the
+    /// legacy row axis it reads. Simulates the first real
+    /// `CredentialState::VERSION` bump (v1 → v2) without touching any
+    /// built-in: the same wire shape as [`TestState`], declared at version 2,
+    /// fed a legacy v1 row (plain JSON, row axis 1).
+    struct VersionTwoCred;
+
+    #[derive(Serialize, Deserialize, Zeroize, ZeroizeOnDrop, StateWireFingerprint)]
+    struct VersionTwoState {
+        token: String,
+    }
+
+    impl CredentialState for VersionTwoState {
+        const KIND: &'static str = "test_refreshable_state";
+        const VERSION: u32 = 2;
+    }
+
+    impl Credential for VersionTwoCred {
+        type Properties = ();
+        type Scheme = TestScheme;
+        type State = VersionTwoState;
+
+        const KEY: &'static str = "test.refreshable.v2";
+
+        fn metadata() -> CredentialMetadataDraft {
+            CredentialMetadataDraft::new(
+                nebula_core::credential_key!("test.refreshable.v2"),
+                crate::metadata_name!("VersionTwoCred"),
+                "version-bumped refreshable test credential for migration regressions",
+            )
+        }
+
+        fn project(_state: &VersionTwoState) -> TestScheme {
+            TestScheme
+        }
+
+        async fn resolve(
+            _properties: &(),
+            _ctx: &CredentialContext,
+        ) -> Result<StaticResolveResult<VersionTwoState>, CredentialError> {
+            Ok(StaticResolveResult::Complete(VersionTwoState {
+                token: "live".to_owned(),
+            }))
+        }
+    }
+
+    impl Refreshable for VersionTwoCred {
+        const REFRESH_EXECUTION_MODE: crate::RefreshExecutionMode =
+            crate::RefreshExecutionMode::Local;
+
+        async fn refresh(
+            state: &mut VersionTwoState,
+            attempt: RefreshAttempt<'_>,
+        ) -> crate::RefreshReport {
+            state.token = "refreshed-v2".to_owned();
+            attempt.local_refresh_completed()
+        }
+    }
+
+    impl CredentialLifecycle for VersionTwoCred {
+        fn policy(_state: &VersionTwoState) -> CredentialPolicy {
+            CredentialPolicy {
+                expires_at: Some(Utc::now() - chrono::Duration::minutes(5)),
+                lease: None,
+                refresh: RefreshStrategy::RefreshToken,
+                revoke: RevokeStrategy::HandleBased,
+            }
         }
     }
 
@@ -2283,7 +2384,7 @@ mod refresh_revoke_race {
         }
     }
 
-    #[derive(Deserialize, Zeroize, ZeroizeOnDrop)]
+    #[derive(Deserialize, Zeroize, ZeroizeOnDrop, StateWireFingerprint)]
     struct PostProviderEncodingState {
         fail_serialization: bool,
     }
@@ -2395,6 +2496,83 @@ mod refresh_revoke_race {
             token: "live".to_owned(),
         })
         .expect("serialize test state")
+    }
+
+    /// The envelope-wrapped payload the write path now produces for
+    /// `TestState`. Pre-envelope (plain legacy JSON) rows are covered by every
+    /// existing fixture that serializes `TestState` directly.
+    fn envelope_wrapped_test_state(token: &str) -> Zeroizing<Vec<u8>> {
+        let state = TestState {
+            token: token.to_owned(),
+        };
+        crate::serde_secret::expose_for_serialization(|| encode_state_payload(&state))
+            .expect("fixture state encodes")
+    }
+
+    /// Envelope bytes with caller-supplied overrides for the three checked
+    /// facets (`None` = the honest value) — the hostile-facet builder behind
+    /// the fail-closed decode tests.
+    fn envelope_payload(
+        fingerprint: Option<u64>,
+        kind_tag: Option<&str>,
+        interface_version: Option<u32>,
+    ) -> Vec<u8> {
+        let body = serde_json::to_value(&TestState {
+            token: "live".to_owned(),
+        })
+        .expect("fixture state encodes");
+        let envelope = serde_json::json!({
+            "interface_version": interface_version.unwrap_or(TestState::VERSION),
+            "schema_fingerprint": fingerprint
+                .unwrap_or(<TestState as StateWireFingerprint>::SCHEMA_FINGERPRINT)
+                .to_le_bytes(),
+            "kind_tag": kind_tag.unwrap_or(TestState::KIND),
+            "body": body,
+        });
+        serde_json::to_vec(&envelope).expect("fixture envelope encodes")
+    }
+
+    /// A live row over caller-supplied `data` and axes, for envelope decode
+    /// scenarios the honest fixtures above do not express.
+    fn row_with_payload(
+        data: Zeroizing<Vec<u8>>,
+        key: &str,
+        kind: &str,
+        version: u32,
+    ) -> StoredCredential {
+        let now = Utc::now();
+        StoredLiveCredential::new(
+            test_id(),
+            None,
+            key.to_owned(),
+            data.into(),
+            kind.to_owned(),
+            version,
+            CredentialVersion::MIN,
+            CredentialMaterialEpoch::MIN,
+            now,
+            now,
+            None,
+            false,
+            serde_json::Map::new(),
+            None,
+        )
+        .expect("fixture is a valid live credential")
+        .into()
+    }
+
+    /// Decode a persisted row through the state-envelope choke point, exactly
+    /// as production readers do — legacy rows decode via the fallback,
+    /// envelope rows via the envelope path. Tests must not re-implement this
+    /// with a direct `serde_json::from_slice(row.data())`.
+    fn decode_persisted_state<S: CredentialState + StateWireFingerprint>(
+        stored: &StoredLiveCredential,
+    ) -> S {
+        let body =
+            decode_state_payload::<S>(stored.data(), stored.state_kind(), stored.state_version())
+                .expect("persisted state passes the envelope choke point");
+        body.into_state()
+            .expect("persisted typed state must decode")
     }
 
     fn live_row() -> StoredCredential {
@@ -2765,8 +2943,7 @@ mod refresh_revoke_race {
         let StoredCredential::Live(row) = store.snapshot() else {
             panic!("typed refresh must leave a live credential row");
         };
-        let persisted: TestState =
-            serde_json::from_slice(row.data()).expect("persisted typed state must decode");
+        let persisted: TestState = decode_persisted_state(&row);
         assert_eq!(persisted.token, "same-key-typed-refresh");
     }
 
@@ -2808,8 +2985,7 @@ mod refresh_revoke_race {
         let StoredCredential::Live(stored) = store.snapshot() else {
             panic!("successful refresh must leave a live credential");
         };
-        let state: TestState =
-            serde_json::from_slice(stored.data()).expect("stored refreshed state is valid");
+        let state: TestState = decode_persisted_state(&stored);
         assert_eq!(state.token, "cancellation-aware-refreshed");
     }
 
@@ -2962,8 +3138,7 @@ mod refresh_revoke_race {
                 .next()
                 .expect("fixture has epoch headroom")
         );
-        let state: TestState =
-            serde_json::from_slice(row.data()).expect("refreshed state remains valid");
+        let state: TestState = decode_persisted_state(&row);
         assert_eq!(state.token, "refreshed");
     }
 
@@ -3091,6 +3266,54 @@ mod refresh_revoke_race {
             "initial load plus the pre-dispatch authority reload are required; \
              a confirmed replacement must not trigger a post-write read"
         );
+    }
+
+    #[tokio::test]
+    async fn refresh_rewrites_legacy_row_with_the_current_state_version_axis() {
+        // Simulates the first real `CredentialState::VERSION` bump without
+        // touching any built-in: `VersionTwoState::VERSION = 2` reads a legacy
+        // v1 row (plain JSON, row axis 1 — the ordered-migration path) and
+        // refreshes it. The rewrite must stamp the row's `state_version` axis
+        // with `C::State::VERSION` (2), never the stored axis (1): a
+        // v1-stamped row under an interface_version-2 envelope refuses on the
+        // next read as an axis disagreement, poisoning exactly the migration
+        // path the envelope exists to serve.
+        let legacy = serde_json::to_vec(&VersionTwoState {
+            token: "legacy".to_owned(),
+        })
+        .expect("legacy v1 fixture state encodes");
+        let store = Arc::new(ScriptedStore::new(
+            row_with_payload(
+                Zeroizing::new(legacy),
+                VersionTwoCred::KEY,
+                VersionTwoState::KIND,
+                1,
+            ),
+            false,
+        ));
+        let resolver = resolver_with(Arc::clone(&store));
+        let ctx = CredentialContext::for_owner("test-owner");
+
+        resolver
+            .resolve_with_refresh::<VersionTwoCred>(&test_selector(), &ctx)
+            .await
+            .expect("an uncontended refresh of a legacy row must succeed");
+
+        let final_row = store.snapshot();
+        let StoredCredential::Live(final_row) = final_row else {
+            panic!("a refresh must leave the row live");
+        };
+        assert_eq!(
+            final_row.state_version(),
+            VersionTwoState::VERSION,
+            "the rewrite must stamp the row axis with the writing build's state version, \
+             not the stored legacy axis"
+        );
+        // The refreshed row must decode under the same build — the exact
+        // property the stale-axis stamp breaks (row axis 1 vs envelope
+        // interface_version 2 → VersionAxesDisagree on the next read).
+        let decoded: VersionTwoState = decode_persisted_state(&final_row);
+        assert_eq!(decoded.token, "refreshed-v2");
     }
 
     #[tokio::test]
@@ -3235,8 +3458,7 @@ mod refresh_revoke_race {
             row.refresh_retry_gate(),
             Some(RefreshRetryGate::Never { .. })
         ));
-        let state: TestState =
-            serde_json::from_slice(row.data()).expect("stored state remains valid");
+        let state: TestState = decode_persisted_state(&row);
         assert_eq!(
             state.token, "live",
             "the invalid locally-mutated state must never be committed"
@@ -4394,5 +4616,166 @@ mod refresh_revoke_race {
             0,
             "no CAS write must occur when the F3 guard rejects the refresh"
         );
+    }
+
+    // ── Envelope fail-closed decode (ADR-0107 Seam 2) ─────────────────
+
+    #[tokio::test]
+    async fn envelope_wrapped_row_resolves_like_a_legacy_row() {
+        let store = Arc::new(ScriptedStore::new(
+            row_with_payload(
+                envelope_wrapped_test_state("live"),
+                TestCred::KEY,
+                TestState::KIND,
+                TestState::VERSION,
+            ),
+            false,
+        ));
+        let resolver = resolver_with(Arc::clone(&store));
+
+        resolver
+            .resolve::<TestCred>(&test_selector())
+            .await
+            .expect("an envelope-wrapped row decodes exactly like a legacy row");
+    }
+
+    #[tokio::test]
+    async fn envelope_schema_fingerprint_mismatch_refuses_with_distinct_error() {
+        let store = Arc::new(ScriptedStore::new(
+            row_with_payload(
+                Zeroizing::new(envelope_payload(
+                    Some(
+                        <TestState as StateWireFingerprint>::SCHEMA_FINGERPRINT
+                            ^ 0x0000_0000_0000_0001,
+                    ),
+                    None,
+                    None,
+                )),
+                TestCred::KEY,
+                TestState::KIND,
+                TestState::VERSION,
+            ),
+            false,
+        ));
+        let resolver = resolver_with(Arc::clone(&store));
+
+        let err = resolver
+            .resolve::<TestCred>(&test_selector())
+            .await
+            .expect_err("a stored fingerprint mismatch must refuse resolution");
+        assert!(
+            matches!(err, ResolveError::SchemaFingerprintMismatch { .. }),
+            "the choke point must not collapse the refusal into Deserialize, got {err:?}"
+        );
+        assert_eq!(
+            store.replacement_count(),
+            0,
+            "a fail-closed refusal must not mutate the row"
+        );
+    }
+
+    #[tokio::test]
+    async fn envelope_kind_tag_mismatch_refuses_with_distinct_error() {
+        let store = Arc::new(ScriptedStore::new(
+            row_with_payload(
+                Zeroizing::new(envelope_payload(None, Some("intruder_kind"), None)),
+                TestCred::KEY,
+                TestState::KIND,
+                TestState::VERSION,
+            ),
+            false,
+        ));
+        let resolver = resolver_with(Arc::clone(&store));
+
+        let err = resolver
+            .resolve::<TestCred>(&test_selector())
+            .await
+            .expect_err("a stored kind-tag mismatch must refuse resolution");
+        assert!(
+            matches!(err, ResolveError::EnvelopeKindMismatch { .. }),
+            "the choke point must not collapse the refusal into row KindMismatch, got {err:?}"
+        );
+        assert_eq!(store.replacement_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn envelope_unsupported_version_refuses_with_distinct_error() {
+        let future = TestState::VERSION + 1;
+        let store = Arc::new(ScriptedStore::new(
+            row_with_payload(
+                Zeroizing::new(envelope_payload(None, None, Some(future))),
+                TestCred::KEY,
+                TestState::KIND,
+                future,
+            ),
+            false,
+        ));
+        let resolver = resolver_with(Arc::clone(&store));
+
+        let err = resolver
+            .resolve::<TestCred>(&test_selector())
+            .await
+            .expect_err("a stored shape newer than this build must refuse resolution");
+        assert!(
+            matches!(err, ResolveError::UnknownSchemaVersion { .. }),
+            "the choke point must name the unsupported version, got {err:?}"
+        );
+        assert_eq!(store.replacement_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn envelope_version_axes_disagreement_refuses_with_distinct_error() {
+        // The envelope claims version 1 while the row column says 2: the two
+        // axes must agree, so the payload refuses before body decode.
+        let store = Arc::new(ScriptedStore::new(
+            row_with_payload(
+                Zeroizing::new(envelope_payload(None, None, Some(TestState::VERSION))),
+                TestCred::KEY,
+                TestState::KIND,
+                TestState::VERSION + 1,
+            ),
+            false,
+        ));
+        let resolver = resolver_with(Arc::clone(&store));
+
+        let err = resolver
+            .resolve::<TestCred>(&test_selector())
+            .await
+            .expect_err("disagreeing version axes must refuse resolution");
+        assert!(
+            matches!(err, ResolveError::StateVersionAxesDisagree { .. }),
+            "the choke point must name the axis disagreement, got {err:?}"
+        );
+        assert_eq!(store.replacement_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn legacy_payload_with_future_row_version_refuses_with_distinct_error() {
+        // A NON-envelope payload (plain legacy JSON) whose row axis exceeds
+        // this build's VERSION must refuse on the legacy path's own version
+        // check. Every envelope-unsupported-version test above feeds an
+        // envelope payload and hits the envelope's `interface_version` check;
+        // this pins the sibling branch (state_envelope.rs legacy fallback).
+        let future = TestState::VERSION + 1;
+        let store = Arc::new(ScriptedStore::new(
+            row_with_payload(
+                Zeroizing::new(test_state_bytes()),
+                TestCred::KEY,
+                TestState::KIND,
+                future,
+            ),
+            false,
+        ));
+        let resolver = resolver_with(Arc::clone(&store));
+
+        let err = resolver
+            .resolve::<TestCred>(&test_selector())
+            .await
+            .expect_err("a legacy row claiming a future version must refuse resolution");
+        assert!(
+            matches!(err, ResolveError::UnknownSchemaVersion { .. }),
+            "the legacy-path version check must refuse fail-closed, got {err:?}"
+        );
+        assert_eq!(store.replacement_count(), 0);
     }
 }

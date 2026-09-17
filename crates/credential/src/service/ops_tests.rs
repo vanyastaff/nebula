@@ -120,7 +120,17 @@ async fn registered_ops_pass_the_once_normalized_secret_to_the_provider() {
         )
         .await
         .unwrap();
-    let decoded: SecretToken = serde_json::from_slice(&state.data).unwrap();
+    let decoded: SecretToken = {
+        // The resolve path produces the envelope-wrapped payload; decode
+        // through the choke point with the row axes it reports.
+        let body = decode_state_payload::<SecretToken>(
+            &state.data,
+            &state.state_kind,
+            state.state_version,
+        )
+        .unwrap();
+        body.into_state().unwrap()
+    };
     assert_eq!(decoded.token().expose_secret(), "aa");
     assert_eq!(state.state_kind, SecretToken::KIND);
     assert_eq!(state.state_version, SecretToken::VERSION);
@@ -180,7 +190,7 @@ fn property_preparation_decodes_secret_into_the_typed_owner() {
     assert!(!format!("{properties:?}").contains("SECRET_CANARY"));
 }
 
-#[derive(zeroize::ZeroizeOnDrop)]
+#[derive(zeroize::ZeroizeOnDrop, crate::StateWireFingerprint)]
 struct UnserializableState {
     token: String,
 }
@@ -252,12 +262,24 @@ async fn stored_state_decoding_errors_never_publish_stored_material() {
     let context = CredentialContext::for_owner("owner");
     let data = br#"{"token":"STATE_SECRET_CANARY"}"#;
     for error in [
-        ops.test(UnserializableCredential::KEY, data, &context)
-            .await
-            .unwrap_err(),
-        ops.revoke(UnserializableCredential::KEY, data, &context)
-            .await
-            .unwrap_err(),
+        ops.test(
+            UnserializableCredential::KEY,
+            data,
+            <UnserializableState as CredentialState>::KIND,
+            <UnserializableState as CredentialState>::VERSION,
+            &context,
+        )
+        .await
+        .unwrap_err(),
+        ops.revoke(
+            UnserializableCredential::KEY,
+            data,
+            <UnserializableState as CredentialState>::KIND,
+            <UnserializableState as CredentialState>::VERSION,
+            &context,
+        )
+        .await
+        .unwrap_err(),
     ] {
         let mut cause: Option<&dyn std::error::Error> = Some(&error);
         while let Some(current) = cause {

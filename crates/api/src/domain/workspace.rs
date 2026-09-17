@@ -187,4 +187,12 @@ pub fn router() -> OpenApiRouter<AppState> {
             Permission::CredentialDelete,
             routes!(credential::revoke_credential),
         ))
+        // Reconciliation is not a credential write: recording what a provider
+        // did to a claim the local store could not resolve is its own authority
+        // (`Permission::CredentialReconcile`), which is why it does not ride
+        // `CredentialWrite` like every lifecycle route above.
+        .routes(access::protected(
+            Permission::CredentialReconcile,
+            routes!(credential::reconcile_credential),
+        ))
 }

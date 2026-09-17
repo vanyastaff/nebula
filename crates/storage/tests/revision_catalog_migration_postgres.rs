@@ -772,7 +772,11 @@ async fn catalog_schema_snapshot(pool: &PgPool) -> TestResult<Vec<(String, Strin
 #[tokio::test]
 async fn clean_catalog_reaches_head_and_enforces_closed_shapes() -> TestResult<()> {
     let Some(database) = IsolatedDatabase::connect().await else {
-        return Ok(());
+        panic!(
+            "clean_catalog_reaches_head_and_enforces_closed_shapes: backend unreachable — the \
+             case cannot run and must fail rather than pass unchecked; reach the backend (set \
+             DATABASE_URL for postgres) or run without this feature"
+        );
     };
 
     let result = async {
@@ -802,7 +806,11 @@ async fn clean_catalog_reaches_head_and_enforces_closed_shapes() -> TestResult<(
 #[tokio::test]
 async fn migration_0041_preserves_0040_state_and_is_idempotent() -> TestResult<()> {
     let Some(database) = IsolatedDatabase::connect().await else {
-        return Ok(());
+        panic!(
+            "migration_0041_preserves_0040_state_and_is_idempotent: backend unreachable — the \
+             case cannot run and must fail rather than pass unchecked; reach the backend (set \
+             DATABASE_URL for postgres) or run without this feature"
+        );
     };
 
     let result = async {

@@ -105,7 +105,12 @@ optional_resource_fanout_conformance_suite!(runtime());
 #[tokio::test]
 async fn digest_collision_and_generation_overflow_use_test_owned_pool() {
     let Some((admin, pool, schema)) = isolated_pool().await else {
-        return;
+        panic!(
+            "digest_collision_and_generation_overflow_use_test_owned_pool: \
+             backend unreachable — the case cannot run and must fail rather than \
+             pass unchecked; reach the backend (set DATABASE_URL for postgres) or run \
+             without this feature"
+        );
     };
     let store = PgResourceRuntime::new(pool.clone());
     let scope = test_scope();
@@ -339,7 +344,11 @@ async fn pending_delivery(
 #[tokio::test]
 async fn claim_failure_rolls_back_and_retries_cleanly() {
     let Some((admin, pool, schema)) = isolated_pool().await else {
-        return;
+        panic!(
+            "claim_failure_rolls_back_and_retries_cleanly: backend unreachable — the case \
+             cannot run and must fail rather than pass unchecked; reach the backend (set \
+             DATABASE_URL for postgres) or run without this feature"
+        );
     };
     let store = PgResourceRuntime::new(pool.clone());
     let (scope, delivery_id) = pending_delivery(&pool, &store, b"claim-rollback").await;
@@ -380,7 +389,11 @@ async fn claim_failure_rolls_back_and_retries_cleanly() {
 #[tokio::test]
 async fn handoff_failure_rolls_back_completion_and_retries_cleanly() {
     let Some((admin, pool, schema)) = isolated_pool().await else {
-        return;
+        panic!(
+            "handoff_failure_rolls_back_completion_and_retries_cleanly: backend unreachable — the \
+             case cannot run and must fail rather than pass unchecked; reach the backend (set \
+             DATABASE_URL for postgres) or run without this feature"
+        );
     };
     let store = PgResourceRuntime::new(pool.clone());
     let (scope, _) = pending_delivery(&pool, &store, b"handoff-rollback").await;
@@ -471,7 +484,11 @@ async fn resolve_test_resource(store: &PgResourceRuntime, scope: &Scope) -> Shar
 #[tokio::test]
 async fn source_heartbeat_waiting_past_expiry_is_fenced() {
     let Some((admin, pool, schema)) = isolated_pool().await else {
-        return;
+        panic!(
+            "source_heartbeat_waiting_past_expiry_is_fenced: backend unreachable — the case \
+             cannot run and must fail rather than pass unchecked; reach the backend (set \
+             DATABASE_URL for postgres) or run without this feature"
+        );
     };
     let store = PgResourceRuntime::new(pool.clone());
     let scope = test_scope();
@@ -531,7 +548,11 @@ async fn source_heartbeat_waiting_past_expiry_is_fenced() {
 #[tokio::test]
 async fn sibling_completions_wait_on_parent_and_terminalize_it() {
     let Some((admin, pool, schema)) = isolated_pool().await else {
-        return;
+        panic!(
+            "sibling_completions_wait_on_parent_and_terminalize_it: backend unreachable — the \
+             case cannot run and must fail rather than pass unchecked; reach the backend (set \
+             DATABASE_URL for postgres) or run without this feature"
+        );
     };
     let store = PgResourceRuntime::new(pool.clone());
     let scope = test_scope();
@@ -647,7 +668,12 @@ async fn sibling_completions_wait_on_parent_and_terminalize_it() {
 #[tokio::test]
 async fn delivery_insert_failure_rolls_back_event_and_retries_cleanly() {
     let Some((admin, pool, schema)) = isolated_pool().await else {
-        return;
+        panic!(
+            "delivery_insert_failure_rolls_back_event_and_retries_cleanly: \
+             backend unreachable — the case cannot run and must fail rather than \
+             pass unchecked; reach the backend (set DATABASE_URL for postgres) or run \
+             without this feature"
+        );
     };
     let store = PgResourceRuntime::new(pool.clone());
     let scope = test_scope();
@@ -732,7 +758,11 @@ async fn delivery_insert_failure_rolls_back_event_and_retries_cleanly() {
 #[tokio::test]
 async fn subscription_insert_maps_only_foreign_keys_to_not_found() {
     let Some((admin, pool, schema)) = isolated_pool().await else {
-        return;
+        panic!(
+            "subscription_insert_maps_only_foreign_keys_to_not_found: backend unreachable — the \
+             case cannot run and must fail rather than pass unchecked; reach the backend (set \
+             DATABASE_URL for postgres) or run without this feature"
+        );
     };
     let store = PgResourceRuntime::new(pool.clone());
     let scope = test_scope();
@@ -780,7 +810,11 @@ async fn subscription_insert_maps_only_foreign_keys_to_not_found() {
 #[tokio::test]
 async fn migration_enforces_bounds_states_and_tenant_foreign_keys() {
     let Some((admin, pool, schema)) = isolated_pool().await else {
-        return;
+        panic!(
+            "migration_enforces_bounds_states_and_tenant_foreign_keys: backend unreachable — the \
+             case cannot run and must fail rather than pass unchecked; reach the backend (set \
+             DATABASE_URL for postgres) or run without this feature"
+        );
     };
     let resource_id = [1_u8; 16];
     let digest = [2_u8; 32];
@@ -832,7 +866,12 @@ async fn migration_enforces_bounds_states_and_tenant_foreign_keys() {
 #[tokio::test]
 async fn incompressible_max_identity_resolves_once_and_accepts_max_occurrence() {
     let Some((admin, pool, schema)) = isolated_pool().await else {
-        return;
+        panic!(
+            "incompressible_max_identity_resolves_once_and_accepts_max_occurrence: \
+             backend unreachable — the case cannot run and must fail rather than \
+             pass unchecked; reach the backend (set DATABASE_URL for postgres) or run \
+             without this feature"
+        );
     };
     let store = PgResourceRuntime::new(pool.clone());
     let scope = test_scope();

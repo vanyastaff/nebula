@@ -23,9 +23,9 @@
 //! testing is read-only, lease release races a TTL). Putting policy in
 //! the dispatcher would either force one-size-fits-all defaults or
 //! demand parameterization that obscures the structural binding the
-//! dispatcher exists to provide. Cf. `resolve_with_refresh` which
-//! adds policy precisely because there is a single canonical refresh
-//! call site.
+//! dispatcher exists to provide. Cf. `resolve_with_refresh`, which adds
+//! policy because it is the runtime's single refresh entry point; no
+//! production path reaches it yet (see `crate::lifecycle`).
 
 use crate::resolve::TestResult;
 use crate::{CredentialContext, Dynamic, Revocable, Testable, error::CredentialError};

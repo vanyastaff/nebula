@@ -58,7 +58,13 @@ impl CredentialService {
         let ctx = self.owner_context(scope);
         let result = self
             .ops
-            .test(stored.credential_key(), stored.data(), &ctx)
+            .test(
+                stored.credential_key(),
+                stored.data(),
+                stored.state_kind(),
+                stored.state_version(),
+                &ctx,
+            )
             .await?;
         tracing::info!(
             credential.id = %id,
@@ -249,10 +255,17 @@ impl CredentialService {
                     }
 
                     let outcome = ops
-                        .refresh(stored.credential_key(), stored.data(), &ctx)
+                        .refresh(
+                            stored.credential_key(),
+                            stored.data(),
+                            stored.state_kind(),
+                            stored.state_version(),
+                            &ctx,
+                        )
                         .await;
 
-                    let (refreshed, refreshed_expires_at, commit_phase) = match outcome {
+                    let (refreshed, refreshed_state_version, refreshed_expires_at, commit_phase) =
+                        match outcome {
                         Ok(super::ops::RefreshExecutionResult::ReauthRequired {
                             reason,
                             phase,
@@ -370,9 +383,10 @@ impl CredentialService {
                         },
                         Ok(super::ops::RefreshExecutionResult::Rewrote {
                             data,
+                            state_version,
                             expires_at,
                             phase,
-                        }) => (data, expires_at, phase),
+                        }) => (data, state_version, expires_at, phase),
                         // Dispatch lookup fails before the implementation
                         // receives its linear attempt.
                         Err(
@@ -403,14 +417,19 @@ impl CredentialService {
                         stored.version(),
                         refreshed.clone().into(),
                         stored.state_kind().to_owned(),
-                        stored.state_version(),
+                        // The row axis advances to the writing build's state
+                        // version (the erased refresh closure stamped it —
+                        // see `RefreshExecutionResult::Rewrote`). The stored
+                        // axis may be a legacy version the envelope already
+                        // left behind; re-stamping it would make the next
+                        // read refuse the row as an axis disagreement.
+                        refreshed_state_version,
                         stored.name().map(str::to_owned),
                         refreshed_expires_at,
                         false,
                         metadata,
                         CredentialMaterialTransition::advance(),
-                    )
-                    ;
+                    );
                     let commit = match store.replace(&selector_for_task, replacement).await {
                         Ok(commit) => commit,
                         Err(CredentialPersistenceError::OutcomeUnknown)
@@ -640,7 +659,13 @@ impl CredentialService {
             .refresh_coordinator()
             .refresh_coalesced(&credential_id, still_same_live_row, move || async move {
                 match ops
-                    .revoke(stored.credential_key(), stored.data(), &ctx)
+                    .revoke(
+                        stored.credential_key(),
+                        stored.data(),
+                        stored.state_kind(),
+                        stored.state_version(),
+                        &ctx,
+                    )
                     .await
                 {
                     Ok(()) => {},

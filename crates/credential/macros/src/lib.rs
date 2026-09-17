@@ -1,5 +1,6 @@
 //! Proc-macro crate for credential authoring: the `#[credential]` attribute
 //! macro (canonical one-impl-block authoring), the `#[derive(AuthScheme)]`
+//! derive, the `#[derive(StateWireFingerprint)]` wire-shape fingerprint
 //! derive, and the `#[capability]` attribute macro.
 
 #![forbid(unsafe_code)]
@@ -13,6 +14,7 @@ use proc_macro::TokenStream;
 mod auth_scheme;
 mod capability;
 mod credential_attr;
+mod state_wire_fingerprint;
 
 /// Attribute macro for declaring a credential as a single `impl` block
 /// (ADR-0088 D1 — the canonical authoring path, superseding
@@ -113,6 +115,45 @@ pub fn credential(args: TokenStream, input: TokenStream) -> TokenStream {
 pub fn derive_auth_scheme(input: TokenStream) -> TokenStream {
     nebula_macro_support::paths::resolve_generated_crate_paths(auth_scheme::derive(input).into())
         .into()
+}
+
+/// Derive macro for the `StateWireFingerprint` trait.
+///
+/// Emits an `impl StateWireFingerprint` whose `SCHEMA_FINGERPRINT` const is an
+/// FNV-1a 64 hash over the type's serde wire-shape projection: per field, in
+/// declaration order, the field name as authored, its Option-ness (`req` /
+/// `opt`), and its type tokens as written. Never authored annotations,
+/// labels, descriptions, or values — a doc edit must not flip the
+/// fingerprint, a field rename/type/order/Option-ness change must.
+///
+/// Supports named-field structs (unit structs hash the empty projection).
+/// Tuple structs, enums, and unions are compile errors. The emitted impl
+/// requires `CredentialState` (the trait's supertrait), which the type's own
+/// `CredentialState` impl satisfies.
+///
+/// # Example
+///
+/// The block below is derive-syntax illustration. Because this `proc-macro`
+/// crate cannot depend on `nebula_credential`, it is not standalone-runnable.
+///
+/// ```text
+/// use nebula_credential::{CredentialState, StateWireFingerprint};
+///
+/// #[derive(Serialize, Deserialize, ZeroizeOnDrop, StateWireFingerprint)]
+/// struct MyState {
+///     token: SecretString,
+/// }
+/// impl CredentialState for MyState {
+///     const KIND: &'static str = "my_state";
+///     const VERSION: u32 = 1;
+/// }
+/// ```
+#[proc_macro_derive(StateWireFingerprint)]
+pub fn derive_state_wire_fingerprint(input: TokenStream) -> TokenStream {
+    nebula_macro_support::paths::resolve_generated_crate_paths(
+        state_wire_fingerprint::derive(input).into(),
+    )
+    .into()
 }
 
 /// Attribute macro for declaring a capability sub-trait.

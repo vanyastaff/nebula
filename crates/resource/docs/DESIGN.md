@@ -117,7 +117,7 @@ Sized`, `destroy(…, cx: TeardownCx)`, дефолты у `check`/`destroy`);
 
 ## 7. Роль в пост-0092 credential/resource модели
 
-После ADR-0092 граница такова: `nebula-credential` — единый крейт (контракт + рантайм resolver/refresh/lease/rotation-state + фасад `CredentialService` + builtin-типы); `nebula-crypto` — Cipher/Kdf; `nebula-engine` credential-модуль — только accessor-мосты + `default_in_memory_coordinator`; `nebula-storage` — durable-stores + decorators + `KeyProvider` + `RefreshClaimRepo`. **`nebula-resource` в этой модели владеет per-slot ротационным FAN-OUT** (`credential_fanout/`, перенесён из engine шагом 5 ADR-0092) **плюс `SlotCell` + `Manager` + topology.**
+После ADR-0092 граница такова: `nebula-credential` — единый крейт (контракт + рантайм resolver/refresh/lease/rotation-state + фасад `CredentialService` + builtin-типы); `nebula-crypto` — Cipher/Kdf; `nebula-engine` — только accessor-мост `EngineCredentialAccessor` (credential-модуль с `default_in_memory_coordinator` удалён: единственный management-writer — `CredentialController`); `nebula-storage` — durable-stores + decorators + `KeyProvider` + `RefreshClaimRepo`. **`nebula-resource` в этой модели владеет per-slot ротационным FAN-OUT** (`credential_fanout/`, перенесён из engine шагом 5 ADR-0092) **плюс `SlotCell` + `Manager` + topology.**
 
 Швы (seam), которыми крейт стыкуется с credential-стеком:
 
@@ -129,7 +129,7 @@ Sized`, `destroy(…, cx: TeardownCx)`, дефолты у `check`/`destroy`);
 
 ## 8. Forward design / открытые вопросы
 
-- **Production bind-population (§M12.4) — главный незакрытый хвост.** `register_and_bind` имеет quiesce-контракт, но ноль продакшн-вызовов: нет производственного credential→slot resolver, который наполнял бы `slot_bindings` реальными биндингами. Пока его нет, статус крейта остаётся `frontier`. Это следующий resource-follow-up.
+- **Production bind-population (§M12.4) — главный незакрытый хвост.** `register_and_bind` имеет quiesce-контракт, но живого вызывающего пути нет. Credential→slot резолвер существует и работает на execution-пути с 2026-09-13 (`CredentialSlotResolver`, impl `CredentialProjectionRuntime`), но `slot_bindings` он не наполняет: reverse index наполняет отдельный producer, которого нет, и единственный вызов `WorkflowEngine::register_resource_and_bind` сам никем не вызывается. Пока producer'а нет, статус крейта остаётся `frontier`. Это следующий resource-follow-up.
 - **Несинхронизированные breaking-коммиты.** На ветке `dreamy-kare-8698d4` лежат ещё 4 breaking-коммита redesign API, не влитые в этот worktree; их надо re-derive против пост-0093 состояния перед мержем (риск дрейфа `RegistrationSpec`/topology API).
 - ~~**Долг по докам — это риск онбординга, а не косметика.**~~ **Closed by Batch D (2026-07-02)** — see §6 above.
 - **Phase-5 target design, implementation pending** —

@@ -114,6 +114,11 @@ nebula-action = { path = "../../crates/action" }
 nebula-api = { path = "../../crates/api", features = ["test-util"] }
 rcgen = { workspace = true }
 tokio-rustls = { workspace = true }
+# The credential runtime's adjudicator fixture computes the evidence digest the
+# production adapters record, so the gateway-forwarding test pins a real
+# identity instead of a fixed placeholder. Workspace dependency; cargo records
+# the dev-dependency edge in the lockfile under this package.
+sha2 = { workspace = true }
 
 [lints]
 workspace = true

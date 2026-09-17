@@ -15,7 +15,7 @@ use zeroize::Zeroize;
 
 use crate::{
     Capabilities, Credential, CredentialGuard, CredentialId, CredentialKey, CredentialLifecycle,
-    CredentialPersistenceError, Refreshable, SchemeFactory, StoredCredential,
+    CredentialPersistenceError, Refreshable, SchemeFactory, StateWireFingerprint, StoredCredential,
 };
 
 #[cfg(test)]
@@ -113,7 +113,14 @@ pub(super) async fn resolve_slot_with(
                     stored.state_kind(),
                     stored.state_version(),
                 )
-                .map_err(|_| CredentialSlotResolveError::InvalidState)?;
+                .map_err(|error| match error {
+                    // Envelope refusals keep their distinct, secret-free
+                    // classification — never collapsed into `InvalidState`.
+                    CredentialServiceError::StateEnvelopeRefused(envelope) => {
+                        CredentialSlotResolveError::StoredStateRefused(envelope)
+                    },
+                    _ => CredentialSlotResolveError::InvalidState,
+                })?;
             let metadata = CredentialGuardMetadata {
                 credential_id: request.credential_id,
                 credential_key: actual_key,
@@ -262,6 +269,11 @@ pub enum CredentialSlotResolveError {
     /// The configured external credential source is not available.
     #[error("credential source is unavailable")]
     SourceUnavailable,
+    /// The persisted state failed a fail-closed state-envelope check
+    /// (schema fingerprint, kind tag, or version) and is reported as
+    /// stored rather than as invalid local state.
+    #[error("stored credential state was refused: {0}")]
+    StoredStateRefused(crate::StateEnvelopeError),
 }
 
 /// Object-safe tenant-scoped credential slot projection boundary.
@@ -499,6 +511,9 @@ impl CredentialService {
                         reason: crate::ReauthReason::ProviderRejected,
                     }
                 },
+                CredentialSlotResolveError::StoredStateRefused(envelope) => {
+                    CredentialServiceError::StateEnvelopeRefused(envelope)
+                },
                 CredentialSlotResolveError::WrongCredentialKey
                 | CredentialSlotResolveError::MissingCapabilities
                 | CredentialSlotResolveError::InvalidState => {
@@ -524,6 +539,7 @@ impl CredentialService {
     where
         C: Refreshable + CredentialLifecycle,
         C::Scheme: Zeroize + Clone + Send + Sync + 'static,
+        C::State: StateWireFingerprint,
     {
         self.resolver
             .scheme_factory(scope.selector(credential_id), self.owner_context(scope))
@@ -679,19 +695,40 @@ mod tests {
         CredentialId,
         CredentialKey,
     ) {
-        let scope = TenantScope::new("org-slot", "workspace-slot");
-        let id = CredentialId::new();
+        // Plain (pre-envelope) legacy JSON: the legacy-decode path keeps this
+        // exact fixture as its slot-surface coverage.
         let token = SecretToken::new(SecretString::new(SECRET_CANARY));
         let data = crate::serde_secret::expose_for_serialization(|| serde_json::to_vec(&token))
             .expect("test token serializes");
+        fixture_with_payload(
+            SecretBytes::new(data),
+            <SecretToken as CredentialState>::KIND,
+            <SecretToken as CredentialState>::VERSION,
+        )
+    }
+
+    fn fixture_with_payload(
+        data: SecretBytes,
+        kind: &str,
+        version: u32,
+    ) -> (
+        SlotStore,
+        crate::CredentialRegistry,
+        super::super::DispatchOps<crate::ErasedPendingStore>,
+        TenantScope,
+        CredentialId,
+        CredentialKey,
+    ) {
+        let scope = TenantScope::new("org-slot", "workspace-slot");
+        let id = CredentialId::new();
         let now = Utc::now();
         let row = StoredLiveCredential::new(
             id,
             Some("default".to_owned()),
             BearerTokenCredential::KEY.to_owned(),
-            SecretBytes::new(data),
-            <SecretToken as CredentialState>::KIND.to_owned(),
-            <SecretToken as CredentialState>::VERSION,
+            data,
+            kind.to_owned(),
+            version,
             CredentialVersion::MIN,
             CredentialMaterialEpoch::MIN,
             now,
@@ -716,6 +753,29 @@ mod tests {
             .expect("fixture ops registration is unique");
         let key = CredentialKey::new(BearerTokenCredential::KEY).expect("fixture key is valid");
         (store, registry, ops, scope, id, key)
+    }
+
+    /// Envelope bytes for the slot surface with caller-supplied overrides for
+    /// the three checked facets (`None` = the honest value).
+    fn envelope_payload(
+        fingerprint: Option<u64>,
+        kind_tag: Option<&str>,
+        interface_version: Option<u32>,
+    ) -> Vec<u8> {
+        let token = SecretToken::new(SecretString::new(SECRET_CANARY));
+        crate::serde_secret::expose_for_serialization(|| {
+            let body = serde_json::to_value(&token).expect("fixture state encodes");
+            let envelope = serde_json::json!({
+                "interface_version": interface_version
+                    .unwrap_or(<SecretToken as CredentialState>::VERSION),
+                "schema_fingerprint": fingerprint
+                    .unwrap_or(<SecretToken as StateWireFingerprint>::SCHEMA_FINGERPRINT)
+                    .to_le_bytes(),
+                "kind_tag": kind_tag.unwrap_or(<SecretToken as CredentialState>::KIND),
+                "body": body,
+            });
+            serde_json::to_vec(&envelope).expect("fixture envelope encodes")
+        })
     }
 
     #[expect(
@@ -1022,5 +1082,181 @@ mod tests {
             RefreshNotAppliedPhase::ProviderConfirmedNotApplied
         );
         assert_eq!(context.retry(), RetryAdvice::Never);
+    }
+
+    // ── Envelope fail-closed decode (ADR-0107 Seam 2) ─────────────────
+
+    #[tokio::test]
+    async fn envelope_wrapped_row_resolves_on_the_slot_surface() {
+        let data = crate::serde_secret::expose_for_serialization(|| {
+            let token = SecretToken::new(SecretString::new(SECRET_CANARY));
+            crate::state_envelope::encode_state_payload(&token)
+        })
+        .expect("fixture envelope encodes");
+        let (store, registry, ops, scope, id, key) = fixture_with_payload(
+            SecretBytes::from(data),
+            <SecretToken as CredentialState>::KIND,
+            <SecretToken as CredentialState>::VERSION,
+        );
+
+        let erased = resolve_fixture(
+            &store,
+            &registry,
+            &ops,
+            &scope,
+            id,
+            key.clone(),
+            Capabilities::empty(),
+            CancellationToken::new(),
+        )
+        .await
+        .expect("an envelope-wrapped row resolves exactly like a legacy row");
+        let typed = erased
+            .into_typed::<SecretToken>()
+            .expect("registered scheme type extracts");
+        assert_eq!(typed.token().expose_secret(), SECRET_CANARY);
+    }
+
+    #[tokio::test]
+    async fn envelope_schema_fingerprint_mismatch_refuses_as_stored_state_refused() {
+        let honest = <SecretToken as StateWireFingerprint>::SCHEMA_FINGERPRINT;
+        let (store, registry, ops, scope, id, key) = fixture_with_payload(
+            SecretBytes::new(envelope_payload(
+                Some(honest ^ 0x0000_0000_0000_0001),
+                None,
+                None,
+            )),
+            <SecretToken as CredentialState>::KIND,
+            <SecretToken as CredentialState>::VERSION,
+        );
+
+        let error = resolve_fixture(
+            &store,
+            &registry,
+            &ops,
+            &scope,
+            id,
+            key,
+            Capabilities::empty(),
+            CancellationToken::new(),
+        )
+        .await
+        .expect_err("a stored fingerprint mismatch must refuse slot resolution");
+        assert_eq!(
+            error,
+            CredentialSlotResolveError::StoredStateRefused(
+                crate::StateEnvelopeError::SchemaFingerprintMismatch {
+                    expected: honest,
+                    stored: honest ^ 0x0000_0000_0000_0001,
+                },
+            ),
+            "the slot surface must keep the refusal distinct from InvalidState"
+        );
+    }
+
+    #[tokio::test]
+    async fn envelope_kind_tag_mismatch_refuses_as_stored_state_refused() {
+        let (store, registry, ops, scope, id, key) = fixture_with_payload(
+            SecretBytes::new(envelope_payload(None, Some("intruder_kind"), None)),
+            <SecretToken as CredentialState>::KIND,
+            <SecretToken as CredentialState>::VERSION,
+        );
+
+        let error = resolve_fixture(
+            &store,
+            &registry,
+            &ops,
+            &scope,
+            id,
+            key,
+            Capabilities::empty(),
+            CancellationToken::new(),
+        )
+        .await
+        .expect_err("a stored kind-tag mismatch must refuse slot resolution");
+        assert_eq!(
+            error,
+            CredentialSlotResolveError::StoredStateRefused(
+                crate::StateEnvelopeError::KindMismatch {
+                    expected: <SecretToken as CredentialState>::KIND,
+                },
+            ),
+            "the slot surface must keep the refusal distinct from InvalidState"
+        );
+    }
+
+    #[tokio::test]
+    async fn envelope_unsupported_version_refuses_as_stored_state_refused() {
+        let future = <SecretToken as CredentialState>::VERSION + 1;
+        let (store, registry, ops, scope, id, key) = fixture_with_payload(
+            SecretBytes::new(envelope_payload(None, None, Some(future))),
+            <SecretToken as CredentialState>::KIND,
+            future,
+        );
+
+        let error = resolve_fixture(
+            &store,
+            &registry,
+            &ops,
+            &scope,
+            id,
+            key,
+            Capabilities::empty(),
+            CancellationToken::new(),
+        )
+        .await
+        .expect_err("a stored shape newer than this build must refuse slot resolution");
+        assert_eq!(
+            error,
+            CredentialSlotResolveError::StoredStateRefused(
+                crate::StateEnvelopeError::UnknownSchemaVersion {
+                    stored_version: future,
+                    supported_version: <SecretToken as CredentialState>::VERSION,
+                },
+            ),
+            "the slot surface must keep the refusal distinct from InvalidState"
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_payload_with_future_row_version_refuses_as_stored_state_refused() {
+        // A NON-envelope payload (plain legacy JSON) whose row axis exceeds
+        // this build's VERSION must refuse on the legacy path's own version
+        // check. The envelope-unsupported-version test above feeds an envelope
+        // payload and hits the envelope's `interface_version` check; this pins
+        // the sibling branch (state_envelope.rs legacy fallback) on the slot
+        // surface.
+        let future = <SecretToken as CredentialState>::VERSION + 1;
+        let token = SecretToken::new(SecretString::new(SECRET_CANARY));
+        let data = crate::serde_secret::expose_for_serialization(|| serde_json::to_vec(&token))
+            .expect("test token serializes");
+        let (store, registry, ops, scope, id, key) = fixture_with_payload(
+            SecretBytes::new(data),
+            <SecretToken as CredentialState>::KIND,
+            future,
+        );
+
+        let error = resolve_fixture(
+            &store,
+            &registry,
+            &ops,
+            &scope,
+            id,
+            key,
+            Capabilities::empty(),
+            CancellationToken::new(),
+        )
+        .await
+        .expect_err("a legacy row claiming a future version must refuse slot resolution");
+        assert_eq!(
+            error,
+            CredentialSlotResolveError::StoredStateRefused(
+                crate::StateEnvelopeError::UnknownSchemaVersion {
+                    stored_version: future,
+                    supported_version: <SecretToken as CredentialState>::VERSION,
+                },
+            ),
+            "the slot surface must keep the refusal distinct from InvalidState"
+        );
     }
 }

@@ -624,8 +624,10 @@ pub(crate) async fn an_unprepared_slot_reads_as_unprepared(
 /// Generate one `#[tokio::test]` per shared case against `$ledger`.
 ///
 /// `$ledger` is an async expression yielding `Option<impl LedgerUnderTest>`;
-/// `None` means this backend is unreachable in the current environment and the
-/// case reports that rather than asserting against a substitute.
+/// `None` is a hard failure naming the unreachable backend, never a silent pass
+/// and never a skip: a case body that returns early is counted as a pass, so a
+/// backend the case cannot run against has to fail loudly instead. A green run
+/// therefore means every case ran against a live backend.
 ///
 /// The including file must declare this module as `oracle`.
 #[macro_export]
@@ -1103,11 +1105,12 @@ macro_rules! operation_ledger_case {
         #[tokio::test]
         async fn $case() {
             let Some((ledger, executions)) = $ledger.await else {
-                eprintln!(concat!(
+                panic!(concat!(
                     stringify!($case),
-                    ": backend unreachable in this environment"
+                    ": backend unreachable — the case cannot run and must fail rather than \
+                     pass unchecked; reach the backend (set DATABASE_URL for postgres) or run \
+                     without this feature"
                 ));
-                return;
             };
             oracle::$case(&ledger, &executions, $seed).await;
         }

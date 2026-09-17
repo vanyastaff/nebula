@@ -4,7 +4,7 @@
 |-------|-------|
 | **Status** | Partial — самый нагруженный, load-bearing крейт (`engine.rs` ~9.8k строк, признан в AGENTS.md «largest, load-bearing») |
 | **Layer** | Composition root / оркестратор исполнения workflow (L2 control-plane) |
-| **Redesign role** | **Затронут с обеих сторон.** Credential: после ADR-0092 runtime (resolver/refresh/lease/rotation-state) уехал в `nebula-credential`, в engine остались accessor-мосты + `default_in_memory_coordinator` + shim-переэкспорты. Resource: engine — место будущего bind-population (M12.4); `rotation.rs` ре-экспортирует fan-out из `nebula-resource`. |
+| **Redesign role** | **Затронут с обеих сторон.** Credential: после ADR-0092 runtime (resolver/refresh/lease/rotation-state) уехал в `nebula-credential`; последний остаток credential-модуля — `default_in_memory_coordinator()` — удалён (sole-management-writer), а credential-сторона bind-population (M12.4) закрыта 2026-09-13: `CredentialSlotResolver` подключён через `with_credential_resolver` и вызывается на execution-пути. Resource: из bind-population открыт resource-half (`register_and_bind` живых вызывающих не получил); `rotation.rs` в дереве отсутствует — при возвращении ротации fan-out shim должен жить в `nebula-resource`. |
 | **Related** | ADR-0092, ADR-0088, ADR-0008 (control plane), ADR-0016 (cancellation), ADR-0068 (layered retry), ADR-0050, PRODUCT_CANON §10/§11.1/§11.2/§12.2/§12.5 |
 
 ---
@@ -46,8 +46,6 @@ plugin-registry — и рискует разойтись с canon §12.2 control
 | `EngineControlDispatch` (канонический impl Start/Resume/Restart/Cancel/Terminate, идемпотентность по `(execution_id, command)`, ADR-0008/0016) | `control_dispatch.rs:72` |
 | `EngineCredentialAccessor` (deny-by-default доступ по node-scoped V2 manifest) | `credential_accessor.rs` |
 | `EngineResourceAccessor` (без allowlist; скоупинг — дело topology-слоя) + `slot_identities_for_key` | `resource_accessor.rs:24 / 148` |
-| `credential::*` — почти целиком re-export из `nebula_credential::runtime` (ADR-0092): `CredentialResolver`, `RefreshCoordinator`, `LeaseLifecycle`, `execute_resolve` / `execute_continue`; своё — только `default_in_memory_coordinator()` | `credential/mod.rs:19-30 / 43` |
-| `credential::rotation` (feature `rotation`) — чистый re-export shim (state-machine из credential, fan-out `ResourceFanoutDriver` из resource) | `rotation.rs:9-34` |
 | `resource::{ResourceActivator, ResourceActivatorRegistry, KindActivator, RegisterRequest, RegistrarError, ResourceRegistrationOutcome}` (seam «stored row (kind+JSON) → типизированная регистрация в `nebula_resource::Manager`»; unrecognized kind = typed error) | `resource/registrar.rs:103-418` |
 | `runtime::{ActionRuntime, ActionRegistry, ActionRunner, InProcessRunner, TaskQueue, MemoryQueue, BlobStorage, DataPassingPolicy, BoundedStreamBuffer, StatefulCheckpoint(-Sink)}` | `runtime/runtime.rs:61-116`, `registry.rs:53`, `runner.rs:25-89`, `queue.rs:22-132` |
 | `scoped_resources::{BranchId, ScopedResourceMap, DashScopedResourceMap, LayeredResourceAccessor, ScopedResourceGuard, run_cleanup(_with_timeout)}` (per-branch хранение, scoped→global precedence, RAII LIFO-cleanup с таймаутом) | `scoped_resources.rs:116-698` |
@@ -59,10 +57,11 @@ plugin-registry — и рискует разойтись с canon §12.2 control
 
 ## 3. Зависимости и зависимые
 
-- **Deps (14 intra-workspace, намеренно для composition root):** `nebula-core`, `nebula-error`,
+- **Deps (15 intra-workspace, намеренно для composition root):** `nebula-core`, `nebula-error`,
   `nebula-action`, `nebula-expression`, `nebula-plugin`, `nebula-workflow`, `nebula-execution`,
   `nebula-schema`, `nebula-credential`, `nebula-eventbus`, `nebula-resource`, `nebula-resilience`,
-  `nebula-storage-port`, `nebula-storage` (feature `credential-in-memory`), `nebula-metrics`.
+  `nebula-storage-port`, `nebula-metrics`, `nebula-orchestrator`. `nebula-storage` — только dev-dep (после удаления
+  credential-модуля lib его больше не линкует).
   Внешние ключевые: `tokio`, `dashmap`, `opentelemetry` / `tracing-opentelemetry`, `async-trait`,
   `zeroize`.
 - **Фичи:** `rotation` (пробрасывается в credential/storage/resource), `test-util` (не в prod,
@@ -77,8 +76,10 @@ plugin-registry — и рискует разойтись с canon §12.2 control
   `effective_retry_policy`), budget, cancel-registry. Самый нагруженный модуль.
 - `control_consumer.rs` / `control_dispatch.rs` / `control_trace.rs` — консьюмер очереди управления
   + восстановление W3C trace-parent на dispatch-span (ADR-0050).
-- `credential/` — Plane B (integration credentials): тонкая обёртка + re-export shim над
-  `nebula_credential::runtime` (ADR-0092); `rotation.rs` — re-export shim ротации.
+- `credential/` — удалён (sole-management-writer): модуль сводился к
+  `default_in_memory_coordinator()`, и конструктор claim-стора вне composition противоречил
+  единственному management-writer'у `CredentialController`. `rotation.rs` — re-export shim
+  ротации, если вернётся.
 - `credential_accessor.rs` / `resource_accessor.rs` — cross-layer мосты business-трейтов в
   engine-типы (README признаёт: архитектурно место им в credential/resource).
 - `daemon/` — реестр и runtime долгоживущих фоновых провайдеров + EventSource-адаптеры.
@@ -131,10 +132,9 @@ broadcast через eventbus. Control-plane (`ControlConsumer`) идёт пар
 2. **README рассинхронизирован с кодом.** `README.md:7,30,100,128` ссылаются на `nebula-runtime`
    как на отдельный sibling-крейт, которого больше нет (поглощён). `last-reviewed: 2026-04-17`,
    status `partial`.
-3. **Re-export shim-слой ADR-0092.** `credential/mod.rs:16-27` и `rotation.rs` целиком — compat-
-   переэкспорты, чтобы старые пути `nebula_engine::credential::*` резолвились. При единственном
-   потребителе (`nebula-api`) — кандидат на прямую миграцию путей и удаление (память:
-   feedback_no_shims).
+3. **Re-export shim-слой ADR-0092.** `credential/mod.rs` удалён (sole-management-writer:
+   единственный management-writer — `CredentialController`); `rotation.rs` в дереве отсутствует —
+   строка ниже о нём осталась от периода, когда shim ещё существовал.
 4. **Legacy-путь регистрации экшенов удалён (ADR-0098 D0, PR3).** Registry и runtime
    работают через единый factory-spine (`ActionFactory` → `ActionHandle`).
 5. **Legacy ExecutionRepo vs spec-16 store.** `engine.rs:1127,1231,1727` — ветвление «store-port если
@@ -154,21 +154,22 @@ broadcast через eventbus. Control-plane (`ControlConsumer`) идёт пар
 `credential-builtin` / `testutil` / `vault` УДАЛЕНЫ). Это напрямую перекраивает engine с двух сторон.
 
 **Credential (Plane B).** Engine **больше не владеет** резолвером / refresh / lease / rotation-state —
-всё переехало в `nebula_credential::runtime`. В engine остались ровно три вещи:
-- `credential/mod.rs` — re-export shim, чтобы исторические пути `nebula_engine::credential::*`
-  (`CredentialResolver`, `execute_resolve`/`execute_continue`, `RefreshCoordinator`, `LeaseLifecycle`)
-  продолжали резолвиться у единственного потребителя `nebula-api`;
-- `default_in_memory_coordinator()` (`credential/mod.rs:43`) — единственный собственный код модуля;
-  конструирует `InMemoryRefreshClaimRepo` из `nebula-storage` для тестов / single-replica desktop;
+всё переехало в `nebula_credential::runtime`. В engine остался ровно один мост:
 - `EngineCredentialAccessor` (`credential_accessor.rs`) — deny-by-default мост от node-scoped
   durable binding manifest к opaque credential guard.
+
+`credential/`-модуль с `default_in_memory_coordinator()` удалён (sole-management-writer):
+последний прямой writer-путь вне `CredentialController` закрыт; test/desktop-композиция
+(`crates/api/src/ports/credential_builder.rs`) теперь собирает `InMemoryRefreshClaimRepo` +
+`RefreshCoordinator::new_with` сама.
 
 Резолвер generic по конкретному типу `C` и вызывает `C::project(&state)` напрямую — type-erased
 projection-registry не нужен (`StateProjectionRegistry` был vestigial, удалён в ADR-0088 D3;
 capability + metadata теперь живут только на `nebula_credential::CredentialRegistry`). Conference-
-коррекции (которые движутся **внутри** `nebula-credential`, не здесь): `policy(&State)` должна
-определять routing; `CredentialSelector` для owner-изоляции; узкий типизированный `RefreshTransport`
-seam; lease как first-class. **Phase-5 target design, implementation pending:**
+коррекции (которые движутся **внутри** `nebula-credential`, не здесь): `policy(&State)` как routing
+**снят** в пользу capability-сабтрейтов (`crates/credential/src/lifecycle.rs`); `CredentialSelector`
+для owner-изоляции; узкий типизированный `RefreshTransport` seam; lease как first-class. **Phase-5
+target design, implementation pending:**
 [контракт](../../schema/docs/PHASE5_PROPERTY.md) сохраняет явные `Input` / `Properties` / `Config`
 и существующие behavior families. Value-only `#[property(...)]` и отдельный `#[slot(...)]`
 не меняют engine consumer `slot_bindings`, `FromWorkflowNode`, root-shape и exact-schema proof boundaries.
@@ -178,10 +179,14 @@ slot/tenant authority; semantic decoupling требует будущей version
 
 **Resource.** Per-slot rotation **fan-out** уехал в `nebula-resource`
 (`credential_fanout/`, ex-engine). Engine остаётся:
-- местом будущего **bind-population (M12.4)** — производственного credential→slot резолвера ещё нет;
+- **bind-population (M12.4): credential-сторона закрыта 2026-09-13.** `CredentialSlotResolver`
+  (`nebula_credential::service::slot`) подключён через `with_credential_resolver` и вызывается на
+  execution-пути (`engine/frontier.rs:2322`); доходит он до `CredentialProjectionRuntime`
+  (`service/projection.rs:44`). Открыт остаётся resource-half: `register_and_bind` живых вызывающих
+  не получил;
 - `resource/registrar.rs` — seam активации kinds в `nebula_resource::Manager` (stored row → typed);
-- `rotation.rs` (feature `rotation`) — re-export shim fan-out (`ResourceFanoutDriver`, `Bind`) из
-  `nebula-resource`;
+- `rotation.rs` — в дереве отсутствует (строка сохранена как историческая пометка; shim fan-out
+  при возвращении ротации должен жить в `nebula-resource`, а не здесь);
 - `scoped_resources.rs` / `LayeredResourceAccessor` — engine-сторона scoped→global precedence;
 - `EngineResourceAccessor` — без allowlist (скоупинг у topology, не engine).
 
@@ -191,17 +196,22 @@ slot/tenant authority; semantic decoupling требует будущей version
 → API-каталог`). Все эти контракты engine **транзитом передаёт**, не владеет ими.
 
 **Что меняется.** При коллапсе крейтов за sole-public `nebula-sdk` **shim-слои engine — первое, что
-схлопывается**: `credential/mod.rs` re-export и `rotation.rs` исчезают, как только `nebula-api`
-мигрирует импорты на канонические пути `nebula_credential::*` / `nebula_resource::*`.
+схлопывается**: `credential/mod.rs` re-export уже удалён; `rotation.rs` исчезает, как только
+ротационный shim (если он вернётся) переедет на канонические пути
+`nebula_credential::*` / `nebula_resource::*`.
 
 ## 8. Forward design / открытые вопросы
 
-- **Удалить shim-слой (P1).** При единственном потребителе (`nebula-api`) прямая миграция импортов
-  `nebula_engine::credential::*` → `nebula_credential::runtime::*` и удаление `credential/mod.rs`
-  re-export + `rotation.rs`. Память feedback_no_shims прямо требует «replace the wrong thing directly».
-- **Bind-population producer (M12.4) — единственный реальный gap активного credential-lifecycle.**
-  Engine — frontier этой работы: нужно подключить production credential→slot резолвер, чтобы
-  `register_and_bind` получил живых вызывающих (сейчас quiesce-контракт есть, callers нет).
+- **Удалить shim-слой (P1).** `credential/mod.rs` уже удалён. Остаётся: при возвращении
+  `rotation.rs` — прямая миграция импортов на канонические пути и удаление shim'а. Память
+  feedback_no_shims прямо требует «replace the wrong thing directly».
+- **Bind-population producer (M12.4) — остался resource-half.** Credential→slot резолвер в
+  production есть: `CredentialSlotResolver` с impl `CredentialProjectionRuntime`
+  (`nebula_credential::service::projection`), подключён `with_credential_resolver`, вызывается из
+  `engine/frontier.rs:2322`. Осталось то же самое для resource reverse index: подключить producer, чтобы
+  `register_and_bind` (`nebula_resource::factory`) получил живой вызывающий путь (quiesce-контракт
+  есть; единственный вызов — `WorkflowEngine::register_resource_and_bind`, под non-default
+  `rotation` и сам никем не вызывается).
 - **Схлопнуть двойной store seam.** Убрать legacy `ExecutionRepo`-ветку (`engine.rs:1127/1231/1727`),
   оставив только spec-16 storage-port; это снимает половину «store-port если сконфигурирован, иначе…».
 - **Legacy action-dispatch путь удалён (ADR-0098 D0, PR3).** Registry и runtime теперь
@@ -213,6 +223,6 @@ slot/tenant authority; semantic decoupling требует будущей version
   per-crate-green инкрементов; выделение control-plane / frontier / retry в подмодули.
 - **Обновить README и self-referential docs.** Снять `nebula-runtime`-как-sibling ссылки и
   `lib.rs` typo после поглощения runtime; синхронизировать `last-reviewed`.
-- **Открытый вопрос:** после удаления shim-слоя и переноса accessor-мостов — сохраняет ли engine
-  отдельный `credential/` модуль вообще, или Plane-B сводится к одному
-  `default_in_memory_coordinator` + accessor в корне крейта?
+- **Решено (sole-management-writer):** `credential/`-модуль удалён вместе с
+  `default_in_memory_coordinator()`; Plane-B в engine сводится к accessor-мосту
+  (`EngineCredentialAccessor`), координатор для тестовых композиций собирают сами потребители.

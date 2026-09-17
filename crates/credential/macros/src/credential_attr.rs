@@ -414,7 +414,7 @@ fn expand_inner(args: TokenStream2, input: TokenStream) -> syn::Result<TokenStre
         }
     } else {
         // MACRO SYNTHESIS NOTE: the auto-generated `policy()` always emits
-        // `RefreshStrategy::RefreshToken` for `#[refreshable]` credentials.
+        // `RefreshStrategy::RefreshToken` for credentials with `fn refresh`.
         // This covers the `OAuth2` / `ActiveFamily` common case. If your
         // credential's `AuthScheme::Family` declares a different refresh class
         // (e.g. `ReMintLocal` or `ReAcquire`), you MUST hand-write the

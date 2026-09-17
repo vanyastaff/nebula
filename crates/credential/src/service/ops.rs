@@ -25,9 +25,11 @@ use crate::runtime::{
     ResolveResponse, dispatch_revoke, dispatch_test, execute_begin, execute_continue,
     execute_resolve,
 };
+use crate::state_envelope::{StateEnvelopeError, decode_state_payload, encode_state_payload};
 use crate::{
     Capabilities, Credential, CredentialContext, CredentialState, Interactive, PendingToken,
-    ReauthReason, RefreshAttempt, RefreshNotAppliedContext, Refreshable, Revocable, Testable,
+    ReauthReason, RefreshAttempt, RefreshNotAppliedContext, Refreshable, Revocable,
+    StateWireFingerprint, Testable,
     contract::{RefreshReauthPhase, RefreshReportKind},
 };
 
@@ -154,7 +156,13 @@ type TestFuture<'a> =
 
 /// Erased `test`: deserializes stored state, projects the scheme, and
 /// invokes [`dispatch_test`] for the captured `C: Testable`.
-type TestFn = Arc<dyn for<'a> Fn(&'a [u8], &'a CredentialContext) -> TestFuture<'a> + Send + Sync>;
+///
+/// `state_kind` / `state_version` are the stored row's queryable axes —
+/// required by the state-envelope decode choke point (kind tag and version
+/// agreement are checked against them).
+type TestFn = Arc<
+    dyn for<'a> Fn(&'a [u8], &'a str, u32, &'a CredentialContext) -> TestFuture<'a> + Send + Sync,
+>;
 
 /// Result of one erased refresh implementation.
 ///
@@ -172,6 +180,13 @@ pub(crate) enum RefreshExecutionResult {
     Rewrote {
         /// Freshly serialized post-refresh `C::State` bytes.
         data: Zeroizing<Vec<u8>>,
+        /// The version axis the service must stamp on the row's
+        /// `state_version` column: `<C::State as CredentialState>::VERSION`,
+        /// the same value the envelope's `interface_version` carries. The
+        /// service-side rewrite is type-erased, so the erased closure is the
+        /// only place that knows it — stamping the stored (possibly legacy)
+        /// axis there would leave the row disagreeing with its own envelope.
+        state_version: u32,
         /// `<C::State as CredentialState>::expires_at()` read off the
         /// *refreshed* state. A refresh that rotated the token typically
         /// produces a new expiry; the service must persist this, not the
@@ -207,8 +222,14 @@ type RefreshFuture<'a> = Pin<
 /// Erased `refresh`: deserializes stored state, runs
 /// `<C as Refreshable>::refresh`, and returns an explicit phase disposition.
 /// Only registered for `C: Refreshable`.
-type RefreshFn =
-    Arc<dyn for<'a> Fn(&'a [u8], &'a CredentialContext) -> RefreshFuture<'a> + Send + Sync>;
+///
+/// `state_kind` / `state_version` are the stored row's queryable axes
+/// (see [`TestFn`]).
+type RefreshFn = Arc<
+    dyn for<'a> Fn(&'a [u8], &'a str, u32, &'a CredentialContext) -> RefreshFuture<'a>
+        + Send
+        + Sync,
+>;
 
 /// Boxed future for the erased `revoke` closure.
 type RevokeFuture<'a> =
@@ -217,8 +238,12 @@ type RevokeFuture<'a> =
 /// Erased `revoke`: deserializes stored state, runs
 /// `<C as Revocable>::revoke` for the captured `C: Revocable`. Only
 /// registered for `C: Revocable`.
-type RevokeFn =
-    Arc<dyn for<'a> Fn(&'a [u8], &'a CredentialContext) -> RevokeFuture<'a> + Send + Sync>;
+///
+/// `state_kind` / `state_version` are the stored row's queryable axes
+/// (see [`TestFn`]).
+type RevokeFn = Arc<
+    dyn for<'a> Fn(&'a [u8], &'a str, u32, &'a CredentialContext) -> RevokeFuture<'a> + Send + Sync,
+>;
 
 /// Monomorphized stored-state projection for one credential type.
 ///
@@ -433,6 +458,8 @@ impl<PS: PendingStateStore> DispatchOps<PS> {
         &self,
         key: &str,
         data: &[u8],
+        state_kind: &str,
+        state_version: u32,
         ctx: &CredentialContext,
     ) -> Result<TestResult, CredentialServiceError> {
         let entry = self
@@ -447,7 +474,7 @@ impl<PS: PendingStateStore> DispatchOps<PS> {
                 key: key.to_owned(),
             }
         })?;
-        test_fn(data, ctx).await
+        test_fn(data, state_kind, state_version, ctx).await
     }
 
     /// Refresh the stored state for the type at `key`. Returns a
@@ -463,6 +490,8 @@ impl<PS: PendingStateStore> DispatchOps<PS> {
         &self,
         key: &str,
         data: &[u8],
+        state_kind: &str,
+        state_version: u32,
         ctx: &CredentialContext,
     ) -> Result<RefreshExecutionResult, CredentialServiceError> {
         let entry = self
@@ -477,7 +506,7 @@ impl<PS: PendingStateStore> DispatchOps<PS> {
                 key: key.to_owned(),
             }
         })?;
-        refresh_fn(data, ctx).await
+        refresh_fn(data, state_kind, state_version, ctx).await
     }
 
     /// Revoke the credential at `key` (mutating provider-side state).
@@ -491,6 +520,8 @@ impl<PS: PendingStateStore> DispatchOps<PS> {
         &self,
         key: &str,
         data: &[u8],
+        state_kind: &str,
+        state_version: u32,
         ctx: &CredentialContext,
     ) -> Result<(), CredentialServiceError> {
         let entry = self
@@ -505,7 +536,7 @@ impl<PS: PendingStateStore> DispatchOps<PS> {
                 key: key.to_owned(),
             }
         })?;
-        revoke_fn(data, ctx).await
+        revoke_fn(data, state_kind, state_version, ctx).await
     }
 }
 
@@ -529,6 +560,7 @@ pub fn register_runtime_ops<C, PS>(ops: &mut DispatchOps<PS>) -> Result<(), Disp
 where
     C: Credential,
     C::Scheme: Zeroize,
+    C::State: StateWireFingerprint,
     PS: PendingStateStore,
 {
     let key: &'static str = C::KEY;
@@ -581,13 +613,19 @@ where
     );
 
     let project: ProjectFn = Arc::new(|data: &[u8], state_kind: &str, state_version: u32| {
-        if state_kind != <C::State as CredentialState>::KIND
-            || state_version != <C::State as CredentialState>::VERSION
-        {
+        if state_kind != <C::State as CredentialState>::KIND {
             return Err(CredentialServiceError::InvalidSlotState);
         }
-        let state: C::State =
-            serde_json::from_slice(data).map_err(|_| CredentialServiceError::InvalidSlotState)?;
+        // The row's `state_version` is deliberately NOT compared against
+        // `C::State::VERSION` here: the envelope choke point is the single
+        // place that version-checks, so an unsupported stored shape surfaces
+        // as the distinct `StateEnvelopeRefused` instead of collapsing to
+        // `InvalidSlotState` before the choke point can classify it.
+        let body = decode_state_payload::<C::State>(data, state_kind, state_version)
+            .map_err(map_state_envelope_error_invalid_slot)?;
+        let state: C::State = body
+            .into_state()
+            .map_err(|_| CredentialServiceError::InvalidSlotState)?;
         let guard = crate::CredentialGuard::new(C::project(&state));
         Ok(Box::new(guard))
     });
@@ -652,6 +690,7 @@ fn map_resolve_response<C>(
 ) -> Result<AcquireOutcome, CredentialServiceError>
 where
     C: Credential,
+    C::State: StateWireFingerprint,
 {
     match response {
         ResolveResponse::Complete(state) => serialize_state(&state).map(AcquireOutcome::Complete),
@@ -662,17 +701,52 @@ where
     }
 }
 
+/// Map a state-envelope choke-point failure for the service surfaces.
+///
+/// The envelope checks surface as the distinct
+/// [`CredentialServiceError::StateEnvelopeRefused`] (never collapsed into
+/// `Internal`/`InvalidSlotState` — the trap this choke point exists to close).
+/// A corrupt legacy payload — neither an envelope nor valid legacy JSON —
+/// keeps the surface's pre-envelope corrupt-row class: the envelope checks
+/// are not implicated.
+fn map_state_envelope_error(
+    error: StateEnvelopeError,
+    corrupt_legacy: CredentialServiceError,
+) -> CredentialServiceError {
+    match error {
+        StateEnvelopeError::LegacyStateParseFailed => corrupt_legacy,
+        error => CredentialServiceError::StateEnvelopeRefused(error),
+    }
+}
+
+/// [`map_state_envelope_error`] with the slot-projection surface's corrupt-row
+/// class (`InvalidSlotState`, as a failed projection has always mapped).
+fn map_state_envelope_error_invalid_slot(error: StateEnvelopeError) -> CredentialServiceError {
+    map_state_envelope_error(error, CredentialServiceError::InvalidSlotState)
+}
+
+/// [`map_state_envelope_error`] with the capability-operation surfaces'
+/// corrupt-row class (`Internal`, as a failed state decode has always mapped).
+fn map_state_envelope_error_internal(error: StateEnvelopeError) -> CredentialServiceError {
+    map_state_envelope_error(
+        error,
+        CredentialServiceError::Internal("stored credential state is invalid".to_owned()),
+    )
+}
+
 #[tracing::instrument(name = "credential.state.serialize", skip_all, fields(state_kind = S::KIND))]
-fn serialize_state<S: CredentialState>(state: &S) -> Result<ResolvedState, CredentialServiceError> {
+fn serialize_state<S: CredentialState + StateWireFingerprint>(
+    state: &S,
+) -> Result<ResolvedState, CredentialServiceError> {
     // Bytes cross directly into the owned encryption boundary. A provider's
     // serializer error can include secret data and must never be formatted.
-    let data = crate::serde_secret::expose_for_serialization(|| serde_json::to_vec(state))
+    let data = crate::serde_secret::expose_for_serialization(|| encode_state_payload(state))
         .map_err(|_| {
             tracing::warn!("credential state serialization failed");
             CredentialServiceError::Internal("credential state serialization failed".to_owned())
         })?;
     Ok(ResolvedState {
-        data: Zeroizing::new(data),
+        data,
         state_kind: S::KIND.to_owned(),
         state_version: S::VERSION,
         expires_at: state.expires_at(),
@@ -680,8 +754,17 @@ fn serialize_state<S: CredentialState>(state: &S) -> Result<ResolvedState, Crede
 }
 
 #[tracing::instrument(name = "credential.state.deserialize", skip_all, fields(state_kind = S::KIND))]
-fn deserialize_state<S: CredentialState>(data: &[u8]) -> Result<S, CredentialServiceError> {
-    serde_json::from_slice(data).map_err(|_| {
+fn deserialize_state<S: CredentialState + StateWireFingerprint>(
+    data: &[u8],
+    state_kind: &str,
+    state_version: u32,
+) -> Result<S, CredentialServiceError> {
+    // The single fail-closed decode choke point: unsupported version, axis
+    // disagreement, kind tag, and schema fingerprint all refuse here (as
+    // `StateEnvelopeRefused`); pre-envelope legacy rows decode directly.
+    let body = decode_state_payload::<S>(data, state_kind, state_version)
+        .map_err(map_state_envelope_error_internal)?;
+    body.into_state().map_err(|_| {
         tracing::warn!("stored credential state is invalid");
         CredentialServiceError::Internal("stored credential state is invalid".to_owned())
     })
@@ -700,6 +783,7 @@ pub fn register_testable_ops<C, PS>(ops: &mut DispatchOps<PS>) -> Result<(), Dis
 where
     C: Testable,
     C::Scheme: Clone,
+    C::State: StateWireFingerprint,
     PS: PendingStateStore,
 {
     let key: &'static str = <C as Credential>::KEY;
@@ -707,15 +791,17 @@ where
         .entries
         .get_mut(key)
         .ok_or(DispatchError::BaseOpsMissing { key })?;
-    let test_fn: TestFn = Arc::new(|data: &[u8], ctx: &CredentialContext| {
-        Box::pin(async move {
-            let state: C::State = deserialize_state(data)?;
-            let scheme = C::project(&state);
-            dispatch_test::<C>(&scheme, ctx).await.map_err(|e| {
-                CredentialServiceError::Provider(format!("credential test failed: {e}"))
-            })
-        }) as TestFuture<'_>
-    });
+    let test_fn: TestFn = Arc::new(
+        |data: &[u8], state_kind: &str, state_version: u32, ctx: &CredentialContext| {
+            Box::pin(async move {
+                let state: C::State = deserialize_state(data, state_kind, state_version)?;
+                let scheme = C::project(&state);
+                dispatch_test::<C>(&scheme, ctx).await.map_err(|e| {
+                    CredentialServiceError::Provider(format!("credential test failed: {e}"))
+                })
+            }) as TestFuture<'_>
+        },
+    );
     entry.test_fn = Some(test_fn);
     tracing::info!(credential.key = key, "credential testable ops registered");
     Ok(())
@@ -784,6 +870,7 @@ pub fn register_refreshable_ops<C, PS>(ops: &mut DispatchOps<PS>) -> Result<(), 
 where
     C: Refreshable,
     C::Scheme: Clone,
+    C::State: StateWireFingerprint,
     PS: PendingStateStore,
 {
     let key: &'static str = <C as Credential>::KEY;
@@ -791,75 +878,78 @@ where
         .entries
         .get_mut(key)
         .ok_or(DispatchError::BaseOpsMissing { key })?;
-    let refresh_fn: RefreshFn = Arc::new(|data: &[u8], ctx: &CredentialContext| {
-        Box::pin(async move {
-            // Forced refresh: invoke the capability trait method directly
-            // (the same call the engine's internal `perform_refresh`
-            // makes — there is no public engine forced-`dispatch_refresh`;
-            // `resolve_with_refresh` is early-window-gated). The service
-            // re-persists the `Rewrote` bytes under compare-and-swap.
-            let mut state: C::State = match deserialize_state(data) {
-                Ok(state) => state,
-                Err(error) => {
-                    return Ok(RefreshExecutionResult::PreparationFailed(error));
-                },
-            };
-            let outcome = <C as Refreshable>::refresh(
-                &mut state,
-                RefreshAttempt::new(ctx, C::REFRESH_EXECUTION_MODE),
-            )
-            .await
-            .into_kind();
-            match outcome {
-                outcome @ (RefreshReportKind::ProviderRefreshed
-                | RefreshReportKind::LocallyRefreshed) => {
-                    let phase = match outcome {
-                        RefreshReportKind::ProviderRefreshed => {
-                            RefreshCommitPhase::ProviderConfirmed
-                        },
-                        RefreshReportKind::LocallyRefreshed => RefreshCommitPhase::LocalOnly,
-                        _ => return Ok(RefreshExecutionResult::OutcomeUnknown),
-                    };
-                    // Read the expiry off the *refreshed* state — a token
-                    // rotation typically sets a new TTL. Persisting the
-                    // pre-refresh `expires_at` would leave a freshly
-                    // refreshed credential carrying a stale (possibly
-                    // already-elapsed) expiry.
-                    let expires_at = state.expires_at();
-                    // Cleartext serialization for the encrypted-at-rest store.
-                    let Ok(data) = crate::serde_secret::expose_for_serialization(|| {
-                        serde_json::to_vec(&state)
-                    }) else {
-                        tracing::warn!(
-                            refresh.commit_phase = ?phase,
-                            "credential refresh succeeded but state serialization failed"
-                        );
-                        return Ok(match phase {
-                            RefreshCommitPhase::ProviderConfirmed => {
-                                RefreshExecutionResult::PostProviderPersistence
+    let refresh_fn: RefreshFn = Arc::new(
+        |data: &[u8], state_kind: &str, state_version: u32, ctx: &CredentialContext| {
+            Box::pin(async move {
+                // Forced refresh: invoke the capability trait method directly
+                // (the same call the engine's internal `perform_refresh`
+                // makes — there is no public engine forced-`dispatch_refresh`;
+                // `resolve_with_refresh` is early-window-gated). The service
+                // re-persists the `Rewrote` bytes under compare-and-swap.
+                let mut state: C::State = match deserialize_state(data, state_kind, state_version) {
+                    Ok(state) => state,
+                    Err(error) => {
+                        return Ok(RefreshExecutionResult::PreparationFailed(error));
+                    },
+                };
+                let outcome = <C as Refreshable>::refresh(
+                    &mut state,
+                    RefreshAttempt::new(ctx, C::REFRESH_EXECUTION_MODE),
+                )
+                .await
+                .into_kind();
+                match outcome {
+                    outcome @ (RefreshReportKind::ProviderRefreshed
+                    | RefreshReportKind::LocallyRefreshed) => {
+                        let phase = match outcome {
+                            RefreshReportKind::ProviderRefreshed => {
+                                RefreshCommitPhase::ProviderConfirmed
                             },
-                            RefreshCommitPhase::LocalOnly => {
-                                RefreshExecutionResult::LocalFinalizationFailed
-                            },
-                        });
-                    };
-                    let data = Zeroizing::new(data);
-                    Ok(RefreshExecutionResult::Rewrote {
-                        data,
-                        expires_at,
-                        phase,
-                    })
-                },
-                RefreshReportKind::ReauthRequired { reason, phase } => {
-                    Ok(RefreshExecutionResult::ReauthRequired { reason, phase })
-                },
-                RefreshReportKind::NotApplied(context) => {
-                    Ok(RefreshExecutionResult::NotApplied(context))
-                },
-                RefreshReportKind::OutcomeUnknown => Ok(RefreshExecutionResult::OutcomeUnknown),
-            }
-        }) as RefreshFuture<'_>
-    });
+                            RefreshReportKind::LocallyRefreshed => RefreshCommitPhase::LocalOnly,
+                            _ => return Ok(RefreshExecutionResult::OutcomeUnknown),
+                        };
+                        // Read the expiry off the *refreshed* state — a token
+                        // rotation typically sets a new TTL. Persisting the
+                        // pre-refresh `expires_at` would leave a freshly
+                        // refreshed credential carrying a stale (possibly
+                        // already-elapsed) expiry.
+                        let expires_at = state.expires_at();
+                        // Cleartext envelope serialization for the
+                        // encrypted-at-rest store.
+                        let Ok(data) = crate::serde_secret::expose_for_serialization(|| {
+                            encode_state_payload(&state)
+                        }) else {
+                            tracing::warn!(
+                                refresh.commit_phase = ?phase,
+                                "credential refresh succeeded but state serialization failed"
+                            );
+                            return Ok(match phase {
+                                RefreshCommitPhase::ProviderConfirmed => {
+                                    RefreshExecutionResult::PostProviderPersistence
+                                },
+                                RefreshCommitPhase::LocalOnly => {
+                                    RefreshExecutionResult::LocalFinalizationFailed
+                                },
+                            });
+                        };
+                        Ok(RefreshExecutionResult::Rewrote {
+                            data,
+                            state_version: <C::State as CredentialState>::VERSION,
+                            expires_at,
+                            phase,
+                        })
+                    },
+                    RefreshReportKind::ReauthRequired { reason, phase } => {
+                        Ok(RefreshExecutionResult::ReauthRequired { reason, phase })
+                    },
+                    RefreshReportKind::NotApplied(context) => {
+                        Ok(RefreshExecutionResult::NotApplied(context))
+                    },
+                    RefreshReportKind::OutcomeUnknown => Ok(RefreshExecutionResult::OutcomeUnknown),
+                }
+            }) as RefreshFuture<'_>
+        },
+    );
     entry.refresh_fn = Some(refresh_fn);
     tracing::info!(
         credential.key = key,
@@ -888,6 +978,7 @@ pub fn register_revocable_ops<C, PS>(ops: &mut DispatchOps<PS>) -> Result<(), Di
 where
     C: Revocable,
     C::Scheme: Clone,
+    C::State: StateWireFingerprint,
     PS: PendingStateStore,
 {
     let key: &'static str = <C as Credential>::KEY;
@@ -895,30 +986,32 @@ where
         .entries
         .get_mut(key)
         .ok_or(DispatchError::BaseOpsMissing { key })?;
-    let revoke_fn: RevokeFn = Arc::new(|data: &[u8], ctx: &CredentialContext| {
-        Box::pin(async move {
-            let mut state: C::State = deserialize_state(data)?;
-            // `revoke` may mutate `state`; the mutation is deliberately
-            // dropped here. After this closure returns, the service writes a
-            // tombstone over the row (zeroing the secret bytes) rather than
-            // deleting it — so the id is non-resurrectable and slot bindings
-            // still pointing at it surface a typed `CredentialTombstoned`
-            // error. See this fn's doc comment and `CredentialService::revoke`.
-            dispatch_revoke::<C>(&mut state, ctx)
-                .await
-                .map_err(|error| match error {
-                    // The integration may know that provider work completed
-                    // and only local finalization failed.
-                    crate::CredentialError::PostProviderPersistence => {
-                        CredentialServiceError::RevokePostProviderPersistence
-                    },
-                    // Once the erased revoke implementation is entered, any
-                    // other error is phase-ambiguous: the trait has no proof
-                    // that provider-side revocation did not occur.
-                    _ => CredentialServiceError::OutcomeUnknown,
-                })
-        }) as RevokeFuture<'_>
-    });
+    let revoke_fn: RevokeFn = Arc::new(
+        |data: &[u8], state_kind: &str, state_version: u32, ctx: &CredentialContext| {
+            Box::pin(async move {
+                let mut state: C::State = deserialize_state(data, state_kind, state_version)?;
+                // `revoke` may mutate `state`; the mutation is deliberately
+                // dropped here. After this closure returns, the service writes a
+                // tombstone over the row (zeroing the secret bytes) rather than
+                // deleting it — so the id is non-resurrectable and slot bindings
+                // still pointing at it surface a typed `CredentialTombstoned`
+                // error. See this fn's doc comment and `CredentialService::revoke`.
+                dispatch_revoke::<C>(&mut state, ctx)
+                    .await
+                    .map_err(|error| match error {
+                        // The integration may know that provider work completed
+                        // and only local finalization failed.
+                        crate::CredentialError::PostProviderPersistence => {
+                            CredentialServiceError::RevokePostProviderPersistence
+                        },
+                        // Once the erased revoke implementation is entered, any
+                        // other error is phase-ambiguous: the trait has no proof
+                        // that provider-side revocation did not occur.
+                        _ => CredentialServiceError::OutcomeUnknown,
+                    })
+            }) as RevokeFuture<'_>
+        },
+    );
     entry.revoke_fn = Some(revoke_fn);
     tracing::info!(credential.key = key, "credential revocable ops registered");
     Ok(())
@@ -935,6 +1028,7 @@ pub fn register_interactive_ops<C, PS>(ops: &mut DispatchOps<PS>) -> Result<(), 
 where
     C: Interactive,
     C::Scheme: Clone,
+    C::State: StateWireFingerprint,
     PS: PendingStateStore,
 {
     let key: &'static str = <C as Credential>::KEY;

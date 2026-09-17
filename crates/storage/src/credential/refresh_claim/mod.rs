@@ -39,6 +39,80 @@ pub use nebula_storage_port::store::{
     SentinelState,
 };
 
+// The adjudication role is new with the reconciliation mechanism, so it has no
+// historical path to keep: it is re-exported under its canonical port names.
+pub use nebula_storage_port::store::{
+    MAX_ADJUDICATION_EVIDENCE_BYTES, RefreshAdjudication, RefreshClaimAdjudicationError,
+    RefreshClaimAdjudicator, RefreshOutcomeDecision,
+};
+
+/// SHA-256 of an adjudication evidence note.
+///
+/// One definition for every backend: the digest is what makes a recommitted
+/// decision comparable across replicas, so the adapters must not each pick
+/// their own hash.
+pub(crate) fn adjudication_evidence_digest(evidence: &str) -> [u8; 32] {
+    use sha2::{Digest as _, Sha256};
+
+    Sha256::digest(evidence.as_bytes()).into()
+}
+
+/// Reject an evidence note the port refuses to digest.
+///
+/// Empty evidence would make every anonymous recommit look like a match, and
+/// an unbounded note would let a caller grow durable incident rows without
+/// limit.
+pub(crate) fn validate_adjudication_evidence(
+    evidence: &str,
+) -> Result<(), RefreshClaimAdjudicationError> {
+    if evidence.is_empty() || evidence.len() > MAX_ADJUDICATION_EVIDENCE_BYTES {
+        return Err(RefreshClaimAdjudicationError::InvalidEvidence);
+    }
+    Ok(())
+}
+
+/// Decide what a recommit means against the resolution already on record.
+///
+/// Shared by all three adapters so the idempotency rule is stated once: the
+/// same `(digest, decision)` pair is a no-op that reports
+/// [`RefreshAdjudication::changed`] `false` carrying the digest on record, and
+/// any mismatch is refused rather than silently overwriting an operator's
+/// earlier decision, with the recorded pair riding on the error so a client
+/// can name what its evidence disagreed with.
+///
+/// # Errors
+///
+/// [`RefreshClaimAdjudicationError::EvidenceConflict`] when the recorded pair
+/// differs, and [`RefreshClaimAdjudicationError::Storage`] when an incident
+/// carries a resolution timestamp but no decodable decision or a digest that
+/// is not 32 bytes — both are corrupted rows, not caller mistakes (only the
+/// adapters write the columns, always with a SHA-256 and a wire decision).
+pub(crate) fn adjudicate_against_recorded_resolution(
+    recorded_digest: &[u8],
+    recorded_decision: Option<&str>,
+    requested_digest: &[u8; 32],
+    requested_decision: RefreshOutcomeDecision,
+) -> Result<RefreshAdjudication, RefreshClaimAdjudicationError> {
+    let Some(recorded_decision) = recorded_decision.and_then(RefreshOutcomeDecision::from_wire)
+    else {
+        return Err(RefreshClaimAdjudicationError::Storage);
+    };
+    let Ok(recorded_digest) = <[u8; 32]>::try_from(recorded_digest) else {
+        return Err(RefreshClaimAdjudicationError::Storage);
+    };
+    if &recorded_digest != requested_digest || recorded_decision != requested_decision {
+        return Err(RefreshClaimAdjudicationError::EvidenceConflict {
+            recorded_digest,
+            recorded_decision,
+        });
+    }
+    Ok(RefreshAdjudication::new(
+        recorded_decision,
+        false,
+        recorded_digest,
+    ))
+}
+
 /// Maps a SQL driver error into the closed backend-error variant at the
 /// adapter edge.
 ///

@@ -22,7 +22,7 @@ use nebula_api::{
     state::{MembershipStore, WorkspaceResolver},
 };
 use nebula_core::{
-    CredentialId, CredentialKey, OrgId, Permission, Principal as CorePrincipal, ServiceAccountId,
+    CredentialId, CredentialKey, OrgId, Principal as CorePrincipal, ServiceAccountId,
     TenantContext, UserId, WorkflowId, WorkspaceGrant, WorkspaceId, effective_workspace_role,
 };
 use nebula_credential::{
@@ -63,24 +63,6 @@ impl ServerCredentialAuthority {
             resolver: BindingScopeResolver,
             membership_store,
             workspace_resolver,
-        }
-    }
-
-    const fn permission(operation: CredentialOperation) -> Option<Permission> {
-        match operation {
-            CredentialOperation::Get | CredentialOperation::List => {
-                Some(Permission::CredentialRead)
-            },
-            CredentialOperation::Create
-            | CredentialOperation::Update
-            | CredentialOperation::Test
-            | CredentialOperation::Refresh
-            | CredentialOperation::Resolve
-            | CredentialOperation::ContinueResolve => Some(Permission::CredentialWrite),
-            CredentialOperation::Delete | CredentialOperation::Revoke => {
-                Some(Permission::CredentialDelete)
-            },
-            _ => None,
         }
     }
 }
@@ -156,10 +138,11 @@ impl CredentialTenantAuthority for ServerCredentialAuthority {
             org_role: membership.org_role,
             workspace_role,
         };
-        let Some(permission) = Self::permission(operation) else {
-            return Ok(AuthorizationDecision::Deny);
-        };
-        if tenant.require(permission).is_err() {
+        // The mapping is total in `nebula-credential`, the crate that owns the
+        // operation enum: an unmapped operation is a compile error there rather
+        // than a denial here that is indistinguishable from a real policy
+        // denial.
+        if tenant.require(operation.rbac_permission()).is_err() {
             return Ok(AuthorizationDecision::Deny);
         }
 
@@ -290,6 +273,15 @@ impl ServerCredentialGateway {
                         authentication_binding,
                     }
                 },
+                CredentialGatewayCommand::Reconcile {
+                    credential_id,
+                    decision,
+                    evidence,
+                } => CredentialCommand::Reconcile {
+                    credential_id: Self::credential_id(&credential_id)?,
+                    decision,
+                    evidence,
+                },
                 _ => return Err(CredentialGatewayError::Internal),
             };
         Ok(command)
@@ -314,6 +306,13 @@ impl ServerCredentialGateway {
             CredentialCommandResult::Revoked => CredentialGatewayResult::Revoked,
             CredentialCommandResult::Acquisition(acquisition) => {
                 CredentialGatewayResult::Acquisition(map_acquisition(acquisition)?)
+            },
+            CredentialCommandResult::Reconciled(adjudication) => {
+                CredentialGatewayResult::Reconciled {
+                    decision: adjudication.decision,
+                    changed: adjudication.changed,
+                    evidence_digest: adjudication.evidence_digest,
+                }
             },
             _ => return Err(CredentialGatewayError::Internal),
         };
@@ -431,6 +430,12 @@ fn map_interaction(
     }
 }
 
+/// Map the controller's taxonomy onto the gateway's.
+///
+/// The adjudication arm delegates to `nebula-api`'s credential command port,
+/// which owns the `From<RefreshClaimAdjudicationError>` impl: one copy of that
+/// classification, shared with the API testkit, instead of two that had to stay
+/// in step by hand.
 fn map_controller_error(error: CredentialControllerError) -> CredentialGatewayError {
     match error {
         CredentialControllerError::Authorization(error) => match error {
@@ -438,9 +443,17 @@ fn map_controller_error(error: CredentialControllerError) -> CredentialGatewayEr
                 CredentialGatewayError::Forbidden
             },
             CredentialAuthorizationError::Unavailable => CredentialGatewayError::Unavailable,
+            // Forced, not exhaustive: `CredentialAuthorizationError` is
+            // `#[non_exhaustive]`, so a variant added in the credential crate
+            // arrives here as `Internal` with no compile error anywhere. It
+            // fails closed, and no backstop in this crate can do better — the
+            // classification of a variant belongs to the crate that defines it.
             _ => CredentialGatewayError::Internal,
         },
         CredentialControllerError::Service(error) => map_service_error(error),
+        CredentialControllerError::Adjudication(error) => error.into(),
+        // Forced for the same reason as the wildcard above: nothing in this
+        // crate can be made to fail on a new cross-crate variant.
         _ => CredentialGatewayError::Internal,
     }
 }
@@ -529,16 +542,30 @@ mod tests {
     };
 
     use nebula_api::{
+        domain::credential::dto::CreateCredentialRequest,
         domain::org::InMemoryMembershipStore,
         error::ApiError,
         state::{AddMemberOutcome, OrgMember, RemoveMemberOutcome, TenantMembershipSnapshot},
     };
     use nebula_core::{OrgRole, WorkspaceRole};
+    use nebula_credential::CredentialService;
     use nebula_storage::credential::EnvKeyProvider;
+    use nebula_storage_port::store::{
+        RefreshAdjudication, RefreshClaimAdjudicationError, RefreshClaimAdjudicator,
+        RefreshOutcomeDecision,
+    };
+    use sha2::{Digest, Sha256};
 
     use super::*;
 
     const TEST_KEY_B64: &str = "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI=";
+
+    /// The first-party credential type the reconciliation fixture creates.
+    const API_KEY_TYPE: &str = "api_key";
+
+    /// The `api_key` credential's only property. Not a secret: a fixture value
+    /// that never leaves the in-memory store.
+    const TEST_API_KEY_VALUE: &str = "runtime-reconciliation-api-key";
 
     #[test]
     fn production_gateway_distinguishes_unknown_refresh_and_revoke_outcomes() {
@@ -797,7 +824,7 @@ mod tests {
         }
     }
 
-    async fn service() -> Arc<nebula_credential::CredentialService> {
+    async fn service() -> Arc<CredentialService> {
         let key =
             Arc::new(EnvKeyProvider::from_base64(TEST_KEY_B64).expect("valid fixed test key"));
         crate::credential_composition::compose_memory_service(key)
@@ -809,6 +836,294 @@ mod tests {
         CredentialActor::user(UserId::new())
     }
 
+    /// Controller with the reconciliation seam stubbed out.
+    ///
+    /// These tests exercise the authority and gateway mappings, not
+    /// adjudication, so no claim store is wired. The stand-in refuses, which is
+    /// the only honest default: accepting would clear a fail-closed poison
+    /// state on the strength of a test double.
+    fn test_controller(
+        service: Arc<CredentialService>,
+        authority: Arc<dyn CredentialTenantAuthority>,
+    ) -> Arc<CredentialController> {
+        Arc::new(CredentialController::new(
+            service,
+            authority,
+            Arc::new(RefusingAdjudicator),
+            None,
+        ))
+    }
+
+    /// Records what the controller asked it to adjudicate and reports a change.
+    #[derive(Debug, Default)]
+    struct RecordingAdjudicator {
+        calls: Mutex<Vec<(CredentialId, RefreshOutcomeDecision, String)>>,
+    }
+
+    #[async_trait]
+    impl RefreshClaimAdjudicator for RecordingAdjudicator {
+        async fn adjudicate(
+            &self,
+            credential_id: &CredentialId,
+            decision: RefreshOutcomeDecision,
+            evidence: &str,
+        ) -> Result<RefreshAdjudication, RefreshClaimAdjudicationError> {
+            self.calls.lock().expect("test adjudication lock").push((
+                *credential_id,
+                decision,
+                evidence.to_owned(),
+            ));
+            Ok(RefreshAdjudication::new(
+                decision,
+                true,
+                // The digest the production adapters would have recorded for
+                // this evidence, so the gateway-forwarding assertion pins a
+                // real identity rather than a placeholder.
+                Sha256::digest(evidence.as_bytes()).into(),
+            ))
+        }
+    }
+
+    /// Refuses every adjudication with `NotPoisoned`.
+    #[derive(Debug)]
+    struct RefusingAdjudicator;
+
+    #[async_trait]
+    impl RefreshClaimAdjudicator for RefusingAdjudicator {
+        async fn adjudicate(
+            &self,
+            _credential_id: &CredentialId,
+            _decision: RefreshOutcomeDecision,
+            _evidence: &str,
+        ) -> Result<RefreshAdjudication, RefreshClaimAdjudicationError> {
+            Err(RefreshClaimAdjudicationError::NotPoisoned)
+        }
+    }
+
+    /// Fails its adjudication with one exact port error, once.
+    ///
+    /// One-shot rather than reusable because `RefreshClaimAdjudicationError`
+    /// carries no `Clone`, and a caller that wants a second failure builds a
+    /// second fixture. That matches how the production seam is exercised: one
+    /// reconcile, one adjudicator answer.
+    #[derive(Debug)]
+    struct OneShotFailingAdjudicator {
+        failure: Mutex<Option<RefreshClaimAdjudicationError>>,
+    }
+
+    impl OneShotFailingAdjudicator {
+        fn new(failure: RefreshClaimAdjudicationError) -> Self {
+            Self {
+                failure: Mutex::new(Some(failure)),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl RefreshClaimAdjudicator for OneShotFailingAdjudicator {
+        async fn adjudicate(
+            &self,
+            _credential_id: &CredentialId,
+            _decision: RefreshOutcomeDecision,
+            _evidence: &str,
+        ) -> Result<RefreshAdjudication, RefreshClaimAdjudicationError> {
+            Err(self
+                .failure
+                .lock()
+                .expect("test adjudication lock")
+                .take()
+                .expect("the adjudicator fails once per fixture"))
+        }
+    }
+
+    #[tokio::test]
+    async fn production_gateway_translates_and_returns_a_reconciliation() {
+        // Covers three wildcard-free paths at once: the command translation arm
+        // (without it the reconcile is swallowed as `Internal`), the result arm
+        // (without it a *successful* reconciliation becomes `Internal`), and the
+        // controller's adjudicator dispatch.
+        let recorded = Arc::new(RecordingAdjudicator::default());
+        let authority: Arc<dyn CredentialTenantAuthority> = Arc::new(CountingAuthority {
+            calls: Arc::new(AtomicUsize::new(0)),
+            decision: AuthorizationDecision::Allow,
+        });
+        let gateway = ServerCredentialGateway::new(Arc::new(CredentialController::new(
+            service().await,
+            authority,
+            recorded.clone(),
+            None,
+        )));
+        let principal = AuthenticatedPrincipal::for_test_user(UserId::new().to_string());
+        let scope = Scope::new(WorkspaceId::new().to_string(), OrgId::new().to_string());
+
+        // The credential must exist under the very scope it is reconciled in:
+        // the controller's reconcile arm resolves it through the owner-scoped
+        // read before the adjudicator is reached, so an id that names no live
+        // row is refused as `NotFound` and never gets this far. Creating it
+        // through the same gateway keeps the fixture honest — nothing here
+        // writes a credential the production path could not have written.
+        let created = gateway
+            .execute(
+                &principal,
+                &scope,
+                CredentialGatewayCommand::Create(CreateCredentialRequest {
+                    credential_key: API_KEY_TYPE.to_owned(),
+                    name: "runtime reconciliation fixture".to_owned(),
+                    description: None,
+                    data: serde_json::json!({ "api_key": TEST_API_KEY_VALUE }),
+                    tags: None,
+                }),
+            )
+            .await
+            .expect("the first-party api_key type must be creatable");
+        let CredentialGatewayResult::Record(record) = created else {
+            panic!("create must answer with the created record, got {created:?}");
+        };
+        let credential_id =
+            CredentialId::parse(&record.id).expect("the gateway returns a parseable credential id");
+
+        let result = gateway
+            .execute(
+                &principal,
+                &scope,
+                CredentialGatewayCommand::Reconcile {
+                    credential_id: credential_id.to_string(),
+                    decision: RefreshOutcomeDecision::ProviderApplied,
+                    evidence: "provider support ticket 4417".to_owned(),
+                },
+            )
+            .await
+            .expect("reconcile reaches the adjudicator");
+
+        let expected_digest: [u8; 32] = Sha256::digest(b"provider support ticket 4417").into();
+        assert!(
+            matches!(
+                result,
+                CredentialGatewayResult::Reconciled {
+                    decision: RefreshOutcomeDecision::ProviderApplied,
+                    changed: true,
+                    evidence_digest,
+                } if evidence_digest == expected_digest
+            ),
+            "expected a successful reconciliation forwarding the recorded digest, got {result:?}"
+        );
+        assert_eq!(
+            recorded
+                .calls
+                .lock()
+                .expect("test adjudication lock")
+                .as_slice(),
+            &[(
+                credential_id,
+                RefreshOutcomeDecision::ProviderApplied,
+                "provider support ticket 4417".to_owned(),
+            )]
+        );
+    }
+
+    /// A failing adjudicator reaches the gateway as its own error, not as
+    /// `Internal`.
+    ///
+    /// The mapping has two halves and this drives both. The controller's `?` on
+    /// the adjudication must surface the port error as
+    /// `CredentialControllerError::Adjudication`, and `map_controller_error`
+    /// must reach its `Adjudication` arm with it rather than the wildcard that
+    /// answers `Internal`. Only the second half is trivially true, because it is
+    /// the `From` impl; the hop before it is real logic, and a wildcard that
+    /// collapsed "nothing to reconcile" into "internal failure" would satisfy
+    /// any test asserting only "not a success". Driving the failure through the
+    /// production adapter is what puts that hop inside the assertion.
+    #[tokio::test]
+    async fn production_gateway_keeps_each_adjudication_failure_distinct() {
+        let principal = AuthenticatedPrincipal::for_test_user(UserId::new().to_string());
+        let scope = Scope::new(WorkspaceId::new().to_string(), OrgId::new().to_string());
+
+        for (port_error, expected) in [
+            (
+                RefreshClaimAdjudicationError::NotPoisoned,
+                CredentialGatewayError::ReconciliationNotRequired,
+            ),
+            (
+                RefreshClaimAdjudicationError::EvidenceConflict {
+                    recorded_digest: [0x5eu8; 32],
+                    recorded_decision: RefreshOutcomeDecision::ProviderApplied,
+                },
+                CredentialGatewayError::ReconciliationConflict {
+                    recorded_digest: [0x5eu8; 32],
+                    recorded_decision: RefreshOutcomeDecision::ProviderApplied,
+                },
+            ),
+            (
+                RefreshClaimAdjudicationError::InvalidEvidence,
+                CredentialGatewayError::ReconciliationEvidenceInvalid,
+            ),
+            (
+                RefreshClaimAdjudicationError::Storage,
+                CredentialGatewayError::Unavailable,
+            ),
+            (
+                RefreshClaimAdjudicationError::AcknowledgementUnknown,
+                CredentialGatewayError::OutcomeUnknown,
+            ),
+        ] {
+            let rendered = format!("{port_error:?}");
+            let gateway = ServerCredentialGateway::new(Arc::new(CredentialController::new(
+                service().await,
+                Arc::new(CountingAuthority {
+                    calls: Arc::new(AtomicUsize::new(0)),
+                    decision: AuthorizationDecision::Allow,
+                }),
+                Arc::new(OneShotFailingAdjudicator::new(port_error)),
+                None,
+            )));
+
+            // The credential must exist under the very scope it is reconciled
+            // in: the controller's reconcile arm resolves it through the
+            // owner-scoped read before the adjudicator is reached, so an id that
+            // names no live row is refused as `NotFound` and never gets this
+            // far. Creating it through the same gateway keeps the fixture honest
+            // — nothing here writes a credential the production path could not
+            // have written.
+            let created = gateway
+                .execute(
+                    &principal,
+                    &scope,
+                    CredentialGatewayCommand::Create(CreateCredentialRequest {
+                        credential_key: API_KEY_TYPE.to_owned(),
+                        name: format!("failing adjudication fixture {rendered}"),
+                        description: None,
+                        data: serde_json::json!({ "api_key": TEST_API_KEY_VALUE }),
+                        tags: None,
+                    }),
+                )
+                .await
+                .expect("the first-party api_key type must be creatable");
+            let CredentialGatewayResult::Record(record) = created else {
+                panic!("create must answer with the created record, got {created:?}");
+            };
+            let credential_id = CredentialId::parse(&record.id)
+                .expect("the gateway returns a parseable credential id");
+
+            let gateway_error = gateway
+                .execute(
+                    &principal,
+                    &scope,
+                    CredentialGatewayCommand::Reconcile {
+                        credential_id: credential_id.to_string(),
+                        decision: RefreshOutcomeDecision::ProviderApplied,
+                        evidence: "provider support ticket 4417".to_owned(),
+                    },
+                )
+                .await
+                .expect_err("a failing adjudicator must not answer with a result");
+
+            assert_eq!(
+                gateway_error, expected,
+                "wrong gateway error for {rendered}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn controller_obtains_exactly_one_decision_for_an_allowed_command() {
         let calls = Arc::new(AtomicUsize::new(0));
@@ -816,7 +1131,7 @@ mod tests {
             calls: Arc::clone(&calls),
             decision: AuthorizationDecision::Allow,
         });
-        let controller = CredentialController::new(service().await, authority);
+        let controller = test_controller(service().await, authority);
 
         let result = controller
             .execute(
@@ -838,10 +1153,7 @@ mod tests {
             calls: Arc::clone(&calls),
             decision: AuthorizationDecision::Allow,
         });
-        let gateway = ServerCredentialGateway::new(Arc::new(CredentialController::new(
-            service().await,
-            authority,
-        )));
+        let gateway = ServerCredentialGateway::new(test_controller(service().await, authority));
         let subject = UserId::new();
         let principal = AuthenticatedPrincipal::for_test_user(subject.to_string());
 
@@ -963,7 +1275,7 @@ mod tests {
             calls: Arc::clone(&calls),
             decision: AuthorizationDecision::Deny,
         });
-        let controller = CredentialController::new(service().await, authority);
+        let controller = test_controller(service().await, authority);
 
         let error = controller
             .execute(
@@ -1017,6 +1329,11 @@ mod tests {
                 user_input: UserInput::Poll,
                 authentication_binding: binding,
             },
+            CredentialCommand::Reconcile {
+                credential_id,
+                decision: RefreshOutcomeDecision::ProviderApplied,
+                evidence: "provider support ticket 4417".to_owned(),
+            },
         ];
         let expected = [
             CredentialOperation::Create,
@@ -1029,11 +1346,11 @@ mod tests {
             CredentialOperation::Revoke,
             CredentialOperation::Resolve,
             CredentialOperation::ContinueResolve,
+            CredentialOperation::Reconcile,
         ];
         let credential_service = service().await;
         let authority = Arc::new(RecordingDenyAuthority::default());
-        let controller =
-            CredentialController::new(Arc::clone(&credential_service), authority.clone());
+        let controller = test_controller(Arc::clone(&credential_service), authority.clone());
         let scope = Scope::new("workspace", "org");
         for command in commands {
             let error = controller
@@ -1059,7 +1376,7 @@ mod tests {
             calls: Arc::clone(&allow_calls),
             decision: AuthorizationDecision::Allow,
         });
-        let verifier = CredentialController::new(credential_service, allow);
+        let verifier = test_controller(credential_service, allow);
         let result = verifier
             .execute(&actor(), &scope, CredentialCommand::List)
             .await
@@ -1192,6 +1509,7 @@ mod tests {
             CredentialOperation::Revoke,
             CredentialOperation::Resolve,
             CredentialOperation::ContinueResolve,
+            CredentialOperation::Reconcile,
         ];
 
         let viewer = Arc::new(RecordingMembershipStore::new(
@@ -1234,14 +1552,35 @@ mod tests {
             Some(editor.clone()),
             workspace_resolver(org_id, workspace_id),
         );
+        // The tier is pinned exactly rather than left as "an editor is
+        // denied": a `Deny` here is also what an org-only requirement, a tier
+        // above admin, or a wrong permission would produce, so the loop below
+        // cannot tell a dropped step from a raised one.
+        assert_eq!(
+            CredentialOperation::Reconcile
+                .rbac_permission()
+                .required_workspace_role(),
+            Some(WorkspaceRole::WorkspaceAdmin),
+            "reconcile must require exactly the workspace-admin tier"
+        );
         for operation in operations {
+            // `Reconcile` is the one operation a write role cannot perform: it
+            // clears a fail-closed poison state and answers for a provider side
+            // effect the platform could not observe, so it requires the
+            // workspace-admin tier — asserted exactly above. A `CredentialWrite`
+            // guard here would hand the privileged seam to every writer.
+            let expected = if matches!(operation, CredentialOperation::Reconcile) {
+                AuthorizationDecision::Deny
+            } else {
+                AuthorizationDecision::Allow
+            };
             assert_eq!(
                 editor_authority
                     .decide(&user, &scope, operation)
                     .await
                     .expect("editor decision"),
-                AuthorizationDecision::Allow,
-                "editor must be allowed for {operation:?}"
+                expected,
+                "unexpected editor decision for {operation:?}"
             );
         }
         assert_eq!(
@@ -1249,6 +1588,30 @@ mod tests {
             operations.len()
         );
         assert_eq!(editor.point_calls.load(Ordering::SeqCst), 0);
+
+        let admin = Arc::new(RecordingMembershipStore::new(
+            Some(OrgRole::OrgMember),
+            Some(WorkspaceRole::WorkspaceAdmin),
+        ));
+        let admin_authority = ServerCredentialAuthority::new(
+            Some(admin.clone()),
+            workspace_resolver(org_id, workspace_id),
+        );
+        for operation in operations {
+            assert_eq!(
+                admin_authority
+                    .decide(&user, &scope, operation)
+                    .await
+                    .expect("admin decision"),
+                AuthorizationDecision::Allow,
+                "admin must be allowed for {operation:?}"
+            );
+        }
+        assert_eq!(
+            admin.snapshot_calls.load(Ordering::SeqCst),
+            operations.len()
+        );
+        assert_eq!(admin.point_calls.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]

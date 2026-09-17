@@ -303,6 +303,40 @@ pub enum ApiError {
     #[classify(category = "internal", code = "API:NOT_IMPLEMENTED")]
     #[error("Not implemented: {0}")]
     NotImplemented(String),
+
+    /// The credential holds no poisoned refresh claim to adjudicate (409).
+    ///
+    /// Distinct from the generic [`Self::Conflict`]: the caller is authorized
+    /// and the credential is not in the state the command names, and a client
+    /// has to tell that apart from a contradictory decision before it can act.
+    #[classify(
+        category = "conflict",
+        code = "API:CREDENTIAL_RECONCILIATION_NOT_REQUIRED",
+        retryable = false
+    )]
+    #[error("Credential has no refresh claim requiring reconciliation")]
+    CredentialReconciliationNotRequired,
+
+    /// The refresh claim already records a different `(evidence, decision)`
+    /// pair than the one submitted (409).
+    ///
+    /// A caller that repeats its own request does not get this: an identical
+    /// pair is a no-op success. This means two operator observations disagree
+    /// about the same claim. The recorded pair is carried so the problem
+    /// document can name what is on record: a client holding its original
+    /// evidence can confirm it disagreed rather than wonder.
+    #[classify(
+        category = "conflict",
+        code = "API:CREDENTIAL_RECONCILIATION_CONFLICT",
+        retryable = false
+    )]
+    #[error("Credential refresh claim already records a different reconciliation decision")]
+    CredentialReconciliationConflict {
+        /// SHA-256 of the recorded evidence, lowercase hex.
+        recorded_digest: String,
+        /// The recorded decision in its wire spelling.
+        recorded_decision: String,
+    },
 }
 
 /// Project a [`nebula_tenancy::TenancyError`] (raised when a request's
@@ -390,6 +424,16 @@ impl ApiError {
             Self::CredentialRevokeReconciliationRequired => {
                 credential_problem(CredentialProblem::RevokeReconciliationRequired)
             },
+            Self::CredentialReconciliationNotRequired => {
+                credential_problem(CredentialProblem::ReconciliationNotRequired)
+            },
+            Self::CredentialReconciliationConflict {
+                recorded_digest,
+                recorded_decision,
+            } => credential_problem(CredentialProblem::ReconciliationConflict {
+                recorded_digest: recorded_digest.clone(),
+                recorded_decision: recorded_decision.clone(),
+            }),
             Self::RateLimitExceeded => standard_problem(
                 StatusCode::TOO_MANY_REQUESTS,
                 "rate-limit",
@@ -553,10 +597,18 @@ enum CredentialProblem {
     RefreshRetryDelayed,
     RefreshReconciliationRequired,
     RevokeReconciliationRequired,
+    ReconciliationNotRequired,
+    /// The pair the comparison refused against, in wire spelling — named by
+    /// the problem document's extensions so a client holding its original
+    /// evidence can confirm what is on record.
+    ReconciliationConflict {
+        recorded_digest: String,
+        recorded_decision: String,
+    },
 }
 
 fn credential_problem(error: CredentialProblem) -> (StatusCode, ProblemDetails) {
-    let (problem_type, title, detail) = match error {
+    let (problem_type, title, detail) = match &error {
         CredentialProblem::ReauthenticationRequired => (
             "credential-reauth-required",
             "Credential Reauthentication Required",
@@ -582,8 +634,32 @@ fn credential_problem(error: CredentialProblem) -> (StatusCode, ProblemDetails) 
             "Credential Revoke Reconciliation Required",
             "The revoke outcome is known, but durable local finalization definitely failed. Do not retry automatically; reconcile credential state.",
         ),
+        CredentialProblem::ReconciliationNotRequired => (
+            "credential-reconciliation-not-required",
+            "Credential Reconciliation Not Required",
+            "The credential has no poisoned refresh claim to adjudicate. A repeated reconciliation of a decision already on record is reported as success instead.",
+        ),
+        CredentialProblem::ReconciliationConflict { .. } => (
+            "credential-reconciliation-conflict",
+            "Credential Reconciliation Conflict",
+            "The refresh claim already records a different evidence and decision pair. Repeating an identical request is a no-op success; the evidence_digest and recorded_decision extensions name the recorded pair this request disagreed with.",
+        ),
     };
-    conflict_problem(problem_type, title, detail)
+    let (status, problem) = conflict_problem(problem_type, title, detail);
+    let CredentialProblem::ReconciliationConflict {
+        recorded_digest,
+        recorded_decision,
+    } = error
+    else {
+        return (status, problem);
+    };
+    (
+        status,
+        problem.with_extensions(serde_json::json!({
+            "evidence_digest": recorded_digest,
+            "recorded_decision": recorded_decision,
+        })),
+    )
 }
 
 fn internal_problem(message: &str) -> (StatusCode, ProblemDetails) {
@@ -1277,5 +1353,63 @@ mod tests {
         let response = error.into_response();
         assert_eq!(response.status(), StatusCode::CONFLICT);
         assert!(!response.headers().contains_key(header::RETRY_AFTER));
+    }
+
+    #[test]
+    fn reconcile_refusals_are_distinguishable_fixed_non_retryable_409s() {
+        use nebula_error::Classify;
+
+        // The two refusals call for different next steps — "nothing to
+        // adjudicate" is terminal for the request, while a conflicting decision
+        // means the operator has to read what is already on record — so each
+        // carries its own code and problem type instead of sharing the generic
+        // conflict response and being told apart only by free-text detail.
+        for (error, code, problem_type, title) in [
+            (
+                ApiError::CredentialReconciliationNotRequired,
+                "API:CREDENTIAL_RECONCILIATION_NOT_REQUIRED",
+                "https://nebula.dev/problems/credential-reconciliation-not-required",
+                "Credential Reconciliation Not Required",
+            ),
+            (
+                ApiError::CredentialReconciliationConflict {
+                    recorded_digest: "ab".repeat(32),
+                    recorded_decision: "provider_applied".to_owned(),
+                },
+                "API:CREDENTIAL_RECONCILIATION_CONFLICT",
+                "https://nebula.dev/problems/credential-reconciliation-conflict",
+                "Credential Reconciliation Conflict",
+            ),
+        ] {
+            let (status, problem) = error.to_problem_details();
+            assert_eq!(status, StatusCode::CONFLICT, "wrong status for {code}");
+            assert_eq!(error.category(), nebula_error::ErrorCategory::Conflict);
+            assert_eq!(error.code().as_str(), code);
+            assert!(!error.is_retryable(), "wrong retryability for {code}");
+            assert_eq!(error.retry_hint(), None);
+            assert_eq!(problem.type_uri, problem_type);
+            assert_eq!(problem.title, title);
+
+            let response = error.into_response();
+            assert_eq!(response.status(), StatusCode::CONFLICT);
+            assert!(!response.headers().contains_key(header::RETRY_AFTER));
+        }
+
+        // The conflict problem names the recorded pair as extensions, so a
+        // client holding its original evidence can confirm what is on record
+        // rather than guess which of two observations disagreed.
+        let (_, problem) = ApiError::CredentialReconciliationConflict {
+            recorded_digest: "ab".repeat(32),
+            recorded_decision: "provider_applied".to_owned(),
+        }
+        .to_problem_details();
+        assert_eq!(
+            problem.extensions,
+            Some(serde_json::json!({
+                "evidence_digest": "ab".repeat(32),
+                "recorded_decision": "provider_applied",
+            })),
+            "the conflict problem must carry the recorded pair as extensions"
+        );
     }
 }

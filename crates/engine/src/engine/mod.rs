@@ -388,7 +388,7 @@ pub struct WorkflowEngine {
     ///
     /// Wired by the composition root via
     /// [`Self::with_credential_reclaim_sweep`] when the deployment has a
-    /// durable [`nebula_storage::credential::RefreshClaimRepo`] (Postgres
+    /// durable [`nebula_storage_port::store::RefreshClaimStore`] (Postgres
     /// or SQLite). Single-replica desktop mode without sentinel-event
     /// recording leaves this `None`.
     credential_reclaim_sweep: Option<nebula_credential::runtime::ReclaimSweepHandle>,
@@ -867,7 +867,7 @@ impl WorkflowEngine {
             .is_err()
         {
             tracing::debug!(
-                target: "nebula_engine::credential::rotation",
+                target: "nebula_engine",
                 "spawn_resource_rotation_fanout called again; fan-out driver \
                  already running — no second subscriber spawned (idempotent)"
             );
