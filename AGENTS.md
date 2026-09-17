@@ -204,6 +204,37 @@ architecture change, not a refactor.
 
 ---
 
+## Readability & Design Standard
+
+Readability is judged by design, not by volume. Line counts, function counts, and
+complexity metrics are diagnostics for locating hotspots — never the standard, and
+never a reason to fragment working code into smaller pieces. A long function with
+clearly named stages beats ten opaque helpers.
+
+What actually makes code hard to read — what every change must optimize for:
+
+- **Names carry the design.** Functions, fields, and types must name the domain
+  concept they implement, not the mechanics that happen to be running. If a reader
+  cannot predict a symbol's role from its name and its crate's layer, the name is
+  wrong, not the reader.
+- **Patterns are named or absent.** When code implements a known pattern (port,
+  adapter, reducer, state machine, aggregate, conformance oracle), the name and docs
+  say which. No accidental pseudo-patterns, no indirection that exists for no stated
+  reason. Deliberate complexity (ports, seams, parity) is documented at its
+  definition; accidental complexity is a bug.
+- **System design over local cleverness.** When a change is hard to express cleanly,
+  the usual cause is the surrounding design — a missing port, a wrong aggregate
+  boundary, a weak seam — not the function at hand. Fix the design (escalate to the
+  chief-architect lens or an ADR); do not bury design debt in a bigger function or a
+  workaround.
+- **No slop, ever.** Vibe-driven code — written because it pattern-matched, because
+  an agent guessed, or "while we're here" — is rejected in review regardless of
+  correctness: speculative abstraction layers, wrappers that add indirection without
+  behavior, generated-boilerplate drift, defensive re-validation behind a gate that
+  already guarantees it. If a line cannot say why it exists, it should not exist.
+
+---
+
 ## Conventions & Gotchas
 
 Repo-specific things that bite. General Rust taste — naming, comment density, module
