@@ -545,8 +545,8 @@ impl<'a> Lexer<'a> {
     ///
     /// * A dot is part of the number only when the next character is a digit,
     ///   so `"1."` scans as an `Integer` token followed by a `Dot` token.
-    /// * The integer fallback order is `i64` first, then `u64` for the
-    ///   unsigned wrap range `2^63..=2^64-1` (values above `i64::MAX`).
+    /// * The integer fallback order is `i64` first, then `u64` for values
+    ///   above `i64::MAX` (`2^63..=2^64-1`), which parse directly as `u64`.
     fn read_number(&mut self) -> ExpressionResult<Token<'a>> {
         let start_pos = self.position;
         let mut is_float = false;
