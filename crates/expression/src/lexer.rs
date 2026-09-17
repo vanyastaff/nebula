@@ -56,6 +56,46 @@ fn parse_codepoint(hex: &str) -> ExpressionResult<char> {
     })
 }
 
+/// Read the `\u{...}` brace form and push the decoded code point as a
+/// `char`. Consumes the opening `{`; the caller has only peeked at it.
+fn read_unicode_brace_escape<I: Iterator<Item = char>>(
+    chars: &mut I,
+    result: &mut String,
+) -> ExpressionResult<()> {
+    chars.next(); // consume '{'
+    let mut hex = String::with_capacity(6);
+    loop {
+        match chars.next() {
+            Some('}') => break,
+            Some(c) if c.is_ascii_hexdigit() => {
+                if hex.len() >= 6 {
+                    return Err(ExpressionError::expression_syntax_error(
+                        "\\u{...} escape exceeds 6 hex digits",
+                    ));
+                }
+                hex.push(c);
+            },
+            Some(c) => {
+                return Err(ExpressionError::expression_syntax_error(format!(
+                    "Invalid hex digit '{c}' in \\u{{...}} escape"
+                )));
+            },
+            None => {
+                return Err(ExpressionError::expression_syntax_error(
+                    "Unterminated \\u{...} escape: missing '}'",
+                ));
+            },
+        }
+    }
+    if hex.is_empty() {
+        return Err(ExpressionError::expression_syntax_error(
+            "Empty \\u{} escape: expected 1-6 hex digits",
+        ));
+    }
+    result.push(parse_codepoint(&hex)?);
+    Ok(())
+}
+
 /// Lexer for tokenizing expression strings
 pub struct Lexer<'a> {
     input: &'a str,
@@ -400,37 +440,7 @@ impl<'a> Lexer<'a> {
                 'x' => read_hex_byte_escape(&mut chars, &mut result)?,
                 'u' => {
                     if chars.peek() == Some(&'{') {
-                        chars.next(); // consume '{'
-                        let mut hex = String::with_capacity(6);
-                        loop {
-                            match chars.next() {
-                                Some('}') => break,
-                                Some(c) if c.is_ascii_hexdigit() => {
-                                    if hex.len() >= 6 {
-                                        return Err(ExpressionError::expression_syntax_error(
-                                            "\\u{...} escape exceeds 6 hex digits",
-                                        ));
-                                    }
-                                    hex.push(c);
-                                },
-                                Some(c) => {
-                                    return Err(ExpressionError::expression_syntax_error(format!(
-                                        "Invalid hex digit '{c}' in \\u{{...}} escape"
-                                    )));
-                                },
-                                None => {
-                                    return Err(ExpressionError::expression_syntax_error(
-                                        "Unterminated \\u{...} escape: missing '}'",
-                                    ));
-                                },
-                            }
-                        }
-                        if hex.is_empty() {
-                            return Err(ExpressionError::expression_syntax_error(
-                                "Empty \\u{} escape: expected 1-6 hex digits",
-                            ));
-                        }
-                        result.push(parse_codepoint(&hex)?);
+                        read_unicode_brace_escape(&mut chars, &mut result)?;
                     } else {
                         let mut hex = String::with_capacity(4);
                         for _ in 0..4 {
