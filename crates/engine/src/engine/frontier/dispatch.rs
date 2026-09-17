@@ -263,8 +263,9 @@ impl WorkflowEngine {
                 RetryDecision::Finalize
             };
 
-            // Asymmetry preserved: runtime warns on rejection, setup path
-            // silent (deliberate).
+            // Symmetry restored: both paths now warn when
+            // `schedule_node_retry` rejects the promotion before falling
+            // through to finalize (runtime: frontier/fail.rs; setup: below).
             if let RetryDecision::Retry { delay } = setup_decision {
                 let attempt_number = ctx
                     .exec_state
@@ -316,6 +317,17 @@ impl WorkflowEngine {
                     });
                     continue;
                 }
+                // Mirror the runtime-failure path's warn (frontier/fail.rs):
+                // `schedule_node_retry` rejected the promotion (e.g. node
+                // moved out of Failed mid-decision); fall through to finalize
+                // so the failure surfaces honestly, loudly.
+                tracing::warn!(
+                    target = "engine::retry",
+                    %execution_id,
+                    %node_key,
+                    "schedule_node_retry rejected on the setup-failure \
+                     path; finalising setup failure"
+                );
             }
 
             let outcome = classify_failure(error_strategy);
