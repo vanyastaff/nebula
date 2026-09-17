@@ -2291,9 +2291,9 @@ fn validate_connections(
         resolved.validate_from_port()?;
         resolved.validate_to_port()?;
         adjacency
-            .entry(resolved.connection.from_node.as_str())
+            .entry(connection.from_node.as_str())
             .or_default()
-            .push(resolved.connection.to_node.as_str());
+            .push(connection.to_node.as_str());
     }
     validate_support_port_cardinality(connections, nodes, actions)?;
     if graph_has_cycle(nodes.keys().copied(), &adjacency) {

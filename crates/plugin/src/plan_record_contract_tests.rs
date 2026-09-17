@@ -889,6 +889,44 @@ fn intrinsic_error_edges_require_the_effect_aware_compiler() {
 }
 
 #[test]
+fn intrinsic_error_edges_cannot_name_a_support_port() {
+    let support_port = RecordedInputPortV1::Support {
+        key: "model".into(),
+        required: false,
+        multi: true,
+        allowed_node_types: None,
+        allowed_tags: None,
+    };
+    let edge = |from_port: &str| RecordedConnectionV1 {
+        from_node: "source".into(),
+        from_port: from_port.into(),
+        to_node: "target".into(),
+        to_port: Some("model".into()),
+    };
+
+    let mut record = fixture_record();
+    record.content.actions[0].inputs =
+        vec![RecordedInputPortV1::Flow { key: "in".into() }, support_port].into_boxed_slice();
+    record.content.nodes = vec![minimal_node("source"), minimal_node("target")].into_boxed_slice();
+    record.content.connections = vec![edge("out")].into_boxed_slice();
+    reseal(&mut record);
+    ExecutablePlanRevision::try_from(record.clone())
+        .expect("a declared main flow edge into a support port is certified");
+
+    // The error port is a flow port, so it cannot feed the port that just
+    // admitted the main flow. Sorted by (from_node, from_port, ...): "error"
+    // precedes "out".
+    record.content.connections = vec![edge("error"), edge("out")].into_boxed_slice();
+    reseal(&mut record);
+    assert!(matches!(
+        ExecutablePlanRevision::try_from(record),
+        Err(ExecutablePlanIntegrityError::NonCanonical {
+            section: "connections.to_port"
+        })
+    ));
+}
+
+#[test]
 fn resealed_error_references_cannot_read_success_only_fields() {
     let mut record = fixture_record();
     record.content.actions[0].effect_contract =
