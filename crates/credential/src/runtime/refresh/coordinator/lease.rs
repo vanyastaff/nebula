@@ -4,8 +4,8 @@ use std::time::Instant;
 use nebula_storage_port::store::{ClaimToken, RefreshClaimStore as RefreshClaimRepo};
 use tokio_util::sync::CancellationToken;
 
-use super::super::l1::{L1Completion, L1RefreshCoalescer};
-use super::super::metrics::RefreshCoordMetrics;
+use crate::runtime::refresh::l1::{L1Completion, L1RefreshCoalescer};
+use crate::runtime::refresh::metrics::RefreshCoordMetrics;
 
 use super::errors::ClaimFinalization;
 
