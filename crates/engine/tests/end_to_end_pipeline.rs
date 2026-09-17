@@ -510,8 +510,12 @@ async fn pipeline_unresolvable_expression_fails_node_before_handler() {
         seen_input.lock().is_none(),
         "handler must NOT have run when resolution failed"
     );
+    // The durable record carries the engine's own typed code and message. It does NOT
+    // carry the failing expression's source chain — that chain is where provider text
+    // used to reach storage and logs (see `durable_error_envelope`).
     assert_eq!(
         result.node_errors[&node],
-        "parameter resolution failed for node bad_node, param 'value': input expression resolution failed: [input.validation]: input expression resolution failed: input processing failed"
+        "ENGINE:PARAM_RESOLUTION: parameter resolution failed for node bad_node, param \
+         'value': input expression resolution failed"
     );
 }

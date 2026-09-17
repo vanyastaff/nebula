@@ -4,6 +4,7 @@ use chrono::{DateTime, Utc};
 use nebula_core::NodeKey;
 use serde::{Deserialize, Serialize};
 
+use crate::error_envelope::ErrorEnvelope;
 use crate::status::ExecutionStatus;
 
 /// A journal entry recording a significant event during execution.
@@ -50,8 +51,8 @@ pub enum JournalEntry {
         timestamp: DateTime<Utc>,
         /// The node that failed.
         node_key: NodeKey,
-        /// Error message.
-        error: String,
+        /// Failure record. Typed and bounded — never the failed action's own text.
+        error: ErrorEnvelope,
     },
 
     /// A node was skipped.
@@ -76,8 +77,8 @@ pub enum JournalEntry {
     ExecutionFailed {
         /// When the event occurred.
         timestamp: DateTime<Utc>,
-        /// Error message.
-        error: String,
+        /// Failure record. Typed and bounded — never the failed action's own text.
+        error: ErrorEnvelope,
     },
 
     /// A cancellation was requested.
@@ -148,11 +149,21 @@ impl JournalEntry {
 #[cfg(test)]
 mod tests {
     use nebula_core::node_key;
+    use nebula_error::{ErrorCategory, ErrorCode};
 
     use super::*;
 
     fn now() -> DateTime<Utc> {
         Utc::now()
+    }
+
+    fn failure(message: &str) -> ErrorEnvelope {
+        ErrorEnvelope::new(
+            ErrorCode::new("ENGINE:NODE_FAILED"),
+            ErrorCategory::Internal,
+            false,
+        )
+        .with_redacted_message(message)
     }
 
     #[test]
@@ -204,9 +215,51 @@ mod tests {
         let entry = JournalEntry::NodeFailed {
             timestamp: now(),
             node_key: node_key!("test"),
-            error: "timeout".into(),
+            error: failure("timeout"),
         };
         assert!(entry.is_node_event());
+    }
+
+    /// The pre-envelope journal shape wrote the error as free-text `String`. A row
+    /// in that shape must fail to decode rather than be read as an entry whose
+    /// error is opaque.
+    ///
+    /// **Falsifiability**: give `error` its pre-envelope `String` type → the
+    /// decode below succeeds and the assert fails. The control decode (the
+    /// un-downgraded wire, same `from_json` path) pins that the refusal below
+    /// is caused by the downgrade and not by some unrelated decode failure.
+    #[test]
+    fn legacy_journal_row_with_a_bare_error_string_fails_to_decode() {
+        let entry = JournalEntry::NodeFailed {
+            timestamp: now(),
+            node_key: node_key!("test"),
+            error: failure("timeout"),
+        };
+        let mut wire = serde_json::to_value(&entry).unwrap();
+        assert!(
+            wire["error"].is_object(),
+            "fixture must persist a typed record, got: {:?}",
+            wire["error"]
+        );
+
+        // Control: the un-downgraded wire must decode `Ok` on the exact path
+        // (`from_json`) the downgraded wire is decoded on below.
+        let control = JournalEntry::from_json(&wire.to_string());
+        assert!(
+            control.is_ok(),
+            "the un-downgraded wire must decode: {control:?}"
+        );
+
+        wire["error"] = serde_json::json!("provider said: token abc123");
+
+        let decoded = JournalEntry::from_json(&wire.to_string());
+
+        let err = decoded.expect_err("a bare error string is not an envelope");
+        let message = err.to_string();
+        assert!(
+            message.contains("ErrorEnvelope"),
+            "the refusal must name the type it refused to decode as, got: {message}"
+        );
     }
 
     #[test]
@@ -262,7 +315,7 @@ mod tests {
             JournalEntry::NodeFailed {
                 timestamp: ts,
                 node_key: nid.clone(),
-                error: "err".into(),
+                error: failure("err"),
             },
             JournalEntry::NodeSkipped {
                 timestamp: ts,
@@ -275,7 +328,7 @@ mod tests {
             },
             JournalEntry::ExecutionFailed {
                 timestamp: ts,
-                error: "fatal".into(),
+                error: failure("fatal"),
             },
             JournalEntry::CancellationRequested {
                 timestamp: ts,

@@ -144,7 +144,9 @@ fn assert_rejected_before_execute(result: &ExecutionResult, calls: usize) {
     assert!(!result.is_success(), "{result:?}");
     let error = &result.node_errors[&node_key!("proof")];
     assert!(
-        error.starts_with("parameter resolution failed for node proof, param '"),
+        error.starts_with(
+            "ENGINE:PARAM_RESOLUTION: parameter resolution failed for node proof, param '"
+        ),
         "{error}"
     );
     assert!(error.ends_with("input schema validation failed"), "{error}");

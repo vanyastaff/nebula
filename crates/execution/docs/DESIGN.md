@@ -15,7 +15,7 @@
 журнал-WAL, ключи идемпотентности, параллельное расписание из DAG и персистентное состояние прогона.
 
 **Владеет:** 8-статусной машиной `ExecutionStatus` и легальностью переходов (execution- и node-уровень,
-включая retry-рёбра); `JournalEntry` (WAL за таблицей `execution_journal`); детерминированным
+включая retry-рёбра); `JournalEntry` (WAL-форма журнала; производственного писателя у типа пока нет); детерминированным
 `IdempotencyKey` формата `{execution_id}:{node_id}:{attempt}`; `ExecutionPlan` (параллельное расписание);
 персистентным `ExecutionState` / `NodeExecutionState` + retry-механикой; `ExecutionContext` / `ExecutionBudget`,
 `ReplayPlan`, `ExecutionResult`, `ExecutionOutput`, `ExecutionError`; default-public
@@ -36,13 +36,14 @@
 | `can_transition_node` / `validate_node_transition` (retry-рёбра `Failed→WaitingRetry→Ready`) | `src/transition.rs:64,87` |
 | `ExecutionState` (`transition_status`, `transition_node`, `schedule_node_retry`, `has_exhausted_retry_budget`, `idempotency_key_for_node`, `mark_setup_failed`) | `src/state.rs:177` |
 | `NodeExecutionState` (+ `next_attempt_at: Option<DateTime<Utc>>`) | `src/state.rs:51` |
-| `AttemptOutcome` / `NodeAttempt` | `src/state.rs:29` / `src/attempt.rs:12` |
+| `AttemptOutcome` / `NodeAttempt` (`.error: Option<ErrorEnvelope>`) | `src/state.rs:29` / `src/attempt.rs:12` |
 | `IdempotencyKey(String)` — детерминированный ключ | `src/idempotency.rs:26` |
-| `JournalEntry` — enum 9 событий, serde `tag="event"` | `src/journal.rs:12` |
+| `JournalEntry` — enum 9 событий, serde `tag="event"`; поле `error` — `ErrorEnvelope` | `src/journal.rs:12` |
 | `ExecutionBudget` / `ExecutionContext` (+ optional `W3cTraceContext`) | `src/context.rs:44,153` |
 | `ExecutionPlan` / `ReplayPlan` | `src/plan.rs:12` / `src/replay.rs:35` |
 | `ExecutionResult` / `ExecutionOutput` (есть `BlobRef`) / `NodeOutput` | `src/result.rs:26` / `src/output.rs:35,90` |
 | `ExecutionError` — typed `thiserror` | `src/error.rs:11` |
+| `ErrorEnvelope` — durable-запись ошибки: version, typed code/category/retryable и bounded `redacted_message` | `src/error_envelope.rs:1` |
 | `ExecutionRevisions` — workflow + worker-flavor revision pins | `src/revision.rs` |
 | `ExecutionProfile`, `ExecutionContractBundle` | `src/bundle.rs` |
 | `RecordedExecutionContractBundleV1`, `ExecutionContractBundleIntegrityError` | `src/bundle.rs` |
@@ -51,7 +52,7 @@
 
 ## 3. Зависимости и зависимые
 
-- **Deps:** `nebula-core` (path), `nebula-error` (workspace, feature `derive`), `nebula-workflow` (path);
+- **Deps:** `nebula-core` (path), `nebula-error` (workspace, features `derive`, `serde`), `nebula-workflow` (path);
   `serde`, `serde_json`, `sha2`, `thiserror`, `tracing`, `chrono`. Dev: `insta`, `rstest`,
   `pretty_assertions`.
 - **Dependents:** `nebula-engine` (`crates/engine/Cargo.toml:32`), `nebula-api` (`crates/api/Cargo.toml:24`).
@@ -77,6 +78,11 @@ retry-механика. `journal.rs` (262) — WAL-события. `idempotency.
   одинаковый ввод даёт один ключ; enforcement (уникальность/CAS) делегирован в storage.
 - **Retry-бюджет.** `has_exhausted_retry_budget` (`state.rs:311`) + `ExecutionBudget::max_total_retries`
   (`context.rs:63`) — движок сверяется с обоими на каждом отказе; `Some(0)` отключает engine-level retry.
+- **Durable-ошибка типизирована и ограничена.** `ErrorEnvelope` несёт version, `ErrorCode`, category,
+  retryable и bounded `redacted_message` (control-escaped, ≤512 байт на char-границе). Запись строится из
+  верхнеуровневого `Display` и **не** обходит `.source()`: цепочка источников и есть канал утечки
+  провайдерского текста. Строка pre-envelope-формы отвергается при чтении (fail closed), а не читается
+  как opaque-ошибка.
 - **`#[non_exhaustive]` на причинах терминации** + `forbid(unsafe_code)` — расширяемость и отсутствие unsafe.
 - **Bundle structural integrity, не authority.** Recorded-v1 принимает только supported
   versions/profile, canonical unique credential IDs и совпадающий fingerprint. Отдельный V2
@@ -106,6 +112,50 @@ retry-механика. `journal.rs` (262) — WAL-события. `idempotency.
 6. **Forward-promise в API:** `ExecutionTerminationCode` (`status.rs:152-160`) и поле `code`
    (`status.rs:131-137`) обещают замену на структурный `ErrorCode` в «Phase 10 action-v2» — отложенная
    зависимость от чужого роадмапа, закодированная в doc-комментариях.
+7. **Durable-запись ошибки: граница redaction и потеря диагностики.** #1016 заменил free-text
+   `error: String` в durable-состоянии и журнале на [`ErrorEnvelope`] (code, category, retryable,
+   bounded `redacted_message`). Запись больше не обходит `.source()`-цепочку: именно этот обход
+   публиковал провайдерский текст в storage, журнал, OnError-payload и спаны. Цена честная, но не та,
+   что казалась раньше: когда отказ несёт типизированный `ActionError` (прямой `EngineError::Action`
+   или обёрнутый в `RuntimeError::ActionError`), запись уже сохраняет код, категорию и retryability
+   именно этого действия через его собственный `Classify` (`EngineError::as_action_error` —
+   `durable_error_envelope` больше не берёт классификацию у обёртки-константы
+   `RuntimeError::ActionError`). Пропадает только свободный текст детали («credential not
+   configured» и т.п.), а не код причины. `ErrorEnvelope::source_codes` при этом всегда пуст: для
+   `Action`/`Execution` `Classify::code` и так возвращает код вложенной ошибки (дублирование), а
+   `StorageError` и revision/projection-мосты `Classify` не реализуют, так что для них у движка
+   действительно нет кода, который можно было бы назвать — это остаётся следующим шагом, а не
+   отсутствием `Classify` на `ActionError`.
+8. **Остаточные каналы `Display` — это класс, а не перечень.** `durable_error_envelope`
+   (`engine/mod.rs`) пишет `error.to_string()` верхнего уровня, и для части вариантов этот текст не
+   авторства фреймворка: `TaskPanicked` несёт payload паники задачи (`persistence.rs:214`), а
+   `PlanningFailed` интерполирует чужой текст ошибки. Таких интерполяций в движке порядка двадцати, и
+   каждая новая становится каналом в тот день, когда её текст дойдёт до durable-записи, поэтому здесь
+   фиксируется класс и признак проверки, а не список.
+
+   Достижимость у них разная. Два сайта в `resume/mod.rs` (`satisfy_signal_waits`, `cancel_dangling_nodes`)
+   и `timer_scan.rs` больше не интерполируют ошибку вообще. Доходящий до них `PlanningFailed` становится
+   `ControlDispatchError::Deferred`, а `Deferred` возвращает строку в `Pending` через `release_claim`
+   (`control_consumer.rs:865-896`): текст уходит в лог и в `ExecutionEvent::ResumeDeferred`, durable-записи
+   не возникает. Durable остаётся текст `ControlDispatchError::Internal` — `control_consumer.rs:898-907`
+   вызывает `ack_failed(&token, &e.to_string())`, и тот пишет `mark_failed`. Признак, по которому
+   проверяется конкретный сайт: становится ли его текст `Internal`, а не `Deferred`.
+
+   Вторая половина класса живёт ниже, в `nebula-storage-port`. `StorageError`'s `Display` достигает
+   `%error`-полей логов, reason-строк `Deferred` и durable `error_message` через тот же `Internal`; `impl
+   From<serde_json::Error>` теперь отдаёт value-free сводку, но прямые конструкторы
+   `Serialization(…to_string())` его обходят: измерено 28 вхождений в `crates/storage/src`, в основном в
+   `sqlite/**` и `postgres/**`. Причина, по которой правки одной конверсии недостаточно: `StorageError`
+   существует в двух видах (`storage-port/src/error.rs:13` и `storage/src/error.rs:13`), и у каждого свой
+   `From`. Это тот же класс утечки с другим владельцем. Текст ограничен и экранирован, но provenance не
+   подтверждён: осознанная граница, не недосмотр.
+9. **`ExplicitFail.message` вне объёма #1016.** `status.rs:139` (`message: String`) хранит авторскую
+   причину терминации, а не перехваченную провайдерскую ошибку. Замена поля на структурный `ErrorCode`
+   уже обещана в §6.6 (`ExecutionTerminationCode` → `ErrorCode`).
+10. **Устранено: ложная doc-претензия в `lib.rs:25`.** Док утверждал, что [`JournalEntry`] «backs
+    `execution_journal` append-only table». Производственного писателя у типа нет: единственные
+    упоминания — тесты. `port_execution_journal` пишется через
+    `nebula_storage_port::dto::JournalEntry` (`{seq, payload}`), payload непрозрачен для порта.
 
 ## 7. Роль в пост-0092 credential/resource модели
 
@@ -121,4 +171,9 @@ retry-механика. `journal.rs` (262) — WAL-события. `idempotency.
 crate-доков и README. Retry-модель синхронизирована с canon §11.2: execution хранит state/idempotency-формы,
 engine делает operator-declared retry, `ActionResult::Retry` не является текущей публичной поверхностью.
 Единственная кодовая зависимость от чужого роадмапа — swap `ExecutionTerminationCode` → структурный
-`ErrorCode` в action-v2 (§6.6); до тех пор opaque-код стабилен по контракту. Структурных открытых вопросов нет.
+`ErrorCode` в action-v2 (§6.6); до тех пор opaque-код стабилен по контракту. Границы, оставленные #1016
+(§6.7–6.9), касаются полноты диагностики внутри уже принятой формы, а не структуры: `ErrorEnvelope`
+закрывает обход `.source()`-цепочки, а именование причин ждёт `Classify` на внутренних ошибках. Одно
+исключение требует владельца, а не ожидания: остаточный класс `Display` из §6.8 второй половиной живёт
+в `crates/storage/src/{sqlite,postgres}/**` (28 прямых конструкторов `Serialization(…to_string())`), и
+закрывается только там. В самом крейте execution структурных открытых вопросов нет.

@@ -14,6 +14,7 @@ use std::{
 use bytes::Bytes;
 use http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use nebula_core::{Dependencies, action_key};
+use nebula_error::decode::value_free_decode_summary;
 use serde::Deserialize;
 use tracing::debug;
 
@@ -99,7 +100,7 @@ impl WebhookAction for SlackWebhookAction {
                 ActionError::validation(
                     "body",
                     ValidationReason::MalformedJson,
-                    Some(e.to_string()),
+                    Some(value_free_decode_summary(&e)),
                 )
             })?
         };
@@ -133,7 +134,7 @@ impl WebhookAction for SlackWebhookAction {
             ActionError::validation(
                 "url_verification.response",
                 ValidationReason::WrongType,
-                Some(e.to_string()),
+                Some(value_free_decode_summary(&e)),
             )
         })?;
         let mut headers = HeaderMap::new();

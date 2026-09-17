@@ -23,21 +23,28 @@ use nebula_action::{
 };
 use nebula_core::{ActionKey, Dependencies, action_key, id::ExecutionId, node_key};
 use nebula_engine::{
-    ActionRegistry, ActionRuntime, ControlDispatch, ControlDispatchError, DataPassingPolicy,
-    EngineControlDispatch, InProcessRunner, WorkflowEngine,
+    ActionRegistry, ActionRuntime, ControlConsumer, ControlDispatch, ControlDispatchError,
+    DataPassingPolicy, EngineControlDispatch, InProcessRunner, WorkflowEngine,
 };
 use nebula_execution::{ExecutionState, ExecutionStatus};
 use nebula_metrics::MetricsRegistry;
 use nebula_storage::inmem::InMemoryTurnHandoff;
-use nebula_storage::{InMemoryExecutionStore, InMemoryWorkflowVersionStore};
-use nebula_storage_port::dto::WorkflowVersionRecord;
-use nebula_storage_port::store::{ExecutionStore, WorkflowVersionStore};
+use nebula_storage::{InMemoryControlQueue, InMemoryExecutionStore, InMemoryWorkflowVersionStore};
+use nebula_storage_port::dto::{ControlCommand, ControlMsg, WorkflowVersionRecord};
+use nebula_storage_port::store::{ControlQueue, ExecutionStore, WorkflowVersionStore};
+use nebula_storage_port::{TransitionBatch, TransitionOutcome};
 use nebula_workflow::{
     CURRENT_SCHEMA_VERSION, Connection, NodeDefinition, Version, WorkflowConfig, WorkflowDefinition,
 };
 use tokio::sync::Notify;
+use tokio_util::sync::CancellationToken;
 
 mod exact_fixture;
+
+/// Text a pre-envelope execution row can hold where this build expects a
+/// `status` discriminant. Structured so a substring match cannot false-positive
+/// on unrelated framework output.
+const MARKER: &str = "MARKER-9f3a-secret";
 
 /// Bundled port adapters for one shared in-memory tenant (mirrors the
 /// in-source `TestStores` pattern). All store calls use `single_tenant_scope()`
@@ -369,6 +376,54 @@ impl Harness {
             .unwrap()
             .expect("execution exists");
         serde_json::from_value(record.state.get("status").cloned().unwrap()).unwrap()
+    }
+
+    /// Overwrite the persisted `status` discriminant with `value` through the
+    /// store's own fenced commit — the shape a row written by an older build,
+    /// or a partially migrated one, has on disk.
+    async fn overwrite_persisted_status(
+        &self,
+        execution_id: ExecutionId,
+        value: serde_json::Value,
+    ) {
+        let scope = nebula_engine::store_seam::single_tenant_scope();
+        let id = execution_id.to_string();
+        let fencing = self
+            .stores
+            .execution
+            .acquire_lease(&scope, &id, "test-corrupt-status", Duration::from_secs(30))
+            .await
+            .unwrap()
+            .expect("lease must be free for the simulated corrupt-status write");
+        let record = self
+            .stores
+            .execution
+            .get(&scope, &id)
+            .await
+            .unwrap()
+            .expect("execution row must exist");
+        let mut state = record.state;
+        state
+            .as_object_mut()
+            .expect("a pinned execution state is a JSON object")
+            .insert("status".to_owned(), value);
+        let batch = TransitionBatch::builder()
+            .scope(scope.clone())
+            .execution_id(&id)
+            .expected_version(record.version)
+            .fencing(fencing)
+            .new_state(state)
+            .build()
+            .unwrap();
+        assert!(matches!(
+            self.stores.execution.commit(batch).await.unwrap(),
+            TransitionOutcome::Applied { .. }
+        ));
+        self.stores
+            .execution
+            .release_lease(&scope, &id, fencing)
+            .await
+            .unwrap();
     }
 
     /// Poll the execution row until `status.is_terminal()`, bounded by `deadline`.
@@ -962,4 +1017,125 @@ async fn dispatch_terminate_behaves_like_cancel() {
         )
         .await
         .expect("terminal terminate is Ok");
+}
+
+/// Poll the queue until `row_id` leaves `Pending`/`Processing`, returning its
+/// `(message, status, error_message)` row.
+async fn await_settled_control_row(
+    queue: &InMemoryControlQueue,
+    row_id: [u8; 16],
+    deadline: Duration,
+) -> (ControlMsg, String, Option<String>) {
+    tokio::time::timeout(deadline, async {
+        loop {
+            let settled = queue
+                .snapshot_detailed()
+                .into_iter()
+                .find(|(msg, _, _)| msg.id == row_id)
+                .filter(|(_, status, _)| status != "Pending" && status != "Processing");
+            if let Some(row) = settled {
+                return row;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the consumer must settle the control row within the deadline")
+}
+
+/// **A control command for a row whose persisted `status` does not decode must
+/// not re-publish the stored value into the durable control-queue row.**
+///
+/// `read_status` decodes `state["status"]` directly — not through
+/// `StorageError` — and on a row written before the typed failure envelope that
+/// field can be the failed action's free-text provider error. `serde_json`'s
+/// decode error renders the offending value **quoted and uncapped**, and
+/// `ControlDispatchError::Internal` is deliberately not `Deferred`: the consumer
+/// ack-fails the row and persists the dispatch error's `Display` into
+/// `execution_control_queue.error_message`, which an operator querying the row
+/// and a post-mortem read both see. The refusal must therefore be a
+/// framework-authored phrase naming the execution and the shape mismatch.
+///
+/// This drives the whole durable path — a real `InMemoryControlQueue` drained by
+/// the production `ControlConsumer` over the production
+/// `EngineControlDispatch` — so the assertion reads what `mark_failed` actually
+/// persisted, not a log line or a returned value. `Cancel` is the command that
+/// reaches the non-discriminated `read_status` from the consumer; the `Start`
+/// claim path discriminates a corrupt row and ack-drops it.
+///
+/// **Falsifiability**: restore `{e}` in the `read_status` decode `map_err` → the
+/// persisted `error_message` quotes the marker → the absence assertion flips →
+/// RED.
+#[tokio::test]
+async fn undecodable_persisted_status_never_reaches_the_durable_queue_row() {
+    let harness = Harness::new().await;
+    let workflow_id = harness.persist_echo_workflow().await;
+    let execution_id = harness
+        .persist_created_execution(workflow_id, serde_json::json!("corrupt-status"))
+        .await;
+    assert_eq!(
+        harness.status(execution_id).await,
+        ExecutionStatus::Created,
+        "the fixture row must start decodable, so the corruption below is what fails the read"
+    );
+    harness
+        .overwrite_persisted_status(
+            execution_id,
+            serde_json::json!(format!("provider rejected token {MARKER}")),
+        )
+        .await;
+
+    let queue = Arc::new(InMemoryControlQueue::new(&harness.stores.execution));
+    let cancel_row_id = [0x5Au8; 16];
+    queue
+        .enqueue(&ControlMsg {
+            id: cancel_row_id,
+            execution_id: execution_id.to_string(),
+            command: ControlCommand::Cancel,
+            scope: nebula_engine::store_seam::single_tenant_scope(),
+            w3c_traceparent: None,
+            reclaim_count: 0,
+            resume_target: None,
+        })
+        .await
+        .expect("the control queue must accept the Cancel row");
+
+    let shutdown = CancellationToken::new();
+    let consumer_queue: Arc<dyn ControlQueue> = queue.clone();
+    let consumer_task = ControlConsumer::for_flavor(
+        consumer_queue,
+        Arc::new(harness.dispatch.clone()),
+        *b"corrupt-status-p",
+        nebula_plugin::WorkerFlavorContext::from_registry(&harness.frozen).revision_id(),
+    )
+    .with_poll_interval(Duration::from_millis(10))
+    .spawn(shutdown.clone());
+
+    let (_, status, error_message) =
+        await_settled_control_row(&queue, cancel_row_id, Duration::from_secs(5)).await;
+    shutdown.cancel();
+    consumer_task
+        .await
+        .expect("the consumer task must join after shutdown");
+
+    // Non-vacuity: the row was ack-FAILED, so the text read next is this
+    // dispatch's own refusal rather than a default (an ack-dropped corrupt row
+    // would read `Completed` with no message, and a redelivering one would read
+    // `Pending`).
+    assert_eq!(
+        status, "Failed",
+        "a corrupt persisted status is a permanent dispatch failure: the consumer must \
+         ack-fail the row, not complete or redeliver it"
+    );
+    let persisted_error =
+        error_message.expect("an ack-failed control-queue row must carry the dispatch error text");
+    assert!(
+        persisted_error.contains("persisted `status` field does not decode as this build's shape"),
+        "the persisted text must be the framework-authored shape-mismatch phrase: {persisted_error}"
+    );
+    assert!(
+        !persisted_error.contains(MARKER),
+        "a decode failure must not re-publish the stored value into the durable queue row: \
+         {persisted_error}"
+    );
 }

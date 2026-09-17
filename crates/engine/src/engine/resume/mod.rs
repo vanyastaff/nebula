@@ -745,10 +745,12 @@ impl WorkflowEngine {
             .node_states
             .iter()
             .filter_map(|(node_id, node_state)| {
+                // Projected for the in-process result surface: `Display` renders the typed
+                // code plus the bounded, engine-authored message.
                 node_state
                     .error_message
                     .as_ref()
-                    .map(|message| (node_id.clone(), message.clone()))
+                    .map(|error| (node_id.clone(), error.to_string()))
             })
             .collect();
 
@@ -970,7 +972,7 @@ impl WorkflowEngine {
         // version — and `satisfy_signal_waits` documents the identical
         // rationale for its own direct-mutation bump.
         if let EngineError::UndeclaredOutputPort { from_node, .. } = reject {
-            let _ = exec_state.mark_setup_failed(from_node.clone(), reject.to_string());
+            let _ = exec_state.mark_setup_failed(from_node.clone(), durable_error_envelope(reject));
         }
         if exec_state.status == ExecutionStatus::Created {
             let _ = exec_state.transition_status(ExecutionStatus::Running);
@@ -1355,9 +1357,21 @@ impl WorkflowEngine {
                 "satisfy_signal_waits: serialise state for {execution_id}: {e}"
             ))
         })?;
+        // The decode error's own `Display` is deliberately NOT interpolated here.
+        // `serde_json` renders the offending value quoted and uncapped, and on a
+        // row written before the typed failure envelope that value is the
+        // pre-envelope provider error text — re-published through a new carrier.
+        // This message is not merely logged: it is the `EngineError` a control
+        // dispatch reports, so its text reaches the control queue's failure
+        // reason and the operator-facing log. A fixed, framework-authored phrase
+        // names the row and the shape mismatch and carries no stored value; the
+        // parenthesised summary adds the failure kind and parser position from
+        // the same value-free helper, still with no stored value in it.
         let mut exec_state: ExecutionState = serde_json::from_str(&state_str).map_err(|e| {
+            let summary = nebula_error::decode::value_free_decode_summary(&e);
             EngineError::PlanningFailed(format!(
-                "satisfy_signal_waits: deserialise state for {execution_id}: {e}"
+                "satisfy_signal_waits: stored state for {execution_id} does not decode as this \
+                 build's execution-state shape ({summary})"
             ))
         })?;
 
@@ -1617,9 +1631,16 @@ impl WorkflowEngine {
                 "cancel_dangling_nodes: serialise state for {execution_id}: {e}"
             ))
         })?;
+        // Same reason as the `satisfy_signal_waits` load above: the decode error's
+        // `Display` quotes the stored value, and this message is durable — a
+        // dispatch `Deferred` reason rather than only a log line. Keep it
+        // value-free and framework-authored; the parenthesised summary adds the
+        // failure kind and parser position from the same value-free helper.
         let mut exec_state: ExecutionState = serde_json::from_str(&state_str).map_err(|e| {
+            let summary = nebula_error::decode::value_free_decode_summary(&e);
             EngineError::PlanningFailed(format!(
-                "cancel_dangling_nodes: deserialise state for {execution_id}: {e}"
+                "cancel_dangling_nodes: stored state for {execution_id} does not decode as this \
+                 build's execution-state shape ({summary})"
             ))
         })?;
 

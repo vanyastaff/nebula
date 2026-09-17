@@ -5,6 +5,8 @@
 //! every variant is fail-closed (no variant silently degrades to success).
 use std::time::Duration;
 
+use nebula_error::decode::value_free_decode_summary;
+
 /// Error returned by every port operation.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -77,6 +79,11 @@ pub enum StorageError {
         entity: &'static str,
     },
     /// (De)serialization failure.
+    ///
+    /// The payload is caller-supplied text naming what failed to
+    /// (de)serialize and why; nothing in the type bounds or redacts it. The
+    /// `From<serde_json::Error>` impl below is this crate's own producer,
+    /// and its doc states the value-free guarantee that conversion makes.
     #[error("serialization: {0}")]
     Serialization(String),
     /// Backend connectivity failure.
@@ -108,7 +115,18 @@ impl StorageError {
 }
 
 impl From<serde_json::Error> for StorageError {
-    fn from(e: serde_json::Error) -> Self {
-        Self::Serialization(e.to_string())
+    /// [`StorageError`]'s `Display` is rendered by `%error` log fields, by a
+    /// consumer's transient `Deferred` reason strings, and, through
+    /// [`StorageError::Internal`], by the durable `execution_control_queue`
+    /// `error_message`. On an execution row written before the typed failure
+    /// envelope existed, `serde_json::Error`'s own `Display` (which quotes
+    /// the value it choked on) *is* the free-text provider error the
+    /// envelope removes — so this conversion's `Serialization` payload is
+    /// never the decoder's own `Display`; it is a bounded, framework-authored
+    /// summary of the failure's kind, plus the parser's position when the
+    /// parser had one. See [`nebula_error::decode::value_free_decode_summary`]
+    /// for why the summary lives in `nebula-error` rather than here.
+    fn from(decode_error: serde_json::Error) -> Self {
+        Self::Serialization(value_free_decode_summary(&decode_error))
     }
 }

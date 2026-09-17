@@ -33,7 +33,7 @@ use nebula_credential::default_credential_accessor;
 // use nebula_core::scope::ScopeLevel;
 use nebula_execution::output::ExecutionOutput;
 use nebula_execution::{
-    ExecutionStatus,
+    ErrorEnvelope, ExecutionStatus,
     context::ExecutionBudget,
     plan::ExecutionPlan,
     state::{AttemptOutcome, ExecutionState, WaitSignal, WaitWake},
@@ -1604,9 +1604,12 @@ impl WorkflowEngine {
             .node_states
             .iter()
             .filter_map(|(id, ns)| {
+                // Projected for the in-process result surface: `Display` renders the typed code
+                // plus the bounded, framework-authored message, so it cannot carry the failed
+                // action's own text into a caller.
                 ns.error_message
                     .as_ref()
-                    .map(|msg| (id.clone(), msg.clone()))
+                    .map(|error| (id.clone(), error.to_string()))
             })
             .collect();
 
@@ -2479,9 +2482,11 @@ impl WorkflowEngine {
             .node_states
             .iter()
             .filter_map(|(id, ns)| {
+                // See the sibling projection in `finalize`: the envelope renders only the typed
+                // code and the bounded framework-authored message.
                 ns.error_message
                     .as_ref()
-                    .map(|msg| (id.clone(), msg.clone()))
+                    .map(|error| (id.clone(), error.to_string()))
             })
             .collect();
 
@@ -3138,10 +3143,15 @@ fn deserialize_stored_result(
     match serde_json::from_value::<ActionResult<serde_json::Value>>(json) {
         Ok(result) => Some(result),
         Err(e) => {
+            // `e`'s own `Display` quotes the value it choked on, and the value
+            // here is a persisted *action output* — provider data, not
+            // framework text. Log the value-free summary instead so a
+            // provider secret embedded in a stored result never reaches this
+            // WARN line.
             tracing::warn!(
                 %execution_id,
                 %node_key,
-                error = %e,
+                error = %nebula_error::decode::value_free_decode_summary(&e),
                 "failed to deserialize persisted action result; \
                  falling back to synthesized Success"
             );
@@ -3259,20 +3269,29 @@ fn arm_signal_waits_under_lease(
     to_arm
 }
 
-/// Mark a node as failed in the execution state.
+/// Mark a node as failed in the execution state, returning the durable
+/// failure record built for it.
 ///
 /// The error message is attached **only if** the node actually transitioned to
 /// `Failed`. A rejected transition (the node was already terminal — e.g.
 /// `Completed` — or the key is unknown) must NOT stamp a failure message onto a
 /// node that did not fail; the rejection is surfaced via `WARN` rather than
-/// silently dropped.
-fn mark_node_failed(exec_state: &mut ExecutionState, node_key: NodeKey, err: &EngineError) {
+/// silently dropped. Either way the envelope built from `err` is returned, so
+/// a caller that also needs it (for `route_failure_edges`'s projection, or the
+/// recorded `AttemptOutcome::Failure`) reuses this one build instead of
+/// paying a second `Display` render and escape pass over the same message.
+fn mark_node_failed(
+    exec_state: &mut ExecutionState,
+    node_key: NodeKey,
+    err: &EngineError,
+) -> ErrorEnvelope {
+    let envelope = durable_error_envelope(err);
     if exec_state
         .transition_node(node_key.clone(), NodeState::Failed)
         .is_ok()
     {
         if let Some(ns) = exec_state.node_states.get_mut(&node_key) {
-            ns.error_message = Some(durable_error_message(err));
+            ns.error_message = Some(envelope.clone());
         }
     } else {
         tracing::warn!(
@@ -3282,64 +3301,94 @@ fn mark_node_failed(exec_state: &mut ExecutionState, node_key: NodeKey, err: &En
             "mark_node_failed: transition to Failed rejected; error_message not written"
         );
     }
+    envelope
 }
 
-const MAX_DURABLE_ERROR_MESSAGE_BYTES: usize = 4 * 1024;
-const MAX_DURABLE_ERROR_SOURCE_DEPTH: usize = 8;
-
-/// Render one bounded diagnostic from an error and its typed source chain.
+/// Build the durable failure record for an engine error.
 ///
-/// Each error controls its own redacted `Display` representation. Wrapper
-/// messages that already end with their source are skipped so a cause appears
-/// once even when an outer error includes it for context.
-fn durable_error_message(error: &(dyn std::error::Error + 'static)) -> String {
-    let mut message = String::new();
-    if !append_error_component(&mut message, &error.to_string()) {
-        return message;
-    }
-
-    let mut source = error.source();
-    for _ in 0..MAX_DURABLE_ERROR_SOURCE_DEPTH {
-        let Some(current) = source else {
-            break;
-        };
-        let current_message = current.to_string();
-        if !current_message.is_empty()
-            && !message.ends_with(&current_message)
-            && !append_error_component(&mut message, &current_message)
-        {
-            break;
-        }
-        source = current.source();
-    }
-    message
+/// When the failure carries a typed [`ActionError`] — the bare
+/// [`EngineError::Action`] variant, or one wrapped inside
+/// [`EngineError::Runtime`]'s `RuntimeError::ActionError` — the record's code,
+/// category, and retryability come from the *action's own* `Classify` impl
+/// (via [`EngineError::as_action_error`]), never from `EngineError`'s.
+/// `RuntimeError::ActionError`'s `#[classify(...)]` derive attribute is a
+/// compile-time constant (`category = "external"`, `code =
+/// "RUNTIME:ACTION_ERROR"`, `retryable = false`): it cannot see which
+/// `ActionError` variant it wraps, so without this branch a `Retryable`
+/// action would be persisted as `retryable: false`, a `Validation` failure as
+/// category `external`, and the action's own code (`ACTION:FATAL`,
+/// `ACTION:VALIDATION`, `ACTION:CREDENTIAL_REFRESH_FAILED`, …) would be
+/// dropped in favor of the constant `RUNTIME:ACTION_ERROR`. `outcome::error_is_terminal`
+/// already takes this same bypass for the retry decision, for the identical
+/// reason. The derive has no delegation form — teaching `#[classify(...)]` to
+/// forward to an inner `Classify` impl is the root fix, and is out of scope
+/// here.
+///
+/// Otherwise, the record carries the engine's typed classification plus the
+/// error's **top-level** `Display`. It deliberately does not walk `.source()`.
+/// `EngineError::Action`'s chain descends into `ActionErrorSource`, which
+/// forwards `Display` to whatever `dyn Error` the failed action supplied —
+/// rendering that chain is exactly how provider text, and any secret the
+/// provider chose to quote, reached `executions.state`, the journal, API
+/// bodies, and every log line that re-read them. A cause the engine *can* name
+/// survives as a typed code in `source_codes` instead of as prose.
+///
+/// Bounding and control-character escaping are [`ErrorEnvelope`]'s job, so a
+/// message that arrives here oversized or containing a newline cannot forge a
+/// log record or grow the durable row without limit.
+///
+/// **Known residual channels, recorded rather than silently widened in scope.**
+/// Two variants interpolate text the engine did not author into their own
+/// `Display`: `TaskPanicked` carries a task's panic payload (built in
+/// `persistence`), and `PlanningFailed` interpolates the underlying error at
+/// several construction sites — `timer_scan`'s `list_all_running`, this module's
+/// `acquire lease`, and `DependencyGraph::from_definition` — so it carries
+/// storage and workflow text, not only a timer-scan message. Their messages are
+/// therefore bounded and escaped but *not* provenance-verified. Closing those
+/// needs the construction sites to carry provenance, which is a separate change.
+fn durable_error_envelope(error: &EngineError) -> ErrorEnvelope {
+    // `source_codes` is deliberately left empty. `EngineError::Action` and
+    // `EngineError::Execution` do delegate `Classify::code` straight to their
+    // inner error's code, so echoing it as a source would duplicate the
+    // record's own code and tell a reader nothing. The remaining typed causes
+    // (`StorageError`, the revision and projection bridges) do not implement
+    // `Classify`, so the engine has no code to name them with — and it does
+    // not invent one. A cause the engine cannot name stays out of the record;
+    // the durable reader gets the outer code and nothing fabricated.
+    //
+    // Walking `.source()` to collect codes is not the fix it looks like: `Classify` is not a
+    // supertrait of `Error`, so once a cause is behind `&dyn Error` its code is only reachable
+    // by downcasting to a concrete type, one arm per type. That list would have to be kept in
+    // step with every error type in the workspace by hand.
+    let (code, category, retryable) = match error.as_action_error() {
+        // See the fn-level doc: `RuntimeError::ActionError`'s derived
+        // classification is a constant that shadows the wrapped action's
+        // real identity, so the action's own `Classify` impl wins here.
+        Some(action_err) => (
+            nebula_error::Classify::code(action_err),
+            nebula_error::Classify::category(action_err),
+            nebula_error::Classify::is_retryable(action_err),
+        ),
+        None => (
+            nebula_error::Classify::code(error),
+            nebula_error::Classify::category(error),
+            nebula_error::Classify::is_retryable(error),
+        ),
+    };
+    ErrorEnvelope::new(code, category, retryable).with_redacted_message(error.to_string())
 }
 
-fn append_error_component(message: &mut String, component: &str) -> bool {
-    let separator = if message.is_empty() { "" } else { ": " };
-    let available = MAX_DURABLE_ERROR_MESSAGE_BYTES.saturating_sub(message.len());
-    if separator.len() + component.len() <= available {
-        message.push_str(separator);
-        message.push_str(component);
-        return true;
-    }
-
-    if available <= separator.len() {
-        return false;
-    }
-    message.push_str(separator);
-    let available = MAX_DURABLE_ERROR_MESSAGE_BYTES.saturating_sub(message.len());
-    let ellipsis = "…";
-    if available <= ellipsis.len() {
-        return false;
-    }
-    let mut end = (available - ellipsis.len()).min(component.len());
-    while !component.is_char_boundary(end) {
-        end -= 1;
-    }
-    message.push_str(&component[..end]);
-    message.push_str(ellipsis);
-    false
+/// Failure record for a setup condition the frontier recognised itself.
+///
+/// The message is engine-authored by construction — a graph, plan, or recorded
+/// bundle precondition the engine checked before dispatching, never an action's
+/// output — so there is no source chain to strip. The caller names the code
+/// from the engine's existing vocabulary, which is what keeps a post-mortem
+/// reader able to tell *which* precondition refused the node even though the
+/// text is now bounded.
+fn setup_refusal(code: nebula_error::ErrorCode, message: impl AsRef<str>) -> ErrorEnvelope {
+    ErrorEnvelope::new(code, nebula_error::ErrorCategory::Internal, false)
+        .with_redacted_message(message)
 }
 
 /// Mint a single-use resume token for a signal-park and return the minted row

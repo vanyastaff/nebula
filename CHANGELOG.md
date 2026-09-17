@@ -11,6 +11,79 @@ changes are expected between minor releases — call them out here.
 
 ### Breaking
 
+- **Free-text error strings leave durable execution state and the journal,
+  advancing the workspace to 0.11.0 in lockstep.** `ErrorEnvelope` replaces the
+  `String` in `NodeAttempt::error`, `AttemptOutcome::Failure::error`,
+  `JournalEntry::{NodeFailed, ExecutionFailed}::error`, and
+  `NodeExecutionState::error_message`; `NodeAttempt::complete_failure` and
+  `ExecutionState::mark_setup_failed` take one. A record carries a typed
+  `ErrorCode`, its category, retryability, and a bounded control-escaped
+  `redacted_message`. It deliberately does not walk the error's `.source()`
+  chain, which is how provider text and PII reached storage, the journal,
+  OnError payloads, and spans. Two consequences to plan for. When the failure
+  is a typed `ActionError` (direct or wrapped by the runtime dispatcher), the
+  record still carries that action's own code, category, and retryability —
+  what is gone is the free-text detail (which credential, which field). A row
+  persisted by an older build is refused rather than read, so such an
+  execution fails closed on resume with a typed decode error.
+  Drain or re-run pre-upgrade executions before upgrading. Note also that
+  `ExecutionStatus::ExplicitFail::message` is unchanged: it holds the author's
+  termination reason, not captured provider text.
+
+  Six producers that built an `ActionError::Validation` detail from a
+  `serde_json::Error` (the state and turn-state decode failures, three
+  webhook provider bodies for generic, Slack, and Stripe, plus Slack's own
+  `url_verification.response` reply) now publish a value-free summary
+  instead.
+  `serde_json::Error`'s `Display` embeds the offending value, quoted and
+  uncapped, so a secret inside a stored state or a webhook body reached logs,
+  spans, and the durable error record through `Validation`'s `Display`.
+  `Validation`'s rendered shape is unchanged; only the detail text differs, and
+  it keeps the failure kind and the parser position. Read a raw decode message
+  from the error you caught, not from `detail`.
+
+  Seven more decode paths stop publishing the text they choked on.
+  `nebula_storage_port::StorageError`'s `From<serde_json::Error>` no longer
+  forwards the decoder's `Display`, so a decode failure reports the failure kind
+  and the parser position instead of the offending value. `control_dispatch`'s
+  persisted-`status` decode and the daemon execution sink's identical read
+  both name the shape mismatch in a framework-authored phrase, because each
+  `Internal` variant is ack-failed and its text becomes the durable
+  `error_message` or the dispatch-failure log line; the same phrase now
+  carries that value-free summary in parentheses. The two `resume`-path state
+  loads (`satisfy_signal_waits`, `cancel_dangling_nodes`) do the same for the
+  `Deferred` reason a stuck control command carries. `timer_scan`'s
+  overdue-row sweep and `deserialize_stored_result`'s persisted-result decode
+  log the summary instead of interpolating the raw decode error. Direct
+  `Serialization(…to_string())` constructors in `crates/storage/src` bypass
+  the `StorageError` conversion and are not fixed here.
+
+  A wait timeout's OnError input payload now carries the failure envelope's full
+  `Display` (`CODE: message`) instead of its message alone, matching the
+  action-failure path, so one handler parses one shape either way. A handler
+  that matched on the payload text sees the code prefix from this release on.
+
+  The envelope's guarantee is the type's, not the writer's. Decoding refuses a
+  `redacted_message`, `code`, or `source_codes` entry that exceeds the 512-byte
+  bound or carries a character the encode side always escapes, so a durable row
+  that did not come from this build's encoder fails closed instead of rendering
+  unbounded or line-forging text into logs and API bodies. The escaped set now
+  covers bidirectional overrides, zero-width and joiner characters, and the
+  line and paragraph separators, in addition to control characters; they are
+  stored as `\u{…}` escapes. A `code` or `source_codes` entry outside that
+  invariant is normalised on encode the same way, so every record `new` builds
+  reads back. `nebula_error::ErrorCategory` gains `ALL`, a slice of every
+  variant kept honest by an exhaustive match, and now decodes from an
+  owned string as well as a borrowed one, so `serde_json::from_value` works on
+  an `ErrorEnvelope`; `ExecutionState` still needs `from_str` because its node
+  keys borrow. `nebula_execution::ExecutionError::Serialization` renders the
+  constant `serialization failed` and keeps the decoder error as its `source`.
+
+  The value-free `serde_json::Error` summary is one function,
+  `nebula_error::decode::value_free_decode_summary`, behind a new optional
+  `serde_json` feature on `nebula-error`; `nebula-action`, `nebula-storage-port`,
+  and `nebula-engine` enable it. No new crate enters the dependency graph.
+
 - **Checkpoint API removal advances development packages to 0.9.0 in lockstep.**
   Remove `CheckpointPolicy` imports and `with_checkpoint_policy` calls; the
   admitted metadata getter is also removed. `OnePass`, `Stepwise`, and

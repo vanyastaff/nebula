@@ -96,11 +96,22 @@ impl EngineExecutionSink {
         match json {
             None => Ok(None),
             Some(json) => match json.get("status") {
+                // The decode error's own `Display` is deliberately absent (same
+                // shape as `ControlDispatchError`'s `read_status` in
+                // `control_dispatch.rs`): it quotes the value it choked on, and
+                // this text reaches `orchestrator.rs`'s dispatch-failure log line
+                // regardless of whether the value was framework-authored. The
+                // phrase is framework-authored instead: it names the row and the
+                // shape mismatch, which is what an operator acts on; the
+                // parenthesised summary adds the failure kind and parser
+                // position from the same value-free helper.
                 Some(s) => serde_json::from_value::<ExecutionStatus>(s.clone())
                     .map(Some)
                     .map_err(|e| {
+                        let summary = nebula_error::decode::value_free_decode_summary(&e);
                         ExecutionSinkError::Internal(format!(
-                            "execution {execution_id}: status field did not deserialize: {e}"
+                            "execution {execution_id}: persisted `status` field does not decode \
+                             as this build's shape ({summary})"
                         ))
                     }),
                 None => Err(ExecutionSinkError::Internal(format!(

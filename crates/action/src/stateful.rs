@@ -8,6 +8,7 @@
 
 use std::{fmt, future::Future, sync::Arc};
 
+use nebula_error::decode::value_free_decode_summary;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
@@ -566,7 +567,7 @@ where
                 ActionError::validation(
                     "state",
                     ValidationReason::StateDeserialization,
-                    Some(e.to_string()),
+                    Some(value_free_decode_summary(&e)),
                 )
             })?,
         };
@@ -758,6 +759,48 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, ActionError::Validation { .. }));
+    }
+
+    #[tokio::test]
+    async fn stateful_adapter_bad_state_error_publishes_no_payload_text() {
+        // Stored state can hold a session token or a credential. The durable
+        // error record is built from `ActionError`'s `Display`, so a decode
+        // failure must be described without quoting the field that failed to
+        // decode.
+        const MARKER: &str = "MARKER-9f3a-secret";
+        let adapter =
+            StatefulActionAdapter::new(CounterAction).expect("valid test catalog definition");
+        let ctx = make_ctx();
+        let input = adapter
+            .prepare_input(ActionInput::Raw(serde_json::json!({})))
+            .unwrap();
+        // `CounterState::count` is a `u32`, so the string makes `from_value`
+        // fail and `CounterAction` offers no migration.
+        let mut stored_state = serde_json::json!({ "count": MARKER });
+
+        let err = adapter
+            .dispatch(&input, &mut stored_state, &ctx)
+            .await
+            .expect_err("a string count is not a CounterState");
+
+        // Non-vacuous: prove the failure really is the state-decode path,
+        // and that it produced a described detail rather than none.
+        let ActionError::Validation {
+            field,
+            reason,
+            detail,
+        } = &err
+        else {
+            panic!("expected ActionError::Validation, got {err:?}");
+        };
+        assert_eq!(*field, "state");
+        assert_eq!(*reason, ValidationReason::StateDeserialization);
+        assert!(detail.is_some(), "the decode failure must be described");
+
+        let rendered = err.to_string();
+        assert!(!rendered.contains(MARKER), "{rendered}");
+        let debugged = format!("{err:?}");
+        assert!(!debugged.contains(MARKER), "{debugged}");
     }
 
     /// Action that mutates state to `mark` then fails with the configured error.

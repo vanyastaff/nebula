@@ -75,9 +75,28 @@ impl WorkflowEngine {
             // field that `serde_json::from_value` cannot deserialize from an owned
             // `Value`, so round-trip through the string form (the same convention
             // the engine's own state-load path uses).
-            let Ok(state) = serde_json::from_str::<ExecutionState>(&record.state.to_string())
-            else {
-                continue;
+            let state = match serde_json::from_str::<ExecutionState>(&record.state.to_string()) {
+                Ok(state) => state,
+                Err(e) => {
+                    // The decode error's own `Display` is deliberately NOT
+                    // logged: `serde_json` renders the offending value quoted
+                    // and uncapped ("invalid type: string \"…\", expected …"),
+                    // and on a row written before the typed failure envelope
+                    // that value IS the pre-envelope provider error text.
+                    // Interpolating it would re-publish, into a log line,
+                    // exactly the text the durable record shape removed. Name
+                    // the row and the reason instead, so an operator can still
+                    // tell why an overdue execution stopped being re-driven;
+                    // `reason` carries the same value-free failure kind and
+                    // parser position as a separate field.
+                    tracing::warn!(
+                        target = "engine::timer_scan",
+                        execution_id = %record.id,
+                        reason = %nebula_error::decode::value_free_decode_summary(&e),
+                        "stored state does not decode as this build's execution-state shape; skipping"
+                    );
+                    continue;
+                },
             };
             let has_overdue_timer = state.node_states.values().any(|ns| {
                 ns.state == NodeState::Waiting && ns.next_attempt_at.is_some_and(|when| when <= now)

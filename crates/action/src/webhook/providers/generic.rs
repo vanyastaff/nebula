@@ -11,6 +11,7 @@ use std::sync::{Arc, OnceLock};
 use bytes::Bytes;
 use http::{HeaderName, Method, StatusCode};
 use nebula_core::{Dependencies, action_key};
+use nebula_error::decode::value_free_decode_summary;
 use subtle::ConstantTimeEq;
 use tracing::debug;
 
@@ -140,7 +141,7 @@ impl WebhookAction for GenericWebhookAction {
                 ActionError::validation(
                     "body",
                     ValidationReason::MalformedJson,
-                    Some(e.to_string()),
+                    Some(value_free_decode_summary(&e)),
                 )
             })?
         };

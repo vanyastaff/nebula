@@ -251,11 +251,24 @@ impl EngineControlDispatch {
         match json {
             None => Ok(None),
             Some(json) => match json.get("status") {
+                // The decode error's own `Display` is deliberately absent: it
+                // quotes the value it choked on, and on a row written before the
+                // typed failure envelope that value is the free-text provider
+                // error the envelope removes. This text is not only logged —
+                // `ControlDispatchError::Internal` is not `Deferred`, so the
+                // consumer ack-fails the row and persists this `Display` into
+                // `execution_control_queue.error_message`. The phrase is
+                // framework-authored instead: it names the row and the shape
+                // mismatch, which is what an operator acts on; the parenthesised
+                // summary adds the failure kind and parser position from the
+                // same value-free helper.
                 Some(s) => serde_json::from_value::<ExecutionStatus>(s.clone())
                     .map(Some)
                     .map_err(|e| {
+                        let summary = nebula_error::decode::value_free_decode_summary(&e);
                         ControlDispatchError::Internal(format!(
-                            "execution {execution_id}: status field did not deserialize: {e}"
+                            "execution {execution_id}: persisted `status` field does not decode \
+                             as this build's shape ({summary})"
                         ))
                     }),
                 None => Err(ControlDispatchError::Internal(format!(

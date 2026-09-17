@@ -13,6 +13,7 @@ use std::{
 use bytes::Bytes;
 use http::{HeaderName, StatusCode};
 use nebula_core::{Dependencies, action_key};
+use nebula_error::decode::value_free_decode_summary;
 use tracing::debug;
 
 use crate::{
@@ -97,7 +98,7 @@ impl WebhookAction for StripeWebhookAction {
                 ActionError::validation(
                     "body",
                     ValidationReason::MalformedJson,
-                    Some(e.to_string()),
+                    Some(value_free_decode_summary(&e)),
                 )
             })?
         };

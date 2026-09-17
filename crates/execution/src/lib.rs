@@ -22,7 +22,10 @@
 //! - [`ExecutionContext`] — lightweight runtime context (`execution_id`, [`ExecutionBudget`],
 //!   optional [`W3cTraceContext`] for M3.5 trace propagation).
 //! - [`ExecutionResult`] — post-execution summary.
-//! - [`JournalEntry`] — audit log entry; backs `execution_journal` append-only table.
+//! - [`JournalEntry`] — audit log entry shape. It has no production writer yet: the
+//!   `port_execution_journal` rows are persisted through `nebula_storage_port::dto::JournalEntry`
+//!   as an opaque `payload`, so this type's shape is a contract no live path constructs
+//!   (DESIGN §6.10). Its `error` field is a typed [`ErrorEnvelope`], not free text.
 //! - [`NodeOutput`], [`ExecutionOutput`] — node output data with metadata.
 //! - [`NodeAttempt`] — attempt-keyed shape used by `save_node_output`; operator-declared
 //!   engine retry advances the attempt number on re-dispatch.
@@ -35,6 +38,9 @@
 //!   production consumption remains partial until compiler, admission, persisted routing, and
 //!   exact-flavor dispatch adopt it end to end.
 //! - [`ExecutionError`] — typed error for state machine violations.
+//! - [`ErrorEnvelope`] — the record every durable failure carrier stores. Typed, bounded, and
+//!   versioned; a durable row that does not match this build's envelope fails to decode rather
+//!   than being read as a plausible-looking record.
 //!
 //! ## Non-goals
 //!
@@ -48,6 +54,7 @@ pub mod bundle_v2;
 pub mod checkpoint;
 pub mod context;
 pub mod error;
+pub mod error_envelope;
 pub mod idempotency;
 pub mod journal;
 pub mod output;
@@ -73,6 +80,9 @@ pub use bundle_v2::{
 pub use checkpoint::{ExecutionCheckpoint, NodeCheckpoint};
 pub use context::{ExecutionBudget, ExecutionContext};
 pub use error::ExecutionError;
+pub use error_envelope::{
+    ERROR_ENVELOPE_VERSION, ErrorEnvelope, MAX_REDACTED_MESSAGE_BYTES, TRUNCATION_MARKER,
+};
 pub use idempotency::IdempotencyKey;
 pub use journal::JournalEntry;
 pub use nebula_core::W3cTraceContext;

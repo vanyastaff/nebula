@@ -43,6 +43,8 @@ mod category;
 mod code;
 mod collection;
 mod convert;
+#[cfg(feature = "serde_json")]
+pub mod decode;
 mod detail_types;
 mod details;
 mod error;
