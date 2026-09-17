@@ -1111,31 +1111,30 @@ impl Evaluator {
             // Look for opening parenthesis
             if chars[i] == '(' {
                 let group_start = i;
-                let mut depth = 1;
-                i += 1;
 
                 // Find matching closing parenthesis
-                while i < len && depth > 0 {
-                    match chars[i] {
-                        '(' => depth += 1,
-                        ')' => depth -= 1,
-                        '\\' => i += 1, // Skip escaped character
-                        _ => {},
-                    }
-                    i += 1;
-                }
+                match Self::find_group_end(&chars, i + 1) {
+                    Some(end) => {
+                        i = end;
 
-                // Check if group is followed by a quantifier
-                if i < len && (chars[i] == '+' || chars[i] == '*') {
-                    // Check if the group contains a quantifier
-                    let group_content: String = chars[group_start + 1..i - 1].iter().collect();
-                    if group_content.contains('+')
-                        || group_content.contains('*')
-                        || group_content.contains('{')
-                    {
-                        // Nested quantifiers detected - potentially dangerous
-                        return true;
-                    }
+                        // Check if group is followed by a quantifier
+                        if i < len && (chars[i] == '+' || chars[i] == '*') {
+                            // Check if the group contains a quantifier
+                            let group_content: String =
+                                chars[group_start + 1..i - 1].iter().collect();
+                            if group_content.contains('+')
+                                || group_content.contains('*')
+                                || group_content.contains('{')
+                            {
+                                // Nested quantifiers detected - potentially dangerous
+                                return true;
+                            }
+                        }
+                    },
+                    // Unbalanced group: the scan ran past end of input, so
+                    // the caller's loop could not find another '(' in the
+                    // tail — stop instead of resuming.
+                    None => break,
                 }
             } else if chars[i] == '\\' {
                 // Skip escaped character
@@ -1146,6 +1145,29 @@ impl Evaluator {
         }
 
         false
+    }
+
+    /// Index just after the ')' matching the '(' directly before `from`,
+    /// scanning `chars` from `from` with depth and escape tracking.
+    /// Returns `None` when the group never closes before end of input
+    /// (the scan has consumed the whole tail by then).
+    #[cfg(feature = "regex")]
+    fn find_group_end(chars: &[char], from: usize) -> Option<usize> {
+        let len = chars.len();
+        let mut i = from;
+        let mut depth = 1;
+
+        while i < len && depth > 0 {
+            match chars[i] {
+                '(' => depth += 1,
+                ')' => depth -= 1,
+                '\\' => i += 1, // Skip escaped character
+                _ => {},
+            }
+            i += 1;
+        }
+
+        if depth == 0 { Some(i) } else { None }
     }
 
     #[cfg(not(feature = "regex"))]
