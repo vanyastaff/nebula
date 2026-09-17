@@ -1,6 +1,6 @@
 ---
 name: Nebula observability contract
-description: SLI / SLO / error budget, structured event schema for execution_journal, core analysis loop for operators.
+description: SLI / SLO / error budget, structured event schema for port_execution_journal, core analysis loop for operators.
 status: accepted
 last-reviewed: 2026-04-17
 related: [PRODUCT_CANON.md, MATURITY.md]
@@ -38,9 +38,20 @@ Error budget = `1 - SLO`. Budgeting policy:
 - Budget burn > 50% in 24 hours pages the on-call.
 - Budget reset is rolling, not calendar — no "fresh budget on the 1st" effect.
 
-## 4. Structured event schema (execution_journal)
+## 4. Structured event schema (port_execution_journal)
 
-Every durable event appended to `execution_journal` follows this shape:
+The live journal table is `port_execution_journal`, not the legacy
+`execution_journal`. Rows are appended through
+`nebula_storage_port::dto::JournalEntry` — an opaque `{seq, payload}` pair — in the
+same commit as the state transition (`TransitionBatch::journal`).
+
+**No production writer exists yet (#1013).** `nebula-engine` does not fill the
+batch's journal rows, so the table is empty in every current deployment. The schema
+below is the planned event shape (the closed `JournalEntry` variant set in
+`crates/execution/src/journal.rs`); journal queries return nothing until that writer
+lands.
+
+Every durable event appended to `port_execution_journal` follows this shape:
 
 ```jsonc
 {
@@ -50,13 +61,13 @@ Every durable event appended to `execution_journal` follows this shape:
   "correlation_id": "trace_...",
   "trace_id": "...",       // OpenTelemetry
   "span_id": "...",        // OpenTelemetry
-  "event_type": "started" | "checkpoint" | "retry" | "cancel_requested" | "cancelled" | "failed" | "succeeded" | ...,
+  "event": "execution_started" | "node_scheduled" | "node_started" | "node_completed" | "node_failed" | "node_skipped" | "execution_completed" | "execution_failed" | "cancellation_requested" | ...,
   "payload": { ... },      // event-type specific
   "timestamp": "2026-04-17T..."
 }
 ```
 
-High-cardinality fields (`execution_id`, `node_id`, `correlation_id`, `trace_id`) are required; enums (`event_type`) are documented with a closed set in `crates/execution/src/journal.rs`.
+High-cardinality fields (`execution_id`, `node_id`, `correlation_id`, `trace_id`) are required; the event vocabulary is the closed `JournalEntry` variant set in `crates/execution/src/journal.rs` (serde tag `event`, snake_case).
 
 Principle (from Observability Engineering): append rich structured events first, aggregate to metrics second. Never add a metric without the underlying event being available for drill-down.
 
@@ -64,8 +75,8 @@ Principle (from Observability Engineering): append rich structured events first,
 
 Operator procedure for any failed or stuck run:
 
-1. **What failed?** Query `execution_journal` by `execution_id` for the last event before the failure. `event_type` + `payload.error` pins the failing step.
-2. **When?** Compare `event_type='started'` timestamp to the failure event timestamp; cross-reference with `trace_id` in the observability stack.
+1. **What failed?** Query `port_execution_journal` by `execution_id` for the last event before the failure. The `event` tag + `payload.error` pins the failing step.
+2. **When?** Compare the `execution_started` timestamp to the failure event timestamp; cross-reference with `trace_id` in the observability stack.
 3. **What changed?** Check recent deploys, config changes, dependency upgrades — `MATURITY.md` `frontier` crates are likely culprits if the run touched them.
 4. **What to try?** For transient classifications (per `nebula-error::Classify`): wait and retry. For permanent: open an issue with the journal excerpt. For "unknown": ask in #observability with the trace_id; do not retry blindly.
 
@@ -92,7 +103,7 @@ Standard labels: `credential_key` (e.g. `"github_token"`), `outcome` (`"success"
 
 > **SEC-01/02 metric emission status (2026-04-27).** Per credential security hardening (archived sub-spec; see the maintainers' private design vault) §6, the metric *names* are reserved here as part of the doc-sync stage (`docs/PRODUCT_CANON.md` §3.5 and §4.5 operational honesty: a new error path must register its observability surface alongside the code that emits it). Emission wiring is deferred to the metric-bus integration cascade — the security-hardening fix surfaces the rejection paths via typed `TokenHttpError` (bounded reader) and the `[*_redacted]` placeholder (sanitizer). When the credential-metrics emitter is wired through `parse_token_response`, both counters get bumped at the existing `Err(...)` returns; no new error semantics are introduced in this stage.
 
-**Analysis loop integration:** when investigating credential-related failures, include credential metrics alongside `execution_journal` events. A spike in `refresh_failed_total` or `tamper_detection_total` is an early signal before execution failures surface.
+**Analysis loop integration:** when investigating credential-related failures, include credential metrics alongside `port_execution_journal` events (no journal rows exist yet — #1013). A spike in `refresh_failed_total` or `tamper_detection_total` is an early signal before execution failures surface.
 
 ## 7. Credential refresh coordinator (two-tier L1+L2)
 
@@ -189,7 +200,7 @@ increase(nebula_credential_refresh_coord_sentinel_events_total{action="reauth_tr
 histogram_quantile(0.99, sum(rate(nebula_credential_refresh_coord_hold_duration_seconds_bucket[5m])) by (le))
 ```
 
-**Analysis loop integration:** an `outcome="exhausted"` crossing zero or a `reauth_triggered` increment is a paging-class event. Cross-reference the `credential.refresh.coordinate` span's `trace_id` with the `execution_journal` to find which actions were waiting on the failed refresh. The sentinel event bus is deliberately non-authoritative; until the K3 owner-qualified command lands, operators must not interpret `reauth_triggered` as evidence that `reauth_required = true` was persisted.
+**Analysis loop integration:** an `outcome="exhausted"` crossing zero or a `reauth_triggered` increment is a paging-class event. Cross-reference the `credential.refresh.coordinate` span's `trace_id` with the `port_execution_journal` (no journal rows exist yet — #1013) to find which actions were waiting on the failed refresh. The sentinel event bus is deliberately non-authoritative; until the K3 owner-qualified command lands, operators must not interpret `reauth_triggered` as evidence that `reauth_required = true` was persisted.
 
 ## 8. Resource credential-hook settlement
 

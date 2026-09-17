@@ -6,8 +6,8 @@
 //! wraps arbitrary provider payloads: `ActionErrorSource` forwards `Display`
 //! to whatever `dyn Error` the action supplied, so any record that renders an
 //! error's *source chain* publishes provider text (and whatever secret the
-//! provider chose to quote) into `executions.state`, `execution_journal`, logs,
-//! and API bodies.
+//! provider chose to quote) into `executions.state`, `port_execution_journal`,
+//! logs, and API bodies.
 //!
 //! [`ErrorEnvelope`] is the shape that replaces that. It keeps the parts a
 //! durable reader can act on — a machine-readable [`ErrorCode`], its
