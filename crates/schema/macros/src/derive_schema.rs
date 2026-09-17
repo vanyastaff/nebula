@@ -571,47 +571,15 @@ pub(crate) fn build_field_expr(
 
     ensure_field_attr_combinations(field_name, kind, field_attr, validate)?;
 
-    // A secret property's Rust leaf type is checked below against the explicit
-    // `SecretInput` contract. Both String and user-defined wrappers map to the
-    // schema's string-shaped Secret field.
-    let mut expr = match inner {
-        FieldKind::String | FieldKind::UserDefined(_) if field_attr.secret => quote! {
-            #crate_path::Property::secret(#key)
-        },
-        FieldKind::String => quote! {
-            #crate_path::Property::string(#key)
-        },
-        FieldKind::Boolean => quote! {
-            #crate_path::Property::boolean(#key)
-        },
-        FieldKind::IntegerNumber(ty) => integer_field_expr(ty, &key, crate_path),
-        FieldKind::FloatNumber(ty) => float_field_expr(ty, &key, crate_path),
-        FieldKind::List(item_kind) => list_field_expr(field_name, key_str, item_kind, crate_path)?,
-        FieldKind::Optional(_) => {
-            // Cannot nest `Option<Option<T>>`; classify already flattened one layer.
-            return Err(syn::Error::new_spanned(
-                field_name,
-                "nested `Option<Option<..>>` is not supported",
-            ));
-        },
-        FieldKind::UserDefined(ty) if field_attr.enum_select => quote! {
-            #crate_path::Property::select(#key).extend_options(
-                <#ty as #crate_path::HasSelectOptions>::select_options(),
-            )
-        },
-        FieldKind::UserDefined(_) => quote! { #nested_binding },
-        FieldKind::UnsupportedInteger(name) => {
-            return Err(syn::Error::new_spanned(
-                field_name,
-                format!(
-                    "#[derive(Schema)]: integer type `{name}` is not yet supported \
-                     because `serde_json::Number` only round-trips through `i64`/`u64`. \
-                     Use a narrower integer type (`i8`..`i64`, `u8`..`u64`) or wrap \
-                     the value in a newtype that implements `HasSchema` manually."
-                ),
-            ));
-        },
-    };
+    let mut expr = base_property_expr(
+        &key,
+        key_str,
+        inner,
+        field_attr,
+        field_name,
+        &nested_binding,
+        crate_path,
+    )?;
 
     if let Some(label) = &field_attr.label {
         expr = quote! { #expr.label(#label) };
@@ -789,6 +757,60 @@ pub(crate) fn build_field_expr(
         ));
     }
     Ok(decorated)
+}
+
+/// Base property construction: match the field's leaf kind to the initial property
+/// builder tokens, before decoration attributes and validation rules are layered on.
+fn base_property_expr(
+    key: &TokenStream2,
+    key_str: &str,
+    inner: &FieldKind,
+    field_attr: &FieldAttrs,
+    field_name: &Ident,
+    nested_binding: &Ident,
+    crate_path: &TokenStream2,
+) -> syn::Result<TokenStream2> {
+    // A secret property's Rust leaf type is checked below against the explicit
+    // `SecretInput` contract. Both String and user-defined wrappers map to the
+    // schema's string-shaped Secret field.
+    Ok(match inner {
+        FieldKind::String | FieldKind::UserDefined(_) if field_attr.secret => quote! {
+            #crate_path::Property::secret(#key)
+        },
+        FieldKind::String => quote! {
+            #crate_path::Property::string(#key)
+        },
+        FieldKind::Boolean => quote! {
+            #crate_path::Property::boolean(#key)
+        },
+        FieldKind::IntegerNumber(ty) => integer_field_expr(ty, key, crate_path),
+        FieldKind::FloatNumber(ty) => float_field_expr(ty, key, crate_path),
+        FieldKind::List(item_kind) => list_field_expr(field_name, key_str, item_kind, crate_path)?,
+        FieldKind::Optional(_) => {
+            // Cannot nest `Option<Option<T>>`; classify already flattened one layer.
+            return Err(syn::Error::new_spanned(
+                field_name,
+                "nested `Option<Option<..>>` is not supported",
+            ));
+        },
+        FieldKind::UserDefined(ty) if field_attr.enum_select => quote! {
+            #crate_path::Property::select(#key).extend_options(
+                <#ty as #crate_path::HasSelectOptions>::select_options(),
+            )
+        },
+        FieldKind::UserDefined(_) => quote! { #nested_binding },
+        FieldKind::UnsupportedInteger(name) => {
+            return Err(syn::Error::new_spanned(
+                field_name,
+                format!(
+                    "#[derive(Schema)]: integer type `{name}` is not yet supported \
+                     because `serde_json::Number` only round-trips through `i64`/`u64`. \
+                     Use a narrower integer type (`i8`..`i64`, `u8`..`u64`) or wrap \
+                     the value in a newtype that implements `HasSchema` manually."
+                ),
+            ));
+        },
+    })
 }
 
 fn apply_property_widget(
