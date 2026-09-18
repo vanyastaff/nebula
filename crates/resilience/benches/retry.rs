@@ -108,6 +108,32 @@ fn bench_backoff_high_attempt(c: &mut Criterion) {
     group.finish();
 }
 
+/// Non-power-of-two multipliers take the general exponential path rather than
+/// the doubling fast path, so this is the branch where soft-float math would
+/// show up. `exponential_default` (multiplier 2.0) never exercises it.
+fn bench_backoff_general_multiplier(c: &mut Criterion) {
+    let mut group = c.benchmark_group("retry/backoff/exponential_multiplier");
+    for multiplier in [1.5f64, 1.7] {
+        let cfg = BackoffConfig::Exponential {
+            base: Duration::from_millis(100),
+            multiplier,
+            max: Duration::from_secs(30),
+        };
+        group.bench_with_input(
+            BenchmarkId::from_parameter(multiplier),
+            &multiplier,
+            |b, _| {
+                b.iter(|| {
+                    for attempt in 0u32..10 {
+                        black_box(cfg.delay_for(black_box(attempt)));
+                    }
+                });
+            },
+        );
+    }
+    group.finish();
+}
+
 // ── Retry loop helpers ────────────────────────────────────────────────────────
 
 /// Operation that always succeeds immediately.
@@ -243,6 +269,7 @@ criterion_group!(
     benches,
     bench_backoff_strategies,
     bench_backoff_high_attempt,
+    bench_backoff_general_multiplier,
     bench_retry_success_first_attempt,
     bench_retry_fail_then_succeed,
     bench_jitter_overhead,
