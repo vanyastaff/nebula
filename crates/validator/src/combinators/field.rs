@@ -110,41 +110,22 @@ where
 // FIELD ERROR TYPE
 // ============================================================================
 
-/// Error wrapper that includes field name context.
+/// Field-name context attached to an inner validation error.
+///
+/// Private to the crate: a `Field` converts it to a [`ValidationError`] whose
+/// `field` path is the composed parent name, and that error is what callers
+/// see. Exposing the wrapper would offer a second, differently shaped error
+/// type for the same failure.
 #[derive(Debug, Clone)]
-pub struct FieldError {
-    /// Name of the field that failed validation
-    pub field_name: Option<Cow<'static, str>>,
-    /// The underlying validation error
-    pub inner: ValidationError,
+struct FieldError {
+    field_name: Option<Cow<'static, str>>,
+    inner: ValidationError,
 }
 
 impl FieldError {
     /// Creates a new field error.
-    pub fn new(field_name: Option<Cow<'static, str>>, inner: ValidationError) -> Self {
+    fn new(field_name: Option<Cow<'static, str>>, inner: ValidationError) -> Self {
         Self { field_name, inner }
-    }
-
-    /// Returns the field name, if any.
-    pub fn field_name(&self) -> Option<&str> {
-        self.field_name.as_deref()
-    }
-
-    /// Returns a reference to the inner error.
-    pub fn inner(&self) -> &ValidationError {
-        &self.inner
-    }
-
-    /// Consumes the error and returns the inner error.
-    pub fn into_inner(self) -> ValidationError {
-        self.inner
-    }
-
-    /// Adds a field name to an unnamed error.
-    #[must_use = "builder methods must be chained or built"]
-    pub fn with_field_name(mut self, name: impl Into<Cow<'static, str>>) -> Self {
-        self.field_name = Some(name.into());
-        self
     }
 }
 

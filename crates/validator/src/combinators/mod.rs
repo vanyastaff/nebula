@@ -102,7 +102,7 @@ pub mod json_field;
 pub use and::{And, AndAll, and, and_all};
 pub use each::{Each, each, each_fail_fast};
 pub use factories::{AllOf, AnyOf, all_of, any_of};
-pub use field::{Field, FieldError, FieldValidateExt, MultiField, field, named_field};
+pub use field::{Field, FieldValidateExt, MultiField, field, named_field};
 pub use json_field::{
     CollectJsonFields, JsonField, collect_json_fields, json_field, json_field_optional,
 };
