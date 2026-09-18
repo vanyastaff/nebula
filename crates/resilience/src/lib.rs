@@ -178,9 +178,9 @@ pub use error::{CallError, CallErrorKind, CallResult, ConfigError};
 pub use fallback::{FallbackStrategy, ValueFallback};
 // Infrastructure
 pub use gate::{Gate, GateCloseTimeout, GateClosed, GateGuard};
-#[doc(hidden)]
+#[cfg(feature = "bench-internals")]
 pub use hedge::LatencyTracker;
-pub use hedge::{HedgeConfig, HedgeExecutor, HedgeSafety};
+pub use hedge::{AdaptiveHedgeExecutor, HedgeConfig, HedgeExecutor, HedgeSafety};
 pub use load_shed::{
     load_shed, load_shed_with_policy_context, load_shed_with_policy_context_and_sink,
     load_shed_with_sink,
@@ -192,7 +192,7 @@ pub use policy::{ConstantLoad, LoadSignal, LoadSnapshot, PolicySource};
 pub use rate_limiter::{
     AdaptiveRateLimiter, ErasedRateLimiter, LeakyBucket, RateLimiter, SlidingWindow, TokenBucket,
 };
-#[doc(hidden)]
+#[cfg(feature = "bench-internals")]
 pub use retry::retry_with_inner;
 pub use retry::{BackoffConfig, JitterConfig, RetryConfig, retry, retry_with};
 // Observability

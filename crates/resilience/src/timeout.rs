@@ -165,7 +165,9 @@ where
 /// # #[tokio::main]
 /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// let sink = RecordingSink::new();
-/// let executor = TimeoutExecutor::new(Duration::from_millis(50)).with_sink(sink.clone());
+/// let executor = TimeoutExecutor::new(Duration::from_millis(50))
+///     .expect("non-zero duration")
+///     .with_sink(sink.clone());
 ///
 /// let value: Result<&str, CallError<&str>> = executor.call(async { Ok("ready") }).await;
 /// assert_eq!(value.unwrap(), "ready");
@@ -186,37 +188,28 @@ impl fmt::Debug for TimeoutExecutor {
 }
 
 impl TimeoutExecutor {
-    /// Create a new executor with validation.
+    /// Create a new executor with the given duration and a noop sink.
     ///
-    /// Prefer this for schema/user-provided configuration. A zero duration is
-    /// rejected because it never polls the protected future and almost always
-    /// indicates a misconfigured workflow timeout.
+    /// A zero duration is rejected: it never polls the protected future, so it
+    /// can only be a misconfigured workflow timeout. Immediate cancellation is
+    /// what [`PolicyContext`] cancellation is for — this constructor refuses to
+    /// express it as a timeout.
     ///
     /// # Errors
     ///
     /// Returns [`ConfigError`] when `duration` is zero.
-    pub fn try_new(duration: Duration) -> Result<Self, ConfigError> {
+    pub fn new(duration: Duration) -> Result<Self, ConfigError> {
         if duration.is_zero() {
             return Err(ConfigError::new(
                 "timeout.duration",
-                "timeout duration must be greater than zero",
+                "must be greater than zero",
             ));
         }
 
-        Ok(Self::new(duration))
-    }
-
-    /// Create a new executor with the given duration and a noop sink.
-    ///
-    /// A zero duration is allowed for compatibility and acts as an immediate
-    /// timeout without polling the protected future. Use [`try_new`](Self::try_new)
-    /// when loading untrusted workflow/user configuration.
-    #[must_use]
-    pub fn new(duration: Duration) -> Self {
-        Self {
+        Ok(Self {
             duration,
             sink: Arc::new(NoopSink),
-        }
+        })
     }
 
     /// Inject a metrics sink.
@@ -329,8 +322,8 @@ mod tests {
     }
 
     #[test]
-    fn try_new_rejects_zero_timeout() {
-        let err = TimeoutExecutor::try_new(Duration::ZERO).unwrap_err();
+    fn new_rejects_zero_timeout() {
+        let err = TimeoutExecutor::new(Duration::ZERO).unwrap_err();
         assert_eq!(err.field, "timeout.duration");
     }
 
@@ -364,7 +357,9 @@ mod tests {
     #[tokio::test]
     async fn executor_emits_timeout_event() {
         let sink = RecordingSink::new();
-        let executor = TimeoutExecutor::new(Duration::from_millis(10)).with_sink(sink.clone());
+        let executor = TimeoutExecutor::new(Duration::from_millis(10))
+            .expect("non-zero duration")
+            .with_sink(sink.clone());
 
         let _ = executor
             .call(async {
@@ -398,7 +393,9 @@ mod tests {
     #[tokio::test]
     async fn executor_policy_context_deadline_bounds_call() {
         let sink = RecordingSink::new();
-        let executor = TimeoutExecutor::new(Duration::from_mins(1)).with_sink(sink.clone());
+        let executor = TimeoutExecutor::new(Duration::from_mins(1))
+            .expect("non-zero duration")
+            .with_sink(sink.clone());
         let context = PolicyContext::with_timeout(Duration::from_millis(1));
 
         let result: Result<(), CallError<()>> = executor

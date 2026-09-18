@@ -7572,3 +7572,48 @@ async fn unrepresentable_rate_limit_policy_refuses_setup() {
         "the refusal must carry the typed rate-limit policy code, got: {message}"
     );
 }
+
+// ── Retry backoff parity with nebula-resilience ─────────────────────────
+
+/// The engine's Layer-2 backoff (`nebula_workflow::RetryConfig`) must compute
+/// the same delay as Layer 1 (`nebula_resilience::BackoffConfig`) for the same
+/// policy, because `engine/outcome.rs` documents that equivalence and both
+/// layers run over the same operator-declared values.
+///
+/// The two formulas live in different crates with no shared implementation, so
+/// this pins them with a contract test instead of a comment. An exponential
+/// multiplier of 2.0 is the one case both sides express exactly
+/// (`BackoffConfig::Exponential` with `multiplier: 2.0`, which takes the
+/// doubling path without floating-point rounding).
+#[test]
+fn engine_retry_backoff_matches_resilience_backoff() {
+    use nebula_resilience::retry::BackoffConfig;
+
+    for (initial_ms, max_ms) in [(100u64, 10_000u64), (50, 500), (1, 2_000), (1_000, 60_000)] {
+        let engine_policy = nebula_workflow::RetryConfig::exponential(6, initial_ms, max_ms);
+        let layer_one = BackoffConfig::Exponential {
+            base: Duration::from_millis(initial_ms),
+            multiplier: 2.0,
+            max: Duration::from_millis(max_ms),
+        };
+
+        for attempt in 0..engine_policy.max_attempts {
+            assert_eq!(
+                engine_policy.delay_for_attempt(attempt),
+                layer_one.delay_for(attempt),
+                "attempt {attempt} diverged for initial={initial_ms}ms max={max_ms}ms"
+            );
+        }
+    }
+
+    // A fixed backoff is the multiplier-1.0 twin of the same formula.
+    let engine_fixed = nebula_workflow::RetryConfig::fixed(4, 250);
+    let layer_one_fixed = BackoffConfig::Fixed(Duration::from_millis(250));
+    for attempt in 0..engine_fixed.max_attempts {
+        assert_eq!(
+            engine_fixed.delay_for_attempt(attempt),
+            layer_one_fixed.delay_for(attempt),
+            "fixed backoff diverged at attempt {attempt}"
+        );
+    }
+}

@@ -27,6 +27,10 @@ serde = ["dep:serde", "smallvec/serde"]
 # `RUSTFLAGS="--cfg loom"`.
 loom = ["dep:loom"]
 
+# Exposes internal helpers the criterion benches measure directly. Not part
+# of the documented surface: enabling it adds no behavior, only visibility.
+bench-internals = []
+
 [dependencies]
 # Nebula integration
 nebula-error = { workspace = true }
@@ -66,6 +70,7 @@ workspace = true
 [[bench]]
 name = "compose"
 harness = false
+required-features = ["bench-internals"]
 
 [[bench]]
 name = "rate_limiter"
@@ -90,10 +95,12 @@ harness = false
 [[bench]]
 name = "latency_tracker"
 harness = false
+required-features = ["bench-internals"]
 
 [[bench]]
 name = "retry"
 harness = false
+required-features = ["bench-internals"]
 
 [[bench]]
 name = "cancellation"
@@ -114,3 +121,4 @@ harness = false
 [[bench]]
 name = "hedge"
 harness = false
+required-features = ["bench-internals"]
