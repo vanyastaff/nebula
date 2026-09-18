@@ -93,9 +93,7 @@ pub type NotNull<T> = Required<T>;
 /// * `T` - The inner type of the `Option` being validated
 #[must_use]
 pub fn not_null<T>() -> NotNull<T> {
-    Required {
-        _phantom: PhantomData,
-    }
+    required()
 }
 
 #[cfg(test)]
