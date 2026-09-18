@@ -469,7 +469,7 @@ impl ValidationError {
             "field": self.field,
             "pointer": self.field_pointer(),
             "params": params,
-            "severity": format!("{:?}", self.severity()),
+            "severity": severity_wire_name(self.severity()),
             "help": self.help(),
             "nested": self.nested().iter().map(ValidationError::to_json_value).collect::<Vec<_>>(),
         })
@@ -484,6 +484,20 @@ impl ValidationError {
     fn extras_mut(&mut self) -> &mut ErrorExtras {
         self.extras
             .get_or_insert_with(|| Box::new(ErrorExtras::default()))
+    }
+}
+
+/// Stable wire name for a severity, matching the `snake_case` convention the
+/// rest of the envelope uses (`kind` is already `"violation"`, not `"Violation"`).
+///
+/// `format!("{:?}")` produced `"Warning"` here while the neighboring `kind`
+/// key was snake_case, so consumers had to special-case one key. The explicit
+/// match also keeps the wire form stable if a variant is renamed.
+fn severity_wire_name(severity: ErrorSeverity) -> &'static str {
+    match severity {
+        ErrorSeverity::Error => "error",
+        ErrorSeverity::Warning => "warning",
+        ErrorSeverity::Info => "info",
     }
 }
 

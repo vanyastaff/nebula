@@ -130,20 +130,29 @@ impl PredicateContext {
     }
 }
 
+/// Count every key and index reachable from `value`, iteratively.
+///
+/// A predicate context may own an arbitrarily deep JSON tree, so the walk uses
+/// an explicit stack: the recursive form overflowed the process stack on a
+/// deeply nested root. The caller ([`PredicateContext::from_json`]) runs this
+/// before any traversal, so an over-deep root still costs one bounded walk.
 fn count_descendant_bindings(value: &serde_json::Value) -> usize {
-    match value {
-        serde_json::Value::Object(object) => {
-            object.len()
-                + object
-                    .values()
-                    .map(count_descendant_bindings)
-                    .sum::<usize>()
-        },
-        serde_json::Value::Array(array) => {
-            array.len() + array.iter().map(count_descendant_bindings).sum::<usize>()
-        },
-        _ => 0,
+    let mut count = 0usize;
+    let mut pending = vec![value];
+    while let Some(value) = pending.pop() {
+        match value {
+            serde_json::Value::Object(object) => {
+                count = count.saturating_add(object.len());
+                pending.extend(object.values());
+            },
+            serde_json::Value::Array(array) => {
+                count = count.saturating_add(array.len());
+                pending.extend(array.iter());
+            },
+            _ => {},
+        }
     }
+    count
 }
 
 #[cfg(test)]

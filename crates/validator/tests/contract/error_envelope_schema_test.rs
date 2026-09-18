@@ -107,3 +107,26 @@ fn serialized_envelope_always_contains_code_and_message() {
         );
     }
 }
+
+/// The envelope's `severity` key uses the same `snake_case` convention as
+/// `kind`.
+///
+/// It previously rendered through `Debug`, so the wire carried `"Warning"`
+/// beside `"violation"` and every consumer had to special-case that one key.
+#[test]
+fn severity_wire_name_is_snake_case() {
+    for (severity, expected) in [
+        (ErrorSeverity::Error, "error"),
+        (ErrorSeverity::Warning, "warning"),
+        (ErrorSeverity::Info, "info"),
+    ] {
+        let json = ValidationError::new("x", "y")
+            .with_severity(severity)
+            .to_json_value();
+        assert_eq!(
+            json["severity"], expected,
+            "severity must be snake_case on the wire"
+        );
+        assert_eq!(json["kind"], "violation");
+    }
+}
