@@ -30,7 +30,7 @@ use std::{
         Arc,
         atomic::{AtomicU32, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use parking_lot::Mutex;
@@ -187,7 +187,7 @@ impl From<crate::classifier::ErrorClass> for Outcome {
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum State {
     Closed,
-    Open { opened_at: std::time::Instant },
+    Open { opened_at: Instant },
     HalfOpen,
 }
 
@@ -398,8 +398,22 @@ impl CircuitBreaker {
 
     /// Return the current instant from the breaker's instant source.
     #[must_use]
-    pub(crate) fn monotonic_now(&self) -> std::time::Instant {
+    pub(crate) fn monotonic_now(&self) -> Instant {
         self.instant_source.now()
+    }
+
+    /// Measure elapsed time from an optional start.
+    ///
+    /// Callers start the clock only when [`Self::tracks_slow_calls`] is true,
+    /// so the default configuration (no `slow_call_threshold`) performs no
+    /// `Instant::now()` reads at all. `Duration::ZERO` is the correct
+    /// no-measurement value: [`Self::classify_outcome`] then returns plain
+    /// `Success`/`Failure`, never a slow variant.
+    #[must_use]
+    fn elapsed_since(&self, start: Option<Instant>) -> Duration {
+        start.map_or(Duration::ZERO, |start| {
+            self.instant_source.now().duration_since(start)
+        })
     }
 
     /// Manually force the circuit open, rejecting all calls until reset timeout or
@@ -508,9 +522,9 @@ impl CircuitBreaker {
     {
         self.try_acquire()?;
         let mut guard = ProbeGuard::new(self);
-        let start = self.instant_source.now();
+        let start = self.tracks_slow_calls().then(|| self.instant_source.now());
         let result = f().await;
-        let duration = self.instant_source.now().duration_since(start);
+        let duration = self.elapsed_since(start);
         let outcome = self.classify_outcome(result.is_ok(), duration);
         guard.defuse();
         self.record_outcome(outcome);
@@ -577,9 +591,9 @@ impl CircuitBreaker {
     {
         self.try_acquire()?;
         let mut guard = ProbeGuard::new(self);
-        let start = self.instant_source.now();
+        let start = self.tracks_slow_calls().then(|| self.instant_source.now());
         let result = f().await;
-        let duration = self.instant_source.now().duration_since(start);
+        let duration = self.elapsed_since(start);
 
         let outcome = match &result {
             Ok(_) => self.classify_outcome(true, duration),
@@ -629,11 +643,11 @@ impl CircuitBreaker {
     {
         self.try_acquire()?;
         let mut guard = ProbeGuard::new(self);
-        let start = self.instant_source.now();
+        let start = self.tracks_slow_calls().then(|| self.instant_source.now());
         let result = context
             .run_result(async { f().await.map_err(CallError::Operation) })
             .await;
-        let duration = self.instant_source.now().duration_since(start);
+        let duration = self.elapsed_since(start);
 
         let outcome = match &result {
             Ok(_) => self.classify_outcome(true, duration),
