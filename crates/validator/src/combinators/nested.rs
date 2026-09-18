@@ -320,15 +320,20 @@ where
         let mut errors: Vec<ValidationError> = Vec::new();
 
         for (index, item) in input.iter().enumerate() {
-            if let Err(e) = self.validator.validate(item) {
-                let indexed_error = ValidationError::new(
-                    e.code.clone(),
-                    format!("Element {} validation failed: {}", index, e.message),
-                );
+            if let Err(error) = self.validator.validate(item) {
+                // Preserve the element's full diagnostic (code, field, params,
+                // severity, nested errors) and attach the index as a param. The
+                // element error is the actionable one; an aggregate wrapper that
+                // rebuilt it would drop exactly the context the caller needs.
                 if self.mode.is_fail_fast() {
-                    return Err(indexed_error);
+                    return Err(ValidationError::new(
+                        "collection_nested_failed",
+                        format!("Element at index {index} failed: {}", error.message),
+                    )
+                    .with_param("index", index.to_string())
+                    .with_nested_error(error));
                 }
-                errors.push(indexed_error);
+                errors.push(error.with_param("index", index.to_string()));
             }
         }
 
@@ -343,6 +348,8 @@ where
                     input.len()
                 ),
             )
+            .with_param("failed_count", errors.len().to_string())
+            .with_param("total_count", input.len().to_string())
             .with_nested(errors))
         }
     }
@@ -515,9 +522,34 @@ mod tests {
         let err = result.unwrap_err();
         assert_eq!(err.code.as_ref(), "collection_nested_failed");
         assert!(err.message.contains("1 of 2"));
+        assert_eq!(err.param("failed_count"), Some("1"));
+        assert_eq!(err.param("total_count"), Some("2"));
         let nested = err.nested();
         assert_eq!(nested.len(), 1);
-        assert!(nested[0].message.contains("Element 1"));
+        // The element's original diagnostic survives, indexed by its param.
+        assert_eq!(nested[0].code.as_ref(), "name_required");
+        assert_eq!(nested[0].param("index"), Some("1"));
+    }
+
+    #[test]
+    fn collection_nested_fail_fast_preserves_the_element_error() {
+        let users = vec![
+            TestUser {
+                name: String::new(),
+                age: 25,
+            },
+            TestUser {
+                name: "John".to_string(),
+                age: 25,
+            },
+        ];
+        let validator = collection_nested::<TestUser>().with_mode(ValidationMode::FailFast);
+        let err = validator.validate(&users).unwrap_err();
+        assert_eq!(err.code.as_ref(), "collection_nested_failed");
+        assert_eq!(err.param("index"), Some("0"));
+        // The original code is preserved as a nested child, not flattened away.
+        assert_eq!(err.nested().len(), 1);
+        assert_eq!(err.nested()[0].code.as_ref(), "name_required");
     }
 
     #[test]
