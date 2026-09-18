@@ -112,10 +112,7 @@ impl<E: Clone + Send> EventBus<E> {
         // attributes its own `RecvError::Lagged(n)` count into the bus's
         // `dropped_count` at recv-time; that signal comes straight from tokio
         // and is exact per subscriber.
-        match self.sender.send(event) {
-            Ok(_) => PublishOutcome::Sent,
-            Err(_) => PublishOutcome::DroppedNoSubscribers,
-        }
+        self.send_to_subscribers(event)
     }
 
     #[inline]
@@ -128,6 +125,15 @@ impl<E: Clone + Send> EventBus<E> {
             return PublishOutcome::DroppedByPolicy;
         }
 
+        self.send_to_subscribers(event)
+    }
+
+    /// Try to hand the event to tokio's broadcast channel.
+    ///
+    /// `Ok(Sent)` means at least one subscriber received it; `Err(_)` means no
+    /// subscriber was connected at the moment of send.
+    #[inline]
+    fn send_to_subscribers(&self, event: E) -> PublishOutcome {
         match self.sender.send(event) {
             Ok(_) => PublishOutcome::Sent,
             Err(_) => PublishOutcome::DroppedNoSubscribers,

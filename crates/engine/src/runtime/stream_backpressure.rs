@@ -5,7 +5,7 @@
 
 use std::{collections::VecDeque, sync::Arc};
 
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::{Mutex, MutexGuard, Notify};
 
 use crate::RuntimeError;
 
@@ -32,6 +32,16 @@ pub enum PushOutcome {
     AcceptedAfterDropOldest,
     /// Item was dropped due to `Overflow::DropNewest`.
     DroppedNewest,
+}
+
+impl PushOutcome {
+    /// Upgrade the outcome to indicate that an old item was evicted to make room.
+    const fn with_dropped_oldest(self) -> Self {
+        match self {
+            PushOutcome::Accepted => PushOutcome::AcceptedAfterDropOldest,
+            other => other,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -71,35 +81,16 @@ impl<T> BoundedStreamBuffer<T> {
             let mut queue = self.inner.queue.lock().await;
 
             if queue.len() < self.inner.capacity {
-                queue.push_back(item);
-                self.inner.not_empty.notify_one();
-                return Ok(PushOutcome::Accepted);
+                return Ok(self.accept(queue, item));
             }
 
             match self.inner.overflow {
-                Overflow::Block => {
-                    // Register the `Notified` future BEFORE releasing the
-                    // queue lock so we cannot race past a `notify_one` that
-                    // fires between `drop(queue)` and `.notified().await`.
-                    // `Notify::notify_one` only stores a permit when a
-                    // waiter is already registered; enabling the future via
-                    // `as_mut().enable()` performs that registration
-                    // without yielding. See tokio::sync::Notify docs.
-                    let notified = self.inner.not_full.notified();
-                    tokio::pin!(notified);
-                    notified.as_mut().enable();
-                    drop(queue);
-                    notified.await;
-                },
+                Overflow::Block => self.wait_for_space(queue).await,
                 Overflow::DropOldest => {
                     let _ = queue.pop_front();
-                    queue.push_back(item);
-                    self.inner.not_empty.notify_one();
-                    return Ok(PushOutcome::AcceptedAfterDropOldest);
+                    return Ok(self.accept(queue, item).with_dropped_oldest());
                 },
-                Overflow::DropNewest => {
-                    return Ok(PushOutcome::DroppedNewest);
-                },
+                Overflow::DropNewest => return Ok(PushOutcome::DroppedNewest),
                 Overflow::Error => {
                     return Err(RuntimeError::Internal(
                         "stream buffer overflow (policy=error)".to_string(),
@@ -107,6 +98,28 @@ impl<T> BoundedStreamBuffer<T> {
                 },
             }
         }
+    }
+
+    /// Insert the item, notify a consumer, and return the base outcome.
+    fn accept(&self, mut queue: MutexGuard<'_, VecDeque<T>>, item: T) -> PushOutcome {
+        queue.push_back(item);
+        self.inner.not_empty.notify_one();
+        PushOutcome::Accepted
+    }
+
+    /// Wait until another item is popped and buffer space becomes available.
+    ///
+    /// Registers the `Notified` future BEFORE releasing the queue lock so we
+    /// cannot race past a `notify_one` that fires between `drop(queue)` and
+    /// `.notified().await`. `Notify::notify_one` only stores a permit when a
+    /// waiter is already registered; enabling the future via `as_mut().enable()`
+    /// performs that registration without yielding. See tokio::sync::Notify docs.
+    async fn wait_for_space(&self, queue: MutexGuard<'_, VecDeque<T>>) {
+        let notified = self.inner.not_full.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        drop(queue);
+        notified.await;
     }
 
     /// Receive next buffered item, waiting until one is available.
