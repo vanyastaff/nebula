@@ -80,6 +80,9 @@ format, and the `Rule` wire encoding — are catalogued in
 ### Added
 
 - `MAX_ERROR_TREE_DEPTH` is exported from `nebula_validator::foundation`.
+- `PredicateContext::from_json` documents its depth contract: the context counts
+  bindings iteratively, but `serde_json::Value` still drops recursively, so an
+  over-deep tree assembled programmatically is the assembler's responsibility.
 - `ValidationError::rendered_message` is documented and covered by tests.
 - `FieldValidateExt::for_field` is documented with a compile-checked example.
 - Registry entry and governance coverage for the `multiple_field_errors` code

@@ -52,11 +52,23 @@ impl PredicateContext {
     }
 
     /// Own one JSON value for direct RFC6901 pointer lookup.
+    ///
+    /// # Depth
+    ///
+    /// The context reads and counts the tree iteratively, but it does not own
+    /// the tree's *drop*: [`serde_json::Value`] frees nested containers
+    /// recursively, so a root deeper than a few thousand levels overflows the
+    /// stack when the context is dropped — as it would for any other owner of
+    /// that value. The hazard belongs to whoever built the tree. Values parsed
+    /// from text are bounded by `serde_json`'s own 128-level recursion limit;
+    /// values assembled programmatically are not, and the assembler is
+    /// responsible for the bound.
     pub fn from_json(root: serde_json::Value) -> Self {
-        // A container root counts its keys and indices recursively. A scalar
-        // root has no addressable children but the root itself is addressable
-        // through `FieldPath::root()`, so it counts as one binding. That keeps
-        // `len() == 0` exactly equivalent to `is_empty()`.
+        // A container root counts its keys and indices. A scalar root has no
+        // addressable children but the root itself is addressable through
+        // `FieldPath::root()`, so it counts as one binding. That keeps
+        // `len() == 0` exactly equivalent to `is_empty()`. The walk is
+        // iterative: an over-deep root must not overflow in *our* code.
         let binding_count = if matches!(
             root,
             serde_json::Value::Object(_) | serde_json::Value::Array(_)
@@ -258,5 +270,25 @@ mod tests {
         let tilde_key = FieldPath::from_segments(["c~d"]);
         assert_eq!(ctx.get(&slash_key), Some(&serde_json::json!(1)));
         assert_eq!(ctx.get(&tilde_key), Some(&serde_json::json!(2)));
+    }
+
+    /// The binding walk is iterative.
+    ///
+    /// A recursive `count_descendant_bindings` overflowed the process stack on
+    /// a deeply nested root. The depth here stays below `serde_json`'s own
+    /// recursive `Drop` threshold, so the test measures our walk rather than
+    /// the drop of the tree it was given.
+    #[test]
+    fn deeply_nested_root_is_counted_without_recursion() {
+        let depth = 900usize;
+        let mut value = serde_json::json!(1);
+        for _ in 0..depth {
+            value = serde_json::Value::Array(vec![value]);
+        }
+        let ctx = PredicateContext::from_json(value);
+        // Only addressable positions count: each of the `depth` arrays
+        // contributes the index `0`. The scalar leaf is not addressable.
+        assert_eq!(ctx.len(), depth, "one addressable index per array level");
+        assert!(!ctx.is_empty());
     }
 }
