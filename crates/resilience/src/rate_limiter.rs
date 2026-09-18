@@ -257,6 +257,13 @@ type BoxRateLimiterFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 /// object-safe. Use `Arc<dyn ErasedRateLimiter>` when a tenant/resource registry
 /// needs to store multiple limiter implementations behind one type.
 ///
+/// **No registry in this workspace stores `dyn ErasedRateLimiter` yet.** It is
+/// the seam a host uses when limiter selection is dynamic (tenant- or
+/// resource-scoped policies); the engine currently builds one concrete
+/// `TokenBucket` per action key and does not need the facade. It is kept
+/// because removing object safety from `RateLimiter` later would be a breaking
+/// change, not because there is a current consumer.
+///
 /// The facade exposes only non-generic operations. To run an operation through a
 /// limiter, acquire through this trait and then call the operation yourself, or
 /// pass the object to
