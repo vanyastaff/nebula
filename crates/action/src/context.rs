@@ -352,7 +352,7 @@ impl ActionRuntimeContext {
     }
 
     /// Run an async operation (typically `nebula_resilience::retry_with` or
-    /// `nebula_resilience::ResiliencePipeline::execute`) under
+    /// `nebula_resilience::ResiliencePipeline::call`) under
     /// [`Self::resource_http_request_span`], with `DEBUG` enter/exit logs.
     ///
     /// `nebula-resilience` is **not** a direct dependency of `nebula-action`, so the references
