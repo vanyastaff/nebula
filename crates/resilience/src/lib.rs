@@ -168,9 +168,6 @@ pub mod pipeline;
 // Patterns
 pub use bulkhead::{Bulkhead, BulkheadConfig};
 pub use cancellation::{CancellableFuture, CancellationContext, CancellationExt};
-// ── Internals exposed for benchmarking ───────────────────────────────────────
-#[doc(hidden)]
-pub use circuit_breaker::OutcomeWindow;
 pub use circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
 pub use classifier::{
     AlwaysPermanent, AlwaysTransient, ErrorClass, ErrorClassifier, FnClassifier, NebulaClassifier,

@@ -74,19 +74,6 @@ fn cb_record_outcome(c: &mut Criterion) {
         });
     });
 
-    // With sliding window
-    group.bench_function("success_sliding_window_10", |b| {
-        let cb = CircuitBreaker::new(CircuitBreakerConfig {
-            sliding_window_size: 10,
-            failure_rate_threshold: Some(0.9),
-            ..closed_config()
-        })
-        .unwrap();
-        b.iter(|| {
-            cb.record_outcome(black_box(Outcome::Success));
-        });
-    });
-
     group.finish();
 }
 

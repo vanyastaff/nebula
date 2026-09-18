@@ -92,10 +92,6 @@ name = "latency_tracker"
 harness = false
 
 [[bench]]
-name = "sliding_window_cb"
-harness = false
-
-[[bench]]
 name = "retry"
 harness = false
 

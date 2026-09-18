@@ -73,11 +73,6 @@ pub struct CircuitBreakerConfig {
     pub slow_call_threshold: Option<Duration>,
     /// Slow call rate threshold (0.0--1.0). If slow calls / total >= this, CB trips. Default: 1.0.
     pub slow_call_rate_threshold: f64,
-    /// Size of the count-based sliding window. 0 = use simple counters (default).
-    pub sliding_window_size: u32,
-    /// Failure rate threshold (0.0--1.0) used with sliding window. `None` = use
-    /// `failure_threshold` count.
-    pub failure_rate_threshold: Option<f64>,
 }
 
 impl Default for CircuitBreakerConfig {
@@ -93,8 +88,6 @@ impl Default for CircuitBreakerConfig {
             max_break_duration: Duration::from_mins(5),
             slow_call_threshold: None,
             slow_call_rate_threshold: 1.0,
-            sliding_window_size: 0,
-            failure_rate_threshold: None,
         }
     }
 }
@@ -134,15 +127,6 @@ impl CircuitBreakerConfig {
         if !(0.0..=1.0).contains(&self.slow_call_rate_threshold) {
             return Err(ConfigError::new(
                 "slow_call_rate_threshold",
-                "must be between 0.0 and 1.0",
-            ));
-        }
-        if self
-            .failure_rate_threshold
-            .is_some_and(|r| !(0.0..=1.0).contains(&r))
-        {
-            return Err(ConfigError::new(
-                "failure_rate_threshold",
                 "must be between 0.0 and 1.0",
             ));
         }
@@ -210,9 +194,9 @@ pub struct CircuitBreakerStats {
     pub state: CircuitState,
     /// Current failure count.
     pub failures: u32,
-    /// Total operations in current window.
+    /// Total operations observed since the counters were last reset.
     pub total: u32,
-    /// Number of slow calls in current window.
+    /// Number of slow calls observed since the counters were last reset.
     pub slow_calls: u32,
 }
 
@@ -281,198 +265,6 @@ pub struct CircuitBreaker {
     on_state_change: Option<StateChangeCallback>,
 }
 
-/// Sum a slice of 0/1 bytes into a u32.
-///
-/// On x86-64, uses SSE2 `psadbw` (sum-of-absolute-differences against zero)
-/// to process 16 bytes per cycle — 16x faster than scalar for large windows.
-/// Falls back to a 4-accumulator scalar loop on non-x86 targets.
-///
-/// Outlined (`inline(never)`) to prevent LLVM from duplicating the loop
-/// body at every inlined `failure_count`/`slow_count` call site.
-#[inline(never)]
-fn byte_sum(slice: &[u8]) -> u32 {
-    #[cfg(target_arch = "x86_64")]
-    {
-        byte_sum_sse2(slice)
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        byte_sum_scalar(slice)
-    }
-}
-
-/// SSE2 SIMD path: `psadbw` sums 16 bytes per iteration into two u64 lanes.
-/// SSE2 is guaranteed on all x86-64 CPUs — no runtime feature check needed.
-#[cfg(target_arch = "x86_64")]
-#[expect(
-    unsafe_code,
-    clippy::cast_ptr_alignment,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss
-)]
-fn byte_sum_sse2(slice: &[u8]) -> u32 {
-    #[cfg(target_arch = "x86_64")]
-    use std::arch::x86_64::{
-        __m128i, _mm_add_epi64, _mm_cvtsi128_si64, _mm_loadu_si128, _mm_sad_epu8,
-        _mm_setzero_si128, _mm_unpackhi_epi64,
-    };
-
-    // SAFETY: SSE2 is guaranteed on x86-64. All pointer arithmetic is bounds-checked
-    // via the chunk/remainder split. `_mm_loadu_si128` handles unaligned loads.
-    #[expect(
-        clippy::multiple_unsafe_ops_per_block,
-        reason = "SIMD kernel: the intrinsics form one logical operation under a single SAFETY contract"
-    )]
-    unsafe {
-        let zero = _mm_setzero_si128();
-        let mut acc = _mm_setzero_si128();
-
-        let chunks = slice.chunks_exact(16);
-        let remainder = chunks.remainder();
-
-        for chunk in chunks {
-            let v = _mm_loadu_si128(chunk.as_ptr().cast::<__m128i>());
-            acc = _mm_add_epi64(acc, _mm_sad_epu8(v, zero));
-        }
-
-        // Horizontal sum of 2 u64 lanes
-        let hi = _mm_unpackhi_epi64(acc, acc);
-        let total = _mm_add_epi64(acc, hi);
-        let mut sum = _mm_cvtsi128_si64(total) as u32;
-
-        for &b in remainder {
-            sum += u32::from(b);
-        }
-        sum
-    }
-}
-
-/// Scalar fallback: 4 independent accumulators to break loop-carried dependency.
-#[cfg(not(target_arch = "x86_64"))]
-fn byte_sum_scalar(slice: &[u8]) -> u32 {
-    let (mut a, mut b, mut c, mut d) = (0u32, 0u32, 0u32, 0u32);
-    let mut chunks = slice.chunks_exact(4);
-    for chunk in &mut chunks {
-        a += u32::from(chunk[0]);
-        b += u32::from(chunk[1]);
-        c += u32::from(chunk[2]);
-        d += u32::from(chunk[3]);
-    }
-    let sum = a + b + c + d;
-    sum + chunks
-        .remainder()
-        .iter()
-        .copied()
-        .map(u32::from)
-        .sum::<u32>()
-}
-
-/// Fixed-size ring buffer of call outcomes for rate-based circuit breaking.
-///
-/// Stores failure and slow-call flags in separate byte arrays. The
-/// `byte_sum` helper uses chunked iteration that LLVM auto-vectorizes
-/// with `psadbw`/`vpsadbw` SIMD instructions at window sizes >= 32.
-///
-/// Capacity is rounded up to the next power of two so that the ring
-/// pointer wraps via bitmask (`& mask`) instead of integer division.
-///
-/// Made `pub` so it can be benchmarked directly from `benches/sliding_window_cb.rs`.
-#[doc(hidden)]
-#[derive(Debug)]
-pub struct OutcomeWindow {
-    /// 1 = failure, 0 = success — one byte per slot, contiguous for SIMD.
-    failure_ring: Box<[u8]>,
-    /// 1 = slow call, 0 = normal — one byte per slot, contiguous for SIMD.
-    slow_ring: Box<[u8]>,
-    /// Bitmask for wrapping: always `capacity - 1` where capacity is a power of two.
-    mask: usize,
-    head: usize,
-    len: usize,
-}
-
-impl OutcomeWindow {
-    #[must_use]
-    pub fn new(requested: usize) -> Self {
-        let cap = requested.next_power_of_two().max(1);
-        Self {
-            failure_ring: vec![0u8; cap].into_boxed_slice(),
-            slow_ring: vec![0u8; cap].into_boxed_slice(),
-            mask: cap - 1,
-            head: 0,
-            len: 0,
-        }
-    }
-
-    #[expect(
-        unsafe_code,
-        reason = "head is maintained via bitmask so get_unchecked_mut is in-bounds; see SAFETY comment"
-    )]
-    pub fn record(&mut self, is_failure: bool, is_slow: bool) {
-        let h = self.head;
-        debug_assert!(h <= self.mask, "head exceeds mask");
-        // SAFETY: `head` is always `< capacity` because it is maintained via
-        // `(head + 1) & mask` where `mask = capacity - 1` and `capacity` equals
-        // both `failure_ring.len()` and `slow_ring.len()`.
-        #[expect(
-            clippy::multiple_unsafe_ops_per_block,
-            reason = "both ring writes share the single head-bound SAFETY invariant"
-        )]
-        unsafe {
-            *self.failure_ring.get_unchecked_mut(h) = u8::from(is_failure);
-            *self.slow_ring.get_unchecked_mut(h) = u8::from(is_slow);
-        }
-        self.head = (h + 1) & self.mask;
-        let cap = self.mask + 1;
-        if self.len < cap {
-            self.len += 1;
-        }
-    }
-
-    // Reason: usize to u32 cast is safe for practical window sizes (< 2^32).
-    #[must_use]
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "usize to u32 cast is safe for practical window sizes (< 2^32)"
-    )]
-    pub const fn total(&self) -> u32 {
-        self.len as u32
-    }
-
-    #[must_use]
-    pub fn failure_count(&self) -> u32 {
-        byte_sum(self.active_slice(&self.failure_ring))
-    }
-
-    #[must_use]
-    pub fn slow_count(&self) -> u32 {
-        byte_sum(self.active_slice(&self.slow_ring))
-    }
-
-    #[expect(
-        unsafe_code,
-        reason = "len <= ring.len() is maintained as invariant; see SAFETY comment"
-    )]
-    fn active_slice<'a>(&self, ring: &'a [u8]) -> &'a [u8] {
-        let cap = self.mask + 1;
-        if self.len < cap {
-            debug_assert!(self.len <= ring.len(), "len exceeds ring capacity");
-            // SAFETY: `len` is always `<= capacity` which equals `ring.len()`.
-            // The `len < cap` guard above ensures `len < ring.len()`.
-            unsafe { ring.get_unchecked(..self.len) }
-        } else {
-            ring
-        }
-    }
-
-    #[cold]
-    fn reset(&mut self) {
-        self.head = 0;
-        self.len = 0;
-        self.failure_ring.fill(0);
-        self.slow_ring.fill(0);
-    }
-}
-
 struct InnerState {
     state: State,
     failures: u32,
@@ -483,10 +275,8 @@ struct InnerState {
     half_open_successes: u32,
     /// Number of consecutive times the circuit has opened (for dynamic break duration).
     consecutive_opens: u32,
-    /// Number of slow calls in the current window.
+    /// Number of slow calls observed since the counters were last reset.
     slow_calls: u32,
-    /// Sliding window (used when `config.sliding_window_size > 0`).
-    window: Option<OutcomeWindow>,
 }
 
 impl CircuitBreaker {
@@ -497,7 +287,6 @@ impl CircuitBreaker {
     /// Returns `Err(ConfigError)` if configuration is invalid.
     pub fn new(config: CircuitBreakerConfig) -> Result<Self, ConfigError> {
         config.validate()?;
-        let window_size = config.sliding_window_size;
         Ok(Self {
             config,
             atomic_state: AtomicU32::new(STATE_CLOSED),
@@ -509,11 +298,6 @@ impl CircuitBreaker {
                 half_open_successes: 0,
                 consecutive_opens: 0,
                 slow_calls: 0,
-                window: if window_size > 0 {
-                    Some(OutcomeWindow::new(window_size as usize))
-                } else {
-                    None
-                },
             }),
             clock: Arc::new(SystemClock),
             sink: Arc::new(NoopSink),
@@ -849,9 +633,6 @@ impl CircuitBreaker {
                     inner.slow_calls = 0;
                     inner.half_open_successes = 0;
                     inner.half_open_probes = 1; // this call is the first probe
-                    if let Some(ref mut window) = inner.window {
-                        window.reset();
-                    }
                     self.atomic_state.store(STATE_HALF_OPEN, Ordering::Relaxed);
                     transition = Some((prev, CircuitState::HalfOpen));
                     Ok(())
@@ -871,17 +652,9 @@ impl CircuitBreaker {
         result
     }
 
-    /// Whether the failure rate/count has exceeded the configured threshold.
-    fn should_trip_on_failure(&self, inner: &InnerState) -> bool {
-        if let (Some(window), Some(rate_threshold)) =
-            (&inner.window, self.config.failure_rate_threshold)
-        {
-            window.total() >= self.config.min_operations
-                && rate_exceeds(window.failure_count(), window.total(), rate_threshold)
-        } else {
-            inner.failures >= self.config.failure_threshold
-                && inner.total >= self.config.min_operations
-        }
+    /// Whether the failure count has reached the configured threshold.
+    const fn should_trip_on_failure(&self, inner: &InnerState) -> bool {
+        inner.failures >= self.config.failure_threshold && inner.total >= self.config.min_operations
     }
 
     /// Whether the slow call rate has exceeded the configured threshold.
@@ -889,14 +662,12 @@ impl CircuitBreaker {
         if self.config.slow_call_threshold.is_none() {
             return false;
         }
-        let (total, slow) = inner
-            .window
-            .as_ref()
-            .map_or((inner.total, inner.slow_calls), |window| {
-                (window.total(), window.slow_count())
-            });
-        total >= self.config.min_operations
-            && rate_exceeds(slow, total, self.config.slow_call_rate_threshold)
+        inner.total >= self.config.min_operations
+            && rate_exceeds(
+                inner.slow_calls,
+                inner.total,
+                self.config.slow_call_rate_threshold,
+            )
     }
 
     /// Transition to `Open` from the current state, returning the transition pair.
@@ -921,7 +692,7 @@ impl CircuitBreaker {
     }
 
     /// Reset all counters and set state to `Closed`.
-    fn reset_counters(inner: &mut InnerState) {
+    const fn reset_counters(inner: &mut InnerState) {
         inner.state = State::Closed;
         inner.failures = 0;
         inner.total = 0;
@@ -929,9 +700,6 @@ impl CircuitBreaker {
         inner.half_open_probes = 0;
         inner.half_open_successes = 0;
         inner.consecutive_opens = 0;
-        if let Some(ref mut window) = inner.window {
-            window.reset();
-        }
     }
 
     /// Reset all counters and transition to `Closed` from the current state.
@@ -976,9 +744,6 @@ impl CircuitBreaker {
                 } else {
                     inner.failures = inner.failures.saturating_sub(1);
                     inner.total = inner.total.saturating_add(1);
-                    if let Some(ref mut window) = inner.window {
-                        window.record(false, false);
-                    }
                 }
             },
             Outcome::Failure | Outcome::Timeout => {
@@ -989,9 +754,6 @@ impl CircuitBreaker {
                 } else {
                     inner.failures = inner.failures.saturating_add(1);
                     inner.total = inner.total.saturating_add(1);
-                    if let Some(ref mut window) = inner.window {
-                        window.record(true, false);
-                    }
 
                     if inner.state == State::HalfOpen {
                         transition = Some(self.trip_open_from_half_open(&mut inner));
@@ -1003,9 +765,6 @@ impl CircuitBreaker {
             Outcome::SlowSuccess => {
                 inner.slow_calls = inner.slow_calls.saturating_add(1);
                 inner.total = inner.total.saturating_add(1);
-                if let Some(ref mut window) = inner.window {
-                    window.record(false, true);
-                }
                 if inner.state == State::HalfOpen {
                     transition = self.record_half_open_success(&mut inner);
                 } else {
@@ -1019,9 +778,6 @@ impl CircuitBreaker {
                 inner.slow_calls = inner.slow_calls.saturating_add(1);
                 inner.failures = inner.failures.saturating_add(1);
                 inner.total = inner.total.saturating_add(1);
-                if let Some(ref mut window) = inner.window {
-                    window.record(true, true);
-                }
                 if inner.state == State::HalfOpen {
                     transition = Some(self.trip_open_from_half_open(&mut inner));
                 } else if self.should_trip_on_failure(&inner) || self.slow_rate_trips(&inner) {
@@ -1052,10 +808,7 @@ impl CircuitBreaker {
     pub fn stats(&self) -> CircuitBreakerStats {
         let inner = self.state.lock();
         let state = to_circuit_state(inner.state);
-        let (failures, total, slow_calls) = inner.window.as_ref().map_or_else(
-            || (inner.failures, inner.total, inner.slow_calls),
-            |window| (window.failure_count(), window.total(), window.slow_count()),
-        );
+        let (failures, total, slow_calls) = (inner.failures, inner.total, inner.slow_calls);
         drop(inner);
         CircuitBreakerStats {
             state,

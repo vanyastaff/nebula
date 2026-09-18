@@ -20,8 +20,6 @@ fn default_config() -> CircuitBreakerConfig {
         max_break_duration: Duration::from_mins(5),
         slow_call_threshold: None,
         slow_call_rate_threshold: 1.0,
-        sliding_window_size: 0,
-        failure_rate_threshold: None,
     }
 }
 
@@ -366,8 +364,6 @@ async fn dynamic_break_duration_increases_on_repeated_opens() {
         max_break_duration: Duration::from_secs(10),
         slow_call_threshold: None,
         slow_call_rate_threshold: 1.0,
-        sliding_window_size: 0,
-        failure_rate_threshold: None,
     })
     .unwrap()
     .with_clock(Arc::clone(&clock) as Arc<dyn Clock>);
@@ -461,71 +457,6 @@ async fn slow_calls_below_threshold_dont_trip() {
     assert_eq!(cb.circuit_state(), CS::Closed);
 }
 
-#[tokio::test]
-async fn sliding_window_forgets_old_outcomes() {
-    let cb = CircuitBreaker::new(CircuitBreakerConfig {
-        failure_threshold: 3,
-        sliding_window_size: 4,
-        failure_rate_threshold: Some(0.6),
-        min_operations: 3,
-        ..default_config()
-    })
-    .unwrap();
-
-    // 3 failures -> 3/3 = 100% > 60% -> trips
-    cb.record_outcome(Outcome::Failure);
-    cb.record_outcome(Outcome::Failure);
-    cb.record_outcome(Outcome::Failure);
-    assert_eq!(cb.circuit_state(), CS::Open);
-
-    cb.force_close();
-
-    // 4 calls: 1 failure, 3 successes -> 1/4 = 25% < 60% -> stays closed
-    cb.record_outcome(Outcome::Success);
-    cb.record_outcome(Outcome::Success);
-    cb.record_outcome(Outcome::Failure);
-    cb.record_outcome(Outcome::Success);
-    assert_eq!(cb.circuit_state(), CS::Closed);
-
-    // One more failure pushes oldest (success) out:
-    // window = [S, F, S, F] -> 2/4 = 50% < 60% -> stays closed
-    cb.record_outcome(Outcome::Failure);
-    assert_eq!(cb.circuit_state(), CS::Closed);
-
-    // Another failure pushes a success out:
-    // window = [F, S, F, F] -> 3/4 = 75% >= 60% -> trips
-    cb.record_outcome(Outcome::Failure);
-    assert_eq!(cb.circuit_state(), CS::Open);
-}
-
-#[test]
-fn sliding_window_without_rate_threshold_uses_count() {
-    // sliding_window_size > 0 but failure_rate_threshold is None -> count-based
-    let cb = CircuitBreaker::new(CircuitBreakerConfig {
-        failure_threshold: 3,
-        sliding_window_size: 10,
-        failure_rate_threshold: None,
-        min_operations: 1,
-        ..default_config()
-    })
-    .unwrap();
-
-    cb.record_outcome(Outcome::Failure);
-    cb.record_outcome(Outcome::Failure);
-    assert_eq!(cb.circuit_state(), CS::Closed);
-    cb.record_outcome(Outcome::Failure);
-    assert_eq!(cb.circuit_state(), CS::Open);
-}
-
-#[test]
-fn invalid_failure_rate_threshold_rejected() {
-    let result = CircuitBreaker::new(CircuitBreakerConfig {
-        failure_rate_threshold: Some(1.5),
-        ..default_config()
-    });
-    assert!(result.is_err());
-}
-
 /// Pins constructor validity of the `Default` impl — the config the L1
 /// refresh fallback in `crates/credential` reaches for when its static
 /// config is rejected. If `CircuitBreakerConfig::default()` stopped
@@ -542,33 +473,6 @@ fn default_config_is_constructor_valid() {
         CircuitBreaker::new(CircuitBreakerConfig::default()).is_ok(),
         "the Default impl config must be accepted by CircuitBreaker::new"
     );
-}
-
-#[test]
-fn sliding_window_stats_reflect_window() {
-    let cb = CircuitBreaker::new(CircuitBreakerConfig {
-        failure_threshold: 100,
-        sliding_window_size: 4,
-        failure_rate_threshold: Some(0.9),
-        min_operations: 1,
-        ..default_config()
-    })
-    .unwrap();
-
-    cb.record_outcome(Outcome::Failure);
-    cb.record_outcome(Outcome::Failure);
-    cb.record_outcome(Outcome::Success);
-    cb.record_outcome(Outcome::Success);
-
-    let stats = cb.stats();
-    assert_eq!(stats.total, 4);
-    assert_eq!(stats.failures, 2);
-
-    // Push oldest failure out of window
-    cb.record_outcome(Outcome::Success);
-    let stats = cb.stats();
-    assert_eq!(stats.total, 4);
-    assert_eq!(stats.failures, 1);
 }
 
 // ── C1: min_operations validation ────────────────────────────────────
