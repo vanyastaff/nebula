@@ -11,6 +11,7 @@ pub mod rate_limit;
 pub mod rbac;
 pub mod request_id;
 pub mod security_headers;
+pub mod shutdown_gate;
 pub mod tenancy;
 pub mod trace_w3c;
 
@@ -22,6 +23,7 @@ pub use rate_limit::RateLimitState;
 pub use rbac::rbac_middleware;
 pub use request_id::RequestIdLayer;
 pub use security_headers::{no_store_authority_response, security_headers_middleware};
+pub use shutdown_gate::ShutdownGate;
 pub use tenancy::tenancy_middleware;
 pub use trace_w3c::{
     InboundW3cTraceContext, inject_w3c_trace_response_headers, trace_context_middleware,

@@ -44,9 +44,27 @@ use tracing::warn; // used in Gate::close() loop
 /// Maximum number of outstanding enters the semaphore can track.
 ///
 /// Neon uses `usize::MAX / 2` to stay safely away from overflow while
-/// remaining practically unbounded. We use `u32::MAX / 2` because Tokio
-/// semaphores use `u32`-sized permit counts internally.
-const MAX_PERMITS: u32 = u32::MAX / 2;
+/// remaining practically unbounded. Tokio's ceiling is
+/// [`Semaphore::MAX_PERMITS`](tokio::sync::Semaphore::MAX_PERMITS)
+/// (`usize::MAX >> 3`), which is smaller than `u32::MAX / 2` on 32-bit
+/// targets; `Semaphore::new` panics above it. Clamp to the halved Tokio
+/// ceiling so the constant stays valid on every target, and keep the
+/// `u32` type because `acquire_many` takes a `u32`.
+// Reason: the branch condition guarantees the narrowed value fits in `u32`;
+// `TryFrom` is not const, so the cast is the only const-context narrowing.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "guarded by `usize::try_from(...)`-equivalent comparison against u32::MAX / 2"
+)]
+const MAX_PERMITS: u32 = {
+    let tokio_max = Semaphore::MAX_PERMITS / 2;
+    let u32_ceiling = (u32::MAX / 2) as usize;
+    if tokio_max >= u32_ceiling {
+        u32::MAX / 2
+    } else {
+        tokio_max as u32
+    }
+};
 
 // ---------------------------------------------------------------------------
 // GateClosed error

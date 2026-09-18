@@ -338,6 +338,16 @@ pub(crate) async fn run_transport<T: ServerTransport>(
 /// Transport runtime orchestrator for binary composition roots.
 pub(crate) struct ServerRuntime;
 
+/// How long the process waits for in-flight HTTP requests after a shutdown
+/// signal before abandoning them.
+///
+/// Distinct from [`crate::SHUTDOWN_FRONTIER_GRACE`] (engine-level, 3 s) and
+/// from Kubernetes' default `terminationGracePeriodSeconds` (30 s): the gate
+/// budget must leave time for telemetry flush and credential-runtime shutdown
+/// inside the operator's overall grace period, so it is deliberately shorter
+/// than the container budget rather than equal to it.
+const SHUTDOWN_DRAIN_BUDGET: Duration = Duration::from_secs(10);
+
 impl ServerRuntime {
     /// Create a new runtime.
     pub(crate) fn new() -> Self {
@@ -458,6 +468,15 @@ impl ServerRuntime {
             Duration::from_secs(api_config.idempotency.sweep_interval_secs),
         );
         let app = transport.build_router(state, &api_config)?;
+        // Bound the graceful drain. `axum::serve(...).with_graceful_shutdown`
+        // waits for in-flight requests without a deadline, so one handler
+        // parked on an unresponsive dependency keeps the process alive until
+        // the orchestrator's SIGKILL — telemetry flush, credential-runtime
+        // shutdown, and the reservation-sweep join below never run.
+        // `ShutdownGate` rejects new requests with 503 once closing and lets
+        // the composition root abandon the drain on its own budget.
+        let shutdown_gate = nebula_api::middleware::ShutdownGate::new();
+        let app = shutdown_gate.install(app);
 
         let listener = TcpListener::bind(bind_address).await?;
         let local_address = listener.local_addr()?;
@@ -486,7 +505,27 @@ impl ServerRuntime {
             result = &mut serve_future => result,
             () = wait_for_shutdown_signal() => {
                 shutdown.cancel();
-                serve_future.await
+                match shutdown_gate.close(SHUTDOWN_DRAIN_BUDGET).await {
+                    Ok(()) => {
+                        tracing::info!(
+                            "all in-flight requests drained within the shutdown budget"
+                        );
+                        serve_future.await
+                    },
+                    Err(timeout) => {
+                        // The gate budget is the drain deadline. Axum's own
+                        // graceful shutdown has no bound, so awaiting
+                        // `serve_future` here would reintroduce the unbounded
+                        // wait this gate exists to remove. Dropping it closes
+                        // remaining connections; the process is exiting anyway.
+                        tracing::warn!(
+                            active_requests = timeout.active_guards,
+                            budget_ms = timeout.timeout.as_millis() as u64,
+                            "shutdown drain budget elapsed; abandoning in-flight requests"
+                        );
+                        Ok(())
+                    },
+                }
             },
         };
         // The token is already cancelled on every path out of the select, so
