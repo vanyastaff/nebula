@@ -656,7 +656,7 @@ async fn pipeline_with_sink_does_not_double_count_prebuilt_bulkhead_rejection() 
         Bulkhead::new(crate::BulkheadConfig {
             max_concurrency: 1,
             queue_size: 0,
-            timeout: None,
+            queue_wait_timeout: None,
         })
         .unwrap()
         .with_sink(sink.clone()),
@@ -751,7 +751,7 @@ async fn pipeline_bulkhead_takes_single_permit() {
         Bulkhead::new(crate::BulkheadConfig {
             max_concurrency: 2,
             queue_size: 1,
-            timeout: None,
+            queue_wait_timeout: None,
         })
         .unwrap(),
     );

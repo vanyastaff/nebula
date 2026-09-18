@@ -30,7 +30,7 @@ use crate::{
 /// let cfg = BulkheadConfig {
 ///     max_concurrency: 8,
 ///     queue_size: 0,
-///     timeout: Some(Duration::from_secs(5)),
+///     queue_wait_timeout: Some(Duration::from_secs(5)),
 /// };
 ///
 /// let _bulkhead = Bulkhead::new(cfg).expect("config is valid");
@@ -45,9 +45,16 @@ pub struct BulkheadConfig {
     /// `0` means **no queue**: if no permit is free, [`Bulkhead::acquire`] returns
     /// [`CallError::BulkheadFull`] immediately (fail-fast) instead of waiting in line.
     pub queue_size: usize,
-    /// Optional timeout while waiting for a permit.
-    #[cfg_attr(feature = "serde", serde(default))]
-    pub timeout: Option<std::time::Duration>,
+    /// How long a request may wait for a permit once the bulkhead is at
+    /// capacity.
+    ///
+    /// `None` waits without bound. Distinct from a pipeline `Timeout` step,
+    /// which bounds the whole call including execution — this bounds only the
+    /// queue wait, so a saturated bulkhead fails fast with
+    /// [`CallError::Timeout`] instead of holding the caller for the whole
+    /// call budget.
+    #[cfg_attr(feature = "serde", serde(default, alias = "timeout"))]
+    pub queue_wait_timeout: Option<std::time::Duration>,
 }
 
 impl Default for BulkheadConfig {
@@ -55,7 +62,7 @@ impl Default for BulkheadConfig {
         Self {
             max_concurrency: 10,
             queue_size: 100,
-            timeout: Some(std::time::Duration::from_secs(30)),
+            queue_wait_timeout: Some(std::time::Duration::from_secs(30)),
         }
     }
 }
@@ -92,7 +99,7 @@ impl BulkheadConfig {
 /// let bulkhead = Bulkhead::new(BulkheadConfig {
 ///     max_concurrency: 4,
 ///     queue_size: 8,
-///     timeout: None,
+///     queue_wait_timeout: None,
 /// })?;
 ///
 /// let value: Result<&str, CallError<&str>> = bulkhead.call(|| async { Ok("ok") }).await;
@@ -274,7 +281,7 @@ impl Bulkhead {
         };
 
         // Wait for a permit (with optional timeout)
-        let result = if let Some(timeout_dur) = self.config.timeout {
+        let result = if let Some(timeout_dur) = self.config.queue_wait_timeout {
             match tokio::time::timeout(timeout_dur, Arc::clone(&self.semaphore).acquire_owned())
                 .await
             {
@@ -370,7 +377,7 @@ mod tests {
         BulkheadConfig {
             max_concurrency: max,
             queue_size: 10,
-            timeout: None,
+            queue_wait_timeout: None,
         }
     }
 
@@ -394,7 +401,7 @@ mod tests {
         let bh = Bulkhead::new(BulkheadConfig {
             max_concurrency: 1,
             queue_size: 0,
-            timeout: None,
+            queue_wait_timeout: None,
         })
         .unwrap();
 
@@ -410,7 +417,7 @@ mod tests {
         let bh = Bulkhead::new(BulkheadConfig {
             max_concurrency: 1,
             queue_size: 1,
-            timeout: None,
+            queue_wait_timeout: None,
         })
         .unwrap();
 
@@ -434,7 +441,7 @@ mod tests {
         let bh = Bulkhead::new(BulkheadConfig {
             max_concurrency: 1,
             queue_size: 1,
-            timeout: None,
+            queue_wait_timeout: None,
         })
         .unwrap();
 
@@ -461,7 +468,7 @@ mod tests {
         let bh = Bulkhead::new(BulkheadConfig {
             max_concurrency: 1,
             queue_size: 1,
-            timeout: None,
+            queue_wait_timeout: None,
         })
         .unwrap();
         let context = PolicyContext::from_cancellation(crate::CancellationContext::new());
@@ -490,7 +497,7 @@ mod tests {
         let bh = Bulkhead::new(BulkheadConfig {
             max_concurrency: 1,
             queue_size: 0,
-            timeout: None,
+            queue_wait_timeout: None,
         })
         .unwrap();
         let context = PolicyContext::with_timeout(Duration::from_millis(1));
@@ -515,7 +522,7 @@ mod tests {
         let bh = Bulkhead::new(BulkheadConfig {
             max_concurrency: 1,
             queue_size: 1,
-            timeout: None,
+            queue_wait_timeout: None,
         })
         .unwrap()
         .with_sink(sink.clone());
@@ -537,7 +544,7 @@ mod tests {
         let result = Bulkhead::new(BulkheadConfig {
             max_concurrency: 0,
             queue_size: 10,
-            timeout: None,
+            queue_wait_timeout: None,
         });
         assert!(result.is_err());
     }

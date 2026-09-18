@@ -47,7 +47,7 @@ async fn stress_bulkhead_heavy_contention() {
         Bulkhead::new(BulkheadConfig {
             max_concurrency: PERMITS,
             queue_size: QUEUE,
-            timeout: Some(Duration::from_millis(200)),
+            queue_wait_timeout: Some(Duration::from_millis(200)),
         })
         .unwrap(),
     );
@@ -213,7 +213,7 @@ async fn stress_full_pipeline_no_leaks() {
         Bulkhead::new(BulkheadConfig {
             max_concurrency: BH_PERMITS,
             queue_size: 200,
-            timeout: Some(Duration::from_millis(500)),
+            queue_wait_timeout: Some(Duration::from_millis(500)),
         })
         .unwrap(),
     );

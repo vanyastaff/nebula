@@ -15,8 +15,8 @@ fn default_config() -> CircuitBreakerConfig {
         half_open_success_threshold: None,
         min_operations: 1,
         count_timeouts_as_failures: true,
-        break_duration_multiplier: 1.0,
-        max_break_duration: Duration::from_mins(5),
+        reset_timeout_multiplier: 1.0,
+        max_reset_timeout: Duration::from_mins(5),
         slow_call_threshold: None,
         slow_call_rate_threshold: 1.0,
     }
@@ -349,7 +349,7 @@ async fn on_state_change_fires_on_open() {
 }
 
 #[tokio::test]
-async fn dynamic_break_duration_increases_on_repeated_opens() {
+async fn dynamic_reset_timeout_increases_on_repeated_opens() {
     use crate::clock::MockInstant;
     let clock = Arc::new(MockInstant::new());
     let cb = CircuitBreaker::new(CircuitBreakerConfig {
@@ -359,8 +359,8 @@ async fn dynamic_break_duration_increases_on_repeated_opens() {
         half_open_success_threshold: None,
         min_operations: 1,
         count_timeouts_as_failures: true,
-        break_duration_multiplier: 2.0,
-        max_break_duration: Duration::from_secs(10),
+        reset_timeout_multiplier: 2.0,
+        max_reset_timeout: Duration::from_secs(10),
         slow_call_threshold: None,
         slow_call_rate_threshold: 1.0,
     })

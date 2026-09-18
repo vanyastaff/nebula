@@ -66,7 +66,7 @@ async fn bulkhead_permit_released_when_pipeline_cancelled() {
         Bulkhead::new(BulkheadConfig {
             max_concurrency: 1,
             queue_size: 1,
-            timeout: None,
+            queue_wait_timeout: None,
         })
         .unwrap(),
     );
@@ -121,7 +121,7 @@ async fn combined_cb_and_bulkhead_released_on_cancel() {
         Bulkhead::new(BulkheadConfig {
             max_concurrency: 1,
             queue_size: 1,
-            timeout: None,
+            queue_wait_timeout: None,
         })
         .unwrap(),
     );

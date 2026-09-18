@@ -65,10 +65,13 @@ pub struct CircuitBreakerConfig {
     /// they do not count as failures, successes, or toward `min_operations`.
     /// Default: `true`.
     pub count_timeouts_as_failures: bool,
-    /// Multiplier for reset timeout on consecutive opens. Default: 1.0 (no increase).
-    pub break_duration_multiplier: f64,
-    /// Maximum reset timeout cap when using dynamic break duration. Default: 5 minutes.
-    pub max_break_duration: Duration,
+    /// Multiplier applied to `base_reset_timeout` on consecutive opens.
+    /// Default: 1.0 (no increase).
+    #[cfg_attr(feature = "serde", serde(alias = "break_duration_multiplier"))]
+    pub reset_timeout_multiplier: f64,
+    /// Maximum reset timeout cap when the multiplier is active. Default: 5 minutes.
+    #[cfg_attr(feature = "serde", serde(alias = "max_break_duration"))]
+    pub max_reset_timeout: Duration,
     /// Duration threshold above which a successful call is considered "slow". `None` = disabled.
     #[cfg_attr(feature = "serde", serde(default))]
     pub slow_call_threshold: Option<Duration>,
@@ -85,8 +88,8 @@ impl Default for CircuitBreakerConfig {
             half_open_success_threshold: None,
             min_operations: 5,
             count_timeouts_as_failures: true,
-            break_duration_multiplier: 1.0,
-            max_break_duration: Duration::from_mins(5),
+            reset_timeout_multiplier: 1.0,
+            max_reset_timeout: Duration::from_mins(5),
             slow_call_threshold: None,
             slow_call_rate_threshold: 1.0,
         }
@@ -119,9 +122,9 @@ impl CircuitBreakerConfig {
         if self.min_operations == 0 {
             return Err(ConfigError::new("min_operations", "must be >= 1"));
         }
-        if self.break_duration_multiplier < 1.0 {
+        if self.reset_timeout_multiplier < 1.0 {
             return Err(ConfigError::new(
-                "break_duration_multiplier",
+                "reset_timeout_multiplier",
                 "must be >= 1.0",
             ));
         }
@@ -439,13 +442,13 @@ impl CircuitBreaker {
         reason = "u32 cast to i32 for powi is safe within realistic consecutive_opens range"
     )]
     fn effective_reset_timeout(&self, consecutive_opens: u32) -> Duration {
-        if consecutive_opens <= 1 || self.config.break_duration_multiplier <= 1.0 {
+        if consecutive_opens <= 1 || self.config.reset_timeout_multiplier <= 1.0 {
             return self.config.reset_timeout;
         }
         let exponent = consecutive_opens - 1;
-        let max_secs = self.config.max_break_duration.as_secs_f64();
+        let max_secs = self.config.max_reset_timeout.as_secs_f64();
         let multiplied = (self.config.reset_timeout.as_secs_f64()
-            * self.config.break_duration_multiplier.powi(exponent as i32))
+            * self.config.reset_timeout_multiplier.powi(exponent as i32))
         .min(max_secs);
         Duration::from_secs_f64(multiplied)
     }

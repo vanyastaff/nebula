@@ -22,7 +22,7 @@ fn bulkhead_acquire(c: &mut Criterion) {
                 let bh = Bulkhead::new(BulkheadConfig {
                     max_concurrency: concurrency,
                     queue_size: 100,
-                    timeout: None,
+                    queue_wait_timeout: None,
                 })
                 .unwrap();
 
@@ -46,7 +46,7 @@ fn bulkhead_call(c: &mut Criterion) {
         let bh = Bulkhead::new(BulkheadConfig {
             max_concurrency: 100,
             queue_size: 100,
-            timeout: None,
+            queue_wait_timeout: None,
         })
         .unwrap();
 
@@ -76,7 +76,7 @@ fn bulkhead_contention(c: &mut Criterion) {
                     Bulkhead::new(BulkheadConfig {
                         max_concurrency: num_tasks,
                         queue_size: num_tasks,
-                        timeout: None,
+                        queue_wait_timeout: None,
                     })
                     .unwrap(),
                 );
