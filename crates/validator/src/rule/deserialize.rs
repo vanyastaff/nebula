@@ -604,6 +604,29 @@ impl<'de> DeserializeSeed<'de> for JsonOperandSeed<'_> {
     }
 }
 
+/// Read the exact two-element tuple that every rule operand form shares.
+///
+/// A macro rather than a function because each element seed borrows the shared
+/// [`RuleBudgetState`] mutably: the expansion reads the first element, ends
+/// that borrow, and only then constructs the second seed. Closures cannot
+/// express that sequencing — a closure returning a borrow of its argument
+/// needs a higher-ranked lifetime the seed types do not carry.
+///
+/// A third element is rejected rather than ignored — see
+/// [`reject_extra_pair_element`].
+macro_rules! read_pair {
+    ($sequence:expr, $description:literal, $first:expr, $second:expr) => {{
+        let first = $sequence
+            .next_element_seed($first)?
+            .ok_or_else(|| de::Error::invalid_length(0, &$description))?;
+        let second = $sequence
+            .next_element_seed($second)?
+            .ok_or_else(|| de::Error::invalid_length(1, &$description))?;
+        reject_extra_pair_element($sequence)?;
+        Ok((first, second))
+    }};
+}
+
 struct PathJsonSeed<'a> {
     budget: &'a mut RuleBudgetState,
 }
@@ -630,19 +653,17 @@ impl<'de> Visitor<'de> for PathJsonVisitor<'_> {
     }
 
     fn visit_seq<A: SeqAccess<'de>>(self, mut sequence: A) -> Result<Self::Value, A::Error> {
-        let path = sequence
-            .next_element_seed(PathSeed {
+        read_pair!(
+            &mut sequence,
+            "a field path and bounded JSON operand pair",
+            PathSeed {
                 budget: &mut *self.budget,
-            })?
-            .ok_or_else(|| de::Error::invalid_length(0, &self))?;
-        let value = sequence
-            .next_element_seed(BoundedJsonSeed {
+            },
+            BoundedJsonSeed {
                 budget: &mut *self.budget,
                 depth: 1,
-            })?
-            .ok_or_else(|| de::Error::invalid_length(1, &self))?;
-        reject_extra_pair_element(&mut sequence)?;
-        Ok((path, value))
+            }
+        )
     }
 }
 
@@ -672,18 +693,16 @@ impl<'de> Visitor<'de> for PathJsonOperandsVisitor<'_> {
     }
 
     fn visit_seq<A: SeqAccess<'de>>(self, mut sequence: A) -> Result<Self::Value, A::Error> {
-        let path = sequence
-            .next_element_seed(PathSeed {
+        read_pair!(
+            &mut sequence,
+            "a field path and bounded JSON operand list pair",
+            PathSeed {
                 budget: &mut *self.budget,
-            })?
-            .ok_or_else(|| de::Error::invalid_length(0, &self))?;
-        let values = sequence
-            .next_element_seed(JsonOperandsSeed {
+            },
+            JsonOperandsSeed {
                 budget: &mut *self.budget,
-            })?
-            .ok_or_else(|| de::Error::invalid_length(1, &self))?;
-        reject_extra_pair_element(&mut sequence)?;
-        Ok((path, values))
+            }
+        )
     }
 }
 
@@ -701,6 +720,21 @@ impl<'de> DeserializeSeed<'de> for PathNumberSeed<'_> {
     }
 }
 
+/// Reads the second element of a `(path, number)` pair.
+///
+/// A plain [`serde::Deserialize`] seed rather than a visitor because this
+/// element consumes no budget — it exists only to keep [`read_pair!`]'s two
+/// elements uniformly shaped.
+struct JsonNumberSeed;
+
+impl<'de> DeserializeSeed<'de> for JsonNumberSeed {
+    type Value = serde_json::Number;
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
+        serde::Deserialize::deserialize(deserializer)
+    }
+}
+
 struct PathNumberVisitor<'a> {
     budget: &'a mut RuleBudgetState,
 }
@@ -713,16 +747,14 @@ impl<'de> Visitor<'de> for PathNumberVisitor<'_> {
     }
 
     fn visit_seq<A: SeqAccess<'de>>(self, mut sequence: A) -> Result<Self::Value, A::Error> {
-        let path = sequence
-            .next_element_seed(PathSeed {
+        read_pair!(
+            &mut sequence,
+            "a field path and JSON number pair",
+            PathSeed {
                 budget: &mut *self.budget,
-            })?
-            .ok_or_else(|| de::Error::invalid_length(0, &self))?;
-        let value = sequence
-            .next_element()?
-            .ok_or_else(|| de::Error::invalid_length(1, &self))?;
-        reject_extra_pair_element(&mut sequence)?;
-        Ok((path, value))
+            },
+            JsonNumberSeed
+        )
     }
 }
 
@@ -752,17 +784,16 @@ impl<'de> Visitor<'de> for PathPatternVisitor<'_> {
     }
 
     fn visit_seq<A: SeqAccess<'de>>(self, mut sequence: A) -> Result<Self::Value, A::Error> {
-        let path = sequence
-            .next_element_seed(PathSeed {
+        let (path, pattern) = read_pair!(
+            &mut sequence,
+            "a field path and bounded pattern pair",
+            PathSeed {
                 budget: &mut *self.budget,
-            })?
-            .ok_or_else(|| de::Error::invalid_length(0, &self))?;
-        let pattern = sequence
-            .next_element_seed(BoundedTextSeed {
+            },
+            BoundedTextSeed {
                 budget: &mut *self.budget,
-            })?
-            .ok_or_else(|| de::Error::invalid_length(1, &self))?;
-        reject_extra_pair_element(&mut sequence)?;
+            }
+        )?;
         let pattern = RulePattern::new(&pattern).map_err(de::Error::custom)?;
         Ok((path, pattern))
     }
