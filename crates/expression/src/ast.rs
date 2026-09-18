@@ -4,14 +4,17 @@
 
 use std::sync::Arc;
 
-use serde_json::Value;
+use crate::value::RuntimeValue;
 
 /// An expression node in the AST
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
     // Literals
-    /// Literal value
-    Literal(Value),
+    /// Literal value, already converted to its runtime representation.
+    ///
+    /// Compilation converts the token once, so evaluation of a literal is a
+    /// borrow rather than a JSON-to-runtime conversion per hit.
+    Literal(RuntimeValue),
 
     // Variables and identifiers
     /// Variable reference (e.g., $node, $execution)
@@ -66,8 +69,11 @@ pub enum Expr {
     },
 
     // Lambda
-    /// Lambda expression (param => body)
-    Lambda { param: Arc<str>, body: Box<Expr> },
+    /// Lambda expression (`param => body`, or `(left, right) => body`).
+    Lambda {
+        params: Box<[Arc<str>]>,
+        body: Box<Expr>,
+    },
 
     // Array and Object literals
     /// Array literal ([expr1, expr2, ...])

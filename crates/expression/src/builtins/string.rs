@@ -1,18 +1,14 @@
 //! String manipulation functions
 
-use serde_json::Value;
-
-use super::{check_arg_count, check_min_arg_count, get_int_arg_with_policy, get_string_arg};
 use crate::{
-    ExpressionError, context::EvaluationContext, error::ExpressionResult, eval::BuiltinView,
+    ExpressionError,
+    context::EvaluationContext,
+    error::ExpressionResult,
+    eval::{Argument, BuiltinView},
+    value::RuntimeValue,
 };
 
-// Note: there used to be a `pub fn length` here that took a string only,
-// duplicating the polymorphic `util::length` registered in
-// `BuiltinRegistry::new()`. Removed in favor of the single polymorphic
-// version in `util.rs`, which uses `value_utils::char_count` for
-// strings (Unicode-scalar-value counting, NOT UTF-8 byte length and
-// NOT JavaScript's UTF-16 code-unit count — see `char_count` docs).
+use super::{check_arg_count, check_min_arg_count, get_int_arg_with_policy, get_string_arg};
 
 fn preflight_string_output(
     view: BuiltinView<'_>,
@@ -27,10 +23,10 @@ fn preflight_string_output(
 
 /// Convert string to uppercase
 pub(crate) fn uppercase(
-    args: &[&Value],
+    args: &[Argument<'_>],
     view: BuiltinView<'_>,
     context: &EvaluationContext,
-) -> ExpressionResult<Value> {
+) -> ExpressionResult<RuntimeValue> {
     check_arg_count("uppercase", args, 1)?;
     let s = get_string_arg("uppercase", args, 0, "text")?;
     let output_bytes = s
@@ -39,15 +35,15 @@ pub(crate) fn uppercase(
         .map(char::len_utf8)
         .fold(0usize, usize::saturating_add);
     preflight_string_output(view, context, output_bytes)?;
-    Ok(Value::String(s.to_uppercase()))
+    Ok(RuntimeValue::string(s.to_uppercase()))
 }
 
 /// Convert string to lowercase
 pub(crate) fn lowercase(
-    args: &[&Value],
+    args: &[Argument<'_>],
     view: BuiltinView<'_>,
     context: &EvaluationContext,
-) -> ExpressionResult<Value> {
+) -> ExpressionResult<RuntimeValue> {
     check_arg_count("lowercase", args, 1)?;
     let s = get_string_arg("lowercase", args, 0, "text")?;
     let output_bytes = s
@@ -56,28 +52,28 @@ pub(crate) fn lowercase(
         .map(char::len_utf8)
         .fold(0usize, usize::saturating_add);
     preflight_string_output(view, context, output_bytes)?;
-    Ok(Value::String(s.to_lowercase()))
+    Ok(RuntimeValue::string(s.to_lowercase()))
 }
 
 /// Trim whitespace from both ends of a string
 pub(crate) fn trim(
-    args: &[&Value],
+    args: &[Argument<'_>],
     view: BuiltinView<'_>,
     context: &EvaluationContext,
-) -> ExpressionResult<Value> {
+) -> ExpressionResult<RuntimeValue> {
     check_arg_count("trim", args, 1)?;
     let s = get_string_arg("trim", args, 0, "text")?;
     let trimmed = s.trim();
     preflight_string_output(view, context, trimmed.len())?;
-    Ok(Value::String(trimmed.to_owned()))
+    Ok(RuntimeValue::string(trimmed))
 }
 
 /// Split a string by a delimiter
 pub(crate) fn split(
-    args: &[&Value],
+    args: &[Argument<'_>],
     view: BuiltinView<'_>,
     context: &EvaluationContext,
-) -> ExpressionResult<Value> {
+) -> ExpressionResult<RuntimeValue> {
     check_arg_count("split", args, 2)?;
     let s = get_string_arg("split", args, 0, "text")?;
     let delimiter = get_string_arg("split", args, 1, "delimiter")?;
@@ -100,19 +96,16 @@ pub(crate) fn split(
     output.ensure_string_bytes(max_part_bytes)?;
     output.ensure_total_bytes(total_bytes)?;
 
-    let parts: Vec<_> = s
-        .split(delimiter)
-        .map(|s| Value::String(s.to_string()))
-        .collect();
-    Ok(Value::Array(parts))
+    let parts: Vec<RuntimeValue> = s.split(delimiter).map(RuntimeValue::string).collect();
+    Ok(RuntimeValue::Array(parts.into()))
 }
 
 /// Replace occurrences of a substring
 pub(crate) fn replace(
-    args: &[&Value],
+    args: &[Argument<'_>],
     view: BuiltinView<'_>,
     context: &EvaluationContext,
-) -> ExpressionResult<Value> {
+) -> ExpressionResult<RuntimeValue> {
     check_arg_count("replace", args, 3)?;
     let s = get_string_arg("replace", args, 0, "text")?;
     let from = get_string_arg("replace", args, 1, "from")?;
@@ -124,7 +117,7 @@ pub(crate) fn replace(
         .saturating_sub(matches.saturating_mul(from.len()))
         .saturating_add(matches.saturating_mul(to.len()));
     preflight_string_output(view, context, output_bytes)?;
-    Ok(Value::String(s.replace(from, to)))
+    Ok(RuntimeValue::string(s.replace(from, to)))
 }
 
 /// Extract a substring by Unicode scalar value indices.
@@ -139,10 +132,10 @@ pub(crate) fn replace(
 /// would return the high surrogate alone. See
 /// `value_utils::char_count` for the rationale.
 pub(crate) fn substring(
-    args: &[&Value],
+    args: &[Argument<'_>],
     view: BuiltinView<'_>,
     ctx: &EvaluationContext,
-) -> ExpressionResult<Value> {
+) -> ExpressionResult<RuntimeValue> {
     check_min_arg_count("substring", args, 2)?;
     let s = get_string_arg("substring", args, 0, "text")?;
     let start = get_int_arg_with_policy("substring", args, 1, "start", view, ctx)?;
@@ -181,58 +174,43 @@ pub(crate) fn substring(
         ""
     };
     preflight_string_output(view, ctx, selected.len())?;
-    Ok(Value::String(selected.to_owned()))
+    Ok(RuntimeValue::string(selected))
 }
 
 /// Check if string contains a substring
 pub(crate) fn contains(
-    args: &[&Value],
+    args: &[Argument<'_>],
     _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
-) -> ExpressionResult<Value> {
+) -> ExpressionResult<RuntimeValue> {
     check_arg_count("contains", args, 2)?;
-    let s = args[0].as_str().ok_or_else(|| {
-        ExpressionError::type_error("string", crate::value_utils::value_type_name(args[0]))
-    })?;
-    let needle = args[1].as_str().ok_or_else(|| {
-        ExpressionError::type_error("string", crate::value_utils::value_type_name(args[1]))
-    })?;
-
-    Ok(Value::Bool(s.contains(needle)))
+    let s = get_string_arg("contains", args, 0, "text")?;
+    let needle = get_string_arg("contains", args, 1, "search")?;
+    Ok(RuntimeValue::Bool(s.contains(needle)))
 }
 
 /// Check if string starts with a prefix
 pub(crate) fn starts_with(
-    args: &[&Value],
+    args: &[Argument<'_>],
     _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
-) -> ExpressionResult<Value> {
+) -> ExpressionResult<RuntimeValue> {
     check_arg_count("starts_with", args, 2)?;
-    let s = args[0].as_str().ok_or_else(|| {
-        ExpressionError::type_error("string", crate::value_utils::value_type_name(args[0]))
-    })?;
-    let prefix = args[1].as_str().ok_or_else(|| {
-        ExpressionError::type_error("string", crate::value_utils::value_type_name(args[1]))
-    })?;
-
-    Ok(Value::Bool(s.starts_with(prefix)))
+    let s = get_string_arg("starts_with", args, 0, "text")?;
+    let prefix = get_string_arg("starts_with", args, 1, "prefix")?;
+    Ok(RuntimeValue::Bool(s.starts_with(prefix)))
 }
 
 /// Check if string ends with a suffix
 pub(crate) fn ends_with(
-    args: &[&Value],
+    args: &[Argument<'_>],
     _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
-) -> ExpressionResult<Value> {
+) -> ExpressionResult<RuntimeValue> {
     check_arg_count("ends_with", args, 2)?;
-    let s = args[0].as_str().ok_or_else(|| {
-        ExpressionError::type_error("string", crate::value_utils::value_type_name(args[0]))
-    })?;
-    let suffix = args[1].as_str().ok_or_else(|| {
-        ExpressionError::type_error("string", crate::value_utils::value_type_name(args[1]))
-    })?;
-
-    Ok(Value::Bool(s.ends_with(suffix)))
+    let s = get_string_arg("ends_with", args, 0, "text")?;
+    let suffix = get_string_arg("ends_with", args, 1, "suffix")?;
+    Ok(RuntimeValue::Bool(s.ends_with(suffix)))
 }
 
 /// Which end of the string receives the padding.
@@ -250,10 +228,10 @@ enum PadSide {
 fn pad(
     function: &'static str,
     side: PadSide,
-    args: &[&Value],
+    args: &[Argument<'_>],
     view: BuiltinView<'_>,
     ctx: &EvaluationContext,
-) -> ExpressionResult<Value> {
+) -> ExpressionResult<RuntimeValue> {
     check_min_arg_count(function, args, 2)?;
     if args.len() > 3 {
         return Err(ExpressionError::eval_error(format!(
@@ -292,7 +270,7 @@ fn pad(
     let char_count = s.chars().count();
     if char_count >= target_len {
         preflight_string_output(view, ctx, s.len())?;
-        return Ok(Value::String(s.to_owned()));
+        return Ok(RuntimeValue::string(s));
     }
 
     let pad_len = target_len - char_count;
@@ -302,7 +280,7 @@ fn pad(
         s.len().saturating_add(padding_bytes(fill, pad_len)),
     )?;
     let padding: String = fill.chars().cycle().take(pad_len).collect();
-    Ok(Value::String(match side {
+    Ok(RuntimeValue::string(match side {
         PadSide::Start => format!("{padding}{s}"),
         PadSide::End => format!("{s}{padding}"),
     }))
@@ -313,10 +291,10 @@ fn pad(
 /// Example: `pad_start("5", 3, "0")` returns `"005"`
 /// Default fill character is a space.
 pub(crate) fn pad_start(
-    args: &[&Value],
+    args: &[Argument<'_>],
     view: BuiltinView<'_>,
     ctx: &EvaluationContext,
-) -> ExpressionResult<Value> {
+) -> ExpressionResult<RuntimeValue> {
     pad("pad_start", PadSide::Start, args, view, ctx)
 }
 
@@ -325,10 +303,10 @@ pub(crate) fn pad_start(
 /// Example: `pad_end("5", 3, "0")` returns `"500"`
 /// Default fill character is a space.
 pub(crate) fn pad_end(
-    args: &[&Value],
+    args: &[Argument<'_>],
     view: BuiltinView<'_>,
     ctx: &EvaluationContext,
-) -> ExpressionResult<Value> {
+) -> ExpressionResult<RuntimeValue> {
     pad("pad_end", PadSide::End, args, view, ctx)
 }
 
@@ -336,10 +314,10 @@ pub(crate) fn pad_end(
 ///
 /// Example: `repeat("ab", 3)` returns `"ababab"`
 pub(crate) fn repeat(
-    args: &[&Value],
+    args: &[Argument<'_>],
     view: BuiltinView<'_>,
     ctx: &EvaluationContext,
-) -> ExpressionResult<Value> {
+) -> ExpressionResult<RuntimeValue> {
     check_arg_count("repeat", args, 2)?;
     let s = get_string_arg("repeat", args, 0, "text")?;
     let count = get_int_arg_with_policy("repeat", args, 1, "count", view, ctx)?;
@@ -361,7 +339,7 @@ pub(crate) fn repeat(
     }
 
     preflight_string_output(view, ctx, result_len)?;
-    Ok(Value::String(s.repeat(count)))
+    Ok(RuntimeValue::string(s.repeat(count)))
 }
 
 fn padding_bytes(fill: &str, characters: usize) -> usize {

@@ -52,20 +52,21 @@
 //!
 //! ## BuiltinFunction signature
 //!
-//! `BuiltinFunction` receives [`eval::BuiltinView`] for policy/work accounting
-//! and a mandatory [`BuiltinOutputBuilder`]. It returns opaque [`BuiltinOutput`]
-//! rather than an unchecked JSON value.
-//! It does NOT expose `Evaluator::eval`, so a
-//! registered builtin literally cannot recurse into AST evaluation. The
-//! step-budget bypass that was historically a "discipline-only" rule
-//! (issue #252, audit memory `pitfall_expression_builtin_frame.md`) is now
-//! type-enforced.
+//! `BuiltinFunction` receives [`eval::Argument`]s (evaluated values or
+//! unevaluated lambdas) and [`eval::BuiltinView`] for policy/work accounting,
+//! plus a mandatory [`BuiltinOutputBuilder`]. It returns opaque
+//! [`BuiltinOutput`] rather than an unchecked value.
+//!
+//! Lambdas are invoked through `BuiltinView::invoke_lambda`, which evaluates
+//! the body against the caller's [`eval`] frame — so no registered builtin can
+//! reset the step budget or recursion depth. The step-budget bypass that was
+//! historically a "discipline-only" rule (issue #252, audit memory
+//! `pitfall_expression_builtin_frame.md`) stays type-enforced.
 //!
 //! Higher-order combinators (`filter`, `map`, `reduce`, `flat_map`,
-//! `group_by`, `find`, `find_index`, `some`, `every`) are NOT registered
-//! through this surface — they live inside the evaluator module and call
-//! `eval_with_frame` directly with the caller's `EvalFrame`, so the step
-//! budget remains enforced across every iteration.
+//! `group_by`, `find`, `find_index`, `some`, `every`) are ordinary builtins
+//! built on this surface, so their iteration budget accumulates on the same
+//! frame as every other call.
 
 // Public modules - exposed for external use
 #[doc(hidden)]
@@ -84,6 +85,7 @@ pub mod span;
 pub mod template;
 #[doc(hidden)]
 pub mod token;
+pub mod value;
 pub(crate) mod value_utils;
 
 // Internal modules - not part of stable public API
@@ -106,7 +108,9 @@ pub use engine::{CacheOverview, ExpressionEngine};
 // Re-export error types
 pub use error::{ExpressionError, ExpressionResult};
 pub use maybe::{CachedExpression, MaybeExpression};
-pub use policy::{BuiltinOutputBound, BuiltinOutputLimits, EvaluationPolicy, EvaluationStepLimit};
+pub use policy::{
+    BuiltinOutputBound, BuiltinOutputLimits, EvaluationPolicy, EvaluationStepLimit, MissingLookup,
+};
 pub use program::{CompiledProgram, ProgramSyntax};
 #[doc(hidden)]
 pub use span::Span;
@@ -115,6 +119,7 @@ pub use template::{MaybeTemplate, Template, has_expression_marker};
 pub use template::{Position, TemplatePart};
 #[doc(hidden)]
 pub use token::{Token, TokenKind};
+pub use value::RuntimeValue;
 
 /// Parse and syntax-check a single expression source string.
 ///

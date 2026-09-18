@@ -19,7 +19,7 @@ fn create_evaluator_with_allowlist(functions: &[&str]) -> Evaluator {
 fn test_eval_literal() {
     let evaluator = create_evaluator();
     let context = EvaluationContext::new();
-    let expr = Expr::Literal(Value::Number(42.into()));
+    let expr = Expr::Literal(RuntimeValue::Integer(42));
     let result = evaluator.eval(&expr, &context).unwrap();
     assert_eq!(result.as_i64(), Some(42));
 }
@@ -29,9 +29,9 @@ fn test_eval_arithmetic() {
     let evaluator = create_evaluator();
     let context = EvaluationContext::new();
     let expr = Expr::Binary {
-        left: Box::new(Expr::Literal(Value::Number(10.into()))),
+        left: Box::new(Expr::Literal(RuntimeValue::Integer(10))),
         op: BinaryOp::Add,
-        right: Box::new(Expr::Literal(Value::Number(5.into()))),
+        right: Box::new(Expr::Literal(RuntimeValue::Integer(5))),
     };
     let result = evaluator.eval(&expr, &context).unwrap();
     assert_eq!(result.as_i64(), Some(15));
@@ -43,13 +43,13 @@ fn test_deep_nesting_within_limit() {
     let context = EvaluationContext::new();
 
     // Create moderately nested expression (safe for both construction and evaluation)
-    let mut expr = Expr::Literal(Value::Number(1.into()));
+    let mut expr = Expr::Literal(RuntimeValue::Integer(1));
     for _ in 0..50 {
         // 50 levels is safe and tests recursion tracking works
         expr = Expr::Binary {
             left: Box::new(expr),
             op: BinaryOp::Add,
-            right: Box::new(Expr::Literal(Value::Number(1.into()))),
+            right: Box::new(Expr::Literal(RuntimeValue::Integer(1))),
         };
     }
 
@@ -67,12 +67,12 @@ fn test_short_circuit_and_false() {
     // false && <anything> should short-circuit and not evaluate right side
     // Using a division by zero on the right to prove it's not evaluated
     let expr = Expr::Binary {
-        left: Box::new(Expr::Literal(Value::Bool(false))),
+        left: Box::new(Expr::Literal(RuntimeValue::Bool(false))),
         op: BinaryOp::And,
         right: Box::new(Expr::Binary {
-            left: Box::new(Expr::Literal(Value::Number(1.into()))),
+            left: Box::new(Expr::Literal(RuntimeValue::Integer(1))),
             op: BinaryOp::Divide,
-            right: Box::new(Expr::Literal(Value::Number(0.into()))),
+            right: Box::new(Expr::Literal(RuntimeValue::Integer(0))),
         }),
     };
 
@@ -92,12 +92,12 @@ fn test_short_circuit_or_true() {
 
     // true || <anything> should short-circuit and not evaluate right side
     let expr = Expr::Binary {
-        left: Box::new(Expr::Literal(Value::Bool(true))),
+        left: Box::new(Expr::Literal(RuntimeValue::Bool(true))),
         op: BinaryOp::Or,
         right: Box::new(Expr::Binary {
-            left: Box::new(Expr::Literal(Value::Number(1.into()))),
+            left: Box::new(Expr::Literal(RuntimeValue::Integer(1))),
             op: BinaryOp::Divide,
-            right: Box::new(Expr::Literal(Value::Number(0.into()))),
+            right: Box::new(Expr::Literal(RuntimeValue::Integer(0))),
         }),
     };
 
@@ -117,9 +117,9 @@ fn test_and_evaluates_both_when_left_true() {
 
     // true && false should evaluate both
     let expr = Expr::Binary {
-        left: Box::new(Expr::Literal(Value::Bool(true))),
+        left: Box::new(Expr::Literal(RuntimeValue::Bool(true))),
         op: BinaryOp::And,
-        right: Box::new(Expr::Literal(Value::Bool(false))),
+        right: Box::new(Expr::Literal(RuntimeValue::Bool(false))),
     };
 
     let result = evaluator.eval(&expr, &context).unwrap();
@@ -133,9 +133,9 @@ fn test_or_evaluates_both_when_left_false() {
 
     // false || true should evaluate both
     let expr = Expr::Binary {
-        left: Box::new(Expr::Literal(Value::Bool(false))),
+        left: Box::new(Expr::Literal(RuntimeValue::Bool(false))),
         op: BinaryOp::Or,
-        right: Box::new(Expr::Literal(Value::Bool(true))),
+        right: Box::new(Expr::Literal(RuntimeValue::Bool(true))),
     };
 
     let result = evaluator.eval(&expr, &context).unwrap();
@@ -150,18 +150,22 @@ fn test_regex_caching() {
 
     // First regex match - should compile and cache
     let expr1 = Expr::Binary {
-        left: Box::new(Expr::Literal(Value::String("hello world".to_string()))),
+        left: Box::new(Expr::Literal(RuntimeValue::string(
+            "hello world".to_string(),
+        ))),
         op: BinaryOp::RegexMatch,
-        right: Box::new(Expr::Literal(Value::String("hello.*".to_string()))),
+        right: Box::new(Expr::Literal(RuntimeValue::string("hello.*".to_string()))),
     };
     let result1 = evaluator.eval(&expr1, &context).unwrap();
     assert_eq!(result1.as_bool(), Some(true));
 
     // Second regex match with same pattern - should use cached regex
     let expr2 = Expr::Binary {
-        left: Box::new(Expr::Literal(Value::String("hello universe".to_string()))),
+        left: Box::new(Expr::Literal(RuntimeValue::string(
+            "hello universe".to_string(),
+        ))),
         op: BinaryOp::RegexMatch,
-        right: Box::new(Expr::Literal(Value::String("hello.*".to_string()))),
+        right: Box::new(Expr::Literal(RuntimeValue::string("hello.*".to_string()))),
     };
     let result2 = evaluator.eval(&expr2, &context).unwrap();
     assert_eq!(result2.as_bool(), Some(true));
@@ -180,9 +184,11 @@ fn test_regex_no_match() {
     let context = EvaluationContext::new();
 
     let expr = Expr::Binary {
-        left: Box::new(Expr::Literal(Value::String("goodbye world".to_string()))),
+        left: Box::new(Expr::Literal(RuntimeValue::string(
+            "goodbye world".to_string(),
+        ))),
         op: BinaryOp::RegexMatch,
-        right: Box::new(Expr::Literal(Value::String("^hello".to_string()))),
+        right: Box::new(Expr::Literal(RuntimeValue::string("^hello".to_string()))),
     };
     let result = evaluator.eval(&expr, &context).unwrap();
     assert_eq!(result.as_bool(), Some(false));
@@ -200,9 +206,9 @@ fn test_redos_pattern_length_limit() {
     let long_pattern = "a".repeat(MAX_REGEX_PATTERN_LEN + 1);
 
     let expr = Expr::Binary {
-        left: Box::new(Expr::Literal(Value::String("test".to_string()))),
+        left: Box::new(Expr::Literal(RuntimeValue::string("test".to_string()))),
         op: BinaryOp::RegexMatch,
-        right: Box::new(Expr::Literal(Value::String(long_pattern))),
+        right: Box::new(Expr::Literal(RuntimeValue::string(long_pattern))),
     };
 
     let result = evaluator.eval(&expr, &context);
@@ -265,11 +271,11 @@ fn test_redos_rejection_in_eval() {
 
     // This dangerous pattern should be rejected
     let expr = Expr::Binary {
-        left: Box::new(Expr::Literal(Value::String(
+        left: Box::new(Expr::Literal(RuntimeValue::string(
             "aaaaaaaaaaaaaaaaaaaaaaaaaaa!".to_string(),
         ))),
         op: BinaryOp::RegexMatch,
-        right: Box::new(Expr::Literal(Value::String("(a+)+$".to_string()))),
+        right: Box::new(Expr::Literal(RuntimeValue::string("(a+)+$".to_string()))),
     };
 
     let result = evaluator.eval(&expr, &context);
@@ -288,9 +294,9 @@ fn test_regex_cache_size_limit() {
     for i in 0..MAX_REGEX_CACHE_SIZE + 10 {
         let pattern = format!("pattern_{i}");
         let expr = Expr::Binary {
-            left: Box::new(Expr::Literal(Value::String("test".to_string()))),
+            left: Box::new(Expr::Literal(RuntimeValue::string("test".to_string()))),
             op: BinaryOp::RegexMatch,
-            right: Box::new(Expr::Literal(Value::String(pattern))),
+            right: Box::new(Expr::Literal(RuntimeValue::string(pattern))),
         };
         let _ = evaluator.eval(&expr, &context);
     }
@@ -370,9 +376,9 @@ fn regex_cache_keeps_hot_pattern_under_load() {
     // Prime the cache with the hot pattern, then keep it warm.
     let warm = |pat: &str| {
         let expr = Expr::Binary {
-            left: Box::new(Expr::Literal(Value::String("hello world".into()))),
+            left: Box::new(Expr::Literal(RuntimeValue::string("hello world"))),
             op: BinaryOp::RegexMatch,
-            right: Box::new(Expr::Literal(Value::String(pat.into()))),
+            right: Box::new(Expr::Literal(RuntimeValue::string(pat))),
         };
         let _ = evaluator.eval(&expr, &context);
     };
@@ -406,18 +412,18 @@ fn test_filter_with_lambda() {
         name: Arc::from("filter"),
         args: vec![
             Expr::Array(vec![
-                Expr::Literal(Value::Number(1.into())),
-                Expr::Literal(Value::Number(2.into())),
-                Expr::Literal(Value::Number(3.into())),
-                Expr::Literal(Value::Number(4.into())),
-                Expr::Literal(Value::Number(5.into())),
+                Expr::Literal(RuntimeValue::Integer(1)),
+                Expr::Literal(RuntimeValue::Integer(2)),
+                Expr::Literal(RuntimeValue::Integer(3)),
+                Expr::Literal(RuntimeValue::Integer(4)),
+                Expr::Literal(RuntimeValue::Integer(5)),
             ]),
             Expr::Lambda {
-                param: Arc::from("x"),
+                params: Box::from([Arc::from("x")]),
                 body: Box::new(Expr::Binary {
                     left: Box::new(Expr::Variable(Arc::from("x"))),
                     op: BinaryOp::GreaterThan,
-                    right: Box::new(Expr::Literal(Value::Number(2.into()))),
+                    right: Box::new(Expr::Literal(RuntimeValue::Integer(2))),
                 }),
             },
         ],
@@ -441,16 +447,16 @@ fn test_map_with_lambda() {
         name: Arc::from("map"),
         args: vec![
             Expr::Array(vec![
-                Expr::Literal(Value::Number(1.into())),
-                Expr::Literal(Value::Number(2.into())),
-                Expr::Literal(Value::Number(3.into())),
+                Expr::Literal(RuntimeValue::Integer(1)),
+                Expr::Literal(RuntimeValue::Integer(2)),
+                Expr::Literal(RuntimeValue::Integer(3)),
             ]),
             Expr::Lambda {
-                param: Arc::from("x"),
+                params: Box::from([Arc::from("x")]),
                 body: Box::new(Expr::Binary {
                     left: Box::new(Expr::Variable(Arc::from("x"))),
                     op: BinaryOp::Multiply,
-                    right: Box::new(Expr::Literal(Value::Number(2.into()))),
+                    right: Box::new(Expr::Literal(RuntimeValue::Integer(2))),
                 }),
             },
         ],
@@ -474,15 +480,15 @@ fn test_reduce_with_lambda() {
         name: Arc::from("reduce"),
         args: vec![
             Expr::Array(vec![
-                Expr::Literal(Value::Number(1.into())),
-                Expr::Literal(Value::Number(2.into())),
-                Expr::Literal(Value::Number(3.into())),
+                Expr::Literal(RuntimeValue::Integer(1)),
+                Expr::Literal(RuntimeValue::Integer(2)),
+                Expr::Literal(RuntimeValue::Integer(3)),
             ]),
-            Expr::Literal(Value::Number(0.into())),
+            Expr::Literal(RuntimeValue::Integer(0)),
             Expr::Lambda {
-                param: Arc::from("x"),
+                params: Box::from([Arc::from("x")]),
                 body: Box::new(Expr::Binary {
-                    left: Box::new(Expr::Variable(Arc::from("$acc"))),
+                    left: Box::new(Expr::Variable(Arc::from("acc"))),
                     op: BinaryOp::Add,
                     right: Box::new(Expr::Variable(Arc::from("x"))),
                 }),
@@ -504,17 +510,17 @@ fn test_find_with_lambda() {
         name: Arc::from("find"),
         args: vec![
             Expr::Array(vec![
-                Expr::Literal(Value::Number(1.into())),
-                Expr::Literal(Value::Number(2.into())),
-                Expr::Literal(Value::Number(3.into())),
-                Expr::Literal(Value::Number(4.into())),
+                Expr::Literal(RuntimeValue::Integer(1)),
+                Expr::Literal(RuntimeValue::Integer(2)),
+                Expr::Literal(RuntimeValue::Integer(3)),
+                Expr::Literal(RuntimeValue::Integer(4)),
             ]),
             Expr::Lambda {
-                param: Arc::from("x"),
+                params: Box::from([Arc::from("x")]),
                 body: Box::new(Expr::Binary {
                     left: Box::new(Expr::Variable(Arc::from("x"))),
                     op: BinaryOp::GreaterThan,
-                    right: Box::new(Expr::Literal(Value::Number(2.into()))),
+                    right: Box::new(Expr::Literal(RuntimeValue::Integer(2))),
                 }),
             },
         ],
@@ -534,20 +540,20 @@ fn test_every_with_lambda() {
         name: Arc::from("every"),
         args: vec![
             Expr::Array(vec![
-                Expr::Literal(Value::Number(2.into())),
-                Expr::Literal(Value::Number(4.into())),
-                Expr::Literal(Value::Number(6.into())),
+                Expr::Literal(RuntimeValue::Integer(2)),
+                Expr::Literal(RuntimeValue::Integer(4)),
+                Expr::Literal(RuntimeValue::Integer(6)),
             ]),
             Expr::Lambda {
-                param: Arc::from("x"),
+                params: Box::from([Arc::from("x")]),
                 body: Box::new(Expr::Binary {
                     left: Box::new(Expr::Binary {
                         left: Box::new(Expr::Variable(Arc::from("x"))),
                         op: BinaryOp::Modulo,
-                        right: Box::new(Expr::Literal(Value::Number(2.into()))),
+                        right: Box::new(Expr::Literal(RuntimeValue::Integer(2))),
                     }),
                     op: BinaryOp::Equal,
-                    right: Box::new(Expr::Literal(Value::Number(0.into()))),
+                    right: Box::new(Expr::Literal(RuntimeValue::Integer(0))),
                 }),
             },
         ],
@@ -567,16 +573,16 @@ fn test_some_with_lambda() {
         name: Arc::from("some"),
         args: vec![
             Expr::Array(vec![
-                Expr::Literal(Value::Number(1.into())),
-                Expr::Literal(Value::Number(2.into())),
-                Expr::Literal(Value::Number(3.into())),
+                Expr::Literal(RuntimeValue::Integer(1)),
+                Expr::Literal(RuntimeValue::Integer(2)),
+                Expr::Literal(RuntimeValue::Integer(3)),
             ]),
             Expr::Lambda {
-                param: Arc::from("x"),
+                params: Box::from([Arc::from("x")]),
                 body: Box::new(Expr::Binary {
                     left: Box::new(Expr::Variable(Arc::from("x"))),
                     op: BinaryOp::GreaterThan,
-                    right: Box::new(Expr::Literal(Value::Number(2.into()))),
+                    right: Box::new(Expr::Literal(RuntimeValue::Integer(2))),
                 }),
             },
         ],
@@ -590,16 +596,16 @@ fn test_some_with_lambda() {
         name: Arc::from("some"),
         args: vec![
             Expr::Array(vec![
-                Expr::Literal(Value::Number(1.into())),
-                Expr::Literal(Value::Number(2.into())),
-                Expr::Literal(Value::Number(3.into())),
+                Expr::Literal(RuntimeValue::Integer(1)),
+                Expr::Literal(RuntimeValue::Integer(2)),
+                Expr::Literal(RuntimeValue::Integer(3)),
             ]),
             Expr::Lambda {
-                param: Arc::from("x"),
+                params: Box::from([Arc::from("x")]),
                 body: Box::new(Expr::Binary {
                     left: Box::new(Expr::Variable(Arc::from("x"))),
                     op: BinaryOp::GreaterThan,
-                    right: Box::new(Expr::Literal(Value::Number(5.into()))),
+                    right: Box::new(Expr::Literal(RuntimeValue::Integer(5))),
                 }),
             },
         ],
@@ -618,20 +624,20 @@ fn test_allowlist_alias_for_higher_order_function() {
         name: Arc::from("every"),
         args: vec![
             Expr::Array(vec![
-                Expr::Literal(Value::Number(2.into())),
-                Expr::Literal(Value::Number(4.into())),
-                Expr::Literal(Value::Number(6.into())),
+                Expr::Literal(RuntimeValue::Integer(2)),
+                Expr::Literal(RuntimeValue::Integer(4)),
+                Expr::Literal(RuntimeValue::Integer(6)),
             ]),
             Expr::Lambda {
-                param: Arc::from("x"),
+                params: Box::from([Arc::from("x")]),
                 body: Box::new(Expr::Binary {
                     left: Box::new(Expr::Binary {
                         left: Box::new(Expr::Variable(Arc::from("x"))),
                         op: BinaryOp::Modulo,
-                        right: Box::new(Expr::Literal(Value::Number(2.into()))),
+                        right: Box::new(Expr::Literal(RuntimeValue::Integer(2))),
                     }),
                     op: BinaryOp::Equal,
-                    right: Box::new(Expr::Literal(Value::Number(0.into()))),
+                    right: Box::new(Expr::Literal(RuntimeValue::Integer(0))),
                 }),
             },
         ],
@@ -659,7 +665,7 @@ fn create_evaluator_with_step_budget(max_steps: usize) -> Evaluator {
 fn literal_array(n: usize) -> Expr {
     Expr::Array(
         (0..n)
-            .map(|i| Expr::Literal(Value::Number((i as i64).into())))
+            .map(|i| Expr::Literal(RuntimeValue::Integer(i as i64)))
             .collect(),
     )
 }
@@ -669,11 +675,11 @@ fn literal_array(n: usize) -> Expr {
 /// out under higher-order traversal.
 fn increment_lambda() -> Expr {
     Expr::Lambda {
-        param: Arc::from("x"),
+        params: Box::from([Arc::from("x")]),
         body: Box::new(Expr::Binary {
             left: Box::new(Expr::Variable(Arc::from("x"))),
             op: BinaryOp::Add,
-            right: Box::new(Expr::Literal(Value::Number(1.into()))),
+            right: Box::new(Expr::Literal(RuntimeValue::Integer(1))),
         }),
     }
 }
@@ -686,12 +692,12 @@ fn step_budget_bounds_linear_expression() {
     let context = EvaluationContext::new();
     let expr = Expr::Binary {
         left: Box::new(Expr::Binary {
-            left: Box::new(Expr::Literal(Value::Number(1.into()))),
+            left: Box::new(Expr::Literal(RuntimeValue::Integer(1))),
             op: BinaryOp::Add,
-            right: Box::new(Expr::Literal(Value::Number(2.into()))),
+            right: Box::new(Expr::Literal(RuntimeValue::Integer(2))),
         }),
         op: BinaryOp::Add,
-        right: Box::new(Expr::Literal(Value::Number(3.into()))),
+        right: Box::new(Expr::Literal(RuntimeValue::Integer(3))),
     };
     let err = evaluator.eval(&expr, &context).unwrap_err();
     assert!(
@@ -733,7 +739,7 @@ fn step_budget_bounds_nested_higher_order() {
         args: vec![
             literal_array(20),
             Expr::Lambda {
-                param: Arc::from("y"),
+                params: Box::from([Arc::from("y")]),
                 body: Box::new(Expr::Binary {
                     left: Box::new(Expr::Variable(Arc::from("y"))),
                     op: BinaryOp::GreaterThan,
@@ -747,7 +753,7 @@ fn step_budget_bounds_nested_higher_order() {
         args: vec![
             literal_array(20),
             Expr::Lambda {
-                param: Arc::from("x"),
+                params: Box::from([Arc::from("x")]),
                 body: Box::new(inner_filter),
             },
         ],
@@ -769,11 +775,11 @@ fn step_budget_bounds_reduce_across_iterations() {
         name: Arc::from("reduce"),
         args: vec![
             literal_array(100),
-            Expr::Literal(Value::Number(0.into())),
+            Expr::Literal(RuntimeValue::Integer(0)),
             Expr::Lambda {
-                param: Arc::from("x"),
+                params: Box::from([Arc::from("x")]),
                 body: Box::new(Expr::Binary {
-                    left: Box::new(Expr::Variable(Arc::from("$acc"))),
+                    left: Box::new(Expr::Variable(Arc::from("acc"))),
                     op: BinaryOp::Add,
                     right: Box::new(Expr::Variable(Arc::from("x"))),
                 }),
@@ -824,9 +830,9 @@ fn step_budget_resets_between_successive_eval_calls() {
     let evaluator = create_evaluator_with_step_budget(10);
     let context = EvaluationContext::new();
     let expr = Expr::Binary {
-        left: Box::new(Expr::Literal(Value::Number(1.into()))),
+        left: Box::new(Expr::Literal(RuntimeValue::Integer(1))),
         op: BinaryOp::Add,
-        right: Box::new(Expr::Literal(Value::Number(2.into()))),
+        right: Box::new(Expr::Literal(RuntimeValue::Integer(2))),
     };
     // First call: 3 steps, well under the cap.
     let r1 = evaluator.eval(&expr, &context).unwrap();
@@ -863,7 +869,7 @@ fn step_budget_error_path_does_not_leak_depth_into_next_call() {
     let context = EvaluationContext::new();
 
     // Build a deeply nested unary-not chain that exceeds MAX_AST_DEPTH.
-    let mut deep_expr = Expr::Literal(Value::Bool(true));
+    let mut deep_expr = Expr::Literal(RuntimeValue::Bool(true));
     for _ in 0..(MAX_AST_DEPTH + 10) {
         deep_expr = Expr::Not(Box::new(deep_expr));
     }
@@ -872,7 +878,7 @@ fn step_budget_error_path_does_not_leak_depth_into_next_call() {
 
     // Next call on the same evaluator must start fresh.
     let ok = evaluator
-        .eval(&Expr::Literal(Value::Bool(true)), &context)
+        .eval(&Expr::Literal(RuntimeValue::Bool(true)), &context)
         .expect("fresh call after a depth error must succeed");
     assert_eq!(ok.as_bool(), Some(true));
 }
@@ -927,11 +933,11 @@ fn step_budget_bounds_reduce_nested_in_map() {
         name: Arc::from("reduce"),
         args: vec![
             literal_array(10),
-            Expr::Literal(Value::Number(0.into())),
+            Expr::Literal(RuntimeValue::Integer(0)),
             Expr::Lambda {
-                param: Arc::from("y"),
+                params: Box::from([Arc::from("y")]),
                 body: Box::new(Expr::Binary {
-                    left: Box::new(Expr::Variable(Arc::from("$acc"))),
+                    left: Box::new(Expr::Variable(Arc::from("acc"))),
                     op: BinaryOp::Add,
                     right: Box::new(Expr::Variable(Arc::from("y"))),
                 }),
@@ -943,7 +949,7 @@ fn step_budget_bounds_reduce_nested_in_map() {
         args: vec![
             literal_array(10),
             Expr::Lambda {
-                param: Arc::from("x"),
+                params: Box::from([Arc::from("x")]),
                 body: Box::new(inner_reduce),
             },
         ],
@@ -968,15 +974,15 @@ fn step_budget_permissive_budget_still_completes_large_map() {
     let result = evaluator.eval(&expr, &context).unwrap();
     let arr = result.as_array().expect("map returns an array");
     assert_eq!(arr.len(), 100);
-    assert_eq!(arr.first().and_then(Value::as_i64), Some(1));
-    assert_eq!(arr.last().and_then(Value::as_i64), Some(100));
+    assert_eq!(arr.first().and_then(serde_json::Value::as_i64), Some(1));
+    assert_eq!(arr.last().and_then(serde_json::Value::as_i64), Some(100));
 }
 
 #[test]
 fn test_negate_integer() {
     let evaluator = create_evaluator();
     let context = EvaluationContext::new();
-    let expr = Expr::Negate(Box::new(Expr::Literal(Value::Number(42.into()))));
+    let expr = Expr::Negate(Box::new(Expr::Literal(RuntimeValue::Integer(42))));
     let result = evaluator.eval(&expr, &context).unwrap();
     assert_eq!(result.as_i64(), Some(-42));
 }
@@ -986,7 +992,7 @@ fn test_negate_float_preserves_fraction() {
     // Regression for #280: `-3.7` must NOT truncate to `-3`.
     let evaluator = create_evaluator();
     let context = EvaluationContext::new();
-    let expr = Expr::Negate(Box::new(Expr::Literal(serde_json::json!(3.7))));
+    let expr = Expr::Negate(Box::new(Expr::Literal(RuntimeValue::Float(3.7))));
     let result = evaluator.eval(&expr, &context).unwrap();
     assert_eq!(result.as_f64(), Some(-3.7));
 }
@@ -995,7 +1001,7 @@ fn test_negate_float_preserves_fraction() {
 fn test_negate_negative_float() {
     let evaluator = create_evaluator();
     let context = EvaluationContext::new();
-    let expr = Expr::Negate(Box::new(Expr::Literal(serde_json::json!(-2.5))));
+    let expr = Expr::Negate(Box::new(Expr::Literal(RuntimeValue::Float(-2.5))));
     let result = evaluator.eval(&expr, &context).unwrap();
     assert_eq!(result.as_f64(), Some(2.5));
 }
@@ -1004,7 +1010,7 @@ fn test_negate_negative_float() {
 fn test_negate_i64_min_uses_representable_json_unsigned_integer() {
     let evaluator = create_evaluator();
     let context = EvaluationContext::new();
-    let expr = Expr::Negate(Box::new(Expr::Literal(Value::Number(i64::MIN.into()))));
+    let expr = Expr::Negate(Box::new(Expr::Literal(RuntimeValue::Integer(i64::MIN))));
     let value = evaluator.eval(&expr, &context).unwrap();
     assert_eq!(value, serde_json::json!(9_223_372_036_854_775_808_u64));
 }
@@ -1014,7 +1020,7 @@ fn test_negate_first_u64_above_i64_max_uses_i64_min() {
     let evaluator = create_evaluator();
     let context = EvaluationContext::new();
     let big = (i64::MAX as u64) + 1;
-    let expr = Expr::Negate(Box::new(Expr::Literal(Value::Number(big.into()))));
+    let expr = Expr::Negate(Box::new(Expr::Literal(RuntimeValue::Unsigned(big))));
     let value = evaluator.eval(&expr, &context).unwrap();
     assert_eq!(value, serde_json::json!(i64::MIN));
 }
@@ -1023,7 +1029,7 @@ fn test_negate_first_u64_above_i64_max_uses_i64_min() {
 fn test_negate_u64_max_errors() {
     let evaluator = create_evaluator();
     let context = EvaluationContext::new();
-    let expr = Expr::Negate(Box::new(Expr::Literal(Value::Number(u64::MAX.into()))));
+    let expr = Expr::Negate(Box::new(Expr::Literal(RuntimeValue::Unsigned(u64::MAX))));
     let err = evaluator.eval(&expr, &context).unwrap_err();
     let msg = format!("{err}");
     assert!(
@@ -1036,7 +1042,7 @@ fn test_negate_u64_max_errors() {
 fn test_negate_non_number_type_error() {
     let evaluator = create_evaluator();
     let context = EvaluationContext::new();
-    let expr = Expr::Negate(Box::new(Expr::Literal(Value::Bool(true))));
+    let expr = Expr::Negate(Box::new(Expr::Literal(RuntimeValue::Bool(true))));
     let err = evaluator.eval(&expr, &context).unwrap_err();
     assert!(format!("{err}").to_lowercase().contains("type"));
 }
@@ -1044,9 +1050,9 @@ fn test_negate_non_number_type_error() {
 /// Helper: build a `2 ** exp` expression.
 fn power_expr(base: i64, exp: f64) -> Expr {
     Expr::Binary {
-        left: Box::new(Expr::Literal(Value::Number(base.into()))),
+        left: Box::new(Expr::Literal(RuntimeValue::Integer(base))),
         op: BinaryOp::Power,
-        right: Box::new(Expr::Literal(serde_json::json!(exp))),
+        right: Box::new(Expr::Literal(RuntimeValue::Float(exp))),
     }
 }
 

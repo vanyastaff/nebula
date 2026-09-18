@@ -2,8 +2,6 @@
 
 use std::{fmt, sync::Arc};
 
-use serde_json::Value;
-
 use crate::{
     EvaluationContext, ExpressionError, ExpressionResult, Template, TemplatePart,
     ast::Expr,
@@ -11,6 +9,7 @@ use crate::{
     lexer::Lexer,
     parser::Parser,
     template::Position,
+    value::RuntimeValue,
 };
 
 /// The authored grammar of a program, independent of its resulting syntax tree.
@@ -197,8 +196,8 @@ impl CompiledProgram {
         &self,
         evaluator: &Evaluator,
         context: &EvaluationContext,
-        frame: &mut EvalFrame,
-    ) -> ExpressionResult<Value> {
+        frame: &EvalFrame,
+    ) -> ExpressionResult<RuntimeValue> {
         let instructions = match self.body.as_ref() {
             ProgramBody::Expression(expression) => {
                 return evaluator.eval_with_frame(expression, context, frame);
@@ -242,15 +241,12 @@ impl CompiledProgram {
                                 source: Box::new(source),
                             },
                         })?;
-                    match value.as_ref() {
-                        Value::String(text) => append_output(&mut output, text, frame)?,
-                        other => append_output(&mut output, &other.to_string(), frame)?,
-                    }
+                    append_output(&mut output, &value.to_display_string(), frame)?;
                     strip_next_leading = *strip_right;
                 },
             }
         }
-        Ok(Value::String(output))
+        Ok(RuntimeValue::string(output))
     }
 }
 

@@ -7,7 +7,7 @@ use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, 
 use nebula_expression::{
     BuiltinOutput, BuiltinOutputBound, BuiltinOutputBuilder, BuiltinOutputLimit, EvaluationContext,
     EvaluationPolicy, ExpressionEngine, ExpressionError, ExpressionResult, Template,
-    eval::BuiltinView,
+    eval::{Argument, BuiltinView},
 };
 use serde_json::Value;
 
@@ -364,7 +364,7 @@ fn benchmark_builtins(c: &mut Criterion) {
 }
 
 fn oversized_custom_output(
-    _args: &[&Value],
+    _args: &[Argument<'_>],
     _view: BuiltinView<'_>,
     _context: &EvaluationContext,
     output: BuiltinOutputBuilder,

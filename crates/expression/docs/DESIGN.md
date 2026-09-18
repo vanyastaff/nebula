@@ -13,7 +13,7 @@
 
 `nebula-expression` is an expression engine with n8n-compatible syntax for resolving
 workflow fields dynamically. It parses and evaluates `{{ expression }}` templates
-against an execution context and returns a `serde_json::Value`. It is the resolution
+against an execution context and returns a `serde_json::Value` at its boundary. It is the resolution
 backend for `nebula-schema` (`ValidValues::resolve`, Canon §3.5).
 
 **Owns:** the expression lexer/parser/AST, the AST-walk evaluator, the builtin
@@ -52,10 +52,12 @@ including malformed unescaped openers. See README for escape rules and hard boun
 | `Template` / `MaybeTemplate` (whitespace control `{{- -}}`) | `template.rs` |
 | `MaybeExpression<T>` (+ `resolve_as_value/string/integer/float/bool`); `CachedExpression` | `maybe.rs` |
 | `ExpressionError` (thiserror + `nebula_error::Classify`, codes `EXPR:*`); `ExpressionResult` | `error.rs` |
+| `MissingLookup` — missing-lookup policy (`Error` default, `Undefined` opt-in) | `policy.rs` |
 | `parse_expression(source)` — delegates to the auto compiler and discards the program | `lib.rs` |
 | `BuiltinFunction` (alias); `BuiltinRegistry` | `builtins/mod.rs` |
 | `BuiltinOutput`; `BuiltinOutputBuilder`; `BuiltinOutputBound`; `BuiltinOutputLimits` | `builtins/output.rs`; `policy.rs` |
-| `BuiltinView<'_>` — policy queries and work charging, no evaluator re-entry | `eval/mod.rs` |
+| `RuntimeValue` — evaluator value model: JSON shapes plus typed date-times and `Undefined` | `value.rs` |
+| `Argument<'_>` / `BuiltinView<'_>` — value-or-lambda arguments; policy, work charging, and shared-frame lambda invocation | `eval/mod.rs` |
 | `ErrorFormatter` — caller-side renderer for structured parse-error positions | `error_formatter.rs` |
 
 doc-hidden but `pub`: `ast` (`Expr`/`BinaryOp`), `lexer`, `parser`, `token`, `span`,
@@ -87,7 +89,10 @@ literal-or-expression layer for configs. `error.rs` holds the typed errors;
 structured `Position`, never a pre-rendered string).
 
 Flow: source → compiler → immutable `CompiledProgram` → optional cache →
-`evaluate_compiled` under the current `EvaluationPolicy` → `Value`. Every template
+`evaluate_compiled` under the current `EvaluationPolicy` → `RuntimeValue` →
+`serde_json::Value` at the crate boundary. Typed values (date-times) survive
+property/index chains and builtin dispatch; `Undefined` renders as `null` at the
+boundary. Every template
 part and higher-order body shares one call-local frame. Context limits cannot
 raise engine ceilings (default work 100,000 units; default JSON input 1 MiB).
 Builtin argument/result materialization and allocation-heavy work use that frame.
@@ -95,9 +100,9 @@ Public custom callbacks must return opaque `BuiltinOutput` through the supplied 
 builder; standard callbacks remain crate-private and their final values are checked.
 Custom callback execution remains cooperative trusted code, not a preemptible sandbox.
 Mixed numeric ordering delegates to `num-cmp`, without its nightly i128 feature.
-Stored context variables are immutable `Arc<Value>` snapshots. Evaluation uses
-borrowed-or-owned values internally, preserving borrows through access chains and
-builtin dispatch rather than cloning the referenced JSON graph.
+Stored context variables are immutable `Arc<RuntimeValue>` snapshots. Evaluation
+uses borrowed-or-owned runtime values internally, preserving borrows through access
+chains and builtin dispatch rather than cloning the referenced graph.
 
 ## 5. Invariants and contracts
 

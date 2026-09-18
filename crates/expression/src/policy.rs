@@ -130,6 +130,23 @@ impl From<NonZeroUsize> for EvaluationStepLimit {
     }
 }
 
+/// How a lookup that finds nothing behaves during evaluation.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum MissingLookup {
+    /// A missing variable, property, or index is an evaluation error.
+    ///
+    /// This is the default: schema resolution relies on missing data failing
+    /// loudly instead of silently becoming a value.
+    #[default]
+    Error,
+    /// A missing lookup yields `Undefined`, which `??` and `?.` can consume.
+    ///
+    /// n8n-compatible authoring uses this mode. `Undefined` is still distinct
+    /// from `Null`: it can only reach the caller through an explicit path.
+    Undefined,
+}
+
 /// Evaluation policy applied by the engine and optionally tightened by context.
 #[derive(Debug, Clone, Default)]
 pub struct EvaluationPolicy {
@@ -138,6 +155,7 @@ pub struct EvaluationPolicy {
     strict_mode: bool,
     strict_conversion_functions: bool,
     strict_numeric_comparisons: bool,
+    missing_lookup: MissingLookup,
     max_json_parse_length: Option<usize>,
     max_eval_steps: Option<EvaluationStepLimit>,
     builtin_output_limits: BuiltinOutputLimits,
@@ -205,6 +223,22 @@ impl EvaluationPolicy {
     pub fn with_strict_numeric_comparisons(mut self, enabled: bool) -> Self {
         self.strict_numeric_comparisons = enabled;
         self
+    }
+
+    /// Set how a lookup that finds nothing behaves.
+    ///
+    /// Defaults to [`MissingLookup::Error`]. [`MissingLookup::Undefined`]
+    /// enables `??` and `?.` to consume missing results instead of failing.
+    #[must_use]
+    pub fn with_missing_lookup(mut self, mode: MissingLookup) -> Self {
+        self.missing_lookup = mode;
+        self
+    }
+
+    /// Whether a missing lookup yields `Undefined` instead of an error.
+    #[must_use]
+    pub fn missing_lookup(&self) -> MissingLookup {
+        self.missing_lookup
     }
 
     /// Set max JSON input size for `parse_json` (engine default: 1 MiB).

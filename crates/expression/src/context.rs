@@ -2,6 +2,10 @@
 //!
 //! This module provides the context in which expressions are evaluated,
 //! including access to $node, $execution, $workflow, and $input variables.
+//!
+//! Setters accept plain `serde_json::Value` — the crate boundary — and convert
+//! once into [`RuntimeValue`]. Everything inside evaluation works on runtime
+//! values, so typed values such as date-times survive inside stored containers.
 
 use std::{
     borrow::Cow,
@@ -10,9 +14,8 @@ use std::{
 };
 
 use chrono::Utc;
-use serde_json::{Map, Value};
 
-use crate::policy::EvaluationPolicy;
+use crate::{policy::EvaluationPolicy, value::RuntimeValue};
 
 /// Evaluation context containing variables and workflow data.
 ///
@@ -23,45 +26,47 @@ use crate::policy::EvaluationPolicy;
 /// node population stages a complete replacement before publishing it.
 #[derive(Debug, Clone)]
 pub struct EvaluationContext {
-    /// Node data (`$node['name'].data`)
-    nodes: Arc<HashMap<Arc<str>, Arc<Value>>>,
+    /// Node data (`$node['name'].json`)
+    nodes: Arc<HashMap<Arc<str>, Arc<RuntimeValue>>>,
     /// Execution variables ($execution.id, $execution.mode, etc.)
-    execution_vars: Arc<HashMap<Arc<str>, Arc<Value>>>,
+    execution_vars: Arc<HashMap<Arc<str>, Arc<RuntimeValue>>>,
     /// Lambda-bound parameters (isolated from execution_vars to avoid name collisions)
-    lambda_vars: Arc<HashMap<Arc<str>, Arc<Value>>>,
+    lambda_vars: Arc<HashMap<Arc<str>, Arc<RuntimeValue>>>,
     /// Workflow metadata ($workflow.id, $workflow.name, etc.)
-    workflow: Arc<Value>,
+    workflow: Arc<RuntimeValue>,
     /// Input data ($input.item, $input.all, etc.)
-    input: Arc<Value>,
+    input: Arc<RuntimeValue>,
     /// Optional per-context restrictions, intersected with the engine policy.
     policy: Option<Arc<EvaluationPolicy>>,
     /// Lazily materialized `$node` view, invalidated on mutation.
-    nodes_view: Arc<OnceLock<Arc<Value>>>,
+    nodes_view: Arc<OnceLock<Arc<RuntimeValue>>>,
     /// Lazily materialized `$execution` view, invalidated on mutation.
-    execution_view: Arc<OnceLock<Arc<Value>>>,
+    execution_view: Arc<OnceLock<Arc<RuntimeValue>>>,
 }
 
 #[inline]
-fn build_view(map: &HashMap<Arc<str>, Arc<Value>>) -> Arc<Value> {
-    let mut obj = Map::with_capacity(map.len());
+fn build_view(map: &HashMap<Arc<str>, Arc<RuntimeValue>>) -> Arc<RuntimeValue> {
+    let mut object = std::collections::BTreeMap::new();
     for (key, value) in map {
-        obj.insert(key.to_string(), (**value).clone());
+        object.insert(Arc::clone(key), (**value).clone());
     }
-    Arc::new(Value::Object(obj))
+    Arc::new(RuntimeValue::Object(Arc::new(object)))
 }
 
 #[inline]
-fn empty_object_arc() -> Arc<Value> {
-    Arc::new(Value::Object(Map::new()))
+fn empty_object_arc() -> Arc<RuntimeValue> {
+    Arc::new(RuntimeValue::Object(Arc::new(
+        std::collections::BTreeMap::new(),
+    )))
 }
 
 #[inline]
-fn empty_view() -> Arc<OnceLock<Arc<Value>>> {
+fn empty_view() -> Arc<OnceLock<Arc<RuntimeValue>>> {
     Arc::new(OnceLock::new())
 }
 
 #[inline]
-fn empty_map_arc() -> Arc<HashMap<Arc<str>, Arc<Value>>> {
+fn empty_map_arc() -> Arc<HashMap<Arc<str>, Arc<RuntimeValue>>> {
     Arc::new(HashMap::new())
 }
 
@@ -80,14 +85,17 @@ impl EvaluationContext {
         }
     }
 
-    /// Validate a JSON tree before placing it in shared immutable storage.
+    /// Validate a JSON tree and convert it to a shared runtime value.
     ///
     /// # Errors
     /// Returns a resource-limit error before cloning when the value exceeds a
     /// fixed expression result ceiling.
-    pub fn try_share_value(value: &Value) -> crate::ExpressionResult<Arc<Value>> {
-        crate::limits::check_value_limits(value)?;
-        Ok(Arc::new(value.clone()))
+    pub fn try_share_value(
+        value: &serde_json::Value,
+    ) -> crate::ExpressionResult<Arc<RuntimeValue>> {
+        let converted = RuntimeValue::from_json(value);
+        crate::limits::check_value_limits(&converted)?;
+        Ok(Arc::new(converted))
     }
 
     /// Validate a borrowed `$node` snapshot before sharing or cloning its trees.
@@ -96,15 +104,21 @@ impl EvaluationContext {
     /// Returns a resource-limit error as soon as the aggregate object would
     /// exceed a fixed expression result ceiling.
     pub fn validate_node_data_snapshot<'a>(
-        nodes: impl IntoIterator<Item = (&'a str, &'a Value)>,
+        nodes: impl IntoIterator<Item = (&'a str, &'a serde_json::Value)>,
     ) -> crate::ExpressionResult<()> {
-        crate::limits::check_object_snapshot_limits(nodes)
+        let converted = nodes
+            .into_iter()
+            .map(|(key, value)| (key, RuntimeValue::from_json(value)))
+            .collect::<Vec<_>>();
+        crate::limits::check_object_snapshot_limits(
+            converted.iter().map(|(key, value)| (*key, value)),
+        )
     }
 
     /// Set data for a specific node
-    pub fn set_node_data(&mut self, node_key: impl AsRef<str>, data: Value) {
+    pub fn set_node_data(&mut self, node_key: impl AsRef<str>, data: serde_json::Value) {
         let key: Arc<str> = Arc::from(node_key.as_ref());
-        Arc::make_mut(&mut self.nodes).insert(key, Arc::new(data));
+        Arc::make_mut(&mut self.nodes).insert(key, Arc::new(RuntimeValue::from_json(&data)));
         self.nodes_view = empty_view();
     }
 
@@ -116,14 +130,15 @@ impl EvaluationContext {
     pub fn set_node_data_batch<K, I>(&mut self, nodes: I)
     where
         K: AsRef<str>,
-        I: IntoIterator<Item = (K, Value)>,
+        I: IntoIterator<Item = (K, serde_json::Value)>,
     {
         let mut updated_nodes = (*self.nodes).clone();
-        updated_nodes.extend(
-            nodes
-                .into_iter()
-                .map(|(node_key, value)| (Arc::<str>::from(node_key.as_ref()), Arc::new(value))),
-        );
+        updated_nodes.extend(nodes.into_iter().map(|(node_key, value)| {
+            (
+                Arc::<str>::from(node_key.as_ref()),
+                Arc::new(RuntimeValue::from_json(&value)),
+            )
+        }));
         self.nodes = Arc::new(updated_nodes);
         self.nodes_view = empty_view();
     }
@@ -136,7 +151,7 @@ impl EvaluationContext {
     pub fn try_set_shared_node_data_batch<K, I>(&mut self, nodes: I) -> crate::ExpressionResult<()>
     where
         K: AsRef<str>,
-        I: IntoIterator<Item = (K, Arc<Value>)>,
+        I: IntoIterator<Item = (K, Arc<RuntimeValue>)>,
     {
         let mut updated_nodes = (*self.nodes).clone();
         for (node_key, value) in nodes {
@@ -163,63 +178,64 @@ impl EvaluationContext {
     }
 
     /// Get data for a specific node
-    pub fn node_data(&self, node_key: &str) -> Option<Arc<Value>> {
+    pub fn node_data(&self, node_key: &str) -> Option<Arc<RuntimeValue>> {
         self.nodes.get(node_key).cloned()
     }
 
     /// Set an execution variable
-    pub fn set_execution_var(&mut self, name: impl AsRef<str>, value: Value) {
+    pub fn set_execution_var(&mut self, name: impl AsRef<str>, value: serde_json::Value) {
         let key: Arc<str> = Arc::from(name.as_ref());
-        Arc::make_mut(&mut self.execution_vars).insert(key, Arc::new(value));
+        Arc::make_mut(&mut self.execution_vars)
+            .insert(key, Arc::new(RuntimeValue::from_json(&value)));
         self.execution_view = empty_view();
     }
 
     /// Get an execution variable
-    pub fn get_execution_var(&self, name: &str) -> Option<Arc<Value>> {
+    pub fn get_execution_var(&self, name: &str) -> Option<Arc<RuntimeValue>> {
         self.execution_vars.get(name).cloned()
     }
 
     /// Set a lambda-bound parameter (used exclusively for lambda scopes to avoid
     /// collisions with real execution variables)
-    pub fn set_lambda_var(&mut self, name: impl AsRef<str>, value: Value) {
+    pub fn set_lambda_var(&mut self, name: impl AsRef<str>, value: RuntimeValue) {
         let key: Arc<str> = Arc::from(name.as_ref());
         Arc::make_mut(&mut self.lambda_vars).insert(key, Arc::new(value));
     }
 
     /// Get a lambda-bound parameter
-    pub fn get_lambda_var(&self, name: &str) -> Option<Arc<Value>> {
+    pub fn get_lambda_var(&self, name: &str) -> Option<Arc<RuntimeValue>> {
         self.lambda_vars.get(name).cloned()
     }
 
-    pub(crate) fn resolve_lambda_value(&self, name: &str) -> Option<&Value> {
+    pub(crate) fn resolve_lambda_value(&self, name: &str) -> Option<&RuntimeValue> {
         self.lambda_vars.get(name).map(AsRef::as_ref)
     }
 
-    pub(crate) fn resolve_node_value(&self, node_key: &str) -> Option<&Value> {
+    pub(crate) fn resolve_node_value(&self, node_key: &str) -> Option<&RuntimeValue> {
         self.nodes.get(node_key).map(AsRef::as_ref)
     }
 
-    pub(crate) fn resolve_execution_value(&self, name: &str) -> Option<&Value> {
+    pub(crate) fn resolve_execution_value(&self, name: &str) -> Option<&RuntimeValue> {
         self.execution_vars.get(name).map(AsRef::as_ref)
     }
 
     /// Set the workflow metadata
-    pub fn set_workflow(&mut self, workflow: Value) {
-        self.workflow = Arc::new(workflow);
+    pub fn set_workflow(&mut self, workflow: serde_json::Value) {
+        self.workflow = Arc::new(RuntimeValue::from_json(&workflow));
     }
 
     /// Get the workflow metadata
-    pub fn get_workflow(&self) -> Arc<Value> {
+    pub fn get_workflow(&self) -> Arc<RuntimeValue> {
         Arc::clone(&self.workflow)
     }
 
     /// Set the input data
-    pub fn set_input(&mut self, input: Value) {
-        self.input = Arc::new(input);
+    pub fn set_input(&mut self, input: serde_json::Value) {
+        self.input = Arc::new(RuntimeValue::from_json(&input));
     }
 
     /// Get the input data
-    pub fn get_input(&self) -> Arc<Value> {
+    pub fn get_input(&self) -> Arc<RuntimeValue> {
         Arc::clone(&self.input)
     }
 
@@ -242,7 +258,10 @@ impl EvaluationContext {
     /// # Errors
     /// Returns a resource-limit error before materializing an oversized
     /// aggregate `$node` view.
-    pub fn resolve_variable(&self, name: &str) -> crate::ExpressionResult<Option<Arc<Value>>> {
+    pub fn resolve_variable(
+        &self,
+        name: &str,
+    ) -> crate::ExpressionResult<Option<Arc<RuntimeValue>>> {
         if let Some(value) = self.lambda_vars.get(name) {
             return Ok(Some(Arc::clone(value)));
         }
@@ -255,9 +274,13 @@ impl EvaluationContext {
             "execution" => Some(Arc::clone(self.execution_view()?)),
             "workflow" => Some(Arc::clone(&self.workflow)),
             "input" => Some(Arc::clone(&self.input)),
-            "now" => Some(Arc::new(Value::String(Utc::now().to_rfc3339()))),
-            "today" => Some(Arc::new(Value::String(
-                Utc::now().format("%Y-%m-%d").to_string(),
+            "now" => Some(Arc::new(RuntimeValue::date_time_utc(Utc::now()))),
+            "today" => Some(Arc::new(RuntimeValue::date_time_utc(
+                Utc::now()
+                    .date_naive()
+                    .and_hms_opt(0, 0, 0)
+                    .map(|naive| chrono::DateTime::<Utc>::from_naive_utc_and_offset(naive, Utc))
+                    .unwrap_or_else(Utc::now),
             ))),
             _ => None,
         })
@@ -267,7 +290,7 @@ impl EvaluationContext {
     pub(crate) fn resolve_variable_value(
         &self,
         name: &str,
-    ) -> crate::ExpressionResult<Option<Cow<'_, Value>>> {
+    ) -> crate::ExpressionResult<Option<Cow<'_, RuntimeValue>>> {
         // Lambda-bound parameters take priority (e.g., `x` in `filter(arr, x => x > 2)`).
         if let Some(value) = self.lambda_vars.get(name) {
             return Ok(Some(Cow::Borrowed(value)));
@@ -283,19 +306,19 @@ impl EvaluationContext {
             "execution" => Some(Cow::Borrowed(self.execution_view()?)),
             "workflow" => Some(Cow::Borrowed(&self.workflow)),
             "input" => Some(Cow::Borrowed(&self.input)),
-            "now" => {
-                let now = Utc::now();
-                Some(Cow::Owned(Value::String(now.to_rfc3339())))
-            },
-            "today" => {
-                let today = Utc::now().format("%Y-%m-%d").to_string();
-                Some(Cow::Owned(Value::String(today)))
-            },
+            "now" => Some(Cow::Owned(RuntimeValue::date_time_utc(Utc::now()))),
+            "today" => Some(Cow::Owned(RuntimeValue::date_time_utc(
+                Utc::now()
+                    .date_naive()
+                    .and_hms_opt(0, 0, 0)
+                    .map(|naive| chrono::DateTime::<Utc>::from_naive_utc_and_offset(naive, Utc))
+                    .unwrap_or_else(Utc::now),
+            ))),
             _ => None,
         })
     }
 
-    fn node_view(&self) -> crate::ExpressionResult<&Arc<Value>> {
+    fn node_view(&self) -> crate::ExpressionResult<&Arc<RuntimeValue>> {
         if let Some(view) = self.nodes_view.get() {
             return Ok(view);
         }
@@ -307,7 +330,7 @@ impl EvaluationContext {
         Ok(self.nodes_view.get_or_init(|| build_view(&self.nodes)))
     }
 
-    fn execution_view(&self) -> crate::ExpressionResult<&Arc<Value>> {
+    fn execution_view(&self) -> crate::ExpressionResult<&Arc<RuntimeValue>> {
         if let Some(view) = self.execution_view.get() {
             return Ok(view);
         }
@@ -336,10 +359,10 @@ impl Default for EvaluationContext {
 /// Builder for creating evaluation contexts
 #[derive(Debug, Clone, Default)]
 pub struct EvaluationContextBuilder {
-    nodes: HashMap<Arc<str>, Arc<Value>>,
-    execution_vars: HashMap<Arc<str>, Arc<Value>>,
-    workflow: Option<Arc<Value>>,
-    input: Option<Arc<Value>>,
+    nodes: HashMap<Arc<str>, Arc<RuntimeValue>>,
+    execution_vars: HashMap<Arc<str>, Arc<RuntimeValue>>,
+    workflow: Option<Arc<RuntimeValue>>,
+    input: Option<Arc<RuntimeValue>>,
     policy: Option<Arc<EvaluationPolicy>>,
 }
 
@@ -350,28 +373,30 @@ impl EvaluationContextBuilder {
     }
 
     /// Add node data
-    pub fn node(mut self, node_key: impl AsRef<str>, data: Value) -> Self {
+    pub fn node(mut self, node_key: impl AsRef<str>, data: serde_json::Value) -> Self {
         let key: Arc<str> = Arc::from(node_key.as_ref());
-        self.nodes.insert(key, Arc::new(data));
+        self.nodes
+            .insert(key, Arc::new(RuntimeValue::from_json(&data)));
         self
     }
 
     /// Add an execution variable
-    pub fn execution_var(mut self, name: impl AsRef<str>, value: Value) -> Self {
+    pub fn execution_var(mut self, name: impl AsRef<str>, value: serde_json::Value) -> Self {
         let key: Arc<str> = Arc::from(name.as_ref());
-        self.execution_vars.insert(key, Arc::new(value));
+        self.execution_vars
+            .insert(key, Arc::new(RuntimeValue::from_json(&value)));
         self
     }
 
     /// Set workflow metadata
-    pub fn workflow(mut self, workflow: Value) -> Self {
-        self.workflow = Some(Arc::new(workflow));
+    pub fn workflow(mut self, workflow: serde_json::Value) -> Self {
+        self.workflow = Some(Arc::new(RuntimeValue::from_json(&workflow)));
         self
     }
 
     /// Set input data
-    pub fn input(mut self, input: Value) -> Self {
-        self.input = Some(Arc::new(input));
+    pub fn input(mut self, input: serde_json::Value) -> Self {
+        self.input = Some(Arc::new(RuntimeValue::from_json(&input)));
         self
     }
 
@@ -399,6 +424,7 @@ impl EvaluationContextBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
 
     #[test]
     fn test_context_creation() {
@@ -426,19 +452,22 @@ mod tests {
         ]);
 
         let populated = context.resolve_variable("node").unwrap().unwrap();
-        assert_eq!(populated["existing"], Value::Number(0.into()));
-        assert_eq!(populated["first"], Value::Number(1.into()));
-        assert_eq!(populated["second"], Value::Number(2.into()));
+        assert_eq!(populated.to_json()["existing"], Value::Number(0.into()));
+        assert_eq!(populated.to_json()["first"], Value::Number(1.into()));
+        assert_eq!(populated.to_json()["second"], Value::Number(2.into()));
 
         let prior_snapshot = snapshot.resolve_variable("node").unwrap().unwrap();
-        assert_eq!(prior_snapshot.as_object().unwrap().len(), 1);
-        assert_eq!(prior_snapshot["existing"], Value::Number(0.into()));
+        assert_eq!(prior_snapshot.to_json().as_object().unwrap().len(), 1);
+        assert_eq!(
+            prior_snapshot.to_json()["existing"],
+            Value::Number(0.into())
+        );
     }
 
     #[test]
     fn shared_node_population_preserves_arc_identity_and_stays_lazy() {
         let mut context = EvaluationContext::new();
-        let output = Arc::new(serde_json::json!({"value": 7}));
+        let output = Arc::new(RuntimeValue::object(Default::default()));
 
         context
             .try_set_shared_node_data_batch([("source", Arc::clone(&output))])
@@ -453,9 +482,9 @@ mod tests {
     fn shared_node_population_rejects_depth_transactionally_without_cloning() {
         let mut context = EvaluationContext::new();
         context.set_node_data("existing", Value::Number(1.into()));
-        let mut nested = Value::Null;
+        let mut nested = RuntimeValue::Null;
         for _ in 0..300 {
-            nested = Value::Array(vec![nested]);
+            nested = RuntimeValue::array(vec![nested]);
         }
         let nested = Arc::new(nested);
 
@@ -538,8 +567,8 @@ mod tests {
         assert!(result.is_err());
         assert!(context.node_data("node_0").is_none());
         let published = context.resolve_variable("node").unwrap().unwrap();
-        assert_eq!(published.as_object().unwrap().len(), 1);
-        assert_eq!(published["existing"], Value::Number(0.into()));
+        assert_eq!(published.to_json().as_object().unwrap().len(), 1);
+        assert_eq!(published.to_json()["existing"], Value::Number(0.into()));
     }
 
     #[test]
@@ -582,7 +611,7 @@ mod tests {
         ctx.set_execution_var("id", Value::String("exec-123".to_string()));
 
         let exec = ctx.resolve_variable("execution").unwrap().unwrap();
-        assert!(exec.is_object());
+        assert!(exec.as_object().is_some());
     }
 
     #[test]
@@ -592,16 +621,14 @@ mod tests {
         let mut ctx = EvaluationContext::new();
         ctx.set_node_data("first", Value::Number(1.into()));
         let view1 = ctx.resolve_variable("node").unwrap().unwrap();
-        let obj1 = view1.as_object().unwrap();
-        assert_eq!(obj1.len(), 1);
-        assert!(obj1.contains_key("first"));
+        assert_eq!(view1.as_object().unwrap().len(), 1);
+        assert!(view1.as_object().unwrap().contains_key("first"));
 
         ctx.set_node_data("second", Value::Number(2.into()));
         let view2 = ctx.resolve_variable("node").unwrap().unwrap();
-        let obj2 = view2.as_object().unwrap();
-        assert_eq!(obj2.len(), 2);
-        assert!(obj2.contains_key("first"));
-        assert!(obj2.contains_key("second"));
+        assert_eq!(view2.as_object().unwrap().len(), 2);
+        assert!(view2.as_object().unwrap().contains_key("first"));
+        assert!(view2.as_object().unwrap().contains_key("second"));
     }
 
     #[test]
@@ -615,9 +642,15 @@ mod tests {
         assert!(ctx.execution_view.get().is_none());
 
         let view = ctx.resolve_variable("execution").unwrap().unwrap();
-        let obj = view.as_object().unwrap();
-        assert_eq!(obj.get("id").and_then(|v| v.as_str()), Some("e1"));
-        assert_eq!(obj.get("mode").and_then(|v| v.as_str()), Some("test"));
+        let object = view.to_json();
+        assert_eq!(
+            object.get("id").and_then(|value| value.as_str()),
+            Some("e1")
+        );
+        assert_eq!(
+            object.get("mode").and_then(|value| value.as_str()),
+            Some("test")
+        );
     }
 
     #[test]
@@ -660,5 +693,15 @@ mod tests {
         let cloned = ctx.clone();
         let view = cloned.resolve_variable("node").unwrap().unwrap();
         assert_eq!(view.as_object().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn now_and_today_resolve_as_date_time_values() {
+        let context = EvaluationContext::new();
+        let now = context.resolve_variable("now").unwrap().unwrap();
+        assert!(now.as_date_time().is_some(), "`$now` must be a date value");
+        let today = context.resolve_variable("today").unwrap().unwrap();
+        let today = today.as_date_time().expect("`$today` must be a date value");
+        assert_eq!(today.format("%H:%M:%S").to_string(), "00:00:00");
     }
 }

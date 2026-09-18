@@ -2,12 +2,15 @@
 
 use std::io;
 
-use serde_json::Value;
-
-use super::check_arg_count;
 use crate::{
-    ExpressionError, context::EvaluationContext, error::ExpressionResult, eval::BuiltinView,
+    ExpressionError,
+    context::EvaluationContext,
+    error::ExpressionResult,
+    eval::{Argument, BuiltinView},
+    value::RuntimeValue,
 };
+
+use super::{check_arg_count, get_value_arg};
 
 /// Maximum JSON string length to parse (1MB) - DoS protection
 const MAX_JSON_PARSE_LENGTH: usize = 1024 * 1024;
@@ -28,17 +31,17 @@ impl io::Write for JsonLength {
     }
 }
 
-fn measure_json(value: &Value) -> ExpressionResult<usize> {
+fn measure_json(value: &RuntimeValue) -> ExpressionResult<usize> {
     let mut counter = JsonLength::default();
-    serde_json::to_writer(&mut counter, value).map_err(|error| {
+    serde_json::to_writer(&mut counter, &value.to_json()).map_err(|error| {
         ExpressionError::eval_error(format!("Failed to measure JSON output: {error}"))
     })?;
     Ok(counter.bytes)
 }
 
-fn encode_json(value: &Value, output_bytes: usize) -> ExpressionResult<String> {
+fn encode_json(value: &RuntimeValue, output_bytes: usize) -> ExpressionResult<String> {
     let mut encoded = Vec::with_capacity(output_bytes);
-    serde_json::to_writer(&mut encoded, value).map_err(|error| {
+    serde_json::to_writer(&mut encoded, &value.to_json()).map_err(|error| {
         ExpressionError::eval_error(format!("Failed to serialize to JSON: {error}"))
     })?;
     String::from_utf8(encoded).map_err(|error| {
@@ -157,59 +160,53 @@ fn preflight_json_structure(
 
 /// Convert value to string
 pub(crate) fn to_string(
-    args: &[&Value],
+    args: &[Argument<'_>],
     view: BuiltinView<'_>,
     ctx: &EvaluationContext,
-) -> ExpressionResult<Value> {
+) -> ExpressionResult<RuntimeValue> {
     check_arg_count("to_string", args, 1)?;
+    let value = get_value_arg("to_string", args, 0, "value")?;
 
-    if view.strict_conversions_enabled(ctx) && matches!(args[0], Value::Array(_) | Value::Object(_))
+    if view.strict_conversions_enabled(ctx)
+        && matches!(value, RuntimeValue::Array(_) | RuntimeValue::Object(_))
     {
         return Err(ExpressionError::type_error(
             "scalar (string/number/boolean/null)",
-            crate::value_utils::value_type_name(args[0]),
+            crate::value_utils::value_type_name(value),
         ));
     }
 
-    let output_bytes = match args[0] {
-        Value::String(string) => string.len(),
-        Value::Number(number) => measure_json(&Value::Number(number.clone()))?,
-        Value::Bool(true) => 4,
-        Value::Bool(false) => 5,
-        Value::Null => 4,
-        Value::Array(_) | Value::Object(_) => measure_json(args[0])?,
+    let output_bytes = match value {
+        RuntimeValue::String(text) => text.len(),
+        RuntimeValue::Array(_) | RuntimeValue::Object(_) => measure_json(value)?,
+        _ => value.to_json().to_string().len(),
     };
     preflight_string_output(view, ctx, output_bytes)?;
-    let string_val = match args[0] {
-        Value::String(string) => string.clone(),
-        Value::Number(number) => number.to_string(),
-        Value::Bool(value) => value.to_string(),
-        Value::Null => "null".to_owned(),
-        Value::Array(_) | Value::Object(_) => encode_json(args[0], output_bytes)?,
-    };
-    Ok(Value::String(string_val))
+    Ok(RuntimeValue::string(value.to_display_string()))
 }
 
 /// Convert value to number
 pub(crate) fn to_number(
-    args: &[&Value],
+    args: &[Argument<'_>],
     view: BuiltinView<'_>,
     ctx: &EvaluationContext,
-) -> ExpressionResult<Value> {
+) -> ExpressionResult<RuntimeValue> {
     check_arg_count("to_number", args, 1)?;
+    let value = get_value_arg("to_number", args, 0, "value")?;
 
-    if view.strict_conversions_enabled(ctx) && !args[0].is_number() {
+    if view.strict_conversions_enabled(ctx) && !value.is_number() {
         return Err(ExpressionError::type_error(
             "number",
-            crate::value_utils::value_type_name(args[0]),
+            crate::value_utils::value_type_name(value),
         ));
     }
 
-    match args[0] {
-        Value::Number(number) => Ok(Value::Number(number.clone())),
-        Value::Bool(value) => Ok(Value::from(i64::from(*value))),
-        Value::String(text) => crate::value_utils::parse_number(text)
-            .map(Value::Number)
+    match value {
+        RuntimeValue::Integer(_) | RuntimeValue::Unsigned(_) | RuntimeValue::Float(_) => {
+            Ok(value.clone())
+        },
+        RuntimeValue::Bool(value) => Ok(RuntimeValue::Integer(i64::from(*value))),
+        RuntimeValue::String(text) => crate::value_utils::parse_number(text)
             .map_err(|message| ExpressionError::invalid_argument("to_number", message)),
         other => Err(ExpressionError::type_error(
             "convertible to number",
@@ -220,47 +217,49 @@ pub(crate) fn to_number(
 
 /// Convert value to boolean
 pub(crate) fn to_boolean(
-    args: &[&Value],
+    args: &[Argument<'_>],
     view: BuiltinView<'_>,
     ctx: &EvaluationContext,
-) -> ExpressionResult<Value> {
+) -> ExpressionResult<RuntimeValue> {
     check_arg_count("to_boolean", args, 1)?;
+    let value = get_value_arg("to_boolean", args, 0, "value")?;
 
-    if view.strict_conversions_enabled(ctx) && !args[0].is_boolean() {
+    if view.strict_conversions_enabled(ctx) && value.as_bool().is_none() {
         return Err(ExpressionError::type_error(
             "boolean",
-            crate::value_utils::value_type_name(args[0]),
+            crate::value_utils::value_type_name(value),
         ));
     }
 
-    Ok(Value::Bool(crate::value_utils::to_boolean(args[0])))
+    Ok(RuntimeValue::Bool(crate::value_utils::to_boolean(value)))
 }
 
 /// Convert value to JSON string
 pub(crate) fn to_json(
-    args: &[&Value],
+    args: &[Argument<'_>],
     view: BuiltinView<'_>,
     context: &EvaluationContext,
-) -> ExpressionResult<Value> {
+) -> ExpressionResult<RuntimeValue> {
     check_arg_count("to_json", args, 1)?;
+    let value = get_value_arg("to_json", args, 0, "value")?;
 
-    let output_bytes = measure_json(args[0])?;
+    let output_bytes = measure_json(value)?;
     preflight_string_output(view, context, output_bytes)?;
-    let json_string = encode_json(args[0], output_bytes)?;
+    let json_string = encode_json(value, output_bytes)?;
 
-    Ok(Value::String(json_string))
+    Ok(RuntimeValue::string(json_string))
 }
 
 /// Parse JSON string to value
 pub(crate) fn parse_json(
-    args: &[&Value],
+    args: &[Argument<'_>],
     view: BuiltinView<'_>,
     ctx: &EvaluationContext,
-) -> ExpressionResult<Value> {
+) -> ExpressionResult<RuntimeValue> {
     check_arg_count("parse_json", args, 1)?;
-
-    let json_str = args[0].as_str().ok_or_else(|| {
-        ExpressionError::type_error("string", crate::value_utils::value_type_name(args[0]))
+    let value = get_value_arg("parse_json", args, 0, "value")?;
+    let json_str = value.as_str().ok_or_else(|| {
+        ExpressionError::type_error("string", crate::value_utils::value_type_name(value))
     })?;
 
     // DoS protection: limit JSON string size
@@ -278,10 +277,13 @@ pub(crate) fn parse_json(
     let output = view.output_builder(ctx);
     preflight_json_structure(json_str, output)?;
 
-    let json: Value = serde_json::from_str(json_str)
+    let json: serde_json::Value = serde_json::from_str(json_str)
         .map_err(|e| ExpressionError::eval_error(format!("Failed to parse JSON: {e}")))?;
+    let json = RuntimeValue::from_json(&json);
 
-    if view.strict_conversions_enabled(ctx) && !matches!(json, Value::Object(_) | Value::Array(_)) {
+    if view.strict_conversions_enabled(ctx)
+        && !matches!(json, RuntimeValue::Object(_) | RuntimeValue::Array(_))
+    {
         return Err(ExpressionError::type_error(
             "object or array",
             crate::value_utils::value_type_name(&json),

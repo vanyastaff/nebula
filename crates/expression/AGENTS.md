@@ -27,10 +27,12 @@
 
 ## Conventions & never-do
 
-- `BuiltinFunction` takes `BuiltinView<'_>` plus `BuiltinOutputBuilder` and returns opaque `BuiltinOutput`, never raw `Value`. Do not expose a constructor or bypass for custom callbacks. The view provides policy queries and shared work charging, not evaluator re-entry; custom callbacks remain trusted, cooperative in-process code.
-- Higher-order combinators (`filter`/`map`/`reduce`/…) live in `eval/mod.rs` and call `eval_with_frame` with the caller's `EvalFrame` so the step budget accumulates across iterations — never re-route them through the builtin registry.
+- `BuiltinFunction` takes `&[Argument<'_>]` (evaluated values or unevaluated lambdas), `BuiltinView<'_>`, and `BuiltinOutputBuilder`, and returns opaque `BuiltinOutput`, never raw `RuntimeValue`. Do not expose a constructor or bypass for custom callbacks. `Argument::Lambda` is invoked only through `BuiltinView::invoke_lambda`, which reuses the caller's frame; the view provides policy queries and shared work charging, not a frame reset. Custom callbacks remain trusted, cooperative in-process code.
+- Higher-order combinators (`filter`/`map`/`reduce`/…) are registered builtins in `builtins/higher_order.rs` and invoke lambdas through `BuiltinView::invoke_lambda`/`eval_body` so the frame (step budget and depth) accumulates across iterations — never give them a fresh frame.
+- Evaluation works on `RuntimeValue` (`value.rs`); `serde_json::Value` appears only at the crate boundary (`RuntimeValue::to_json`/`from_json`). Typed date-times and `Undefined` must survive inside containers, so do not flatten stored context values back to JSON.
+- `EvaluationPolicy::missing_lookup` defaults to `MissingLookup::Error`; `Undefined` is opt-in for n8n-style authoring. Keep missing distinct from null.
 - `EvaluationPolicy` bounds every whole program (depth 256; default 100,000 work units) and every builtin output (bytes, strings, collections, nodes, depth); context limits only tighten engine ceilings. Template parts and higher-order evaluation share one frame.
-- Stored context variables resolve as shared `Arc<Value>` snapshots. Keep evaluator property/index chains and builtin arguments borrowed; do not reintroduce deep clones per reference.
+- Stored context variables resolve as shared `Arc<RuntimeValue>` snapshots. Keep evaluator property/index chains and builtin arguments borrowed; do not reintroduce deep clones per reference.
 - Downstream callers retain `CompiledProgram`, never a source-only surrogate AST or duplicated raw/template dispatcher. Keep parsing distinct from runtime type and lookup validation; missing is not null.
 - `ProgramSyntax` records authored intent, not effective AST/body kind. AUTO raw-first
   compilation remains AUTO; TEMPLATE always returns string. Source exports alone

@@ -52,7 +52,7 @@ impl WorkflowEngine {
         factory_dispatch: &FactoryDispatch<'_>,
         graph: &DependencyGraph,
         outputs: &Arc<DashMap<NodeKey, serde_json::Value>>,
-        shared_expression_outputs: &Arc<DashMap<NodeKey, Arc<serde_json::Value>>>,
+        shared_expression_outputs: &Arc<DashMap<NodeKey, Arc<nebula_expression::RuntimeValue>>>,
         semaphore: &Arc<Semaphore>,
         cancel_token: &CancellationToken,
         exec_state: &mut ExecutionState,

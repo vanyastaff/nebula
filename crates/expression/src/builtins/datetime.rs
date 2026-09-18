@@ -1,13 +1,17 @@
 //! Date and time functions
 
-use chrono::{DateTime, Datelike, NaiveDateTime, NaiveTime, TimeZone, Timelike, Utc};
+use chrono::{DateTime, Datelike, FixedOffset, NaiveDateTime, NaiveTime, TimeZone, Timelike, Utc};
 use chrono_tz::Tz;
-use serde_json::Value;
 
-use super::{check_arg_count, check_min_arg_count};
 use crate::{
-    ExpressionError, context::EvaluationContext, error::ExpressionResult, eval::BuiltinView,
+    ExpressionError,
+    context::EvaluationContext,
+    error::ExpressionResult,
+    eval::{Argument, BuiltinView},
+    value::RuntimeValue,
 };
+
+use super::{check_arg_count, check_min_arg_count, get_value_arg};
 
 fn preflight_string_output(
     view: BuiltinView<'_>,
@@ -37,9 +41,19 @@ fn parse_timezone(function: &str, name: &str) -> ExpressionResult<Tz> {
 ///
 /// Returns `Ok(None)` if the slot doesn't exist; `Err` if it exists but
 /// isn't a string or names an unknown zone.
-fn optional_tz_arg(function: &str, args: &[&Value], index: usize) -> ExpressionResult<Option<Tz>> {
-    let Some(raw) = args.get(index) else {
+fn optional_tz_arg(
+    function: &str,
+    args: &[Argument<'_>],
+    index: usize,
+) -> ExpressionResult<Option<Tz>> {
+    let Some(argument) = args.get(index) else {
         return Ok(None);
+    };
+    let Some(raw) = argument.as_value() else {
+        return Err(ExpressionError::invalid_argument(
+            function,
+            "timezone argument must be a value",
+        ));
     };
     let name = raw.as_str().ok_or_else(|| {
         ExpressionError::type_error("string", crate::value_utils::value_type_name(raw))
@@ -49,28 +63,28 @@ fn optional_tz_arg(function: &str, args: &[&Value], index: usize) -> ExpressionR
 
 /// Get current timestamp as Unix seconds
 pub(crate) fn now(
-    _args: &[&Value],
+    _args: &[Argument<'_>],
     _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
-) -> ExpressionResult<Value> {
+) -> ExpressionResult<RuntimeValue> {
     let now = Utc::now().timestamp();
-    Ok(Value::Number(now.into()))
+    Ok(RuntimeValue::Integer(now))
 }
 
 /// Get current date/time as ISO 8601 string
 pub(crate) fn now_iso(
-    _args: &[&Value],
+    _args: &[Argument<'_>],
     _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
-) -> ExpressionResult<Value> {
+) -> ExpressionResult<RuntimeValue> {
     let now = Utc::now();
-    Ok(Value::String(now.to_rfc3339()))
+    Ok(RuntimeValue::string(now.to_rfc3339()))
 }
 
-/// Format a timestamp or date string.
+/// Format a timestamp or date value.
 ///
 /// Signature: `format_date(value, format_or_tz?, tz?)`
-/// - `value`: Unix timestamp (integer) or ISO/common date string.
+/// - `value`: date value, Unix timestamp (integer), or ISO/common date string.
 /// - 2-arg form: `format_date(value, x)` first tries `x` as an IANA timezone name (so
 ///   `format_date(0, "Europe/Moscow")` does what most callers mean — render `value` in Moscow time
 ///   as RFC 3339). If `x` doesn't parse as a known timezone, it is treated as a format string. This
@@ -81,10 +95,10 @@ pub(crate) fn now_iso(
 /// - When `tz` is omitted output is in UTC; when `format` is omitted RFC 3339 is used. Unknown
 ///   timezone names in the explicit-tz slot yield a typed error.
 pub(crate) fn format_date(
-    args: &[&Value],
+    args: &[Argument<'_>],
     view: BuiltinView<'_>,
     ctx: &EvaluationContext,
-) -> ExpressionResult<Value> {
+) -> ExpressionResult<RuntimeValue> {
     check_min_arg_count("format_date", args, 1)?;
     if args.len() > 3 {
         return Err(ExpressionError::invalid_argument(
@@ -93,13 +107,14 @@ pub(crate) fn format_date(
         ));
     }
 
-    let utc_dt = parse_datetime(args[0])?;
+    let utc_dt = parse_datetime(get_value_arg("format_date", args, 0, "value")?)?;
 
     let (format_str, tz) = match args.len() {
         1 => (None, None),
         2 => {
-            let arg1 = args[1].as_str().ok_or_else(|| {
-                ExpressionError::type_error("string", crate::value_utils::value_type_name(args[1]))
+            let argument = get_value_arg("format_date", args, 1, "format_or_tz")?;
+            let arg1 = argument.as_str().ok_or_else(|| {
+                ExpressionError::type_error("string", crate::value_utils::value_type_name(argument))
             })?;
             // Probe-parse as IANA timezone. Success → tz-only call;
             // failure → treat as format string (legacy 2-arg shape).
@@ -110,9 +125,17 @@ pub(crate) fn format_date(
             }
         },
         _ => {
-            let fmt = args[1].as_str().ok_or_else(|| {
-                ExpressionError::type_error("string", crate::value_utils::value_type_name(args[1]))
-            })?;
+            let fmt = get_value_arg("format_date", args, 1, "format")?
+                .as_str()
+                .ok_or_else(|| {
+                    ExpressionError::type_error(
+                        "string",
+                        crate::value_utils::value_type_name(
+                            get_value_arg("format_date", args, 1, "format")
+                                .map_or(&RuntimeValue::Null, |value| value),
+                        ),
+                    )
+                })?;
             let tz = optional_tz_arg("format_date", args, 2)?;
             (Some(fmt), tz)
         },
@@ -126,21 +149,21 @@ pub(crate) fn format_date(
     };
     preflight_string_output(view, ctx, rendered.len())?;
 
-    Ok(Value::String(rendered))
+    Ok(RuntimeValue::string(rendered))
 }
 
-/// Parse a date string to Unix timestamp.
+/// Parse a date string to a date value.
 ///
 /// Signature: `parse_date(value, tz?)`
-/// - `value`: timestamp (integer) or date string.
+/// - `value`: date value, timestamp (integer), or date string.
 /// - `tz`: optional IANA timezone name. When the input string has no embedded offset, it is
 ///   interpreted as wall time in `tz` (UTC by default). Strings that already carry a `+HH:MM` / `Z`
 ///   suffix ignore `tz` and round-trip exactly.
 pub(crate) fn parse_date(
-    args: &[&Value],
+    args: &[Argument<'_>],
     _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
-) -> ExpressionResult<Value> {
+) -> ExpressionResult<RuntimeValue> {
     check_min_arg_count("parse_date", args, 1)?;
     if args.len() > 2 {
         return Err(ExpressionError::invalid_argument(
@@ -150,11 +173,12 @@ pub(crate) fn parse_date(
     }
 
     let tz = optional_tz_arg("parse_date", args, 1)?;
+    let value = get_value_arg("parse_date", args, 0, "value")?;
     let dt = match tz {
-        Some(tz) => parse_datetime_in_tz(args[0], tz)?,
-        None => parse_datetime(args[0])?,
+        Some(tz) => parse_datetime_in_tz(value, tz)?,
+        None => parse_datetime(value)?,
     };
-    Ok(Value::Number(dt.timestamp().into()))
+    Ok(RuntimeValue::DateTime(dt))
 }
 
 /// Build a `chrono::Duration` for a unit string and an (untrusted) `amount`,
@@ -181,18 +205,20 @@ fn duration_for_unit(fn_name: &str, unit: &str, amount: i64) -> ExpressionResult
 
 /// Add duration to a date
 pub(crate) fn date_add(
-    args: &[&Value],
+    args: &[Argument<'_>],
     _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
-) -> ExpressionResult<Value> {
+) -> ExpressionResult<RuntimeValue> {
     check_arg_count("date_add", args, 3)?;
 
-    let dt = parse_datetime(args[0])?;
-    let amount = args[1].as_i64().ok_or_else(|| {
-        ExpressionError::type_error("integer", crate::value_utils::value_type_name(args[1]))
+    let dt = parse_datetime(get_value_arg("date_add", args, 0, "value")?)?;
+    let amount_value = get_value_arg("date_add", args, 1, "amount")?;
+    let amount = amount_value.as_i64().ok_or_else(|| {
+        ExpressionError::type_error("integer", crate::value_utils::value_type_name(amount_value))
     })?;
-    let unit = args[2].as_str().ok_or_else(|| {
-        ExpressionError::type_error("string", crate::value_utils::value_type_name(args[2]))
+    let unit_value = get_value_arg("date_add", args, 2, "unit")?;
+    let unit = unit_value.as_str().ok_or_else(|| {
+        ExpressionError::type_error("string", crate::value_utils::value_type_name(unit_value))
     })?;
 
     let duration = duration_for_unit("date_add", unit, amount)?;
@@ -203,23 +229,25 @@ pub(crate) fn date_add(
         )
     })?;
 
-    Ok(Value::Number(new_dt.timestamp().into()))
+    Ok(RuntimeValue::DateTime(new_dt))
 }
 
 /// Subtract duration from a date
 pub(crate) fn date_subtract(
-    args: &[&Value],
+    args: &[Argument<'_>],
     _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
-) -> ExpressionResult<Value> {
+) -> ExpressionResult<RuntimeValue> {
     check_arg_count("date_subtract", args, 3)?;
 
-    let dt = parse_datetime(args[0])?;
-    let amount = args[1].as_i64().ok_or_else(|| {
-        ExpressionError::type_error("integer", crate::value_utils::value_type_name(args[1]))
+    let dt = parse_datetime(get_value_arg("date_subtract", args, 0, "value")?)?;
+    let amount_value = get_value_arg("date_subtract", args, 1, "amount")?;
+    let amount = amount_value.as_i64().ok_or_else(|| {
+        ExpressionError::type_error("integer", crate::value_utils::value_type_name(amount_value))
     })?;
-    let unit = args[2].as_str().ok_or_else(|| {
-        ExpressionError::type_error("string", crate::value_utils::value_type_name(args[2]))
+    let unit_value = get_value_arg("date_subtract", args, 2, "unit")?;
+    let unit = unit_value.as_str().ok_or_else(|| {
+        ExpressionError::type_error("string", crate::value_utils::value_type_name(unit_value))
     })?;
 
     let duration = duration_for_unit("date_subtract", unit, amount)?;
@@ -230,21 +258,22 @@ pub(crate) fn date_subtract(
         )
     })?;
 
-    Ok(Value::Number(new_dt.timestamp().into()))
+    Ok(RuntimeValue::DateTime(new_dt))
 }
 
 /// Get difference between two dates in specified unit
 pub(crate) fn date_diff(
-    args: &[&Value],
+    args: &[Argument<'_>],
     _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
-) -> ExpressionResult<Value> {
+) -> ExpressionResult<RuntimeValue> {
     check_arg_count("date_diff", args, 3)?;
 
-    let dt1 = parse_datetime(args[0])?;
-    let dt2 = parse_datetime(args[1])?;
-    let unit = args[2].as_str().ok_or_else(|| {
-        ExpressionError::type_error("string", crate::value_utils::value_type_name(args[2]))
+    let dt1 = parse_datetime(get_value_arg("date_diff", args, 0, "value")?)?;
+    let dt2 = parse_datetime(get_value_arg("date_diff", args, 1, "value")?)?;
+    let unit_value = get_value_arg("date_diff", args, 2, "unit")?;
+    let unit = unit_value.as_str().ok_or_else(|| {
+        ExpressionError::type_error("string", crate::value_utils::value_type_name(unit_value))
     })?;
 
     let duration = dt1.signed_duration_since(dt2);
@@ -263,85 +292,85 @@ pub(crate) fn date_diff(
         },
     };
 
-    Ok(Value::Number(result.into()))
+    Ok(RuntimeValue::Integer(result))
 }
 
 /// Extract year from date
 pub(crate) fn date_year(
-    args: &[&Value],
+    args: &[Argument<'_>],
     _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
-) -> ExpressionResult<Value> {
+) -> ExpressionResult<RuntimeValue> {
     check_arg_count("date_year", args, 1)?;
-    let dt = parse_datetime(args[0])?;
-    Ok(Value::Number((dt.year() as i64).into()))
+    let dt = parse_datetime(get_value_arg("date_year", args, 0, "value")?)?;
+    Ok(RuntimeValue::Integer(i64::from(dt.year())))
 }
 
 /// Extract month from date (1-12)
 pub(crate) fn date_month(
-    args: &[&Value],
+    args: &[Argument<'_>],
     _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
-) -> ExpressionResult<Value> {
+) -> ExpressionResult<RuntimeValue> {
     check_arg_count("date_month", args, 1)?;
-    let dt = parse_datetime(args[0])?;
-    Ok(Value::Number((dt.month() as i64).into()))
+    let dt = parse_datetime(get_value_arg("date_month", args, 0, "value")?)?;
+    Ok(RuntimeValue::Integer(i64::from(dt.month())))
 }
 
 /// Extract day from date (1-31)
 pub(crate) fn date_day(
-    args: &[&Value],
+    args: &[Argument<'_>],
     _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
-) -> ExpressionResult<Value> {
+) -> ExpressionResult<RuntimeValue> {
     check_arg_count("date_day", args, 1)?;
-    let dt = parse_datetime(args[0])?;
-    Ok(Value::Number((dt.day() as i64).into()))
+    let dt = parse_datetime(get_value_arg("date_day", args, 0, "value")?)?;
+    Ok(RuntimeValue::Integer(i64::from(dt.day())))
 }
 
 /// Extract hour from date (0-23)
 pub(crate) fn date_hour(
-    args: &[&Value],
+    args: &[Argument<'_>],
     _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
-) -> ExpressionResult<Value> {
+) -> ExpressionResult<RuntimeValue> {
     check_arg_count("date_hour", args, 1)?;
-    let dt = parse_datetime(args[0])?;
-    Ok(Value::Number((dt.hour() as i64).into()))
+    let dt = parse_datetime(get_value_arg("date_hour", args, 0, "value")?)?;
+    Ok(RuntimeValue::Integer(i64::from(dt.hour())))
 }
 
 /// Extract minute from date (0-59)
 pub(crate) fn date_minute(
-    args: &[&Value],
+    args: &[Argument<'_>],
     _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
-) -> ExpressionResult<Value> {
+) -> ExpressionResult<RuntimeValue> {
     check_arg_count("date_minute", args, 1)?;
-    let dt = parse_datetime(args[0])?;
-    Ok(Value::Number((dt.minute() as i64).into()))
+    let dt = parse_datetime(get_value_arg("date_minute", args, 0, "value")?)?;
+    Ok(RuntimeValue::Integer(i64::from(dt.minute())))
 }
 
 /// Extract second from date (0-59)
 pub(crate) fn date_second(
-    args: &[&Value],
+    args: &[Argument<'_>],
     _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
-) -> ExpressionResult<Value> {
+) -> ExpressionResult<RuntimeValue> {
     check_arg_count("date_second", args, 1)?;
-    let dt = parse_datetime(args[0])?;
-    Ok(Value::Number((dt.second() as i64).into()))
+    let dt = parse_datetime(get_value_arg("date_second", args, 0, "value")?)?;
+    Ok(RuntimeValue::Integer(i64::from(dt.second())))
 }
 
 /// Get day of week (0=Sunday, 6=Saturday)
 pub(crate) fn date_day_of_week(
-    args: &[&Value],
+    args: &[Argument<'_>],
     _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
-) -> ExpressionResult<Value> {
+) -> ExpressionResult<RuntimeValue> {
     check_arg_count("date_day_of_week", args, 1)?;
-    let dt = parse_datetime(args[0])?;
+    let dt = parse_datetime(get_value_arg("date_day_of_week", args, 0, "value")?)?;
     let weekday = dt.weekday().num_days_from_sunday();
-    Ok(Value::Number((weekday as i64).into()))
+    Ok(RuntimeValue::Integer(i64::from(weekday)))
 }
 
 // Helper functions
@@ -376,46 +405,50 @@ fn parse_naive(s: &str) -> Option<NaiveDateTime> {
     None
 }
 
-/// Parse datetime from Value (timestamp or string), interpreting any
+/// Parse a runtime value into an absolute instant, interpreting any
 /// naive (no-offset) string as UTC.
-fn parse_datetime(value: &Value) -> ExpressionResult<DateTime<Utc>> {
+///
+/// Date values pass through unchanged; integers are Unix seconds; strings are
+/// RFC 3339 first, then the common naive formats.
+fn parse_datetime(value: &RuntimeValue) -> ExpressionResult<DateTime<FixedOffset>> {
     match value {
-        Value::Number(i) => {
-            let timestamp = crate::value_utils::number_as_i64(i)
-                .ok_or_else(|| ExpressionError::eval_error("Invalid timestamp: not an integer"))?;
-            Utc.timestamp_opt(timestamp, 0)
-                .single()
-                .ok_or_else(|| ExpressionError::eval_error("Invalid timestamp"))
-        },
-        Value::String(s) => {
-            let s = s.as_str();
+        RuntimeValue::DateTime(dt) => Ok(*dt),
+        RuntimeValue::Integer(timestamp) => Utc
+            .timestamp_opt(*timestamp, 0)
+            .single()
+            .map(|dt| dt.fixed_offset())
+            .ok_or_else(|| ExpressionError::eval_error("Invalid timestamp")),
+        RuntimeValue::Unsigned(timestamp) => i64::try_from(*timestamp)
+            .ok()
+            .and_then(|timestamp| Utc.timestamp_opt(timestamp, 0).single())
+            .map(|dt| dt.fixed_offset())
+            .ok_or_else(|| ExpressionError::eval_error("Invalid timestamp")),
+        RuntimeValue::String(s) => {
             if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
-                return Ok(dt.with_timezone(&Utc));
+                return Ok(dt);
             }
             let naive = parse_naive(s)
                 .ok_or_else(|| ExpressionError::eval_error("Cannot parse date string"))?;
-            Ok(Utc.from_utc_datetime(&naive))
+            Ok(Utc.from_utc_datetime(&naive).fixed_offset())
         },
         _ => Err(ExpressionError::type_error(
-            "integer or string",
+            "date, integer, or string",
             crate::value_utils::value_type_name(value),
         )),
     }
 }
 
-/// Parse datetime from Value, interpreting naive strings as wall time in
-/// the given timezone before converting to UTC.
+/// Parse a runtime value into an absolute instant, interpreting naive strings
+/// as wall time in the given timezone.
 ///
 /// Numeric timestamps are absolute and ignore `tz`. Strings with embedded
 /// offsets (`Z`, `+HH:MM`) also bypass `tz` — that information already
 /// fully determines the instant.
-fn parse_datetime_in_tz(value: &Value, tz: Tz) -> ExpressionResult<DateTime<Utc>> {
+fn parse_datetime_in_tz(value: &RuntimeValue, tz: Tz) -> ExpressionResult<DateTime<FixedOffset>> {
     match value {
-        Value::Number(_) => parse_datetime(value),
-        Value::String(s) => {
-            let s = s.as_str();
+        RuntimeValue::String(s) => {
             if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
-                return Ok(dt.with_timezone(&Utc));
+                return Ok(dt);
             }
             let naive = parse_naive(s)
                 .ok_or_else(|| ExpressionError::eval_error("Cannot parse date string"))?;
@@ -424,17 +457,14 @@ fn parse_datetime_in_tz(value: &Value, tz: Tz) -> ExpressionResult<DateTime<Utc>
             // instants (DST spring-forward), surface a typed error.
             tz.from_local_datetime(&naive)
                 .earliest()
-                .map(|dt| dt.with_timezone(&Utc))
+                .map(|dt| dt.fixed_offset())
                 .ok_or_else(|| {
                     ExpressionError::eval_error(
                         "Local datetime does not exist in the requested timezone",
                     )
                 })
         },
-        _ => Err(ExpressionError::type_error(
-            "integer or string",
-            crate::value_utils::value_type_name(value),
-        )),
+        _ => parse_datetime(value),
     }
 }
 

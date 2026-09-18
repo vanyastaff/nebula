@@ -309,7 +309,7 @@ impl Template {
             serde_json::Value::String(text) => Ok(text),
             other => Err(ExpressionError::type_error(
                 "template string",
-                crate::value_utils::value_type_name(&other),
+                crate::value_utils::value_type_name(&crate::RuntimeValue::from_json(&other)),
             )),
         }
     }

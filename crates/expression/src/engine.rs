@@ -333,6 +333,20 @@ impl ExpressionEngine {
         program: &CompiledProgram,
         context: &EvaluationContext,
     ) -> ExpressionResult<Value> {
+        self.evaluate_compiled_runtime(program, context)
+            .map(|value| value.to_json())
+    }
+
+    /// Evaluate retained syntax, returning the runtime value directly.
+    ///
+    /// Crate-internal: callers outside the crate get plain JSON from
+    /// [`Self::evaluate_compiled`]. Typed values (date-times) survive to this
+    /// boundary and are rendered by `RuntimeValue::to_json`.
+    pub(crate) fn evaluate_compiled_runtime(
+        &self,
+        program: &CompiledProgram,
+        context: &EvaluationContext,
+    ) -> ExpressionResult<crate::RuntimeValue> {
         self.evaluator.eval_program(program, context)
     }
 
@@ -478,7 +492,7 @@ mod tests {
     use crate::EvaluationPolicy;
 
     fn constant_one(
-        _args: &[&Value],
+        _args: &[crate::eval::Argument<'_>],
         _view: crate::eval::BuiltinView<'_>,
         _context: &EvaluationContext,
         output: crate::BuiltinOutputBuilder,

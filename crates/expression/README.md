@@ -112,35 +112,39 @@ See `src/lib.rs` rustdoc for the quick-start example.
 - Not a full JavaScript sandbox: expressions are parsed and evaluated by this crate,
   not by a JS engine.
 
-### BuiltinFunction signature (no re-entry)
+### BuiltinFunction signature (no frame reset)
 
 `BuiltinFunction` is typed as:
 
 ```rust
 pub type BuiltinFunction =
     fn(
-        &[&Value],
+        &[Argument<'_>],
         BuiltinView<'_>,
         &EvaluationContext,
         BuiltinOutputBuilder,
     ) -> ExpressionResult<BuiltinOutput>;
 ```
 
-`BuiltinView<'_>` exposes policy queries plus
+`Argument<'_>` is either an evaluated value or an unevaluated lambda. Lambdas stay
+unevaluated until the builtin calls `BuiltinView::invoke_lambda`, which binds the
+lambda's parameters positionally and evaluates its body against the **caller's frame**.
+A registered builtin therefore cannot reset the step budget or recursion depth, and
+every lambda invocation is charged against the calling program — the historical
+step-budget bypass (issue #252) stays type-enforced. The pitfall is documented in
+`docs/pitfalls.md` for historical context.
+
+`BuiltinView<'_>` also exposes policy queries plus
 `charge_work` and `check_output_bytes` against the calling program's shared budget.
 The mandatory `BuiltinOutputBuilder` is the only public way to construct the opaque
 result, and validates total bytes, string bytes, collection size, value nodes, and
 depth. Registered functions should charge work before loops and use builder methods
-that preflight allocations. `BuiltinView` does not expose
-`Evaluator::eval` — a registered builtin physically cannot recurse back into AST
-evaluation, so the historical step-budget bypass that was previously a "discipline-only"
-rule (issue #252) is now type-enforced. The pitfall is documented in
-`docs/pitfalls.md` for historical context.
+that preflight allocations.
 
 Higher-order combinators (`filter`, `map`, `reduce`, `flat_map`, `group_by`, `find`,
-`find_index`, `some`, `every`) are NOT registered through this surface. They live
-inside the evaluator module and call `eval_with_frame` directly with the caller's
-`EvalFrame`, so the step budget stays accumulated across every iteration.
+`find_index`, `some`, `every`) are ordinary registered builtins built on this surface.
+`reduce` accepts both shapes: a single-parameter lambda with `$acc` bound in context,
+or `(acc, x) => …` with positional binding.
 
 Custom callbacks are trusted in-process code: work charging is cooperative and cannot
 preempt a callback that ignores the view or blocks. Output bounds are mandatory because
@@ -176,8 +180,9 @@ nebula-expression/
     ├── ast.rs            # Expression AST node types
     ├── program.rs        # Immutable compiled expressions/templates
     ├── limits.rs         # Shared compilation and allocation bounds
-    ├── eval/             # AST evaluator (Evaluator, EvalFrame)
-    ├── builtins.rs       # BuiltinFunction registry
+    ├── eval/             # AST evaluator (Evaluator, EvalFrame, Argument, BuiltinView)
+    ├── value.rs          # RuntimeValue: JSON shapes + typed date-times + Undefined
+    ├── builtins/         # BuiltinFunction registry (higher_order.rs, output.rs, …)
     ├── context.rs        # EvaluationContext + builder
     ├── template.rs       # Template / MaybeTemplate
     ├── engine.rs         # ExpressionEngine + LRU cache
