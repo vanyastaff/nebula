@@ -97,10 +97,9 @@ crate::validator! {
 
 /// Validates email format.
 ///
-/// Checks basic email structure (local part @ domain) against
-/// [`EMAIL_PATTERN`]. The pattern is compiled once per process on first use;
-/// a compile failure surfaces as an `unavailable` diagnostic rather than a
-/// panic or a silent rejection.
+/// Checks basic email structure (local part @ domain). The pattern is compiled
+/// once per process on first use; a compile failure surfaces as an
+/// `unavailable` diagnostic rather than a panic or a silent rejection.
 ///
 /// # Examples
 ///
@@ -133,9 +132,9 @@ pub const fn email() -> Email {
 
 /// Validates URL format.
 ///
-/// Accepts HTTP and HTTPS URLs per [`URL_PATTERN`]. The pattern is compiled
-/// once per process on first use; a compile failure surfaces as an
-/// `unavailable` diagnostic rather than a panic or a silent rejection.
+/// Accepts HTTP and HTTPS URLs. The pattern is compiled once per process on
+/// first use; a compile failure surfaces as an `unavailable` diagnostic rather
+/// than a panic or a silent rejection.
 ///
 /// # Examples
 ///

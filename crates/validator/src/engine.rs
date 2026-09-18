@@ -61,6 +61,7 @@ pub enum DeferredReason {
 /// A deferred pass is not proof that the rules are satisfied. Re-evaluate the
 /// entire rule tree with all required context before issuing a complete proof.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[non_exhaustive]
 #[must_use = "deferred evaluation must be completed before issuing a proof"]
 pub enum EvaluationOutcome {
     /// The rule tree is satisfied by the supplied value and context.
@@ -115,6 +116,7 @@ pub enum ExecutionMode {
 /// fields. The policy is propagated through the complete rule tree, including
 /// logical combinators and described rules.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum DiagnosticDisclosure {
     /// Include the evaluated value in diagnostic template parameters.
     IncludeValue,

@@ -4,7 +4,7 @@
 //! surfaces: composable programmatic validators via the [`foundation::Validate`] trait,
 //! and a JSON-serializable [`Rule`] type for declarative schema-field constraints.
 //!
-//! **Role:** Validation Rules Engine + Declarative Rule. See `crates/validator/README.md`.
+//! **Role:** Validation Rules Engine + Declarative Rule.
 //!
 //! **Maturity:** `frontier` — the programmatic validator API (`Validate`, `ValidateExt`,
 //! `Validated`, `ValidationError`) is stable; [`Rule`] has just moved to a typed sum-of-sums
@@ -46,11 +46,13 @@
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
+#![warn(unreachable_pub)]
 // ValidationError (<= 80 bytes) is the fundamental error type for all validators —
 // boxing it would add indirection to every validation call for no practical benefit.
 #![allow(clippy::result_large_err)]
-// Deep combinator nesting (And<Or<Not<...>,...>,...>) produces complex types
-// that are inherent to the type-safe combinator architecture.
+// Monomorphized combinator stacks (And<Or<Not<...>, ...>, ...>) produce types the
+// compiler prints as impenetrably long, but the nesting is the point of the
+// type-safe combinator design; type erasure is available via `AnyValidator`.
 #![allow(clippy::type_complexity)]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
