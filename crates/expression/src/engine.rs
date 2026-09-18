@@ -281,35 +281,36 @@ impl ExpressionEngine {
         self.evaluator.register_bounded(name, func);
     }
 
-    /// Evaluate an expression string in the given context
+    /// Compile `expression`, using the parse cache when one is configured.
+    ///
+    /// The single source of the size check and cache lookup for both
+    /// evaluation entry points; they must not drift into two copies.
     #[instrument(level = "debug", skip_all, fields(expr_len = expression.len()))]
-    pub fn evaluate(
-        &self,
-        expression: &str,
-        context: &EvaluationContext,
-    ) -> ExpressionResult<Value> {
+    fn compile_cached(&self, expression: &str) -> ExpressionResult<CompiledProgram> {
         crate::limits::check_limit(
             "source bytes",
             expression.len(),
             crate::limits::MAX_SOURCE_BYTES,
         )?;
-        // Parse the expression (with caching if enabled)
         #[cfg(feature = "cache")]
-        let program = if let Some(cache) = &self.expr_cache {
+        if let Some(cache) = &self.expr_cache {
             if let Some(cached) = cache.get(expression) {
-                cached
-            } else {
-                let parsed = CompiledProgram::compile(expression)?;
-                cache.insert(Arc::from(expression), parsed.clone());
-                parsed
+                return Ok(cached);
             }
-        } else {
-            CompiledProgram::compile(expression)?
-        };
+            let parsed = CompiledProgram::compile(expression)?;
+            cache.insert(Arc::from(expression), parsed.clone());
+            return Ok(parsed);
+        }
+        CompiledProgram::compile(expression)
+    }
 
-        #[cfg(not(feature = "cache"))]
-        let program = CompiledProgram::compile(expression)?;
-
+    /// Evaluate an expression string in the given context
+    pub fn evaluate(
+        &self,
+        expression: &str,
+        context: &EvaluationContext,
+    ) -> ExpressionResult<Value> {
+        let program = self.compile_cached(expression)?;
         self.evaluate_compiled(&program, context)
     }
 
@@ -322,33 +323,12 @@ impl ExpressionEngine {
     ///
     /// # Errors
     /// Returns the same typed errors as [`Self::evaluate`].
-    #[instrument(level = "debug", skip_all, fields(expr_len = expression.len()))]
     pub fn evaluate_runtime(
         &self,
         expression: &str,
         context: &EvaluationContext,
     ) -> ExpressionResult<crate::RuntimeValue> {
-        crate::limits::check_limit(
-            "source bytes",
-            expression.len(),
-            crate::limits::MAX_SOURCE_BYTES,
-        )?;
-        #[cfg(feature = "cache")]
-        let program = if let Some(cache) = &self.expr_cache {
-            if let Some(cached) = cache.get(expression) {
-                cached
-            } else {
-                let parsed = CompiledProgram::compile(expression)?;
-                cache.insert(Arc::from(expression), parsed.clone());
-                parsed
-            }
-        } else {
-            CompiledProgram::compile(expression)?
-        };
-
-        #[cfg(not(feature = "cache"))]
-        let program = CompiledProgram::compile(expression)?;
-
+        let program = self.compile_cached(expression)?;
         self.evaluate_compiled_runtime(&program, context)
     }
 

@@ -17,6 +17,16 @@ use chrono::Utc;
 
 use crate::{policy::EvaluationPolicy, value::RuntimeValue};
 
+/// Midnight UTC of the current day, as the `$today` value.
+///
+/// `NaiveDate::and_time(NaiveTime::MIN)` is infallible, unlike the
+/// `and_hms_opt` combinator it replaces; midnight always exists.
+#[inline]
+fn today_utc() -> chrono::DateTime<Utc> {
+    let midnight = Utc::now().date_naive().and_time(chrono::NaiveTime::MIN);
+    chrono::DateTime::<Utc>::from_naive_utc_and_offset(midnight, Utc)
+}
+
 /// Evaluation context containing variables and workflow data.
 ///
 /// All maps are wrapped in `Arc<HashMap<...>>` so cloning the context is
@@ -280,13 +290,7 @@ impl EvaluationContext {
             // crate resolves one item at a time, so it is exactly `$input`.
             "input" | "json" => Some(Arc::clone(&self.input)),
             "now" => Some(Arc::new(RuntimeValue::date_time_utc(Utc::now()))),
-            "today" => Some(Arc::new(RuntimeValue::date_time_utc(
-                Utc::now()
-                    .date_naive()
-                    .and_hms_opt(0, 0, 0)
-                    .map(|naive| chrono::DateTime::<Utc>::from_naive_utc_and_offset(naive, Utc))
-                    .unwrap_or_else(Utc::now),
-            ))),
+            "today" => Some(Arc::new(RuntimeValue::date_time_utc(today_utc()))),
             _ => None,
         })
     }
@@ -315,13 +319,7 @@ impl EvaluationContext {
             // See `resolve_variable`: `$json` aliases the current item.
             "input" | "json" => Some(Cow::Borrowed(&self.input)),
             "now" => Some(Cow::Owned(RuntimeValue::date_time_utc(Utc::now()))),
-            "today" => Some(Cow::Owned(RuntimeValue::date_time_utc(
-                Utc::now()
-                    .date_naive()
-                    .and_hms_opt(0, 0, 0)
-                    .map(|naive| chrono::DateTime::<Utc>::from_naive_utc_and_offset(naive, Utc))
-                    .unwrap_or_else(Utc::now),
-            ))),
+            "today" => Some(Cow::Owned(RuntimeValue::date_time_utc(today_utc()))),
             _ => None,
         })
     }
