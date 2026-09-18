@@ -37,7 +37,7 @@ use parking_lot::Mutex;
 use crate::{
     CallError, ConfigError, PolicyContext,
     clock::{Clock, SystemClock},
-    sink::{CircuitState, MetricsSink, NoopSink, ResilienceEvent},
+    sink::{MetricsSink, NoopSink, ResilienceEvent},
 };
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -198,6 +198,19 @@ pub struct CircuitBreakerStats {
     pub total: u32,
     /// Number of slow calls observed since the counters were last reset.
     pub slow_calls: u32,
+}
+
+/// A state in the circuit breaker state machine.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum CircuitState {
+    /// Normal operation — requests pass through.
+    Closed,
+    /// Breaker tripped — requests rejected immediately.
+    Open,
+    /// Probing — limited requests allowed to test recovery.
+    HalfOpen,
 }
 
 type StateChangeCallback = Box<dyn Fn(CircuitState, CircuitState) + Send + Sync>;

@@ -471,6 +471,44 @@ async fn total_budget_limits_zero_delay_retries() {
     );
 }
 
+/// An operation that fails *instantly* — no await of its own — must still be
+/// bounded by the budget, not by `max_attempts`.
+///
+/// `Deadline::timeout` re-reads the remaining budget before every attempt, so
+/// a million zero-cost attempts cannot burn through the budget unobserved.
+#[tokio::test]
+async fn total_budget_bounds_instant_failing_operation() {
+    let counter = Arc::new(AtomicU32::new(0));
+    let c = counter.clone();
+
+    let config = RetryConfig::new(1_000_000)
+        .unwrap()
+        .backoff(BackoffConfig::Fixed(Duration::ZERO))
+        .total_budget(Duration::from_millis(5));
+
+    let start = std::time::Instant::now();
+    let result: Result<(), CallError<TransientErr>> = retry_with(config, async || {
+        c.fetch_add(1, Ordering::SeqCst);
+        Err(TransientErr("instant fail"))
+    })
+    .await;
+
+    assert!(
+        matches!(result, Err(CallError::Timeout(_))),
+        "instant retries must exhaust the budget, got {result:?}"
+    );
+    let attempts = counter.load(Ordering::SeqCst);
+    assert!(
+        attempts < 1_000_000,
+        "the attempt count, not the budget, bounded the loop: {attempts}"
+    );
+    assert!(
+        start.elapsed() < Duration::from_secs(1),
+        "budget of 5ms must not run for {:?}",
+        start.elapsed()
+    );
+}
+
 #[tokio::test]
 async fn total_budget_times_out_hung_attempt() {
     let counter = Arc::new(AtomicU32::new(0));

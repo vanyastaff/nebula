@@ -168,7 +168,7 @@ pub mod pipeline;
 // Patterns
 pub use bulkhead::{Bulkhead, BulkheadConfig};
 pub use cancellation::{CancellableFuture, CancellationContext, CancellationExt};
-pub use circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
+pub use circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, CircuitState};
 pub use classifier::{
     AlwaysPermanent, AlwaysTransient, ErrorClass, ErrorClassifier, FnClassifier, NebulaClassifier,
 };
@@ -185,7 +185,9 @@ pub use load_shed::{
     load_shed, load_shed_with_policy_context, load_shed_with_policy_context_and_sink,
     load_shed_with_sink,
 };
-pub use pipeline::{LoadShedPredicate, PipelineBuilder, RateLimitCheck, ResiliencePipeline};
+pub use pipeline::{
+    LoadShedPredicate, PipelineBuilder, PipelineOutcome, RateLimitCheck, ResiliencePipeline,
+};
 pub use policy::{ConstantLoad, LoadSignal, LoadSnapshot, PolicySource};
 pub use rate_limiter::{
     AdaptiveRateLimiter, ErasedRateLimiter, LeakyBucket, RateLimiter, SlidingWindow, TokenBucket,
@@ -195,8 +197,8 @@ pub use retry::retry_with_inner;
 pub use retry::{BackoffConfig, JitterConfig, RetryConfig, retry, retry_with};
 // Observability
 pub use sink::{
-    CircuitState, MetricsSink, NoopSink, PipelineOutcome, PolicyScope, RecordingSink,
-    ResilienceEvent, ResilienceEventKind, ScopeValue,
+    MetricsSink, NoopSink, PolicyScope, RecordingSink, ResilienceEvent, ResilienceEventKind,
+    ScopeValue,
 };
 pub use timeout::{
     TimeoutExecutor, timeout, timeout_with_policy_context, timeout_with_policy_context_and_sink,

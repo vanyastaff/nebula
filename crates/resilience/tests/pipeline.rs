@@ -92,10 +92,7 @@ async fn full_stack_pipeline_happy_path() {
     assert_eq!(result.unwrap(), 42);
     // Permits released, CB still closed
     assert_eq!(bh.available_permits(), 10);
-    assert_eq!(
-        cb.circuit_state(),
-        nebula_resilience::sink::CircuitState::Closed
-    );
+    assert_eq!(cb.circuit_state(), nebula_resilience::CircuitState::Closed);
 }
 
 #[tokio::test]
@@ -152,10 +149,7 @@ async fn pipeline_circuit_breaker_counts_slow_successes() {
         assert_eq!(result.unwrap(), 42);
     }
 
-    assert_eq!(
-        cb.circuit_state(),
-        nebula_resilience::sink::CircuitState::Open
-    );
+    assert_eq!(cb.circuit_state(), nebula_resilience::CircuitState::Open);
     assert_eq!(cb.stats().slow_calls, 2);
 }
 
@@ -192,10 +186,7 @@ async fn full_stack_retry_exhaustion_does_not_trip_cb() {
         Err(CallError::RetriesExhausted { attempts: 3, .. })
     ));
     // CB saw 3 failures but threshold is 10 — still closed
-    assert_eq!(
-        cb.circuit_state(),
-        nebula_resilience::sink::CircuitState::Closed
-    );
+    assert_eq!(cb.circuit_state(), nebula_resilience::CircuitState::Closed);
 }
 
 // ── Full-stack: CB trips after enough pipeline calls ────────────────────────
@@ -228,10 +219,7 @@ async fn full_stack_cb_trips_after_threshold() {
             .await;
     }
 
-    assert_eq!(
-        cb.circuit_state(),
-        nebula_resilience::sink::CircuitState::Open
-    );
+    assert_eq!(cb.circuit_state(), nebula_resilience::CircuitState::Open);
 
     // Next call rejected immediately by CB
     let result = pipeline

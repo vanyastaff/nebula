@@ -99,8 +99,8 @@
 use std::{collections::HashMap, fmt, num::NonZeroUsize, sync::Arc, time::Duration};
 
 use lru::LruCache;
+use nebula_resilience::CircuitState;
 use nebula_resilience::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, Outcome};
-use nebula_resilience::sink::CircuitState;
 use tokio::sync::oneshot;
 
 /// In-flight refresh entry.

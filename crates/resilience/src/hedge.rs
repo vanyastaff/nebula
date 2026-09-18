@@ -215,6 +215,7 @@ impl HedgeExecutor {
         let mut hedges_sent = 0usize;
         let mut delay = Box::pin(sleep(hedge_delay));
         let mut last_err: Option<E> = None;
+        let mut panicked = false;
 
         loop {
             tokio::select! {
@@ -230,9 +231,23 @@ impl HedgeExecutor {
                             return Ok(v);
                         }
                         Ok(Err(e)) => last_err = Some(e),
-                        Err(_) => {} // task panicked or was aborted
+                        // The only way a task ends without a result here is a
+                        // panic: `abort_all` runs only on the success path
+                        // (which returns), and the set is local to this call.
+                        // Record it so the final error is not `Operation`/
+                        // `Cancelled` for an operation that produced neither.
+                        Err(join_error) => {
+                            panicked = true;
+                            tracing::error!(
+                                error = %join_error,
+                                "hedge operation task ended without a result"
+                            );
+                        }
                     }
                     if set.is_empty() && hedges_sent >= self.config.max_hedges {
+                        if panicked {
+                            return Err(CallError::task_panicked());
+                        }
                         return Err(
                             last_err.map_or(CallError::cancelled(), CallError::Operation)
                         );
@@ -430,8 +445,15 @@ pub struct LatencyTracker {
 }
 
 impl LatencyTracker {
+    /// Create a tracker retaining at most `max_samples` latencies.
+    ///
+    /// `max_samples` is clamped to at least 1: a zero-capacity ring would
+    /// never evict (the `ring.len() == max_samples` check never holds on an
+    /// empty ring), so it would grow without bound despite declaring itself
+    /// bounded.
     #[must_use]
     pub fn new(max_samples: usize) -> Self {
+        let max_samples = max_samples.max(1);
         Self {
             ring: VecDeque::with_capacity(max_samples),
             histogram: SmallVec::new(),
@@ -689,6 +711,31 @@ mod tests {
     #[test]
     fn accepts_valid_config() {
         assert!(HedgeExecutor::new(HedgeConfig::default()).is_ok());
+    }
+
+    /// A panicking operation must be reported as such, not as `Cancelled`.
+    ///
+    /// Before the fix the `Err(_)` join arm was discarded, and a run in which
+    /// every task panicked returned `CallError::cancelled()` — the caller could
+    /// not tell a crashed attempt from a shutdown.
+    #[tokio::test]
+    async fn panicking_operation_reports_task_panicked() {
+        let executor = HedgeExecutor::new(HedgeConfig {
+            hedge_delay: Duration::from_millis(1),
+            max_hedges: 1,
+            duplicate_safety: HedgeSafety::Idempotent,
+            ..Default::default()
+        })
+        .unwrap();
+
+        let result: Result<u32, CallError<&str>> = executor
+            .call(|| Box::pin(async { panic!("operation exploded") }))
+            .await;
+
+        assert!(
+            matches!(result, Err(CallError::TaskPanicked)),
+            "a panicked operation must not be reported as cancellation, got {result:?}"
+        );
     }
 
     #[test]

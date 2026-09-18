@@ -19,13 +19,12 @@ use std::{
 };
 
 use nebula_resilience::{
-    CallError,
+    CallError, CircuitState,
     bulkhead::{Bulkhead, BulkheadConfig},
     circuit_breaker::{CircuitBreaker, CircuitBreakerConfig},
     gate::Gate,
     pipeline::ResiliencePipeline,
     retry::{BackoffConfig, RetryConfig},
-    sink::CircuitState,
 };
 
 /// Generous enough that a correct drain always finishes, short enough that a

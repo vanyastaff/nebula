@@ -7,7 +7,7 @@ use std::{borrow::Cow, ops::Deref, sync::Arc, time::Duration};
 
 use parking_lot::Mutex;
 
-use crate::CallErrorKind;
+use crate::{CallErrorKind, circuit_breaker::CircuitState, pipeline::PipelineOutcome};
 
 /// Low-cardinality scope string shared by [`PolicyScope`].
 ///
@@ -156,45 +156,6 @@ impl PolicyScope {
         self.operation = Some(operation.into());
         self
     }
-}
-
-/// Final outcome of a pipeline invocation.
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[non_exhaustive]
-pub enum PipelineOutcome {
-    /// Pipeline returned the primary operation result.
-    Success,
-    /// Pipeline failed and no fallback recovered it.
-    Failure {
-        /// Final failure kind.
-        error: CallErrorKind,
-    },
-    /// Fallback recovered the primary failure.
-    FallbackSucceeded {
-        /// Primary failure kind that was recovered.
-        primary_error: CallErrorKind,
-    },
-    /// Fallback was attempted but failed.
-    FallbackFailed {
-        /// Primary failure kind that triggered fallback.
-        primary_error: CallErrorKind,
-        /// Fallback failure kind.
-        fallback_error: CallErrorKind,
-    },
-}
-
-/// A state in the circuit breaker state machine.
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[non_exhaustive]
-pub enum CircuitState {
-    /// Normal operation — requests pass through.
-    Closed,
-    /// Breaker tripped — requests rejected immediately.
-    Open,
-    /// Probing — limited requests allowed to test recovery.
-    HalfOpen,
 }
 
 /// Events emitted by resilience patterns to the [`MetricsSink`].

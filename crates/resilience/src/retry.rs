@@ -218,7 +218,13 @@ pub enum JitterConfig {
     None,
     /// Add a random fraction up to `factor` of the delay.
     Full {
-        /// Maximum jitter fraction (0.0–1.0).
+        /// Maximum jitter fraction.
+        ///
+        /// Values are not rejected at construction: `factor > 1.0` is capped
+        /// at `1.0`, and `factor <= 0.0` or `NaN` disables jitter entirely
+        /// (the base delay is returned unchanged). Keeping the builder
+        /// infallible matches the other `RetryConfig` setters; the effective
+        /// behavior is exactly this clamp.
         factor: f64,
         /// Optional seed for deterministic jitter (useful for testing).
         seed: Option<u64>,
@@ -523,6 +529,10 @@ where
     for attempt in 0..max_attempts {
         attempts_executed = attempt + 1;
         let attempt_result = if let Some(deadline) = deadline {
+            // `Deadline::timeout` re-reads the remaining budget on every
+            // attempt, so an instantly-failing operation under a
+            // `max_attempts` that far exceeds the budget still stops when the
+            // budget does — the budget, not the attempt count, is the bound.
             deadline.timeout(f()).await?
         } else {
             f().await

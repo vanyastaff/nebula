@@ -678,7 +678,7 @@ async fn pipeline_with_sink_does_not_double_count_prebuilt_bulkhead_rejection() 
 
 #[tokio::test]
 async fn pipeline_with_sink_does_not_double_count_prebuilt_circuit_state_change() {
-    use crate::sink::CircuitState;
+    use crate::CircuitState;
 
     let sink = RecordingSink::new();
     let cb = Arc::new(
@@ -708,8 +708,8 @@ async fn pipeline_with_sink_does_not_double_count_prebuilt_circuit_state_change(
 #[tokio::test]
 async fn pipeline_cb_half_open_allows_single_probe() {
     use crate::{
+        CircuitState,
         circuit_breaker::{CircuitBreakerConfig, Outcome},
-        sink::CircuitState,
     };
 
     let cb = Arc::new(
@@ -812,7 +812,7 @@ async fn pipeline_call_with_fallback_recovers() {
         Some((
             _,
             PipelineOutcome::FallbackSucceeded {
-                primary_error: crate::CallErrorKind::Timeout,
+                primary_error: CallErrorKind::Timeout,
             }
         ))
     ));
@@ -923,7 +923,7 @@ async fn policy_context_deadline_bounds_entire_pipeline() {
         Some((
             scope,
             PipelineOutcome::Failure {
-                error: crate::CallErrorKind::Timeout,
+                error: CallErrorKind::Timeout,
             }
         )) if scope.tenant_id.as_deref() == Some("tenant-context")
     ));

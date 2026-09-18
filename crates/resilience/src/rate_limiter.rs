@@ -119,6 +119,7 @@ pub(crate) fn map_acquire_error<E>(err: CallError<()>) -> CallError<E> {
         CallError::CircuitOpen => CallError::CircuitOpen,
         CallError::BulkheadFull => CallError::BulkheadFull,
         CallError::Cancelled { reason } => CallError::Cancelled { reason },
+        CallError::TaskPanicked => CallError::TaskPanicked,
         CallError::LoadShed => CallError::LoadShed,
         CallError::FallbackFailed { reason } => CallError::FallbackFailed { reason },
         CallError::FallbackFailedWithContext { primary, fallback } => {
@@ -888,6 +889,24 @@ impl fmt::Debug for AdaptiveRateLimiter {
     }
 }
 
+/// Re-arms the adaptive limiter's next-adjustment deadline on drop.
+///
+/// Exists so the `u64::MAX` adjustment sentinel cannot survive an unwind in
+/// the write section; see [`AdaptiveRateLimiter::maybe_adjust_rate`].
+struct RearmOnDrop<'a> {
+    limiter: &'a AdaptiveRateLimiter,
+}
+
+impl Drop for RearmOnDrop<'_> {
+    fn drop(&mut self) {
+        let elapsed_ns = duration_as_nanos_u64(self.limiter.adjustment_origin.elapsed());
+        let window_ns = duration_as_nanos_u64(self.limiter.stats_window);
+        self.limiter
+            .next_adjust_after_ns
+            .store(elapsed_ns.saturating_add(window_ns), Ordering::Release);
+    }
+}
+
 impl AdaptiveRateLimiter {
     /// Create new adaptive rate limiter.
     ///
@@ -972,6 +991,13 @@ impl AdaptiveRateLimiter {
             return;
         }
 
+        // `u64::MAX` above is the adjustment lock. It must be cleared on every
+        // exit from this slow path — including an unwind inside the write
+        // section — because a leaked `u64::MAX` permanently disables
+        // self-tuning: every later call reads `elapsed < next_adjust_after`
+        // and returns. The RAII guard is what re-arms the window.
+        let rearm = RearmOnDrop { limiter: self };
+
         // Slow path: write lock for adjustment
         let mut state = self.state.write();
         // Double-check after acquiring write lock (another thread may have adjusted)
@@ -980,12 +1006,9 @@ impl AdaptiveRateLimiter {
             let error = self.error_count.swap(0, Ordering::Relaxed);
             self.do_adjust_rate(&mut state, success, error);
         }
-
-        let elapsed_ns = duration_as_nanos_u64(self.adjustment_origin.elapsed());
-        let window_ns = duration_as_nanos_u64(self.stats_window);
-        self.next_adjust_after_ns
-            .store(elapsed_ns.saturating_add(window_ns), Ordering::Release);
         drop(state);
+
+        drop(rearm);
     }
 
     /// Perform the rate adjustment. Caller must hold the write lock.

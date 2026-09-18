@@ -37,14 +37,14 @@
 use std::{fmt, future::Future, pin::Pin, sync::Arc, time::Duration};
 
 use crate::{
-    CallError, PolicyContext,
+    CallError, CallErrorKind, PolicyContext,
     bulkhead::Bulkhead,
     cancellation::CancellationContext,
     circuit_breaker::{CircuitBreaker, Outcome, ProbeGuard},
     classifier::{ErrorClass, ErrorClassifier, FnClassifier},
     rate_limiter::{ErasedRateLimiter, map_acquire_error},
     retry::{RetryConfig, retry_with},
-    sink::{MetricsSink, NoopSink, PipelineOutcome, PolicyScope, ResilienceEvent},
+    sink::{MetricsSink, NoopSink, PolicyScope, ResilienceEvent},
 };
 
 // ── Execution ────────────────────────────────────────────────────────────────
@@ -359,6 +359,32 @@ impl<E: Send + 'static> PipelineBuilder<E> {
             scope: self.scope,
         }
     }
+}
+
+/// Final outcome of a pipeline invocation.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum PipelineOutcome {
+    /// Pipeline returned the primary operation result.
+    Success,
+    /// Pipeline failed and no fallback recovered it.
+    Failure {
+        /// Final failure kind.
+        error: CallErrorKind,
+    },
+    /// Fallback recovered the primary failure.
+    FallbackSucceeded {
+        /// Primary failure kind that was recovered.
+        primary_error: CallErrorKind,
+    },
+    /// Fallback was attempted but failed.
+    FallbackFailed {
+        /// Primary failure kind that triggered fallback.
+        primary_error: CallErrorKind,
+        /// Fallback failure kind.
+        fallback_error: CallErrorKind,
+    },
 }
 
 /// Convenience: set [`NebulaClassifier`](crate::classifier::NebulaClassifier)

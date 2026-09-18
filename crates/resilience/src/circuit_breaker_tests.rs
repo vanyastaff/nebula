@@ -2,10 +2,9 @@ use std::time::Duration;
 
 use super::*;
 use crate::{
-    CallError, PolicyContext, RecordingSink,
+    CallError, CircuitState as CS, PolicyContext, RecordingSink,
     cancellation::CancellationContext,
     classifier::{ErrorClass, FnClassifier},
-    sink::CircuitState as CS,
 };
 
 fn default_config() -> CircuitBreakerConfig {

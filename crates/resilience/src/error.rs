@@ -46,6 +46,12 @@ pub enum CallError<E> {
         /// `Cow` avoids heap allocation for static reasons (the common case).
         reason: Option<Cow<'static, str>>,
     },
+    /// A spawned operation task panicked instead of returning a result.
+    ///
+    /// Produced by patterns that run the operation in a task they own (hedge):
+    /// the caller must be able to tell a panicked attempt from one that
+    /// returned an error, because the two demand different responses.
+    TaskPanicked,
     /// Load shed — system is overloaded, request rejected without queuing.
     LoadShed,
     /// Rate limit exceeded.
@@ -84,6 +90,7 @@ impl<E: std::fmt::Display> std::fmt::Display for CallError<E> {
             },
             Self::Cancelled { reason: Some(r) } => write!(f, "operation cancelled: {r}"),
             Self::Cancelled { reason: None } => write!(f, "operation cancelled"),
+            Self::TaskPanicked => write!(f, "operation task panicked"),
             Self::LoadShed => write!(f, "request load-shed due to overload"),
             Self::RateLimited {
                 retry_after: Some(d),
@@ -117,6 +124,12 @@ impl<E> CallError<E> {
     #[must_use]
     pub const fn cancelled() -> Self {
         Self::Cancelled { reason: None }
+    }
+
+    /// A task owned by the pattern panicked while running the operation.
+    #[must_use]
+    pub const fn task_panicked() -> Self {
+        Self::TaskPanicked
     }
 
     /// Cancelled with a static reason (zero heap allocation).
@@ -231,6 +244,7 @@ impl<E> CallError<E> {
             Self::BulkheadFull => CallError::BulkheadFull,
             Self::Timeout(d) => CallError::Timeout(d),
             Self::Cancelled { reason } => CallError::Cancelled { reason },
+            Self::TaskPanicked => CallError::TaskPanicked,
             Self::LoadShed => CallError::LoadShed,
             Self::RateLimited { retry_after } => CallError::RateLimited { retry_after },
             Self::FallbackFailed { reason } => CallError::FallbackFailed { reason },
@@ -273,6 +287,7 @@ impl<E> CallError<E> {
             Self::BulkheadFull => CallError::BulkheadFull,
             Self::Timeout(d) => CallError::Timeout(d),
             Self::Cancelled { reason } => CallError::Cancelled { reason },
+            Self::TaskPanicked => CallError::TaskPanicked,
             Self::LoadShed => CallError::LoadShed,
             Self::RateLimited { retry_after } => CallError::RateLimited { retry_after },
             Self::FallbackFailed { reason } => CallError::FallbackFailed { reason },
@@ -319,6 +334,7 @@ impl<E> CallError<E> {
                 },
                 Self::Cancelled { reason },
             ),
+            Self::TaskPanicked => (CallError::TaskPanicked, Self::TaskPanicked),
             Self::LoadShed => (CallError::LoadShed, Self::LoadShed),
             Self::RateLimited { retry_after } => (
                 CallError::RateLimited { retry_after },
@@ -347,6 +363,7 @@ impl<E: nebula_error::Classify> nebula_error::Classify for CallError<E> {
             Self::CircuitOpen | Self::LoadShed | Self::BulkheadFull => {
                 nebula_error::ErrorCategory::Exhausted
             },
+            Self::TaskPanicked => nebula_error::ErrorCategory::Internal,
             Self::Timeout(_) => nebula_error::ErrorCategory::Timeout,
             Self::Cancelled { .. } => nebula_error::ErrorCategory::Cancelled,
             Self::RateLimited { .. } => nebula_error::ErrorCategory::RateLimit,
@@ -363,6 +380,7 @@ impl<E: nebula_error::Classify> nebula_error::Classify for CallError<E> {
             Self::BulkheadFull => nebula_error::ErrorCode::new("RESILIENCE:BULKHEAD_FULL"),
             Self::Timeout(_) => nebula_error::ErrorCode::new("RESILIENCE:TIMEOUT"),
             Self::Cancelled { .. } => nebula_error::ErrorCode::new("RESILIENCE:CANCELLED"),
+            Self::TaskPanicked => nebula_error::ErrorCode::new("RESILIENCE:TASK_PANICKED"),
             Self::LoadShed => nebula_error::ErrorCode::new("RESILIENCE:LOAD_SHED"),
             Self::RateLimited { .. } => nebula_error::ErrorCode::new("RESILIENCE:RATE_LIMITED"),
             Self::FallbackFailed { .. } | Self::FallbackFailedWithContext { .. } => {
@@ -432,6 +450,8 @@ pub enum CallErrorKind {
     RetriesExhausted,
     /// [`CallError::Cancelled`]
     Cancelled,
+    /// [`CallError::TaskPanicked`]
+    TaskPanicked,
     /// [`CallError::LoadShed`]
     LoadShed,
     /// [`CallError::RateLimited`]
@@ -451,6 +471,7 @@ impl<E> CallError<E> {
             Self::Timeout(_) => CallErrorKind::Timeout,
             Self::RetriesExhausted { .. } => CallErrorKind::RetriesExhausted,
             Self::Cancelled { .. } => CallErrorKind::Cancelled,
+            Self::TaskPanicked => CallErrorKind::TaskPanicked,
             Self::LoadShed => CallErrorKind::LoadShed,
             Self::RateLimited { .. } => CallErrorKind::RateLimited,
             Self::FallbackFailed { .. } | Self::FallbackFailedWithContext { .. } => {

@@ -4,10 +4,10 @@
 use std::{sync::Arc, time::Duration};
 
 use nebula_resilience::{
+    CircuitState,
     bulkhead::{Bulkhead, BulkheadConfig},
     circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, Outcome},
     pipeline::ResiliencePipeline,
-    sink::CircuitState,
 };
 
 // ── CB probe slot released on cancel ────────────────────────────────────────

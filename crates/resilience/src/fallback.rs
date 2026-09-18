@@ -29,14 +29,15 @@ use crate::{
 ///
 /// Implement this trait to define custom fallback behavior.
 pub trait FallbackStrategy<T, E>: Send + Sync {
-    /// Execute recovery logic after [`fallback()`](Self::fallback) has accepted the error.
+    /// Produce a recovery value for an error that
+    /// [`should_fallback()`](Self::should_fallback) accepted.
     ///
-    /// Custom strategies normally implement this method and leave [`fallback()`](Self::fallback)
-    /// alone. Calling `recover` directly intentionally bypasses
-    /// [`should_fallback()`](Self::should_fallback); policy code should call `fallback` so
-    /// cancellation and overload-style errors are not accidentally converted into successful
-    /// graceful degradation.
-    #[doc(hidden)]
+    /// This is the trait's required method: a custom strategy implements
+    /// `recover` and normally leaves [`fallback()`](Self::fallback) alone.
+    /// Policy code should call [`fallback()`](Self::fallback), not `recover`
+    /// directly — `fallback` is what gates recovery on `should_fallback`, so
+    /// calling `recover` bypasses the decision that keeps cancellation and
+    /// backpressure rejections from being reported as graceful degradation.
     fn recover<'a>(
         &'a self,
         error: CallError<E>,

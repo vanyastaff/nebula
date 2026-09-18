@@ -3,9 +3,8 @@
 use std::{sync::Arc, time::Duration};
 
 use nebula_resilience::{
-    CallError,
+    CallError, CircuitState,
     circuit_breaker::{CircuitBreaker, CircuitBreakerConfig},
-    sink::CircuitState,
 };
 
 fn test_config() -> CircuitBreakerConfig {
