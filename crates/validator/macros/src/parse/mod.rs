@@ -114,37 +114,33 @@ pub(crate) fn parse(input: &DeriveInput) -> syn::Result<ValidatorInput> {
 // Type-checking helpers
 // ---------------------------------------------------------------------------
 
-/// Return an error if the field type is not `String` or `Option<String>`.
-pub(super) fn require_string_type(ty: &Type, is_string: bool, attr_name: &str) -> syn::Result<()> {
-    if !is_string {
+/// Return an error if `matches` is false, naming the required field shape.
+///
+/// The three type gates below differ only in the recognized shape and its
+/// diagnostic, so the span-plus-message construction lives here once.
+fn require_shape(ty: &Type, matches: bool, attr_name: &str, shape: &str) -> syn::Result<()> {
+    if !matches {
         return Err(syn::Error::new_spanned(
             ty,
-            format!("`{attr_name}` requires `String` or `Option<String>` fields"),
+            format!("`{attr_name}` requires `{shape}` fields"),
         ));
     }
     Ok(())
+}
+
+/// Return an error if the field type is not `String` or `Option<String>`.
+pub(super) fn require_string_type(ty: &Type, is_string: bool, attr_name: &str) -> syn::Result<()> {
+    require_shape(ty, is_string, attr_name, "String` or `Option<String>")
 }
 
 /// Return an error if the field type is not `Vec<T>` or `Option<Vec<T>>`.
 pub(super) fn require_vec_type(ty: &Type, is_vec: bool, attr_name: &str) -> syn::Result<()> {
-    if !is_vec {
-        return Err(syn::Error::new_spanned(
-            ty,
-            format!("`{attr_name}` requires `Vec<T>` or `Option<Vec<T>>` fields"),
-        ));
-    }
-    Ok(())
+    require_shape(ty, is_vec, attr_name, "Vec<T>` or `Option<Vec<T>>")
 }
 
 /// Return an error if the field type is not `bool` or `Option<bool>`.
 pub(super) fn require_bool_type(ty: &Type, is_bool: bool, attr_name: &str) -> syn::Result<()> {
-    if !is_bool {
-        return Err(syn::Error::new_spanned(
-            ty,
-            format!("`{attr_name}` requires `bool` or `Option<bool>` fields"),
-        ));
-    }
-    Ok(())
+    require_shape(ty, is_bool, attr_name, "bool` or `Option<bool>")
 }
 
 // ---------------------------------------------------------------------------
