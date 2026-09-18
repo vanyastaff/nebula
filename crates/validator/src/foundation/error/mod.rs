@@ -250,6 +250,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::literal_string_with_formatting_args,
+        reason = "{min} is a ValidationError message-template placeholder, not a format arg"
+    )]
     fn rendered_message_matches_display_substitution() {
         let err = ValidationError::new("min_length", "Must be at least {min} characters")
             .with_param("min", "3");
@@ -261,9 +265,6 @@ mod tests {
 
         // No placeholders → borrowed, no allocation.
         let plain = ValidationError::new("required", "This field is required");
-        assert!(matches!(
-            plain.rendered_message(),
-            std::borrow::Cow::Borrowed(_)
-        ));
+        assert!(matches!(plain.rendered_message(), Cow::Borrowed(_)));
     }
 }
