@@ -1,6 +1,6 @@
 //! DAG dependency graph built on `petgraph`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use nebula_core::NodeKey;
 use petgraph::{
@@ -42,25 +42,26 @@ impl DependencyGraph {
         let mut index_map = HashMap::new();
 
         for node in nodes {
-            let idx = graph.add_node(node.id.clone());
+            let id = node.id.clone();
+            let idx = graph.add_node(id.clone());
             // `validate_workflow` also checks duplicates, but plan builders
             // call this constructor directly without that pass, so an
             // unchecked `insert` would orphan the first of two duplicate
             // nodes inside `petgraph` while silently losing it from the
             // index map. Fail loudly here.
-            if index_map.insert(node.id.clone(), idx).is_some() {
-                return Err(WorkflowError::DuplicateNodeKey(node.id.clone()));
+            if index_map.insert(id.clone(), idx).is_some() {
+                return Err(WorkflowError::DuplicateNodeKey(id));
             }
         }
 
         for conn in connections {
             let from_idx = index_map
                 .get(&conn.from_node)
-                .ok_or(WorkflowError::UnknownNode(conn.from_node.clone()))?;
+                .ok_or_else(|| WorkflowError::UnknownNode(conn.from_node.clone()))?;
             let to_idx = index_map
                 .get(&conn.to_node)
-                .ok_or(WorkflowError::UnknownNode(conn.to_node.clone()))?;
-            if conn.from_node == conn.to_node {
+                .ok_or_else(|| WorkflowError::UnknownNode(conn.to_node.clone()))?;
+            if conn.is_self_loop() {
                 return Err(WorkflowError::SelfLoop(conn.from_node.clone()));
             }
             graph.add_edge(*from_idx, *to_idx, conn.clone());
@@ -78,10 +79,15 @@ impl DependencyGraph {
     /// Topological sort of the graph. Returns an error if a cycle exists.
     pub fn topological_sort(&self) -> Result<Vec<NodeKey>, WorkflowError> {
         let sorted = algo::toposort(&self.graph, None).map_err(|_| WorkflowError::CycleDetected)?;
-        Ok(sorted
+        Ok(self.collect_node_keys(sorted))
+    }
+
+    /// Collect [`NodeKey`]s from a sequence of node indices.
+    fn collect_node_keys(&self, indices: impl IntoIterator<Item = NodeIndex>) -> Vec<NodeKey> {
+        indices
             .into_iter()
             .map(|idx| self.graph[idx].clone())
-            .collect())
+            .collect()
     }
 
     /// Compute parallel execution levels using Kahn's algorithm.
@@ -89,50 +95,68 @@ impl DependencyGraph {
     /// Each level contains nodes whose predecessors all appear in earlier levels,
     /// meaning the nodes within a single level can execute concurrently.
     pub fn compute_levels(&self) -> Result<Vec<Vec<NodeKey>>, WorkflowError> {
-        let mut in_degree: HashMap<NodeIndex, usize> = HashMap::new();
-        for idx in self.graph.node_indices() {
-            in_degree.insert(
-                idx,
-                self.graph
-                    .neighbors_directed(idx, Direction::Incoming)
-                    .count(),
-            );
-        }
-
-        let mut levels = Vec::new();
+        let mut in_degree = self.compute_in_degrees();
         let mut remaining: Vec<NodeIndex> = self.graph.node_indices().collect();
+        let mut levels = Vec::new();
 
         while !remaining.is_empty() {
-            let current_level: HashSet<NodeIndex> = remaining
-                .iter()
-                .filter(|idx| in_degree[idx] == 0)
-                .copied()
-                .collect();
-
-            if current_level.is_empty() {
-                return Err(WorkflowError::CycleDetected);
-            }
-
-            for &idx in &current_level {
-                for neighbor in self.graph.neighbors_directed(idx, Direction::Outgoing) {
-                    in_degree.entry(neighbor).and_modify(|deg| *deg -= 1);
-                }
-            }
-
+            let current_level = Self::next_level(&remaining, &in_degree)?;
+            self.decrement_successor_degrees(&current_level, &mut in_degree);
             remaining.retain(|idx| !current_level.contains(idx));
-            for idx in &current_level {
-                in_degree.remove(idx);
-            }
-
-            levels.push(
-                current_level
-                    .into_iter()
-                    .map(|idx| self.graph[idx].clone())
-                    .collect(),
-            );
+            levels.push(self.collect_node_keys(current_level));
         }
 
         Ok(levels)
+    }
+
+    /// Build the initial in-degree map for Kahn's algorithm.
+    fn compute_in_degrees(&self) -> HashMap<NodeIndex, usize> {
+        self.graph
+            .node_indices()
+            .map(|idx| (idx, self.in_degree(idx)))
+            .collect()
+    }
+
+    /// Count incoming edges for a single node.
+    fn in_degree(&self, idx: NodeIndex) -> usize {
+        self.graph
+            .neighbors_directed(idx, Direction::Incoming)
+            .count()
+    }
+
+    /// Pick all remaining nodes whose in-degree has dropped to zero.
+    ///
+    /// Returns an error if no zero-in-degree nodes remain — that means the
+    /// graph contains a cycle.
+    fn next_level(
+        remaining: &[NodeIndex],
+        in_degree: &HashMap<NodeIndex, usize>,
+    ) -> Result<Vec<NodeIndex>, WorkflowError> {
+        let level: Vec<NodeIndex> = remaining
+            .iter()
+            .copied()
+            .filter(|idx| in_degree.get(idx).copied().unwrap_or(0) == 0)
+            .collect();
+
+        if level.is_empty() {
+            return Err(WorkflowError::CycleDetected);
+        }
+        Ok(level)
+    }
+
+    /// Decrement in-degrees for the direct successors of every node in the
+    /// just-completed level and remove those nodes from the degree map.
+    fn decrement_successor_degrees(
+        &self,
+        level: &[NodeIndex],
+        in_degree: &mut HashMap<NodeIndex, usize>,
+    ) {
+        for &idx in level {
+            for neighbor in self.graph.neighbors_directed(idx, Direction::Outgoing) {
+                in_degree.entry(neighbor).and_modify(|deg| *deg -= 1);
+            }
+            in_degree.remove(&idx);
+        }
     }
 
     /// Get all incoming connections (edges pointing TO this node).
@@ -162,57 +186,48 @@ impl DependencyGraph {
     /// Nodes with no incoming edges (start points of the DAG).
     #[must_use]
     pub fn entry_nodes(&self) -> Vec<NodeKey> {
-        self.graph
-            .node_indices()
-            .filter(|&idx| {
-                self.graph
-                    .neighbors_directed(idx, Direction::Incoming)
-                    .count()
-                    == 0
-            })
-            .map(|idx| self.graph[idx].clone())
-            .collect()
+        self.collect_node_keys(
+            self.graph
+                .node_indices()
+                .filter(|&idx| self.in_degree(idx) == 0),
+        )
     }
 
     /// Nodes with no outgoing edges (end points of the DAG).
     #[must_use]
     pub fn exit_nodes(&self) -> Vec<NodeKey> {
+        self.collect_node_keys(
+            self.graph
+                .node_indices()
+                .filter(|&idx| self.out_degree(idx) == 0),
+        )
+    }
+
+    /// Count outgoing edges for a single node.
+    fn out_degree(&self, idx: NodeIndex) -> usize {
         self.graph
-            .node_indices()
-            .filter(|&idx| {
-                self.graph
-                    .neighbors_directed(idx, Direction::Outgoing)
-                    .count()
-                    == 0
-            })
-            .map(|idx| self.graph[idx].clone())
-            .collect()
+            .neighbors_directed(idx, Direction::Outgoing)
+            .count()
+    }
+
+    /// Look up a node index and collect its neighbors in one direction.
+    fn neighbors(&self, id: NodeKey, direction: Direction) -> Vec<NodeKey> {
+        let Some(&idx) = self.index_map.get(&id) else {
+            return Vec::new();
+        };
+        self.collect_node_keys(self.graph.neighbors_directed(idx, direction))
     }
 
     /// Get the predecessor (upstream) node IDs of a given node.
     #[must_use]
     pub fn predecessors(&self, id: NodeKey) -> Vec<NodeKey> {
-        if let Some(&idx) = self.index_map.get(&id) {
-            self.graph
-                .neighbors_directed(idx, Direction::Incoming)
-                .map(|i| self.graph[i].clone())
-                .collect()
-        } else {
-            Vec::new()
-        }
+        self.neighbors(id, Direction::Incoming)
     }
 
     /// Get the successor (downstream) node IDs of a given node.
     #[must_use]
     pub fn successors(&self, id: NodeKey) -> Vec<NodeKey> {
-        if let Some(&idx) = self.index_map.get(&id) {
-            self.graph
-                .neighbors_directed(idx, Direction::Outgoing)
-                .map(|i| self.graph[i].clone())
-                .collect()
-        } else {
-            Vec::new()
-        }
+        self.neighbors(id, Direction::Outgoing)
     }
 
     /// Validate the graph structure: no cycles and at least one entry node.
