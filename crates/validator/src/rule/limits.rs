@@ -130,6 +130,36 @@ pub(super) struct RuleStats {
     pub(super) text_bytes: usize,
 }
 
+/// Reject `actual` when it exceeds `limit`, naming the exhausted budget.
+///
+/// Every budget check in this module is the same comparison with a different
+/// variant constructor, so the comparison lives here once.
+fn ensure_within(
+    actual: usize,
+    limit: usize,
+    reject: fn(usize) -> RuleBuildError,
+) -> Result<(), RuleBuildError> {
+    if actual > limit {
+        return Err(reject(limit));
+    }
+    Ok(())
+}
+
+/// Saturating accumulator for one budget dimension.
+///
+/// Charges `total` and rejects the overflow with the budget-specific variant.
+/// Saturating arithmetic keeps a maliciously large `count` from wrapping the
+/// total into an apparently small value.
+fn charge(
+    total: &mut usize,
+    count: usize,
+    limit: usize,
+    reject: fn(usize) -> RuleBuildError,
+) -> Result<(), RuleBuildError> {
+    *total = total.saturating_add(count);
+    ensure_within(*total, limit, reject)
+}
+
 impl RuleStats {
     pub(super) fn compose(
         children: &[Rule],
@@ -158,37 +188,24 @@ impl RuleStats {
     }
 
     fn ensure_within_limits(self) -> Result<(), RuleBuildError> {
-        if self.depth > MAX_RULE_DEPTH {
-            return Err(RuleBuildError::DepthLimit {
-                limit: MAX_RULE_DEPTH,
-            });
-        }
-        if self.nodes > MAX_RULE_NODES {
-            return Err(RuleBuildError::NodeLimit {
-                limit: MAX_RULE_NODES,
-            });
-        }
-        if self.operands > MAX_RULE_OPERANDS {
-            return Err(RuleBuildError::OperandLimit {
-                limit: MAX_RULE_OPERANDS,
-            });
-        }
-        if self.json_nodes > MAX_RULE_JSON_NODES {
-            return Err(RuleBuildError::JsonNodeLimit {
-                limit: MAX_RULE_JSON_NODES,
-            });
-        }
-        if self.json_depth > MAX_RULE_JSON_DEPTH {
-            return Err(RuleBuildError::JsonDepthLimit {
-                limit: MAX_RULE_JSON_DEPTH,
-            });
-        }
-        if self.text_bytes > MAX_RULE_TEXT_BYTES {
-            return Err(RuleBuildError::TextLimit {
-                limit: MAX_RULE_TEXT_BYTES,
-            });
-        }
-        Ok(())
+        ensure_within(self.depth, MAX_RULE_DEPTH, |limit| {
+            RuleBuildError::DepthLimit { limit }
+        })?;
+        ensure_within(self.nodes, MAX_RULE_NODES, |limit| {
+            RuleBuildError::NodeLimit { limit }
+        })?;
+        ensure_within(self.operands, MAX_RULE_OPERANDS, |limit| {
+            RuleBuildError::OperandLimit { limit }
+        })?;
+        ensure_within(self.json_nodes, MAX_RULE_JSON_NODES, |limit| {
+            RuleBuildError::JsonNodeLimit { limit }
+        })?;
+        ensure_within(self.json_depth, MAX_RULE_JSON_DEPTH, |limit| {
+            RuleBuildError::JsonDepthLimit { limit }
+        })?;
+        ensure_within(self.text_bytes, MAX_RULE_TEXT_BYTES, |limit| {
+            RuleBuildError::TextLimit { limit }
+        })
     }
 }
 
@@ -203,28 +220,18 @@ pub(super) struct RuleBudgetState {
 
 impl RuleBudgetState {
     pub(super) fn enter_rule(&mut self, depth: usize) -> Result<(), RuleBuildError> {
-        if depth > MAX_RULE_DEPTH {
-            return Err(RuleBuildError::DepthLimit {
-                limit: MAX_RULE_DEPTH,
-            });
-        }
-        self.nodes = self.nodes.saturating_add(1);
-        if self.nodes > MAX_RULE_NODES {
-            return Err(RuleBuildError::NodeLimit {
-                limit: MAX_RULE_NODES,
-            });
-        }
-        Ok(())
+        ensure_within(depth, MAX_RULE_DEPTH, |limit| RuleBuildError::DepthLimit {
+            limit,
+        })?;
+        charge(&mut self.nodes, 1, MAX_RULE_NODES, |limit| {
+            RuleBuildError::NodeLimit { limit }
+        })
     }
 
     pub(super) fn add_operands(&mut self, count: usize) -> Result<(), RuleBuildError> {
-        self.operands = self.operands.saturating_add(count);
-        if self.operands > MAX_RULE_OPERANDS {
-            return Err(RuleBuildError::OperandLimit {
-                limit: MAX_RULE_OPERANDS,
-            });
-        }
-        Ok(())
+        charge(&mut self.operands, count, MAX_RULE_OPERANDS, |limit| {
+            RuleBuildError::OperandLimit { limit }
+        })
     }
 
     pub(super) fn add_text(&mut self, text: &str) -> Result<(), RuleBuildError> {
@@ -232,29 +239,19 @@ impl RuleBudgetState {
     }
 
     pub(super) fn add_text_bytes(&mut self, count: usize) -> Result<(), RuleBuildError> {
-        self.text_bytes = self.text_bytes.saturating_add(count);
-        if self.text_bytes > MAX_RULE_TEXT_BYTES {
-            return Err(RuleBuildError::TextLimit {
-                limit: MAX_RULE_TEXT_BYTES,
-            });
-        }
-        Ok(())
+        charge(&mut self.text_bytes, count, MAX_RULE_TEXT_BYTES, |limit| {
+            RuleBuildError::TextLimit { limit }
+        })
     }
 
     pub(super) fn enter_json(&mut self, depth: usize) -> Result<(), RuleBuildError> {
-        if depth > MAX_RULE_JSON_DEPTH {
-            return Err(RuleBuildError::JsonDepthLimit {
-                limit: MAX_RULE_JSON_DEPTH,
-            });
-        }
+        ensure_within(depth, MAX_RULE_JSON_DEPTH, |limit| {
+            RuleBuildError::JsonDepthLimit { limit }
+        })?;
         self.json_depth = self.json_depth.max(depth);
-        self.json_nodes = self.json_nodes.saturating_add(1);
-        if self.json_nodes > MAX_RULE_JSON_NODES {
-            return Err(RuleBuildError::JsonNodeLimit {
-                limit: MAX_RULE_JSON_NODES,
-            });
-        }
-        Ok(())
+        charge(&mut self.json_nodes, 1, MAX_RULE_JSON_NODES, |limit| {
+            RuleBuildError::JsonNodeLimit { limit }
+        })
     }
 
     pub(super) fn add_json_value(&mut self, value: &Value) -> Result<(), RuleBuildError> {
