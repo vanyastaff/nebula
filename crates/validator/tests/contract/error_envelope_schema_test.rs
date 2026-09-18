@@ -130,3 +130,21 @@ fn severity_wire_name_is_snake_case() {
         assert_eq!(json["kind"], "violation");
     }
 }
+
+/// Public combinator types are printable; a library type that cannot be
+/// `Debug`-formatted is hard to inspect in a failing consumer test.
+#[test]
+fn public_combinator_types_are_debug() {
+    use nebula_validator::combinators::{Each, Field, JsonField, MultiField, all_of, any_of};
+    use nebula_validator::validators::{MinLength, min_length};
+
+    let _ = format!("{:?}", MultiField::<String>::new());
+    let _ = format!("{:?}", all_of([min_length(1)]));
+    let _ = format!("{:?}", any_of([min_length(1)]));
+    let _ = format!("{:?}", Each::new(min_length(1)));
+    let json: JsonField<MinLength, str> = JsonField::required("/x", min_length(1));
+    let _ = format!("{json:?}");
+    let field: Field<String, str, MinLength, fn(&String) -> &str> =
+        Field::named("x", min_length(1), String::as_str);
+    let _ = format!("{field:?}");
+}

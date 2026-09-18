@@ -328,6 +328,16 @@ impl<T> Default for MultiField<T> {
     }
 }
 
+// Manual because the validators are boxed closures, which are not `Debug`.
+impl<T> std::fmt::Debug for MultiField<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MultiField")
+            .field("field_count", &self.validators.len())
+            .field("mode", &self.mode)
+            .finish()
+    }
+}
+
 impl<T> Validate<T> for MultiField<T> {
     fn validate(&self, input: &T) -> Result<(), ValidationError> {
         let mut errors = Vec::new();
