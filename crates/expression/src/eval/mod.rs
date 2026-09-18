@@ -1165,20 +1165,16 @@ impl Evaluator {
     fn group_quantified_dangerously(chars: &[char], group_start: usize, group_end: usize) -> bool {
         let len = chars.len();
 
-        // Check if group is followed by a quantifier
-        if group_end < len && (chars[group_end] == '+' || chars[group_end] == '*') {
-            // Check if the group contains a quantifier
-            let group_content: String = chars[group_start + 1..group_end - 1].iter().collect();
-            if group_content.contains('+')
-                || group_content.contains('*')
-                || group_content.contains('{')
-            {
-                // Nested quantifiers detected - potentially dangerous
-                return true;
-            }
+        // Check if group is followed by a quantifier.
+        if group_end >= len || !matches!(chars[group_end], '+' | '*') {
+            return false;
         }
 
-        false
+        // Check if the group content contains a nested quantifier.
+        // `group_end - 1` is the closing `)`; content lives between the parens.
+        chars[group_start + 1..group_end - 1]
+            .iter()
+            .any(|ch| matches!(ch, '+' | '*' | '{'))
     }
 
     #[cfg(not(feature = "regex"))]
@@ -1188,126 +1184,87 @@ impl Evaluator {
         ))
     }
 
-    /// Access a property of an object
+    /// Access a property of an object.
     fn access_property<'a>(
         &self,
         object: EvalValue<'a>,
         property: &str,
     ) -> ExpressionResult<EvalValue<'a>> {
-        if !object.is_object() {
-            return Err(ExpressionError::expression_type_error(
-                "object",
-                crate::value_utils::value_type_name(&object),
-            ));
-        }
+        let missing =
+            || ExpressionError::expression_eval_error(format!("Property '{property}' not found"));
         match object {
             Cow::Borrowed(Value::Object(entries)) => {
-                entries.get(property).map(Cow::Borrowed).ok_or_else(|| {
-                    ExpressionError::expression_eval_error(format!(
-                        "Property '{property}' not found"
-                    ))
-                })
+                entries.get(property).map(Cow::Borrowed).ok_or_else(missing)
             },
             Cow::Owned(Value::Object(entries)) => entries
                 .get(property)
                 .cloned()
                 .map(Cow::Owned)
-                .ok_or_else(|| {
-                    ExpressionError::expression_eval_error(format!(
-                        "Property '{property}' not found"
-                    ))
-                }),
-            Cow::Borrowed(_) | Cow::Owned(_) => Err(ExpressionError::internal(
-                "property access object invariant was not preserved",
+                .ok_or_else(missing),
+            Cow::Borrowed(other) => Err(ExpressionError::expression_type_error(
+                "object",
+                crate::value_utils::value_type_name(other),
+            )),
+            Cow::Owned(other) => Err(ExpressionError::expression_type_error(
+                "object",
+                crate::value_utils::value_type_name(&other),
             )),
         }
     }
 
-    /// Access an element of an array or object by index
+    /// Resolve a signed integer index into a `0..len` position, supporting
+    /// negative indices (Python-style).
+    fn normalize_index(idx: i64, len: usize) -> ExpressionResult<usize> {
+        let len_i64 = len as i64;
+        let actual = if idx < 0 { len_i64 + idx } else { idx };
+        if actual < 0 || actual >= len_i64 {
+            return Err(ExpressionError::expression_index_out_of_bounds(
+                actual as usize,
+                len,
+            ));
+        }
+        Ok(actual as usize)
+    }
+
+    /// Access an element of an array or object by index.
     fn access_index<'a>(
         &self,
         object: EvalValue<'a>,
         index: &Value,
     ) -> ExpressionResult<EvalValue<'a>> {
+        let missing_object = || ExpressionError::expression_eval_error("Object key not found");
         match object {
             Cow::Borrowed(Value::Array(array)) => {
-                let idx = index.as_i64().ok_or_else(|| {
-                    ExpressionError::expression_type_error(
-                        "integer",
-                        crate::value_utils::value_type_name(index),
-                    )
-                })?;
-                let len = array.len() as i64;
-                let actual_idx = if idx < 0 { len + idx } else { idx };
-
-                if actual_idx < 0 || actual_idx >= len {
-                    return Err(ExpressionError::expression_index_out_of_bounds(
-                        actual_idx as usize,
-                        len as usize,
-                    ));
-                }
-
-                array
-                    .get(actual_idx as usize)
-                    .map(Cow::Borrowed)
-                    .ok_or_else(|| {
-                        ExpressionError::expression_index_out_of_bounds(
-                            actual_idx as usize,
-                            len as usize,
-                        )
-                    })
+                let pos = Self::resolve_array_index(index, array.len())?;
+                array.get(pos).map(Cow::Borrowed).ok_or_else(|| {
+                    ExpressionError::expression_index_out_of_bounds(pos, array.len())
+                })
             },
             Cow::Owned(Value::Array(array)) => {
-                let idx = index.as_i64().ok_or_else(|| {
-                    ExpressionError::expression_type_error(
-                        "integer",
-                        crate::value_utils::value_type_name(index),
-                    )
-                })?;
-                let len = array.len() as i64;
-                let actual_idx = if idx < 0 { len + idx } else { idx };
-                if actual_idx < 0 || actual_idx >= len {
-                    return Err(ExpressionError::expression_index_out_of_bounds(
-                        actual_idx as usize,
-                        len as usize,
-                    ));
-                }
-                array
-                    .get(actual_idx as usize)
-                    .cloned()
-                    .map(Cow::Owned)
-                    .ok_or_else(|| {
-                        ExpressionError::expression_index_out_of_bounds(
-                            actual_idx as usize,
-                            len as usize,
-                        )
-                    })
+                let pos = Self::resolve_array_index(index, array.len())?;
+                array.get(pos).cloned().map(Cow::Owned).ok_or_else(|| {
+                    ExpressionError::expression_index_out_of_bounds(pos, array.len())
+                })
             },
-            Cow::Borrowed(Value::Object(entries)) => {
-                let key = index.as_str().ok_or_else(|| {
+            Cow::Borrowed(Value::Object(entries)) => entries
+                .get(index.as_str().ok_or_else(|| {
                     ExpressionError::expression_type_error(
                         "string",
                         crate::value_utils::value_type_name(index),
                     )
-                })?;
-                entries
-                    .get(key)
-                    .map(Cow::Borrowed)
-                    .ok_or_else(|| ExpressionError::expression_eval_error("Object key not found"))
-            },
-            Cow::Owned(Value::Object(entries)) => {
-                let key = index.as_str().ok_or_else(|| {
+                })?)
+                .map(Cow::Borrowed)
+                .ok_or_else(missing_object),
+            Cow::Owned(Value::Object(entries)) => entries
+                .get(index.as_str().ok_or_else(|| {
                     ExpressionError::expression_type_error(
                         "string",
                         crate::value_utils::value_type_name(index),
                     )
-                })?;
-                entries
-                    .get(key)
-                    .cloned()
-                    .map(Cow::Owned)
-                    .ok_or_else(|| ExpressionError::expression_eval_error("Object key not found"))
-            },
+                })?)
+                .cloned()
+                .map(Cow::Owned)
+                .ok_or_else(missing_object),
             Cow::Borrowed(other) => Err(ExpressionError::expression_type_error(
                 "array or object",
                 crate::value_utils::value_type_name(other),
@@ -1317,6 +1274,18 @@ impl Evaluator {
                 crate::value_utils::value_type_name(&other),
             )),
         }
+    }
+
+    /// Resolve an array index value (integer, allowing negative offsets) into
+    /// a `0..len` position.
+    fn resolve_array_index(index: &Value, len: usize) -> ExpressionResult<usize> {
+        let idx = index.as_i64().ok_or_else(|| {
+            ExpressionError::expression_type_error(
+                "integer",
+                crate::value_utils::value_type_name(index),
+            )
+        })?;
+        Self::normalize_index(idx, len)
     }
 
     /// Call a builtin function
