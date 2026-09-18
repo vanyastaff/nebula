@@ -312,6 +312,45 @@ impl<'a> BuiltinView<'a> {
     }
 }
 
+/// A context view whose members can be read directly without materializing
+/// the whole view object (`$node.<key>`, `$execution.<key>`).
+#[derive(Clone, Copy)]
+enum DirectView {
+    Node,
+    Execution,
+}
+
+impl DirectView {
+    /// The view a bare variable name refers to, if any.
+    fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "node" => Some(Self::Node),
+            "execution" => Some(Self::Execution),
+            _ => None,
+        }
+    }
+
+    /// Resolve one member of this view.
+    fn resolve<'a>(self, context: &'a EvaluationContext, key: &str) -> Option<&'a RuntimeValue> {
+        match self {
+            Self::Node => context.resolve_node_value(key),
+            Self::Execution => context.resolve_execution_value(key),
+        }
+    }
+}
+
+/// Charge one member-access step and its depth check.
+///
+/// The entered region is closed immediately, never held across fallible work:
+/// every caller does `charge_member_access(frame)?` and then any further work
+/// (such as evaluating an index expression) outside the entered region.
+fn charge_member_access(frame: &EvalFrame) -> ExpressionResult<()> {
+    frame.tick()?;
+    frame.enter()?;
+    frame.leave();
+    Ok(())
+}
+
 /// Reserved namespace identifiers that dispatch as function libraries.
 fn is_namespace(name: &str) -> bool {
     matches!(name, "Math" | "JSON" | "Object" | "Array" | "Number")
@@ -584,33 +623,13 @@ impl Evaluator {
                 property,
                 optional,
             } => {
-                // Direct `$node.<name>` / `$execution.<name>` lookups keep the
-                // borrow fast path: no intermediate `$node` object is built.
+                // A bare `$node`/`$execution` receiver resolves its member
+                // directly, without materializing the aggregate view object.
                 if let Expr::Variable(name) = object.as_ref()
-                    && name.as_ref() == "node"
+                    && let Some(view) = DirectView::from_name(name)
                 {
-                    frame.tick()?;
-                    frame.enter()?;
-                    let value = context.resolve_node_value(property);
-                    frame.leave();
-                    let Some(value) = value else {
-                        return if *optional {
-                            Ok(Cow::Owned(RuntimeValue::Undefined))
-                        } else {
-                            self.missing_property(property, context).map(Cow::Owned)
-                        };
-                    };
-                    frame.charge_value(value)?;
-                    return Ok(Cow::Borrowed(value));
-                }
-                if let Expr::Variable(name) = object.as_ref()
-                    && name.as_ref() == "execution"
-                {
-                    frame.tick()?;
-                    frame.enter()?;
-                    let value = context.resolve_execution_value(property);
-                    frame.leave();
-                    let Some(value) = value else {
+                    charge_member_access(frame)?;
+                    let Some(value) = view.resolve(context, property) else {
                         return if *optional {
                             Ok(Cow::Owned(RuntimeValue::Undefined))
                         } else {
@@ -631,12 +650,12 @@ impl Evaluator {
                 index,
                 optional,
             } => {
+                // The index expression still evaluates before the lookup, but
+                // outside the entered region: `charge_member_access` closes it.
                 if let Expr::Variable(name) = object.as_ref()
-                    && name.as_ref() == "node"
+                    && let Some(view) = DirectView::from_name(name)
                 {
-                    frame.tick()?;
-                    frame.enter()?;
-                    frame.leave();
+                    charge_member_access(frame)?;
                     let index = self.eval_borrowed_with_frame(index, context, frame)?;
                     let Some(key) = index.as_str() else {
                         return Err(ExpressionError::type_error(
@@ -644,31 +663,7 @@ impl Evaluator {
                             crate::value_utils::value_type_name(&index),
                         ));
                     };
-                    let value = context.resolve_node_value(key);
-                    let Some(value) = value else {
-                        return if *optional {
-                            Ok(Cow::Owned(RuntimeValue::Undefined))
-                        } else {
-                            self.missing_key(context).map(Cow::Owned)
-                        };
-                    };
-                    frame.charge_value(value)?;
-                    return Ok(Cow::Borrowed(value));
-                }
-                if let Expr::Variable(name) = object.as_ref()
-                    && name.as_ref() == "execution"
-                {
-                    frame.tick()?;
-                    frame.enter()?;
-                    frame.leave();
-                    let index = self.eval_borrowed_with_frame(index, context, frame)?;
-                    let Some(key) = index.as_str() else {
-                        return Err(ExpressionError::type_error(
-                            "string",
-                            crate::value_utils::value_type_name(&index),
-                        ));
-                    };
-                    let value = context.resolve_execution_value(key);
+                    let value = view.resolve(context, key);
                     let Some(value) = value else {
                         return if *optional {
                             Ok(Cow::Owned(RuntimeValue::Undefined))

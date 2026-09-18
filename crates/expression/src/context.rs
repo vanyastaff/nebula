@@ -255,6 +255,9 @@ impl EvaluationContext {
     /// `$node` and `$execution` views. Time-derived variables allocate one new
     /// scalar value for each lookup.
     ///
+    /// [`Self::resolve_variable`] and [`Self::resolve_variable_value`] share
+    /// this name table; keep them in sync.
+    ///
     /// # Errors
     /// Returns a resource-limit error before materializing an oversized
     /// aggregate `$node` view.
@@ -273,7 +276,9 @@ impl EvaluationContext {
             "node" => Some(Arc::clone(self.node_view()?)),
             "execution" => Some(Arc::clone(self.execution_view()?)),
             "workflow" => Some(Arc::clone(&self.workflow)),
-            "input" => Some(Arc::clone(&self.input)),
+            // `$json` is the n8n spelling of the current item's data. This
+            // crate resolves one item at a time, so it is exactly `$input`.
+            "input" | "json" => Some(Arc::clone(&self.input)),
             "now" => Some(Arc::new(RuntimeValue::date_time_utc(Utc::now()))),
             "today" => Some(Arc::new(RuntimeValue::date_time_utc(
                 Utc::now()
@@ -287,6 +292,8 @@ impl EvaluationContext {
     }
 
     /// Borrow stored data so the evaluator can check its budget before cloning.
+    ///
+    /// Name table shared with [`Self::resolve_variable`]; keep them in sync.
     pub(crate) fn resolve_variable_value(
         &self,
         name: &str,
@@ -305,7 +312,8 @@ impl EvaluationContext {
             "node" => Some(Cow::Borrowed(self.node_view()?)),
             "execution" => Some(Cow::Borrowed(self.execution_view()?)),
             "workflow" => Some(Cow::Borrowed(&self.workflow)),
-            "input" => Some(Cow::Borrowed(&self.input)),
+            // See `resolve_variable`: `$json` aliases the current item.
+            "input" | "json" => Some(Cow::Borrowed(&self.input)),
             "now" => Some(Cow::Owned(RuntimeValue::date_time_utc(Utc::now()))),
             "today" => Some(Cow::Owned(RuntimeValue::date_time_utc(
                 Utc::now()
@@ -703,5 +711,20 @@ mod tests {
         let today = context.resolve_variable("today").unwrap().unwrap();
         let today = today.as_date_time().expect("`$today` must be a date value");
         assert_eq!(today.format("%H:%M:%S").to_string(), "00:00:00");
+    }
+
+    #[test]
+    fn json_and_input_resolve_to_the_same_shared_value() {
+        // `$json` is the n8n spelling of the current item and must not be a
+        // second copy that can drift from `$input`.
+        let mut context = EvaluationContext::new();
+        context.set_input(Value::String("item".into()));
+
+        let from_input = context.resolve_variable("input").unwrap().unwrap();
+        let from_json = context.resolve_variable("json").unwrap().unwrap();
+        assert!(Arc::ptr_eq(&from_input, &from_json));
+
+        let borrowed = context.resolve_variable_value("json").unwrap().unwrap();
+        assert_eq!(borrowed.as_ref(), from_input.as_ref());
     }
 }

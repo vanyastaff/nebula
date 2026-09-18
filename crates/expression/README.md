@@ -60,8 +60,13 @@ See `src/lib.rs` rustdoc for the quick-start example.
 
 ## Contract
 
-- **Expression variables:** `$node`, `$execution`, `$workflow`, `$input` — the four
-  standard execution-time variable namespaces. Seam: `crates/expression/src/context.rs`.
+- **Expression variables:** `$node`, `$execution`, `$workflow`, `$input`, plus `$json`
+  (the n8n spelling of the current item, which is exactly `$input` because this crate
+  resolves one item at a time), `$now`, and `$today`. Seam:
+  `crates/expression/src/context.rs`. `$node`/`$execution` members resolve directly
+  without building the aggregate view object. The n8n item model (`$item`, `$items()`,
+  `$position`, `$itemIndex`) is not implemented: it needs multiple outputs per node,
+  which is an engine/workflow contract.
 - **Compilation boundary:** compile once and retain `CompiledProgram`; evaluation never
   reparses its source. Compilation checks syntax, not variable existence, builtin
   availability, policy, or expected result type. Those remain runtime checks.

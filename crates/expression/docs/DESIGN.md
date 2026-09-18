@@ -141,10 +141,12 @@ chains and builtin dispatch rather than cloning the referenced graph.
 5. **Path to an n8n-class engine.** The stated target is an authoring language and
    template engine at n8n's level. Landed: method calls on values (`items.filter(…)`),
    optional chaining (`?.`), nullish coalescing (`??`), namespace libraries
-   (`Math`/`JSON`/`Object`/`Number`/`Array`), and typed date-times with `plus`/`diff`/
-   `toFormat` methods and calendar units. Still unrealized: `$json`/`$item`-class
-   namespaces, the item model (`$items()` with multiple outputs per node), and Jinja-style
-   `{% if %}` / `{% for %}` template control flow. This is unrealized scope, not a defect.
+   (`Math`/`JSON`/`Object`/`Number`/`Array`), `$json` as the n8n spelling of the
+   current item, and typed date-times with `plus`/`diff`/`toFormat` methods and
+   calendar units. Still unrealized: the item model (`$item`, `$items()`, `$position`,
+   `$itemIndex` with multiple outputs per node — that is an engine/workflow design, not
+   a naming gap the context can invent), and Jinja-style `{% if %}` / `{% for %}`
+   template control flow. This is unrealized scope, not a defect.
 6. **Methods are a syntax, not a second library.** `builtins/methods.rs` only maps
    JavaScript/Luxon names onto the registered builtins; the receiver becomes the first
    argument. Adding a method implementation there instead of a builtin would fork the

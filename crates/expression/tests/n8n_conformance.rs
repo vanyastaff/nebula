@@ -300,3 +300,32 @@ fn now_is_a_typed_date_value() {
         "`$now` must stay a typed date inside evaluation, got {value:?}"
     );
 }
+
+// ──────────────────────────────────────────────
+// Context namespaces
+// ──────────────────────────────────────────────
+
+#[test]
+fn json_aliases_the_current_item() {
+    // n8n authors write `$json.field`; this crate resolves one item at a
+    // time, so `$json` is exactly `$input`.
+    assert_eq!(
+        evaluate("$json.person.name"),
+        evaluate("$input.person.name")
+    );
+    assert_eq!(
+        evaluate_authoring("$json.items.filter(x => x > 1)"),
+        evaluate_authoring("$input.items.filter(x => x > 1)")
+    );
+    assert_eq!(evaluate_authoring("$json.missing ?? 'x'"), json!("x"));
+}
+
+#[test]
+fn json_and_input_share_one_binding() {
+    // Both names must resolve to the same value, not two copies that can
+    // drift when one of them is fixed.
+    let context = context();
+    let from_json = engine().evaluate("$json.person", &context).unwrap();
+    let from_input = engine().evaluate("$input.person", &context).unwrap();
+    assert_eq!(from_json, from_input);
+}
