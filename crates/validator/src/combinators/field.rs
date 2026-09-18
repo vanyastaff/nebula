@@ -236,7 +236,7 @@ where
 ///
 /// assert!(validator.validate(&User { email: "a@b.co".into() }).is_ok());
 /// let err = validator.validate(&User { email: "a@b".into() }).unwrap_err();
-/// assert_eq!(err.field.as_deref(), Some("/email"));
+/// assert_eq!(err.field_pointer().as_deref(), Some("/email"));
 /// ```
 pub trait FieldValidateExt<U: ?Sized>: Validate<U> + Sized {
     /// Creates a field validator for this validator.

@@ -87,7 +87,6 @@ pub mod and;
 pub mod each;
 pub mod factories;
 pub mod field;
-pub mod lazy;
 pub mod message;
 pub mod nested;
 pub mod not;
@@ -106,7 +105,6 @@ pub use field::{Field, FieldValidateExt, MultiField, field, named_field};
 pub use json_field::{
     CollectJsonFields, JsonField, collect_json_fields, json_field, json_field_optional,
 };
-pub use lazy::{Lazy, lazy};
 pub use message::{WithCode, WithMessage, with_code, with_message};
 pub use nested::{
     CollectionNested, NestedValidate, OptionalNested, SelfValidating, collection_nested,

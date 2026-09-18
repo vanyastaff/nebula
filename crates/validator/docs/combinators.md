@@ -250,16 +250,24 @@ error codes, or when you need to map to a specific code expected by a downstream
 
 ---
 
-## `Lazy<V>` — deferred construction
+## Deferred construction
 
-Defers validator construction until the first call. Useful when the validator is expensive to
-build (e.g., compiling a regex) and may not always be needed.
+There is no `Lazy` combinator. An off-the-shelf deferral wrapper cannot serve this crate:
+the expensive validators that would justify one (`Email`, `Url`, `MatchesRegex`) build
+fallibly, and a `Fn() -> V` wrapper has no way to surface a construction failure. Their
+patterns are compiled once per process behind a `OnceLock<Result<Regex, _>>`, and a failure
+becomes an `unavailable` diagnostic on the call that needed it.
+
+If you need to defer an infallible validator, use `std::sync::OnceLock` directly:
 
 ```rust
-use nebula_validator::combinators::lazy;
+use std::sync::OnceLock;
+use nebula_validator::foundation::Validate;
+use nebula_validator::validators::min_length;
 
-let v = lazy(|| matches_regex(r"^\d{4}-\d{2}-\d{2}$").expect("valid regex"));
-// Regex is compiled only on the first call to validate().
+static RULES: OnceLock<nebula_validator::validators::MinLength> = OnceLock::new();
+let rules = RULES.get_or_init(|| min_length(3));
+assert!(rules.validate("hello").is_ok());
 ```
 
 ---
@@ -307,7 +315,3 @@ as three sequential `if` checks. No allocation, no vtable.
 
 **`AnyValidator` costs ~2–5 ns per call** from the vtable indirection. This is negligible for
 user-input validation but avoid it in tight inner loops over millions of items.
-
-**`Lazy` saves startup time** but pays a branch on every call to check whether the inner
-validator has been initialized. After the first call, the branch is predicted and essentially
-free. Use it for module-level statics or conditionally constructed validators.

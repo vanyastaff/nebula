@@ -129,7 +129,6 @@ validate_rules(
 | Proof tokens | `Validated<T>` | Zero-cost; `Deserialize` intentionally omitted |
 | Declarative rules | `Rule` enum | JSON-serializable; runtime evaluation |
 | Batch rule evaluation | `validate_rules` + `ExecutionMode` | `StaticOnly` / `Deferred` / `Full` |
-| Lazy construction | `Lazy<V>` | Defers expensive init (regex, etc.) until first use |
 | Custom validators | `validator!` macro | Generates struct + `Validate<T>` impl + constructor |
 | Structured errors | `ValidationError` | Nested trees, RFC 6901 paths, sensitive-key redaction |
 | Error aggregation | `ValidationErrors` | Collects multiple errors; `into_single_error()` |
@@ -196,7 +195,6 @@ nebula-validator/
 │       ├── json_field.rs      JsonField<V, I>
 │       ├── factories.rs       AllOf<V>, AnyOf<V>
 │       ├── message.rs         WithMessage<V>
-│       ├── lazy.rs            Lazy<V>
 │       └── mod.rs
 └── docs/
     ├── README.md              ← this file

@@ -188,7 +188,6 @@ nebula-validator/src/
 │   ├── factories.rs   AllOf<V> — all validators in a Vec must pass.
 │   │                  AnyOf<V> — at least one must pass (empty rejects).
 │   ├── message.rs     WithMessage<V> — overrides the error message and/or code.
-│   ├── lazy.rs        Lazy<V> — defers construction until first call.
 │   └── mod.rs         Module declarations and re-exports.
 │
 ├── rule/              Rule arena: value/predicate/deferred/logic nodes, bounded
@@ -302,7 +301,7 @@ Contract tests have **zero flakiness tolerance**. A flaky contract test is treat
 broken contract, not a test infrastructure issue.
 
 Benchmarks in `benches/` cover the hot paths: string validators, combinator chains,
-error construction, and lazy initialization. Regressions beyond the agreed threshold fail CI.
+error construction. Regressions beyond the agreed threshold fail CI.
 
 ---
 

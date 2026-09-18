@@ -75,7 +75,7 @@ in `nebula-api`. There is no KDF or hashing here either (that is
   `error/`), `FieldPath`. No nested prelude: the crate-level `prelude` is the single import
   surface.
 - `combinators/` — `And`/`Or`/`Not`/`When`/`Unless`/`Each`/`Field`/`MultiField`/`JsonField`/
-  `Lazy`/`WithMessage`/`NestedValidate`/`OptionalNested`/`CollectionNested`/`Optional`/
+  `WithMessage`/`NestedValidate`/`OptionalNested`/`CollectionNested`/`Optional`/
   `AllOf`/`AnyOf`.
 - `validators/` — built-ins by category: length, pattern, content, range, size, boolean,
   nullable, network (cfg), temporal (cfg).
