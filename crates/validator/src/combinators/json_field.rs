@@ -213,15 +213,19 @@ where
                 errors.push(e);
             }
         }
-        match errors.len() {
-            0 => Ok(()),
-            1 => Err(errors.pop().expect("checked len == 1 above")),
-            count => Err(ValidationError::new(
-                "validation_failed",
-                format!("{count} fields failed validation"),
-            )
-            .with_nested(errors)),
+        let Some(last) = errors.pop() else {
+            return Ok(());
+        };
+        if errors.is_empty() {
+            return Err(last);
         }
+        errors.push(last);
+        let count = errors.len();
+        Err(ValidationError::new(
+            "validation_failed",
+            format!("{count} fields failed validation"),
+        )
+        .with_nested(errors))
     }
 }
 

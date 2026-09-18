@@ -19,7 +19,7 @@ use crate::{
     engine::DiagnosticDisclosure,
     foundation::{Validate, ValidationError, validatable::json_type_name},
     validators::{
-        content::{EMAIL_REGEX, URL_REGEX},
+        content::{email_regex, url_regex},
         max_length, max_size, min_length, min_size,
     },
 };
@@ -258,7 +258,7 @@ impl ValueRule {
                 let s = value
                     .as_str()
                     .ok_or_else(|| type_mismatch(value, "string", disclosure))?;
-                if !EMAIL_REGEX.is_match(s) {
+                if !email_regex()?.is_match(s) {
                     return Err(with_input_value(
                         ValidationError::invalid_format("", "email"),
                         value,
@@ -271,7 +271,7 @@ impl ValueRule {
                 let s = value
                     .as_str()
                     .ok_or_else(|| type_mismatch(value, "string", disclosure))?;
-                if !URL_REGEX.is_match(s) {
+                if !url_regex()?.is_match(s) {
                     return Err(with_input_value(
                         ValidationError::invalid_format("", "url"),
                         value,

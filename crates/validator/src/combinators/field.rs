@@ -343,19 +343,20 @@ impl<T> Validate<T> for MultiField<T> {
             }
         }
 
+        // Pop the last failure first: if it was the only one, return it
+        // directly; otherwise put it back and wrap the whole set. This avoids
+        // both a panic-on-`unwrap` and a dead branch for `len() == 1`.
+        let Some(last) = errors.pop() else {
+            return Ok(());
+        };
         if errors.is_empty() {
-            Ok(())
-        } else if errors.len() == 1 {
-            Err(errors
-                .into_iter()
-                .next()
-                .expect("errors.len() == 1 guarantees next() succeeds"))
-        } else {
-            Err(
-                ValidationError::new("multiple_field_errors", "Multiple field validation errors")
-                    .with_nested(errors),
-            )
+            return Err(last);
         }
+        errors.push(last);
+        Err(
+            ValidationError::new("multiple_field_errors", "Multiple field validation errors")
+                .with_nested(errors),
+        )
     }
 }
 

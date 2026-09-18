@@ -90,13 +90,15 @@ pub(super) fn validate_all(
         ..
     } = collect_children(children, input, ctx, mode, disclosure)?;
 
-    if errors.is_empty() {
+    // A single failure is returned directly, not wrapped in `all_failed`.
+    // Pop first, so the "exactly one" case needs no panic and no dead branch.
+    let Some(last) = errors.pop() else {
         return Ok(EvaluationOutcome::from_deferred(deferred));
+    };
+    if errors.is_empty() {
+        return Err(last);
     }
-    if errors.len() == 1 {
-        // Single failure is returned directly, not wrapped in `all_failed`.
-        return Err(errors.pop().expect("checked len == 1 above"));
-    }
+    errors.push(last);
     let count = errors.len();
     Err(
         ValidationError::new("all_failed", format!("{count} of the rules failed"))

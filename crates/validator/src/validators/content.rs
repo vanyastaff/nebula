@@ -27,9 +27,9 @@
 //! assert!(validator.validate("123-4567").is_ok());
 //! ```
 
-use std::sync::LazyLock;
+use std::sync::OnceLock;
 
-use crate::foundation::ValidationError;
+use crate::foundation::{Validate, ValidationError};
 
 /// Email regex pattern (shared with `Rule::Email` in `rule.rs`).
 pub(crate) const EMAIL_PATTERN: &str = r"^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$";
@@ -37,13 +37,36 @@ pub(crate) const EMAIL_PATTERN: &str = r"^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA
 /// URL regex pattern (shared with `Rule::Url` in `rule.rs`).
 pub(crate) const URL_PATTERN: &str = r"^https?://[^\s/$.?#]+\.[^\s]+$";
 
-/// Compiled [`EMAIL_PATTERN`], shared with `rule::ValueRule::Email`.
-pub(crate) static EMAIL_REGEX: LazyLock<regex::Regex> =
-    LazyLock::new(|| regex::Regex::new(EMAIL_PATTERN).unwrap());
+/// Compile a fixed crate pattern once, without panicking on failure.
+///
+/// A failure here means a build-time regression in one of the constants above;
+/// the `built_in_patterns_compile` test catches that in CI. Returning the
+/// failure keeps the library panic-free anyway: a validator built on a broken
+/// pattern reports `unavailable` (a structural diagnostic) rather than aborting
+/// the process or silently rejecting every input.
+fn compile_fixed(
+    slot: &'static OnceLock<Result<regex::Regex, String>>,
+    pattern: &'static str,
+) -> Result<&'static regex::Regex, ValidationError> {
+    match slot.get_or_init(|| regex::Regex::new(pattern).map_err(|error| error.to_string())) {
+        Ok(regex) => Ok(regex),
+        Err(_) => Err(ValidationError::unavailable(
+            "the built-in validation pattern failed to compile",
+        )),
+    }
+}
 
-/// Compiled [`URL_PATTERN`], shared with `rule::ValueRule::Url`.
-pub(crate) static URL_REGEX: LazyLock<regex::Regex> =
-    LazyLock::new(|| regex::Regex::new(URL_PATTERN).unwrap());
+/// The shared compiled [`EMAIL_PATTERN`], resolved on first use.
+pub(crate) fn email_regex() -> Result<&'static regex::Regex, ValidationError> {
+    static REGEX: OnceLock<Result<regex::Regex, String>> = OnceLock::new();
+    compile_fixed(&REGEX, EMAIL_PATTERN)
+}
+
+/// The shared compiled [`URL_PATTERN`], resolved on first use.
+pub(crate) fn url_regex() -> Result<&'static regex::Regex, ValidationError> {
+    static REGEX: OnceLock<Result<regex::Regex, String>> = OnceLock::new();
+    compile_fixed(&REGEX, URL_PATTERN)
+}
 
 crate::validator! {
     /// Validates that a string matches a regular expression.
@@ -72,58 +95,76 @@ crate::validator! {
     fn matches_regex(pattern: &str) -> regex::Error;
 }
 
-crate::validator! {
-    /// Validates email format.
-    ///
-    /// Uses a simple but effective regex pattern that checks for basic
-    /// email structure (local part @ domain).
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// use nebula_validator::validators::email;
-    /// use nebula_validator::foundation::Validate;
-    ///
-    /// let validator = email();
-    /// assert!(validator.validate("user@example.com").is_ok());
-    /// assert!(validator.validate("invalid").is_err());
-    /// ```
-    pub Email { pattern: regex::Regex } for str;
-    rule(self, input) { self.pattern.is_match(input) }
-    error(self, input) { ValidationError::invalid_format("", "email") }
-    new() {
-        Self {
-            pattern: EMAIL_REGEX.clone(),
+/// Validates email format.
+///
+/// Checks basic email structure (local part @ domain) against
+/// [`EMAIL_PATTERN`]. The pattern is compiled once per process on first use;
+/// a compile failure surfaces as an `unavailable` diagnostic rather than a
+/// panic or a silent rejection.
+///
+/// # Examples
+///
+/// ```rust
+/// use nebula_validator::validators::email;
+/// use nebula_validator::foundation::Validate;
+///
+/// let validator = email();
+/// assert!(validator.validate("user@example.com").is_ok());
+/// assert!(validator.validate("invalid").is_err());
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Email;
+
+impl Validate<str> for Email {
+    fn validate(&self, input: &str) -> Result<(), ValidationError> {
+        if email_regex()?.is_match(input) {
+            Ok(())
+        } else {
+            Err(ValidationError::invalid_format("", "email"))
         }
     }
-    fn email();
 }
 
-crate::validator! {
-    /// Validates URL format.
-    ///
-    /// Validates HTTP and HTTPS URLs using a regex pattern.
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// use nebula_validator::validators::url;
-    /// use nebula_validator::foundation::Validate;
-    ///
-    /// let validator = url();
-    /// assert!(validator.validate("https://example.com").is_ok());
-    /// assert!(validator.validate("http://example.com/path").is_ok());
-    /// assert!(validator.validate("invalid").is_err());
-    /// ```
-    pub Url { pattern: regex::Regex } for str;
-    rule(self, input) { self.pattern.is_match(input) }
-    error(self, input) { ValidationError::invalid_format("", "url") }
-    new() {
-        Self {
-            pattern: URL_REGEX.clone(),
+/// Creates an email-format validator.
+#[must_use]
+pub const fn email() -> Email {
+    Email
+}
+
+/// Validates URL format.
+///
+/// Accepts HTTP and HTTPS URLs per [`URL_PATTERN`]. The pattern is compiled
+/// once per process on first use; a compile failure surfaces as an
+/// `unavailable` diagnostic rather than a panic or a silent rejection.
+///
+/// # Examples
+///
+/// ```rust
+/// use nebula_validator::validators::url;
+/// use nebula_validator::foundation::Validate;
+///
+/// let validator = url();
+/// assert!(validator.validate("https://example.com").is_ok());
+/// assert!(validator.validate("http://example.com/path").is_ok());
+/// assert!(validator.validate("invalid").is_err());
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Url;
+
+impl Validate<str> for Url {
+    fn validate(&self, input: &str) -> Result<(), ValidationError> {
+        if url_regex()?.is_match(input) {
+            Ok(())
+        } else {
+            Err(ValidationError::invalid_format("", "url"))
         }
     }
-    fn url();
+}
+
+/// Creates a URL-format validator.
+#[must_use]
+pub const fn url() -> Url {
+    Url
 }
 
 #[cfg(test)]
@@ -154,5 +195,17 @@ mod tests {
         assert!(validator.validate("https://example.com/path").is_ok());
         assert!(validator.validate("invalid").is_err());
         assert!(validator.validate("ftp://example.com").is_err());
+    }
+}
+
+#[cfg(test)]
+mod builtin_pattern_tests {
+    use super::*;
+
+    /// A constant that no longer compiles must fail here, not at runtime.
+    #[test]
+    fn built_in_patterns_compile() {
+        assert!(email_regex().is_ok(), "EMAIL_PATTERN must compile");
+        assert!(url_regex().is_ok(), "URL_PATTERN must compile");
     }
 }
