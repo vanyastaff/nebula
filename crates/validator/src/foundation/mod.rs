@@ -101,16 +101,6 @@ pub mod prelude {
 }
 
 // ============================================================================
-// TYPE ALIASES
-// ============================================================================
-
-/// A validation result using the standard `ValidationError`.
-pub type ValidationResult<T> = Result<T, ValidationError>;
-
-/// A validation result that can contain multiple errors.
-pub type ValidationResultMulti<T> = Result<T, ValidationErrors>;
-
-// ============================================================================
 // TESTS
 // ============================================================================
 

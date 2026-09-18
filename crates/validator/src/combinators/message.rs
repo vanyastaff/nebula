@@ -112,35 +112,47 @@ pub fn with_message<V>(validator: V, message: impl Into<String>) -> WithMessage<
 // WITH CODE (type alias for backwards compatibility)
 // ============================================================================
 
-/// Type alias for backwards compatibility.
+/// Overrides only the error code of a validator, keeping its message.
 ///
-/// `WithCode<V>` is now [`WithMessage<V>`] configured to only override the error code.
-///
-/// # Warning
-///
-/// **Do not use `WithCode::new()`** — it is inherited from `WithMessage` and sets the
-/// *message*, not the code. Use [`with_code()`] or [`WithMessage::code_only()`] instead.
+/// This is [`WithMessage`] with a code-only constructor: unlike `WithMessage`,
+/// whose `new` takes a message, `WithCode::new` takes the code. The two stay
+/// distinct types so a positional argument can never be silently misread.
 ///
 /// # Examples
 ///
 /// ```rust
-/// use nebula_validator::combinators::{with_code, WithMessage};
+/// use nebula_validator::combinators::WithCode;
 /// use nebula_validator::validators::min_length;
 /// use nebula_validator::foundation::Validate;
 ///
-/// // Correct: use the free function
-/// let validator = with_code(min_length(8), "ERR_PASSWORD_TOO_SHORT");
-/// assert_eq!(validator.validate("short").unwrap_err().code, "ERR_PASSWORD_TOO_SHORT");
-///
-/// // Also correct: use code_only constructor
-/// let validator = WithMessage::code_only(min_length(8), "ERR_PASSWORD_TOO_SHORT");
-/// assert_eq!(validator.validate("short").unwrap_err().code, "ERR_PASSWORD_TOO_SHORT");
+/// let validator = WithCode::new(min_length(8), "ERR_PASSWORD_TOO_SHORT");
+/// assert_eq!(
+///     validator.validate("short").unwrap_err().code,
+///     "ERR_PASSWORD_TOO_SHORT",
+/// );
 /// ```
-pub type WithCode<V> = WithMessage<V>;
+#[derive(Debug, Clone)]
+pub struct WithCode<V>(WithMessage<V>);
+
+impl<V> WithCode<V> {
+    /// Creates a combinator that overrides only the error code.
+    pub fn new(inner: V, code: impl Into<String>) -> Self {
+        Self(WithMessage::code_only(inner, code))
+    }
+}
+
+impl<T: ?Sized, V> Validate<T> for WithCode<V>
+where
+    V: Validate<T>,
+{
+    fn validate(&self, input: &T) -> Result<(), ValidationError> {
+        self.0.validate(input)
+    }
+}
 
 /// Creates a combinator that overrides only the error code.
-pub fn with_code<V>(validator: V, code: impl Into<String>) -> WithMessage<V> {
-    WithMessage::code_only(validator, code)
+pub fn with_code<V>(validator: V, code: impl Into<String>) -> WithCode<V> {
+    WithCode::new(validator, code)
 }
 
 // ============================================================================

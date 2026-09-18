@@ -66,6 +66,10 @@ impl ValidationErrors {
     }
 
     /// Returns a mutable reference to the last error, if any.
+    ///
+    /// Used by `#[derive(Validator)]` to attach a field's `message = "..."`
+    /// override to exactly the error that check just pushed, without
+    /// re-scanning the collection.
     #[inline]
     pub fn last_mut(&mut self) -> Option<&mut ValidationError> {
         self.errors.last_mut()
@@ -75,17 +79,6 @@ impl ValidationErrors {
     #[inline]
     pub fn into_single_error(self, message: impl Into<Cow<'static, str>>) -> ValidationError {
         ValidationError::new("validation_errors", message).with_nested(self.errors)
-    }
-
-    /// Converts to a Result.
-    #[must_use = "result must be used"]
-    #[inline]
-    pub fn into_result<T>(self, ok_value: T) -> Result<T, ValidationErrors> {
-        if self.is_empty() {
-            Ok(ok_value)
-        } else {
-            Err(self)
-        }
     }
 }
 

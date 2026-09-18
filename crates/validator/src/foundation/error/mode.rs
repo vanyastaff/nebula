@@ -40,11 +40,4 @@ impl ValidationMode {
     pub fn is_fail_fast(self) -> bool {
         matches!(self, Self::FailFast)
     }
-
-    /// Returns `true` if this mode collects all errors.
-    #[inline]
-    #[must_use]
-    pub fn is_collect_all(self) -> bool {
-        matches!(self, Self::CollectAll)
-    }
 }
