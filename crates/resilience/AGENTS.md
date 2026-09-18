@@ -19,7 +19,7 @@
 - `cargo check -p nebula-resilience --all-features` and `cargo check -p nebula-resilience --all-targets --no-default-features` exercise the optional/default-free shapes separately.
 - `cargo test -p nebula-resilience --doc` — the rustdoc examples are the reference documentation and must compile.
 - benches: `cargo bench -p nebula-resilience --features bench-internals` (retry, hedge, latency_tracker, compose need that feature; the rest do not).
-- features: `serde` (default), `full` (= serde), `bench-internals`.
+- features: `serde` (default), `bench-internals`.
 
 ## Key files
 

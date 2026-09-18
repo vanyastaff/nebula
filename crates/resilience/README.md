@@ -38,7 +38,6 @@ for transient in-action failures compose inside the action.
 | Feature | Default | Purpose |
 |---------|---------|---------|
 | `serde` | yes | Serde support for config/value boundary types: configs, error/event discriminants, policy scopes, pipeline outcomes, stats, and load snapshots. |
-| `full` | no | Convenience alias for every normal optional feature owned by this crate; currently equivalent to `serde`. |
 | `bench-internals` | no | Exposes internal helpers (`retry_with_inner`, `LatencyTracker`) that the criterion benches measure directly. Adds visibility only, never behavior; not part of the documented surface. |
 
 The crate intentionally does not expose optional third-party limiter wrappers. Built-in rate
