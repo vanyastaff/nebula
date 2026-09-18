@@ -482,6 +482,17 @@ let admitted = recorded.readmit_against(fresh)?;
 
 ### Added
 
+- **Bounded shutdown drains, and rate limiters that actually share.**
+  `nebula-api` gains `ShutdownGate`, which wraps a router in
+  `nebula_resilience::Gate`: new requests get 503 once closing, `/health` and
+  `/ready` stay admitted, and `apps/server` drains within a 10s budget instead
+  of waiting on in-flight requests without a bound. `apps/worker` gets the
+  same treatment (20s, `WorkerRunError::ShutdownTimedOut`). `WorkflowEngine`
+  now keeps one `TokenBucket` per action key for its whole lifetime —
+  previously a fresh bucket was built per node dispatch, so retries and
+  sibling nodes each drew a full quota — and an unrepresentable
+  `rate_limit` policy is a typed `ENGINE:RATE_LIMIT_POLICY` setup refusal
+  instead of a silently dropped limit.
 - **Credential reconciliation command.** A poisoned refresh claim (an expired
   in-flight row the claim store answers as outcome-unknown) is now resolvable
   through `CredentialController::reconcile` over the HTTP route, gated by the

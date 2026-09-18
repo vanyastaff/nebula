@@ -31,14 +31,43 @@ field was renamed.
 | `BulkheadConfig::timeout` | `queue_wait_timeout` | it bounds queue wait, not the call |
 | `PolicyContext` | `CallContext` | the context of one protected call |
 | `flat_map_inner` | `flat_map_operation` | one error-mapping vocabulary in the crate |
+| `timeout_with_policy_context[_and_sink]` · `load_shed_with_policy_context[_and_sink]` · `acquire_with_policy_context` · `call_with_classifier_and_policy_context` | same names with `_with_context` | one context axis across the pipeline, combinator, and trait methods |
+| `build_checked` / `build_recommended_order` | `try_build` / `build_sorted` | Rust `try_` convention for fallible construction; the other name says what it does |
+
+### Added
+
+- `RateLimiter::status() -> RateLimiterStatus` replacing the four-meanings
+  `current_rate()`; `ErasedRateLimiter::status_boxed` is the object-safe twin.
+- `CallError::TaskPanicked`, so a panicked hedge attempt is representable
+  without being reported as cancellation.
+- `bench-internals` feature: exposes `retry_with_inner` and `LatencyTracker`
+  for the criterion benches without putting them on the documented surface.
+  The crate's own integration effects (server/worker drains, engine limiter
+  sharing) are recorded in the repository CHANGELOG.
+
+### Changed
+
+- Rustdoc is now the reference documentation: all summary lines are
+  third person, every fallible item carries `# Errors`, every `pub async fn`
+  carries a `# Cancel safety` section, and every public type links to an
+  example (RFC 1574 / Rust API Guidelines).
+- `doc(alias)` on the config and seam types maps the crate's names to the
+  industry synonyms (Resilience4j, Polly, AWS SDK, RFC 9110); `README.md`
+  carries the full table.
+- Module layout: `rate_limiter/` is now one module per algorithm plus the
+  trait; `pipeline/` is split into `builder.rs` and `executor.rs`.
 
 ### Removed
 
-- `ResiliencePipeline::call_with_context` and `call_with_context_and_fallback` —
-  `call_with_context`/`call_with_context_and_fallback` now take the richer
-  context directly, so the cancellation-only duplicates are gone.
+- The `docs/` prose folder. It documented APIs that no longer existed
+  (`close_with_timeout()`, old `Outcome`/`BackoffConfig` shapes) and a `Gate`
+  consumer that did not exist; the rustdoc and doctests replace it.
+- The cancellation-only `call_with_context` / `call_with_context_and_fallback`
+  pipeline methods. The context-taking methods (`call_with_policy_context*`)
+  were renamed to those names, so `ResiliencePipeline` now has one context
+  axis and four call methods instead of six with two meanings of "context".
 - `CancellationContext::call` / `call_with_timeout` — replaced by the composable
-  `timeout_with_policy_context` / `bulkhead.call_with_policy_context` paths.
+  `timeout_with_context` / `bulkhead.acquire_with_context` paths.
 - The unconsumed loom harness and its `loom` feature; the dead `full` feature
   alias (it only re-enabled the default `serde`).
 - The `sliding_window_size` / `failure_rate_threshold` circuit-breaker config

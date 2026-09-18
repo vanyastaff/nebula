@@ -1,6 +1,8 @@
 # nebula-resilience — Agent orientation
 > Local guide for `crates/resilience/`. Read [root AGENTS.md](../../AGENTS.md) first;
 > this guide adds crate-specific rules. Design and status: [README.md](README.md).
+> Human contributors: the README's [Contributing](README.md#contributing) section is the
+> entry point; this file is the machine-facing subset of the same rules.
 
 **Purpose:** In-process stability-patterns pipeline (retry, circuit breaker, bulkhead, rate limiter, timeout, hedge, load-shed) that action authors compose at outbound call sites; retry filtering is driven by `nebula-error::Classify`.
 **Layer:** Cross-cutting — depends only downward (root AGENTS.md -> Layered Dependency Map); only Nebula dep is `nebula-error`.
@@ -56,5 +58,6 @@
 
 ## See also
 
-- `README.md` — purpose, role, feature table, contract, non-goals
+- `README.md` — purpose, role, terminology table, contribution rules, non-goals
+- Root [`CONTRIBUTING.md`](../../CONTRIBUTING.md) — toolchain, commits, PR policy
 - Canon [docs/PRODUCT_CANON.md](../../docs/PRODUCT_CANON.md) §4.2/§4.3/§11.2–§11.3 (Circuit Breaker + Timeout + Retry-with-Backoff)

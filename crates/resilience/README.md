@@ -20,9 +20,10 @@ and the doc examples compile as doctests. This file is the map, not a second cop
 Actions that call external APIs face flaky networks, rate limits, and transient failures. Without
 a shared resilience layer, each action author re-implements retry loops, circuit breakers, and
 timeout logic inconsistently — some retry permanent errors, others do not retry transient ones.
-`nebula-resilience` provides a composable pipeline of seven patterns (retry, circuit breaker,
-timeout, bulkhead, rate limiter, fallback, hedge) that action authors wire at outbound call sites.
-The patterns share `nebula-error`'s `Classify` trait to distinguish transient from permanent errors
+`nebula-resilience` provides seven in-process patterns — retry, circuit breaker, timeout,
+bulkhead, rate limiter, load shed, and hedge — plus fallback strategies for graceful degradation.
+They compose through `ResiliencePipeline` at an outbound call site, or run standalone. The
+patterns share `nebula-error`'s `Classify` trait to distinguish transient from permanent errors
 automatically.
 
 ## Role
@@ -37,12 +38,12 @@ for transient in-action failures compose inside the action.
 
 | Feature | Default | Purpose |
 |---------|---------|---------|
-| `serde` | yes | Serde support for config/value boundary types: configs, error/event discriminants, policy scopes, pipeline outcomes, stats, and load snapshots. |
+| `serde` | yes | Serde support for config/value boundary types: configs, error/event discriminants, event scopes, pipeline outcomes, stats, and load snapshots. |
 | `bench-internals` | no | Exposes internal helpers (`retry_with_inner`, `LatencyTracker`) that the criterion benches measure directly. Adds visibility only, never behavior; not part of the documented surface. |
 
 The crate intentionally does not expose optional third-party limiter wrappers. Built-in rate
-limiters live in `rate_limiter.rs`; specialized external adapters should stay at integration
-boundaries.
+limiters live in `rate_limiter/` (one module per algorithm); specialized external adapters should
+stay at integration boundaries.
 
 Runtime executors, guards, sinks, callbacks, and generic caller errors intentionally stay outside
 serde because they carry live process state or user-owned types, not stable Nebula config/event
@@ -69,6 +70,7 @@ arriving with another library's vocabulary lands on the right item.
 | `InstantSource` | `Clock`, `TimeSource` | Java `java.time.InstantSource` |
 | `EventSink` | `MetricsSink` (former name), `EventExporter` | OpenTelemetry |
 | `CallContext` | `PolicyContext` (former name) | — |
+| `PipelineOutcome` | `PipelineResult` | — |
 | `Idempotent` (hedge) | idempotent method | RFC 9110 |
 
 The unaliased decisions are deliberate: `CircuitBreaker`, `Bulkhead`,
@@ -147,16 +149,72 @@ See the `nebula-resilience` row in `docs/MATURITY.md`.
 - The hedge pattern and the adaptive rate limiter have no in-repo consumer yet; their contract is
   pinned by their own tests and their scope is documented on the types.
 
+## Contributing
+
+This crate follows the workspace rules in the root [`CONTRIBUTING.md`](../../CONTRIBUTING.md)
+and [`AGENTS.md`](../../AGENTS.md); read those first. What is specific to this crate:
+
+### Before you start
+
+- Read `src/lib.rs` and the module docs for the pattern you are touching. The rustdoc is the
+  reference documentation — there is deliberately no separate prose manual (a `docs/` folder
+  existed once and drifted into documenting APIs that no longer existed).
+- Public API changes are cheap now and expensive after the first release: the crate is
+  unpublished, downstream consumers are `nebula-engine`, `nebula-credential`, and `nebula-api`
+  inside this repository.
+
+### Local development
+
+```sh
+cargo check -p nebula-resilience --all-features
+cargo nextest run -p nebula-resilience          # unit + integration tests
+cargo test -p nebula-resilience --doc           # doc examples must compile
+cargo clippy -p nebula-resilience --all-targets --all-features -- -D warnings
+cargo clippy -p nebula-resilience --all-targets --no-default-features -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo doc -p nebula-resilience --no-deps --document-private-items
+```
+
+Benches that measure crate internals need `--features bench-internals` (declared in
+`Cargo.toml` as `required-features`); the others run without it:
+
+```sh
+cargo bench -p nebula-resilience --features bench-internals
+```
+
+The workspace pre-PR gate is `task dev:check` (fmt + clippy + nextest + doctests + deny).
+
+### Adding or changing a pattern
+
+1. Standalone module with its own `# Examples`, `# Errors`, and `# Cancel safety` sections.
+2. Integrate into `PipelineBuilder` if it is a pipeline step (hedge and fallback deliberately are
+   not builder steps — see their module docs for why).
+3. Re-export from `src/lib.rs`; keep the re-export list sorted by module.
+4. Add a criterion bench in `benches/`.
+5. Add tests: at least one happy path and one failure path; a new panic-capable path needs a test
+   proving it is not reported as cancellation (`CallError::TaskPanicked` exists for that).
+
+### Documentation rules
+
+- Rustdoc summary lines are third person singular (`Creates…`, not `Create…`), per RFC 1574.
+- Every fallible item carries `# Errors`; every `pub async fn` carries `# Cancel safety`.
+- Every public type either has an example or links to one on a sibling item.
+- When a name diverges from the industry term, add `#[doc(alias = "…")]` and a row in the
+  [Terminology](#terminology) table.
+
+### Review expectations
+
+- A PR that changes a public name or signature updates this README, the rustdoc, and the
+  changelog in the same commit.
+- `CallError<E>` variants stay additive (`#[non_exhaustive]`); do not map the caller's error into
+  a crate-owned type.
+- Never report a panicked or aborted attempt as `Cancelled`.
+
 ## Related
 
 - Canon: `docs/PRODUCT_CANON.md` §4.2 (Safety pillar), §4.3 (Keep-alive), §11.2–§11.3.
 - Siblings: `nebula-error` (`Classify` / `RetryHint`), `nebula-action` (primary consumer).
+- Process: root [`CONTRIBUTING.md`](../../CONTRIBUTING.md), root [`AGENTS.md`](../../AGENTS.md).
 
-```bash
-# Verify locally
-cargo check -p nebula-resilience --all-features
-cargo check -p nebula-resilience --all-targets --no-default-features
-cargo nextest run -p nebula-resilience
-cargo test -p nebula-resilience --doc
-cargo bench -p nebula-resilience --features bench-internals
-```
+## License
+
+Licensed under the terms in the repository [`LICENSE`](../../LICENSE).

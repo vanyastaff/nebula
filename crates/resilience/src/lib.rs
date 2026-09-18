@@ -1,108 +1,109 @@
 //! # nebula-resilience
 //!
-//! Stability patterns pipeline for fault-tolerant outbound calls inside Nebula actions.
+//! In-process stability patterns for fault-tolerant outbound calls inside Nebula actions.
 //!
-//! ## Purpose
+//! ## What this crate gives you
 //!
-//! Actions that call external APIs face flaky networks, rate limits, and transient failures.
-//! This crate provides the canonical in-process resilience layer: seven composable patterns
-//! (retry, circuit breaker, bulkhead, rate limiter, timeout, hedge, load shed) that action
-//! authors wire at outbound call sites. Retry filtering is driven by `nebula-error::Classify`
-//! so transient vs permanent is explicit — not folklore.
+//! Actions that call external APIs face flaky networks, rate limits, and transient
+//! failures. This crate provides the canonical in-process resilience layer: seven
+//! patterns — retry, circuit breaker, bulkhead, rate limiter, timeout, hedge, and load
+//! shed — plus a fallback mechanism for graceful degradation. Retry filtering is driven
+//! by [`nebula_error::Classify`], so "transient vs permanent" is an explicit decision,
+//! never folklore in an action body.
 //!
-//! `nebula-resilience` pipelines are the **canonical retry surface today**.
-//! Engine-level node re-execution with persisted attempt accounting is `planned`. See
-//! `crates/resilience/README.md` for the full role description and contract invariants.
+//! Every pattern returns [`CallError<E>`], where `E` is your own error type — no forced
+//! mapping, no `Box<dyn Error>` erasure.
 //!
-//! ## Role
+//! ## Entry points
 //!
-//! **Stability Patterns Pipeline** (Release It! — Circuit Breaker + Timeout + Retry-with-Backoff
-//! composition). Cross-cutting infrastructure;
-//! no upward dependencies.
+//! - **Compose several patterns** — [`ResiliencePipeline`], built through
+//!   [`PipelineBuilder`]:
 //!
-//! ## Public API (summary)
+//!   ```rust,no_run
+//!   use std::time::Duration;
 //!
-//! Seven patterns — retry, circuit breaker, bulkhead, rate limiter, timeout,
-//! hedge, load shed — composable via [`ResiliencePipeline`].
+//!   use nebula_resilience::{
+//!       ResiliencePipeline,
+//!       retry::{BackoffConfig, RetryConfig},
+//!   };
 //!
-//! Every pattern returns [`CallError<E>`] where `E` is your own error type —
-//! no forced mapping, no type erasure.
-//! [`Deadline`] is the shared monotonic helper for policies that need to enforce
-//! remaining time budgets across attempts and sleeps.
-//! [`CallContext`] groups cancellation, deadline, and observability scope for
-//! workflow-runtime pipeline calls.
+//!   # #[tokio::main]
+//!   # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//!   let pipeline = ResiliencePipeline::<String>::builder()
+//!       .timeout(Duration::from_secs(5))
+//!       .retry(RetryConfig::new(3)?.backoff(BackoffConfig::exponential_default()))
+//!       .build();
 //!
-//! # Quick Start — Pipeline
+//!   let _value: Result<String, _> = pipeline
+//!       .call(|| Box::pin(async { Ok::<_, String>("success".into()) }))
+//!       .await;
+//!   # Ok(())
+//!   # }
+//!   ```
 //!
-//! ```rust,no_run
-//! use std::time::Duration;
+//! - **Use one pattern standalone** — each module has its own entry point and works
+//!   without the pipeline: [`retry::retry_with`], [`CircuitBreaker::call`],
+//!   [`Bulkhead::call`], [`timeout()`], [`load_shed()`], [`HedgeExecutor::call`],
+//!   [`RateLimiter::acquire`], [`FallbackExecutor::call`].
 //!
-//! use nebula_resilience::{
-//! CallError, ResiliencePipeline,
-//! retry::{BackoffConfig, RetryConfig},
-//! };
+//!   ```rust,no_run
+//!   use std::time::Duration;
 //!
-//! # #[tokio::main]
-//! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//! let pipeline = ResiliencePipeline::<String>::builder()
-//!.timeout(Duration::from_secs(5))
-//!.retry(RetryConfig::new(3)?.backoff(BackoffConfig::exponential_default()))
-//!.build();
+//!   use nebula_resilience::{
+//!       CallError,
+//!       circuit_breaker::{CircuitBreaker, CircuitBreakerConfig},
+//!       retry::{BackoffConfig, RetryConfig, retry_with},
+//!   };
 //!
-//! let _value: Result<String, _> = pipeline
-//!.call(|| Box::pin(async { Ok::<_, String>("success".into()) }))
-//!.await;
-//! # Ok(())
-//! # }
-//! ```
+//!   # #[derive(Debug)]
+//!   # struct MyError;
+//!   # impl std::fmt::Display for MyError {
+//!   #     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "error") }
+//!   # }
+//!   # impl std::error::Error for MyError {}
+//!   # impl nebula_error::Classify for MyError {
+//!   #     fn category(&self) -> nebula_error::ErrorCategory { nebula_error::ErrorCategory::Internal }
+//!   #     fn code(&self) -> nebula_error::ErrorCode { nebula_error::ErrorCode::new("DOC:EXAMPLE") }
+//!   # }
+//!   # #[tokio::main]
+//!   # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//!   let cb = CircuitBreaker::new(CircuitBreakerConfig {
+//!       failure_threshold: 5,
+//!       reset_timeout: Duration::from_secs(30),
+//!       ..Default::default()
+//!   })?;
+//!   let _: Result<&str, CallError<MyError>> = cb.call(|| Box::pin(async { Ok("ok") })).await;
 //!
-//! # Standalone Patterns
+//!   let config = RetryConfig::<MyError>::new(3)?
+//!       .backoff(BackoffConfig::Fixed(Duration::from_millis(50)));
+//!   let _: Result<&str, CallError<MyError>> =
+//!       retry_with(config, || Box::pin(async { Ok("ok") })).await;
+//!   # Ok(())
+//!   # }
+//!   ```
 //!
-//! Each pattern also works independently:
+//! - **Thread one execution contract through everything** — [`CallContext`] carries the
+//!   cancellation token, deadline, and observability scope of a single call, and every
+//!   context-aware entry point (`call_with_context`, `timeout_with_context`, …) consumes
+//!   it.
 //!
-//! ```rust,no_run
-//! use nebula_resilience::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
-//! use nebula_resilience::retry::{RetryConfig, BackoffConfig, retry_with};
-//! use nebula_resilience::CallError;
-//! use std::time::Duration;
+//! ## Retry has two layers (canon §11.2)
 //!
-//! # #[derive(Debug)]
-//! # struct MyError;
-//! # impl std::fmt::Display for MyError {
-//! # fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "error") }
-//! # }
-//! # impl std::error::Error for MyError {}
-//! # impl nebula_error::Classify for MyError {
-//! # fn category(&self) -> nebula_error::ErrorCategory { nebula_error::ErrorCategory::Internal }
-//! # fn code(&self) -> nebula_error::ErrorCode { nebula_error::ErrorCode::new("DOC:EXAMPLE") }
-//! # }
-//! # #[tokio::main]
-//! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//! // Circuit breaker
-//! let cb = CircuitBreaker::new(CircuitBreakerConfig {
-//! failure_threshold: 5,
-//! reset_timeout: Duration::from_secs(30),
-//!..Default::default()
-//! })?;
-//!
-//! let result = cb.call(|| Box::pin(async {
-//! Ok::<_, MyError>("ok")
-//! })).await;
-//!
-//! // Retry with Classify-aware error filtering
-//! let config = RetryConfig::<MyError>::new(3)?
-//!.backoff(BackoffConfig::Fixed(Duration::from_millis(50)));
-//!
-//! let result = retry_with(config, || Box::pin(async {
-//! Ok::<_, MyError>("ok")
-//! })).await;
-//! # Ok(())
-//! # }
-//! ```
+//! `nebula-resilience` owns **in-action outbound-call retry** — the retry loop around a
+//! single external call inside one action attempt. The engine separately owns
+//! **operator-declared node retry** (`nebula_workflow::RetryConfig` with persisted
+//! attempt accounting).
+//! They are disjoint: this crate never re-executes a node, and the engine never
+//! second-guesses a pipeline retry. A retryable classification is not permission to
+//! repeat an ambiguous remote effect (canon §11.3) — see the [`hedge`] module docs for
+//! why speculative duplication must never wrap an effecting call.
 //!
 //! # Error Model
 //!
-//! [`CallError<E>`] is `#[non_exhaustive]` with variants for each pattern:
+//! [`CallError<E>`] is `#[non_exhaustive]` with one variant per rejection kind. Use
+//! [`CallError::operation`] to reach the caller's own error; use
+//! [`CallError::is_retryable`] only as a hint (the retry loop's real decision comes from
+//! `E`'s `Classify` implementation).
 //!
 //! | Variant | Retryable | Produced by |
 //! |---------|-----------|-------------|
@@ -114,12 +115,14 @@
 //! | `RetriesExhausted { attempts, last }` | no | retry |
 //! | `Cancelled { reason }` | no | cancellation |
 //! | `LoadShed` | no | load shedder |
-//! | `FallbackFailed { reason }` / `FallbackFailedWithContext {.. }` | no | fallback |
+//! | `TaskPanicked` | no | hedge (a spawned attempt panicked) |
+//! | `FallbackFailed { .. }` / `FallbackFailedWithContext { .. }` | no | fallback |
 //!
 //! # Observability
 //!
-//! Inject an [`EventSink`] into any pattern to receive [`ResilienceEvent`]s.
-//! Use [`RecordingSink`] in tests for assertion-friendly event capture.
+//! Inject an [`EventSink`] into any pattern to receive [`ResilienceEvent`]s; the default
+//! is the zero-cost [`NoopSink`], and [`RecordingSink`] captures events for tests.
+//! [`EventScope`] tags high-level pipeline events with low-cardinality identifiers.
 //!
 //! # Cargo features
 //!
@@ -128,8 +131,16 @@
 //! | `serde` | yes | `Serialize`/`Deserialize` for config and event boundary types. |
 //! | `bench-internals` | no | Exposes internal helpers the criterion benches measure; visibility only. |
 //!
-//! The async surface is tokio-based (`tokio::time`, `tokio-util` cancellation);
-//! there is no runtime-agnostic mode.
+//! The async surface is tokio-based (`tokio::time`, `tokio-util` cancellation); there is
+//! no runtime-agnostic mode.
+//!
+//! # Where to look next
+//!
+//! - [`pipeline`] — composing patterns and their recommended order
+//! - [`retry`](mod@retry) — backoff, jitter, and `Classify`-aware retry
+//! - [`circuit_breaker`] — the state machine and its one accounting model
+//! - [`CallContext`] / [`Deadline`] — the execution contract of a call
+//! - [`events`] — observability hooks
 
 #![warn(clippy::all, clippy::pedantic, clippy::nursery, clippy::perf)]
 // Reason: types like CircuitBreakerConfig deliberately repeat the module name for readability.
@@ -179,7 +190,7 @@ pub use classifier::{
 pub use context::CallContext;
 pub use deadline::Deadline;
 pub use error::{CallError, CallErrorKind, CallResult, ConfigError};
-pub use fallback::{FallbackStrategy, ValueFallback};
+pub use fallback::{FallbackExecutor, FallbackStrategy, ValueFallback};
 // Infrastructure
 pub use gate::{Gate, GateCloseTimeout, GateClosed, GateGuard};
 #[cfg(feature = "bench-internals")]
