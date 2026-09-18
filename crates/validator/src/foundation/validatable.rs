@@ -314,6 +314,23 @@ pub(crate) fn json_type_name(value: &serde_json::Value) -> &'static str {
     }
 }
 
+/// Build the canonical `type_mismatch` error for a JSON value.
+///
+/// `expected` is the wire-facing expected-type name (`"integer"`, `"string"`,
+/// …); `actual` is the value's JSON type. Both are `'static` because the
+/// error's params outlive this call and `json_type_name` already returns
+/// `'static` names. The two call shapes (a mismatched variant, and a number
+/// that does not fit the requested numeric view) share this error so their
+/// `expected`/`actual` params cannot drift.
+fn json_type_mismatch(expected: &'static str, actual: &'static str) -> ValidationError {
+    ValidationError::new(
+        "type_mismatch",
+        format!("Expected {expected}, got {actual}"),
+    )
+    .with_param("expected", expected)
+    .with_param("actual", actual)
+}
+
 impl AsValidatable<str> for serde_json::Value {
     type Output<'a>
         = &'a str
@@ -324,12 +341,7 @@ impl AsValidatable<str> for serde_json::Value {
     fn as_validatable(&self) -> Result<&str, ValidationError> {
         match self {
             serde_json::Value::String(s) => Ok(s.as_str()),
-            other => Err(ValidationError::new(
-                "type_mismatch",
-                format!("Expected string, got {}", json_type_name(other)),
-            )
-            .with_param("expected", "string")
-            .with_param("actual", json_type_name(other))),
+            other => Err(json_type_mismatch("string", json_type_name(other))),
         }
     }
 }
@@ -340,17 +352,10 @@ impl AsValidatable<i64> for serde_json::Value {
     #[inline]
     fn as_validatable(&self) -> Result<i64, ValidationError> {
         match self {
-            serde_json::Value::Number(n) => n.as_i64().ok_or_else(|| {
-                ValidationError::new("type_mismatch", format!("Expected integer, got {n}"))
-                    .with_param("expected", "integer")
-                    .with_param("actual", "number")
-            }),
-            other => Err(ValidationError::new(
-                "type_mismatch",
-                format!("Expected integer, got {}", json_type_name(other)),
-            )
-            .with_param("expected", "integer")
-            .with_param("actual", json_type_name(other))),
+            serde_json::Value::Number(n) => n
+                .as_i64()
+                .ok_or_else(|| json_type_mismatch("integer", "number")),
+            other => Err(json_type_mismatch("integer", json_type_name(other))),
         }
     }
 }
@@ -361,17 +366,10 @@ impl AsValidatable<f64> for serde_json::Value {
     #[inline]
     fn as_validatable(&self) -> Result<f64, ValidationError> {
         match self {
-            serde_json::Value::Number(n) => n.as_f64().ok_or_else(|| {
-                ValidationError::new("type_mismatch", format!("Expected number, got {n}"))
-                    .with_param("expected", "number")
-                    .with_param("actual", "number")
-            }),
-            other => Err(ValidationError::new(
-                "type_mismatch",
-                format!("Expected number, got {}", json_type_name(other)),
-            )
-            .with_param("expected", "number")
-            .with_param("actual", json_type_name(other))),
+            serde_json::Value::Number(n) => n
+                .as_f64()
+                .ok_or_else(|| json_type_mismatch("number", "number")),
+            other => Err(json_type_mismatch("number", json_type_name(other))),
         }
     }
 }
@@ -383,12 +381,7 @@ impl AsValidatable<bool> for serde_json::Value {
     fn as_validatable(&self) -> Result<bool, ValidationError> {
         match self {
             serde_json::Value::Bool(b) => Ok(*b),
-            other => Err(ValidationError::new(
-                "type_mismatch",
-                format!("Expected boolean, got {}", json_type_name(other)),
-            )
-            .with_param("expected", "boolean")
-            .with_param("actual", json_type_name(other))),
+            other => Err(json_type_mismatch("boolean", json_type_name(other))),
         }
     }
 }
@@ -403,12 +396,7 @@ impl AsValidatable<[serde_json::Value]> for serde_json::Value {
     fn as_validatable(&self) -> Result<&[serde_json::Value], ValidationError> {
         match self {
             serde_json::Value::Array(arr) => Ok(arr.as_slice()),
-            other => Err(ValidationError::new(
-                "type_mismatch",
-                format!("Expected array, got {}", json_type_name(other)),
-            )
-            .with_param("expected", "array")
-            .with_param("actual", json_type_name(other))),
+            other => Err(json_type_mismatch("array", json_type_name(other))),
         }
     }
 }
