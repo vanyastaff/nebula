@@ -34,6 +34,12 @@ struct ErrorExtras {
     /// Nested validation errors for complex objects.
     nested: Vec<ValidationError>,
 
+    /// Depth of the deepest node in this error's subtree, counting `self` as 1.
+    ///
+    /// Cached so the construction-time depth bound is checked in O(1) instead
+    /// of re-walking the subtree on every `with_nested*` call.
+    max_depth: usize,
+
     /// Severity level (defaults to Error).
     severity: ErrorSeverity,
 
@@ -47,11 +53,24 @@ impl Default for ErrorExtras {
             kind: ValidationErrorKind::Violation,
             params: SmallVec::new(),
             nested: Vec::new(),
+            max_depth: 1,
             severity: ErrorSeverity::Error,
             help: None,
         }
     }
 }
+
+/// Maximum depth of a nested error tree, counting the outermost error as one.
+///
+/// [`ValidationError::with_nested`] and
+/// [`ValidationError::with_nested_error`] enforce this bound during
+/// construction: children that would exceed it are replaced by a single
+/// `nested_errors_omitted` diagnostic. The bound exists because everything
+/// that touches the tree recurses once per level — the `kind`, `flatten`,
+/// `total_error_count`, `to_json_value`, and `Display` traversals, and the
+/// derived `Clone` / `PartialEq` / `Debug` / `Drop` impls. A tree capped here
+/// cannot overflow the stack through any of them, including at drop time.
+pub const MAX_ERROR_TREE_DEPTH: usize = 64;
 
 /// Whether a diagnostic describes rejected input or an evaluation failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -254,21 +273,55 @@ impl ValidationError {
     }
 
     /// Adds nested validation errors.
+    ///
+    /// Children are trimmed to fit [`MAX_ERROR_TREE_DEPTH`]: everything below
+    /// the ceiling is dropped and its count recorded as a
+    /// `nested_errors_omitted` parameter on the node where the cut happened.
+    /// See that constant for why the bound is enforced at construction.
     #[must_use = "builder methods must be chained or built"]
     #[inline]
     pub fn with_nested(mut self, errors: Vec<ValidationError>) -> Self {
-        if !errors.is_empty() {
-            self.extras_mut().nested = errors;
+        if errors.is_empty() {
+            return self;
+        }
+        let room = MAX_ERROR_TREE_DEPTH.saturating_sub(self.max_depth());
+        let extras = self.extras_mut();
+        for error in errors {
+            if room == 0 {
+                bump_omitted(extras, 1);
+                continue;
+            }
+            let error = trim_to_depth(error, room);
+            extras.max_depth = extras.max_depth.max(1 + error.max_depth());
+            extras.nested.push(error);
         }
         self
     }
 
     /// Adds a single nested error.
+    ///
+    /// Enforces the same [`MAX_ERROR_TREE_DEPTH`] bound as
+    /// [`Self::with_nested`].
     #[must_use = "builder methods must be chained or built"]
     #[inline]
     pub fn with_nested_error(mut self, error: ValidationError) -> Self {
-        self.extras_mut().nested.push(error);
+        let room = MAX_ERROR_TREE_DEPTH.saturating_sub(self.max_depth());
+        let extras = self.extras_mut();
+        if room == 0 {
+            bump_omitted(extras, 1);
+            return self;
+        }
+        let error = trim_to_depth(error, room);
+        extras.max_depth = extras.max_depth.max(1 + error.max_depth());
+        extras.nested.push(error);
         self
+    }
+
+    /// Depth of the deepest node in this error's subtree, counting `self` as 1.
+    #[must_use]
+    #[inline]
+    pub fn max_depth(&self) -> usize {
+        self.extras.as_ref().map_or(1, |extras| extras.max_depth)
     }
 
     /// Sets the severity level.
@@ -407,6 +460,124 @@ impl ValidationError {
         self.extras
             .get_or_insert_with(|| Box::new(ErrorExtras::default()))
     }
+}
+
+/// Trim an error subtree so it fits within `room` levels.
+///
+/// Keeps the outermost `room` levels and replaces the children below the cut
+/// with an omitted-count parameter on the node where the cut happened. The
+/// result's `max_depth()` is `<= room`, so the caller can splice it in without
+/// re-walking the subtree.
+fn trim_to_depth(error: ValidationError, room: usize) -> ValidationError {
+    if room == 0 {
+        // Only reachable defensively; callers guard `room == 0` before calling.
+        return error;
+    }
+    let ValidationError {
+        code,
+        message,
+        field,
+        mut extras,
+    } = error;
+
+    let Some(inner) = extras.take() else {
+        return ValidationError {
+            code,
+            message,
+            field,
+            extras: None,
+        };
+    };
+    let ErrorExtras {
+        kind,
+        params,
+        nested,
+        max_depth,
+        severity,
+        help,
+    } = *inner;
+
+    if max_depth <= room {
+        return ValidationError {
+            code,
+            message,
+            field,
+            extras: Some(Box::new(ErrorExtras {
+                kind,
+                params,
+                nested,
+                max_depth,
+                severity,
+                help,
+            })),
+        };
+    }
+
+    let mut params = params;
+    let mut trimmed_nested = Vec::with_capacity(nested.len());
+    let mut omitted = 0usize;
+    for child in nested {
+        if room <= 1 {
+            omitted += count_errors(&child);
+            continue;
+        }
+        let child = trim_to_depth(child, room - 1);
+        trimmed_nested.push(child);
+    }
+    if omitted > 0 {
+        push_omitted_param(&mut params, omitted);
+    }
+
+    let trimmed_depth = trimmed_nested
+        .iter()
+        .map(ValidationError::max_depth)
+        .max()
+        .map_or(1, |depth| depth + 1);
+
+    ValidationError {
+        code,
+        message,
+        field,
+        extras: Some(Box::new(ErrorExtras {
+            kind,
+            params,
+            nested: trimmed_nested,
+            max_depth: trimmed_depth,
+            severity,
+            help,
+        })),
+    }
+}
+
+/// Record that `count` diagnostics were dropped into an error's params.
+fn push_omitted_param(
+    params: &mut SmallVec<[(Cow<'static, str>, Cow<'static, str>); 2]>,
+    count: usize,
+) {
+    let key = Cow::Borrowed("nested_errors_omitted");
+    match params.iter_mut().find(|(existing, _)| *existing == key) {
+        Some((_, value)) => {
+            let total = value.parse::<usize>().unwrap_or(0).saturating_add(count);
+            *value = Cow::Owned(total.to_string());
+        },
+        None => params.push((key, Cow::Owned(count.to_string()))),
+    }
+}
+
+/// Increment an extras block's omitted-diagnostic count.
+fn bump_omitted(extras: &mut ErrorExtras, count: usize) {
+    push_omitted_param(&mut extras.params, count);
+}
+
+/// Count the nodes in an error subtree, iteratively.
+fn count_errors(root: &ValidationError) -> usize {
+    let mut count = 0;
+    let mut pending = vec![root];
+    while let Some(error) = pending.pop() {
+        count += 1;
+        pending.extend(error.nested());
+    }
+    count
 }
 
 /// Renders a message template by substituting `{name}` placeholders with

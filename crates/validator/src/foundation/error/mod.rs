@@ -22,7 +22,7 @@ pub use mode::ValidationMode;
 pub(crate) use pointer::to_json_pointer;
 pub use severity::ErrorSeverity;
 pub(crate) use validation_error::render_template;
-pub use validation_error::{ValidationError, ValidationErrorKind};
+pub use validation_error::{MAX_ERROR_TREE_DEPTH, ValidationError, ValidationErrorKind};
 pub use validation_errors::ValidationErrors;
 
 // ============================================================================

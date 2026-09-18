@@ -135,9 +135,13 @@ in `nebula-api`. There is no KDF or hashing here either (that is
    for stored rules.
 4. **Crate-wide `#![allow(clippy::result_large_err)]`** — deliberate, because the 80-byte
    error travels by value on every validation call.
-5. **Error-tree traversals are recursive.** `kind`, `total_error_count`, `flatten`, and
-   `to_json_value` recurse over the nested-error tree. The tests cover moderate depths only;
-   the tree has no explicit depth ceiling.
+5. **Error-tree traversals are recursive — bounded at construction.** `kind`,
+   `total_error_count`, `flatten`, `to_json_value`, `Display`, and the derived
+   `Clone`/`PartialEq`/`Debug`/`Drop` impls all recurse once per nesting level, so the tree is
+   capped at `MAX_ERROR_TREE_DEPTH` (64) when `with_nested*` builds it. Diagnostics below the
+   ceiling are dropped and the count is recorded as a `nested_errors_omitted` param on the
+   node where the cut happened. Contract coverage:
+   `tests/contract/error_tree_bounds_test.rs`.
 
 ## 7. Role in the post-0092 credential/resource model
 
