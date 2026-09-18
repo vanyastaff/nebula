@@ -141,9 +141,8 @@ pub trait Validate<T: ?Sized> {
     ///
     /// # Errors
     ///
-    /// Returns the validator's
-    /// [`ValidationError`](crate::foundation::ValidationError) if the value
-    /// does not pass validation.
+    /// Returns the validator's [`ValidationError`] if the value does not pass
+    /// validation.
     ///
     /// # Examples
     ///

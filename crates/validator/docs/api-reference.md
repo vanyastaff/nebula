@@ -10,9 +10,16 @@ see [`architecture.md`](architecture.md). For combinator-specific usage patterns
 
 | Tier | Items |
 |------|-------|
-| **Stable** | `Validate<T>`, `ValidateExt<T>`, `Validatable`, `ValidationError`, `ValidationErrors`, `AnyValidator<T>`, `ErrorSeverity`, `Validated<T>`, all built-in validators, core combinators, the `validator!` macro |
+| **Stable** | `Validate<T>`, `ValidateExt<T>`, `Validatable`, `ValidationError`, `ValidationErrors`, `AnyValidator<T>`, `ErrorSeverity`, `Validated<T>`, `AsValidatable`, all built-in validators, core combinators, the `validator!` macro |
+| **Frontier** | `Rule` and everything under `rule/`, `engine::*`, `policy::*` — the declarative surface still moves between releases |
 | **Experimental** | `MultiField` internals, advanced `NestedValidate` helpers — treat as non-contract |
-| **Internal** | `ErasedValidator` trait, `AsValidatable` bridge, macro `@`-arms |
+| **Internal** | `ErasedValidator` trait, macro `@`-arms |
+
+Implementing `AsValidatable` for your own type is the supported extension point: it is how a
+third-party value type becomes validatable without this crate knowing about it. See the
+module docs for the recipe. Everything else in `foundation/` is consumed, not implemented —
+`Validate<T>` is open by design, `Validatable`/`ValidateExt` are blanket-implemented and
+cannot be implemented downstream.
 
 ---
 
