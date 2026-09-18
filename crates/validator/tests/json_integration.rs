@@ -176,7 +176,7 @@ fn numeric_json_field_port() {
 
     let bad = json!({"server": {"port": 0}});
     let err = v.validate(&bad).unwrap_err();
-    assert_eq!(err.field.as_deref(), Some("/server/port"));
+    assert_eq!(err.field_pointer().as_deref(), Some("/server/port"));
 }
 
 // ============================================================================
@@ -326,7 +326,7 @@ fn when_combinator_json() {
     let err = v
         .validate(&json!({"notify": true, "email": "bad"}))
         .unwrap_err();
-    assert_eq!(err.field.as_deref(), Some("/email"));
+    assert_eq!(err.field_pointer().as_deref(), Some("/email"));
 
     // notify=false, invalid email → pass (skipped)
     assert!(
@@ -409,7 +409,7 @@ fn empty_object_missing_fields() {
     let v = json_field("/name", min_length(1));
     let err = v.validate(&data).unwrap_err();
     assert_eq!(err.code.as_ref(), "path_not_found");
-    assert_eq!(err.field.as_deref(), Some("/name"));
+    assert_eq!(err.field_pointer().as_deref(), Some("/name"));
 }
 
 #[test]
@@ -418,7 +418,7 @@ fn empty_array_not_empty() {
 
     let v = json_field("/items", not_empty_collection::<Value>());
     let err = v.validate(&json!({"items": []})).unwrap_err();
-    assert_eq!(err.field.as_deref(), Some("/items"));
+    assert_eq!(err.field_pointer().as_deref(), Some("/items"));
 }
 
 #[test]
@@ -442,8 +442,8 @@ fn multiple_field_errors() {
         .collect();
 
     assert_eq!(errors.len(), 2);
-    assert_eq!(errors[0].field.as_deref(), Some("/name"));
-    assert_eq!(errors[1].field.as_deref(), Some("/email"));
+    assert_eq!(errors[0].field_pointer().as_deref(), Some("/name"));
+    assert_eq!(errors[1].field_pointer().as_deref(), Some("/email"));
 }
 
 // ============================================================================
@@ -483,7 +483,7 @@ fn user_registration_payload() {
         "terms_accepted": true
     });
     let err = validator.validate(&no_name).unwrap_err();
-    assert_eq!(err.field.as_deref(), Some("/name"));
+    assert_eq!(err.field_pointer().as_deref(), Some("/name"));
 
     // Too young
     let too_young = json!({
@@ -494,7 +494,7 @@ fn user_registration_payload() {
         "terms_accepted": true
     });
     let err = validator.validate(&too_young).unwrap_err();
-    assert_eq!(err.field.as_deref(), Some("/age"));
+    assert_eq!(err.field_pointer().as_deref(), Some("/age"));
 
     // Terms not accepted
     let no_terms = json!({
@@ -505,7 +505,7 @@ fn user_registration_payload() {
         "terms_accepted": false
     });
     let err = validator.validate(&no_terms).unwrap_err();
-    assert_eq!(err.field.as_deref(), Some("/terms_accepted"));
+    assert_eq!(err.field_pointer().as_deref(), Some("/terms_accepted"));
 }
 
 #[test]
@@ -551,5 +551,5 @@ fn server_config_payload() {
         "workers": 1
     });
     let err = validator.validate(&bad_port).unwrap_err();
-    assert_eq!(err.field.as_deref(), Some("/port"));
+    assert_eq!(err.field_pointer().as_deref(), Some("/port"));
 }

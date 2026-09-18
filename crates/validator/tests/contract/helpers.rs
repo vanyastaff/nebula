@@ -44,7 +44,11 @@ pub(super) fn assert_error_contract(
         assert_eq!(error.code.as_ref(), code, "unexpected error code");
     }
     if let Some(field) = expected_field {
-        assert_eq!(error.field.as_deref(), Some(field), "unexpected field path");
+        assert_eq!(
+            error.field_pointer().as_deref(),
+            Some(field),
+            "unexpected field path"
+        );
     }
 }
 

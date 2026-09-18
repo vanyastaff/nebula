@@ -149,17 +149,13 @@ impl std::error::Error for FieldError {
 // CONVERSIONS
 // ============================================================================
 
-/// Prefix `error`'s existing field path with `name`, dot-separated.
+/// Prefix `error`'s existing field path with `name`.
 ///
 /// Both `FieldError`'s conversion and `MultiField::add_field` attach a parent
 /// field name ahead of any nested path the inner validator already set, so the
 /// composition rule lives here once.
 pub(crate) fn prefix_field(error: ValidationError, name: &str) -> ValidationError {
-    let composed = match error.field.as_deref() {
-        Some(existing) if !existing.is_empty() => format!("{name}.{existing}"),
-        _ => name.to_owned(),
-    };
-    error.with_field(composed)
+    error.prepend_field_segment(name)
 }
 
 /// Convert `FieldError` to `ValidationError`

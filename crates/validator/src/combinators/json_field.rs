@@ -246,7 +246,7 @@ mod tests {
     fn required_field_invalid() {
         let v = json_field("/name", min_length(3));
         let err = v.validate(&json!({"name": "Al"})).unwrap_err();
-        assert_eq!(err.field.as_deref(), Some("/name"));
+        assert_eq!(err.field_pointer().as_deref(), Some("/name"));
     }
 
     #[test]
@@ -294,7 +294,7 @@ mod tests {
         let v = json_field("/name", min_length(1));
         let err = v.validate(&json!({"name": 42})).unwrap_err();
         assert_eq!(err.code.as_ref(), "type_mismatch");
-        assert_eq!(err.field.as_deref(), Some("/name"));
+        assert_eq!(err.field_pointer().as_deref(), Some("/name"));
     }
 
     #[test]

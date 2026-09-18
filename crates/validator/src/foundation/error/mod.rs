@@ -55,7 +55,7 @@ mod tests {
     #[test]
     fn test_error_with_field() {
         let error = ValidationError::new("required", "Field is required").with_field("email");
-        assert_eq!(error.field.as_deref(), Some("/email"));
+        assert_eq!(error.field_pointer().as_deref(), Some("/email"));
     }
 
     #[test]
@@ -138,7 +138,7 @@ mod tests {
     #[test]
     fn test_empty_field_ignored() {
         let error = ValidationError::new("test", "Test").with_field("");
-        assert!(error.field.is_none());
+        assert!(error.field_pointer().is_none());
     }
 
     #[test]
@@ -156,7 +156,7 @@ mod tests {
     #[test]
     fn test_pointer_fragment_is_normalized() {
         let error = ValidationError::new("test", "Test").with_pointer("#/user/email");
-        assert_eq!(error.field.as_deref(), Some("/user/email"));
+        assert_eq!(error.field_pointer().as_deref(), Some("/user/email"));
     }
 
     #[test]
@@ -185,7 +185,7 @@ mod tests {
         // Unclosed bracket should not silently drop the index content
         let error = ValidationError::new("test", "Test").with_field("items[0");
         // "items" becomes first segment, "[0" becomes second (bracket preserved as literal)
-        assert_eq!(error.field.as_deref(), Some("/items/[0"));
+        assert_eq!(error.field_pointer().as_deref(), Some("/items/[0"));
     }
 
     #[test]

@@ -144,10 +144,14 @@ pub struct ValidationError {
     /// This is the default message. Use `code` and `params` for i18n.
     pub message: Cow<'static, str>,
 
-    /// Optional field path for nested object validation.
+    /// Optional field path, always in canonical RFC 6901 pointer form.
     ///
-    /// Examples: "user.email", "address.zipcode", "items\[0\].name"
-    pub field: Option<Cow<'static, str>>,
+    /// Private on purpose: every writer (`with_field`, `with_field_path`,
+    /// `with_pointer`) normalizes its input, so `field` and
+    /// [`field_pointer`](Self::field_pointer) cannot disagree. A public field
+    /// would let safe external code store raw dot notation here and produce an
+    /// envelope whose `field` key contradicts its `pointer` key.
+    field: Option<Cow<'static, str>>,
 
     /// Extended error data (params, nested, severity, help).
     /// Boxed to reduce struct size; lazily allocated on first use.
@@ -240,6 +244,27 @@ impl ValidationError {
     #[inline]
     pub fn with_field_path(mut self, path: super::super::field_path::FieldPath) -> Self {
         self.field = Some(path.into_inner());
+        self
+    }
+
+    /// Prefixes this error's field path with `segment`.
+    ///
+    /// Field combinators use this to compose `parent.child` when the inner
+    /// validator already recorded `child`. The stored path is a JSON Pointer,
+    /// so the two halves join directly: `/parent` + `/child`. Joining the
+    /// segment with a dot instead would store `/parent/~1child`, escaping the
+    /// separator into the key name.
+    pub(crate) fn prepend_field_segment(mut self, segment: &str) -> Self {
+        let parent = super::super::field_path::FieldPath::single(segment);
+        let Some(child) = self.field.take() else {
+            return self.with_field_path(parent);
+        };
+        // Both halves are canonical pointers by construction: every writer on
+        // this type normalizes, and `field` is private to this module.
+        let mut pointer = String::with_capacity(parent.as_str().len() + child.len());
+        pointer.push_str(parent.as_str());
+        pointer.push_str(&child);
+        self.field = Some(Cow::Owned(pointer));
         self
     }
 

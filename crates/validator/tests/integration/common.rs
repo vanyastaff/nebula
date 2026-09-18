@@ -62,5 +62,5 @@ pub(crate) fn find_by_field<'a>(
     errors
         .errors()
         .iter()
-        .find(|e| e.field.as_deref() == Some(field))
+        .find(|e| e.field_pointer().as_deref() == Some(field))
 }

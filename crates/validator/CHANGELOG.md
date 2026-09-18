@@ -39,12 +39,19 @@ format, and the `Rule` wire encoding — are catalogued in
   `ValidationErrors::into_result`, the `ValidationResult` / `ValidationResultMulti` aliases,
   and the previously public `FieldError` wrapper (now crate-private; `Field` continues to
   return a `ValidationError` with a composed `field` path).
+- **`ValidationError.field` is private.** The type guarantees the path is a canonical
+  RFC 6901 pointer; a public field let safe external code store raw dot notation and emit an
+  envelope whose `field` and `pointer` keys disagreed. Read it through `field_pointer()`.
 - **`EvaluationOutcome` and `DiagnosticDisclosure` are `#[non_exhaustive]`.** Downstream
   matches need a wildcard arm. `nebula-schema` records an unknown `EvaluationOutcome`
   variant as a pending obligation rather than treating it as satisfied.
 
 ### Fixed
 
+- **`named_field` corrupted nested field paths.** Composing a parent name over an inner
+  validator that had already recorded a path produced `/profile/~1email` — the two halves
+  were joined with a dot and then RFC 6901-escaped, so the separator became part of the key
+  name. Parent and child pointers now join as pointer segments (`/profile/email`).
 - `Email` and `Url` no longer `unwrap()` a `LazyLock` regex. A pattern that fails to
   compile — a build-time regression guarded by `built_in_patterns_compile` — surfaces as an
   `unavailable` diagnostic instead of a panic.

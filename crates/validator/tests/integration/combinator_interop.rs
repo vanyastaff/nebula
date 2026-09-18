@@ -148,3 +148,47 @@ fn not_over_deferred_propagates_skip_in_static_only() {
         nebula_validator::ValidationErrorKind::Unavailable
     );
 }
+
+/// `named_field` over an inner validator that already recorded a field path
+/// must compose the two as JSON Pointer segments.
+///
+/// The stored path is a pointer, so the parent segment joins with `/`, not
+/// with a dot: joining `"profile"` and `"/email"` via `format!` produced
+/// `/profile/~1email`, i.e. the separator was escaped into the key name and
+/// the pointer named a field literally called `/email`.
+#[test]
+fn named_field_composes_json_pointer_segments() {
+    use nebula_validator::combinators::{json_field, named_field};
+    use nebula_validator::foundation::{Validate, ValidationError};
+    use nebula_validator::validators::min_length;
+    use serde_json::{Value, json};
+
+    fn identity(value: &Value) -> &Value {
+        value
+    }
+
+    let inner = json_field("/email", min_length(5));
+    let outer = named_field("profile", inner, identity);
+    let error: ValidationError = outer.validate(&json!({"email": "a"})).unwrap_err();
+
+    assert_eq!(
+        error.field_pointer().as_deref(),
+        Some("/profile/email"),
+        "parent and child pointers must join with a literal '/'"
+    );
+
+    // A validator with no recorded field still gets the bare segment.
+    struct NonEmpty;
+    impl Validate<Value> for NonEmpty {
+        fn validate(&self, input: &Value) -> Result<(), ValidationError> {
+            if input.as_str().is_some_and(|s| !s.is_empty()) {
+                Ok(())
+            } else {
+                Err(ValidationError::new("not_empty", "must not be empty"))
+            }
+        }
+    }
+    let bare = named_field("name", NonEmpty, identity);
+    let error = bare.validate(&json!("")).unwrap_err();
+    assert_eq!(error.field_pointer().as_deref(), Some("/name"));
+}

@@ -216,7 +216,7 @@ fn error_reporting() {
     if let Err(e) = validator.validate(&data) {
         println!("Error code:    {}", e.code);
         println!("Error message: {}", e.message);
-        if let Some(field) = &e.field {
+        if let Some(field) = &e.field_pointer() {
             println!("Error field:   {field}");
         }
         for (k, v) in e.params() {

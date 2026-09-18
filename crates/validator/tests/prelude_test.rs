@@ -158,5 +158,5 @@ fn composed_json_validation_via_prelude() {
             "tags": ["admin"],
         }))
         .unwrap_err();
-    assert_eq!(err.field.as_deref(), Some("/name"));
+    assert_eq!(err.field_pointer().as_deref(), Some("/name"));
 }

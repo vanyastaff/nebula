@@ -153,10 +153,10 @@ fn prefixes_match_complete_segments() {
 #[test]
 fn typed_root_diagnostic_is_distinct_from_unspecified_field() {
     let error = ValidationError::new("test", "rejected");
-    assert_eq!(error.field, None);
-    assert_eq!(error.clone().with_field("").field, None);
+    assert_eq!(error.field_pointer(), None);
+    assert_eq!(error.clone().with_field("").field_pointer(), None);
     let root_error = error.with_field_path(FieldPath::root());
-    assert_eq!(root_error.field.as_deref(), Some(""));
+    assert_eq!(root_error.field_pointer().as_deref(), Some(""));
     assert_eq!(root_error.field_pointer().as_deref(), Some(""));
     assert_eq!(root_error.to_json_value()["pointer"], json!(""));
 }

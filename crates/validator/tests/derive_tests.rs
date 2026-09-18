@@ -708,7 +708,7 @@ fn each_rejects_invalid_elements() {
     let fields: Vec<_> = err
         .errors()
         .iter()
-        .filter_map(|e| e.field.as_deref())
+        .filter_map(ValidationError::field_pointer)
         .collect();
     assert!(fields.iter().any(|f| f.contains('1')));
     assert!(fields.iter().any(|f| f.contains('2')));

@@ -118,14 +118,16 @@ fn nested_address_errors_carry_path() {
     let any_under_address = errors
         .errors()
         .iter()
-        .any(|e| e.field.as_deref().is_some_and(|f| f.contains("/address")));
+        .any(|e| e.field_pointer().is_some_and(|f| f.contains("/address")));
     assert!(
         any_under_address,
         "expected nested errors under `/address`, got: [{}]",
         errors
             .errors()
             .iter()
-            .map(|e| e.field.as_deref().unwrap_or("-"))
+            .map(|e| e
+                .field_pointer()
+                .map_or_else(|| "-".to_owned(), std::borrow::Cow::into_owned))
             .collect::<Vec<_>>()
             .join(", ")
     );
