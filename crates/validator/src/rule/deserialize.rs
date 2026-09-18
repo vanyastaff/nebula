@@ -1,18 +1,88 @@
-//! Bounded manual deserialization for [`Rule`].
+//! Bounded manual deserialization for [`Rule`] and its leaf types.
 
 use serde::de::{self, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
 
-use super::{Predicate, Rule, RuleBuildError, RulePattern, ValueRule, limits::RuleBudgetState};
+use super::{
+    DeferredRule, Predicate, Rule, RuleBuildError, RulePattern, RuleView, ValueRule,
+    limits::RuleBudgetState,
+};
 use crate::foundation::FieldPath;
 
 impl<'de> serde::Deserialize<'de> for Rule {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let mut budget = RuleBudgetState::default();
-        RuleSeed {
-            budget: &mut budget,
-            depth: 1,
-        }
-        .deserialize(deserializer)
+        deserialize_rule(deserializer)
+    }
+}
+
+/// Run the bounded rule deserializer.
+fn deserialize_rule<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Rule, D::Error> {
+    let mut budget = RuleBudgetState::default();
+    RuleSeed {
+        budget: &mut budget,
+        depth: 1,
+    }
+    .deserialize(deserializer)
+}
+
+/// Deserialize one leaf of a given kind through the bounded rule path.
+///
+/// The leaf wire forms are exactly the corresponding single-rule wire forms, so
+/// parsing the input as a [`Rule`] and narrowing to the requested `RuleView`
+/// variant gives identical results for valid input while subjecting the public
+/// leaf path to the same depth, node, operand, JSON, and text budgets. Without
+/// this, `Deserialize` on the leaves was an unbounded side door into rule
+/// construction that skipped every budget.
+fn deserialize_leaf<'de, D, T>(
+    deserializer: D,
+    extract: impl FnOnce(RuleView<'_>) -> Option<T>,
+    expected: &'static str,
+) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let rule = deserialize_rule(deserializer)?;
+    match extract(rule.view()) {
+        Some(leaf) => Ok(leaf),
+        None => Err(de::Error::custom(expected)),
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for ValueRule {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserialize_leaf(
+            deserializer,
+            |view| match view {
+                RuleView::Value(value) => Some(value.clone()),
+                _ => None,
+            },
+            "expected a value rule",
+        )
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Predicate {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserialize_leaf(
+            deserializer,
+            |view| match view {
+                RuleView::Predicate(predicate) => Some(predicate.clone()),
+                _ => None,
+            },
+            "expected a context predicate",
+        )
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for DeferredRule {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserialize_leaf(
+            deserializer,
+            |view| match view {
+                RuleView::Deferred(deferred) => Some(deferred.clone()),
+                _ => None,
+            },
+            "expected a deferred rule",
+        )
     }
 }
 

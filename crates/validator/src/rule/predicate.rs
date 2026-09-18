@@ -4,13 +4,13 @@
 //! `PredicateContext` and returns a checked boolean. Missing-field semantics are
 //! documented per-variant.
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use super::{RulePattern, context::PredicateContext};
 use crate::foundation::{FieldPath, ValidationError};
 
 /// Context predicate. Pending dependencies are unavailable, not missing values.
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum Predicate {

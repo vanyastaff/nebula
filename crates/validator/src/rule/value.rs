@@ -9,7 +9,7 @@
 //! this boundary prevents schema validation from silently accepting the wrong
 //! JSON shape.
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use super::{
     RulePattern,
@@ -27,7 +27,7 @@ use crate::{
 /// Value-validation rule. Takes a JSON value, returns `Ok` or a
 /// `ValidationError` whose `params` include rule-specific placeholders
 /// (`{min}`, `{max}`, `{pattern}`, `{allowed}`) for template rendering.
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum ValueRule {

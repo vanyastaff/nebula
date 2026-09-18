@@ -335,6 +335,33 @@ fn checked_pattern_construction_and_serde_agree() {
     assert_eq!(serde_json::from_value::<Rule>(wire).unwrap(), rule);
 }
 
+/// The leaf types are not a side door around the rule budgets.
+///
+/// `Deserialize` on `ValueRule` / `Predicate` / `DeferredRule` routes through
+/// the bounded `Rule` path, so a leaf and the equivalent `Rule` accept and
+/// reject exactly the same wire. Before that, over-budget leaves deserialized
+/// successfully with no limit on operands, JSON nodes, or text.
+#[test]
+fn leaf_deserialization_is_bounded_like_rule() {
+    let oversized: Vec<Value> = (0..5_000).map(|i| json!(format!("v{i}"))).collect();
+    let wire = json!({ "one_of": oversized });
+
+    let leaf = serde_json::from_value::<ValueRule>(wire.clone());
+    let rule = serde_json::from_value::<Rule>(wire);
+    assert_eq!(
+        leaf.is_ok(),
+        rule.is_ok(),
+        "leaf and Rule must agree on the operand budget"
+    );
+    assert!(leaf.is_err(), "over-budget leaf operands must be rejected");
+
+    // Valid leaves still round-trip through the same path.
+    assert_eq!(
+        serde_json::from_value::<ValueRule>(json!({"min_length": 3})).unwrap(),
+        ValueRule::MinLength(3)
+    );
+}
+
 fn assert_order(left: Value, right: Value, expected: std::cmp::Ordering) {
     let bound = right.as_number().unwrap().clone();
     assert_eq!(

@@ -1,7 +1,7 @@
 //! Deferred rules — require runtime context beyond the value + predicate
 //! map. Skipped at schema-validation time.
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use crate::{
     foundation::{FieldPath, ValidationError},
@@ -9,7 +9,7 @@ use crate::{
 };
 
 /// Rule requiring runtime evaluation beyond static context.
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum DeferredRule {
