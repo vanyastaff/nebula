@@ -43,6 +43,24 @@ struct OutputSize {
     max_depth: usize,
 }
 
+impl OutputSize {
+    /// Seed for a container that will hold one or more children.
+    ///
+    /// `total_bytes` counts the opening and closing delimiters, `value_nodes`
+    /// the container itself, and `max_depth` the root level. Every container
+    /// budget starts from this shape before children are folded in, so the
+    /// seed lives here instead of being re-written per constructor.
+    const fn container() -> Self {
+        Self {
+            total_bytes: 2,
+            value_nodes: 1,
+            max_depth: 1,
+            max_string_bytes: 0,
+            max_collection_items: 0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ArrayOutputBudget {
     builder: BuiltinOutputBuilder,
@@ -52,12 +70,7 @@ pub(crate) struct ArrayOutputBudget {
 
 impl ArrayOutputBudget {
     pub(crate) fn new(builder: BuiltinOutputBuilder) -> ExpressionResult<Self> {
-        let size = OutputSize {
-            total_bytes: 2,
-            value_nodes: 1,
-            max_depth: 1,
-            ..OutputSize::default()
-        };
+        let size = OutputSize::container();
         builder.ensure_output_size(size)?;
         Ok(Self {
             builder,
@@ -97,12 +110,7 @@ pub(crate) struct GroupOutputBudget {
 
 impl GroupOutputBudget {
     pub(crate) fn new(builder: BuiltinOutputBuilder) -> ExpressionResult<Self> {
-        let size = OutputSize {
-            total_bytes: 2,
-            value_nodes: 1,
-            max_depth: 1,
-            ..OutputSize::default()
-        };
+        let size = OutputSize::container();
         builder.ensure_output_size(size)?;
         Ok(Self {
             builder,
@@ -272,9 +280,7 @@ impl BuiltinOutputBuilder {
         let size = OutputSize {
             total_bytes: value.len(),
             max_string_bytes: value.len(),
-            max_collection_items: 0,
-            value_nodes: 1,
-            max_depth: 1,
+            ..OutputSize::container()
         };
         self.ensure_output_size(size)?;
         Ok(BuiltinOutput {
@@ -294,9 +300,7 @@ impl BuiltinOutputBuilder {
         let size = OutputSize {
             total_bytes: output_bytes,
             max_string_bytes: output_bytes,
-            max_collection_items: 0,
-            value_nodes: 1,
-            max_depth: 1,
+            ..OutputSize::container()
         };
         self.ensure_output_size(size)?;
         Ok(BuiltinOutput {
@@ -330,12 +334,7 @@ impl BuiltinOutputBuilder {
         values: impl IntoIterator<Item = BuiltinOutput>,
     ) -> ExpressionResult<BuiltinOutput> {
         let mut array = Vec::new();
-        let mut size = OutputSize {
-            total_bytes: 2,
-            value_nodes: 1,
-            max_depth: 1,
-            ..OutputSize::default()
-        };
+        let mut size = OutputSize::container();
         for output in values {
             let next_items = array.len().saturating_add(1);
             size.total_bytes = size
@@ -414,12 +413,7 @@ impl BuiltinOutputBuilder {
         self,
         values: impl IntoIterator<Item = &'a Value>,
     ) -> ExpressionResult<()> {
-        let mut size = OutputSize {
-            total_bytes: 2,
-            value_nodes: 1,
-            max_depth: 1,
-            ..OutputSize::default()
-        };
+        let mut size = OutputSize::container();
         let mut direct_items = 0usize;
         for value in values {
             let child = self.measure(value)?;
@@ -444,12 +438,7 @@ impl BuiltinOutputBuilder {
         self,
         entries: impl IntoIterator<Item = (&'a str, &'a Value)>,
     ) -> ExpressionResult<()> {
-        let mut size = OutputSize {
-            total_bytes: 2,
-            value_nodes: 1,
-            max_depth: 1,
-            ..OutputSize::default()
-        };
+        let mut size = OutputSize::container();
         let mut direct_items = 0usize;
         for (key, value) in entries {
             let child = self.measure(value)?;
@@ -477,11 +466,8 @@ impl BuiltinOutputBuilder {
 
     pub(crate) fn preflight_entries(self, entries: &Map<String, Value>) -> ExpressionResult<()> {
         let mut size = OutputSize {
-            total_bytes: 2,
             max_collection_items: entries.len(),
-            value_nodes: 1,
-            max_depth: 1,
-            ..OutputSize::default()
+            ..OutputSize::container()
         };
         for (index, (key, value)) in entries.iter().enumerate() {
             let child = self.measure(value)?;
@@ -533,9 +519,7 @@ impl BuiltinOutputBuilder {
         };
         let size = OutputSize {
             total_bytes,
-            value_nodes: 1,
-            max_depth: 1,
-            ..OutputSize::default()
+            ..OutputSize::container()
         };
         self.ensure_output_size(size)?;
         Ok(BuiltinOutput { value, size })
@@ -676,12 +660,7 @@ fn object_output_size_with_entry(
 }
 
 fn object_output_size(entries: &BTreeMap<String, OutputSize>) -> OutputSize {
-    let mut size = OutputSize {
-        total_bytes: 2,
-        value_nodes: 1,
-        max_depth: 1,
-        ..OutputSize::default()
-    };
+    let mut size = OutputSize::container();
     for (index, (key, child)) in entries.iter().enumerate() {
         size = object_output_size_with_entry(size, key, index.saturating_add(1), *child);
     }
