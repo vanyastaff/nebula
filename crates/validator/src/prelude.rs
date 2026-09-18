@@ -24,10 +24,9 @@
 pub use crate::validators::*;
 pub use crate::{
     combinators::{
-        AllOf, And, AnyOf, CollectJsonFields, CollectionNested, Each, Field, JsonField, MultiField,
-        NestedValidate, Not, OptionalNested, Or, SelfValidating, When, all_of, and, any_of,
-        collect_json_fields, collection_nested, each, field, json_field, json_field_optional,
-        named_field, nested_validator, not, optional_nested, or,
+        AllOf, And, AnyOf, CollectJsonFields, Each, Field, JsonField, MultiField, NestedValidate,
+        Not, Or, SelfValidating, When, all_of, and, any_of, collect_json_fields, each, field,
+        json_field, json_field_optional, named_field, nested_validator, not, or,
     },
     engine::{
         DeferredReason, EvaluationOutcome, ExecutionMode, validate_rules, validate_rules_with_ctx,

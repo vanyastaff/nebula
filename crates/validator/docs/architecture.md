@@ -176,10 +176,9 @@ nebula-validator/src/
 │   ├── field.rs       Field<T, U, V, F> — applies V to a field extracted by F.
 │   │                  named_field() adds dot-notation path to error.
 │   │                  MultiField<T> — validates multiple fields; aggregates errors.
-│   ├── nested.rs      NestedValidate<T, F>, OptionalNested<T, F> — delegate to a
-│   │                  self-validating type or a custom closure.
-│   │                  CollectionNested<T, F> — validates collection elements;
-│   │                  fail-fast or collect-all mode.
+│   ├── nested.rs      NestedValidate<T, F> — delegates to a self-validating type or
+│   │                  a custom closure. Compose with `Each` for collections and
+│   │                  `Optional` for nullable fields.
 │   ├── json_field.rs  JsonField<V, I> — validates a JSON Pointer path in a Value.
 │   │                  Required and optional variants.
 │   ├── factories.rs   AllOf<V> — all validators in a Vec must pass.

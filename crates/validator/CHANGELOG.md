@@ -44,6 +44,10 @@ format, and the `Rule` wire encoding — are catalogued in
   mode and `OrAny` was `AnyOf` under a second name and error code. Use `all_of` /
   `any_of` and select short-circuiting with `.with_mode(ValidationMode::FailFast)`. The
   `or_any_failed` code is removed from the registry.
+- **The collection/deferred wrappers are gone.** `CollectionNested` was `Each<NestedValidate>`
+  with a different error code and `OptionalNested` was `Optional<NestedValidate>`; both are
+  removed, and the `collection_nested_failed` code with them. Compose `nested_validator()`
+  with `Each` or `Optional` instead.
 - **`ValidationError.field` is private.** The type guarantees the path is a canonical
   RFC 6901 pointer; a public field let safe external code store raw dot notation and emit an
   envelope whose `field` and `pointer` keys disagreed. Read it through `field_pointer()`.

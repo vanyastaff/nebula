@@ -285,12 +285,6 @@
       "source": "combinators::each::Each"
     },
     {
-      "code": "collection_nested_failed",
-      "meaning": "one or more elements in a nested collection failed validation",
-      "stability": "stable",
-      "source": "combinators::nested::CollectionNested"
-    },
-    {
       "code": "one_of",
       "meaning": "value is not a member of the allowed set",
       "stability": "stable",

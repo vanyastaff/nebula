@@ -191,7 +191,7 @@ nebula-validator/
 │       ├── optional.rs        Optional<V>
 │       ├── each.rs            Each<V>
 │       ├── field.rs           Field<T, U, V, F>, MultiField<T>
-│       ├── nested.rs          NestedValidate<T, F>, OptionalNested<T, F>, CollectionNested<T, F>
+│       ├── nested.rs          NestedValidate<T, F>, SelfValidating
 │       ├── json_field.rs      JsonField<V, I>
 │       ├── factories.rs       AllOf<V>, AnyOf<V>
 │       ├── message.rs         WithMessage<V>

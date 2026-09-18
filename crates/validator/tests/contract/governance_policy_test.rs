@@ -138,7 +138,6 @@ fn registry_contains_all_canonical_error_codes() {
         "any_failed",
         "not_failed",
         "each_failed",
-        "collection_nested_failed",
         "multiple_field_errors",
         "one_of",
         "path_not_found",

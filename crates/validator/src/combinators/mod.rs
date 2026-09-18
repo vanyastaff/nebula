@@ -106,10 +106,7 @@ pub use json_field::{
     CollectJsonFields, JsonField, collect_json_fields, json_field, json_field_optional,
 };
 pub use message::{WithCode, WithMessage, with_code, with_message};
-pub use nested::{
-    CollectionNested, NestedValidate, OptionalNested, SelfValidating, collection_nested,
-    custom_nested, nested_validator, optional_nested,
-};
+pub use nested::{NestedValidate, SelfValidating, custom_nested, nested_validator};
 pub use not::{Not, not};
 pub use optional::{Optional, optional};
 pub use or::{Or, or};
