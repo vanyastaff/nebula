@@ -85,7 +85,9 @@ pub(super) fn validate_all(
     disclosure: DiagnosticDisclosure,
 ) -> Result<EvaluationOutcome, ValidationError> {
     let ChildOutcomes {
-        errors, deferred, ..
+        mut errors,
+        deferred,
+        ..
     } = collect_children(children, input, ctx, mode, disclosure)?;
 
     if errors.is_empty() {
