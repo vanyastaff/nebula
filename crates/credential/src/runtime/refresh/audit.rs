@@ -26,6 +26,31 @@ use nebula_core::CredentialId;
 
 use crate::audit::{AuditEvent, AuditOperation, AuditResult, AuditSink};
 
+/// Emit one refresh-coordinator audit event, if a sink is configured.
+///
+/// Every refresh-coord event shares the same envelope and failure contract:
+/// a missing sink is a silent no-op, and a sink error is logged at `warn` but
+/// never propagates (see the module doc — failing the refresh on an audit
+/// hiccup would re-create the n8n #13088 retry storm). Only `kind` (the
+/// stable event name used in diagnostics) and `operation` differ per site.
+fn emit(
+    sink: Option<&dyn AuditSink>,
+    credential_id: &CredentialId,
+    kind: &'static str,
+    operation: AuditOperation,
+) {
+    let Some(sink) = sink else { return };
+    let event = AuditEvent {
+        timestamp: chrono::Utc::now(),
+        credential_id: credential_id.to_string(),
+        operation,
+        result: AuditResult::Success,
+    };
+    if let Err(e) = sink.record(&event) {
+        tracing::warn!(?e, cred = %credential_id, kind, "refresh-coord audit sink failed");
+    }
+}
+
 /// Emit an audit event for an L2 claim acquisition.
 pub(super) fn emit_claim_acquired(
     sink: Option<&dyn AuditSink>,
@@ -33,19 +58,15 @@ pub(super) fn emit_claim_acquired(
     holder: &str,
     ttl_secs: u64,
 ) {
-    let Some(sink) = sink else { return };
-    let event = AuditEvent {
-        timestamp: chrono::Utc::now(),
-        credential_id: credential_id.to_string(),
-        operation: AuditOperation::RefreshCoordClaimAcquired {
+    emit(
+        sink,
+        credential_id,
+        "ClaimAcquired",
+        AuditOperation::RefreshCoordClaimAcquired {
             holder: holder.to_owned(),
             ttl_secs,
         },
-        result: AuditResult::Success,
-    };
-    if let Err(e) = sink.record(&event) {
-        tracing::warn!(?e, cred = %credential_id, "refresh-coord audit sink failed for ClaimAcquired");
-    }
+    );
 }
 
 /// Emit an audit event for one newly-accounted poisoned claim UUID.
@@ -54,20 +75,12 @@ pub(super) fn emit_sentinel_triggered(
     credential_id: &CredentialId,
     recent_count: u32,
 ) {
-    let Some(sink) = sink else { return };
-    let event = AuditEvent {
-        timestamp: chrono::Utc::now(),
-        credential_id: credential_id.to_string(),
-        operation: AuditOperation::RefreshCoordSentinelTriggered { recent_count },
-        result: AuditResult::Success,
-    };
-    if let Err(e) = sink.record(&event) {
-        tracing::warn!(
-            ?e,
-            cred = %credential_id,
-            "refresh-coord audit sink failed for SentinelTriggered"
-        );
-    }
+    emit(
+        sink,
+        credential_id,
+        "SentinelTriggered",
+        AuditOperation::RefreshCoordSentinelTriggered { recent_count },
+    );
 }
 
 /// Emit an audit event for a newly-accounted incident at or above threshold.
@@ -76,20 +89,12 @@ pub(super) fn emit_reauth_threshold_reached(
     credential_id: &CredentialId,
     reason: &str,
 ) {
-    let Some(sink) = sink else { return };
-    let event = AuditEvent {
-        timestamp: chrono::Utc::now(),
-        credential_id: credential_id.to_string(),
-        operation: AuditOperation::RefreshCoordReauthThresholdReached {
+    emit(
+        sink,
+        credential_id,
+        "ReauthThresholdReached",
+        AuditOperation::RefreshCoordReauthThresholdReached {
             reason: reason.to_owned(),
         },
-        result: AuditResult::Success,
-    };
-    if let Err(e) = sink.record(&event) {
-        tracing::warn!(
-            ?e,
-            cred = %credential_id,
-            "refresh-coord audit sink failed for ReauthThresholdReached"
-        );
-    }
+    );
 }

@@ -55,6 +55,31 @@ fn admit_metadata<A: Action>(
     draft.admit_for::<A>(kind).map(Arc::new)
 }
 
+/// Decode prepared input through the admitted contract, execute one stateless
+/// call, and re-encode the output.
+///
+/// Shared by the owned-action and shared-instance stateless handles: both hold
+/// the same typed contract and differ only in how they reach `A` (by value vs.
+/// through an `Arc`), which the caller resolves by passing `&A`.
+async fn dispatch_stateless<A>(
+    action: &A,
+    input_contract: &ActionInputContract,
+    input: PreparedActionInput,
+    ctx: &dyn ActionContext,
+) -> Result<ActionResult<Value>, ActionError>
+where
+    A: StatelessAction,
+    <A as Action>::Input: DeserializeOwned + Send + Sync,
+    <A as Action>::Output: Serialize + Send + Sync,
+{
+    let typed_input = input.into_typed::<A::Input>(input_contract)?;
+    let result = action.execute(typed_input, ctx).await?;
+    result.try_map_output(|output| {
+        serde_json::to_value(output)
+            .map_err(|e| ActionError::fatal(format!("output serialization failed: {e}")))
+    })
+}
+
 mod sealed {
     pub trait Sealed {}
 }
@@ -187,14 +212,7 @@ where
         input: PreparedActionInput,
         ctx: &dyn ActionContext,
     ) -> Result<ActionResult<Value>, ActionError> {
-        let typed_input = input.into_typed::<A::Input>(&self.input_contract)?;
-
-        let result = self.action.execute(typed_input, ctx).await?;
-
-        result.try_map_output(|output| {
-            serde_json::to_value(output)
-                .map_err(|e| ActionError::fatal(format!("output serialization failed: {e}")))
-        })
+        dispatch_stateless(&self.action, &self.input_contract, input, ctx).await
     }
 }
 
@@ -417,14 +435,7 @@ where
         input: PreparedActionInput,
         ctx: &dyn ActionContext,
     ) -> Result<ActionResult<Value>, ActionError> {
-        let typed_input = input.into_typed::<A::Input>(&self.input_contract)?;
-
-        let result = self.action.execute(typed_input, ctx).await?;
-
-        result.try_map_output(|output| {
-            serde_json::to_value(output)
-                .map_err(|e| ActionError::fatal(format!("output serialization failed: {e}")))
-        })
+        dispatch_stateless(&*self.action, &self.input_contract, input, ctx).await
     }
 }
 

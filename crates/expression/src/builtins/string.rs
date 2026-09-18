@@ -256,46 +256,56 @@ pub(crate) fn ends_with(
     Ok(Value::Bool(s.ends_with(suffix)))
 }
 
-/// Pad a string from the left to a target length
+/// Which end of the string receives the padding.
+#[derive(Clone, Copy)]
+enum PadSide {
+    Start,
+    End,
+}
+
+/// Pad a string to a target character length on the requested side.
 ///
-/// Example: `pad_start("5", 3, "0")` returns `"005"`
-/// Default fill character is a space.
-pub(crate) fn pad_start(
+/// Both `pad_start` and `pad_end` share every validation and budget step and
+/// differ only in which side the padding lands on and the function name in
+/// diagnostics, so the side is a parameter rather than a duplicated body.
+fn pad(
+    function: &'static str,
+    side: PadSide,
     args: &[&Value],
     view: BuiltinView<'_>,
     ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
-    check_min_arg_count("pad_start", args, 2)?;
+    check_min_arg_count(function, args, 2)?;
     if args.len() > 3 {
         return Err(ExpressionError::expression_eval_error(format!(
-            "pad_start: expected 2 or 3 arguments, got {}",
+            "{function}: expected 2 or 3 arguments, got {}",
             args.len()
         )));
     }
-    let s = get_string_arg("pad_start", args, 0, "text")?;
-    let target_len = get_int_arg_with_policy("pad_start", args, 1, "length", view, ctx)?;
+    let s = get_string_arg(function, args, 0, "text")?;
+    let target_len = get_int_arg_with_policy(function, args, 1, "length", view, ctx)?;
     if target_len < 0 {
-        return Err(ExpressionError::expression_eval_error(
-            "pad_start: length must be non-negative",
-        ));
+        return Err(ExpressionError::expression_eval_error(format!(
+            "{function}: length must be non-negative"
+        )));
     }
     let target_len = target_len as usize;
 
     const MAX_PAD_LENGTH: usize = 1_048_576;
     if target_len > MAX_PAD_LENGTH {
         return Err(ExpressionError::expression_eval_error(format!(
-            "pad_start: target length {target_len} exceeds maximum {MAX_PAD_LENGTH}"
+            "{function}: target length {target_len} exceeds maximum {MAX_PAD_LENGTH}"
         )));
     }
 
     let fill = if args.len() > 2 {
-        get_string_arg("pad_start", args, 2, "fill_char")?
+        get_string_arg(function, args, 2, "fill_char")?
     } else {
         " "
     };
     if fill.is_empty() {
         return Err(ExpressionError::expression_invalid_argument(
-            "pad_start",
+            function,
             "Fill string must not be empty",
         ));
     }
@@ -313,7 +323,22 @@ pub(crate) fn pad_start(
         s.len().saturating_add(padding_bytes(fill, pad_len)),
     )?;
     let padding: String = fill.chars().cycle().take(pad_len).collect();
-    Ok(Value::String(format!("{padding}{s}")))
+    Ok(Value::String(match side {
+        PadSide::Start => format!("{padding}{s}"),
+        PadSide::End => format!("{s}{padding}"),
+    }))
+}
+
+/// Pad a string from the left to a target length
+///
+/// Example: `pad_start("5", 3, "0")` returns `"005"`
+/// Default fill character is a space.
+pub(crate) fn pad_start(
+    args: &[&Value],
+    view: BuiltinView<'_>,
+    ctx: &EvaluationContext,
+) -> ExpressionResult<Value> {
+    pad("pad_start", PadSide::Start, args, view, ctx)
 }
 
 /// Pad a string from the right to a target length
@@ -325,55 +350,7 @@ pub(crate) fn pad_end(
     view: BuiltinView<'_>,
     ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
-    check_min_arg_count("pad_end", args, 2)?;
-    if args.len() > 3 {
-        return Err(ExpressionError::expression_eval_error(format!(
-            "pad_end: expected 2 or 3 arguments, got {}",
-            args.len()
-        )));
-    }
-    let s = get_string_arg("pad_end", args, 0, "text")?;
-    let target_len = get_int_arg_with_policy("pad_end", args, 1, "length", view, ctx)?;
-    if target_len < 0 {
-        return Err(ExpressionError::expression_eval_error(
-            "pad_end: length must be non-negative",
-        ));
-    }
-    let target_len = target_len as usize;
-
-    const MAX_PAD_LENGTH: usize = 1_048_576;
-    if target_len > MAX_PAD_LENGTH {
-        return Err(ExpressionError::expression_eval_error(format!(
-            "pad_end: target length {target_len} exceeds maximum {MAX_PAD_LENGTH}"
-        )));
-    }
-
-    let fill = if args.len() > 2 {
-        get_string_arg("pad_end", args, 2, "fill_char")?
-    } else {
-        " "
-    };
-    if fill.is_empty() {
-        return Err(ExpressionError::expression_invalid_argument(
-            "pad_end",
-            "Fill string must not be empty",
-        ));
-    }
-
-    let char_count = s.chars().count();
-    if char_count >= target_len {
-        preflight_string_output(view, ctx, s.len())?;
-        return Ok(Value::String(s.to_owned()));
-    }
-
-    let pad_len = target_len - char_count;
-    preflight_string_output(
-        view,
-        ctx,
-        s.len().saturating_add(padding_bytes(fill, pad_len)),
-    )?;
-    let padding: String = fill.chars().cycle().take(pad_len).collect();
-    Ok(Value::String(format!("{s}{padding}")))
+    pad("pad_end", PadSide::End, args, view, ctx)
 }
 
 /// Repeat a string N times
