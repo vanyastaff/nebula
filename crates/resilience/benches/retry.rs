@@ -210,7 +210,7 @@ fn bench_jitter_overhead(c: &mut Criterion) {
                 let cfg = RetryConfig::<()>::new(4)
                     .unwrap()
                     .backoff(BackoffConfig::Fixed(Duration::ZERO))
-                    .jitter(JitterConfig::Full { factor: 0.5, seed: None });
+                    .jitter(JitterConfig::Additive { max_fraction: 0.5, seed: None });
                 (cfg, fail_n_then_ok(3))
             },
             |(cfg, op)| async move {
@@ -226,7 +226,7 @@ fn bench_jitter_overhead(c: &mut Criterion) {
                 let cfg = RetryConfig::<()>::new(4)
                     .unwrap()
                     .backoff(BackoffConfig::Fixed(Duration::ZERO))
-                    .jitter(JitterConfig::Full { factor: 0.5, seed: Some(0xdead_beef) });
+                    .jitter(JitterConfig::Additive { max_fraction: 0.5, seed: Some(0xdead_beef) });
                 (cfg, fail_n_then_ok(3))
             },
             |(cfg, op)| async move {

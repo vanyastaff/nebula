@@ -216,16 +216,22 @@ pub enum JitterConfig {
     /// No jitter.
     #[default]
     None,
-    /// Add a random fraction up to `factor` of the delay.
-    Full {
-        /// Maximum jitter fraction.
-        ///
-        /// Values are not rejected at construction: `factor > 1.0` is capped
-        /// at `1.0`, and `factor <= 0.0` or `NaN` disables jitter entirely
-        /// (the base delay is returned unchanged). Keeping the builder
-        /// infallible matches the other `RetryConfig` setters; the effective
-        /// behavior is exactly this clamp.
-        factor: f64,
+    /// Add a random fraction of the delay on top of it.
+    ///
+    /// The applied delay is `base + rand(0.0, max_fraction * base)`, so the
+    /// result is never shorter than the computed backoff. This is *additive*
+    /// jitter in the AWS "Timeouts, retries and backoff with jitter"
+    /// taxonomy — deliberately not full jitter, which would replace the
+    /// delay with `rand(0.0, base)` and could undercut a `retry_after`
+    /// floor.
+    ///
+    /// The fraction is not rejected at construction: values above `1.0` are
+    /// capped at `1.0`, and `max_fraction <= 0.0` or `NaN` disables jitter
+    /// entirely (the base delay is returned unchanged). Keeping the builder
+    /// infallible matches the other `RetryConfig` setters.
+    Additive {
+        /// Maximum extra fraction of the base delay (values above 1.0 cap at 1.0).
+        max_fraction: f64,
         /// Optional seed for deterministic jitter (useful for testing).
         seed: Option<u64>,
     },
@@ -257,7 +263,7 @@ type RetryNotify<E> = Arc<dyn Fn(&E, Duration, u32) + Send + Sync>;
 /// let config = RetryConfig::<&str>::new(5)
 ///     .expect("max_attempts >= 1")
 ///     .backoff(BackoffConfig::exponential_default())
-///     .jitter(JitterConfig::Full {
+///     .jitter(JitterConfig::Additive {
 ///         factor: 0.5,
 ///         seed: None,
 ///     })
@@ -669,12 +675,15 @@ async fn sleep_with_deadline<E>(
 /// When `seed` is set, the jitter is deterministic but varies per `attempt`
 /// (seed is mixed with the attempt number to avoid identical jitter across retries).
 ///
-/// Split into leaf dispatcher + outlined `Full` path so that `JitterConfig::None`
-/// (the common case) compiles to a 2-instruction function with no register saves.
+/// Split into leaf dispatcher + outlined `Additive` path so that
+/// `JitterConfig::None` (the common case) compiles to a 2-instruction function
+/// with no register saves.
 fn apply_jitter(delay: Duration, jitter: &JitterConfig, attempt: u32) -> Duration {
     match jitter {
         JitterConfig::None => delay,
-        JitterConfig::Full { factor, seed } => apply_jitter_full(delay, *factor, *seed, attempt),
+        JitterConfig::Additive { max_fraction, seed } => {
+            apply_additive_jitter(delay, *max_fraction, *seed, attempt)
+        },
     }
 }
 
@@ -685,20 +694,25 @@ fn apply_jitter(delay: Duration, jitter: &JitterConfig, attempt: u32) -> Duratio
     reason = "mul_add emits slow fma call on default x86-64 target; explicit multiply+add is faster"
 )]
 #[inline(never)]
-// Reason: `!(factor > 0.0)` is intentional — it rejects NaN, -0.0, negatives, +0.0,
-// and -inf in a single `ucomisd + ja` (2 insns) vs 35-instruction bit decomposition
-// that `!is_finite() || <= 0.0` produces. The negated partial-ord is the whole point.
+// Reason: `!(max_fraction > 0.0)` is intentional — it rejects NaN, -0.0,
+// negatives, +0.0, and -inf in a single `ucomisd + ja` (2 insns) vs
+// 35-instruction bit decomposition that `!is_finite() || <= 0.0` produces.
 #[expect(
     clippy::neg_cmp_op_on_partial_ord,
-    reason = "`!(factor > 0.0)` rejects NaN and negatives in 2 instructions; cleaner than the equivalent is_finite chain"
+    reason = "`!(max_fraction > 0.0)` rejects NaN and negatives in 2 instructions; cleaner than the equivalent is_finite chain"
 )]
-fn apply_jitter_full(delay: Duration, factor: f64, seed: Option<u64>, attempt: u32) -> Duration {
-    if !(factor > 0.0) {
+fn apply_additive_jitter(
+    delay: Duration,
+    max_fraction: f64,
+    seed: Option<u64>,
+    attempt: u32,
+) -> Duration {
+    if !(max_fraction > 0.0) {
         return delay;
     }
 
     let base = delay.as_secs_f64();
-    let clamped_factor = factor.min(1.0);
+    let clamped_factor = max_fraction.min(1.0);
     let rand_val = seed.map_or_else(fastrand::f64, |s| {
         fastrand::Rng::with_seed(s.wrapping_add(u64::from(attempt))).f64()
     });

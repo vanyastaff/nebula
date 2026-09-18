@@ -204,8 +204,8 @@ async fn jitter_adds_delay_variance() {
     let config = RetryConfig::new(3)
         .unwrap()
         .backoff(BackoffConfig::Fixed(base))
-        .jitter(JitterConfig::Full {
-            factor: 1.0,
+        .jitter(JitterConfig::Additive {
+            max_fraction: 1.0,
             seed: None,
         });
 
@@ -226,8 +226,8 @@ async fn jitter_adds_delay_variance() {
 #[test]
 fn seeded_jitter_is_deterministic_for_same_attempt() {
     let delay = Duration::from_millis(100);
-    let jitter = JitterConfig::Full {
-        factor: 0.5,
+    let jitter = JitterConfig::Additive {
+        max_fraction: 0.5,
         seed: Some(42),
     };
     let d1 = apply_jitter(delay, &jitter, 0);
@@ -244,8 +244,8 @@ fn seeded_jitter_is_deterministic_for_same_attempt() {
 #[test]
 fn seeded_jitter_varies_across_attempts() {
     let delay = Duration::from_millis(100);
-    let jitter = JitterConfig::Full {
-        factor: 0.5,
+    let jitter = JitterConfig::Additive {
+        max_fraction: 0.5,
         seed: Some(42),
     };
     let d0 = apply_jitter(delay, &jitter, 0);
@@ -262,20 +262,20 @@ fn seeded_jitter_varies_across_attempts() {
 #[test]
 fn jitter_with_nan_factor_falls_back_to_base_delay() {
     let delay = Duration::from_millis(100);
-    let nan_jitter = JitterConfig::Full {
-        factor: f64::NAN,
+    let nan_jitter = JitterConfig::Additive {
+        max_fraction: f64::NAN,
         seed: Some(42),
     };
     assert_eq!(apply_jitter(delay, &nan_jitter, 0), delay);
 
-    let neg_jitter = JitterConfig::Full {
-        factor: -1.0,
+    let neg_jitter = JitterConfig::Additive {
+        max_fraction: -1.0,
         seed: Some(42),
     };
     assert_eq!(apply_jitter(delay, &neg_jitter, 0), delay);
 
-    let zero_jitter = JitterConfig::Full {
-        factor: 0.0,
+    let zero_jitter = JitterConfig::Additive {
+        max_fraction: 0.0,
         seed: Some(42),
     };
     assert_eq!(apply_jitter(delay, &zero_jitter, 0), delay);
@@ -284,8 +284,8 @@ fn jitter_with_nan_factor_falls_back_to_base_delay() {
 #[test]
 fn jitter_with_infinite_factor_clamps_to_one() {
     let delay = Duration::from_millis(100);
-    let jitter = JitterConfig::Full {
-        factor: f64::INFINITY,
+    let jitter = JitterConfig::Additive {
+        max_fraction: f64::INFINITY,
         seed: Some(42),
     };
     // Infinity is clamped to 1.0 by factor.min(1.0), so jitter is applied
