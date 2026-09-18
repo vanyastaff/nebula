@@ -267,19 +267,21 @@ impl Rule {
     }
 }
 
+/// Admit one budget-free [`ValueRule`] as a single-node rule.
+///
+/// Every value rule built through this helper carries no user-controlled text
+/// or JSON operands, so the leaf's statistics are the fixed zero-payload shape.
+/// The two budgeted variants — `Pattern` (text) and `OneOf` (operands and JSON
+/// nodes) — must go through [`Rule::value`] or [`Rule::pattern`], which measure
+/// and reject. `from_bounded_parts` records the caller's statistics verbatim
+/// without re-measuring, so a misuse here would under-count silently; the
+/// assertion below turns that into a debug-build failure.
 fn trusted_value(value: ValueRule) -> Rule {
-    Rule::from_bounded_parts(
-        vec![RuleNode::Value(value)],
-        0,
-        RuleStats {
-            depth: 1,
-            nodes: 1,
-            operands: 0,
-            json_nodes: 0,
-            json_depth: 0,
-            text_bytes: 0,
-        },
-    )
+    debug_assert!(
+        !matches!(value, ValueRule::Pattern(_) | ValueRule::OneOf(_)),
+        "budgeted ValueRule variants must be admitted through Rule::value, not trusted_value"
+    );
+    Rule::from_bounded_parts(vec![RuleNode::Value(value)], 0, RuleStats::LEAF)
 }
 
 fn compose_many(
@@ -335,4 +337,22 @@ fn collect_json_operands(values: RuleOperands) -> Result<Vec<serde_json::Value>,
         collected.push(value);
     }
     Ok(collected)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[should_panic(expected = "budgeted ValueRule variants must be admitted")]
+    fn trusted_value_rejects_patterns() {
+        let pattern = RulePattern::new("^a$").expect("valid pattern");
+        let _ = trusted_value(ValueRule::Pattern(pattern));
+    }
+
+    #[test]
+    #[should_panic(expected = "budgeted ValueRule variants must be admitted")]
+    fn trusted_value_rejects_one_of() {
+        let _ = trusted_value(ValueRule::OneOf(vec![serde_json::json!("a")]));
+    }
 }

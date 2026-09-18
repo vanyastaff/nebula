@@ -130,6 +130,18 @@ pub(super) struct RuleStats {
     pub(super) text_bytes: usize,
 }
 
+impl RuleStats {
+    /// Statistics of a single-node leaf carrying no user-controlled payload.
+    pub(super) const LEAF: Self = Self {
+        depth: 1,
+        nodes: 1,
+        operands: 0,
+        json_nodes: 0,
+        json_depth: 0,
+        text_bytes: 0,
+    };
+}
+
 /// Reject `actual` when it exceeds `limit`, naming the exhausted budget.
 ///
 /// Every budget check in this module is the same comparison with a different
