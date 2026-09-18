@@ -1020,6 +1020,55 @@ impl std::fmt::Debug for UnknownField {
 const REQUIRED_EXPRESSION_MODE: ExpressionMode = ExpressionMode::Required;
 const FORBIDDEN_EXPRESSION_MODE: ExpressionMode = ExpressionMode::Forbidden;
 
+/// Apply a token body to every [`Property`] variant, including
+/// [`Property::Unknown`]. Used by accessors whose slot `UnknownField`
+/// actually stores (`key`, `visible`, `required`).
+macro_rules! with_field {
+    ($self:expr, |$f:ident| $body:expr) => {
+        match $self {
+            Property::String($f) => $body,
+            Property::Secret($f) => $body,
+            Property::Number($f) => $body,
+            Property::Boolean($f) => $body,
+            Property::Select($f) => $body,
+            Property::Object($f) => $body,
+            Property::List($f) => $body,
+            Property::Mode($f) => $body,
+            Property::Code($f) => $body,
+            Property::File($f) => $body,
+            Property::Computed($f) => $body,
+            Property::Dynamic($f) => $body,
+            Property::Notice($f) => $body,
+            Property::Unknown($f) => $body,
+        }
+    };
+}
+
+/// Apply a token body to the 13 *known* [`Property`] variants, yielding
+/// `$fallback` for [`Property::Unknown`] (which stores no rules, transformers,
+/// defaults, aliases, or `emit_as`). Total by construction — no variant is
+/// left to a caller-side `match` that could forget the `Unknown` arm.
+macro_rules! with_known_field {
+    ($self:expr, |$f:ident| $body:expr, $fallback:expr) => {
+        match $self {
+            Property::String($f) => $body,
+            Property::Secret($f) => $body,
+            Property::Number($f) => $body,
+            Property::Boolean($f) => $body,
+            Property::Select($f) => $body,
+            Property::Object($f) => $body,
+            Property::List($f) => $body,
+            Property::Mode($f) => $body,
+            Property::Code($f) => $body,
+            Property::File($f) => $body,
+            Property::Computed($f) => $body,
+            Property::Dynamic($f) => $body,
+            Property::Notice($f) => $body,
+            Property::Unknown(_) => $fallback,
+        }
+    };
+}
+
 /// The known `type` discriminators — routes deserialization between a known
 /// variant and the forward-compat [`Property::Unknown`] preservation path.
 const KNOWN_FIELD_TYPES: [&str; 13] = [
@@ -1455,66 +1504,21 @@ impl Property {
     #[inline]
     #[must_use]
     pub const fn key(&self) -> &FieldKey {
-        match self {
-            Self::String(f) => &f.key,
-            Self::Secret(f) => &f.key,
-            Self::Number(f) => &f.key,
-            Self::Boolean(f) => &f.key,
-            Self::Select(f) => &f.key,
-            Self::Object(f) => &f.key,
-            Self::List(f) => &f.key,
-            Self::Mode(f) => &f.key,
-            Self::Code(f) => &f.key,
-            Self::File(f) => &f.key,
-            Self::Computed(f) => &f.key,
-            Self::Dynamic(f) => &f.key,
-            Self::Notice(f) => &f.key,
-            Self::Unknown(f) => &f.key,
-        }
+        with_field!(self, |f| &f.key)
     }
 
     /// Shared visibility accessor.
     #[inline]
     #[must_use]
     pub const fn visible(&self) -> &VisibilityMode {
-        match self {
-            Self::String(f) => &f.visible,
-            Self::Secret(f) => &f.visible,
-            Self::Number(f) => &f.visible,
-            Self::Boolean(f) => &f.visible,
-            Self::Select(f) => &f.visible,
-            Self::Object(f) => &f.visible,
-            Self::List(f) => &f.visible,
-            Self::Mode(f) => &f.visible,
-            Self::Code(f) => &f.visible,
-            Self::File(f) => &f.visible,
-            Self::Computed(f) => &f.visible,
-            Self::Dynamic(f) => &f.visible,
-            Self::Notice(f) => &f.visible,
-            Self::Unknown(f) => &f.visible,
-        }
+        with_field!(self, |f| &f.visible)
     }
 
     /// Shared required accessor.
     #[inline]
     #[must_use]
     pub const fn required(&self) -> &RequiredMode {
-        match self {
-            Self::String(f) => &f.required,
-            Self::Secret(f) => &f.required,
-            Self::Number(f) => &f.required,
-            Self::Boolean(f) => &f.required,
-            Self::Select(f) => &f.required,
-            Self::Object(f) => &f.required,
-            Self::List(f) => &f.required,
-            Self::Mode(f) => &f.required,
-            Self::Code(f) => &f.required,
-            Self::File(f) => &f.required,
-            Self::Computed(f) => &f.required,
-            Self::Dynamic(f) => &f.required,
-            Self::Notice(f) => &f.required,
-            Self::Unknown(f) => &f.required,
-        }
+        with_field!(self, |f| &f.required)
     }
 
     /// Shared expression mode accessor.
@@ -1522,21 +1526,11 @@ impl Property {
     #[must_use]
     pub const fn expression(&self) -> &ExpressionMode {
         match self {
-            Self::String(f) => &f.expression,
-            Self::Secret(f) => &f.expression,
-            Self::Number(f) => &f.expression,
-            Self::Boolean(f) => &f.expression,
-            Self::Select(f) => &f.expression,
-            Self::Object(f) => &f.expression,
-            Self::List(f) => &f.expression,
-            Self::Mode(f) => &f.expression,
-            Self::Code(f) => &f.expression,
-            Self::File(f) => &f.expression,
             Self::Computed(_) => &REQUIRED_EXPRESSION_MODE,
-            Self::Dynamic(f) => &f.expression,
+            // Notice is display-only and must never carry an expression.
             Self::Notice(_) => &FORBIDDEN_EXPRESSION_MODE,
-            // An unknown field is opaque: this version cannot evaluate expressions in it.
-            Self::Unknown(_) => &FORBIDDEN_EXPRESSION_MODE,
+            // Known variants store the mode on the inner field; Unknown is opaque.
+            other => with_known_field!(other, |f| &f.expression, &FORBIDDEN_EXPRESSION_MODE),
         }
     }
 
@@ -1544,45 +1538,14 @@ impl Property {
     #[inline]
     #[must_use]
     pub const fn rules(&self) -> &[Rule] {
-        match self {
-            Self::String(f) => f.rules.as_slice(),
-            Self::Secret(f) => f.rules.as_slice(),
-            Self::Number(f) => f.rules.as_slice(),
-            Self::Boolean(f) => f.rules.as_slice(),
-            Self::Select(f) => f.rules.as_slice(),
-            Self::Object(f) => f.rules.as_slice(),
-            Self::List(f) => f.rules.as_slice(),
-            Self::Mode(f) => f.rules.as_slice(),
-            Self::Code(f) => f.rules.as_slice(),
-            Self::File(f) => f.rules.as_slice(),
-            Self::Computed(f) => f.rules.as_slice(),
-            Self::Dynamic(f) => f.rules.as_slice(),
-            Self::Notice(f) => f.rules.as_slice(),
-            // Rules of an unknown field are not understood by this version.
-            Self::Unknown(_) => &[],
-        }
+        with_known_field!(self, |f| f.rules.as_slice(), &[])
     }
 
     /// Shared transformer accessor.
     #[inline]
     #[must_use]
     pub const fn transformers(&self) -> &[Transformer] {
-        match self {
-            Self::String(f) => f.transformers.as_slice(),
-            Self::Secret(f) => f.transformers.as_slice(),
-            Self::Number(f) => f.transformers.as_slice(),
-            Self::Boolean(f) => f.transformers.as_slice(),
-            Self::Select(f) => f.transformers.as_slice(),
-            Self::Object(f) => f.transformers.as_slice(),
-            Self::List(f) => f.transformers.as_slice(),
-            Self::Mode(f) => f.transformers.as_slice(),
-            Self::Code(f) => f.transformers.as_slice(),
-            Self::File(f) => f.transformers.as_slice(),
-            Self::Computed(f) => f.transformers.as_slice(),
-            Self::Dynamic(f) => f.transformers.as_slice(),
-            Self::Notice(f) => f.transformers.as_slice(),
-            Self::Unknown(_) => &[],
-        }
+        with_known_field!(self, |f| f.transformers.as_slice(), &[])
     }
 
     /// Shared default-value accessor.
@@ -1603,22 +1566,7 @@ impl Property {
     #[inline]
     #[must_use]
     pub const fn default(&self) -> Option<&Value> {
-        match self {
-            Self::String(f) => f.default.as_ref(),
-            Self::Secret(f) => f.default.as_ref(),
-            Self::Number(f) => f.default.as_ref(),
-            Self::Boolean(f) => f.default.as_ref(),
-            Self::Select(f) => f.default.as_ref(),
-            Self::Object(f) => f.default.as_ref(),
-            Self::List(f) => f.default.as_ref(),
-            Self::Mode(f) => f.default.as_ref(),
-            Self::Code(f) => f.default.as_ref(),
-            Self::File(f) => f.default.as_ref(),
-            Self::Computed(f) => f.default.as_ref(),
-            Self::Dynamic(f) => f.default.as_ref(),
-            Self::Notice(f) => f.default.as_ref(),
-            Self::Unknown(_) => None,
-        }
+        with_known_field!(self, |f| f.default.as_ref(), None)
     }
 
     /// Shared read-aliases accessor — extra keys accepted on ingest.
@@ -1628,22 +1576,7 @@ impl Property {
     #[inline]
     #[must_use]
     pub fn read_aliases(&self) -> &[FieldKey] {
-        match self {
-            Self::String(f) => f.read_aliases.as_slice(),
-            Self::Secret(f) => f.read_aliases.as_slice(),
-            Self::Number(f) => f.read_aliases.as_slice(),
-            Self::Boolean(f) => f.read_aliases.as_slice(),
-            Self::Select(f) => f.read_aliases.as_slice(),
-            Self::Object(f) => f.read_aliases.as_slice(),
-            Self::List(f) => f.read_aliases.as_slice(),
-            Self::Mode(f) => f.read_aliases.as_slice(),
-            Self::Code(f) => f.read_aliases.as_slice(),
-            Self::File(f) => f.read_aliases.as_slice(),
-            Self::Computed(f) => f.read_aliases.as_slice(),
-            Self::Dynamic(f) => f.read_aliases.as_slice(),
-            Self::Notice(f) => f.read_aliases.as_slice(),
-            Self::Unknown(_) => &[],
-        }
+        with_known_field!(self, |f| f.read_aliases.as_slice(), &[])
     }
 
     /// Output key this field is emitted under on projection (`emit_as`).
@@ -1652,22 +1585,7 @@ impl Property {
     #[inline]
     #[must_use]
     pub fn emit_as(&self) -> Option<&FieldKey> {
-        match self {
-            Self::String(f) => f.emit_as.as_ref(),
-            Self::Secret(f) => f.emit_as.as_ref(),
-            Self::Number(f) => f.emit_as.as_ref(),
-            Self::Boolean(f) => f.emit_as.as_ref(),
-            Self::Select(f) => f.emit_as.as_ref(),
-            Self::Object(f) => f.emit_as.as_ref(),
-            Self::List(f) => f.emit_as.as_ref(),
-            Self::Mode(f) => f.emit_as.as_ref(),
-            Self::Code(f) => f.emit_as.as_ref(),
-            Self::File(f) => f.emit_as.as_ref(),
-            Self::Computed(f) => f.emit_as.as_ref(),
-            Self::Dynamic(f) => f.emit_as.as_ref(),
-            Self::Notice(f) => f.emit_as.as_ref(),
-            Self::Unknown(_) => None,
-        }
+        with_known_field!(self, |f| f.emit_as.as_ref(), None)
     }
 
     /// Return the static type name for error messages and diagnostics.
@@ -1723,65 +1641,30 @@ impl Property {
 
 // ── From impls ────────────────────────────────────────────────────────────────
 
-impl From<StringField> for Property {
-    fn from(value: StringField) -> Self {
-        Self::String(value)
-    }
+/// Generate a trivial `From<XField> for Property` impl for fields whose
+/// conversion is a simple enum wrapper. `ComputedField` and `NoticeField` are
+/// kept manual because they enforce expression-mode invariants.
+macro_rules! impl_from_field {
+    ($field:ty, $variant:ident) => {
+        impl From<$field> for Property {
+            fn from(value: $field) -> Self {
+                Self::$variant(value)
+            }
+        }
+    };
 }
 
-impl From<SecretField> for Property {
-    fn from(value: SecretField) -> Self {
-        Self::Secret(value)
-    }
-}
-
-impl From<NumberField> for Property {
-    fn from(value: NumberField) -> Self {
-        Self::Number(value)
-    }
-}
-
-impl From<BooleanField> for Property {
-    fn from(value: BooleanField) -> Self {
-        Self::Boolean(value)
-    }
-}
-
-impl From<SelectField> for Property {
-    fn from(value: SelectField) -> Self {
-        Self::Select(value)
-    }
-}
-
-impl From<ObjectField> for Property {
-    fn from(value: ObjectField) -> Self {
-        Self::Object(value)
-    }
-}
-
-impl From<ListField> for Property {
-    fn from(value: ListField) -> Self {
-        Self::List(value)
-    }
-}
-
-impl From<ModeField> for Property {
-    fn from(value: ModeField) -> Self {
-        Self::Mode(value)
-    }
-}
-
-impl From<CodeField> for Property {
-    fn from(value: CodeField) -> Self {
-        Self::Code(value)
-    }
-}
-
-impl From<FileField> for Property {
-    fn from(value: FileField) -> Self {
-        Self::File(value)
-    }
-}
+impl_from_field!(StringField, String);
+impl_from_field!(SecretField, Secret);
+impl_from_field!(NumberField, Number);
+impl_from_field!(BooleanField, Boolean);
+impl_from_field!(SelectField, Select);
+impl_from_field!(ObjectField, Object);
+impl_from_field!(ListField, List);
+impl_from_field!(ModeField, Mode);
+impl_from_field!(CodeField, Code);
+impl_from_field!(FileField, File);
+impl_from_field!(DynamicField, Dynamic);
 
 impl From<ComputedField> for Property {
     fn from(mut value: ComputedField) -> Self {
@@ -1789,12 +1672,6 @@ impl From<ComputedField> for Property {
         // even if generic builder helpers changed the mode.
         value.expression = ExpressionMode::Required;
         Self::Computed(value)
-    }
-}
-
-impl From<DynamicField> for Property {
-    fn from(value: DynamicField) -> Self {
-        Self::Dynamic(value)
     }
 }
 
