@@ -53,7 +53,18 @@ impl PredicateContext {
 
     /// Own one JSON value for direct RFC6901 pointer lookup.
     pub fn from_json(root: serde_json::Value) -> Self {
-        let binding_count = count_descendant_bindings(&root);
+        // A container root counts its keys and indices recursively. A scalar
+        // root has no addressable children but the root itself is addressable
+        // through `FieldPath::root()`, so it counts as one binding. That keeps
+        // `len() == 0` exactly equivalent to `is_empty()`.
+        let binding_count = if matches!(
+            root,
+            serde_json::Value::Object(_) | serde_json::Value::Array(_)
+        ) {
+            count_descendant_bindings(&root)
+        } else {
+            1
+        };
         Self {
             values: ContextValues::Root(root),
             binding_count,
@@ -100,22 +111,22 @@ impl PredicateContext {
         }
     }
 
-    /// Number of stored non-root bindings.
+    /// Number of addressable bindings in this context.
+    ///
+    /// For a `from_json` root this counts every reachable object key and array
+    /// index, plus one for a scalar root (addressable as [`FieldPath::root`]).
+    /// For `from_fields` it counts the supplied pairs.
+    ///
+    /// Contract: `len() == 0` if and only if `is_empty()`.
     pub const fn len(&self) -> usize {
         self.binding_count
     }
 
-    /// True if no fields are bound.
+    /// True if this context binds nothing addressable.
+    ///
+    /// Contract: equivalent to `len() == 0`.
     pub fn is_empty(&self) -> bool {
-        match &self.values {
-            ContextValues::Empty => true,
-            ContextValues::Root(root) => match root {
-                serde_json::Value::Object(object) => object.is_empty(),
-                serde_json::Value::Array(array) => array.is_empty(),
-                _ => false,
-            },
-            ContextValues::Fields(fields) => fields.is_empty(),
-        }
+        self.binding_count == 0
     }
 }
 
@@ -179,6 +190,43 @@ mod tests {
     fn empty_context_is_empty() {
         let ctx = PredicateContext::new();
         assert!(ctx.is_empty());
+        assert_eq!(ctx.len(), 0);
+    }
+
+    #[test]
+    fn len_and_is_empty_agree_for_every_root_shape() {
+        // Containers with content bind something.
+        let object = PredicateContext::from_json(json!({"a": 1}));
+        assert_eq!(object.len(), 1);
+        assert!(!object.is_empty());
+
+        let array = PredicateContext::from_json(json!([1, 2]));
+        assert_eq!(array.len(), 2);
+        assert!(!array.is_empty());
+
+        // Empty containers bind nothing at all.
+        let empty_object = PredicateContext::from_json(json!({}));
+        assert_eq!(empty_object.len(), 0);
+        assert!(empty_object.is_empty());
+
+        let empty_array = PredicateContext::from_json(json!([]));
+        assert_eq!(empty_array.len(), 0);
+        assert!(empty_array.is_empty());
+
+        // A scalar root is addressable through FieldPath::root(), so it binds.
+        let scalar = PredicateContext::from_json(json!("hello"));
+        assert_eq!(scalar.len(), 1);
+        assert!(!scalar.is_empty());
+        assert_eq!(scalar.get(&FieldPath::root()), Some(&json!("hello")));
+
+        let root_nulls = PredicateContext::from_json(json!(null));
+        assert_eq!(root_nulls.len(), 1);
+        assert!(!root_nulls.is_empty());
+
+        // from_fields binds exactly the supplied pairs.
+        let fields = PredicateContext::from_fields([(FieldPath::single("name"), json!("alice"))]);
+        assert_eq!(fields.len(), 1);
+        assert!(!fields.is_empty());
     }
 
     #[test]
