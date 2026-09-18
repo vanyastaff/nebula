@@ -280,11 +280,18 @@ fn emit_each_regex(
     wrap_each_option(element_is_option, check)
 }
 
-/// Emit element-level nested validation check.
-fn emit_each_nested(message: &Option<String>, element_is_option: bool) -> TokenStream2 {
-    let check = if let Some(msg) = message {
+/// Wrap a fallible `check(value)` call with per-element field attribution.
+///
+/// `check` performs the element validation and yields
+/// `Result<(), ValidationError>`. Nested, custom, and `using(...)` element
+/// rules differ only in that expression; all of them attach `each_field` to a
+/// returned error and, when `#[validate(..., message = "...")]` is present,
+/// replace the message first. `all(...)` applies the same shape once per
+/// member expression.
+fn each_check(check: TokenStream2, message: &Option<String>) -> TokenStream2 {
+    if let Some(msg) = message {
         quote! {
-            if let Err(mut e) = ::nebula_validator::combinators::SelfValidating::check(value) {
+            if let Err(mut e) = #check {
                 e = e.with_field(each_field.clone());
                 e.message = ::std::borrow::Cow::Owned(#msg.to_string());
                 errors.add(e);
@@ -292,11 +299,21 @@ fn emit_each_nested(message: &Option<String>, element_is_option: bool) -> TokenS
         }
     } else {
         quote! {
-            if let Err(e) = ::nebula_validator::combinators::SelfValidating::check(value) {
+            if let Err(e) = #check {
                 errors.add(e.with_field(each_field.clone()));
             }
         }
-    };
+    }
+}
+
+/// Emit element-level nested validation check.
+fn emit_each_nested(message: &Option<String>, element_is_option: bool) -> TokenStream2 {
+    let check = each_check(
+        quote!(::nebula_validator::combinators::SelfValidating::check(
+            value
+        )),
+        message,
+    );
 
     wrap_each_option(element_is_option, check)
 }
@@ -307,21 +324,7 @@ fn emit_each_custom(
     message: &Option<String>,
     element_is_option: bool,
 ) -> TokenStream2 {
-    let check = if let Some(msg) = message {
-        quote! {
-            if let Err(mut e) = (#expr)(value) {
-                e = e.with_field(each_field.clone());
-                e.message = ::std::borrow::Cow::Owned(#msg.to_string());
-                errors.add(e);
-            }
-        }
-    } else {
-        quote! {
-            if let Err(e) = (#expr)(value) {
-                errors.add(e.with_field(each_field.clone()));
-            }
-        }
-    };
+    let check = each_check(quote!((#expr)(value)), message);
 
     wrap_each_option(element_is_option, check)
 }
@@ -332,21 +335,10 @@ fn emit_each_using(
     message: &Option<String>,
     element_is_option: bool,
 ) -> TokenStream2 {
-    let check = if let Some(msg) = message {
-        quote! {
-            if let Err(mut e) = ::nebula_validator::foundation::Validate::validate(&(#expr), value) {
-                e = e.with_field(each_field.clone());
-                e.message = ::std::borrow::Cow::Owned(#msg.to_string());
-                errors.add(e);
-            }
-        }
-    } else {
-        quote! {
-            if let Err(e) = ::nebula_validator::foundation::Validate::validate(&(#expr), value) {
-                errors.add(e.with_field(each_field.clone()));
-            }
-        }
-    };
+    let check = each_check(
+        quote!(::nebula_validator::foundation::Validate::validate(&(#expr), value)),
+        message,
+    );
 
     wrap_each_option(element_is_option, check)
 }
@@ -360,21 +352,10 @@ fn emit_each_all(
     let checks: Vec<TokenStream2> = exprs
         .iter()
         .map(|expr| {
-            if let Some(msg) = message {
-                quote! {
-                    if let Err(mut e) = ::nebula_validator::foundation::Validate::validate(&(#expr), value) {
-                        e = e.with_field(each_field.clone());
-                        e.message = ::std::borrow::Cow::Owned(#msg.to_string());
-                        errors.add(e);
-                    }
-                }
-            } else {
-                quote! {
-                    if let Err(e) = ::nebula_validator::foundation::Validate::validate(&(#expr), value) {
-                        errors.add(e.with_field(each_field.clone()));
-                    }
-                }
-            }
+            each_check(
+                quote!(::nebula_validator::foundation::Validate::validate(&(#expr), value)),
+                message,
+            )
         })
         .collect();
 
