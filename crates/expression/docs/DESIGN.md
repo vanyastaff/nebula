@@ -3,30 +3,32 @@
 | Field | Value |
 |-------|-------|
 | **Status** | Stable — leaf/core evaluation primitive |
-| **Layer** | Core (зависит только от `nebula-log` + `nebula-error`; ни одного домен-крейта) |
-| **Redesign role** | **Не затронут** post-ADR-0092 credential/resource переделкой — ни один credential-крейт от него не зависит, rewrite-планы его не упоминают. Косвенный потребитель: `nebula-resource`/`nebula-action` резолвят `MaybeExpression`-конфиги. |
-| **Related** | PRODUCT_CANON §3.5 (`ValidValues::resolve`), ROADMAP #590 (regex-кэш), issue #252 (step-budget bypass fix), n8n expression-синтаксис |
+| **Layer** | Core (depends only on `nebula-log` + `nebula-error`; no domain crate) |
+| **Redesign role** | **Unaffected** by the post-ADR-0092 credential/resource redesign — no credential crate depends on it and the rewrite plans do not mention it. Indirect consumer: `nebula-resource` / `nebula-action` resolve `MaybeExpression` configs through it. |
+| **Related** | PRODUCT_CANON §3.5 (`ValidValues::resolve`), ROADMAP #590 (regex cache), issue #252 (step-budget bypass fix), n8n expression syntax |
 
 ---
 
-## 1. Назначение и границы
+## 1. Purpose and boundaries
 
-`nebula-expression` — выражательный движок с n8n-совместимым синтаксисом для динамического
-разрешения полей workflow. Парсит и вычисляет `{{ expression }}`-шаблоны против
-execution-контекста и возвращает `serde_json::Value`. Служит бэкендом резолва для
-`nebula-schema` (`ValidValues::resolve`, Canon §3.5).
+`nebula-expression` is an expression engine with n8n-compatible syntax for resolving
+workflow fields dynamically. It parses and evaluates `{{ expression }}` templates
+against an execution context and returns a `serde_json::Value`. It is the resolution
+backend for `nebula-schema` (`ValidValues::resolve`, Canon §3.5).
 
-**Владеет:** лексером/парсером/AST выражений, AST-walk вычислителем, реестром builtin-функций
-(`array`/`string`/`math`/`object`/`datetime`/`conversion`/`util`), template-движком с
-whitespace-control (`{{- -}}`), двумя LRU-кэшами (AST + template) на moka, DoS-бюджетом
-(`EvaluationPolicy`), serde-обёртками литерал-или-выражение (`MaybeExpression<T>`,
-`MaybeTemplate`) и типизированными ошибками с span-рендерингом.
+**Owns:** the expression lexer/parser/AST, the AST-walk evaluator, the builtin
+function registry (`array`/`string`/`math`/`object`/`datetime`/`conversion`/`util`),
+the template engine with whitespace control (`{{- -}}`), two moka-backed LRU caches
+(AST + template), the DoS budget (`EvaluationPolicy`), the literal-or-expression serde
+wrappers (`MaybeExpression<T>`, `MaybeTemplate`), and typed errors with structured
+source positions.
 
-**ЯВНО НЕ делает:** не хранит execution-state (контекст строит вызывающий), не знает про
-credential/resource домен, не делает KDF/crypto, не валидирует схему (это `nebula-schema`,
-которая лишь *вызывает* резолв), не выполняет I/O — вычисление чистое над переданным контекстом.
+**Explicitly does NOT:** store execution state (the caller builds the context), know
+about the credential/resource domain, do KDF or crypto, validate schemas (`nebula-schema`
+does that and merely *calls* resolution), or perform I/O — evaluation is pure over the
+supplied context.
 
-## 2. Публичная поверхность
+## 2. Public surface
 
 The retained-program contract is the syntax boundary shared with schema. Consumers
 cache `CompiledProgram`, not source-only AST wrappers, and call
@@ -42,47 +44,50 @@ including malformed unescaped openers. See README for escape rules and hard boun
 | `CompiledProgram::{compile, compile_expression, compile_template, source}` | `program.rs` |
 | `ExpressionEngine::evaluate_compiled` | `engine.rs` |
 | `has_expression_marker` | `template.rs`, re-exported from the crate root |
-| `ExpressionEngine` (+ `new`/`with_cache_size`/`with_policy`) | `engine.rs:154` (169–256) |
-| `evaluate` / `parse_template` / `render_template` / `cache_overview` | `engine.rs:287 / 323 / 347 / 433` |
-| `CacheOverview` (+ `CacheStats`) | `engine.rs:32` (`:23`) |
-| `EvaluationContext` (+ `EvaluationContextBuilder`) — `$node`/`$execution`/`$workflow`/`$input` | `context.rs:22` (`:204`) |
-| `EvaluationPolicy` (DoS-бюджет: step limit + recursion depth, дефолт 256) | `policy.rs:10` |
-| `Template` / `MaybeTemplate` (whitespace-control `{{- -}}`) | `template.rs:87 / 381` |
-| `MaybeExpression<T>` (+ `resolve_as_value/string/integer/float/bool`); `CachedExpression` | `maybe.rs:88` (203–280); `:27` |
-| `ExpressionError` (thiserror + `nebula_error::Classify`, коды `EXPR:*`); `ExpressionResult`; `ExpressionErrorExt` | `error.rs:14 / 220 / 227` |
+| `ExpressionEngine` (+ `new`/`with_cache_size`/`with_policy`) | `engine.rs` |
+| `evaluate` / `parse_template` / `render_template` / `cache_overview` | `engine.rs` |
+| `CacheOverview` (+ `CacheStats`) | `engine.rs` |
+| `EvaluationContext` (+ `EvaluationContextBuilder`) — `$node`/`$execution`/`$workflow`/`$input` | `context.rs` |
+| `EvaluationPolicy` (DoS budget: work limit + recursion depth, default 256) | `policy.rs` |
+| `Template` / `MaybeTemplate` (whitespace control `{{- -}}`) | `template.rs` |
+| `MaybeExpression<T>` (+ `resolve_as_value/string/integer/float/bool`); `CachedExpression` | `maybe.rs` |
+| `ExpressionError` (thiserror + `nebula_error::Classify`, codes `EXPR:*`); `ExpressionResult` | `error.rs` |
 | `parse_expression(source)` — delegates to the auto compiler and discards the program | `lib.rs` |
-| `BuiltinFunction` (alias); `BuiltinRegistry` | `builtins.rs:32 / 37` |
+| `BuiltinFunction` (alias); `BuiltinRegistry` | `builtins/mod.rs` |
 | `BuiltinOutput`; `BuiltinOutputBuilder`; `BuiltinOutputBound`; `BuiltinOutputLimits` | `builtins/output.rs`; `policy.rs` |
 | `BuiltinView<'_>` — policy queries and work charging, no evaluator re-entry | `eval/mod.rs` |
-| `ErrorFormatter` / `format_template_error` | `error_formatter.rs:28 / 183` |
-| `value_utils` — pub-хелперы коэрции (`is_truthy:48`, `to_integer:73`, `char_count:106`, …) | `value_utils.rs` |
-| Re-export `serde_json::Value`; `prelude` | `lib.rs:103 / 148` |
+| `ErrorFormatter` — caller-side renderer for structured parse-error positions | `error_formatter.rs` |
 
-doc-hidden, но pub: `ast` (`Expr`/`BinaryOp`), `lexer`, `parser`, `token`, `span`, `interner`,
-`Evaluator` (`eval/mod.rs:182`) — помечены «advanced use, may change».
+doc-hidden but `pub`: `ast` (`Expr`/`BinaryOp`), `lexer`, `parser`, `token`, `span`,
+`Evaluator` (`eval/mod.rs`) — marked "advanced use, may change".
 
-## 3. Зависимости и зависимые
+## 3. Dependencies and dependents
 
 - **Deps:** `nebula-log` (path), `nebula-error` (workspace, feature `derive`), `tracing`,
-  `thiserror`, `serde`, `serde_json`, `chrono`, `parking_lot`, `unicode-width`. Опциональные:
-  `moka` (`cache`), `regex` (`regex`, намеренно тянет moka — true-LRU regex-кэш, ROADMAP #590),
-  `chrono-tz` (`datetime`), `uuid` (`uuid`). default = `cache,regex,datetime,uuid`.
-- **Зависимые:** `nebula-engine`, `nebula-schema`, `nebula-action` (default-features=false,
-  только `cache`), `nebula-resource` (default-features=false, только `cache`), `examples`,
-  `nebula-expression-fuzz` (features=full).
+  `thiserror`, `serde`, `serde_json`, `chrono`, `unicode-width`. Optional:
+  `moka` (`cache`), `regex` (`regex`, deliberately pulls in moka for true-LRU regex
+  caching, ROADMAP #590), `chrono-tz` (`datetime`), `uuid` (`uuid`).
+  default = `cache,regex,datetime,uuid`.
+- **Dependents:** `nebula-engine`, `nebula-schema`, `nebula-action`
+  (default-features=false, `cache` only), `nebula-resource`
+  (default-features=false, `cache` only), `examples`, `nebula-expression-fuzz`
+  (features=full).
 
-## 4. Внутренняя архитектура
+## 4. Internal architecture
 
-Фронтенд: `lexer.rs`/`token.rs` → `parser.rs` → `ast.rs` (+ `span.rs` для позиций),
-`interner.rs` дедуплицирует идентификаторы. `eval/mod.rs` — AST-walker `Evaluator`/`EvalFrame`;
-higher-order комбинаторы (`filter`/`map`/`reduce`/`group_by`/…) идут через `eval_with_frame`
-с фреймом вызывающего, builtin'ы получают только `BuiltinView` (без доступа к рекурсивному
-eval). `engine.rs` оркестрирует два moka-LRU кэша (expr-AST + template) и статистику.
-`context.rs` несёт 4 пространства переменных. `template.rs` склеивает literal/expr-части
-с whitespace-control. `maybe.rs` — serde-слой литерал-или-выражение для конфигов.
-`error.rs`/`error_formatter.rs` — типизированные ошибки + красивый span-рендер.
-Flow: source -> compiler -> immutable `CompiledProgram` -> optional cache ->
-`evaluate_compiled` under current `EvaluationPolicy` -> `Value`. Every template
+Frontend: `lexer.rs`/`token.rs` → `parser.rs` → `ast.rs` (+ `span.rs` for positions).
+`eval/mod.rs` is the AST-walker `Evaluator`/`EvalFrame`; higher-order combinators
+(`filter`/`map`/`reduce`/`group_by`/…) go through `eval_with_frame` with the caller's
+frame, and builtins receive only `BuiltinView` (no recursive-eval access).
+`engine.rs` orchestrates two moka LRU caches (expr-AST + template) and their statistics.
+`context.rs` holds the four variable namespaces. `template.rs` stitches literal and
+expression parts together with whitespace control. `maybe.rs` is the serde
+literal-or-expression layer for configs. `error.rs` holds the typed errors;
+`error_formatter.rs` renders a position on the caller's side (`ParseError` carries a
+structured `Position`, never a pre-rendered string).
+
+Flow: source → compiler → immutable `CompiledProgram` → optional cache →
+`evaluate_compiled` under the current `EvaluationPolicy` → `Value`. Every template
 part and higher-order body shares one call-local frame. Context limits cannot
 raise engine ceilings (default work 100,000 units; default JSON input 1 MiB).
 Builtin argument/result materialization and allocation-heavy work use that frame.
@@ -94,15 +99,16 @@ Stored context variables are immutable `Arc<Value>` snapshots. Evaluation uses
 borrowed-or-owned values internally, preserving borrows through access chains and
 builtin dispatch rather than cloning the referenced JSON graph.
 
-## 5. Инварианты и контракты
+## 5. Invariants and contracts
 
-- **Резолв-бэкенд Canon §3.5.** `ValidValues::resolve` в `nebula-schema` вызывает движок;
-  выход всегда `serde_json::Value`.
-- **DoS-бюджет by-construction.** `EvaluationPolicy` ограничивает шаги и глубину рекурсии
-  (дефолт 256); бюджет общий на всё вычисление.
-- **Step-budget нельзя обойти из builtin'а (issue #252).** Builtin'ы получают `BuiltinView`,
-  а не `Evaluator` — тип запрещает рекурсивный вызов в обход счётчика шагов. Higher-order
-  комбинаторы рекурсируют только через `eval_with_frame` под тем же бюджетом.
+- **Canon §3.5 resolution backend.** `ValidValues::resolve` in `nebula-schema` calls the
+  engine; the output is always a `serde_json::Value`.
+- **DoS budget by construction.** `EvaluationPolicy` bounds work units and recursion
+  depth (default 256); the budget is shared across the whole evaluation.
+- **No step-budget bypass from a builtin (issue #252).** Builtins receive
+  `BuiltinView`, not `Evaluator` — the type forbids recursive calls that would skip the
+  step counter. Higher-order combinators recurse only through `eval_with_frame` under
+  the same budget.
 - **Builtin output is bounded by construction.** Public callbacks cannot return raw
   `Value`; `BuiltinOutputBuilder` enforces finite total-byte, string, collection, node,
   and depth ceilings. Expanding standard builtins preflight their exact output before
@@ -110,34 +116,49 @@ builtin dispatch rather than cloning the referenced JSON graph.
 - **One compilation dispatcher.** Raw grammar takes precedence; only then does the
   template parser interpret unescaped delimiters. `parse_expression` and engine
   source evaluation both use `CompiledProgram::compile`.
-- **Типизированные ошибки.** `ExpressionError` несёт `nebula_error::Classify` с кодами `EXPR:*`.
+- **Typed errors.** `ExpressionError` carries `nebula_error::Classify` with `EXPR:*` codes.
+  Parse failures carry a structured `Position`; rendering is the caller's concern.
 
-## 6. Известные напряжения / долг
+## 6. Known tensions / debt
 
 1. **Trusted callbacks.** `BuiltinView` exposes cooperative work charging but cannot
    preempt a custom callback that blocks or ignores its budget.
-2. **Legacy-эвристика datetime.** `datetime.rs:101` — «legacy 2-arg shape»: разбор 3-го
-   аргумента (tz vs format) эвристикой с fallback; единственное упоминание legacy в крейте.
-3. **Широкая doc-hidden pub-поверхность.** `lexer`/`parser`/`eval`/`ast`/`token`/`span`/`interner`
-   — полупубличный «may change» API. Под sole-public-sdk (публичен только `nebula-sdk`) это можно
-   честно перевести в `pub(crate)`.
-4. **Unmerged resolve-seam рефактор.** Ветка `refactor/error-unify-validation` трогает
-   expression resolve seam (sync/single-parse + `From<ExpressionError>` на стороне потребителей);
-   в этом worktree не отражена.
-5. TODO/FIXME/deprecated отсутствуют; явных внутрикрейтовых дублей не найдено.
+2. **Legacy datetime heuristic.** `datetime.rs` — the "legacy 2-arg shape": the second
+   argument is probed as a timezone, falling back to a format string. Under the n8n
+   target (§6.5) this disappears: a date becomes a typed value instead of a string that
+   has to be guessed at.
+3. **Wide doc-hidden pub surface.** `lexer`/`parser`/`eval`/`ast`/`token`/`span` are a
+   semi-public "may change" API. Under sole-public-sdk (only `nebula-sdk` is published)
+   these can honestly move to `pub(crate)`.
+4. **Unmerged resolve-seam refactor.** The `refactor/error-unify-validation` branch
+   touches the expression resolve seam (sync/single-parse + `From<ExpressionError>` on
+   the consumer side); it is not reflected in this worktree.
+5. **Path to an n8n-class engine.** The stated target is an authoring language and
+   template engine at n8n's level (methods on values, optional chaining,
+   `$json`/`$item`, template control flow). That does not exist today: `Expr` knows only
+   property/index access, dates are strings, and the namespaces are fixed at four.
+   This is unrealized scope, not a defect; the plan and its forks live in the crate's
+   review discussion, not in this file.
+6. No TODO/FIXME/deprecated markers.
 
-## 7. Роль в пост-0092 credential/resource модели
+## 7. Role in the post-0092 credential/resource model
 
-Не затронут — стабильный фундамент. Ни `nebula-credential`, ни `nebula-resource`,
-ни `nebula-storage` не зависят от него по credential-пути, и rewrite-планы (ADR-0088/0092)
-его не упоминают. Единственная связь косвенная: consumer binding в `nebula-resource`/`nebula-action`
-резолвит `MaybeExpression`-конфиги через урезанный (`default-features=false`, только `cache`)
-вариант. При коллапсе крейтов за `nebula-sdk` публичность станет внутренней деталью — re-export
-решает sdk.
+Unaffected — a stable foundation. Neither `nebula-credential`, `nebula-resource`, nor
+`nebula-storage` depends on it along the credential path, and the rewrite plans
+(ADR-0088/0092) do not mention it. The only indirect link: consumer binding in
+`nebula-resource`/`nebula-action` resolves `MaybeExpression` configs through the
+reduced variant (`default-features=false`, `cache` only). If crates collapse behind
+`nebula-sdk`, this crate's publicity becomes an internal detail — the sdk re-export
+decides.
 
-## 8. Forward design / открытые вопросы
+## 8. Forward design / open questions
 
-Крейт стабилен; зелёного-поля работы нет. Открытые пункты узкие: (а) свести doc-drift из §6.1;
-(б) при переходе на sole-public-sdk сузить doc-hidden pub-модули до `pub(crate)` (§6.3);
-(в) подобрать resolve-seam изменения из `refactor/error-unify-validation` при мердже (§6.4).
-regex-кэш на moka — уже выбранное направление (ROADMAP #590), не открытый вопрос.
+The crate is stable as the Canon §3.5 resolution backend, but the target frame is
+wider: a template engine with control flow and an n8n-compatible expression language
+(§6.5). Open items: (a) settle the doc drift from §6.1; (b) under sole-public-sdk,
+narrow the doc-hidden pub modules to `pub(crate)` (§6.3); (c) pick up the resolve-seam
+changes from `refactor/error-unify-validation` at merge time (§6.4); (d) decide the
+value-model/ABI/block-syntax forks before 0.1.0, while the public contract is still
+free.
+The regex cache on moka is already a chosen direction (ROADMAP #590), not an open
+question.

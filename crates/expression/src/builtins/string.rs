@@ -4,10 +4,7 @@ use serde_json::Value;
 
 use super::{check_arg_count, check_min_arg_count, get_int_arg_with_policy, get_string_arg};
 use crate::{
-    ExpressionError,
-    context::EvaluationContext,
-    error::{ExpressionErrorExt, ExpressionResult},
-    eval::BuiltinView,
+    ExpressionError, context::EvaluationContext, error::ExpressionResult, eval::BuiltinView,
 };
 
 // Note: there used to be a `pub fn length` here that took a string only,
@@ -150,7 +147,7 @@ pub(crate) fn substring(
     let s = get_string_arg("substring", args, 0, "text")?;
     let start = get_int_arg_with_policy("substring", args, 1, "start", view, ctx)?;
     if start < 0 {
-        return Err(ExpressionError::expression_invalid_argument(
+        return Err(ExpressionError::invalid_argument(
             "substring",
             "Argument 'start' must be non-negative",
         ));
@@ -160,7 +157,7 @@ pub(crate) fn substring(
     let end = if args.len() > 2 {
         let end = get_int_arg_with_policy("substring", args, 2, "end", view, ctx)?;
         if end < 0 {
-            return Err(ExpressionError::expression_invalid_argument(
+            return Err(ExpressionError::invalid_argument(
                 "substring",
                 "Argument 'end' must be non-negative",
             ));
@@ -195,16 +192,10 @@ pub(crate) fn contains(
 ) -> ExpressionResult<Value> {
     check_arg_count("contains", args, 2)?;
     let s = args[0].as_str().ok_or_else(|| {
-        ExpressionError::expression_type_error(
-            "string",
-            crate::value_utils::value_type_name(args[0]),
-        )
+        ExpressionError::type_error("string", crate::value_utils::value_type_name(args[0]))
     })?;
     let needle = args[1].as_str().ok_or_else(|| {
-        ExpressionError::expression_type_error(
-            "string",
-            crate::value_utils::value_type_name(args[1]),
-        )
+        ExpressionError::type_error("string", crate::value_utils::value_type_name(args[1]))
     })?;
 
     Ok(Value::Bool(s.contains(needle)))
@@ -218,16 +209,10 @@ pub(crate) fn starts_with(
 ) -> ExpressionResult<Value> {
     check_arg_count("starts_with", args, 2)?;
     let s = args[0].as_str().ok_or_else(|| {
-        ExpressionError::expression_type_error(
-            "string",
-            crate::value_utils::value_type_name(args[0]),
-        )
+        ExpressionError::type_error("string", crate::value_utils::value_type_name(args[0]))
     })?;
     let prefix = args[1].as_str().ok_or_else(|| {
-        ExpressionError::expression_type_error(
-            "string",
-            crate::value_utils::value_type_name(args[1]),
-        )
+        ExpressionError::type_error("string", crate::value_utils::value_type_name(args[1]))
     })?;
 
     Ok(Value::Bool(s.starts_with(prefix)))
@@ -241,16 +226,10 @@ pub(crate) fn ends_with(
 ) -> ExpressionResult<Value> {
     check_arg_count("ends_with", args, 2)?;
     let s = args[0].as_str().ok_or_else(|| {
-        ExpressionError::expression_type_error(
-            "string",
-            crate::value_utils::value_type_name(args[0]),
-        )
+        ExpressionError::type_error("string", crate::value_utils::value_type_name(args[0]))
     })?;
     let suffix = args[1].as_str().ok_or_else(|| {
-        ExpressionError::expression_type_error(
-            "string",
-            crate::value_utils::value_type_name(args[1]),
-        )
+        ExpressionError::type_error("string", crate::value_utils::value_type_name(args[1]))
     })?;
 
     Ok(Value::Bool(s.ends_with(suffix)))
@@ -277,7 +256,7 @@ fn pad(
 ) -> ExpressionResult<Value> {
     check_min_arg_count(function, args, 2)?;
     if args.len() > 3 {
-        return Err(ExpressionError::expression_eval_error(format!(
+        return Err(ExpressionError::eval_error(format!(
             "{function}: expected 2 or 3 arguments, got {}",
             args.len()
         )));
@@ -285,7 +264,7 @@ fn pad(
     let s = get_string_arg(function, args, 0, "text")?;
     let target_len = get_int_arg_with_policy(function, args, 1, "length", view, ctx)?;
     if target_len < 0 {
-        return Err(ExpressionError::expression_eval_error(format!(
+        return Err(ExpressionError::eval_error(format!(
             "{function}: length must be non-negative"
         )));
     }
@@ -293,7 +272,7 @@ fn pad(
 
     const MAX_PAD_LENGTH: usize = 1_048_576;
     if target_len > MAX_PAD_LENGTH {
-        return Err(ExpressionError::expression_eval_error(format!(
+        return Err(ExpressionError::eval_error(format!(
             "{function}: target length {target_len} exceeds maximum {MAX_PAD_LENGTH}"
         )));
     }
@@ -304,7 +283,7 @@ fn pad(
         " "
     };
     if fill.is_empty() {
-        return Err(ExpressionError::expression_invalid_argument(
+        return Err(ExpressionError::invalid_argument(
             function,
             "Fill string must not be empty",
         ));
@@ -365,7 +344,7 @@ pub(crate) fn repeat(
     let s = get_string_arg("repeat", args, 0, "text")?;
     let count = get_int_arg_with_policy("repeat", args, 1, "count", view, ctx)?;
     if count < 0 {
-        return Err(ExpressionError::expression_invalid_argument(
+        return Err(ExpressionError::invalid_argument(
             "repeat",
             "Argument 'count' must be non-negative",
         ));
@@ -376,7 +355,7 @@ pub(crate) fn repeat(
     const MAX_RESULT_LEN: usize = 1_000_000;
     let result_len = s.len().saturating_mul(count);
     if result_len > MAX_RESULT_LEN {
-        return Err(ExpressionError::expression_eval_error(format!(
+        return Err(ExpressionError::eval_error(format!(
             "repeat would produce a string of {result_len} bytes, exceeding limit of {MAX_RESULT_LEN}"
         )));
     }

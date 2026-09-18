@@ -6,10 +6,7 @@ use serde_json::Value;
 
 use super::{check_arg_count, check_min_arg_count, get_array_arg, get_object_arg};
 use crate::{
-    ExpressionError,
-    context::EvaluationContext,
-    error::{ExpressionErrorExt, ExpressionResult},
-    eval::BuiltinView,
+    ExpressionError, context::EvaluationContext, error::ExpressionResult, eval::BuiltinView,
 };
 
 /// Get all keys of an object
@@ -51,10 +48,7 @@ pub(crate) fn has(
     check_arg_count("has", args, 2)?;
     let obj = get_object_arg("has", args, 0, "object")?;
     let key = args[1].as_str().ok_or_else(|| {
-        ExpressionError::expression_type_error(
-            "string",
-            crate::value_utils::value_type_name(args[1]),
-        )
+        ExpressionError::type_error("string", crate::value_utils::value_type_name(args[1]))
     })?;
 
     Ok(Value::Bool(obj.contains_key(key)))
@@ -107,7 +101,7 @@ pub(crate) fn pick(
                 keys_to_pick.insert(key);
             },
             None => {
-                return Err(ExpressionError::expression_type_error(
+                return Err(ExpressionError::type_error(
                     "string",
                     crate::value_utils::value_type_name(arg),
                 ));
@@ -148,7 +142,7 @@ pub(crate) fn omit(
                 keys_to_omit.insert(key);
             },
             None => {
-                return Err(ExpressionError::expression_type_error(
+                return Err(ExpressionError::type_error(
                     "string",
                     crate::value_utils::value_type_name(arg),
                 ));
@@ -209,14 +203,14 @@ pub(crate) fn from_entries(
     let mut result = serde_json::Map::new();
     for item in arr {
         let pair = item.as_object().ok_or_else(|| {
-            ExpressionError::expression_invalid_argument(
+            ExpressionError::invalid_argument(
                 "from_entries",
                 "Each element must be an object with 'key' and 'value' fields",
             )
         })?;
 
         let key = pair.get("key").and_then(|v| v.as_str()).ok_or_else(|| {
-            ExpressionError::expression_invalid_argument(
+            ExpressionError::invalid_argument(
                 "from_entries",
                 "Each element must have a string 'key' field",
             )

@@ -15,11 +15,7 @@ use std::collections::HashMap;
 use serde_json::Value;
 
 use crate::{
-    ExpressionError,
-    ast::Expr,
-    context::EvaluationContext,
-    error::{ExpressionErrorExt, ExpressionResult},
-    eval::BuiltinView,
+    ExpressionError, context::EvaluationContext, error::ExpressionResult, eval::BuiltinView,
 };
 
 pub(crate) use output::{ArrayOutputBudget, GroupOutputBudget};
@@ -103,7 +99,7 @@ impl BuiltinRegistry {
         let function = self
             .functions
             .get(name)
-            .ok_or_else(|| ExpressionError::expression_function_not_found(name))?;
+            .ok_or_else(|| ExpressionError::function_not_found(name))?;
         let output = view.output_builder(context);
 
         match function {
@@ -156,9 +152,6 @@ impl BuiltinRegistry {
     fn register_array_functions(&mut self) {
         self.register("first", array::first);
         self.register("last", array::last);
-        self.register("filter", array::filter);
-        self.register("map", array::map);
-        self.register("reduce", array::reduce);
         self.register("sort", array::sort);
         self.register("reverse", array::reverse);
         self.register("join", array::join);
@@ -243,7 +236,7 @@ pub(crate) fn check_arg_count(
     if args.len() == expected {
         Ok(())
     } else {
-        Err(ExpressionError::expression_invalid_argument(
+        Err(ExpressionError::invalid_argument(
             func_name,
             format!("Expected {} arguments, got {}", expected, args.len()),
         ))
@@ -257,24 +250,12 @@ pub(crate) fn check_min_arg_count(
     min: usize,
 ) -> ExpressionResult<()> {
     if args.len() < min {
-        Err(ExpressionError::expression_invalid_argument(
+        Err(ExpressionError::invalid_argument(
             func_name,
             format!("Expected at least {} arguments, got {}", min, args.len()),
         ))
     } else {
         Ok(())
-    }
-}
-
-/// Helper to extract a lambda expression from args
-#[expect(dead_code)]
-pub(crate) fn extract_lambda(arg: &Expr) -> ExpressionResult<(&str, &Expr)> {
-    match arg {
-        Expr::Lambda { param, body } => Ok((param, body)),
-        _ => Err(ExpressionError::expression_invalid_argument(
-            "lambda",
-            "Expected a lambda expression",
-        )),
     }
 }
 
@@ -287,14 +268,14 @@ pub(crate) fn get_string_arg<'a>(
 ) -> ExpressionResult<&'a str> {
     args.get(index)
         .ok_or_else(|| {
-            ExpressionError::expression_invalid_argument(
+            ExpressionError::invalid_argument(
                 func_name,
                 format!("Missing argument '{arg_name}' at position {index}"),
             )
         })?
         .as_str()
         .ok_or_else(|| {
-            ExpressionError::expression_invalid_argument(
+            ExpressionError::invalid_argument(
                 func_name,
                 format!(
                     "Argument '{}' must be a string, got {}",
@@ -313,14 +294,14 @@ pub(crate) fn get_int_arg(
     arg_name: &str,
 ) -> ExpressionResult<i64> {
     let val = args.get(index).ok_or_else(|| {
-        ExpressionError::expression_invalid_argument(
+        ExpressionError::invalid_argument(
             func_name,
             format!("Missing argument '{arg_name}' at position {index}"),
         )
     })?;
 
     crate::value_utils::to_integer(val).map_err(|_| {
-        ExpressionError::expression_invalid_argument(
+        ExpressionError::invalid_argument(
             func_name,
             format!(
                 "Argument '{}' must be an integer, got {}",
@@ -341,7 +322,7 @@ pub(crate) fn get_int_arg_with_policy(
     ctx: &EvaluationContext,
 ) -> ExpressionResult<i64> {
     let val = args.get(index).ok_or_else(|| {
-        ExpressionError::expression_invalid_argument(
+        ExpressionError::invalid_argument(
             func_name,
             format!("Missing argument '{arg_name}' at position {index}"),
         )
@@ -350,7 +331,7 @@ pub(crate) fn get_int_arg_with_policy(
     if view.is_strict_mode(ctx) {
         return match val {
             Value::Number(n) => n.as_i64().ok_or_else(|| {
-                ExpressionError::expression_invalid_argument(
+                ExpressionError::invalid_argument(
                     func_name,
                     format!(
                         "Argument '{}' must be an integer number in strict mode, got {}",
@@ -359,7 +340,7 @@ pub(crate) fn get_int_arg_with_policy(
                     ),
                 )
             }),
-            _ => Err(ExpressionError::expression_invalid_argument(
+            _ => Err(ExpressionError::invalid_argument(
                 func_name,
                 format!(
                     "Argument '{}' must be an integer number in strict mode, got {}",
@@ -381,14 +362,14 @@ pub(crate) fn get_number_arg(
     arg_name: &str,
 ) -> ExpressionResult<f64> {
     let val = args.get(index).ok_or_else(|| {
-        ExpressionError::expression_invalid_argument(
+        ExpressionError::invalid_argument(
             func_name,
             format!("Missing argument '{arg_name}' at position {index}"),
         )
     })?;
 
     crate::value_utils::to_float(val).map_err(|_| {
-        ExpressionError::expression_invalid_argument(
+        ExpressionError::invalid_argument(
             func_name,
             format!(
                 "Argument '{}' must be a number, got {}",
@@ -409,7 +390,7 @@ pub(crate) fn get_number_arg_with_policy(
     ctx: &EvaluationContext,
 ) -> ExpressionResult<f64> {
     let val = args.get(index).ok_or_else(|| {
-        ExpressionError::expression_invalid_argument(
+        ExpressionError::invalid_argument(
             func_name,
             format!("Missing argument '{arg_name}' at position {index}"),
         )
@@ -418,7 +399,7 @@ pub(crate) fn get_number_arg_with_policy(
     if view.is_strict_mode(ctx) {
         return match val {
             Value::Number(n) => crate::value_utils::number_as_f64(n).ok_or_else(|| {
-                ExpressionError::expression_invalid_argument(
+                ExpressionError::invalid_argument(
                     func_name,
                     format!(
                         "Argument '{}' must be a number in strict mode, got {}",
@@ -427,7 +408,7 @@ pub(crate) fn get_number_arg_with_policy(
                     ),
                 )
             }),
-            _ => Err(ExpressionError::expression_invalid_argument(
+            _ => Err(ExpressionError::invalid_argument(
                 func_name,
                 format!(
                     "Argument '{}' must be a number in strict mode, got {}",
@@ -450,14 +431,14 @@ pub(crate) fn get_array_arg<'a>(
 ) -> ExpressionResult<&'a Vec<Value>> {
     args.get(index)
         .ok_or_else(|| {
-            ExpressionError::expression_invalid_argument(
+            ExpressionError::invalid_argument(
                 func_name,
                 format!("Missing argument '{arg_name}' at position {index}"),
             )
         })?
         .as_array()
         .ok_or_else(|| {
-            ExpressionError::expression_invalid_argument(
+            ExpressionError::invalid_argument(
                 func_name,
                 format!(
                     "Argument '{}' must be an array, got {}",
@@ -477,14 +458,14 @@ pub(crate) fn get_object_arg<'a>(
 ) -> ExpressionResult<&'a serde_json::Map<String, Value>> {
     args.get(index)
         .ok_or_else(|| {
-            ExpressionError::expression_invalid_argument(
+            ExpressionError::invalid_argument(
                 func_name,
                 format!("Missing argument '{arg_name}' at position {index}"),
             )
         })?
         .as_object()
         .ok_or_else(|| {
-            ExpressionError::expression_invalid_argument(
+            ExpressionError::invalid_argument(
                 func_name,
                 format!(
                     "Argument '{}' must be an object, got {}",

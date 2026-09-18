@@ -862,9 +862,9 @@ fn step_budget_error_path_does_not_leak_depth_into_next_call() {
     let evaluator = create_evaluator();
     let context = EvaluationContext::new();
 
-    // Build a deeply nested unary-not chain that exceeds MAX_RECURSION_DEPTH.
+    // Build a deeply nested unary-not chain that exceeds MAX_AST_DEPTH.
     let mut deep_expr = Expr::Literal(Value::Bool(true));
-    for _ in 0..(MAX_RECURSION_DEPTH + 10) {
+    for _ in 0..(MAX_AST_DEPTH + 10) {
         deep_expr = Expr::Not(Box::new(deep_expr));
     }
     let err = evaluator.eval(&deep_expr, &context).unwrap_err();

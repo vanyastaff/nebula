@@ -3,6 +3,7 @@
 > this guide adds crate-specific rules. Design and status: [README.md](README.md).
 
 **Purpose:** Shared expression evaluator that resolves `{{ expression }}` templates (n8n-compatible syntax) against execution-time context — the resolution backend `nebula-schema`'s `ValidValues::resolve` step calls.
+**Trajectory:** Stated target is a full n8n-class authoring language and template engine: method calls on values, optional chaining, typed datetimes, richer namespaces, and Jinja-style `{% if %}` / `{% for %}` control flow. None of that is implemented yet — do not write code or docs that assume it exists. See `docs/DESIGN.md` §6.5.
 **Layer:** Core — depends only downward (root AGENTS.md -> Layered Dependency Map).
 
 ## Commands
@@ -22,6 +23,7 @@
 - `src/builtins/output.rs` — opaque public builtin output and mandatory bounded builder
 - `src/maybe.rs` — `MaybeExpression<T>` typed serde wrapper (literal vs expression)
 - `src/template.rs` — `Template` / `MaybeTemplate`; `{{- -}}` whitespace control; shared lexical `has_expression_marker` classifier (recognizes malformed unescaped openers)
+- `src/error_formatter.rs` — caller-side renderer for structured parse-error positions; parse errors themselves carry `Position` + message, never pre-rendered art
 
 ## Conventions & never-do
 

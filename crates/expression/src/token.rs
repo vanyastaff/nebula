@@ -133,43 +133,6 @@ pub enum TokenKind<'a> {
 }
 
 impl TokenKind<'_> {
-    /// Check if this token is a literal value
-    pub fn is_literal(&self) -> bool {
-        matches!(
-            self,
-            TokenKind::Integer(_)
-                | TokenKind::UnsignedInteger(_)
-                | TokenKind::Float(_)
-                | TokenKind::String(_)
-                | TokenKind::Boolean(_)
-                | TokenKind::Null
-        )
-    }
-
-    /// Check if this token is an operator
-    pub fn is_operator(&self) -> bool {
-        matches!(
-            self,
-            TokenKind::Plus
-                | TokenKind::Minus
-                | TokenKind::Star
-                | TokenKind::Slash
-                | TokenKind::Percent
-                | TokenKind::Power
-                | TokenKind::Equal
-                | TokenKind::NotEqual
-                | TokenKind::LessThan
-                | TokenKind::GreaterThan
-                | TokenKind::LessEqual
-                | TokenKind::GreaterEqual
-                | TokenKind::RegexMatch
-                | TokenKind::And
-                | TokenKind::Or
-                | TokenKind::Not
-                | TokenKind::Pipe
-        )
-    }
-
     /// Check if this token is a binary operator
     pub fn is_binary_operator(&self) -> bool {
         matches!(

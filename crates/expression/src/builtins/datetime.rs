@@ -6,10 +6,7 @@ use serde_json::Value;
 
 use super::{check_arg_count, check_min_arg_count};
 use crate::{
-    ExpressionError,
-    context::EvaluationContext,
-    error::{ExpressionErrorExt, ExpressionResult},
-    eval::BuiltinView,
+    ExpressionError, context::EvaluationContext, error::ExpressionResult, eval::BuiltinView,
 };
 
 fn preflight_string_output(
@@ -29,7 +26,7 @@ fn preflight_string_output(
 /// Returns a typed error without echoing the runtime value.
 fn parse_timezone(function: &str, name: &str) -> ExpressionResult<Tz> {
     name.parse::<Tz>().map_err(|_| {
-        ExpressionError::expression_invalid_argument(
+        ExpressionError::invalid_argument(
             function,
             "Unknown timezone; expected an IANA name like 'Europe/Moscow' or 'UTC'",
         )
@@ -45,7 +42,7 @@ fn optional_tz_arg(function: &str, args: &[&Value], index: usize) -> ExpressionR
         return Ok(None);
     };
     let name = raw.as_str().ok_or_else(|| {
-        ExpressionError::expression_type_error("string", crate::value_utils::value_type_name(raw))
+        ExpressionError::type_error("string", crate::value_utils::value_type_name(raw))
     })?;
     parse_timezone(function, name).map(Some)
 }
@@ -90,7 +87,7 @@ pub(crate) fn format_date(
 ) -> ExpressionResult<Value> {
     check_min_arg_count("format_date", args, 1)?;
     if args.len() > 3 {
-        return Err(ExpressionError::expression_invalid_argument(
+        return Err(ExpressionError::invalid_argument(
             "format_date",
             format!("expected 1-3 arguments, got {}", args.len()),
         ));
@@ -102,10 +99,7 @@ pub(crate) fn format_date(
         1 => (None, None),
         2 => {
             let arg1 = args[1].as_str().ok_or_else(|| {
-                ExpressionError::expression_type_error(
-                    "string",
-                    crate::value_utils::value_type_name(args[1]),
-                )
+                ExpressionError::type_error("string", crate::value_utils::value_type_name(args[1]))
             })?;
             // Probe-parse as IANA timezone. Success → tz-only call;
             // failure → treat as format string (legacy 2-arg shape).
@@ -117,10 +111,7 @@ pub(crate) fn format_date(
         },
         _ => {
             let fmt = args[1].as_str().ok_or_else(|| {
-                ExpressionError::expression_type_error(
-                    "string",
-                    crate::value_utils::value_type_name(args[1]),
-                )
+                ExpressionError::type_error("string", crate::value_utils::value_type_name(args[1]))
             })?;
             let tz = optional_tz_arg("format_date", args, 2)?;
             (Some(fmt), tz)
@@ -152,7 +143,7 @@ pub(crate) fn parse_date(
 ) -> ExpressionResult<Value> {
     check_min_arg_count("parse_date", args, 1)?;
     if args.len() > 2 {
-        return Err(ExpressionError::expression_invalid_argument(
+        return Err(ExpressionError::invalid_argument(
             "parse_date",
             format!("expected 1-2 arguments, got {}", args.len()),
         ));
@@ -179,15 +170,13 @@ fn duration_for_unit(fn_name: &str, unit: &str, amount: i64) -> ExpressionResult
         "days" | "day" | "d" => chrono::Duration::try_days(amount),
         "weeks" | "week" | "w" => chrono::Duration::try_weeks(amount),
         _ => {
-            return Err(ExpressionError::expression_invalid_argument(
+            return Err(ExpressionError::invalid_argument(
                 fn_name,
                 "Invalid duration unit",
             ));
         },
     };
-    duration.ok_or_else(|| {
-        ExpressionError::expression_invalid_argument(fn_name, "Duration is out of range")
-    })
+    duration.ok_or_else(|| ExpressionError::invalid_argument(fn_name, "Duration is out of range"))
 }
 
 /// Add duration to a date
@@ -203,15 +192,12 @@ pub(crate) fn date_add(
         ExpressionError::type_error("integer", crate::value_utils::value_type_name(args[1]))
     })?;
     let unit = args[2].as_str().ok_or_else(|| {
-        ExpressionError::expression_type_error(
-            "string",
-            crate::value_utils::value_type_name(args[2]),
-        )
+        ExpressionError::type_error("string", crate::value_utils::value_type_name(args[2]))
     })?;
 
     let duration = duration_for_unit("date_add", unit, amount)?;
     let new_dt = dt.checked_add_signed(duration).ok_or_else(|| {
-        ExpressionError::expression_invalid_argument(
+        ExpressionError::invalid_argument(
             "date_add",
             "Date addition overflows the representable date range",
         )
@@ -233,15 +219,12 @@ pub(crate) fn date_subtract(
         ExpressionError::type_error("integer", crate::value_utils::value_type_name(args[1]))
     })?;
     let unit = args[2].as_str().ok_or_else(|| {
-        ExpressionError::expression_type_error(
-            "string",
-            crate::value_utils::value_type_name(args[2]),
-        )
+        ExpressionError::type_error("string", crate::value_utils::value_type_name(args[2]))
     })?;
 
     let duration = duration_for_unit("date_subtract", unit, amount)?;
     let new_dt = dt.checked_sub_signed(duration).ok_or_else(|| {
-        ExpressionError::expression_invalid_argument(
+        ExpressionError::invalid_argument(
             "date_subtract",
             "Date subtraction overflows the representable date range",
         )
@@ -261,10 +244,7 @@ pub(crate) fn date_diff(
     let dt1 = parse_datetime(args[0])?;
     let dt2 = parse_datetime(args[1])?;
     let unit = args[2].as_str().ok_or_else(|| {
-        ExpressionError::expression_type_error(
-            "string",
-            crate::value_utils::value_type_name(args[2]),
-        )
+        ExpressionError::type_error("string", crate::value_utils::value_type_name(args[2]))
     })?;
 
     let duration = dt1.signed_duration_since(dt2);
@@ -276,7 +256,7 @@ pub(crate) fn date_diff(
         "days" | "day" | "d" => duration.num_days(),
         "weeks" | "week" | "w" => duration.num_weeks(),
         _ => {
-            return Err(ExpressionError::expression_invalid_argument(
+            return Err(ExpressionError::invalid_argument(
                 "date_diff",
                 "Invalid duration unit",
             ));
@@ -401,24 +381,22 @@ fn parse_naive(s: &str) -> Option<NaiveDateTime> {
 fn parse_datetime(value: &Value) -> ExpressionResult<DateTime<Utc>> {
     match value {
         Value::Number(i) => {
-            let timestamp = crate::value_utils::number_as_i64(i).ok_or_else(|| {
-                ExpressionError::expression_eval_error("Invalid timestamp: not an integer")
-            })?;
+            let timestamp = crate::value_utils::number_as_i64(i)
+                .ok_or_else(|| ExpressionError::eval_error("Invalid timestamp: not an integer"))?;
             Utc.timestamp_opt(timestamp, 0)
                 .single()
-                .ok_or_else(|| ExpressionError::expression_eval_error("Invalid timestamp"))
+                .ok_or_else(|| ExpressionError::eval_error("Invalid timestamp"))
         },
         Value::String(s) => {
             let s = s.as_str();
             if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
                 return Ok(dt.with_timezone(&Utc));
             }
-            let naive = parse_naive(s).ok_or_else(|| {
-                ExpressionError::expression_eval_error("Cannot parse date string")
-            })?;
+            let naive = parse_naive(s)
+                .ok_or_else(|| ExpressionError::eval_error("Cannot parse date string"))?;
             Ok(Utc.from_utc_datetime(&naive))
         },
-        _ => Err(ExpressionError::expression_type_error(
+        _ => Err(ExpressionError::type_error(
             "integer or string",
             crate::value_utils::value_type_name(value),
         )),
@@ -439,9 +417,8 @@ fn parse_datetime_in_tz(value: &Value, tz: Tz) -> ExpressionResult<DateTime<Utc>
             if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
                 return Ok(dt.with_timezone(&Utc));
             }
-            let naive = parse_naive(s).ok_or_else(|| {
-                ExpressionError::expression_eval_error("Cannot parse date string")
-            })?;
+            let naive = parse_naive(s)
+                .ok_or_else(|| ExpressionError::eval_error("Cannot parse date string"))?;
             // Naive wall time → tz → UTC. For ambiguous instants (DST
             // fall-back), pick the earliest interpretation; for skipped
             // instants (DST spring-forward), surface a typed error.
@@ -449,12 +426,12 @@ fn parse_datetime_in_tz(value: &Value, tz: Tz) -> ExpressionResult<DateTime<Utc>
                 .earliest()
                 .map(|dt| dt.with_timezone(&Utc))
                 .ok_or_else(|| {
-                    ExpressionError::expression_eval_error(
+                    ExpressionError::eval_error(
                         "Local datetime does not exist in the requested timezone",
                     )
                 })
         },
-        _ => Err(ExpressionError::expression_type_error(
+        _ => Err(ExpressionError::type_error(
             "integer or string",
             crate::value_utils::value_type_name(value),
         )),

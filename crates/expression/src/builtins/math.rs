@@ -6,10 +6,7 @@ use super::{
     check_arg_count, check_min_arg_count, get_int_arg_with_policy, get_number_arg_with_policy,
 };
 use crate::{
-    ExpressionError,
-    context::EvaluationContext,
-    error::{ExpressionErrorExt, ExpressionResult},
-    eval::BuiltinView,
+    ExpressionError, context::EvaluationContext, error::ExpressionResult, eval::BuiltinView,
 };
 
 /// Wrap a computed `f64` result, rejecting a non-finite value with a typed error
@@ -21,7 +18,7 @@ fn finite_result(fn_name: &str, value: f64) -> ExpressionResult<Value> {
     if value.is_finite() {
         Ok(serde_json::json!(value))
     } else {
-        Err(ExpressionError::expression_invalid_argument(
+        Err(ExpressionError::invalid_argument(
             fn_name,
             "result is not a finite number",
         ))
@@ -176,7 +173,7 @@ pub(crate) fn sqrt(
     check_arg_count("sqrt", args, 1)?;
     let num = get_number_arg_with_policy("sqrt", args, 0, "value", view, ctx)?;
     if num < 0.0 {
-        return Err(ExpressionError::expression_invalid_argument(
+        return Err(ExpressionError::invalid_argument(
             "sqrt",
             "Cannot take square root of negative number",
         ));

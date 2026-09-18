@@ -51,7 +51,9 @@ it and returns a `serde_json::Value`.
 - `MaybeTemplate` — like `MaybeExpression` but for text templates (`{{ }}` delimiters).
 - `CachedExpression` — opaque lazy program storage inside `MaybeExpression`; clones
   share the compiled program independently of the optional engine cache.
-- `ExpressionError`, `ExpressionResult` — typed error and result alias.
+- `ExpressionError`, `ExpressionResult` — typed error and result alias. Parse failures
+  carry a structured `Position`; render source context with
+  `error_formatter::ErrorFormatter`, not by parsing the message.
 - `CacheOverview` — cache hit/miss statistics snapshot.
 
 See `src/lib.rs` rustdoc for the quick-start example.
@@ -104,8 +106,11 @@ See `src/lib.rs` rustdoc for the quick-start example.
 - Not a validation rules engine — see `nebula-validator` for `Rule` and `Validate<T>`.
 - Not a schema system — see `nebula-schema` for field definitions and the proof-token
   pipeline.
-- Not a template engine for HTML rendering — it resolves `{{ }}` in workflow field strings;
-  full HTML templating with control flow is out of scope.
+- The template engine resolves `{{ }}` interpolation and reports structured positions.
+  Jinja-style control flow (`{% if %}`, `{% for %}`) is the stated direction but is
+  **not implemented today**; do not write templates against it yet.
+- Not a full JavaScript sandbox: expressions are parsed and evaluated by this crate,
+  not by a JS engine.
 
 ### BuiltinFunction signature (no re-entry)
 

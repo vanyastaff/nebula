@@ -6,10 +6,7 @@ use serde_json::Value;
 
 use super::check_arg_count;
 use crate::{
-    ExpressionError,
-    context::EvaluationContext,
-    error::{ExpressionErrorExt, ExpressionResult},
-    eval::BuiltinView,
+    ExpressionError, context::EvaluationContext, error::ExpressionResult, eval::BuiltinView,
 };
 
 /// Maximum JSON string length to parse (1MB) - DoS protection
@@ -34,7 +31,7 @@ impl io::Write for JsonLength {
 fn measure_json(value: &Value) -> ExpressionResult<usize> {
     let mut counter = JsonLength::default();
     serde_json::to_writer(&mut counter, value).map_err(|error| {
-        ExpressionError::expression_eval_error(format!("Failed to measure JSON output: {error}"))
+        ExpressionError::eval_error(format!("Failed to measure JSON output: {error}"))
     })?;
     Ok(counter.bytes)
 }
@@ -42,10 +39,10 @@ fn measure_json(value: &Value) -> ExpressionResult<usize> {
 fn encode_json(value: &Value, output_bytes: usize) -> ExpressionResult<String> {
     let mut encoded = Vec::with_capacity(output_bytes);
     serde_json::to_writer(&mut encoded, value).map_err(|error| {
-        ExpressionError::expression_eval_error(format!("Failed to serialize to JSON: {error}"))
+        ExpressionError::eval_error(format!("Failed to serialize to JSON: {error}"))
     })?;
     String::from_utf8(encoded).map_err(|error| {
-        ExpressionError::expression_eval_error(format!("JSON serialization was not UTF-8: {error}"))
+        ExpressionError::eval_error(format!("JSON serialization was not UTF-8: {error}"))
     })
 }
 
@@ -168,7 +165,7 @@ pub(crate) fn to_string(
 
     if view.strict_conversions_enabled(ctx) && matches!(args[0], Value::Array(_) | Value::Object(_))
     {
-        return Err(ExpressionError::expression_type_error(
+        return Err(ExpressionError::type_error(
             "scalar (string/number/boolean/null)",
             crate::value_utils::value_type_name(args[0]),
         ));
@@ -202,7 +199,7 @@ pub(crate) fn to_number(
     check_arg_count("to_number", args, 1)?;
 
     if view.strict_conversions_enabled(ctx) && !args[0].is_number() {
-        return Err(ExpressionError::expression_type_error(
+        return Err(ExpressionError::type_error(
             "number",
             crate::value_utils::value_type_name(args[0]),
         ));
@@ -230,7 +227,7 @@ pub(crate) fn to_boolean(
     check_arg_count("to_boolean", args, 1)?;
 
     if view.strict_conversions_enabled(ctx) && !args[0].is_boolean() {
-        return Err(ExpressionError::expression_type_error(
+        return Err(ExpressionError::type_error(
             "boolean",
             crate::value_utils::value_type_name(args[0]),
         ));
@@ -263,10 +260,7 @@ pub(crate) fn parse_json(
     check_arg_count("parse_json", args, 1)?;
 
     let json_str = args[0].as_str().ok_or_else(|| {
-        ExpressionError::expression_type_error(
-            "string",
-            crate::value_utils::value_type_name(args[0]),
-        )
+        ExpressionError::type_error("string", crate::value_utils::value_type_name(args[0]))
     })?;
 
     // DoS protection: limit JSON string size
@@ -274,7 +268,7 @@ pub(crate) fn parse_json(
         .max_json_parse_length(ctx)
         .unwrap_or(MAX_JSON_PARSE_LENGTH);
     if json_str.len() > max_len {
-        return Err(ExpressionError::expression_eval_error(format!(
+        return Err(ExpressionError::eval_error(format!(
             "JSON string too large: {} bytes (max {} bytes)",
             json_str.len(),
             max_len
@@ -284,12 +278,11 @@ pub(crate) fn parse_json(
     let output = view.output_builder(ctx);
     preflight_json_structure(json_str, output)?;
 
-    let json: Value = serde_json::from_str(json_str).map_err(|e| {
-        ExpressionError::expression_eval_error(format!("Failed to parse JSON: {e}"))
-    })?;
+    let json: Value = serde_json::from_str(json_str)
+        .map_err(|e| ExpressionError::eval_error(format!("Failed to parse JSON: {e}")))?;
 
     if view.strict_conversions_enabled(ctx) && !matches!(json, Value::Object(_) | Value::Array(_)) {
-        return Err(ExpressionError::expression_type_error(
+        return Err(ExpressionError::type_error(
             "object or array",
             crate::value_utils::value_type_name(&json),
         ));

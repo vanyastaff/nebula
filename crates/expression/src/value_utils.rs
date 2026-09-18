@@ -8,7 +8,7 @@ use serde_json::{Number, Value};
 use crate::{ExpressionError, ExpressionResult};
 
 /// Get the type name of a Value for error messages
-pub fn value_type_name(value: &Value) -> &'static str {
+pub(crate) fn value_type_name(value: &Value) -> &'static str {
     match value {
         Value::Null => "null",
         Value::Bool(_) => "boolean",
@@ -21,7 +21,7 @@ pub fn value_type_name(value: &Value) -> &'static str {
 
 /// Extract an exact i64, accepting integral floats only within the i64 range.
 #[inline]
-pub fn number_as_i64(num: &Number) -> Option<i64> {
+pub(crate) fn number_as_i64(num: &Number) -> Option<i64> {
     num.as_i64().or_else(|| {
         let float = num.is_f64().then(|| num.as_f64()).flatten()?;
         (float.is_finite()
@@ -34,7 +34,7 @@ pub fn number_as_i64(num: &Number) -> Option<i64> {
 
 /// Extract f64 from Number, trying both f64 and i64 representations
 #[inline]
-pub fn number_as_f64(num: &Number) -> Option<f64> {
+pub(crate) fn number_as_f64(num: &Number) -> Option<f64> {
     num.as_f64().or_else(|| num.as_i64().map(|i| i as f64))
 }
 
@@ -47,26 +47,14 @@ pub(crate) fn parse_number(text: &str) -> Result<Number, &'static str> {
     Ok(number)
 }
 
-/// Check if two numbers can be added as integers
-#[inline]
-pub fn can_add_as_int(l: &Number, r: &Number) -> bool {
-    l.is_i64() && r.is_i64()
-}
-
 /// Check if a number represents an integer
 #[inline]
-pub fn is_integer_number(num: &Number) -> bool {
+pub(crate) fn is_integer_number(num: &Number) -> bool {
     num.is_i64() || num.is_u64()
 }
 
-/// Check if a value is numeric (number type)
-#[inline]
-pub fn is_numeric(value: &Value) -> bool {
-    value.is_number()
-}
-
 /// Check if a value is truthy (not null, false, 0, or empty string)
-pub fn is_truthy(value: &Value) -> bool {
+pub(crate) fn is_truthy(value: &Value) -> bool {
     match value {
         Value::Null => false,
         Value::Bool(b) => *b,
@@ -86,12 +74,12 @@ pub fn is_truthy(value: &Value) -> bool {
 }
 
 /// Convert Value to boolean (truthy/falsy semantics)
-pub fn to_boolean(value: &Value) -> bool {
+pub(crate) fn to_boolean(value: &Value) -> bool {
     is_truthy(value)
 }
 
 /// Convert Value to i64 with error
-pub fn to_integer(value: &Value) -> Result<i64, &'static str> {
+pub(crate) fn to_integer(value: &Value) -> Result<i64, &'static str> {
     match value {
         Value::Number(n) => number_as_i64(n).ok_or("number is not an integer"),
         Value::String(s) => s.parse().map_err(|_| "string is not a valid integer"),
@@ -101,7 +89,7 @@ pub fn to_integer(value: &Value) -> Result<i64, &'static str> {
 }
 
 /// Convert Value to f64 with error
-pub fn to_float(value: &Value) -> Result<f64, &'static str> {
+pub(crate) fn to_float(value: &Value) -> Result<f64, &'static str> {
     let float = match value {
         Value::Number(n) => number_as_f64(n).ok_or("number cannot be represented as float"),
         Value::String(s) => s.parse().map_err(|_| "string is not a valid number"),
@@ -193,7 +181,7 @@ pub(crate) fn finite_result(value: f64, operation: &'static str) -> ExpressionRe
 /// `chars().count()` (this) are wrong in different ways relative to JS;
 /// scalar-value count is the closest stable behaviour Rust supports.
 #[inline]
-pub fn char_count(s: &str) -> i64 {
+pub(crate) fn char_count(s: &str) -> i64 {
     s.chars().count() as i64
 }
 
@@ -226,5 +214,18 @@ mod tests {
         assert!(is_truthy(&Value::Number(1.into())));
         assert!(!is_truthy(&Value::String(String::new())));
         assert!(is_truthy(&Value::String("test".to_string())));
+    }
+
+    #[test]
+    fn to_integer_rejects_fractional_and_out_of_range_numbers() {
+        for value in [
+            Value::from(1.5),
+            Value::from(u64::MAX),
+            serde_json::json!(9_223_372_036_854_775_808.0_f64),
+        ] {
+            to_integer(&value).unwrap_err();
+        }
+        assert_eq!(to_integer(&serde_json::json!(12.0)).unwrap(), 12);
+        assert_eq!(to_integer(&serde_json::json!(i64::MIN)).unwrap(), i64::MIN);
     }
 }

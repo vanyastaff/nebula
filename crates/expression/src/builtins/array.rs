@@ -6,10 +6,7 @@ use serde_json::Value;
 
 use super::{check_arg_count, check_min_arg_count, get_array_arg};
 use crate::{
-    ExpressionError,
-    context::EvaluationContext,
-    error::{ExpressionErrorExt, ExpressionResult},
-    eval::BuiltinView,
+    ExpressionError, context::EvaluationContext, error::ExpressionResult, eval::BuiltinView,
 };
 
 // Note: there used to be a `pub fn length` here that took an array only,
@@ -29,7 +26,7 @@ pub(crate) fn first(
     let arr = get_array_arg("first", args, 0, "array")?;
     let json_val = arr
         .first()
-        .ok_or_else(|| ExpressionError::expression_eval_error("Array is empty"))?;
+        .ok_or_else(|| ExpressionError::eval_error("Array is empty"))?;
     Ok(json_val.clone())
 }
 
@@ -43,46 +40,12 @@ pub(crate) fn last(
     let arr = get_array_arg("last", args, 0, "array")?;
     let len = arr.len();
     if len == 0 {
-        return Err(ExpressionError::expression_eval_error("Array is empty"));
+        return Err(ExpressionError::eval_error("Array is empty"));
     }
     let json_val = arr
         .get(len - 1)
-        .ok_or_else(|| ExpressionError::expression_eval_error("Array is empty"))?;
+        .ok_or_else(|| ExpressionError::eval_error("Array is empty"))?;
     Ok(json_val.clone())
-}
-
-/// Filter array elements (stub - lambdas need special handling)
-pub(crate) fn filter(
-    _args: &[&Value],
-    _view: BuiltinView<'_>,
-    _ctx: &EvaluationContext,
-) -> ExpressionResult<Value> {
-    // Note: This would require special handling in the evaluator to pass lambdas
-    Err(ExpressionError::expression_eval_error(
-        "filter requires lambda support in evaluator",
-    ))
-}
-
-/// Map over array elements (stub - lambdas need special handling)
-pub(crate) fn map(
-    _args: &[&Value],
-    _view: BuiltinView<'_>,
-    _ctx: &EvaluationContext,
-) -> ExpressionResult<Value> {
-    Err(ExpressionError::expression_eval_error(
-        "map requires lambda support in evaluator",
-    ))
-}
-
-/// Reduce array elements (stub - lambdas need special handling)
-pub(crate) fn reduce(
-    _args: &[&Value],
-    _view: BuiltinView<'_>,
-    _ctx: &EvaluationContext,
-) -> ExpressionResult<Value> {
-    Err(ExpressionError::expression_eval_error(
-        "reduce requires lambda support in evaluator",
-    ))
 }
 
 /// Sort an array
@@ -144,10 +107,7 @@ pub(crate) fn join(
     check_arg_count("join", args, 2)?;
     let arr = get_array_arg("join", args, 0, "array")?;
     let separator = args[1].as_str().ok_or_else(|| {
-        ExpressionError::expression_type_error(
-            "string",
-            crate::value_utils::value_type_name(args[1]),
-        )
+        ExpressionError::type_error("string", crate::value_utils::value_type_name(args[1]))
     })?;
 
     let mut output_bytes = separator.len().saturating_mul(arr.len().saturating_sub(1));
@@ -156,9 +116,8 @@ pub(crate) fn join(
             Value::String(string) => string.len(),
             value => {
                 let mut counter = FormatLength::default();
-                write!(&mut counter, "{value}").map_err(|_| {
-                    ExpressionError::expression_eval_error("failed to measure join output")
-                })?;
+                write!(&mut counter, "{value}")
+                    .map_err(|_| ExpressionError::eval_error("failed to measure join output"))?;
                 counter.bytes
             },
         };
@@ -176,9 +135,8 @@ pub(crate) fn join(
         }
         match value {
             Value::String(string) => result.push_str(string),
-            value => write!(&mut result, "{value}").map_err(|_| {
-                ExpressionError::expression_eval_error("failed to render join output")
-            })?,
+            value => write!(&mut result, "{value}")
+                .map_err(|_| ExpressionError::eval_error("failed to render join output"))?,
         }
     }
 
@@ -215,17 +173,11 @@ pub(crate) fn slice(
     check_min_arg_count("slice", args, 2)?;
     let arr = get_array_arg("slice", args, 0, "array")?;
     let start_index = args[1].as_i64().ok_or_else(|| {
-        ExpressionError::expression_type_error(
-            "integer",
-            crate::value_utils::value_type_name(args[1]),
-        )
+        ExpressionError::type_error("integer", crate::value_utils::value_type_name(args[1]))
     })?;
     let end_index = if args.len() > 2 {
         args[2].as_i64().ok_or_else(|| {
-            ExpressionError::expression_type_error(
-                "integer",
-                crate::value_utils::value_type_name(args[2]),
-            )
+            ExpressionError::type_error("integer", crate::value_utils::value_type_name(args[2]))
         })?
     } else {
         arr.len() as i64
@@ -286,9 +238,8 @@ pub(crate) fn unique(
     let mut scratch_bytes = 0usize;
     for item in arr {
         let mut counter = FormatLength::default();
-        write!(&mut counter, "{item}").map_err(|_| {
-            ExpressionError::expression_eval_error("failed to measure unique comparison key")
-        })?;
+        write!(&mut counter, "{item}")
+            .map_err(|_| ExpressionError::eval_error("failed to measure unique comparison key"))?;
         scratch_bytes = scratch_bytes.saturating_add(counter.bytes);
         crate::limits::check_limit(
             "builtin scratch bytes",

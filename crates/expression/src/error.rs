@@ -21,8 +21,16 @@ pub enum ExpressionError {
 
     /// Parse error
     #[classify(category = "validation", code = "EXPR:PARSE")]
-    #[error("Expression parse error: {message}")]
-    ParseError { message: String },
+    #[error("Expression parse error{}: {message}", parse_error_position(position))]
+    ParseError {
+        /// Position in the template source, when the failing construct has one.
+        ///
+        /// Structured so callers can render source context themselves
+        /// (`error_formatter::format_template_error`) instead of parsing a
+        /// pre-rendered diagnostic. `None` for raw-grammar parse failures.
+        position: Option<crate::template::Position>,
+        message: String,
+    },
 
     /// Evaluation error
     #[classify(category = "internal", code = "EXPR:EVAL")]
@@ -148,6 +156,14 @@ pub enum ExpressionError {
     NonFiniteNumber { operation: &'static str },
 }
 
+/// Display helper for the optional position on [`ExpressionError::ParseError`].
+fn parse_error_position(position: &Option<crate::template::Position>) -> String {
+    match position {
+        Some(position) => format!(" at {position}"),
+        None => String::new(),
+    }
+}
+
 impl ExpressionError {
     // ============================================================================
     // Convenience Constructors
@@ -160,9 +176,18 @@ impl ExpressionError {
         }
     }
 
-    /// Create a parse error
+    /// Create a parse error without a known template position.
     pub fn parse_error(message: impl Into<String>) -> Self {
         Self::ParseError {
+            position: None,
+            message: message.into(),
+        }
+    }
+
+    /// Create a parse error carrying its position in the template source.
+    pub fn parse_error_at(position: crate::template::Position, message: impl Into<String>) -> Self {
+        Self::ParseError {
+            position: Some(position),
             message: message.into(),
         }
     }
@@ -264,98 +289,11 @@ impl ExpressionError {
 }
 
 // ============================================================================
-// External Error Conversions
-// ============================================================================
-
-// ============================================================================
 // Result Type
 // ============================================================================
 
 /// Result type for expression operations
 pub type ExpressionResult<T> = Result<T, ExpressionError>;
-
-// ============================================================================
-// Extension Trait (for convenience)
-// ============================================================================
-
-/// Extension trait for creating expression errors using method syntax
-pub trait ExpressionErrorExt {
-    /// Create a syntax error
-    fn expression_syntax_error(message: impl Into<String>) -> Self;
-
-    /// Create a parse error
-    fn expression_parse_error(message: impl Into<String>) -> Self;
-
-    /// Create an evaluation error
-    fn expression_eval_error(message: impl Into<String>) -> Self;
-
-    /// Create a type error
-    fn expression_type_error(expected: impl Into<String>, found: impl Into<String>) -> Self;
-
-    /// Create a variable not found error
-    fn expression_variable_not_found(name: impl Into<String>) -> Self;
-
-    /// Create a function not found error
-    fn expression_function_not_found(name: impl Into<String>) -> Self;
-
-    /// Create an invalid argument error
-    fn expression_invalid_argument(function: impl Into<String>, message: impl Into<String>)
-    -> Self;
-
-    /// Create a division by zero error
-    fn expression_division_by_zero() -> Self;
-
-    /// Create a regex error
-    fn expression_regex_error(message: impl Into<String>) -> Self;
-
-    /// Create an index out of bounds error
-    fn expression_index_out_of_bounds(index: usize, len: usize) -> Self;
-}
-
-impl ExpressionErrorExt for ExpressionError {
-    fn expression_syntax_error(message: impl Into<String>) -> Self {
-        ExpressionError::syntax_error(message)
-    }
-
-    fn expression_parse_error(message: impl Into<String>) -> Self {
-        ExpressionError::parse_error(message)
-    }
-
-    fn expression_eval_error(message: impl Into<String>) -> Self {
-        ExpressionError::eval_error(message)
-    }
-
-    fn expression_type_error(expected: impl Into<String>, found: impl Into<String>) -> Self {
-        ExpressionError::type_error(expected, found)
-    }
-
-    fn expression_variable_not_found(name: impl Into<String>) -> Self {
-        ExpressionError::variable_not_found(name)
-    }
-
-    fn expression_function_not_found(name: impl Into<String>) -> Self {
-        ExpressionError::function_not_found(name)
-    }
-
-    fn expression_invalid_argument(
-        function: impl Into<String>,
-        message: impl Into<String>,
-    ) -> Self {
-        ExpressionError::invalid_argument(function, message)
-    }
-
-    fn expression_division_by_zero() -> Self {
-        ExpressionError::division_by_zero()
-    }
-
-    fn expression_regex_error(message: impl Into<String>) -> Self {
-        ExpressionError::regex_error(message)
-    }
-
-    fn expression_index_out_of_bounds(index: usize, len: usize) -> Self {
-        ExpressionError::index_out_of_bounds(index, len)
-    }
-}
 
 // ============================================================================
 // Tests

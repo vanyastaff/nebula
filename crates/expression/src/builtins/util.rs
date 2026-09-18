@@ -4,10 +4,7 @@ use serde_json::Value;
 
 use super::{check_arg_count, check_min_arg_count};
 use crate::{
-    ExpressionError,
-    context::EvaluationContext,
-    error::{ExpressionErrorExt, ExpressionResult},
-    eval::BuiltinView,
+    ExpressionError, context::EvaluationContext, error::ExpressionResult, eval::BuiltinView,
 };
 
 /// Get the length of a string, array, or object — the single polymorphic
@@ -30,7 +27,7 @@ pub(crate) fn length(
         Value::String(t) => Ok(Value::Number(crate::value_utils::char_count(t).into())),
         Value::Array(arr) => Ok(Value::Number((arr.len() as i64).into())),
         Value::Object(obj) => Ok(Value::Number((obj.len() as i64).into())),
-        _ => Err(ExpressionError::expression_type_error(
+        _ => Err(ExpressionError::type_error(
             "string, array, or object",
             crate::value_utils::value_type_name(args[0]),
         )),
@@ -105,7 +102,7 @@ pub(crate) fn uuid(
     _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
-    Err(ExpressionError::expression_function_not_found(
+    Err(ExpressionError::function_not_found(
         "uuid (feature 'uuid' not enabled)",
     ))
 }

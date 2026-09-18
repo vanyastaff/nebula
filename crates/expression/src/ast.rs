@@ -130,18 +130,3 @@ impl std::fmt::Display for BinaryOp {
         write!(f, "{}", self.name())
     }
 }
-
-impl Expr {
-    /// Check if this expression is a literal constant
-    pub fn is_literal(&self) -> bool {
-        matches!(self, Expr::Literal(_))
-    }
-
-    /// Try to extract a literal value if this is a literal expression
-    pub fn as_literal(&self) -> Option<&Value> {
-        match self {
-            Expr::Literal(val) => Some(val),
-            _ => None,
-        }
-    }
-}

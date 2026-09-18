@@ -9,11 +9,8 @@ use std::{fmt, sync::Arc};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    CompiledProgram, ExpressionError,
-    context::EvaluationContext,
-    engine::ExpressionEngine,
-    error::{ExpressionErrorExt, ExpressionResult},
-    error_formatter::format_template_error,
+    CompiledProgram, ExpressionError, context::EvaluationContext, engine::ExpressionEngine,
+    error::ExpressionResult,
 };
 
 /// Maximum number of expressions allowed in a single template (DoS protection)
@@ -226,7 +223,7 @@ fn enforce_expression_count(parts: &[TemplatePart]) -> ExpressionResult<()> {
         .filter(|p| matches!(p, TemplatePart::Expression { .. }))
         .count();
     if expr_count > MAX_TEMPLATE_EXPRESSIONS {
-        return Err(ExpressionError::expression_parse_error(format!(
+        return Err(ExpressionError::parse_error(format!(
             "Template contains too many expressions: {expr_count} (max {MAX_TEMPLATE_EXPRESSIONS})"
         )));
     }
@@ -359,14 +356,10 @@ impl Template {
                 // Find closing }}
                 let Some(end) = find_expression_end(&chars, char_index + 2, line, column + 2)
                 else {
-                    // Unclosed {{ - this is an error
-                    let formatted_error = format_template_error(
-                        source,
+                    return Err(ExpressionError::parse_error_at(
                         expression_start,
                         "Unclosed '{{' - expected closing '}}'",
-                        None,
-                    );
-                    return Err(ExpressionError::expression_parse_error(formatted_error));
+                    ));
                 };
 
                 // Check for whitespace control markers

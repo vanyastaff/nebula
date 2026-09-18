@@ -46,7 +46,9 @@
 //!
 //! ## Non-goals
 //!
-//! Not a validation rules engine (`nebula-validator`), not a schema system (`nebula-schema`).
+//! Not a validation rules engine (`nebula-validator`), not a schema system (`nebula-schema`),
+//! not a JavaScript sandbox. Jinja-style template control flow is the stated direction but
+//! is not implemented today.
 //!
 //! ## BuiltinFunction signature
 //!
@@ -73,8 +75,6 @@ pub mod context;
 pub mod engine;
 pub mod error;
 pub mod error_formatter;
-#[doc(hidden)]
-pub mod interner;
 mod limits;
 pub mod maybe;
 pub mod policy;
@@ -84,7 +84,7 @@ pub mod span;
 pub mod template;
 #[doc(hidden)]
 pub mod token;
-pub mod value_utils;
+pub(crate) mod value_utils;
 
 // Internal modules - not part of stable public API
 // These are exposed for advanced use cases but may change between versions
@@ -104,12 +104,10 @@ pub use builtins::{BuiltinOutput, BuiltinOutputBuilder, BuiltinOutputLimit};
 pub use context::{EvaluationContext, EvaluationContextBuilder};
 pub use engine::{CacheOverview, ExpressionEngine};
 // Re-export error types
-pub use error::{ExpressionError, ExpressionErrorExt, ExpressionResult};
+pub use error::{ExpressionError, ExpressionResult};
 pub use maybe::{CachedExpression, MaybeExpression};
 pub use policy::{BuiltinOutputBound, BuiltinOutputLimits, EvaluationPolicy, EvaluationStepLimit};
 pub use program::{CompiledProgram, ProgramSyntax};
-// Re-export serde_json types for convenience
-pub use serde_json::Value;
 #[doc(hidden)]
 pub use span::Span;
 pub use template::{MaybeTemplate, Template, has_expression_marker};
@@ -130,17 +128,6 @@ pub use token::{Token, TokenKind};
 /// compiled program instead of discarding it through this syntax-only helper.
 pub fn parse_expression(source: &str) -> ExpressionResult<()> {
     CompiledProgram::compile(source).map(|_| ())
-}
-
-/// Prelude module for convenient imports
-pub mod prelude {
-    pub use crate::{
-        BuiltinOutput, BuiltinOutputBound, BuiltinOutputBuilder, BuiltinOutputLimit,
-        BuiltinOutputLimits, CacheOverview, CompiledProgram, EvaluationContext,
-        EvaluationContextBuilder, EvaluationPolicy, EvaluationStepLimit, ExpressionEngine,
-        ExpressionError, ExpressionErrorExt, ExpressionResult, MaybeExpression, MaybeTemplate,
-        ProgramSyntax, Template, Value, has_expression_marker,
-    };
 }
 
 #[cfg(test)]

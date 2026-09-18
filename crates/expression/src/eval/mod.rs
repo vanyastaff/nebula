@@ -13,12 +13,10 @@ use crate::{
     ast::{BinaryOp, Expr},
     builtins::BuiltinRegistry,
     context::EvaluationContext,
-    error::{ExpressionErrorExt, ExpressionResult},
+    error::ExpressionResult,
+    limits::MAX_AST_DEPTH,
     policy::EvaluationPolicy,
 };
-
-/// Maximum recursion depth for expression evaluation
-const MAX_RECURSION_DEPTH: usize = 256;
 
 /// Maximum length for regex patterns to prevent ReDoS attacks
 #[cfg(feature = "regex")]
@@ -99,7 +97,7 @@ impl EvalFrame {
         self.tick()?;
         let mut pending = vec![(value, 1)];
         while let Some((value, depth)) = pending.pop() {
-            crate::limits::check_limit("value depth", depth, crate::limits::MAX_AST_DEPTH)?;
+            crate::limits::check_limit("value depth", depth, MAX_AST_DEPTH)?;
             match value {
                 Value::String(text) => self.charge(text.len())?,
                 Value::Array(values) => {
@@ -129,17 +127,14 @@ impl EvalFrame {
     /// even if a recursive path bails mid-traversal.
     #[inline]
     fn enter(&mut self) -> ExpressionResult<()> {
-        if self.depth >= MAX_RECURSION_DEPTH {
+        if self.depth >= MAX_AST_DEPTH {
             tracing::warn!(
                 target: "nebula_expression::dos",
-                limit = MAX_RECURSION_DEPTH,
+                limit = MAX_AST_DEPTH,
                 actual = self.depth,
                 "recursion depth exceeded"
             );
-            return Err(ExpressionError::depth_exceeded(
-                MAX_RECURSION_DEPTH,
-                self.depth,
-            ));
+            return Err(ExpressionError::depth_exceeded(MAX_AST_DEPTH, self.depth));
         }
         self.depth += 1;
         Ok(())
@@ -351,7 +346,7 @@ impl Evaluator {
             Expr::Variable(name) => {
                 let value = context
                     .resolve_variable_value(name)?
-                    .ok_or_else(|| ExpressionError::expression_variable_not_found(&**name))?;
+                    .ok_or_else(|| ExpressionError::variable_not_found(&**name))?;
                 frame.charge_value(&value)?;
                 Ok(value.into_owned())
             },
@@ -412,7 +407,7 @@ impl Evaluator {
 
             Expr::Lambda { .. } => {
                 // Lambdas are handled specially in higher-order functions
-                Err(ExpressionError::expression_eval_error(
+                Err(ExpressionError::eval_error(
                     "Lambda expressions can only be used as function arguments",
                 ))
             },
@@ -460,7 +455,7 @@ impl Evaluator {
             Expr::Variable(name) => {
                 let value = context
                     .resolve_variable_value(name)?
-                    .ok_or_else(|| ExpressionError::expression_variable_not_found(&**name))?;
+                    .ok_or_else(|| ExpressionError::variable_not_found(&**name))?;
                 frame.charge_value(&value)?;
                 Ok(value)
             },
@@ -479,9 +474,7 @@ impl Evaluator {
                     frame.tick()?;
                     frame.enter()?;
                     let value = context.resolve_node_value(property).ok_or_else(|| {
-                        ExpressionError::expression_eval_error(format!(
-                            "Property '{property}' not found"
-                        ))
+                        ExpressionError::eval_error(format!("Property '{property}' not found"))
                     });
                     frame.leave();
                     let value = value?;
@@ -494,9 +487,7 @@ impl Evaluator {
                     frame.tick()?;
                     frame.enter()?;
                     let value = context.resolve_execution_value(property).ok_or_else(|| {
-                        ExpressionError::expression_eval_error(format!(
-                            "Property '{property}' not found"
-                        ))
+                        ExpressionError::eval_error(format!("Property '{property}' not found"))
                     });
                     frame.leave();
                     let value = value?;
@@ -515,14 +506,14 @@ impl Evaluator {
                     frame.leave();
                     let index = self.eval_borrowed_with_frame(index, context, frame)?;
                     let key = index.as_str().ok_or_else(|| {
-                        ExpressionError::expression_type_error(
+                        ExpressionError::type_error(
                             "string",
                             crate::value_utils::value_type_name(&index),
                         )
                     })?;
-                    let value = context.resolve_node_value(key).ok_or_else(|| {
-                        ExpressionError::expression_eval_error("Object key not found")
-                    })?;
+                    let value = context
+                        .resolve_node_value(key)
+                        .ok_or_else(|| ExpressionError::eval_error("Object key not found"))?;
                     frame.charge_value(value)?;
                     return Ok(Cow::Borrowed(value));
                 }
@@ -534,14 +525,14 @@ impl Evaluator {
                     frame.leave();
                     let index = self.eval_borrowed_with_frame(index, context, frame)?;
                     let key = index.as_str().ok_or_else(|| {
-                        ExpressionError::expression_type_error(
+                        ExpressionError::type_error(
                             "string",
                             crate::value_utils::value_type_name(&index),
                         )
                     })?;
-                    let value = context.resolve_execution_value(key).ok_or_else(|| {
-                        ExpressionError::expression_eval_error("Object key not found")
-                    })?;
+                    let value = context
+                        .resolve_execution_value(key)
+                        .ok_or_else(|| ExpressionError::eval_error("Object key not found"))?;
                     frame.charge_value(value)?;
                     return Ok(Cow::Borrowed(value));
                 }
@@ -737,7 +728,7 @@ impl Evaluator {
                 result.push_str(r);
                 Ok(Value::String(result))
             },
-            _ => Err(ExpressionError::expression_type_error(
+            _ => Err(ExpressionError::type_error(
                 "number or string",
                 format!(
                     "{} and {}",
@@ -764,7 +755,7 @@ impl Evaluator {
                     crate::value_utils::finite_result(lf - rf, "subtraction")
                 }
             },
-            _ => Err(ExpressionError::expression_type_error(
+            _ => Err(ExpressionError::type_error(
                 "number",
                 format!(
                     "{} and {}",
@@ -791,7 +782,7 @@ impl Evaluator {
                     crate::value_utils::finite_result(lf * rf, "multiplication")
                 }
             },
-            _ => Err(ExpressionError::expression_type_error(
+            _ => Err(ExpressionError::type_error(
                 "number",
                 format!(
                     "{} and {}",
@@ -812,26 +803,24 @@ impl Evaluator {
                 let rf = self.number_to_f64(r)?;
 
                 if rf == 0.0 {
-                    return Err(ExpressionError::expression_division_by_zero());
+                    return Err(ExpressionError::division_by_zero());
                 }
                 // Reject non-finite divisor (NaN, ±∞). `serde_json::json!(NaN)`
                 // silently converts to `Value::Null`, which would surface as
                 // `1 / NaN = null` instead of an error.
                 if !rf.is_finite() {
-                    return Err(ExpressionError::expression_eval_error(
-                        "division by non-finite number",
-                    ));
+                    return Err(ExpressionError::eval_error("division by non-finite number"));
                 }
 
                 let result = lf / rf;
                 if !result.is_finite() {
-                    return Err(ExpressionError::expression_eval_error(
+                    return Err(ExpressionError::eval_error(
                         "division produced a non-finite result",
                     ));
                 }
                 Ok(serde_json::json!(result))
             },
-            _ => Err(ExpressionError::expression_type_error(
+            _ => Err(ExpressionError::type_error(
                 "number",
                 format!(
                     "{} and {}",
@@ -853,7 +842,7 @@ impl Evaluator {
                     crate::value_utils::integer_value(r),
                 ) {
                     if ri == 0 {
-                        return Err(ExpressionError::expression_division_by_zero());
+                        return Err(ExpressionError::division_by_zero());
                     }
                     crate::value_utils::integer_result(li.checked_rem(ri), "remainder")
                 } else {
@@ -861,12 +850,12 @@ impl Evaluator {
                     let lf = self.number_to_f64(l)?;
                     let rf = self.number_to_f64(r)?;
                     if rf == 0.0 {
-                        return Err(ExpressionError::expression_division_by_zero());
+                        return Err(ExpressionError::division_by_zero());
                     }
                     crate::value_utils::finite_result(lf % rf, "remainder")
                 }
             },
-            _ => Err(ExpressionError::expression_type_error(
+            _ => Err(ExpressionError::type_error(
                 "number",
                 format!(
                     "{} and {}",
@@ -888,7 +877,7 @@ impl Evaluator {
                 let result = lf.powf(rf);
                 crate::value_utils::finite_result(result, "power")
             },
-            _ => Err(ExpressionError::expression_type_error(
+            _ => Err(ExpressionError::type_error(
                 "number",
                 format!(
                     "{} and {}",
@@ -957,7 +946,7 @@ impl Evaluator {
         if self.strict_numeric_comparisons_enabled(context)
             && (!left.is_number() || !right.is_number())
         {
-            return Err(ExpressionError::expression_type_error(
+            return Err(ExpressionError::type_error(
                 "number",
                 format!(
                     "{} and {}",
@@ -970,7 +959,7 @@ impl Evaluator {
             (Value::Number(l), Value::Number(r)) => self.number_ordering(l, r)?,
             (Value::String(l), Value::String(r)) => l.cmp(r),
             _ => {
-                return Err(ExpressionError::expression_type_error(
+                return Err(ExpressionError::type_error(
                     "comparable values",
                     format!(
                         "{} and {}",
@@ -992,22 +981,16 @@ impl Evaluator {
     #[cfg(feature = "regex")]
     fn regex_match(&self, left: &Value, right: &Value) -> ExpressionResult<Value> {
         let text = left.as_str().ok_or_else(|| {
-            ExpressionError::expression_type_error(
-                "string",
-                crate::value_utils::value_type_name(left),
-            )
+            ExpressionError::type_error("string", crate::value_utils::value_type_name(left))
         })?;
 
         let pattern = right.as_str().ok_or_else(|| {
-            ExpressionError::expression_type_error(
-                "string",
-                crate::value_utils::value_type_name(right),
-            )
+            ExpressionError::type_error("string", crate::value_utils::value_type_name(right))
         })?;
 
         // ReDoS protection: check pattern length
         if pattern.len() > MAX_REGEX_PATTERN_LEN {
-            return Err(ExpressionError::expression_regex_error(format!(
+            return Err(ExpressionError::regex_error(format!(
                 "Regex pattern too long: {} chars (max {})",
                 pattern.len(),
                 MAX_REGEX_PATTERN_LEN
@@ -1016,7 +999,7 @@ impl Evaluator {
 
         // ReDoS protection: detect potentially dangerous patterns
         if Self::is_potentially_dangerous_regex(pattern) {
-            return Err(ExpressionError::expression_regex_error(
+            return Err(ExpressionError::regex_error(
                 "Regex pattern rejected: contains potentially dangerous nested quantifiers",
             ));
         }
@@ -1028,7 +1011,7 @@ impl Evaluator {
             cached
         } else {
             let compiled = Regex::new(pattern)
-                .map_err(|_| ExpressionError::expression_regex_error("Regex pattern is invalid"))?;
+                .map_err(|_| ExpressionError::regex_error("Regex pattern is invalid"))?;
             let arc = Arc::new(compiled);
             self.regex_cache
                 .insert(Arc::from(pattern), Arc::clone(&arc));
@@ -1121,7 +1104,7 @@ impl Evaluator {
 
     #[cfg(not(feature = "regex"))]
     fn regex_match(&self, _left: &Value, _right: &Value) -> ExpressionResult<Value> {
-        Err(ExpressionError::expression_eval_error(
+        Err(ExpressionError::eval_error(
             "Regex matching is not enabled (feature 'regex' not enabled)",
         ))
     }
@@ -1132,8 +1115,7 @@ impl Evaluator {
         object: EvalValue<'a>,
         property: &str,
     ) -> ExpressionResult<EvalValue<'a>> {
-        let missing =
-            || ExpressionError::expression_eval_error(format!("Property '{property}' not found"));
+        let missing = || ExpressionError::eval_error(format!("Property '{property}' not found"));
         match object {
             Cow::Borrowed(Value::Object(entries)) => {
                 entries.get(property).map(Cow::Borrowed).ok_or_else(missing)
@@ -1143,11 +1125,11 @@ impl Evaluator {
                 .cloned()
                 .map(Cow::Owned)
                 .ok_or_else(missing),
-            Cow::Borrowed(other) => Err(ExpressionError::expression_type_error(
+            Cow::Borrowed(other) => Err(ExpressionError::type_error(
                 "object",
                 crate::value_utils::value_type_name(other),
             )),
-            Cow::Owned(other) => Err(ExpressionError::expression_type_error(
+            Cow::Owned(other) => Err(ExpressionError::type_error(
                 "object",
                 crate::value_utils::value_type_name(&other),
             )),
@@ -1160,10 +1142,7 @@ impl Evaluator {
         let len_i64 = len as i64;
         let actual = if idx < 0 { len_i64 + idx } else { idx };
         if actual < 0 || actual >= len_i64 {
-            return Err(ExpressionError::expression_index_out_of_bounds(
-                actual as usize,
-                len,
-            ));
+            return Err(ExpressionError::index_out_of_bounds(actual as usize, len));
         }
         Ok(actual as usize)
     }
@@ -1174,23 +1153,26 @@ impl Evaluator {
         object: EvalValue<'a>,
         index: &Value,
     ) -> ExpressionResult<EvalValue<'a>> {
-        let missing_object = || ExpressionError::expression_eval_error("Object key not found");
+        let missing_object = || ExpressionError::eval_error("Object key not found");
         match object {
             Cow::Borrowed(Value::Array(array)) => {
                 let pos = Self::resolve_array_index(index, array.len())?;
-                array.get(pos).map(Cow::Borrowed).ok_or_else(|| {
-                    ExpressionError::expression_index_out_of_bounds(pos, array.len())
-                })
+                array
+                    .get(pos)
+                    .map(Cow::Borrowed)
+                    .ok_or_else(|| ExpressionError::index_out_of_bounds(pos, array.len()))
             },
             Cow::Owned(Value::Array(array)) => {
                 let pos = Self::resolve_array_index(index, array.len())?;
-                array.get(pos).cloned().map(Cow::Owned).ok_or_else(|| {
-                    ExpressionError::expression_index_out_of_bounds(pos, array.len())
-                })
+                array
+                    .get(pos)
+                    .cloned()
+                    .map(Cow::Owned)
+                    .ok_or_else(|| ExpressionError::index_out_of_bounds(pos, array.len()))
             },
             Cow::Borrowed(Value::Object(entries)) => entries
                 .get(index.as_str().ok_or_else(|| {
-                    ExpressionError::expression_type_error(
+                    ExpressionError::type_error(
                         "string",
                         crate::value_utils::value_type_name(index),
                     )
@@ -1199,7 +1181,7 @@ impl Evaluator {
                 .ok_or_else(missing_object),
             Cow::Owned(Value::Object(entries)) => entries
                 .get(index.as_str().ok_or_else(|| {
-                    ExpressionError::expression_type_error(
+                    ExpressionError::type_error(
                         "string",
                         crate::value_utils::value_type_name(index),
                     )
@@ -1207,11 +1189,11 @@ impl Evaluator {
                 .cloned()
                 .map(Cow::Owned)
                 .ok_or_else(missing_object),
-            Cow::Borrowed(other) => Err(ExpressionError::expression_type_error(
+            Cow::Borrowed(other) => Err(ExpressionError::type_error(
                 "array or object",
                 crate::value_utils::value_type_name(other),
             )),
-            Cow::Owned(other) => Err(ExpressionError::expression_type_error(
+            Cow::Owned(other) => Err(ExpressionError::type_error(
                 "array or object",
                 crate::value_utils::value_type_name(&other),
             )),
@@ -1222,10 +1204,7 @@ impl Evaluator {
     /// a `0..len` position.
     fn resolve_array_index(index: &Value, len: usize) -> ExpressionResult<usize> {
         let idx = index.as_i64().ok_or_else(|| {
-            ExpressionError::expression_type_error(
-                "integer",
-                crate::value_utils::value_type_name(index),
-            )
+            ExpressionError::type_error("integer", crate::value_utils::value_type_name(index))
         })?;
         Self::normalize_index(idx, len)
     }
@@ -1289,7 +1268,7 @@ impl Evaluator {
     ) -> ExpressionResult<Vec<Value>> {
         match self.eval_with_frame(&args[0], context, frame)? {
             Value::Array(array) => Ok(array),
-            other => Err(ExpressionError::expression_type_error(
+            other => Err(ExpressionError::type_error(
                 "array",
                 crate::value_utils::value_type_name(&other),
             )),
@@ -1304,7 +1283,7 @@ impl Evaluator {
     fn lambda_parts(args: &[Expr], index: usize) -> ExpressionResult<(&str, &Expr)> {
         match &args[index] {
             Expr::Lambda { param, body } => Ok((param.as_ref(), body.as_ref())),
-            _ => Err(ExpressionError::expression_type_error(
+            _ => Err(ExpressionError::type_error(
                 "lambda expression",
                 "non-lambda",
             )),
@@ -1358,7 +1337,7 @@ impl Evaluator {
         for policy in policies.into_iter().flatten() {
             let denied = policy.denied_functions();
             if denied.contains(name) || denied.contains(canonical) {
-                return Err(ExpressionError::expression_eval_error(format!(
+                return Err(ExpressionError::eval_error(format!(
                     "Function '{name}' is denied by policy"
                 )));
             }
@@ -1368,7 +1347,7 @@ impl Evaluator {
             if self.is_allowed_by_policy(policy, name, canonical) {
                 continue;
             }
-            return Err(ExpressionError::expression_eval_error(format!(
+            return Err(ExpressionError::eval_error(format!(
                 "Function '{name}' is not allowed by policy"
             )));
         }
@@ -1445,7 +1424,7 @@ impl Evaluator {
 
     fn coerce_boolean(&self, value: &Value, context: &EvaluationContext) -> ExpressionResult<bool> {
         if self.strict_mode_enabled(context) && !value.is_boolean() {
-            return Err(ExpressionError::expression_type_error(
+            return Err(ExpressionError::type_error(
                 "boolean",
                 crate::value_utils::value_type_name(value),
             ));
@@ -1454,9 +1433,8 @@ impl Evaluator {
     }
 
     fn number_to_f64(&self, num: &Number) -> ExpressionResult<f64> {
-        crate::value_utils::number_as_f64(num).ok_or_else(|| {
-            ExpressionError::expression_eval_error("Number cannot be represented as float")
-        })
+        crate::value_utils::number_as_f64(num)
+            .ok_or_else(|| ExpressionError::eval_error("Number cannot be represented as float"))
     }
 
     pub(crate) fn builtin_output_limits(
@@ -1497,7 +1475,7 @@ impl Evaluator {
         frame: &mut EvalFrame,
     ) -> ExpressionResult<Value> {
         if args.len() != 2 {
-            return Err(ExpressionError::expression_invalid_argument(
+            return Err(ExpressionError::invalid_argument(
                 "filter",
                 format!("expected 2 arguments, got {}", args.len()),
             ));
@@ -1532,7 +1510,7 @@ impl Evaluator {
         frame: &mut EvalFrame,
     ) -> ExpressionResult<Value> {
         if args.len() != 2 {
-            return Err(ExpressionError::expression_invalid_argument(
+            return Err(ExpressionError::invalid_argument(
                 "map",
                 format!("expected 2 arguments, got {}", args.len()),
             ));
@@ -1572,7 +1550,7 @@ impl Evaluator {
         frame: &mut EvalFrame,
     ) -> ExpressionResult<Value> {
         if args.len() != 3 {
-            return Err(ExpressionError::expression_invalid_argument(
+            return Err(ExpressionError::invalid_argument(
                 "reduce",
                 format!("expected 3 arguments, got {}", args.len()),
             ));
@@ -1614,7 +1592,7 @@ impl Evaluator {
         frame: &mut EvalFrame,
     ) -> ExpressionResult<Value> {
         if args.len() != 2 {
-            return Err(ExpressionError::expression_invalid_argument(
+            return Err(ExpressionError::invalid_argument(
                 "find",
                 format!("expected 2 arguments, got {}", args.len()),
             ));
@@ -1645,7 +1623,7 @@ impl Evaluator {
         frame: &mut EvalFrame,
     ) -> ExpressionResult<Value> {
         if args.len() != 2 {
-            return Err(ExpressionError::expression_invalid_argument(
+            return Err(ExpressionError::invalid_argument(
                 "every",
                 format!("expected 2 arguments, got {}", args.len()),
             ));
@@ -1676,7 +1654,7 @@ impl Evaluator {
         frame: &mut EvalFrame,
     ) -> ExpressionResult<Value> {
         if args.len() != 2 {
-            return Err(ExpressionError::expression_invalid_argument(
+            return Err(ExpressionError::invalid_argument(
                 "some",
                 format!("expected 2 arguments, got {}", args.len()),
             ));
@@ -1707,7 +1685,7 @@ impl Evaluator {
         frame: &mut EvalFrame,
     ) -> ExpressionResult<Value> {
         if args.len() != 2 {
-            return Err(ExpressionError::expression_invalid_argument(
+            return Err(ExpressionError::invalid_argument(
                 "find_index",
                 format!("expected 2 arguments, got {}", args.len()),
             ));
@@ -1739,7 +1717,7 @@ impl Evaluator {
         frame: &mut EvalFrame,
     ) -> ExpressionResult<Value> {
         if args.len() != 2 {
-            return Err(ExpressionError::expression_invalid_argument(
+            return Err(ExpressionError::invalid_argument(
                 "group_by",
                 format!("expected 2 arguments, got {}", args.len()),
             ));
@@ -1760,7 +1738,7 @@ impl Evaluator {
                 Value::Bool(b) => b.to_string(),
                 Value::Null => "null".to_string(),
                 _ => {
-                    return Err(ExpressionError::expression_eval_error(
+                    return Err(ExpressionError::eval_error(
                         "group_by key must be a string, number, boolean, or null",
                     ));
                 },
@@ -1777,7 +1755,7 @@ impl Evaluator {
             match group_entry {
                 Value::Array(items) => items.push(item.clone()),
                 other => {
-                    return Err(ExpressionError::expression_type_error(
+                    return Err(ExpressionError::type_error(
                         "array",
                         crate::value_utils::value_type_name(other),
                     ));
@@ -1799,7 +1777,7 @@ impl Evaluator {
         frame: &mut EvalFrame,
     ) -> ExpressionResult<Value> {
         if args.len() != 2 {
-            return Err(ExpressionError::expression_invalid_argument(
+            return Err(ExpressionError::invalid_argument(
                 "flat_map",
                 format!("expected 2 arguments, got {}", args.len()),
             ));

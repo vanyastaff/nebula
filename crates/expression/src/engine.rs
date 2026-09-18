@@ -361,11 +361,6 @@ impl ExpressionEngine {
         crate::Template::new(source_str)
     }
 
-    /// Get or parse a template (alias for parse_template with caching)
-    pub fn get_template(&self, source: impl AsRef<str>) -> ExpressionResult<crate::Template> {
-        self.parse_template(source)
-    }
-
     /// Render a parsed template with the given context
     #[instrument(level = "debug", skip_all, fields(parts = template.parts().len()))]
     pub fn render_template(
@@ -406,30 +401,6 @@ impl ExpressionEngine {
         if let Some(cache) = &self.template_cache {
             cache.clear();
             debug!("Template cache cleared");
-        }
-    }
-
-    /// Get expression cache size
-    pub fn expr_cache_size(&self) -> Option<usize> {
-        #[cfg(feature = "cache")]
-        {
-            self.expr_cache.as_ref().map(TrackedCache::len)
-        }
-        #[cfg(not(feature = "cache"))]
-        {
-            None
-        }
-    }
-
-    /// Get template cache size
-    pub fn template_cache_size(&self) -> Option<usize> {
-        #[cfg(feature = "cache")]
-        {
-            self.template_cache.as_ref().map(TrackedCache::len)
-        }
-        #[cfg(not(feature = "cache"))]
-        {
-            None
         }
     }
 

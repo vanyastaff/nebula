@@ -29,8 +29,9 @@ builtins are first-party" is one PR away from being false.
 **Structural fix (landed).** `BuiltinRegistry::call` now wraps the
 evaluator in `BuiltinView<'_>` (defined in `crates/expression/src/eval/mod.rs`)
 and hands that view to the registered function instead of `&Evaluator`.
-The view exposes only policy-query methods — `is_strict_mode`,
-`strict_conversions_enabled`, `max_json_parse_length` — so the
+The view exposes only policy-query methods (`is_strict_mode`,
+`strict_conversions_enabled`, `max_json_parse_length`) and shared work
+charging (`charge_work`, `check_output_bytes`) — so the
 registered function physically cannot reach `eval()`. Re-entry through
 the registry is now a compile error, not a discipline ask.
 
@@ -45,7 +46,7 @@ they bypass the `BuiltinView` boundary entirely.
 **Files.**
 - Type-enforced boundary: `crates/expression/src/eval/mod.rs`
   (`BuiltinView`, `BuiltinRegistry::call` dispatch).
-- Public type alias: `crates/expression/src/builtins.rs`
+- Public type alias: `crates/expression/src/builtins/mod.rs`
   (`BuiltinFunction`).
 - Crate-level docs: `crates/expression/src/lib.rs`
   ("BuiltinFunction signature" section), `crates/expression/README.md`.

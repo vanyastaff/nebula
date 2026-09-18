@@ -10,12 +10,18 @@ use serde_json::Value;
 use crate::{
     ExpressionError,
     ast::{BinaryOp, Expr},
-    error::{ExpressionErrorExt, ExpressionResult},
+    error::ExpressionResult,
     span::Span,
     token::{Token, TokenKind},
 };
 
-/// Maximum recursion depth for parser
+/// Maximum recursive-descent call depth for the parser.
+///
+/// This is NOT `limits::MAX_AST_DEPTH`: the parser counts call-chain frames,
+/// not AST nodes, and one source construct can consume several frames
+/// (40 nested parentheses ≈ 240 parser depth, well under this cap while the
+/// resulting AST is only 40 nodes deep). Merging the two would weaken the
+/// stack-overflow guard by roughly an order of magnitude.
 const MAX_PARSER_DEPTH: usize = 256;
 
 /// EOF token constant
@@ -49,7 +55,7 @@ impl<'a> Parser<'a> {
         crate::limits::check_limit("tokens", self.tokens.len(), crate::limits::MAX_TOKENS)?;
         let expr = self.parse_expression_with_depth(0)?;
         if self.current_token().kind != TokenKind::Eof {
-            return Err(ExpressionError::expression_parse_error(format!(
+            return Err(ExpressionError::parse_error(format!(
                 "Unexpected trailing token: expected end of input, found {}",
                 self.current_token()
             )));
@@ -66,7 +72,7 @@ impl<'a> Parser<'a> {
     /// Parse expression with depth tracking
     fn parse_expression_with_depth(&mut self, depth: usize) -> ExpressionResult<Expr> {
         if depth > MAX_PARSER_DEPTH {
-            return Err(ExpressionError::expression_parse_error(format!(
+            return Err(ExpressionError::parse_error(format!(
                 "Maximum parser recursion depth ({MAX_PARSER_DEPTH}) exceeded"
             )));
         }
@@ -107,7 +113,7 @@ impl<'a> Parser<'a> {
                 self.advance();
                 name
             } else {
-                return Err(ExpressionError::expression_parse_error(
+                return Err(ExpressionError::parse_error(
                     "Expected function name after |",
                 ));
             };
@@ -141,7 +147,7 @@ impl<'a> Parser<'a> {
         // `parse_expression_with_depth`, so the global entry-point depth
         // guard is not enough. Enforce the cap here too.
         if depth > MAX_PARSER_DEPTH {
-            return Err(ExpressionError::expression_parse_error(format!(
+            return Err(ExpressionError::parse_error(format!(
                 "Maximum parser recursion depth ({MAX_PARSER_DEPTH}) exceeded"
             )));
         }
@@ -174,7 +180,7 @@ impl<'a> Parser<'a> {
                 TokenKind::And => BinaryOp::And,
                 TokenKind::Or => BinaryOp::Or,
                 _ => {
-                    return Err(ExpressionError::expression_parse_error(format!(
+                    return Err(ExpressionError::parse_error(format!(
                         "Unexpected operator: {}",
                         self.current_token()
                     )));
@@ -208,7 +214,7 @@ impl<'a> Parser<'a> {
         // The `parse_expression_with_depth` guard is too far upstream to
         // stop a stack overflow on hostile input, so enforce the cap here.
         if depth > MAX_PARSER_DEPTH {
-            return Err(ExpressionError::expression_parse_error(format!(
+            return Err(ExpressionError::parse_error(format!(
                 "Maximum parser recursion depth ({MAX_PARSER_DEPTH}) exceeded"
             )));
         }
@@ -249,7 +255,7 @@ impl<'a> Parser<'a> {
                         self.advance();
                         name
                     } else {
-                        return Err(ExpressionError::expression_parse_error(
+                        return Err(ExpressionError::parse_error(
                             "Expected property name after .",
                         ));
                     };
@@ -381,9 +387,7 @@ impl<'a> Parser<'a> {
                                 k
                             },
                             _ => {
-                                return Err(ExpressionError::expression_parse_error(
-                                    "Expected object key",
-                                ));
+                                return Err(ExpressionError::parse_error("Expected object key"));
                             },
                         };
 
@@ -401,7 +405,7 @@ impl<'a> Parser<'a> {
                 Ok(Expr::Object(pairs))
             },
 
-            _ => Err(ExpressionError::expression_parse_error(format!(
+            _ => Err(ExpressionError::parse_error(format!(
                 "Unexpected token: {}",
                 self.current_token()
             ))),
@@ -495,7 +499,7 @@ impl<'a> Parser<'a> {
             self.advance();
             Ok(())
         } else {
-            Err(ExpressionError::expression_parse_error(format!(
+            Err(ExpressionError::parse_error(format!(
                 "Expected {}, found {}",
                 expected,
                 self.current_token()
