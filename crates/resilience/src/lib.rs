@@ -118,8 +118,18 @@
 //!
 //! # Observability
 //!
-//! Inject a [`EventSink`] into any pattern to receive [`ResilienceEvent`]s.
+//! Inject an [`EventSink`] into any pattern to receive [`ResilienceEvent`]s.
 //! Use [`RecordingSink`] in tests for assertion-friendly event capture.
+//!
+//! # Cargo features
+//!
+//! | Feature | Default | Effect |
+//! |---------|---------|--------|
+//! | `serde` | yes | `Serialize`/`Deserialize` for config and event boundary types. |
+//! | `bench-internals` | no | Exposes internal helpers the criterion benches measure; visibility only. |
+//!
+//! The async surface is tokio-based (`tokio::time`, `tokio-util` cancellation);
+//! there is no runtime-agnostic mode.
 
 #![warn(clippy::all, clippy::pedantic, clippy::nursery, clippy::perf)]
 // Reason: types like CircuitBreakerConfig deliberately repeat the module name for readability.

@@ -48,7 +48,7 @@ impl CancellationContext {
         }
     }
 
-    /// Create a cancellation context with a reason.
+    /// Creates a cancellation context with a reason.
     pub fn with_reason(reason: impl Into<Cow<'static, str>>) -> Self {
         Self {
             token: CancellationToken::new(),

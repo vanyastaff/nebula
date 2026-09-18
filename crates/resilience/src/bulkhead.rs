@@ -125,7 +125,7 @@ impl std::fmt::Debug for Bulkhead {
 }
 
 impl Bulkhead {
-    /// Create a new bulkhead.
+    /// Creates a new bulkhead.
     ///
     /// # Errors
     ///
@@ -177,6 +177,13 @@ impl Bulkhead {
     ///
     /// Returns `Err(CallError::BulkheadFull)` when the queue is full,
     /// or `Err(CallError::Operation)` if the operation itself fails.
+    ///
+    /// # Cancel safety
+    ///
+    /// Dropping the returned future drops the in-flight operation at its
+    /// current `.await`; the permit is released by its RAII guard. Whether a
+    /// *partially executed* operation is safe to abandon is the operation's
+    /// own contract.
     pub async fn call<T, E, Fut>(&self, f: impl FnOnce() -> Fut) -> Result<T, CallError<E>>
     where
         Fut: Future<Output = Result<T, E>> + Send,
@@ -197,6 +204,13 @@ impl Bulkhead {
     /// `Err(CallError::Timeout)` if the context deadline or bulkhead queue timeout
     /// expires, `Err(CallError::BulkheadFull)` when capacity/queue is exhausted,
     /// or `Err(CallError::Operation)` if the operation itself fails.
+    ///
+    /// # Cancel safety
+    ///
+    /// Dropping the returned future drops the in-flight operation at its
+    /// current `.await`; the permit is released by its RAII guard. Whether a
+    /// *partially executed* operation is safe to abandon is the operation's
+    /// own contract.
     pub async fn call_with_context<T, E, Fut>(
         &self,
         context: &CallContext,
@@ -222,6 +236,11 @@ impl Bulkhead {
     /// **Note:** Queue timeout returns `CallError::Timeout`, not `BulkheadFull`.
     /// When used in a pipeline alongside a `Timeout` step, callers cannot
     /// distinguish the two by variant alone — check the duration value if needed.
+    ///
+    /// # Cancel safety
+    ///
+    /// Dropping the returned future while it waits releases the queue slot
+    /// (the wait count has an RAII guard) and does not consume a permit.
     pub async fn acquire<E>(&self) -> Result<BulkheadPermit, CallError<E>> {
         self.acquire_permit().await
     }
@@ -233,6 +252,11 @@ impl Bulkhead {
     /// Returns `Err(CallError::Cancelled)` if the context is cancelled,
     /// `Err(CallError::Timeout)` if the context deadline or configured queue
     /// timeout expires, or `Err(CallError::BulkheadFull)` when the queue is full.
+    ///
+    /// # Cancel safety
+    ///
+    /// Dropping the returned future while it waits releases the queue slot
+    /// (the wait count has an RAII guard) and does not consume a permit.
     pub async fn acquire_with_context<E>(
         &self,
         context: &CallContext,

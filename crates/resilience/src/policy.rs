@@ -50,6 +50,10 @@ impl<C: Clone + Send + Sync> PolicySource<C> for C {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// Runtime signal providing system load metrics for adaptive policies.
+///
+/// [`ConstantLoad`] is a complete implementation to copy from; the
+/// [module documentation](self) explains where these seams are (and are not)
+/// consumed today.
 pub trait LoadSignal: Send + Sync {
     /// Overall load factor in 0.0..=1.0 (0 = idle, 1 = fully saturated).
     fn load_factor(&self) -> f64;
@@ -91,7 +95,7 @@ pub struct LoadSnapshot {
 }
 
 impl LoadSnapshot {
-    /// Create a validated load snapshot.
+    /// Creates a validated load snapshot.
     ///
     /// # Errors
     ///
@@ -174,7 +178,7 @@ pub struct ConstantLoad {
 }
 
 impl ConstantLoad {
-    /// Create a validated constant load signal.
+    /// Creates a validated constant load signal.
     ///
     /// # Errors
     ///

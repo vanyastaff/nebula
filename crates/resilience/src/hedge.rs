@@ -179,7 +179,7 @@ impl fmt::Debug for HedgeExecutor {
 }
 
 impl HedgeExecutor {
-    /// Create a new hedge executor.
+    /// Creates a new hedge executor.
     ///
     /// # Errors
     ///
@@ -333,7 +333,7 @@ impl fmt::Debug for AdaptiveHedgeExecutor {
 }
 
 impl AdaptiveHedgeExecutor {
-    /// Create a new adaptive hedge executor.
+    /// Creates a new adaptive hedge executor.
     ///
     /// # Errors
     ///
@@ -348,7 +348,7 @@ impl AdaptiveHedgeExecutor {
         })
     }
 
-    /// Set the target latency percentile for hedge delay calculation.
+    /// Sets the target latency percentile for hedge delay calculation.
     ///
     /// # Errors
     ///
@@ -371,7 +371,7 @@ impl AdaptiveHedgeExecutor {
         self
     }
 
-    /// Set the maximum number of latency samples retained for percentile calculation.
+    /// Sets the maximum number of latency samples retained for percentile calculation.
     ///
     /// Larger values improve percentile accuracy but consume more memory.
     /// Default: 1000.

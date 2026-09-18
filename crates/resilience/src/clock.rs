@@ -45,6 +45,9 @@ use parking_lot::Mutex;
 ///
 /// This trait is designed to be implemented by downstream crates.
 /// New methods will always have default implementations to avoid breaking changes.
+///
+/// See [`MockInstant`] for a ready-made deterministic implementation and the
+/// [module documentation](self) for an example.
 pub trait InstantSource: Send + Sync {
     /// Returns the current instant according to this source.
     fn now(&self) -> Instant;
@@ -105,7 +108,7 @@ impl MockInstant {
         }
     }
 
-    /// Advance this source by `duration`.
+    /// Advances this source by `duration`.
     ///
     /// All clones of this `MockInstant` will observe the new time immediately.
     pub fn advance(&self, duration: Duration) {

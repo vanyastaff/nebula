@@ -297,7 +297,7 @@ struct InnerState {
 }
 
 impl CircuitBreaker {
-    /// Create a new circuit breaker with the given configuration.
+    /// Creates a new circuit breaker with the given configuration.
     ///
     /// # Errors
     ///
@@ -474,6 +474,11 @@ impl CircuitBreaker {
     /// Returns `Err(CallError::CircuitOpen)` if the breaker is open,
     /// or `Err(CallError::Operation)` if the operation itself fails.
     ///
+    /// # Cancel safety
+    ///
+    /// Dropping the returned future releases a half-open probe slot via its
+    /// drop guard; the recorded outcome is `Cancelled`, never a failure.
+    ///
     /// # Examples
     ///
     /// ```rust
@@ -518,6 +523,11 @@ impl CircuitBreaker {
     /// `Err(CallError::Cancelled)` if the context is cancelled,
     /// `Err(CallError::Timeout)` if the context deadline expires,
     /// or `Err(CallError::Operation)` if the operation itself fails.
+    ///
+    /// # Cancel safety
+    ///
+    /// Dropping the returned future releases a half-open probe slot via its
+    /// drop guard; the recorded outcome is `Cancelled`, never a failure.
     pub async fn call_with_context<T, E, Fut>(
         &self,
         context: &CallContext,
@@ -545,6 +555,11 @@ impl CircuitBreaker {
     ///
     /// Returns `Err(CallError::CircuitOpen)` if the breaker is open,
     /// or `Err(CallError::Operation)` if the operation itself fails.
+    ///
+    /// # Cancel safety
+    ///
+    /// Dropping the returned future releases a half-open probe slot via its
+    /// drop guard; the recorded outcome is `Cancelled`, never a failure.
     pub async fn call_with_classifier<T, E, Fut>(
         &self,
         classifier: &dyn crate::classifier::ErrorClassifier<E>,
@@ -578,6 +593,11 @@ impl CircuitBreaker {
     /// `Err(CallError::Cancelled)` if the context is cancelled,
     /// `Err(CallError::Timeout)` if the context deadline expires,
     /// or `Err(CallError::Operation)` if the operation itself fails.
+    ///
+    /// # Cancel safety
+    ///
+    /// Dropping the returned future releases a half-open probe slot via its
+    /// drop guard; the recorded outcome is `Cancelled`, never a failure.
     pub async fn call_with_classifier_and_context<T, E, Fut>(
         &self,
         classifier: &dyn crate::classifier::ErrorClassifier<E>,
@@ -757,7 +777,7 @@ impl CircuitBreaker {
         }
     }
 
-    /// Record an operation outcome directly (useful when driving the CB from external code).
+    /// Records an operation outcome directly (useful when driving the CB from external code).
     ///
     /// In the Closed state, each success decrements the failure counter by one ("leaky bucket"
     /// forgiveness). This means that interleaved successes slowly erase past failures,

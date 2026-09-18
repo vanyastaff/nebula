@@ -222,7 +222,24 @@ impl<E> CallError<E> {
         }
     }
 
-    /// Map the inner operation error, leaving pattern errors unchanged.
+    /// Maps the inner operation error, leaving pattern errors unchanged.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use std::time::Duration;
+    ///
+    /// use nebula_resilience::CallError;
+    ///
+    /// let err: CallError<u32> = CallError::Operation(7);
+    /// let mapped: CallError<String> = err.map_operation(|n| n.to_string());
+    /// assert_eq!(mapped.operation(), Some(&"7".to_string()));
+    ///
+    /// // Pattern errors carry no caller error, so they pass through unchanged.
+    /// let pattern: CallError<String> =
+    ///     CallError::<u32>::Timeout(Duration::from_secs(1)).map_operation(|n| n.to_string());
+    /// assert!(matches!(pattern, CallError::Timeout(_)));
+    /// ```
     pub fn map_operation<F, E2>(self, mut f: F) -> CallError<E2>
     where
         F: FnMut(E) -> E2,

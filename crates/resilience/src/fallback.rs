@@ -28,6 +28,10 @@ use crate::{
 /// Fallback strategy trait, generic over both the value and error type.
 ///
 /// Implement this trait to define custom fallback behavior.
+///
+/// [`ValueFallback`] and [`FunctionFallback`] are complete implementations to
+/// copy from; [`FallbackExecutor::call`](FallbackExecutor::call) shows how a
+/// strategy is driven.
 pub trait FallbackStrategy<T, E>: Send + Sync {
     /// Produce a recovery value for an error that
     /// [`should_fallback()`](Self::should_fallback) accepted.
@@ -110,7 +114,7 @@ pub struct ValueFallback<T: Clone + Send + Sync> {
 }
 
 impl<T: Clone + Send + Sync> ValueFallback<T> {
-    /// Create new value fallback.
+    /// Creates a new value fallback.
     pub const fn new(value: T) -> Self {
         Self { value }
     }
@@ -315,7 +319,12 @@ impl<T: Clone + Send + Sync> CacheFallback<T> {
         self
     }
 
-    /// Update cached value.
+    /// Updates the cached value.
+    ///
+    /// # Cancel safety
+    ///
+    /// Dropping the returned future before the write lands leaves the
+    /// previous entry in place; no partial value is observable.
     pub async fn update(&self, value: T) {
         *self.cache.write().await = Some(CacheEntry {
             value,
@@ -610,7 +619,8 @@ where
 
 /// Runs an operation and, on eligible failure, a [`FallbackStrategy`].
 ///
-/// The executor shape matches the crate's other drivers ([`HedgeExecutor`],
+/// The executor shape matches the crate's other drivers
+/// ([`HedgeExecutor`](crate::HedgeExecutor),
 /// [`TimeoutExecutor`](crate::TimeoutExecutor)): a configured object whose
 /// `call` wraps a caller-supplied operation, rather than a free function that
 /// needs the strategy threaded through every call site.
@@ -694,6 +704,11 @@ impl<T, E> FallbackExecutor<T, E> {
     ///
     /// Returns the fallback strategy's error if both the operation and fallback fail,
     /// or the original error if the fallback strategy declines to handle it.
+    ///
+    /// # Cancel safety
+    ///
+    /// Dropping the returned future drops the in-flight primary or fallback at
+    /// its current `.await`; no crate-owned state is left half-written.
     pub async fn call<F, Fut>(&self, operation: F) -> Result<T, CallError<E>>
     where
         F: FnOnce() -> Fut,
@@ -720,6 +735,12 @@ impl<T, E> FallbackExecutor<T, E> {
     /// `Err(CallError::Timeout)` if the context deadline expires, the fallback
     /// strategy's error if both primary and fallback fail, or the original error
     /// if fallback declines it.
+    ///
+    /// # Cancel safety
+    ///
+    /// Dropping the returned future drops the in-flight primary or fallback at
+    /// its current `.await`; the context's `select!` arms hold only stack
+    /// state, so nothing is left half-written.
     pub async fn call_with_context<F, Fut>(
         &self,
         context: &CallContext,

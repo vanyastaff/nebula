@@ -137,6 +137,8 @@ impl fmt::Display for ErrorClass {
 ///
 /// This trait is designed to be implemented by downstream crates.
 /// New methods will always have default implementations to avoid breaking changes.
+///
+/// The [module documentation](self) shows the minimal implementation shape.
 pub trait ErrorClassifier<E>: Send + Sync {
     /// Classify an error into an [`ErrorClass`].
     fn classify(&self, error: &E) -> ErrorClass;
@@ -201,7 +203,7 @@ pub struct FnClassifier<E, F> {
 }
 
 impl<E, F: Fn(&E) -> ErrorClass + Send + Sync> FnClassifier<E, F> {
-    /// Create a new closure-based classifier.
+    /// Creates a new closure-based classifier.
     pub const fn new(f: F) -> Self {
         Self {
             f,

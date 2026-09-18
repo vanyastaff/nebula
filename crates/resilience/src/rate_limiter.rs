@@ -217,6 +217,9 @@ impl RateLimiterStatus {
 /// This trait is `sealed`-free and designed for downstream implementation.
 /// New methods will always provide default implementations to avoid breaking
 /// changes across minor versions.
+///
+/// [`TokenBucket`] and [`SlidingWindow`] are complete implementations to copy
+/// from; the [module documentation](self) shows both in use.
 pub trait RateLimiter: Send + Sync {
     /// Attempt to consume one permit from the rate limiter.
     ///
@@ -328,6 +331,9 @@ type BoxRateLimiterFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 /// limiter, acquire through this trait and then call the operation yourself, or
 /// pass the object to
 /// [`PipelineBuilder::rate_limiter_erased`](crate::PipelineBuilder::rate_limiter_erased).
+///
+/// The [module documentation](self) shows a `Vec<Arc<dyn ErasedRateLimiter>>`
+/// registry.
 pub trait ErasedRateLimiter: Send + Sync {
     /// Attempt to consume one permit from the rate limiter.
     fn acquire_boxed(&self) -> BoxRateLimiterFuture<'_, Result<(), CallError<()>>>;
@@ -473,7 +479,7 @@ impl TokenBucket {
         self
     }
 
-    /// Update the refill rate in-place, avoiding a re-allocation.
+    /// Updates the refill rate in-place, avoiding a re-allocation.
     ///
     /// The new rate is applied on the next `acquire()` call.
     /// `new_rate` is clamped to the same range accepted by `new()`.
@@ -486,7 +492,7 @@ impl TokenBucket {
         self.refill_rate.store(clamped.to_bits(), Ordering::Release);
     }
 
-    /// Update the burst size in-place.
+    /// Updates the burst size in-place.
     ///
     /// Used by the adaptive rate limiter to keep burst capacity in sync with the
     /// adjusted rate. Clamped to `1..=100,000`.
@@ -620,7 +626,7 @@ impl fmt::Debug for LeakyBucket {
 }
 
 impl LeakyBucket {
-    /// Create new leaky bucket.
+    /// Creates a new leaky bucket.
     ///
     /// # Errors
     ///
@@ -790,7 +796,7 @@ impl fmt::Debug for SlidingWindow {
 }
 
 impl SlidingWindow {
-    /// Create new sliding window rate limiter.
+    /// Creates a new sliding window rate limiter.
     ///
     /// # Errors
     ///
@@ -1126,13 +1132,13 @@ impl AdaptiveRateLimiter {
         state.last_stats_reset = Instant::now();
     }
 
-    /// Record a successful operation.
+    /// Records a successful operation.
     pub fn record_success(&self) {
         self.success_count.fetch_add(1, Ordering::Relaxed);
         self.maybe_adjust_rate();
     }
 
-    /// Record a failed operation.
+    /// Records a failed operation.
     pub fn record_error(&self) {
         self.error_count.fetch_add(1, Ordering::Relaxed);
         self.maybe_adjust_rate();

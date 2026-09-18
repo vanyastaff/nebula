@@ -297,7 +297,7 @@ impl<E> fmt::Debug for RetryConfig<E> {
 }
 
 impl<E: 'static> RetryConfig<E> {
-    /// Create a retry config that retries all errors up to `max_attempts` times.
+    /// Creates a retry config that retries all errors up to `max_attempts` times.
     ///
     /// `max_attempts` must be at least 1 (the initial attempt counts).
     /// `E` is inferred from the closure passed to [`retry_with`].

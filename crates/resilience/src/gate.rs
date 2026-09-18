@@ -109,6 +109,8 @@ struct GateInner {
 /// Dropping a guard while `close()` is in progress is fully legitimate: the
 /// guard was acquired before shutdown started, and dropping it unblocks
 /// [`Gate::close`].
+///
+/// See [`Gate::enter`] for the creation example.
 pub struct GateGuard {
     inner: Arc<GateInner>,
 }
@@ -272,6 +274,12 @@ impl Gate {
     ///
     /// Returns [`GateCloseTimeout`], carrying the budget and the number of
     /// guards still active, if the drain does not finish in time.
+    ///
+    /// # Cancel safety
+    ///
+    /// The gate stays closed after a dropped `close` future: dropping it
+    /// abandons the *wait*, not the drain state, so a later `close` resumes
+    /// draining. No guard is affected.
     pub async fn close(&self, budget: Duration) -> Result<(), GateCloseTimeout> {
         // Mark as closing so new enter() calls fail fast. Done before the
         // budget check so even a zero budget still latches the gate shut.

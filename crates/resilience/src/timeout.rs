@@ -188,7 +188,7 @@ impl fmt::Debug for TimeoutExecutor {
 }
 
 impl TimeoutExecutor {
-    /// Create a new executor with the given duration and a noop sink.
+    /// Creates a new executor with the given duration and a noop sink.
     ///
     /// A zero duration is rejected: it never polls the protected future, so it
     /// can only be a misconfigured workflow timeout. Immediate cancellation is

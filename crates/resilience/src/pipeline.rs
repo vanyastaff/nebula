@@ -16,21 +16,22 @@
 //! };
 //!
 //! # #[tokio::main]
-//! # async fn main() {
+//! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let pipeline = ResiliencePipeline::<&str>::builder()
 //!     .timeout(Duration::from_secs(2))
 //!     .retry(
-//!         RetryConfig::new(3)
-//!             .expect("max_attempts >= 1")
+//!         RetryConfig::new(3)?
 //!             .backoff(BackoffConfig::Fixed(Duration::from_millis(10))),
 //!     )
 //!     .build();
 //!
+//! // The operation returns `Ok` unconditionally, so this cannot fail.
 //! let value = pipeline
 //!     .call(|| Box::pin(async { Ok::<_, &str>(42u32) }))
 //!     .await
-//!     .unwrap();
+//!     .expect("the operation succeeds by construction");
 //! assert_eq!(value, 42);
+//! # Ok(())
 //! # }
 //! ```
 
@@ -94,16 +95,18 @@ enum Step<E: 'static> {
 /// use nebula_resilience::{PipelineBuilder, ResiliencePipeline};
 ///
 /// # #[tokio::main]
-/// # async fn main() {
+/// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// let builder: PipelineBuilder<&str> =
 ///     ResiliencePipeline::<&str>::builder().timeout(Duration::from_secs(1));
 ///
 /// let pipeline = builder.build();
+/// // The operation returns `Ok` unconditionally, so this cannot fail.
 /// let value = pipeline
 ///     .call(|| Box::pin(async { Ok::<_, &str>(7u32) }))
 ///     .await
-///     .unwrap();
+///     .expect("the operation succeeds by construction");
 /// assert_eq!(value, 7);
+/// # Ok(())
 /// # }
 /// ```
 pub struct PipelineBuilder<E: 'static> {
@@ -323,7 +326,7 @@ impl<E: Send + 'static> PipelineBuilder<E> {
         self.build_inner()
     }
 
-    /// Build the pipeline only if steps are already in the recommended order.
+    /// Builds the pipeline only if steps are already in the recommended order.
     ///
     /// This is intended for config/schema-driven construction where warnings are
     /// too easy to miss. Use [`build_sorted`](Self::build_sorted)
@@ -493,7 +496,7 @@ fn warn_on_suboptimal_order<E>(steps: &[Step<E>]) {
 
 /// A composed resilience pipeline that applies multiple patterns in order.
 ///
-/// Build via [`ResiliencePipeline::builder()`].
+/// Builds via [`ResiliencePipeline::builder()`].
 ///
 /// # Examples
 ///
