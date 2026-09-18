@@ -20,6 +20,10 @@ format, and the `Rule` wire encoding — are catalogued in
   over-deep tree aborted the process: every traversal (`kind`, `total_error_count`,
   `flatten`, `to_json_value`, `Display`) and the derived `Clone`/`PartialEq`/`Debug`/`Drop`
   impls recurse once per level.
+- **`severity` is snake_case in the serialized envelope.** `to_json_value()` rendered it
+  through `Debug`, so the wire carried `"Warning"` next to a snake_case `kind`
+  (`"violation"`). It now emits `"error"` / `"warning"` / `"info"` like every other
+  enumerated key.
 - **`CollectionNested` preserves the element diagnostic.** Element failures keep their
   original `code`, `field`, `params`, `severity`, and nested errors, and gain an `index`
   param. Fail-fast mode wraps the element error as a nested child. Previously the
