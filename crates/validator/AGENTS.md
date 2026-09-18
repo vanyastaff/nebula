@@ -14,8 +14,9 @@
 
 - `src/lib.rs` — public surface + re-exports (`Rule`, `RuleKind`, `Validated`, `ExecutionMode`, `validate_rules`); `__private::regex` for derive output
 - `src/foundation/` — `Validate`/`ValidateExt` traits, `AnyValidator`, `ValidationError` (80-byte, RFC 6901 paths), `FieldPath`
-- `src/rule/mod.rs` — typed sum-of-sums `Rule` seam (`Value`/`Predicate`/`Logic`/`Deferred`/`Described`); cross-kind misuse is a compile error
-- `src/engine.rs` — `validate_rules` / `validate_rules_with_ctx`, `ExecutionMode` (`StaticOnly`/`Deferred`/`Full`)
+- `src/rule/mod.rs` — typed sum-of-sums `Rule` over a bounded flat arena (`Value`/`Predicate`/`All`/`Any`/`Not`/`Deferred`/`Described`), read through `RuleView`/`RuleRef`; cross-kind misuse is a compile error
+- `src/rule/limits.rs` — `MAX_RULE_*` budgets enforced on construction and deserialization; bare leaf types (`ValueRule`/`Predicate`/`DeferredRule`) are construction-only and are not a public admission path
+- `src/engine.rs` — `validate_rules` / `validate_rules_with_ctx`, `ExecutionMode` (`StaticOnly`/`Deferred`/`Full`), `DiagnosticDisclosure`
 - `EvaluationOutcome` distinguishes satisfied rules from partial evaluation;
   `ValidationErrorKind` keeps configuration/unavailable diagnostics out of boolean negation.
 - `src/rule/pattern.rs` — `RulePattern`, checked equally by construction and serde
@@ -45,5 +46,6 @@
 
 ## See also
 
-- `README.md` — full design · `docs/` (architecture, api-reference, combinators, extending, migration)
+- `README.md` — full design · `docs/DESIGN.md` — design record (boundaries, invariants, known debt, forward design)
+- `docs/` — architecture, api-reference, combinators, extending, migration
 - ADR-0080 (ADR-0052 consolidated) — schema↔validator condition-eval seam

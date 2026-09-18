@@ -2,174 +2,183 @@
 
 | Field | Value |
 |-------|-------|
-| **Status** | `frontier` (ADR-0052/0080) — программный API стабилен, `Rule` wire-format недавно сменился |
-| **Layer** | Core cross-cutting — rules-engine, к которому `nebula-schema` делегирует исполнение правил |
-| **Redesign role** | **Не затронут напрямую** redesign'ом credential/resource (нет deps на эти крейты и нет обратных). Косвенный участник: единственный эмиттер `required`-ошибок (ADR-0052 P2) на write-path credential (P4) через `nebula-schema` |
-| **Related** | [ADR-0052], ADR-0080, PRODUCT_CANON §3.5 / §4.5, [refactor/error-unify-validation] (несмёрженная ветка унификации ошибок) |
+| **Status** | `frontier` (ADR-0052/0080) — the programmatic API is stable; the `Rule` wire format changed recently |
+| **Layer** | Core — the rules engine that `nebula-schema` delegates rule execution to |
+| **Redesign role** | **Not directly affected** by the credential/resource redesign (no dependencies on those crates, none in reverse). An indirect participant: the only emitter of `required` errors (ADR-0052 P2) on the credential write path (P4) through `nebula-schema` |
+| **Related** | ADR-0052, ADR-0080, PRODUCT_CANON §3.5 / §4.5, `origin/refactor/error-unify-validation` (unmerged error-unification branch) |
 
 ---
 
-## 1. Назначение и границы
+## 1. Purpose and boundaries
 
-`nebula-validator` — это shared rules-engine уровня Core с двумя поверхностями:
+`nebula-validator` is the Core-layer shared rules engine with two surfaces:
 
-1. **Программные валидаторы** — трейт `Validate<T>` (`src/foundation/traits.rs:97`) плюс
-   комбинаторы `.and()/.or()/.not()` через `ValidateExt<T>` (`traits.rs:238`). Авторы
-   интеграций компонуют проверки прямо в Rust-коде.
-2. **Декларативный `Rule`** — JSON-сериализуемый typed sum-of-sums enum
-   (`src/rule/mod.rs:47`), который несут поля схем. Движок исполняет его на
-   lint / activation / runtime.
+1. **Programmatic validators** — the `Validate<T>` trait (`src/foundation/traits.rs`) plus
+   `.and()` / `.or()` / `.not()` composition through `ValidateExt<T>`. Integration authors
+   compose checks directly in Rust code.
+2. **Declarative `Rule`** — a JSON-serializable typed sum-of-sums (`src/rule/mod.rs`) that
+   schema fields carry. The engine executes it at lint / activation / runtime.
 
-**Владеет:** трейтами валидации (`Validate`, `ValidateExt`, `Validatable`), type-erasure
-(`AnyValidator<T>`), структурной `ValidationError` (<=80 байт, `Cow`, RFC 6901 пути),
-декларативным `Rule` + его исполнителем (`engine.rs`), proof-token'ом `Validated<T>`
-(canon §4.5), policy-движком visibility/required-условий (`policy/`), каталогом встроенных
-валидаторов (length/pattern/content/range/size/boolean/nullable + network/temporal за
-фичами) и derive-макросом `#[derive(Validator)]`.
+**Owns:** the validation traits (`Validate`, `ValidateExt`, `Validatable`), type erasure
+(`AnyValidator<T>`), the structured `ValidationError` (≤80 bytes, `Cow`-based, RFC 6901
+paths), the declarative `Rule` and its executor (`engine.rs`), the `Validated<T>` proof token
+(canon §4.5), the visibility/required policy engine (`policy/`), the catalog of built-in
+validators (length/pattern/content/range/size/boolean/nullable plus network/temporal behind
+features), and the `#[derive(Validator)]` macro.
 
-**ЯВНО НЕ делает** (из non-goals README): это **не** schema-система — `Field`/`Schema` и
-пайплайн `ValidValues → ResolvedValues` живут в `nebula-schema`; **не** вычислитель
-выражений (`nebula-expression`); **не** resilience-пайплайн (`nebula-resilience`); **не**
-форматтер API-ошибок — RFC 9457 `problem+json` маппинг делает `nebula-api`. KDF/hashing
-здесь тоже нет (это `nebula-credential`/`nebula-crypto`).
+**Explicitly does not do** (see the README non-goals): it is **not** a schema system —
+`Field`/`Schema` and the `ValidValues → ResolvedValues` pipeline live in `nebula-schema`; not
+an expression evaluator (`nebula-expression`); not a resilience pipeline
+(`nebula-resilience`); not an API error formatter — the RFC 9457 `problem+json` mapping lives
+in `nebula-api`. There is no KDF or hashing here either (that is
+`nebula-credential`/`nebula-crypto`).
 
-## 2. Публичная поверхность
+## 2. Public surface
 
-| Item | Где |
-|------|-----|
-| `Validate<T>` — core-трейт валидатора | `src/foundation/traits.rs:97` |
-| `ValidateExt<T>` — комбинаторные методы `.and()/.or()/.not()` | `src/foundation/traits.rs:238` |
-| `Validatable` | `src/foundation/traits.rs:192` |
-| `ValidationError` — структурная ошибка (<=80 байт, `Cow`, RFC 6901) | `src/foundation/error/validation_error.rs:103` |
-| `ValidationErrors` — мульти-ошибки | `src/foundation/error/validation_errors.rs:11` |
-| `FieldPath` — RFC 6901 JSON-pointer, валидация при конструировании | `src/foundation/field_path.rs:39` |
-| `AnyValidator<T>` — type-erased валидатор | `src/foundation/any.rs:91` |
-| `Rule` — sum-of-sums, ручные `Serialize`/`Deserialize` | `src/rule/mod.rs:47` |
-| `Rule::validate` / `RuleKind` | `src/rule/mod.rs:83` / `mod.rs:171` |
-| `ValueRule` / `Predicate` / `Logic` / `DeferredRule` / `PredicateContext` | `src/rule/value.rs:28` / `predicate.rs:16` / `logic.rs:12` / `deferred.rs:15` / `context.rs:13` |
-| `ExecutionMode` (`StaticOnly`/`Deferred`/`Full`) | `src/engine.rs:35` |
-| `validate_rules` / `validate_rules_with_ctx` | `src/engine.rs:67` / `engine.rs:77` |
-| `Validated<T>` — proof-token (`Serialize` есть, `Deserialize` намеренно НЕТ) | `src/proof.rs:54` |
-| `Presence` / `Requiredness` / `VisibilityPolicy` / `RequiredPolicy` | `src/policy/mod.rs:14/24/34/46` |
-| `resolve_field_policies` — единственная точка входа для `nebula-schema::validate` | `src/policy/mod.rs:218` |
-| `FieldDirective` / `FieldPolicyDecl` / `FieldPlan` / `FieldPolicyResolution` | `src/policy/mod.rs:109/127/175/195` |
-| `ValidatorError` — операционная ошибка (`#[derive(nebula_error::Classify)]`) | `src/error.rs:30` |
-| `#[derive(Validator)]` proc-macro (feature `derive`, subcrate `macros/`) | re-export `src/lib.rs:82` |
-| Built-in фабрики/типы: length/pattern/content/range/size/boolean/nullable (+network/temporal) | `src/validators/mod.rs:57-80` |
-| `__private::regex` re-export для вывода derive-кода | `src/lib.rs:94` |
+| Item | Location |
+|------|----------|
+| `Validate<T>` — core validator trait | `src/foundation/traits.rs` |
+| `ValidateExt<T>` — `.and()` / `.or()` / `.not()` / `.when()` | `src/foundation/traits.rs` |
+| `Validatable` | `src/foundation/traits.rs` |
+| `AsValidatable` — fallible input conversion | `src/foundation/validatable.rs` |
+| `ValidationError` — structured error (≤80 bytes, `Cow`, RFC 6901) | `src/foundation/error/validation_error.rs` |
+| `ValidationErrors` — multi-error aggregate | `src/foundation/error/validation_errors.rs` |
+| `FieldPath` — validated RFC 6901 pointer | `src/foundation/field_path.rs` |
+| `AnyValidator<T>` — type-erased validator | `src/foundation/any.rs` |
+| `Rule` — bounded arena, manual `Serialize`/`Deserialize` | `src/rule/mod.rs` |
+| `RuleRef` / `RuleView` / `RuleChildren` / `RuleKind` | `src/rule/mod.rs` |
+| `ValueRule` / `Predicate` / `DeferredRule` / `PredicateContext` | `src/rule/{value,predicate,deferred,context}.rs` |
+| `ExecutionMode` / `EvaluationOutcome` / `DeferredReason` / `DiagnosticDisclosure` | `src/engine.rs` |
+| `validate_rules` / `validate_rules_with_ctx` | `src/engine.rs` |
+| `Validated<T>` — proof token (`Serialize` present, `Deserialize` deliberately absent) | `src/proof.rs` |
+| `Presence` / `Requiredness` / `VisibilityPolicy` / `RequiredPolicy` | `src/policy/mod.rs` |
+| `resolve_field_policies` — the single entry point for `nebula-schema::validate` | `src/policy/mod.rs` |
+| `FieldDirective` / `FieldPolicyDecl` / `FieldPlan` / `FieldPolicyResolution` | `src/policy/mod.rs` |
+| `ValidatorError` — operational error (`#[derive(nebula_error::Classify)]`) | `src/error.rs` |
+| `#[derive(Validator)]` proc-macro (feature `derive`, subcrate `macros/`) | re-export in `src/lib.rs` |
+| Built-in factories/types: length/pattern/content/range/size/boolean/nullable (+network/temporal) | `src/validators/mod.rs` |
+| `__private::regex` re-export for derive-generated code | `src/lib.rs` |
 
-## 3. Зависимости и зависимые
+## 3. Dependencies and dependents
 
-- **Deps:** `nebula-error` (features=`["derive"]`, используется **только** ради `Classify` в
-  `src/error.rs:28`), `nebula-validator-macros` (path=`macros`, optional за фичей `derive`);
-  внешние — `thiserror`, `smallvec`, `regex`, `serde`, `serde_json`.
-- **Зависят от него:** `nebula-schema` (`crates/schema/Cargo.toml:24`), `nebula-sdk`
-  (`crates/sdk/Cargo.toml:24`), `nebula-api` (`crates/api/Cargo.toml:25`).
-- **Фичи:** `default = derive + network + temporal`.
+- **Deps:** `nebula-error` (features `["derive"]`, used **only** for `Classify` in
+  `src/error.rs`), `nebula-validator-macros` (path `macros`, optional behind the `derive`
+  feature); external — `thiserror`, `smallvec`, `regex`, `serde`, `serde_json`, `num-cmp`,
+  `tracing`.
+- **Depended on by:** `nebula-schema`, `nebula-sdk`, `nebula-api` (all path dependencies).
+- **Features:** `default = derive + network + temporal`.
 
-## 4. Внутренняя архитектура
+## 4. Internal architecture
 
-- `foundation/` — трейты `Validate`/`ValidateExt`/`Validatable`, `AnyValidator`,
-  `ValidationError` (+ codes/severity/mode/pointer), `FieldPath`, собственный prelude.
-- `combinators/` — `And`/`Or`/`Not`/`When`/`Unless`/`Each`/`Field`/`JsonField`/`Lazy`/
-  `WithMessage`/`WithCode`/`Nested`/`Optional`/`AllOf`/`AnyOf`.
-- `validators/` — встроенные по категориям: length, pattern, content, range, size, boolean,
+- `foundation/` — the `Validate`/`ValidateExt`/`Validatable` traits, `AnyValidator`,
+  `AsValidatable` conversions, `ValidationError` (+ codes/severity/mode/pointer split into
+  `error/`), `FieldPath`. No nested prelude: the crate-level `prelude` is the single import
+  surface.
+- `combinators/` — `And`/`Or`/`Not`/`When`/`Unless`/`Each`/`Field`/`MultiField`/`JsonField`/
+  `Lazy`/`WithMessage`/`NestedValidate`/`OptionalNested`/`CollectionNested`/`Optional`/
+  `AllOf`/`AnyOf`.
+- `validators/` — built-ins by category: length, pattern, content, range, size, boolean,
   nullable, network (cfg), temporal (cfg).
-- `rule/` — `Rule` + `value`/`predicate`/`logic`/`deferred`/`context` + ручной deserialize +
-  конструкторы/хелперы.
-- `engine.rs` — `validate_rules` / `validate_rules_with_ctx` + `ExecutionMode`.
-- `policy/` — движок `When(Rule)`-условий visibility/required; типизированные вердикты вместо
-  голого `bool`.
-- `proof.rs` — `Validated<T>` proof-token (canon §4.5).
-- `error.rs` — `ValidatorError` (операционная), отделённая от `ValidationError`-на-вход.
-- `macros.rs` — `validator!`. Модуль приватный, но сам макрос под `#[macro_export]`,
-  т.е. виден downstream-крейтам из корня. Композиция — методы `.and()`/`.or()`
-  из `ValidateExt`.
-- `macros/` — subcrate `nebula-validator-macros`: `parse/` → `model.rs` → `emit/` для
+- `rule/` — the `Rule` arena plus `value`/`predicate`/`logic`/`deferred`/`context`/`pattern`,
+  bounded manual deserialization, constructors, and helpers.
+- `engine.rs` — `validate_rules` / `validate_rules_with_ctx` plus `ExecutionMode` and
+  `EvaluationOutcome`.
+- `policy/` — the `When(Rule)` engine for visibility/required conditions; typed verdicts
+  instead of a bare `bool`.
+- `proof.rs` — the `Validated<T>` proof token (canon §4.5).
+- `error.rs` — `ValidatorError` (operational), kept distinct from the inbound
+  `ValidationError`.
+- `macros.rs` — the `validator!` macro. The module is private, but the macro itself is
+  `#[macro_export]`ed, so downstream crates see it at the crate root. Composition is the
+  `.and()` / `.or()` methods from `ValidateExt`.
+- `macros/` — the `nebula-validator-macros` subcrate: `parse/` → `model.rs` → `emit/` for
   `#[derive(Validator)]`.
 
-**Поток данных (декларативный путь):** схема несёт `Rule` → `validate_rules(_with_ctx)`
-выбирает по `ExecutionMode`, какие категории исполнять → `Rule::validate` диспетчеризует по
-`RuleKind` на нужную inner-поверхность → результат — `Result<_, ValidationError(s)>`.
-Программный путь: `Validate<T>::validate` (+ комбинаторы) → опционально `Validated<T>`.
+**Data flow (declarative path):** a schema carries `Rule` values →
+`validate_rules(_with_ctx)` selects which categories to execute from `ExecutionMode` →
+`Rule` dispatches through `RuleView` onto the matching inner surface → the result is
+`Result<EvaluationOutcome, ValidationErrors>`. The programmatic path:
+`Validate<T>::validate` (plus combinators) → optionally `Validated<T>`.
 
-## 5. Инварианты и контракты
+## 5. Invariants and contracts
 
-- **[L1-§4.5] proof-token by-construction.** `Validated<T>` нельзя получить, не вызвав
-  `validate`; `Deserialize` для него **намеренно не реализован** (`src/proof.rs:54`) —
-  десериализованные данные обязаны повторно валидироваться.
-- **Rule cross-kind safety.** Каждый inner-kind (`ValueRule`/`Predicate`/`Logic`/
-  `DeferredRule`) экспонирует только осмысленный для него метод; вызов value-only метода на
-  predicate-несущем `Rule` — ошибка компиляции. Это by-construction замена «silent-pass»
-  эргономики старого плоского enum'а. Seam: `src/rule/mod.rs`.
-- **[L1-§3.5] делегирование схемы.** `nebula-schema` исполняет правила полей через этот
-  крейт; `resolve_field_policies` (`src/policy/mod.rs:218`) — **единственная** точка входа
-  для `nebula-schema::validate` (visibility/required), вердикты типизированы.
-- **ADR-0052 P2 — единственный эмиттер `required`.** Required-ошибки эмитит только validator
-  (через policy-движок), а не каждый слой по отдельности.
-- **Wire-format заморожен.** `Rule` сериализуется externally-tagged tuple-compact;
-  смена кодировки ломает сохранённые правила. Коды ошибок заморожены fixtures
-  (`tests/fixtures/compat/error_registry_v1.json`), есть адверсариальные contract-тесты.
+- **[L1-§4.5] proof token by construction.** `Validated<T>` cannot be obtained without
+  calling `validate`; `Deserialize` is **deliberately not implemented** for it — deserialized
+  data must be re-validated.
+- **Rule cross-kind safety.** Each inner kind (`ValueRule`, `Predicate`, `DeferredRule`) is
+  reachable only through the `RuleView` variant that makes sense for it; calling a value-only
+  operation on a predicate-carrying `Rule` is a compile error. This replaces the old flat
+  enum's silent-pass ergonomics by construction. Seam: `src/rule/mod.rs`.
+- **[L1-§3.5] schema delegation.** `nebula-schema` executes field rules through this crate;
+  `resolve_field_policies` (`src/policy/mod.rs`) is the **single** entry point for
+  `nebula-schema::validate` (visibility/required), and its verdicts are typed.
+- **ADR-0052 P2 — the only `required` emitter.** Required errors are emitted only by the
+  validator (through the policy engine), never independently by each layer.
+- **The wire format is frozen.** `Rule` serializes as externally-tagged tuple-compact;
+  changing the encoding breaks stored rules. Error codes are frozen by the fixture
+  (`tests/fixtures/compat/error_registry_v1.json`) and guarded by adversarial contract tests.
+- **Deserialization is bounded.** `Rule` enforces depth, node, operand, JSON-node, JSON-depth,
+  and text budgets before an instance can exist.
 
-## 6. Известные напряжения / долг
+## 6. Known tensions / debt
 
-1. **Дубль `ValidationError`.** Свой `ValidationError` (`src/foundation/error/validation_error.rs:103`)
-   дублирует канонический `nebula-error::ValidationError`. Унификация **сделана** на ветке
-   `refactor/error-unify-validation`, но **не смёржена** — в `main` крейт всё ещё определяет
-   собственный тип, а `nebula-error` нужен только ради `Classify` (`src/error.rs:28`).
-2. **Док-ложь про `Cached`.** `combinators/mod.rs:14,57` описывает комбинатор
-   `Cached`/`cached()`, которого нет в exports (`mod.rs:93-110`).
-3. **Три prelude.** `crate::prelude`, `foundation::prelude` (:84) и `combinators::prelude`
-   (:127) — расползание поверхности импорта.
-4. **Wire/коды как обязательство совместимости.** Externally-tagged tuple-compact + замороженный
-   `error_registry_v1.json` означают, что любая правка сериализации/кодов — breaking для
-   сохранённых правил.
-5. **`#![allow(clippy::result_large_err)]` на весь крейт** (`src/lib.rs:50`) — осознанно,
-   из-за 80-байтовой ошибки по значению.
+1. **Duplicate `ValidationError`.** This crate defines its own `ValidationError`
+   (`src/foundation/error/validation_error.rs`), duplicating the canonical
+   `nebula-error::ValidationError`. Unification **is done** on
+   `origin/refactor/error-unify-validation` but **is not merged** — `main` still defines the
+   local type, and `nebula-error` is pulled in only for `Classify`. The branch is stale
+   (hundreds of commits behind `main`), so merging it is a project, not a fast-forward.
+2. **Three-prelude sprawl — resolved.** `foundation::prelude` and `combinators::prelude`
+   were removed; `crate::prelude` is the single import surface.
+3. **Wire format and codes are a compatibility obligation.** Externally-tagged tuple-compact
+   plus the frozen `error_registry_v1.json` mean any serialization or code change is breaking
+   for stored rules.
+4. **Crate-wide `#![allow(clippy::result_large_err)]`** — deliberate, because the 80-byte
+   error travels by value on every validation call.
+5. **Error-tree traversals are recursive.** `kind`, `total_error_count`, `flatten`, and
+   `to_json_value` recurse over the nested-error tree. The tests cover moderate depths only;
+   the tree has no explicit depth ceiling.
 
-## 7. Роль в пост-0092 credential/resource модели
+## 7. Role in the post-0092 credential/resource model
 
-Крейт **не является артефактом** consolidation'а ADR-0092: у него нет deps на
-`nebula-credential`/`nebula-crypto`/`nebula-resource`, и эти крейты не зависят от него
-напрямую. Его участие в новой модели — **косвенное, через `nebula-schema`** и неизменное:
+The crate is **not an artifact** of the ADR-0092 consolidation: it has no dependencies on
+`nebula-credential`/`nebula-crypto`/`nebula-resource`, and those crates do not depend on it
+directly. Its participation in the new model is **indirect, through `nebula-schema`**, and
+unchanged:
 
-- **Write-path credential (ADR-0052 P4).** Объединённый `nebula-credential` (контракт +
-  runtime + `CredentialService` facade + builtin-типы в одном крейте) валидирует `data`
-  **перед** persist. Этот вызов идёт `nebula-credential` → `nebula-schema::validate` →
-  `nebula-validator`. Тем самым validator остаётся **единственным эмиттером `required`** (P2)
-  и для credential-данных тоже — это шов, который redesign не двигает.
-- **Values-only persistence + HasSchema.** В пост-0092 модели слоты (`slot_bindings`) и
-  параметры разделены, а сами значения хранятся без схемы: схема восстанавливается из
-  зарегистрированных типов через `HasSchema → nebula-metadata → API catalog`. Validator
-  исполняет правила этой восстановленной схемы — то есть **исполнительная сторона того же
-  seam'а**, без знания о credential/resource топологии (`CredentialSelector`, lease, rotation
-  fan-out в `nebula-resource`, `RefreshTransport`-шов — всё это вне validator).
-- **Что остаётся.** `Rule` cross-kind safety, proof-token `Validated<T>`, policy-движок
-  visibility/required и wire-format `Rule` — всё это уже стабильно и переживает redesign
-  без изменений. `nebula-resource` `SlotCell`/`Manager`/topology с validator не
-  пересекаются.
-- **Что меняется.** Только топология крейтов: при коллапсе за sole-public `nebula-sdk`
-  validator становится **приватной impl-деталью** (sdk уже зависит от него,
-  `crates/sdk/Cargo.toml:24`) — внешнего semver-обязательства у его API больше нет, что
-  снимает часть давления с пунктов 1–5 §6 (унификация ошибок, удаление deprecated-макросов,
-  схлопывание prelude'ов можно делать как внутренние breaking-правки).
+- **Credential write path (ADR-0052 P4).** The unified `nebula-credential` validates `data`
+  **before** persisting it. The call travels `nebula-credential` → `nebula-schema::validate`
+  → `nebula-validator`. The validator therefore remains the **only `required` emitter** (P2)
+  for credential data too — a seam the redesign does not move.
+- **Values-only persistence + `HasSchema`.** In the post-0092 model, slots (`slot_bindings`)
+  and parameters are separated, and values are stored without their schema; the schema is
+  reconstructed from registered types through `HasSchema → nebula-metadata → API catalog`.
+  The validator executes the rules of that reconstructed schema — the **execution side of the
+  same seam** — without knowledge of credential/resource topology (`CredentialSelector`,
+  leases, rotation fan-out in `nebula-resource`, the `RefreshTransport` seam all live outside
+  the validator).
+- **What stays.** `Rule` cross-kind safety, the `Validated<T>` proof token, the
+  visibility/required policy engine, and the `Rule` wire format are all stable and survive the
+  redesign unchanged. `nebula-resource`'s `SlotCell`/`Manager`/topology do not intersect with
+  the validator.
+- **What changes.** Only crate topology: once everything collapses behind the sole public
+  `nebula-sdk`, the validator becomes a **private implementation detail** (`sdk` already
+  depends on it). There is then no external semver obligation on its API, which relieves some
+  pressure on items 1–5 in §6 (error unification, deprecated-macro removal, prelude
+  collapse can be internal breaking changes).
 
-## 8. Forward design / открытые вопросы
+## 8. Forward design / open questions
 
-- **Смержить унификацию ошибок.** Завести `refactor/error-unify-validation` в `main`: убрать
-  собственный `ValidationError` в пользу `nebula-error::ValidationError`. Это снимает
-  единственную причину тянуть `nebula-error` (сейчас только ради `Classify`) и закрывает
-  напряжение №1. Риск: затрагивает RFC 6901 пути и contract-fixtures — нужна сверка
-  `error_registry_v1.json`.
-- **Починить док-ложь про `Cached`.** Либо реализовать `cached()` комбинатор, либо вычистить
-  упоминания из `combinators/mod.rs:14,57`. Сейчас это прямое расхождение doc vs exports.
-- **Сократить prelude'ы до одного.** Свести `foundation::prelude`/`combinators::prelude` к
-  `crate::prelude`, чтобы убрать расползание импортов.
-- **Решить судьбу wire-format до durable-роста.** Externally-tagged tuple-compact +
-  замороженные коды — обязательство перед сохранёнными правилами; любую эволюцию `Rule`
-  планировать как версионированную миграцию (по аналогии с versioned-envelope в
-  `nebula-crypto`), а не молчаливую смену кодировки.
-- **Открытый вопрос.** Нужно ли validator знать о `PredicateContext`-расширениях под
-  credential-data (например, cross-field правила поверх восстановленной из `HasSchema`
-  схемы), или это полностью остаётся ответственностью `nebula-schema`? Развязать до того,
-  как credential write-path начнёт декларировать нетривиальные cross-field `Rule`.
+- **Merge the error unification.** Bring `origin/refactor/error-unify-validation` into `main`:
+  drop the local `ValidationError` in favour of `nebula-error::ValidationError`. That removes
+  the only reason to pull in `nebula-error` (currently only for `Classify`) and closes tension
+  #1. Risk: it touches RFC 6901 paths and the contract fixtures — `error_registry_v1.json`
+  must be reconciled, and the branch must be rebased across hundreds of commits.
+- **Decide the wire format's fate before durable growth.** Externally-tagged tuple-compact
+  plus frozen codes is an obligation to stored rules; plan any `Rule` evolution as a versioned
+  migration (analogous to the versioned envelope in `nebula-crypto`), never a silent encoding
+  change.
+- **Open question.** Should the validator know about `PredicateContext` extensions for
+  credential data (for example, cross-field rules over a schema reconstructed from
+  `HasSchema`), or does that stay entirely `nebula-schema`'s responsibility? Resolve this
+  before extending the predicate surface.
