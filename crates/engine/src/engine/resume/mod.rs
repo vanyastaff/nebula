@@ -127,6 +127,32 @@ impl WorkflowEngine {
             .await
     }
 
+    /// Release a turn/execution lease, logging but never propagating failure.
+    ///
+    /// Callers release only after the commit has already written the new
+    /// fencing generation, so a failed release is not a correctness loss: the
+    /// lease simply expires at TTL and another runner can re-acquire. Every
+    /// release site shares that contract, so they share this helper; `context`
+    /// names the path for the operator-facing warning.
+    async fn release_lease_best_effort(
+        &self,
+        stores: &crate::store_seam::ExecutionStores,
+        scope: &Scope,
+        execution_id: ExecutionId,
+        id: &str,
+        lease_token: nebula_storage_port::FencingToken,
+        context: &'static str,
+    ) {
+        if let Err(error) = stores.execution.release_lease(scope, id, lease_token).await {
+            tracing::warn!(
+                %execution_id,
+                error = %error,
+                context,
+                "best-effort lease release failed (will expire at TTL)"
+            );
+        }
+    }
+
     async fn resume_execution_inner(
         &self,
         scope: &Scope,
@@ -1040,18 +1066,15 @@ impl WorkflowEngine {
             },
         }
 
-        if let Err(e) = stores
-            .execution
-            .release_lease(scope, &id, lease_token)
-            .await
-        {
-            tracing::warn!(
-                %execution_id,
-                error = %e,
-                "cold-start preflight rejection: best-effort lease release failed (will expire \
-                 at TTL)"
-            );
-        }
+        self.release_lease_best_effort(
+            stores,
+            scope,
+            execution_id,
+            &id,
+            lease_token,
+            "cold-start preflight rejection",
+        )
+        .await;
     }
 
     /// Durably satisfy all signal-driven waits on a `Paused` execution.
@@ -1179,21 +1202,15 @@ impl WorkflowEngine {
             )
             .await;
 
-        // Release the lease best-effort. The commit already wrote the new
-        // fencing generation, so a release failure leaves the lease to expire
-        // at TTL — the correct fail-safe behaviour (another runner can then
-        // re-acquire after TTL rather than being blocked indefinitely).
-        if let Err(e) = stores
-            .execution
-            .release_lease(scope, &id, lease_token)
-            .await
-        {
-            tracing::warn!(
-                %execution_id,
-                error = %e,
-                "satisfy_signal_waits: best-effort lease release failed (will expire at TTL)"
-            );
-        }
+        self.release_lease_best_effort(
+            stores,
+            scope,
+            execution_id,
+            &id,
+            lease_token,
+            "satisfy_signal_waits",
+        )
+        .await;
 
         outcome
     }
@@ -1303,21 +1320,15 @@ impl WorkflowEngine {
             )
             .await;
 
-        // Release the lease best-effort (mirror `satisfy_signal_waits`): the
-        // commit already wrote the new fencing generation, so a release failure
-        // leaves the lease to expire at TTL (the correct fail-safe).
-        if let Err(e) = stores
-            .execution
-            .release_lease(scope, &id, lease_token)
-            .await
-        {
-            tracing::warn!(
-                %execution_id,
-                error = %e,
-                "satisfy_running_signal_waits: best-effort lease release failed \
-                 (will expire at TTL)"
-            );
-        }
+        self.release_lease_best_effort(
+            stores,
+            scope,
+            execution_id,
+            &id,
+            lease_token,
+            "satisfy_running_signal_waits",
+        )
+        .await;
 
         outcome
     }
@@ -1585,17 +1596,15 @@ impl WorkflowEngine {
             .cancel_dangling_nodes_under_lease(stores, scope, execution_id, &id, lease_token)
             .await;
 
-        if let Err(e) = stores
-            .execution
-            .release_lease(scope, &id, lease_token)
-            .await
-        {
-            tracing::warn!(
-                %execution_id,
-                error = %e,
-                "cancel_dangling_nodes: best-effort lease release failed (will expire at TTL)"
-            );
-        }
+        self.release_lease_best_effort(
+            stores,
+            scope,
+            execution_id,
+            &id,
+            lease_token,
+            "cancel_dangling_nodes",
+        )
+        .await;
 
         outcome
     }
