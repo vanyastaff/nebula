@@ -461,12 +461,10 @@ impl Checks {
             // this build does not understand must not be treated as satisfied:
             // record it as a pending obligation so the caller re-evaluates.
             Ok(_) => {
-                self.result
-                    .pending
-                    .push(PendingValidation::Rule {
-                        path: path.clone(),
-                        reason: DeferredReason::DeferredRule,
-                    });
+                self.result.pending.push(PendingValidation::Rule {
+                    path: path.clone(),
+                    reason: DeferredReason::DeferredRule,
+                });
             },
             Err(errors) if protected => {
                 // Move, rather than clone, payload-bearing causes into private custody.
