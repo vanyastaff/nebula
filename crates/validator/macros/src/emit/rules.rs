@@ -331,16 +331,25 @@ fn emit_regex_validator(field: &FieldDef, pattern: &str) -> TokenStream2 {
 }
 
 // ---------------------------------------------------------------------------
-// Nested validator
+// Nested / custom / using validators
 // ---------------------------------------------------------------------------
 
-/// Emit a nested validation check via `SelfValidating::check`.
-fn emit_nested_validator(field: &FieldDef) -> TokenStream2 {
+/// Wrap a fallible `check(value)` call with field attribution and the
+/// authored message override.
+///
+/// `check` is the token stream that performs the validation and yields
+/// `Result<(), ValidationError>`. Nested, custom, and `using(...)` rules differ
+/// only in that expression — all three attach the field key to the returned
+/// error and, when `#[validate(..., message = "...")]` is present, replace the
+/// message before adding the error. These rules deliberately do **not** go
+/// through [`wrap_message`], because that helper rewrites a
+/// `ValidationError` that this pattern already owns.
+fn wrap_field_check(field: &FieldDef, check: TokenStream2) -> TokenStream2 {
     let field_key = field.ident.to_string();
 
     let inner = if let Some(message) = &field.message {
         quote! {
-            if let Err(mut e) = ::nebula_validator::combinators::SelfValidating::check(value) {
+            if let Err(mut e) = #check {
                 e = e.with_field(#field_key);
                 e.message = ::std::borrow::Cow::Owned(#message.to_string());
                 errors.add(e);
@@ -348,68 +357,36 @@ fn emit_nested_validator(field: &FieldDef) -> TokenStream2 {
         }
     } else {
         quote! {
-            if let Err(e) = ::nebula_validator::combinators::SelfValidating::check(value) {
+            if let Err(e) = #check {
                 errors.add(e.with_field(#field_key));
             }
         }
     };
 
-    // NOTE: nested uses its own message pattern (mut e) instead of wrap_message,
-    // because it needs to set both field and message on the error before adding.
-    // wrap_option is still used to centralize Option handling.
     wrap_option(field, inner)
 }
 
-// ---------------------------------------------------------------------------
-// Custom validator
-// ---------------------------------------------------------------------------
+/// Emit a nested validation check via `SelfValidating::check`.
+fn emit_nested_validator(field: &FieldDef) -> TokenStream2 {
+    wrap_field_check(
+        field,
+        quote!(::nebula_validator::combinators::SelfValidating::check(
+            value
+        )),
+    )
+}
 
 /// Emit a custom validator expression check.
 fn emit_custom_validator(field: &FieldDef, expr: &TokenStream2) -> TokenStream2 {
-    let field_key = field.ident.to_string();
-
-    let inner = if let Some(message) = &field.message {
-        quote! {
-            if let Err(mut e) = (#expr)(value) {
-                e = e.with_field(#field_key);
-                e.message = ::std::borrow::Cow::Owned(#message.to_string());
-                errors.add(e);
-            }
-        }
-    } else {
-        quote! {
-            if let Err(e) = (#expr)(value) {
-                errors.add(e.with_field(#field_key));
-            }
-        }
-    };
-
-    // NOTE: custom uses its own message pattern (mut e) instead of wrap_message,
-    // same as nested — needs to modify the error before adding.
-    wrap_option(field, inner)
+    wrap_field_check(field, quote!((#expr)(value)))
 }
 
 /// Emit a validator-expression check via `Validate::validate`.
 fn emit_using_validator(field: &FieldDef, expr: &TokenStream2) -> TokenStream2 {
-    let field_key = field.ident.to_string();
-
-    let inner = if let Some(message) = &field.message {
-        quote! {
-            if let Err(mut e) = ::nebula_validator::foundation::Validate::validate(&(#expr), value) {
-                e = e.with_field(#field_key);
-                e.message = ::std::borrow::Cow::Owned(#message.to_string());
-                errors.add(e);
-            }
-        }
-    } else {
-        quote! {
-            if let Err(e) = ::nebula_validator::foundation::Validate::validate(&(#expr), value) {
-                errors.add(e.with_field(#field_key));
-            }
-        }
-    };
-
-    wrap_option(field, inner)
+    wrap_field_check(
+        field,
+        quote!(::nebula_validator::foundation::Validate::validate(&(#expr), value)),
+    )
 }
 
 /// Emit `all(v1, v2, ...)` by applying validators sequentially.
