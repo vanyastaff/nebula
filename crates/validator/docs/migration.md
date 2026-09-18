@@ -3,7 +3,8 @@
 This document is the authority for all breaking changes, deprecation notices, and migration
 paths in `nebula-validator`. It is referenced by the error code registry
 (`tests/fixtures/compat/error_registry_v1.json`) and enforced by
-`tests/contract/migration_requirements_test.rs`.
+`tests/contract/governance_policy_test.rs` and
+`tests/contract/compatibility_fixtures_test.rs`.
 
 ---
 
@@ -155,13 +156,16 @@ match validate_rules(&json!("alice"), &rules, ExecutionMode::StaticOnly)? {
 
 ---
 
-## Config Integration
+## Downstream Consumers
 
-Changes that affect `nebula-config` compatibility require an additional fixture update.
+The crates that depend on `nebula-validator` today are `nebula-schema`, `nebula-api`, and
+`nebula-sdk`. Category constants are covered by the fixtures in
+`tests/fixtures/compat/` (`error_registry_v1.json`, `minor_contract_v1.json`,
+`envelope_contract_v1.json`).
 
 | Surface | Old | New | Impacted consumer | Required update |
 |---------|-----|-----|-------------------|-----------------|
-| Category constants | _(see registry)_ | _(see registry)_ | `nebula-config` | `tests/fixtures/compat/validator_contract_v*.json` |
+| Category constants | _(see registry)_ | _(see registry)_ | `nebula-schema` | Re-run `tests/contract/compatibility_fixtures_test.rs` against the updated registry |
 
 ---
 
@@ -183,8 +187,7 @@ If a release is rolled back due to contract breakage:
 - [ ] Every breaking change has an entry in the table above.
 - [ ] Every deprecated item has `#[deprecated]` in the source and `"stability": "deprecated"`
       in the registry.
-- [ ] `tests/contract/migration_requirements_test.rs` passes.
 - [ ] `tests/contract/governance_policy_test.rs` passes.
 - [ ] `tests/contract/compatibility_fixtures_test.rs` passes against the new registry.
-- [ ] Downstream crates (`nebula-config`, `nebula-api`, `nebula-parameter`) compile without
+- [ ] Downstream crates (`nebula-schema`, `nebula-api`, `nebula-sdk`) compile without
       deprecation warnings after applying the documented migrations.

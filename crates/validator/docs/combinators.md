@@ -28,7 +28,8 @@ acceptable. For cases where you need to collect all failures at once, use
 
 ### `Or<L, R>` — `.or(v)`
 
-At least one validator must pass. Both branches are always evaluated.
+At least one validator must pass. The right branch is evaluated only when the left branch
+fails; a non-violation diagnostic from the left branch short-circuits immediately.
 
 ```rust
 let v = exact_length(8).or(exact_length(16)); // accept 8 or 16-char keys
@@ -221,7 +222,7 @@ use nebula_validator::prelude::*;
 // All must pass — aggregates all failures as nested errors
 let v = all_of([min_length(3), max_length(20), alphanumeric()]);
 
-// At least one must pass — empty AnyOf always passes
+// At least one must pass — an empty AnyOf rejects every input (no alternative succeeds)
 let v = any_of([exact_length(8), exact_length(16)]);
 
 // Heterogeneous:
@@ -246,25 +247,6 @@ let v = with_code(email(), "invalid_email");
 
 These are useful when you want to present user-facing messages without exposing internal
 error codes, or when you need to map to a specific code expected by a downstream consumer.
-
----
-
-## `Cached<V>` — memoized validation
-
-Wraps any validator and memoizes results by input hash. Thread-safe via `RwLock`.
-
-```rust
-use nebula_validator::combinators::cached;
-
-let v = cached(matches_regex(r"^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$")?);
-// First call: validates and caches. Subsequent calls with the same input: cache hit.
-```
-
-Use `Cached` for:
-- Regex validators called repeatedly with a small set of distinct values.
-- Expensive custom validators in hot paths.
-
-Do not use `Cached` for validators whose correctness depends on mutable external state.
 
 ---
 
@@ -325,11 +307,6 @@ as three sequential `if` checks. No allocation, no vtable.
 
 **`AnyValidator` costs ~2–5 ns per call** from the vtable indirection. This is negligible for
 user-input validation but avoid it in tight inner loops over millions of items.
-
-**`Cached` is effective when:**
-- The validator is expensive (>1 µs per call).
-- The set of distinct input values is small (high cache hit rate).
-- Inputs are `Hash + Eq` — the cache key is a hash of the input.
 
 **`Lazy` saves startup time** but pays a branch on every call to check whether the inner
 validator has been initialized. After the first call, the branch is predicted and essentially

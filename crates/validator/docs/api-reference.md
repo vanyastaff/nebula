@@ -353,60 +353,116 @@ Pure Rust; no chrono or uuid dependencies. Validates format and value ranges.
 
 ## Declarative Rules
 
-### `Rule` enum
+### `Rule`
 
-JSON-serializable declarative rules. Covers three categories:
+`Rule` is a typed sum-of-sums over a bounded flat arena. Its children are read through
+`RuleView` (returned by `Rule::view()` and `RuleRef::view()`), never through a public
+enum of variants. Construction goes through the `Rule::*` constructors.
 
-**Value rules** — applied to a single `serde_json::Value`:
+```rust
+pub struct Rule { /* private arena */ }
+
+impl Rule {
+    pub fn value(value: ValueRule) -> Result<Self, RuleBuildError>;
+    pub fn predicate(predicate: Predicate) -> Result<Self, RuleBuildError>;
+    pub fn min_length(n: usize) -> Self;
+    pub fn max_length(n: usize) -> Self;
+    pub fn pattern(pattern: &str) -> Result<Self, RuleBuildError>;
+    pub fn min_value(n: i64) -> Self;
+    pub fn max_value(n: i64) -> Self;
+    pub fn one_of(values: impl Into<RuleOperands>) -> Result<Self, RuleBuildError>;
+    pub fn all(rules: impl IntoIterator<Item = Rule>) -> Result<Self, RuleBuildError>;
+    pub fn any(rules: impl IntoIterator<Item = Rule>) -> Result<Self, RuleBuildError>;
+    pub fn not(inner: Rule) -> Result<Self, RuleBuildError>;
+    pub fn described(rule: Rule, message: impl Into<String>) -> Result<Self, RuleBuildError>;
+    pub fn custom(expression: impl Into<String>) -> Result<Self, RuleBuildError>;
+    pub fn unique_by(path: impl AsRef<str>) -> Result<Self, RuleBuildError>;
+    pub fn check_limits(&self) -> Result<(), RuleBuildError>;
+    pub fn kind(&self) -> RuleKind;
+    pub fn field_references<'a>(&'a self, out: &mut Vec<&'a str>);
+    pub fn matches(&self, ctx: &PredicateContext) -> Result<bool, ValidationError>;
+}
+```
+
+**Value rules** — `ValueRule`, applied to a single `serde_json::Value`:
 
 | Variant | Code |
 |---------|------|
-| `Rule::Required` | `required` |
-| `Rule::MinLength { min, message }` | `min_length` |
-| `Rule::MaxLength { max, message }` | `max_length` |
-| `Rule::Pattern { pattern, message }` | `invalid_format` |
-| `Rule::Min { value, message }` | `min` |
-| `Rule::Max { value, message }` | `max` |
-| `Rule::InRange { min, max, message }` | `out_of_range` |
-| `Rule::OneOf { values, message }` | `one_of` |
+| `ValueRule::MinLength(usize)` | `min_length` |
+| `ValueRule::MaxLength(usize)` | `max_length` |
+| `ValueRule::Pattern(RulePattern)` | `invalid_format` |
+| `ValueRule::Min(Number)` | `min` |
+| `ValueRule::Max(Number)` | `max` |
+| `ValueRule::GreaterThan(Number)` | `greater_than` |
+| `ValueRule::LessThan(Number)` | `less_than` |
+| `ValueRule::OneOf(Vec<Value>)` | `one_of` |
+| `ValueRule::MinItems(usize)` | `min_size` |
+| `ValueRule::MaxItems(usize)` | `max_size` |
+| `ValueRule::Email` | `invalid_format` |
+| `ValueRule::Url` | `invalid_format` |
 
-**Context predicates** — test sibling fields in a `HashMap<String, Value>`:
+**Context predicates** — `Predicate`, evaluated against a `PredicateContext`:
 
 | Variant | Evaluates |
 |---------|-----------|
-| `Rule::Eq { field, value }` | `ctx[field] == value` |
-| `Rule::Ne { field, value }` | `ctx[field] != value` |
-| `Rule::In { field, values }` | `values.contains(ctx[field])` |
-| `Rule::IsNull { field }` | `ctx[field]` is null or absent |
-| `Rule::IsPresent { field }` | `ctx[field]` exists and is not null |
+| `Predicate::Eq(path, value)` | `ctx[path] == value` |
+| `Predicate::Ne(path, value)` | `ctx[path] != value` |
+| `Predicate::Gt/Gte/Lt/Lte(path, n)` | numeric comparison |
+| `Predicate::IsTrue(IsFalse)(path)` | boolean equality |
+| `Predicate::Set(path)` | non-null, non-empty value |
+| `Predicate::Empty(path)` | null, absent, or empty string/array |
+| `Predicate::Contains(path, v)` | string or array contains `v` |
+| `Predicate::Matches(path, pattern)` | string matches the checked regex |
+| `Predicate::In(path, values)` | `values.contains(ctx[path])` |
 
-**Logical combinators**:
+**Logical nodes** — reached through `RuleView::All` / `RuleView::Any` / `RuleView::Not`.
+Each logical node is created with `Rule::all` / `Rule::any` / `Rule::not`.
 
-| Variant | Behaviour |
-|---------|-----------|
-| `Rule::All { rules }` | All sub-rules must pass |
-| `Rule::Any { rules }` | At least one must pass |
-| `Rule::Not { rule }` | Inverts the sub-rule |
-
-### `validate_rules`
+### `validate_rules` / `validate_rules_with_ctx`
 
 ```rust
 pub fn validate_rules(
     value: &serde_json::Value,
     rules: &[Rule],
-    mode:  ExecutionMode,
-) -> Result<(), ValidationErrors>
+    mode: ExecutionMode,
+    disclosure: DiagnosticDisclosure,
+) -> Result<EvaluationOutcome, ValidationErrors>;
+
+pub fn validate_rules_with_ctx(
+    value: &serde_json::Value,
+    rules: &[Rule],
+    ctx: Option<&PredicateContext>,
+    mode: ExecutionMode,
+    disclosure: DiagnosticDisclosure,
+) -> Result<EvaluationOutcome, ValidationErrors>;
 ```
+
+A successful pass is not necessarily proof of satisfaction: `EvaluationOutcome::Deferred`
+lists obligations (`DeferredReason`) that a later pass with runtime context must discharge.
+`EvaluationOutcome::require_satisfied()` converts a partial result into an `unavailable`
+diagnostic.
 
 ### `ExecutionMode`
 
 ```rust
 pub enum ExecutionMode {
-    StaticOnly,  // skip Deferred rules; synchronous, allocation-minimal
-    Deferred,    // run only Deferred rules
-    Full,        // run all rules
+    StaticOnly,  // run static rules; report deferred rules as explicit obligations
+    Deferred,    // run only deferred rules
+    Full,        // run all rules; unavailable context/evaluators are diagnostics
 }
 ```
+
+### `DiagnosticDisclosure`
+
+```rust
+pub enum DiagnosticDisclosure {
+    IncludeValue, // include evaluated values in diagnostic params
+    OmitValue,    // never materialize evaluated values into diagnostics
+}
+```
+
+Schema owners choose `OmitValue` for protected fields; the policy propagates through the
+entire rule tree.
 
 ---
 
@@ -454,13 +510,16 @@ pub enum ExecutionMode {
 `use nebula_validator::prelude::*` imports:
 
 - Foundation: `Validate`, `ValidateExt`, `Validatable`, `ValidationError`, `ValidationErrors`,
-  `AnyValidator`, `ErrorSeverity`, `And`, `Or`, `Not`, `When`, `AsValidatable`
+  `AnyValidator`, `ErrorSeverity`, `AsValidatable`
 - Proof: `Validated`, `ValidatorError`
 - All validators: `validators::*` (glob)
-- Key combinators: `and`, `or`, `not`, `cached`, `json_field`, `json_field_optional`,
-  `Cached`, `JsonField`
+- Key combinators: `And`, `Or`, `Not`, `When`, `and`, `or`, `not`, `json_field`,
+  `json_field_optional`, `JsonField`
 
-For the full combinator surface use `use nebula_validator::combinators::prelude::*`.
+`nebula_validator::prelude` is the single import surface. The former
+`foundation::prelude` and `combinators::prelude` were removed; import the
+individual items from their module paths if you need something the prelude
+does not cover.
 
 ---
 
@@ -478,9 +537,10 @@ is part of the minor-release stability contract.
 
 ---
 
-## Cross-Crate Category Contract
+## Category Contract
 
-These canonical category names are shared with `nebula-config` and must remain stable:
+These canonical category names are recorded in the error registry
+(`tests/fixtures/compat/error_registry_v1.json`) and must remain stable:
 
 `source_load_failed`, `merge_failed`, `validation_failed`, `missing_path`,
 `type_mismatch`, `invalid_value`, `watcher_failed`

@@ -101,14 +101,16 @@ v.validate(&json!({ "server": { "host": "localhost", "port": 8080 } }))?;
 ### Declarative rules
 
 ```rust
-use nebula_validator::{Rule, ExecutionMode, validate_rules};
+use nebula_validator::{DiagnosticDisclosure, ExecutionMode, Rule, validate_rules};
 use serde_json::json;
 
-let rules = vec![
-    Rule::MinLength { min: 3, message: None },
-    Rule::Pattern { pattern: "^[a-z]+$".into(), message: None },
-];
-validate_rules(&json!("alice"), &rules, ExecutionMode::StaticOnly)?;
+let rules = vec![Rule::min_length(3), Rule::pattern("^[a-z]+$")?];
+validate_rules(
+    &json!("alice"),
+    &rules,
+    ExecutionMode::StaticOnly,
+    DiagnosticDisclosure::IncludeValue,
+)?;
 ```
 
 ---
@@ -127,7 +129,6 @@ validate_rules(&json!("alice"), &rules, ExecutionMode::StaticOnly)?;
 | Proof tokens | `Validated<T>` | Zero-cost; `Deserialize` intentionally omitted |
 | Declarative rules | `Rule` enum | JSON-serializable; runtime evaluation |
 | Batch rule evaluation | `validate_rules` + `ExecutionMode` | `StaticOnly` / `Deferred` / `Full` |
-| Caching | `Cached<V>` | Memoizes by input hash; thread-safe |
 | Lazy construction | `Lazy<V>` | Defers expensive init (regex, etc.) until first use |
 | Custom validators | `validator!` macro | Generates struct + `Validate<T>` impl + constructor |
 | Structured errors | `ValidationError` | Nested trees, RFC 6901 paths, sensitive-key redaction |
@@ -147,20 +148,30 @@ nebula-validator/
 ├── src/
 │   ├── lib.rs                 Re-exports, crate-level doc
 │   ├── prelude.rs             Single-import convenience module
-│   ├── rule.rs                Declarative Rule enum
-│   ├── engine.rs              validate_rules, ExecutionMode
+│   ├── engine.rs              validate_rules, ExecutionMode, EvaluationOutcome
 │   ├── error.rs               ValidatorError, ValidatorResult
 │   ├── proof.rs               Validated<T> proof token
+│   ├── policy/                Field visibility / required policy engine
 │   ├── macros.rs              validator! macro (`#[macro_export]`; module private)
 │   ├── foundation/
 │   │   ├── traits.rs          Validate<T>, ValidateExt<T>, Validatable
 │   │   ├── any.rs             AnyValidator<T>
-│   │   ├── context.rs         ValidationContext
-│   │   ├── category.rs        ErrorCategory
-│   │   ├── error.rs           ValidationError
+│   │   ├── error/             ValidationError, ValidationErrors, codes, mode, severity, pointer
 │   │   ├── field_path.rs      FieldPath (RFC 6901 typed path)
-│   │   ├── validatable.rs     SelfValidating trait
+│   │   ├── validatable.rs     AsValidatable conversions
 │   │   └── mod.rs
+│   ├── rule/
+│   │   ├── mod.rs             Rule arena, RuleRef/RuleView/RuleChildren
+│   │   ├── value.rs           ValueRule
+│   │   ├── predicate.rs       Predicate
+│   │   ├── deferred.rs        DeferredRule
+│   │   ├── logic.rs           All/Any/Not evaluation
+│   │   ├── constructors.rs    Rule constructors
+│   │   ├── deserialize.rs     Bounded manual Deserialize
+│   │   ├── pattern.rs         RulePattern (checked regex)
+│   │   ├── context.rs         PredicateContext
+│   │   ├── limits.rs          Rule budgets and RuleStats
+│   │   └── helpers.rs         Exact JSON number comparison
 │   ├── validators/
 │   │   ├── length.rs          MinLength, MaxLength, ExactLength, LengthRange, NotEmpty
 │   │   ├── pattern.rs         Contains, StartsWith, EndsWith, Alphanumeric, …
@@ -173,24 +184,23 @@ nebula-validator/
 │   │   ├── temporal.rs        Date, Time, DateTime, Uuid
 │   │   └── mod.rs
 │   └── combinators/
-│       ├── and.rs             And<L, R>
-│       ├── or.rs              Or<L, R>
+│       ├── and.rs             And<L, R>, AndAll<V>
+│       ├── or.rs              Or<L, R>, OrAny<V>
 │       ├── not.rs             Not<V>
 │       ├── when.rs            When<V, C>
 │       ├── unless.rs          Unless<V, C>
 │       ├── optional.rs        Optional<V>
 │       ├── each.rs            Each<V>
-│       ├── field.rs           Field<T, U, V, F>
-│       ├── nested.rs          MultiField<T>, CollectionNested<T>
+│       ├── field.rs           Field<T, U, V, F>, MultiField<T>
+│       ├── nested.rs          NestedValidate<T, F>, OptionalNested<T, F>, CollectionNested<T, F>
 │       ├── json_field.rs      JsonField<V, I>
 │       ├── factories.rs       AllOf<V>, AnyOf<V>
-│       ├── message.rs         WithMessage<V>, WithCode<V>
-│       ├── cached.rs          Cached<V>
+│       ├── message.rs         WithMessage<V>
 │       ├── lazy.rs            Lazy<V>
-│       ├── error.rs           combinator error helpers
 │       └── mod.rs
 └── docs/
     ├── README.md              ← this file
+    ├── DESIGN.md              Design record: purpose, boundaries, invariants, debt
     ├── architecture.md        Design decisions, module map, data flow, invariants
     ├── api-reference.md       Complete public API reference
     ├── combinators.md         Combinator catalog, composition patterns, performance notes
@@ -204,8 +214,9 @@ nebula-validator/
 
 | Document | Contents |
 |----------|----------|
+| [`DESIGN.md`](DESIGN.md) | Design record: purpose, boundaries, invariants, known debt, forward design |
 | [`architecture.md`](architecture.md) | Design decisions, module map, data flow, test strategy, invariants |
 | [`api-reference.md`](api-reference.md) | Every public type, trait, and method with signatures and examples |
-| [`combinators.md`](combinators.md) | Full combinator catalog, composition patterns, caching, JSON field access |
+| [`combinators.md`](combinators.md) | Full combinator catalog, composition patterns, JSON field access |
 | [`extending.md`](extending.md) | Writing custom validators, the `validator!` macro, the `Rule` enum |
 | [`migration.md`](migration.md) | Versioning policy, error code stability, breaking change catalog |

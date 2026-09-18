@@ -207,49 +207,65 @@ logic, use the programmatic API.
 
 ### Defining and evaluating rules
 
+Most rules have infallible constructor functions. `Rule::pattern`, `Rule::custom`, and
+`Rule::unique_by` are fallible because they validate or budget their input.
+
 ```rust
-use nebula_validator::{Rule, ExecutionMode, validate_rules};
+use nebula_validator::{DiagnosticDisclosure, ExecutionMode, Rule, validate_rules};
 use serde_json::json;
 
 let rules = vec![
-    Rule::MinLength { min: 3, message: None },
-    Rule::MaxLength { max: 20, message: None },
-    Rule::Pattern { pattern: "^[a-z0-9]+$".into(), message: None },
+    Rule::min_length(3),
+    Rule::max_length(20),
+    Rule::pattern("^[a-z0-9]+$")?,
 ];
 
-validate_rules(&json!("alice99"), &rules, ExecutionMode::StaticOnly)?;
+validate_rules(
+    &json!("alice99"),
+    &rules,
+    ExecutionMode::StaticOnly,
+    DiagnosticDisclosure::IncludeValue,
+)?;
 ```
 
 ### Storing rules
 
 `Rule` implements `Serialize` and `Deserialize`, so rules can be persisted in any JSON-capable
-store and loaded back at runtime:
+store and loaded back at runtime. Deserialization is bounded: depth, node, operand, JSON, and
+text budgets are enforced before a `Rule` can exist.
 
 ```rust
 let json_rules = serde_json::to_string(&rules)?;
 let loaded: Vec<Rule> = serde_json::from_str(&json_rules)?;
+// Belt-and-braces: re-check the fixed budgets after storage round-trips.
+for rule in &loaded {
+    rule.check_limits()?;
+}
 ```
 
 ### Context predicates
 
-Context predicates check sibling fields. They are typically combined with `Logic::All`
-to express "validate field X only when field Y has value Z". Evaluate them with
-`Rule::matches`, which resolves nested JSON-Pointer paths via `PredicateContext`:
+Context predicates check sibling fields. Combine them with `Rule::all` to express
+"validate field X only when field Y has value Z". Evaluate them with `Rule::matches`,
+which resolves JSON Pointer paths through a `PredicateContext`:
 
 ```rust
+use nebula_validator::{Predicate, Rule};
+use nebula_validator::foundation::FieldPath;
+use nebula_validator::rule::PredicateContext;
 use serde_json::json;
 
-let rule = Rule::Logic(Box::new(Logic::All(vec![
-    Rule::Predicate(Predicate::Eq(
-        FieldPath::parse("role").unwrap(),
-        json!("admin"),
-    )),
-])));
+let role_is_admin = Rule::predicate(Predicate::Eq(
+    FieldPath::parse("role")?,
+    json!("admin"),
+))?;
+let rule = Rule::all([role_is_admin])?;
 
 let ctx = PredicateContext::from_json(json!({ "email": "a@b.com", "role": "admin" }));
 
-// matches() returns bool (used for Rule context predicates)
-let passes = rule.matches(&ctx);
+// matches() returns Result<bool, ValidationError>; value and deferred rules are
+// invalid as conditions.
+let passes = rule.matches(&ctx)?;
 ```
 
 ### Mixing declarative and programmatic
@@ -266,7 +282,12 @@ let user_rules: Vec<Rule> = load_user_rules_from_db()?;
 
 // Apply both:
 format_check.validate(input)?;
-validate_rules(&json!(input), &user_rules, ExecutionMode::StaticOnly)?;
+validate_rules(
+    &json!(input),
+    &user_rules,
+    ExecutionMode::StaticOnly,
+    DiagnosticDisclosure::IncludeValue,
+)?;
 ```
 
 ---

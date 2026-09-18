@@ -72,15 +72,20 @@ and must always be re-validated before the proof token is issued.
 
 ### 6. Declarative `Rule` enum
 
-The `Rule` enum is a JSON-serializable representation of the same validation logic exposed by
-the programmatic API. It covers:
-- **Value rules** — `MinLength`, `MaxLength`, `Pattern`, `Min`, `Max`, …
-- **Context predicates** — `Eq`, `Ne`, `In`, `IsNull`, `IsPresent`, … (test sibling fields)
+`Rule` is a typed sum-of-sums, not a flat enum: each node is one of `Value(ValueRule)`,
+`Predicate(Predicate)`, `All`/`Any`/`Not` (logical), `Deferred(DeferredRule)`, or
+`Described`. Children live in a bounded flat arena and are read through `RuleView`/`RuleRef`.
+It covers:
+- **Value rules** — `MinLength`, `MaxLength`, `Pattern`, `Min`, `Max`, `OneOf`, …
+- **Context predicates** — `Eq`, `Ne`, `Gt`, `In`, `Set`, `Empty`, `Contains`, `Matches`, …
+  (test sibling fields through a `PredicateContext`)
 - **Logical combinators** — `All`, `Any`, `Not`
+- **Deferred rules** — `Custom`, `UniqueBy` (runtime-owned evaluation)
 
-Rules are evaluated by `validate_rules(value, &rules, ExecutionMode)`. `ExecutionMode` controls
-which categories run: `StaticOnly` skips deferred/async rules, making evaluation synchronous
-and allocation-minimal for hot paths.
+Rules are evaluated by
+`validate_rules(value, &rules, mode, disclosure) -> Result<EvaluationOutcome, ValidationErrors>`.
+`ExecutionMode` controls which categories run: `StaticOnly` reports deferred rules as
+explicit remaining obligations rather than silently skipping them.
 
 ### 7. Error code registry governance
 
@@ -120,20 +125,22 @@ nebula-validator/src/
 │   │                  Requires V: Validate<T> + Clone + Send + Sync + 'static.
 │   │                  ~2–5 ns overhead per call from the vtable.
 │   │
-│   ├── error.rs       ValidationError (80 bytes, Cow-based).
+│   ├── error/         ValidationError (80 bytes, Cow-based) in validation_error.rs.
 │   │                  ValidationErrors (Vec<ValidationError> aggregate).
-│   │                  ErrorSeverity (Error / Warning / Info).
+│   │                  ErrorSeverity (Error / Warning / Info), ValidationMode,
+│   │                  canonical codes, and RFC 6901 pointer normalization.
 │   │                  Convenience constructors: required, min_length, max_length,
-│   │                  invalid_format, type_mismatch, out_of_range, custom, …
+│   │                  exact_length, length_range, invalid_format, type_mismatch,
+│   │                  out_of_range, custom.
 │   │
 │   ├── field_path.rs  FieldPath — validated RFC 6901 JSON Pointer.
 │   │                  Typed path operations: segments(), depth(), parent(),
 │   │                  append(), push(), last_segment().
 │   │
-│   ├── validatable.rs SelfValidating trait — check() method for self-validating types.
-│   ├── context.rs     ValidationContext — carries execution metadata into validators.
-│   ├── category.rs    ErrorCategory — classifies errors for cross-crate contracts.
-│   └── mod.rs         Re-exports the public foundation surface.
+│   ├── validatable.rs AsValidatable — fallible conversions from typed values and
+│   │                  serde_json::Value into a validator's input type.
+│   └── mod.rs         Re-exports the public foundation surface and ValidationResult
+│                      aliases.
 │
 ├── validators/
 │   ├── length.rs      MinLength, MaxLength, ExactLength, LengthRange, NotEmpty.
@@ -160,7 +167,9 @@ nebula-validator/src/
 │
 ├── combinators/
 │   ├── and.rs         And<L, R> — both must pass; short-circuits on first failure.
+│   │                  AndAll<V> — the same over a Vec of validators.
 │   ├── or.rs          Or<L, R>  — either must pass; nests both errors on failure.
+│   │                  OrAny<V> — the same over a Vec of validators.
 │   ├── not.rs         Not<V>    — inverts result; code `not_failed`.
 │   ├── when.rs        When<V, C> — skips inner validator when predicate returns false.
 │   ├── unless.rs      Unless<V, C> — equivalent to when(!condition).
@@ -169,19 +178,23 @@ nebula-validator/src/
 │   │                  Fail-fast mode: stops at first failing element.
 │   ├── field.rs       Field<T, U, V, F> — applies V to a field extracted by F.
 │   │                  named_field() adds dot-notation path to error.
-│   ├── nested.rs      MultiField<T> — validates multiple fields; aggregates errors.
-│   │                  CollectionNested<T> — validates collection elements as structs.
+│   │                  MultiField<T> — validates multiple fields; aggregates errors.
+│   ├── nested.rs      NestedValidate<T, F>, OptionalNested<T, F> — delegate to a
+│   │                  self-validating type or a custom closure.
+│   │                  CollectionNested<T, F> — validates collection elements;
+│   │                  fail-fast or collect-all mode.
 │   ├── json_field.rs  JsonField<V, I> — validates a JSON Pointer path in a Value.
 │   │                  Required and optional variants.
 │   ├── factories.rs   AllOf<V> — all validators in a Vec must pass.
-│   │                  AnyOf<V> — at least one must pass.
-│   ├── message.rs     WithMessage<V>, WithCode<V> — override error output.
-│   ├── cached.rs      Cached<V> — memoizes results by input hash; RwLock-protected.
+│   │                  AnyOf<V> — at least one must pass (empty rejects).
+│   ├── message.rs     WithMessage<V> — overrides the error message and/or code.
 │   ├── lazy.rs        Lazy<V> — defers construction until first call.
-│   └── error.rs       Combinator-level error helpers.
+│   └── mod.rs         Module declarations and re-exports.
 │
-├── rule.rs            Rule enum — serializable declarative validation rules.
+├── rule/              Rule arena: value/predicate/deferred/logic nodes, bounded
+│                      deserialization, constructors, context, limits.
 ├── engine.rs          validate_rules(), ExecutionMode (StaticOnly / Deferred / Full).
+├── policy/            Visibility/required policy engine (resolve_field_policies).
 ├── proof.rs           Validated<T> proof token.
 ├── error.rs           ValidatorError, ValidatorResult<T>.
 ├── macros.rs          validator! — `#[macro_export]`ed, module private; expands at the call site.
@@ -239,18 +252,22 @@ Validated<V>   (or error propagated via ?)
 
 ```
 Caller
-  │  validate_rules(value, &rules, ExecutionMode::StaticOnly)
+  │  validate_rules(value, &rules, mode, disclosure)
   ▼
 Engine::evaluate
-  │  1. Filter rules by ExecutionMode (skip Deferred rules in StaticOnly)
-  │  2. For each rule:
-  │     Rule::MinLength { min, .. } → MinLength { min }.validate(value.as_str()?)
-  │     Rule::All { rules }         → recursive evaluate on each sub-rule
-  │     Rule::Eq { field, value }   → lookup field in ValidationContext, compare
-  │  3. Aggregate errors into ValidationErrors
-  │  4. .into_result(()) → Ok if empty, Err(ValidationErrors) if any
+  │  1. Dispatch each rule node by ExecutionMode: static nodes run, deferred
+  │     nodes report DeferredReason obligations instead of being skipped
+  │  2. Per node:
+  │     RuleView::Value(v)     → v.validate_value(value, disclosure)
+  │     RuleView::Predicate(p) → p.evaluate(context?) with mode-aware deferral
+  │     RuleView::All/Any/Not  → recurse; a non-violation diagnostic aborts
+  │     RuleView::Deferred(d)  → unavailable evaluator diagnostic in Full
+  │  3. Collect failures into ValidationErrors; accumulate deferred reasons
   ▼
-Result<(), ValidationErrors>
+Result<EvaluationOutcome, ValidationErrors>
+  │  EvaluationOutcome::Satisfied | Deferred(Vec<DeferredReason>)
+  ▼
+.require_satisfied() → Ok(()) | Err(unavailable diagnostic)
 ```
 
 ---
@@ -277,14 +294,15 @@ They verify:
 - `adversarial_inputs_test.rs` — long strings, null bytes, deep nesting, empty inputs
 - `safe_diagnostics_test.rs` — sensitive params are redacted, nested counts are correct
 - `error_tree_bounds_test.rs` — `total_error_count` and `flatten` are consistent
-- `governance_policy_test.rs` — every error code in the codebase is registered in the registry
-- `migration_requirements_test.rs` — behavior-significant changes have a migration mapping
+- `governance_policy_test.rs` — every error code in the codebase is registered in the registry,
+  and the registry's migration authority resolves to a real file
+- `minimal_contract_v1.json` / `minor_contract_v1.json` fixtures — the additive-only surface
 
 Contract tests have **zero flakiness tolerance**. A flaky contract test is treated as a
 broken contract, not a test infrastructure issue.
 
 Benchmarks in `benches/` cover the hot paths: string validators, combinator chains,
-error construction, and cache hit/miss. Regressions beyond the agreed threshold fail CI.
+error construction, and lazy initialization. Regressions beyond the agreed threshold fail CI.
 
 ---
 

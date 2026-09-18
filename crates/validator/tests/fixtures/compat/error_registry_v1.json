@@ -1,5 +1,5 @@
 {
-  "version": "1.2.0",
+  "version": "1.3.0",
   "artifact": "validator_error_registry",
   "error_codes": [
     {
@@ -297,6 +297,12 @@
       "source": "combinators::nested::CollectionNested"
     },
     {
+      "code": "multiple_field_errors",
+      "meaning": "two or more struct fields failed validation in one MultiField pass",
+      "stability": "stable",
+      "source": "combinators::field::MultiField"
+    },
+    {
       "code": "path_not_found",
       "meaning": "required JSON pointer path does not exist",
       "stability": "stable",
@@ -349,6 +355,6 @@
   "change_policy": {
     "minor_rule": "additive_only",
     "major_rule": "semantic_change_or_removal_requires_migration_mapping",
-    "migration_authority": "crates/validator/docs/MIGRATION.md"
+    "migration_authority": "crates/validator/docs/migration.md"
   }
 }

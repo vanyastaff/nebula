@@ -43,7 +43,7 @@ fn load_error_registry() -> ErrorRegistry {
 #[test]
 fn registry_has_required_metadata_and_policy() {
     let registry = load_error_registry();
-    assert_eq!(registry.version, "1.2.0");
+    assert_eq!(registry.version, "1.3.0");
     assert_eq!(registry.artifact, "validator_error_registry");
     assert_eq!(registry.change_policy.minor_rule, "additive_only");
     assert_eq!(
@@ -52,7 +52,25 @@ fn registry_has_required_metadata_and_policy() {
     );
     assert_eq!(
         registry.change_policy.migration_authority,
-        "crates/validator/docs/MIGRATION.md"
+        "crates/validator/docs/migration.md"
+    );
+}
+
+/// The registry's migration authority must name a file that exists.
+///
+/// A path string that no longer resolves is worse than a missing entry: the
+/// governance policy silently points at nothing.
+#[test]
+fn migration_authority_file_exists() {
+    let registry = load_error_registry();
+    let authority = &registry.change_policy.migration_authority;
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join(authority);
+    assert!(
+        path.is_file(),
+        "registry migration_authority does not resolve to a file: {authority}"
     );
 }
 
@@ -121,6 +139,8 @@ fn registry_contains_all_canonical_error_codes() {
         "any_failed",
         "not_failed",
         "each_failed",
+        "collection_nested_failed",
+        "multiple_field_errors",
         "path_not_found",
         "validation_errors",
     ];
