@@ -2,7 +2,7 @@
 name: nebula-resilience
 role: Stability Patterns Pipeline (Circuit Breaker + Timeout + Retry-with-Backoff composition)
 status: stable
-last-reviewed: 2026-05-05
+last-reviewed: 2026-09-17
 canon-invariants: [L2-11.2]
 related: [nebula-error, nebula-action]
 ---
@@ -11,6 +11,9 @@ related: [nebula-error, nebula-action]
 
 Internal Nebula workspace crate. It is not published as a standalone public crate; its
 versioning, documentation, and compatibility expectations follow the Nebula repository.
+
+The crate's reference documentation is its rustdoc: every public item carries its contract,
+and the doc examples compile as doctests. This file is the map, not a second copy.
 
 ## Purpose
 
@@ -27,20 +30,21 @@ automatically.
 **Stability Patterns Pipeline** — the canonical in-process fault-tolerance layer for outbound calls
 inside actions. Pattern: *Circuit Breaker + Timeout + Retry-with-Backoff* composition (Release It!).
 Per canon §11.2 this crate is the **only retry surface**
-in the workflow stack: the engine does not re-execute nodes, so retry semantics for transient
-failures must compose inside the action.
+in the workflow stack: engine node re-execution is operator-declared policy, and retry semantics
+for transient in-action failures compose inside the action.
 
 ## Cargo Features
 
 | Feature | Default | Purpose |
 |---------|---------|---------|
-| `serde` | yes | Enables serde support for config/value boundary types: configs, error/event discriminants, policy scopes, pipeline outcomes, and stats/load snapshots. |
+| `serde` | yes | Serde support for config/value boundary types: configs, error/event discriminants, policy scopes, pipeline outcomes, stats, and load snapshots. |
 | `full` | no | Convenience alias for every normal optional feature owned by this crate; currently equivalent to `serde`. |
-| `loom` | no | Enables loom-backed atomics for model-checking tests when paired with `RUSTFLAGS="--cfg loom"`. |
+| `loom` | no | Loom-backed atomics for model-checking tests when paired with `RUSTFLAGS="--cfg loom"`. |
+| `bench-internals` | no | Exposes internal helpers (`retry_with_inner`, `LatencyTracker`) that the criterion benches measure directly. Adds visibility only, never behavior; not part of the documented surface. |
 
 The crate intentionally does not expose optional third-party limiter wrappers. Built-in rate
 limiters live in `rate_limiter.rs`; specialized external adapters should stay at integration
-boundaries unless the engine itself depends on them.
+boundaries.
 
 Runtime executors, guards, sinks, callbacks, and generic caller errors intentionally stay outside
 serde because they carry live process state or user-owned types, not stable Nebula config/event
@@ -48,62 +52,84 @@ data.
 
 ## Workspace API
 
-- `ResiliencePipeline<E>` — composable pipeline: `.classifier()`, `.classify_errors()`, `.with_sink()`, `.scope()`, `.timeout()`, `.retry()`, `.circuit_breaker()`, `.bulkhead()`, `.rate_limiter()` / `.rate_limiter_from()` / `.rate_limiter_erased()`, `.load_shed()`, then `.build_checked()`, `.build()`, or `.build_recommended_order()`. Use `.call_with_policy_context()` / `.call_with_policy_context_and_fallback()` when the workflow engine has one cancellation/deadline/scope contract for the call. `.call_with_context()` remains available for cancellation-only use. Hedging stays in the `hedge` module (no `.hedge()` builder step on the pipeline). For graceful degradation after the pipeline returns without a cancellation context, use `ResiliencePipeline::call_with_fallback` (separate from the builder).
-- `CallError<E>` — wrapper error returned by all pipeline calls; no type erasure, no forced mapping.
-- `retry::RetryConfig`, `retry::BackoffConfig`, `retry::retry_with` — standalone retry with `Classify`-aware error filtering.
-- `circuit_breaker::CircuitBreaker`, `circuit_breaker::CircuitBreakerConfig` — half-open/open/closed state machine.
-- `bulkhead::Bulkhead`, `bulkhead::BulkheadConfig` — concurrency-limiting bulkhead.
-- `rate_limiter::{RateLimiter, ErasedRateLimiter}`.
-- `timeout::{timeout, timeout_with_policy_context, TimeoutExecutor}` and `load_shed::{load_shed, load_shed_with_policy_context, load_shed_with_sink}` — standalone timeout / load-shed combinators.
-- `fallback::{FallbackStrategy, ValueFallback, FunctionFallback, CacheFallback, ChainFallback, PriorityFallback, FallbackOperation}` — graceful degradation strategies. Standalone `FallbackOperation` can emit fallback lifecycle events with `.with_sink()`.
-- `PolicyContext` — shared cancellation/deadline/scope contract for pipeline and standalone policy calls.
-- `Gate::close_with_timeout()` — bounded cooperative shutdown drain with typed timeout diagnostics.
-- `hedge::{HedgeConfig, HedgeSafety, HedgeExecutor, AdaptiveHedgeExecutor}` — speculative execution for duplicate-safe operations.
-- `Deadline` — shared monotonic budget helper for attempts and sleeps.
-- `sink::{MetricsSink, PolicyScope, ScopeValue, PipelineOutcome, ResilienceEvent, ResilienceEventKind, RecordingSink}` — observability hooks for pipeline and pattern events.
+Read the rustdoc of `src/lib.rs` for the exhaustive re-export surface. The entry points:
+
+- `ResiliencePipeline<E>` / `PipelineBuilder<E>` — compose `.classify_errors()`, `.with_sink()`,
+  `.scope()`, `.timeout()`, `.retry()`, `.circuit_breaker()`, `.bulkhead()`,
+  `.rate_limiter_from()` / `.rate_limiter_erased()`, `.load_shed()`, then `build()` (warns on
+  suboptimal order), `build_checked()` (rejects it), or `build_recommended_order()` (sorts it).
+  Call through `call()`, `call_with_context()`, or `call_with_policy_context[_and_fallback]()`.
+  Hedging is deliberately not a builder step (see `hedge` docs for why).
+- `CallError<E>` — error of every pattern; carries the caller's `E` and a variant per rejection
+  kind. `TaskPanicked` exists so a panicked attempt is never reported as cancellation.
+- `retry::{RetryConfig, BackoffConfig, JitterConfig, retry, retry_with}` — `Classify`-aware retry.
+- `circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, CircuitState}` — one accounting model:
+  consecutive-failure counters with leaky forgiveness, slow-call rate, configurable half-open
+  recovery. `circuit_state()` is the read-only state accessor; `try_acquire()` mutates.
+- `bulkhead::{Bulkhead, BulkheadConfig}` — semaphore + bounded queue.
+- `rate_limiter::{RateLimiter, ErasedRateLimiter, TokenBucket, LeakyBucket, SlidingWindow,
+  AdaptiveRateLimiter}` — `ErasedRateLimiter` is the object-safe facade for heterogeneous
+  registries.
+- `timeout::{timeout, timeout_with_policy_context, TimeoutExecutor}`,
+  `load_shed::{load_shed, load_shed_with_policy_context[_and_sink]}` — standalone combinators.
+- `fallback::{FallbackStrategy, ValueFallback, FunctionFallback, CacheFallback, ChainFallback,
+  PriorityFallback, FallbackOperation}` — one shared orchestration (`orchestrate_fallback`)
+  serves both `FallbackOperation` and the pipeline's `call_with_fallback*`, so the event contract
+  cannot drift between them.
+- `PolicyContext`, `Deadline` — the cancellation/deadline/scope contract and its budget helper.
+- `gate::{Gate, GateGuard, GateCloseTimeout}` — cooperative shutdown drain with a caller-chosen
+  budget. In-process only; see `gate` docs for the drain contract.
+- `hedge::{HedgeConfig, HedgeSafety, HedgeExecutor, AdaptiveHedgeExecutor}` — speculative
+  duplication, restricted to duplicate-safe non-effecting calls.
+- `sink::{MetricsSink, PolicyScope, ScopeValue, ResilienceEvent, RecordingSink}` — observability
+  hooks; the default is the zero-cost `NoopSink`.
+- `policy::{PolicySource, LoadSignal, LoadSnapshot, ConstantLoad}` — adaptive-config seams.
+  `LoadSignal` is consumed by the engine's admission-based load signal, not by the pipeline.
+- `clock::{Clock, SystemClock, MockClock}` — injectable time for the circuit breaker.
 
 ## Contract
 
-- **[L2-§11.2]** This crate is the **only retry surface in the workflow stack**. The engine does not re-execute nodes; retry, circuit breaking, and timeout for outbound calls live in `ResiliencePipeline` composed inside an action. Seam: action call sites that compose `ResiliencePipeline`. Test coverage: see `docs/MATURITY.md`.
-- **[L1-§4.2]** Retry filtering is driven by `nebula-error::Classify::retry_hint()` — transient vs permanent is an explicit classification, not folklore in individual action bodies.
-- **[L1-§4.3]** This crate is listed in the canon architecture table as the *Keep-alive + Safety* pillar implementation.
+- **[L2-§11.2]** This crate is the **only retry surface in the workflow stack**. Retry, circuit
+  breaking, and timeout for in-action outbound calls live in `ResiliencePipeline`. The engine's
+  operator-declared node retry is a separate, persisted layer; the two do not share authority.
+- **[L1-§4.2]** Retry filtering is driven by `nebula-error::Classify::retry_hint()` — transient vs
+  permanent is an explicit classification, not folklore in individual action bodies.
+- Ambiguous remote effects are never retried through this crate's pipeline without the
+  stable-key contract (canon §11.2–§11.3). The hedge pattern must not be applied to effecting
+  calls at all: speculative duplication bypasses the effect driver's invocation accounting.
 
 ## Non-goals
 
-- Not an engine-level retry scheduler — the engine does not re-execute nodes (canon §11.2); retry composes around outbound calls inside an action.
-- Not a durable control plane — in-process patterns only; durable cancel/dispatch lives in `execution_control_queue` (canon §12.2, §4.5).
-- Not a metrics export layer — resilience events feed `nebula-metrics` via observability hooks, not the reverse.
+- Not an engine-level retry scheduler — engine node re-execution is operator policy (canon §11.2);
+  this crate retries around outbound calls inside one action attempt.
+- Not a durable control plane — in-process patterns only; durable cancel/dispatch lives in
+  `execution_control_queue` (canon §12.2).
+- Not a metrics export layer — resilience events feed `nebula-metrics` via sinks, not the reverse.
+- Not runtime-agnostic — the async surface is built on tokio (`tokio::time`, `select!`,
+  `tokio-util` cancellation).
 
 ## Maturity
 
-See `docs/MATURITY.md` row for `nebula-resilience`.
+See the `nebula-resilience` row in `docs/MATURITY.md`.
 
-- API stability: `stable` — `ResiliencePipeline`, `RetryConfig`, `CircuitBreaker`, and `CallError` are in active use; benchmarks cover all seven patterns and stress tests verify high-concurrency safety (5K–10K concurrent tasks, permit leak detection, cooperative shutdown under load).
-- Test coverage: `stable` — comprehensive benchmarks, stress tests (bulkhead, circuit breaker, pipeline, gate shutdown), and property-based tests validating backoff calculation invariants across the full input space.
-- `MetricsSink`-based observability hooks and hedge-related APIs are newer and may still get minor refinements.
+- API stability: `stable` — `ResiliencePipeline`, `RetryConfig`, `CircuitBreaker`, and `CallError`
+  are in active use by `nebula-engine`, `nebula-credential`, and `nebula-api`.
+- Test coverage: nextest suites plus benchmarks for the seven patterns, stress tests at 5K–10K
+  concurrent tasks, and property-based tests over backoff arithmetic.
+- The hedge pattern and the adaptive rate limiter have no in-repo consumer yet; their contract is
+  pinned by their own tests and their scope is documented on the types.
 
 ## Related
 
-- Canon: `docs/PRODUCT_CANON.md` §4.2 (Safety pillar / ErrorClassifier), §4.3 (Keep-alive), §6 (architecture ↔ pillars table), §11.2 (engine non-retry; this crate is the retry surface).
-- Siblings: `nebula-error` (provides `Classify` / `RetryHint`), `nebula-action` (primary consumer).
-
-## Appendix: Crate-local guides
-
-Extended documentation lives in `crates/resilience/docs/`:
-
-- `README.md` — overview and pattern guide
-- `docs/README.md` — overview and feature matrix
-- `api-reference.md` — full API surface reference
-- `composition.md` — pipeline composition guide
-- `observability.md` — observability hooks
-- `gate.md` — cooperative shutdown barrier
-- `architecture.md` — internal architecture notes
+- Canon: `docs/PRODUCT_CANON.md` §4.2 (Safety pillar), §4.3 (Keep-alive), §11.2–§11.3.
+- Siblings: `nebula-error` (`Classify` / `RetryHint`), `nebula-action` (primary consumer).
 
 ```bash
 # Verify locally
 cargo check -p nebula-resilience --all-features
 cargo check -p nebula-resilience --all-targets --no-default-features
-cargo test -p nebula-resilience
-RUSTFLAGS="--cfg loom" cargo test -p nebula-resilience --features loom --lib loom
-cargo bench -p nebula-resilience
+cargo nextest run -p nebula-resilience
+cargo test -p nebula-resilience --doc
+RUSTFLAGS="--cfg loom" cargo nextest run -p nebula-resilience --features loom
+cargo bench -p nebula-resilience --features bench-internals
 ```
