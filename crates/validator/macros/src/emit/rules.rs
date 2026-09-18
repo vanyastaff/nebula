@@ -201,20 +201,14 @@ fn emit_cmp_check(
 
 /// Emit a collection size validator check (min_size, max_size, exact_size).
 fn emit_size_validator(field: &FieldDef, validator_name: &str, size: usize) -> TokenStream2 {
-    let field_key = field.ident.to_string();
     let element_type = vec_inner_type_from_field(field);
     let validator_ident = syn::Ident::new(validator_name, proc_macro2::Span::call_site());
 
-    let inner = quote! {
-        if let Err(e) = ::nebula_validator::foundation::Validate::validate(
-            &::nebula_validator::validators::#validator_ident::<#element_type>(#size),
-            value.as_slice(),
-        ) {
-            errors.add(e.with_field(#field_key));
-        }
-    };
-
-    wrap_message(field, wrap_option(field, inner))
+    emit_builtin_validator(
+        field,
+        quote!(::nebula_validator::validators::#validator_ident::<#element_type>(#size)),
+        quote!(value.as_slice()),
+    )
 }
 
 /// Emit `size_range(min, max)` check.
@@ -249,53 +243,48 @@ fn emit_size_range(field: &FieldDef, min: usize, max: usize) -> TokenStream2 {
 
 /// Emit `not_empty_collection` check.
 fn emit_not_empty_collection(field: &FieldDef) -> TokenStream2 {
-    let field_key = field.ident.to_string();
     let element_type = vec_inner_type_from_field(field);
 
+    emit_builtin_validator(
+        field,
+        quote!(::nebula_validator::validators::not_empty_collection::<#element_type>()),
+        quote!(value.as_slice()),
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Built-in validator expression
+// ---------------------------------------------------------------------------
+
+/// Emit a check that runs a built-in validator expression against `value_ref`.
+///
+/// String and boolean validators both delegate to a
+/// `nebula_validator::validators` constructor and attach the field key to any
+/// failure; only the borrowed input differs (`value.as_str()` vs `value`).
+fn emit_builtin_validator(
+    field: &FieldDef,
+    validator_expr: TokenStream2,
+    value_ref: TokenStream2,
+) -> TokenStream2 {
+    let field_key = field.ident.to_string();
+
     let inner = quote! {
-        if let Err(e) = ::nebula_validator::foundation::Validate::validate(
-            &::nebula_validator::validators::not_empty_collection::<#element_type>(),
-            value.as_slice(),
-        ) {
+        if let Err(e) = ::nebula_validator::foundation::Validate::validate(&#validator_expr, #value_ref) {
             errors.add(e.with_field(#field_key));
         }
     };
 
     wrap_message(field, wrap_option(field, inner))
 }
-
-// ---------------------------------------------------------------------------
-// String validators
-// ---------------------------------------------------------------------------
 
 /// Emit a string validator check using a built-in validator expression.
 fn emit_str_validator(field: &FieldDef, validator_expr: TokenStream2) -> TokenStream2 {
-    let field_key = field.ident.to_string();
-
-    let inner = quote! {
-        if let Err(e) = ::nebula_validator::foundation::Validate::validate(&#validator_expr, value.as_str()) {
-            errors.add(e.with_field(#field_key));
-        }
-    };
-
-    wrap_message(field, wrap_option(field, inner))
+    emit_builtin_validator(field, validator_expr, quote!(value.as_str()))
 }
-
-// ---------------------------------------------------------------------------
-// Bool validators
-// ---------------------------------------------------------------------------
 
 /// Emit a boolean validator check.
 fn emit_bool_validator(field: &FieldDef, validator_expr: TokenStream2) -> TokenStream2 {
-    let field_key = field.ident.to_string();
-
-    let inner = quote! {
-        if let Err(e) = ::nebula_validator::foundation::Validate::validate(&#validator_expr, value) {
-            errors.add(e.with_field(#field_key));
-        }
-    };
-
-    wrap_message(field, wrap_option(field, inner))
+    emit_builtin_validator(field, validator_expr, quote!(value))
 }
 
 // ---------------------------------------------------------------------------
