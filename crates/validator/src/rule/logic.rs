@@ -43,6 +43,40 @@ fn matches_many(
     unavailable.map_or(Ok(matched), Err)
 }
 
+/// Per-child classification shared by the `all` / `any` evaluators.
+///
+/// A non-violation diagnostic (invalid rule, unavailable evaluator) is
+/// structural: it aborts the whole combinator instead of counting as a failed
+/// alternative, so it is returned as `Err` from the collector.
+struct ChildOutcomes {
+    errors: Vec<ValidationError>,
+    deferred: Vec<crate::engine::DeferredReason>,
+    satisfied: bool,
+}
+
+fn collect_children(
+    children: RuleChildren<'_>,
+    input: &serde_json::Value,
+    ctx: Option<&PredicateContext>,
+    mode: ExecutionMode,
+    disclosure: DiagnosticDisclosure,
+) -> Result<ChildOutcomes, ValidationError> {
+    let mut outcomes = ChildOutcomes {
+        errors: Vec::new(),
+        deferred: Vec::new(),
+        satisfied: false,
+    };
+    for child in children {
+        match child.validate_bounded(input, ctx, mode, disclosure) {
+            Ok(EvaluationOutcome::Satisfied) => outcomes.satisfied = true,
+            Ok(EvaluationOutcome::Deferred(reasons)) => outcomes.deferred.extend(reasons),
+            Err(error) if error.kind() != ValidationErrorKind::Violation => return Err(error),
+            Err(error) => outcomes.errors.push(error),
+        }
+    }
+    Ok(outcomes)
+}
+
 pub(super) fn validate_all(
     children: RuleChildren<'_>,
     input: &serde_json::Value,
@@ -50,27 +84,22 @@ pub(super) fn validate_all(
     mode: ExecutionMode,
     disclosure: DiagnosticDisclosure,
 ) -> Result<EvaluationOutcome, ValidationError> {
-    let mut errors = Vec::new();
-    let mut deferred = Vec::new();
-    for child in children {
-        match child.validate_bounded(input, ctx, mode, disclosure) {
-            Ok(EvaluationOutcome::Satisfied) => {},
-            Ok(EvaluationOutcome::Deferred(reasons)) => deferred.extend(reasons),
-            Err(error) if error.kind() != ValidationErrorKind::Violation => return Err(error),
-            Err(error) => errors.push(error),
-        }
-    }
+    let ChildOutcomes {
+        errors, deferred, ..
+    } = collect_children(children, input, ctx, mode, disclosure)?;
+
     if errors.is_empty() {
-        Ok(EvaluationOutcome::from_deferred(deferred))
-    } else if errors.len() == 1 {
-        Err(errors.remove(0))
-    } else {
-        let count = errors.len();
-        Err(
-            ValidationError::new("all_failed", format!("{count} of the rules failed"))
-                .with_nested(errors),
-        )
+        return Ok(EvaluationOutcome::from_deferred(deferred));
     }
+    if errors.len() == 1 {
+        // Single failure is returned directly, not wrapped in `all_failed`.
+        return Err(errors.pop().expect("checked len == 1 above"));
+    }
+    let count = errors.len();
+    Err(
+        ValidationError::new("all_failed", format!("{count} of the rules failed"))
+            .with_nested(errors),
+    )
 }
 
 pub(super) fn validate_any(
@@ -80,17 +109,12 @@ pub(super) fn validate_any(
     mode: ExecutionMode,
     disclosure: DiagnosticDisclosure,
 ) -> Result<EvaluationOutcome, ValidationError> {
-    let mut errors = Vec::new();
-    let mut deferred = Vec::new();
-    let mut satisfied = false;
-    for child in children {
-        match child.validate_bounded(input, ctx, mode, disclosure) {
-            Ok(EvaluationOutcome::Satisfied) => satisfied = true,
-            Ok(EvaluationOutcome::Deferred(reasons)) => deferred.extend(reasons),
-            Err(error) if error.kind() != ValidationErrorKind::Violation => return Err(error),
-            Err(error) => errors.push(error),
-        }
-    }
+    let ChildOutcomes {
+        errors,
+        deferred,
+        satisfied,
+    } = collect_children(children, input, ctx, mode, disclosure)?;
+
     if satisfied {
         return Ok(EvaluationOutcome::Satisfied);
     }
