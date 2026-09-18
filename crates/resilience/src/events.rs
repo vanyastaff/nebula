@@ -278,6 +278,8 @@ pub enum ResilienceEventKind {
 /// sink.record(ResilienceEvent::LoadShed);
 /// assert_eq!(sink.calls.load(Ordering::Relaxed), 1);
 /// ```
+#[doc(alias = "MetricsSink")]
+#[doc(alias = "EventExporter")]
 pub trait EventSink: Send + Sync {
     /// Record a resilience event.
     fn record(&self, event: ResilienceEvent);

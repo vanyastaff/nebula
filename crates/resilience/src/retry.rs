@@ -320,6 +320,7 @@ impl<E: 'static> RetryConfig<E> {
     }
 
     /// Maximum number of attempts, including the initial attempt.
+    #[doc(alias = "maxAttempts")]
     #[must_use]
     pub const fn max_attempts(&self) -> NonZeroU32 {
         self.max_attempts
@@ -338,6 +339,8 @@ impl<E: 'static> RetryConfig<E> {
     }
 
     /// Total retry budget, if configured.
+    #[doc(alias = "totalTimeout")]
+    #[doc(alias = "apiCallTimeout")]
     #[must_use]
     pub const fn total_budget_config(&self) -> Option<Duration> {
         self.total_budget
@@ -359,6 +362,8 @@ impl<E: 'static> RetryConfig<E> {
 
     /// Set a total time budget. The retry loop bounds each operation attempt
     /// and retry sleep by the remaining budget.
+    #[doc(alias = "totalTimeout")]
+    #[doc(alias = "apiCallTimeout")]
     #[must_use]
     pub const fn total_budget(mut self, budget: Duration) -> Self {
         self.total_budget = Some(budget);

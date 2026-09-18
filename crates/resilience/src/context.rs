@@ -16,6 +16,7 @@ use crate::{CallError, CancellationContext, Deadline, events::EventScope};
 /// already means adaptive configuration (`PolicySource`), and this value
 /// describes the call, not the policy.
 #[derive(Debug, Clone)]
+#[doc(alias = "PolicyContext")]
 pub struct CallContext {
     cancellation: Option<CancellationContext>,
     deadline: Option<Deadline>,

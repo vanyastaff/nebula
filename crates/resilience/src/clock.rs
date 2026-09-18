@@ -48,6 +48,8 @@ use parking_lot::Mutex;
 ///
 /// See [`MockInstant`] for a ready-made deterministic implementation and the
 /// [module documentation](self) for an example.
+#[doc(alias = "Clock")]
+#[doc(alias = "TimeSource")]
 pub trait InstantSource: Send + Sync {
     /// Returns the current instant according to this source.
     fn now(&self) -> Instant;

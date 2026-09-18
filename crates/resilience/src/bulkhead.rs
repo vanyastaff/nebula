@@ -39,6 +39,7 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BulkheadConfig {
     /// Maximum number of concurrent operations. Min: 1.
+    #[doc(alias = "maxConcurrentCalls")]
     pub max_concurrency: usize,
     /// Maximum number of operations allowed to queue while waiting for a permit.
     ///
@@ -54,6 +55,7 @@ pub struct BulkheadConfig {
     /// [`CallError::Timeout`] instead of holding the caller for the whole
     /// call budget.
     #[cfg_attr(feature = "serde", serde(default, alias = "timeout"))]
+    #[doc(alias = "maxWaitDuration")]
     pub queue_wait_timeout: Option<std::time::Duration>,
 }
 

@@ -48,10 +48,15 @@ use crate::{
 #[derive(Debug, Clone)]
 pub struct CircuitBreakerConfig {
     /// Number of failures before opening the circuit. Min: 1.
+    #[doc(alias = "failureRateThreshold")]
     pub failure_threshold: u32,
     /// How long to wait in Open state before transitioning to `HalfOpen`.
+    #[doc(alias = "waitDurationInOpenState")]
+    #[doc(alias = "breakDuration")]
+    #[doc(alias = "sleepWindow")]
     pub reset_timeout: Duration,
     /// Max concurrent probe operations allowed in `HalfOpen` state. Default: 1.
+    #[doc(alias = "permittedNumberOfCallsInHalfOpenState")]
     pub max_half_open_operations: u32,
     /// Successful half-open probes required before closing.
     ///
@@ -59,13 +64,15 @@ pub struct CircuitBreakerConfig {
     /// concurrent probes also require multiple successful probes before recovery.
     pub half_open_success_threshold: Option<u32>,
     /// Minimum number of operations required before failures can trip the breaker. Default: 5.
+    #[doc(alias = "minimumNumberOfCalls")]
+    #[doc(alias = "minimumThroughput")]
     pub min_operations: u32,
     /// Whether timeouts count as failures **and toward `total` operations**.
     /// When `false`, timeouts are completely ignored by the circuit breaker —
     /// they do not count as failures, successes, or toward `min_operations`.
     /// Default: `true`.
     pub count_timeouts_as_failures: bool,
-    /// Multiplier applied to `base_reset_timeout` on consecutive opens.
+    /// Multiplier applied to `reset_timeout` on consecutive opens.
     /// Default: 1.0 (no increase).
     #[cfg_attr(feature = "serde", serde(alias = "break_duration_multiplier"))]
     pub reset_timeout_multiplier: f64,

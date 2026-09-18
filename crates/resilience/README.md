@@ -48,6 +48,34 @@ Runtime executors, guards, sinks, callbacks, and generic caller errors intention
 serde because they carry live process state or user-owned types, not stable Nebula config/event
 data.
 
+## Terminology
+
+Our names follow the source each pattern already cites; the column on the right
+lists the synonyms `doc(alias)` makes searchable in rustdoc, so a reader
+arriving with another library's vocabulary lands on the right item.
+
+| Our name | Industry synonyms (aliases) | Standard |
+|---|---|---|
+| `failure_threshold` | `failureRateThreshold` | Resilience4j |
+| `reset_timeout` | `waitDurationInOpenState`, `breakDuration`, `sleepWindow` | Resilience4j / Polly / Hystrix |
+| `max_half_open_operations` | `permittedNumberOfCallsInHalfOpenState` | Resilience4j |
+| `min_operations` | `minimumNumberOfCalls`, `minimumThroughput` | Resilience4j / Polly |
+| `queue_wait_timeout` | `maxWaitDuration` | Resilience4j |
+| `max_concurrency` | `maxConcurrentCalls` | Polly |
+| `max_attempts` | `maxAttempts` | Resilience4j |
+| `total_budget` | `totalTimeout`, `apiCallTimeout` | AWS SDK retry |
+| `JitterConfig::Additive` | additive jitter | AWS Builders' Library |
+| `RateLimiterStatus::remaining` / `limit_per_second` | `RateLimit-Remaining`, quota | RFC 9110 (`RateLimit` fields) |
+| `InstantSource` | `Clock`, `TimeSource` | Java `java.time.InstantSource` |
+| `EventSink` | `MetricsSink` (former name), `EventExporter` | OpenTelemetry |
+| `CallContext` | `PolicyContext` (former name) | — |
+| `Idempotent` (hedge) | idempotent method | RFC 9110 |
+
+The unaliased decisions are deliberate: `CircuitBreaker`, `Bulkhead`,
+`RetryConfig`, `RateLimited`, and `Deadline` are already the standard terms
+(Release It!, gRPC), and `CallError::Operation` keeps the caller's payload
+rather than naming a foreign error taxonomy.
+
 ## Workspace API
 
 Read the rustdoc of `src/lib.rs` for the exhaustive re-export surface. The entry points:

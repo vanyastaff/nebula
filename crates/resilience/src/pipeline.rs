@@ -368,6 +368,7 @@ impl<E: Send + 'static> PipelineBuilder<E> {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
+#[doc(alias = "PipelineResult")]
 pub enum PipelineOutcome {
     /// Pipeline returned the primary operation result.
     Success,
