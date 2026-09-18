@@ -5,6 +5,20 @@
 
 use crate::foundation::{Validate, ValidationError};
 
+/// Reject `input` unless it parses as `A`, naming the expected address family.
+///
+/// IPv4, IPv6, and the union all share this shape: `std::net`'s `FromStr` is
+/// the parser, and the only difference is the rule code and human label.
+fn require_parses<A>(input: &str, code: &'static str, label: &str) -> Result<(), ValidationError>
+where
+    A: std::str::FromStr,
+{
+    input.parse::<A>().map(|_| ()).map_err(|_| {
+        ValidationError::new(code, format!("'{input}' is not a valid {label}"))
+            .with_param("actual", input.to_string())
+    })
+}
+
 // ============================================================================
 // IPv4
 // ============================================================================
@@ -15,13 +29,7 @@ pub struct Ipv4;
 
 impl Validate<str> for Ipv4 {
     fn validate(&self, input: &str) -> Result<(), ValidationError> {
-        input
-            .parse::<std::net::Ipv4Addr>()
-            .map(|_| ())
-            .map_err(|_| {
-                ValidationError::new("ipv4", format!("'{input}' is not a valid IPv4 address"))
-                    .with_param("actual", input.to_string())
-            })
+        require_parses::<std::net::Ipv4Addr>(input, "ipv4", "IPv4 address")
     }
 }
 
@@ -41,13 +49,7 @@ pub struct Ipv6;
 
 impl Validate<str> for Ipv6 {
     fn validate(&self, input: &str) -> Result<(), ValidationError> {
-        input
-            .parse::<std::net::Ipv6Addr>()
-            .map(|_| ())
-            .map_err(|_| {
-                ValidationError::new("ipv6", format!("'{input}' is not a valid IPv6 address"))
-                    .with_param("actual", input.to_string())
-            })
+        require_parses::<std::net::Ipv6Addr>(input, "ipv6", "IPv6 address")
     }
 }
 
@@ -67,10 +69,7 @@ pub struct IpAddr;
 
 impl Validate<str> for IpAddr {
     fn validate(&self, input: &str) -> Result<(), ValidationError> {
-        input.parse::<std::net::IpAddr>().map(|_| ()).map_err(|_| {
-            ValidationError::new("ip_addr", format!("'{input}' is not a valid IP address"))
-                .with_param("actual", input.to_string())
-        })
+        require_parses::<std::net::IpAddr>(input, "ip_addr", "IP address")
     }
 }
 
@@ -105,33 +104,29 @@ impl Validate<str> for Hostname {
         }
 
         for label in input.trim_end_matches('.').split('.') {
-            if label.is_empty() || label.len() > 63 {
-                return Err(ValidationError::new(
-                    "hostname",
-                    format!("Hostname label '{label}' must be between 1 and 63 characters"),
-                )
-                .with_param("label", label.to_string()));
-            }
-            if label.starts_with('-') || label.ends_with('-') {
-                return Err(ValidationError::new(
-                    "hostname",
-                    format!("Hostname label '{label}' must not start or end with a hyphen"),
-                )
-                .with_param("label", label.to_string()));
-            }
-            if !label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
-                return Err(ValidationError::new(
-                    "hostname",
-                    format!(
-                        "Hostname label '{label}' contains invalid characters (only a-z, 0-9, - allowed)"
-                    ),
-                )
-                .with_param("label", label.to_string()));
-            }
+            validate_label(label)?;
         }
 
         Ok(())
     }
+}
+
+/// Validate one dot-separated hostname label per RFC 1123.
+fn validate_label(label: &str) -> Result<(), ValidationError> {
+    let reason = if label.is_empty() || label.len() > 63 {
+        "must be between 1 and 63 characters".to_string()
+    } else if label.starts_with('-') || label.ends_with('-') {
+        "must not start or end with a hyphen".to_string()
+    } else if !label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        "contains invalid characters (only a-z, 0-9, - allowed)".to_string()
+    } else {
+        return Ok(());
+    };
+
+    Err(
+        ValidationError::new("hostname", format!("Hostname label '{label}' {reason}"))
+            .with_param("label", label.to_string()),
+    )
 }
 
 /// Creates a hostname validator (RFC 1123).
