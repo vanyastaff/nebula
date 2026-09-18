@@ -10,6 +10,8 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 documentation.workspace = true
+readme = "README.md"
+categories = ["validation", "parsing"]
 
 [features]
 default = ["derive", "network", "temporal"]
