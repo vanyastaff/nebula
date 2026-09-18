@@ -1227,6 +1227,15 @@ impl RequiredPolicy {
         self.replay_window
     }
 
+    fn map_verify_error(error: ActionError, scheme: &'static str) -> SignatureOutcome {
+        warn!(
+            scheme,
+            %error,
+            "webhook signature primitive returned unexpected error; treating as Invalid"
+        );
+        SignatureOutcome::Invalid
+    }
+
     /// Run the configured timestamp + signature checks against `request`.
     ///
     /// The single source of truth shared by the HTTP transport's
@@ -1275,30 +1284,12 @@ impl RequiredPolicy {
 
         let outcome = match self.scheme {
             SignatureScheme::Sha256Hex => {
-                match verify_hmac_sha256(request, &self.secret, self.header.as_str()) {
-                    Ok(o) => o,
-                    Err(error) => {
-                        warn!(
-                            scheme = "sha256-hex",
-                            %error,
-                            "webhook signature primitive returned unexpected error; treating as Invalid"
-                        );
-                        SignatureOutcome::Invalid
-                    },
-                }
+                verify_hmac_sha256(request, &self.secret, self.header.as_str())
+                    .unwrap_or_else(|error| Self::map_verify_error(error, "sha256-hex"))
             },
             SignatureScheme::Sha256Base64 => {
-                match verify_hmac_sha256_base64(request, &self.secret, self.header.as_str()) {
-                    Ok(o) => o,
-                    Err(error) => {
-                        warn!(
-                            scheme = "sha256-base64",
-                            %error,
-                            "webhook signature primitive returned unexpected error; treating as Invalid"
-                        );
-                        SignatureOutcome::Invalid
-                    },
-                }
+                verify_hmac_sha256_base64(request, &self.secret, self.header.as_str())
+                    .unwrap_or_else(|error| Self::map_verify_error(error, "sha256-base64"))
             },
             SignatureScheme::StandardWebhooks => {
                 verify_standard_webhooks(request, &self.secret, self.replay_window, clock)?
@@ -1677,6 +1668,32 @@ pub trait WebhookEndpointProvider: Send + Sync + fmt::Debug {
 
 // ── WebhookTriggerAdapter ────────────────────────────────────────────────────
 
+/// Send an HTTP response through an optional oneshot channel, ignoring
+/// send failures (the transport will observe `RecvError` instead).
+#[inline]
+fn send_http_response(
+    response_tx: &mut Option<oneshot::Sender<WebhookHttpResponse>>,
+    response: WebhookHttpResponse,
+) {
+    if let Some(tx) = response_tx.take() {
+        let _ = tx.send(response);
+    }
+}
+
+/// Send the canonical 500 Internal Server Error response and record a
+/// health error. Used by every `handle_event` failure path that must
+/// return a real HTTP status to the caller.
+fn send_internal_error(
+    response_tx: &mut Option<oneshot::Sender<WebhookHttpResponse>>,
+    ctx: &dyn TriggerContext,
+) {
+    send_http_response(
+        response_tx,
+        WebhookHttpResponse::new(StatusCode::INTERNAL_SERVER_ERROR, Bytes::new()),
+    );
+    ctx.health().record_error();
+}
+
 /// Wraps a [`WebhookAction`] as a [`dyn TriggerHandler`] with state management.
 ///
 /// Stores state from `on_activate` in a `RwLock<Option<Arc<State>>>`.
@@ -1927,7 +1944,7 @@ where
                 },
             };
 
-            let response_tx = request.take_response_tx();
+            let mut response_tx = request.take_response_tx();
 
             self.in_flight.fetch_add(1, Ordering::AcqRel);
             let _guard = InFlightGuard {
@@ -1946,13 +1963,7 @@ where
                 // stop() that already took the state. Both should not
                 // hang the transport — send a 500 so the caller gets
                 // a real HTTP response instead of `RecvError`.
-                if let Some(tx) = response_tx {
-                    let _ = tx.send(WebhookHttpResponse::new(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Bytes::new(),
-                    ));
-                }
-                ctx.health().record_error();
+                send_internal_error(&mut response_tx, ctx);
                 return Err(ActionError::fatal(
                     "handle_event called before start or after stop — no state available",
                 ));
@@ -1969,20 +1980,12 @@ where
             match self.action.pre_handle(&request, ctx).await {
                 Ok(PreHandleOutcome::Continue) => {},
                 Ok(PreHandleOutcome::RespondNow(http_response)) => {
-                    if let Some(tx) = response_tx {
-                        let _ = tx.send(http_response);
-                    }
+                    send_http_response(&mut response_tx, http_response);
                     ctx.health().record_idle();
                     return Ok(TriggerEventOutcome::Skip);
                 },
                 Err(e) => {
-                    if let Some(tx) = response_tx {
-                        let _ = tx.send(WebhookHttpResponse::new(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            Bytes::new(),
-                        ));
-                    }
-                    ctx.health().record_error();
+                    send_internal_error(&mut response_tx, ctx);
                     return Err(e);
                 },
             }
@@ -1993,44 +1996,37 @@ where
             // runtime records it and the task exits cleanly. Otherwise
             // race the handler normally.
             let response = tokio::select! {
-                           biased;
-                           () = ctx.cancellation().cancelled() => {
-                               if let Some(tx) = response_tx {
-                                   let _ = tx.send(WebhookHttpResponse::new(
-                                       StatusCode::SERVICE_UNAVAILABLE,
-                                       Bytes::from_static(b"shutting down"),
-                                   ));
-                               }
-                               ctx.health().record_error();
-                               return Err(ActionError::retryable(
-                                   "webhook trigger cancelled mid-request",
-                               ));
-                           }
-                           result = self.action.handle_request(&request, &state, ctx) => {
-            // H1 — on handler error, send a 500 via oneshot BEFORE
-            // propagating Err. Without this, the transport receives
-            // RecvError and has to guess the HTTP status.
-                               match result {
-                                   Ok(r) => r,
-                                   Err(e) => {
-                                       if let Some(tx) = response_tx {
-                                           let _ = tx.send(WebhookHttpResponse::new(
-                                               StatusCode::INTERNAL_SERVER_ERROR,
-                                               Bytes::new(),
-                                           ));
-                                       }
-                                       ctx.health().record_error();
-                                       return Err(e);
-                                   }
-                               }
-                           }
-                       };
+                biased;
+                () = ctx.cancellation().cancelled() => {
+                    send_http_response(
+                        &mut response_tx,
+                        WebhookHttpResponse::new(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            Bytes::from_static(b"shutting down"),
+                        ),
+                    );
+                    ctx.health().record_error();
+                    return Err(ActionError::retryable(
+                        "webhook trigger cancelled mid-request",
+                    ));
+                }
+                result = self.action.handle_request(&request, &state, ctx) => {
+                    // H1 — on handler error, send a 500 via oneshot BEFORE
+                    // propagating Err. Without this, the transport receives
+                    // RecvError and has to guess the HTTP status.
+                    match result {
+                        Ok(r) => r,
+                        Err(e) => {
+                            send_internal_error(&mut response_tx, ctx);
+                            return Err(e);
+                        }
+                    }
+                }
+            };
 
             let (http_response, outcome) = response.into_parts();
 
-            if let Some(tx) = response_tx {
-                let _ = tx.send(http_response);
-            }
+            send_http_response(&mut response_tx, http_response);
 
             // H7 — health: emit = success, skip = idle-equivalent.
             // Matches poll's record_success/record_idle split.
@@ -2257,6 +2253,44 @@ fn verify_base64_hmac_timing_invariant(
     }
 }
 
+/// Validate the shared signature inputs shared by all HMAC verifiers.
+///
+/// - Empty secret → `Err(Validation::MissingField)` (fail-closed).
+/// - Malformed header name → `Err(Validation::WrongType)`.
+fn prepare_signature_header(secret: &[u8], header: &str) -> Result<HeaderName, ActionError> {
+    if secret.is_empty() {
+        return Err(ActionError::validation(
+            "webhook.secret",
+            ValidationReason::MissingField,
+            Some("webhook signature verification requires a non-empty HMAC secret".to_string()),
+        ));
+    }
+
+    HeaderName::from_bytes(header.as_bytes()).map_err(|_| {
+        ActionError::validation(
+            "webhook.signature_header",
+            ValidationReason::WrongType,
+            Some(format!("invalid HTTP header name: {header:?}")),
+        )
+    })
+}
+
+/// Look up a strict single-valued signature header.
+///
+/// H3 — a proxy chain that appends rather than replaces can produce
+/// duplicate headers; picking "the first" gives an attacker-controlled
+/// slot. Reject anything other than exactly one value.
+fn read_signature_header<'a>(
+    request: &'a WebhookRequest,
+    name: &HeaderName,
+) -> Result<&'a str, SignatureOutcome> {
+    match single_header_value(request.headers(), name) {
+        HeaderLookup::One(v) => Ok(v),
+        HeaderLookup::Missing => Err(SignatureOutcome::Missing),
+        HeaderLookup::Multiple => Err(SignatureOutcome::Invalid),
+    }
+}
+
 /// Verify an HMAC-SHA256 signature from a named header against the
 /// webhook request body.
 ///
@@ -2290,30 +2324,10 @@ pub fn verify_hmac_sha256(
     secret: &[u8],
     header: &str,
 ) -> Result<SignatureOutcome, ActionError> {
-    if secret.is_empty() {
-        return Err(ActionError::validation(
-            "webhook.secret",
-            ValidationReason::MissingField,
-            Some("webhook signature verification requires a non-empty HMAC secret".to_string()),
-        ));
-    }
-
-    let name = HeaderName::from_bytes(header.as_bytes()).map_err(|_| {
-        ActionError::validation(
-            "webhook.signature_header",
-            ValidationReason::WrongType,
-            Some(format!("invalid HTTP header name: {header:?}")),
-        )
-    })?;
-
-    // H3 — strict single-valued signature header. A proxy chain that
-    // appends rather than replaces can produce duplicate headers;
-    // picking "the first" gives an attacker-controlled slot. Reject
-    // anything other than exactly one value.
-    let sig_header = match single_header_value(request.headers(), &name) {
-        HeaderLookup::One(v) => v,
-        HeaderLookup::Missing => return Ok(SignatureOutcome::Missing),
-        HeaderLookup::Multiple => return Ok(SignatureOutcome::Invalid),
+    let name = prepare_signature_header(secret, header)?;
+    let sig_header = match read_signature_header(request, &name) {
+        Ok(v) => v,
+        Err(outcome) => return Ok(outcome),
     };
 
     Ok(verify_hex_hmac_timing_invariant(
@@ -2342,26 +2356,10 @@ pub fn verify_hmac_sha256_base64(
     secret: &[u8],
     header: &str,
 ) -> Result<SignatureOutcome, ActionError> {
-    if secret.is_empty() {
-        return Err(ActionError::validation(
-            "webhook.secret",
-            ValidationReason::MissingField,
-            Some("webhook signature verification requires a non-empty HMAC secret".to_string()),
-        ));
-    }
-
-    let name = HeaderName::from_bytes(header.as_bytes()).map_err(|_| {
-        ActionError::validation(
-            "webhook.signature_header",
-            ValidationReason::WrongType,
-            Some(format!("invalid HTTP header name: {header:?}")),
-        )
-    })?;
-
-    let sig_header = match single_header_value(request.headers(), &name) {
-        HeaderLookup::One(v) => v,
-        HeaderLookup::Missing => return Ok(SignatureOutcome::Missing),
-        HeaderLookup::Multiple => return Ok(SignatureOutcome::Invalid),
+    let name = prepare_signature_header(secret, header)?;
+    let sig_header = match read_signature_header(request, &name) {
+        Ok(v) => v,
+        Err(outcome) => return Ok(outcome),
     };
 
     Ok(verify_base64_hmac_timing_invariant(
