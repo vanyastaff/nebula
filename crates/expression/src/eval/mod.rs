@@ -312,6 +312,11 @@ impl<'a> BuiltinView<'a> {
     }
 }
 
+/// Reserved namespace identifiers that dispatch as function libraries.
+fn is_namespace(name: &str) -> bool {
+    matches!(name, "Math" | "JSON" | "Object" | "Array" | "Number")
+}
+
 /// Evaluator for expression ASTs
 pub struct Evaluator {
     builtins: Arc<BuiltinRegistry>,
@@ -482,6 +487,13 @@ impl Evaluator {
 
             Expr::FunctionCall { name, args } => self.eval_function(name, args, context, frame),
 
+            Expr::MethodCall {
+                object,
+                method,
+                args,
+                optional,
+            } => self.eval_method_call(object, method, args, *optional, context, frame),
+
             Expr::Pipeline {
                 value,
                 function,
@@ -567,7 +579,13 @@ impl Evaluator {
                 frame.charge(name.len())?;
                 Ok(Cow::Owned(RuntimeValue::String(Arc::clone(name))))
             },
-            Expr::PropertyAccess { object, property } => {
+            Expr::PropertyAccess {
+                object,
+                property,
+                optional,
+            } => {
+                // Direct `$node.<name>` / `$execution.<name>` lookups keep the
+                // borrow fast path: no intermediate `$node` object is built.
                 if let Expr::Variable(name) = object.as_ref()
                     && name.as_ref() == "node"
                 {
@@ -576,7 +594,11 @@ impl Evaluator {
                     let value = context.resolve_node_value(property);
                     frame.leave();
                     let Some(value) = value else {
-                        return self.missing_property(property, context).map(Cow::Owned);
+                        return if *optional {
+                            Ok(Cow::Owned(RuntimeValue::Undefined))
+                        } else {
+                            self.missing_property(property, context).map(Cow::Owned)
+                        };
                     };
                     frame.charge_value(value)?;
                     return Ok(Cow::Borrowed(value));
@@ -589,15 +611,26 @@ impl Evaluator {
                     let value = context.resolve_execution_value(property);
                     frame.leave();
                     let Some(value) = value else {
-                        return self.missing_property(property, context).map(Cow::Owned);
+                        return if *optional {
+                            Ok(Cow::Owned(RuntimeValue::Undefined))
+                        } else {
+                            self.missing_property(property, context).map(Cow::Owned)
+                        };
                     };
                     frame.charge_value(value)?;
                     return Ok(Cow::Borrowed(value));
                 }
                 let object = self.eval_borrowed_with_frame(object, context, frame)?;
-                self.access_property(object, property, context)
+                if *optional && object.is_nullish() {
+                    return Ok(Cow::Owned(RuntimeValue::Undefined));
+                }
+                self.access_property(object, property, context, *optional)
             },
-            Expr::IndexAccess { object, index } => {
+            Expr::IndexAccess {
+                object,
+                index,
+                optional,
+            } => {
                 if let Expr::Variable(name) = object.as_ref()
                     && name.as_ref() == "node"
                 {
@@ -611,8 +644,13 @@ impl Evaluator {
                             crate::value_utils::value_type_name(&index),
                         ));
                     };
-                    let Some(value) = context.resolve_node_value(key) else {
-                        return self.missing_key(context).map(Cow::Owned);
+                    let value = context.resolve_node_value(key);
+                    let Some(value) = value else {
+                        return if *optional {
+                            Ok(Cow::Owned(RuntimeValue::Undefined))
+                        } else {
+                            self.missing_key(context).map(Cow::Owned)
+                        };
                     };
                     frame.charge_value(value)?;
                     return Ok(Cow::Borrowed(value));
@@ -630,15 +668,23 @@ impl Evaluator {
                             crate::value_utils::value_type_name(&index),
                         ));
                     };
-                    let Some(value) = context.resolve_execution_value(key) else {
-                        return self.missing_key(context).map(Cow::Owned);
+                    let value = context.resolve_execution_value(key);
+                    let Some(value) = value else {
+                        return if *optional {
+                            Ok(Cow::Owned(RuntimeValue::Undefined))
+                        } else {
+                            self.missing_key(context).map(Cow::Owned)
+                        };
                     };
                     frame.charge_value(value)?;
                     return Ok(Cow::Borrowed(value));
                 }
                 let object = self.eval_borrowed_with_frame(object, context, frame)?;
+                if *optional && object.is_nullish() {
+                    return Ok(Cow::Owned(RuntimeValue::Undefined));
+                }
                 let index = self.eval_borrowed_with_frame(index, context, frame)?;
-                self.access_index(object, &index, context)
+                self.access_index(object, &index, context, *optional)
             },
             _ => self.eval_with_frame(expr, context, frame).map(Cow::Owned),
         }
@@ -652,6 +698,89 @@ impl Evaluator {
         frame: &EvalFrame,
     ) -> ExpressionResult<RuntimeValue> {
         let mut arguments = Vec::with_capacity(args.len());
+        for argument in args {
+            arguments.push(self.eval_argument(argument, context, frame)?);
+        }
+        self.call_function(name, &arguments, context, frame)
+    }
+
+    /// Evaluate `receiver.method(args…)`.
+    ///
+    /// Methods are the same standard library as functions with the receiver
+    /// as the first argument; see [`crate::builtins::methods`]. A bare
+    /// identifier receiver naming a namespace (`Math`, `JSON`, `Object`, …)
+    /// dispatches to a receiverless builtin instead. `optional`
+    /// (`?.method()`) short-circuits a nullish receiver to `Undefined`.
+    fn eval_method_call(
+        &self,
+        object: &Expr,
+        method: &str,
+        args: &[Expr],
+        optional: bool,
+        context: &EvaluationContext,
+        frame: &EvalFrame,
+    ) -> ExpressionResult<RuntimeValue> {
+        // Namespace dispatch happens before the receiver is evaluated so a
+        // namespace name is never treated as a free variable.
+        if let Expr::Identifier(namespace) = object {
+            let namespace = namespace.as_ref();
+            if let Some(name) = crate::builtins::methods::resolve_namespace(namespace, method) {
+                let mut arguments = Vec::with_capacity(args.len());
+                for argument in args {
+                    arguments.push(self.eval_argument(argument, context, frame)?);
+                }
+                return self.call_function(name, &arguments, context, frame);
+            }
+            // An unknown member on a known namespace is a clearer error than
+            // "variable not found" about the namespace name itself.
+            if is_namespace(namespace) {
+                return Err(ExpressionError::eval_error(format!(
+                    "Unknown member '{method}' on namespace '{namespace}'"
+                )));
+            }
+        }
+
+        let receiver = self.eval_borrowed_with_frame(object, context, frame)?;
+        if optional && receiver.is_nullish() {
+            return Ok(RuntimeValue::Undefined);
+        }
+
+        let target = crate::builtins::methods::resolve_method(method);
+        // Without an alias the author's spelling goes to the registry as-is;
+        // canonical names therefore keep working unchanged.
+        let name = if let Some(target) = target {
+            target.name()
+        } else {
+            method
+        };
+
+        // `items.reduce(fn, init)` uses the JavaScript argument order; the
+        // builtin takes `(initial, fn)`.
+        if matches!(
+            target,
+            Some(crate::builtins::methods::MethodTarget::ReceiverReduce(_))
+        ) {
+            let mut arguments = Vec::with_capacity(1 + args.len());
+            arguments.push(Argument::Value(receiver));
+            match args {
+                [lambda, initial] => {
+                    let initial = self.eval_argument(initial, context, frame)?;
+                    let lambda = self.eval_argument(lambda, context, frame)?;
+                    arguments.push(initial);
+                    arguments.push(lambda);
+                },
+                _ => {
+                    return Err(ExpressionError::invalid_argument(
+                        method,
+                        format!("expected 2 arguments, got {}", args.len()),
+                    ));
+                },
+            }
+            return self.call_function(name, &arguments, context, frame);
+        }
+
+        let mut arguments = Vec::with_capacity(1 + args.len());
+        arguments.push(Argument::Value(receiver));
         for argument in args {
             arguments.push(self.eval_argument(argument, context, frame)?);
         }
@@ -782,6 +911,15 @@ impl Evaluator {
                     self.coerce_boolean(&right_val, context)?,
                 ))
             },
+            BinaryOp::Coalesce => {
+                // `??` returns the left side unless it is nullish. Unlike
+                // `||` it keeps `false`, `0`, and `""`.
+                let left_val = self.eval_borrowed_with_frame(left, context, frame)?;
+                if !left_val.is_nullish() {
+                    return Ok(left_val.into_owned());
+                }
+                self.eval_with_frame(right, context, frame)
+            },
             // For all other operators, evaluate both operands
             _ => {
                 let left_val = self.eval_borrowed_with_frame(left, context, frame)?;
@@ -809,9 +947,9 @@ impl Evaluator {
                     BinaryOp::LessEqual => self.less_equal(&left_val, &right_val, context),
                     BinaryOp::GreaterEqual => self.greater_equal(&left_val, &right_val, context),
                     BinaryOp::RegexMatch => self.regex_match(&left_val, &right_val),
-                    BinaryOp::And | BinaryOp::Or => Err(ExpressionError::internal(
-                        "logical operator escaped short-circuit dispatch",
-                    )),
+                    BinaryOp::And | BinaryOp::Or | BinaryOp::Coalesce => Err(
+                        ExpressionError::internal("short-circuit operator escaped dispatch"),
+                    ),
                 }
             },
         }
@@ -1273,14 +1411,23 @@ impl Evaluator {
         object: EvalValue<'a>,
         property: &str,
         context: &EvaluationContext,
+        optional: bool,
     ) -> ExpressionResult<EvalValue<'a>> {
+        // Property-like members of primitives (`arr.length`, `$now.year`, …)
+        // resolve before object lookup; they are not calls and therefore are
+        // not part of the method alias table.
+        if let Some(value) = crate::builtins::methods::member_property(&object, property) {
+            return Ok(Cow::Owned(value));
+        }
         match object {
             Cow::Borrowed(RuntimeValue::Object(entries)) => match entries.get(property) {
                 Some(value) => Ok(Cow::Borrowed(value)),
+                None if optional => Ok(Cow::Owned(RuntimeValue::Undefined)),
                 None => self.missing_property(property, context).map(Cow::Owned),
             },
             Cow::Owned(RuntimeValue::Object(entries)) => match entries.get(property) {
                 Some(value) => Ok(Cow::Owned(value.clone())),
+                None if optional => Ok(Cow::Owned(RuntimeValue::Undefined)),
                 None => self.missing_property(property, context).map(Cow::Owned),
             },
             Cow::Borrowed(other) => Err(ExpressionError::type_error(
@@ -1311,22 +1458,24 @@ impl Evaluator {
         object: EvalValue<'a>,
         index: &RuntimeValue,
         context: &EvaluationContext,
+        optional: bool,
     ) -> ExpressionResult<EvalValue<'a>> {
         match object {
             Cow::Borrowed(RuntimeValue::Array(array)) => {
                 let pos = Self::resolve_array_index(index, array.len())?;
-                array
-                    .get(pos)
-                    .map(Cow::Borrowed)
-                    .ok_or_else(|| ExpressionError::index_out_of_bounds(pos, array.len()))
+                match array.get(pos) {
+                    Some(value) => Ok(Cow::Borrowed(value)),
+                    None if optional => Ok(Cow::Owned(RuntimeValue::Undefined)),
+                    None => Err(ExpressionError::index_out_of_bounds(pos, array.len())),
+                }
             },
             Cow::Owned(RuntimeValue::Array(array)) => {
                 let pos = Self::resolve_array_index(index, array.len())?;
-                array
-                    .get(pos)
-                    .cloned()
-                    .map(Cow::Owned)
-                    .ok_or_else(|| ExpressionError::index_out_of_bounds(pos, array.len()))
+                match array.get(pos) {
+                    Some(value) => Ok(Cow::Owned(value.clone())),
+                    None if optional => Ok(Cow::Owned(RuntimeValue::Undefined)),
+                    None => Err(ExpressionError::index_out_of_bounds(pos, array.len())),
+                }
             },
             Cow::Borrowed(RuntimeValue::Object(entries)) => {
                 let key = index.as_str().ok_or_else(|| {
@@ -1337,6 +1486,7 @@ impl Evaluator {
                 })?;
                 match entries.get(key) {
                     Some(value) => Ok(Cow::Borrowed(value)),
+                    None if optional => Ok(Cow::Owned(RuntimeValue::Undefined)),
                     None => self.missing_key(context).map(Cow::Owned),
                 }
             },
@@ -1349,6 +1499,7 @@ impl Evaluator {
                 })?;
                 match entries.get(key) {
                     Some(value) => Ok(Cow::Owned(value.clone())),
+                    None if optional => Ok(Cow::Owned(RuntimeValue::Undefined)),
                     None => self.missing_key(context).map(Cow::Owned),
                 }
             },

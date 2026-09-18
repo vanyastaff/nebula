@@ -3,7 +3,7 @@
 > this guide adds crate-specific rules. Design and status: [README.md](README.md).
 
 **Purpose:** Shared expression evaluator that resolves `{{ expression }}` templates (n8n-compatible syntax) against execution-time context — the resolution backend `nebula-schema`'s `ValidValues::resolve` step calls.
-**Trajectory:** Stated target is a full n8n-class authoring language and template engine: method calls on values, optional chaining, typed datetimes, richer namespaces, and Jinja-style `{% if %}` / `{% for %}` control flow. None of that is implemented yet — do not write code or docs that assume it exists. See `docs/DESIGN.md` §6.5.
+**Trajectory:** Stated target is a full n8n-class authoring language and template engine. Landed so far: method calls on values, optional chaining (`?.`), nullish coalescing (`??`), namespaces (`Math`/`JSON`/`Object`/`Number`/`Array`), and typed datetimes. Still missing: Jinja-style `{% if %}` / `{% for %}` control flow, `$json`/`$item`-class namespaces, and item-model support. Do not write code or docs that assume the missing parts exist. See `docs/DESIGN.md` §6.5.
 **Layer:** Core — depends only downward (root AGENTS.md -> Layered Dependency Map).
 
 ## Commands

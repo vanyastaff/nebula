@@ -76,8 +76,20 @@ See `src/lib.rs` rustdoc for the quick-start example.
   the program. Template text accepts `\{{` and `{{{{` as escaped literal openers;
   an even number of preceding backslashes leaves the opener active. Marker
   classification and template parsing share these lexical rules.
-- **Missing versus null:** missing variables/properties are lookup errors; explicit
-  JSON null remains `Value::Null`. No missing-value sentinel is collapsed into null.
+- **Missing versus null:** missing variables/properties are lookup errors under the
+  default policy; explicit JSON null remains `Value::Null`. No missing-value sentinel is
+  collapsed into null. `EvaluationPolicy::with_missing_lookup(MissingLookup::Undefined)`
+  opts into n8n-style authoring, where a miss yields `Undefined` that `??` and `?.` can
+  consume. `?.` guards a nullish *receiver*, not a missing key: `a.missing?.b` still
+  follows the missing policy for `missing`.
+- **Methods and namespaces:** `items.filter(x => x > 1)` is the same call as
+  `filter(items, x => x > 1)` — the receiver becomes the first argument. JavaScript
+  names (`toUpperCase`, `includes`, `startsWith`) and Luxon date methods (`plus`, `diff`,
+  `toFormat`) map onto the registered builtins; there is no second library. `reduce`
+  honors the JavaScript `(fn, initial)` order. `Math`, `JSON`, `Object`, `Number`, and
+  `Array` are namespace libraries that dispatch to receiverless builtins.
+- **Coalescing:** `??` returns the left side unless it is `Null` or `Undefined`, so
+  `false`, `0`, and `""` survive. It binds looser than `||`.
 - **DoS guard:** source is capped at 1 MiB, with at most 65,536 tokens and 16,384 AST
   nodes per embedded expression, depth 256, and 1,000 template expressions. Evaluation
   has a default 100,000-unit work ceiling shared by all template parts, pipelines,

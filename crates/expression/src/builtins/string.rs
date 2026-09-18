@@ -8,7 +8,9 @@ use crate::{
     value::RuntimeValue,
 };
 
-use super::{check_arg_count, check_min_arg_count, get_int_arg_with_policy, get_string_arg};
+use super::{
+    check_arg_count, check_min_arg_count, get_int_arg_with_policy, get_string_arg, get_value_arg,
+};
 
 fn preflight_string_output(
     view: BuiltinView<'_>,
@@ -177,16 +179,34 @@ pub(crate) fn substring(
     Ok(RuntimeValue::string(selected))
 }
 
-/// Check if string contains a substring
+/// Check whether a string contains a substring, or an array contains a value.
+///
+/// Polymorphic like `length`: `contains("hello", "ell")` checks a substring,
+/// while `contains([1, 2, 3], 2)` checks array membership using structural
+/// equality. `arr.includes(x)` maps here.
 pub(crate) fn contains(
     args: &[Argument<'_>],
     _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<RuntimeValue> {
     check_arg_count("contains", args, 2)?;
-    let s = get_string_arg("contains", args, 0, "text")?;
-    let needle = get_string_arg("contains", args, 1, "search")?;
-    Ok(RuntimeValue::Bool(s.contains(needle)))
+    let haystack = get_value_arg("contains", args, 0, "value")?;
+    let needle = get_value_arg("contains", args, 1, "search")?;
+    match haystack {
+        RuntimeValue::String(text) => {
+            let needle = needle.as_str().ok_or_else(|| {
+                ExpressionError::type_error("string", crate::value_utils::value_type_name(needle))
+            })?;
+            Ok(RuntimeValue::Bool(text.contains(needle)))
+        },
+        RuntimeValue::Array(values) => {
+            Ok(RuntimeValue::Bool(values.iter().any(|item| item == needle)))
+        },
+        other => Err(ExpressionError::type_error(
+            "string or array",
+            crate::value_utils::value_type_name(other),
+        )),
+    }
 }
 
 /// Check if string starts with a prefix

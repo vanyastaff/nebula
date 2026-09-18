@@ -139,12 +139,17 @@ chains and builtin dispatch rather than cloning the referenced graph.
    touches the expression resolve seam (sync/single-parse + `From<ExpressionError>` on
    the consumer side); it is not reflected in this worktree.
 5. **Path to an n8n-class engine.** The stated target is an authoring language and
-   template engine at n8n's level (methods on values, optional chaining,
-   `$json`/`$item`, template control flow). That does not exist today: `Expr` knows only
-   property/index access, dates are strings, and the namespaces are fixed at four.
-   This is unrealized scope, not a defect; the plan and its forks live in the crate's
-   review discussion, not in this file.
-6. No TODO/FIXME/deprecated markers.
+   template engine at n8n's level. Landed: method calls on values (`items.filter(…)`),
+   optional chaining (`?.`), nullish coalescing (`??`), namespace libraries
+   (`Math`/`JSON`/`Object`/`Number`/`Array`), and typed date-times with `plus`/`diff`/
+   `toFormat` methods and calendar units. Still unrealized: `$json`/`$item`-class
+   namespaces, the item model (`$items()` with multiple outputs per node), and Jinja-style
+   `{% if %}` / `{% for %}` template control flow. This is unrealized scope, not a defect.
+6. **Methods are a syntax, not a second library.** `builtins/methods.rs` only maps
+   JavaScript/Luxon names onto the registered builtins; the receiver becomes the first
+   argument. Adding a method implementation there instead of a builtin would fork the
+   library and is forbidden.
+7. No TODO/FIXME/deprecated markers.
 
 ## 7. Role in the post-0092 credential/resource model
 

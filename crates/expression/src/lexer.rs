@@ -267,6 +267,16 @@ impl<'a> Lexer<'a> {
                 self.advance();
                 Token::new(TokenKind::Colon, Span::new(start, self.position))
             },
+            '?' if self.peek() == Some('.') => {
+                self.advance();
+                self.advance();
+                Token::new(TokenKind::OptionalDot, Span::new(start, self.position))
+            },
+            '?' if self.peek() == Some('?') => {
+                self.advance();
+                self.advance();
+                Token::new(TokenKind::Coalesce, Span::new(start, self.position))
+            },
             '?' => {
                 self.advance();
                 Token::new(TokenKind::Question, Span::new(start, self.position))
@@ -852,6 +862,44 @@ mod tests {
                 &TokenKind::And,
                 &TokenKind::Or,
                 &TokenKind::RegexMatch,
+                &TokenKind::Eof
+            ]
+        );
+    }
+
+    #[test]
+    fn optional_chain_and_coalesce_are_distinct_tokens() {
+        let mut lexer = Lexer::new("$a?.b ?? $c");
+        let tokens = lexer.tokenize().unwrap();
+        let kinds: Vec<_> = tokens.iter().map(|t| &t.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                &TokenKind::Variable("a"),
+                &TokenKind::OptionalDot,
+                &TokenKind::Identifier("b"),
+                &TokenKind::Coalesce,
+                &TokenKind::Variable("c"),
+                &TokenKind::Eof
+            ]
+        );
+    }
+
+    #[test]
+    fn lone_question_mark_and_lone_dot_stay_separate() {
+        // `?` followed by a non-`.`/`?` char is still `Question`, and a plain
+        // `.` is still `Dot`: the new tokens must not swallow the old ones.
+        let mut lexer = Lexer::new("a ? b . c");
+        let tokens = lexer.tokenize().unwrap();
+        let kinds: Vec<_> = tokens.iter().map(|t| &t.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                &TokenKind::Identifier("a"),
+                &TokenKind::Question,
+                &TokenKind::Identifier("b"),
+                &TokenKind::Dot,
+                &TokenKind::Identifier("c"),
                 &TokenKind::Eof
             ]
         );

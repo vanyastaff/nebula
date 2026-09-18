@@ -90,6 +90,26 @@ pub(crate) fn reverse(
     Ok(RuntimeValue::Array(elements.into()))
 }
 
+/// First index of a value in an array, or `-1`.
+///
+/// Uses structural equality (`RuntimeValue::eq`), so numbers compare exactly
+/// across representations and objects/arrays compare by contents.
+pub(crate) fn index_of(
+    args: &[Argument<'_>],
+    _view: BuiltinView<'_>,
+    _ctx: &EvaluationContext,
+) -> ExpressionResult<RuntimeValue> {
+    check_arg_count("index_of", args, 2)?;
+    let array = get_array_arg("index_of", args, 0, "array")?;
+    let needle = get_value_arg("index_of", args, 1, "value")?;
+    for (index, item) in array.iter().enumerate() {
+        if item == needle {
+            return Ok(RuntimeValue::Integer(index as i64));
+        }
+    }
+    Ok(RuntimeValue::Integer(-1))
+}
+
 /// Join array elements into a string
 pub(crate) fn join(
     args: &[Argument<'_>],

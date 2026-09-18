@@ -39,14 +39,36 @@ pub enum Expr {
     },
 
     // Access operations
-    /// Property access (object.property)
+    /// Property access (`object.property`).
+    ///
+    /// `optional` is set by the `?.` operator: a missing property yields
+    /// `Undefined` instead of erroring, regardless of the missing-lookup policy.
     PropertyAccess {
         object: Box<Expr>,
         property: Arc<str>,
+        optional: bool,
     },
 
-    /// Index access (array\[index\])
-    IndexAccess { object: Box<Expr>, index: Box<Expr> },
+    /// Index access (`array[index]`).
+    ///
+    /// `optional` is set by `?.[`-style chaining; see [`Expr::PropertyAccess`].
+    IndexAccess {
+        object: Box<Expr>,
+        index: Box<Expr>,
+        optional: bool,
+    },
+
+    /// Method call (`object.method(args...)`).
+    ///
+    /// Methods dispatch on the receiver's runtime type. `optional` is set by
+    /// `?.`: a missing receiver or unknown method yields `Undefined` instead of
+    /// erroring.
+    MethodCall {
+        object: Box<Expr>,
+        method: Arc<str>,
+        args: Vec<Expr>,
+        optional: bool,
+    },
 
     // Function calls
     /// Function call (functionName(args...))
@@ -106,6 +128,13 @@ pub enum BinaryOp {
     // Logical
     And,
     Or,
+
+    /// Nullish coalescing (`left ?? right`).
+    ///
+    /// Returns `left` unless it is `Null` or `Undefined`, in which case it
+    /// evaluates `right`. Unlike `||` it does not treat `false`/`0`/`""` as
+    /// missing.
+    Coalesce,
 }
 
 impl BinaryOp {
@@ -127,6 +156,7 @@ impl BinaryOp {
             BinaryOp::RegexMatch => "=~",
             BinaryOp::And => "&&",
             BinaryOp::Or => "||",
+            BinaryOp::Coalesce => "??",
         }
     }
 }

@@ -179,6 +179,7 @@ impl<'a> Parser<'a> {
                 TokenKind::RegexMatch => BinaryOp::RegexMatch,
                 TokenKind::And => BinaryOp::And,
                 TokenKind::Or => BinaryOp::Or,
+                TokenKind::Coalesce => BinaryOp::Coalesce,
                 _ => {
                     return Err(ExpressionError::parse_error(format!(
                         "Unexpected operator: {}",
@@ -241,45 +242,78 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Parse postfix expression with depth tracking
+    /// Parse postfix expression with depth tracking.
+    ///
+    /// Handles `.name`, `?.name`, `.name(args)`, `?.name(args)`, `[index]`,
+    /// `?.[index]`. A member name followed by `(` is a method call; otherwise
+    /// it is a property access.
     fn parse_postfix_with_depth(&mut self, depth: usize) -> ExpressionResult<Expr> {
         let mut expr = self.parse_primary_with_depth(depth + 1)?;
 
         loop {
-            match &self.current_token().kind {
-                TokenKind::Dot => {
-                    self.record_node()?;
-                    self.advance();
-                    let property = if let TokenKind::Identifier(name) = &self.current_token().kind {
-                        let name = Arc::from(*name);
-                        self.advance();
-                        name
-                    } else {
-                        return Err(ExpressionError::parse_error(
-                            "Expected property name after .",
-                        ));
-                    };
-
-                    expr = Expr::PropertyAccess {
-                        object: Box::new(expr),
-                        property,
-                    };
-                    check_ast_depth(&expr)?;
-                },
-                TokenKind::LeftBracket => {
-                    self.record_node()?;
-                    self.advance();
-                    let index = self.parse_expression_with_depth(depth + 1)?;
-                    self.expect_token(TokenKind::RightBracket)?;
-
-                    expr = Expr::IndexAccess {
-                        object: Box::new(expr),
-                        index: Box::new(index),
-                    };
-                    check_ast_depth(&expr)?;
-                },
-                _ => break,
+            // A bare `[` is always a non-optional index access.
+            if self.current_token().kind == TokenKind::LeftBracket {
+                self.record_node()?;
+                self.advance();
+                let index = self.parse_expression_with_depth(depth + 1)?;
+                self.expect_token(TokenKind::RightBracket)?;
+                expr = Expr::IndexAccess {
+                    object: Box::new(expr),
+                    index: Box::new(index),
+                    optional: false,
+                };
+                check_ast_depth(&expr)?;
+                continue;
             }
+
+            let optional = match self.current_token().kind {
+                TokenKind::Dot => false,
+                TokenKind::OptionalDot => true,
+                _ => break,
+            };
+            self.record_node()?;
+            self.advance();
+
+            // `?.[` and `. [` index instead of accessing a property.
+            if self.current_token().kind == TokenKind::LeftBracket {
+                self.advance();
+                let index = self.parse_expression_with_depth(depth + 1)?;
+                self.expect_token(TokenKind::RightBracket)?;
+                expr = Expr::IndexAccess {
+                    object: Box::new(expr),
+                    index: Box::new(index),
+                    optional,
+                };
+                check_ast_depth(&expr)?;
+                continue;
+            }
+
+            let member = if let TokenKind::Identifier(name) = &self.current_token().kind {
+                let name = Arc::from(*name);
+                self.advance();
+                name
+            } else {
+                return Err(ExpressionError::parse_error(
+                    "Expected property name after .",
+                ));
+            };
+
+            if self.current_token().kind == TokenKind::LeftParen {
+                let args = self.parse_function_args_with_depth(depth + 1)?;
+                expr = Expr::MethodCall {
+                    object: Box::new(expr),
+                    method: member,
+                    args,
+                    optional,
+                };
+            } else {
+                expr = Expr::PropertyAccess {
+                    object: Box::new(expr),
+                    property: member,
+                    optional,
+                };
+            }
+            check_ast_depth(&expr)?;
         }
 
         Ok(expr)
@@ -552,9 +586,14 @@ fn check_ast_depth(root: &Expr) -> ExpressionResult<()> {
             | Expr::IndexAccess {
                 object: left,
                 index: right,
+                ..
             } => {
                 pending.push((left, child_depth));
                 pending.push((right, child_depth));
+            },
+            Expr::MethodCall { object, args, .. } => {
+                pending.push((object, child_depth));
+                pending.extend(args.iter().map(|child| (child, child_depth)));
             },
             Expr::FunctionCall { args, .. } | Expr::Array(args) => {
                 pending.extend(args.iter().map(|child| (child, child_depth)));

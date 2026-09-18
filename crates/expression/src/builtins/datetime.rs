@@ -181,18 +181,36 @@ pub(crate) fn parse_date(
     Ok(RuntimeValue::DateTime(dt))
 }
 
-/// Build a `chrono::Duration` for a unit string and an (untrusted) `amount`,
+/// A date shift, split into the two kinds chrono can express.
+///
+/// `months` carries calendar months and years (which are not fixed-length
+/// durations), `duration` carries every fixed-length unit.
+struct DateShift {
+    months: i64,
+    duration: chrono::Duration,
+}
+
+/// Build a [`DateShift`] for a unit string and an (untrusted) `amount`,
 /// rejecting an unknown unit or an out-of-range magnitude with a typed error.
 ///
 /// Uses the non-panicking `try_*` constructors: `Duration::weeks`/`days`/… panic
 /// on overflow, and `amount` comes from workflow/template input.
-fn duration_for_unit(fn_name: &str, unit: &str, amount: i64) -> ExpressionResult<chrono::Duration> {
-    let duration = match unit.to_lowercase().as_str() {
-        "seconds" | "second" | "s" => chrono::Duration::try_seconds(amount),
-        "minutes" | "minute" | "m" => chrono::Duration::try_minutes(amount),
-        "hours" | "hour" | "h" => chrono::Duration::try_hours(amount),
-        "days" | "day" | "d" => chrono::Duration::try_days(amount),
-        "weeks" | "week" | "w" => chrono::Duration::try_weeks(amount),
+fn shift_for_unit(fn_name: &str, unit: &str, amount: i64) -> ExpressionResult<DateShift> {
+    let (months, duration) = match unit.to_lowercase().as_str() {
+        "seconds" | "second" | "s" => (0, chrono::Duration::try_seconds(amount)),
+        "minutes" | "minute" | "m" => (0, chrono::Duration::try_minutes(amount)),
+        "hours" | "hour" | "h" => (0, chrono::Duration::try_hours(amount)),
+        "days" | "day" | "d" => (0, chrono::Duration::try_days(amount)),
+        "weeks" | "week" | "w" => (0, chrono::Duration::try_weeks(amount)),
+        // Calendar units: a month is not a fixed number of seconds, so these
+        // must go through `checked_add_months` / `checked_sub_months`.
+        "months" | "month" => (amount, Some(chrono::Duration::zero())),
+        "years" | "year" | "y" => (
+            amount.checked_mul(12).ok_or_else(|| {
+                ExpressionError::invalid_argument(fn_name, "Duration is out of range")
+            })?,
+            Some(chrono::Duration::zero()),
+        ),
         _ => {
             return Err(ExpressionError::invalid_argument(
                 fn_name,
@@ -200,10 +218,55 @@ fn duration_for_unit(fn_name: &str, unit: &str, amount: i64) -> ExpressionResult
             ));
         },
     };
-    duration.ok_or_else(|| ExpressionError::invalid_argument(fn_name, "Duration is out of range"))
+    let duration = duration
+        .ok_or_else(|| ExpressionError::invalid_argument(fn_name, "Duration is out of range"))?;
+    Ok(DateShift { months, duration })
 }
 
-/// Add duration to a date
+impl DateShift {
+    /// Apply the shift forward, clamping to the last valid day of the target
+    /// month the way `chrono` does (`Jan 31 + 1 month = Feb 29`).
+    fn add(
+        self,
+        dt: DateTime<FixedOffset>,
+        fn_name: &str,
+    ) -> ExpressionResult<DateTime<FixedOffset>> {
+        let shifted = dt
+            .checked_add_months(chrono::Months::new(u32::try_from(self.months).map_err(
+                |_| ExpressionError::invalid_argument(fn_name, "Duration is out of range"),
+            )?))
+            .and_then(|dt| dt.checked_add_signed(self.duration))
+            .ok_or_else(|| {
+                ExpressionError::invalid_argument(
+                    fn_name,
+                    "Date addition overflows the representable date range",
+                )
+            })?;
+        Ok(shifted)
+    }
+
+    /// Apply the shift backward.
+    fn subtract(
+        self,
+        dt: DateTime<FixedOffset>,
+        fn_name: &str,
+    ) -> ExpressionResult<DateTime<FixedOffset>> {
+        let shifted = dt
+            .checked_sub_months(chrono::Months::new(u32::try_from(self.months).map_err(
+                |_| ExpressionError::invalid_argument(fn_name, "Duration is out of range"),
+            )?))
+            .and_then(|dt| dt.checked_sub_signed(self.duration))
+            .ok_or_else(|| {
+                ExpressionError::invalid_argument(
+                    fn_name,
+                    "Date subtraction overflows the representable date range",
+                )
+            })?;
+        Ok(shifted)
+    }
+}
+
+/// Add a calendar or fixed-length shift to a date
 pub(crate) fn date_add(
     args: &[Argument<'_>],
     _view: BuiltinView<'_>,
@@ -221,15 +284,8 @@ pub(crate) fn date_add(
         ExpressionError::type_error("string", crate::value_utils::value_type_name(unit_value))
     })?;
 
-    let duration = duration_for_unit("date_add", unit, amount)?;
-    let new_dt = dt.checked_add_signed(duration).ok_or_else(|| {
-        ExpressionError::invalid_argument(
-            "date_add",
-            "Date addition overflows the representable date range",
-        )
-    })?;
-
-    Ok(RuntimeValue::DateTime(new_dt))
+    let shift = shift_for_unit("date_add", unit, amount)?;
+    Ok(RuntimeValue::DateTime(shift.add(dt, "date_add")?))
 }
 
 /// Subtract duration from a date
@@ -250,15 +306,8 @@ pub(crate) fn date_subtract(
         ExpressionError::type_error("string", crate::value_utils::value_type_name(unit_value))
     })?;
 
-    let duration = duration_for_unit("date_subtract", unit, amount)?;
-    let new_dt = dt.checked_sub_signed(duration).ok_or_else(|| {
-        ExpressionError::invalid_argument(
-            "date_subtract",
-            "Date subtraction overflows the representable date range",
-        )
-    })?;
-
-    Ok(RuntimeValue::DateTime(new_dt))
+    let shift = shift_for_unit("date_subtract", unit, amount)?;
+    Ok(RuntimeValue::DateTime(shift.subtract(dt, "date_subtract")?))
 }
 
 /// Get difference between two dates in specified unit

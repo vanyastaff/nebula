@@ -6,6 +6,7 @@ pub(crate) mod conversion;
 pub(crate) mod datetime;
 pub(crate) mod higher_order;
 pub(crate) mod math;
+pub(crate) mod methods;
 pub(crate) mod object;
 mod output;
 pub(crate) mod string;
@@ -165,6 +166,7 @@ impl BuiltinRegistry {
         self.register("concat", array::concat);
         self.register("flatten", array::flatten);
         self.register("unique", array::unique);
+        self.register("index_of", array::index_of);
     }
 
     /// Higher-order combinators are ordinary builtins: they receive

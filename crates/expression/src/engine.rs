@@ -320,6 +320,45 @@ impl ExpressionEngine {
         self.evaluate_compiled(&program, context)
     }
 
+    /// Evaluate an expression, returning the runtime value directly.
+    ///
+    /// Unlike [`Self::evaluate`], typed values such as date-times are not
+    /// rendered to JSON; callers get `Undefined`, `DateTime`, and every other
+    /// [`crate::RuntimeValue`] variant as-is. Use this when the result feeds
+    /// further expression work rather than a JSON boundary.
+    ///
+    /// # Errors
+    /// Returns the same typed errors as [`Self::evaluate`].
+    #[instrument(level = "debug", skip_all, fields(expr_len = expression.len()))]
+    pub fn evaluate_runtime(
+        &self,
+        expression: &str,
+        context: &EvaluationContext,
+    ) -> ExpressionResult<crate::RuntimeValue> {
+        crate::limits::check_limit(
+            "source bytes",
+            expression.len(),
+            crate::limits::MAX_SOURCE_BYTES,
+        )?;
+        #[cfg(feature = "cache")]
+        let program = if let Some(cache) = &self.expr_cache {
+            if let Some(cached) = cache.get(expression) {
+                cached
+            } else {
+                let parsed = CompiledProgram::compile(expression)?;
+                cache.insert(Arc::from(expression), parsed.clone());
+                parsed
+            }
+        } else {
+            CompiledProgram::compile(expression)?
+        };
+
+        #[cfg(not(feature = "cache"))]
+        let program = CompiledProgram::compile(expression)?;
+
+        self.evaluate_compiled_runtime(&program, context)
+    }
+
     /// Evaluate retained syntax under this engine's current registry and policy.
     ///
     /// No source parsing or cache lookup occurs. Every template expression and
@@ -339,10 +378,8 @@ impl ExpressionEngine {
 
     /// Evaluate retained syntax, returning the runtime value directly.
     ///
-    /// Crate-internal: callers outside the crate get plain JSON from
-    /// [`Self::evaluate_compiled`]. Typed values (date-times) survive to this
-    /// boundary and are rendered by `RuntimeValue::to_json`.
-    pub(crate) fn evaluate_compiled_runtime(
+    /// The typed-value counterpart of [`Self::evaluate_compiled`].
+    pub fn evaluate_compiled_runtime(
         &self,
         program: &CompiledProgram,
         context: &EvaluationContext,
