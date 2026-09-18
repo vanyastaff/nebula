@@ -33,8 +33,11 @@ pub enum Expr {
     // Binary operations
     /// Binary operation (left op right)
     Binary {
+        /// Left operand.
         left: Box<Expr>,
+        /// Operator applied to both operands.
         op: BinaryOp,
+        /// Right operand.
         right: Box<Expr>,
     },
 
@@ -44,8 +47,11 @@ pub enum Expr {
     /// `optional` is set by the `?.` operator: a missing property yields
     /// `Undefined` instead of erroring, regardless of the missing-lookup policy.
     PropertyAccess {
+        /// Expression the property is read from.
         object: Box<Expr>,
+        /// Static property name (safe to echo in diagnostics).
         property: Arc<str>,
+        /// Set by `?.`: a nullish receiver short-circuits to `Undefined`.
         optional: bool,
     },
 
@@ -53,8 +59,11 @@ pub enum Expr {
     ///
     /// `optional` is set by `?.[`-style chaining; see [`Expr::PropertyAccess`].
     IndexAccess {
+        /// Array or object being indexed.
         object: Box<Expr>,
+        /// Index expression; arrays take an integer, objects a string key.
         index: Box<Expr>,
+        /// Set by `?.[`: a nullish receiver short-circuits to `Undefined`.
         optional: bool,
     },
 
@@ -64,36 +73,53 @@ pub enum Expr {
     /// `?.`: a missing receiver or unknown method yields `Undefined` instead of
     /// erroring.
     MethodCall {
+        /// Receiver expression, passed as the method's first argument.
         object: Box<Expr>,
+        /// Method name, resolved through the alias table.
         method: Arc<str>,
+        /// Remaining call arguments.
         args: Vec<Expr>,
+        /// Set by `?.`: a nullish receiver short-circuits to `Undefined`.
         optional: bool,
     },
 
     // Function calls
     /// Function call (functionName(args...))
-    FunctionCall { name: Arc<str>, args: Vec<Expr> },
+    FunctionCall {
+        /// Registered function name.
+        name: Arc<str>,
+        /// Call arguments; a lambda stays unevaluated until the builtin asks.
+        args: Vec<Expr>,
+    },
 
     // Pipeline
     /// Pipeline operation (expr | function(args...))
     Pipeline {
+        /// Value piped into the function as its first argument.
         value: Box<Expr>,
+        /// Registered function name.
         function: Arc<str>,
+        /// Remaining call arguments.
         args: Vec<Expr>,
     },
 
     // Conditional
     /// Conditional expression (if condition then value1 else value2)
     Conditional {
+        /// Condition; only the taken branch is evaluated.
         condition: Box<Expr>,
+        /// Branch evaluated when the condition is truthy.
         then_expr: Box<Expr>,
+        /// Branch evaluated otherwise.
         else_expr: Box<Expr>,
     },
 
     // Lambda
     /// Lambda expression (`param => body`, or `(left, right) => body`).
     Lambda {
+        /// Parameter names, bound positionally by the invoking builtin.
         params: Box<[Arc<str>]>,
+        /// Body evaluated once per invocation.
         body: Box<Expr>,
     },
 
@@ -109,24 +135,39 @@ pub enum Expr {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinaryOp {
     // Arithmetic
+    /// `+`: integer or float addition, or string concatenation.
     Add,
+    /// `-`: numeric subtraction.
     Subtract,
+    /// `*`: numeric multiplication.
     Multiply,
+    /// `/`: floating-point division; integer operands are widened.
     Divide,
+    /// `%`: remainder; integer modulo when both sides are integers.
     Modulo,
+    /// `**`: exponentiation, always floating-point.
     Power,
 
     // Comparison
+    /// `==`: structural equality with exact mixed-number comparison.
     Equal,
+    /// `!=`: negation of [`Self::Equal`].
     NotEqual,
+    /// `<`.
     LessThan,
+    /// `>`.
     GreaterThan,
+    /// `<=`.
     LessEqual,
+    /// `>=`.
     GreaterEqual,
+    /// `=~`: regex match of the left string against the right pattern.
     RegexMatch,
 
     // Logical
+    /// `&&`: short-circuiting boolean conjunction.
     And,
+    /// `||`: short-circuiting boolean disjunction.
     Or,
 
     /// Nullish coalescing (`left ?? right`).

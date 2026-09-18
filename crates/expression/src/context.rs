@@ -265,8 +265,7 @@ impl EvaluationContext {
     /// `$node` and `$execution` views. Time-derived variables allocate one new
     /// scalar value for each lookup.
     ///
-    /// [`Self::resolve_variable`] and [`Self::resolve_variable_value`] share
-    /// this name table; keep them in sync.
+    /// The borrowed counterpart used during evaluation shares this name table.
     ///
     /// # Errors
     /// Returns a resource-limit error before materializing an oversized

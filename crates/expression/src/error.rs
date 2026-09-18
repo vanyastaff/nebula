@@ -37,7 +37,10 @@ pub enum ExpressionError {
     /// Syntax error in expression
     #[classify(category = "validation", code = "EXPR:SYNTAX")]
     #[error("Expression syntax error: {message}")]
-    SyntaxError { message: String },
+    SyntaxError {
+        /// Diagnostic describing the offending construct.
+        message: String,
+    },
 
     /// Parse error
     #[classify(category = "validation", code = "EXPR:PARSE")]
@@ -49,6 +52,7 @@ pub enum ExpressionError {
         /// (`error_formatter::format_template_error`) instead of parsing a
         /// pre-rendered diagnostic. `None` for raw-grammar parse failures.
         position: Option<crate::template::Position>,
+        /// Diagnostic describing the parse failure, without source context.
         message: String,
     },
 
@@ -60,22 +64,36 @@ pub enum ExpressionError {
     /// [`ExpressionError::Internal`].
     #[classify(category = "validation", code = "EXPR:EVAL")]
     #[error("Expression evaluation error: {message}")]
-    EvalError { message: String },
+    EvalError {
+        /// Diagnostic describing the runtime failure.
+        message: String,
+    },
 
     /// Type mismatch error
     #[classify(category = "validation", code = "EXPR:TYPE")]
     #[error("Type error: expected {expected}, found {actual}")]
-    TypeError { expected: String, actual: String },
+    TypeError {
+        /// Type the operation required.
+        expected: String,
+        /// Type it received.
+        actual: String,
+    },
 
     /// Variable not found
     #[classify(category = "not_found", code = "EXPR:VAR_NOT_FOUND")]
     #[error("Variable '{name}' not found")]
-    VariableNotFound { name: String },
+    VariableNotFound {
+        /// Variable name from the template source.
+        name: String,
+    },
 
     /// Function not found
     #[classify(category = "not_found", code = "EXPR:FUNC_NOT_FOUND")]
     #[error("Function '{name}' not found")]
-    FunctionNotFound { name: String },
+    FunctionNotFound {
+        /// Function name from the template source.
+        name: String,
+    },
 
     /// A property named in the template source is absent.
     ///
@@ -83,7 +101,10 @@ pub enum ExpressionError {
     /// A key computed from data goes to [`ExpressionError::KeyNotFound`].
     #[classify(category = "not_found", code = "EXPR:PROPERTY_NOT_FOUND")]
     #[error("Property '{property}' not found")]
-    PropertyNotFound { property: String },
+    PropertyNotFound {
+        /// Property name from the template source.
+        property: String,
+    },
 
     /// An object key computed from input data is absent.
     ///
@@ -100,12 +121,20 @@ pub enum ExpressionError {
     /// it for this evaluation.
     #[classify(category = "authorization", code = "EXPR:FUNC_DENIED")]
     #[error("Function '{name}' is denied by policy")]
-    FunctionNotAllowed { name: String },
+    FunctionNotAllowed {
+        /// Function name denied by the effective policy.
+        name: String,
+    },
 
     /// Invalid function argument
     #[classify(category = "validation", code = "EXPR:INVALID_ARG")]
     #[error("Invalid argument for {function}: {message}")]
-    InvalidArgument { function: String, message: String },
+    InvalidArgument {
+        /// Function whose argument was rejected.
+        function: String,
+        /// What was wrong with the argument.
+        message: String,
+    },
 
     /// Division by zero
     #[classify(category = "validation", code = "EXPR:DIV_ZERO")]
@@ -115,17 +144,28 @@ pub enum ExpressionError {
     /// Regex compilation or matching error
     #[classify(category = "validation", code = "EXPR:REGEX")]
     #[error("Regex error: {message}")]
-    RegexError { message: String },
+    RegexError {
+        /// What was wrong with the pattern.
+        message: String,
+    },
 
     /// Index out of bounds
     #[classify(category = "validation", code = "EXPR:INDEX_OOB")]
     #[error("Index out of bounds: index {index} is out of range for array of length {length}")]
-    IndexOutOfBounds { index: usize, length: usize },
+    IndexOutOfBounds {
+        /// Resolved index that fell outside the array.
+        index: usize,
+        /// Array length at the time of access.
+        length: usize,
+    },
 
     /// A date, timestamp, or date string could not be interpreted.
     #[classify(category = "validation", code = "EXPR:INVALID_DATE")]
     #[error("Invalid date: {message}")]
-    InvalidDate { message: String },
+    InvalidDate {
+        /// Which date form could not be interpreted.
+        message: String,
+    },
 
     /// A JSON document supplied at runtime could not be parsed.
     ///
@@ -133,7 +173,10 @@ pub enum ExpressionError {
     /// grammar: this is data, parsed by `parse_json`.
     #[classify(category = "validation", code = "EXPR:INVALID_JSON")]
     #[error("Invalid JSON: {message}")]
-    InvalidJson { message: String },
+    InvalidJson {
+        /// Parser diagnostic for the rejected document.
+        message: String,
+    },
 
     /// Internal error: a crate invariant was violated.
     ///
@@ -141,7 +184,10 @@ pub enum ExpressionError {
     /// fixed build or a different input.
     #[classify(category = "internal", code = "EXPR:INTERNAL")]
     #[error("Internal error: {message}")]
-    Internal { message: String },
+    Internal {
+        /// The violated invariant, for a bug report.
+        message: String,
+    },
 
     /// Step budget exhausted: per-call evaluation cap (`max_eval_steps`)
     /// has been hit. Carries `limit` and `actual` so callers can
@@ -149,14 +195,24 @@ pub enum ExpressionError {
     /// about whether to relax the limit or shrink the input.
     #[classify(category = "validation", code = "EXPR:STEP_LIMIT")]
     #[error("Step budget exhausted: actual={actual} > limit={limit}")]
-    StepLimitExceeded { limit: usize, actual: usize },
+    StepLimitExceeded {
+        /// Configured work ceiling.
+        limit: usize,
+        /// Work consumed when the ceiling was crossed.
+        actual: usize,
+    },
 
     /// Recursion depth exhausted: the per-call AST depth tracker
     /// (`MAX_RECURSION_DEPTH`) has been hit. Distinguishes a hostile
     /// stack-blowing input from a legitimate `EvalError`.
     #[classify(category = "validation", code = "EXPR:DEPTH_LIMIT")]
     #[error("Recursion depth exhausted: actual={actual} >= limit={limit}")]
-    DepthExceeded { limit: usize, actual: usize },
+    DepthExceeded {
+        /// Configured recursion ceiling.
+        limit: usize,
+        /// Depth reached when the ceiling was crossed.
+        actual: usize,
+    },
 
     /// A registered builtin result exceeded its mandatory output policy.
     #[classify(category = "validation", code = "EXPR:BUILTIN_OUTPUT_LIMIT")]
@@ -174,7 +230,9 @@ pub enum ExpressionError {
     #[classify(category = "validation", code = "EXPR:TEMPLATE_EVAL")]
     #[error("Template evaluation failed at {position}: {source}")]
     TemplateEvaluation {
+        /// Position of the failing `{{ … }}` or `{% … %}` in the source.
         position: crate::template::Position,
+        /// The underlying failure, preserved for programmatic matching.
         #[source]
         source: Box<ExpressionError>,
     },
@@ -183,20 +241,29 @@ pub enum ExpressionError {
     #[classify(category = "validation", code = "EXPR:RESOURCE_LIMIT")]
     #[error("Expression {resource} limit exceeded: actual={actual} > limit={limit}")]
     ResourceLimitExceeded {
+        /// Which bound was crossed (source bytes, AST nodes, …).
         resource: &'static str,
+        /// Configured ceiling for that bound.
         limit: usize,
+        /// Size attempted when the ceiling was crossed.
         actual: usize,
     },
 
     /// Integer arithmetic exceeded the representable JSON integer range.
     #[classify(category = "validation", code = "EXPR:NUMERIC_OVERFLOW")]
     #[error("Integer overflow in {operation}")]
-    NumericOverflow { operation: &'static str },
+    NumericOverflow {
+        /// Arithmetic operation that overflowed.
+        operation: &'static str,
+    },
 
     /// A numeric conversion or operation produced infinity or NaN.
     #[classify(category = "validation", code = "EXPR:NONFINITE")]
     #[error("Non-finite number in {operation}")]
-    NonFiniteNumber { operation: &'static str },
+    NonFiniteNumber {
+        /// Operation that produced the non-finite value.
+        operation: &'static str,
+    },
 }
 
 /// Display helper for the optional position on [`ExpressionError::ParseError`].

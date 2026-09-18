@@ -50,15 +50,19 @@ enum RegisteredBuiltin {
     Trusted(TrustedBuiltinFunction),
 }
 
-/// Registry of all builtin functions
+/// Registry of all builtin functions.
+///
+/// Crate-private: its `call` takes a [`BuiltinView`], which only the evaluator
+/// can construct, so a registry handed to external code could not be invoked.
+/// Custom functions go through [`crate::ExpressionEngine::register_function`].
 #[derive(Clone)]
-pub struct BuiltinRegistry {
+pub(crate) struct BuiltinRegistry {
     functions: HashMap<String, RegisteredBuiltin>,
 }
 
 impl BuiltinRegistry {
     /// Create a new builtin registry with all standard functions
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let mut registry = Self {
             functions: HashMap::new(),
         };
@@ -96,7 +100,7 @@ impl BuiltinRegistry {
     /// Requires the calling evaluator's policy and budget view. The registered
     /// function cannot construct a fresh budget and lambda arguments are
     /// invoked through the view's shared frame.
-    pub fn call(
+    pub(crate) fn call(
         &self,
         name: &str,
         args: &[Argument<'_>],
@@ -116,16 +120,6 @@ impl BuiltinRegistry {
             RegisteredBuiltin::Trusted(function) => output.value(function(args, view, context)?),
         }
         .map(BuiltinOutput::into_value)
-    }
-
-    /// Check if a function exists
-    pub fn has_function(&self, name: &str) -> bool {
-        self.functions.contains_key(name)
-    }
-
-    /// Get all function names
-    pub fn function_names(&self) -> Vec<String> {
-        self.functions.keys().cloned().collect()
     }
 
     // Registration methods for each category

@@ -154,9 +154,9 @@ impl<K: std::hash::Hash + Eq + Send + Sync + 'static, V: Clone + Send + Sync + '
 
 /// Expression engine with parsing and evaluation capabilities.
 ///
-/// Owns only the parse caches; the [`Evaluator`] owns the builtin registry and
-/// the engine-level policy. A registry or policy change is a single mutation on
-/// the evaluator, so the two cannot drift out of sync.
+/// Owns only the parse caches; the evaluator (crate-private) owns the builtin
+/// registry and the engine-level policy. A registry or policy change is a
+/// single mutation on the evaluator, so the two cannot drift out of sync.
 pub struct ExpressionEngine {
     /// Cache for parsed expressions
     #[cfg(feature = "cache")]
