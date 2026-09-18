@@ -147,24 +147,24 @@ async fn pipeline_warns_on_bad_layer_order() {
 }
 
 #[test]
-fn build_checked_rejects_out_of_order_steps() {
+fn try_build_rejects_out_of_order_steps() {
     let err = ResiliencePipeline::<&str>::builder()
         .retry(RetryConfig::new(2).unwrap())
         .rate_limiter(Arc::new(|| Box::pin(async { Ok(()) })))
-        .build_checked()
+        .try_build()
         .unwrap_err();
 
     assert_eq!(err.field, "pipeline_order");
 }
 
 #[test]
-fn build_checked_accepts_recommended_order() {
+fn try_build_accepts_recommended_order() {
     let result = ResiliencePipeline::<&str>::builder()
         .load_shed(Arc::new(|| false))
         .rate_limiter(Arc::new(|| Box::pin(async { Ok(()) })))
         .timeout(Duration::from_secs(1))
         .retry(RetryConfig::new(2).unwrap())
-        .build_checked();
+        .try_build();
 
     assert!(result.is_ok());
 }
@@ -315,7 +315,7 @@ async fn pipeline_retry_does_not_retry_inner_circuit_open() {
 }
 
 #[tokio::test]
-async fn build_recommended_order_rejects_before_retry() {
+async fn build_sorted_rejects_before_retry() {
     let checks = Arc::new(AtomicU32::new(0));
     let seen_checks = Arc::clone(&checks);
     let operations = Arc::new(AtomicU32::new(0));
@@ -333,7 +333,7 @@ async fn build_recommended_order_rejects_before_retry() {
                 .backoff(BackoffConfig::Fixed(Duration::ZERO)),
         )
         .rate_limiter(rate_limiter)
-        .build_recommended_order();
+        .build_sorted();
 
     let result = pipeline
         .call(move || {

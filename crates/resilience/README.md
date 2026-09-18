@@ -55,7 +55,7 @@ Read the rustdoc of `src/lib.rs` for the exhaustive re-export surface. The entry
 - `ResiliencePipeline<E>` / `PipelineBuilder<E>` — compose `.classify_errors()`, `.with_sink()`,
   `.scope()`, `.timeout()`, `.retry()`, `.circuit_breaker()`, `.bulkhead()`,
   `.rate_limiter_from()` / `.rate_limiter_erased()`, `.load_shed()`, then `build()` (warns on
-  suboptimal order), `build_checked()` (rejects it), or `build_recommended_order()` (sorts it).
+  suboptimal order), `try_build()` (rejects it), or `build_sorted()` (sorts it).
   Call through `call()`, `call_with_context()`, or `call_with_context_and_fallback()`.
   Hedging is deliberately not a builder step (see `hedge` docs for why).
 - `CallError<E>` — error of every pattern; carries the caller's `E` and a variant per rejection

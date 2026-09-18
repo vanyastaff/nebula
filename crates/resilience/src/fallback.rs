@@ -213,7 +213,7 @@ where
             match (self.function)(erased).await {
                 Ok(value) => Ok(value),
                 Err(e) => {
-                    let fallback = e.flat_map_inner(
+                    let fallback = e.flat_map_operation(
                         |()| {
                             CallError::fallback_failed_with(
                                 "fallback returned Operation(()) — original error was erased",

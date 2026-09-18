@@ -263,15 +263,15 @@ impl<E> CallError<E> {
     /// Unlike [`map_operation`](Self::map_operation), the handlers return
     /// `CallError<E2>` directly, allowing variant changes (e.g., converting
     /// `Operation(())` into `Cancelled`).
-    pub fn flat_map_inner<E2>(
+    pub fn flat_map_operation<E2>(
         self,
         mut on_operation: impl FnMut(E) -> CallError<E2>,
         mut on_retries: impl FnMut(u32, E) -> CallError<E2>,
     ) -> CallError<E2> {
-        self.flat_map_inner_impl(&mut on_operation, &mut on_retries)
+        self.flat_map_operation_impl(&mut on_operation, &mut on_retries)
     }
 
-    fn flat_map_inner_impl<E2, F, R>(
+    fn flat_map_operation_impl<E2, F, R>(
         self,
         on_operation: &mut F,
         on_retries: &mut R,
@@ -293,8 +293,8 @@ impl<E> CallError<E> {
             Self::FallbackFailed { reason } => CallError::FallbackFailed { reason },
             Self::FallbackFailedWithContext { primary, fallback } => {
                 CallError::FallbackFailedWithContext {
-                    primary: Box::new(primary.flat_map_inner_impl(on_operation, on_retries)),
-                    fallback: Box::new(fallback.flat_map_inner_impl(on_operation, on_retries)),
+                    primary: Box::new(primary.flat_map_operation_impl(on_operation, on_retries)),
+                    fallback: Box::new(fallback.flat_map_operation_impl(on_operation, on_retries)),
                 }
             },
         }

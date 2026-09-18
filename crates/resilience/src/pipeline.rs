@@ -49,7 +49,7 @@ use crate::{
 
 // ── Execution ────────────────────────────────────────────────────────────────
 //
-// Steps are processed recursively by `run_operation_with_shells`. Each step
+// Steps are processed recursively by `execute_remaining_steps`. Each step
 // type is handled exactly once, in order:
 //
 // - LoadShed / RateLimiter: checked before recursing to inner steps.
@@ -57,7 +57,7 @@ use crate::{
 // - Bulkhead: `acquire()` permit held for the inner scope.
 // - Timeout / Retry: wrap the remainder of the pipeline.
 //
-// `run_operation_with_shells` wraps every recursive call in `Box::pin`
+// `execute_remaining_steps` wraps every recursive call in `Box::pin`
 // (required because the async fn is recursive). Timeout and Retry add
 // additional overhead: Timeout for `tokio::time::timeout` wrapping,
 // Retry for the back-off loop with `retry_with`.
@@ -319,21 +319,21 @@ impl<E: Send + 'static> PipelineBuilder<E> {
     /// Build the pipeline, emitting a tracing warning if layer order is suboptimal.
     #[must_use]
     pub fn build(self) -> ResiliencePipeline<E> {
-        validate_order(&self.steps);
+        warn_on_suboptimal_order(&self.steps);
         self.build_inner()
     }
 
     /// Build the pipeline only if steps are already in the recommended order.
     ///
     /// This is intended for config/schema-driven construction where warnings are
-    /// too easy to miss. Use [`build_recommended_order`](Self::build_recommended_order)
+    /// too easy to miss. Use [`build_sorted`](Self::build_sorted)
     /// when policy declarations may arrive in arbitrary order and sorting is acceptable.
     ///
     /// # Errors
     ///
     /// Returns `ConfigError` if a later step should be outside an earlier one.
-    pub fn build_checked(self) -> Result<ResiliencePipeline<E>, crate::ConfigError> {
-        validate_recommended_order(&self.steps)?;
+    pub fn try_build(self) -> Result<ResiliencePipeline<E>, crate::ConfigError> {
+        require_recommended_order(&self.steps)?;
         Ok(self.build_inner())
     }
 
@@ -343,7 +343,7 @@ impl<E: Send + 'static> PipelineBuilder<E> {
     /// different kinds as: `load_shed -> rate_limiter -> timeout -> retry ->
     /// circuit_breaker -> bulkhead`.
     #[must_use]
-    pub fn build_recommended_order(mut self) -> ResiliencePipeline<E> {
+    pub fn build_sorted(mut self) -> ResiliencePipeline<E> {
         self.steps.sort_by_key(step_rank);
         self.build_inner()
     }
@@ -427,7 +427,7 @@ const fn step_name<E>(step: &Step<E>) -> &'static str {
     }
 }
 
-fn validate_recommended_order<E>(steps: &[Step<E>]) -> Result<(), crate::ConfigError> {
+fn require_recommended_order<E>(steps: &[Step<E>]) -> Result<(), crate::ConfigError> {
     let mut highest_rank = 0u8;
     let mut highest_name = None;
 
@@ -438,7 +438,7 @@ fn validate_recommended_order<E>(steps: &[Step<E>]) -> Result<(), crate::ConfigE
             return Err(crate::ConfigError::new(
                 "pipeline_order",
                 format!(
-                    "{} must be added before {}; use build_recommended_order() to sort config-driven pipelines",
+                    "{} must be added before {}; use build_sorted() to sort config-driven pipelines",
                     step_name(step),
                     earlier
                 ),
@@ -453,7 +453,7 @@ fn validate_recommended_order<E>(steps: &[Step<E>]) -> Result<(), crate::ConfigE
     Ok(())
 }
 
-fn validate_order<E>(steps: &[Step<E>]) {
+fn warn_on_suboptimal_order<E>(steps: &[Step<E>]) {
     let names: Vec<&str> = steps
         .iter()
         .map(|s| match s {
@@ -995,12 +995,12 @@ where
         retry_hint,
         cancellation,
     };
-    run_operation_with_shells(ctx, 0, f).await
+    execute_remaining_steps(ctx, 0, f).await
 }
 
 /// Recursively apply pipeline steps (one `Box::pin` per Timeout/Retry shell),
 /// then call the user function.
-fn run_operation_with_shells<T, E, F>(
+fn execute_remaining_steps<T, E, F>(
     ctx: PipelineRunContext<E>,
     idx: usize,
     f: Arc<F>,
@@ -1032,7 +1032,7 @@ where
         match &steps[idx] {
             Step::Timeout(d) => {
                 let d = *d;
-                let inner = run_operation_with_shells(ctx.clone(), idx + 1, f);
+                let inner = execute_remaining_steps(ctx.clone(), idx + 1, f);
                 if let Some(cancellation) = ctx.cancellation.clone() {
                     tokio::select! {
                         result = tokio::time::timeout(d, inner) => {
@@ -1058,7 +1058,7 @@ where
 
                 let mut guard = ProbeGuard::new(cb);
                 let start = cb.tracks_slow_calls().then(|| cb.monotonic_now());
-                let result = run_operation_with_shells(ctx.clone(), idx + 1, Arc::clone(&f)).await;
+                let result = execute_remaining_steps(ctx.clone(), idx + 1, Arc::clone(&f)).await;
                 let duration = start.map(|start| cb.monotonic_now().duration_since(start));
                 guard.defuse();
 
@@ -1076,7 +1076,7 @@ where
                 } else {
                     acquire.await?
                 };
-                run_operation_with_shells(ctx, idx + 1, f).await
+                execute_remaining_steps(ctx, idx + 1, f).await
             },
             Step::RateLimiter(check) => {
                 let check_result = if let Some(cancellation) = ctx.cancellation.clone() {
@@ -1095,14 +1095,14 @@ where
                     },
                     Err(error) => return Err(map_acquire_error(error)),
                 }
-                run_operation_with_shells(ctx, idx + 1, f).await
+                execute_remaining_steps(ctx, idx + 1, f).await
             },
             Step::LoadShed(predicate) => {
                 if predicate() {
                     ctx.sink.record(ResilienceEvent::LoadShed);
                     Err(CallError::LoadShed)
                 } else {
-                    run_operation_with_shells(ctx, idx + 1, f).await
+                    execute_remaining_steps(ctx, idx + 1, f).await
                 }
             },
         }
@@ -1222,7 +1222,7 @@ where
             Box::pin(async move {
                 let retry_hint = ctx.retry_hint.clone();
                 classify_inner(
-                    run_operation_with_shells(ctx, idx + 1, f).await,
+                    execute_remaining_steps(ctx, idx + 1, f).await,
                     retry_hint.as_ref(),
                 )
             })
@@ -1342,7 +1342,7 @@ fn map_retry_result<T, E>(
 ) -> Result<T, CallError<E>> {
     match result {
         Ok(v) => Ok(v),
-        Err(e) => Err(e.flat_map_inner(
+        Err(e) => Err(e.flat_map_operation(
             |inner| inner.into_call_error(None),
             |attempts, inner| inner.into_call_error(Some(attempts)),
         )),
