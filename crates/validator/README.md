@@ -34,7 +34,7 @@ that a value passed validation; the type cannot be constructed without calling `
 - `Validated<T>` (`proof::Validated`) — proof-token certifying a value passed validation.
 - `ValidationError` (`foundation::ValidationError`) — structured error (80 bytes, `Cow`-based, RFC 6901 field paths).
 - `AnyValidator<T>` (`foundation::AnyValidator`) — type-erased validator for dynamic dispatch.
-- `Rule` — typed sum-of-sums: `Value(ValueRule)` / `Predicate(Predicate)` / `Logic(Box<Logic>)` / `Deferred(DeferredRule)` / `Described(Box<Rule>, String)`. Each inner kind owns exactly one method that makes sense for it; cross-kind silent-pass is a compile error.
+- `Rule` — typed sum-of-sums over a bounded flat arena. Children are read through `RuleView` (`Value` / `Predicate` / `All` / `Any` / `Not` / `Deferred` / `Described`), never through a public enum of variants; cross-kind misuse is a compile error.
 - `FieldPath` — validated RFC 6901 pointer, including root and empty-string keys; strict wire parsing via `from_pointer` and serde.
 - `Described` — decorator with `{placeholder}` message templates (replaces per-variant `message: Option<String>` fields).
 - `PredicateContext` — structured value context for predicate evaluation (nested JSON-Pointer sibling lookups).
@@ -83,12 +83,12 @@ temporal (`DateTime`, `Uuid`).
 
 See `docs/MATURITY.md` row for `nebula-validator`.
 
-- API stability: `frontier` — the `Rule` type just moved from a flat 30-variant enum to the
-  typed sum-of-sums above (commit landed; see ADR-0052 schema-validator seam).
-  The programmatic validator API (`Validate<T>`, `ValidateExt`, `Validated<T>`,
-  `ValidationError`) is stable and unchanged. Wire format for `Rule` JSON has changed
-  (externally-tagged tuple-compact encoding); consumers must re-serialize any stored
-  rule data. Alpha-stage breakage acknowledged.
+- API stability: `frontier`. The `Rule` type is the typed sum-of-sums above over a bounded
+  flat arena; its wire format is externally-tagged tuple-compact, so consumers holding stored
+  rule data must re-serialize through the current writer. The programmatic validator API
+  (`Validate<T>`, `ValidateExt`, `Validated<T>`, `ValidationError`) is the stable surface.
+- Breaking changes between releases are catalogued in [`CHANGELOG.md`](CHANGELOG.md) and
+  [`docs/migration.md`](docs/migration.md).
 - The `#[derive(Validator)]` macro public attribute syntax is stable across the refactor.
 
 Rule evaluation, condition evaluation, and regex constructors have intentionally

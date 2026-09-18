@@ -98,7 +98,7 @@ pub mod when;
 pub mod json_field;
 
 // Re-export all combinator types
-pub use and::{And, AndAll, and, and_all};
+pub use and::{And, and};
 pub use each::{Each, each, each_fail_fast};
 pub use factories::{AllOf, AnyOf, all_of, any_of};
 pub use field::{Field, FieldValidateExt, MultiField, field, named_field};
@@ -112,7 +112,7 @@ pub use nested::{
 };
 pub use not::{Not, not};
 pub use optional::{Optional, optional};
-pub use or::{Or, OrAny, or, or_any};
+pub use or::{Or, or};
 pub use unless::{Unless, unless};
 pub use when::{When, when};
 

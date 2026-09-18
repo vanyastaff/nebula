@@ -133,7 +133,6 @@ fn registry_contains_all_canonical_error_codes() {
         "uuid",
         // Combinator codes
         "or_failed",
-        "or_any_failed",
         "any_of_failed",
         "all_failed",
         "any_failed",

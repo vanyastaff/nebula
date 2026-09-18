@@ -255,12 +255,6 @@
       "source": "combinators::or::Or"
     },
     {
-      "code": "or_any_failed",
-      "meaning": "all validators in OR-any collection failed",
-      "stability": "stable",
-      "source": "combinators::or::OrAny"
-    },
-    {
       "code": "any_of_failed",
       "meaning": "all validators in any_of collection failed",
       "stability": "stable",

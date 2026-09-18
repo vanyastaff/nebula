@@ -183,8 +183,8 @@ nebula-validator/
 │   │   ├── temporal.rs        Date, Time, DateTime, Uuid
 │   │   └── mod.rs
 │   └── combinators/
-│       ├── and.rs             And<L, R>, AndAll<V>
-│       ├── or.rs              Or<L, R>, OrAny<V>
+│       ├── and.rs             And<L, R>
+│       ├── or.rs              Or<L, R>
 │       ├── not.rs             Not<V>
 │       ├── when.rs            When<V, C>
 │       ├── unless.rs          Unless<V, C>

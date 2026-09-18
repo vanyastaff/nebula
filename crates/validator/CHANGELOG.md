@@ -40,6 +40,10 @@ format, and the `Rule` wire encoding — are catalogued in
   the `Lazy` combinator (`src/combinators/lazy.rs`), and the previously public `FieldError`
   wrapper (now crate-private; `Field` continues to return a `ValidationError` with a composed
   `field` path).
+- **The duplicate AND/OR collection families are gone.** `AndAll` was `AllOf` in fail-fast
+  mode and `OrAny` was `AnyOf` under a second name and error code. Use `all_of` /
+  `any_of` and select short-circuiting with `.with_mode(ValidationMode::FailFast)`. The
+  `or_any_failed` code is removed from the registry.
 - **`ValidationError.field` is private.** The type guarantees the path is a canonical
   RFC 6901 pointer; a public field let safe external code store raw dot notation and emit an
   envelope whose `field` and `pointer` keys disagreed. Read it through `field_pointer()`.

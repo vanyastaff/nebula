@@ -98,47 +98,6 @@ pub fn and<L, R>(left: L, right: R) -> And<L, R> {
     And::new(left, right)
 }
 
-/// Creates an `AndAll` combinator from a vector of validators.
-///
-/// This is useful when you have a dynamic number of validators.
-///
-/// # Examples
-///
-/// ```rust
-/// use nebula_validator::prelude::*;
-/// use nebula_validator::combinators::and_all;
-///
-/// let validators = vec![min_length(3), min_length(5), min_length(7)];
-/// let validator = and_all(validators);
-/// assert!(validator.validate("helloworld").is_ok());
-/// assert!(validator.validate("hello").is_err());
-/// ```
-#[must_use]
-pub fn and_all<V>(validators: Vec<V>) -> AndAll<V> {
-    AndAll { validators }
-}
-
-/// Combines multiple validators with logical AND.
-///
-/// All validators in the collection must pass for this validator to succeed.
-/// Validation stops at the first failure (short-circuits).
-#[derive(Debug, Clone)]
-pub struct AndAll<V> {
-    validators: Vec<V>,
-}
-
-impl<T: ?Sized, V> Validate<T> for AndAll<V>
-where
-    V: Validate<T>,
-{
-    fn validate(&self, input: &T) -> Result<(), ValidationError> {
-        for validator in &self.validators {
-            validator.validate(input)?;
-        }
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -186,13 +145,5 @@ mod tests {
         let validator = MinLength(3).and(MaxLength(10)).and(MinLength(5));
         assert!("hello".validate_with(&validator).is_ok());
         assert!("hi".validate_with(&validator).is_err());
-    }
-
-    #[test]
-    fn test_and_all() {
-        let validators = vec![MinLength(3), MinLength(5), MinLength(7)];
-        let combined = and_all(validators);
-        assert!("helloworld".validate_with(&combined).is_ok());
-        assert!("hello".validate_with(&combined).is_err());
     }
 }

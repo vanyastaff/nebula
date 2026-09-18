@@ -78,43 +78,6 @@ pub fn or<L, R>(left: L, right: R) -> Or<L, R> {
     Or::new(left, right)
 }
 
-/// Creates an `OrAny` combinator from a vector of validators.
-#[must_use]
-pub fn or_any<V>(validators: Vec<V>) -> OrAny<V> {
-    OrAny { validators }
-}
-
-/// Tries multiple validators until one passes.
-#[derive(Debug, Clone)]
-pub struct OrAny<V> {
-    validators: Vec<V>,
-}
-
-impl<T: ?Sized, V> Validate<T> for OrAny<V>
-where
-    V: Validate<T>,
-{
-    fn validate(&self, input: &T) -> Result<(), ValidationError> {
-        let mut errors = Vec::new();
-
-        for validator in &self.validators {
-            match validator.validate(input) {
-                Ok(()) => return Ok(()),
-                Err(error) if !error.is_violation() => return Err(error),
-                Err(e) => errors.push(e),
-            }
-        }
-
-        let count = errors.len();
-        let mut err =
-            ValidationError::new("or_any_failed", format!("All {count} alternatives failed"));
-        for e in errors {
-            err = err.with_nested_error(e);
-        }
-        Err(err)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -161,17 +124,5 @@ mod tests {
         assert!("abc".validate_with(&validator).is_ok());
         assert!("hello".validate_with(&validator).is_ok());
         assert!("hi".validate_with(&validator).is_err());
-    }
-
-    #[test]
-    fn test_or_any() {
-        let validators = vec![ExactLength(3), ExactLength(5), ExactLength(7)];
-        let combined = or_any(validators);
-        assert!("abc".validate_with(&combined).is_ok());
-        assert!("hello".validate_with(&combined).is_ok());
-
-        let err = "hi".validate_with(&combined).unwrap_err();
-        assert_eq!(err.code.as_ref(), "or_any_failed");
-        assert_eq!(err.nested().len(), 3);
     }
 }

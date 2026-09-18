@@ -152,8 +152,9 @@ ValidationErrors::new()                                 -> Self
 .add(e: ValidationError)
 .extend(iter: impl IntoIterator<Item = ValidationError>)
 .has_errors()                                           -> bool
+.len() / .is_empty() / .iter() / .errors()              -> slice access
+.last_mut()                                             -> Option<&mut ValidationError>
 .into_single_error(msg: &str)                           -> ValidationError
-.into_result(ok_value: T)                               -> Result<T, ValidationErrors>
 ```
 
 Implements `FromIterator<ValidationError>` and `IntoIterator`.

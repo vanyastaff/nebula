@@ -139,8 +139,7 @@ nebula-validator/src/
 │   │
 │   ├── validatable.rs AsValidatable — fallible conversions from typed values and
 │   │                  serde_json::Value into a validator's input type.
-│   └── mod.rs         Re-exports the public foundation surface and ValidationResult
-│                      aliases.
+│   └── mod.rs         Re-exports the public foundation surface.
 │
 ├── validators/
 │   ├── length.rs      MinLength, MaxLength, ExactLength, LengthRange, NotEmpty.
@@ -167,9 +166,7 @@ nebula-validator/src/
 │
 ├── combinators/
 │   ├── and.rs         And<L, R> — both must pass; short-circuits on first failure.
-│   │                  AndAll<V> — the same over a Vec of validators.
 │   ├── or.rs          Or<L, R>  — either must pass; nests both errors on failure.
-│   │                  OrAny<V> — the same over a Vec of validators.
 │   ├── not.rs         Not<V>    — inverts result; code `not_failed`.
 │   ├── when.rs        When<V, C> — skips inner validator when predicate returns false.
 │   ├── unless.rs      Unless<V, C> — equivalent to when(!condition).
