@@ -10,7 +10,7 @@ use crate::CallError;
 /// A monotonic deadline represented as a start instant plus total budget.
 ///
 /// This is intentionally small and copyable. It does not replace the injectable
-/// [`Clock`](crate::clock::Clock) used by state machines, but it gives async policies
+/// [`InstantSource`](crate::clock::InstantSource) used by state machines, but it gives async policies
 /// one shared way to enforce "remaining budget" for attempts and sleeps.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Deadline {
@@ -22,13 +22,10 @@ impl Deadline {
     /// Create a deadline starting at `Instant::now()`.
     #[must_use]
     pub fn after(budget: Duration) -> Self {
-        Self::from_start(Instant::now(), budget)
-    }
-
-    /// Create a deadline from an explicit start instant.
-    #[must_use]
-    pub const fn from_start(start: Instant, budget: Duration) -> Self {
-        Self { start, budget }
+        Self {
+            start: Instant::now(),
+            budget,
+        }
     }
 
     /// Total configured budget.
@@ -37,16 +34,10 @@ impl Deadline {
         self.budget
     }
 
-    /// Elapsed time since the deadline start.
-    #[must_use]
-    pub fn elapsed(self) -> Duration {
-        self.start.elapsed()
-    }
-
     /// Remaining time, if any.
     #[must_use]
     pub fn remaining(self) -> Option<Duration> {
-        self.budget.checked_sub(self.elapsed())
+        self.budget.checked_sub(self.start.elapsed())
     }
 
     /// Remaining time or `CallError::Timeout` if the deadline has expired.

@@ -3,9 +3,8 @@
 use std::{sync::Arc, time::Duration};
 
 use nebula_resilience::{
-    CallError,
+    CallError, CircuitState,
     circuit_breaker::{CircuitBreaker, CircuitBreakerConfig},
-    sink::CircuitState,
 };
 
 fn test_config() -> CircuitBreakerConfig {
@@ -88,15 +87,15 @@ async fn half_open_probe_failure_reopens() {
 // ── Dynamic break duration escalates ────────────────────────────────────────
 
 #[tokio::test]
-async fn dynamic_break_duration_escalates_with_consecutive_opens() {
+async fn dynamic_reset_timeout_escalates_with_consecutive_opens() {
     let cb = Arc::new(
         CircuitBreaker::new(CircuitBreakerConfig {
             failure_threshold: 1,
             reset_timeout: Duration::from_millis(30),
             max_half_open_operations: 1,
             min_operations: 1,
-            break_duration_multiplier: 2.0,
-            max_break_duration: Duration::from_secs(10),
+            reset_timeout_multiplier: 2.0,
+            max_reset_timeout: Duration::from_secs(10),
             ..Default::default()
         })
         .unwrap(),

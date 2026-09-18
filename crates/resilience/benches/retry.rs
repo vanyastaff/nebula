@@ -10,7 +10,7 @@
 //! - **Retry loop (fail N times then succeed)** — measures classification, backoff computation, and
 //!   re-scheduling overhead across 1, 2, and 4 failures. Uses
 //!   `BackoffConfig::Fixed(Duration::ZERO)` to isolate logic cost from sleep time.
-//! - **Jitter overhead** — comparison of `JitterConfig::None` vs `JitterConfig::Full` measured
+//! - **Jitter overhead** — comparison of `JitterConfig::None` vs `JitterConfig::Additive` measured
 //!   through the full retry loop at zero-delay backoff.
 //!
 //! Run with:
@@ -210,7 +210,7 @@ fn bench_jitter_overhead(c: &mut Criterion) {
                 let cfg = RetryConfig::<()>::new(4)
                     .unwrap()
                     .backoff(BackoffConfig::Fixed(Duration::ZERO))
-                    .jitter(JitterConfig::Full { factor: 0.5, seed: None });
+                    .jitter(JitterConfig::Additive { max_fraction: 0.5, seed: None });
                 (cfg, fail_n_then_ok(3))
             },
             |(cfg, op)| async move {
@@ -226,7 +226,7 @@ fn bench_jitter_overhead(c: &mut Criterion) {
                 let cfg = RetryConfig::<()>::new(4)
                     .unwrap()
                     .backoff(BackoffConfig::Fixed(Duration::ZERO))
-                    .jitter(JitterConfig::Full { factor: 0.5, seed: Some(0xdead_beef) });
+                    .jitter(JitterConfig::Additive { max_fraction: 0.5, seed: Some(0xdead_beef) });
                 (cfg, fail_n_then_ok(3))
             },
             |(cfg, op)| async move {

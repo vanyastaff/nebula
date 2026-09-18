@@ -54,6 +54,22 @@ pub(crate) enum WorkerRunError {
     #[error("worker runtime stopped before a shutdown signal")]
     RuntimeExited,
 
+    /// The runtime did not exit within the shutdown budget after its
+    /// cancellation token fired.
+    ///
+    /// The process exits non-zero instead of waiting indefinitely on a
+    /// component that is wedged; work it was still draining is left to lease
+    /// expiry and the next replica, which is the same recovery path a crash
+    /// takes.
+    #[error(
+        "worker runtime did not exit within {budget_secs}s of shutdown; \
+         abandoning the drain (accepted work recovers via lease expiry)"
+    )]
+    ShutdownTimedOut {
+        /// The elapsed shutdown budget in seconds.
+        budget_secs: u64,
+    },
+
     /// SQLite pool construction or `connect()` failed.
     ///
     /// Uses an explicit `.map_err(WorkerRunError::SqliteDatabase)` at the pool
@@ -408,7 +424,20 @@ pub(crate) async fn run() -> Result<(), WorkerRunError> {
             tracing::info!(
                 "shutdown signal received; waiting for the worker runtime to exit"
             );
-            handle.await.map_err(WorkerRunError::RuntimeTask)??;
+            match tokio::time::timeout(SHUTDOWN_DRAIN_BUDGET, &mut handle).await {
+                Ok(runtime_result) => {
+                    runtime_result.map_err(WorkerRunError::RuntimeTask)??;
+                },
+                Err(_elapsed) => {
+                    // Dropping the handle detaches the runtime task; the
+                    // process exits below. Accepted work is not lost: its
+                    // execution lease expires and a successor replica
+                    // reclaims it, exactly as after a crash.
+                    return Err(WorkerRunError::ShutdownTimedOut {
+                        budget_secs: SHUTDOWN_DRAIN_BUDGET.as_secs(),
+                    });
+                },
+            }
         },
         runtime_result = &mut handle => {
             cancel.cancel();
@@ -420,6 +449,15 @@ pub(crate) async fn run() -> Result<(), WorkerRunError> {
 
     Ok(())
 }
+
+/// How long the worker waits for its supervised components to drain after a
+/// shutdown signal before abandoning the drain and exiting non-zero.
+///
+/// Longer than the server's HTTP drain budget because worker components finish
+/// in-flight node turns rather than whole requests, and shorter than the
+/// orchestrator's typical grace period so lease expiry — not SIGKILL — is the
+/// recovery path for work that cannot finish.
+const SHUTDOWN_DRAIN_BUDGET: Duration = Duration::from_secs(20);
 
 /// Wait for SIGINT (Ctrl-C) or SIGTERM, then cancel `token`.
 async fn wait_for_shutdown_signal() -> Result<(), std::io::Error> {

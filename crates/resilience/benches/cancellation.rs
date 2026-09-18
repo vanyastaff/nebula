@@ -1,15 +1,11 @@
-//! Benchmarks for `CancellableFuture`'s per-poll cost.
+//! Benchmarks for `with_cancellation`'s per-poll cost.
 //!
-//! Regression guard for #632. `CancellableFuture` used to build a fresh
-//! `WaitForCancellationFuture` on **every** poll, re-registering a waker with
-//! the token each time. That cost is invisible on a future that yields once and
-//! dominant on one that yields constantly — which is exactly what a busy
-//! workflow step looks like.
-//!
-//! The wrapped case is measured against the same future unwrapped, so the
-//! benchmark reports the *overhead of the wrapper* rather than the cost of
-//! yielding. A reintroduced per-poll rebuild shows up as that gap widening with
-//! the yield count.
+//! `CancellationExt::with_cancellation` delegates to tokio-util's
+//! `run_until_cancelled_owned`, which stores its cancellation wait instead of
+//! rebuilding it per poll. This benchmark measures the remaining wrapper
+//! overhead against the same future run unwrapped, so a regression that
+//! reintroduced per-poll work would show up as that gap widening with the
+//! yield count.
 
 use std::hint::black_box;
 

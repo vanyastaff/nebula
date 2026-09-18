@@ -17,7 +17,7 @@ use std::{fmt, future::Future, pin::Pin, sync::Arc};
 use tokio::sync::RwLock;
 
 use crate::{
-    MetricsSink, NoopSink, PolicyContext, ResilienceEvent,
+    CallContext, EventSink, NoopSink, ResilienceEvent,
     error::{CallError, CallErrorKind},
 };
 
@@ -28,15 +28,20 @@ use crate::{
 /// Fallback strategy trait, generic over both the value and error type.
 ///
 /// Implement this trait to define custom fallback behavior.
+///
+/// [`ValueFallback`] and [`FunctionFallback`] are complete implementations to
+/// copy from; [`FallbackExecutor::call`](FallbackExecutor::call) shows how a
+/// strategy is driven.
 pub trait FallbackStrategy<T, E>: Send + Sync {
-    /// Execute recovery logic after [`fallback()`](Self::fallback) has accepted the error.
+    /// Produce a recovery value for an error that
+    /// [`should_fallback()`](Self::should_fallback) accepted.
     ///
-    /// Custom strategies normally implement this method and leave [`fallback()`](Self::fallback)
-    /// alone. Calling `recover` directly intentionally bypasses
-    /// [`should_fallback()`](Self::should_fallback); policy code should call `fallback` so
-    /// cancellation and overload-style errors are not accidentally converted into successful
-    /// graceful degradation.
-    #[doc(hidden)]
+    /// This is the trait's required method: a custom strategy implements
+    /// `recover` and normally leaves [`fallback()`](Self::fallback) alone.
+    /// Policy code should call [`fallback()`](Self::fallback), not `recover`
+    /// directly — `fallback` is what gates recovery on `should_fallback`, so
+    /// calling `recover` bypasses the decision that keeps cancellation and
+    /// backpressure rejections from being reported as graceful degradation.
     fn recover<'a>(
         &'a self,
         error: CallError<E>,
@@ -109,7 +114,7 @@ pub struct ValueFallback<T: Clone + Send + Sync> {
 }
 
 impl<T: Clone + Send + Sync> ValueFallback<T> {
-    /// Create new value fallback.
+    /// Creates a new value fallback.
     pub const fn new(value: T) -> Self {
         Self { value }
     }
@@ -212,7 +217,7 @@ where
             match (self.function)(erased).await {
                 Ok(value) => Ok(value),
                 Err(e) => {
-                    let fallback = e.flat_map_inner(
+                    let fallback = e.flat_map_operation(
                         |()| {
                             CallError::fallback_failed_with(
                                 "fallback returned Operation(()) — original error was erased",
@@ -314,7 +319,12 @@ impl<T: Clone + Send + Sync> CacheFallback<T> {
         self
     }
 
-    /// Update cached value.
+    /// Updates the cached value.
+    ///
+    /// # Cancel safety
+    ///
+    /// Dropping the returned future before the write lands leaves the
+    /// previous entry in place; no partial value is observable.
     pub async fn update(&self, value: T) {
         *self.cache.write().await = Some(CacheEntry {
             value,
@@ -546,7 +556,104 @@ impl<T: Send + Sync + 'static, E: Send + 'static> FallbackStrategy<T, E>
     }
 }
 
-/// Fallback with operation — combines primary and fallback operations.
+// =============================================================================
+// SHARED ORCHESTRATION
+// =============================================================================
+
+/// Outcome of attempting a fallback after a primary failure.
+///
+/// Produced by [`orchestrate_fallback`]; the caller translates it into its own
+/// completion event (`PipelineOutcome` for the pipeline, the bare event pair
+/// for [`FallbackExecutor`]).
+pub(crate) enum FallbackOutcome<T, E> {
+    /// The strategy was not asked: it declined the error.
+    Declined(CallError<E>),
+    /// The strategy recovered a value.
+    Recovered(T),
+    /// The strategy was asked and failed.
+    Failed(CallError<E>),
+}
+
+/// Whether a failed call should be offered to the strategy at all.
+///
+/// The decision half of the fallback contract, callable without awaiting.
+/// `FallbackExecutor` uses it as a guard so the common decline path — policy
+/// rejections such as [`CallError::LoadShed`] — returns without building an
+/// async recovery frame; [`orchestrate_fallback`] uses the same function, so
+/// the standalone executor and the pipeline cannot drift on who gets offered
+/// to a strategy.
+pub(crate) fn should_offer_fallback<T, E>(
+    strategy: &dyn FallbackStrategy<T, E>,
+    error: &CallError<E>,
+) -> bool {
+    !matches!(error, CallError::Cancelled { .. }) && strategy.should_fallback(error)
+}
+
+/// Run an already-accepted error through the strategy: emit
+/// `FallbackAttempted`, recover, emit the result event.
+///
+/// Caller responsibility: [`should_offer_fallback`] must have returned `true`
+/// for this error. Calling it directly on a declined error would report a
+/// recovery attempt that policy said should not happen.
+pub(crate) async fn recover_via_fallback<T, E>(
+    strategy: &dyn FallbackStrategy<T, E>,
+    sink: &dyn EventSink,
+    error: CallError<E>,
+) -> FallbackOutcome<T, E>
+where
+    T: Send + Sync,
+    E: Send,
+{
+    let primary_error = error.kind();
+    sink.record(ResilienceEvent::FallbackAttempted { primary_error });
+    match strategy.recover(error).await {
+        Ok(value) => {
+            sink.record(ResilienceEvent::FallbackSucceeded { primary_error });
+            FallbackOutcome::Recovered(value)
+        },
+        Err(fallback_error) => {
+            sink.record(ResilienceEvent::FallbackFailed {
+                primary_error,
+                fallback_error: fallback_error.kind(),
+            });
+            FallbackOutcome::Failed(fallback_error)
+        },
+    }
+}
+
+/// The one fallback orchestration: decide, then [`recover_via_fallback`].
+///
+/// `ResiliencePipeline::call_with_fallback*` drives fallback through this
+/// function, so the event contract cannot drift from the standalone
+/// `FallbackExecutor` path.
+///
+/// Cancellation and context-deadline errors are never offered to the strategy:
+/// shutdown and action deadlines must not be reported as successful graceful
+/// degradation. The caller keeps responsibility for the stronger check that
+/// requires its own cancellation handle (the pipeline's `select!` against a
+/// live token).
+pub(crate) async fn orchestrate_fallback<T, E>(
+    strategy: &dyn FallbackStrategy<T, E>,
+    sink: &dyn EventSink,
+    error: CallError<E>,
+) -> FallbackOutcome<T, E>
+where
+    T: Send + Sync,
+    E: Send,
+{
+    if !should_offer_fallback(strategy, &error) {
+        return FallbackOutcome::Declined(error);
+    }
+    recover_via_fallback(strategy, sink, error).await
+}
+
+/// Runs an operation and, on eligible failure, a [`FallbackStrategy`].
+///
+/// The executor shape matches the crate's other drivers
+/// ([`HedgeExecutor`](crate::HedgeExecutor),
+/// [`TimeoutExecutor`](crate::TimeoutExecutor)): a configured object whose
+/// `call` wraps a caller-supplied operation, rather than a free function that
+/// needs the strategy threaded through every call site.
 ///
 /// # Examples
 ///
@@ -555,13 +662,13 @@ impl<T: Send + Sync + 'static, E: Send + 'static> FallbackStrategy<T, E>
 ///
 /// use nebula_resilience::{
 ///     CallError,
-///     fallback::{FallbackOperation, ValueFallback},
+///     fallback::{FallbackExecutor, ValueFallback},
 /// };
 ///
 /// # #[tokio::main]
 /// # async fn main() {
-/// let op: FallbackOperation<u32, &str> =
-///     FallbackOperation::new(Arc::new(ValueFallback::new(99u32)));
+/// let op: FallbackExecutor<u32, &str> =
+///     FallbackExecutor::new(Arc::new(ValueFallback::new(99u32)));
 ///
 /// // The primary operation fails, so the fallback value is returned.
 /// let recovered = op
@@ -570,18 +677,45 @@ impl<T: Send + Sync + 'static, E: Send + 'static> FallbackStrategy<T, E>
 /// assert_eq!(recovered.unwrap(), 99);
 /// # }
 /// ```
-pub struct FallbackOperation<T, E> {
+pub struct FallbackExecutor<T, E> {
     fallback_strategy: Arc<dyn FallbackStrategy<T, E>>,
-    sink: Arc<dyn MetricsSink>,
+    sink: Arc<dyn EventSink>,
 }
 
-impl<T, E> fmt::Debug for FallbackOperation<T, E> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("FallbackOperation").finish_non_exhaustive()
+impl<T, E> FallbackExecutor<T, E> {
+    /// Delegate one primary failure to the strategy through the shared
+    /// orchestration and translate its outcome.
+    /// The synchronous decline check, inlined by callers before they commit
+    /// to an async recovery path.
+    fn offers_fallback(&self, error: &CallError<E>) -> bool {
+        should_offer_fallback(self.fallback_strategy.as_ref(), error)
+    }
+
+    /// Recover an error the caller already accepted for fallback.
+    ///
+    /// The acceptance decision is made once by [`Self::offers_fallback`];
+    /// this function never re-evaluates it, so `should_fallback` runs exactly
+    /// once per failed call.
+    async fn apply(&self, error: CallError<E>) -> Result<T, CallError<E>>
+    where
+        T: Send + Sync,
+        E: Send,
+    {
+        match recover_via_fallback(self.fallback_strategy.as_ref(), self.sink.as_ref(), error).await
+        {
+            FallbackOutcome::Declined(error) | FallbackOutcome::Failed(error) => Err(error),
+            FallbackOutcome::Recovered(value) => Ok(value),
+        }
     }
 }
 
-impl<T, E> FallbackOperation<T, E> {
+impl<T, E> fmt::Debug for FallbackExecutor<T, E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FallbackExecutor").finish_non_exhaustive()
+    }
+}
+
+impl<T, E> FallbackExecutor<T, E> {
     /// Create new fallback operation.
     #[must_use]
     pub fn new(fallback_strategy: Arc<dyn FallbackStrategy<T, E>>) -> Self {
@@ -593,20 +727,16 @@ impl<T, E> FallbackOperation<T, E> {
 
     /// Attach a metrics/event sink for standalone fallback lifecycle events.
     #[must_use = "builder methods must be chained or built"]
-    pub fn with_sink(mut self, sink: impl MetricsSink + 'static) -> Self {
+    pub fn with_sink(mut self, sink: impl EventSink + 'static) -> Self {
         self.sink = Arc::new(sink);
         self
     }
 
     /// Attach a shared metrics/event sink for standalone fallback lifecycle events.
     #[must_use = "builder methods must be chained or built"]
-    pub fn with_shared_sink(mut self, sink: Arc<dyn MetricsSink>) -> Self {
+    pub fn with_shared_sink(mut self, sink: Arc<dyn EventSink>) -> Self {
         self.sink = sink;
         self
-    }
-
-    fn record(&self, event: ResilienceEvent) {
-        self.sink.record(event);
     }
 
     /// Call with fallback.
@@ -615,6 +745,11 @@ impl<T, E> FallbackOperation<T, E> {
     ///
     /// Returns the fallback strategy's error if both the operation and fallback fail,
     /// or the original error if the fallback strategy declines to handle it.
+    ///
+    /// # Cancel safety
+    ///
+    /// Dropping the returned future drops the in-flight primary or fallback at
+    /// its current `.await`; no crate-owned state is left half-written.
     pub async fn call<F, Fut>(&self, operation: F) -> Result<T, CallError<E>>
     where
         F: FnOnce() -> Fut,
@@ -624,27 +759,8 @@ impl<T, E> FallbackOperation<T, E> {
     {
         match operation().await {
             Ok(value) => Ok(value),
-            Err(error) => {
-                if self.fallback_strategy.should_fallback(&error) {
-                    let primary_error = error.kind();
-                    self.record(ResilienceEvent::FallbackAttempted { primary_error });
-                    match self.fallback_strategy.recover(error).await {
-                        Ok(value) => {
-                            self.record(ResilienceEvent::FallbackSucceeded { primary_error });
-                            Ok(value)
-                        },
-                        Err(error) => {
-                            self.record(ResilienceEvent::FallbackFailed {
-                                primary_error,
-                                fallback_error: error.kind(),
-                            });
-                            Err(error)
-                        },
-                    }
-                } else {
-                    Err(error)
-                }
-            },
+            Err(error) if self.offers_fallback(&error) => self.apply(error).await,
+            Err(error) => Err(error),
         }
     }
 
@@ -661,9 +777,15 @@ impl<T, E> FallbackOperation<T, E> {
     /// `Err(CallError::Timeout)` if the context deadline expires, the fallback
     /// strategy's error if both primary and fallback fail, or the original error
     /// if fallback declines it.
-    pub async fn call_with_policy_context<F, Fut>(
+    ///
+    /// # Cancel safety
+    ///
+    /// Dropping the returned future drops the in-flight primary or fallback at
+    /// its current `.await`; the context's `select!` arms hold only stack
+    /// state, so nothing is left half-written.
+    pub async fn call_with_context<F, Fut>(
         &self,
-        context: &PolicyContext,
+        context: &CallContext,
         operation: F,
     ) -> Result<T, CallError<E>>
     where
@@ -684,28 +806,13 @@ impl<T, E> FallbackOperation<T, E> {
                 if matches!(error, CallError::Timeout(_)) && context.is_deadline_expired() {
                     return Err(error);
                 }
-                if self.fallback_strategy.should_fallback(&error) {
-                    let primary_error = error.kind();
-                    self.record(ResilienceEvent::FallbackAttempted { primary_error });
-                    match context
-                        .run_result(self.fallback_strategy.recover(error))
-                        .await
-                    {
-                        Ok(value) => {
-                            self.record(ResilienceEvent::FallbackSucceeded { primary_error });
-                            Ok(value)
-                        },
-                        Err(error) => {
-                            self.record(ResilienceEvent::FallbackFailed {
-                                primary_error,
-                                fallback_error: error.kind(),
-                            });
-                            Err(error)
-                        },
-                    }
-                } else {
-                    Err(error)
+                if !self.offers_fallback(&error) {
+                    return Err(error);
                 }
+                // The fallback phase stays bounded by the same context as the
+                // primary: a deadline that expires during recovery turns into
+                // `Timeout` rather than waiting for a slow strategy.
+                context.run_result(self.apply(error)).await
             },
         }
     }

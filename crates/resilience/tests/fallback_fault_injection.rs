@@ -5,7 +5,7 @@ use std::{sync::Arc, time::Duration};
 use nebula_resilience::{
     CallError, CallErrorKind,
     fallback::{
-        CacheFallback, ChainFallback, FallbackOperation, FallbackStrategy, FunctionFallback,
+        CacheFallback, ChainFallback, FallbackExecutor, FallbackStrategy, FunctionFallback,
         PriorityFallback, ValueFallback,
     },
 };
@@ -13,7 +13,7 @@ use nebula_resilience::{
 #[tokio::test]
 async fn test_fault_injection_value_fallback_on_timeout() {
     let fallback = Arc::new(ValueFallback::new("value-fallback".to_string()));
-    let operation = FallbackOperation::new(fallback);
+    let operation = FallbackExecutor::new(fallback);
 
     let result = operation
         .call(|| async {
@@ -34,7 +34,7 @@ async fn test_fault_injection_function_fallback_receives_original_error() {
         }
     }));
 
-    let operation = FallbackOperation::new(fallback);
+    let operation = FallbackExecutor::new(fallback);
     let result = operation
         .call(|| async { Err::<String, CallError<&str>>(CallError::CircuitOpen) })
         .await;
@@ -48,7 +48,7 @@ async fn test_fault_injection_cache_fallback_uses_cached_value() {
     let fallback = Arc::new(CacheFallback::new());
     fallback.update("cached-value".to_string()).await;
 
-    let operation = FallbackOperation::new(fallback);
+    let operation = FallbackExecutor::new(fallback);
     let result = operation
         .call(|| async {
             Err::<String, CallError<&str>>(CallError::Timeout(Duration::from_millis(10)))
@@ -65,7 +65,7 @@ async fn test_fault_injection_cache_fallback_expired_value_returns_original_erro
     fallback.update("stale-value".to_string()).await;
     tokio::time::sleep(Duration::from_millis(10)).await;
 
-    let operation = FallbackOperation::new(fallback);
+    let operation = FallbackExecutor::new(fallback);
     let result = operation
         .call(|| async {
             Err::<String, CallError<&str>>(CallError::Timeout(Duration::from_millis(10)))
@@ -86,7 +86,7 @@ async fn test_fault_injection_cache_fallback_stale_if_error_returns_expired_valu
     fallback.update("stale-value".to_string()).await;
     tokio::time::sleep(Duration::from_millis(10)).await;
 
-    let operation = FallbackOperation::new(fallback);
+    let operation = FallbackExecutor::new(fallback);
     let result = operation
         .call(|| async {
             Err::<String, CallError<&str>>(CallError::Timeout(Duration::from_millis(10)))
@@ -108,7 +108,7 @@ async fn test_fault_injection_chain_fallback_cascades_to_next_strategy() {
             .then(second as Arc<dyn FallbackStrategy<String, &str>>),
     );
 
-    let operation = FallbackOperation::new(chain);
+    let operation = FallbackExecutor::new(chain);
     let result = operation
         .call(|| async {
             Err::<String, CallError<&str>>(CallError::Timeout(Duration::from_millis(10)))
@@ -132,7 +132,7 @@ async fn test_fault_injection_chain_stops_on_fallback_cancellation() {
             .then(second as Arc<dyn FallbackStrategy<String, &str>>),
     );
 
-    let operation = FallbackOperation::new(chain);
+    let operation = FallbackExecutor::new(chain);
     let result = operation
         .call(|| async {
             Err::<String, CallError<&str>>(CallError::Timeout(Duration::from_millis(10)))
@@ -158,7 +158,7 @@ async fn test_fault_injection_priority_fallback_routes_by_error_kind() {
             )
             .with_default(default_fallback as Arc<dyn FallbackStrategy<String, &str>>),
     );
-    let operation = FallbackOperation::new(priority);
+    let operation = FallbackExecutor::new(priority);
 
     let timeout_result = operation
         .call(|| async {
@@ -182,7 +182,7 @@ async fn test_fault_injection_priority_fallback_without_default_returns_original
         CallErrorKind::Timeout,
         timeout_fallback as Arc<dyn FallbackStrategy<String, &str>>,
     ));
-    let operation = FallbackOperation::new(priority);
+    let operation = FallbackExecutor::new(priority);
 
     let result = operation
         .call(|| async { Err::<String, CallError<&str>>(CallError::CircuitOpen) })

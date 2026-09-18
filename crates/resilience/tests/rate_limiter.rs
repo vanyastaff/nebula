@@ -52,15 +52,15 @@ async fn test_adaptive_rate_limiter_adjusts() {
         limiter.record_success();
     }
 
-    let initial_rate = limiter.current_rate().await;
-    assert_eq!(initial_rate, 100.0, "Initial rate should be 100.0");
+    let initial_rate = limiter.status().await.limit_per_second;
+    assert_eq!(initial_rate, Some(100.0), "Initial rate should be 100.0");
 
     for _ in 0..10 {
         limiter.record_error();
     }
 
     // Since we haven't waited for the stats window (60s), rate should still be the same
-    let rate_after_immediate = limiter.current_rate().await;
+    let rate_after_immediate = limiter.status().await.limit_per_second;
     assert_eq!(
         rate_after_immediate, initial_rate,
         "Rate should not change before stats window elapses"

@@ -2,10 +2,9 @@ use std::time::Duration;
 
 use super::*;
 use crate::{
-    CallError, PolicyContext, RecordingSink,
+    CallContext, CallError, CircuitState as CS, RecordingSink,
     cancellation::CancellationContext,
     classifier::{ErrorClass, FnClassifier},
-    sink::CircuitState as CS,
 };
 
 fn default_config() -> CircuitBreakerConfig {
@@ -16,12 +15,10 @@ fn default_config() -> CircuitBreakerConfig {
         half_open_success_threshold: None,
         min_operations: 1,
         count_timeouts_as_failures: true,
-        break_duration_multiplier: 1.0,
-        max_break_duration: Duration::from_mins(5),
+        reset_timeout_multiplier: 1.0,
+        max_reset_timeout: Duration::from_mins(5),
         slow_call_threshold: None,
         slow_call_rate_threshold: 1.0,
-        sliding_window_size: 0,
-        failure_rate_threshold: None,
     }
 }
 
@@ -51,20 +48,18 @@ async fn cancelled_does_not_trip_breaker() {
 }
 
 #[tokio::test]
-async fn policy_context_cancellation_does_not_trip_breaker() {
+async fn call_context_cancellation_does_not_trip_breaker() {
     let cb = CircuitBreaker::new(CircuitBreakerConfig {
         failure_threshold: 1,
         ..default_config()
     })
     .unwrap();
     let cancellation = CancellationContext::with_reason("shutdown");
-    let context = PolicyContext::from_cancellation(cancellation.clone());
+    let context = CallContext::from_cancellation(cancellation.clone());
     cancellation.cancel();
 
     let result = cb
-        .call_with_policy_context::<(), &str, _>(&context, || {
-            Box::pin(async { Ok::<(), &str>(()) })
-        })
+        .call_with_context::<(), &str, _>(&context, || Box::pin(async { Ok::<(), &str>(()) }))
         .await;
 
     assert!(matches!(result, Err(CallError::Cancelled { .. })));
@@ -73,7 +68,7 @@ async fn policy_context_cancellation_does_not_trip_breaker() {
 }
 
 #[tokio::test]
-async fn policy_context_deadline_records_timeout_outcome() {
+async fn call_context_deadline_records_timeout_outcome() {
     let cb = CircuitBreaker::new(CircuitBreakerConfig {
         failure_threshold: 1,
         min_operations: 1,
@@ -81,10 +76,10 @@ async fn policy_context_deadline_records_timeout_outcome() {
         ..default_config()
     })
     .unwrap();
-    let context = PolicyContext::with_timeout(Duration::from_millis(1));
+    let context = CallContext::with_timeout(Duration::from_millis(1));
 
     let result = cb
-        .call_with_policy_context::<(), &str, _>(&context, || {
+        .call_with_context::<(), &str, _>(&context, || {
             Box::pin(async {
                 tokio::time::sleep(Duration::from_mins(1)).await;
                 Ok::<(), &str>(())
@@ -352,9 +347,9 @@ async fn on_state_change_fires_on_open() {
 }
 
 #[tokio::test]
-async fn dynamic_break_duration_increases_on_repeated_opens() {
-    use crate::clock::MockClock;
-    let clock = Arc::new(MockClock::new());
+async fn dynamic_reset_timeout_increases_on_repeated_opens() {
+    use crate::clock::MockInstant;
+    let clock = Arc::new(MockInstant::new());
     let cb = CircuitBreaker::new(CircuitBreakerConfig {
         failure_threshold: 2,
         reset_timeout: Duration::from_millis(100),
@@ -362,15 +357,13 @@ async fn dynamic_break_duration_increases_on_repeated_opens() {
         half_open_success_threshold: None,
         min_operations: 1,
         count_timeouts_as_failures: true,
-        break_duration_multiplier: 2.0,
-        max_break_duration: Duration::from_secs(10),
+        reset_timeout_multiplier: 2.0,
+        max_reset_timeout: Duration::from_secs(10),
         slow_call_threshold: None,
         slow_call_rate_threshold: 1.0,
-        sliding_window_size: 0,
-        failure_rate_threshold: None,
     })
     .unwrap()
-    .with_clock(Arc::clone(&clock) as Arc<dyn Clock>);
+    .with_instant_source(Arc::clone(&clock) as Arc<dyn InstantSource>);
 
     // First trip
     cb.record_outcome(Outcome::Failure);
@@ -461,71 +454,6 @@ async fn slow_calls_below_threshold_dont_trip() {
     assert_eq!(cb.circuit_state(), CS::Closed);
 }
 
-#[tokio::test]
-async fn sliding_window_forgets_old_outcomes() {
-    let cb = CircuitBreaker::new(CircuitBreakerConfig {
-        failure_threshold: 3,
-        sliding_window_size: 4,
-        failure_rate_threshold: Some(0.6),
-        min_operations: 3,
-        ..default_config()
-    })
-    .unwrap();
-
-    // 3 failures -> 3/3 = 100% > 60% -> trips
-    cb.record_outcome(Outcome::Failure);
-    cb.record_outcome(Outcome::Failure);
-    cb.record_outcome(Outcome::Failure);
-    assert_eq!(cb.circuit_state(), CS::Open);
-
-    cb.force_close();
-
-    // 4 calls: 1 failure, 3 successes -> 1/4 = 25% < 60% -> stays closed
-    cb.record_outcome(Outcome::Success);
-    cb.record_outcome(Outcome::Success);
-    cb.record_outcome(Outcome::Failure);
-    cb.record_outcome(Outcome::Success);
-    assert_eq!(cb.circuit_state(), CS::Closed);
-
-    // One more failure pushes oldest (success) out:
-    // window = [S, F, S, F] -> 2/4 = 50% < 60% -> stays closed
-    cb.record_outcome(Outcome::Failure);
-    assert_eq!(cb.circuit_state(), CS::Closed);
-
-    // Another failure pushes a success out:
-    // window = [F, S, F, F] -> 3/4 = 75% >= 60% -> trips
-    cb.record_outcome(Outcome::Failure);
-    assert_eq!(cb.circuit_state(), CS::Open);
-}
-
-#[test]
-fn sliding_window_without_rate_threshold_uses_count() {
-    // sliding_window_size > 0 but failure_rate_threshold is None -> count-based
-    let cb = CircuitBreaker::new(CircuitBreakerConfig {
-        failure_threshold: 3,
-        sliding_window_size: 10,
-        failure_rate_threshold: None,
-        min_operations: 1,
-        ..default_config()
-    })
-    .unwrap();
-
-    cb.record_outcome(Outcome::Failure);
-    cb.record_outcome(Outcome::Failure);
-    assert_eq!(cb.circuit_state(), CS::Closed);
-    cb.record_outcome(Outcome::Failure);
-    assert_eq!(cb.circuit_state(), CS::Open);
-}
-
-#[test]
-fn invalid_failure_rate_threshold_rejected() {
-    let result = CircuitBreaker::new(CircuitBreakerConfig {
-        failure_rate_threshold: Some(1.5),
-        ..default_config()
-    });
-    assert!(result.is_err());
-}
-
 /// Pins constructor validity of the `Default` impl — the config the L1
 /// refresh fallback in `crates/credential` reaches for when its static
 /// config is rejected. If `CircuitBreakerConfig::default()` stopped
@@ -542,33 +470,6 @@ fn default_config_is_constructor_valid() {
         CircuitBreaker::new(CircuitBreakerConfig::default()).is_ok(),
         "the Default impl config must be accepted by CircuitBreaker::new"
     );
-}
-
-#[test]
-fn sliding_window_stats_reflect_window() {
-    let cb = CircuitBreaker::new(CircuitBreakerConfig {
-        failure_threshold: 100,
-        sliding_window_size: 4,
-        failure_rate_threshold: Some(0.9),
-        min_operations: 1,
-        ..default_config()
-    })
-    .unwrap();
-
-    cb.record_outcome(Outcome::Failure);
-    cb.record_outcome(Outcome::Failure);
-    cb.record_outcome(Outcome::Success);
-    cb.record_outcome(Outcome::Success);
-
-    let stats = cb.stats();
-    assert_eq!(stats.total, 4);
-    assert_eq!(stats.failures, 2);
-
-    // Push oldest failure out of window
-    cb.record_outcome(Outcome::Success);
-    let stats = cb.stats();
-    assert_eq!(stats.total, 4);
-    assert_eq!(stats.failures, 1);
 }
 
 // ── C1: min_operations validation ────────────────────────────────────

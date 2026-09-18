@@ -17,15 +17,12 @@ documentation.workspace = true
 # Keep boundary type serialization enabled by default for backwards compatibility.
 default = ["serde"]
 
-# Enables every normal optional runtime feature owned by this crate.
-full = ["serde"]
-
 # Enables serde for config/value boundary types.
 serde = ["dep:serde", "smallvec/serde"]
 
-# Enables loom-backed atomics for model-checking tests when paired with
-# `RUSTFLAGS="--cfg loom"`.
-loom = ["dep:loom"]
+# Exposes internal helpers the criterion benches measure directly. Not part
+# of the documented surface: enabling it adds no behavior, only visibility.
+bench-internals = []
 
 [dependencies]
 # Nebula integration
@@ -48,7 +45,6 @@ fastrand = "2.4"
 
 # Optional feature dependencies
 serde = { workspace = true, optional = true }
-loom = { version = "0.7", optional = true }
 
 [dev-dependencies]
 criterion = { workspace = true, features = ["async_tokio"] }
@@ -66,6 +62,7 @@ workspace = true
 [[bench]]
 name = "compose"
 harness = false
+required-features = ["bench-internals"]
 
 [[bench]]
 name = "rate_limiter"
@@ -90,14 +87,12 @@ harness = false
 [[bench]]
 name = "latency_tracker"
 harness = false
-
-[[bench]]
-name = "sliding_window_cb"
-harness = false
+required-features = ["bench-internals"]
 
 [[bench]]
 name = "retry"
 harness = false
+required-features = ["bench-internals"]
 
 [[bench]]
 name = "cancellation"
@@ -112,9 +107,10 @@ name = "load_shed"
 harness = false
 
 [[bench]]
-name = "policy_context"
+name = "call_context"
 harness = false
 
 [[bench]]
 name = "hedge"
 harness = false
+required-features = ["bench-internals"]

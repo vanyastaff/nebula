@@ -250,7 +250,8 @@ unreachable_pub = "warn"
 #   is the standard idiom for fire-and-forget; forcing `drop(x)` hurts clarity.
 #
 # Custom cfgs known across the workspace:
-# - `cfg(loom)` is set by nebula-resilience's loom harness.
+# - `cfg(loom)` is set by the storage loom probe harness
+#   (`crates/storage-loom-probe`, `--cfg loom` + its `loom-test` feature).
 # Keeping every custom cfg here at workspace level so every crate can
 # switch `workspace = true` on without re-declaring it locally.
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }

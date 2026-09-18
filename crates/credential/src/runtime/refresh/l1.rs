@@ -99,6 +99,7 @@
 use std::{collections::HashMap, fmt, num::NonZeroUsize, sync::Arc, time::Duration};
 
 use lru::LruCache;
+use nebula_resilience::CircuitState;
 use nebula_resilience::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, Outcome};
 use tokio::sync::oneshot;
 
@@ -405,10 +406,21 @@ impl L1RefreshCoalescer {
     }
 
     /// Returns `true` if the circuit breaker is open (too many failures).
+    ///
+    /// Reads [`CircuitBreaker::circuit_state`] rather than probing with
+    /// `try_acquire`: this is called on the resolve path, and `try_acquire`
+    /// mutates breaker state (it consumes a half-open probe slot and can
+    /// drive `Open → HalfOpen`). Using it as a predicate would let an
+    /// observability read both leak probe slots and open the circuit it is
+    /// supposed to be observing.
+    ///
+    /// `peek` rather than `get`: this is a diagnostic read, and `get` would
+    /// promote the entry's LRU recency as a side effect, evicting whichever
+    /// credential happened to be oldest.
     pub(crate) fn is_circuit_open(&self, credential_id: &str) -> bool {
-        let mut cbs = self.circuit_breakers.lock();
-        cbs.get(credential_id)
-            .is_some_and(|cb| cb.try_acquire::<()>().is_err())
+        let cbs = self.circuit_breakers.lock();
+        cbs.peek(credential_id)
+            .is_some_and(|cb| cb.circuit_state() == CircuitState::Open)
     }
 }
 

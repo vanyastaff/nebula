@@ -1,17 +1,24 @@
-//! Pluggable clock abstraction for deterministic testing.
+//! Pluggable monotonic instant source for deterministic testing.
 //!
-//! The [`Clock`] trait decouples "what time is it now?" from the system
-//! clock.  Production code uses [`SystemClock`]; tests use [`MockClock`],
-//! which allows time to be advanced programmatically without `sleep`.
+//! [`InstantSource`] decouples "what instant is it now?" from the process
+//! monotonic clock. Production code uses [`SystemInstant`]; tests use
+//! [`MockInstant`], which advances programmatically without `sleep`.
+//!
+//! The name deliberately avoids `Clock`: the workspace already has
+//! `nebula_core::accessor::Clock` (wall time plus monotonic) and
+//! `nebula_action::webhook::Clock`. Those carry wall-clock time; this trait
+//! carries only `std::time::Instant`, matching Java's
+//! [`java.time.InstantSource`](https://docs.oracle.com/en/java/javase/17/docs/api/java.base/java/time/InstantSource.html)
+//! in scope.
 //!
 //! # Example
 //!
 //! ```rust
 //! use std::time::Duration;
 //!
-//! use nebula_resilience::clock::{Clock, MockClock};
+//! use nebula_resilience::clock::{InstantSource, MockInstant};
 //!
-//! let clock = MockClock::new();
+//! let clock = MockInstant::new();
 //! let t0 = clock.now();
 //!
 //! clock.advance(Duration::from_secs(5));
@@ -31,29 +38,34 @@ use parking_lot::Mutex;
 // TRAIT
 // =============================================================================
 
-/// A source of wall-clock time.
+/// A source of monotonic instants.
 ///
 /// Implement this trait (or use one of the provided implementations) to inject
 /// a time source into resilience patterns that need deterministic test control.
 ///
 /// This trait is designed to be implemented by downstream crates.
 /// New methods will always have default implementations to avoid breaking changes.
-pub trait Clock: Send + Sync {
-    /// Returns the current instant according to this clock.
+///
+/// See [`MockInstant`] for a ready-made deterministic implementation and the
+/// [module documentation](self) for an example.
+#[doc(alias = "Clock")]
+#[doc(alias = "TimeSource")]
+pub trait InstantSource: Send + Sync {
+    /// Returns the current instant according to this source.
     fn now(&self) -> Instant;
 }
 
 // =============================================================================
-// SYSTEM CLOCK
+// SYSTEM INSTANT
 // =============================================================================
 
-/// The real system clock — delegates directly to [`Instant::now`].
+/// The real monotonic clock — delegates directly to [`Instant::now`].
 ///
 /// This is the default implementation used in production code.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct SystemClock;
+pub struct SystemInstant;
 
-impl Clock for SystemClock {
+impl InstantSource for SystemInstant {
     #[inline]
     fn now(&self) -> Instant {
         Instant::now()
@@ -61,65 +73,66 @@ impl Clock for SystemClock {
 }
 
 // =============================================================================
-// MOCK CLOCK
+// MOCK INSTANT
 // =============================================================================
 
-/// A manually-controlled clock for deterministic tests.
+/// A manually-controlled instant source for deterministic tests.
 ///
-/// `MockClock` is cheap to clone — all clones share the same underlying state.
+/// `MockInstant` is cheap to clone — all clones share the same underlying
+/// state.
 ///
-/// Unlike [`SystemClock`], this clock does not advance unless
-/// [`advance`](MockClock::advance) is called. That keeps state-machine tests
+/// Unlike [`SystemInstant`], this source does not advance unless
+/// [`advance`](MockInstant::advance) is called. That keeps state-machine tests
 /// deterministic and avoids hidden real-time sleeps.
 #[derive(Debug, Clone)]
-pub struct MockClock {
-    inner: Arc<Mutex<MockClockInner>>,
+pub struct MockInstant {
+    inner: Arc<Mutex<MockInstantInner>>,
 }
 
 #[derive(Debug)]
-struct MockClockInner {
+struct MockInstantInner {
     /// Current representable instant.
     now: Instant,
     /// Additional virtual time added via `advance()`.
     offset: Duration,
 }
 
-impl MockClock {
-    /// Create a new mock clock anchored at `Instant::now()`.
+impl MockInstant {
+    /// Create a new mock instant source anchored at `Instant::now()`.
     #[must_use]
     pub fn new() -> Self {
         let base = Instant::now();
         Self {
-            inner: Arc::new(Mutex::new(MockClockInner {
+            inner: Arc::new(Mutex::new(MockInstantInner {
                 now: base,
                 offset: Duration::ZERO,
             })),
         }
     }
 
-    /// Advance this clock by `duration`.
+    /// Advances this source by `duration`.
     ///
-    /// All clones of this `MockClock` will observe the new time immediately.
+    /// All clones of this `MockInstant` will observe the new time immediately.
     pub fn advance(&self, duration: Duration) {
         let mut inner = self.inner.lock();
         inner.offset = inner.offset.saturating_add(duration);
         inner.now = inner.now.checked_add(duration).unwrap_or(inner.now);
     }
 
-    /// Returns the total virtual time elapsed since this clock was created.
+    /// Returns the total virtual time elapsed since this source was created.
     #[must_use]
     pub fn elapsed(&self) -> Duration {
         self.inner.lock().offset
     }
 }
 
-impl Default for MockClock {
+impl Default for MockInstant {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl Clock for MockClock {
+impl InstantSource for MockInstant {
     fn now(&self) -> Instant {
         self.inner.lock().now
     }
@@ -134,8 +147,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn system_clock_advances_monotonically() {
-        let clock = SystemClock;
+    fn system_instant_advances_monotonically() {
+        let clock = SystemInstant;
         let t0 = clock.now();
         std::thread::sleep(Duration::from_millis(1));
         let t1 = clock.now();
@@ -143,8 +156,8 @@ mod tests {
     }
 
     #[test]
-    fn mock_clock_does_not_advance_without_explicit_call() {
-        let clock = MockClock::new();
+    fn mock_instant_does_not_advance_without_explicit_call() {
+        let clock = MockInstant::new();
         let t0 = clock.now();
         std::thread::sleep(Duration::from_millis(1));
         let t1 = clock.now();
@@ -152,8 +165,8 @@ mod tests {
     }
 
     #[test]
-    fn mock_clock_advance_increases_now() {
-        let clock = MockClock::new();
+    fn mock_instant_advance_increases_now() {
+        let clock = MockInstant::new();
         let t0 = clock.now();
         clock.advance(Duration::from_secs(10));
         let t1 = clock.now();
@@ -161,8 +174,8 @@ mod tests {
     }
 
     #[test]
-    fn mock_clock_clones_share_state() {
-        let clock = MockClock::new();
+    fn mock_instant_clones_share_state() {
+        let clock = MockInstant::new();
         let clone = clock.clone();
 
         let t0 = clock.now();
@@ -173,16 +186,16 @@ mod tests {
     }
 
     #[test]
-    fn mock_clock_elapsed_matches_advances() {
-        let clock = MockClock::new();
+    fn mock_instant_elapsed_matches_advances() {
+        let clock = MockInstant::new();
         clock.advance(Duration::from_millis(500));
         clock.advance(Duration::from_millis(500));
         assert_eq!(clock.elapsed(), Duration::from_secs(1));
     }
 
     #[test]
-    fn mock_clock_overflow_does_not_move_backwards() {
-        let clock = MockClock::new();
+    fn mock_instant_overflow_does_not_move_backwards() {
+        let clock = MockInstant::new();
 
         let initial = clock.now();
         clock.advance(Duration::from_secs(1));

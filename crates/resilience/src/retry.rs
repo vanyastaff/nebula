@@ -42,7 +42,7 @@ use crate::{
     CallError,
     classifier::{ErrorClass, ErrorClassifier, FnClassifier},
     deadline::Deadline,
-    sink::{MetricsSink, NoopSink, ResilienceEvent},
+    events::{EventSink, NoopSink, ResilienceEvent},
 };
 
 // ── Backoff ───────────────────────────────────────────────────────────────────
@@ -216,10 +216,22 @@ pub enum JitterConfig {
     /// No jitter.
     #[default]
     None,
-    /// Add a random fraction up to `factor` of the delay.
-    Full {
-        /// Maximum jitter fraction (0.0–1.0).
-        factor: f64,
+    /// Add a random fraction of the delay on top of it.
+    ///
+    /// The applied delay is `base + rand(0.0, max_fraction * base)`, so the
+    /// result is never shorter than the computed backoff. This is *additive*
+    /// jitter in the AWS "Timeouts, retries and backoff with jitter"
+    /// taxonomy — deliberately not full jitter, which would replace the
+    /// delay with `rand(0.0, base)` and could undercut a `retry_after`
+    /// floor.
+    ///
+    /// The fraction is not rejected at construction: values above `1.0` are
+    /// capped at `1.0`, and `max_fraction <= 0.0` or `NaN` disables jitter
+    /// entirely (the base delay is returned unchanged). Keeping the builder
+    /// infallible matches the other `RetryConfig` setters.
+    Additive {
+        /// Maximum extra fraction of the base delay (values above 1.0 cap at 1.0).
+        max_fraction: f64,
         /// Optional seed for deterministic jitter (useful for testing).
         seed: Option<u64>,
     },
@@ -247,12 +259,12 @@ type RetryNotify<E> = Arc<dyn Fn(&E, Duration, u32) + Send + Sync>;
 ///
 /// use nebula_resilience::retry::{BackoffConfig, JitterConfig, RetryConfig};
 ///
-/// // Up to 5 attempts, exponential backoff, full jitter, 10 s total budget.
+/// // Up to 5 attempts, exponential backoff, additive jitter, 10 s total budget.
 /// let config = RetryConfig::<&str>::new(5)
 ///     .expect("max_attempts >= 1")
 ///     .backoff(BackoffConfig::exponential_default())
-///     .jitter(JitterConfig::Full {
-///         factor: 0.5,
+///     .jitter(JitterConfig::Additive {
+///         max_fraction: 0.5,
 ///         seed: None,
 ///     })
 ///     .total_budget(Duration::from_secs(10));
@@ -270,7 +282,7 @@ pub struct RetryConfig<E = ()> {
     total_budget: Option<Duration>,
     pub(crate) classifier: Option<Arc<dyn ErrorClassifier<E>>>,
     pub(crate) on_retry: Option<RetryNotify<E>>,
-    pub(crate) sink: Arc<dyn MetricsSink>,
+    pub(crate) sink: Arc<dyn EventSink>,
 }
 
 impl<E> fmt::Debug for RetryConfig<E> {
@@ -285,7 +297,7 @@ impl<E> fmt::Debug for RetryConfig<E> {
 }
 
 impl<E: 'static> RetryConfig<E> {
-    /// Create a retry config that retries all errors up to `max_attempts` times.
+    /// Creates a retry config that retries all errors up to `max_attempts` times.
     ///
     /// `max_attempts` must be at least 1 (the initial attempt counts).
     /// `E` is inferred from the closure passed to [`retry_with`].
@@ -308,6 +320,7 @@ impl<E: 'static> RetryConfig<E> {
     }
 
     /// Maximum number of attempts, including the initial attempt.
+    #[doc(alias = "maxAttempts")]
     #[must_use]
     pub const fn max_attempts(&self) -> NonZeroU32 {
         self.max_attempts
@@ -326,6 +339,8 @@ impl<E: 'static> RetryConfig<E> {
     }
 
     /// Total retry budget, if configured.
+    #[doc(alias = "totalTimeout")]
+    #[doc(alias = "apiCallTimeout")]
     #[must_use]
     pub const fn total_budget_config(&self) -> Option<Duration> {
         self.total_budget
@@ -347,6 +362,8 @@ impl<E: 'static> RetryConfig<E> {
 
     /// Set a total time budget. The retry loop bounds each operation attempt
     /// and retry sleep by the remaining budget.
+    #[doc(alias = "totalTimeout")]
+    #[doc(alias = "apiCallTimeout")]
     #[must_use]
     pub const fn total_budget(mut self, budget: Duration) -> Self {
         self.total_budget = Some(budget);
@@ -399,7 +416,7 @@ impl<E: 'static> RetryConfig<E> {
 
     /// Inject a metrics sink.
     #[must_use]
-    pub fn with_sink(mut self, sink: impl MetricsSink + 'static) -> Self {
+    pub fn with_sink(mut self, sink: impl EventSink + 'static) -> Self {
         self.sink = Arc::new(sink);
         self
     }
@@ -523,6 +540,10 @@ where
     for attempt in 0..max_attempts {
         attempts_executed = attempt + 1;
         let attempt_result = if let Some(deadline) = deadline {
+            // `Deadline::timeout` re-reads the remaining budget on every
+            // attempt, so an instantly-failing operation under a
+            // `max_attempts` that far exceeds the budget still stops when the
+            // budget does — the budget, not the attempt count, is the bound.
             deadline.timeout(f()).await?
         } else {
             f().await
@@ -659,12 +680,15 @@ async fn sleep_with_deadline<E>(
 /// When `seed` is set, the jitter is deterministic but varies per `attempt`
 /// (seed is mixed with the attempt number to avoid identical jitter across retries).
 ///
-/// Split into leaf dispatcher + outlined `Full` path so that `JitterConfig::None`
-/// (the common case) compiles to a 2-instruction function with no register saves.
+/// Split into leaf dispatcher + outlined `Additive` path so that
+/// `JitterConfig::None` (the common case) compiles to a 2-instruction function
+/// with no register saves.
 fn apply_jitter(delay: Duration, jitter: &JitterConfig, attempt: u32) -> Duration {
     match jitter {
         JitterConfig::None => delay,
-        JitterConfig::Full { factor, seed } => apply_jitter_full(delay, *factor, *seed, attempt),
+        JitterConfig::Additive { max_fraction, seed } => {
+            apply_additive_jitter(delay, *max_fraction, *seed, attempt)
+        },
     }
 }
 
@@ -675,20 +699,25 @@ fn apply_jitter(delay: Duration, jitter: &JitterConfig, attempt: u32) -> Duratio
     reason = "mul_add emits slow fma call on default x86-64 target; explicit multiply+add is faster"
 )]
 #[inline(never)]
-// Reason: `!(factor > 0.0)` is intentional — it rejects NaN, -0.0, negatives, +0.0,
-// and -inf in a single `ucomisd + ja` (2 insns) vs 35-instruction bit decomposition
-// that `!is_finite() || <= 0.0` produces. The negated partial-ord is the whole point.
+// Reason: `!(max_fraction > 0.0)` is intentional — it rejects NaN, -0.0,
+// negatives, +0.0, and -inf in a single `ucomisd + ja` (2 insns) vs
+// 35-instruction bit decomposition that `!is_finite() || <= 0.0` produces.
 #[expect(
     clippy::neg_cmp_op_on_partial_ord,
-    reason = "`!(factor > 0.0)` rejects NaN and negatives in 2 instructions; cleaner than the equivalent is_finite chain"
+    reason = "`!(max_fraction > 0.0)` rejects NaN and negatives in 2 instructions; cleaner than the equivalent is_finite chain"
 )]
-fn apply_jitter_full(delay: Duration, factor: f64, seed: Option<u64>, attempt: u32) -> Duration {
-    if !(factor > 0.0) {
+fn apply_additive_jitter(
+    delay: Duration,
+    max_fraction: f64,
+    seed: Option<u64>,
+    attempt: u32,
+) -> Duration {
+    if !(max_fraction > 0.0) {
         return delay;
     }
 
     let base = delay.as_secs_f64();
-    let clamped_factor = factor.min(1.0);
+    let clamped_factor = max_fraction.min(1.0);
     let rand_val = seed.map_or_else(fastrand::f64, |s| {
         fastrand::Rng::with_seed(s.wrapping_add(u64::from(attempt))).f64()
     });

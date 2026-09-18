@@ -5,8 +5,8 @@ use std::{fmt, future::Future, sync::Arc, time::Duration};
 use tokio::time::timeout as tokio_timeout;
 
 use crate::{
-    CallError, ConfigError, PolicyContext,
-    sink::{MetricsSink, NoopSink, ResilienceEvent},
+    CallContext, CallError, ConfigError,
+    events::{EventSink, NoopSink, ResilienceEvent},
 };
 
 /// Execute `future` with a timeout.
@@ -65,7 +65,7 @@ where
 pub async fn timeout_with_sink<T, E, F>(
     duration: Duration,
     future: F,
-    sink: &dyn MetricsSink,
+    sink: &dyn EventSink,
 ) -> Result<T, CallError<E>>
 where
     F: Future<Output = Result<T, E>>,
@@ -85,7 +85,7 @@ where
     }
 }
 
-/// Like [`timeout`] but also observes a shared [`PolicyContext`].
+/// Like [`timeout`] but also observes a shared [`CallContext`].
 ///
 /// The effective deadline is the earlier of `duration` and the context deadline.
 /// Context cancellation wins over timeout before and during the future.
@@ -103,8 +103,8 @@ where
 /// timeout bookkeeping — no crate-owned state is left partially mutated,
 /// and no work is detached via `spawn`. Whether a *partially executed*
 /// operation is safe to abandon is the supplied operation's own contract.
-pub async fn timeout_with_policy_context<T, E, F>(
-    context: &PolicyContext,
+pub async fn timeout_with_context<T, E, F>(
+    context: &CallContext,
     duration: Duration,
     future: F,
 ) -> Result<T, CallError<E>>
@@ -112,10 +112,10 @@ where
     F: Future<Output = Result<T, E>> + Send,
     E: Send,
 {
-    timeout_with_policy_context_and_sink(context, duration, future, &NoopSink).await
+    timeout_with_context_and_sink(context, duration, future, &NoopSink).await
 }
 
-/// Like [`timeout_with_policy_context`] but emits [`ResilienceEvent::TimeoutElapsed`]
+/// Like [`timeout_with_context`] but emits [`ResilienceEvent::TimeoutElapsed`]
 /// via `sink` when the local timeout expires.
 ///
 /// If the context deadline fires first, the returned error is still
@@ -134,11 +134,11 @@ where
 /// timeout bookkeeping — no crate-owned state is left partially mutated,
 /// and no work is detached via `spawn`. Whether a *partially executed*
 /// operation is safe to abandon is the supplied operation's own contract.
-pub async fn timeout_with_policy_context_and_sink<T, E, F>(
-    context: &PolicyContext,
+pub async fn timeout_with_context_and_sink<T, E, F>(
+    context: &CallContext,
     duration: Duration,
     future: F,
-    sink: &dyn MetricsSink,
+    sink: &dyn EventSink,
 ) -> Result<T, CallError<E>>
 where
     F: Future<Output = Result<T, E>> + Send,
@@ -149,7 +149,7 @@ where
         .await
 }
 
-/// A timeout executor with an injectable [`MetricsSink`].
+/// A timeout executor with an injectable [`EventSink`].
 ///
 /// Construct once and reuse across many calls when you want a stable timeout
 /// budget plus uniform observability. For one-off use, prefer the free
@@ -165,7 +165,9 @@ where
 /// # #[tokio::main]
 /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// let sink = RecordingSink::new();
-/// let executor = TimeoutExecutor::new(Duration::from_millis(50)).with_sink(sink.clone());
+/// let executor = TimeoutExecutor::new(Duration::from_millis(50))
+///     .expect("non-zero duration")
+///     .with_sink(sink.clone());
 ///
 /// let value: Result<&str, CallError<&str>> = executor.call(async { Ok("ready") }).await;
 /// assert_eq!(value.unwrap(), "ready");
@@ -174,7 +176,7 @@ where
 /// ```
 pub struct TimeoutExecutor {
     duration: Duration,
-    sink: Arc<dyn MetricsSink>,
+    sink: Arc<dyn EventSink>,
 }
 
 impl fmt::Debug for TimeoutExecutor {
@@ -186,49 +188,40 @@ impl fmt::Debug for TimeoutExecutor {
 }
 
 impl TimeoutExecutor {
-    /// Create a new executor with validation.
+    /// Creates a new executor with the given duration and a noop sink.
     ///
-    /// Prefer this for schema/user-provided configuration. A zero duration is
-    /// rejected because it never polls the protected future and almost always
-    /// indicates a misconfigured workflow timeout.
+    /// A zero duration is rejected: it never polls the protected future, so it
+    /// can only be a misconfigured workflow timeout. Immediate cancellation is
+    /// what [`CallContext`] cancellation is for — this constructor refuses to
+    /// express it as a timeout.
     ///
     /// # Errors
     ///
     /// Returns [`ConfigError`] when `duration` is zero.
-    pub fn try_new(duration: Duration) -> Result<Self, ConfigError> {
+    pub fn new(duration: Duration) -> Result<Self, ConfigError> {
         if duration.is_zero() {
             return Err(ConfigError::new(
                 "timeout.duration",
-                "timeout duration must be greater than zero",
+                "must be greater than zero",
             ));
         }
 
-        Ok(Self::new(duration))
-    }
-
-    /// Create a new executor with the given duration and a noop sink.
-    ///
-    /// A zero duration is allowed for compatibility and acts as an immediate
-    /// timeout without polling the protected future. Use [`try_new`](Self::try_new)
-    /// when loading untrusted workflow/user configuration.
-    #[must_use]
-    pub fn new(duration: Duration) -> Self {
-        Self {
+        Ok(Self {
             duration,
             sink: Arc::new(NoopSink),
-        }
+        })
     }
 
     /// Inject a metrics sink.
     #[must_use]
-    pub fn with_sink(mut self, sink: impl MetricsSink + 'static) -> Self {
+    pub fn with_sink(mut self, sink: impl EventSink + 'static) -> Self {
         self.sink = Arc::new(sink);
         self
     }
 
     /// Inject a shared metrics sink.
     #[must_use = "builder methods must be chained or built"]
-    pub fn with_shared_sink(mut self, sink: Arc<dyn MetricsSink>) -> Self {
+    pub fn with_shared_sink(mut self, sink: Arc<dyn EventSink>) -> Self {
         self.sink = sink;
         self
     }
@@ -269,17 +262,16 @@ impl TimeoutExecutor {
     /// timeout bookkeeping — no crate-owned state is left partially mutated,
     /// and no work is detached via `spawn`. Whether a *partially executed*
     /// operation is safe to abandon is the supplied operation's own contract.
-    pub async fn call_with_policy_context<T, E, F>(
+    pub async fn call_with_context<T, E, F>(
         &self,
-        context: &PolicyContext,
+        context: &CallContext,
         future: F,
     ) -> Result<T, CallError<E>>
     where
         F: Future<Output = Result<T, E>> + Send,
         E: Send,
     {
-        timeout_with_policy_context_and_sink(context, self.duration, future, self.sink.as_ref())
-            .await
+        timeout_with_context_and_sink(context, self.duration, future, self.sink.as_ref()).await
     }
 }
 
@@ -329,8 +321,8 @@ mod tests {
     }
 
     #[test]
-    fn try_new_rejects_zero_timeout() {
-        let err = TimeoutExecutor::try_new(Duration::ZERO).unwrap_err();
+    fn new_rejects_zero_timeout() {
+        let err = TimeoutExecutor::new(Duration::ZERO).unwrap_err();
         assert_eq!(err.field, "timeout.duration");
     }
 
@@ -364,7 +356,9 @@ mod tests {
     #[tokio::test]
     async fn executor_emits_timeout_event() {
         let sink = RecordingSink::new();
-        let executor = TimeoutExecutor::new(Duration::from_millis(10)).with_sink(sink.clone());
+        let executor = TimeoutExecutor::new(Duration::from_millis(10))
+            .expect("non-zero duration")
+            .with_sink(sink.clone());
 
         let _ = executor
             .call(async {
@@ -377,15 +371,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn policy_context_cancellation_wins_without_polling_future() {
+    async fn call_context_cancellation_wins_without_polling_future() {
         let cancellation = CancellationContext::with_reason("shutdown");
-        let context = PolicyContext::from_cancellation(cancellation.clone());
+        let context = CallContext::from_cancellation(cancellation.clone());
         cancellation.cancel();
         let polled = Arc::new(AtomicBool::new(false));
         let polled_for_call = Arc::clone(&polled);
 
         let result: Result<(), CallError<()>> =
-            timeout_with_policy_context(&context, Duration::from_secs(1), async move {
+            timeout_with_context(&context, Duration::from_secs(1), async move {
                 polled_for_call.store(true, Ordering::SeqCst);
                 Ok(())
             })
@@ -398,11 +392,13 @@ mod tests {
     #[tokio::test]
     async fn executor_policy_context_deadline_bounds_call() {
         let sink = RecordingSink::new();
-        let executor = TimeoutExecutor::new(Duration::from_mins(1)).with_sink(sink.clone());
-        let context = PolicyContext::with_timeout(Duration::from_millis(1));
+        let executor = TimeoutExecutor::new(Duration::from_mins(1))
+            .expect("non-zero duration")
+            .with_sink(sink.clone());
+        let context = CallContext::with_timeout(Duration::from_millis(1));
 
         let result: Result<(), CallError<()>> = executor
-            .call_with_policy_context(&context, async {
+            .call_with_context(&context, async {
                 tokio::time::sleep(Duration::from_mins(1)).await;
                 Ok(())
             })

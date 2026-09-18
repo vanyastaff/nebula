@@ -7427,3 +7427,193 @@ async fn preflight_rejects_a_port_the_pinned_version_lacks_even_if_latest_declar
         other => panic!("expected EngineError::UndeclaredOutputPort, got {other:?}"),
     }
 }
+
+// ── Per-action rate limiter registry ────────────────────────────────────
+
+/// One bucket per action key: a node's `rate_limit` policy must survive
+/// across dispatches (retries, sibling nodes), not reset per spawn.
+///
+/// The observable contract: two sequential dispatches of the same action
+/// under a `max_requests: 1, window_secs: 300` policy — the first consumes
+/// the only token, the second must observe `RateLimited`. A per-dispatch
+/// bucket would give both a full bucket and both would pass.
+#[tokio::test]
+async fn node_rate_limit_quota_is_shared_per_action_key() {
+    let registry = Arc::new(ActionRegistry::new());
+    registry
+        .register_stateless_instance(
+            pure_metadata(
+                action_key!("echo"),
+                nebula_action::metadata_name!("Echo"),
+                "echoes input",
+            ),
+            EchoHandler,
+        )
+        .expect("valid test catalog definition");
+
+    let (engine, _) = make_engine(registry);
+    let mut node = NodeDefinition::new(node_key!("n"), "A", "core", "echo").unwrap();
+    node.rate_limit = Some(nebula_workflow::RateLimit {
+        max_requests: 1,
+        window_secs: 300,
+    });
+    let wf = make_workflow(vec![node], vec![]);
+
+    let first = engine
+        .execute_unit_fixture(
+            &crate::store_seam::single_tenant_scope(),
+            &wf,
+            serde_json::json!("first"),
+            ExecutionBudget::default(),
+        )
+        .await
+        .expect("first execution completes");
+    assert!(
+        first.is_success(),
+        "the first dispatch consumes the only token: {first:?}"
+    );
+
+    let second = engine
+        .execute_unit_fixture(
+            &crate::store_seam::single_tenant_scope(),
+            &wf,
+            serde_json::json!("second"),
+            ExecutionBudget::default(),
+        )
+        .await
+        .expect("second execution still completes (with a failed node)");
+    assert!(
+        second.is_failure(),
+        "the second dispatch must be rate-limited by the shared bucket: {second:?}"
+    );
+    assert!(
+        second.node_errors.contains_key(&node_key!("n")),
+        "the rate-limited node records a failure"
+    );
+}
+
+/// The registry returns one `Arc` per action key, so quota cannot rewind
+/// between dispatches; a second declaration for a known key keeps the
+/// existing bucket rather than minting a fresh one.
+#[test]
+fn rate_limiter_registry_shares_one_bucket_per_action_key() {
+    let registry = Arc::new(ActionRegistry::new());
+    let (engine, _) = make_engine(registry);
+    let policy = nebula_workflow::RateLimit {
+        max_requests: 3,
+        window_secs: 60,
+    };
+
+    let first = engine
+        .rate_limiter_for_action("core.echo", &policy)
+        .expect("a representable policy builds a limiter");
+    let second = engine
+        .rate_limiter_for_action("core.echo", &policy)
+        .expect("repeat lookup succeeds");
+    let other_action = engine
+        .rate_limiter_for_action("core.other", &policy)
+        .expect("a distinct action key builds its own limiter");
+
+    assert!(
+        Arc::ptr_eq(&first, &second),
+        "the same action key must resolve to the same bucket"
+    );
+    assert!(
+        !Arc::ptr_eq(&first, &other_action),
+        "distinct action keys must not share a bucket"
+    );
+}
+
+/// A declared policy the limiter cannot represent is a setup refusal, not a
+/// silently dropped limit.
+///
+/// `max_requests: 0` passes recorded-plan validation (`max_requests == 0` is
+/// only rejected for *recorded* plans), so the engine is the last gate. The
+/// node must fail with the typed policy code rather than run unlimited.
+#[tokio::test]
+async fn unrepresentable_rate_limit_policy_refuses_setup() {
+    let registry = Arc::new(ActionRegistry::new());
+    registry
+        .register_stateless_instance(
+            pure_metadata(
+                action_key!("echo"),
+                nebula_action::metadata_name!("Echo"),
+                "echoes input",
+            ),
+            EchoHandler,
+        )
+        .expect("valid test catalog definition");
+
+    let (engine, _) = make_engine(registry);
+    let mut node = NodeDefinition::new(node_key!("n"), "A", "core", "echo").unwrap();
+    node.rate_limit = Some(nebula_workflow::RateLimit {
+        max_requests: 0,
+        window_secs: 60,
+    });
+    let wf = make_workflow(vec![node], vec![]);
+
+    let result = engine
+        .execute_unit_fixture(
+            &crate::store_seam::single_tenant_scope(),
+            &wf,
+            serde_json::json!("input"),
+            ExecutionBudget::default(),
+        )
+        .await
+        .expect("the execution completes with a failed node");
+
+    assert!(result.is_failure());
+    let message = result
+        .node_errors
+        .get(&node_key!("n"))
+        .expect("the refused node records an error");
+    assert!(
+        message.contains(crate::error::codes::RATE_LIMIT_POLICY),
+        "the refusal must carry the typed rate-limit policy code, got: {message}"
+    );
+}
+
+// ── Retry backoff parity with nebula-resilience ─────────────────────────
+
+/// The engine's Layer-2 backoff (`nebula_workflow::RetryConfig`) must compute
+/// the same delay as Layer 1 (`nebula_resilience::BackoffConfig`) for the same
+/// policy, because `engine/outcome.rs` documents that equivalence and both
+/// layers run over the same operator-declared values.
+///
+/// The two formulas live in different crates with no shared implementation, so
+/// this pins them with a contract test instead of a comment. An exponential
+/// multiplier of 2.0 is the one case both sides express exactly
+/// (`BackoffConfig::Exponential` with `multiplier: 2.0`, which takes the
+/// doubling path without floating-point rounding).
+#[test]
+fn engine_retry_backoff_matches_resilience_backoff() {
+    use nebula_resilience::retry::BackoffConfig;
+
+    for (initial_ms, max_ms) in [(100u64, 10_000u64), (50, 500), (1, 2_000), (1_000, 60_000)] {
+        let engine_policy = nebula_workflow::RetryConfig::exponential(6, initial_ms, max_ms);
+        let layer_one = BackoffConfig::Exponential {
+            base: Duration::from_millis(initial_ms),
+            multiplier: 2.0,
+            max: Duration::from_millis(max_ms),
+        };
+
+        for attempt in 0..engine_policy.max_attempts {
+            assert_eq!(
+                engine_policy.delay_for_attempt(attempt),
+                layer_one.delay_for(attempt),
+                "attempt {attempt} diverged for initial={initial_ms}ms max={max_ms}ms"
+            );
+        }
+    }
+
+    // A fixed backoff is the multiplier-1.0 twin of the same formula.
+    let engine_fixed = nebula_workflow::RetryConfig::fixed(4, 250);
+    let layer_one_fixed = BackoffConfig::Fixed(Duration::from_millis(250));
+    for attempt in 0..engine_fixed.max_attempts {
+        assert_eq!(
+            engine_fixed.delay_for_attempt(attempt),
+            layer_one_fixed.delay_for(attempt),
+            "fixed backoff diverged at attempt {attempt}"
+        );
+    }
+}

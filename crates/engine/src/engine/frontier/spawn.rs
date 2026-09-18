@@ -379,13 +379,23 @@ impl WorkflowEngine {
             None
         };
 
-        // Build rate limiter from node definition if configured.
-        let rate_limiter = node_def.rate_limit.as_ref().and_then(|rl| {
-            let refill_rate = rl.max_requests as f64 / rl.window_secs.max(1) as f64;
-            nebula_resilience::rate_limiter::TokenBucket::new(rl.max_requests as usize, refill_rate)
-                .ok()
-                .map(Arc::new)
-        });
+        // Rate limiter from the node's `rate_limit` policy. The bucket is
+        // shared per action key across this engine's lifetime (see
+        // `WorkflowEngine::rate_limiters`): rebuilding it per dispatch would
+        // reset the quota on every retry. An invalid policy is a setup
+        // refusal, not a silent `None` — a configured limit that the engine
+        // fails to honor is worse than no limit, because the operator
+        // believes it is enforced.
+        let rate_limiter = match node_def.rate_limit.as_ref() {
+            None => None,
+            Some(rl) => match self.rate_limiter_for_action(&action_key, rl) {
+                Ok(limiter) => Some(limiter),
+                Err(error) => {
+                    let _ = exec_state.mark_setup_failed(node_key.clone(), error);
+                    return false;
+                },
+            },
+        };
 
         let handle = join_set.spawn(
             NodeTask {

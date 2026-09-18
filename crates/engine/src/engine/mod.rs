@@ -312,6 +312,14 @@ pub struct WorkflowEngine {
     /// [`WorkflowEngine::with_clock`] in tests to make wall-clock-sensitive
     /// timing behaviour deterministic and inspection-ready.
     clock: Arc<dyn Clock>,
+    /// Shared per-`ActionKey` rate limiters built from node `rate_limit` policy.
+    ///
+    /// One bucket per action key per engine, not one per node dispatch: a
+    /// per-dispatch bucket would reset on every attempt and enforce nothing
+    /// across retries or across nodes sharing an action. The key is the
+    /// action key rather than the node key because the policy limits the
+    /// downstream service, which is shared by every node invoking it.
+    rate_limiters: DashMap<String, Arc<nebula_resilience::rate_limiter::TokenBucket>>,
     /// Stable per-instance identifier used as the execution-lease holder.
     ///
     /// Generated once when constructing [`WorkflowEngine`] via [`InstanceId::new`]
@@ -579,6 +587,7 @@ impl WorkflowEngine {
             credential_refresh: None,
             event_bus: None,
             clock: Arc::new(SystemClock),
+            rate_limiters: DashMap::new(),
             instance_id,
             shutdown: CancellationToken::new(),
             lease_ttl: DEFAULT_EXECUTION_LEASE_TTL,
@@ -729,6 +738,62 @@ impl WorkflowEngine {
     pub fn with_lease_ttl(mut self, ttl: Duration) -> Self {
         self.lease_ttl = ttl;
         self
+    }
+
+    /// Return the shared limiter for `action_key`, creating it from `policy`
+    /// on first use.
+    ///
+    /// The limiter is keyed by action key, so concurrent nodes and retries of
+    /// the same action draw from one quota. A later node declaring a different
+    /// rate for an already-seen action key keeps the first limiter: the
+    /// effective policy for an action is its first-seen declaration for the
+    /// engine's lifetime, and [`crate::error::codes::RATE_LIMIT_POLICY`]
+    /// records the mismatch in the tracing log so an operator can see it
+    /// rather than infer it from throttling behavior.
+    ///
+    /// # Errors
+    ///
+    /// Returns a setup-refusal envelope when the declared
+    /// `max_requests`/`window_secs` pair cannot be represented by
+    /// [`nebula_resilience::rate_limiter::TokenBucket`]'s configuration
+    /// bounds.
+    fn rate_limiter_for_action(
+        &self,
+        action_key: &str,
+        policy: &nebula_workflow::node::RateLimit,
+    ) -> Result<Arc<nebula_resilience::rate_limiter::TokenBucket>, ErrorEnvelope> {
+        if let Some(existing) = self.rate_limiters.get(action_key) {
+            return Ok(Arc::clone(existing.value()));
+        }
+
+        let window_secs = policy.window_secs.max(1);
+        let refill_rate = f64::from(policy.max_requests) / window_secs as f64;
+        let limiter = nebula_resilience::rate_limiter::TokenBucket::new(
+            policy.max_requests as usize,
+            refill_rate,
+        )
+        .map_err(|error| {
+            // The message is operator-facing and bounded; it names the policy
+            // values, never action inputs or credentials.
+            setup_refusal(
+                nebula_error::ErrorCode::new(crate::error::codes::RATE_LIMIT_POLICY),
+                format!(
+                    "rate_limit {{ max_requests: {}, window_secs: {} }} is not a valid \
+                     limiter configuration: {error}",
+                    policy.max_requests, policy.window_secs,
+                ),
+            )
+        })?;
+
+        let limiter = Arc::new(limiter);
+        // `entry` rather than `insert` so a racing first dispatcher of the
+        // same action key cannot replace the bucket another node already
+        // started drawing from.
+        let entry = self
+            .rate_limiters
+            .entry(action_key.to_owned())
+            .or_insert_with(|| Arc::clone(&limiter));
+        Ok(Arc::clone(entry.value()))
     }
 
     /// Override the execution-lease heartbeat interval.

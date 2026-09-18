@@ -109,15 +109,15 @@ fn rate_limiter_call(c: &mut Criterion) {
     group.finish();
 }
 
-fn rate_limiter_current_rate(c: &mut Criterion) {
-    let mut group = c.benchmark_group("rate_limiter/current_rate");
+fn rate_limiter_status(c: &mut Criterion) {
+    let mut group = c.benchmark_group("rate_limiter/status");
 
     group.bench_function("token_bucket", |b| {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let limiter = TokenBucket::new(1000, 1000.0).unwrap();
 
         b.to_async(&rt)
-            .iter(|| async { black_box(limiter.current_rate().await) });
+            .iter(|| async { black_box(limiter.status().await) });
     });
 
     group.bench_function("leaky_bucket", |b| {
@@ -125,7 +125,7 @@ fn rate_limiter_current_rate(c: &mut Criterion) {
         let limiter = LeakyBucket::new(1000, 1000.0).unwrap();
 
         b.to_async(&rt)
-            .iter(|| async { black_box(limiter.current_rate().await) });
+            .iter(|| async { black_box(limiter.status().await) });
     });
 
     group.bench_function("sliding_window", |b| {
@@ -133,7 +133,7 @@ fn rate_limiter_current_rate(c: &mut Criterion) {
         let limiter = SlidingWindow::new(std::time::Duration::from_secs(1), 1000).unwrap();
 
         b.to_async(&rt)
-            .iter(|| async { black_box(limiter.current_rate().await) });
+            .iter(|| async { black_box(limiter.status().await) });
     });
 
     group.bench_function("adaptive", |b| {
@@ -141,7 +141,7 @@ fn rate_limiter_current_rate(c: &mut Criterion) {
         let limiter = AdaptiveRateLimiter::new(1000.0, 100.0, 10000.0).unwrap();
 
         b.to_async(&rt)
-            .iter(|| async { black_box(limiter.current_rate().await) });
+            .iter(|| async { black_box(limiter.status().await) });
     });
 
     group.finish();
@@ -187,7 +187,7 @@ criterion_group!(
     benches,
     rate_limiter_acquire,
     rate_limiter_call,
-    rate_limiter_current_rate,
+    rate_limiter_status,
     rate_limiter_contention,
 );
 

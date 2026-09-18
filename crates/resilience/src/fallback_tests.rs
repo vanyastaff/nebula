@@ -9,7 +9,7 @@ use std::{
 };
 
 use super::*;
-use crate::{CallError, CancellationContext, PolicyContext, RecordingSink, ResilienceEventKind};
+use crate::{CallContext, CallError, CancellationContext, RecordingSink, ResilienceEventKind};
 
 fn timeout_error() -> CallError<&'static str> {
     CallError::Timeout(Duration::from_secs(1))
@@ -203,21 +203,20 @@ async fn priority_fallback_returns_error_when_no_match_and_no_default() {
 }
 
 // -----------------------------------------------------------------------
-// FallbackOperation
+// FallbackExecutor
 // -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn fallback_operation_returns_primary_result_on_success() {
-    let op: FallbackOperation<u32, &str> =
-        FallbackOperation::new(Arc::new(ValueFallback::new(0u32)));
+    let op: FallbackExecutor<u32, &str> = FallbackExecutor::new(Arc::new(ValueFallback::new(0u32)));
     let result = op.call(|| async { Ok(42u32) }).await;
     assert_eq!(result.unwrap(), 42);
 }
 
 #[tokio::test]
 async fn fallback_operation_invokes_fallback_on_error() {
-    let op: FallbackOperation<u32, &str> =
-        FallbackOperation::new(Arc::new(ValueFallback::new(99u32)));
+    let op: FallbackExecutor<u32, &str> =
+        FallbackExecutor::new(Arc::new(ValueFallback::new(99u32)));
     let result = op.call(|| async { Err::<u32, _>(timeout_error()) }).await;
     assert_eq!(result.unwrap(), 99);
 }
@@ -225,8 +224,8 @@ async fn fallback_operation_invokes_fallback_on_error() {
 #[tokio::test]
 async fn fallback_operation_emits_standalone_lifecycle_events() {
     let sink = RecordingSink::new();
-    let op: FallbackOperation<u32, &str> =
-        FallbackOperation::new(Arc::new(ValueFallback::new(99u32))).with_sink(sink.clone());
+    let op: FallbackExecutor<u32, &str> =
+        FallbackExecutor::new(Arc::new(ValueFallback::new(99u32))).with_sink(sink.clone());
 
     let result = op.call(|| async { Err::<u32, _>(timeout_error()) }).await;
 
@@ -242,8 +241,8 @@ async fn fallback_operation_emits_failure_event_on_fallback_failure() {
     let fallback = FunctionFallback::new(|_err: CallError<()>| async {
         Err::<u32, _>(CallError::fallback_failed_with("cache unavailable"))
     });
-    let op: FallbackOperation<u32, &str> =
-        FallbackOperation::new(Arc::new(fallback)).with_sink(sink.clone());
+    let op: FallbackExecutor<u32, &str> =
+        FallbackExecutor::new(Arc::new(fallback)).with_sink(sink.clone());
 
     let result = op.call(|| async { Err::<u32, _>(timeout_error()) }).await;
 
@@ -266,7 +265,7 @@ async fn fallback_operation_emits_failure_event_on_fallback_failure() {
 #[tokio::test]
 async fn fallback_operation_evaluates_should_fallback_once() {
     let calls = Arc::new(AtomicUsize::new(0));
-    let op = FallbackOperation::new(Arc::new(CountingFallback {
+    let op = FallbackExecutor::new(Arc::new(CountingFallback {
         calls: Arc::clone(&calls),
     }));
 
@@ -278,14 +277,14 @@ async fn fallback_operation_evaluates_should_fallback_once() {
 
 #[tokio::test]
 async fn fallback_operation_context_cancellation_skips_fallback() {
-    let op: FallbackOperation<u32, &str> =
-        FallbackOperation::new(Arc::new(ValueFallback::new(99u32)));
+    let op: FallbackExecutor<u32, &str> =
+        FallbackExecutor::new(Arc::new(ValueFallback::new(99u32)));
     let cancellation = CancellationContext::with_reason("shutdown");
-    let context = PolicyContext::from_cancellation(cancellation.clone());
+    let context = CallContext::from_cancellation(cancellation.clone());
     cancellation.cancel();
 
     let result = op
-        .call_with_policy_context(&context, || async { Ok::<u32, CallError<&str>>(42) })
+        .call_with_context(&context, || async { Ok::<u32, CallError<&str>>(42) })
         .await;
 
     assert!(matches!(result, Err(CallError::Cancelled { .. })));
@@ -293,12 +292,12 @@ async fn fallback_operation_context_cancellation_skips_fallback() {
 
 #[tokio::test]
 async fn fallback_operation_preserves_non_context_cancellation_reason() {
-    let op: FallbackOperation<u32, &str> =
-        FallbackOperation::new(Arc::new(ValueFallback::new(99u32)));
-    let context = PolicyContext::empty();
+    let op: FallbackExecutor<u32, &str> =
+        FallbackExecutor::new(Arc::new(ValueFallback::new(99u32)));
+    let context = CallContext::empty();
 
     let result = op
-        .call_with_policy_context(&context, || async {
+        .call_with_context(&context, || async {
             Err::<u32, _>(CallError::cancelled_with("primary stopped itself"))
         })
         .await;
@@ -317,11 +316,11 @@ async fn fallback_operation_context_deadline_bounds_fallback() {
         tokio::time::sleep(Duration::from_mins(1)).await;
         Ok::<u32, CallError<()>>(99)
     });
-    let op: FallbackOperation<u32, &str> = FallbackOperation::new(Arc::new(fallback));
-    let context = PolicyContext::with_timeout(Duration::from_millis(1));
+    let op: FallbackExecutor<u32, &str> = FallbackExecutor::new(Arc::new(fallback));
+    let context = CallContext::with_timeout(Duration::from_millis(1));
 
     let result = op
-        .call_with_policy_context(&context, || async { Err::<u32, _>(timeout_error()) })
+        .call_with_context(&context, || async { Err::<u32, _>(timeout_error()) })
         .await;
 
     assert!(matches!(result, Err(CallError::Timeout(_))));

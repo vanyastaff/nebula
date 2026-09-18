@@ -4,6 +4,18 @@
 //! Because hedging can execute the operation concurrently, duplicate requests are disabled
 //! by default and must be explicitly marked as safe for idempotent operations.
 //!
+//! # Where hedging is allowed
+//!
+//! Only for operations that are safe to run twice **concurrently**. In Nebula
+//! terms that excludes every durable remote effect: the effect driver accounts
+//! each provider invocation against a minted `OperationCallId` and the policy's
+//! `max_invocations`, so a second concurrent call would either spend budget the
+//! ledger never granted or produce an outcome the protocol cannot attribute.
+//! Hedging is therefore for read-only or genuinely idempotent outbound calls
+//! (cache/probe/health lookups), never for effecting ones — even under
+//! `RemoteDestinationGuarantee::StableKey`, which authorizes *sequential*
+//! re-invocation of a prepared operation, not speculative duplication.
+//!
 //! # Cancel safety
 //!
 //! Dropping the `HedgeExecutor::call` future aborts any tasks owned by that call.
@@ -46,7 +58,7 @@ use tokio::{
 
 use crate::{
     CallError,
-    sink::{MetricsSink, NoopSink, ResilienceEvent},
+    events::{EventSink, NoopSink, ResilienceEvent},
 };
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -155,7 +167,7 @@ impl HedgeConfig {
 /// ```
 pub struct HedgeExecutor {
     config: HedgeConfig,
-    sink: Arc<dyn MetricsSink>,
+    sink: Arc<dyn EventSink>,
 }
 
 impl fmt::Debug for HedgeExecutor {
@@ -167,7 +179,7 @@ impl fmt::Debug for HedgeExecutor {
 }
 
 impl HedgeExecutor {
-    /// Create a new hedge executor.
+    /// Creates a new hedge executor.
     ///
     /// # Errors
     ///
@@ -182,7 +194,7 @@ impl HedgeExecutor {
 
     /// Inject a metrics sink.
     #[must_use]
-    pub fn with_sink(mut self, sink: impl MetricsSink + 'static) -> Self {
+    pub fn with_sink(mut self, sink: impl EventSink + 'static) -> Self {
         self.sink = Arc::new(sink);
         self
     }
@@ -215,6 +227,7 @@ impl HedgeExecutor {
         let mut hedges_sent = 0usize;
         let mut delay = Box::pin(sleep(hedge_delay));
         let mut last_err: Option<E> = None;
+        let mut panicked = false;
 
         loop {
             tokio::select! {
@@ -230,9 +243,23 @@ impl HedgeExecutor {
                             return Ok(v);
                         }
                         Ok(Err(e)) => last_err = Some(e),
-                        Err(_) => {} // task panicked or was aborted
+                        // The only way a task ends without a result here is a
+                        // panic: `abort_all` runs only on the success path
+                        // (which returns), and the set is local to this call.
+                        // Record it so the final error is not `Operation`/
+                        // `Cancelled` for an operation that produced neither.
+                        Err(join_error) => {
+                            panicked = true;
+                            tracing::error!(
+                                error = %join_error,
+                                "hedge operation task ended without a result"
+                            );
+                        }
                     }
                     if set.is_empty() && hedges_sent >= self.config.max_hedges {
+                        if panicked {
+                            return Err(CallError::task_panicked());
+                        }
                         return Err(
                             last_err.map_or(CallError::cancelled(), CallError::Operation)
                         );
@@ -293,7 +320,7 @@ pub struct AdaptiveHedgeExecutor {
     // parking_lot::RwLock is used because neither record() nor percentile() cross .await points.
     latency_tracker: Arc<RwLock<LatencyTracker>>,
     target_percentile: f64,
-    sink: Arc<dyn MetricsSink>,
+    sink: Arc<dyn EventSink>,
 }
 
 impl fmt::Debug for AdaptiveHedgeExecutor {
@@ -306,7 +333,7 @@ impl fmt::Debug for AdaptiveHedgeExecutor {
 }
 
 impl AdaptiveHedgeExecutor {
-    /// Create a new adaptive hedge executor.
+    /// Creates a new adaptive hedge executor.
     ///
     /// # Errors
     ///
@@ -321,7 +348,7 @@ impl AdaptiveHedgeExecutor {
         })
     }
 
-    /// Set the target latency percentile for hedge delay calculation.
+    /// Sets the target latency percentile for hedge delay calculation.
     ///
     /// # Errors
     ///
@@ -339,12 +366,12 @@ impl AdaptiveHedgeExecutor {
 
     /// Inject a metrics sink.
     #[must_use]
-    pub fn with_sink(mut self, sink: impl MetricsSink + 'static) -> Self {
+    pub fn with_sink(mut self, sink: impl EventSink + 'static) -> Self {
         self.sink = Arc::new(sink);
         self
     }
 
-    /// Set the maximum number of latency samples retained for percentile calculation.
+    /// Sets the maximum number of latency samples retained for percentile calculation.
     ///
     /// Larger values improve percentile accuracy but consume more memory.
     /// Default: 1000.
@@ -430,8 +457,15 @@ pub struct LatencyTracker {
 }
 
 impl LatencyTracker {
+    /// Create a tracker retaining at most `max_samples` latencies.
+    ///
+    /// `max_samples` is clamped to at least 1: a zero-capacity ring would
+    /// never evict (the `ring.len() == max_samples` check never holds on an
+    /// empty ring), so it would grow without bound despite declaring itself
+    /// bounded.
     #[must_use]
     pub fn new(max_samples: usize) -> Self {
+        let max_samples = max_samples.max(1);
         Self {
             ring: VecDeque::with_capacity(max_samples),
             histogram: SmallVec::new(),
@@ -689,6 +723,31 @@ mod tests {
     #[test]
     fn accepts_valid_config() {
         assert!(HedgeExecutor::new(HedgeConfig::default()).is_ok());
+    }
+
+    /// A panicking operation must be reported as such, not as `Cancelled`.
+    ///
+    /// Before the fix the `Err(_)` join arm was discarded, and a run in which
+    /// every task panicked returned `CallError::cancelled()` — the caller could
+    /// not tell a crashed attempt from a shutdown.
+    #[tokio::test]
+    async fn panicking_operation_reports_task_panicked() {
+        let executor = HedgeExecutor::new(HedgeConfig {
+            hedge_delay: Duration::from_millis(1),
+            max_hedges: 1,
+            duplicate_safety: HedgeSafety::Idempotent,
+            ..Default::default()
+        })
+        .unwrap();
+
+        let result: Result<u32, CallError<&str>> = executor
+            .call(|| Box::pin(async { panic!("operation exploded") }))
+            .await;
+
+        assert!(
+            matches!(result, Err(CallError::TaskPanicked)),
+            "a panicked operation must not be reported as cancellation, got {result:?}"
+        );
     }
 
     #[test]

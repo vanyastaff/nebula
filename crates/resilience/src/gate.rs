@@ -27,13 +27,14 @@
 //! # }
 //! ```
 
-// Under loom, swap std atomics for loom-instrumented equivalents.
-#[cfg(not(loom))]
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::{fmt, sync::Arc};
+use std::{
+    fmt,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
-#[cfg(loom)]
-use loom::sync::atomic::{AtomicBool, Ordering};
 use tokio::{sync::Semaphore, time::Duration};
 use tracing::warn; // used in Gate::close() loop
 
@@ -44,9 +45,27 @@ use tracing::warn; // used in Gate::close() loop
 /// Maximum number of outstanding enters the semaphore can track.
 ///
 /// Neon uses `usize::MAX / 2` to stay safely away from overflow while
-/// remaining practically unbounded. We use `u32::MAX / 2` because Tokio
-/// semaphores use `u32`-sized permit counts internally.
-const MAX_PERMITS: u32 = u32::MAX / 2;
+/// remaining practically unbounded. Tokio's ceiling is
+/// [`Semaphore::MAX_PERMITS`](tokio::sync::Semaphore::MAX_PERMITS)
+/// (`usize::MAX >> 3`), which is smaller than `u32::MAX / 2` on 32-bit
+/// targets; `Semaphore::new` panics above it. Clamp to the halved Tokio
+/// ceiling so the constant stays valid on every target, and keep the
+/// `u32` type because `acquire_many` takes a `u32`.
+// Reason: the branch condition guarantees the narrowed value fits in `u32`;
+// `TryFrom` is not const, so the cast is the only const-context narrowing.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "guarded by `usize::try_from(...)`-equivalent comparison against u32::MAX / 2"
+)]
+const MAX_PERMITS: u32 = {
+    let tokio_max = Semaphore::MAX_PERMITS / 2;
+    let u32_ceiling = (u32::MAX / 2) as usize;
+    if tokio_max >= u32_ceiling {
+        u32::MAX / 2
+    } else {
+        tokio_max as u32
+    }
+};
 
 // ---------------------------------------------------------------------------
 // GateClosed error
@@ -90,6 +109,8 @@ struct GateInner {
 /// Dropping a guard while `close()` is in progress is fully legitimate: the
 /// guard was acquired before shutdown started, and dropping it unblocks
 /// [`Gate::close`].
+///
+/// See [`Gate::enter`] for the creation example.
 pub struct GateGuard {
     inner: Arc<GateInner>,
 }
@@ -253,6 +274,12 @@ impl Gate {
     ///
     /// Returns [`GateCloseTimeout`], carrying the budget and the number of
     /// guards still active, if the drain does not finish in time.
+    ///
+    /// # Cancel safety
+    ///
+    /// The gate stays closed after a dropped `close` future: dropping it
+    /// abandons the *wait*, not the drain state, so a later `close` resumes
+    /// draining. No guard is affected.
     pub async fn close(&self, budget: Duration) -> Result<(), GateCloseTimeout> {
         // Mark as closing so new enter() calls fail fast. Done before the
         // budget check so even a zero budget still latches the gate shut.
@@ -504,74 +531,5 @@ mod tests {
         assert_eq!(gate.active_count(), 0);
         assert!(gate.is_closed());
         assert!(matches!(gate.enter(), Err(GateClosed)));
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Loom tests — exhaustive concurrency model-checking for the atomic ordering
-// invariants in `enter()` / `close()`.
-//
-// Run with:
-//   RUSTFLAGS="--cfg loom" cargo test -p nebula-resilience --features loom --lib loom
-//
-// Note: loom replaces `AtomicBool` via the conditional import above.
-// Tokio's `Semaphore` is **not** loom-instrumented; the loom tests here focus
-// exclusively on the `closing` atomic flag logic.
-// ---------------------------------------------------------------------------
-#[cfg(all(test, loom))]
-mod loom_tests {
-    use loom::{sync::Arc, thread};
-
-    use super::*;
-
-    /// Two threads race: one calls `enter()` and the other sets `closing=true`
-    /// directly (simulating `close()`'s first action).  Loom exhaustively
-    /// schedules all interleavings and checks that:
-    ///
-    /// - After `closing` is set, a concurrent `enter()` either returns `Err(GateClosed)` OR the
-    ///   guard was already fully committed (acquired and flag not yet visible) — never a
-    ///   half-entered state.
-    #[test]
-    fn enter_vs_close_flag_race() {
-        loom::model(|| {
-            // Directly test the AtomicBool ordering without tokio's Semaphore.
-            let closing = Arc::new(AtomicBool::new(false));
-
-            let closing2 = Arc::clone(&closing);
-            let t1 = thread::spawn(move || {
-                // Simulate the `close()` flag write.
-                closing2.store(true, Ordering::Release);
-            });
-
-            // Simulate the `enter()` flag check.
-            let saw_closed = closing.load(Ordering::Acquire);
-
-            t1.join().unwrap();
-
-            // After both threads complete, the flag must be true.
-            assert!(closing.load(Ordering::Acquire));
-            // `saw_closed` may be true or false depending on scheduling;
-            // both are valid interleavings.
-            let _ = saw_closed;
-        });
-    }
-
-    /// Verify that a Release store on one thread is always observed by a
-    /// subsequent Acquire load on another (no stale reads possible).
-    #[test]
-    fn release_acquire_visibility() {
-        loom::model(|| {
-            let flag = Arc::new(AtomicBool::new(false));
-            let flag2 = Arc::clone(&flag);
-
-            let writer = thread::spawn(move || {
-                flag2.store(true, Ordering::Release);
-            });
-
-            writer.join().unwrap();
-
-            // After the writer thread completes, the Acquire load must see `true`.
-            assert!(flag.load(Ordering::Acquire));
-        });
     }
 }

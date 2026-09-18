@@ -11,8 +11,8 @@ use std::{
 use tokio::sync::Semaphore;
 
 use crate::{
-    CallError, ConfigError, PolicyContext,
-    sink::{MetricsSink, NoopSink, ResilienceEvent},
+    CallContext, CallError, ConfigError,
+    events::{EventSink, NoopSink, ResilienceEvent},
 };
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -30,7 +30,7 @@ use crate::{
 /// let cfg = BulkheadConfig {
 ///     max_concurrency: 8,
 ///     queue_size: 0,
-///     timeout: Some(Duration::from_secs(5)),
+///     queue_wait_timeout: Some(Duration::from_secs(5)),
 /// };
 ///
 /// let _bulkhead = Bulkhead::new(cfg).expect("config is valid");
@@ -39,15 +39,24 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BulkheadConfig {
     /// Maximum number of concurrent operations. Min: 1.
+    #[doc(alias = "maxConcurrentCalls")]
     pub max_concurrency: usize,
     /// Maximum number of operations allowed to queue while waiting for a permit.
     ///
     /// `0` means **no queue**: if no permit is free, [`Bulkhead::acquire`] returns
     /// [`CallError::BulkheadFull`] immediately (fail-fast) instead of waiting in line.
     pub queue_size: usize,
-    /// Optional timeout while waiting for a permit.
-    #[cfg_attr(feature = "serde", serde(default))]
-    pub timeout: Option<std::time::Duration>,
+    /// How long a request may wait for a permit once the bulkhead is at
+    /// capacity.
+    ///
+    /// `None` waits without bound. Distinct from a pipeline `Timeout` step,
+    /// which bounds the whole call including execution — this bounds only the
+    /// queue wait, so a saturated bulkhead fails fast with
+    /// [`CallError::Timeout`] instead of holding the caller for the whole
+    /// call budget.
+    #[cfg_attr(feature = "serde", serde(default, alias = "timeout"))]
+    #[doc(alias = "maxWaitDuration")]
+    pub queue_wait_timeout: Option<std::time::Duration>,
 }
 
 impl Default for BulkheadConfig {
@@ -55,7 +64,7 @@ impl Default for BulkheadConfig {
         Self {
             max_concurrency: 10,
             queue_size: 100,
-            timeout: Some(std::time::Duration::from_secs(30)),
+            queue_wait_timeout: Some(std::time::Duration::from_secs(30)),
         }
     }
 }
@@ -92,7 +101,7 @@ impl BulkheadConfig {
 /// let bulkhead = Bulkhead::new(BulkheadConfig {
 ///     max_concurrency: 4,
 ///     queue_size: 8,
-///     timeout: None,
+///     queue_wait_timeout: None,
 /// })?;
 ///
 /// let value: Result<&str, CallError<&str>> = bulkhead.call(|| async { Ok("ok") }).await;
@@ -105,7 +114,7 @@ pub struct Bulkhead {
     config: BulkheadConfig,
     semaphore: Arc<Semaphore>,
     waiting_count: Arc<AtomicUsize>,
-    sink: Arc<dyn MetricsSink>,
+    sink: Arc<dyn EventSink>,
 }
 
 impl std::fmt::Debug for Bulkhead {
@@ -118,7 +127,7 @@ impl std::fmt::Debug for Bulkhead {
 }
 
 impl Bulkhead {
-    /// Create a new bulkhead.
+    /// Creates a new bulkhead.
     ///
     /// # Errors
     ///
@@ -135,7 +144,7 @@ impl Bulkhead {
 
     /// Replace the metrics sink (builder-style).
     #[must_use]
-    pub fn with_sink(mut self, sink: impl MetricsSink + 'static) -> Self {
+    pub fn with_sink(mut self, sink: impl EventSink + 'static) -> Self {
         self.sink = Arc::new(sink);
         self
     }
@@ -170,6 +179,13 @@ impl Bulkhead {
     ///
     /// Returns `Err(CallError::BulkheadFull)` when the queue is full,
     /// or `Err(CallError::Operation)` if the operation itself fails.
+    ///
+    /// # Cancel safety
+    ///
+    /// Dropping the returned future drops the in-flight operation at its
+    /// current `.await`; the permit is released by its RAII guard. Whether a
+    /// *partially executed* operation is safe to abandon is the operation's
+    /// own contract.
     pub async fn call<T, E, Fut>(&self, f: impl FnOnce() -> Fut) -> Result<T, CallError<E>>
     where
         Fut: Future<Output = Result<T, E>> + Send,
@@ -190,15 +206,22 @@ impl Bulkhead {
     /// `Err(CallError::Timeout)` if the context deadline or bulkhead queue timeout
     /// expires, `Err(CallError::BulkheadFull)` when capacity/queue is exhausted,
     /// or `Err(CallError::Operation)` if the operation itself fails.
-    pub async fn call_with_policy_context<T, E, Fut>(
+    ///
+    /// # Cancel safety
+    ///
+    /// Dropping the returned future drops the in-flight operation at its
+    /// current `.await`; the permit is released by its RAII guard. Whether a
+    /// *partially executed* operation is safe to abandon is the operation's
+    /// own contract.
+    pub async fn call_with_context<T, E, Fut>(
         &self,
-        context: &PolicyContext,
+        context: &CallContext,
         f: impl FnOnce() -> Fut + Send,
     ) -> Result<T, CallError<E>>
     where
         Fut: Future<Output = Result<T, E>> + Send,
     {
-        let _permit = self.acquire_with_policy_context(context).await?;
+        let _permit = self.acquire_with_context(context).await?;
         context
             .run_result(async { f().await.map_err(CallError::Operation) })
             .await
@@ -215,6 +238,11 @@ impl Bulkhead {
     /// **Note:** Queue timeout returns `CallError::Timeout`, not `BulkheadFull`.
     /// When used in a pipeline alongside a `Timeout` step, callers cannot
     /// distinguish the two by variant alone — check the duration value if needed.
+    ///
+    /// # Cancel safety
+    ///
+    /// Dropping the returned future while it waits releases the queue slot
+    /// (the wait count has an RAII guard) and does not consume a permit.
     pub async fn acquire<E>(&self) -> Result<BulkheadPermit, CallError<E>> {
         self.acquire_permit().await
     }
@@ -226,9 +254,14 @@ impl Bulkhead {
     /// Returns `Err(CallError::Cancelled)` if the context is cancelled,
     /// `Err(CallError::Timeout)` if the context deadline or configured queue
     /// timeout expires, or `Err(CallError::BulkheadFull)` when the queue is full.
-    pub async fn acquire_with_policy_context<E>(
+    ///
+    /// # Cancel safety
+    ///
+    /// Dropping the returned future while it waits releases the queue slot
+    /// (the wait count has an RAII guard) and does not consume a permit.
+    pub async fn acquire_with_context<E>(
         &self,
-        context: &PolicyContext,
+        context: &CallContext,
     ) -> Result<BulkheadPermit, CallError<E>> {
         context.run_result(self.acquire_permit()).await
     }
@@ -274,7 +307,7 @@ impl Bulkhead {
         };
 
         // Wait for a permit (with optional timeout)
-        let result = if let Some(timeout_dur) = self.config.timeout {
+        let result = if let Some(timeout_dur) = self.config.queue_wait_timeout {
             match tokio::time::timeout(timeout_dur, Arc::clone(&self.semaphore).acquire_owned())
                 .await
             {
@@ -364,13 +397,13 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::{CallError, PolicyContext, RecordingSink, ResilienceEventKind};
+    use crate::{CallContext, CallError, RecordingSink, ResilienceEventKind};
 
     fn cfg(max: usize) -> BulkheadConfig {
         BulkheadConfig {
             max_concurrency: max,
             queue_size: 10,
-            timeout: None,
+            queue_wait_timeout: None,
         }
     }
 
@@ -394,7 +427,7 @@ mod tests {
         let bh = Bulkhead::new(BulkheadConfig {
             max_concurrency: 1,
             queue_size: 0,
-            timeout: None,
+            queue_wait_timeout: None,
         })
         .unwrap();
 
@@ -410,7 +443,7 @@ mod tests {
         let bh = Bulkhead::new(BulkheadConfig {
             max_concurrency: 1,
             queue_size: 1,
-            timeout: None,
+            queue_wait_timeout: None,
         })
         .unwrap();
 
@@ -434,7 +467,7 @@ mod tests {
         let bh = Bulkhead::new(BulkheadConfig {
             max_concurrency: 1,
             queue_size: 1,
-            timeout: None,
+            queue_wait_timeout: None,
         })
         .unwrap();
 
@@ -457,17 +490,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn policy_context_cancelled_acquire_releases_queue_slot() {
+    async fn call_context_cancelled_acquire_releases_queue_slot() {
         let bh = Bulkhead::new(BulkheadConfig {
             max_concurrency: 1,
             queue_size: 1,
-            timeout: None,
+            queue_wait_timeout: None,
         })
         .unwrap();
-        let context = PolicyContext::from_cancellation(crate::CancellationContext::new());
+        let context = CallContext::from_cancellation(crate::CancellationContext::new());
 
         let permit = bh.acquire::<&str>().await.unwrap();
-        let mut queued = Box::pin(bh.acquire_with_policy_context::<&str>(&context));
+        let mut queued = Box::pin(bh.acquire_with_context::<&str>(&context));
 
         tokio::select! {
             result = &mut queued => {
@@ -486,17 +519,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn policy_context_deadline_releases_operation_permit() {
+    async fn call_context_deadline_releases_operation_permit() {
         let bh = Bulkhead::new(BulkheadConfig {
             max_concurrency: 1,
             queue_size: 0,
-            timeout: None,
+            queue_wait_timeout: None,
         })
         .unwrap();
-        let context = PolicyContext::with_timeout(Duration::from_millis(1));
+        let context = CallContext::with_timeout(Duration::from_millis(1));
 
         let err = bh
-            .call_with_policy_context::<(), &str, _>(&context, || {
+            .call_with_context::<(), &str, _>(&context, || {
                 Box::pin(async {
                     tokio::time::sleep(Duration::from_mins(1)).await;
                     Ok(())
@@ -515,7 +548,7 @@ mod tests {
         let bh = Bulkhead::new(BulkheadConfig {
             max_concurrency: 1,
             queue_size: 1,
-            timeout: None,
+            queue_wait_timeout: None,
         })
         .unwrap()
         .with_sink(sink.clone());
@@ -537,7 +570,7 @@ mod tests {
         let result = Bulkhead::new(BulkheadConfig {
             max_concurrency: 0,
             queue_size: 10,
-            timeout: None,
+            queue_wait_timeout: None,
         });
         assert!(result.is_err());
     }

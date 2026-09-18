@@ -12,8 +12,8 @@ use nebula_error::{Classify, ErrorCategory, ErrorCode, RetryHint, codes};
 
 use super::*;
 use crate::{
-    CallError, CancellationContext, CircuitBreaker, PolicyContext, RecordingSink,
-    ResilienceEventKind, retry::BackoffConfig,
+    CallContext, CallError, CancellationContext, CircuitBreaker, EventScope, RecordingSink,
+    ResilienceEvent, ResilienceEventKind, retry::BackoffConfig,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -147,24 +147,24 @@ async fn pipeline_warns_on_bad_layer_order() {
 }
 
 #[test]
-fn build_checked_rejects_out_of_order_steps() {
+fn try_build_rejects_out_of_order_steps() {
     let err = ResiliencePipeline::<&str>::builder()
         .retry(RetryConfig::new(2).unwrap())
         .rate_limiter(Arc::new(|| Box::pin(async { Ok(()) })))
-        .build_checked()
+        .try_build()
         .unwrap_err();
 
     assert_eq!(err.field, "pipeline_order");
 }
 
 #[test]
-fn build_checked_accepts_recommended_order() {
+fn try_build_accepts_recommended_order() {
     let result = ResiliencePipeline::<&str>::builder()
         .load_shed(Arc::new(|| false))
         .rate_limiter(Arc::new(|| Box::pin(async { Ok(()) })))
         .timeout(Duration::from_secs(1))
         .retry(RetryConfig::new(2).unwrap())
-        .build_checked();
+        .try_build();
 
     assert!(result.is_ok());
 }
@@ -315,7 +315,7 @@ async fn pipeline_retry_does_not_retry_inner_circuit_open() {
 }
 
 #[tokio::test]
-async fn build_recommended_order_rejects_before_retry() {
+async fn build_sorted_rejects_before_retry() {
     let checks = Arc::new(AtomicU32::new(0));
     let seen_checks = Arc::clone(&checks);
     let operations = Arc::new(AtomicU32::new(0));
@@ -333,7 +333,7 @@ async fn build_recommended_order_rejects_before_retry() {
                 .backoff(BackoffConfig::Fixed(Duration::ZERO)),
         )
         .rate_limiter(rate_limiter)
-        .build_recommended_order();
+        .build_sorted();
 
     let result = pipeline
         .call(move || {
@@ -423,7 +423,7 @@ async fn pipeline_context_cancels_retry_sleep() {
     let attempts = Arc::new(AtomicU32::new(0));
     let seen = Arc::clone(&attempts);
     let cancellation = CancellationContext::with_reason("shutdown");
-    let cancellation_for_call = cancellation.clone();
+    let context = CallContext::from_cancellation(cancellation.clone());
 
     let pipeline = ResiliencePipeline::<&str>::builder()
         .retry(
@@ -436,7 +436,7 @@ async fn pipeline_context_cancels_retry_sleep() {
 
     let task = tokio::spawn(async move {
         pipeline
-            .call_with_context(&cancellation_for_call, move || {
+            .call_with_context(&context, move || {
                 fail_transient_after_count(Arc::clone(&seen))
             })
             .await
@@ -656,7 +656,7 @@ async fn pipeline_with_sink_does_not_double_count_prebuilt_bulkhead_rejection() 
         Bulkhead::new(crate::BulkheadConfig {
             max_concurrency: 1,
             queue_size: 0,
-            timeout: None,
+            queue_wait_timeout: None,
         })
         .unwrap()
         .with_sink(sink.clone()),
@@ -678,7 +678,7 @@ async fn pipeline_with_sink_does_not_double_count_prebuilt_bulkhead_rejection() 
 
 #[tokio::test]
 async fn pipeline_with_sink_does_not_double_count_prebuilt_circuit_state_change() {
-    use crate::sink::CircuitState;
+    use crate::CircuitState;
 
     let sink = RecordingSink::new();
     let cb = Arc::new(
@@ -708,8 +708,8 @@ async fn pipeline_with_sink_does_not_double_count_prebuilt_circuit_state_change(
 #[tokio::test]
 async fn pipeline_cb_half_open_allows_single_probe() {
     use crate::{
+        CircuitState,
         circuit_breaker::{CircuitBreakerConfig, Outcome},
-        sink::CircuitState,
     };
 
     let cb = Arc::new(
@@ -751,7 +751,7 @@ async fn pipeline_bulkhead_takes_single_permit() {
         Bulkhead::new(crate::BulkheadConfig {
             max_concurrency: 2,
             queue_size: 1,
-            timeout: None,
+            queue_wait_timeout: None,
         })
         .unwrap(),
     );
@@ -812,7 +812,7 @@ async fn pipeline_call_with_fallback_recovers() {
         Some((
             _,
             PipelineOutcome::FallbackSucceeded {
-                primary_error: crate::CallErrorKind::Timeout,
+                primary_error: CallErrorKind::Timeout,
             }
         ))
     ));
@@ -845,10 +845,11 @@ async fn pipeline_context_fallback_does_not_recover_cancellation() {
     };
     let cancellation = CancellationContext::with_reason("shutdown");
     cancellation.cancel();
+    let context = CallContext::from_cancellation(cancellation);
     let pipeline = ResiliencePipeline::<&'static str>::builder().build();
 
     let result = pipeline
-        .call_with_context_and_fallback(&cancellation, || boxed_ok_static_operation(42), &fallback)
+        .call_with_context_and_fallback(&context, || boxed_ok_static_operation(42), &fallback)
         .await;
 
     assert!(matches!(result, Err(CallError::Cancelled { .. })));
@@ -860,7 +861,7 @@ async fn pipeline_context_cancels_inflight_fallback() {
     use crate::fallback::FunctionFallback;
 
     let cancellation = CancellationContext::with_reason("shutdown");
-    let cancellation_for_call = cancellation.clone();
+    let context = CallContext::from_cancellation(cancellation.clone());
     let started = Arc::new(tokio::sync::Notify::new());
     let started_for_fallback = Arc::clone(&started);
 
@@ -874,11 +875,7 @@ async fn pipeline_context_cancels_inflight_fallback() {
         });
 
         pipeline
-            .call_with_context_and_fallback(
-                &cancellation_for_call,
-                boxed_long_static_operation,
-                &fallback,
-            )
+            .call_with_context_and_fallback(&context, boxed_long_static_operation, &fallback)
             .await
     });
 
@@ -894,17 +891,17 @@ async fn pipeline_context_cancels_inflight_fallback() {
 }
 
 #[tokio::test]
-async fn policy_context_deadline_bounds_entire_pipeline() {
+async fn call_context_deadline_bounds_entire_pipeline() {
     let sink = RecordingSink::new();
-    let context = PolicyContext::with_timeout(Duration::from_millis(1))
-        .with_scope(PolicyScope::empty().tenant_id("tenant-context"));
+    let context = CallContext::with_timeout(Duration::from_millis(1))
+        .with_scope(EventScope::empty().tenant_id("tenant-context"));
     let pipeline = ResiliencePipeline::<&'static str>::builder()
         .with_sink(sink.clone())
-        .scope(PolicyScope::empty().tenant_id("tenant-builder"))
+        .scope(EventScope::empty().tenant_id("tenant-builder"))
         .build();
 
     let result = pipeline
-        .call_with_policy_context(&context, boxed_long_static_operation)
+        .call_with_context(&context, boxed_long_static_operation)
         .await;
 
     assert!(matches!(result, Err(CallError::Timeout(_))));
@@ -923,20 +920,20 @@ async fn policy_context_deadline_bounds_entire_pipeline() {
         Some((
             scope,
             PipelineOutcome::Failure {
-                error: crate::CallErrorKind::Timeout,
+                error: CallErrorKind::Timeout,
             }
         )) if scope.tenant_id.as_deref() == Some("tenant-context")
     ));
 }
 
 #[tokio::test]
-async fn policy_context_deadline_bounds_inflight_fallback() {
+async fn call_context_deadline_bounds_inflight_fallback() {
     use crate::fallback::FunctionFallback;
 
     let sink = RecordingSink::new();
     let started = Arc::new(tokio::sync::Notify::new());
     let started_for_fallback = Arc::clone(&started);
-    let context = PolicyContext::with_timeout(Duration::from_millis(50));
+    let context = CallContext::with_timeout(Duration::from_millis(50));
     let pipeline = ResiliencePipeline::<&'static str>::builder()
         .with_sink(sink.clone())
         .timeout(Duration::from_millis(1))
@@ -946,11 +943,8 @@ async fn policy_context_deadline_bounds_inflight_fallback() {
         long_fallback_after_notify(started)
     });
 
-    let call = pipeline.call_with_policy_context_and_fallback(
-        &context,
-        boxed_long_static_operation,
-        &fallback,
-    );
+    let call =
+        pipeline.call_with_context_and_fallback(&context, boxed_long_static_operation, &fallback);
     tokio::pin!(call);
     tokio::select! {
         () = started.notified() => {},
@@ -971,7 +965,7 @@ async fn pipeline_completion_event_carries_scope() {
     let pipeline = ResiliencePipeline::<&str>::builder()
         .with_sink(sink.clone())
         .scope(
-            PolicyScope::empty()
+            EventScope::empty()
                 .tenant_id("tenant-a")
                 .operation("gmail.poll"),
         )

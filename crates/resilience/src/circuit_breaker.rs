@@ -25,19 +25,20 @@
 //! # }
 //! ```
 
-#[cfg(not(loom))]
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicU32, Ordering},
+    },
+    time::Duration,
+};
 
-// Under loom, swap std atomics for loom-instrumented equivalents.
-#[cfg(loom)]
-use loom::sync::atomic::{AtomicU32, Ordering};
 use parking_lot::Mutex;
 
 use crate::{
-    CallError, ConfigError, PolicyContext,
-    clock::{Clock, SystemClock},
-    sink::{CircuitState, MetricsSink, NoopSink, ResilienceEvent},
+    CallContext, CallError, ConfigError,
+    clock::{InstantSource, SystemInstant},
+    events::{EventSink, NoopSink, ResilienceEvent},
 };
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -47,10 +48,15 @@ use crate::{
 #[derive(Debug, Clone)]
 pub struct CircuitBreakerConfig {
     /// Number of failures before opening the circuit. Min: 1.
+    #[doc(alias = "failureRateThreshold")]
     pub failure_threshold: u32,
     /// How long to wait in Open state before transitioning to `HalfOpen`.
+    #[doc(alias = "waitDurationInOpenState")]
+    #[doc(alias = "breakDuration")]
+    #[doc(alias = "sleepWindow")]
     pub reset_timeout: Duration,
     /// Max concurrent probe operations allowed in `HalfOpen` state. Default: 1.
+    #[doc(alias = "permittedNumberOfCallsInHalfOpenState")]
     pub max_half_open_operations: u32,
     /// Successful half-open probes required before closing.
     ///
@@ -58,26 +64,26 @@ pub struct CircuitBreakerConfig {
     /// concurrent probes also require multiple successful probes before recovery.
     pub half_open_success_threshold: Option<u32>,
     /// Minimum number of operations required before failures can trip the breaker. Default: 5.
+    #[doc(alias = "minimumNumberOfCalls")]
+    #[doc(alias = "minimumThroughput")]
     pub min_operations: u32,
     /// Whether timeouts count as failures **and toward `total` operations**.
     /// When `false`, timeouts are completely ignored by the circuit breaker —
     /// they do not count as failures, successes, or toward `min_operations`.
     /// Default: `true`.
     pub count_timeouts_as_failures: bool,
-    /// Multiplier for reset timeout on consecutive opens. Default: 1.0 (no increase).
-    pub break_duration_multiplier: f64,
-    /// Maximum reset timeout cap when using dynamic break duration. Default: 5 minutes.
-    pub max_break_duration: Duration,
+    /// Multiplier applied to `reset_timeout` on consecutive opens.
+    /// Default: 1.0 (no increase).
+    #[cfg_attr(feature = "serde", serde(alias = "break_duration_multiplier"))]
+    pub reset_timeout_multiplier: f64,
+    /// Maximum reset timeout cap when the multiplier is active. Default: 5 minutes.
+    #[cfg_attr(feature = "serde", serde(alias = "max_break_duration"))]
+    pub max_reset_timeout: Duration,
     /// Duration threshold above which a successful call is considered "slow". `None` = disabled.
     #[cfg_attr(feature = "serde", serde(default))]
     pub slow_call_threshold: Option<Duration>,
     /// Slow call rate threshold (0.0--1.0). If slow calls / total >= this, CB trips. Default: 1.0.
     pub slow_call_rate_threshold: f64,
-    /// Size of the count-based sliding window. 0 = use simple counters (default).
-    pub sliding_window_size: u32,
-    /// Failure rate threshold (0.0--1.0) used with sliding window. `None` = use
-    /// `failure_threshold` count.
-    pub failure_rate_threshold: Option<f64>,
 }
 
 impl Default for CircuitBreakerConfig {
@@ -89,12 +95,10 @@ impl Default for CircuitBreakerConfig {
             half_open_success_threshold: None,
             min_operations: 5,
             count_timeouts_as_failures: true,
-            break_duration_multiplier: 1.0,
-            max_break_duration: Duration::from_mins(5),
+            reset_timeout_multiplier: 1.0,
+            max_reset_timeout: Duration::from_mins(5),
             slow_call_threshold: None,
             slow_call_rate_threshold: 1.0,
-            sliding_window_size: 0,
-            failure_rate_threshold: None,
         }
     }
 }
@@ -125,24 +129,15 @@ impl CircuitBreakerConfig {
         if self.min_operations == 0 {
             return Err(ConfigError::new("min_operations", "must be >= 1"));
         }
-        if self.break_duration_multiplier < 1.0 {
+        if self.reset_timeout_multiplier < 1.0 {
             return Err(ConfigError::new(
-                "break_duration_multiplier",
+                "reset_timeout_multiplier",
                 "must be >= 1.0",
             ));
         }
         if !(0.0..=1.0).contains(&self.slow_call_rate_threshold) {
             return Err(ConfigError::new(
                 "slow_call_rate_threshold",
-                "must be between 0.0 and 1.0",
-            ));
-        }
-        if self
-            .failure_rate_threshold
-            .is_some_and(|r| !(0.0..=1.0).contains(&r))
-        {
-            return Err(ConfigError::new(
-                "failure_rate_threshold",
                 "must be between 0.0 and 1.0",
             ));
         }
@@ -210,17 +205,30 @@ pub struct CircuitBreakerStats {
     pub state: CircuitState,
     /// Current failure count.
     pub failures: u32,
-    /// Total operations in current window.
+    /// Total operations observed since the counters were last reset.
     pub total: u32,
-    /// Number of slow calls in current window.
+    /// Number of slow calls observed since the counters were last reset.
     pub slow_calls: u32,
+}
+
+/// A state in the circuit breaker state machine.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum CircuitState {
+    /// Normal operation — requests pass through.
+    Closed,
+    /// Breaker tripped — requests rejected immediately.
+    Open,
+    /// Probing — limited requests allowed to test recovery.
+    HalfOpen,
 }
 
 type StateChangeCallback = Box<dyn Fn(CircuitState, CircuitState) + Send + Sync>;
 
 /// Circuit breaker — protects downstream calls by rejecting requests when failure rate is high.
 ///
-/// Shared state via `Arc<CircuitBreaker>`. Inject [`MockClock`](crate::clock::MockClock) and
+/// Shared state via `Arc<CircuitBreaker>`. Inject [`MockInstant`](crate::clock::MockInstant) and
 /// [`RecordingSink`](crate::RecordingSink) for tests.
 ///
 /// # Cancel safety
@@ -275,202 +283,10 @@ pub struct CircuitBreaker {
     /// Lock-free state mirror for observability. Offset 0 = cache line 0.
     atomic_state: AtomicU32,
     config: CircuitBreakerConfig,
-    clock: Arc<dyn Clock>,
-    sink: Arc<dyn MetricsSink>,
+    instant_source: Arc<dyn InstantSource>,
+    sink: Arc<dyn EventSink>,
     state: Mutex<InnerState>,
     on_state_change: Option<StateChangeCallback>,
-}
-
-/// Sum a slice of 0/1 bytes into a u32.
-///
-/// On x86-64, uses SSE2 `psadbw` (sum-of-absolute-differences against zero)
-/// to process 16 bytes per cycle — 16x faster than scalar for large windows.
-/// Falls back to a 4-accumulator scalar loop on non-x86 targets.
-///
-/// Outlined (`inline(never)`) to prevent LLVM from duplicating the loop
-/// body at every inlined `failure_count`/`slow_count` call site.
-#[inline(never)]
-fn byte_sum(slice: &[u8]) -> u32 {
-    #[cfg(target_arch = "x86_64")]
-    {
-        byte_sum_sse2(slice)
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        byte_sum_scalar(slice)
-    }
-}
-
-/// SSE2 SIMD path: `psadbw` sums 16 bytes per iteration into two u64 lanes.
-/// SSE2 is guaranteed on all x86-64 CPUs — no runtime feature check needed.
-#[cfg(target_arch = "x86_64")]
-#[expect(
-    unsafe_code,
-    clippy::cast_ptr_alignment,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss
-)]
-fn byte_sum_sse2(slice: &[u8]) -> u32 {
-    #[cfg(target_arch = "x86_64")]
-    use std::arch::x86_64::{
-        __m128i, _mm_add_epi64, _mm_cvtsi128_si64, _mm_loadu_si128, _mm_sad_epu8,
-        _mm_setzero_si128, _mm_unpackhi_epi64,
-    };
-
-    // SAFETY: SSE2 is guaranteed on x86-64. All pointer arithmetic is bounds-checked
-    // via the chunk/remainder split. `_mm_loadu_si128` handles unaligned loads.
-    #[expect(
-        clippy::multiple_unsafe_ops_per_block,
-        reason = "SIMD kernel: the intrinsics form one logical operation under a single SAFETY contract"
-    )]
-    unsafe {
-        let zero = _mm_setzero_si128();
-        let mut acc = _mm_setzero_si128();
-
-        let chunks = slice.chunks_exact(16);
-        let remainder = chunks.remainder();
-
-        for chunk in chunks {
-            let v = _mm_loadu_si128(chunk.as_ptr().cast::<__m128i>());
-            acc = _mm_add_epi64(acc, _mm_sad_epu8(v, zero));
-        }
-
-        // Horizontal sum of 2 u64 lanes
-        let hi = _mm_unpackhi_epi64(acc, acc);
-        let total = _mm_add_epi64(acc, hi);
-        let mut sum = _mm_cvtsi128_si64(total) as u32;
-
-        for &b in remainder {
-            sum += u32::from(b);
-        }
-        sum
-    }
-}
-
-/// Scalar fallback: 4 independent accumulators to break loop-carried dependency.
-#[cfg(not(target_arch = "x86_64"))]
-fn byte_sum_scalar(slice: &[u8]) -> u32 {
-    let (mut a, mut b, mut c, mut d) = (0u32, 0u32, 0u32, 0u32);
-    let mut chunks = slice.chunks_exact(4);
-    for chunk in &mut chunks {
-        a += u32::from(chunk[0]);
-        b += u32::from(chunk[1]);
-        c += u32::from(chunk[2]);
-        d += u32::from(chunk[3]);
-    }
-    let sum = a + b + c + d;
-    sum + chunks
-        .remainder()
-        .iter()
-        .copied()
-        .map(u32::from)
-        .sum::<u32>()
-}
-
-/// Fixed-size ring buffer of call outcomes for rate-based circuit breaking.
-///
-/// Stores failure and slow-call flags in separate byte arrays. The
-/// `byte_sum` helper uses chunked iteration that LLVM auto-vectorizes
-/// with `psadbw`/`vpsadbw` SIMD instructions at window sizes >= 32.
-///
-/// Capacity is rounded up to the next power of two so that the ring
-/// pointer wraps via bitmask (`& mask`) instead of integer division.
-///
-/// Made `pub` so it can be benchmarked directly from `benches/sliding_window_cb.rs`.
-#[doc(hidden)]
-#[derive(Debug)]
-pub struct OutcomeWindow {
-    /// 1 = failure, 0 = success — one byte per slot, contiguous for SIMD.
-    failure_ring: Box<[u8]>,
-    /// 1 = slow call, 0 = normal — one byte per slot, contiguous for SIMD.
-    slow_ring: Box<[u8]>,
-    /// Bitmask for wrapping: always `capacity - 1` where capacity is a power of two.
-    mask: usize,
-    head: usize,
-    len: usize,
-}
-
-impl OutcomeWindow {
-    #[must_use]
-    pub fn new(requested: usize) -> Self {
-        let cap = requested.next_power_of_two().max(1);
-        Self {
-            failure_ring: vec![0u8; cap].into_boxed_slice(),
-            slow_ring: vec![0u8; cap].into_boxed_slice(),
-            mask: cap - 1,
-            head: 0,
-            len: 0,
-        }
-    }
-
-    #[expect(
-        unsafe_code,
-        reason = "head is maintained via bitmask so get_unchecked_mut is in-bounds; see SAFETY comment"
-    )]
-    pub fn record(&mut self, is_failure: bool, is_slow: bool) {
-        let h = self.head;
-        debug_assert!(h <= self.mask, "head exceeds mask");
-        // SAFETY: `head` is always `< capacity` because it is maintained via
-        // `(head + 1) & mask` where `mask = capacity - 1` and `capacity` equals
-        // both `failure_ring.len()` and `slow_ring.len()`.
-        #[expect(
-            clippy::multiple_unsafe_ops_per_block,
-            reason = "both ring writes share the single head-bound SAFETY invariant"
-        )]
-        unsafe {
-            *self.failure_ring.get_unchecked_mut(h) = u8::from(is_failure);
-            *self.slow_ring.get_unchecked_mut(h) = u8::from(is_slow);
-        }
-        self.head = (h + 1) & self.mask;
-        let cap = self.mask + 1;
-        if self.len < cap {
-            self.len += 1;
-        }
-    }
-
-    // Reason: usize to u32 cast is safe for practical window sizes (< 2^32).
-    #[must_use]
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "usize to u32 cast is safe for practical window sizes (< 2^32)"
-    )]
-    pub const fn total(&self) -> u32 {
-        self.len as u32
-    }
-
-    #[must_use]
-    pub fn failure_count(&self) -> u32 {
-        byte_sum(self.active_slice(&self.failure_ring))
-    }
-
-    #[must_use]
-    pub fn slow_count(&self) -> u32 {
-        byte_sum(self.active_slice(&self.slow_ring))
-    }
-
-    #[expect(
-        unsafe_code,
-        reason = "len <= ring.len() is maintained as invariant; see SAFETY comment"
-    )]
-    fn active_slice<'a>(&self, ring: &'a [u8]) -> &'a [u8] {
-        let cap = self.mask + 1;
-        if self.len < cap {
-            debug_assert!(self.len <= ring.len(), "len exceeds ring capacity");
-            // SAFETY: `len` is always `<= capacity` which equals `ring.len()`.
-            // The `len < cap` guard above ensures `len < ring.len()`.
-            unsafe { ring.get_unchecked(..self.len) }
-        } else {
-            ring
-        }
-    }
-
-    #[cold]
-    fn reset(&mut self) {
-        self.head = 0;
-        self.len = 0;
-        self.failure_ring.fill(0);
-        self.slow_ring.fill(0);
-    }
 }
 
 struct InnerState {
@@ -483,21 +299,18 @@ struct InnerState {
     half_open_successes: u32,
     /// Number of consecutive times the circuit has opened (for dynamic break duration).
     consecutive_opens: u32,
-    /// Number of slow calls in the current window.
+    /// Number of slow calls observed since the counters were last reset.
     slow_calls: u32,
-    /// Sliding window (used when `config.sliding_window_size > 0`).
-    window: Option<OutcomeWindow>,
 }
 
 impl CircuitBreaker {
-    /// Create a new circuit breaker with the given configuration.
+    /// Creates a new circuit breaker with the given configuration.
     ///
     /// # Errors
     ///
     /// Returns `Err(ConfigError)` if configuration is invalid.
     pub fn new(config: CircuitBreakerConfig) -> Result<Self, ConfigError> {
         config.validate()?;
-        let window_size = config.sliding_window_size;
         Ok(Self {
             config,
             atomic_state: AtomicU32::new(STATE_CLOSED),
@@ -509,13 +322,8 @@ impl CircuitBreaker {
                 half_open_successes: 0,
                 consecutive_opens: 0,
                 slow_calls: 0,
-                window: if window_size > 0 {
-                    Some(OutcomeWindow::new(window_size as usize))
-                } else {
-                    None
-                },
             }),
-            clock: Arc::new(SystemClock),
+            instant_source: Arc::new(SystemInstant),
             sink: Arc::new(NoopSink),
             on_state_change: None,
         })
@@ -523,15 +331,19 @@ impl CircuitBreaker {
 
     /// Replace the metrics sink (builder-style).
     #[must_use]
-    pub fn with_sink(mut self, sink: impl MetricsSink + 'static) -> Self {
+    pub fn with_sink(mut self, sink: impl EventSink + 'static) -> Self {
         self.sink = Arc::new(sink);
         self
     }
 
-    /// Replace the clock (builder-style, for testing).
+    /// Replace the monotonic instant source (builder-style, for testing).
+    ///
+    /// Named `instant_source` rather than `clock` because this crate's source
+    /// carries only `Instant`; `nebula_core::accessor::Clock` (wall time plus
+    /// monotonic) is a different contract on a different type.
     #[must_use]
-    pub fn with_clock(mut self, clock: Arc<dyn Clock>) -> Self {
-        self.clock = clock;
+    pub fn with_instant_source(mut self, source: Arc<dyn InstantSource>) -> Self {
+        self.instant_source = source;
         self
     }
 
@@ -584,10 +396,10 @@ impl CircuitBreaker {
         self.config.slow_call_threshold.is_some()
     }
 
-    /// Return the current instant from the breaker clock.
+    /// Return the current instant from the breaker's instant source.
     #[must_use]
-    pub(crate) fn clock_now(&self) -> std::time::Instant {
-        self.clock.now()
+    pub(crate) fn monotonic_now(&self) -> std::time::Instant {
+        self.instant_source.now()
     }
 
     /// Manually force the circuit open, rejecting all calls until reset timeout or
@@ -596,7 +408,7 @@ impl CircuitBreaker {
         let mut inner = self.state.lock();
         let prev = to_circuit_state(inner.state);
         inner.state = State::Open {
-            opened_at: self.clock.now(),
+            opened_at: self.instant_source.now(),
         };
         inner.half_open_probes = 0;
         inner.half_open_successes = 0;
@@ -637,13 +449,13 @@ impl CircuitBreaker {
         reason = "u32 cast to i32 for powi is safe within realistic consecutive_opens range"
     )]
     fn effective_reset_timeout(&self, consecutive_opens: u32) -> Duration {
-        if consecutive_opens <= 1 || self.config.break_duration_multiplier <= 1.0 {
+        if consecutive_opens <= 1 || self.config.reset_timeout_multiplier <= 1.0 {
             return self.config.reset_timeout;
         }
         let exponent = consecutive_opens - 1;
-        let max_secs = self.config.max_break_duration.as_secs_f64();
+        let max_secs = self.config.max_reset_timeout.as_secs_f64();
         let multiplied = (self.config.reset_timeout.as_secs_f64()
-            * self.config.break_duration_multiplier.powi(exponent as i32))
+            * self.config.reset_timeout_multiplier.powi(exponent as i32))
         .min(max_secs);
         Duration::from_secs_f64(multiplied)
     }
@@ -669,6 +481,11 @@ impl CircuitBreaker {
     /// Returns `Err(CallError::CircuitOpen)` if the breaker is open,
     /// or `Err(CallError::Operation)` if the operation itself fails.
     ///
+    /// # Cancel safety
+    ///
+    /// Dropping the returned future releases a half-open probe slot via its
+    /// drop guard; the recorded outcome is `Cancelled`, never a failure.
+    ///
     /// # Examples
     ///
     /// ```rust
@@ -691,9 +508,9 @@ impl CircuitBreaker {
     {
         self.try_acquire()?;
         let mut guard = ProbeGuard::new(self);
-        let start = self.clock.now();
+        let start = self.instant_source.now();
         let result = f().await;
-        let duration = self.clock.now().duration_since(start);
+        let duration = self.instant_source.now().duration_since(start);
         let outcome = self.classify_outcome(result.is_ok(), duration);
         guard.defuse();
         self.record_outcome(outcome);
@@ -713,15 +530,20 @@ impl CircuitBreaker {
     /// `Err(CallError::Cancelled)` if the context is cancelled,
     /// `Err(CallError::Timeout)` if the context deadline expires,
     /// or `Err(CallError::Operation)` if the operation itself fails.
-    pub async fn call_with_policy_context<T, E, Fut>(
+    ///
+    /// # Cancel safety
+    ///
+    /// Dropping the returned future releases a half-open probe slot via its
+    /// drop guard; the recorded outcome is `Cancelled`, never a failure.
+    pub async fn call_with_context<T, E, Fut>(
         &self,
-        context: &PolicyContext,
+        context: &CallContext,
         f: impl FnOnce() -> Fut + Send,
     ) -> Result<T, CallError<E>>
     where
         Fut: Future<Output = Result<T, E>> + Send,
     {
-        self.call_with_policy_context_inner(context, None, f).await
+        self.call_with_context_inner(context, None, f).await
     }
 
     /// Execute a closure under the circuit breaker with error classification.
@@ -740,6 +562,11 @@ impl CircuitBreaker {
     ///
     /// Returns `Err(CallError::CircuitOpen)` if the breaker is open,
     /// or `Err(CallError::Operation)` if the operation itself fails.
+    ///
+    /// # Cancel safety
+    ///
+    /// Dropping the returned future releases a half-open probe slot via its
+    /// drop guard; the recorded outcome is `Cancelled`, never a failure.
     pub async fn call_with_classifier<T, E, Fut>(
         &self,
         classifier: &dyn crate::classifier::ErrorClassifier<E>,
@@ -750,9 +577,9 @@ impl CircuitBreaker {
     {
         self.try_acquire()?;
         let mut guard = ProbeGuard::new(self);
-        let start = self.clock.now();
+        let start = self.instant_source.now();
         let result = f().await;
-        let duration = self.clock.now().duration_since(start);
+        let duration = self.instant_source.now().duration_since(start);
 
         let outcome = match &result {
             Ok(_) => self.classify_outcome(true, duration),
@@ -773,22 +600,27 @@ impl CircuitBreaker {
     /// `Err(CallError::Cancelled)` if the context is cancelled,
     /// `Err(CallError::Timeout)` if the context deadline expires,
     /// or `Err(CallError::Operation)` if the operation itself fails.
-    pub async fn call_with_classifier_and_policy_context<T, E, Fut>(
+    ///
+    /// # Cancel safety
+    ///
+    /// Dropping the returned future releases a half-open probe slot via its
+    /// drop guard; the recorded outcome is `Cancelled`, never a failure.
+    pub async fn call_with_classifier_and_context<T, E, Fut>(
         &self,
         classifier: &dyn crate::classifier::ErrorClassifier<E>,
-        context: &PolicyContext,
+        context: &CallContext,
         f: impl FnOnce() -> Fut + Send,
     ) -> Result<T, CallError<E>>
     where
         Fut: Future<Output = Result<T, E>> + Send,
     {
-        self.call_with_policy_context_inner(context, Some(classifier), f)
+        self.call_with_context_inner(context, Some(classifier), f)
             .await
     }
 
-    async fn call_with_policy_context_inner<T, E, Fut>(
+    async fn call_with_context_inner<T, E, Fut>(
         &self,
-        context: &PolicyContext,
+        context: &CallContext,
         classifier: Option<&dyn crate::classifier::ErrorClassifier<E>>,
         f: impl FnOnce() -> Fut + Send,
     ) -> Result<T, CallError<E>>
@@ -797,11 +629,11 @@ impl CircuitBreaker {
     {
         self.try_acquire()?;
         let mut guard = ProbeGuard::new(self);
-        let start = self.clock.now();
+        let start = self.instant_source.now();
         let result = context
             .run_result(async { f().await.map_err(CallError::Operation) })
             .await;
-        let duration = self.clock.now().duration_since(start);
+        let duration = self.instant_source.now().duration_since(start);
 
         let outcome = match &result {
             Ok(_) => self.classify_outcome(true, duration),
@@ -819,7 +651,19 @@ impl CircuitBreaker {
         result
     }
 
-    /// Check if the circuit allows execution.
+    /// Check if the circuit allows execution, **taking a half-open probe
+    /// slot when it does**.
+    ///
+    /// This is not a read-only predicate: in `HalfOpen` it increments the
+    /// active-probe count, and in `Open` with an elapsed reset timeout it
+    /// transitions the breaker to `HalfOpen` and resets the counters. Every
+    /// successful call must therefore be paired with
+    /// [`record_outcome`](Self::record_outcome) (the [`call`](Self::call)
+    /// methods do this via an internal drop guard).
+    ///
+    /// To merely observe the state, use [`circuit_state`](Self::circuit_state)
+    /// or [`stats`](Self::stats) — calling this as a predicate leaks probe
+    /// slots and can open the circuit it was asked to observe.
     ///
     /// # Errors
     ///
@@ -839,7 +683,7 @@ impl CircuitBreaker {
                 }
             },
             State::Open { opened_at } => {
-                let elapsed = self.clock.now().duration_since(opened_at);
+                let elapsed = self.instant_source.now().duration_since(opened_at);
                 let timeout = self.effective_reset_timeout(inner.consecutive_opens);
                 if elapsed >= timeout {
                     let prev = to_circuit_state(inner.state);
@@ -849,9 +693,6 @@ impl CircuitBreaker {
                     inner.slow_calls = 0;
                     inner.half_open_successes = 0;
                     inner.half_open_probes = 1; // this call is the first probe
-                    if let Some(ref mut window) = inner.window {
-                        window.reset();
-                    }
                     self.atomic_state.store(STATE_HALF_OPEN, Ordering::Relaxed);
                     transition = Some((prev, CircuitState::HalfOpen));
                     Ok(())
@@ -871,17 +712,9 @@ impl CircuitBreaker {
         result
     }
 
-    /// Whether the failure rate/count has exceeded the configured threshold.
-    fn should_trip_on_failure(&self, inner: &InnerState) -> bool {
-        if let (Some(window), Some(rate_threshold)) =
-            (&inner.window, self.config.failure_rate_threshold)
-        {
-            window.total() >= self.config.min_operations
-                && rate_exceeds(window.failure_count(), window.total(), rate_threshold)
-        } else {
-            inner.failures >= self.config.failure_threshold
-                && inner.total >= self.config.min_operations
-        }
+    /// Whether the failure count has reached the configured threshold.
+    const fn should_trip_on_failure(&self, inner: &InnerState) -> bool {
+        inner.failures >= self.config.failure_threshold && inner.total >= self.config.min_operations
     }
 
     /// Whether the slow call rate has exceeded the configured threshold.
@@ -889,21 +722,19 @@ impl CircuitBreaker {
         if self.config.slow_call_threshold.is_none() {
             return false;
         }
-        let (total, slow) = inner
-            .window
-            .as_ref()
-            .map_or((inner.total, inner.slow_calls), |window| {
-                (window.total(), window.slow_count())
-            });
-        total >= self.config.min_operations
-            && rate_exceeds(slow, total, self.config.slow_call_rate_threshold)
+        inner.total >= self.config.min_operations
+            && rate_exceeds(
+                inner.slow_calls,
+                inner.total,
+                self.config.slow_call_rate_threshold,
+            )
     }
 
     /// Transition to `Open` from the current state, returning the transition pair.
     fn trip_open(&self, inner: &mut InnerState) -> (CircuitState, CircuitState) {
         let prev = to_circuit_state(inner.state);
         inner.state = State::Open {
-            opened_at: self.clock.now(),
+            opened_at: self.instant_source.now(),
         };
         inner.half_open_probes = 0;
         inner.half_open_successes = 0;
@@ -921,7 +752,7 @@ impl CircuitBreaker {
     }
 
     /// Reset all counters and set state to `Closed`.
-    fn reset_counters(inner: &mut InnerState) {
+    const fn reset_counters(inner: &mut InnerState) {
         inner.state = State::Closed;
         inner.failures = 0;
         inner.total = 0;
@@ -929,9 +760,6 @@ impl CircuitBreaker {
         inner.half_open_probes = 0;
         inner.half_open_successes = 0;
         inner.consecutive_opens = 0;
-        if let Some(ref mut window) = inner.window {
-            window.reset();
-        }
     }
 
     /// Reset all counters and transition to `Closed` from the current state.
@@ -956,7 +784,7 @@ impl CircuitBreaker {
         }
     }
 
-    /// Record an operation outcome directly (useful when driving the CB from external code).
+    /// Records an operation outcome directly (useful when driving the CB from external code).
     ///
     /// In the Closed state, each success decrements the failure counter by one ("leaky bucket"
     /// forgiveness). This means that interleaved successes slowly erase past failures,
@@ -976,9 +804,6 @@ impl CircuitBreaker {
                 } else {
                     inner.failures = inner.failures.saturating_sub(1);
                     inner.total = inner.total.saturating_add(1);
-                    if let Some(ref mut window) = inner.window {
-                        window.record(false, false);
-                    }
                 }
             },
             Outcome::Failure | Outcome::Timeout => {
@@ -989,9 +814,6 @@ impl CircuitBreaker {
                 } else {
                     inner.failures = inner.failures.saturating_add(1);
                     inner.total = inner.total.saturating_add(1);
-                    if let Some(ref mut window) = inner.window {
-                        window.record(true, false);
-                    }
 
                     if inner.state == State::HalfOpen {
                         transition = Some(self.trip_open_from_half_open(&mut inner));
@@ -1003,9 +825,6 @@ impl CircuitBreaker {
             Outcome::SlowSuccess => {
                 inner.slow_calls = inner.slow_calls.saturating_add(1);
                 inner.total = inner.total.saturating_add(1);
-                if let Some(ref mut window) = inner.window {
-                    window.record(false, true);
-                }
                 if inner.state == State::HalfOpen {
                     transition = self.record_half_open_success(&mut inner);
                 } else {
@@ -1019,9 +838,6 @@ impl CircuitBreaker {
                 inner.slow_calls = inner.slow_calls.saturating_add(1);
                 inner.failures = inner.failures.saturating_add(1);
                 inner.total = inner.total.saturating_add(1);
-                if let Some(ref mut window) = inner.window {
-                    window.record(true, true);
-                }
                 if inner.state == State::HalfOpen {
                     transition = Some(self.trip_open_from_half_open(&mut inner));
                 } else if self.should_trip_on_failure(&inner) || self.slow_rate_trips(&inner) {
@@ -1052,10 +868,7 @@ impl CircuitBreaker {
     pub fn stats(&self) -> CircuitBreakerStats {
         let inner = self.state.lock();
         let state = to_circuit_state(inner.state);
-        let (failures, total, slow_calls) = inner.window.as_ref().map_or_else(
-            || (inner.failures, inner.total, inner.slow_calls),
-            |window| (window.failure_count(), window.total(), window.slow_count()),
-        );
+        let (failures, total, slow_calls) = (inner.failures, inner.total, inner.slow_calls);
         drop(inner);
         CircuitBreakerStats {
             state,
@@ -1134,100 +947,3 @@ const fn to_circuit_state(s: State) -> CircuitState {
 #[cfg(test)]
 #[path = "circuit_breaker_tests.rs"]
 mod tests;
-
-// ---------------------------------------------------------------------------
-// Loom concurrency tests — exhaustively verify the atomic_state mirror pattern.
-//
-// The circuit breaker uses a `Relaxed` atomic store (inside the parking_lot mutex)
-// paired with a `Relaxed` atomic load (outside the mutex) for `circuit_state()`.
-// Loom checks that no invalid interleaving produces an undefined state value.
-//
-// Run with:
-//   RUSTFLAGS="--cfg loom" cargo test -p nebula-resilience --features loom --lib loom
-//
-// Note: parking_lot::Mutex is NOT loom-instrumented. These tests focus exclusively
-// on the AtomicU32 mirror — the mutex correctness is guaranteed by parking_lot.
-// ---------------------------------------------------------------------------
-#[cfg(all(test, loom))]
-mod loom_tests {
-    use loom::{
-        sync::{
-            Arc,
-            atomic::{AtomicU32, Ordering},
-        },
-        thread,
-    };
-
-    use super::{STATE_CLOSED, STATE_HALF_OPEN, STATE_OPEN};
-
-    /// Two threads race: writer transitions Closed→Open→HalfOpen→Closed
-    /// while reader polls `circuit_state()`. Loom verifies that the reader
-    /// only ever sees valid state values (0, 1, or 2) — never torn or
-    /// intermediate values.
-    #[test]
-    fn atomic_state_mirror_only_sees_valid_states() {
-        loom::model(|| {
-            let state = Arc::new(AtomicU32::new(STATE_CLOSED));
-
-            let writer_state = Arc::clone(&state);
-            let writer = thread::spawn(move || {
-                writer_state.store(STATE_OPEN, Ordering::Relaxed);
-                writer_state.store(STATE_HALF_OPEN, Ordering::Relaxed);
-                writer_state.store(STATE_CLOSED, Ordering::Relaxed);
-            });
-
-            let val = state.load(Ordering::Relaxed);
-            assert!(
-                val == STATE_CLOSED || val == STATE_OPEN || val == STATE_HALF_OPEN,
-                "invalid state value observed: {val}"
-            );
-
-            writer.join().unwrap();
-            assert_eq!(state.load(Ordering::Relaxed), STATE_CLOSED);
-        });
-    }
-
-    /// Multiple concurrent readers + one writer.
-    #[test]
-    fn concurrent_readers_see_valid_states() {
-        loom::model(|| {
-            let state = Arc::new(AtomicU32::new(STATE_CLOSED));
-
-            let w = Arc::clone(&state);
-            let writer = thread::spawn(move || {
-                w.store(STATE_OPEN, Ordering::Relaxed);
-            });
-
-            let r1 = Arc::clone(&state);
-            let reader1 = thread::spawn(move || {
-                let v = r1.load(Ordering::Relaxed);
-                assert!(v == STATE_CLOSED || v == STATE_OPEN);
-            });
-
-            let v = state.load(Ordering::Relaxed);
-            assert!(v == STATE_CLOSED || v == STATE_OPEN);
-
-            writer.join().unwrap();
-            reader1.join().unwrap();
-        });
-    }
-
-    /// Verify no spurious values from valid state machine transitions.
-    #[test]
-    fn no_spurious_state_values() {
-        loom::model(|| {
-            let state = Arc::new(AtomicU32::new(STATE_CLOSED));
-
-            let w = Arc::clone(&state);
-            let t = thread::spawn(move || {
-                w.store(STATE_OPEN, Ordering::Relaxed);
-                w.store(STATE_CLOSED, Ordering::Relaxed);
-            });
-
-            let v = state.load(Ordering::Relaxed);
-            assert!(v <= STATE_HALF_OPEN, "saw value {v} > 2");
-
-            t.join().unwrap();
-        });
-    }
-}
