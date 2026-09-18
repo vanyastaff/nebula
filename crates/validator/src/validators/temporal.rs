@@ -258,6 +258,11 @@ pub struct Uuid;
 
 impl Validate<str> for Uuid {
     fn validate(&self, input: &str) -> Result<(), ValidationError> {
+        /// Byte positions of the four hyphens in `8-4-4-4-12` layout.
+        const HYPHEN_POSITIONS: [usize; 4] = [8, 13, 18, 23];
+        /// 32 hex digits + 4 hyphens.
+        const UUID_LEN: usize = 36;
+
         let err = || {
             ValidationError::new(
                 "uuid",
@@ -269,22 +274,17 @@ impl Validate<str> for Uuid {
         };
 
         let b = input.as_bytes();
-        // 32 hex + 4 hyphens = 36 chars
-        if b.len() != 36 {
+        if b.len() != UUID_LEN {
             return Err(err());
         }
-        // Hyphens at positions 8, 13, 18, 23
-        for &pos in &[8usize, 13, 18, 23] {
-            if b[pos] != b'-' {
-                return Err(err());
-            }
-        }
-        // All other chars must be hex
+
         for (i, &byte) in b.iter().enumerate() {
-            if i == 8 || i == 13 || i == 18 || i == 23 {
-                continue;
-            }
-            if !byte.is_ascii_hexdigit() {
+            let valid = if HYPHEN_POSITIONS.contains(&i) {
+                byte == b'-'
+            } else {
+                byte.is_ascii_hexdigit()
+            };
+            if !valid {
                 return Err(err());
             }
         }
