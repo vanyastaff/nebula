@@ -122,6 +122,11 @@ chains and builtin dispatch rather than cloning the referenced graph.
   template parser interpret unescaped delimiters. `parse_expression` and engine
   source evaluation both use `CompiledProgram::compile`.
 - **Typed errors.** `ExpressionError` carries `nebula_error::Classify` with `EXPR:*` codes.
+  Every variant is constructed somewhere; author-fixable failures classify as
+  `validation` (never `internal`), policy denials as `authorization`, and lookups as
+  `not_found`. Runtime lookup keys never appear in diagnostics:
+  `KeyNotFound` is a unit variant by construction, while `PropertyNotFound` and
+  `VariableNotFound` may echo the authored name.
   Parse failures carry a structured `Position`; rendering is the caller's concern.
 
 ## 6. Known tensions / debt

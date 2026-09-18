@@ -466,18 +466,18 @@ fn parse_datetime(value: &RuntimeValue) -> ExpressionResult<DateTime<FixedOffset
             .timestamp_opt(*timestamp, 0)
             .single()
             .map(|dt| dt.fixed_offset())
-            .ok_or_else(|| ExpressionError::eval_error("Invalid timestamp")),
+            .ok_or_else(|| ExpressionError::invalid_date("timestamp is out of range")),
         RuntimeValue::Unsigned(timestamp) => i64::try_from(*timestamp)
             .ok()
             .and_then(|timestamp| Utc.timestamp_opt(timestamp, 0).single())
             .map(|dt| dt.fixed_offset())
-            .ok_or_else(|| ExpressionError::eval_error("Invalid timestamp")),
+            .ok_or_else(|| ExpressionError::invalid_date("timestamp is out of range")),
         RuntimeValue::String(s) => {
             if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
                 return Ok(dt);
             }
             let naive = parse_naive(s)
-                .ok_or_else(|| ExpressionError::eval_error("Cannot parse date string"))?;
+                .ok_or_else(|| ExpressionError::invalid_date("cannot parse date string"))?;
             Ok(Utc.from_utc_datetime(&naive).fixed_offset())
         },
         _ => Err(ExpressionError::type_error(
@@ -500,7 +500,7 @@ fn parse_datetime_in_tz(value: &RuntimeValue, tz: Tz) -> ExpressionResult<DateTi
                 return Ok(dt);
             }
             let naive = parse_naive(s)
-                .ok_or_else(|| ExpressionError::eval_error("Cannot parse date string"))?;
+                .ok_or_else(|| ExpressionError::invalid_date("cannot parse date string"))?;
             // Naive wall time → tz → UTC. For ambiguous instants (DST
             // fall-back), pick the earliest interpretation; for skipped
             // instants (DST spring-forward), surface a typed error.
@@ -508,8 +508,8 @@ fn parse_datetime_in_tz(value: &RuntimeValue, tz: Tz) -> ExpressionResult<DateTi
                 .earliest()
                 .map(|dt| dt.fixed_offset())
                 .ok_or_else(|| {
-                    ExpressionError::eval_error(
-                        "Local datetime does not exist in the requested timezone",
+                    ExpressionError::invalid_date(
+                        "local datetime does not exist in the requested timezone",
                     )
                 })
         },

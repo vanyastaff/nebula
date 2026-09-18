@@ -1382,9 +1382,7 @@ impl Evaluator {
         if self.missing_lookup_is_undefined(context) {
             Ok(RuntimeValue::Undefined)
         } else {
-            Err(ExpressionError::eval_error(format!(
-                "Property '{property}' not found"
-            )))
+            Err(ExpressionError::property_not_found(property))
         }
     }
 
@@ -1396,7 +1394,7 @@ impl Evaluator {
         if self.missing_lookup_is_undefined(context) {
             Ok(RuntimeValue::Undefined)
         } else {
-            Err(ExpressionError::eval_error("Object key not found"))
+            Err(ExpressionError::key_not_found())
         }
     }
 
@@ -1584,9 +1582,7 @@ impl Evaluator {
         for policy in policies.into_iter().flatten() {
             let denied = policy.denied_functions();
             if denied.contains(name) || denied.contains(canonical) {
-                return Err(ExpressionError::eval_error(format!(
-                    "Function '{name}' is denied by policy"
-                )));
+                return Err(ExpressionError::function_not_allowed(name));
             }
         }
 
@@ -1594,9 +1590,7 @@ impl Evaluator {
             if self.is_allowed_by_policy(policy, name, canonical) {
                 continue;
             }
-            return Err(ExpressionError::eval_error(format!(
-                "Function '{name}' is not allowed by policy"
-            )));
+            return Err(ExpressionError::function_not_allowed(name));
         }
 
         Ok(())

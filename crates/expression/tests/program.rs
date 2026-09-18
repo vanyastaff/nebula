@@ -710,14 +710,15 @@ fn missing_lookup_policy_switches_between_error_and_undefined() {
         .build();
     let engine = ExpressionEngine::new();
 
-    // Default: a missing property is an error (schema resolution relies on it).
+    // Default: a missing property is a typed lookup error (schema resolution
+    // relies on it). The authored name is echoed; a runtime key is not.
     assert_matches!(
         engine.evaluate("$input.missing", &context),
-        Err(ExpressionError::EvalError { .. })
+        Err(ExpressionError::PropertyNotFound { ref property }) if property == "missing"
     );
     assert_matches!(
         engine.evaluate("$input['missing']", &context),
-        Err(ExpressionError::EvalError { .. })
+        Err(ExpressionError::KeyNotFound)
     );
 
     // Opt-in: missing yields `Undefined`, which renders as null at the boundary.

@@ -227,12 +227,9 @@ fn parse_json_accepts_whitespace_only_source() {
         let error = engine
             .evaluate(&format!("parse_json({source})"), &EvaluationContext::new())
             .unwrap_err();
-        // The whitespace-only early return must surface serde_json's parse
-        // error, never a builtin output limit.
-        assert!(
-            error.to_string().contains("Failed to parse JSON"),
-            "whitespace-only source must not trip an output bound, got {error:?}"
-        );
+        // The whitespace-only early return must surface the JSON parse
+        // failure, never a builtin output limit.
+        std::assert_matches!(error, ExpressionError::InvalidJson { .. });
     }
 }
 

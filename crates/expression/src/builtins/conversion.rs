@@ -278,7 +278,7 @@ pub(crate) fn parse_json(
     preflight_json_structure(json_str, output)?;
 
     let json: serde_json::Value = serde_json::from_str(json_str)
-        .map_err(|e| ExpressionError::eval_error(format!("Failed to parse JSON: {e}")))?;
+        .map_err(|e| ExpressionError::invalid_json(format!("failed to parse JSON: {e}")))?;
     let json = RuntimeValue::from_json(&json);
 
     if view.strict_conversions_enabled(ctx)
