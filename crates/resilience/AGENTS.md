@@ -22,6 +22,7 @@
 - `cargo test -p nebula-resilience --doc` — the rustdoc examples are the reference documentation and must compile.
 - benches: `cargo bench -p nebula-resilience --features bench-internals` (retry, hedge, latency_tracker, compose need that feature; the rest do not).
 - features: `serde` (default), `bench-internals`.
+- asm check for a hot function: `cargo asm -p nebula-resilience --lib "<symbol>"` (needs a release build; symbols are listed by `cargo asm -p nebula-resilience --lib` with no argument). A perf change to a hot path carries before/after asm and a number, not just a green bench.
 
 ## Key files
 
@@ -46,6 +47,9 @@
 - `CallError<E>` keeps the caller's `E` — no forced mapping, no `Box<dyn Error>` erasure; keep variants additive (`#[non_exhaustive]`).
 - Never report a panicked or aborted attempt as `Cancelled`; `CallError::TaskPanicked` exists for that distinction.
 - No `unsafe` in this crate (`#![deny(unsafe_code)]`).
+- **Float hot paths assume the default x86-64 target, which has no hardware FMA.** `mul_add` lowers to a ~30-cycle `call fma` there, so `retry.rs` and `rate_limiter/` use explicit multiply+add under `#[expect(clippy::suboptimal_flops, reason = …)]`. Do not "fix" those back to `mul_add` without checking `cargo asm` for the target CI builds.
+- **`delay_for`'s general exponential path must stay free of soft-float libcalls** (`__powidf2`, `__floattidf`). `powi_nonnegative` mirrors compiler-rt's operation order; `exponential_general_path_matches_powi_oracle` is the numeric oracle.
+- **The circuit breaker reads its instant source only when `slow_call_threshold` is set.** `call_skips_instant_reads_without_slow_threshold` pins it; adding an unconditional `Instant::now()` back would silently cost ~20ns per call in the default config.
 - Rustdoc is the reference documentation. Do not reintroduce a `docs/` prose folder; update the doc comment instead.
 
 ## Change checks
@@ -55,6 +59,7 @@
 | Cancellation/deadline composition | [cancel_safety](tests/cancel_safety.rs), [call_context_contracts](tests/call_context_contracts.rs), [pipeline](tests/pipeline.rs). |
 | Limiter/backoff behavior | [rate_limiter](tests/rate_limiter.rs), [proptest_backoff](tests/proptest_backoff.rs); retry-budget bounds live in `src/retry_tests.rs`. |
 | Circuit-breaker accounting | `src/circuit_breaker_tests.rs` plus [circuit_breaker](tests/circuit_breaker.rs); Layer-1/Layer-2 backoff parity is pinned in `crates/engine/src/engine/tests.rs`. |
+| Hot-path timing or float math | `src/retry_tests.rs` (`exponential_general_path_matches_powi_oracle`), `src/circuit_breaker_tests.rs` (`call_skips_instant_reads_without_slow_threshold`), `tests/proptest_backoff.rs`; plus before/after `cargo bench` and `cargo asm` for the symbol touched. |
 
 ## See also
 
