@@ -144,11 +144,7 @@ impl FieldPath {
     /// ```
     #[must_use]
     pub fn single(segment: impl AsRef<str>) -> Self {
-        let segment = segment.as_ref();
-        let mut pointer = String::with_capacity(1 + segment.len());
-        pointer.push('/');
-        escape_segment(segment, &mut pointer);
-        Self(Cow::Owned(pointer))
+        Self::from_segments([segment])
     }
 
     /// Creates a `FieldPath` from an iterator of segments.
