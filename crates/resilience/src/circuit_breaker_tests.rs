@@ -1,4 +1,7 @@
-use std::time::Duration;
+use std::{
+    sync::atomic::{AtomicU32, Ordering},
+    time::{Duration, Instant},
+};
 
 use super::*;
 use crate::{
@@ -482,4 +485,79 @@ fn rejects_min_operations_zero() {
     };
     let err = CircuitBreaker::new(config).unwrap_err();
     assert_eq!(err.field, "min_operations");
+}
+
+/// `call()` must still classify slow calls when a threshold is configured.
+///
+/// The fast path skips `Instant::now()` reads only when
+/// `slow_call_threshold` is `None`; this pins that enabling the threshold
+/// re-enables measurement, using a mock instant source advanced by the
+/// operation itself.
+#[tokio::test]
+async fn call_measures_duration_when_slow_threshold_set() {
+    use crate::clock::MockInstant;
+
+    let clock = Arc::new(MockInstant::new());
+    let cb = CircuitBreaker::new(CircuitBreakerConfig {
+        failure_threshold: 100,
+        slow_call_threshold: Some(Duration::from_millis(10)),
+        slow_call_rate_threshold: 0.5,
+        min_operations: 3,
+        ..default_config()
+    })
+    .unwrap()
+    .with_instant_source(Arc::clone(&clock) as Arc<dyn InstantSource>);
+
+    let clock_for_op = Arc::clone(&clock);
+    for _ in 0..3 {
+        let _ = cb
+            .call::<(), &str, _>(|| {
+                let clock = Arc::clone(&clock_for_op);
+                Box::pin(async move {
+                    clock.advance(Duration::from_millis(50));
+                    Ok(())
+                })
+            })
+            .await;
+    }
+
+    // Three 50ms successes on a 10ms threshold = 100% slow > 50% -> open.
+    assert_eq!(cb.circuit_state(), CS::Open);
+}
+
+/// With no slow-call threshold, the breaker must not consult the instant
+/// source on the `call()` path at all.
+#[tokio::test]
+async fn call_skips_instant_reads_without_slow_threshold() {
+    use crate::clock::MockInstant;
+
+    /// Counts every `now()` read.
+    #[derive(Debug)]
+    struct CountingInstant {
+        reads: AtomicU32,
+        inner: MockInstant,
+    }
+
+    impl InstantSource for CountingInstant {
+        fn now(&self) -> Instant {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            self.inner.now()
+        }
+    }
+
+    let source = Arc::new(CountingInstant {
+        reads: AtomicU32::new(0),
+        inner: MockInstant::new(),
+    });
+    let cb = CircuitBreaker::new(default_config())
+        .unwrap()
+        .with_instant_source(Arc::clone(&source) as Arc<dyn InstantSource>);
+
+    let _ = cb.call::<(), &str, _>(|| Box::pin(async { Ok(()) })).await;
+
+    assert_eq!(
+        source.reads.load(Ordering::SeqCst),
+        0,
+        "the default configuration performs no timing reads on call()"
+    );
 }

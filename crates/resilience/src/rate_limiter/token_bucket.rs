@@ -160,9 +160,13 @@ impl RateLimiter for TokenBucket {
     }
 
     // Reason: usize burst_size cast to f64 for token math — acceptable for rate limiting.
+    // Reason: on the default x86-64 target `mul_add` lowers to a `call fma`
+    // (~30 cycles via libm) because the baseline lacks hardware FMA; explicit
+    // multiply+add uses `mulsd`+`addsd`. Same rationale as `retry.rs`'s jitter.
     #[expect(
         clippy::cast_precision_loss,
-        reason = "usize burst_size cast to f64 for token math — acceptable for rate limiting"
+        clippy::suboptimal_flops,
+        reason = "usize burst_size to f64 for token math; mul_add emits a slow fma call on default x86-64"
     )]
     async fn status(&self) -> RateLimiterStatus {
         let state = self.state.lock();
@@ -173,7 +177,7 @@ impl RateLimiter for TokenBucket {
         let refill_rate = f64::from_bits(self.refill_rate.load(Ordering::Acquire));
         let burst = self.burst_size.load(Ordering::Acquire);
         RateLimiterStatus::new(
-            elapsed.mul_add(refill_rate, tokens).min(burst as f64),
+            (elapsed * refill_rate + tokens).min(burst as f64),
             Some(refill_rate),
         )
     }
