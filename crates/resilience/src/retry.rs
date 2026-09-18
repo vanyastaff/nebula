@@ -259,12 +259,12 @@ type RetryNotify<E> = Arc<dyn Fn(&E, Duration, u32) + Send + Sync>;
 ///
 /// use nebula_resilience::retry::{BackoffConfig, JitterConfig, RetryConfig};
 ///
-/// // Up to 5 attempts, exponential backoff, full jitter, 10 s total budget.
+/// // Up to 5 attempts, exponential backoff, additive jitter, 10 s total budget.
 /// let config = RetryConfig::<&str>::new(5)
 ///     .expect("max_attempts >= 1")
 ///     .backoff(BackoffConfig::exponential_default())
 ///     .jitter(JitterConfig::Additive {
-///         factor: 0.5,
+///         max_fraction: 0.5,
 ///         seed: None,
 ///     })
 ///     .total_budget(Duration::from_secs(10));

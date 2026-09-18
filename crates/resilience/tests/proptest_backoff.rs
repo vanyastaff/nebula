@@ -331,7 +331,7 @@ proptest! {
 // ── Jitter properties ─────────────────────────────────────────────────────────
 //
 // `apply_jitter` is a private function, so we test jitter invariants through the
-// public API: construct a seeded `JitterConfig::Full` and verify that the
+// public API: construct a seeded `JitterConfig::Additive` and verify that the
 // deterministic output respects its contract. Since jitter is applied on top of
 // the backoff delay inside the retry loop (not via `delay_for`), we verify the
 // contract of the seeded jitter directly by re-implementing the deterministic

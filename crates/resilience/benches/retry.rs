@@ -10,7 +10,7 @@
 //! - **Retry loop (fail N times then succeed)** — measures classification, backoff computation, and
 //!   re-scheduling overhead across 1, 2, and 4 failures. Uses
 //!   `BackoffConfig::Fixed(Duration::ZERO)` to isolate logic cost from sleep time.
-//! - **Jitter overhead** — comparison of `JitterConfig::None` vs `JitterConfig::Full` measured
+//! - **Jitter overhead** — comparison of `JitterConfig::None` vs `JitterConfig::Additive` measured
 //!   through the full retry loop at zero-delay backoff.
 //!
 //! Run with:

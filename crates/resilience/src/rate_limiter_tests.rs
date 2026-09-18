@@ -95,8 +95,8 @@ async fn erased_rate_limiter_forwards_specialized_context_acquire() {
             Err(CallError::cancelled_with("specialized path"))
         }
 
-        async fn current_rate(&self) -> f64 {
-            1.0
+        async fn status(&self) -> RateLimiterStatus {
+            RateLimiterStatus::new(1.0, Some(1.0))
         }
 
         async fn reset(&self) {}
@@ -155,7 +155,7 @@ async fn erased_rate_limiter_registry_stores_heterogeneous_limiters() {
 
     assert!(registry[0].acquire_boxed().await.is_ok());
     assert!(registry[1].acquire_boxed().await.is_ok());
-    assert!(registry[0].current_rate_boxed().await.is_finite());
+    assert!(registry[0].status_boxed().await.remaining.is_finite());
 
     registry[0].reset_boxed().await;
     assert!(registry[0].acquire_boxed().await.is_ok());
@@ -313,6 +313,6 @@ async fn adaptive_record_success_and_error_are_lock_free() {
         limiter.record_error();
     }
     // Rate should still be around initial since stats_window (1 min) hasn't elapsed
-    let rate = limiter.current_rate().await;
-    assert!((rate - 50.0).abs() < 0.001, "expected ~50.0, got {rate}");
+    let rate = limiter.status().await.limit_per_second;
+    assert_eq!(rate, Some(50.0));
 }

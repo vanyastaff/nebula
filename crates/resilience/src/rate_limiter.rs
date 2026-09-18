@@ -133,6 +133,55 @@ pub(crate) fn map_acquire_error<E>(err: CallError<()>) -> CallError<E> {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// STATUS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Current state of a rate limiter, uniform across algorithms.
+///
+/// # Examples
+///
+/// ```rust
+/// use nebula_resilience::{RateLimiter, rate_limiter::TokenBucket};
+///
+/// # #[tokio::main]
+/// # async fn main() {
+/// let limiter = TokenBucket::new(10, 1.0).expect("valid config");
+/// let status = limiter.status().await;
+/// assert!(status.remaining <= 10.0);
+/// assert_eq!(status.limit_per_second, Some(1.0));
+/// # }
+/// ```
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub struct RateLimiterStatus {
+    /// Permits available right now, in the limiter's own permit units.
+    ///
+    /// This is the number of immediately successful `acquire()` calls
+    /// (fractional when the bucket refills continuously). It is never a
+    /// rate: `SlidingWindow` reports its remaining window quota here.
+    pub remaining: f64,
+    /// Configured steady-state rate in permits per second, when the
+    /// algorithm has one.
+    ///
+    /// `TokenBucket` and `LeakyBucket` fill this from their refill/leak rate;
+    /// `AdaptiveRateLimiter` from its current tuned rate. `SlidingWindow`
+    /// returns `None` — it enforces a count per window, not a rate.
+    pub limit_per_second: Option<f64>,
+}
+
+impl RateLimiterStatus {
+    /// Build a status from a remaining-quota count and an optional rate.
+    #[must_use]
+    pub const fn new(remaining: f64, limit_per_second: Option<f64>) -> Self {
+        Self {
+            remaining,
+            limit_per_second,
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // TRAIT
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -241,8 +290,19 @@ pub trait RateLimiter: Send + Sync {
         }
     }
 
-    /// Returns the current rate or available capacity (implementation-dependent).
-    fn current_rate(&self) -> impl Future<Output = f64> + Send;
+    /// Report the limiter's current state.
+    ///
+    /// [`remaining`](RateLimiterStatus::remaining) answers "would `acquire()`
+    /// succeed right now, and how many times?" for every implementation.
+    /// [`limit_per_second`](RateLimiterStatus::limit_per_second) is the
+    /// configured steady-state rate where the algorithm has one
+    /// (`None` for window counters, whose whole point is the window, not a
+    /// rate).
+    ///
+    /// The field names follow the IETF `RateLimit` header vocabulary
+    /// (`RateLimit-Remaining` / `RateLimit-Limit`): a status reports quota,
+    /// not an algorithm-specific internal counter.
+    fn status(&self) -> impl Future<Output = RateLimiterStatus> + Send;
 
     /// Clears all state and resets to initial conditions.
     fn reset(&self) -> impl Future<Output = ()> + Send;
@@ -281,8 +341,8 @@ pub trait ErasedRateLimiter: Send + Sync {
         Box::pin(context.run_result(self.acquire_boxed()))
     }
 
-    /// Returns the current rate or available capacity (implementation-dependent).
-    fn current_rate_boxed(&self) -> BoxRateLimiterFuture<'_, f64>;
+    /// Report the limiter's current state (see [`RateLimiter::status`]).
+    fn status_boxed(&self) -> BoxRateLimiterFuture<'_, RateLimiterStatus>;
 
     /// Clears all state and resets to initial conditions.
     fn reset_boxed(&self) -> BoxRateLimiterFuture<'_, ()>;
@@ -303,8 +363,8 @@ where
         Box::pin(self.acquire_with_policy_context(context))
     }
 
-    fn current_rate_boxed(&self) -> BoxRateLimiterFuture<'_, f64> {
-        Box::pin(self.current_rate())
+    fn status_boxed(&self) -> BoxRateLimiterFuture<'_, RateLimiterStatus> {
+        Box::pin(self.status())
     }
 
     fn reset_boxed(&self) -> BoxRateLimiterFuture<'_, ()> {
@@ -469,7 +529,7 @@ impl RateLimiter for TokenBucket {
         clippy::cast_precision_loss,
         reason = "usize burst_size cast to f64 for token math — acceptable for rate limiting"
     )]
-    async fn current_rate(&self) -> f64 {
+    async fn status(&self) -> RateLimiterStatus {
         let state = self.state.lock();
         let now = Instant::now();
         let elapsed = now.duration_since(state.last_refill).as_secs_f64();
@@ -477,7 +537,10 @@ impl RateLimiter for TokenBucket {
         drop(state);
         let refill_rate = f64::from_bits(self.refill_rate.load(Ordering::Acquire));
         let burst = self.burst_size.load(Ordering::Acquire);
-        elapsed.mul_add(refill_rate, tokens).min(burst as f64)
+        RateLimiterStatus::new(
+            elapsed.mul_add(refill_rate, tokens).min(burst as f64),
+            Some(refill_rate),
+        )
     }
 
     // Reason: usize burst_size cast to f64 for token reset — acceptable for rate limiting.
@@ -652,7 +715,7 @@ impl RateLimiter for LeakyBucket {
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss
     )]
-    async fn current_rate(&self) -> f64 {
+    async fn status(&self) -> RateLimiterStatus {
         let state = self.state.lock();
         let now = Instant::now();
         let elapsed = now.duration_since(state.last_leak).as_secs_f64();
@@ -660,7 +723,7 @@ impl RateLimiter for LeakyBucket {
         drop(state);
         let leaked = (elapsed * self.leak_rate) as usize;
         let current_level = level.saturating_sub(leaked);
-        (self.capacity - current_level) as f64
+        RateLimiterStatus::new((self.capacity - current_level) as f64, Some(self.leak_rate))
     }
 
     async fn reset(&self) {
@@ -800,15 +863,17 @@ impl RateLimiter for SlidingWindow {
         clippy::cast_precision_loss,
         reason = "usize request count cast to f64 — acceptable for rate reporting"
     )]
-    async fn current_rate(&self) -> f64 {
+    async fn status(&self) -> RateLimiterStatus {
         let now = Instant::now();
         let mut requests = self.requests.lock();
         // Always do a full cleanup here so the reported count is accurate.
         let cutoff = now.checked_sub(self.window_duration).unwrap_or(now);
         Self::clean_old_requests_locked(&mut requests, cutoff);
-        let len = requests.len() as f64;
+        let used = requests.len();
         drop(requests);
-        len
+        // Remaining window quota: a window counter enforces a count per
+        // window, so it reports quota and no rate.
+        RateLimiterStatus::new(self.max_requests.saturating_sub(used) as f64, None)
     }
 
     async fn reset(&self) {
@@ -1128,8 +1193,18 @@ impl RateLimiter for AdaptiveRateLimiter {
         result
     }
 
-    async fn current_rate(&self) -> f64 {
-        f64::from_bits(self.atomic_rate.load(Ordering::Acquire))
+    async fn status(&self) -> RateLimiterStatus {
+        // The adaptive limiter's remaining quota is its inner bucket's;
+        // the tuned rate is the one it reports.
+        let limiter = {
+            let state = self.state.read();
+            state.inner.clone()
+        };
+        let inner = limiter.status().await;
+        RateLimiterStatus::new(
+            inner.remaining,
+            Some(f64::from_bits(self.atomic_rate.load(Ordering::Acquire))),
+        )
     }
 
     // Reason: f64 rate cast to usize for token bucket capacity — acceptable for rate limiting.

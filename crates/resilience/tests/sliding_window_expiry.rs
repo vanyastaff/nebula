@@ -36,25 +36,31 @@ async fn expired_entries_do_not_block_new_requests() {
 }
 
 #[tokio::test]
-async fn current_rate_and_acquire_agree_after_expiry() {
+async fn status_and_acquire_agree_after_expiry() {
     let limiter = SlidingWindow::new(Duration::from_millis(50), 10).unwrap();
 
-    // Add 5 requests
+    // Add 5 requests: the window now has 5 of its 10-permit quota used.
     for _ in 0..5 {
         limiter.acquire().await.unwrap();
     }
-
-    // Wait for expiry
-    tokio::time::sleep(Duration::from_millis(60)).await;
-
-    // current_rate() should report 0 active requests
-    let rate = limiter.current_rate().await;
-    assert!(
-        rate < 1.0,
-        "expected ~0 active requests after expiry, got {rate}"
+    let before_expiry = limiter.status().await;
+    assert_eq!(
+        before_expiry.remaining, 5.0,
+        "a half-used window must report its remaining quota"
+    );
+    assert_eq!(
+        before_expiry.limit_per_second, None,
+        "a window counter enforces a count per window, not a rate"
     );
 
-    // acquire() should also see 0 active and allow full capacity
+    // Wait for expiry: full quota returns, and acquire() agrees.
+    tokio::time::sleep(Duration::from_millis(60)).await;
+    assert_eq!(
+        limiter.status().await.remaining,
+        10.0,
+        "expired entries must not count against the remaining quota"
+    );
+
     for _ in 0..10 {
         assert!(limiter.acquire().await.is_ok());
     }
