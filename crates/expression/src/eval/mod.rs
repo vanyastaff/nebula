@@ -132,7 +132,7 @@ impl EffectivePolicy {
 }
 
 /// Per-call evaluation frame that tracks recursion depth and the DoS
-/// step budget for a single top-level [`Evaluator::eval`] invocation.
+/// step budget for a single top-level evaluation.
 ///
 /// Lives on the caller's stack (never on `Evaluator`, never on
 /// [`EvaluationContext`]). Every recursive path inside the evaluator
