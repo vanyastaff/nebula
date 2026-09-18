@@ -39,7 +39,6 @@ for transient in-action failures compose inside the action.
 |---------|---------|---------|
 | `serde` | yes | Serde support for config/value boundary types: configs, error/event discriminants, policy scopes, pipeline outcomes, stats, and load snapshots. |
 | `full` | no | Convenience alias for every normal optional feature owned by this crate; currently equivalent to `serde`. |
-| `loom` | no | Loom-backed atomics for model-checking tests when paired with `RUSTFLAGS="--cfg loom"`. |
 | `bench-internals` | no | Exposes internal helpers (`retry_with_inner`, `LatencyTracker`) that the criterion benches measure directly. Adds visibility only, never behavior; not part of the documented surface. |
 
 The crate intentionally does not expose optional third-party limiter wrappers. Built-in rate
@@ -83,8 +82,9 @@ Read the rustdoc of `src/lib.rs` for the exhaustive re-export surface. The entry
   duplication, restricted to duplicate-safe non-effecting calls.
 - `sink::{MetricsSink, PolicyScope, ScopeValue, ResilienceEvent, RecordingSink}` — observability
   hooks; the default is the zero-cost `NoopSink`.
-- `policy::{PolicySource, LoadSignal, LoadSnapshot, ConstantLoad}` — adaptive-config seams.
-  `LoadSignal` is consumed by the engine's admission-based load signal, not by the pipeline.
+- `policy::{PolicySource, LoadSignal, LoadSnapshot, ConstantLoad}` — adaptive-config seams
+  with no in-repo consumer yet. They are seams an embedding host may wire; the pipeline and the
+  engine do not read a `LoadSignal` today, so do not assume adaptive behavior from their presence.
 - `clock::{Clock, SystemClock, MockClock}` — injectable time for the circuit breaker.
 
 ## Contract
@@ -130,6 +130,5 @@ cargo check -p nebula-resilience --all-features
 cargo check -p nebula-resilience --all-targets --no-default-features
 cargo nextest run -p nebula-resilience
 cargo test -p nebula-resilience --doc
-RUSTFLAGS="--cfg loom" cargo nextest run -p nebula-resilience --features loom
 cargo bench -p nebula-resilience --features bench-internals
 ```

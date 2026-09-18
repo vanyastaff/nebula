@@ -3,6 +3,13 @@
 //! [`PolicySource`] provides the current configuration for a resilience pattern.
 //! Static configs implement it automatically via the blanket impl; adaptive sources
 //! compute the config at call-time based on a [`LoadSignal`].
+//!
+//! **No module in this workspace consumes these seams yet.** They exist so an
+//! embedding host can supply its own adaptive source and signal without
+//! changing this crate; the built-in patterns (`AdaptiveRateLimiter`,
+//! `AdaptiveHedgeExecutor`, the pipeline) take their inputs directly and do not
+//! read a `LoadSignal`. Treating their presence as evidence of adaptive
+//! behavior would be wrong today.
 
 use std::time::Duration;
 

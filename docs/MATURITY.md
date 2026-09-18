@@ -34,7 +34,7 @@ Legend:
 | nebula-metadata      | stable | stable  | stable | n/a | n/a |
 | nebula-metrics       | stable   | stable  | stable | n/a | n/a |
 | nebula-plugin        | stable mutable registry path; partial default-public frozen plugin-set/flavor epoch and pure Graph-v1 compiler | stable  | stable | partial frozen path is consumed by activation, persisted plan/flavor catalogs, server materialization, and worker exact-flavor dispatch; registry compatibility is checked before a turn receives execution authority | n/a |
-| nebula-resilience    | stable   | stable  | stable | n/a (hedge, adaptive rate limiting, and `Gate` have no in-repo consumer yet; their contracts are pinned by their own suites) | n/a |
+| nebula-resilience    | stable   | stable  | stable | n/a (hedge and the adaptive rate limiter have no in-repo consumer yet; `Gate` is consumed by the server shutdown drain; the unconsumed contracts are pinned by their own suites) | n/a |
 | nebula-storage-port  | stable existing row-model seam; partial runtime-authority ports | stable  | stable | partial exact-revision catalogs, start acceptance, turn handoff, scoped operation ledger, and recovery discovery are consumed by first-party roots; mutation authority remains aggregate-scoped and backend implementation remains exclusively in `nebula-storage` | n/a |
 | nebula-storage-loom-probe | partial | stable | partial | partial (`loom`-checked concurrency probes for storage critical sections; library, no SLI) | n/a |
 | nebula-tenancy       | stable   | stable  | stable | stable (ADR-0072 policy plus decorators for the enumerated general Scope-taking ports; credential persistence is the separate owner-bound exception) | n/a |

@@ -23,10 +23,6 @@ full = ["serde"]
 # Enables serde for config/value boundary types.
 serde = ["dep:serde", "smallvec/serde"]
 
-# Enables loom-backed atomics for model-checking tests when paired with
-# `RUSTFLAGS="--cfg loom"`.
-loom = ["dep:loom"]
-
 # Exposes internal helpers the criterion benches measure directly. Not part
 # of the documented surface: enabling it adds no behavior, only visibility.
 bench-internals = []
@@ -52,7 +48,6 @@ fastrand = "2.4"
 
 # Optional feature dependencies
 serde = { workspace = true, optional = true }
-loom = { version = "0.7", optional = true }
 
 [dev-dependencies]
 criterion = { workspace = true, features = ["async_tokio"] }

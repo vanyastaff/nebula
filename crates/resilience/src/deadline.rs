@@ -22,13 +22,10 @@ impl Deadline {
     /// Create a deadline starting at `Instant::now()`.
     #[must_use]
     pub fn after(budget: Duration) -> Self {
-        Self::from_start(Instant::now(), budget)
-    }
-
-    /// Create a deadline from an explicit start instant.
-    #[must_use]
-    pub const fn from_start(start: Instant, budget: Duration) -> Self {
-        Self { start, budget }
+        Self {
+            start: Instant::now(),
+            budget,
+        }
     }
 
     /// Total configured budget.
@@ -37,16 +34,10 @@ impl Deadline {
         self.budget
     }
 
-    /// Elapsed time since the deadline start.
-    #[must_use]
-    pub fn elapsed(self) -> Duration {
-        self.start.elapsed()
-    }
-
     /// Remaining time, if any.
     #[must_use]
     pub fn remaining(self) -> Option<Duration> {
-        self.budget.checked_sub(self.elapsed())
+        self.budget.checked_sub(self.start.elapsed())
     }
 
     /// Remaining time or `CallError::Timeout` if the deadline has expired.

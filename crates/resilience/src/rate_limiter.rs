@@ -151,6 +151,18 @@ pub(crate) fn map_acquire_error<E>(err: CallError<()>) -> CallError<E> {
 /// - **Thread safety**: all implementors must be `Send + Sync` so they can be shared across async
 ///   tasks via `Arc<T>`.
 ///
+/// # Why `acquire` is `async`
+///
+/// A limiter that enforces a strict outflow rate must be able to park a caller
+/// until a permit is free; a synchronous `Result` signature would force such
+/// limiters to spin or lie. The built-in limiters all fail fast instead (they
+/// return `RateLimited` immediately), so their `async` bodies complete without
+/// awaiting — that is an implementation choice, not the contract. Implementors
+/// that queue callers must bound the wait themselves.
+///
+/// Because `impl Future` in return position makes the trait not object-safe,
+/// [`ErasedRateLimiter`] is the object-safe facade for heterogeneous registries.
+///
 /// # Implementing for third-party types
 ///
 /// This trait is `sealed`-free and designed for downstream implementation.

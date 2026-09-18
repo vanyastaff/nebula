@@ -27,13 +27,14 @@
 //! # }
 //! ```
 
-// Under loom, swap std atomics for loom-instrumented equivalents.
-#[cfg(not(loom))]
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::{fmt, sync::Arc};
+use std::{
+    fmt,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
-#[cfg(loom)]
-use loom::sync::atomic::{AtomicBool, Ordering};
 use tokio::{sync::Semaphore, time::Duration};
 use tracing::warn; // used in Gate::close() loop
 
@@ -522,74 +523,5 @@ mod tests {
         assert_eq!(gate.active_count(), 0);
         assert!(gate.is_closed());
         assert!(matches!(gate.enter(), Err(GateClosed)));
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Loom tests — exhaustive concurrency model-checking for the atomic ordering
-// invariants in `enter()` / `close()`.
-//
-// Run with:
-//   RUSTFLAGS="--cfg loom" cargo test -p nebula-resilience --features loom --lib loom
-//
-// Note: loom replaces `AtomicBool` via the conditional import above.
-// Tokio's `Semaphore` is **not** loom-instrumented; the loom tests here focus
-// exclusively on the `closing` atomic flag logic.
-// ---------------------------------------------------------------------------
-#[cfg(all(test, loom))]
-mod loom_tests {
-    use loom::{sync::Arc, thread};
-
-    use super::*;
-
-    /// Two threads race: one calls `enter()` and the other sets `closing=true`
-    /// directly (simulating `close()`'s first action).  Loom exhaustively
-    /// schedules all interleavings and checks that:
-    ///
-    /// - After `closing` is set, a concurrent `enter()` either returns `Err(GateClosed)` OR the
-    ///   guard was already fully committed (acquired and flag not yet visible) — never a
-    ///   half-entered state.
-    #[test]
-    fn enter_vs_close_flag_race() {
-        loom::model(|| {
-            // Directly test the AtomicBool ordering without tokio's Semaphore.
-            let closing = Arc::new(AtomicBool::new(false));
-
-            let closing2 = Arc::clone(&closing);
-            let t1 = thread::spawn(move || {
-                // Simulate the `close()` flag write.
-                closing2.store(true, Ordering::Release);
-            });
-
-            // Simulate the `enter()` flag check.
-            let saw_closed = closing.load(Ordering::Acquire);
-
-            t1.join().unwrap();
-
-            // After both threads complete, the flag must be true.
-            assert!(closing.load(Ordering::Acquire));
-            // `saw_closed` may be true or false depending on scheduling;
-            // both are valid interleavings.
-            let _ = saw_closed;
-        });
-    }
-
-    /// Verify that a Release store on one thread is always observed by a
-    /// subsequent Acquire load on another (no stale reads possible).
-    #[test]
-    fn release_acquire_visibility() {
-        loom::model(|| {
-            let flag = Arc::new(AtomicBool::new(false));
-            let flag2 = Arc::clone(&flag);
-
-            let writer = thread::spawn(move || {
-                flag2.store(true, Ordering::Release);
-            });
-
-            writer.join().unwrap();
-
-            // After the writer thread completes, the Acquire load must see `true`.
-            assert!(flag.load(Ordering::Acquire));
-        });
     }
 }

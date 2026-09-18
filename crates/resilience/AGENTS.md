@@ -18,9 +18,8 @@
 
 - `cargo check -p nebula-resilience --all-features` and `cargo check -p nebula-resilience --all-targets --no-default-features` exercise the optional/default-free shapes separately.
 - `cargo test -p nebula-resilience --doc` — the rustdoc examples are the reference documentation and must compile.
-- loom model-check: `RUSTFLAGS="--cfg loom" cargo nextest run -p nebula-resilience --features loom`
 - benches: `cargo bench -p nebula-resilience --features bench-internals` (retry, hedge, latency_tracker, compose need that feature; the rest do not).
-- features: `serde` (default), `full` (= serde), `loom`, `bench-internals`.
+- features: `serde` (default), `full` (= serde), `bench-internals`.
 
 ## Key files
 
@@ -31,7 +30,7 @@
 - `src/circuit_breaker.rs` · `src/retry.rs` · `src/bulkhead.rs` · `src/rate_limiter.rs` · `src/hedge.rs` — the standalone patterns
 - `src/fallback.rs` — strategies + the single `orchestrate_fallback` shared by `FallbackOperation` and the pipeline
 - `src/gate.rs` — cooperative-shutdown barrier; `src/sink.rs` — `MetricsSink` observability hooks
-- `src/policy.rs` — `PolicySource` / `LoadSignal` seams (consumed by the engine, not the pipeline)
+- `src/policy.rs` — `PolicySource` / `LoadSignal` seams (no in-repo consumer yet; host-wired)
 
 ## Conventions & never-do
 
@@ -44,7 +43,7 @@
 - NOT a durable control plane (in-process only — durable cancel/dispatch lives in `execution_control_queue`) and NOT a metrics exporter (events feed `nebula-metrics` via sinks, not the reverse).
 - `CallError<E>` keeps the caller's `E` — no forced mapping, no `Box<dyn Error>` erasure; keep variants additive (`#[non_exhaustive]`).
 - Never report a panicked or aborted attempt as `Cancelled`; `CallError::TaskPanicked` exists for that distinction.
-- No `unsafe` in this crate (`#![deny(unsafe_code)]`); `cfg(loom)` atomics are the only cfg-swapped types.
+- No `unsafe` in this crate (`#![deny(unsafe_code)]`).
 - Rustdoc is the reference documentation. Do not reintroduce a `docs/` prose folder; update the doc comment instead.
 
 ## Change checks

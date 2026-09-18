@@ -403,7 +403,7 @@ impl<E: nebula_error::Classify> nebula_error::Classify for CallError<E> {
 
 /// Returned from pattern constructors when configuration is invalid.
 #[derive(Debug, Clone, thiserror::Error)]
-#[error("invalid resilience config: {message}")]
+#[error("invalid resilience config: {field}: {message}")]
 pub struct ConfigError {
     /// Name of the invalid configuration field.
     pub field: &'static str,
