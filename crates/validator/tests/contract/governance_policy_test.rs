@@ -141,6 +141,7 @@ fn registry_contains_all_canonical_error_codes() {
         "each_failed",
         "collection_nested_failed",
         "multiple_field_errors",
+        "one_of",
         "path_not_found",
         "validation_errors",
     ];
@@ -220,4 +221,93 @@ fn registry_version_follows_semver() {
             "registry version segment '{part}' is not a valid number"
         );
     }
+}
+
+/// Every error code the library emits must be registered.
+///
+/// The registry is the stability contract; a code that ships without an entry
+/// cannot be governed at all. This scans the crate sources rather than
+/// comparing the registry against a hand-maintained list, which is what the
+/// check above does and why `one_of` could be emitted for so long unregistered.
+#[test]
+fn every_emitted_code_is_registered() {
+    let registry = load_error_registry();
+    let registered: HashSet<&str> = registry
+        .error_codes
+        .iter()
+        .map(|entry| entry.code.as_str())
+        .collect();
+
+    let src_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut emitted: Vec<(String, String)> = Vec::new();
+    collect_emitted_codes(&src_dir, &mut emitted);
+    assert!(
+        !emitted.is_empty(),
+        "the scanner found no emitted codes; it is not looking at the sources"
+    );
+
+    let unregistered: Vec<String> = emitted
+        .into_iter()
+        .filter(|(code, _)| !registered.contains(code.as_str()))
+        .map(|(code, site)| format!("{code} (emitted at {site})"))
+        .collect();
+    assert!(
+        unregistered.is_empty(),
+        "error codes emitted but missing from error_registry_v1.json:\n  {}",
+        unregistered.join("\n  ")
+    );
+}
+
+/// Walk `dir` and collect every `ValidationError::new("<code>", ...)` literal
+/// in non-test, non-doc-comment code.
+fn collect_emitted_codes(dir: &std::path::Path, out: &mut Vec<(String, String)>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_emitted_codes(&path, out);
+            continue;
+        }
+        if path.extension().is_none_or(|ext| ext != "rs") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        // Cut at the first test module so test-only codes are not required to
+        // be registered.
+        let body = text.split("#[cfg(test)]").next().unwrap_or(&text);
+        for (index, line) in body.lines().enumerate() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("///") || trimmed.starts_with("//!") || trimmed.starts_with("//")
+            {
+                continue;
+            }
+            for code in scan_new_literals(line) {
+                out.push((code, format!("{}:{}", path.display(), index + 1)));
+            }
+        }
+    }
+}
+
+/// Extract the code argument of every `ValidationError::new("...")` on `line`.
+fn scan_new_literals(line: &str) -> Vec<String> {
+    const NEEDLE: &str = "ValidationError::new(\"";
+    let mut found = Vec::new();
+    let mut rest = line;
+    while let Some(start) = rest.find(NEEDLE) {
+        let after = &rest[start + NEEDLE.len()..];
+        if let Some(end) = after.find('"') {
+            let code = &after[..end];
+            if !code.is_empty() && code.chars().all(|c| c.is_ascii_lowercase() || c == '_') {
+                found.push(code.to_owned());
+            }
+            rest = &after[end..];
+        } else {
+            break;
+        }
+    }
+    found
 }

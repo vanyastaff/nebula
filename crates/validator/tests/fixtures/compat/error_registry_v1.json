@@ -297,6 +297,12 @@
       "source": "combinators::nested::CollectionNested"
     },
     {
+      "code": "one_of",
+      "meaning": "value is not a member of the allowed set",
+      "stability": "stable",
+      "source": "rule::value::ValueRule::OneOf"
+    },
+    {
       "code": "multiple_field_errors",
       "meaning": "two or more struct fields failed validation in one MultiField pass",
       "stability": "stable",
