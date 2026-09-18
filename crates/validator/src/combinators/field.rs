@@ -168,18 +168,27 @@ impl std::error::Error for FieldError {
 // CONVERSIONS
 // ============================================================================
 
+/// Prefix `error`'s existing field path with `name`, dot-separated.
+///
+/// Both `FieldError`'s conversion and `MultiField::add_field` attach a parent
+/// field name ahead of any nested path the inner validator already set, so the
+/// composition rule lives here once.
+pub(crate) fn prefix_field(error: ValidationError, name: &str) -> ValidationError {
+    let composed = match error.field.as_deref() {
+        Some(existing) if !existing.is_empty() => format!("{name}.{existing}"),
+        _ => name.to_owned(),
+    };
+    error.with_field(composed)
+}
+
 /// Convert `FieldError` to `ValidationError`
 impl From<FieldError> for ValidationError {
     fn from(error: FieldError) -> Self {
-        let mut inner = error.inner;
-        if let Some(field_name) = error.field_name {
-            let composed_field = match inner.field.as_deref() {
-                Some(existing) if !existing.is_empty() => format!("{field_name}.{existing}"),
-                _ => field_name.into_owned(),
-            };
-            inner = inner.with_field(composed_field);
+        let FieldError { field_name, inner } = error;
+        match field_name {
+            Some(name) => prefix_field(inner, &name),
+            None => inner,
         }
-        inner
     }
 }
 
@@ -307,13 +316,9 @@ impl<T> MultiField<T> {
         let name: Cow<'static, str> = name.into();
         self.validators.push(Box::new(move |input: &T| {
             let field_value = accessor(input);
-            validator.validate(field_value).map_err(|err| {
-                let composed_field = match err.field.as_deref() {
-                    Some(existing) if !existing.is_empty() => format!("{name}.{existing}"),
-                    _ => name.to_string(),
-                };
-                err.with_field(composed_field)
-            })
+            validator
+                .validate(field_value)
+                .map_err(|err| prefix_field(err, &name))
         }));
         self
     }
