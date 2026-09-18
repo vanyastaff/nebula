@@ -17,7 +17,7 @@ use super::{
 };
 use crate::{
     engine::DiagnosticDisclosure,
-    foundation::{Validate, ValidationError},
+    foundation::{Validate, ValidationError, validatable::json_type_name},
     validators::{
         content::{EMAIL_PATTERN, URL_PATTERN},
         max_length, max_size, min_length, min_size,
@@ -73,18 +73,6 @@ impl std::fmt::Debug for ValueRule {
             Self::Email => "ValueRule::Email",
             Self::Url => "ValueRule::Url",
         })
-    }
-}
-
-/// JSON kind name for error reporting — stable across rustc versions.
-fn json_type_name(v: &serde_json::Value) -> &'static str {
-    match v {
-        serde_json::Value::Null => "null",
-        serde_json::Value::Bool(_) => "boolean",
-        serde_json::Value::Number(_) => "number",
-        serde_json::Value::String(_) => "string",
-        serde_json::Value::Array(_) => "array",
-        serde_json::Value::Object(_) => "object",
     }
 }
 
