@@ -9,7 +9,7 @@
 
 | Task | Steps |
 |------|-------|
-| Add resilience to an outbound call | Compose patterns via `ResiliencePipeline<E>` / `PipelineBuilder` in `src/pipeline.rs`. The doc examples on those types are the guide; there is no separate prose manual. |
+| Add resilience to an outbound call | Compose patterns via `ResiliencePipeline<E>` / `PipelineBuilder` in `src/pipeline/`. The doc examples on those types are the guide; there is no separate prose manual. |
 | Understand retry semantics | Two layers, never merged: this crate retries transient outbound calls inside one action attempt; the engine separately owns operator-declared node re-execution with persisted attempt accounting. `nebula-error::Classify::retry_hint()` classifies failures but does not authorize retry across an ambiguous remote-effect boundary (canon §11.2–§11.3). |
 | Add a new resilience pattern | Add standalone module, integrate into `PipelineBuilder`, add to `src/lib.rs` re-exports. Add criterion bench in `benches/` (declare `required-features = ["bench-internals"]` if it measures crate internals). |
 | Touch the circuit breaker | One accounting model: consecutive-failure counters with leaky forgiveness + slow-call rate. `circuit_state()` reads; `try_acquire()` mutates (probe slots, Open→HalfOpen) — never use it as a predicate. |
@@ -24,10 +24,10 @@
 ## Key files
 
 - `src/lib.rs` — crate docs + re-export surface (the public API map)
-- `src/pipeline.rs` — `ResiliencePipeline<E>` / `PipelineBuilder`; composes the patterns
+- `src/pipeline/` — `builder.rs` (`PipelineBuilder`) + `executor.rs` (`ResiliencePipeline`); composes the patterns
 - `src/error.rs` — `CallError<E>` (`#[non_exhaustive]`, no type erasure); per-pattern variants
 - `src/classifier.rs` + `src/context.rs` — `ErrorClassifier` (Classify seam) and `CallContext` (cancel/deadline/scope)
-- `src/circuit_breaker.rs` · `src/retry.rs` · `src/bulkhead.rs` · `src/rate_limiter.rs` · `src/hedge.rs` — the standalone patterns
+- `src/circuit_breaker.rs` · `src/retry.rs` · `src/bulkhead.rs` · `src/hedge.rs` — standalone patterns; `src/rate_limiter/` holds the trait plus one module per algorithm
 - `src/fallback.rs` — strategies + the single `orchestrate_fallback` shared by `FallbackExecutor` and the pipeline
 - `src/gate.rs` — cooperative-shutdown barrier; `src/events.rs` — `EventSink` observability hooks
 - `src/policy.rs` — `PolicySource` / `LoadSignal` seams (no in-repo consumer yet; host-wired)
