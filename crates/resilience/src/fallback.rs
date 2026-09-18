@@ -555,7 +555,7 @@ impl<T: Send + Sync + 'static, E: Send + 'static> FallbackStrategy<T, E>
 ///
 /// Produced by [`orchestrate_fallback`]; the caller translates it into its own
 /// completion event (`PipelineOutcome` for the pipeline, the bare event pair
-/// for [`FallbackOperation`]).
+/// for [`FallbackExecutor`]).
 pub(crate) enum FallbackOutcome<T, E> {
     /// The strategy was not asked: it declined the error.
     Declined(CallError<E>),
@@ -568,7 +568,7 @@ pub(crate) enum FallbackOutcome<T, E> {
 /// The one fallback orchestration: decide, emit `FallbackAttempted`, recover,
 /// emit the result event.
 ///
-/// `FallbackOperation` and `ResiliencePipeline::call_with_fallback*` both drive
+/// `FallbackExecutor` and `ResiliencePipeline::call_with_fallback*` both drive
 /// fallback through this function rather than keeping parallel copies of the
 /// sequence, because two copies let the event contract drift between the
 /// standalone and pipeline entry points.
@@ -608,7 +608,12 @@ where
     }
 }
 
-/// Fallback with operation — combines primary and fallback operations.
+/// Runs an operation and, on eligible failure, a [`FallbackStrategy`].
+///
+/// The executor shape matches the crate's other drivers ([`HedgeExecutor`],
+/// [`TimeoutExecutor`](crate::TimeoutExecutor)): a configured object whose
+/// `call` wraps a caller-supplied operation, rather than a free function that
+/// needs the strategy threaded through every call site.
 ///
 /// # Examples
 ///
@@ -617,13 +622,13 @@ where
 ///
 /// use nebula_resilience::{
 ///     CallError,
-///     fallback::{FallbackOperation, ValueFallback},
+///     fallback::{FallbackExecutor, ValueFallback},
 /// };
 ///
 /// # #[tokio::main]
 /// # async fn main() {
-/// let op: FallbackOperation<u32, &str> =
-///     FallbackOperation::new(Arc::new(ValueFallback::new(99u32)));
+/// let op: FallbackExecutor<u32, &str> =
+///     FallbackExecutor::new(Arc::new(ValueFallback::new(99u32)));
 ///
 /// // The primary operation fails, so the fallback value is returned.
 /// let recovered = op
@@ -632,12 +637,12 @@ where
 /// assert_eq!(recovered.unwrap(), 99);
 /// # }
 /// ```
-pub struct FallbackOperation<T, E> {
+pub struct FallbackExecutor<T, E> {
     fallback_strategy: Arc<dyn FallbackStrategy<T, E>>,
     sink: Arc<dyn MetricsSink>,
 }
 
-impl<T, E> FallbackOperation<T, E> {
+impl<T, E> FallbackExecutor<T, E> {
     /// Delegate one primary failure to the strategy through the shared
     /// orchestration and translate its outcome.
     async fn apply(&self, error: CallError<E>) -> Result<T, CallError<E>>
@@ -653,13 +658,13 @@ impl<T, E> FallbackOperation<T, E> {
     }
 }
 
-impl<T, E> fmt::Debug for FallbackOperation<T, E> {
+impl<T, E> fmt::Debug for FallbackExecutor<T, E> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("FallbackOperation").finish_non_exhaustive()
+        f.debug_struct("FallbackExecutor").finish_non_exhaustive()
     }
 }
 
-impl<T, E> FallbackOperation<T, E> {
+impl<T, E> FallbackExecutor<T, E> {
     /// Create new fallback operation.
     #[must_use]
     pub fn new(fallback_strategy: Arc<dyn FallbackStrategy<T, E>>) -> Self {

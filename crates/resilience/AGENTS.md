@@ -28,7 +28,7 @@
 - `src/error.rs` — `CallError<E>` (`#[non_exhaustive]`, no type erasure); per-pattern variants
 - `src/classifier.rs` + `src/context.rs` — `ErrorClassifier` (Classify seam) and `PolicyContext` (cancel/deadline/scope)
 - `src/circuit_breaker.rs` · `src/retry.rs` · `src/bulkhead.rs` · `src/rate_limiter.rs` · `src/hedge.rs` — the standalone patterns
-- `src/fallback.rs` — strategies + the single `orchestrate_fallback` shared by `FallbackOperation` and the pipeline
+- `src/fallback.rs` — strategies + the single `orchestrate_fallback` shared by `FallbackExecutor` and the pipeline
 - `src/gate.rs` — cooperative-shutdown barrier; `src/sink.rs` — `MetricsSink` observability hooks
 - `src/policy.rs` — `PolicySource` / `LoadSignal` seams (no in-repo consumer yet; host-wired)
 

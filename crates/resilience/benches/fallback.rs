@@ -9,7 +9,7 @@ use std::{hint::black_box, sync::Arc};
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use nebula_resilience::{
     CallError,
-    fallback::{ChainFallback, FallbackOperation, FallbackStrategy, ValueFallback},
+    fallback::{ChainFallback, FallbackExecutor, FallbackStrategy, ValueFallback},
 };
 
 fn fallback_call_overhead(c: &mut Criterion) {
@@ -18,7 +18,7 @@ fn fallback_call_overhead(c: &mut Criterion) {
     group.bench_function("value_success_path", |b| {
         let rt = tokio::runtime::Runtime::new().expect("runtime");
         let fallback = Arc::new(ValueFallback::new("fallback".to_string()));
-        let operation = Arc::new(FallbackOperation::new(fallback));
+        let operation = Arc::new(FallbackExecutor::new(fallback));
 
         b.to_async(&rt).iter(|| {
             let operation = Arc::clone(&operation);
@@ -34,7 +34,7 @@ fn fallback_call_overhead(c: &mut Criterion) {
     group.bench_function("value_error_path", |b| {
         let rt = tokio::runtime::Runtime::new().expect("runtime");
         let fallback = Arc::new(ValueFallback::new("fallback".to_string()));
-        let operation = Arc::new(FallbackOperation::new(fallback));
+        let operation = Arc::new(FallbackExecutor::new(fallback));
 
         b.to_async(&rt).iter(|| {
             let operation = Arc::clone(&operation);
@@ -53,7 +53,7 @@ fn fallback_call_overhead(c: &mut Criterion) {
             ChainFallback::new().then(Arc::new(ValueFallback::new("chain-fallback".to_string()))
                 as Arc<dyn FallbackStrategy<String, &str>>),
         );
-        let operation = Arc::new(FallbackOperation::new(chain));
+        let operation = Arc::new(FallbackExecutor::new(chain));
 
         b.to_async(&rt).iter(|| {
             let operation = Arc::clone(&operation);
@@ -80,7 +80,7 @@ fn fallback_contention(c: &mut Criterion) {
             |b, &num_tasks| {
                 let rt = tokio::runtime::Runtime::new().expect("runtime");
                 let fallback = Arc::new(ValueFallback::new("fallback".to_string()));
-                let operation = Arc::new(FallbackOperation::new(fallback));
+                let operation = Arc::new(FallbackExecutor::new(fallback));
 
                 b.to_async(&rt).iter(|| {
                     let operation = Arc::clone(&operation);

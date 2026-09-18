@@ -14,7 +14,7 @@ use std::{
 
 use nebula_resilience::{
     CallError, CancellationContext, Gate, PolicyContext, RecordingSink, ResilienceEventKind,
-    fallback::{FallbackOperation, ValueFallback},
+    fallback::{FallbackExecutor, ValueFallback},
     load_shed_with_policy_context, timeout_with_policy_context,
     timeout_with_policy_context_and_sink,
 };
@@ -120,8 +120,8 @@ async fn fallback_context_cancellation_emits_no_fallback_events() {
     cancellation.cancel();
 
     let sink = RecordingSink::new();
-    let operation: FallbackOperation<u32, ()> =
-        FallbackOperation::new(Arc::new(ValueFallback::new(99))).with_sink(sink.clone());
+    let operation: FallbackExecutor<u32, ()> =
+        FallbackExecutor::new(Arc::new(ValueFallback::new(99))).with_sink(sink.clone());
 
     let result = operation
         .call_with_policy_context(&context, || async {

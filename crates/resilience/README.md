@@ -71,8 +71,8 @@ Read the rustdoc of `src/lib.rs` for the exhaustive re-export surface. The entry
 - `timeout::{timeout, timeout_with_policy_context, TimeoutExecutor}`,
   `load_shed::{load_shed, load_shed_with_policy_context[_and_sink]}` — standalone combinators.
 - `fallback::{FallbackStrategy, ValueFallback, FunctionFallback, CacheFallback, ChainFallback,
-  PriorityFallback, FallbackOperation}` — one shared orchestration (`orchestrate_fallback`)
-  serves both `FallbackOperation` and the pipeline's `call_with_fallback*`, so the event contract
+  PriorityFallback, FallbackExecutor}` — one shared orchestration (`orchestrate_fallback`)
+  serves both `FallbackExecutor` and the pipeline's `call_with_fallback*`, so the event contract
   cannot drift between them.
 - `PolicyContext`, `Deadline` — the cancellation/deadline/scope contract and its budget helper.
 - `gate::{Gate, GateGuard, GateCloseTimeout}` — cooperative shutdown drain with a caller-chosen
