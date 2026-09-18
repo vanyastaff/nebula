@@ -128,13 +128,21 @@ impl LeakyBucket {
         state.last_leak = state.last_leak.checked_add(drain_duration).unwrap_or(now);
     }
 
+    // Reason: on the default x86-64 target `mul_add` lowers to a `call fma`
+    // (~30 cycles via libm) because the baseline lacks hardware FMA;
+    // explicit multiply+add uses `mulsd`+`addsd`. Same rationale as
+    // `retry.rs`'s jitter path.
+    #[expect(
+        clippy::suboptimal_flops,
+        reason = "mul_add emits a slow fma call on default x86-64; explicit multiply+add is faster"
+    )]
     fn retry_after_locked(
         state: &LeakyBucketState,
         leak_rate: f64,
         now: Instant,
     ) -> Option<Duration> {
         let elapsed = now.duration_since(state.last_leak).as_secs_f64();
-        let units_until_next_leak = elapsed.mul_add(-leak_rate, 1.0).max(0.0);
+        let units_until_next_leak = (1.0 - elapsed * leak_rate).max(0.0);
         retry_after_from_rate(units_until_next_leak, leak_rate)
     }
 }
