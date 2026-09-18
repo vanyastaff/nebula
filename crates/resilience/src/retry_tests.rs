@@ -594,3 +594,69 @@ async fn pipeline_rate_limiter_from_works() {
         .await;
     assert!(matches!(result, Err(CallError::RateLimited { .. })));
 }
+
+// ── General exponential path: numeric parity with the old powi formula ──────
+
+/// The general exponential path (multiplier not 1.0 or 2.0) must produce the
+/// same delay as `base_millis as f64 * multiplier.powi(attempt as i32) *`
+/// truncated to milliseconds, capped at `max`.
+///
+/// That was the implementation before `powi_nonnegative` replaced the
+/// `__powidf2` libcall; it stays the oracle so a future "optimization" cannot
+/// silently change retry timing.
+#[test]
+#[expect(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_wrap,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "test oracle deliberately reproduces the old f64/powi formula, including its truncation"
+)]
+fn exponential_general_path_matches_powi_oracle() {
+    let attempts = [0u32, 1, 2, 3, 5, 8, 13, 21, 34, 55];
+    let multipliers = [1.1f64, 1.25, 1.5, 1.7, 2.5, 3.0];
+    let cases = [(10u64, 5_000u64), (100, 30_000), (1_000, 60_000), (7, 9)];
+
+    for (base_ms, max_ms) in cases {
+        let base = Duration::from_millis(base_ms);
+        let max = Duration::from_millis(max_ms);
+        for multiplier in multipliers {
+            let cfg = BackoffConfig::Exponential {
+                base,
+                multiplier,
+                max,
+            };
+            for attempt in attempts {
+                let oracle_ms = base_ms as f64 * multiplier.powi(attempt as i32);
+                let oracle = if !oracle_ms.is_finite() || oracle_ms >= max_ms as f64 {
+                    max
+                } else {
+                    Duration::from_millis(oracle_ms as u64).min(max)
+                };
+                assert_eq!(
+                    cfg.delay_for(attempt),
+                    oracle,
+                    "base={base_ms}ms max={max_ms}ms multiplier={multiplier} attempt={attempt}"
+                );
+            }
+        }
+    }
+}
+
+/// A multiplier above 1.0 must strictly grow the delay until the cap, on the
+/// general path as well as the doubling path.
+#[test]
+fn exponential_general_path_grows_until_capped() {
+    let cfg = BackoffConfig::Exponential {
+        base: Duration::from_millis(50),
+        multiplier: 1.5,
+        max: Duration::from_secs(10),
+    };
+
+    assert_eq!(cfg.delay_for(0), Duration::from_millis(50));
+    assert_eq!(cfg.delay_for(1), Duration::from_millis(75));
+    assert_eq!(cfg.delay_for(2), Duration::from_millis(112));
+    let capped = cfg.delay_for(50);
+    assert_eq!(capped, Duration::from_secs(10));
+    assert!(cfg.delay_for(25) <= capped);
+}

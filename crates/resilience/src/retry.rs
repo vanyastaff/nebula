@@ -130,8 +130,7 @@ impl BackoffConfig {
     #[must_use]
     #[expect(
         clippy::cast_precision_loss,
-        clippy::cast_possible_wrap,
-        reason = "u128 millis cast to f64 for exponential math and u32 attempt to i32 for powi stay within configured retry bounds"
+        reason = "u128 millis cast to f64 on the cold >u64-millis path stays within Duration's representable range"
     )]
     pub fn delay_for(&self, attempt: u32) -> Duration {
         match self {
@@ -149,7 +148,22 @@ impl BackoffConfig {
                 if multiplier.to_bits() == 2.0f64.to_bits() {
                     return exponential_delay_by_doubling(*base, attempt, *max);
                 }
-                let ms = base.as_millis() as f64 * multiplier.powi(attempt as i32);
+                // Fast path: millisecond magnitudes that fit `u64` avoid both
+                // soft-float libcalls this branch used to make on default
+                // x86-64 — `__floattidf` (u128 -> f64, twice) and `__powidf2`
+                // (f64::powi). u64 -> f64 is a hardware conversion.
+                if let (Ok(base_ms), Ok(max_ms)) = (
+                    u64::try_from(base.as_millis()),
+                    u64::try_from(max.as_millis()),
+                ) {
+                    return exponential_delay_general_u64(
+                        base_ms, multiplier, attempt, max_ms, *max,
+                    );
+                }
+                // Cold path: durations beyond ~584 million years in
+                // milliseconds do not fit `u64`. Preserved so the public
+                // contract has no numeric cliff.
+                let ms = base.as_millis() as f64 * powi_nonnegative(multiplier, attempt);
                 duration_from_millis_capped(ms, *max)
             },
             Self::Fibonacci { base, max } => {
@@ -163,6 +177,54 @@ impl BackoffConfig {
                 .unwrap_or(Duration::ZERO),
         }
     }
+}
+
+/// `base^exponent` by square-and-multiply for a non-negative exponent.
+///
+/// Mirrors compiler-rt's `__powidf2` operation order exactly
+/// (`if (exp & 1) result *= base; exp /= 2; if exp == 0 break; base *= base`),
+/// so replacing the `powi` libcall with this does not change any result. The
+/// exponent is `u32`, avoiding the `as i32` wrap the previous call had for
+/// attempts above `i32::MAX`.
+fn powi_nonnegative(mut base: f64, mut exponent: u32) -> f64 {
+    let mut result = 1.0f64;
+    loop {
+        if exponent & 1 == 1 {
+            result *= base;
+        }
+        exponent /= 2;
+        if exponent == 0 {
+            return result;
+        }
+        base *= base;
+    }
+}
+
+/// Exponential delay for millisecond values that fit `u64`.
+///
+/// Separate from [`duration_from_millis_capped`] so the `u64 -> f64`
+/// conversion is a hardware instruction and the cap comparison is integer
+/// (`max_ms` is already a `u64`), keeping the whole path free of soft-float
+/// calls.
+#[expect(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "u64 millisecond delays above 2^53 lose sub-millisecond precision; the value is finite, capped below max_ms, and non-negative before truncation"
+)]
+fn exponential_delay_general_u64(
+    base_ms: u64,
+    multiplier: f64,
+    attempt: u32,
+    max_ms: u64,
+    max: Duration,
+) -> Duration {
+    let ms = base_ms as f64 * powi_nonnegative(multiplier, attempt);
+    if !ms.is_finite() || ms >= max_ms as f64 {
+        return max;
+    }
+    let millis = ms.max(0.0) as u64;
+    Duration::from_millis(millis).min(max)
 }
 
 fn exponential_delay_by_doubling(base: Duration, attempt: u32, max: Duration) -> Duration {
