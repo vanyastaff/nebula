@@ -37,8 +37,9 @@ format, and the `Rule` wire encoding — are catalogued in
   `nebula_validator::prelude` or import items from their module paths.
 - **Removed from the public API:** `ValidationMode::is_collect_all`,
   `ValidationErrors::into_result`, the `ValidationResult` / `ValidationResultMulti` aliases,
-  and the previously public `FieldError` wrapper (now crate-private; `Field` continues to
-  return a `ValidationError` with a composed `field` path).
+  the `Lazy` combinator (`src/combinators/lazy.rs`), and the previously public `FieldError`
+  wrapper (now crate-private; `Field` continues to return a `ValidationError` with a composed
+  `field` path).
 - **`ValidationError.field` is private.** The type guarantees the path is a canonical
   RFC 6901 pointer; a public field let safe external code store raw dot notation and emit an
   envelope whose `field` and `pointer` keys disagreed. Read it through `field_pointer()`.

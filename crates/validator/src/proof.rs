@@ -91,33 +91,16 @@ impl<T> Validated<T> {
         self.value
     }
 
-    /// Maps the inner value through a function, producing a new `Validated<U>`.
-    ///
-    /// # Safety (logical)
-    ///
-    /// The caller **must** guarantee that `f` preserves the validation invariant.
-    /// Misuse breaks the trust boundary that `Validated<T>` exists to enforce.
-    /// Prefer re-validating when in doubt.
-    #[inline]
-    #[cfg_attr(not(test), expect(dead_code))]
-    pub(crate) fn map<U>(self, f: impl FnOnce(T) -> U) -> Validated<U> {
-        Validated {
-            value: f(self.value),
-        }
-    }
-
     /// Constructs a proof token without validation.
     ///
     /// # Safety (logical)
     ///
-    /// The caller **must** guarantee that `value` satisfies whatever
-    /// validation contract this proof is expected to represent.
-    /// Misuse breaks the trust boundary that `Validated<T>` exists to enforce.
-    ///
-    /// Prefer [`Validated::new`] or
-    /// [`Validate::validate_into`](crate::foundation::Validate::validate_into).
+    /// The caller **must** have already run `value` through the validation this
+    /// proof represents. The only caller is `Validate::validate_into`, which
+    /// validates immediately before constructing it. Misuse breaks the trust
+    /// boundary that `Validated<T>` exists to enforce.
     #[inline]
-    pub(crate) fn new_unchecked(value: T) -> Self {
+    pub(crate) fn from_validated(value: T) -> Self {
         Self { value }
     }
 }
@@ -209,13 +192,6 @@ mod tests {
         let v = Validated::new("hello".to_string(), &min_length(1)).unwrap();
         let s: String = v.into_inner();
         assert_eq!(s, "hello");
-    }
-
-    #[test]
-    fn map_works() {
-        let v = Validated::new(42u32, &crate::validators::min(10u32)).unwrap();
-        let doubled = v.map(|n| n * 2);
-        assert_eq!(*doubled, 84);
     }
 
     #[test]

@@ -162,7 +162,7 @@ pub trait Validate<T: ?Sized> {
         Self: Sized,
     {
         self.validate(value.borrow())?;
-        Ok(crate::proof::Validated::new_unchecked(value))
+        Ok(crate::proof::Validated::from_validated(value))
     }
 }
 
