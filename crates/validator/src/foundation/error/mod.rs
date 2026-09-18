@@ -248,4 +248,22 @@ mod tests {
             "param values not referenced by template must not appear in Display: {rendered}"
         );
     }
+
+    #[test]
+    fn rendered_message_matches_display_substitution() {
+        let err = ValidationError::new("min_length", "Must be at least {min} characters")
+            .with_param("min", "3");
+        assert_eq!(err.rendered_message(), "Must be at least 3 characters");
+
+        // Unknown placeholders stay literal, matching Display.
+        let unknown = ValidationError::new("odd", "value is {unknown}");
+        assert_eq!(unknown.rendered_message(), "value is {unknown}");
+
+        // No placeholders → borrowed, no allocation.
+        let plain = ValidationError::new("required", "This field is required");
+        assert!(matches!(
+            plain.rendered_message(),
+            std::borrow::Cow::Borrowed(_)
+        ));
+    }
 }

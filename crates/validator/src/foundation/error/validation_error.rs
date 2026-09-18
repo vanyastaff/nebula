@@ -638,14 +638,26 @@ pub(crate) fn render_template<'a>(
 }
 
 impl ValidationError {
-    /// Renders the message template against this error's params, returning
-    /// the substituted string. Zero-allocation fast path when the message
-    /// contains no `{` placeholders.
+    /// Renders the message template against this error's params.
     ///
-    /// This is the same rendering used by [`fmt::Display`], exposed so
-    /// callers that need to read the rendered message without going through
-    /// formatter overhead (e.g. to store it back into the error or attach
-    /// it to a log record) can do so directly.
+    /// This is the substitution [`Display`](fmt::Display) performs, exposed so
+    /// a caller that needs the rendered text without formatter overhead — to
+    /// attach it to a log record or store it back into the error — can obtain
+    /// it directly. Returns [`Cow::Borrowed`] when the message has no `{`
+    /// placeholders, so the common case does not allocate.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use nebula_validator::foundation::ValidationError;
+    ///
+    /// let error = ValidationError::new("min_length", "Must be at least {min} characters")
+    ///     .with_param("min", "3");
+    /// assert_eq!(error.rendered_message(), "Must be at least 3 characters");
+    ///
+    /// let plain = ValidationError::new("required", "This field is required");
+    /// assert_eq!(plain.rendered_message(), "This field is required");
+    /// ```
     pub fn rendered_message(&self) -> Cow<'_, str> {
         render_template(self.message.as_ref(), self.params())
     }

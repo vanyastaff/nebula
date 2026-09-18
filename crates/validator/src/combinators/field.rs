@@ -240,6 +240,27 @@ where
 // ============================================================================
 
 /// Extension trait for creating field validators.
+///
+/// The method form of [`named_field`] / [`field`]: `validator.for_field(name,
+/// accessor)` reads left-to-right as "this validator, for this field".
+///
+/// # Examples
+///
+/// ```rust
+/// use nebula_validator::combinators::FieldValidateExt;
+/// use nebula_validator::validators::min_length;
+/// use nebula_validator::foundation::Validate;
+///
+/// struct User {
+///     email: String,
+/// }
+///
+/// let validator = min_length(5).for_field("email", |u: &User| u.email.as_str());
+///
+/// assert!(validator.validate(&User { email: "a@b.co".into() }).is_ok());
+/// let err = validator.validate(&User { email: "a@b".into() }).unwrap_err();
+/// assert_eq!(err.field.as_deref(), Some("/email"));
+/// ```
 pub trait FieldValidateExt<U: ?Sized>: Validate<U> + Sized {
     /// Creates a field validator for this validator.
     fn for_field<T, F>(
