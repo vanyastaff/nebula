@@ -14,9 +14,6 @@ fn incomplete_rule_cannot_issue_a_complete_proof() {
         .unwrap()
         .validate_into(json!(42))
         .unwrap_err();
-    let nebula_validator::ValidatorError::ValidationFailed(error) = error else {
-        panic!("expected a validation diagnostic");
-    };
     assert_eq!(error.code, "evaluation_unavailable");
 }
 

@@ -107,10 +107,6 @@ fn numeric_proof_from_range_validator() {
 
     let out: Result<Validated<i32>, ValidationError> = in_range(0i32, 100i32)
         .expect("ordered bounds")
-        .validate_into(101)
-        .map_err(|e| match e {
-            nebula_validator::ValidatorError::ValidationFailed(inner) => inner,
-            other => panic!("unexpected error variant: {other:?}"),
-        });
+        .validate_into(101);
     assert!(out.is_err());
 }

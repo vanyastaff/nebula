@@ -60,7 +60,8 @@ impl<T> Validated<T> {
     ///
     /// # Errors
     ///
-    /// Returns `Err(ValidatorError::ValidationFailed(..))` if validation fails.
+    /// Returns the validator's [`ValidationError`](crate::foundation::ValidationError)
+    /// when `value` does not pass.
     ///
     /// # Examples
     ///
@@ -70,7 +71,10 @@ impl<T> Validated<T> {
     /// let name = Validated::new("alice".to_string(), &min_length(3)).unwrap();
     /// assert_eq!(name.as_ref(), "alice");
     /// ```
-    pub fn new<V, U: ?Sized>(value: T, validator: &V) -> crate::error::ValidatorResult<Self>
+    pub fn new<V, U: ?Sized>(
+        value: T,
+        validator: &V,
+    ) -> Result<Self, crate::foundation::ValidationError>
     where
         T: Borrow<U>,
         V: crate::foundation::Validate<U>,

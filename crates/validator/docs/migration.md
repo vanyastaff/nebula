@@ -151,7 +151,7 @@ match validate_rules(&json!("alice"), &rules, ExecutionMode::StaticOnly)? {
 | Field-path format | Mixed dot/bracket notation stored verbatim | RFC 6901 JSON Pointer normalized by `with_field()` | v0.x | Consumers reading `field` as dot-notation must switch to `field_pointer()` or the `pointer` key in the JSON envelope | Replace `error.field` reads with `error.field_pointer()` |
 | Error serialization | `field` key only in JSON envelope | Both `field` (raw) and `pointer` (RFC 6901) keys emitted | v0.x | Additive; consumers reading `field` are unaffected | Prefer `pointer` key for new consumers |
 | API validation | `nebula-api` used a parallel local validation trait | Uses `nebula_validator::foundation::Validate<T>` directly | v0.x | Handlers implementing local `Validate` must migrate to the validator trait | Implement `nebula_validator::foundation::Validate<T>` |
-| Regex errors in macros | `#[validate(regex = "...")]` panicked on invalid regex | Returns structured `ValidationError` with code `invalid_regex_pattern` | v0.x | Callers relying on panic behavior must handle a validation error | Match on `ValidatorError::ValidationFailed` |
+| Regex errors in macros | `#[validate(regex = "...")]` panicked on invalid regex | Returns structured `ValidationError` with code `invalid_regex_pattern` | v0.x | Callers relying on panic behavior must handle a validation error | Match the returned `ValidationError` |
 | Combinator types | `ValidateExt::and()` returned `foundation::And`, free `and()` returned `combinators::And` | Both return `combinators::And` — single canonical type | v0.x | Code using both paths in the same generic bound would see a type mismatch | Remove `foundation::And` references; use `combinators::And` |
 
 ---

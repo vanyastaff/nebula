@@ -31,7 +31,6 @@ that serialize to JSON and evaluate at runtime. Both approaches share the same s
 | **`Validated<T>`** | Proof token certifying a value passed validation. Only constructable through a validated code path. |
 | **`Rule`** | Serializable declarative rule enum covering value constraints, context predicates, and logical combinators. |
 | **`ExecutionMode`** | Controls which `Rule` categories run: `StaticOnly`, `Deferred`, or `Full`. |
-| **`ValidatorError`** | Crate-level operational error separating configuration bugs from validation failures. |
 
 ---
 
@@ -148,7 +147,6 @@ nebula-validator/
 │   ├── lib.rs                 Re-exports, crate-level doc
 │   ├── prelude.rs             Single-import convenience module
 │   ├── engine.rs              validate_rules, ExecutionMode, EvaluationOutcome
-│   ├── error.rs               ValidatorError, ValidatorResult
 │   ├── proof.rs               Validated<T> proof token
 │   ├── policy/                Field visibility / required policy engine
 │   ├── macros.rs              validator! macro (`#[macro_export]`; module private)

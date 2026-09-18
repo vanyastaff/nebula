@@ -3808,7 +3808,6 @@ version = "0.12.0"
 dependencies = [
  "codspeed-criterion-compat",
  "insta",
- "nebula-error",
  "nebula-validator-macros",
  "num-cmp",
  "pretty_assertions",

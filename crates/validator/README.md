@@ -44,7 +44,6 @@ that a value passed validation; the type cannot be constructed without calling `
 - `RulePattern` — compiled regex shared by constructors and rule deserialization.
 - `PredicateContext::with_pending_paths` marks unresolved roots; overlapping predicates defer without confusing pending data with missing or null values.
 - `validate_rules` — batch-evaluate a slice of `Rule` against a `serde_json::Value`.
-- `ValidatorError` — crate-level operational error type.
 - `validator!` macro — zero-boilerplate custom validator.
 - `#[derive(Validator)]` — derive macro (feature `derive`) for struct-level validation.
 - `prelude` — single-import convenience module.

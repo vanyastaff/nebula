@@ -141,8 +141,9 @@ pub trait Validate<T: ?Sized> {
     ///
     /// # Errors
     ///
-    /// Returns [`ValidatorError::ValidationFailed`](crate::error::ValidatorError::ValidationFailed)
-    /// if the value does not pass validation.
+    /// Returns the validator's
+    /// [`ValidationError`](crate::foundation::ValidationError) if the value
+    /// does not pass validation.
     ///
     /// # Examples
     ///
@@ -153,10 +154,7 @@ pub trait Validate<T: ?Sized> {
     /// let name: Validated<String> = v.validate_into("alice".to_string()).unwrap();
     /// assert_eq!(name.as_ref(), "alice");
     /// ```
-    fn validate_into<V>(
-        &self,
-        value: V,
-    ) -> crate::error::ValidatorResult<crate::proof::Validated<V>>
+    fn validate_into<V>(&self, value: V) -> Result<crate::proof::Validated<V>, ValidationError>
     where
         V: Borrow<T>,
         Self: Sized,

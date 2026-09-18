@@ -31,7 +31,6 @@ pub use crate::{
     engine::{
         DeferredReason, EvaluationOutcome, ExecutionMode, validate_rules, validate_rules_with_ctx,
     },
-    error::ValidatorError,
     foundation::{
         AnyValidator, AsValidatable, ErrorSeverity, FieldPath, FieldPathError, Validatable,
         Validate, ValidateExt, ValidationError, ValidationErrorKind, ValidationErrors,

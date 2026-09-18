@@ -39,6 +39,12 @@ format, and the `Rule` wire encoding — are catalogued in
   `WithCode` no longer exposes `WithMessage`'s message-oriented constructor surface.
 - **`combinators::prelude` and `foundation::prelude` were removed.** Use
   `nebula_validator::prelude` or import items from their module paths.
+- **`ValidatorError` and `ValidatorResult` are gone; `nebula-error` is no longer a
+  dependency.** Every fallible entry point — `validate`, `validate_any`, `validate_into`,
+  `Validated::new` — returns `Result<_, ValidationError>`. `InvalidConfig` had no producer,
+  and `ValidationFailed` was a transparent wrapper that only hid the real error. Per-module
+  construction failures stay with their owner (`RangeConfigError`, `FieldPathError`,
+  `RuleBuildError`, `regex::Error`).
 - **Removed from the public API:** `ValidationMode::is_collect_all`,
   `ValidationErrors::into_result`, the `ValidationResult` / `ValidationResultMulti` aliases,
   the `Lazy` combinator (`src/combinators/lazy.rs`), and the previously public `FieldError`

@@ -54,7 +54,6 @@ in `nebula-api`. There is no KDF or hashing here either (that is
 | `Presence` / `Requiredness` / `VisibilityPolicy` / `RequiredPolicy` | `src/policy/mod.rs` |
 | `resolve_field_policies` — the single entry point for `nebula-schema::validate` | `src/policy/mod.rs` |
 | `FieldDirective` / `FieldPolicyDecl` / `FieldPlan` / `FieldPolicyResolution` | `src/policy/mod.rs` |
-| `ValidatorError` — operational error (`#[derive(nebula_error::Classify)]`) | `src/error.rs` |
 | `#[derive(Validator)]` proc-macro (feature `derive`, subcrate `macros/`) | re-export in `src/lib.rs` |
 | Built-in factories/types: length/pattern/content/range/size/boolean/nullable (+network/temporal) | `src/validators/mod.rs` |
 | `__private::regex` re-export for derive-generated code | `src/lib.rs` |
@@ -86,8 +85,6 @@ in `nebula-api`. There is no KDF or hashing here either (that is
 - `policy/` — the `When(Rule)` engine for visibility/required conditions; typed verdicts
   instead of a bare `bool`.
 - `proof.rs` — the `Validated<T>` proof token (canon §4.5).
-- `error.rs` — `ValidatorError` (operational), kept distinct from the inbound
-  `ValidationError`.
 - `macros.rs` — the `validator!` macro. The module is private, but the macro itself is
   `#[macro_export]`ed, so downstream crates see it at the crate root. Composition is the
   `.and()` / `.or()` methods from `ValidateExt`.

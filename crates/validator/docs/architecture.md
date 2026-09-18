@@ -101,10 +101,11 @@ Minor releases are **additive only** for the error code catalog.
 
 ### 8. Operational error separation
 
-`ValidatorError` separates `InvalidConfig` (misconfigured validator, e.g., `min > max` in
-`LengthRange`) from `ValidationFailed` (bad input). The lower-level `validate()` method still
-returns `Result<(), ValidationError>` for callers that only need pass/fail. `validate_into` and
-`Validated::new` return `ValidatorResult<T>` to expose the richer variant.
+Every fallible entry point returns the same `ValidationError`: `validate()`,
+`validate_any()`, `validate_into()`, and `Validated::new()`. There is no separate
+operational-error type; validator *construction* failures use the typed config errors of
+their own module (`RangeConfigError`, `FieldPathError`, `RuleBuildError`), and a validator
+that cannot be built is not produced at all.
 
 ---
 
@@ -191,7 +192,6 @@ nebula-validator/src/
 ├── engine.rs          validate_rules(), ExecutionMode (StaticOnly / Deferred / Full).
 ├── policy/            Visibility/required policy engine (resolve_field_policies).
 ├── proof.rs           Validated<T> proof token.
-├── error.rs           ValidatorError, ValidatorResult<T>.
 ├── macros.rs          validator! — `#[macro_export]`ed, module private; expands at the call site.
 └── prelude.rs         Single-import convenience re-export.
 ```
@@ -237,10 +237,10 @@ Caller
   │    where V: Borrow<T>, Self: Validate<T>
   ▼
 Validate<T>::validate(&value.borrow())
-  │  Ok(()) → Validated::new_unchecked(value)  → ValidatorResult::Ok(Validated<V>)
-  │  Err(e)  → ValidatorResult::Err(ValidatorError::ValidationFailed(e))
+  │  Ok(()) → Validated::from_validated(value) → Ok(Validated<V>)
+  │  Err(e)  → Err(e: ValidationError)
   ▼
-Validated<V>   (or error propagated via ?)
+Result<Validated<V>, ValidationError>
 ```
 
 ### Declarative rule evaluation
@@ -318,7 +318,7 @@ error construction. Regressions beyond the agreed threshold fail CI.
 
 4. **`Validated<T>` cannot be constructed without validation.**
    There is no `impl Deserialize for Validated<T>`. The only construction paths are
-   `validate_into` and `Validated::new`. The internal `new_unchecked` is `pub(crate)`
+   `validate_into` and `Validated::new`. The internal `from_validated` is `pub(crate)`
    and not accessible to downstream consumers.
 
 5. **No unsafe code.**

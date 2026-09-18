@@ -10,7 +10,7 @@ see [`architecture.md`](architecture.md). For combinator-specific usage patterns
 
 | Tier | Items |
 |------|-------|
-| **Stable** | `Validate<T>`, `ValidateExt<T>`, `Validatable`, `ValidationError`, `ValidationErrors`, `AnyValidator<T>`, `ErrorSeverity`, `Validated<T>`, `ValidatorError`, all built-in validators, core combinators, the `validator!` macro |
+| **Stable** | `Validate<T>`, `ValidateExt<T>`, `Validatable`, `ValidationError`, `ValidationErrors`, `AnyValidator<T>`, `ErrorSeverity`, `Validated<T>`, all built-in validators, core combinators, the `validator!` macro |
 | **Experimental** | `MultiField` internals, advanced `NestedValidate` helpers — treat as non-contract |
 | **Internal** | `ErasedValidator` trait, `AsValidatable` bridge, macro `@`-arms |
 
@@ -28,7 +28,7 @@ pub trait Validate<T: ?Sized> {
     where
         U: AsValidatable<T>;
 
-    fn validate_into<V>(&self, value: V) -> ValidatorResult<Validated<V>>
+    fn validate_into<V>(&self, value: V) -> Result<Validated<V>, ValidationError>
     where
         V: Borrow<T>,
         Self: Sized;
@@ -39,7 +39,7 @@ pub trait Validate<T: ?Sized> {
 - `validate_any` — bridge for `serde_json::Value` inputs when `Value: AsValidatable<T>`.
   Allows string validators to accept `&json!("hello")` directly.
 - `validate_into` — validates and wraps the value in a `Validated<V>` proof token.
-  Returns `Err(ValidatorError::ValidationFailed(..))` on failure.
+  Returns the validator's `ValidationError` on failure.
 
 ### `ValidateExt<T>`
 
@@ -204,9 +204,9 @@ Zero-cost proof token certifying the inner value passed validation.
 
 | Method | Notes |
 |--------|-------|
-| `validator.validate_into(value)` | Primary path; returns `ValidatorResult<Validated<V>>` |
+| `validator.validate_into(value)` | Primary path; returns `Result<Validated<V>, ValidationError>` |
 | `Validated::new(value, &validator)` | Direct construction; same semantics |
-| `Validated::new_unchecked(value)` | Internal escape hatch (`pub(crate)`) |
+| `Validated::from_validated(value)` | Internal escape hatch (`pub(crate)`) |
 
 ### Access
 
@@ -224,22 +224,19 @@ Zero-cost proof token certifying the inner value passed validation.
 
 ---
 
-## `ValidatorError`
+## Operational errors
 
-Crate-level operational error separating configuration failures from validation failures.
+There is no crate-level `ValidatorError`. Every fallible entry point — `validate()`,
+`validate_any()`, `validate_into()`, `Validated::new()` — returns the same
+`Result<_, ValidationError>`. Per-module construction failures stay with the module that
+owns the configuration:
 
-```rust
-#[non_exhaustive]
-pub enum ValidatorError {
-    InvalidConfig { message: Cow<'static, str> },
-    ValidationFailed(#[from] ValidationError),
-}
-
-pub type ValidatorResult<T> = Result<T, ValidatorError>;
-```
-
-`validate()` returns `Result<(), ValidationError>`.
-`validate_into()` and `Validated::new()` return `ValidatorResult<T>`.
+| Module | Error |
+|--------|-------|
+| `validators::range` | `RangeConfigError` |
+| `foundation::field_path` | `FieldPathError` |
+| `rule` | `RuleBuildError` |
+| `validators::content` | `regex::Error` (from `matches_regex`) |
 
 ---
 
@@ -512,7 +509,7 @@ entire rule tree.
 
 - Foundation: `Validate`, `ValidateExt`, `Validatable`, `ValidationError`, `ValidationErrors`,
   `AnyValidator`, `ErrorSeverity`, `AsValidatable`
-- Proof: `Validated`, `ValidatorError`
+- Proof: `Validated`
 - All validators: `validators::*` (glob)
 - Key combinators: `And`, `Or`, `Not`, `When`, `and`, `or`, `not`, `json_field`,
   `json_field_optional`, `JsonField`

@@ -21,7 +21,6 @@
 //! | [`foundation::ValidationError`] | Structured error (80 bytes, `Cow`-based) |
 //! | [`Rule`] | Unified declarative rule (value, predicate, combinator, deferred) |
 //! | [`ExecutionMode`] | Controls which categories run (`StaticOnly`, `Deferred`, `Full`) |
-//! | [`ValidatorError`] | Crate-level operational error type |
 //!
 //! ## Quick Start
 //!
@@ -36,7 +35,7 @@
 //! let name: Validated<String> = min_length(3).validate_into("alice".to_string())?;
 //! // fn process(name: Validated<String>) — compiler enforces the check happened
 //! # assert_eq!(name.as_ref(), "alice");
-//! # Ok::<(), ValidatorError>(())
+//! # Ok::<(), nebula_validator::foundation::ValidationError>(())
 //! ```
 //!
 //! ## Non-goals
@@ -61,8 +60,6 @@
 pub mod combinators;
 /// Validation engine for declarative rules.
 pub mod engine;
-/// Crate-level operational error type.
-pub mod error;
 /// Core traits, errors, and type-erased validators.
 pub mod foundation;
 /// Field visibility / required policy evaluation.
@@ -84,7 +81,6 @@ pub use engine::{
     DeferredReason, DiagnosticDisclosure, EvaluationOutcome, ExecutionMode, validate_rules,
     validate_rules_with_ctx,
 };
-pub use error::ValidatorError;
 pub use foundation::error::ValidationErrorKind;
 #[cfg(feature = "derive")]
 pub use nebula_validator_macros::Validator;

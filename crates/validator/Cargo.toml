@@ -31,7 +31,6 @@ nebula-validator-macros = { path = "macros", optional = true }
 
 # Error handling
 thiserror = { workspace = true }
-nebula-error = { workspace = true, features = ["derive"] }
 tracing = { workspace = true }
 num-cmp = { workspace = true }
 
