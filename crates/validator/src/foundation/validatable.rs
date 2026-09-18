@@ -264,6 +264,19 @@ impl AsValidatable<f64> for i64 {
 // PATH CONVERSIONS (Path/PathBuf don't implement Display)
 // ============================================================================
 
+/// Borrow a path as a string, rejecting non-UTF-8 paths with the same error.
+///
+/// `Path` and `PathBuf` are the same conversion; only the deref to `Path`
+/// differs, so the diagnostic is defined once.
+fn path_as_str(path: &std::path::Path) -> Result<&str, ValidationError> {
+    path.to_str().ok_or_else(|| {
+        ValidationError::new(
+            "invalid_path",
+            "Path contains non-UTF-8 characters and cannot be validated as a string",
+        )
+    })
+}
+
 impl AsValidatable<str> for std::path::Path {
     type Output<'a>
         = &'a str
@@ -272,12 +285,7 @@ impl AsValidatable<str> for std::path::Path {
 
     #[inline]
     fn as_validatable(&self) -> Result<&str, ValidationError> {
-        self.to_str().ok_or_else(|| {
-            ValidationError::new(
-                "invalid_path",
-                "Path contains non-UTF-8 characters and cannot be validated as a string",
-            )
-        })
+        path_as_str(self)
     }
 }
 
@@ -289,12 +297,7 @@ impl AsValidatable<str> for std::path::PathBuf {
 
     #[inline]
     fn as_validatable(&self) -> Result<&str, ValidationError> {
-        self.as_path().to_str().ok_or_else(|| {
-            ValidationError::new(
-                "invalid_path",
-                "Path contains non-UTF-8 characters and cannot be validated as a string",
-            )
-        })
+        path_as_str(self.as_path())
     }
 }
 
