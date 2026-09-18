@@ -574,20 +574,28 @@ pub(crate) enum FallbackOutcome<T, E> {
     Failed(CallError<E>),
 }
 
-/// The one fallback orchestration: decide, emit `FallbackAttempted`, recover,
-/// emit the result event.
+/// Whether a failed call should be offered to the strategy at all.
 ///
-/// `FallbackExecutor` and `ResiliencePipeline::call_with_fallback*` both drive
-/// fallback through this function rather than keeping parallel copies of the
-/// sequence, because two copies let the event contract drift between the
-/// standalone and pipeline entry points.
+/// The decision half of the fallback contract, callable without awaiting.
+/// `FallbackExecutor` uses it as a guard so the common decline path — policy
+/// rejections such as [`CallError::LoadShed`] — returns without building an
+/// async recovery frame; [`orchestrate_fallback`] uses the same function, so
+/// the standalone executor and the pipeline cannot drift on who gets offered
+/// to a strategy.
+pub(crate) fn should_offer_fallback<T, E>(
+    strategy: &dyn FallbackStrategy<T, E>,
+    error: &CallError<E>,
+) -> bool {
+    !matches!(error, CallError::Cancelled { .. }) && strategy.should_fallback(error)
+}
+
+/// Run an already-accepted error through the strategy: emit
+/// `FallbackAttempted`, recover, emit the result event.
 ///
-/// Cancellation and context-deadline errors are never offered to the strategy:
-/// shutdown and action deadlines must not be reported as successful graceful
-/// degradation. The caller keeps responsibility for the stronger check that
-/// requires its own cancellation handle (the pipeline's `select!` against a
-/// live token).
-pub(crate) async fn orchestrate_fallback<T, E>(
+/// Caller responsibility: [`should_offer_fallback`] must have returned `true`
+/// for this error. Calling it directly on a declined error would report a
+/// recovery attempt that policy said should not happen.
+pub(crate) async fn recover_via_fallback<T, E>(
     strategy: &dyn FallbackStrategy<T, E>,
     sink: &dyn EventSink,
     error: CallError<E>,
@@ -596,10 +604,6 @@ where
     T: Send + Sync,
     E: Send,
 {
-    if matches!(error, CallError::Cancelled { .. }) || !strategy.should_fallback(&error) {
-        return FallbackOutcome::Declined(error);
-    }
-
     let primary_error = error.kind();
     sink.record(ResilienceEvent::FallbackAttempted { primary_error });
     match strategy.recover(error).await {
@@ -615,6 +619,32 @@ where
             FallbackOutcome::Failed(fallback_error)
         },
     }
+}
+
+/// The one fallback orchestration: decide, then [`recover_via_fallback`].
+///
+/// `ResiliencePipeline::call_with_fallback*` drives fallback through this
+/// function, so the event contract cannot drift from the standalone
+/// `FallbackExecutor` path.
+///
+/// Cancellation and context-deadline errors are never offered to the strategy:
+/// shutdown and action deadlines must not be reported as successful graceful
+/// degradation. The caller keeps responsibility for the stronger check that
+/// requires its own cancellation handle (the pipeline's `select!` against a
+/// live token).
+pub(crate) async fn orchestrate_fallback<T, E>(
+    strategy: &dyn FallbackStrategy<T, E>,
+    sink: &dyn EventSink,
+    error: CallError<E>,
+) -> FallbackOutcome<T, E>
+where
+    T: Send + Sync,
+    E: Send,
+{
+    if !should_offer_fallback(strategy, &error) {
+        return FallbackOutcome::Declined(error);
+    }
+    recover_via_fallback(strategy, sink, error).await
 }
 
 /// Runs an operation and, on eligible failure, a [`FallbackStrategy`].
@@ -655,12 +685,23 @@ pub struct FallbackExecutor<T, E> {
 impl<T, E> FallbackExecutor<T, E> {
     /// Delegate one primary failure to the strategy through the shared
     /// orchestration and translate its outcome.
+    /// The synchronous decline check, inlined by callers before they commit
+    /// to an async recovery path.
+    fn offers_fallback(&self, error: &CallError<E>) -> bool {
+        should_offer_fallback(self.fallback_strategy.as_ref(), error)
+    }
+
+    /// Recover an error the caller already accepted for fallback.
+    ///
+    /// The acceptance decision is made once by [`Self::offers_fallback`];
+    /// this function never re-evaluates it, so `should_fallback` runs exactly
+    /// once per failed call.
     async fn apply(&self, error: CallError<E>) -> Result<T, CallError<E>>
     where
         T: Send + Sync,
         E: Send,
     {
-        match orchestrate_fallback(self.fallback_strategy.as_ref(), self.sink.as_ref(), error).await
+        match recover_via_fallback(self.fallback_strategy.as_ref(), self.sink.as_ref(), error).await
         {
             FallbackOutcome::Declined(error) | FallbackOutcome::Failed(error) => Err(error),
             FallbackOutcome::Recovered(value) => Ok(value),
@@ -718,7 +759,8 @@ impl<T, E> FallbackExecutor<T, E> {
     {
         match operation().await {
             Ok(value) => Ok(value),
-            Err(error) => self.apply(error).await,
+            Err(error) if self.offers_fallback(&error) => self.apply(error).await,
+            Err(error) => Err(error),
         }
     }
 
@@ -762,6 +804,9 @@ impl<T, E> FallbackExecutor<T, E> {
                     return Err(error);
                 }
                 if matches!(error, CallError::Timeout(_)) && context.is_deadline_expired() {
+                    return Err(error);
+                }
+                if !self.offers_fallback(&error) {
                     return Err(error);
                 }
                 // The fallback phase stays bounded by the same context as the
