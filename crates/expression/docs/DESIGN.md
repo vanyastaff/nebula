@@ -145,8 +145,10 @@ chains and builtin dispatch rather than cloning the referenced graph.
    current item, and typed date-times with `plus`/`diff`/`toFormat` methods and
    calendar units. Still unrealized: the item model (`$item`, `$items()`, `$position`,
    `$itemIndex` with multiple outputs per node — that is an engine/workflow design, not
-   a naming gap the context can invent), and Jinja-style `{% if %}` / `{% for %}`
-   template control flow. This is unrealized scope, not a defect.
+   a naming gap the context can invent). The template control flow (`{% if %}` /
+   `{% elif %}` / `{% else %}` / `{% for %}` with `loop` variables, `{# #}` comments, and
+   `{%- -%}` whitespace control) landed in `program.rs`; it is unrealized scope only for
+   inheritance and macros.
 6. **Methods are a syntax, not a second library.** `builtins/methods.rs` only maps
    JavaScript/Luxon names onto the registered builtins; the receiver becomes the first
    argument. Adding a method implementation there instead of a builtin would fork the
@@ -167,7 +169,7 @@ decides.
 
 The crate is stable as the Canon §3.5 resolution backend, but the target frame is
 wider: a template engine with control flow and an n8n-compatible expression language
-(§6.5). Open items: (a) settle the doc drift from §6.1; (b) under sole-public-sdk,
+(§6.5), both now landed through the expression language and `{% %}` blocks. Open items: (a) settle the doc drift from §6.1; (b) under sole-public-sdk,
 narrow the doc-hidden pub modules to `pub(crate)` (§6.3); (c) pick up the resolve-seam
 changes from `refactor/error-unify-validation` at merge time (§6.4); (d) decide the
 value-model/ABI/block-syntax forks before 0.1.0, while the public contract is still

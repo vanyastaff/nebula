@@ -3,7 +3,7 @@
 > this guide adds crate-specific rules. Design and status: [README.md](README.md).
 
 **Purpose:** Shared expression evaluator that resolves `{{ expression }}` templates (n8n-compatible syntax) against execution-time context — the resolution backend `nebula-schema`'s `ValidValues::resolve` step calls.
-**Trajectory:** Stated target is a full n8n-class authoring language and template engine. Landed so far: method calls on values, optional chaining (`?.`), nullish coalescing (`??`), namespaces (`Math`/`JSON`/`Object`/`Number`/`Array`), `$json`, and typed datetimes. Still missing: Jinja-style `{% if %}` / `{% for %}` control flow and the n8n item model (`$item`, `$items()`, `$position`, `$itemIndex` — needs multiple outputs per node, an engine/workflow contract). Do not write code or docs that assume the missing parts exist. See `docs/DESIGN.md` §6.5.
+**Trajectory:** Stated target is a full n8n-class authoring language and template engine. Landed so far: method calls on values, optional chaining (`?.`), nullish coalescing (`??`), namespaces (`Math`/`JSON`/`Object`/`Number`/`Array`), `$json`, and typed datetimes. Still missing: the n8n item model (`$item`, `$items()`, `$position`, `$itemIndex` — needs multiple outputs per node, an engine/workflow contract) and template inheritance/macros. Do not write code or docs that assume the missing parts exist. See `docs/DESIGN.md` §6.5.
 **Layer:** Core — depends only downward (root AGENTS.md -> Layered Dependency Map).
 
 ## Commands
@@ -22,7 +22,8 @@
 - `src/policy.rs` — `EvaluationPolicy` DoS budget (work, recursion, input, builtin output)
 - `src/builtins/output.rs` — opaque public builtin output and mandatory bounded builder
 - `src/maybe.rs` — `MaybeExpression<T>` typed serde wrapper (literal vs expression)
-- `src/template.rs` — `Template` / `MaybeTemplate`; `{{- -}}` whitespace control; shared lexical `has_expression_marker` classifier (recognizes malformed unescaped openers)
+- `src/template.rs` — `Template` / `MaybeTemplate`; `{{ }}`, `{% %}` tags, `{# #}` comments, whitespace control; shared lexical `has_expression_marker` classifier (recognizes malformed unescaped openers)
+- `src/program.rs` — `CompiledProgram` plus the template block tree: `{% if %}`/`{% for %}` nesting, `loop` variables, per-tag whitespace control
 - `src/error_formatter.rs` — caller-side renderer for structured parse-error positions; parse errors themselves carry `Position` + message, never pre-rendered art
 
 ## Conventions & never-do
@@ -38,7 +39,9 @@
   compilation remains AUTO; TEMPLATE always returns string. Source exports alone
   cannot reconstruct this distinction. Keep syntax immutable across clones.
 - Exact mixed numeric comparison delegates to `num-cmp` without the nightly i128 feature. Do not replace it with `as_f64` or a second handwritten comparator.
-- NOT a validation engine (`nebula-validator`), schema system (`nebula-schema`), or HTML template engine — keep scope to `{{ }}` field resolution.
+- Template blocks (`{% if %}`, `{% for %}`) are compiled into a tree in `program.rs`; rendering must go through `render_nodes` so every branch and iteration shares the caller's `EvalFrame`. Never call the evaluator with a fresh frame from a block path — the loop budget would reset per iteration.
+- `TemplatePart::Tag` carries the raw tag body; block structure and nesting live only in `program.rs`. Do not parse tags in `template.rs` beyond delimiting them.
+- NOT a validation engine (`nebula-validator`), schema system (`nebula-schema`), or general-purpose HTML template language — `{{ }}`, `{% %}`, and `{# #}` are the whole surface.
 
 ## Change checks
 

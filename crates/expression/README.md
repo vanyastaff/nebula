@@ -45,7 +45,7 @@ it and returns a `serde_json::Value`.
 - `EvaluationPolicy` — function restrictions, coercion rules, work and JSON input limits.
 - `BuiltinOutput`, `BuiltinOutputBuilder`, `BuiltinOutputBound`, `BuiltinOutputLimits` — mandatory bounded
   construction for outputs returned by public custom builtins.
-- `Template` — pre-parsed `{{ ... }}` template; call `.render(engine, ctx)` to evaluate.
+- `Template` — pre-parsed `{{ ... }}` / `{% ... %}` template; call `.render(engine, ctx)` to evaluate.
 - `MaybeExpression<T>` — typed wrapper: either a literal `T` or an expression string that
   resolves to `T`. Used in `serde` structs for action/credential config parameters.
 - `MaybeTemplate` — like `MaybeExpression` but for text templates (`{{ }}` delimiters).
@@ -124,8 +124,10 @@ See `src/lib.rs` rustdoc for the quick-start example.
 - Not a schema system — see `nebula-schema` for field definitions and the proof-token
   pipeline.
 - The template engine resolves `{{ }}` interpolation and reports structured positions.
-  Jinja-style control flow (`{% if %}`, `{% for %}`) is the stated direction but is
-  **not implemented today**; do not write templates against it yet.
+  It supports `{{ }}` interpolation and `{% if %}` / `{% for %}` control flow with
+  `{# #}` comments. It is not a general-purpose HTML/JS templating language: there is
+  no template inheritance, macro system, or expression evaluation inside text other
+  than the documented delimiters.
 - Not a full JavaScript sandbox: expressions are parsed and evaluated by this crate,
   not by a JS engine.
 

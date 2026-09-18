@@ -1,9 +1,10 @@
 #![no_main]
 //! Fuzz target: `nebula_expression::Template::new`.
 //!
-//! Exercises the template parser (which has its own newline/`{{`/`}}`
-//! state machine separate from the lexer). Same contract as
-//! `parse_expression`: panic-free for any UTF-8 input.
+//! Exercises the template scanner and block builder (their own
+//! `{{`/`{%`/`{#` state machine separate from the expression lexer). Same
+//! contract as `parse_expression`: panic-free for any UTF-8 input. Compilation
+//! also builds the block tree, so malformed nesting is covered here.
 
 use libfuzzer_sys::fuzz_target;
 use nebula_expression::Template;

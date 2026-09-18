@@ -54,6 +54,16 @@ fn main() -> anyhow::Result<()> {
                     "Part {i}: Expression at {position} (length: {length}, strip_left: {strip_left}, strip_right: {strip_right}) = {content:?}"
                 );
             },
+            TemplatePart::Tag {
+                content,
+                position,
+                strip_left,
+                strip_right,
+            } => {
+                println!(
+                    "Part {i}: Tag at {position} (strip_left: {strip_left}, strip_right: {strip_right}) = {content:?}"
+                );
+            },
         }
     }
     println!();

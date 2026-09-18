@@ -47,8 +47,9 @@
 //! ## Non-goals
 //!
 //! Not a validation rules engine (`nebula-validator`), not a schema system (`nebula-schema`),
-//! not a JavaScript sandbox. Jinja-style template control flow is the stated direction but
-//! is not implemented today.
+//! not a JavaScript sandbox, and not a general-purpose HTML template language:
+//! `{{ }}` interpolation, `{% if %}` / `{% for %}` blocks, and `{# #}` comments are
+//! the whole template surface.
 //!
 //! ## BuiltinFunction signature
 //!

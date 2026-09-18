@@ -16,7 +16,7 @@ use crate::{
 /// Maximum number of expressions allowed in a single template (DoS protection)
 const MAX_TEMPLATE_EXPRESSIONS: usize = 1000;
 
-/// A template part - either static text or an expression to evaluate
+/// A template part: static text, an expression, or a control-flow tag.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TemplatePart {
     /// Static text that doesn't need evaluation
@@ -37,6 +37,20 @@ pub enum TemplatePart {
         /// Strip whitespace to the left ({{-)
         strip_left: bool,
         /// Strip whitespace to the right (-}})
+        strip_right: bool,
+    },
+    /// A control-flow tag (`{% if … %}`, `{% for … %}`, …).
+    ///
+    /// Tags form the block structure; the program layer nests them. This part
+    /// carries the raw body without the delimiters.
+    Tag {
+        /// The tag body (without `{% %}`), e.g. `if $input.count > 0`.
+        content: Arc<str>,
+        /// Starting position of `{%` in the original template
+        position: Position,
+        /// Strip whitespace to the left (`{%-`)
+        strip_left: bool,
+        /// Strip whitespace to the right (`-%}`)
         strip_right: bool,
     },
 }
@@ -80,6 +94,8 @@ impl fmt::Display for Position {
 
 enum TemplateToken {
     Open,
+    TagOpen,
+    CommentOpen,
     Escaped { width: usize, text: &'static str },
     Text,
 }
@@ -95,18 +111,47 @@ fn template_token(bytes: &[u8]) -> TemplateToken {
             width: 3,
             text: "{{",
         }
+    } else if bytes.starts_with(b"\\{%") {
+        TemplateToken::Escaped {
+            width: 3,
+            text: "{%",
+        }
+    } else if bytes.starts_with(b"\\{#") {
+        TemplateToken::Escaped {
+            width: 3,
+            text: "{#",
+        }
     } else if bytes.starts_with(b"{{{{") {
         TemplateToken::Escaped {
             width: 4,
             text: "{{",
+        }
+    } else if bytes.starts_with(b"{%{%") {
+        TemplateToken::Escaped {
+            width: 4,
+            text: "{%",
+        }
+    } else if bytes.starts_with(b"{#{#") {
+        TemplateToken::Escaped {
+            width: 4,
+            text: "{#",
         }
     } else if bytes.starts_with(b"}}}}") {
         TemplateToken::Escaped {
             width: 4,
             text: "}}",
         }
+    } else if bytes.starts_with(b"%}%}") {
+        TemplateToken::Escaped {
+            width: 4,
+            text: "%}",
+        }
     } else if bytes.starts_with(b"{{") {
         TemplateToken::Open
+    } else if bytes.starts_with(b"{%") {
+        TemplateToken::TagOpen
+    } else if bytes.starts_with(b"{#") {
+        TemplateToken::CommentOpen
     } else {
         TemplateToken::Text
     }
@@ -116,10 +161,6 @@ fn template_token(bytes: &[u8]) -> TemplateToken {
 struct ExpressionEnd {
     /// Index of the first `}` of the closing `}}`.
     index: usize,
-    /// Line and column of the last character before the closing `}}`; the two
-    /// brace characters themselves are excluded, so the caller adds 2.
-    line: usize,
-    column: usize,
 }
 
 /// Scan for the closing `}}` of an expression body, tracking quoted spans and
@@ -132,19 +173,12 @@ struct ExpressionEnd {
 /// position excludes the braces themselves because the scan returns as soon as
 /// `}}` is recognised — before the per-character line/column update runs on
 /// them — so the caller must add 2 to the column.
-fn find_expression_end(
-    chars: &[char],
-    from: usize,
-    start_line: usize,
-    start_column: usize,
-) -> Option<ExpressionEnd> {
+fn find_expression_end(chars: &[char], from: usize) -> Option<ExpressionEnd> {
     let len = chars.len();
     let mut scan = from;
     let mut object_depth = 0_usize;
     let mut quote = None;
     let mut escaped = false;
-    let mut end_line = start_line;
-    let mut end_column = start_column;
 
     while scan < len {
         let character = chars[scan];
@@ -162,32 +196,80 @@ fn find_expression_end(
                 '{' => object_depth += 1,
                 '}' if object_depth > 0 => object_depth -= 1,
                 '}' if chars.get(scan + 1) == Some(&'}') => {
-                    return Some(ExpressionEnd {
-                        index: scan,
-                        line: end_line,
-                        column: end_column,
-                    });
+                    return Some(ExpressionEnd { index: scan });
                 },
                 _ => {},
             }
-        }
-        if character == '\n' {
-            end_line += 1;
-            end_column = 1;
-        } else {
-            end_column += 1;
         }
         scan += 1;
     }
     None
 }
 
-/// Strip the whitespace-control markers around an expression body.
+/// The end of a tag body found by [`find_tag_end`].
+struct TagEnd {
+    /// Index of the first `%` of the closing `%}`.
+    index: usize,
+}
+
+/// Scan for the closing `%}` of a tag body, tracking quoted spans.
 ///
-/// `content_start` is the index of the first character after the opening `{{`
-/// and `content_end` the index of the closing braces' first `}`. A leading
-/// `-` (`{{-`) or a trailing `-` before the closing braces (`-}}`) sets the
-/// corresponding strip flag and narrows the body on that side. Returns
+/// `from` is the index of the first character after the opening `{%`. The
+/// returned position excludes the closing `%}` for the same reason
+/// [`find_expression_end`] excludes its braces.
+fn find_tag_end(chars: &[char], from: usize) -> Option<TagEnd> {
+    let len = chars.len();
+    let mut scan = from;
+    let mut quote = None;
+    let mut escaped = false;
+
+    while scan < len {
+        let character = chars[scan];
+        if let Some(delimiter) = quote {
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == delimiter {
+                quote = None;
+            }
+        } else {
+            match character {
+                '\'' | '"' => quote = Some(character),
+                '%' if chars.get(scan + 1) == Some(&'}') => {
+                    return Some(TagEnd { index: scan });
+                },
+                _ => {},
+            }
+        }
+        scan += 1;
+    }
+    None
+}
+
+/// Scan for the end of a comment body (`#}`).
+///
+/// Comments are discarded entirely, so their body needs no quote tracking:
+/// the first `#}` closes them.
+fn find_comment_end(chars: &[char], from: usize) -> Option<usize> {
+    let len = chars.len();
+    let mut scan = from;
+    while scan < len {
+        if chars[scan] == '#' && chars.get(scan + 1) == Some(&'}') {
+            return Some(scan);
+        }
+        scan += 1;
+    }
+    None
+}
+
+/// Strip the whitespace-control markers around a body.
+///
+/// `content_start` is the index of the first character after the opening
+/// delimiter and `content_end` the index of the closing delimiter's first
+/// character. A leading `-` (`{{-` / `{%-`) or a trailing `-` before the
+/// closing delimiter (`-}}` / `-%}`) sets the corresponding strip flag and
+/// narrows the body on that side. Returns
 /// `(content_start, content_end, strip_left, strip_right)`.
 fn parse_strip_markers(
     chars: &[char],
@@ -213,18 +295,40 @@ fn parse_strip_markers(
     (content_start, content_end, strip_left, strip_right)
 }
 
+/// Advance line/column over an already-consumed character run.
+///
+/// Used after a delimiter body is skipped wholesale, so position tracking stays
+/// in one place instead of being re-derived per delimiter kind.
+fn advance_over(consumed: &[char], mut line: usize, mut column: usize) -> (usize, usize) {
+    for character in consumed {
+        if *character == '\n' {
+            line += 1;
+            column = 1;
+        } else {
+            column += 1;
+        }
+    }
+    (line, column)
+}
+
 /// Enforce the expression-count limit (DoS protection).
 ///
 /// The count covers the parts parsed so far, so this must be called after the
-/// expression part has been pushed.
+/// part has been pushed. Tags count too: a hostile template can otherwise
+/// nest blocks past the bound.
 fn enforce_expression_count(parts: &[TemplatePart]) -> ExpressionResult<()> {
     let expr_count = parts
         .iter()
-        .filter(|p| matches!(p, TemplatePart::Expression { .. }))
+        .filter(|p| {
+            matches!(
+                p,
+                TemplatePart::Expression { .. } | TemplatePart::Tag { .. }
+            )
+        })
         .count();
     if expr_count > MAX_TEMPLATE_EXPRESSIONS {
         return Err(ExpressionError::parse_error(format!(
-            "Template contains too many expressions: {expr_count} (max {MAX_TEMPLATE_EXPRESSIONS})"
+            "Template contains too many expressions or tags: {expr_count} (max {MAX_TEMPLATE_EXPRESSIONS})"
         )));
     }
     Ok(())
@@ -232,15 +336,17 @@ fn enforce_expression_count(parts: &[TemplatePart]) -> ExpressionResult<()> {
 
 /// Detect an unescaped template opener without parsing or evaluating the source.
 ///
-/// Neither a closing delimiter nor a `$` sigil is required: malformed syntax
-/// remains authored expression input and can subsequently fail compilation.
-/// `{{{{` escapes an opener; an odd backslash run before `{{` escapes it, while
-/// an even run does not. Quotes have no meaning during this template-text scan.
+/// Recognizes `{{`, `{%`, and `{#`. Neither a closing delimiter nor a `$`
+/// sigil is required: malformed syntax remains authored expression input and
+/// can subsequently fail compilation. `{{{{`, `{%{%`, and `{#{#` escape an
+/// opener; an odd backslash run before an opener escapes it, while an even run
+/// does not. Quotes have no meaning during this template-text scan.
 /// This performs a linear scan without allocation or a compilation size check.
 ///
 /// ```
 /// use nebula_expression::has_expression_marker;
 /// assert!(has_expression_marker("total: {{ 1 +"));
+/// assert!(has_expression_marker("{% if $input.count %}"));
 /// assert!(!has_expression_marker(r"literal \{{ opener"));
 /// assert!(has_expression_marker(r"prefix \\{{ 1 }}"));
 /// ```
@@ -251,7 +357,9 @@ pub fn has_expression_marker(source: &str) -> bool {
     let mut position = 0;
     while position < bytes.len() {
         match template_token(&bytes[position..]) {
-            TemplateToken::Open => return true,
+            TemplateToken::Open | TemplateToken::TagOpen | TemplateToken::CommentOpen => {
+                return true;
+            },
             TemplateToken::Escaped { width, .. } => position += width,
             TemplateToken::Text => position += 1,
         }
@@ -346,66 +454,103 @@ impl Template {
                 column += width;
                 continue;
             }
-            // Look for opening {{
-            if matches!(token, TemplateToken::Open) {
-                // Save any accumulated static content
-                Self::flush_static(&mut parts, &mut current_static, static_start);
 
-                let expression_start = Position::new(line, column, char_index);
+            match token {
+                TemplateToken::Open => {
+                    Self::flush_static(&mut parts, &mut current_static, static_start);
+                    let start = Position::new(line, column, char_index);
+                    let Some(end) = find_expression_end(&chars, char_index + 2) else {
+                        return Err(ExpressionError::parse_error_at(
+                            start,
+                            "Unclosed '{{' - expected closing '}}'",
+                        ));
+                    };
+                    let (content_start, content_end, strip_left, strip_right) =
+                        parse_strip_markers(&chars, char_index + 2, end.index);
+                    let content: String = chars[content_start..content_end].iter().collect();
+                    parts.push(TemplatePart::Expression {
+                        content: Arc::from(content.as_str()),
+                        position: start,
+                        length: end.index + 2 - char_index,
+                        strip_left,
+                        strip_right,
+                    });
+                    enforce_expression_count(&parts)?;
+                    let (new_line, new_column) =
+                        advance_over(&chars[char_index..end.index + 2], line, column);
+                    byte_offset += chars[char_index..end.index + 2]
+                        .iter()
+                        .map(|character| character.len_utf8())
+                        .sum::<usize>();
+                    char_index = end.index + 2;
+                    line = new_line;
+                    column = new_column;
+                    static_start = Position::new(line, column, char_index);
+                },
+                TemplateToken::TagOpen => {
+                    Self::flush_static(&mut parts, &mut current_static, static_start);
+                    let start = Position::new(line, column, char_index);
+                    let Some(end) = find_tag_end(&chars, char_index + 2) else {
+                        return Err(ExpressionError::parse_error_at(
+                            start,
+                            "Unclosed '{%' - expected closing '%}'",
+                        ));
+                    };
+                    let (content_start, content_end, strip_left, strip_right) =
+                        parse_strip_markers(&chars, char_index + 2, end.index);
+                    let content: String = chars[content_start..content_end].iter().collect();
+                    parts.push(TemplatePart::Tag {
+                        content: Arc::from(content.as_str()),
+                        position: start,
+                        strip_left,
+                        strip_right,
+                    });
+                    enforce_expression_count(&parts)?;
+                    let (new_line, new_column) =
+                        advance_over(&chars[char_index..end.index + 2], line, column);
+                    byte_offset += chars[char_index..end.index + 2]
+                        .iter()
+                        .map(|character| character.len_utf8())
+                        .sum::<usize>();
+                    char_index = end.index + 2;
+                    line = new_line;
+                    column = new_column;
+                    static_start = Position::new(line, column, char_index);
+                },
+                TemplateToken::CommentOpen => {
+                    // Comments produce no part at all; their body never
+                    // reaches output.
+                    Self::flush_static(&mut parts, &mut current_static, static_start);
+                    let start = Position::new(line, column, char_index);
+                    let Some(end) = find_comment_end(&chars, char_index + 2) else {
+                        return Err(ExpressionError::parse_error_at(
+                            start,
+                            "Unclosed '{#' - expected closing '#}'",
+                        ));
+                    };
+                    let (new_line, new_column) =
+                        advance_over(&chars[char_index..end + 2], line, column);
+                    byte_offset += chars[char_index..end + 2]
+                        .iter()
+                        .map(|character| character.len_utf8())
+                        .sum::<usize>();
+                    char_index = end + 2;
+                    line = new_line;
+                    column = new_column;
+                    static_start = Position::new(line, column, char_index);
+                },
+                TemplateToken::Escaped { .. } | TemplateToken::Text => {
+                    current_static.push(chars[char_index]);
+                    byte_offset += chars[char_index].len_utf8();
+                    char_index += 1;
 
-                // Find closing }}
-                let Some(end) = find_expression_end(&chars, char_index + 2, line, column + 2)
-                else {
-                    return Err(ExpressionError::parse_error_at(
-                        expression_start,
-                        "Unclosed '{{' - expected closing '}}'",
-                    ));
-                };
-
-                // Check for whitespace control markers
-                let closing_index = end.index;
-                let closing_line = end.line;
-                let closing_column = end.column;
-                let (content_start, content_end, strip_left, strip_right) =
-                    parse_strip_markers(&chars, char_index + 2, closing_index);
-
-                // Extract the expression content (without whitespace markers)
-                let expr_content: String = chars[content_start..content_end].iter().collect();
-                let expression_length = closing_index + 2 - char_index;
-
-                parts.push(TemplatePart::Expression {
-                    content: Arc::from(expr_content.as_str()),
-                    position: expression_start,
-                    length: expression_length,
-                    strip_left,
-                    strip_right,
-                });
-
-                // Check expression count limit (DoS protection)
-                enforce_expression_count(&parts)?;
-
-                // Update position tracking
-                byte_offset += chars[char_index..closing_index + 2]
-                    .iter()
-                    .map(|character| character.len_utf8())
-                    .sum::<usize>();
-                char_index = closing_index + 2;
-                line = closing_line;
-                column = closing_column + 2;
-                static_start = Position::new(line, column, char_index);
-            } else {
-                // Regular character
-                current_static.push(chars[char_index]);
-                byte_offset += chars[char_index].len_utf8();
-                char_index += 1;
-
-                // Track newlines
-                if chars[char_index - 1] == '\n' {
-                    line += 1;
-                    column = 1;
-                } else {
-                    column += 1;
-                }
+                    if chars[char_index - 1] == '\n' {
+                        line += 1;
+                        column = 1;
+                    } else {
+                        column += 1;
+                    }
+                },
             }
         }
 
@@ -430,18 +575,31 @@ impl Template {
         }
     }
 
-    /// Check if the template contains any expressions
+    /// Check if the template contains any expressions or control-flow tags
     pub fn has_expressions(&self) -> bool {
-        self.parts
-            .iter()
-            .any(|part| matches!(part, TemplatePart::Expression { .. }))
+        self.parts.iter().any(|part| {
+            matches!(
+                part,
+                TemplatePart::Expression { .. } | TemplatePart::Tag { .. }
+            )
+        })
     }
 
     /// Get the number of expressions in the template
+    ///
+    /// Control-flow tags are not counted; use [`Self::tag_count`] for those.
     pub fn expression_count(&self) -> usize {
         self.parts
             .iter()
             .filter(|part| matches!(part, TemplatePart::Expression { .. }))
+            .count()
+    }
+
+    /// Get the number of control-flow tags in the template.
+    pub fn tag_count(&self) -> usize {
+        self.parts
+            .iter()
+            .filter(|part| matches!(part, TemplatePart::Tag { .. }))
             .count()
     }
 
@@ -451,6 +609,17 @@ impl Template {
             .iter()
             .filter_map(|part| match part {
                 TemplatePart::Expression { content, .. } => Some(&**content),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Get all control-flow tag bodies, in source order.
+    pub fn tags(&self) -> Vec<&str> {
+        self.parts
+            .iter()
+            .filter_map(|part| match part {
+                TemplatePart::Tag { content, .. } => Some(&**content),
                 _ => None,
             })
             .collect()
@@ -886,12 +1055,28 @@ Line 3: Done",
         let err = result.unwrap_err();
         assert!(
             err.to_string()
-                .contains("Template contains too many expressions: 1001 (max 1000)")
+                .contains("Template contains too many expressions or tags: 1001 (max 1000)")
         );
 
         let at_limit = vec!["{{ 1 }}"; 1000].join(" ");
         let template = Template::new(at_limit.as_str()).expect("1000 expressions must compile");
         assert_eq!(template.expression_count(), 1000);
+    }
+
+    #[test]
+    fn tags_count_against_the_same_limit() {
+        // Tags share the expression bound: a hostile template could
+        // otherwise nest blocks past it.
+        let source = format!(
+            "{}{}",
+            "{% if true %}".repeat(600),
+            "{% endif %}".repeat(600)
+        );
+        let err = Template::new(source.as_str()).unwrap_err();
+        assert!(
+            err.to_string().contains("too many expressions or tags"),
+            "got: {err}"
+        );
     }
 
     #[test]

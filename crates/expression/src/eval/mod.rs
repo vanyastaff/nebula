@@ -1408,32 +1408,55 @@ impl Evaluator {
         context: &EvaluationContext,
         optional: bool,
     ) -> ExpressionResult<EvalValue<'a>> {
-        // Property-like members of primitives (`arr.length`, `$now.year`, …)
-        // resolve before object lookup; they are not calls and therefore are
-        // not part of the method alias table.
-        if let Some(value) = crate::builtins::methods::member_property(&object, property) {
-            return Ok(Cow::Owned(value));
-        }
         match object {
+            // An object's own keys always win: `loop.length` is the bound
+            // field, not the entry count. Only when the key is absent does the
+            // property surface apply.
             Cow::Borrowed(RuntimeValue::Object(entries)) => match entries.get(property) {
                 Some(value) => Ok(Cow::Borrowed(value)),
-                None if optional => Ok(Cow::Owned(RuntimeValue::Undefined)),
-                None => self.missing_property(property, context).map(Cow::Owned),
+                None => self.object_property_member(property, entries.len(), context, optional),
             },
             Cow::Owned(RuntimeValue::Object(entries)) => match entries.get(property) {
                 Some(value) => Ok(Cow::Owned(value.clone())),
-                None if optional => Ok(Cow::Owned(RuntimeValue::Undefined)),
-                None => self.missing_property(property, context).map(Cow::Owned),
+                None => self.object_property_member(property, entries.len(), context, optional),
             },
-            Cow::Borrowed(other) => Err(ExpressionError::type_error(
-                "object",
-                crate::value_utils::value_type_name(other),
-            )),
-            Cow::Owned(other) => Err(ExpressionError::type_error(
-                "object",
-                crate::value_utils::value_type_name(&other),
-            )),
+            Cow::Borrowed(other) => {
+                if let Some(value) = crate::builtins::methods::member_property(other, property) {
+                    return Ok(Cow::Owned(value));
+                }
+                Err(ExpressionError::type_error(
+                    "object",
+                    crate::value_utils::value_type_name(other),
+                ))
+            },
+            Cow::Owned(other) => {
+                if let Some(value) = crate::builtins::methods::member_property(&other, property) {
+                    return Ok(Cow::Owned(value));
+                }
+                Err(ExpressionError::type_error(
+                    "object",
+                    crate::value_utils::value_type_name(&other),
+                ))
+            },
         }
+    }
+
+    /// Fallback for an object key that is absent: `length` reports the entry
+    /// count; every other member follows the missing-lookup policy.
+    fn object_property_member<'a>(
+        &self,
+        property: &str,
+        entry_count: usize,
+        context: &EvaluationContext,
+        optional: bool,
+    ) -> ExpressionResult<EvalValue<'a>> {
+        if optional {
+            return Ok(Cow::Owned(RuntimeValue::Undefined));
+        }
+        if property == "length" {
+            return Ok(Cow::Owned(RuntimeValue::Integer(entry_count as i64)));
+        }
+        self.missing_property(property, context).map(Cow::Owned)
     }
 
     /// Resolve a signed integer index into a `0..len` position, supporting
