@@ -10,24 +10,14 @@ use crate::{
 
 use super::{
     check_arg_count, check_min_arg_count, get_int_arg_with_policy, get_string_arg, get_value_arg,
+    preflight_string_output,
 };
-
-fn preflight_string_output(
-    view: BuiltinView<'_>,
-    context: &EvaluationContext,
-    output_bytes: usize,
-) -> ExpressionResult<()> {
-    view.check_output_bytes(output_bytes)?;
-    let output = view.output_builder(context);
-    output.ensure_string_bytes(output_bytes)?;
-    output.ensure_total_bytes(output_bytes)
-}
 
 /// Convert string to uppercase
 pub(crate) fn uppercase(
     args: &[Argument<'_>],
     view: BuiltinView<'_>,
-    context: &EvaluationContext,
+    _context: &EvaluationContext,
 ) -> ExpressionResult<RuntimeValue> {
     check_arg_count("uppercase", args, 1)?;
     let s = get_string_arg("uppercase", args, 0, "text")?;
@@ -36,7 +26,7 @@ pub(crate) fn uppercase(
         .flat_map(char::to_uppercase)
         .map(char::len_utf8)
         .fold(0usize, usize::saturating_add);
-    preflight_string_output(view, context, output_bytes)?;
+    preflight_string_output(view, output_bytes)?;
     Ok(RuntimeValue::string(s.to_uppercase()))
 }
 
@@ -44,7 +34,7 @@ pub(crate) fn uppercase(
 pub(crate) fn lowercase(
     args: &[Argument<'_>],
     view: BuiltinView<'_>,
-    context: &EvaluationContext,
+    _context: &EvaluationContext,
 ) -> ExpressionResult<RuntimeValue> {
     check_arg_count("lowercase", args, 1)?;
     let s = get_string_arg("lowercase", args, 0, "text")?;
@@ -53,7 +43,7 @@ pub(crate) fn lowercase(
         .flat_map(char::to_lowercase)
         .map(char::len_utf8)
         .fold(0usize, usize::saturating_add);
-    preflight_string_output(view, context, output_bytes)?;
+    preflight_string_output(view, output_bytes)?;
     Ok(RuntimeValue::string(s.to_lowercase()))
 }
 
@@ -61,12 +51,12 @@ pub(crate) fn lowercase(
 pub(crate) fn trim(
     args: &[Argument<'_>],
     view: BuiltinView<'_>,
-    context: &EvaluationContext,
+    _context: &EvaluationContext,
 ) -> ExpressionResult<RuntimeValue> {
     check_arg_count("trim", args, 1)?;
     let s = get_string_arg("trim", args, 0, "text")?;
     let trimmed = s.trim();
-    preflight_string_output(view, context, trimmed.len())?;
+    preflight_string_output(view, trimmed.len())?;
     Ok(RuntimeValue::string(trimmed))
 }
 
@@ -74,7 +64,7 @@ pub(crate) fn trim(
 pub(crate) fn split(
     args: &[Argument<'_>],
     view: BuiltinView<'_>,
-    context: &EvaluationContext,
+    _context: &EvaluationContext,
 ) -> ExpressionResult<RuntimeValue> {
     check_arg_count("split", args, 2)?;
     let s = get_string_arg("split", args, 0, "text")?;
@@ -91,7 +81,7 @@ pub(crate) fn split(
             .saturating_add(part.len());
     }
     view.check_output_bytes(total_bytes)?;
-    let output = view.output_builder(context);
+    let output = view.output_builder();
     output.ensure_collection_items(part_count)?;
     output.ensure_value_nodes(part_count.saturating_add(1))?;
     output.ensure_value_depth(2)?;
@@ -106,7 +96,7 @@ pub(crate) fn split(
 pub(crate) fn replace(
     args: &[Argument<'_>],
     view: BuiltinView<'_>,
-    context: &EvaluationContext,
+    _context: &EvaluationContext,
 ) -> ExpressionResult<RuntimeValue> {
     check_arg_count("replace", args, 3)?;
     let s = get_string_arg("replace", args, 0, "text")?;
@@ -118,7 +108,7 @@ pub(crate) fn replace(
         .len()
         .saturating_sub(matches.saturating_mul(from.len()))
         .saturating_add(matches.saturating_mul(to.len()));
-    preflight_string_output(view, context, output_bytes)?;
+    preflight_string_output(view, output_bytes)?;
     Ok(RuntimeValue::string(s.replace(from, to)))
 }
 
@@ -175,7 +165,7 @@ pub(crate) fn substring(
     } else {
         ""
     };
-    preflight_string_output(view, ctx, selected.len())?;
+    preflight_string_output(view, selected.len())?;
     Ok(RuntimeValue::string(selected))
 }
 
@@ -289,16 +279,12 @@ fn pad(
 
     let char_count = s.chars().count();
     if char_count >= target_len {
-        preflight_string_output(view, ctx, s.len())?;
+        preflight_string_output(view, s.len())?;
         return Ok(RuntimeValue::string(s));
     }
 
     let pad_len = target_len - char_count;
-    preflight_string_output(
-        view,
-        ctx,
-        s.len().saturating_add(padding_bytes(fill, pad_len)),
-    )?;
+    preflight_string_output(view, s.len().saturating_add(padding_bytes(fill, pad_len)))?;
     let padding: String = fill.chars().cycle().take(pad_len).collect();
     Ok(RuntimeValue::string(match side {
         PadSide::Start => format!("{padding}{s}"),
@@ -358,7 +344,7 @@ pub(crate) fn repeat(
         )));
     }
 
-    preflight_string_output(view, ctx, result_len)?;
+    preflight_string_output(view, result_len)?;
     Ok(RuntimeValue::string(s.repeat(count)))
 }
 

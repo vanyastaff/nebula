@@ -13,8 +13,8 @@ use serde_json::Value;
 use tracing::instrument;
 
 use crate::{
-    CompiledProgram, builtins::BuiltinRegistry, context::EvaluationContext,
-    error::ExpressionResult, eval::Evaluator, policy::EvaluationPolicy,
+    CompiledProgram, context::EvaluationContext, error::ExpressionResult, eval::Evaluator,
+    policy::EvaluationPolicy,
 };
 
 /// Cache hit/miss statistics snapshot.
@@ -152,7 +152,11 @@ impl<K: std::hash::Hash + Eq + Send + Sync + 'static, V: Clone + Send + Sync + '
     }
 }
 
-/// Expression engine with parsing and evaluation capabilities
+/// Expression engine with parsing and evaluation capabilities.
+///
+/// Owns only the parse caches; the [`Evaluator`] owns the builtin registry and
+/// the engine-level policy. A registry or policy change is a single mutation on
+/// the evaluator, so the two cannot drift out of sync.
 pub struct ExpressionEngine {
     /// Cache for parsed expressions
     #[cfg(feature = "cache")]
@@ -160,11 +164,7 @@ pub struct ExpressionEngine {
     /// Cache for parsed templates
     #[cfg(feature = "cache")]
     template_cache: Option<TrackedCache<Arc<str>, crate::Template>>,
-    /// Builtin function registry
-    builtins: Arc<BuiltinRegistry>,
-    /// Optional engine-level evaluation policy.
-    policy: Option<Arc<EvaluationPolicy>>,
-    /// Evaluator
+    /// AST walker, builtin registry, and engine-level policy.
     evaluator: Evaluator,
 }
 
@@ -175,27 +175,23 @@ impl ExpressionEngine {
         template_cache: Option<TrackedCache<Arc<str>, crate::Template>>,
         policy: Option<Arc<EvaluationPolicy>>,
     ) -> Self {
-        let builtins = Arc::new(BuiltinRegistry::new());
-        let evaluator = Evaluator::with_policy(Arc::clone(&builtins), policy.clone());
-
         Self {
             expr_cache,
             template_cache,
-            builtins,
-            policy,
-            evaluator,
+            evaluator: Evaluator::with_policy(
+                Arc::new(crate::builtins::BuiltinRegistry::new()),
+                policy,
+            ),
         }
     }
 
     #[cfg(not(feature = "cache"))]
     fn create(policy: Option<Arc<EvaluationPolicy>>) -> Self {
-        let builtins = Arc::new(BuiltinRegistry::new());
-        let evaluator = Evaluator::with_policy(Arc::clone(&builtins), policy.clone());
-
         Self {
-            builtins,
-            policy,
-            evaluator,
+            evaluator: Evaluator::with_policy(
+                Arc::new(crate::builtins::BuiltinRegistry::new()),
+                policy,
+            ),
         }
     }
 
@@ -249,43 +245,40 @@ impl ExpressionEngine {
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
-        let policy = self.policy.as_deref().cloned().unwrap_or_default();
-        self.policy = Some(Arc::new(policy.with_allowed_functions(allowed_functions)));
-        self.rebuild_evaluator();
+        let policy = self
+            .evaluator
+            .policy()
+            .cloned()
+            .unwrap_or_default()
+            .with_allowed_functions(allowed_functions);
+        self.evaluator.set_policy(Some(Arc::new(policy)));
         self
     }
 
     /// Set an engine-level policy.
     pub fn with_policy(mut self, policy: EvaluationPolicy) -> Self {
-        self.policy = Some(Arc::new(policy));
-        self.rebuild_evaluator();
+        self.evaluator.set_policy(Some(Arc::new(policy)));
         self
     }
 
     /// Return the current engine-level policy, if configured.
     pub fn policy(&self) -> Option<&EvaluationPolicy> {
-        self.policy.as_deref()
-    }
-
-    fn rebuild_evaluator(&mut self) {
-        self.evaluator = Evaluator::with_policy(Arc::clone(&self.builtins), self.policy.clone());
+        self.evaluator.policy()
     }
 
     /// Register a custom builtin function.
     ///
     /// This method is safe to call after the engine has been used. Internally,
-    /// it performs copy-on-write on the builtin registry when needed and then
-    /// rebuilds the evaluator so subsequent evaluations observe the new function.
-    /// The callback must return an opaque [`crate::BuiltinOutput`] constructed by
-    /// its mandatory [`crate::BuiltinOutputBuilder`], so no unchecked raw JSON
-    /// value can cross this public extension boundary.
+    /// it performs copy-on-write on the builtin registry. The callback must
+    /// return an opaque [`crate::BuiltinOutput`] constructed by its mandatory
+    /// [`crate::BuiltinOutputBuilder`], so no unchecked raw JSON value can cross
+    /// this public extension boundary.
     pub fn register_function(
         &mut self,
         name: impl AsRef<str>,
         func: crate::builtins::BuiltinFunction,
     ) {
-        Arc::make_mut(&mut self.builtins).register_bounded(name, func);
-        self.rebuild_evaluator();
+        self.evaluator.register_bounded(name, func);
     }
 
     /// Evaluate an expression string in the given context

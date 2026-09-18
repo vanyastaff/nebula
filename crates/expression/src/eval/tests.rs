@@ -5,14 +5,12 @@ use crate::{
 };
 
 fn create_evaluator() -> Evaluator {
-    let registry = Arc::new(BuiltinRegistry::new());
-    Evaluator::new(registry)
+    Evaluator::new()
 }
 
 fn create_evaluator_with_allowlist(functions: &[&str]) -> Evaluator {
-    let registry = Arc::new(BuiltinRegistry::new());
     let policy = EvaluationPolicy::allow_only(functions.iter().copied());
-    Evaluator::with_policy(registry, Some(Arc::new(policy)))
+    Evaluator::with_policy(Arc::new(BuiltinRegistry::new()), Some(Arc::new(policy)))
 }
 
 #[test]

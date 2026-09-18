@@ -81,7 +81,7 @@ pub(crate) fn map(
     let array = array_argument(args, "map")?;
     let lambda = lambda_argument(args, 1, "map")?;
 
-    let output = view.output_builder(context);
+    let output = view.output_builder();
     output.ensure_collection_items(array.len())?;
     let mut budget = ArrayOutputBudget::new(output)?;
     let mut result = Vec::with_capacity(array.len());
@@ -217,7 +217,7 @@ pub(crate) fn group_by(
     let array = array_argument(args, "group_by")?;
     let lambda = lambda_argument(args, 1, "group_by")?;
 
-    let output = view.output_builder(context);
+    let output = view.output_builder();
     let mut budget = GroupOutputBudget::new(output)?;
     let mut groups: BTreeMap<Arc<str>, Vec<RuntimeValue>> = BTreeMap::new();
     for item in array {
@@ -257,7 +257,7 @@ pub(crate) fn flat_map(
     let array = array_argument(args, "flat_map")?;
     let lambda = lambda_argument(args, 1, "flat_map")?;
 
-    let output = view.output_builder(context);
+    let output = view.output_builder();
     let mut budget = ArrayOutputBudget::new(output)?;
     let mut result = Vec::new();
     for item in array {

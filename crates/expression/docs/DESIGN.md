@@ -57,7 +57,8 @@ including malformed unescaped openers. See README for escape rules and hard boun
 | `BuiltinFunction` (alias); `BuiltinRegistry` | `builtins/mod.rs` |
 | `BuiltinOutput`; `BuiltinOutputBuilder`; `BuiltinOutputBound`; `BuiltinOutputLimits` | `builtins/output.rs`; `policy.rs` |
 | `RuntimeValue` — evaluator value model: JSON shapes plus typed date-times and `Undefined` | `value.rs` |
-| `Argument<'_>` / `BuiltinView<'_>` — value-or-lambda arguments; policy, work charging, and shared-frame lambda invocation | `eval/mod.rs` |
+| `Argument<'_>` / `BuiltinView<'_>` — value-or-lambda arguments; work charging and shared-frame lambda invocation; policy read from the frame | `eval/mod.rs` |
+| `EffectivePolicy` — engine ∩ context policy, resolved once per top-level call | `eval/mod.rs` |
 | `ErrorFormatter` — caller-side renderer for structured parse-error positions | `error_formatter.rs` |
 
 doc-hidden but `pub`: `ast` (`Expr`/`BinaryOp`), `lexer`, `parser`, `token`, `span`,
@@ -89,7 +90,8 @@ literal-or-expression layer for configs. `error.rs` holds the typed errors;
 structured `Position`, never a pre-rendered string).
 
 Flow: source → compiler → immutable `CompiledProgram` → optional cache →
-`evaluate_compiled` under the current `EvaluationPolicy` → `RuntimeValue` →
+`evaluate_compiled`; the engine ∩ context policy is intersected once into an
+`EffectivePolicy` that the call's frame carries → `RuntimeValue` →
 `serde_json::Value` at the crate boundary. Typed values (date-times) survive
 property/index chains and builtin dispatch; `Undefined` renders as `null` at the
 boundary. Every template

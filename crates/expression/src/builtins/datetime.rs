@@ -11,18 +11,7 @@ use crate::{
     value::RuntimeValue,
 };
 
-use super::{check_arg_count, check_min_arg_count, get_value_arg};
-
-fn preflight_string_output(
-    view: BuiltinView<'_>,
-    context: &EvaluationContext,
-    output_bytes: usize,
-) -> ExpressionResult<()> {
-    view.check_output_bytes(output_bytes)?;
-    let output = view.output_builder(context);
-    output.ensure_string_bytes(output_bytes)?;
-    output.ensure_total_bytes(output_bytes)
-}
+use super::{check_arg_count, check_min_arg_count, get_value_arg, preflight_string_output};
 
 /// Parse an IANA timezone name into a `chrono_tz::Tz`.
 ///
@@ -147,7 +136,7 @@ pub(crate) fn format_date(
         (Some(fmt), None) => format_datetime(&utc_dt, fmt, view, ctx)?,
         (Some(fmt), Some(tz)) => format_datetime(&utc_dt.with_timezone(&tz), fmt, view, ctx)?,
     };
-    preflight_string_output(view, ctx, rendered.len())?;
+    preflight_string_output(view, rendered.len())?;
 
     Ok(RuntimeValue::string(rendered))
 }
@@ -629,13 +618,13 @@ fn replace_format_token(
     token: &str,
     replacement: &str,
     view: BuiltinView<'_>,
-    context: &EvaluationContext,
+    _context: &EvaluationContext,
 ) -> ExpressionResult<()> {
     let occurrences = value.matches(token).count();
     let removed = token.len().saturating_mul(occurrences);
     let added = replacement.len().saturating_mul(occurrences);
     let output_bytes = value.len().saturating_sub(removed).saturating_add(added);
-    preflight_string_output(view, context, output_bytes)?;
+    preflight_string_output(view, output_bytes)?;
     *value = std::borrow::Cow::Owned(value.replace(token, replacement));
     Ok(())
 }

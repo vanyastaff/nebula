@@ -64,6 +64,73 @@ impl Argument<'_> {
     }
 }
 
+/// The engine and context policies already intersected for one top-level call.
+///
+/// Engine limits are ceilings, context limits may only tighten them. Computing
+/// the intersection once here means every consumer (frame budget, coercion
+/// rules, builtin output bounds) reads the same values for the whole call
+/// instead of re-deriving them per query.
+#[derive(Debug, Clone)]
+struct EffectivePolicy {
+    /// Work ceiling for the call. Never `None`: the engine default applies.
+    max_steps: usize,
+    /// JSON input ceiling for `parse_json`.
+    max_json_parse_length: usize,
+    /// Strict coercion for boolean contexts (`if`, `&&`, `!`).
+    strict_mode: bool,
+    /// Strict conversions for explicit conversion builtins.
+    strict_conversions: bool,
+    /// Relational operators accept numbers only.
+    strict_numeric_comparisons: bool,
+    /// A missing lookup yields `Undefined` instead of an error.
+    missing_lookup_undefined: bool,
+    /// Output bounds every registered builtin result must satisfy.
+    builtin_output_limits: crate::BuiltinOutputLimits,
+}
+
+impl EffectivePolicy {
+    /// Intersect the engine policy with the context policy.
+    ///
+    /// Flag-style options are additive (either side can enable them);
+    /// ceiling-style options take the tighter value.
+    fn resolve(engine: Option<&EvaluationPolicy>, context: Option<&EvaluationPolicy>) -> Self {
+        let engine_max_steps = engine
+            .and_then(EvaluationPolicy::max_eval_steps)
+            .unwrap_or(crate::limits::DEFAULT_MAX_EVAL_STEPS);
+        let context_max_steps = context.and_then(EvaluationPolicy::max_eval_steps);
+        let engine_json = engine
+            .and_then(EvaluationPolicy::max_json_parse_length)
+            .unwrap_or(crate::limits::MAX_SOURCE_BYTES);
+        let context_json = context.and_then(EvaluationPolicy::max_json_parse_length);
+        let engine_output_limits = engine
+            .map_or_else(
+                crate::BuiltinOutputLimits::default,
+                EvaluationPolicy::builtin_output_limits,
+            )
+            .most_restrictive(crate::BuiltinOutputLimits::default());
+
+        Self {
+            max_steps: context_max_steps
+                .map_or(engine_max_steps, |limit| limit.min(engine_max_steps)),
+            max_json_parse_length: context_json.map_or(engine_json, |limit| limit.min(engine_json)),
+            strict_mode: engine.is_some_and(EvaluationPolicy::strict_mode)
+                || context.is_some_and(EvaluationPolicy::strict_mode),
+            strict_conversions: engine.is_some_and(EvaluationPolicy::strict_conversion_functions)
+                || context.is_some_and(EvaluationPolicy::strict_conversion_functions),
+            strict_numeric_comparisons: engine
+                .is_some_and(EvaluationPolicy::strict_numeric_comparisons)
+                || context.is_some_and(EvaluationPolicy::strict_numeric_comparisons),
+            missing_lookup_undefined: engine
+                .is_some_and(|policy| policy.missing_lookup() == MissingLookup::Undefined)
+                || context
+                    .is_some_and(|policy| policy.missing_lookup() == MissingLookup::Undefined),
+            builtin_output_limits: context.map_or(engine_output_limits, |policy| {
+                engine_output_limits.most_restrictive(policy.builtin_output_limits())
+            }),
+        }
+    }
+}
+
 /// Per-call evaluation frame that tracks recursion depth and the DoS
 /// step budget for a single top-level [`Evaluator::eval`] invocation.
 ///
@@ -88,19 +155,24 @@ impl Argument<'_> {
 pub(crate) struct EvalFrame {
     depth: Cell<usize>,
     steps: Cell<usize>,
-    max_steps: Option<usize>,
+    policy: EffectivePolicy,
 }
 
 impl EvalFrame {
-    /// Create a fresh frame with the given step cap (snapshotted once
-    /// from the effective policy at the top-level `eval` entry).
+    /// Create a fresh frame around the already-intersected policy.
     #[inline]
-    fn new(max_steps: Option<usize>) -> Self {
+    fn new(policy: EffectivePolicy) -> Self {
         Self {
             depth: Cell::new(0),
             steps: Cell::new(0),
-            max_steps,
+            policy,
         }
+    }
+
+    /// The effective policy for this call.
+    #[inline]
+    fn policy(&self) -> &EffectivePolicy {
+        &self.policy
     }
 
     /// Count one AST-node evaluation against the step budget.
@@ -117,9 +189,8 @@ impl EvalFrame {
     pub(crate) fn charge(&self, steps: usize) -> ExpressionResult<()> {
         let actual = self.steps.get().saturating_add(steps);
         self.steps.set(actual);
-        if let Some(max) = self.max_steps
-            && actual > max
-        {
+        let max = self.policy.max_steps;
+        if actual > max {
             // Emit a structured warning so dashboards can spot DoS attempts
             // before the typed error has reached the user. `actual` is the
             // step that tripped the budget, not the budget itself.
@@ -291,24 +362,24 @@ impl<'a> BuiltinView<'a> {
     /// Whether strict mode is enabled for this evaluation (engine-level
     /// or context-level policy).
     #[inline(always)]
-    pub fn is_strict_mode(&self, context: &EvaluationContext) -> bool {
-        self.eval.is_strict_mode(context)
+    pub fn is_strict_mode(&self) -> bool {
+        self.frame.policy().strict_mode
     }
 
     /// Whether strict-coercion mode is enabled for conversion builtins.
     #[inline(always)]
-    pub fn strict_conversions_enabled(&self, context: &EvaluationContext) -> bool {
-        self.eval.strict_conversions_enabled(context)
+    pub fn strict_conversions_enabled(&self) -> bool {
+        self.frame.policy().strict_conversions
     }
 
-    /// Optional max JSON parse length cap for `parse_json`.
+    /// Max JSON parse length cap for `parse_json`, already intersected.
     #[inline(always)]
-    pub fn max_json_parse_length(&self, context: &EvaluationContext) -> Option<usize> {
-        self.eval.max_json_parse_length(context)
+    pub fn max_json_parse_length(&self) -> usize {
+        self.frame.policy().max_json_parse_length
     }
 
-    pub(crate) fn output_builder(self, context: &EvaluationContext) -> crate::BuiltinOutputBuilder {
-        crate::BuiltinOutputBuilder::new(self.eval.builtin_output_limits(context))
+    pub(crate) fn output_builder(self) -> crate::BuiltinOutputBuilder {
+        crate::BuiltinOutputBuilder::new(self.frame.policy().builtin_output_limits)
     }
 }
 
@@ -356,8 +427,12 @@ fn is_namespace(name: &str) -> bool {
     matches!(name, "Math" | "JSON" | "Object" | "Array" | "Number")
 }
 
-/// Evaluator for expression ASTs
-pub struct Evaluator {
+/// Evaluator for expression ASTs.
+///
+/// Sole owner of the builtin registry and the engine-level policy, so a
+/// registry or policy change is one mutation here rather than a field that has
+/// to be re-synchronized with a copy elsewhere.
+pub(crate) struct Evaluator {
     builtins: Arc<BuiltinRegistry>,
     policy: Option<Arc<EvaluationPolicy>>,
     /// Compiled regex cache (pattern → `Arc<Regex>`).
@@ -371,13 +446,14 @@ pub struct Evaluator {
 }
 
 impl Evaluator {
-    /// Create a new evaluator with the given builtin registry
-    pub fn new(builtins: Arc<BuiltinRegistry>) -> Self {
-        Self::with_policy(builtins, None)
+    /// Create a new evaluator over an empty registry with no policy.
+    #[cfg(test)]
+    pub(crate) fn new() -> Self {
+        Self::with_policy(Arc::new(BuiltinRegistry::new()), None)
     }
 
     /// Create a new evaluator with an optional policy.
-    pub fn with_policy(
+    pub(crate) fn with_policy(
         builtins: Arc<BuiltinRegistry>,
         policy: Option<Arc<EvaluationPolicy>>,
     ) -> Self {
@@ -389,46 +465,48 @@ impl Evaluator {
         }
     }
 
-    /// Resolve the effective `max_eval_steps` for this `eval` call.
-    ///
-    /// Context limits can tighten the engine ceiling, never raise it.
-    #[inline]
-    fn resolve_max_steps(&self, context: &EvaluationContext) -> Option<usize> {
-        let engine_limit = self
-            .policy
-            .as_deref()
-            .and_then(EvaluationPolicy::max_eval_steps)
-            .unwrap_or(crate::limits::DEFAULT_MAX_EVAL_STEPS);
-        Some(
-            context
-                .policy()
-                .and_then(EvaluationPolicy::max_eval_steps)
-                .map_or(engine_limit, |limit| limit.min(engine_limit)),
-        )
+    /// Replace the engine-level policy.
+    pub(crate) fn set_policy(&mut self, policy: Option<Arc<EvaluationPolicy>>) {
+        self.policy = policy;
     }
 
-    /// Evaluate an expression and convert the result to plain JSON.
+    /// Borrow the engine-level policy.
+    pub(crate) fn policy(&self) -> Option<&EvaluationPolicy> {
+        self.policy.as_deref()
+    }
+
+    /// Register a bounded function, copy-on-write on the registry.
+    pub(crate) fn register_bounded(
+        &mut self,
+        name: impl AsRef<str>,
+        function: crate::builtins::BuiltinFunction,
+    ) {
+        Arc::make_mut(&mut self.builtins).register_bounded(name, function);
+    }
+
+    /// Intersect the engine and context policies for one top-level call.
+    ///
+    /// Computed once per call so the frame budget, coercion rules, and output
+    /// bounds all read the same intersection.
     #[inline]
-    pub fn eval(
+    fn resolve_effective_policy(&self, context: &EvaluationContext) -> EffectivePolicy {
+        EffectivePolicy::resolve(self.policy.as_deref(), context.policy())
+    }
+
+    /// Evaluate a bare AST expression and convert the result to plain JSON.
+    ///
+    /// Test-facing: production paths go through a [`crate::CompiledProgram`].
+    #[cfg(test)]
+    #[inline]
+    pub(crate) fn eval(
         &self,
         expr: &Expr,
         context: &EvaluationContext,
     ) -> ExpressionResult<serde_json::Value> {
-        self.eval_runtime(expr, context)
-            .map(|value| value.to_json())
-    }
-
-    /// Evaluate an expression, returning its runtime value.
-    #[inline]
-    pub fn eval_runtime(
-        &self,
-        expr: &Expr,
-        context: &EvaluationContext,
-    ) -> ExpressionResult<RuntimeValue> {
-        let frame = EvalFrame::new(self.resolve_max_steps(context));
+        let frame = EvalFrame::new(self.resolve_effective_policy(context));
         let result = self.eval_with_frame(expr, context, &frame)?;
         crate::limits::check_value_limits(&result)?;
-        Ok(result)
+        Ok(result.to_json())
     }
 
     pub(crate) fn eval_program(
@@ -436,7 +514,7 @@ impl Evaluator {
         program: &crate::CompiledProgram,
         context: &EvaluationContext,
     ) -> ExpressionResult<RuntimeValue> {
-        let frame = EvalFrame::new(self.resolve_max_steps(context));
+        let frame = EvalFrame::new(self.resolve_effective_policy(context));
         let result = program.evaluate(self, context, &frame)?;
         crate::limits::check_value_limits(&result)?;
         Ok(result)
@@ -484,7 +562,7 @@ impl Evaluator {
             Expr::Variable(name) => {
                 let value = match context.resolve_variable_value(name)? {
                     Some(value) => value,
-                    None => return self.missing_variable(name, context),
+                    None => return self.missing_variable(name, frame),
                 };
                 frame.charge_value(&value)?;
                 Ok(value.into_owned())
@@ -509,7 +587,7 @@ impl Evaluator {
 
             Expr::Not(expr) => {
                 let val = self.eval_with_frame(expr, context, frame)?;
-                Ok(RuntimeValue::Bool(!self.coerce_boolean(&val, context)?))
+                Ok(RuntimeValue::Bool(!self.coerce_boolean(&val, frame)?))
             },
 
             Expr::Binary { left, op, right } => {
@@ -545,7 +623,7 @@ impl Evaluator {
                 else_expr,
             } => {
                 let cond_val = self.eval_with_frame(condition, context, frame)?;
-                if self.coerce_boolean(&cond_val, context)? {
+                if self.coerce_boolean(&cond_val, frame)? {
                     self.eval_with_frame(then_expr, context, frame)
                 } else {
                     self.eval_with_frame(else_expr, context, frame)
@@ -605,7 +683,7 @@ impl Evaluator {
             Expr::Variable(name) => {
                 let value = match context.resolve_variable_value(name)? {
                     Some(value) => value,
-                    None => return self.missing_variable(name, context).map(Cow::Owned),
+                    None => return self.missing_variable(name, frame).map(Cow::Owned),
                 };
                 frame.charge_value(&value)?;
                 Ok(value)
@@ -633,7 +711,7 @@ impl Evaluator {
                         return if *optional {
                             Ok(Cow::Owned(RuntimeValue::Undefined))
                         } else {
-                            self.missing_property(property, context).map(Cow::Owned)
+                            self.missing_property(property, frame).map(Cow::Owned)
                         };
                     };
                     frame.charge_value(value)?;
@@ -643,7 +721,7 @@ impl Evaluator {
                 if *optional && object.is_nullish() {
                     return Ok(Cow::Owned(RuntimeValue::Undefined));
                 }
-                self.access_property(object, property, context, *optional)
+                self.access_property(object, property, frame, *optional)
             },
             Expr::IndexAccess {
                 object,
@@ -668,7 +746,7 @@ impl Evaluator {
                         return if *optional {
                             Ok(Cow::Owned(RuntimeValue::Undefined))
                         } else {
-                            self.missing_key(context).map(Cow::Owned)
+                            self.missing_key(frame).map(Cow::Owned)
                         };
                     };
                     frame.charge_value(value)?;
@@ -679,7 +757,7 @@ impl Evaluator {
                     return Ok(Cow::Owned(RuntimeValue::Undefined));
                 }
                 let index = self.eval_borrowed_with_frame(index, context, frame)?;
-                self.access_index(object, &index, context, *optional)
+                self.access_index(object, &index, frame, *optional)
             },
             _ => self.eval_with_frame(expr, context, frame).map(Cow::Owned),
         }
@@ -886,25 +964,21 @@ impl Evaluator {
         match op {
             BinaryOp::And => {
                 let left_val = self.eval_borrowed_with_frame(left, context, frame)?;
-                if !self.coerce_boolean(&left_val, context)? {
+                if !self.coerce_boolean(&left_val, frame)? {
                     // Short-circuit: if left is false, don't evaluate right
                     return Ok(RuntimeValue::Bool(false));
                 }
                 let right_val = self.eval_borrowed_with_frame(right, context, frame)?;
-                Ok(RuntimeValue::Bool(
-                    self.coerce_boolean(&right_val, context)?,
-                ))
+                Ok(RuntimeValue::Bool(self.coerce_boolean(&right_val, frame)?))
             },
             BinaryOp::Or => {
                 let left_val = self.eval_borrowed_with_frame(left, context, frame)?;
-                if self.coerce_boolean(&left_val, context)? {
+                if self.coerce_boolean(&left_val, frame)? {
                     // Short-circuit: if left is true, don't evaluate right
                     return Ok(RuntimeValue::Bool(true));
                 }
                 let right_val = self.eval_borrowed_with_frame(right, context, frame)?;
-                Ok(RuntimeValue::Bool(
-                    self.coerce_boolean(&right_val, context)?,
-                ))
+                Ok(RuntimeValue::Bool(self.coerce_boolean(&right_val, frame)?))
             },
             BinaryOp::Coalesce => {
                 // `??` returns the left side unless it is nullish. Unlike
@@ -937,10 +1011,10 @@ impl Evaluator {
                             !equal
                         }))
                     },
-                    BinaryOp::LessThan => self.less_than(&left_val, &right_val, context),
-                    BinaryOp::GreaterThan => self.greater_than(&left_val, &right_val, context),
-                    BinaryOp::LessEqual => self.less_equal(&left_val, &right_val, context),
-                    BinaryOp::GreaterEqual => self.greater_equal(&left_val, &right_val, context),
+                    BinaryOp::LessThan => self.less_than(&left_val, &right_val, frame),
+                    BinaryOp::GreaterThan => self.greater_than(&left_val, &right_val, frame),
+                    BinaryOp::LessEqual => self.less_equal(&left_val, &right_val, frame),
+                    BinaryOp::GreaterEqual => self.greater_equal(&left_val, &right_val, frame),
                     BinaryOp::RegexMatch => self.regex_match(&left_val, &right_val),
                     BinaryOp::And | BinaryOp::Or | BinaryOp::Coalesce => Err(
                         ExpressionError::internal("short-circuit operator escaped dispatch"),
@@ -1129,9 +1203,9 @@ impl Evaluator {
         &self,
         left: &RuntimeValue,
         right: &RuntimeValue,
-        context: &EvaluationContext,
+        frame: &EvalFrame,
     ) -> ExpressionResult<RuntimeValue> {
-        self.compare_operands(left, right, context, std::cmp::Ordering::is_lt)
+        self.compare_operands(left, right, frame, std::cmp::Ordering::is_lt)
     }
 
     /// Greater than comparison
@@ -1140,9 +1214,9 @@ impl Evaluator {
         &self,
         left: &RuntimeValue,
         right: &RuntimeValue,
-        context: &EvaluationContext,
+        frame: &EvalFrame,
     ) -> ExpressionResult<RuntimeValue> {
-        self.compare_operands(left, right, context, std::cmp::Ordering::is_gt)
+        self.compare_operands(left, right, frame, std::cmp::Ordering::is_gt)
     }
 
     /// Less than or equal comparison
@@ -1150,9 +1224,9 @@ impl Evaluator {
         &self,
         left: &RuntimeValue,
         right: &RuntimeValue,
-        context: &EvaluationContext,
+        frame: &EvalFrame,
     ) -> ExpressionResult<RuntimeValue> {
-        self.compare_operands(left, right, context, std::cmp::Ordering::is_le)
+        self.compare_operands(left, right, frame, std::cmp::Ordering::is_le)
     }
 
     /// Greater than or equal comparison
@@ -1160,9 +1234,9 @@ impl Evaluator {
         &self,
         left: &RuntimeValue,
         right: &RuntimeValue,
-        context: &EvaluationContext,
+        frame: &EvalFrame,
     ) -> ExpressionResult<RuntimeValue> {
-        self.compare_operands(left, right, context, std::cmp::Ordering::is_ge)
+        self.compare_operands(left, right, frame, std::cmp::Ordering::is_ge)
     }
 
     /// Shared ordering seam for the four comparison operators.
@@ -1176,12 +1250,10 @@ impl Evaluator {
         &self,
         left: &RuntimeValue,
         right: &RuntimeValue,
-        context: &EvaluationContext,
+        frame: &EvalFrame,
         accept: fn(std::cmp::Ordering) -> bool,
     ) -> ExpressionResult<RuntimeValue> {
-        if self.strict_numeric_comparisons_enabled(context)
-            && (!left.is_number() || !right.is_number())
-        {
+        if frame.policy().strict_numeric_comparisons && (!left.is_number() || !right.is_number()) {
             return Err(ExpressionError::type_error(
                 "number",
                 format!(
@@ -1359,12 +1431,8 @@ impl Evaluator {
     }
 
     /// The value produced for a missing variable under the current policy.
-    fn missing_variable(
-        &self,
-        name: &str,
-        context: &EvaluationContext,
-    ) -> ExpressionResult<RuntimeValue> {
-        if self.missing_lookup_is_undefined(context) {
+    fn missing_variable(&self, name: &str, frame: &EvalFrame) -> ExpressionResult<RuntimeValue> {
+        if frame.policy().missing_lookup_undefined {
             Ok(RuntimeValue::Undefined)
         } else {
             Err(ExpressionError::variable_not_found(name))
@@ -1377,9 +1445,9 @@ impl Evaluator {
     fn missing_property(
         &self,
         property: &str,
-        context: &EvaluationContext,
+        frame: &EvalFrame,
     ) -> ExpressionResult<RuntimeValue> {
-        if self.missing_lookup_is_undefined(context) {
+        if frame.policy().missing_lookup_undefined {
             Ok(RuntimeValue::Undefined)
         } else {
             Err(ExpressionError::property_not_found(property))
@@ -1390,8 +1458,8 @@ impl Evaluator {
     ///
     /// The key was computed from input data, so it may hold credential material
     /// and must never appear in a diagnostic.
-    fn missing_key(&self, context: &EvaluationContext) -> ExpressionResult<RuntimeValue> {
-        if self.missing_lookup_is_undefined(context) {
+    fn missing_key(&self, frame: &EvalFrame) -> ExpressionResult<RuntimeValue> {
+        if frame.policy().missing_lookup_undefined {
             Ok(RuntimeValue::Undefined)
         } else {
             Err(ExpressionError::key_not_found())
@@ -1403,7 +1471,7 @@ impl Evaluator {
         &self,
         object: EvalValue<'a>,
         property: &str,
-        context: &EvaluationContext,
+        frame: &EvalFrame,
         optional: bool,
     ) -> ExpressionResult<EvalValue<'a>> {
         match object {
@@ -1412,11 +1480,11 @@ impl Evaluator {
             // property surface apply.
             Cow::Borrowed(RuntimeValue::Object(entries)) => match entries.get(property) {
                 Some(value) => Ok(Cow::Borrowed(value)),
-                None => self.object_property_member(property, entries.len(), context, optional),
+                None => self.object_property_member(property, entries.len(), frame, optional),
             },
             Cow::Owned(RuntimeValue::Object(entries)) => match entries.get(property) {
                 Some(value) => Ok(Cow::Owned(value.clone())),
-                None => self.object_property_member(property, entries.len(), context, optional),
+                None => self.object_property_member(property, entries.len(), frame, optional),
             },
             Cow::Borrowed(other) => {
                 if let Some(value) = crate::builtins::methods::member_property(other, property) {
@@ -1445,7 +1513,7 @@ impl Evaluator {
         &self,
         property: &str,
         entry_count: usize,
-        context: &EvaluationContext,
+        frame: &EvalFrame,
         optional: bool,
     ) -> ExpressionResult<EvalValue<'a>> {
         if optional {
@@ -1454,7 +1522,7 @@ impl Evaluator {
         if property == "length" {
             return Ok(Cow::Owned(RuntimeValue::Integer(entry_count as i64)));
         }
-        self.missing_property(property, context).map(Cow::Owned)
+        self.missing_property(property, frame).map(Cow::Owned)
     }
 
     /// Resolve a signed integer index into a `0..len` position, supporting
@@ -1473,7 +1541,7 @@ impl Evaluator {
         &self,
         object: EvalValue<'a>,
         index: &RuntimeValue,
-        context: &EvaluationContext,
+        frame: &EvalFrame,
         optional: bool,
     ) -> ExpressionResult<EvalValue<'a>> {
         match object {
@@ -1503,7 +1571,7 @@ impl Evaluator {
                 match entries.get(key) {
                     Some(value) => Ok(Cow::Borrowed(value)),
                     None if optional => Ok(Cow::Owned(RuntimeValue::Undefined)),
-                    None => self.missing_key(context).map(Cow::Owned),
+                    None => self.missing_key(frame).map(Cow::Owned),
                 }
             },
             Cow::Owned(RuntimeValue::Object(entries)) => {
@@ -1516,7 +1584,7 @@ impl Evaluator {
                 match entries.get(key) {
                     Some(value) => Ok(Cow::Owned(value.clone())),
                     None if optional => Ok(Cow::Owned(RuntimeValue::Undefined)),
-                    None => self.missing_key(context).map(Cow::Owned),
+                    None => self.missing_key(frame).map(Cow::Owned),
                 }
             },
             Cow::Borrowed(other) => Err(ExpressionError::type_error(
@@ -1556,7 +1624,7 @@ impl Evaluator {
         let result = self
             .builtins
             .call(name, args, BuiltinView::new(self, frame), context)?;
-        let result = crate::BuiltinOutputBuilder::new(self.builtin_output_limits(context))
+        let result = crate::BuiltinOutputBuilder::new(frame.policy().builtin_output_limits)
             .value(result)?
             .into_value();
         frame.charge_value(&result)?;
@@ -1614,99 +1682,14 @@ impl Evaluator {
         )
     }
 
-    fn strict_mode_enabled(&self, context: &EvaluationContext) -> bool {
-        let engine_strict = self
-            .policy
-            .as_deref()
-            .is_some_and(EvaluationPolicy::strict_mode);
-        let context_strict = context.policy().is_some_and(EvaluationPolicy::strict_mode);
-        engine_strict || context_strict
-    }
-
-    pub(crate) fn is_strict_mode(&self, context: &EvaluationContext) -> bool {
-        self.strict_mode_enabled(context)
-    }
-
-    pub(crate) fn strict_conversions_enabled(&self, context: &EvaluationContext) -> bool {
-        let engine_strict = self
-            .policy
-            .as_deref()
-            .is_some_and(EvaluationPolicy::strict_conversion_functions);
-        let context_strict = context
-            .policy()
-            .is_some_and(EvaluationPolicy::strict_conversion_functions);
-        engine_strict || context_strict
-    }
-
-    fn strict_numeric_comparisons_enabled(&self, context: &EvaluationContext) -> bool {
-        let engine_strict = self
-            .policy
-            .as_deref()
-            .is_some_and(EvaluationPolicy::strict_numeric_comparisons);
-        let context_strict = context
-            .policy()
-            .is_some_and(EvaluationPolicy::strict_numeric_comparisons);
-        engine_strict || context_strict
-    }
-
-    /// Whether a missing lookup yields `Undefined`.
-    ///
-    /// Enabling is additive: either the engine or the context policy can
-    /// switch it on, and neither can switch the other off.
-    fn missing_lookup_is_undefined(&self, context: &EvaluationContext) -> bool {
-        let engine_undefined = self
-            .policy
-            .as_deref()
-            .is_some_and(|policy| policy.missing_lookup() == MissingLookup::Undefined);
-        let context_undefined = context
-            .policy()
-            .is_some_and(|policy| policy.missing_lookup() == MissingLookup::Undefined);
-        engine_undefined || context_undefined
-    }
-
-    pub(crate) fn max_json_parse_length(&self, context: &EvaluationContext) -> Option<usize> {
-        let engine_limit = self
-            .policy
-            .as_deref()
-            .and_then(EvaluationPolicy::max_json_parse_length)
-            .unwrap_or(crate::limits::MAX_SOURCE_BYTES);
-        Some(
-            context
-                .policy()
-                .and_then(EvaluationPolicy::max_json_parse_length)
-                .map_or(engine_limit, |limit| limit.min(engine_limit)),
-        )
-    }
-
-    fn coerce_boolean(
-        &self,
-        value: &RuntimeValue,
-        context: &EvaluationContext,
-    ) -> ExpressionResult<bool> {
-        if self.strict_mode_enabled(context) && value.as_bool().is_none() {
+    fn coerce_boolean(&self, value: &RuntimeValue, frame: &EvalFrame) -> ExpressionResult<bool> {
+        if frame.policy().strict_mode && value.as_bool().is_none() {
             return Err(ExpressionError::type_error(
                 "boolean",
                 crate::value_utils::value_type_name(value),
             ));
         }
         Ok(crate::value_utils::to_boolean(value))
-    }
-
-    pub(crate) fn builtin_output_limits(
-        &self,
-        context: &EvaluationContext,
-    ) -> crate::BuiltinOutputLimits {
-        let engine_limits = self
-            .policy
-            .as_deref()
-            .map_or_else(
-                crate::BuiltinOutputLimits::default,
-                EvaluationPolicy::builtin_output_limits,
-            )
-            .most_restrictive(crate::BuiltinOutputLimits::default());
-        context.policy().map_or(engine_limits, |policy| {
-            engine_limits.most_restrictive(policy.builtin_output_limits())
-        })
     }
 }
 

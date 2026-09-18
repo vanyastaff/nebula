@@ -107,7 +107,7 @@ impl BuiltinRegistry {
             .functions
             .get(name)
             .ok_or_else(|| ExpressionError::function_not_found(name))?;
-        let output = view.output_builder(context);
+        let output = view.output_builder();
 
         match function {
             RegisteredBuiltin::Bounded(function) => {
@@ -302,6 +302,20 @@ pub(crate) fn get_value_arg<'a>(
     })
 }
 
+/// Preflight a string-producing builtin's exact output size.
+///
+/// Shared by every string/date builtin: charges the work, then checks the
+/// string and total byte bounds before the allocation happens.
+pub(crate) fn preflight_string_output(
+    view: BuiltinView<'_>,
+    output_bytes: usize,
+) -> ExpressionResult<()> {
+    view.check_output_bytes(output_bytes)?;
+    let output = view.output_builder();
+    output.ensure_string_bytes(output_bytes)?;
+    output.ensure_total_bytes(output_bytes)
+}
+
 /// Helper to get a string argument with better error message
 pub(crate) fn get_string_arg<'a>(
     func_name: &str,
@@ -349,11 +363,11 @@ pub(crate) fn get_int_arg_with_policy(
     index: usize,
     arg_name: &str,
     view: BuiltinView<'_>,
-    ctx: &EvaluationContext,
+    _ctx: &EvaluationContext,
 ) -> ExpressionResult<i64> {
     let value = get_value_arg(func_name, args, index, arg_name)?;
 
-    if view.is_strict_mode(ctx) {
+    if view.is_strict_mode() {
         return match value {
             RuntimeValue::Integer(integer) => Ok(*integer),
             RuntimeValue::Unsigned(integer) => i64::try_from(*integer).map_err(|_| {
@@ -407,11 +421,11 @@ pub(crate) fn get_number_arg_with_policy(
     index: usize,
     arg_name: &str,
     view: BuiltinView<'_>,
-    ctx: &EvaluationContext,
+    _ctx: &EvaluationContext,
 ) -> ExpressionResult<f64> {
     let value = get_value_arg(func_name, args, index, arg_name)?;
 
-    if view.is_strict_mode(ctx) {
+    if view.is_strict_mode() {
         return match value {
             RuntimeValue::Integer(integer) => Ok(*integer as f64),
             RuntimeValue::Unsigned(integer) => Ok(*integer as f64),

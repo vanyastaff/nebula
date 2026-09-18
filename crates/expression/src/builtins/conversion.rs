@@ -10,10 +10,7 @@ use crate::{
     value::RuntimeValue,
 };
 
-use super::{check_arg_count, get_value_arg};
-
-/// Maximum JSON string length to parse (1MB) - DoS protection
-const MAX_JSON_PARSE_LENGTH: usize = 1024 * 1024;
+use super::{check_arg_count, get_value_arg, preflight_string_output};
 
 #[derive(Default)]
 struct JsonLength {
@@ -47,17 +44,6 @@ fn encode_json(value: &RuntimeValue, output_bytes: usize) -> ExpressionResult<St
     String::from_utf8(encoded).map_err(|error| {
         ExpressionError::eval_error(format!("JSON serialization was not UTF-8: {error}"))
     })
-}
-
-fn preflight_string_output(
-    view: BuiltinView<'_>,
-    context: &EvaluationContext,
-    output_bytes: usize,
-) -> ExpressionResult<()> {
-    view.check_output_bytes(output_bytes)?;
-    let output = view.output_builder(context);
-    output.ensure_string_bytes(output_bytes)?;
-    output.ensure_total_bytes(output_bytes)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -162,12 +148,12 @@ fn preflight_json_structure(
 pub(crate) fn to_string(
     args: &[Argument<'_>],
     view: BuiltinView<'_>,
-    ctx: &EvaluationContext,
+    _ctx: &EvaluationContext,
 ) -> ExpressionResult<RuntimeValue> {
     check_arg_count("to_string", args, 1)?;
     let value = get_value_arg("to_string", args, 0, "value")?;
 
-    if view.strict_conversions_enabled(ctx)
+    if view.strict_conversions_enabled()
         && matches!(value, RuntimeValue::Array(_) | RuntimeValue::Object(_))
     {
         return Err(ExpressionError::type_error(
@@ -181,7 +167,7 @@ pub(crate) fn to_string(
         RuntimeValue::Array(_) | RuntimeValue::Object(_) => measure_json(value)?,
         _ => value.to_json().to_string().len(),
     };
-    preflight_string_output(view, ctx, output_bytes)?;
+    preflight_string_output(view, output_bytes)?;
     Ok(RuntimeValue::string(value.to_display_string()))
 }
 
@@ -189,12 +175,12 @@ pub(crate) fn to_string(
 pub(crate) fn to_number(
     args: &[Argument<'_>],
     view: BuiltinView<'_>,
-    ctx: &EvaluationContext,
+    _ctx: &EvaluationContext,
 ) -> ExpressionResult<RuntimeValue> {
     check_arg_count("to_number", args, 1)?;
     let value = get_value_arg("to_number", args, 0, "value")?;
 
-    if view.strict_conversions_enabled(ctx) && !value.is_number() {
+    if view.strict_conversions_enabled() && !value.is_number() {
         return Err(ExpressionError::type_error(
             "number",
             crate::value_utils::value_type_name(value),
@@ -219,12 +205,12 @@ pub(crate) fn to_number(
 pub(crate) fn to_boolean(
     args: &[Argument<'_>],
     view: BuiltinView<'_>,
-    ctx: &EvaluationContext,
+    _ctx: &EvaluationContext,
 ) -> ExpressionResult<RuntimeValue> {
     check_arg_count("to_boolean", args, 1)?;
     let value = get_value_arg("to_boolean", args, 0, "value")?;
 
-    if view.strict_conversions_enabled(ctx) && value.as_bool().is_none() {
+    if view.strict_conversions_enabled() && value.as_bool().is_none() {
         return Err(ExpressionError::type_error(
             "boolean",
             crate::value_utils::value_type_name(value),
@@ -238,13 +224,13 @@ pub(crate) fn to_boolean(
 pub(crate) fn to_json(
     args: &[Argument<'_>],
     view: BuiltinView<'_>,
-    context: &EvaluationContext,
+    _context: &EvaluationContext,
 ) -> ExpressionResult<RuntimeValue> {
     check_arg_count("to_json", args, 1)?;
     let value = get_value_arg("to_json", args, 0, "value")?;
 
     let output_bytes = measure_json(value)?;
-    preflight_string_output(view, context, output_bytes)?;
+    preflight_string_output(view, output_bytes)?;
     let json_string = encode_json(value, output_bytes)?;
 
     Ok(RuntimeValue::string(json_string))
@@ -254,7 +240,7 @@ pub(crate) fn to_json(
 pub(crate) fn parse_json(
     args: &[Argument<'_>],
     view: BuiltinView<'_>,
-    ctx: &EvaluationContext,
+    _ctx: &EvaluationContext,
 ) -> ExpressionResult<RuntimeValue> {
     check_arg_count("parse_json", args, 1)?;
     let value = get_value_arg("parse_json", args, 0, "value")?;
@@ -262,10 +248,9 @@ pub(crate) fn parse_json(
         ExpressionError::type_error("string", crate::value_utils::value_type_name(value))
     })?;
 
-    // DoS protection: limit JSON string size
-    let max_len = view
-        .max_json_parse_length(ctx)
-        .unwrap_or(MAX_JSON_PARSE_LENGTH);
+    // DoS protection: limit JSON string size. The effective policy already
+    // resolved the engine default into the frame, so no fallback is needed.
+    let max_len = view.max_json_parse_length();
     if json_str.len() > max_len {
         return Err(ExpressionError::eval_error(format!(
             "JSON string too large: {} bytes (max {} bytes)",
@@ -274,14 +259,14 @@ pub(crate) fn parse_json(
         )));
     }
 
-    let output = view.output_builder(ctx);
+    let output = view.output_builder();
     preflight_json_structure(json_str, output)?;
 
     let json: serde_json::Value = serde_json::from_str(json_str)
         .map_err(|e| ExpressionError::invalid_json(format!("failed to parse JSON: {e}")))?;
     let json = RuntimeValue::from_json(&json);
 
-    if view.strict_conversions_enabled(ctx)
+    if view.strict_conversions_enabled()
         && !matches!(json, RuntimeValue::Object(_) | RuntimeValue::Array(_))
     {
         return Err(ExpressionError::type_error(

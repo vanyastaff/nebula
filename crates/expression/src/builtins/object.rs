@@ -75,7 +75,7 @@ pub(crate) fn has(
 pub(crate) fn merge(
     args: &[Argument<'_>],
     view: BuiltinView<'_>,
-    context: &EvaluationContext,
+    _context: &EvaluationContext,
 ) -> ExpressionResult<RuntimeValue> {
     check_min_arg_count("merge", args, 1)?;
 
@@ -84,7 +84,7 @@ pub(crate) fn merge(
         let object = get_object_arg("merge", args, index, "object")?;
         merged.extend(object.iter().map(|(key, value)| (key.as_ref(), value)));
     }
-    view.output_builder(context).preflight_object(merged)?;
+    view.output_builder().preflight_object(merged)?;
 
     let mut result = BTreeMap::new();
     for (index, _) in args.iter().enumerate() {
@@ -103,7 +103,7 @@ pub(crate) fn merge(
 pub(crate) fn pick(
     args: &[Argument<'_>],
     view: BuiltinView<'_>,
-    context: &EvaluationContext,
+    _context: &EvaluationContext,
 ) -> ExpressionResult<RuntimeValue> {
     check_min_arg_count("pick", args, 1)?;
     let object = get_object_arg("pick", args, 0, "object")?;
@@ -129,7 +129,7 @@ pub(crate) fn pick(
         .iter()
         .filter(|(key, _)| keys_to_pick.contains(key.as_ref()))
         .map(|(key, value)| (key.as_ref(), value));
-    view.output_builder(context).preflight_object(selected)?;
+    view.output_builder().preflight_object(selected)?;
     let result: BTreeMap<Arc<str>, RuntimeValue> = object
         .iter()
         .filter(|(key, _)| keys_to_pick.contains(key.as_ref()))
@@ -145,7 +145,7 @@ pub(crate) fn pick(
 pub(crate) fn omit(
     args: &[Argument<'_>],
     view: BuiltinView<'_>,
-    context: &EvaluationContext,
+    _context: &EvaluationContext,
 ) -> ExpressionResult<RuntimeValue> {
     check_min_arg_count("omit", args, 1)?;
     let object = get_object_arg("omit", args, 0, "object")?;
@@ -171,7 +171,7 @@ pub(crate) fn omit(
         .iter()
         .filter(|(key, _)| !keys_to_omit.contains(key.as_ref()))
         .map(|(key, value)| (key.as_ref(), value));
-    view.output_builder(context).preflight_object(selected)?;
+    view.output_builder().preflight_object(selected)?;
     let result: BTreeMap<Arc<str>, RuntimeValue> = object
         .iter()
         .filter(|(key, _)| !keys_to_omit.contains(key.as_ref()))
@@ -187,11 +187,11 @@ pub(crate) fn omit(
 pub(crate) fn entries(
     args: &[Argument<'_>],
     view: BuiltinView<'_>,
-    context: &EvaluationContext,
+    _context: &EvaluationContext,
 ) -> ExpressionResult<RuntimeValue> {
     check_arg_count("entries", args, 1)?;
     let object = get_object_arg("entries", args, 0, "object")?;
-    view.output_builder(context).preflight_entries(object)?;
+    view.output_builder().preflight_entries(object)?;
 
     let result: Vec<RuntimeValue> = object
         .iter()

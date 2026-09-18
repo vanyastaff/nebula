@@ -153,8 +153,9 @@ every lambda invocation is charged against the calling program — the historica
 step-budget bypass (issue #252) stays type-enforced. The pitfall is documented in
 `docs/pitfalls.md` for historical context.
 
-`BuiltinView<'_>` also exposes policy queries plus
-`charge_work` and `check_output_bytes` against the calling program's shared budget.
+`BuiltinView<'_>` also exposes the call's effective policy (the engine and
+context policies already intersected) plus `charge_work` and
+`check_output_bytes` against the calling program's shared budget.
 The mandatory `BuiltinOutputBuilder` is the only public way to construct the opaque
 result, and validates total bytes, string bytes, collection size, value nodes, and
 depth. Registered functions should charge work before loops and use builder methods

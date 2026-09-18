@@ -114,7 +114,7 @@ pub(crate) fn index_of(
 pub(crate) fn join(
     args: &[Argument<'_>],
     view: BuiltinView<'_>,
-    context: &EvaluationContext,
+    _context: &EvaluationContext,
 ) -> ExpressionResult<RuntimeValue> {
     check_arg_count("join", args, 2)?;
     let array = get_array_arg("join", args, 0, "array")?;
@@ -142,7 +142,7 @@ pub(crate) fn join(
         output_bytes = output_bytes.saturating_add(element_bytes);
     }
     view.check_output_bytes(output_bytes)?;
-    let output = view.output_builder(context);
+    let output = view.output_builder();
     output.ensure_string_bytes(output_bytes)?;
     output.ensure_total_bytes(output_bytes)?;
 
@@ -219,7 +219,7 @@ pub(crate) fn slice(
 pub(crate) fn concat(
     args: &[Argument<'_>],
     view: BuiltinView<'_>,
-    context: &EvaluationContext,
+    _context: &EvaluationContext,
 ) -> ExpressionResult<RuntimeValue> {
     check_min_arg_count("concat", args, 1)?;
 
@@ -228,7 +228,7 @@ pub(crate) fn concat(
         let array = get_array_arg("concat", args, index, "array")?;
         total_size = total_size.saturating_add(array.len());
     }
-    view.output_builder(context).preflight_array(
+    view.output_builder().preflight_array(
         args.iter()
             .filter_map(Argument::as_value)
             .filter_map(RuntimeValue::as_array)
@@ -288,12 +288,12 @@ pub(crate) fn unique(
 pub(crate) fn flatten(
     args: &[Argument<'_>],
     view: BuiltinView<'_>,
-    context: &EvaluationContext,
+    _context: &EvaluationContext,
 ) -> ExpressionResult<RuntimeValue> {
     check_arg_count("flatten", args, 1)?;
     let array = get_array_arg("flatten", args, 0, "array")?;
 
-    view.output_builder(context)
+    view.output_builder()
         .preflight_array(array.iter().flat_map(|value| {
             value
                 .as_array()
