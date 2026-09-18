@@ -56,6 +56,38 @@ pub enum RequiredPolicy<'a> {
     When(&'a Rule),
 }
 
+/// Three-way outcome of evaluating a `When` condition against a context.
+enum ConditionOutcome {
+    /// The condition evaluated to `true`.
+    Match,
+    /// The condition evaluated to `false`.
+    NoMatch,
+    /// The condition depends on context values that are not resolved yet.
+    Pending,
+}
+
+/// Classify a condition evaluation, folding "unavailable" into `Pending`.
+///
+/// Both `VisibilityPolicy::resolve` and `RequiredPolicy::resolve` map a
+/// condition onto their own tri-state verdict; this is the shared classifier
+/// that keeps the `Unavailable` special case in one place.
+///
+/// # Errors
+/// Returns an invalid-rule diagnostic for a non-predicate condition.
+fn evaluate_condition(
+    rule: &Rule,
+    ctx: &PredicateContext,
+) -> Result<ConditionOutcome, ValidationError> {
+    match rule.matches(ctx) {
+        Ok(true) => Ok(ConditionOutcome::Match),
+        Ok(false) => Ok(ConditionOutcome::NoMatch),
+        Err(error) if error.kind() == ValidationErrorKind::Unavailable => {
+            Ok(ConditionOutcome::Pending)
+        },
+        Err(error) => Err(error),
+    }
+}
+
 impl VisibilityPolicy<'_> {
     /// The only way to turn a visibility policy into a decision.
     ///
@@ -65,11 +97,10 @@ impl VisibilityPolicy<'_> {
         Ok(match self {
             Self::Always => Presence::Active,
             Self::Never => Presence::Skipped,
-            Self::When(r) => match r.matches(ctx) {
-                Ok(true) => Presence::Active,
-                Ok(false) => Presence::Skipped,
-                Err(error) if error.kind() == ValidationErrorKind::Unavailable => Presence::Pending,
-                Err(error) => return Err(error),
+            Self::When(rule) => match evaluate_condition(rule, ctx)? {
+                ConditionOutcome::Match => Presence::Active,
+                ConditionOutcome::NoMatch => Presence::Skipped,
+                ConditionOutcome::Pending => Presence::Pending,
             },
         })
     }
@@ -84,13 +115,10 @@ impl RequiredPolicy<'_> {
         Ok(match self {
             Self::Optional => Requiredness::Optional,
             Self::Always => Requiredness::Required,
-            Self::When(r) => match r.matches(ctx) {
-                Ok(true) => Requiredness::Required,
-                Ok(false) => Requiredness::Optional,
-                Err(error) if error.kind() == ValidationErrorKind::Unavailable => {
-                    Requiredness::Pending
-                },
-                Err(error) => return Err(error),
+            Self::When(rule) => match evaluate_condition(rule, ctx)? {
+                ConditionOutcome::Match => Requiredness::Required,
+                ConditionOutcome::NoMatch => Requiredness::Optional,
+                ConditionOutcome::Pending => Requiredness::Pending,
             },
         })
     }
