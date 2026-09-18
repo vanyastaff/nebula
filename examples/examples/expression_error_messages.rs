@@ -1,15 +1,31 @@
 //! Example demonstrating beautiful error messages with source context
 //!
 //! This example shows how the template engine provides detailed error messages
-//! with source code context and visual highlighting.
+//! with source code context and visual highlighting. Parse errors carry a
+//! structured `Position`; rendering the caret view is the caller's job via
+//! `ErrorFormatter`.
 
 #![expect(
     clippy::print_stdout,
     reason = "example: printed output is the demonstration"
 )]
 
-use nebula_expression::{EvaluationContext, ExpressionEngine, Template};
+use nebula_expression::{
+    EvaluationContext, ExpressionEngine, ExpressionError, Template, error_formatter::ErrorFormatter,
+};
 use serde_json::Value;
+
+/// Render a parse failure with source context; fall back to `Display` for
+/// errors that carry no position (raw-grammar failures).
+fn render_parse_error(source: &str, error: &ExpressionError) -> String {
+    match error {
+        ExpressionError::ParseError {
+            position: Some(position),
+            message,
+        } => ErrorFormatter::new(source, *position, message).format(),
+        _ => error.to_string(),
+    }
+}
 
 fn main() {
     let engine = ExpressionEngine::new();
@@ -63,7 +79,7 @@ Line 5";
     match Template::new(template3) {
         Ok(_) => println!("Parsed successfully"),
         Err(e) => {
-            println!("{e}\n");
+            println!("{}\n", render_parse_error(template3, &e));
         },
     }
 

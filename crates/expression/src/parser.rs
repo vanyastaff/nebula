@@ -5,17 +5,23 @@
 use std::sync::Arc;
 
 use nebula_log::trace;
-use serde_json::Value;
 
 use crate::{
     ExpressionError,
     ast::{BinaryOp, Expr},
-    error::{ExpressionErrorExt, ExpressionResult},
+    error::ExpressionResult,
     span::Span,
     token::{Token, TokenKind},
+    value::RuntimeValue,
 };
 
-/// Maximum recursion depth for parser
+/// Maximum recursive-descent call depth for the parser.
+///
+/// This is NOT `limits::MAX_AST_DEPTH`: the parser counts call-chain frames,
+/// not AST nodes, and one source construct can consume several frames
+/// (40 nested parentheses ≈ 240 parser depth, well under this cap while the
+/// resulting AST is only 40 nodes deep). Merging the two would weaken the
+/// stack-overflow guard by roughly an order of magnitude.
 const MAX_PARSER_DEPTH: usize = 256;
 
 /// EOF token constant
@@ -49,7 +55,7 @@ impl<'a> Parser<'a> {
         crate::limits::check_limit("tokens", self.tokens.len(), crate::limits::MAX_TOKENS)?;
         let expr = self.parse_expression_with_depth(0)?;
         if self.current_token().kind != TokenKind::Eof {
-            return Err(ExpressionError::expression_parse_error(format!(
+            return Err(ExpressionError::parse_error(format!(
                 "Unexpected trailing token: expected end of input, found {}",
                 self.current_token()
             )));
@@ -66,7 +72,7 @@ impl<'a> Parser<'a> {
     /// Parse expression with depth tracking
     fn parse_expression_with_depth(&mut self, depth: usize) -> ExpressionResult<Expr> {
         if depth > MAX_PARSER_DEPTH {
-            return Err(ExpressionError::expression_parse_error(format!(
+            return Err(ExpressionError::parse_error(format!(
                 "Maximum parser recursion depth ({MAX_PARSER_DEPTH}) exceeded"
             )));
         }
@@ -107,7 +113,7 @@ impl<'a> Parser<'a> {
                 self.advance();
                 name
             } else {
-                return Err(ExpressionError::expression_parse_error(
+                return Err(ExpressionError::parse_error(
                     "Expected function name after |",
                 ));
             };
@@ -141,7 +147,7 @@ impl<'a> Parser<'a> {
         // `parse_expression_with_depth`, so the global entry-point depth
         // guard is not enough. Enforce the cap here too.
         if depth > MAX_PARSER_DEPTH {
-            return Err(ExpressionError::expression_parse_error(format!(
+            return Err(ExpressionError::parse_error(format!(
                 "Maximum parser recursion depth ({MAX_PARSER_DEPTH}) exceeded"
             )));
         }
@@ -173,8 +179,9 @@ impl<'a> Parser<'a> {
                 TokenKind::RegexMatch => BinaryOp::RegexMatch,
                 TokenKind::And => BinaryOp::And,
                 TokenKind::Or => BinaryOp::Or,
+                TokenKind::Coalesce => BinaryOp::Coalesce,
                 _ => {
-                    return Err(ExpressionError::expression_parse_error(format!(
+                    return Err(ExpressionError::parse_error(format!(
                         "Unexpected operator: {}",
                         self.current_token()
                     )));
@@ -208,7 +215,7 @@ impl<'a> Parser<'a> {
         // The `parse_expression_with_depth` guard is too far upstream to
         // stop a stack overflow on hostile input, so enforce the cap here.
         if depth > MAX_PARSER_DEPTH {
-            return Err(ExpressionError::expression_parse_error(format!(
+            return Err(ExpressionError::parse_error(format!(
                 "Maximum parser recursion depth ({MAX_PARSER_DEPTH}) exceeded"
             )));
         }
@@ -220,7 +227,7 @@ impl<'a> Parser<'a> {
                     && value == i64::MIN.unsigned_abs()
                 {
                     self.advance();
-                    return Ok(Expr::Literal(Value::Number(i64::MIN.into())));
+                    return Ok(Expr::Literal(RuntimeValue::Integer(i64::MIN)));
                 }
                 let expr = self.parse_unary_with_depth(depth + 1)?;
                 Ok(Expr::Negate(Box::new(expr)))
@@ -235,45 +242,78 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Parse postfix expression with depth tracking
+    /// Parse postfix expression with depth tracking.
+    ///
+    /// Handles `.name`, `?.name`, `.name(args)`, `?.name(args)`, `[index]`,
+    /// `?.[index]`. A member name followed by `(` is a method call; otherwise
+    /// it is a property access.
     fn parse_postfix_with_depth(&mut self, depth: usize) -> ExpressionResult<Expr> {
         let mut expr = self.parse_primary_with_depth(depth + 1)?;
 
         loop {
-            match &self.current_token().kind {
-                TokenKind::Dot => {
-                    self.record_node()?;
-                    self.advance();
-                    let property = if let TokenKind::Identifier(name) = &self.current_token().kind {
-                        let name = Arc::from(*name);
-                        self.advance();
-                        name
-                    } else {
-                        return Err(ExpressionError::expression_parse_error(
-                            "Expected property name after .",
-                        ));
-                    };
-
-                    expr = Expr::PropertyAccess {
-                        object: Box::new(expr),
-                        property,
-                    };
-                    check_ast_depth(&expr)?;
-                },
-                TokenKind::LeftBracket => {
-                    self.record_node()?;
-                    self.advance();
-                    let index = self.parse_expression_with_depth(depth + 1)?;
-                    self.expect_token(TokenKind::RightBracket)?;
-
-                    expr = Expr::IndexAccess {
-                        object: Box::new(expr),
-                        index: Box::new(index),
-                    };
-                    check_ast_depth(&expr)?;
-                },
-                _ => break,
+            // A bare `[` is always a non-optional index access.
+            if self.current_token().kind == TokenKind::LeftBracket {
+                self.record_node()?;
+                self.advance();
+                let index = self.parse_expression_with_depth(depth + 1)?;
+                self.expect_token(TokenKind::RightBracket)?;
+                expr = Expr::IndexAccess {
+                    object: Box::new(expr),
+                    index: Box::new(index),
+                    optional: false,
+                };
+                check_ast_depth(&expr)?;
+                continue;
             }
+
+            let optional = match self.current_token().kind {
+                TokenKind::Dot => false,
+                TokenKind::OptionalDot => true,
+                _ => break,
+            };
+            self.record_node()?;
+            self.advance();
+
+            // `?.[` and `. [` index instead of accessing a property.
+            if self.current_token().kind == TokenKind::LeftBracket {
+                self.advance();
+                let index = self.parse_expression_with_depth(depth + 1)?;
+                self.expect_token(TokenKind::RightBracket)?;
+                expr = Expr::IndexAccess {
+                    object: Box::new(expr),
+                    index: Box::new(index),
+                    optional,
+                };
+                check_ast_depth(&expr)?;
+                continue;
+            }
+
+            let member = if let TokenKind::Identifier(name) = &self.current_token().kind {
+                let name = Arc::from(*name);
+                self.advance();
+                name
+            } else {
+                return Err(ExpressionError::parse_error(
+                    "Expected property name after .",
+                ));
+            };
+
+            if self.current_token().kind == TokenKind::LeftParen {
+                let args = self.parse_function_args_with_depth(depth + 1)?;
+                expr = Expr::MethodCall {
+                    object: Box::new(expr),
+                    method: member,
+                    args,
+                    optional,
+                };
+            } else {
+                expr = Expr::PropertyAccess {
+                    object: Box::new(expr),
+                    property: member,
+                    optional,
+                };
+            }
+            check_ast_depth(&expr)?;
         }
 
         Ok(expr)
@@ -287,31 +327,31 @@ impl<'a> Parser<'a> {
             TokenKind::Integer(n) => {
                 let n = *n;
                 self.advance();
-                Ok(Expr::Literal(Value::Number(n.into())))
+                Ok(Expr::Literal(RuntimeValue::Integer(n)))
             },
             TokenKind::UnsignedInteger(n) => {
                 let number = *n;
                 self.advance();
-                Ok(Expr::Literal(Value::Number(number.into())))
+                Ok(Expr::Literal(RuntimeValue::Unsigned(number)))
             },
             TokenKind::Float(n) => {
                 let n = *n;
                 self.advance();
-                Ok(Expr::Literal(serde_json::json!(n)))
+                Ok(Expr::Literal(RuntimeValue::Float(n)))
             },
             TokenKind::String(s) => {
                 let owned = s.to_string();
                 self.advance();
-                Ok(Expr::Literal(Value::String(owned)))
+                Ok(Expr::Literal(RuntimeValue::string(owned)))
             },
             TokenKind::Boolean(b) => {
                 let b = *b;
                 self.advance();
-                Ok(Expr::Literal(Value::Bool(b)))
+                Ok(Expr::Literal(RuntimeValue::Bool(b)))
             },
             TokenKind::Null => {
                 self.advance();
-                Ok(Expr::Literal(Value::Null))
+                Ok(Expr::Literal(RuntimeValue::Null))
             },
 
             // Variables
@@ -381,9 +421,7 @@ impl<'a> Parser<'a> {
                                 k
                             },
                             _ => {
-                                return Err(ExpressionError::expression_parse_error(
-                                    "Expected object key",
-                                ));
+                                return Err(ExpressionError::parse_error("Expected object key"));
                             },
                         };
 
@@ -401,7 +439,7 @@ impl<'a> Parser<'a> {
                 Ok(Expr::Object(pairs))
             },
 
-            _ => Err(ExpressionError::expression_parse_error(format!(
+            _ => Err(ExpressionError::parse_error(format!(
                 "Unexpected token: {}",
                 self.current_token()
             ))),
@@ -410,27 +448,26 @@ impl<'a> Parser<'a> {
 
     /// Parse function arguments with depth tracking.
     ///
-    /// Lambda detection is a peek-and-restore: when an `Identifier =>` pair
-    /// appears at the head of an argument it produces an `Expr::Lambda`;
-    /// anything else (including `Identifier <op> ...`, where `<op>` is a
-    /// binary operator, postfix `.` / `[]`, or a function call) restores the
-    /// pre-peek position and falls through to the full expression parser so
-    /// every shape that `parse_expression_with_depth` accepts also works as a
-    /// function argument. The previous shortcut routed the bare identifier
-    /// through a postfix-only chain and dropped trailing binary operators,
-    /// causing `f(x + 1)` to be rejected after the identifier.
+    /// Lambda detection is a peek-and-restore: when an `Identifier =>` pair or
+    /// a parenthesized parameter list `(a, b) =>` appears at the head of an
+    /// argument it produces an `Expr::Lambda`; anything else (including
+    /// `Identifier <op> ...`, where `<op>` is a binary operator, postfix `.` /
+    /// `[]`, or a function call) restores the pre-peek position and falls
+    /// through to the full expression parser so every shape that
+    /// `parse_expression_with_depth` accepts also works as a function argument.
     fn parse_function_args_with_depth(&mut self, depth: usize) -> ExpressionResult<Vec<Expr>> {
         self.expect_token(TokenKind::LeftParen)?;
         let mut args = Vec::new();
 
         if self.current_token().kind != TokenKind::RightParen {
             loop {
-                let lambda_param = self.try_consume_lambda_param();
-
-                if let Some(param) = lambda_param {
-                    trace!(?param, "parsing lambda function arg");
+                if let Some(params) = self.try_consume_lambda_params() {
+                    trace!(?params, "parsing lambda function arg");
                     let body = Box::new(self.parse_expression_with_depth(depth + 1)?);
-                    args.push(Expr::Lambda { param, body });
+                    args.push(Expr::Lambda {
+                        params: params.into_boxed_slice(),
+                        body,
+                    });
                 } else {
                     trace!("parsing expression function arg");
                     args.push(self.parse_expression_with_depth(depth + 1)?);
@@ -446,21 +483,51 @@ impl<'a> Parser<'a> {
         Ok(args)
     }
 
-    /// Peek for a lambda parameter (`Identifier =>`).
+    /// Peek for a lambda head: `Identifier =>` or `( Identifier , Identifier … ) =>`.
     ///
-    /// Returns `Some(param)` and leaves `self.position` past the `=>` if a
-    /// lambda head is present. Returns `None` and restores the original
-    /// position otherwise — so the caller can hand control back to the full
-    /// expression parser without losing the consumed identifier.
-    fn try_consume_lambda_param(&mut self) -> Option<Arc<str>> {
-        let TokenKind::Identifier(param) = &self.current_token().kind else {
-            return None;
-        };
+    /// Returns the parameter list and leaves `self.position` past the `=>` when
+    /// a lambda head is present. Returns `None` and restores the original
+    /// position otherwise — the caller can hand control back to the full
+    /// expression parser without losing the consumed tokens. A parenthesized
+    /// list is only a lambda head when it closes with `)` and the next token is
+    /// `=>`; otherwise it is an ordinary parenthesized expression.
+    fn try_consume_lambda_params(&mut self) -> Option<Vec<Arc<str>>> {
         let saved_pos = self.position;
-        let param_name: Arc<str> = Arc::from(*param);
+
+        if let TokenKind::Identifier(param) = &self.current_token().kind {
+            let param_name: Arc<str> = Arc::from(*param);
+            self.advance();
+            if self.match_token(&TokenKind::Arrow) {
+                return Some(vec![param_name]);
+            }
+            self.position = saved_pos;
+            return None;
+        }
+
+        if self.current_token().kind != TokenKind::LeftParen {
+            return None;
+        }
         self.advance();
+
+        let mut params = Vec::new();
+        loop {
+            let TokenKind::Identifier(param) = &self.current_token().kind else {
+                self.position = saved_pos;
+                return None;
+            };
+            params.push(Arc::<str>::from(*param));
+            self.advance();
+            if self.match_token(&TokenKind::Comma) {
+                continue;
+            }
+            break;
+        }
+        if params.is_empty() || !self.match_token(&TokenKind::RightParen) {
+            self.position = saved_pos;
+            return None;
+        }
         if self.match_token(&TokenKind::Arrow) {
-            Some(param_name)
+            Some(params)
         } else {
             self.position = saved_pos;
             None
@@ -495,7 +562,7 @@ impl<'a> Parser<'a> {
             self.advance();
             Ok(())
         } else {
-            Err(ExpressionError::expression_parse_error(format!(
+            Err(ExpressionError::parse_error(format!(
                 "Expected {}, found {}",
                 expected,
                 self.current_token()
@@ -519,9 +586,14 @@ fn check_ast_depth(root: &Expr) -> ExpressionResult<()> {
             | Expr::IndexAccess {
                 object: left,
                 index: right,
+                ..
             } => {
                 pending.push((left, child_depth));
                 pending.push((right, child_depth));
+            },
+            Expr::MethodCall { object, args, .. } => {
+                pending.push((object, child_depth));
+                pending.extend(args.iter().map(|child| (child, child_depth)));
             },
             Expr::FunctionCall { args, .. } | Expr::Array(args) => {
                 pending.extend(args.iter().map(|child| (child, child_depth)));
@@ -677,7 +749,7 @@ mod tests {
         };
         assert!(matches!(op, BinaryOp::Add));
         assert!(matches!(&**left, Expr::Identifier(n) if &**n == "x"));
-        assert!(matches!(&**right, Expr::Literal(Value::Number(_))));
+        assert!(matches!(&**right, Expr::Literal(RuntimeValue::Integer(1))));
     }
 
     #[test]
@@ -705,10 +777,11 @@ mod tests {
             panic!("expected FunctionCall");
         };
         assert_eq!(args.len(), 1);
-        let Expr::Lambda { param, body } = &args[0] else {
+        let Expr::Lambda { params, body } = &args[0] else {
             panic!("expected Lambda, got {arg:?}", arg = args[0]);
         };
-        assert_eq!(&**param, "x");
+        assert_eq!(params.len(), 1);
+        assert_eq!(&*params[0], "x");
         assert!(matches!(
             &**body,
             Expr::Binary {

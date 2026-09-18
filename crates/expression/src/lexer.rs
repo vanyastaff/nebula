@@ -6,7 +6,7 @@ use std::borrow::Cow;
 
 use crate::{
     ExpressionError,
-    error::{ExpressionErrorExt, ExpressionResult},
+    error::ExpressionResult,
     span::Span,
     token::{Token, TokenKind},
 };
@@ -18,11 +18,8 @@ use crate::{
 /// syntax error rather than panicking through `char::encode_utf8` into
 /// a one-byte buffer.
 fn parse_hex_pair(d1: char, d2: char) -> ExpressionResult<u8> {
-    let bad = || {
-        ExpressionError::expression_syntax_error(format!(
-            "Invalid hex digits in \\x escape: '{d1}{d2}'",
-        ))
-    };
+    let bad =
+        || ExpressionError::syntax_error(format!("Invalid hex digits in \\x escape: '{d1}{d2}'"));
     let hi = d1.to_digit(16).ok_or_else(bad)?;
     let lo = d2.to_digit(16).ok_or_else(bad)?;
     Ok(((hi << 4) | lo) as u8)
@@ -34,10 +31,10 @@ fn read_hex_byte_escape<I: Iterator<Item = char>>(
     result: &mut String,
 ) -> ExpressionResult<()> {
     let d1 = chars.next().ok_or_else(|| {
-        ExpressionError::expression_syntax_error("Truncated \\x escape: expected 2 hex digits")
+        ExpressionError::syntax_error("Truncated \\x escape: expected 2 hex digits")
     })?;
     let d2 = chars.next().ok_or_else(|| {
-        ExpressionError::expression_syntax_error("Truncated \\x escape: expected 2 hex digits")
+        ExpressionError::syntax_error("Truncated \\x escape: expected 2 hex digits")
     })?;
     let value = parse_hex_pair(d1, d2)?;
     result.push(value as char);
@@ -46,11 +43,10 @@ fn read_hex_byte_escape<I: Iterator<Item = char>>(
 
 /// Parse a hex code-point string (1–6 digits, no `0x` prefix) into a `char`.
 fn parse_codepoint(hex: &str) -> ExpressionResult<char> {
-    let cp = u32::from_str_radix(hex, 16).map_err(|_| {
-        ExpressionError::expression_syntax_error(format!("Invalid hex code point: '{hex}'"))
-    })?;
+    let cp = u32::from_str_radix(hex, 16)
+        .map_err(|_| ExpressionError::syntax_error(format!("Invalid hex code point: '{hex}'")))?;
     char::from_u32(cp).ok_or_else(|| {
-        ExpressionError::expression_syntax_error(format!(
+        ExpressionError::syntax_error(format!(
             "Code point U+{hex} is not a valid Unicode scalar value (surrogate or out of range)",
         ))
     })
@@ -61,7 +57,7 @@ fn parse_codepoint(hex: &str) -> ExpressionResult<char> {
 fn parse_float_literal(num_str: &str, span: Span) -> ExpressionResult<Token<'static>> {
     num_str
         .parse::<f64>()
-        .map_err(|_| ExpressionError::expression_syntax_error("Invalid float literal"))
+        .map_err(|_| ExpressionError::syntax_error("Invalid float literal"))
         .and_then(|f| {
             if f.is_finite() {
                 Ok(Token::new(TokenKind::Float(f), span))
@@ -84,7 +80,7 @@ fn parse_integer_literal(num_str: &str, span: Span) -> ExpressionResult<Token<'s
                 .parse::<u64>()
                 .map(|n| Token::new(TokenKind::UnsignedInteger(n), span))
         })
-        .map_err(|_| ExpressionError::expression_syntax_error("Invalid integer literal"))
+        .map_err(|_| ExpressionError::syntax_error("Invalid integer literal"))
 }
 
 /// Read the `\u{...}` brace form and push the decoded code point as a
@@ -100,26 +96,26 @@ fn read_unicode_brace_escape<I: Iterator<Item = char>>(
             Some('}') => break,
             Some(c) if c.is_ascii_hexdigit() => {
                 if hex.len() >= 6 {
-                    return Err(ExpressionError::expression_syntax_error(
+                    return Err(ExpressionError::syntax_error(
                         "\\u{...} escape exceeds 6 hex digits",
                     ));
                 }
                 hex.push(c);
             },
             Some(c) => {
-                return Err(ExpressionError::expression_syntax_error(format!(
+                return Err(ExpressionError::syntax_error(format!(
                     "Invalid hex digit '{c}' in \\u{{...}} escape"
                 )));
             },
             None => {
-                return Err(ExpressionError::expression_syntax_error(
+                return Err(ExpressionError::syntax_error(
                     "Unterminated \\u{...} escape: missing '}'",
                 ));
             },
         }
     }
     if hex.is_empty() {
-        return Err(ExpressionError::expression_syntax_error(
+        return Err(ExpressionError::syntax_error(
             "Empty \\u{} escape: expected 1-6 hex digits",
         ));
     }
@@ -139,12 +135,12 @@ fn read_unicode_bmp_escape<I: Iterator<Item = char>>(
         match chars.next() {
             Some(c) if c.is_ascii_hexdigit() => hex.push(c),
             Some(c) => {
-                return Err(ExpressionError::expression_syntax_error(format!(
+                return Err(ExpressionError::syntax_error(format!(
                     "Invalid hex digit '{c}' in \\uNNNN escape"
                 )));
             },
             None => {
-                return Err(ExpressionError::expression_syntax_error(
+                return Err(ExpressionError::syntax_error(
                     "Truncated \\uNNNN escape: expected 4 hex digits",
                 ));
             },
@@ -271,6 +267,16 @@ impl<'a> Lexer<'a> {
                 self.advance();
                 Token::new(TokenKind::Colon, Span::new(start, self.position))
             },
+            '?' if self.peek() == Some('.') => {
+                self.advance();
+                self.advance();
+                Token::new(TokenKind::OptionalDot, Span::new(start, self.position))
+            },
+            '?' if self.peek() == Some('?') => {
+                self.advance();
+                self.advance();
+                Token::new(TokenKind::Coalesce, Span::new(start, self.position))
+            },
             '?' => {
                 self.advance();
                 Token::new(TokenKind::Question, Span::new(start, self.position))
@@ -376,7 +382,7 @@ impl<'a> Lexer<'a> {
             ch if ch.is_alphabetic() || ch == '_' => self.read_identifier_or_keyword()?,
 
             _ => {
-                return Err(ExpressionError::expression_syntax_error(format!(
+                return Err(ExpressionError::syntax_error(format!(
                     "Unexpected character '{}' at position {}",
                     ch, self.position
                 )));
@@ -451,9 +457,7 @@ impl<'a> Lexer<'a> {
             }
         }
 
-        Err(ExpressionError::expression_syntax_error(
-            "Unterminated string literal",
-        ))
+        Err(ExpressionError::syntax_error("Unterminated string literal"))
     }
 
     /// Read a string with escape sequences (requires allocation).
@@ -488,7 +492,7 @@ impl<'a> Lexer<'a> {
                 // unreachable from `read_string`, which consumes the
                 // character after every `\` it scans. Kept as a defensive
                 // error path; do not delete without a reachability proof.
-                return Err(ExpressionError::expression_syntax_error(
+                return Err(ExpressionError::syntax_error(
                     "Trailing backslash in string literal",
                 ));
             };
@@ -528,7 +532,7 @@ impl<'a> Lexer<'a> {
         let end_pos = self.position;
 
         if start_pos == end_pos {
-            return Err(ExpressionError::expression_syntax_error(
+            return Err(ExpressionError::syntax_error(
                 "Expected variable name after $",
             ));
         }
@@ -858,6 +862,44 @@ mod tests {
                 &TokenKind::And,
                 &TokenKind::Or,
                 &TokenKind::RegexMatch,
+                &TokenKind::Eof
+            ]
+        );
+    }
+
+    #[test]
+    fn optional_chain_and_coalesce_are_distinct_tokens() {
+        let mut lexer = Lexer::new("$a?.b ?? $c");
+        let tokens = lexer.tokenize().unwrap();
+        let kinds: Vec<_> = tokens.iter().map(|t| &t.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                &TokenKind::Variable("a"),
+                &TokenKind::OptionalDot,
+                &TokenKind::Identifier("b"),
+                &TokenKind::Coalesce,
+                &TokenKind::Variable("c"),
+                &TokenKind::Eof
+            ]
+        );
+    }
+
+    #[test]
+    fn lone_question_mark_and_lone_dot_stay_separate() {
+        // `?` followed by a non-`.`/`?` char is still `Question`, and a plain
+        // `.` is still `Dot`: the new tokens must not swallow the old ones.
+        let mut lexer = Lexer::new("a ? b . c");
+        let tokens = lexer.tokenize().unwrap();
+        let kinds: Vec<_> = tokens.iter().map(|t| &t.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                &TokenKind::Identifier("a"),
+                &TokenKind::Question,
+                &TokenKind::Identifier("b"),
+                &TokenKind::Dot,
+                &TokenKind::Identifier("c"),
                 &TokenKind::Eof
             ]
         );

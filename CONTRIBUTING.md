@@ -29,7 +29,8 @@ See the *Workspace Layout* and *Layered Dependency Map* sections of
 - `crates/` — 36 crate workspace members.
 - `apps/` — two first-party deployment workspace members.
 - `examples/` — one runnable-examples workspace member (not per-crate).
-- **Total:** 36 crates + 2 apps + 1 examples member = 39 workspace members.
+- `tools/xtask/` — CI planning and repository automation (not a product crate).
+- **Total:** 36 crates + 2 apps + 1 examples + 1 xtask = 40 workspace members.
 - `docs/` — agent doc map (`docs/README.md` is the entry point).
 - `Taskfile.yml` — the canonical task runner. Don't call raw `cargo` for
   fmt / lint.

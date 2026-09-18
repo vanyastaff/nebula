@@ -3,6 +3,7 @@
 > this guide adds crate-specific rules. Design and status: [README.md](README.md).
 
 **Purpose:** Shared expression evaluator that resolves `{{ expression }}` templates (n8n-compatible syntax) against execution-time context — the resolution backend `nebula-schema`'s `ValidValues::resolve` step calls.
+**Trajectory:** Stated target is a full n8n-class authoring language and template engine. Landed so far: method calls on values, optional chaining (`?.`), nullish coalescing (`??`), namespaces (`Math`/`JSON`/`Object`/`Number`/`Array`), `$json`, and typed datetimes. Still missing: the n8n item model (`$item`, `$items()`, `$position`, `$itemIndex` — needs multiple outputs per node, an engine/workflow contract) and template inheritance/macros. Do not write code or docs that assume the missing parts exist. See `docs/DESIGN.md` §6.5.
 **Layer:** Core — depends only downward (root AGENTS.md -> Layered Dependency Map).
 
 ## Commands
@@ -21,20 +22,28 @@
 - `src/policy.rs` — `EvaluationPolicy` DoS budget (work, recursion, input, builtin output)
 - `src/builtins/output.rs` — opaque public builtin output and mandatory bounded builder
 - `src/maybe.rs` — `MaybeExpression<T>` typed serde wrapper (literal vs expression)
-- `src/template.rs` — `Template` / `MaybeTemplate`; `{{- -}}` whitespace control; shared lexical `has_expression_marker` classifier (recognizes malformed unescaped openers)
+- `src/template.rs` — `Template` / `MaybeTemplate`; `{{ }}`, `{% %}` tags, `{# #}` comments, whitespace control; shared lexical `has_expression_marker` classifier (recognizes malformed unescaped openers)
+- `src/program.rs` — `CompiledProgram` plus the template block tree: `{% if %}`/`{% for %}` nesting, `loop` variables, per-tag whitespace control
+- `src/error_formatter.rs` — caller-side renderer for structured parse-error positions; parse errors themselves carry `Position` + message, never pre-rendered art
 
 ## Conventions & never-do
 
-- `BuiltinFunction` takes `BuiltinView<'_>` plus `BuiltinOutputBuilder` and returns opaque `BuiltinOutput`, never raw `Value`. Do not expose a constructor or bypass for custom callbacks. The view provides policy queries and shared work charging, not evaluator re-entry; custom callbacks remain trusted, cooperative in-process code.
-- Higher-order combinators (`filter`/`map`/`reduce`/…) live in `eval/mod.rs` and call `eval_with_frame` with the caller's `EvalFrame` so the step budget accumulates across iterations — never re-route them through the builtin registry.
-- `EvaluationPolicy` bounds every whole program (depth 256; default 100,000 work units) and every builtin output (bytes, strings, collections, nodes, depth); context limits only tighten engine ceilings. Template parts and higher-order evaluation share one frame.
-- Stored context variables resolve as shared `Arc<Value>` snapshots. Keep evaluator property/index chains and builtin arguments borrowed; do not reintroduce deep clones per reference.
+- `BuiltinFunction` takes `&[Argument<'_>]` (evaluated values or unevaluated lambdas), `BuiltinView<'_>`, and `BuiltinOutputBuilder`, and returns opaque `BuiltinOutput`, never raw `RuntimeValue`. Do not expose a constructor or bypass for custom callbacks. `Argument::Lambda` is invoked only through `BuiltinView::invoke_lambda`, which reuses the caller's frame; the view provides policy queries and shared work charging, not a frame reset. Custom callbacks remain trusted, cooperative in-process code.
+- Higher-order combinators (`filter`/`map`/`reduce`/…) are registered builtins in `builtins/higher_order.rs` and invoke lambdas through `BuiltinView::invoke_lambda`/`eval_body` so the frame (step budget and depth) accumulates across iterations — never give them a fresh frame.
+- Evaluation works on `RuntimeValue` (`value.rs`); `serde_json::Value` appears only at the crate boundary (`RuntimeValue::to_json`/`from_json`). Typed date-times and `Undefined` must survive inside containers, so do not flatten stored context values back to JSON.
+- `EvaluationPolicy::missing_lookup` defaults to `MissingLookup::Error`; `Undefined` is opt-in for n8n-style authoring. Keep missing distinct from null.
+- `EvaluationPolicy` bounds every whole program (depth 256; default 100,000 work units) and every builtin output (bytes, strings, collections, nodes, depth); context limits only tighten engine ceilings. Engine and context are intersected once per top-level call into `EffectivePolicy`, which the `EvalFrame` carries — do not re-derive an intersection per query, and never read the engine or context policy directly from evaluator paths.
+- `ExpressionEngine` owns only the parse caches; `Evaluator` owns the builtin registry and engine policy. A registry or policy change is one mutation on the evaluator (`register_bounded`, `set_policy`) — do not reintroduce a second policy field or a rebuild step.
+- `Evaluator` is crate-private. It was public; nothing outside the crate used it, and its `eval`/`eval_program` are the engine's implementation detail.
+- Stored context variables resolve as shared `Arc<RuntimeValue>` snapshots. Keep evaluator property/index chains and builtin arguments borrowed; do not reintroduce deep clones per reference.
 - Downstream callers retain `CompiledProgram`, never a source-only surrogate AST or duplicated raw/template dispatcher. Keep parsing distinct from runtime type and lookup validation; missing is not null.
 - `ProgramSyntax` records authored intent, not effective AST/body kind. AUTO raw-first
   compilation remains AUTO; TEMPLATE always returns string. Source exports alone
   cannot reconstruct this distinction. Keep syntax immutable across clones.
 - Exact mixed numeric comparison delegates to `num-cmp` without the nightly i128 feature. Do not replace it with `as_f64` or a second handwritten comparator.
-- NOT a validation engine (`nebula-validator`), schema system (`nebula-schema`), or HTML template engine — keep scope to `{{ }}` field resolution.
+- Template blocks (`{% if %}`, `{% for %}`) are compiled into a tree in `program.rs`; rendering must go through `render_nodes` so every branch and iteration shares the caller's `EvalFrame`. Never call the evaluator with a fresh frame from a block path — the loop budget would reset per iteration.
+- `TemplatePart::Tag` carries the raw tag body; block structure and nesting live only in `program.rs`. Do not parse tags in `template.rs` beyond delimiting them.
+- NOT a validation engine (`nebula-validator`), schema system (`nebula-schema`), or general-purpose HTML template language — `{{ }}`, `{% %}`, and `{# #}` are the whole surface.
 
 ## Change checks
 

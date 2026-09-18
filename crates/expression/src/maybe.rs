@@ -13,6 +13,7 @@ use serde_json::Value;
 
 use crate::{
     CompiledProgram, ExpressionError, context::EvaluationContext, engine::ExpressionEngine,
+    value::RuntimeValue,
 };
 
 /// Tag key used for `MaybeExpression::Expression` on the wire.
@@ -44,14 +45,14 @@ impl CachedExpression {
         &self,
         engine: &ExpressionEngine,
         context: &EvaluationContext,
-    ) -> Result<Value, ExpressionError> {
+    ) -> Result<RuntimeValue, ExpressionError> {
         let program = if let Some(program) = self.program.get() {
             program
         } else {
             let compiled = CompiledProgram::compile(&self.source)?;
             self.program.get_or_init(|| compiled)
         };
-        engine.evaluate_compiled(program, context)
+        engine.evaluate_compiled_runtime(program, context)
     }
 }
 
@@ -201,7 +202,7 @@ where
         match self {
             Self::Value(v) => Ok(v.clone()),
             Self::Expression(cached) => {
-                let value = cached.evaluate(engine, context)?;
+                let value = cached.evaluate(engine, context)?.to_json();
                 T::try_from(value).map_err(Into::into)
             },
         }
@@ -220,7 +221,9 @@ impl MaybeExpression<Value> {
     ) -> Result<Value, ExpressionError> {
         match self {
             Self::Value(v) => Ok(v.clone()),
-            Self::Expression(cached) => cached.evaluate(engine, context),
+            Self::Expression(cached) => cached
+                .evaluate(engine, context)
+                .map(|value| value.to_json()),
         }
     }
 }
@@ -241,7 +244,7 @@ impl MaybeExpression<String> {
                 let value = cached.evaluate(engine, context)?;
                 match value.as_str() {
                     Some(s) => Ok(s.to_owned()),
-                    None => Ok(value.to_string()),
+                    None => Ok(value.to_display_string()),
                 }
             },
         }

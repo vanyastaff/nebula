@@ -2,9 +2,11 @@
 
 use std::{collections::BTreeMap, fmt};
 
-use serde_json::{Map, Number, Value};
+use chrono::{DateTime, FixedOffset};
 
-use crate::{ExpressionError, error::ExpressionResult, policy::BuiltinOutputLimits};
+use crate::{
+    ExpressionError, error::ExpressionResult, policy::BuiltinOutputLimits, value::RuntimeValue,
+};
 
 /// Output dimension rejected by [`BuiltinOutputBuilder`].
 #[non_exhaustive]
@@ -33,6 +35,9 @@ impl fmt::Display for BuiltinOutputLimit {
         }
     }
 }
+
+/// The byte cost of an RFC 3339 date-time rendering with an offset.
+const DATE_TIME_JSON_BYTES: usize = 35;
 
 #[derive(Debug, Clone, Copy, Default)]
 struct OutputSize {
@@ -79,7 +84,7 @@ impl ArrayOutputBudget {
         })
     }
 
-    pub(crate) fn push(&mut self, value: &Value) -> ExpressionResult<()> {
+    pub(crate) fn push(&mut self, value: &RuntimeValue) -> ExpressionResult<()> {
         let child = self.builder.measure(value)?;
         let direct_items = self.direct_items.saturating_add(1);
         let mut size = self.size;
@@ -123,7 +128,7 @@ impl GroupOutputBudget {
         &mut self,
         key: &str,
         existing_items: usize,
-        value: &Value,
+        value: &RuntimeValue,
     ) -> ExpressionResult<()> {
         let child = self.builder.measure(value)?;
         let mut size = self.size;
@@ -174,11 +179,11 @@ impl GroupOutputBudget {
 /// Opaque, policy-bounded result from a registered builtin.
 ///
 /// Values of this type can only be created through [`BuiltinOutputBuilder`].
-/// This prevents a public extension from returning an unchecked
-/// [`serde_json::Value`] to the evaluator.
+/// This prevents a public extension from returning an unchecked value to the
+/// evaluator.
 #[must_use]
 pub struct BuiltinOutput {
-    value: Value,
+    value: RuntimeValue,
     size: OutputSize,
 }
 
@@ -196,7 +201,7 @@ impl fmt::Debug for BuiltinOutput {
 }
 
 impl BuiltinOutput {
-    pub(crate) fn into_value(self) -> Value {
+    pub(crate) fn into_value(self) -> RuntimeValue {
         self.value
     }
 }
@@ -205,7 +210,7 @@ impl BuiltinOutput {
 ///
 /// String and repeat constructors check their exact output size before
 /// allocating. Collection constructors stop before accepting an item beyond
-/// their configured bound. The raw `Value` constructor is crate-private so
+/// their configured bound. The raw value constructor is crate-private so
 /// public extensions cannot bypass these checks.
 #[must_use]
 #[derive(Debug, Clone, Copy)]
@@ -218,6 +223,16 @@ impl BuiltinOutputBuilder {
         Self { limits }
     }
 
+    /// Construct a missing value (`Undefined`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ExpressionError::BuiltinOutputLimitExceeded`] when the scalar
+    /// exceeds a configured output bound.
+    pub fn undefined(self) -> ExpressionResult<BuiltinOutput> {
+        self.scalar(RuntimeValue::Undefined)
+    }
+
     /// Construct JSON null.
     ///
     /// # Errors
@@ -225,49 +240,62 @@ impl BuiltinOutputBuilder {
     /// Returns [`ExpressionError::BuiltinOutputLimitExceeded`] when the scalar
     /// exceeds a configured output bound.
     pub fn null(self) -> ExpressionResult<BuiltinOutput> {
-        self.scalar(Value::Null)
+        self.scalar(RuntimeValue::Null)
     }
 
-    /// Construct a JSON boolean.
+    /// Construct a boolean.
     ///
     /// # Errors
     ///
     /// Returns [`ExpressionError::BuiltinOutputLimitExceeded`] when the scalar
     /// exceeds a configured output bound.
     pub fn boolean(self, value: bool) -> ExpressionResult<BuiltinOutput> {
-        self.scalar(Value::Bool(value))
+        self.scalar(RuntimeValue::Bool(value))
     }
 
-    /// Construct a JSON signed integer.
+    /// Construct a signed integer.
     ///
     /// # Errors
     ///
     /// Returns [`ExpressionError::BuiltinOutputLimitExceeded`] when the scalar
     /// exceeds a configured output bound.
     pub fn signed_integer(self, value: i64) -> ExpressionResult<BuiltinOutput> {
-        self.scalar(Value::Number(value.into()))
+        self.scalar(RuntimeValue::Integer(value))
     }
 
-    /// Construct a JSON unsigned integer.
+    /// Construct an unsigned integer.
     ///
     /// # Errors
     ///
     /// Returns [`ExpressionError::BuiltinOutputLimitExceeded`] when the scalar
     /// exceeds a configured output bound.
     pub fn unsigned_integer(self, value: u64) -> ExpressionResult<BuiltinOutput> {
-        self.scalar(Value::Number(value.into()))
+        self.scalar(RuntimeValue::Unsigned(value))
     }
 
-    /// Construct a finite JSON floating-point number.
+    /// Construct a finite floating-point number.
     ///
     /// # Errors
     ///
     /// Returns an evaluation error when `value` is NaN or infinite.
     pub fn float(self, value: f64) -> ExpressionResult<BuiltinOutput> {
-        Number::from_f64(value)
-            .map(|number| self.scalar(Value::Number(number)))
-            .transpose()?
-            .ok_or_else(|| ExpressionError::eval_error("builtin produced a non-finite number"))
+        if value.is_finite() {
+            self.scalar(RuntimeValue::Float(value))
+        } else {
+            Err(ExpressionError::eval_error(
+                "builtin produced a non-finite number",
+            ))
+        }
+    }
+
+    /// Construct a date-time value.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ExpressionError::BuiltinOutputLimitExceeded`] when the scalar
+    /// exceeds a configured output bound.
+    pub fn date_time(self, value: DateTime<FixedOffset>) -> ExpressionResult<BuiltinOutput> {
+        self.scalar(RuntimeValue::DateTime(value))
     }
 
     /// Copy a borrowed string after checking its byte length.
@@ -284,7 +312,7 @@ impl BuiltinOutputBuilder {
         };
         self.ensure_output_size(size)?;
         Ok(BuiltinOutput {
-            value: Value::String(value.to_owned()),
+            value: RuntimeValue::string(value),
             size,
         })
     }
@@ -304,18 +332,18 @@ impl BuiltinOutputBuilder {
         };
         self.ensure_output_size(size)?;
         Ok(BuiltinOutput {
-            value: Value::String(value.repeat(count)),
+            value: RuntimeValue::string(value.repeat(count)),
             size,
         })
     }
 
-    /// Clone an existing JSON value only after validating its complete shape.
+    /// Clone an existing runtime value only after validating its complete shape.
     ///
     /// # Errors
     ///
     /// Returns [`ExpressionError::BuiltinOutputLimitExceeded`] without cloning
     /// when any configured limit would be exceeded.
-    pub fn clone_value(self, value: &Value) -> ExpressionResult<BuiltinOutput> {
+    pub fn clone_value(self, value: &RuntimeValue) -> ExpressionResult<BuiltinOutput> {
         let size = self.measure(value)?;
         Ok(BuiltinOutput {
             value: value.clone(),
@@ -352,7 +380,7 @@ impl BuiltinOutputBuilder {
             array.push(output.value);
         }
         Ok(BuiltinOutput {
-            value: Value::Array(array),
+            value: RuntimeValue::Array(array.into()),
             size,
         })
     }
@@ -370,7 +398,7 @@ impl BuiltinOutputBuilder {
     where
         K: AsRef<str>,
     {
-        let mut object = Map::new();
+        let mut object = BTreeMap::new();
         let mut entry_sizes = BTreeMap::new();
         let mut size = object_output_size(&entry_sizes);
         self.ensure_output_size(size)?;
@@ -391,10 +419,10 @@ impl BuiltinOutputBuilder {
             self.ensure_output_size(candidate_size)?;
             size = candidate_size;
             entry_sizes.insert(key.clone(), output.size);
-            object.insert(key, output.value);
+            object.insert(std::sync::Arc::<str>::from(key.as_str()), output.value);
         }
         Ok(BuiltinOutput {
-            value: Value::Object(object),
+            value: RuntimeValue::Object(std::sync::Arc::new(object)),
             size,
         })
     }
@@ -404,14 +432,14 @@ impl BuiltinOutputBuilder {
         Ok(output)
     }
 
-    pub(crate) fn value(self, value: Value) -> ExpressionResult<BuiltinOutput> {
+    pub(crate) fn value(self, value: RuntimeValue) -> ExpressionResult<BuiltinOutput> {
         let size = self.measure(&value)?;
         Ok(BuiltinOutput { value, size })
     }
 
     pub(crate) fn preflight_array<'a>(
         self,
-        values: impl IntoIterator<Item = &'a Value>,
+        values: impl IntoIterator<Item = &'a RuntimeValue>,
     ) -> ExpressionResult<()> {
         let mut size = OutputSize::container();
         let mut direct_items = 0usize;
@@ -436,7 +464,7 @@ impl BuiltinOutputBuilder {
 
     pub(crate) fn preflight_object<'a>(
         self,
-        entries: impl IntoIterator<Item = (&'a str, &'a Value)>,
+        entries: impl IntoIterator<Item = (&'a str, &'a RuntimeValue)>,
     ) -> ExpressionResult<()> {
         let mut size = OutputSize::container();
         let mut direct_items = 0usize;
@@ -464,7 +492,10 @@ impl BuiltinOutputBuilder {
         Ok(())
     }
 
-    pub(crate) fn preflight_entries(self, entries: &Map<String, Value>) -> ExpressionResult<()> {
+    pub(crate) fn preflight_entries(
+        self,
+        entries: &BTreeMap<std::sync::Arc<str>, RuntimeValue>,
+    ) -> ExpressionResult<()> {
         let mut size = OutputSize {
             max_collection_items: entries.len(),
             ..OutputSize::container()
@@ -509,13 +540,16 @@ impl BuiltinOutputBuilder {
         )
     }
 
-    fn scalar(self, value: Value) -> ExpressionResult<BuiltinOutput> {
+    fn scalar(self, value: RuntimeValue) -> ExpressionResult<BuiltinOutput> {
         let total_bytes = match &value {
-            Value::Null => 4,
-            Value::Bool(true) => 4,
-            Value::Bool(false) => 5,
-            Value::Number(number) => number.to_string().len(),
-            Value::String(_) | Value::Array(_) | Value::Object(_) => 0,
+            RuntimeValue::Null | RuntimeValue::Undefined => 4,
+            RuntimeValue::Bool(true) => 4,
+            RuntimeValue::Bool(false) => 5,
+            RuntimeValue::Integer(number) => number.to_string().len(),
+            RuntimeValue::Unsigned(number) => number.to_string().len(),
+            RuntimeValue::Float(number) => number.to_string().len(),
+            RuntimeValue::DateTime(_) => DATE_TIME_JSON_BYTES,
+            RuntimeValue::String(_) | RuntimeValue::Array(_) | RuntimeValue::Object(_) => 0,
         };
         let size = OutputSize {
             total_bytes,
@@ -525,7 +559,7 @@ impl BuiltinOutputBuilder {
         Ok(BuiltinOutput { value, size })
     }
 
-    fn measure(self, root: &Value) -> ExpressionResult<OutputSize> {
+    fn measure(self, root: &RuntimeValue) -> ExpressionResult<OutputSize> {
         let mut pending = vec![(root, 1usize)];
         let mut size = OutputSize::default();
         while let Some((value, depth)) = pending.pop() {
@@ -534,16 +568,19 @@ impl BuiltinOutputBuilder {
             size.max_depth = size.max_depth.max(depth);
             self.ensure_value_depth(size.max_depth)?;
             let local_bytes = match value {
-                Value::Null => 4,
-                Value::Bool(true) => 4,
-                Value::Bool(false) => 5,
-                Value::Number(number) => number.to_string().len(),
-                Value::String(string) => {
+                RuntimeValue::Null | RuntimeValue::Undefined => 4,
+                RuntimeValue::Bool(true) => 4,
+                RuntimeValue::Bool(false) => 5,
+                RuntimeValue::Integer(number) => number.to_string().len(),
+                RuntimeValue::Unsigned(number) => number.to_string().len(),
+                RuntimeValue::Float(number) => number.to_string().len(),
+                RuntimeValue::DateTime(_) => DATE_TIME_JSON_BYTES,
+                RuntimeValue::String(string) => {
                     size.max_string_bytes = size.max_string_bytes.max(string.len());
                     self.ensure_string_bytes(size.max_string_bytes)?;
                     string.len()
                 },
-                Value::Array(values) => {
+                RuntimeValue::Array(values) => {
                     size.max_collection_items = size.max_collection_items.max(values.len());
                     self.ensure_collection_items(size.max_collection_items)?;
                     self.ensure_value_nodes(
@@ -554,7 +591,7 @@ impl BuiltinOutputBuilder {
                     pending.extend(values.iter().map(|value| (value, depth.saturating_add(1))));
                     2usize.saturating_add(values.len().saturating_sub(1))
                 },
-                Value::Object(entries) => {
+                RuntimeValue::Object(entries) => {
                     size.max_collection_items = size.max_collection_items.max(entries.len());
                     self.ensure_collection_items(size.max_collection_items)?;
                     self.ensure_value_nodes(
@@ -563,7 +600,7 @@ impl BuiltinOutputBuilder {
                             .saturating_add(entries.len()),
                     )?;
                     let mut key_bytes = 0usize;
-                    for (key, value) in entries {
+                    for (key, value) in entries.iter() {
                         size.max_string_bytes = size.max_string_bytes.max(key.len());
                         self.ensure_string_bytes(size.max_string_bytes)?;
                         key_bytes = key_bytes.saturating_add(key.len()).saturating_add(3);
@@ -715,7 +752,7 @@ mod tests {
     #[test]
     fn cloned_value_is_measured_before_clone() {
         let output = builder_with_limits(16, 8, 3);
-        let value = serde_json::json!({"items": [1, 2]});
+        let value = RuntimeValue::from_json(&serde_json::json!({"items": [1, 2]}));
 
         let error = output.clone_value(&value).unwrap_err();
         let ExpressionError::BuiltinOutputLimitExceeded {
@@ -761,7 +798,7 @@ mod tests {
             ])
             .unwrap();
 
-        assert_eq!(result.into_value(), serde_json::json!({"key": 2}));
+        assert_eq!(result.into_value().to_json(), serde_json::json!({"key": 2}));
     }
 
     #[test]
@@ -787,7 +824,7 @@ mod tests {
     fn borrowed_value_is_rejected_by_depth_limit_before_clone() {
         let policy = EvaluationPolicy::new().with_max_builtin_output_depth(output_bound(2));
         let output = BuiltinOutputBuilder::new(policy.builtin_output_limits());
-        let value = serde_json::json!({"nested": {"value": 1}});
+        let value = RuntimeValue::from_json(&serde_json::json!({"nested": {"value": 1}}));
 
         let error = output.clone_value(&value).unwrap_err();
         let ExpressionError::BuiltinOutputLimitExceeded {
@@ -804,10 +841,20 @@ mod tests {
     }
 
     #[test]
+    fn date_time_is_a_bounded_scalar() {
+        let output = BuiltinOutputBuilder::new(BuiltinOutputLimits::default());
+        let instant = DateTime::parse_from_rfc3339("2024-03-01T10:00:00+03:00").unwrap();
+        let value = output.date_time(instant).unwrap().into_value();
+        assert!(value.as_date_time().is_some());
+    }
+
+    #[test]
     fn debug_output_redacts_wrapped_payload() {
         const CANARY: &str = "BUILTIN_OUTPUT_SECRET_CANARY";
         let output = BuiltinOutputBuilder::new(BuiltinOutputLimits::default())
-            .clone_value(&serde_json::json!({CANARY: CANARY}))
+            .clone_value(&RuntimeValue::from_json(
+                &serde_json::json!({CANARY: CANARY}),
+            ))
             .unwrap();
 
         let diagnostic = format!("{output:?}");

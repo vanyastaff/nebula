@@ -1,113 +1,66 @@
-//! Utility functions for working with serde_json::Value
+//! Coercion and numeric helpers over [`RuntimeValue`].
 
 use std::cmp::Ordering;
 
 use num_cmp::NumCmp;
-use serde_json::{Number, Value};
 
-use crate::{ExpressionError, ExpressionResult};
+use crate::{ExpressionError, ExpressionResult, value::RuntimeValue};
 
-/// Get the type name of a Value for error messages
-pub fn value_type_name(value: &Value) -> &'static str {
+/// Borrow the type name of a value for error messages.
+pub(crate) fn value_type_name(value: &RuntimeValue) -> &'static str {
+    value.type_name()
+}
+
+/// Check if a value is truthy (not null/undefined, false, 0, empty string/array/object).
+pub(crate) fn is_truthy(value: &RuntimeValue) -> bool {
     match value {
-        Value::Null => "null",
-        Value::Bool(_) => "boolean",
-        Value::Number(_) => "number",
-        Value::String(_) => "string",
-        Value::Array(_) => "array",
-        Value::Object(_) => "object",
+        RuntimeValue::Null | RuntimeValue::Undefined => false,
+        RuntimeValue::Bool(value) => *value,
+        RuntimeValue::Integer(value) => *value != 0,
+        RuntimeValue::Unsigned(value) => *value != 0,
+        RuntimeValue::Float(value) => *value != 0.0 && !value.is_nan(),
+        RuntimeValue::String(text) => !text.is_empty(),
+        RuntimeValue::Array(values) => !values.is_empty(),
+        RuntimeValue::Object(entries) => !entries.is_empty(),
+        RuntimeValue::DateTime(_) => true,
     }
 }
 
-/// Extract an exact i64, accepting integral floats only within the i64 range.
-#[inline]
-pub fn number_as_i64(num: &Number) -> Option<i64> {
-    num.as_i64().or_else(|| {
-        let float = num.is_f64().then(|| num.as_f64()).flatten()?;
-        (float.is_finite()
-            && float.fract() == 0.0
-            && float.num_ge(i64::MIN)
-            && float.num_le(i64::MAX))
-        .then_some(float as i64)
-    })
-}
-
-/// Extract f64 from Number, trying both f64 and i64 representations
-#[inline]
-pub fn number_as_f64(num: &Number) -> Option<f64> {
-    num.as_f64().or_else(|| num.as_i64().map(|i| i as f64))
-}
-
-/// Parse finite JSON numeric syntax without rounding out-of-range integer text.
-pub(crate) fn parse_number(text: &str) -> Result<Number, &'static str> {
-    let number: Number = serde_json::from_str(text).map_err(|_| "expected a finite JSON number")?;
-    if number.is_f64() && !text.contains(['.', 'e', 'E']) {
-        return Err("integer is outside the JSON integer range");
-    }
-    Ok(number)
-}
-
-/// Check if two numbers can be added as integers
-#[inline]
-pub fn can_add_as_int(l: &Number, r: &Number) -> bool {
-    l.is_i64() && r.is_i64()
-}
-
-/// Check if a number represents an integer
-#[inline]
-pub fn is_integer_number(num: &Number) -> bool {
-    num.is_i64() || num.is_u64()
-}
-
-/// Check if a value is numeric (number type)
-#[inline]
-pub fn is_numeric(value: &Value) -> bool {
-    value.is_number()
-}
-
-/// Check if a value is truthy (not null, false, 0, or empty string)
-pub fn is_truthy(value: &Value) -> bool {
-    match value {
-        Value::Null => false,
-        Value::Bool(b) => *b,
-        Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                i != 0
-            } else if let Some(f) = n.as_f64() {
-                f != 0.0 && !f.is_nan()
-            } else {
-                true // u64 values
-            }
-        },
-        Value::String(s) => !s.is_empty(),
-        Value::Array(arr) => !arr.is_empty(),
-        Value::Object(obj) => !obj.is_empty(),
-    }
-}
-
-/// Convert Value to boolean (truthy/falsy semantics)
-pub fn to_boolean(value: &Value) -> bool {
+/// Convert a value to boolean (truthy/falsy semantics).
+pub(crate) fn to_boolean(value: &RuntimeValue) -> bool {
     is_truthy(value)
 }
 
-/// Convert Value to i64 with error
-pub fn to_integer(value: &Value) -> Result<i64, &'static str> {
+/// Convert a value to `i64` with a human-readable failure reason.
+pub(crate) fn to_integer(value: &RuntimeValue) -> Result<i64, &'static str> {
     match value {
-        Value::Number(n) => number_as_i64(n).ok_or("number is not an integer"),
-        Value::String(s) => s.parse().map_err(|_| "string is not a valid integer"),
-        Value::Bool(b) => Ok(i64::from(*b)),
+        RuntimeValue::Integer(value) => Ok(*value),
+        RuntimeValue::Unsigned(value) => {
+            i64::try_from(*value).map_err(|_| "number is not an integer")
+        },
+        RuntimeValue::Float(_) => value.as_i64().ok_or("number is not an integer"),
+        RuntimeValue::String(text) => text.parse().map_err(|_| "string is not a valid integer"),
+        RuntimeValue::Bool(value) => Ok(i64::from(*value)),
         _ => Err("value cannot be converted to integer"),
     }
 }
 
-/// Convert Value to f64 with error
-pub fn to_float(value: &Value) -> Result<f64, &'static str> {
+/// Convert a value to `f64` with a human-readable failure reason.
+pub(crate) fn to_float(value: &RuntimeValue) -> Result<f64, &'static str> {
     let float = match value {
-        Value::Number(n) => number_as_f64(n).ok_or("number cannot be represented as float"),
-        Value::String(s) => s.parse().map_err(|_| "string is not a valid number"),
-        Value::Bool(b) => Ok(if *b { 1.0 } else { 0.0 }),
-        _ => Err("value cannot be converted to number"),
-    }?;
+        RuntimeValue::Integer(value) => *value as f64,
+        RuntimeValue::Unsigned(value) => *value as f64,
+        RuntimeValue::Float(value) => *value,
+        RuntimeValue::String(text) => text.parse().map_err(|_| "string is not a valid number")?,
+        RuntimeValue::Bool(value) => {
+            if *value {
+                1.0
+            } else {
+                0.0
+            }
+        },
+        _ => return Err("value cannot be converted to number"),
+    };
     if float.is_finite() {
         Ok(float)
     } else {
@@ -115,64 +68,64 @@ pub fn to_float(value: &Value) -> Result<f64, &'static str> {
     }
 }
 
-/// Adapt JSON number representations to the shared exact numeric comparator.
-pub(crate) fn compare_numbers(left: &Number, right: &Number) -> Option<Ordering> {
-    if let Some(left) = left.as_i64() {
-        if let Some(right) = right.as_i64() {
-            return left.num_cmp(right);
-        }
-        if let Some(right) = right.as_u64() {
-            return left.num_cmp(right);
-        }
-        return left.num_cmp(right.as_f64()?);
+/// Parse finite JSON numeric syntax without rounding out-of-range integer text.
+pub(crate) fn parse_number(text: &str) -> Result<RuntimeValue, &'static str> {
+    let json: serde_json::Value =
+        serde_json::from_str(text).map_err(|_| "expected a finite JSON number")?;
+    let value = RuntimeValue::from_json(&json);
+    if let RuntimeValue::Float(_) = value
+        && !text.contains(['.', 'e', 'E'])
+    {
+        return Err("integer is outside the JSON integer range");
     }
-    if let Some(left) = left.as_u64() {
-        if let Some(right) = right.as_i64() {
-            return left.num_cmp(right);
-        }
-        if let Some(right) = right.as_u64() {
-            return left.num_cmp(right);
-        }
-        return left.num_cmp(right.as_f64()?);
+    match value {
+        RuntimeValue::Integer(_) | RuntimeValue::Unsigned(_) | RuntimeValue::Float(_) => Ok(value),
+        _ => Err("expected a finite JSON number"),
     }
-    let left = left.as_f64()?;
-    if let Some(right) = right.as_i64() {
-        return left.num_cmp(right);
-    }
-    if let Some(right) = right.as_u64() {
-        return left.num_cmp(right);
-    }
-    left.num_cmp(right.as_f64()?)
 }
 
-pub(crate) fn integer_value(number: &Number) -> Option<i128> {
-    number
-        .as_i64()
-        .map(i128::from)
-        .or_else(|| number.as_u64().map(i128::from))
+/// Adapt the three numeric representations to the shared exact comparator.
+///
+/// Mixed integer/float comparisons delegate to `num-cmp`, so values above
+/// 2^53 compare exactly. `None` means "not comparable as numbers".
+pub(crate) fn compare_numbers(left: &RuntimeValue, right: &RuntimeValue) -> Option<Ordering> {
+    match (left, right) {
+        (RuntimeValue::Integer(left), RuntimeValue::Integer(right)) => left.num_cmp(*right),
+        (RuntimeValue::Integer(left), RuntimeValue::Unsigned(right)) => left.num_cmp(*right),
+        (RuntimeValue::Integer(left), RuntimeValue::Float(right)) => left.num_cmp(*right),
+        (RuntimeValue::Unsigned(left), RuntimeValue::Integer(right)) => left.num_cmp(*right),
+        (RuntimeValue::Unsigned(left), RuntimeValue::Unsigned(right)) => left.num_cmp(*right),
+        (RuntimeValue::Unsigned(left), RuntimeValue::Float(right)) => left.num_cmp(*right),
+        (RuntimeValue::Float(left), RuntimeValue::Integer(right)) => left.num_cmp(*right),
+        (RuntimeValue::Float(left), RuntimeValue::Unsigned(right)) => left.num_cmp(*right),
+        (RuntimeValue::Float(left), RuntimeValue::Float(right)) => left.num_cmp(*right),
+        _ => None,
+    }
 }
 
+/// Narrow an `i128` integer result back into the JSON integer range.
 pub(crate) fn integer_result(
     value: Option<i128>,
     operation: &'static str,
-) -> ExpressionResult<Value> {
-    let number = value.and_then(|value| {
+) -> ExpressionResult<RuntimeValue> {
+    let narrowed = value.and_then(|value| {
         i64::try_from(value)
-            .map(Number::from)
+            .map(RuntimeValue::Integer)
             .ok()
-            .or_else(|| u64::try_from(value).map(Number::from).ok())
+            .or_else(|| u64::try_from(value).map(RuntimeValue::Unsigned).ok())
     });
-    if let Some(number) = number {
-        Ok(Value::Number(number))
+    if let Some(value) = narrowed {
+        Ok(value)
     } else {
         tracing::debug!(operation, "integer arithmetic overflow");
         Err(ExpressionError::NumericOverflow { operation })
     }
 }
 
-pub(crate) fn finite_result(value: f64, operation: &'static str) -> ExpressionResult<Value> {
-    if let Some(number) = Number::from_f64(value) {
-        Ok(Value::Number(number))
+/// Reject a non-finite float result instead of letting it become silent null.
+pub(crate) fn finite_result(value: f64, operation: &'static str) -> ExpressionResult<RuntimeValue> {
+    if value.is_finite() {
+        Ok(RuntimeValue::Float(value))
     } else {
         tracing::debug!(operation, "non-finite numeric result");
         Err(ExpressionError::NonFiniteNumber { operation })
@@ -193,7 +146,7 @@ pub(crate) fn finite_result(value: f64, operation: &'static str) -> ExpressionRe
 /// `chars().count()` (this) are wrong in different ways relative to JS;
 /// scalar-value count is the closest stable behaviour Rust supports.
 #[inline]
-pub fn char_count(s: &str) -> i64 {
+pub(crate) fn char_count(s: &str) -> i64 {
     s.chars().count() as i64
 }
 
@@ -203,28 +156,85 @@ mod tests {
 
     #[test]
     fn test_value_type_name() {
-        assert_eq!(value_type_name(&Value::Null), "null");
-        assert_eq!(value_type_name(&Value::Bool(true)), "boolean");
-        assert_eq!(value_type_name(&Value::Number(42.into())), "number");
+        assert_eq!(value_type_name(&RuntimeValue::Null), "null");
+        assert_eq!(value_type_name(&RuntimeValue::Undefined), "undefined");
+        assert_eq!(value_type_name(&RuntimeValue::Bool(true)), "boolean");
+        assert_eq!(value_type_name(&RuntimeValue::Integer(42)), "number");
+        assert_eq!(value_type_name(&RuntimeValue::Unsigned(42)), "number");
+        assert_eq!(value_type_name(&RuntimeValue::Float(1.5)), "number");
+        assert_eq!(value_type_name(&RuntimeValue::string("test")), "string");
+        assert_eq!(value_type_name(&RuntimeValue::array(vec![])), "array");
         assert_eq!(
-            value_type_name(&Value::String("test".to_string())),
-            "string"
-        );
-        assert_eq!(value_type_name(&Value::Array(vec![])), "array");
-        assert_eq!(
-            value_type_name(&Value::Object(serde_json::Map::new())),
+            value_type_name(&RuntimeValue::object(Default::default())),
             "object"
+        );
+        assert_eq!(
+            value_type_name(&RuntimeValue::date_time_utc(chrono::Utc::now())),
+            "date"
         );
     }
 
     #[test]
     fn test_is_truthy() {
-        assert!(!is_truthy(&Value::Null));
-        assert!(!is_truthy(&Value::Bool(false)));
-        assert!(is_truthy(&Value::Bool(true)));
-        assert!(!is_truthy(&Value::Number(0.into())));
-        assert!(is_truthy(&Value::Number(1.into())));
-        assert!(!is_truthy(&Value::String(String::new())));
-        assert!(is_truthy(&Value::String("test".to_string())));
+        assert!(!is_truthy(&RuntimeValue::Null));
+        assert!(!is_truthy(&RuntimeValue::Undefined));
+        assert!(!is_truthy(&RuntimeValue::Bool(false)));
+        assert!(is_truthy(&RuntimeValue::Bool(true)));
+        assert!(!is_truthy(&RuntimeValue::Integer(0)));
+        assert!(is_truthy(&RuntimeValue::Integer(1)));
+        assert!(!is_truthy(&RuntimeValue::string(String::new())));
+        assert!(is_truthy(&RuntimeValue::string("test")));
+    }
+
+    #[test]
+    fn to_integer_rejects_fractional_and_out_of_range_numbers() {
+        for value in [
+            RuntimeValue::Float(1.5),
+            RuntimeValue::Unsigned(u64::MAX),
+            RuntimeValue::Float(9_223_372_036_854_775_808.0),
+        ] {
+            to_integer(&value).unwrap_err();
+        }
+        assert_eq!(to_integer(&RuntimeValue::Float(12.0)).unwrap(), 12);
+        assert_eq!(
+            to_integer(&RuntimeValue::Integer(i64::MIN)).unwrap(),
+            i64::MIN
+        );
+    }
+
+    #[test]
+    fn exact_mixed_comparison_spans_every_representation() {
+        use std::cmp::Ordering;
+
+        assert_eq!(
+            compare_numbers(
+                &RuntimeValue::Unsigned(9_007_199_254_740_993),
+                &RuntimeValue::Float(9_007_199_254_740_992.0)
+            ),
+            Some(Ordering::Greater)
+        );
+        assert_eq!(
+            compare_numbers(
+                &RuntimeValue::Integer(-1),
+                &RuntimeValue::Unsigned(u64::MAX)
+            ),
+            Some(Ordering::Less)
+        );
+        assert_eq!(
+            compare_numbers(&RuntimeValue::Integer(0), &RuntimeValue::string("0")),
+            None
+        );
+    }
+
+    #[test]
+    fn overflow_and_non_finite_results_are_typed_errors() {
+        assert!(matches!(
+            integer_result(None, "addition"),
+            Err(ExpressionError::NumericOverflow { .. })
+        ));
+        assert!(matches!(
+            finite_result(f64::INFINITY, "division"),
+            Err(ExpressionError::NonFiniteNumber { .. })
+        ));
     }
 }

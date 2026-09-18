@@ -3,9 +3,9 @@
 use nebula_expression::{
     BuiltinOutput, BuiltinOutputBound, BuiltinOutputBuilder, BuiltinOutputLimit, EvaluationContext,
     EvaluationPolicy, EvaluationStepLimit, ExpressionEngine, ExpressionError, ExpressionResult,
-    Value, eval::BuiltinView,
+    eval::{Argument, BuiltinView},
 };
-use serde_json::json;
+use serde_json::{Value, json};
 
 fn eval(expr: &str) -> Value {
     let engine = ExpressionEngine::default();
@@ -29,7 +29,7 @@ fn assert_output_limit(error: ExpressionError, expected: BuiltinOutputLimit) {
 }
 
 fn oversized_custom_output(
-    _args: &[&Value],
+    _args: &[Argument<'_>],
     _view: BuiltinView<'_>,
     _context: &EvaluationContext,
     output: BuiltinOutputBuilder,
@@ -38,13 +38,18 @@ fn oversized_custom_output(
 }
 
 fn assert_borrowed_input(
-    args: &[&Value],
+    args: &[Argument<'_>],
     _view: BuiltinView<'_>,
     context: &EvaluationContext,
     output: BuiltinOutputBuilder,
 ) -> ExpressionResult<BuiltinOutput> {
     let input = context.get_input();
-    assert!(std::ptr::eq(args[0], &raw const input["large"]));
+    let stored = input
+        .as_object()
+        .and_then(|object| object.get("large"))
+        .expect("input object has the `large` key");
+    let argument = args[0].as_value().expect("first argument is a value");
+    assert!(std::ptr::eq(argument, stored));
     output.boolean(true)
 }
 
@@ -222,12 +227,9 @@ fn parse_json_accepts_whitespace_only_source() {
         let error = engine
             .evaluate(&format!("parse_json({source})"), &EvaluationContext::new())
             .unwrap_err();
-        // The whitespace-only early return must surface serde_json's parse
-        // error, never a builtin output limit.
-        assert!(
-            error.to_string().contains("Failed to parse JSON"),
-            "whitespace-only source must not trip an output bound, got {error:?}"
-        );
+        // The whitespace-only early return must surface the JSON parse
+        // failure, never a builtin output limit.
+        std::assert_matches!(error, ExpressionError::InvalidJson { .. });
     }
 }
 
@@ -1076,10 +1078,17 @@ fn format_date_unknown_tz_returns_error() {
 #[cfg(feature = "datetime")]
 fn parse_date_with_tz_interprets_naive_as_local_wall_time() {
     // "2024-01-01 00:00:00" interpreted as Moscow wall time = 2023-12-31
-    // 21:00 UTC → timestamp 1704056400.
+    // 21:00 UTC. `parse_date` returns a typed date; the JSON boundary
+    // renders it with its offset, and `date_diff` sees the same instant.
     assert_eq!(
         eval(r#"parse_date("2024-01-01 00:00:00", "Europe/Moscow")"#),
-        json!(1_704_056_400)
+        json!("2024-01-01T00:00:00+03:00")
+    );
+    assert_eq!(
+        eval(
+            r#"date_diff(parse_date("2024-01-01 00:00:00", "Europe/Moscow"), parse_date("2024-01-01 00:00:00"), "hours")"#
+        ),
+        json!(-3)
     );
 }
 
@@ -1122,14 +1131,29 @@ fn datetime_errors_redact_runtime_values() {
 #[test]
 #[cfg(feature = "datetime")]
 fn date_add_normal_still_works() {
-    // epoch 0 + 1 day = 86_400 seconds.
-    assert_eq!(eval(r#"date_add(0, 1, "days")"#), json!(86_400));
+    // epoch 0 + 1 day. `date_add` returns a typed date; the JSON boundary
+    // renders it as RFC 3339, and `date_diff` confirms the exact instant.
+    assert_eq!(
+        eval(r#"date_add(0, 1, "days")"#),
+        json!("1970-01-02T00:00:00Z")
+    );
+    assert_eq!(
+        eval(r#"date_diff(date_add(0, 1, "days"), 0, "seconds")"#),
+        json!(86_400)
+    );
 }
 
 #[test]
 #[cfg(feature = "datetime")]
 fn date_subtract_normal_still_works() {
-    assert_eq!(eval(r#"date_subtract(86400, 1, "days")"#), json!(0));
+    assert_eq!(
+        eval(r#"date_subtract(86400, 1, "days")"#),
+        json!("1970-01-01T00:00:00Z")
+    );
+    assert_eq!(
+        eval(r#"date_diff(86400, date_subtract(86400, 1, "days"), "seconds")"#),
+        json!(86_400)
+    );
 }
 
 /// A huge `amount` must return a typed error, not panic.

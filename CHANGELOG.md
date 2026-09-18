@@ -11,6 +11,16 @@ changes are expected between minor releases — call them out here.
 
 ### Breaking
 
+- **Expression evaluation advances development packages to 0.13.0 in
+  lockstep.** Evaluation now works on `RuntimeValue` instead of
+  `serde_json::Value`, the `BuiltinFunction` contract takes `Argument`s and
+  returns bounded output through `BuiltinOutputBuilder`, the `ExpressionError`
+  taxonomy drops four variants and splits `EvalError`, and `Evaluator`/`eval`
+  leave the supported surface (`BuiltinRegistry` becomes crate-private).
+  Templates gain `{% if %}` / `{% for %}` blocks, methods, optional chaining,
+  and namespaces. Exact-version SDK consumers and renamed leaf fixtures must
+  continue to update all Nebula pins together; the crate changelog carries the
+  full detail.
 - **Credential reconciliation advances development packages to 0.12.0 in
   lockstep.** `CredentialController::new` takes the adjudicator and audit-sink
   dependencies it needs for the reconciliation command (two additional

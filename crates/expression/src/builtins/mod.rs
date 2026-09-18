@@ -4,7 +4,9 @@ pub(crate) mod array;
 pub(crate) mod conversion;
 #[cfg(feature = "datetime")]
 pub(crate) mod datetime;
+pub(crate) mod higher_order;
 pub(crate) mod math;
+pub(crate) mod methods;
 pub(crate) mod object;
 mod output;
 pub(crate) mod string;
@@ -12,14 +14,12 @@ pub(crate) mod util;
 
 use std::collections::HashMap;
 
-use serde_json::Value;
-
 use crate::{
     ExpressionError,
-    ast::Expr,
     context::EvaluationContext,
-    error::{ExpressionErrorExt, ExpressionResult},
-    eval::BuiltinView,
+    error::ExpressionResult,
+    eval::{Argument, BuiltinView},
+    value::RuntimeValue,
 };
 
 pub(crate) use output::{ArrayOutputBudget, GroupOutputBudget};
@@ -28,20 +28,21 @@ pub use output::{BuiltinOutput, BuiltinOutputBuilder, BuiltinOutputLimit};
 /// Type alias for a builtin function.
 ///
 /// The middle parameter is `BuiltinView<'_>`, NOT `&Evaluator`. The view
-/// exposes policy queries and shared work charging (`charge_work`,
-/// `check_output_bytes`) — registered
-/// builtins cannot recurse back into AST evaluation. This is a
-/// type-enforced replacement for the discipline rule documented in the
-/// crate `lib.rs` "Known limitation" note (CO-C1-01 step-budget bypass).
+/// exposes policy queries, shared work charging (`charge_work`,
+/// `check_output_bytes`), and bounded lambda invocation (`invoke_lambda`,
+/// `eval_body`) over the caller's frame. Registered builtins therefore cannot
+/// reset the step budget or recursion depth. This is a type-enforced
+/// replacement for the discipline rule documented in the crate `lib.rs`
+/// "Known limitation" note (CO-C1-01 step-budget bypass, issue #252).
 pub type BuiltinFunction = fn(
-    &[&Value],
+    &[Argument<'_>],
     BuiltinView<'_>,
     &EvaluationContext,
     BuiltinOutputBuilder,
 ) -> ExpressionResult<BuiltinOutput>;
 
 type TrustedBuiltinFunction =
-    fn(&[&Value], BuiltinView<'_>, &EvaluationContext) -> ExpressionResult<Value>;
+    fn(&[Argument<'_>], BuiltinView<'_>, &EvaluationContext) -> ExpressionResult<RuntimeValue>;
 
 #[derive(Clone, Copy)]
 enum RegisteredBuiltin {
@@ -49,15 +50,19 @@ enum RegisteredBuiltin {
     Trusted(TrustedBuiltinFunction),
 }
 
-/// Registry of all builtin functions
+/// Registry of all builtin functions.
+///
+/// Crate-private: its `call` takes a [`BuiltinView`], which only the evaluator
+/// can construct, so a registry handed to external code could not be invoked.
+/// Custom functions go through [`crate::ExpressionEngine::register_function`].
 #[derive(Clone)]
-pub struct BuiltinRegistry {
+pub(crate) struct BuiltinRegistry {
     functions: HashMap<String, RegisteredBuiltin>,
 }
 
 impl BuiltinRegistry {
     /// Create a new builtin registry with all standard functions
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let mut registry = Self {
             functions: HashMap::new(),
         };
@@ -69,6 +74,7 @@ impl BuiltinRegistry {
         registry.register_object_functions();
         registry.register_conversion_functions();
         registry.register_util_functions();
+        registry.register_higher_order_functions();
         #[cfg(feature = "datetime")]
         registry.register_datetime_functions();
 
@@ -92,19 +98,20 @@ impl BuiltinRegistry {
     /// Call a builtin function by name.
     ///
     /// Requires the calling evaluator's policy and budget view. The registered
-    /// function cannot construct a fresh budget or re-enter evaluation.
-    pub fn call(
+    /// function cannot construct a fresh budget and lambda arguments are
+    /// invoked through the view's shared frame.
+    pub(crate) fn call(
         &self,
         name: &str,
-        args: &[&Value],
+        args: &[Argument<'_>],
         view: BuiltinView<'_>,
         context: &EvaluationContext,
-    ) -> ExpressionResult<Value> {
+    ) -> ExpressionResult<RuntimeValue> {
         let function = self
             .functions
             .get(name)
-            .ok_or_else(|| ExpressionError::expression_function_not_found(name))?;
-        let output = view.output_builder(context);
+            .ok_or_else(|| ExpressionError::function_not_found(name))?;
+        let output = view.output_builder();
 
         match function {
             RegisteredBuiltin::Bounded(function) => {
@@ -113,16 +120,6 @@ impl BuiltinRegistry {
             RegisteredBuiltin::Trusted(function) => output.value(function(args, view, context)?),
         }
         .map(BuiltinOutput::into_value)
-    }
-
-    /// Check if a function exists
-    pub fn has_function(&self, name: &str) -> bool {
-        self.functions.contains_key(name)
-    }
-
-    /// Get all function names
-    pub fn function_names(&self) -> Vec<String> {
-        self.functions.keys().cloned().collect()
     }
 
     // Registration methods for each category
@@ -156,9 +153,6 @@ impl BuiltinRegistry {
     fn register_array_functions(&mut self) {
         self.register("first", array::first);
         self.register("last", array::last);
-        self.register("filter", array::filter);
-        self.register("map", array::map);
-        self.register("reduce", array::reduce);
         self.register("sort", array::sort);
         self.register("reverse", array::reverse);
         self.register("join", array::join);
@@ -166,9 +160,23 @@ impl BuiltinRegistry {
         self.register("concat", array::concat);
         self.register("flatten", array::flatten);
         self.register("unique", array::unique);
-        // Note: some, every, find, find_index, group_by, flat_map are
-        // higher-order functions handled by the evaluator via
-        // try_higher_order_function. NOT registered here.
+        self.register("index_of", array::index_of);
+    }
+
+    /// Higher-order combinators are ordinary builtins: they receive
+    /// [`Argument`]s and invoke lambdas through the shared frame.
+    fn register_higher_order_functions(&mut self) {
+        self.register("filter", higher_order::filter);
+        self.register("map", higher_order::map);
+        self.register("reduce", higher_order::reduce);
+        self.register("find", higher_order::find);
+        self.register("find_index", higher_order::find_index);
+        self.register("every", higher_order::every);
+        self.register("all", higher_order::every);
+        self.register("some", higher_order::some);
+        self.register("any", higher_order::some);
+        self.register("group_by", higher_order::group_by);
+        self.register("flat_map", higher_order::flat_map);
     }
 
     fn register_object_functions(&mut self) {
@@ -237,13 +245,13 @@ impl Default for BuiltinRegistry {
 /// Helper to check argument count
 pub(crate) fn check_arg_count(
     func_name: &str,
-    args: &[&Value],
+    args: &[Argument<'_>],
     expected: usize,
 ) -> ExpressionResult<()> {
     if args.len() == expected {
         Ok(())
     } else {
-        Err(ExpressionError::expression_invalid_argument(
+        Err(ExpressionError::invalid_argument(
             func_name,
             format!("Expected {} arguments, got {}", expected, args.len()),
         ))
@@ -253,11 +261,11 @@ pub(crate) fn check_arg_count(
 /// Helper to check minimum argument count
 pub(crate) fn check_min_arg_count(
     func_name: &str,
-    args: &[&Value],
+    args: &[Argument<'_>],
     min: usize,
 ) -> ExpressionResult<()> {
     if args.len() < min {
-        Err(ExpressionError::expression_invalid_argument(
+        Err(ExpressionError::invalid_argument(
             func_name,
             format!("Expected at least {} arguments, got {}", min, args.len()),
         ))
@@ -266,66 +274,77 @@ pub(crate) fn check_min_arg_count(
     }
 }
 
-/// Helper to extract a lambda expression from args
-#[expect(dead_code)]
-pub(crate) fn extract_lambda(arg: &Expr) -> ExpressionResult<(&str, &Expr)> {
-    match arg {
-        Expr::Lambda { param, body } => Ok((param, body)),
-        _ => Err(ExpressionError::expression_invalid_argument(
-            "lambda",
-            "Expected a lambda expression",
-        )),
-    }
+/// Borrow the value in argument slot `index`, reporting a missing or lambda
+/// argument as an invalid-argument error.
+pub(crate) fn get_value_arg<'a>(
+    func_name: &str,
+    args: &'a [Argument<'_>],
+    index: usize,
+    arg_name: &str,
+) -> ExpressionResult<&'a RuntimeValue> {
+    let argument = args.get(index).ok_or_else(|| {
+        ExpressionError::invalid_argument(
+            func_name,
+            format!("Missing argument '{arg_name}' at position {index}"),
+        )
+    })?;
+    argument.as_value().ok_or_else(|| {
+        ExpressionError::invalid_argument(
+            func_name,
+            format!("Argument '{arg_name}' must be a value, not a lambda"),
+        )
+    })
+}
+
+/// Preflight a string-producing builtin's exact output size.
+///
+/// Shared by every string/date builtin: charges the work, then checks the
+/// string and total byte bounds before the allocation happens.
+pub(crate) fn preflight_string_output(
+    view: BuiltinView<'_>,
+    output_bytes: usize,
+) -> ExpressionResult<()> {
+    view.check_output_bytes(output_bytes)?;
+    let output = view.output_builder();
+    output.ensure_string_bytes(output_bytes)?;
+    output.ensure_total_bytes(output_bytes)
 }
 
 /// Helper to get a string argument with better error message
 pub(crate) fn get_string_arg<'a>(
     func_name: &str,
-    args: &[&'a Value],
+    args: &'a [Argument<'_>],
     index: usize,
     arg_name: &str,
 ) -> ExpressionResult<&'a str> {
-    args.get(index)
-        .ok_or_else(|| {
-            ExpressionError::expression_invalid_argument(
-                func_name,
-                format!("Missing argument '{arg_name}' at position {index}"),
-            )
-        })?
-        .as_str()
-        .ok_or_else(|| {
-            ExpressionError::expression_invalid_argument(
-                func_name,
-                format!(
-                    "Argument '{}' must be a string, got {}",
-                    arg_name,
-                    crate::value_utils::value_type_name(args[index])
-                ),
-            )
-        })
+    let value = get_value_arg(func_name, args, index, arg_name)?;
+    value.as_str().ok_or_else(|| {
+        ExpressionError::invalid_argument(
+            func_name,
+            format!(
+                "Argument '{}' must be a string, got {}",
+                arg_name,
+                crate::value_utils::value_type_name(value)
+            ),
+        )
+    })
 }
 
 /// Helper to get an integer argument with better error message
 pub(crate) fn get_int_arg(
     func_name: &str,
-    args: &[&Value],
+    args: &[Argument<'_>],
     index: usize,
     arg_name: &str,
 ) -> ExpressionResult<i64> {
-    let val = args.get(index).ok_or_else(|| {
-        ExpressionError::expression_invalid_argument(
-            func_name,
-            format!("Missing argument '{arg_name}' at position {index}"),
-        )
-    })?;
-
-    crate::value_utils::to_integer(val).map_err(|_| {
-        ExpressionError::expression_invalid_argument(
+    let value = get_value_arg(func_name, args, index, arg_name)?;
+    crate::value_utils::to_integer(value).map_err(|_| {
+        ExpressionError::invalid_argument(
             func_name,
             format!(
                 "Argument '{}' must be an integer, got {}",
                 arg_name,
-                crate::value_utils::value_type_name(val)
+                crate::value_utils::value_type_name(value)
             ),
         )
     })
@@ -334,37 +353,33 @@ pub(crate) fn get_int_arg(
 /// Helper to get an integer argument with strict-mode awareness.
 pub(crate) fn get_int_arg_with_policy(
     func_name: &str,
-    args: &[&Value],
+    args: &[Argument<'_>],
     index: usize,
     arg_name: &str,
     view: BuiltinView<'_>,
-    ctx: &EvaluationContext,
+    _ctx: &EvaluationContext,
 ) -> ExpressionResult<i64> {
-    let val = args.get(index).ok_or_else(|| {
-        ExpressionError::expression_invalid_argument(
-            func_name,
-            format!("Missing argument '{arg_name}' at position {index}"),
-        )
-    })?;
+    let value = get_value_arg(func_name, args, index, arg_name)?;
 
-    if view.is_strict_mode(ctx) {
-        return match val {
-            Value::Number(n) => n.as_i64().ok_or_else(|| {
-                ExpressionError::expression_invalid_argument(
+    if view.is_strict_mode() {
+        return match value {
+            RuntimeValue::Integer(integer) => Ok(*integer),
+            RuntimeValue::Unsigned(integer) => i64::try_from(*integer).map_err(|_| {
+                ExpressionError::invalid_argument(
                     func_name,
                     format!(
                         "Argument '{}' must be an integer number in strict mode, got {}",
                         arg_name,
-                        crate::value_utils::value_type_name(val)
+                        crate::value_utils::value_type_name(value)
                     ),
                 )
             }),
-            _ => Err(ExpressionError::expression_invalid_argument(
+            _ => Err(ExpressionError::invalid_argument(
                 func_name,
                 format!(
                     "Argument '{}' must be an integer number in strict mode, got {}",
                     arg_name,
-                    crate::value_utils::value_type_name(val)
+                    crate::value_utils::value_type_name(value)
                 ),
             )),
         };
@@ -376,24 +391,18 @@ pub(crate) fn get_int_arg_with_policy(
 /// Helper to get a number argument (int or float) with better error message
 pub(crate) fn get_number_arg(
     func_name: &str,
-    args: &[&Value],
+    args: &[Argument<'_>],
     index: usize,
     arg_name: &str,
 ) -> ExpressionResult<f64> {
-    let val = args.get(index).ok_or_else(|| {
-        ExpressionError::expression_invalid_argument(
-            func_name,
-            format!("Missing argument '{arg_name}' at position {index}"),
-        )
-    })?;
-
-    crate::value_utils::to_float(val).map_err(|_| {
-        ExpressionError::expression_invalid_argument(
+    let value = get_value_arg(func_name, args, index, arg_name)?;
+    crate::value_utils::to_float(value).map_err(|_| {
+        ExpressionError::invalid_argument(
             func_name,
             format!(
                 "Argument '{}' must be a number, got {}",
                 arg_name,
-                crate::value_utils::value_type_name(val)
+                crate::value_utils::value_type_name(value)
             ),
         )
     })
@@ -402,37 +411,25 @@ pub(crate) fn get_number_arg(
 /// Helper to get a number argument with strict-mode awareness.
 pub(crate) fn get_number_arg_with_policy(
     func_name: &str,
-    args: &[&Value],
+    args: &[Argument<'_>],
     index: usize,
     arg_name: &str,
     view: BuiltinView<'_>,
-    ctx: &EvaluationContext,
+    _ctx: &EvaluationContext,
 ) -> ExpressionResult<f64> {
-    let val = args.get(index).ok_or_else(|| {
-        ExpressionError::expression_invalid_argument(
-            func_name,
-            format!("Missing argument '{arg_name}' at position {index}"),
-        )
-    })?;
+    let value = get_value_arg(func_name, args, index, arg_name)?;
 
-    if view.is_strict_mode(ctx) {
-        return match val {
-            Value::Number(n) => crate::value_utils::number_as_f64(n).ok_or_else(|| {
-                ExpressionError::expression_invalid_argument(
-                    func_name,
-                    format!(
-                        "Argument '{}' must be a number in strict mode, got {}",
-                        arg_name,
-                        crate::value_utils::value_type_name(val)
-                    ),
-                )
-            }),
-            _ => Err(ExpressionError::expression_invalid_argument(
+    if view.is_strict_mode() {
+        return match value {
+            RuntimeValue::Integer(integer) => Ok(*integer as f64),
+            RuntimeValue::Unsigned(integer) => Ok(*integer as f64),
+            RuntimeValue::Float(float) => Ok(*float),
+            _ => Err(ExpressionError::invalid_argument(
                 func_name,
                 format!(
                     "Argument '{}' must be a number in strict mode, got {}",
                     arg_name,
-                    crate::value_utils::value_type_name(val)
+                    crate::value_utils::value_type_name(value)
                 ),
             )),
         };
@@ -444,65 +441,59 @@ pub(crate) fn get_number_arg_with_policy(
 /// Helper to get an array argument with better error message
 pub(crate) fn get_array_arg<'a>(
     func_name: &str,
-    args: &[&'a Value],
+    args: &'a [Argument<'_>],
     index: usize,
     arg_name: &str,
-) -> ExpressionResult<&'a Vec<Value>> {
-    args.get(index)
-        .ok_or_else(|| {
-            ExpressionError::expression_invalid_argument(
-                func_name,
-                format!("Missing argument '{arg_name}' at position {index}"),
-            )
-        })?
-        .as_array()
-        .ok_or_else(|| {
-            ExpressionError::expression_invalid_argument(
-                func_name,
-                format!(
-                    "Argument '{}' must be an array, got {}",
-                    arg_name,
-                    crate::value_utils::value_type_name(args[index])
-                ),
-            )
-        })
+) -> ExpressionResult<&'a [RuntimeValue]> {
+    let value = get_value_arg(func_name, args, index, arg_name)?;
+    value.as_array().ok_or_else(|| {
+        ExpressionError::invalid_argument(
+            func_name,
+            format!(
+                "Argument '{}' must be an array, got {}",
+                arg_name,
+                crate::value_utils::value_type_name(value)
+            ),
+        )
+    })
 }
 
 /// Helper to get an object argument with better error message
 pub(crate) fn get_object_arg<'a>(
     func_name: &str,
-    args: &[&'a Value],
+    args: &'a [Argument<'_>],
     index: usize,
     arg_name: &str,
-) -> ExpressionResult<&'a serde_json::Map<String, Value>> {
-    args.get(index)
-        .ok_or_else(|| {
-            ExpressionError::expression_invalid_argument(
-                func_name,
-                format!("Missing argument '{arg_name}' at position {index}"),
-            )
-        })?
-        .as_object()
-        .ok_or_else(|| {
-            ExpressionError::expression_invalid_argument(
-                func_name,
-                format!(
-                    "Argument '{}' must be an object, got {}",
-                    arg_name,
-                    crate::value_utils::value_type_name(args[index])
-                ),
-            )
-        })
+) -> ExpressionResult<&'a std::collections::BTreeMap<std::sync::Arc<str>, RuntimeValue>> {
+    let value = get_value_arg(func_name, args, index, arg_name)?;
+    value.as_object().ok_or_else(|| {
+        ExpressionError::invalid_argument(
+            func_name,
+            format!(
+                "Argument '{}' must be an object, got {}",
+                arg_name,
+                crate::value_utils::value_type_name(value)
+            ),
+        )
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn arguments(values: &[RuntimeValue]) -> Vec<Argument<'_>> {
+        values
+            .iter()
+            .map(|value| Argument::Value(std::borrow::Cow::Borrowed(value)))
+            .collect()
+    }
+
     #[test]
     fn test_get_string_arg_type_error() {
-        let value = Value::Number(42.into());
-        let result = get_string_arg("test_func", &[&value], 0, "text");
+        let values = [RuntimeValue::Integer(42)];
+        let args = arguments(&values);
+        let result = get_string_arg("test_func", &args, 0, "text");
 
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -513,8 +504,9 @@ mod tests {
 
     #[test]
     fn test_get_int_arg_type_error() {
-        let value = Value::String("hello".to_string());
-        let result = get_int_arg("test_func", &[&value], 0, "count");
+        let values = [RuntimeValue::string("hello")];
+        let args = arguments(&values);
+        let result = get_int_arg("test_func", &args, 0, "count");
 
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -528,23 +520,44 @@ mod tests {
     )]
     #[test]
     fn test_get_number_arg_accepts_int_and_float() {
-        let integer = Value::Number(42.into());
-        let result_int = get_number_arg("test_func", &[&integer], 0, "value");
-        assert_eq!(result_int.unwrap(), 42.0);
+        let values = [RuntimeValue::Integer(42)];
+        let args = arguments(&values);
+        assert_eq!(
+            get_number_arg("test_func", &args, 0, "value").unwrap(),
+            42.0
+        );
 
-        let float = serde_json::json!(3.14);
-        let result_float = get_number_arg("test_func", &[&float], 0, "value");
-        assert_eq!(result_float.unwrap(), 3.14);
+        let values = [RuntimeValue::Float(3.14)];
+        let args = arguments(&values);
+        assert_eq!(
+            get_number_arg("test_func", &args, 0, "value").unwrap(),
+            3.14
+        );
     }
 
     #[test]
     fn test_get_array_arg_type_error() {
-        let value = Value::String("not an array".to_string());
-        let result = get_array_arg("test_func", &[&value], 0, "items");
+        let values = [RuntimeValue::string("not an array")];
+        let args = arguments(&values);
+        let result = get_array_arg("test_func", &args, 0, "items");
 
         assert!(result.is_err());
         let err = result.unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("Argument 'items' must be an array"));
+    }
+
+    #[test]
+    fn lambda_argument_is_a_typed_error_not_a_silent_value() {
+        let lambda = crate::ast::Expr::Lambda {
+            params: Box::from([std::sync::Arc::from("x")]),
+            body: Box::new(crate::ast::Expr::Identifier(std::sync::Arc::from("x"))),
+        };
+        let args = [Argument::Lambda(&lambda)];
+        let result = get_string_arg("test_func", &args, 0, "text");
+        assert!(
+            result.is_err(),
+            "lambda argument must not coerce to a value"
+        );
     }
 }

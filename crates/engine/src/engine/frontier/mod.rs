@@ -66,7 +66,7 @@ struct FrontierCtx<'a> {
     /// Side map from tokio task id to node key for panic attribution (#301).
     task_nodes: HashMap<tokio::task::Id, NodeKey>,
     /// Shared `$node` expression outputs handed to spawned tasks.
-    shared_expression_outputs: Arc<DashMap<NodeKey, Arc<serde_json::Value>>>,
+    shared_expression_outputs: Arc<DashMap<NodeKey, Arc<nebula_expression::RuntimeValue>>>,
     /// Running output-byte total shared with in-flight tasks for the
     /// budget guard.
     total_output_bytes: Arc<AtomicU64>,

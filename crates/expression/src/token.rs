@@ -104,12 +104,16 @@ pub enum TokenKind<'a> {
     // Punctuation
     /// Dot operator (.)
     Dot,
+    /// Optional-chain dot operator (`?.`)
+    OptionalDot,
     /// Comma separator (,)
     Comma,
     /// Colon (:)
     Colon,
     /// Question mark (?)
     Question,
+    /// Nullish-coalescing operator (`??`)
+    Coalesce,
     /// Arrow for lambdas (=>)
     Arrow,
 
@@ -133,43 +137,6 @@ pub enum TokenKind<'a> {
 }
 
 impl TokenKind<'_> {
-    /// Check if this token is a literal value
-    pub fn is_literal(&self) -> bool {
-        matches!(
-            self,
-            TokenKind::Integer(_)
-                | TokenKind::UnsignedInteger(_)
-                | TokenKind::Float(_)
-                | TokenKind::String(_)
-                | TokenKind::Boolean(_)
-                | TokenKind::Null
-        )
-    }
-
-    /// Check if this token is an operator
-    pub fn is_operator(&self) -> bool {
-        matches!(
-            self,
-            TokenKind::Plus
-                | TokenKind::Minus
-                | TokenKind::Star
-                | TokenKind::Slash
-                | TokenKind::Percent
-                | TokenKind::Power
-                | TokenKind::Equal
-                | TokenKind::NotEqual
-                | TokenKind::LessThan
-                | TokenKind::GreaterThan
-                | TokenKind::LessEqual
-                | TokenKind::GreaterEqual
-                | TokenKind::RegexMatch
-                | TokenKind::And
-                | TokenKind::Or
-                | TokenKind::Not
-                | TokenKind::Pipe
-        )
-    }
-
     /// Check if this token is a binary operator
     pub fn is_binary_operator(&self) -> bool {
         matches!(
@@ -188,25 +155,29 @@ impl TokenKind<'_> {
                 | TokenKind::GreaterEqual
                 | TokenKind::RegexMatch
                 | TokenKind::And
-                | TokenKind::Or /* Pipe is not a binary operator, it's used for pipeline
-                                 * expressions */
+                | TokenKind::Or
+                | TokenKind::Coalesce /* Pipe is not a binary operator, it's used for pipeline
+                                       * expressions */
         )
     }
 
     /// Get the precedence of this operator (higher number = higher precedence)
     pub fn precedence(&self) -> u8 {
         match self {
-            TokenKind::Or => 1,
-            TokenKind::And => 2,
-            TokenKind::Equal | TokenKind::NotEqual => 3,
+            // `??` binds looser than `||`, matching the JavaScript precedence
+            // table; every other operator keeps its relative order.
+            TokenKind::Coalesce => 1,
+            TokenKind::Or => 2,
+            TokenKind::And => 3,
+            TokenKind::Equal | TokenKind::NotEqual => 4,
             TokenKind::LessThan
             | TokenKind::GreaterThan
             | TokenKind::LessEqual
             | TokenKind::GreaterEqual
-            | TokenKind::RegexMatch => 4,
-            TokenKind::Plus | TokenKind::Minus => 5,
-            TokenKind::Star | TokenKind::Slash | TokenKind::Percent => 6,
-            TokenKind::Power => 7,
+            | TokenKind::RegexMatch => 5,
+            TokenKind::Plus | TokenKind::Minus => 6,
+            TokenKind::Star | TokenKind::Slash | TokenKind::Percent => 7,
+            TokenKind::Power => 8,
             // Pipe is not a binary operator, handled separately in parse_pipeline
             _ => 0,
         }
@@ -259,9 +230,11 @@ impl std::fmt::Display for TokenKind<'_> {
             TokenKind::LeftBrace => write!(f, "{{"),
             TokenKind::RightBrace => write!(f, "}}"),
             TokenKind::Dot => write!(f, "."),
+            TokenKind::OptionalDot => write!(f, "?."),
             TokenKind::Comma => write!(f, ","),
             TokenKind::Colon => write!(f, ":"),
             TokenKind::Question => write!(f, "?"),
+            TokenKind::Coalesce => write!(f, "??"),
             TokenKind::Arrow => write!(f, "=>"),
             TokenKind::If => write!(f, "if"),
             TokenKind::Then => write!(f, "then"),

@@ -179,30 +179,6 @@ impl<'a> ErrorFormatter<'a> {
     }
 }
 
-/// Helper to format template errors with source context
-pub fn format_template_error(
-    source: &str,
-    position: Position,
-    error_msg: &str,
-    expression: Option<&str>,
-) -> String {
-    let formatter = ErrorFormatter::new(source, position, error_msg);
-
-    let formatted = if let Some(expr) = expression {
-        // Try to highlight the expression length
-        let expr_len = expr.len();
-        formatter.format_with_length(expr_len)
-    } else {
-        formatter.format()
-    };
-
-    if let Some(expr) = expression {
-        format!("{formatted}\nExpression: {expr}")
-    } else {
-        formatted
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -249,13 +225,11 @@ mod tests {
         let source = "<html>\n  <title>{{ $unknown }}</title>\n</html>";
         let position = Position::new(2, 14, 0);
 
-        let output =
-            format_template_error(source, position, "Undefined variable", Some("$unknown"));
+        let output = ErrorFormatter::new(source, position, "Undefined variable").format();
 
         assert!(output.contains("Error at line 2, column 14"));
         assert!(output.contains("Undefined variable"));
         assert!(output.contains("<title>{{ $unknown }}</title>"));
-        assert!(output.contains("Expression: $unknown"));
     }
 
     /// Helper: count leading spaces preceding the lone `^` caret on the

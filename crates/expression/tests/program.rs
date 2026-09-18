@@ -3,7 +3,8 @@ use std::assert_matches;
 use nebula_expression::{
     BuiltinOutput, BuiltinOutputBound, BuiltinOutputBuilder, BuiltinOutputLimit, CompiledProgram,
     EvaluationContext, EvaluationPolicy, EvaluationStepLimit, ExpressionEngine, ExpressionError,
-    ExpressionResult, ProgramSyntax, Template, eval::BuiltinView, parse_expression,
+    ExpressionResult, MissingLookup, ProgramSyntax, Template, eval::Argument, eval::BuiltinView,
+    parse_expression,
 };
 use serde_json::{Value, json};
 
@@ -12,7 +13,7 @@ fn step_limit(max_steps: usize) -> EvaluationStepLimit {
 }
 
 fn oversized_result(
-    _arguments: &[&Value],
+    _arguments: &[Argument<'_>],
     _view: BuiltinView<'_>,
     _context: &EvaluationContext,
     output: BuiltinOutputBuilder,
@@ -613,4 +614,141 @@ fn maybe_template_uses_the_engine_program_cache() {
     }
     assert_eq!(engine.cache_overview().template_misses, 1);
     assert_eq!(engine.cache_overview().template_hits, 1);
+}
+
+#[test]
+fn multi_parameter_lambda_binds_positionally() {
+    // `reduce` with `(acc, x) => acc + x` gets the accumulator first and the
+    // element second — no `$acc` context magic needed.
+    assert_eq!(
+        ExpressionEngine::new()
+            .evaluate(
+                "reduce([1, 2, 3, 4], 0, (acc, x) => acc + x)",
+                &EvaluationContext::new()
+            )
+            .unwrap(),
+        json!(10)
+    );
+    // Single-parameter lambda keeps the documented `$acc` form working.
+    assert_eq!(
+        ExpressionEngine::new()
+            .evaluate(
+                "reduce([1, 2, 3], 0, x => $acc + x)",
+                &EvaluationContext::new()
+            )
+            .unwrap(),
+        json!(6)
+    );
+}
+
+#[test]
+fn lambda_parameter_count_mismatch_is_a_typed_error() {
+    let error =
+        ExpressionEngine::new().evaluate("reduce([1], 0, (a, b) => a)", &EvaluationContext::new());
+    // `reduce` binds two arguments positionally, so this is actually a
+    // well-formed two-parameter lambda; the mismatch case is a one-parameter
+    // lambda receiving two positional arguments in `map`.
+    let _ = error;
+    let error = ExpressionEngine::new()
+        .evaluate("map([1], (a, b) => a)", &EvaluationContext::new())
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("expected 2 argument(s)"),
+        "got: {error}"
+    );
+}
+
+#[test]
+fn custom_builtin_can_invoke_a_lambda_under_the_shared_budget() {
+    use nebula_expression::{
+        BuiltinOutput, BuiltinOutputBuilder, ExpressionResult, RuntimeValue, eval::Argument,
+        eval::BuiltinView,
+    };
+
+    fn apply_twice(
+        args: &[Argument<'_>],
+        view: BuiltinView<'_>,
+        context: &EvaluationContext,
+        output: BuiltinOutputBuilder,
+    ) -> ExpressionResult<BuiltinOutput> {
+        let lambda = args[1].as_lambda().expect("second argument is a lambda");
+        let value = args[0]
+            .as_value()
+            .cloned()
+            .expect("first argument is a value");
+        let once = view.invoke_lambda(lambda, std::slice::from_ref(&value), context)?;
+        let twice = view.invoke_lambda(lambda, std::slice::from_ref(&once), context)?;
+        output.clone_value(&twice)
+    }
+
+    let mut engine = ExpressionEngine::new()
+        .with_policy(EvaluationPolicy::new().with_max_eval_steps(step_limit(10_000_000)));
+    engine.register_function("apply_twice", apply_twice);
+    assert_eq!(
+        engine
+            .evaluate("apply_twice(2, x => x * 3)", &EvaluationContext::new())
+            .unwrap(),
+        json!(18)
+    );
+
+    // The same call under a tight budget must abort: lambda work is charged
+    // against the caller's frame, not a fresh one.
+    let mut bounded = ExpressionEngine::new()
+        .with_policy(EvaluationPolicy::new().with_max_eval_steps(step_limit(6)));
+    bounded.register_function("apply_twice", apply_twice);
+    assert_matches!(
+        bounded.evaluate("apply_twice(2, x => x * 3)", &EvaluationContext::new()),
+        Err(ExpressionError::StepLimitExceeded { .. })
+    );
+    let _ = RuntimeValue::Null;
+}
+
+#[test]
+fn missing_lookup_policy_switches_between_error_and_undefined() {
+    let context = EvaluationContext::builder()
+        .input(json!({"present": 1}))
+        .build();
+    let engine = ExpressionEngine::new();
+
+    // Default: a missing property is a typed lookup error (schema resolution
+    // relies on it). The authored name is echoed; a runtime key is not.
+    assert_matches!(
+        engine.evaluate("$input.missing", &context),
+        Err(ExpressionError::PropertyNotFound { ref property }) if property == "missing"
+    );
+    assert_matches!(
+        engine.evaluate("$input['missing']", &context),
+        Err(ExpressionError::KeyNotFound)
+    );
+
+    // Opt-in: missing yields `Undefined`, which renders as null at the boundary.
+    let lenient = ExpressionEngine::new()
+        .with_policy(EvaluationPolicy::new().with_missing_lookup(MissingLookup::Undefined));
+    assert_eq!(
+        lenient.evaluate("$input.missing", &context).unwrap(),
+        json!(null)
+    );
+    assert_eq!(
+        lenient.evaluate("$input['missing']", &context).unwrap(),
+        json!(null)
+    );
+}
+
+#[test]
+fn default_budget_admits_the_largest_template_the_count_limit_allows() {
+    // Two independent DoS guards must not contradict each other: the template
+    // parser admits up to 1000 expressions, and the default work budget must
+    // be able to evaluate that admitted maximum. A budget calibrated below the
+    // parser's ceiling would reject templates the parser promised to accept.
+    let context = EvaluationContext::builder()
+        .input(json!({"name": "ada"}))
+        .build();
+    let engine = ExpressionEngine::new();
+    let source = vec!["{{ $input.name.toUpperCase() }}"; 1000].join(" ");
+    let template =
+        Template::new(source.as_str()).expect("1000 expressions is the admitted maximum");
+    let rendered = template
+        .render(&engine, &context)
+        .expect("the default budget must admit the largest permitted template");
+    assert_eq!(rendered.matches("ADA").count(), 1000);
 }

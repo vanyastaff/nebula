@@ -1,4 +1,4 @@
-use nebula_expression::{CompiledProgram, EvaluationContext, ExpressionEngine, value_utils};
+use nebula_expression::{CompiledProgram, EvaluationContext, ExpressionEngine};
 use serde_json::{Value, json};
 
 fn evaluate(source: &str) -> nebula_expression::ExpressionResult<Value> {
@@ -149,19 +149,6 @@ fn number_conversion_preserves_exact_native_and_string_integers() {
         evaluate("to_number('18446744073709551615')").unwrap(),
         json!(u64::MAX)
     );
-}
-
-#[test]
-fn integer_conversion_rejects_fractional_and_out_of_range_numbers() {
-    for value in [
-        json!(1.5),
-        json!(u64::MAX),
-        json!(9_223_372_036_854_775_808.0_f64),
-    ] {
-        value_utils::to_integer(&value).unwrap_err();
-    }
-    assert_eq!(value_utils::to_integer(&json!(12.0)).unwrap(), 12);
-    assert_eq!(value_utils::to_integer(&json!(i64::MIN)).unwrap(), i64::MIN);
 }
 
 #[test]

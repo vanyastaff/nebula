@@ -6,9 +6,10 @@ use std::{assert_matches, hint::black_box, sync::Arc, thread};
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use nebula_expression::{
     BuiltinOutput, BuiltinOutputBound, BuiltinOutputBuilder, BuiltinOutputLimit, EvaluationContext,
-    EvaluationPolicy, ExpressionEngine, ExpressionError, ExpressionResult, Template, Value,
-    eval::BuiltinView,
+    EvaluationPolicy, ExpressionEngine, ExpressionError, ExpressionResult, Template,
+    eval::{Argument, BuiltinView},
 };
+use serde_json::Value;
 
 // ================================
 // Template Benchmarks
@@ -169,7 +170,7 @@ fn benchmark_context_operations(c: &mut Criterion) {
     // Create context with many variables
     let mut context = EvaluationContext::new();
     for i in 0..100 {
-        context.set_execution_var(format!("var_{i}"), Value::Number((i as i64).into()));
+        context.set_execution_var(format!("var_{i}"), Value::Number(i.into()));
     }
 
     // Clone benchmark
@@ -363,7 +364,7 @@ fn benchmark_builtins(c: &mut Criterion) {
 }
 
 fn oversized_custom_output(
-    _args: &[&Value],
+    _args: &[Argument<'_>],
     _view: BuiltinView<'_>,
     _context: &EvaluationContext,
     output: BuiltinOutputBuilder,

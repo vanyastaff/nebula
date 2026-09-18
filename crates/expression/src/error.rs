@@ -1,6 +1,26 @@
 //! Standalone error types for nebula-expression
 //!
 //! Uses thiserror for clean, idiomatic Rust error definitions.
+//!
+//! # Taxonomy
+//!
+//! Every variant is constructed somewhere in the crate and carries its meaning
+//! in fields, not in a formatted string. The split is: what the author wrote
+//! wrong (`SyntaxError`, `ParseError`, `TypeError`, `InvalidArgument`,
+//! `InvalidDate`, `InvalidJson`, `EvalError`), what was not found
+//! (`VariableNotFound`, `FunctionNotFound`, `PropertyNotFound`, `KeyNotFound`),
+//! what policy forbade (`FunctionNotAllowed`), what a finite budget stopped
+//! (`StepLimitExceeded`, `DepthExceeded`, `ResourceLimitExceeded`,
+//! `BuiltinOutputLimitExceeded`), arithmetic outcomes (`DivisionByZero`,
+//! `NumericOverflow`, `NonFiniteNumber`), and what the crate itself broke
+//! (`Internal`).
+//!
+//! # Redaction
+//!
+//! Property and variable names come from the template source and may be
+//! echoed. Runtime lookup keys come from data — they may carry credential
+//! material — so [`ExpressionError::KeyNotFound`] deliberately has no payload:
+//! it cannot leak by construction.
 
 use thiserror::Error;
 
@@ -17,37 +37,104 @@ pub enum ExpressionError {
     /// Syntax error in expression
     #[classify(category = "validation", code = "EXPR:SYNTAX")]
     #[error("Expression syntax error: {message}")]
-    SyntaxError { message: String },
+    SyntaxError {
+        /// Diagnostic describing the offending construct.
+        message: String,
+    },
 
     /// Parse error
     #[classify(category = "validation", code = "EXPR:PARSE")]
-    #[error("Expression parse error: {message}")]
-    ParseError { message: String },
+    #[error("Expression parse error{}: {message}", parse_error_position(position))]
+    ParseError {
+        /// Position in the template source, when the failing construct has one.
+        ///
+        /// Structured so callers can render source context themselves
+        /// (`error_formatter::format_template_error`) instead of parsing a
+        /// pre-rendered diagnostic. `None` for raw-grammar parse failures.
+        position: Option<crate::template::Position>,
+        /// Diagnostic describing the parse failure, without source context.
+        message: String,
+    },
 
-    /// Evaluation error
-    #[classify(category = "internal", code = "EXPR:EVAL")]
+    /// Evaluation error: the expression is well-formed but wrong at runtime,
+    /// and the failure is not one of the more specific variants below.
+    ///
+    /// The author can fix these by changing the expression or its input;
+    /// they are never retryable and never a crate defect. Crate defects go to
+    /// [`ExpressionError::Internal`].
+    #[classify(category = "validation", code = "EXPR:EVAL")]
     #[error("Expression evaluation error: {message}")]
-    EvalError { message: String },
+    EvalError {
+        /// Diagnostic describing the runtime failure.
+        message: String,
+    },
 
     /// Type mismatch error
     #[classify(category = "validation", code = "EXPR:TYPE")]
     #[error("Type error: expected {expected}, found {actual}")]
-    TypeError { expected: String, actual: String },
+    TypeError {
+        /// Type the operation required.
+        expected: String,
+        /// Type it received.
+        actual: String,
+    },
 
     /// Variable not found
     #[classify(category = "not_found", code = "EXPR:VAR_NOT_FOUND")]
     #[error("Variable '{name}' not found")]
-    VariableNotFound { name: String },
+    VariableNotFound {
+        /// Variable name from the template source.
+        name: String,
+    },
 
     /// Function not found
     #[classify(category = "not_found", code = "EXPR:FUNC_NOT_FOUND")]
     #[error("Function '{name}' not found")]
-    FunctionNotFound { name: String },
+    FunctionNotFound {
+        /// Function name from the template source.
+        name: String,
+    },
+
+    /// A property named in the template source is absent.
+    ///
+    /// `property` comes from the expression text, so echoing it is safe.
+    /// A key computed from data goes to [`ExpressionError::KeyNotFound`].
+    #[classify(category = "not_found", code = "EXPR:PROPERTY_NOT_FOUND")]
+    #[error("Property '{property}' not found")]
+    PropertyNotFound {
+        /// Property name from the template source.
+        property: String,
+    },
+
+    /// An object key computed from input data is absent.
+    ///
+    /// Deliberately carries no key: the value was derived from data, which may
+    /// hold credential material, and diagnostics must never echo it.
+    #[classify(category = "not_found", code = "EXPR:KEY_NOT_FOUND")]
+    #[error("Object key not found")]
+    KeyNotFound,
+
+    /// The evaluation policy denies this function.
+    ///
+    /// Distinct from [`ExpressionError::FunctionNotFound`]: the function
+    /// exists and the registry can call it, but the effective policy forbids
+    /// it for this evaluation.
+    #[classify(category = "authorization", code = "EXPR:FUNC_DENIED")]
+    #[error("Function '{name}' is denied by policy")]
+    FunctionNotAllowed {
+        /// Function name denied by the effective policy.
+        name: String,
+    },
 
     /// Invalid function argument
     #[classify(category = "validation", code = "EXPR:INVALID_ARG")]
     #[error("Invalid argument for {function}: {message}")]
-    InvalidArgument { function: String, message: String },
+    InvalidArgument {
+        /// Function whose argument was rejected.
+        function: String,
+        /// What was wrong with the argument.
+        message: String,
+    },
 
     /// Division by zero
     #[classify(category = "validation", code = "EXPR:DIV_ZERO")]
@@ -57,40 +144,50 @@ pub enum ExpressionError {
     /// Regex compilation or matching error
     #[classify(category = "validation", code = "EXPR:REGEX")]
     #[error("Regex error: {message}")]
-    RegexError { message: String },
+    RegexError {
+        /// What was wrong with the pattern.
+        message: String,
+    },
 
     /// Index out of bounds
     #[classify(category = "validation", code = "EXPR:INDEX_OOB")]
     #[error("Index out of bounds: index {index} is out of range for array of length {length}")]
-    IndexOutOfBounds { index: usize, length: usize },
-
-    /// Validation error (general)
-    #[classify(category = "validation", code = "EXPR:VALIDATION")]
-    #[error("Validation error: {message}")]
-    Validation { message: String },
-
-    /// Not found error (general)
-    #[classify(category = "not_found", code = "EXPR:NOT_FOUND")]
-    #[error("{resource_type} not found: {resource_id}")]
-    NotFound {
-        resource_type: String,
-        resource_id: String,
+    IndexOutOfBounds {
+        /// Resolved index that fell outside the array.
+        index: usize,
+        /// Array length at the time of access.
+        length: usize,
     },
 
-    /// Internal error
-    #[classify(category = "internal", code = "EXPR:INTERNAL", retryable = true)]
-    #[error("Internal error: {message}")]
-    Internal { message: String },
-
-    /// JSON error
-    #[classify(category = "internal", code = "EXPR:JSON", retryable = true)]
-    #[error("JSON error: {0}")]
-    Json(#[from] serde_json::Error),
-
-    /// Invalid date format error
+    /// A date, timestamp, or date string could not be interpreted.
     #[classify(category = "validation", code = "EXPR:INVALID_DATE")]
-    #[error("Invalid date format: {0}")]
-    InvalidDate(#[from] chrono::format::ParseError),
+    #[error("Invalid date: {message}")]
+    InvalidDate {
+        /// Which date form could not be interpreted.
+        message: String,
+    },
+
+    /// A JSON document supplied at runtime could not be parsed.
+    ///
+    /// Distinct from [`ExpressionError::ParseError`], which is the expression
+    /// grammar: this is data, parsed by `parse_json`.
+    #[classify(category = "validation", code = "EXPR:INVALID_JSON")]
+    #[error("Invalid JSON: {message}")]
+    InvalidJson {
+        /// Parser diagnostic for the rejected document.
+        message: String,
+    },
+
+    /// Internal error: a crate invariant was violated.
+    ///
+    /// Not retryable: the same expression cannot succeed on a retry, only on a
+    /// fixed build or a different input.
+    #[classify(category = "internal", code = "EXPR:INTERNAL")]
+    #[error("Internal error: {message}")]
+    Internal {
+        /// The violated invariant, for a bug report.
+        message: String,
+    },
 
     /// Step budget exhausted: per-call evaluation cap (`max_eval_steps`)
     /// has been hit. Carries `limit` and `actual` so callers can
@@ -98,14 +195,24 @@ pub enum ExpressionError {
     /// about whether to relax the limit or shrink the input.
     #[classify(category = "validation", code = "EXPR:STEP_LIMIT")]
     #[error("Step budget exhausted: actual={actual} > limit={limit}")]
-    StepLimitExceeded { limit: usize, actual: usize },
+    StepLimitExceeded {
+        /// Configured work ceiling.
+        limit: usize,
+        /// Work consumed when the ceiling was crossed.
+        actual: usize,
+    },
 
     /// Recursion depth exhausted: the per-call AST depth tracker
     /// (`MAX_RECURSION_DEPTH`) has been hit. Distinguishes a hostile
     /// stack-blowing input from a legitimate `EvalError`.
     #[classify(category = "validation", code = "EXPR:DEPTH_LIMIT")]
     #[error("Recursion depth exhausted: actual={actual} >= limit={limit}")]
-    DepthExceeded { limit: usize, actual: usize },
+    DepthExceeded {
+        /// Configured recursion ceiling.
+        limit: usize,
+        /// Depth reached when the ceiling was crossed.
+        actual: usize,
+    },
 
     /// A registered builtin result exceeded its mandatory output policy.
     #[classify(category = "validation", code = "EXPR:BUILTIN_OUTPUT_LIMIT")]
@@ -123,7 +230,9 @@ pub enum ExpressionError {
     #[classify(category = "validation", code = "EXPR:TEMPLATE_EVAL")]
     #[error("Template evaluation failed at {position}: {source}")]
     TemplateEvaluation {
+        /// Position of the failing `{{ … }}` or `{% … %}` in the source.
         position: crate::template::Position,
+        /// The underlying failure, preserved for programmatic matching.
         #[source]
         source: Box<ExpressionError>,
     },
@@ -132,20 +241,37 @@ pub enum ExpressionError {
     #[classify(category = "validation", code = "EXPR:RESOURCE_LIMIT")]
     #[error("Expression {resource} limit exceeded: actual={actual} > limit={limit}")]
     ResourceLimitExceeded {
+        /// Which bound was crossed (source bytes, AST nodes, …).
         resource: &'static str,
+        /// Configured ceiling for that bound.
         limit: usize,
+        /// Size attempted when the ceiling was crossed.
         actual: usize,
     },
 
     /// Integer arithmetic exceeded the representable JSON integer range.
     #[classify(category = "validation", code = "EXPR:NUMERIC_OVERFLOW")]
     #[error("Integer overflow in {operation}")]
-    NumericOverflow { operation: &'static str },
+    NumericOverflow {
+        /// Arithmetic operation that overflowed.
+        operation: &'static str,
+    },
 
     /// A numeric conversion or operation produced infinity or NaN.
     #[classify(category = "validation", code = "EXPR:NONFINITE")]
     #[error("Non-finite number in {operation}")]
-    NonFiniteNumber { operation: &'static str },
+    NonFiniteNumber {
+        /// Operation that produced the non-finite value.
+        operation: &'static str,
+    },
+}
+
+/// Display helper for the optional position on [`ExpressionError::ParseError`].
+fn parse_error_position(position: &Option<crate::template::Position>) -> String {
+    match position {
+        Some(position) => format!(" at {position}"),
+        None => String::new(),
+    }
 }
 
 impl ExpressionError {
@@ -160,9 +286,18 @@ impl ExpressionError {
         }
     }
 
-    /// Create a parse error
+    /// Create a parse error without a known template position.
     pub fn parse_error(message: impl Into<String>) -> Self {
         Self::ParseError {
+            position: None,
+            message: message.into(),
+        }
+    }
+
+    /// Create a parse error carrying its position in the template source.
+    pub fn parse_error_at(position: crate::template::Position, message: impl Into<String>) -> Self {
+        Self::ParseError {
+            position: Some(position),
             message: message.into(),
         }
     }
@@ -192,6 +327,23 @@ impl ExpressionError {
         Self::FunctionNotFound { name: name.into() }
     }
 
+    /// Create a property-not-found error for an authored property name.
+    pub fn property_not_found(property: impl Into<String>) -> Self {
+        Self::PropertyNotFound {
+            property: property.into(),
+        }
+    }
+
+    /// Create a key-not-found error for a key computed from input data.
+    pub fn key_not_found() -> Self {
+        Self::KeyNotFound
+    }
+
+    /// Create a policy-denial error.
+    pub fn function_not_allowed(name: impl Into<String>) -> Self {
+        Self::FunctionNotAllowed { name: name.into() }
+    }
+
     /// Create an invalid argument error
     pub fn invalid_argument(function: impl Into<String>, message: impl Into<String>) -> Self {
         Self::InvalidArgument {
@@ -217,18 +369,17 @@ impl ExpressionError {
         Self::IndexOutOfBounds { index, length }
     }
 
-    /// Create a validation error
-    pub fn validation(message: impl Into<String>) -> Self {
-        Self::Validation {
+    /// Create an invalid-date error.
+    pub fn invalid_date(message: impl Into<String>) -> Self {
+        Self::InvalidDate {
             message: message.into(),
         }
     }
 
-    /// Create a not found error
-    pub fn not_found(resource_type: impl Into<String>, resource_id: impl Into<String>) -> Self {
-        Self::NotFound {
-            resource_type: resource_type.into(),
-            resource_id: resource_id.into(),
+    /// Create an invalid-JSON error.
+    pub fn invalid_json(message: impl Into<String>) -> Self {
+        Self::InvalidJson {
+            message: message.into(),
         }
     }
 
@@ -264,98 +415,11 @@ impl ExpressionError {
 }
 
 // ============================================================================
-// External Error Conversions
-// ============================================================================
-
-// ============================================================================
 // Result Type
 // ============================================================================
 
 /// Result type for expression operations
 pub type ExpressionResult<T> = Result<T, ExpressionError>;
-
-// ============================================================================
-// Extension Trait (for convenience)
-// ============================================================================
-
-/// Extension trait for creating expression errors using method syntax
-pub trait ExpressionErrorExt {
-    /// Create a syntax error
-    fn expression_syntax_error(message: impl Into<String>) -> Self;
-
-    /// Create a parse error
-    fn expression_parse_error(message: impl Into<String>) -> Self;
-
-    /// Create an evaluation error
-    fn expression_eval_error(message: impl Into<String>) -> Self;
-
-    /// Create a type error
-    fn expression_type_error(expected: impl Into<String>, found: impl Into<String>) -> Self;
-
-    /// Create a variable not found error
-    fn expression_variable_not_found(name: impl Into<String>) -> Self;
-
-    /// Create a function not found error
-    fn expression_function_not_found(name: impl Into<String>) -> Self;
-
-    /// Create an invalid argument error
-    fn expression_invalid_argument(function: impl Into<String>, message: impl Into<String>)
-    -> Self;
-
-    /// Create a division by zero error
-    fn expression_division_by_zero() -> Self;
-
-    /// Create a regex error
-    fn expression_regex_error(message: impl Into<String>) -> Self;
-
-    /// Create an index out of bounds error
-    fn expression_index_out_of_bounds(index: usize, len: usize) -> Self;
-}
-
-impl ExpressionErrorExt for ExpressionError {
-    fn expression_syntax_error(message: impl Into<String>) -> Self {
-        ExpressionError::syntax_error(message)
-    }
-
-    fn expression_parse_error(message: impl Into<String>) -> Self {
-        ExpressionError::parse_error(message)
-    }
-
-    fn expression_eval_error(message: impl Into<String>) -> Self {
-        ExpressionError::eval_error(message)
-    }
-
-    fn expression_type_error(expected: impl Into<String>, found: impl Into<String>) -> Self {
-        ExpressionError::type_error(expected, found)
-    }
-
-    fn expression_variable_not_found(name: impl Into<String>) -> Self {
-        ExpressionError::variable_not_found(name)
-    }
-
-    fn expression_function_not_found(name: impl Into<String>) -> Self {
-        ExpressionError::function_not_found(name)
-    }
-
-    fn expression_invalid_argument(
-        function: impl Into<String>,
-        message: impl Into<String>,
-    ) -> Self {
-        ExpressionError::invalid_argument(function, message)
-    }
-
-    fn expression_division_by_zero() -> Self {
-        ExpressionError::division_by_zero()
-    }
-
-    fn expression_regex_error(message: impl Into<String>) -> Self {
-        ExpressionError::regex_error(message)
-    }
-
-    fn expression_index_out_of_bounds(index: usize, len: usize) -> Self {
-        ExpressionError::index_out_of_bounds(index, len)
-    }
-}
 
 // ============================================================================
 // Tests
@@ -387,9 +451,70 @@ mod tests {
     }
 
     #[test]
-    fn test_retryable() {
-        assert!(!ExpressionError::syntax_error("test").is_retryable());
-        assert!(ExpressionError::internal("test").is_retryable());
+    fn internal_is_not_retryable() {
+        // An invariant breach is not fixed by retrying the same input; it is
+        // fixed by a different build. Retrying it would only burn budget.
+        assert!(!ExpressionError::internal("test").is_retryable());
+    }
+
+    #[test]
+    fn author_errors_are_validation_and_not_retryable() {
+        // Every failure the author can fix by editing the expression must be
+        // classified as validation — never internal — and must not invite a
+        // retry.
+        use nebula_error::ErrorCategory;
+
+        for error in [
+            ExpressionError::syntax_error("x"),
+            ExpressionError::parse_error("x"),
+            ExpressionError::eval_error("x"),
+            ExpressionError::type_error("number", "string"),
+            ExpressionError::invalid_argument("f", "x"),
+            ExpressionError::invalid_date("x"),
+            ExpressionError::invalid_json("x"),
+            ExpressionError::division_by_zero(),
+            ExpressionError::regex_error("x"),
+            ExpressionError::index_out_of_bounds(1, 0),
+            ExpressionError::step_limit_exceeded(1, 2),
+            ExpressionError::depth_exceeded(1, 2),
+            ExpressionError::NumericOverflow { operation: "add" },
+            ExpressionError::NonFiniteNumber { operation: "add" },
+        ] {
+            assert_eq!(
+                error.category(),
+                ErrorCategory::Validation,
+                "{error:?} must be validation"
+            );
+            assert!(!error.is_retryable(), "{error:?} must not be retryable");
+        }
+    }
+
+    #[test]
+    fn lookup_errors_are_not_found_and_distinct_from_policy_denial() {
+        use nebula_error::ErrorCategory;
+
+        for error in [
+            ExpressionError::variable_not_found("x"),
+            ExpressionError::function_not_found("f"),
+            ExpressionError::property_not_found("p"),
+            ExpressionError::key_not_found(),
+        ] {
+            assert_eq!(error.category(), ErrorCategory::NotFound, "{error:?}");
+        }
+        assert_eq!(
+            ExpressionError::function_not_allowed("f").category(),
+            ErrorCategory::Authorization
+        );
+    }
+
+    #[test]
+    fn key_not_found_carries_no_runtime_key() {
+        // The redaction invariant is structural: `KeyNotFound` is a unit
+        // variant, so there is no field a runtime key could ever occupy.
+        // This test pins the observable half — the diagnostic text.
+        let error = ExpressionError::key_not_found();
+        assert_eq!(error.to_string(), "Object key not found");
+        assert_eq!(format!("{error:?}"), "KeyNotFound");
     }
 
     #[test]

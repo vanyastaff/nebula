@@ -29,7 +29,7 @@ pub(crate) struct NodeInputRequest<'a> {
     pub(crate) parameters: &'a HashMap<String, ParamValue>,
     pub(crate) predecessor_input: serde_json::Value,
     pub(crate) outputs: &'a DashMap<NodeKey, serde_json::Value>,
-    pub(crate) shared_outputs: &'a DashMap<NodeKey, Arc<serde_json::Value>>,
+    pub(crate) shared_outputs: &'a DashMap<NodeKey, Arc<nebula_expression::RuntimeValue>>,
     pub(crate) schema: &'a ValidSchema,
     pub(crate) cancellation: CancellationToken,
 }
@@ -191,7 +191,7 @@ impl ParamResolver {
 
 pub(crate) fn share_output_for_expressions(
     value: &serde_json::Value,
-) -> Result<Arc<serde_json::Value>, nebula_expression::ExpressionError> {
+) -> Result<Arc<nebula_expression::RuntimeValue>, nebula_expression::ExpressionError> {
     EvaluationContext::try_share_value(value)
 }
 

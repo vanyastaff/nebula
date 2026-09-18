@@ -1,24 +1,27 @@
 //! AST evaluation module
 //!
 //! This module implements the evaluation of parsed expression ASTs.
+//!
+//! Evaluation works on [`RuntimeValue`], not on `serde_json::Value`:
+//! typed values such as date-times survive property/index chains and
+//! builtin dispatch. Plain JSON appears only at the crate boundary
+//! (`ExpressionEngine::evaluate` and friends call `RuntimeValue::to_json`).
 
 use std::{borrow::Cow, cell::Cell, sync::Arc};
 
 #[cfg(feature = "regex")]
 use regex::Regex;
-use serde_json::{Number, Value};
 
 use crate::{
     ExpressionError,
     ast::{BinaryOp, Expr},
     builtins::BuiltinRegistry,
     context::EvaluationContext,
-    error::{ExpressionErrorExt, ExpressionResult},
-    policy::EvaluationPolicy,
+    error::ExpressionResult,
+    limits::MAX_AST_DEPTH,
+    policy::{EvaluationPolicy, MissingLookup},
+    value::RuntimeValue,
 };
-
-/// Maximum recursion depth for expression evaluation
-const MAX_RECURSION_DEPTH: usize = 256;
 
 /// Maximum length for regex patterns to prevent ReDoS attacks
 #[cfg(feature = "regex")]
@@ -28,14 +31,112 @@ const MAX_REGEX_PATTERN_LEN: usize = 1000;
 #[cfg(feature = "regex")]
 const MAX_REGEX_CACHE_SIZE: usize = 100;
 
-pub(crate) type EvalValue<'a> = Cow<'a, Value>;
+/// A value borrowed from the AST or context, or owned by evaluation.
+pub(crate) type EvalValue<'a> = Cow<'a, RuntimeValue>;
+
+/// One evaluated function argument.
+///
+/// Lambdas stay unevaluated: a registered builtin receives the expression and
+/// decides when (and how many times) to invoke it through
+/// [`BuiltinView::invoke_lambda`]. Every other argument is a value.
+pub enum Argument<'a> {
+    /// An evaluated value.
+    Value(EvalValue<'a>),
+    /// An unevaluated lambda expression (`Expr::Lambda`).
+    Lambda(&'a Expr),
+}
+
+impl Argument<'_> {
+    /// Borrow the value, if this argument is one.
+    pub fn as_value(&self) -> Option<&RuntimeValue> {
+        match self {
+            Self::Value(value) => Some(value.as_ref()),
+            Self::Lambda(_) => None,
+        }
+    }
+
+    /// Borrow the lambda expression, if this argument is one.
+    pub fn as_lambda(&self) -> Option<&Expr> {
+        match self {
+            Self::Value(_) => None,
+            Self::Lambda(lambda) => Some(lambda),
+        }
+    }
+}
+
+/// The engine and context policies already intersected for one top-level call.
+///
+/// Engine limits are ceilings, context limits may only tighten them. Computing
+/// the intersection once here means every consumer (frame budget, coercion
+/// rules, builtin output bounds) reads the same values for the whole call
+/// instead of re-deriving them per query.
+#[derive(Debug, Clone)]
+struct EffectivePolicy {
+    /// Work ceiling for the call. Never `None`: the engine default applies.
+    max_steps: usize,
+    /// JSON input ceiling for `parse_json`.
+    max_json_parse_length: usize,
+    /// Strict coercion for boolean contexts (`if`, `&&`, `!`).
+    strict_mode: bool,
+    /// Strict conversions for explicit conversion builtins.
+    strict_conversions: bool,
+    /// Relational operators accept numbers only.
+    strict_numeric_comparisons: bool,
+    /// A missing lookup yields `Undefined` instead of an error.
+    missing_lookup_undefined: bool,
+    /// Output bounds every registered builtin result must satisfy.
+    builtin_output_limits: crate::BuiltinOutputLimits,
+}
+
+impl EffectivePolicy {
+    /// Intersect the engine policy with the context policy.
+    ///
+    /// Flag-style options are additive (either side can enable them);
+    /// ceiling-style options take the tighter value.
+    fn resolve(engine: Option<&EvaluationPolicy>, context: Option<&EvaluationPolicy>) -> Self {
+        let engine_max_steps = engine
+            .and_then(EvaluationPolicy::max_eval_steps)
+            .unwrap_or(crate::limits::DEFAULT_MAX_EVAL_STEPS);
+        let context_max_steps = context.and_then(EvaluationPolicy::max_eval_steps);
+        let engine_json = engine
+            .and_then(EvaluationPolicy::max_json_parse_length)
+            .unwrap_or(crate::limits::MAX_SOURCE_BYTES);
+        let context_json = context.and_then(EvaluationPolicy::max_json_parse_length);
+        let engine_output_limits = engine
+            .map_or_else(
+                crate::BuiltinOutputLimits::default,
+                EvaluationPolicy::builtin_output_limits,
+            )
+            .most_restrictive(crate::BuiltinOutputLimits::default());
+
+        Self {
+            max_steps: context_max_steps
+                .map_or(engine_max_steps, |limit| limit.min(engine_max_steps)),
+            max_json_parse_length: context_json.map_or(engine_json, |limit| limit.min(engine_json)),
+            strict_mode: engine.is_some_and(EvaluationPolicy::strict_mode)
+                || context.is_some_and(EvaluationPolicy::strict_mode),
+            strict_conversions: engine.is_some_and(EvaluationPolicy::strict_conversion_functions)
+                || context.is_some_and(EvaluationPolicy::strict_conversion_functions),
+            strict_numeric_comparisons: engine
+                .is_some_and(EvaluationPolicy::strict_numeric_comparisons)
+                || context.is_some_and(EvaluationPolicy::strict_numeric_comparisons),
+            missing_lookup_undefined: engine
+                .is_some_and(|policy| policy.missing_lookup() == MissingLookup::Undefined)
+                || context
+                    .is_some_and(|policy| policy.missing_lookup() == MissingLookup::Undefined),
+            builtin_output_limits: context.map_or(engine_output_limits, |policy| {
+                engine_output_limits.most_restrictive(policy.builtin_output_limits())
+            }),
+        }
+    }
+}
 
 /// Per-call evaluation frame that tracks recursion depth and the DoS
-/// step budget for a single top-level [`Evaluator::eval`] invocation.
+/// step budget for a single top-level evaluation.
 ///
 /// Lives on the caller's stack (never on `Evaluator`, never on
 /// [`EvaluationContext`]). Every recursive path inside the evaluator
-/// threads `&mut EvalFrame` instead of a bare `depth: usize`, so:
+/// threads `&EvalFrame` instead of a bare `depth: usize`, so:
 ///
 /// - Concurrent `Arc<Evaluator>` users each get their own frame with zero synchronization — no
 ///   shared atomics, no thread-local state.
@@ -44,23 +145,34 @@ pub(crate) type EvalValue<'a> = Cow<'a, Value>;
 /// - One top-level `eval` call = one step budget, regardless of how many lambdas / reduces /
 ///   pipelines it recurses through.
 ///
+/// The frame is shared by reference, not by `&mut`: a registered builtin holds
+/// a [`BuiltinView`] over the same frame when it invokes a lambda argument, so
+/// the step budget and depth still accumulate across every invocation. What a
+/// builtin must not be able to do — construct a fresh frame — remains
+/// type-impossible.
+///
 /// Closes CO-C1-01 (issue #252): `max_eval_steps` bypass via lambdas.
 pub(crate) struct EvalFrame {
-    depth: usize,
+    depth: Cell<usize>,
     steps: Cell<usize>,
-    max_steps: Option<usize>,
+    policy: EffectivePolicy,
 }
 
 impl EvalFrame {
-    /// Create a fresh frame with the given step cap (snapshotted once
-    /// from the effective policy at the top-level `eval` entry).
+    /// Create a fresh frame around the already-intersected policy.
     #[inline]
-    fn new(max_steps: Option<usize>) -> Self {
+    fn new(policy: EffectivePolicy) -> Self {
         Self {
-            depth: 0,
+            depth: Cell::new(0),
             steps: Cell::new(0),
-            max_steps,
+            policy,
         }
+    }
+
+    /// The effective policy for this call.
+    #[inline]
+    fn policy(&self) -> &EffectivePolicy {
+        &self.policy
     }
 
     /// Count one AST-node evaluation against the step budget.
@@ -77,9 +189,8 @@ impl EvalFrame {
     pub(crate) fn charge(&self, steps: usize) -> ExpressionResult<()> {
         let actual = self.steps.get().saturating_add(steps);
         self.steps.set(actual);
-        if let Some(max) = self.max_steps
-            && actual > max
-        {
+        let max = self.policy.max_steps;
+        if actual > max {
             // Emit a structured warning so dashboards can spot DoS attempts
             // before the typed error has reached the user. `actual` is the
             // step that tripped the budget, not the budget itself.
@@ -94,21 +205,24 @@ impl EvalFrame {
         Ok(())
     }
 
-    fn charge_value(&self, value: &Value) -> ExpressionResult<()> {
+    /// Charge a value's shape (string bytes and container entries) plus one
+    /// step for materializing it. Recurses iteratively, never on the stack.
+    fn charge_value(&self, value: &RuntimeValue) -> ExpressionResult<()> {
         crate::limits::check_value_limits(value)?;
         self.tick()?;
         let mut pending = vec![(value, 1)];
         while let Some((value, depth)) = pending.pop() {
-            crate::limits::check_limit("value depth", depth, crate::limits::MAX_AST_DEPTH)?;
+            crate::limits::check_limit("value depth", depth, MAX_AST_DEPTH)?;
             match value {
-                Value::String(text) => self.charge(text.len())?,
-                Value::Array(values) => {
+                RuntimeValue::String(text) => self.charge(text.len())?,
+                RuntimeValue::DateTime(_) => self.charge(35)?,
+                RuntimeValue::Array(values) => {
                     self.charge(values.len())?;
                     pending.extend(values.iter().map(|value| (value, depth + 1)));
                 },
-                Value::Object(values) => {
+                RuntimeValue::Object(values) => {
                     self.charge(values.len())?;
-                    for (key, value) in values {
+                    for (key, value) in values.iter() {
                         self.charge(key.len())?;
                         pending.push((value, depth + 1));
                     }
@@ -128,47 +242,42 @@ impl EvalFrame {
     /// stack-local, so depth cannot leak across top-level `eval` calls
     /// even if a recursive path bails mid-traversal.
     #[inline]
-    fn enter(&mut self) -> ExpressionResult<()> {
-        if self.depth >= MAX_RECURSION_DEPTH {
+    fn enter(&self) -> ExpressionResult<()> {
+        let depth = self.depth.get();
+        if depth >= MAX_AST_DEPTH {
             tracing::warn!(
                 target: "nebula_expression::dos",
-                limit = MAX_RECURSION_DEPTH,
-                actual = self.depth,
+                limit = MAX_AST_DEPTH,
+                actual = depth,
                 "recursion depth exceeded"
             );
-            return Err(ExpressionError::depth_exceeded(
-                MAX_RECURSION_DEPTH,
-                self.depth,
-            ));
+            return Err(ExpressionError::depth_exceeded(MAX_AST_DEPTH, depth));
         }
-        self.depth += 1;
+        self.depth.set(depth + 1);
         Ok(())
     }
 
     /// Leave a recursion level previously entered via [`enter`].
     #[inline]
-    fn leave(&mut self) {
-        debug_assert!(self.depth > 0, "leave called without matching enter");
-        self.depth -= 1;
+    fn leave(&self) {
+        let depth = self.depth.get();
+        debug_assert!(depth > 0, "leave called without matching enter");
+        self.depth.set(depth.saturating_sub(1));
     }
 }
 
-/// Read-only handle on the evaluator's policy state, exposed to
+/// Read-only handle on the evaluator's frame and policy state, exposed to
 /// registered builtins.
 ///
 /// Replaces the old `&Evaluator` parameter that builtins used to
 /// receive. The crucial difference: `BuiltinView` does not expose
-/// `eval()` or `eval_with_frame()`, so a registered builtin literally
-/// cannot recurse back into AST evaluation. The CO-C1-01 step-budget
-/// bypass therefore becomes type-impossible for first-party builtins,
-/// closing the discipline-only contract documented in the crate
-/// `lib.rs` "Known limitation" note (issue #252).
+/// `eval()` or construct a fresh frame, so a registered builtin cannot reset
+/// the step budget. Lambda arguments are invoked through
+/// [`BuiltinView::invoke_lambda`], which reuses the caller's frame.
 ///
-/// Higher-order combinators (`filter`, `map`, `reduce`, …) live inside
-/// the evaluator module itself and continue to call `eval_with_frame`
-/// directly with the caller's `EvalFrame`. They never go through this
-/// view; the type-enforced boundary applies only to the
-/// `BuiltinRegistry`'s callable surface.
+/// Higher-order combinators (`filter`, `map`, `reduce`, …) are registered
+/// builtins too and use the same path; the shared-budget invariant is
+/// enforced by this view, not by convention.
 #[derive(Copy, Clone)]
 pub struct BuiltinView<'a> {
     eval: &'a Evaluator,
@@ -183,7 +292,7 @@ impl<'a> BuiltinView<'a> {
     }
 
     /// Charge work before a builtin loop or allocation. This shares the calling
-    /// program's budget without exposing evaluator re-entry or budget resets.
+    /// program's budget without exposing a frame reset.
     pub fn charge_work(&self, units: usize) -> ExpressionResult<()> {
         self.frame.charge(units)
     }
@@ -198,32 +307,132 @@ impl<'a> BuiltinView<'a> {
         self.charge_work(bytes)
     }
 
+    /// Invoke a lambda argument with the caller's frame.
+    ///
+    /// The lambda's parameters are bound positionally; a parameter-count
+    /// mismatch is an argument error, not a silent partial binding. The
+    /// invocation shares the calling program's step budget and recursion
+    /// depth, so a lambda cannot be used to reset either.
+    ///
+    /// # Errors
+    /// Returns an argument error when `lambda` is not a lambda expression or
+    /// `arguments` does not match its parameter count.
+    pub fn invoke_lambda(
+        &self,
+        lambda: &Expr,
+        arguments: &[RuntimeValue],
+        context: &EvaluationContext,
+    ) -> ExpressionResult<RuntimeValue> {
+        let Expr::Lambda { params, body } = lambda else {
+            return Err(ExpressionError::type_error(
+                "lambda expression",
+                "non-lambda",
+            ));
+        };
+        if params.len() != arguments.len() {
+            return Err(ExpressionError::invalid_argument(
+                "lambda",
+                format!(
+                    "expected {} argument(s), got {}",
+                    params.len(),
+                    arguments.len()
+                ),
+            ));
+        }
+        let mut lambda_context = context.clone();
+        for (param, argument) in params.iter().zip(arguments) {
+            lambda_context.set_lambda_var(param, argument.clone());
+        }
+        self.eval.eval_with_frame(body, &lambda_context, self.frame)
+    }
+
+    /// Invoke a lambda body with an already-prepared context.
+    ///
+    /// Used by combinators that bind extra names beyond the lambda's own
+    /// parameters (for example `$acc` in `reduce`). Shares the caller's frame
+    /// exactly like [`Self::invoke_lambda`].
+    pub fn eval_body(
+        &self,
+        body: &Expr,
+        context: &EvaluationContext,
+    ) -> ExpressionResult<RuntimeValue> {
+        self.eval.eval_with_frame(body, context, self.frame)
+    }
+
     /// Whether strict mode is enabled for this evaluation (engine-level
     /// or context-level policy).
     #[inline(always)]
-    pub fn is_strict_mode(&self, context: &EvaluationContext) -> bool {
-        self.eval.is_strict_mode(context)
+    pub fn is_strict_mode(&self) -> bool {
+        self.frame.policy().strict_mode
     }
 
     /// Whether strict-coercion mode is enabled for conversion builtins.
     #[inline(always)]
-    pub fn strict_conversions_enabled(&self, context: &EvaluationContext) -> bool {
-        self.eval.strict_conversions_enabled(context)
+    pub fn strict_conversions_enabled(&self) -> bool {
+        self.frame.policy().strict_conversions
     }
 
-    /// Optional max JSON parse length cap for `parse_json`.
+    /// Max JSON parse length cap for `parse_json`, already intersected.
     #[inline(always)]
-    pub fn max_json_parse_length(&self, context: &EvaluationContext) -> Option<usize> {
-        self.eval.max_json_parse_length(context)
+    pub fn max_json_parse_length(&self) -> usize {
+        self.frame.policy().max_json_parse_length
     }
 
-    pub(crate) fn output_builder(self, context: &EvaluationContext) -> crate::BuiltinOutputBuilder {
-        crate::BuiltinOutputBuilder::new(self.eval.builtin_output_limits(context))
+    pub(crate) fn output_builder(self) -> crate::BuiltinOutputBuilder {
+        crate::BuiltinOutputBuilder::new(self.frame.policy().builtin_output_limits)
     }
 }
 
-/// Evaluator for expression ASTs
-pub struct Evaluator {
+/// A context view whose members can be read directly without materializing
+/// the whole view object (`$node.<key>`, `$execution.<key>`).
+#[derive(Clone, Copy)]
+enum DirectView {
+    Node,
+    Execution,
+}
+
+impl DirectView {
+    /// The view a bare variable name refers to, if any.
+    fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "node" => Some(Self::Node),
+            "execution" => Some(Self::Execution),
+            _ => None,
+        }
+    }
+
+    /// Resolve one member of this view.
+    fn resolve<'a>(self, context: &'a EvaluationContext, key: &str) -> Option<&'a RuntimeValue> {
+        match self {
+            Self::Node => context.resolve_node_value(key),
+            Self::Execution => context.resolve_execution_value(key),
+        }
+    }
+}
+
+/// Charge one member-access step and its depth check.
+///
+/// The entered region is closed immediately, never held across fallible work:
+/// every caller does `charge_member_access(frame)?` and then any further work
+/// (such as evaluating an index expression) outside the entered region.
+fn charge_member_access(frame: &EvalFrame) -> ExpressionResult<()> {
+    frame.tick()?;
+    frame.enter()?;
+    frame.leave();
+    Ok(())
+}
+
+/// Reserved namespace identifiers that dispatch as function libraries.
+fn is_namespace(name: &str) -> bool {
+    matches!(name, "Math" | "JSON" | "Object" | "Array" | "Number")
+}
+
+/// Evaluator for expression ASTs.
+///
+/// Sole owner of the builtin registry and the engine-level policy, so a
+/// registry or policy change is one mutation here rather than a field that has
+/// to be re-synchronized with a copy elsewhere.
+pub(crate) struct Evaluator {
     builtins: Arc<BuiltinRegistry>,
     policy: Option<Arc<EvaluationPolicy>>,
     /// Compiled regex cache (pattern → `Arc<Regex>`).
@@ -237,13 +446,14 @@ pub struct Evaluator {
 }
 
 impl Evaluator {
-    /// Create a new evaluator with the given builtin registry
-    pub fn new(builtins: Arc<BuiltinRegistry>) -> Self {
-        Self::with_policy(builtins, None)
+    /// Create a new evaluator over an empty registry with no policy.
+    #[cfg(test)]
+    pub(crate) fn new() -> Self {
+        Self::with_policy(Arc::new(BuiltinRegistry::new()), None)
     }
 
     /// Create a new evaluator with an optional policy.
-    pub fn with_policy(
+    pub(crate) fn with_policy(
         builtins: Arc<BuiltinRegistry>,
         policy: Option<Arc<EvaluationPolicy>>,
     ) -> Self {
@@ -255,61 +465,72 @@ impl Evaluator {
         }
     }
 
-    /// Resolve the effective `max_eval_steps` for this `eval` call.
-    ///
-    /// Context limits can tighten the engine ceiling, never raise it.
-    #[inline]
-    fn resolve_max_steps(&self, context: &EvaluationContext) -> Option<usize> {
-        let engine_limit = self
-            .policy
-            .as_deref()
-            .and_then(EvaluationPolicy::max_eval_steps)
-            .unwrap_or(crate::limits::DEFAULT_MAX_EVAL_STEPS);
-        Some(
-            context
-                .policy()
-                .and_then(EvaluationPolicy::max_eval_steps)
-                .map_or(engine_limit, |limit| limit.min(engine_limit)),
-        )
+    /// Replace the engine-level policy.
+    pub(crate) fn set_policy(&mut self, policy: Option<Arc<EvaluationPolicy>>) {
+        self.policy = policy;
     }
 
-    /// Evaluate an expression in the given context.
+    /// Borrow the engine-level policy.
+    pub(crate) fn policy(&self) -> Option<&EvaluationPolicy> {
+        self.policy.as_deref()
+    }
+
+    /// Register a bounded function, copy-on-write on the registry.
+    pub(crate) fn register_bounded(
+        &mut self,
+        name: impl AsRef<str>,
+        function: crate::builtins::BuiltinFunction,
+    ) {
+        Arc::make_mut(&mut self.builtins).register_bounded(name, function);
+    }
+
+    /// Intersect the engine and context policies for one top-level call.
     ///
-    /// Top-level AST and compiled-program calls construct a fresh [`EvalFrame`].
-    /// All recursive paths inside the evaluator reuse the caller's frame
-    /// via [`eval_with_frame`], so the step budget defined by
-    /// [`EvaluationPolicy::max_eval_steps`] is enforced across ALL
-    /// nested work — lambdas, reduces, pipelines, higher-order combinators.
-    ///
-    /// # CO-C1-01 footgun (builtins) — closed
-    ///
-    /// `BuiltinRegistry::call` now hands builtins a [`BuiltinView`]
-    /// instead of `&Evaluator`. The view exposes policy and work-charging
-    /// methods, so a registered builtin cannot recurse back into AST
-    /// evaluation — the historical step-budget bypass (issue #252) is
-    /// type-enforced shut. Higher-order combinators (`map`, `filter`,
-    /// `reduce`, ...) live inside this module and continue to use
-    /// `eval_with_frame` with the caller's `EvalFrame` directly, so
-    /// their iteration budget stays accumulated. See the `lib.rs`
-    /// crate-level docs and `docs/pitfalls.md` for the historical
-    /// context.
+    /// Computed once per call so the frame budget, coercion rules, and output
+    /// bounds all read the same intersection.
     #[inline]
-    pub fn eval(&self, expr: &Expr, context: &EvaluationContext) -> ExpressionResult<Value> {
-        let mut frame = EvalFrame::new(self.resolve_max_steps(context));
-        let result = self.eval_with_frame(expr, context, &mut frame)?;
+    fn resolve_effective_policy(&self, context: &EvaluationContext) -> EffectivePolicy {
+        EffectivePolicy::resolve(self.policy.as_deref(), context.policy())
+    }
+
+    /// Evaluate a bare AST expression and convert the result to plain JSON.
+    ///
+    /// Test-facing: production paths go through a [`crate::CompiledProgram`].
+    #[cfg(test)]
+    #[inline]
+    pub(crate) fn eval(
+        &self,
+        expr: &Expr,
+        context: &EvaluationContext,
+    ) -> ExpressionResult<serde_json::Value> {
+        let frame = EvalFrame::new(self.resolve_effective_policy(context));
+        let result = self.eval_with_frame(expr, context, &frame)?;
         crate::limits::check_value_limits(&result)?;
-        Ok(result)
+        Ok(result.to_json())
     }
 
     pub(crate) fn eval_program(
         &self,
         program: &crate::CompiledProgram,
         context: &EvaluationContext,
-    ) -> ExpressionResult<Value> {
-        let mut frame = EvalFrame::new(self.resolve_max_steps(context));
-        let result = program.evaluate(self, context, &mut frame)?;
+    ) -> ExpressionResult<RuntimeValue> {
+        let frame = EvalFrame::new(self.resolve_effective_policy(context));
+        let result = program.evaluate(self, context, &frame)?;
         crate::limits::check_value_limits(&result)?;
         Ok(result)
+    }
+
+    /// Render a template program to text under this evaluator's policy.
+    ///
+    /// The text counterpart of [`Self::eval_program`]; output bounds are
+    /// enforced per appended piece inside the renderer.
+    pub(crate) fn render_program(
+        &self,
+        program: &crate::CompiledProgram,
+        context: &EvaluationContext,
+    ) -> ExpressionResult<String> {
+        let frame = EvalFrame::new(self.resolve_effective_policy(context));
+        program.render_text(self, context, &frame)
     }
 
     /// Evaluate an expression using the caller's step/depth frame.
@@ -322,8 +543,8 @@ impl Evaluator {
         &self,
         expr: &Expr,
         context: &EvaluationContext,
-        frame: &mut EvalFrame,
-    ) -> ExpressionResult<Value> {
+        frame: &EvalFrame,
+    ) -> ExpressionResult<RuntimeValue> {
         frame.tick()?;
         frame.enter()?;
         let result = self.eval_node(expr, context, frame);
@@ -338,20 +559,24 @@ impl Evaluator {
         &self,
         expr: &Expr,
         context: &EvaluationContext,
-        frame: &mut EvalFrame,
-    ) -> ExpressionResult<Value> {
+        frame: &EvalFrame,
+    ) -> ExpressionResult<RuntimeValue> {
         match expr {
-            Expr::Literal(val) => {
-                if matches!(val, Value::String(_) | Value::Array(_) | Value::Object(_)) {
-                    frame.charge_value(val)?;
+            Expr::Literal(value) => {
+                if matches!(
+                    value,
+                    RuntimeValue::String(_) | RuntimeValue::Array(_) | RuntimeValue::Object(_)
+                ) {
+                    frame.charge_value(value)?;
                 }
-                Ok(val.clone())
+                Ok(value.clone())
             },
 
             Expr::Variable(name) => {
-                let value = context
-                    .resolve_variable_value(name)?
-                    .ok_or_else(|| ExpressionError::expression_variable_not_found(&**name))?;
+                let value = match context.resolve_variable_value(name)? {
+                    Some(value) => value,
+                    None => return self.missing_variable(name, frame),
+                };
                 frame.charge_value(&value)?;
                 Ok(value.into_owned())
             },
@@ -362,9 +587,10 @@ impl Evaluator {
                     frame.charge_value(&value)?;
                     return Ok((*value).clone());
                 }
-                // Otherwise treat as a string constant
+                // Otherwise treat as a string constant. The name is already an
+                // `Arc<str>`, so this is a refcount bump, not an allocation.
                 frame.charge(name.len())?;
-                Ok(Value::String(name.as_ref().to_string()))
+                Ok(RuntimeValue::String(Arc::clone(name)))
             },
 
             Expr::Negate(expr) => {
@@ -374,7 +600,7 @@ impl Evaluator {
 
             Expr::Not(expr) => {
                 let val = self.eval_with_frame(expr, context, frame)?;
-                Ok(Value::Bool(!self.coerce_boolean(&val, context)?))
+                Ok(RuntimeValue::Bool(!self.coerce_boolean(&val, frame)?))
             },
 
             Expr::Binary { left, op, right } => {
@@ -391,6 +617,13 @@ impl Evaluator {
 
             Expr::FunctionCall { name, args } => self.eval_function(name, args, context, frame),
 
+            Expr::MethodCall {
+                object,
+                method,
+                args,
+                optional,
+            } => self.eval_method_call(object, method, args, *optional, context, frame),
+
             Expr::Pipeline {
                 value,
                 function,
@@ -403,7 +636,7 @@ impl Evaluator {
                 else_expr,
             } => {
                 let cond_val = self.eval_with_frame(condition, context, frame)?;
-                if self.coerce_boolean(&cond_val, context)? {
+                if self.coerce_boolean(&cond_val, frame)? {
                     self.eval_with_frame(then_expr, context, frame)
                 } else {
                     self.eval_with_frame(else_expr, context, frame)
@@ -411,8 +644,8 @@ impl Evaluator {
             },
 
             Expr::Lambda { .. } => {
-                // Lambdas are handled specially in higher-order functions
-                Err(ExpressionError::expression_eval_error(
+                // A lambda evaluates only through `BuiltinView::invoke_lambda`.
+                Err(ExpressionError::eval_error(
                     "Lambda expressions can only be used as function arguments",
                 ))
             },
@@ -426,7 +659,7 @@ impl Evaluator {
         &self,
         expr: &'a Expr,
         context: &'a EvaluationContext,
-        frame: &mut EvalFrame,
+        frame: &EvalFrame,
     ) -> ExpressionResult<EvalValue<'a>> {
         match expr {
             Expr::Literal(_)
@@ -448,19 +681,23 @@ impl Evaluator {
         &self,
         expr: &'a Expr,
         context: &'a EvaluationContext,
-        frame: &mut EvalFrame,
+        frame: &EvalFrame,
     ) -> ExpressionResult<EvalValue<'a>> {
         match expr {
             Expr::Literal(value) => {
-                if matches!(value, Value::String(_) | Value::Array(_) | Value::Object(_)) {
+                if matches!(
+                    value,
+                    RuntimeValue::String(_) | RuntimeValue::Array(_) | RuntimeValue::Object(_)
+                ) {
                     frame.charge_value(value)?;
                 }
                 Ok(Cow::Borrowed(value))
             },
             Expr::Variable(name) => {
-                let value = context
-                    .resolve_variable_value(name)?
-                    .ok_or_else(|| ExpressionError::expression_variable_not_found(&**name))?;
+                let value = match context.resolve_variable_value(name)? {
+                    Some(value) => value,
+                    None => return self.missing_variable(name, frame).map(Cow::Owned),
+                };
                 frame.charge_value(&value)?;
                 Ok(value)
             },
@@ -470,84 +707,70 @@ impl Evaluator {
                     return Ok(Cow::Borrowed(value));
                 }
                 frame.charge(name.len())?;
-                Ok(Cow::Owned(Value::String(name.as_ref().to_string())))
+                Ok(Cow::Owned(RuntimeValue::String(Arc::clone(name))))
             },
-            Expr::PropertyAccess { object, property } => {
+            Expr::PropertyAccess {
+                object,
+                property,
+                optional,
+            } => {
+                // A bare `$node`/`$execution` receiver resolves its member
+                // directly, without materializing the aggregate view object.
                 if let Expr::Variable(name) = object.as_ref()
-                    && name.as_ref() == "node"
+                    && let Some(view) = DirectView::from_name(name)
                 {
-                    frame.tick()?;
-                    frame.enter()?;
-                    let value = context.resolve_node_value(property).ok_or_else(|| {
-                        ExpressionError::expression_eval_error(format!(
-                            "Property '{property}' not found"
-                        ))
-                    });
-                    frame.leave();
-                    let value = value?;
-                    frame.charge_value(value)?;
-                    return Ok(Cow::Borrowed(value));
-                }
-                if let Expr::Variable(name) = object.as_ref()
-                    && name.as_ref() == "execution"
-                {
-                    frame.tick()?;
-                    frame.enter()?;
-                    let value = context.resolve_execution_value(property).ok_or_else(|| {
-                        ExpressionError::expression_eval_error(format!(
-                            "Property '{property}' not found"
-                        ))
-                    });
-                    frame.leave();
-                    let value = value?;
+                    charge_member_access(frame)?;
+                    let Some(value) = view.resolve(context, property) else {
+                        return if *optional {
+                            Ok(Cow::Owned(RuntimeValue::Undefined))
+                        } else {
+                            self.missing_property(property, frame).map(Cow::Owned)
+                        };
+                    };
                     frame.charge_value(value)?;
                     return Ok(Cow::Borrowed(value));
                 }
                 let object = self.eval_borrowed_with_frame(object, context, frame)?;
-                self.access_property(object, property)
-            },
-            Expr::IndexAccess { object, index } => {
-                if let Expr::Variable(name) = object.as_ref()
-                    && name.as_ref() == "node"
-                {
-                    frame.tick()?;
-                    frame.enter()?;
-                    frame.leave();
-                    let index = self.eval_borrowed_with_frame(index, context, frame)?;
-                    let key = index.as_str().ok_or_else(|| {
-                        ExpressionError::expression_type_error(
-                            "string",
-                            crate::value_utils::value_type_name(&index),
-                        )
-                    })?;
-                    let value = context.resolve_node_value(key).ok_or_else(|| {
-                        ExpressionError::expression_eval_error("Object key not found")
-                    })?;
-                    frame.charge_value(value)?;
-                    return Ok(Cow::Borrowed(value));
+                if *optional && object.is_nullish() {
+                    return Ok(Cow::Owned(RuntimeValue::Undefined));
                 }
+                self.access_property(object, property, frame, *optional)
+            },
+            Expr::IndexAccess {
+                object,
+                index,
+                optional,
+            } => {
+                // The index expression still evaluates before the lookup, but
+                // outside the entered region: `charge_member_access` closes it.
                 if let Expr::Variable(name) = object.as_ref()
-                    && name.as_ref() == "execution"
+                    && let Some(view) = DirectView::from_name(name)
                 {
-                    frame.tick()?;
-                    frame.enter()?;
-                    frame.leave();
+                    charge_member_access(frame)?;
                     let index = self.eval_borrowed_with_frame(index, context, frame)?;
-                    let key = index.as_str().ok_or_else(|| {
-                        ExpressionError::expression_type_error(
+                    let Some(key) = index.as_str() else {
+                        return Err(ExpressionError::type_error(
                             "string",
                             crate::value_utils::value_type_name(&index),
-                        )
-                    })?;
-                    let value = context.resolve_execution_value(key).ok_or_else(|| {
-                        ExpressionError::expression_eval_error("Object key not found")
-                    })?;
+                        ));
+                    };
+                    let value = view.resolve(context, key);
+                    let Some(value) = value else {
+                        return if *optional {
+                            Ok(Cow::Owned(RuntimeValue::Undefined))
+                        } else {
+                            self.missing_key(frame).map(Cow::Owned)
+                        };
+                    };
                     frame.charge_value(value)?;
                     return Ok(Cow::Borrowed(value));
                 }
                 let object = self.eval_borrowed_with_frame(object, context, frame)?;
+                if *optional && object.is_nullish() {
+                    return Ok(Cow::Owned(RuntimeValue::Undefined));
+                }
                 let index = self.eval_borrowed_with_frame(index, context, frame)?;
-                self.access_index(object, &index)
+                self.access_index(object, &index, frame, *optional)
             },
             _ => self.eval_with_frame(expr, context, frame).map(Cow::Owned),
         }
@@ -558,16 +781,96 @@ impl Evaluator {
         name: &str,
         args: &[Expr],
         context: &EvaluationContext,
-        frame: &mut EvalFrame,
-    ) -> ExpressionResult<Value> {
-        if let Some(result) = self.try_higher_order_function(name, args, context, frame) {
-            return result;
-        }
-        let mut values = Vec::with_capacity(args.len());
+        frame: &EvalFrame,
+    ) -> ExpressionResult<RuntimeValue> {
+        let mut arguments = Vec::with_capacity(args.len());
         for argument in args {
-            values.push(self.eval_borrowed_with_frame(argument, context, frame)?);
+            arguments.push(self.eval_argument(argument, context, frame)?);
         }
-        self.call_function(name, &values, context, frame)
+        self.call_function(name, &arguments, context, frame)
+    }
+
+    /// Evaluate `receiver.method(args…)`.
+    ///
+    /// Methods are the same standard library as functions with the receiver
+    /// as the first argument; see [`crate::builtins::methods`]. A bare
+    /// identifier receiver naming a namespace (`Math`, `JSON`, `Object`, …)
+    /// dispatches to a receiverless builtin instead. `optional`
+    /// (`?.method()`) short-circuits a nullish receiver to `Undefined`.
+    fn eval_method_call(
+        &self,
+        object: &Expr,
+        method: &str,
+        args: &[Expr],
+        optional: bool,
+        context: &EvaluationContext,
+        frame: &EvalFrame,
+    ) -> ExpressionResult<RuntimeValue> {
+        // Namespace dispatch happens before the receiver is evaluated so a
+        // namespace name is never treated as a free variable.
+        if let Expr::Identifier(namespace) = object {
+            let namespace = namespace.as_ref();
+            if let Some(name) = crate::builtins::methods::resolve_namespace(namespace, method) {
+                let mut arguments = Vec::with_capacity(args.len());
+                for argument in args {
+                    arguments.push(self.eval_argument(argument, context, frame)?);
+                }
+                return self.call_function(name, &arguments, context, frame);
+            }
+            // An unknown member on a known namespace is a clearer error than
+            // "variable not found" about the namespace name itself.
+            if is_namespace(namespace) {
+                return Err(ExpressionError::eval_error(format!(
+                    "Unknown member '{method}' on namespace '{namespace}'"
+                )));
+            }
+        }
+
+        let receiver = self.eval_borrowed_with_frame(object, context, frame)?;
+        if optional && receiver.is_nullish() {
+            return Ok(RuntimeValue::Undefined);
+        }
+
+        let target = crate::builtins::methods::resolve_method(method);
+        // Without an alias the author's spelling goes to the registry as-is;
+        // canonical names therefore keep working unchanged.
+        let name = if let Some(target) = target {
+            target.name()
+        } else {
+            method
+        };
+
+        // `items.reduce(fn, init)` uses the JavaScript argument order; the
+        // builtin takes `(initial, fn)`.
+        if matches!(
+            target,
+            Some(crate::builtins::methods::MethodTarget::ReceiverReduce(_))
+        ) {
+            let mut arguments = Vec::with_capacity(1 + args.len());
+            arguments.push(Argument::Value(receiver));
+            match args {
+                [lambda, initial] => {
+                    let initial = self.eval_argument(initial, context, frame)?;
+                    let lambda = self.eval_argument(lambda, context, frame)?;
+                    arguments.push(initial);
+                    arguments.push(lambda);
+                },
+                _ => {
+                    return Err(ExpressionError::invalid_argument(
+                        method,
+                        format!("expected 2 arguments, got {}", args.len()),
+                    ));
+                },
+            }
+            return self.call_function(name, &arguments, context, frame);
+        }
+
+        let mut arguments = Vec::with_capacity(1 + args.len());
+        arguments.push(Argument::Value(receiver));
+        for argument in args {
+            arguments.push(self.eval_argument(argument, context, frame)?);
+        }
+        self.call_function(name, &arguments, context, frame)
     }
 
     fn eval_pipeline(
@@ -576,28 +879,37 @@ impl Evaluator {
         function: &str,
         args: &[Expr],
         context: &EvaluationContext,
-        frame: &mut EvalFrame,
-    ) -> ExpressionResult<Value> {
-        let mut full_args = Vec::with_capacity(1 + args.len());
-        full_args.push(value.clone());
-        full_args.extend(args.iter().cloned());
-        if let Some(result) = self.try_higher_order_function(function, &full_args, context, frame) {
-            return result;
-        }
-        let mut values = Vec::with_capacity(1 + args.len());
-        values.push(self.eval_borrowed_with_frame(value, context, frame)?);
+        frame: &EvalFrame,
+    ) -> ExpressionResult<RuntimeValue> {
+        let mut arguments = Vec::with_capacity(1 + args.len());
+        arguments.push(self.eval_argument(value, context, frame)?);
         for argument in args {
-            values.push(self.eval_borrowed_with_frame(argument, context, frame)?);
+            arguments.push(self.eval_argument(argument, context, frame)?);
         }
-        self.call_function(function, &values, context, frame)
+        self.call_function(function, &arguments, context, frame)
+    }
+
+    /// Evaluate one call argument: lambdas stay unevaluated, values evaluate.
+    fn eval_argument<'a>(
+        &'a self,
+        argument: &'a Expr,
+        context: &'a EvaluationContext,
+        frame: &EvalFrame,
+    ) -> ExpressionResult<Argument<'a>> {
+        match argument {
+            Expr::Lambda { .. } => Ok(Argument::Lambda(argument)),
+            _ => self
+                .eval_borrowed_with_frame(argument, context, frame)
+                .map(Argument::Value),
+        }
     }
 
     fn eval_array(
         &self,
         elements: &[Expr],
         context: &EvaluationContext,
-        frame: &mut EvalFrame,
-    ) -> ExpressionResult<Value> {
+        frame: &EvalFrame,
+    ) -> ExpressionResult<RuntimeValue> {
         let mut budget = crate::limits::AggregateValueBudget::new()?;
         let mut values = Vec::with_capacity(elements.len());
         for element in elements {
@@ -605,38 +917,50 @@ impl Evaluator {
             budget.push_array_value(&value)?;
             values.push(value);
         }
-        Ok(Value::Array(values))
+        Ok(RuntimeValue::Array(values.into()))
     }
 
     fn eval_object(
         &self,
         pairs: &[(Arc<str>, Expr)],
         context: &EvaluationContext,
-        frame: &mut EvalFrame,
-    ) -> ExpressionResult<Value> {
-        let mut object = serde_json::Map::new();
+        frame: &EvalFrame,
+    ) -> ExpressionResult<RuntimeValue> {
+        let mut object = std::collections::BTreeMap::new();
         let mut budget = crate::limits::AggregateValueBudget::new()?;
         for (key, expression) in pairs {
             frame.charge(key.len())?;
             let value = self.eval_with_frame(expression, context, frame)?;
             budget.insert_object_value(key, &value, object.get(key.as_ref()))?;
-            object.insert(key.to_string(), value);
+            object.insert(Arc::clone(key), value);
         }
-        Ok(Value::Object(object))
+        Ok(RuntimeValue::Object(Arc::new(object)))
     }
 
     // Keep numeric conversion/error temporaries out of every recursive dispatch frame.
-    fn negate(&self, value: &Value) -> ExpressionResult<Value> {
-        let number = value.as_number().ok_or_else(|| {
-            ExpressionError::type_error("number", crate::value_utils::value_type_name(value))
-        })?;
-        if number.is_f64() {
-            return crate::value_utils::finite_result(-self.number_to_f64(number)?, "negation");
+    fn negate(&self, value: &RuntimeValue) -> ExpressionResult<RuntimeValue> {
+        match value {
+            RuntimeValue::Float(value) => {
+                return crate::value_utils::finite_result(-value, "negation");
+            },
+            RuntimeValue::Integer(value) => {
+                return crate::value_utils::integer_result(
+                    i128::from(*value).checked_neg(),
+                    "negation",
+                );
+            },
+            RuntimeValue::Unsigned(value) => {
+                return crate::value_utils::integer_result(
+                    i128::from(*value).checked_neg(),
+                    "negation",
+                );
+            },
+            _ => {},
         }
-        let integer = crate::value_utils::integer_value(number).ok_or_else(|| {
-            ExpressionError::eval_error("Integer cannot be represented in the JSON integer range")
-        })?;
-        crate::value_utils::integer_result(integer.checked_neg(), "negation")
+        Err(ExpressionError::type_error(
+            "number",
+            crate::value_utils::value_type_name(value),
+        ))
     }
 
     /// Evaluate a binary operation
@@ -647,27 +971,36 @@ impl Evaluator {
         left: &Expr,
         right: &Expr,
         context: &EvaluationContext,
-        frame: &mut EvalFrame,
-    ) -> ExpressionResult<Value> {
+        frame: &EvalFrame,
+    ) -> ExpressionResult<RuntimeValue> {
         // Short-circuit evaluation for logical operators
         match op {
             BinaryOp::And => {
                 let left_val = self.eval_borrowed_with_frame(left, context, frame)?;
-                if !self.coerce_boolean(&left_val, context)? {
+                if !self.coerce_boolean(&left_val, frame)? {
                     // Short-circuit: if left is false, don't evaluate right
-                    return Ok(Value::Bool(false));
+                    return Ok(RuntimeValue::Bool(false));
                 }
                 let right_val = self.eval_borrowed_with_frame(right, context, frame)?;
-                Ok(Value::Bool(self.coerce_boolean(&right_val, context)?))
+                Ok(RuntimeValue::Bool(self.coerce_boolean(&right_val, frame)?))
             },
             BinaryOp::Or => {
                 let left_val = self.eval_borrowed_with_frame(left, context, frame)?;
-                if self.coerce_boolean(&left_val, context)? {
+                if self.coerce_boolean(&left_val, frame)? {
                     // Short-circuit: if left is true, don't evaluate right
-                    return Ok(Value::Bool(true));
+                    return Ok(RuntimeValue::Bool(true));
                 }
                 let right_val = self.eval_borrowed_with_frame(right, context, frame)?;
-                Ok(Value::Bool(self.coerce_boolean(&right_val, context)?))
+                Ok(RuntimeValue::Bool(self.coerce_boolean(&right_val, frame)?))
+            },
+            BinaryOp::Coalesce => {
+                // `??` returns the left side unless it is nullish. Unlike
+                // `||` it keeps `false`, `0`, and `""`.
+                let left_val = self.eval_borrowed_with_frame(left, context, frame)?;
+                if !left_val.is_nullish() {
+                    return Ok(left_val.into_owned());
+                }
+                self.eval_with_frame(right, context, frame)
             },
             // For all other operators, evaluate both operands
             _ => {
@@ -682,27 +1015,23 @@ impl Evaluator {
                     BinaryOp::Modulo => self.modulo(&left_val, &right_val),
                     BinaryOp::Power => self.power(&left_val, &right_val),
                     BinaryOp::Equal | BinaryOp::NotEqual => {
-                        let equal = match (left_val.as_ref(), right_val.as_ref()) {
-                            (Value::Number(left), Value::Number(right)) => {
-                                crate::value_utils::compare_numbers(left, right)
-                                    == Some(std::cmp::Ordering::Equal)
-                            },
-                            _ => left_val == right_val,
-                        };
-                        Ok(Value::Bool(if op == BinaryOp::Equal {
+                        // Structural equality already compares numbers exactly
+                        // across representations; see `RuntimeValue::eq`.
+                        let equal = left_val == right_val;
+                        Ok(RuntimeValue::Bool(if op == BinaryOp::Equal {
                             equal
                         } else {
                             !equal
                         }))
                     },
-                    BinaryOp::LessThan => self.less_than(&left_val, &right_val, context),
-                    BinaryOp::GreaterThan => self.greater_than(&left_val, &right_val, context),
-                    BinaryOp::LessEqual => self.less_equal(&left_val, &right_val, context),
-                    BinaryOp::GreaterEqual => self.greater_equal(&left_val, &right_val, context),
+                    BinaryOp::LessThan => self.less_than(&left_val, &right_val, frame),
+                    BinaryOp::GreaterThan => self.greater_than(&left_val, &right_val, frame),
+                    BinaryOp::LessEqual => self.less_equal(&left_val, &right_val, frame),
+                    BinaryOp::GreaterEqual => self.greater_equal(&left_val, &right_val, frame),
                     BinaryOp::RegexMatch => self.regex_match(&left_val, &right_val),
-                    BinaryOp::And | BinaryOp::Or => Err(ExpressionError::internal(
-                        "logical operator escaped short-circuit dispatch",
-                    )),
+                    BinaryOp::And | BinaryOp::Or | BinaryOp::Coalesce => Err(
+                        ExpressionError::internal("short-circuit operator escaped dispatch"),
+                    ),
                 }
             },
         }
@@ -710,34 +1039,36 @@ impl Evaluator {
 
     /// Addition
     #[inline]
-    fn add(&self, left: &Value, right: &Value, frame: &EvalFrame) -> ExpressionResult<Value> {
+    fn add(
+        &self,
+        left: &RuntimeValue,
+        right: &RuntimeValue,
+        frame: &EvalFrame,
+    ) -> ExpressionResult<RuntimeValue> {
         match (left, right) {
-            (Value::Number(l), Value::Number(r)) => {
-                if let (Some(left), Some(right)) = (
-                    crate::value_utils::integer_value(l),
-                    crate::value_utils::integer_value(r),
-                ) {
+            (RuntimeValue::String(left), RuntimeValue::String(right)) => {
+                crate::limits::check_limit(
+                    "string output bytes",
+                    left.len().saturating_add(right.len()),
+                    crate::limits::MAX_RESULT_BYTES,
+                )?;
+                frame.charge(left.len() + right.len())?;
+                // Pre-allocate exact capacity to avoid reallocations
+                let mut result = String::with_capacity(left.len() + right.len());
+                result.push_str(left);
+                result.push_str(right);
+                Ok(RuntimeValue::string(result))
+            },
+            _ if left.is_number() && right.is_number() => {
+                if let (Some(left), Some(right)) = (left.as_i128(), right.as_i128()) {
                     crate::value_utils::integer_result(left.checked_add(right), "addition")
                 } else {
-                    let lf = self.number_to_f64(l)?;
-                    let rf = self.number_to_f64(r)?;
+                    let lf = left.as_f64().unwrap_or_default();
+                    let rf = right.as_f64().unwrap_or_default();
                     crate::value_utils::finite_result(lf + rf, "addition")
                 }
             },
-            (Value::String(l), Value::String(r)) => {
-                crate::limits::check_limit(
-                    "string output bytes",
-                    l.len().saturating_add(r.len()),
-                    crate::limits::MAX_RESULT_BYTES,
-                )?;
-                frame.charge(l.len() + r.len())?;
-                // Pre-allocate exact capacity to avoid reallocations
-                let mut result = String::with_capacity(l.len() + r.len());
-                result.push_str(l);
-                result.push_str(r);
-                Ok(Value::String(result))
-            },
-            _ => Err(ExpressionError::expression_type_error(
+            _ => Err(ExpressionError::type_error(
                 "number or string",
                 format!(
                     "{} and {}",
@@ -750,152 +1081,132 @@ impl Evaluator {
 
     /// Subtraction
     #[inline]
-    fn subtract(&self, left: &Value, right: &Value) -> ExpressionResult<Value> {
-        match (left, right) {
-            (Value::Number(l), Value::Number(r)) => {
-                if let (Some(left), Some(right)) = (
-                    crate::value_utils::integer_value(l),
-                    crate::value_utils::integer_value(r),
-                ) {
-                    crate::value_utils::integer_result(left.checked_sub(right), "subtraction")
-                } else {
-                    let lf = self.number_to_f64(l)?;
-                    let rf = self.number_to_f64(r)?;
-                    crate::value_utils::finite_result(lf - rf, "subtraction")
-                }
-            },
-            _ => Err(ExpressionError::expression_type_error(
+    fn subtract(
+        &self,
+        left: &RuntimeValue,
+        right: &RuntimeValue,
+    ) -> ExpressionResult<RuntimeValue> {
+        if left.is_number() && right.is_number() {
+            if let (Some(left), Some(right)) = (left.as_i128(), right.as_i128()) {
+                crate::value_utils::integer_result(left.checked_sub(right), "subtraction")
+            } else {
+                let lf = left.as_f64().unwrap_or_default();
+                let rf = right.as_f64().unwrap_or_default();
+                crate::value_utils::finite_result(lf - rf, "subtraction")
+            }
+        } else {
+            Err(ExpressionError::type_error(
                 "number",
                 format!(
                     "{} and {}",
                     crate::value_utils::value_type_name(left),
                     crate::value_utils::value_type_name(right)
                 ),
-            )),
+            ))
         }
     }
 
     /// Multiplication
     #[inline]
-    fn multiply(&self, left: &Value, right: &Value) -> ExpressionResult<Value> {
-        match (left, right) {
-            (Value::Number(l), Value::Number(r)) => {
-                if let (Some(left), Some(right)) = (
-                    crate::value_utils::integer_value(l),
-                    crate::value_utils::integer_value(r),
-                ) {
-                    crate::value_utils::integer_result(left.checked_mul(right), "multiplication")
-                } else {
-                    let lf = self.number_to_f64(l)?;
-                    let rf = self.number_to_f64(r)?;
-                    crate::value_utils::finite_result(lf * rf, "multiplication")
-                }
-            },
-            _ => Err(ExpressionError::expression_type_error(
+    fn multiply(
+        &self,
+        left: &RuntimeValue,
+        right: &RuntimeValue,
+    ) -> ExpressionResult<RuntimeValue> {
+        if left.is_number() && right.is_number() {
+            if let (Some(left), Some(right)) = (left.as_i128(), right.as_i128()) {
+                crate::value_utils::integer_result(left.checked_mul(right), "multiplication")
+            } else {
+                let lf = left.as_f64().unwrap_or_default();
+                let rf = right.as_f64().unwrap_or_default();
+                crate::value_utils::finite_result(lf * rf, "multiplication")
+            }
+        } else {
+            Err(ExpressionError::type_error(
                 "number",
                 format!(
                     "{} and {}",
                     crate::value_utils::value_type_name(left),
                     crate::value_utils::value_type_name(right)
                 ),
-            )),
+            ))
         }
     }
 
     /// Division
     #[inline]
-    fn divide(&self, left: &Value, right: &Value) -> ExpressionResult<Value> {
-        match (left, right) {
-            (Value::Number(l), Value::Number(r)) => {
-                // Always use floating point for division
-                let lf = self.number_to_f64(l)?;
-                let rf = self.number_to_f64(r)?;
+    fn divide(&self, left: &RuntimeValue, right: &RuntimeValue) -> ExpressionResult<RuntimeValue> {
+        if left.is_number() && right.is_number() {
+            // Always use floating point for division
+            let lf = crate::value_utils::to_float(left).map_err(ExpressionError::eval_error)?;
+            let rf = crate::value_utils::to_float(right).map_err(ExpressionError::eval_error)?;
 
-                if rf == 0.0 {
-                    return Err(ExpressionError::expression_division_by_zero());
-                }
-                // Reject non-finite divisor (NaN, ±∞). `serde_json::json!(NaN)`
-                // silently converts to `Value::Null`, which would surface as
-                // `1 / NaN = null` instead of an error.
-                if !rf.is_finite() {
-                    return Err(ExpressionError::expression_eval_error(
-                        "division by non-finite number",
-                    ));
-                }
-
-                let result = lf / rf;
-                if !result.is_finite() {
-                    return Err(ExpressionError::expression_eval_error(
-                        "division produced a non-finite result",
-                    ));
-                }
-                Ok(serde_json::json!(result))
-            },
-            _ => Err(ExpressionError::expression_type_error(
+            if rf == 0.0 {
+                return Err(ExpressionError::division_by_zero());
+            }
+            let result = lf / rf;
+            crate::value_utils::finite_result(result, "division")
+        } else {
+            Err(ExpressionError::type_error(
                 "number",
                 format!(
                     "{} and {}",
                     crate::value_utils::value_type_name(left),
                     crate::value_utils::value_type_name(right)
                 ),
-            )),
+            ))
         }
     }
 
     /// Modulo
     #[inline]
-    fn modulo(&self, left: &Value, right: &Value) -> ExpressionResult<Value> {
-        match (left, right) {
-            (Value::Number(l), Value::Number(r)) => {
-                // Try integer modulo first
-                if let (Some(li), Some(ri)) = (
-                    crate::value_utils::integer_value(l),
-                    crate::value_utils::integer_value(r),
-                ) {
-                    if ri == 0 {
-                        return Err(ExpressionError::expression_division_by_zero());
-                    }
-                    crate::value_utils::integer_result(li.checked_rem(ri), "remainder")
-                } else {
-                    // Fall back to float modulo
-                    let lf = self.number_to_f64(l)?;
-                    let rf = self.number_to_f64(r)?;
-                    if rf == 0.0 {
-                        return Err(ExpressionError::expression_division_by_zero());
-                    }
-                    crate::value_utils::finite_result(lf % rf, "remainder")
+    fn modulo(&self, left: &RuntimeValue, right: &RuntimeValue) -> ExpressionResult<RuntimeValue> {
+        if left.is_number() && right.is_number() {
+            // Try integer modulo first
+            if let (Some(left), Some(right)) = (left.as_i128(), right.as_i128()) {
+                if right == 0 {
+                    return Err(ExpressionError::division_by_zero());
                 }
-            },
-            _ => Err(ExpressionError::expression_type_error(
+                crate::value_utils::integer_result(left.checked_rem(right), "remainder")
+            } else {
+                // Fall back to float modulo
+                let lf = crate::value_utils::to_float(left).map_err(ExpressionError::eval_error)?;
+                let rf =
+                    crate::value_utils::to_float(right).map_err(ExpressionError::eval_error)?;
+                if rf == 0.0 {
+                    return Err(ExpressionError::division_by_zero());
+                }
+                crate::value_utils::finite_result(lf % rf, "remainder")
+            }
+        } else {
+            Err(ExpressionError::type_error(
                 "number",
                 format!(
                     "{} and {}",
                     crate::value_utils::value_type_name(left),
                     crate::value_utils::value_type_name(right)
                 ),
-            )),
+            ))
         }
     }
 
     /// Power
     #[inline]
-    fn power(&self, left: &Value, right: &Value) -> ExpressionResult<Value> {
-        match (left, right) {
-            (Value::Number(l), Value::Number(r)) => {
-                // Always use floating point for power operations
-                let lf = self.number_to_f64(l)?;
-                let rf = self.number_to_f64(r)?;
-                let result = lf.powf(rf);
-                crate::value_utils::finite_result(result, "power")
-            },
-            _ => Err(ExpressionError::expression_type_error(
+    fn power(&self, left: &RuntimeValue, right: &RuntimeValue) -> ExpressionResult<RuntimeValue> {
+        if left.is_number() && right.is_number() {
+            // Always use floating point for power operations
+            let lf = crate::value_utils::to_float(left).map_err(ExpressionError::eval_error)?;
+            let rf = crate::value_utils::to_float(right).map_err(ExpressionError::eval_error)?;
+            crate::value_utils::finite_result(lf.powf(rf), "power")
+        } else {
+            Err(ExpressionError::type_error(
                 "number",
                 format!(
                     "{} and {}",
                     crate::value_utils::value_type_name(left),
                     crate::value_utils::value_type_name(right)
                 ),
-            )),
+            ))
         }
     }
 
@@ -903,61 +1214,60 @@ impl Evaluator {
     #[inline]
     fn less_than(
         &self,
-        left: &Value,
-        right: &Value,
-        context: &EvaluationContext,
-    ) -> ExpressionResult<Value> {
-        self.compare_operands(left, right, context, std::cmp::Ordering::is_lt)
+        left: &RuntimeValue,
+        right: &RuntimeValue,
+        frame: &EvalFrame,
+    ) -> ExpressionResult<RuntimeValue> {
+        self.compare_operands(left, right, frame, std::cmp::Ordering::is_lt)
     }
 
     /// Greater than comparison
     #[inline]
     fn greater_than(
         &self,
-        left: &Value,
-        right: &Value,
-        context: &EvaluationContext,
-    ) -> ExpressionResult<Value> {
-        self.compare_operands(left, right, context, std::cmp::Ordering::is_gt)
+        left: &RuntimeValue,
+        right: &RuntimeValue,
+        frame: &EvalFrame,
+    ) -> ExpressionResult<RuntimeValue> {
+        self.compare_operands(left, right, frame, std::cmp::Ordering::is_gt)
     }
 
     /// Less than or equal comparison
     fn less_equal(
         &self,
-        left: &Value,
-        right: &Value,
-        context: &EvaluationContext,
-    ) -> ExpressionResult<Value> {
-        self.compare_operands(left, right, context, std::cmp::Ordering::is_le)
+        left: &RuntimeValue,
+        right: &RuntimeValue,
+        frame: &EvalFrame,
+    ) -> ExpressionResult<RuntimeValue> {
+        self.compare_operands(left, right, frame, std::cmp::Ordering::is_le)
     }
 
     /// Greater than or equal comparison
     fn greater_equal(
         &self,
-        left: &Value,
-        right: &Value,
-        context: &EvaluationContext,
-    ) -> ExpressionResult<Value> {
-        self.compare_operands(left, right, context, std::cmp::Ordering::is_ge)
+        left: &RuntimeValue,
+        right: &RuntimeValue,
+        frame: &EvalFrame,
+    ) -> ExpressionResult<RuntimeValue> {
+        self.compare_operands(left, right, frame, std::cmp::Ordering::is_ge)
     }
 
     /// Shared ordering seam for the four comparison operators.
     ///
     /// Both numbers and strings reduce to a [`std::cmp::Ordering`]; `accept`
     /// supplies the operator-specific predicate. Non-finite numbers surface as
-    /// [`ExpressionError::NonFiniteNumber`] from [`Self::number_ordering`]
-    /// regardless of which operator asked, so error behaviour stays uniform.
+    /// [`ExpressionError::NonFiniteNumber`] from
+    /// [`crate::value_utils::compare_numbers`] regardless of which operator
+    /// asked, so error behaviour stays uniform.
     fn compare_operands(
         &self,
-        left: &Value,
-        right: &Value,
-        context: &EvaluationContext,
+        left: &RuntimeValue,
+        right: &RuntimeValue,
+        frame: &EvalFrame,
         accept: fn(std::cmp::Ordering) -> bool,
-    ) -> ExpressionResult<Value> {
-        if self.strict_numeric_comparisons_enabled(context)
-            && (!left.is_number() || !right.is_number())
-        {
-            return Err(ExpressionError::expression_type_error(
+    ) -> ExpressionResult<RuntimeValue> {
+        if frame.policy().strict_numeric_comparisons && (!left.is_number() || !right.is_number()) {
+            return Err(ExpressionError::type_error(
                 "number",
                 format!(
                     "{} and {}",
@@ -967,10 +1277,15 @@ impl Evaluator {
             ));
         }
         let ordering = match (left, right) {
-            (Value::Number(l), Value::Number(r)) => self.number_ordering(l, r)?,
-            (Value::String(l), Value::String(r)) => l.cmp(r),
+            (RuntimeValue::String(left), RuntimeValue::String(right)) => left.cmp(right),
+            _ if left.is_number() && right.is_number() => crate::value_utils::compare_numbers(
+                left, right,
+            )
+            .ok_or(ExpressionError::NonFiniteNumber {
+                operation: "comparison",
+            })?,
             _ => {
-                return Err(ExpressionError::expression_type_error(
+                return Err(ExpressionError::type_error(
                     "comparable values",
                     format!(
                         "{} and {}",
@@ -980,7 +1295,7 @@ impl Evaluator {
                 ));
             },
         };
-        Ok(Value::Bool(accept(ordering)))
+        Ok(RuntimeValue::Bool(accept(ordering)))
     }
 
     /// Regex match with ReDoS protection
@@ -990,24 +1305,22 @@ impl Evaluator {
     /// - Detection of potentially dangerous nested quantifiers
     /// - Cache size limit with eviction (MAX_REGEX_CACHE_SIZE)
     #[cfg(feature = "regex")]
-    fn regex_match(&self, left: &Value, right: &Value) -> ExpressionResult<Value> {
+    fn regex_match(
+        &self,
+        left: &RuntimeValue,
+        right: &RuntimeValue,
+    ) -> ExpressionResult<RuntimeValue> {
         let text = left.as_str().ok_or_else(|| {
-            ExpressionError::expression_type_error(
-                "string",
-                crate::value_utils::value_type_name(left),
-            )
+            ExpressionError::type_error("string", crate::value_utils::value_type_name(left))
         })?;
 
         let pattern = right.as_str().ok_or_else(|| {
-            ExpressionError::expression_type_error(
-                "string",
-                crate::value_utils::value_type_name(right),
-            )
+            ExpressionError::type_error("string", crate::value_utils::value_type_name(right))
         })?;
 
         // ReDoS protection: check pattern length
         if pattern.len() > MAX_REGEX_PATTERN_LEN {
-            return Err(ExpressionError::expression_regex_error(format!(
+            return Err(ExpressionError::regex_error(format!(
                 "Regex pattern too long: {} chars (max {})",
                 pattern.len(),
                 MAX_REGEX_PATTERN_LEN
@@ -1016,7 +1329,7 @@ impl Evaluator {
 
         // ReDoS protection: detect potentially dangerous patterns
         if Self::is_potentially_dangerous_regex(pattern) {
-            return Err(ExpressionError::expression_regex_error(
+            return Err(ExpressionError::regex_error(
                 "Regex pattern rejected: contains potentially dangerous nested quantifiers",
             ));
         }
@@ -1028,14 +1341,14 @@ impl Evaluator {
             cached
         } else {
             let compiled = Regex::new(pattern)
-                .map_err(|_| ExpressionError::expression_regex_error("Regex pattern is invalid"))?;
+                .map_err(|_| ExpressionError::regex_error("Regex pattern is invalid"))?;
             let arc = Arc::new(compiled);
             self.regex_cache
                 .insert(Arc::from(pattern), Arc::clone(&arc));
             arc
         };
 
-        Ok(Value::Bool(regex.is_match(text)))
+        Ok(RuntimeValue::Bool(regex.is_match(text)))
     }
 
     /// Check if a regex pattern contains potentially dangerous constructs
@@ -1120,10 +1433,50 @@ impl Evaluator {
     }
 
     #[cfg(not(feature = "regex"))]
-    fn regex_match(&self, _left: &Value, _right: &Value) -> ExpressionResult<Value> {
-        Err(ExpressionError::expression_eval_error(
+    fn regex_match(
+        &self,
+        _left: &RuntimeValue,
+        _right: &RuntimeValue,
+    ) -> ExpressionResult<RuntimeValue> {
+        Err(ExpressionError::eval_error(
             "Regex matching is not enabled (feature 'regex' not enabled)",
         ))
+    }
+
+    /// The value produced for a missing variable under the current policy.
+    fn missing_variable(&self, name: &str, frame: &EvalFrame) -> ExpressionResult<RuntimeValue> {
+        if frame.policy().missing_lookup_undefined {
+            Ok(RuntimeValue::Undefined)
+        } else {
+            Err(ExpressionError::variable_not_found(name))
+        }
+    }
+
+    /// The value produced for a missing authored property under the current policy.
+    ///
+    /// The name comes from the template source, so echoing it is safe.
+    fn missing_property(
+        &self,
+        property: &str,
+        frame: &EvalFrame,
+    ) -> ExpressionResult<RuntimeValue> {
+        if frame.policy().missing_lookup_undefined {
+            Ok(RuntimeValue::Undefined)
+        } else {
+            Err(ExpressionError::property_not_found(property))
+        }
+    }
+
+    /// The value produced for a missing runtime index key under the current policy.
+    ///
+    /// The key was computed from input data, so it may hold credential material
+    /// and must never appear in a diagnostic.
+    fn missing_key(&self, frame: &EvalFrame) -> ExpressionResult<RuntimeValue> {
+        if frame.policy().missing_lookup_undefined {
+            Ok(RuntimeValue::Undefined)
+        } else {
+            Err(ExpressionError::key_not_found())
+        }
     }
 
     /// Access a property of an object.
@@ -1131,27 +1484,58 @@ impl Evaluator {
         &self,
         object: EvalValue<'a>,
         property: &str,
+        frame: &EvalFrame,
+        optional: bool,
     ) -> ExpressionResult<EvalValue<'a>> {
-        let missing =
-            || ExpressionError::expression_eval_error(format!("Property '{property}' not found"));
         match object {
-            Cow::Borrowed(Value::Object(entries)) => {
-                entries.get(property).map(Cow::Borrowed).ok_or_else(missing)
+            // An object's own keys always win: `loop.length` is the bound
+            // field, not the entry count. Only when the key is absent does the
+            // property surface apply.
+            Cow::Borrowed(RuntimeValue::Object(entries)) => match entries.get(property) {
+                Some(value) => Ok(Cow::Borrowed(value)),
+                None => self.object_property_member(property, entries.len(), frame, optional),
             },
-            Cow::Owned(Value::Object(entries)) => entries
-                .get(property)
-                .cloned()
-                .map(Cow::Owned)
-                .ok_or_else(missing),
-            Cow::Borrowed(other) => Err(ExpressionError::expression_type_error(
-                "object",
-                crate::value_utils::value_type_name(other),
-            )),
-            Cow::Owned(other) => Err(ExpressionError::expression_type_error(
-                "object",
-                crate::value_utils::value_type_name(&other),
-            )),
+            Cow::Owned(RuntimeValue::Object(entries)) => match entries.get(property) {
+                Some(value) => Ok(Cow::Owned(value.clone())),
+                None => self.object_property_member(property, entries.len(), frame, optional),
+            },
+            Cow::Borrowed(other) => {
+                if let Some(value) = crate::builtins::methods::member_property(other, property) {
+                    return Ok(Cow::Owned(value));
+                }
+                Err(ExpressionError::type_error(
+                    "object",
+                    crate::value_utils::value_type_name(other),
+                ))
+            },
+            Cow::Owned(other) => {
+                if let Some(value) = crate::builtins::methods::member_property(&other, property) {
+                    return Ok(Cow::Owned(value));
+                }
+                Err(ExpressionError::type_error(
+                    "object",
+                    crate::value_utils::value_type_name(&other),
+                ))
+            },
         }
+    }
+
+    /// Fallback for an object key that is absent: `length` reports the entry
+    /// count; every other member follows the missing-lookup policy.
+    fn object_property_member<'a>(
+        &self,
+        property: &str,
+        entry_count: usize,
+        frame: &EvalFrame,
+        optional: bool,
+    ) -> ExpressionResult<EvalValue<'a>> {
+        if optional {
+            return Ok(Cow::Owned(RuntimeValue::Undefined));
+        }
+        if property == "length" {
+            return Ok(Cow::Owned(RuntimeValue::Integer(entry_count as i64)));
+        }
+        self.missing_property(property, frame).map(Cow::Owned)
     }
 
     /// Resolve a signed integer index into a `0..len` position, supporting
@@ -1160,10 +1544,7 @@ impl Evaluator {
         let len_i64 = len as i64;
         let actual = if idx < 0 { len_i64 + idx } else { idx };
         if actual < 0 || actual >= len_i64 {
-            return Err(ExpressionError::expression_index_out_of_bounds(
-                actual as usize,
-                len,
-            ));
+            return Err(ExpressionError::index_out_of_bounds(actual as usize, len));
         }
         Ok(actual as usize)
     }
@@ -1172,46 +1553,58 @@ impl Evaluator {
     fn access_index<'a>(
         &self,
         object: EvalValue<'a>,
-        index: &Value,
+        index: &RuntimeValue,
+        frame: &EvalFrame,
+        optional: bool,
     ) -> ExpressionResult<EvalValue<'a>> {
-        let missing_object = || ExpressionError::expression_eval_error("Object key not found");
         match object {
-            Cow::Borrowed(Value::Array(array)) => {
+            Cow::Borrowed(RuntimeValue::Array(array)) => {
                 let pos = Self::resolve_array_index(index, array.len())?;
-                array.get(pos).map(Cow::Borrowed).ok_or_else(|| {
-                    ExpressionError::expression_index_out_of_bounds(pos, array.len())
-                })
+                match array.get(pos) {
+                    Some(value) => Ok(Cow::Borrowed(value)),
+                    None if optional => Ok(Cow::Owned(RuntimeValue::Undefined)),
+                    None => Err(ExpressionError::index_out_of_bounds(pos, array.len())),
+                }
             },
-            Cow::Owned(Value::Array(array)) => {
+            Cow::Owned(RuntimeValue::Array(array)) => {
                 let pos = Self::resolve_array_index(index, array.len())?;
-                array.get(pos).cloned().map(Cow::Owned).ok_or_else(|| {
-                    ExpressionError::expression_index_out_of_bounds(pos, array.len())
-                })
+                match array.get(pos) {
+                    Some(value) => Ok(Cow::Owned(value.clone())),
+                    None if optional => Ok(Cow::Owned(RuntimeValue::Undefined)),
+                    None => Err(ExpressionError::index_out_of_bounds(pos, array.len())),
+                }
             },
-            Cow::Borrowed(Value::Object(entries)) => entries
-                .get(index.as_str().ok_or_else(|| {
-                    ExpressionError::expression_type_error(
+            Cow::Borrowed(RuntimeValue::Object(entries)) => {
+                let key = index.as_str().ok_or_else(|| {
+                    ExpressionError::type_error(
                         "string",
                         crate::value_utils::value_type_name(index),
                     )
-                })?)
-                .map(Cow::Borrowed)
-                .ok_or_else(missing_object),
-            Cow::Owned(Value::Object(entries)) => entries
-                .get(index.as_str().ok_or_else(|| {
-                    ExpressionError::expression_type_error(
+                })?;
+                match entries.get(key) {
+                    Some(value) => Ok(Cow::Borrowed(value)),
+                    None if optional => Ok(Cow::Owned(RuntimeValue::Undefined)),
+                    None => self.missing_key(frame).map(Cow::Owned),
+                }
+            },
+            Cow::Owned(RuntimeValue::Object(entries)) => {
+                let key = index.as_str().ok_or_else(|| {
+                    ExpressionError::type_error(
                         "string",
                         crate::value_utils::value_type_name(index),
                     )
-                })?)
-                .cloned()
-                .map(Cow::Owned)
-                .ok_or_else(missing_object),
-            Cow::Borrowed(other) => Err(ExpressionError::expression_type_error(
+                })?;
+                match entries.get(key) {
+                    Some(value) => Ok(Cow::Owned(value.clone())),
+                    None if optional => Ok(Cow::Owned(RuntimeValue::Undefined)),
+                    None => self.missing_key(frame).map(Cow::Owned),
+                }
+            },
+            Cow::Borrowed(other) => Err(ExpressionError::type_error(
                 "array or object",
                 crate::value_utils::value_type_name(other),
             )),
-            Cow::Owned(other) => Err(ExpressionError::expression_type_error(
+            Cow::Owned(other) => Err(ExpressionError::type_error(
                 "array or object",
                 crate::value_utils::value_type_name(&other),
             )),
@@ -1220,12 +1613,9 @@ impl Evaluator {
 
     /// Resolve an array index value (integer, allowing negative offsets) into
     /// a `0..len` position.
-    fn resolve_array_index(index: &Value, len: usize) -> ExpressionResult<usize> {
+    fn resolve_array_index(index: &RuntimeValue, len: usize) -> ExpressionResult<usize> {
         let idx = index.as_i64().ok_or_else(|| {
-            ExpressionError::expression_type_error(
-                "integer",
-                crate::value_utils::value_type_name(index),
-            )
+            ExpressionError::type_error("integer", crate::value_utils::value_type_name(index))
         })?;
         Self::normalize_index(idx, len)
     }
@@ -1234,109 +1624,24 @@ impl Evaluator {
     fn call_function(
         &self,
         name: &str,
-        args: &[EvalValue<'_>],
+        args: &[Argument<'_>],
         context: &EvaluationContext,
         frame: &EvalFrame,
-    ) -> ExpressionResult<Value> {
+    ) -> ExpressionResult<RuntimeValue> {
         self.ensure_function_allowed(name, context)?;
         for argument in args {
-            frame.charge_value(argument)?;
+            if let Argument::Value(value) = argument {
+                frame.charge_value(value)?;
+            }
         }
-        let arguments = args.iter().map(AsRef::as_ref).collect::<Vec<_>>();
-        let result =
-            self.builtins
-                .call(name, &arguments, BuiltinView::new(self, frame), context)?;
-        let result = crate::BuiltinOutputBuilder::new(self.builtin_output_limits(context))
+        let result = self
+            .builtins
+            .call(name, args, BuiltinView::new(self, frame), context)?;
+        let result = crate::BuiltinOutputBuilder::new(frame.policy().builtin_output_limits)
             .value(result)?
             .into_value();
         frame.charge_value(&result)?;
         Ok(result)
-    }
-
-    /// Evaluate a lambda expression with a parameter value.
-    ///
-    /// Visibility is `pub(crate)` — external callers cannot construct
-    /// an [`EvalFrame`], and exposing a wrapper that would create a
-    /// fresh frame would reopen the CO-C1-01 lambda DoS bypass.
-    pub(crate) fn eval_lambda(
-        &self,
-        param: &str,
-        body: &Expr,
-        value: &Value,
-        context: &EvaluationContext,
-        frame: &mut EvalFrame,
-    ) -> ExpressionResult<Value> {
-        // Create a new context with the lambda parameter. Note: we
-        // reuse the caller's `frame` so the step budget accumulates
-        // across every lambda application. Do NOT switch this to
-        // `self.eval(...)` — doing so would construct a fresh frame
-        // and defeat the whole budget.
-        let mut lambda_context = context.clone();
-        lambda_context.set_lambda_var(param, value.clone());
-        self.eval_with_frame(body, &lambda_context, frame)
-    }
-
-    /// Evaluate a higher-order array argument and require an array result.
-    ///
-    /// Moves the array out of the evaluated value (no clone) and produces the
-    /// same diagnostic for every higher-order function, so the type error
-    /// stays uniform.
-    fn eval_array_argument(
-        &self,
-        args: &[Expr],
-        context: &EvaluationContext,
-        frame: &mut EvalFrame,
-    ) -> ExpressionResult<Vec<Value>> {
-        match self.eval_with_frame(&args[0], context, frame)? {
-            Value::Array(array) => Ok(array),
-            other => Err(ExpressionError::expression_type_error(
-                "array",
-                crate::value_utils::value_type_name(&other),
-            )),
-        }
-    }
-
-    /// Extract the `(param, body)` pair from a lambda argument.
-    ///
-    /// Higher-order functions accept a lambda in a fixed argument slot; a
-    /// non-lambda there is a type error, not a fall-through to the builtin
-    /// registry.
-    fn lambda_parts(args: &[Expr], index: usize) -> ExpressionResult<(&str, &Expr)> {
-        match &args[index] {
-            Expr::Lambda { param, body } => Ok((param.as_ref(), body.as_ref())),
-            _ => Err(ExpressionError::expression_type_error(
-                "lambda expression",
-                "non-lambda",
-            )),
-        }
-    }
-
-    /// Handle higher-order functions that require lambda expressions.
-    /// Returns Some(result) if the function was handled, None if it should
-    /// be passed to the regular builtin registry.
-    fn try_higher_order_function(
-        &self,
-        name: &str,
-        args: &[Expr],
-        context: &EvaluationContext,
-        frame: &mut EvalFrame,
-    ) -> Option<ExpressionResult<Value>> {
-        if let Err(err) = self.ensure_function_allowed(name, context) {
-            return Some(Err(err));
-        }
-
-        match name {
-            "filter" => Some(self.eval_filter(args, context, frame)),
-            "map" => Some(self.eval_map(args, context, frame)),
-            "reduce" => Some(self.eval_reduce(args, context, frame)),
-            "find" => Some(self.eval_find(args, context, frame)),
-            "find_index" => Some(self.eval_find_index(args, context, frame)),
-            "every" | "all" => Some(self.eval_every(args, context, frame)),
-            "some" | "any" => Some(self.eval_some(args, context, frame)),
-            "group_by" => Some(self.eval_group_by(args, context, frame)),
-            "flat_map" => Some(self.eval_flat_map(args, context, frame)),
-            _ => None,
-        }
     }
 
     fn canonical_function_name<'a>(&self, name: &'a str) -> &'a str {
@@ -1358,9 +1663,7 @@ impl Evaluator {
         for policy in policies.into_iter().flatten() {
             let denied = policy.denied_functions();
             if denied.contains(name) || denied.contains(canonical) {
-                return Err(ExpressionError::expression_eval_error(format!(
-                    "Function '{name}' is denied by policy"
-                )));
+                return Err(ExpressionError::function_not_allowed(name));
             }
         }
 
@@ -1368,9 +1671,7 @@ impl Evaluator {
             if self.is_allowed_by_policy(policy, name, canonical) {
                 continue;
             }
-            return Err(ExpressionError::expression_eval_error(format!(
-                "Function '{name}' is not allowed by policy"
-            )));
+            return Err(ExpressionError::function_not_allowed(name));
         }
 
         Ok(())
@@ -1394,441 +1695,14 @@ impl Evaluator {
         )
     }
 
-    fn strict_mode_enabled(&self, context: &EvaluationContext) -> bool {
-        let engine_strict = self
-            .policy
-            .as_deref()
-            .is_some_and(EvaluationPolicy::strict_mode);
-        let context_strict = context.policy().is_some_and(EvaluationPolicy::strict_mode);
-        engine_strict || context_strict
-    }
-
-    pub(crate) fn is_strict_mode(&self, context: &EvaluationContext) -> bool {
-        self.strict_mode_enabled(context)
-    }
-
-    pub(crate) fn strict_conversions_enabled(&self, context: &EvaluationContext) -> bool {
-        let engine_strict = self
-            .policy
-            .as_deref()
-            .is_some_and(EvaluationPolicy::strict_conversion_functions);
-        let context_strict = context
-            .policy()
-            .is_some_and(EvaluationPolicy::strict_conversion_functions);
-        engine_strict || context_strict
-    }
-
-    fn strict_numeric_comparisons_enabled(&self, context: &EvaluationContext) -> bool {
-        let engine_strict = self
-            .policy
-            .as_deref()
-            .is_some_and(EvaluationPolicy::strict_numeric_comparisons);
-        let context_strict = context
-            .policy()
-            .is_some_and(EvaluationPolicy::strict_numeric_comparisons);
-        engine_strict || context_strict
-    }
-
-    pub(crate) fn max_json_parse_length(&self, context: &EvaluationContext) -> Option<usize> {
-        let engine_limit = self
-            .policy
-            .as_deref()
-            .and_then(EvaluationPolicy::max_json_parse_length)
-            .unwrap_or(crate::limits::MAX_SOURCE_BYTES);
-        Some(
-            context
-                .policy()
-                .and_then(EvaluationPolicy::max_json_parse_length)
-                .map_or(engine_limit, |limit| limit.min(engine_limit)),
-        )
-    }
-
-    fn coerce_boolean(&self, value: &Value, context: &EvaluationContext) -> ExpressionResult<bool> {
-        if self.strict_mode_enabled(context) && !value.is_boolean() {
-            return Err(ExpressionError::expression_type_error(
+    fn coerce_boolean(&self, value: &RuntimeValue, frame: &EvalFrame) -> ExpressionResult<bool> {
+        if frame.policy().strict_mode && value.as_bool().is_none() {
+            return Err(ExpressionError::type_error(
                 "boolean",
                 crate::value_utils::value_type_name(value),
             ));
         }
         Ok(crate::value_utils::to_boolean(value))
-    }
-
-    fn number_to_f64(&self, num: &Number) -> ExpressionResult<f64> {
-        crate::value_utils::number_as_f64(num).ok_or_else(|| {
-            ExpressionError::expression_eval_error("Number cannot be represented as float")
-        })
-    }
-
-    pub(crate) fn builtin_output_limits(
-        &self,
-        context: &EvaluationContext,
-    ) -> crate::BuiltinOutputLimits {
-        let engine_limits = self
-            .policy
-            .as_deref()
-            .map_or_else(
-                crate::BuiltinOutputLimits::default,
-                EvaluationPolicy::builtin_output_limits,
-            )
-            .most_restrictive(crate::BuiltinOutputLimits::default());
-        context.policy().map_or(engine_limits, |policy| {
-            engine_limits.most_restrictive(policy.builtin_output_limits())
-        })
-    }
-
-    fn number_ordering(
-        &self,
-        left: &Number,
-        right: &Number,
-    ) -> ExpressionResult<std::cmp::Ordering> {
-        crate::value_utils::compare_numbers(left, right).ok_or(ExpressionError::NonFiniteNumber {
-            operation: "comparison",
-        })
-    }
-
-    /// Filter array elements using a lambda predicate
-    ///
-    /// Usage: `filter(array, x => condition)`
-    /// Example: `filter([1, 2, 3, 4, 5], x => x > 2)` returns `[3, 4, 5]`
-    fn eval_filter(
-        &self,
-        args: &[Expr],
-        context: &EvaluationContext,
-        frame: &mut EvalFrame,
-    ) -> ExpressionResult<Value> {
-        if args.len() != 2 {
-            return Err(ExpressionError::expression_invalid_argument(
-                "filter",
-                format!("expected 2 arguments, got {}", args.len()),
-            ));
-        }
-
-        // Evaluate the array argument
-        let array = self.eval_array_argument(args, context, frame)?;
-
-        // Extract the lambda
-        let (param, body) = Self::lambda_parts(args, 1)?;
-
-        // Filter the array
-        let mut result = Vec::with_capacity(array.len());
-        for item in &array {
-            let predicate_result = self.eval_lambda(param, body, item, context, frame)?;
-            if self.coerce_boolean(&predicate_result, context)? {
-                result.push(item.clone());
-            }
-        }
-
-        Ok(Value::Array(result))
-    }
-
-    /// Map over array elements using a lambda transformer
-    ///
-    /// Usage: `map(array, x => transform)`
-    /// Example: `map([1, 2, 3], x => x * 2)` returns `[2, 4, 6]`
-    fn eval_map(
-        &self,
-        args: &[Expr],
-        context: &EvaluationContext,
-        frame: &mut EvalFrame,
-    ) -> ExpressionResult<Value> {
-        if args.len() != 2 {
-            return Err(ExpressionError::expression_invalid_argument(
-                "map",
-                format!("expected 2 arguments, got {}", args.len()),
-            ));
-        }
-
-        // Evaluate the array argument
-        let array = self.eval_array_argument(args, context, frame)?;
-
-        // Extract the lambda
-        let (param, body) = Self::lambda_parts(args, 1)?;
-
-        // Map the array
-        let output = crate::BuiltinOutputBuilder::new(self.builtin_output_limits(context));
-        output.ensure_collection_items(array.len())?;
-        let mut budget = crate::builtins::ArrayOutputBudget::new(output)?;
-        let mut result = Vec::with_capacity(array.len());
-        for item in &array {
-            let transformed = self.eval_lambda(param, body, item, context, frame)?;
-            budget.push(&transformed)?;
-            result.push(transformed);
-        }
-
-        Ok(Value::Array(result))
-    }
-
-    /// Reduce array elements using a lambda accumulator
-    ///
-    /// Usage: `reduce(array, initial, (acc, x) => expression)`
-    /// Note: Since we only support single-parameter lambdas, we use a special syntax:
-    /// `reduce(array, initial, x => expression)` where `$acc` is available in context
-    ///
-    /// Example: `reduce([1, 2, 3], 0, x => $acc + x)` returns `6`
-    fn eval_reduce(
-        &self,
-        args: &[Expr],
-        context: &EvaluationContext,
-        frame: &mut EvalFrame,
-    ) -> ExpressionResult<Value> {
-        if args.len() != 3 {
-            return Err(ExpressionError::expression_invalid_argument(
-                "reduce",
-                format!("expected 3 arguments, got {}", args.len()),
-            ));
-        }
-
-        // Evaluate the array argument
-        let array = self.eval_array_argument(args, context, frame)?;
-
-        // Evaluate the initial value
-        let initial = self.eval_with_frame(&args[1], context, frame)?;
-
-        // Extract the lambda
-        let (param, body) = Self::lambda_parts(args, 2)?;
-
-        // Reduce the array. Each iteration reuses the caller's frame
-        // so the step budget is enforced across every element — the
-        // previous `self.eval(body, ...)` pattern reset the counter on
-        // every element and was the CO-C1-01 DoS bypass.
-        let mut accumulator = initial;
-        for item in &array {
-            // Create context with both accumulator and current item
-            let mut reduce_context = context.clone();
-            reduce_context.set_lambda_var("$acc", accumulator.clone());
-            reduce_context.set_lambda_var(param, item.clone());
-            accumulator = self.eval_with_frame(body, &reduce_context, frame)?;
-        }
-
-        Ok(accumulator)
-    }
-
-    /// Find the first element matching a predicate
-    ///
-    /// Usage: `find(array, x => condition)`
-    /// Example: `find([1, 2, 3, 4], x => x > 2)` returns `3`
-    fn eval_find(
-        &self,
-        args: &[Expr],
-        context: &EvaluationContext,
-        frame: &mut EvalFrame,
-    ) -> ExpressionResult<Value> {
-        if args.len() != 2 {
-            return Err(ExpressionError::expression_invalid_argument(
-                "find",
-                format!("expected 2 arguments, got {}", args.len()),
-            ));
-        }
-
-        let array = self.eval_array_argument(args, context, frame)?;
-
-        let (param, body) = Self::lambda_parts(args, 1)?;
-
-        for item in &array {
-            let predicate_result = self.eval_lambda(param, body, item, context, frame)?;
-            if self.coerce_boolean(&predicate_result, context)? {
-                return Ok(item.clone());
-            }
-        }
-
-        Ok(Value::Null)
-    }
-
-    /// Check if all elements match a predicate
-    ///
-    /// Usage: `every(array, x => condition)` or `all(array, x => condition)`
-    /// Example: `every([2, 4, 6], x => x % 2 == 0)` returns `true`
-    fn eval_every(
-        &self,
-        args: &[Expr],
-        context: &EvaluationContext,
-        frame: &mut EvalFrame,
-    ) -> ExpressionResult<Value> {
-        if args.len() != 2 {
-            return Err(ExpressionError::expression_invalid_argument(
-                "every",
-                format!("expected 2 arguments, got {}", args.len()),
-            ));
-        }
-
-        let array = self.eval_array_argument(args, context, frame)?;
-
-        let (param, body) = Self::lambda_parts(args, 1)?;
-
-        for item in &array {
-            let predicate_result = self.eval_lambda(param, body, item, context, frame)?;
-            if !self.coerce_boolean(&predicate_result, context)? {
-                return Ok(Value::Bool(false));
-            }
-        }
-
-        Ok(Value::Bool(true))
-    }
-
-    /// Check if any element matches a predicate
-    ///
-    /// Usage: `some(array, x => condition)` or `any(array, x => condition)`
-    /// Example: `some([1, 2, 3], x => x > 2)` returns `true`
-    fn eval_some(
-        &self,
-        args: &[Expr],
-        context: &EvaluationContext,
-        frame: &mut EvalFrame,
-    ) -> ExpressionResult<Value> {
-        if args.len() != 2 {
-            return Err(ExpressionError::expression_invalid_argument(
-                "some",
-                format!("expected 2 arguments, got {}", args.len()),
-            ));
-        }
-
-        let array = self.eval_array_argument(args, context, frame)?;
-
-        let (param, body) = Self::lambda_parts(args, 1)?;
-
-        for item in &array {
-            let predicate_result = self.eval_lambda(param, body, item, context, frame)?;
-            if self.coerce_boolean(&predicate_result, context)? {
-                return Ok(Value::Bool(true));
-            }
-        }
-
-        Ok(Value::Bool(false))
-    }
-
-    /// Return the index of the first element matching a predicate, or -1
-    ///
-    /// Usage: `find_index(array, x => condition)`
-    /// Example: `find_index([1, 2, 3], x => x > 1)` returns `1`
-    fn eval_find_index(
-        &self,
-        args: &[Expr],
-        context: &EvaluationContext,
-        frame: &mut EvalFrame,
-    ) -> ExpressionResult<Value> {
-        if args.len() != 2 {
-            return Err(ExpressionError::expression_invalid_argument(
-                "find_index",
-                format!("expected 2 arguments, got {}", args.len()),
-            ));
-        }
-
-        let array = self.eval_array_argument(args, context, frame)?;
-
-        let (param, body) = Self::lambda_parts(args, 1)?;
-
-        for (i, item) in array.iter().enumerate() {
-            let predicate_result = self.eval_lambda(param, body, item, context, frame)?;
-            if self.coerce_boolean(&predicate_result, context)? {
-                return Ok(Value::Number((i as i64).into()));
-            }
-        }
-
-        Ok(Value::Number((-1_i64).into()))
-    }
-
-    /// Group array elements by a key returned by a lambda
-    ///
-    /// Usage: `group_by(array, x => key_expr)`
-    /// Example: `group_by([{name:"a",age:1},{name:"b",age:1}], x => x.age)`
-    ///   returns `{"1": [{name:"a",age:1},{name:"b",age:1}]}`
-    fn eval_group_by(
-        &self,
-        args: &[Expr],
-        context: &EvaluationContext,
-        frame: &mut EvalFrame,
-    ) -> ExpressionResult<Value> {
-        if args.len() != 2 {
-            return Err(ExpressionError::expression_invalid_argument(
-                "group_by",
-                format!("expected 2 arguments, got {}", args.len()),
-            ));
-        }
-
-        let array = self.eval_array_argument(args, context, frame)?;
-
-        let (param, body) = Self::lambda_parts(args, 1)?;
-
-        let output = crate::BuiltinOutputBuilder::new(self.builtin_output_limits(context));
-        let mut budget = crate::builtins::GroupOutputBudget::new(output)?;
-        let mut groups = serde_json::Map::new();
-        for item in &array {
-            let key_val = self.eval_lambda(param, body, item, context, frame)?;
-            let key = match &key_val {
-                Value::String(s) => s.clone(),
-                Value::Number(n) => n.to_string(),
-                Value::Bool(b) => b.to_string(),
-                Value::Null => "null".to_string(),
-                _ => {
-                    return Err(ExpressionError::expression_eval_error(
-                        "group_by key must be a string, number, boolean, or null",
-                    ));
-                },
-            };
-            let existing_items = groups
-                .get(&key)
-                .and_then(Value::as_array)
-                .map_or(0, Vec::len);
-            budget.push(&key, existing_items, item)?;
-            let group_entry = groups
-                .entry(key)
-                .or_insert_with(|| Value::Array(Vec::new()));
-
-            match group_entry {
-                Value::Array(items) => items.push(item.clone()),
-                other => {
-                    return Err(ExpressionError::expression_type_error(
-                        "array",
-                        crate::value_utils::value_type_name(other),
-                    ));
-                },
-            }
-        }
-
-        Ok(Value::Object(groups))
-    }
-
-    /// Map then flatten one level
-    ///
-    /// Usage: `flat_map(array, x => transform)`
-    /// Example: `flat_map([[1,2],[3,4]], x => x)` returns `[1,2,3,4]`
-    fn eval_flat_map(
-        &self,
-        args: &[Expr],
-        context: &EvaluationContext,
-        frame: &mut EvalFrame,
-    ) -> ExpressionResult<Value> {
-        if args.len() != 2 {
-            return Err(ExpressionError::expression_invalid_argument(
-                "flat_map",
-                format!("expected 2 arguments, got {}", args.len()),
-            ));
-        }
-
-        let array = self.eval_array_argument(args, context, frame)?;
-
-        let (param, body) = Self::lambda_parts(args, 1)?;
-
-        let output = crate::BuiltinOutputBuilder::new(self.builtin_output_limits(context));
-        let mut budget = crate::builtins::ArrayOutputBudget::new(output)?;
-        let mut result = Vec::new();
-        for item in &array {
-            let transformed = self.eval_lambda(param, body, item, context, frame)?;
-            match transformed {
-                Value::Array(inner) => {
-                    for value in inner {
-                        budget.push(&value)?;
-                        result.push(value);
-                    }
-                },
-                other => {
-                    budget.push(&other)?;
-                    result.push(other);
-                },
-            }
-        }
-
-        Ok(Value::Array(result))
     }
 }
 

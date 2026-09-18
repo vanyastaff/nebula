@@ -29,30 +29,32 @@ builtins are first-party" is one PR away from being false.
 **Structural fix (landed).** `BuiltinRegistry::call` now wraps the
 evaluator in `BuiltinView<'_>` (defined in `crates/expression/src/eval/mod.rs`)
 and hands that view to the registered function instead of `&Evaluator`.
-The view exposes only policy-query methods — `is_strict_mode`,
-`strict_conversions_enabled`, `max_json_parse_length` — so the
-registered function physically cannot reach `eval()`. Re-entry through
-the registry is now a compile error, not a discipline ask.
+The view exposes policy-query methods (`is_strict_mode`,
+`strict_conversions_enabled`, `max_json_parse_length`), shared work
+charging (`charge_work`, `check_output_bytes`), and bounded lambda
+invocation (`invoke_lambda`, `eval_body`) — but no way to construct a
+fresh frame. Every lambda body runs against the caller's frame, so the
+step budget and recursion depth accumulate across invocations. A
+registered function physically cannot reset either; that is a compile
+error, not a discipline ask.
 
-The intentional re-entry path — higher-order combinators (`filter`,
-`map`, `reduce`, `flat_map`, `group_by`, `find`, `find_index`, `some`,
-`every`) — is implemented inside `Evaluator` itself and calls
-`eval_with_frame` with the caller's existing `EvalFrame`. The step
-budget therefore continues to accumulate across every iteration.
-These combinators are NOT registered through `BuiltinRegistry`, so
-they bypass the `BuiltinView` boundary entirely.
+Higher-order combinators (`filter`, `map`, `reduce`, `flat_map`,
+`group_by`, `find`, `find_index`, `some`, `every`) are ordinary
+registered builtins (`crates/expression/src/builtins/higher_order.rs`)
+built on that same view, so they share the caller's frame like any
+other call.
 
 **Files.**
 - Type-enforced boundary: `crates/expression/src/eval/mod.rs`
-  (`BuiltinView`, `BuiltinRegistry::call` dispatch).
-- Public type alias: `crates/expression/src/builtins.rs`
+  (`BuiltinView`, `Argument`, `BuiltinRegistry::call` dispatch).
+- Public type alias: `crates/expression/src/builtins/mod.rs`
   (`BuiltinFunction`).
 - Crate-level docs: `crates/expression/src/lib.rs`
   ("BuiltinFunction signature" section), `crates/expression/README.md`.
 
 **Anti-pattern (do NOT introduce again).** Adding a method on
-`BuiltinView` that returns `&Evaluator`, or exposing `Evaluator::eval`
-through a "convenience" trait re-export. Either move the work into the
-evaluator module so it can use `eval_with_frame` properly, or
-restructure so the builtin produces a value rather than walking the
-AST itself.
+`BuiltinView` that returns `&Evaluator`, constructs an `EvalFrame`, or
+otherwise evaluates an arbitrary expression outside the shared-frame
+paths. Move the work into a registered builtin that takes
+`&[Argument<'_>]`, or restructure so the builtin produces a value rather
+than walking the AST itself.
