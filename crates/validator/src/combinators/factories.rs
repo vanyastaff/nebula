@@ -29,9 +29,7 @@
 //! assert!(flexible_validator.validate("ab").is_ok()); // satisfies max_length
 //! ```
 
-use crate::foundation::{
-    Validate, ValidationError, ValidationErrorKind, ValidationErrors, ValidationMode,
-};
+use crate::foundation::{Validate, ValidationError, ValidationErrors, ValidationMode};
 
 // ============================================================================
 // ALL OF (AND semantics)
@@ -209,7 +207,7 @@ where
         for validator in &self.validators {
             match validator.validate(input) {
                 Ok(()) => return Ok(()),
-                Err(error) if error.kind() != ValidationErrorKind::Violation => return Err(error),
+                Err(error) if !error.is_violation() => return Err(error),
                 Err(e) => errors.add(e),
             }
         }

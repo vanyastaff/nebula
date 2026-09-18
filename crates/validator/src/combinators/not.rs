@@ -14,7 +14,7 @@
 //! assert!("this is forbidden".validate_with(&validator).is_err());
 //! ```
 
-use crate::foundation::{Validate, ValidationError, ValidationErrorKind};
+use crate::foundation::{Validate, ValidationError};
 
 /// Inverts a validator with logical NOT.
 ///
@@ -53,7 +53,7 @@ where
                 "not_failed",
                 "Validation should have failed but passed",
             )),
-            Err(error) if error.kind() == ValidationErrorKind::Violation => Ok(()),
+            Err(error) if error.is_violation() => Ok(()),
             Err(error) => Err(error),
         }
     }

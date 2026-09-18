@@ -16,7 +16,7 @@
 //! assert!("hi".validate_with(&validator).is_err()); // neither 5 nor 10
 //! ```
 
-use crate::foundation::{Validate, ValidationError, ValidationErrorKind};
+use crate::foundation::{Validate, ValidationError};
 
 /// Combines two validators with logical OR.
 ///
@@ -60,7 +60,7 @@ where
         // Contract: right side is evaluated only if the left side fails.
         match self.left.validate(input) {
             Ok(()) => Ok(()),
-            Err(error) if is_structural(&error) => Err(error),
+            Err(error) if !error.is_violation() => Err(error),
             Err(left_error) => match self.right.validate(input) {
                 Ok(()) => Ok(()),
                 Err(right_error) => {
@@ -71,15 +71,6 @@ where
             },
         }
     }
-}
-
-/// Whether a diagnostic is structural rather than a failed alternative.
-///
-/// An `any` combinator counts only `Violation` errors as "this alternative
-/// failed"; invalid-rule and unavailable diagnostics abort the whole
-/// combinator so an invalid branch cannot be masked by a passing sibling.
-fn is_structural(error: &ValidationError) -> bool {
-    error.kind() != ValidationErrorKind::Violation
 }
 
 /// Creates an `Or` combinator from two validators.
@@ -109,7 +100,7 @@ where
         for validator in &self.validators {
             match validator.validate(input) {
                 Ok(()) => return Ok(()),
-                Err(error) if is_structural(&error) => return Err(error),
+                Err(error) if !error.is_violation() => return Err(error),
                 Err(e) => errors.push(e),
             }
         }

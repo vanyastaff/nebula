@@ -70,7 +70,7 @@ fn collect_children(
         match child.validate_bounded(input, ctx, mode, disclosure) {
             Ok(EvaluationOutcome::Satisfied) => outcomes.satisfied = true,
             Ok(EvaluationOutcome::Deferred(reasons)) => outcomes.deferred.extend(reasons),
-            Err(error) if error.kind() != ValidationErrorKind::Violation => return Err(error),
+            Err(error) if !error.is_violation() => return Err(error),
             Err(error) => outcomes.errors.push(error),
         }
     }
@@ -142,9 +142,7 @@ pub(super) fn validate_not(
             Err(ValidationError::new("not_failed", "negated rule passed"))
         },
         Ok(deferred @ EvaluationOutcome::Deferred(_)) => Ok(deferred),
-        Err(error) if error.kind() == ValidationErrorKind::Violation => {
-            Ok(EvaluationOutcome::Satisfied)
-        },
+        Err(error) if error.is_violation() => Ok(EvaluationOutcome::Satisfied),
         Err(error) => Err(error),
     }
 }

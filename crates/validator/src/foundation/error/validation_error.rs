@@ -153,6 +153,19 @@ impl ValidationError {
             .unwrap_or(ValidationErrorKind::Violation)
     }
 
+    /// Whether this diagnostic is a failed alternative rather than structural.
+    ///
+    /// Logical combinators (`and`/`or`/`not`/`any`, `Rule::all`/`any`/`not`)
+    /// treat only `Violation` as "this branch failed" and count it toward their
+    /// aggregate verdict. An `InvalidRule` or `Unavailable` diagnostic is
+    /// structural: it aborts the whole combinator instead of being absorbed by
+    /// a passing sibling, so a misconfigured or un-evaluable branch cannot be
+    /// masked.
+    #[must_use]
+    pub fn is_violation(&self) -> bool {
+        self.kind() == ValidationErrorKind::Violation
+    }
+
     pub(crate) fn invalid_rule(message: &'static str) -> Self {
         let mut error = Self::new("invalid_rule", message);
         error.extras_mut().kind = ValidationErrorKind::InvalidRule;
