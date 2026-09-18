@@ -90,7 +90,7 @@
 //! # Pipeline integration
 //!
 //! When using a rate limiter inside a [`ResiliencePipeline`](crate::ResiliencePipeline) the
-//! limiter must be wrapped in [`Arc`] before being passed to
+//! limiter must be wrapped in [`Arc`](std::sync::Arc) before being passed to
 //! [`rate_limiter_from()`](crate::PipelineBuilder::rate_limiter_from):
 //!
 //! ```rust,no_run

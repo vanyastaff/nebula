@@ -298,7 +298,7 @@ impl<E: Send + 'static> PipelineBuilder<E> {
 impl<E: nebula_error::Classify + Send + Sync + 'static> PipelineBuilder<E> {
     /// Use [`NebulaClassifier`](crate::classifier::NebulaClassifier) to automatically
     /// map [`ErrorCategory`](nebula_error::ErrorCategory) to
-    /// [`ErrorClass`].
+    /// [`ErrorClass`](crate::classifier::ErrorClass).
     ///
     /// This is the recommended default for pipelines where `E: Classify`.
     #[must_use]

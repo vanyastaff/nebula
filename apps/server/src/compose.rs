@@ -341,7 +341,7 @@ pub(crate) struct ServerRuntime;
 /// How long the process waits for in-flight HTTP requests after a shutdown
 /// signal before abandoning them.
 ///
-/// Distinct from [`crate::SHUTDOWN_FRONTIER_GRACE`] (engine-level, 3 s) and
+/// Distinct from `nebula_engine::engine::SHUTDOWN_FRONTIER_GRACE` (engine-level, 3 s) and
 /// from Kubernetes' default `terminationGracePeriodSeconds` (30 s): the gate
 /// budget must leave time for telemetry flush and credential-runtime shutdown
 /// inside the operator's overall grace period, so it is deliberately shorter

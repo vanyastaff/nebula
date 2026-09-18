@@ -23,7 +23,7 @@ pub(super) struct LeakyBucketState {
 /// `acquire()` returns [`CallError::RateLimited`]
 /// immediately.
 ///
-/// Unlike [`TokenBucket`], the leaky bucket enforces a strict outflow rate:
+/// Unlike [`TokenBucket`](super::TokenBucket), the leaky bucket enforces a strict outflow rate:
 /// no matter how fast requests arrive, outgoing permit grants are smoothed
 /// to the configured `leak_rate`.
 ///
