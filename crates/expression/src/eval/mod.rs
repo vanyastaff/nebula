@@ -907,32 +907,7 @@ impl Evaluator {
         right: &Value,
         context: &EvaluationContext,
     ) -> ExpressionResult<Value> {
-        if self.strict_numeric_comparisons_enabled(context)
-            && (!left.is_number() || !right.is_number())
-        {
-            return Err(ExpressionError::expression_type_error(
-                "number",
-                format!(
-                    "{} and {}",
-                    crate::value_utils::value_type_name(left),
-                    crate::value_utils::value_type_name(right)
-                ),
-            ));
-        }
-        match (left, right) {
-            (Value::Number(l), Value::Number(r)) => {
-                Ok(Value::Bool(self.number_ordering(l, r)?.is_lt()))
-            },
-            (Value::String(l), Value::String(r)) => Ok(Value::Bool(l < r)),
-            _ => Err(ExpressionError::expression_type_error(
-                "comparable values",
-                format!(
-                    "{} and {}",
-                    crate::value_utils::value_type_name(left),
-                    crate::value_utils::value_type_name(right)
-                ),
-            )),
-        }
+        self.compare_operands(left, right, context, std::cmp::Ordering::is_lt)
     }
 
     /// Greater than comparison
@@ -943,32 +918,7 @@ impl Evaluator {
         right: &Value,
         context: &EvaluationContext,
     ) -> ExpressionResult<Value> {
-        if self.strict_numeric_comparisons_enabled(context)
-            && (!left.is_number() || !right.is_number())
-        {
-            return Err(ExpressionError::expression_type_error(
-                "number",
-                format!(
-                    "{} and {}",
-                    crate::value_utils::value_type_name(left),
-                    crate::value_utils::value_type_name(right)
-                ),
-            ));
-        }
-        match (left, right) {
-            (Value::Number(l), Value::Number(r)) => {
-                Ok(Value::Bool(self.number_ordering(l, r)?.is_gt()))
-            },
-            (Value::String(l), Value::String(r)) => Ok(Value::Bool(l > r)),
-            _ => Err(ExpressionError::expression_type_error(
-                "comparable values",
-                format!(
-                    "{} and {}",
-                    crate::value_utils::value_type_name(left),
-                    crate::value_utils::value_type_name(right)
-                ),
-            )),
-        }
+        self.compare_operands(left, right, context, std::cmp::Ordering::is_gt)
     }
 
     /// Less than or equal comparison
@@ -978,32 +928,7 @@ impl Evaluator {
         right: &Value,
         context: &EvaluationContext,
     ) -> ExpressionResult<Value> {
-        if self.strict_numeric_comparisons_enabled(context)
-            && (!left.is_number() || !right.is_number())
-        {
-            return Err(ExpressionError::expression_type_error(
-                "number",
-                format!(
-                    "{} and {}",
-                    crate::value_utils::value_type_name(left),
-                    crate::value_utils::value_type_name(right)
-                ),
-            ));
-        }
-        match (left, right) {
-            (Value::Number(l), Value::Number(r)) => {
-                Ok(Value::Bool(self.number_ordering(l, r)?.is_le()))
-            },
-            (Value::String(l), Value::String(r)) => Ok(Value::Bool(l <= r)),
-            _ => Err(ExpressionError::expression_type_error(
-                "comparable values",
-                format!(
-                    "{} and {}",
-                    crate::value_utils::value_type_name(left),
-                    crate::value_utils::value_type_name(right)
-                ),
-            )),
-        }
+        self.compare_operands(left, right, context, std::cmp::Ordering::is_le)
     }
 
     /// Greater than or equal comparison
@@ -1012,6 +937,22 @@ impl Evaluator {
         left: &Value,
         right: &Value,
         context: &EvaluationContext,
+    ) -> ExpressionResult<Value> {
+        self.compare_operands(left, right, context, std::cmp::Ordering::is_ge)
+    }
+
+    /// Shared ordering seam for the four comparison operators.
+    ///
+    /// Both numbers and strings reduce to a [`std::cmp::Ordering`]; `accept`
+    /// supplies the operator-specific predicate. Non-finite numbers surface as
+    /// [`ExpressionError::NonFiniteNumber`] from [`Self::number_ordering`]
+    /// regardless of which operator asked, so error behaviour stays uniform.
+    fn compare_operands(
+        &self,
+        left: &Value,
+        right: &Value,
+        context: &EvaluationContext,
+        accept: fn(std::cmp::Ordering) -> bool,
     ) -> ExpressionResult<Value> {
         if self.strict_numeric_comparisons_enabled(context)
             && (!left.is_number() || !right.is_number())
@@ -1025,20 +966,21 @@ impl Evaluator {
                 ),
             ));
         }
-        match (left, right) {
-            (Value::Number(l), Value::Number(r)) => {
-                Ok(Value::Bool(self.number_ordering(l, r)?.is_ge()))
+        let ordering = match (left, right) {
+            (Value::Number(l), Value::Number(r)) => self.number_ordering(l, r)?,
+            (Value::String(l), Value::String(r)) => l.cmp(r),
+            _ => {
+                return Err(ExpressionError::expression_type_error(
+                    "comparable values",
+                    format!(
+                        "{} and {}",
+                        crate::value_utils::value_type_name(left),
+                        crate::value_utils::value_type_name(right)
+                    ),
+                ));
             },
-            (Value::String(l), Value::String(r)) => Ok(Value::Bool(l >= r)),
-            _ => Err(ExpressionError::expression_type_error(
-                "comparable values",
-                format!(
-                    "{} and {}",
-                    crate::value_utils::value_type_name(left),
-                    crate::value_utils::value_type_name(right)
-                ),
-            )),
-        }
+        };
+        Ok(Value::Bool(accept(ordering)))
     }
 
     /// Regex match with ReDoS protection
@@ -1334,6 +1276,41 @@ impl Evaluator {
         self.eval_with_frame(body, &lambda_context, frame)
     }
 
+    /// Evaluate a higher-order array argument and require an array result.
+    ///
+    /// Moves the array out of the evaluated value (no clone) and produces the
+    /// same diagnostic for every higher-order function, so the type error
+    /// stays uniform.
+    fn eval_array_argument(
+        &self,
+        args: &[Expr],
+        context: &EvaluationContext,
+        frame: &mut EvalFrame,
+    ) -> ExpressionResult<Vec<Value>> {
+        match self.eval_with_frame(&args[0], context, frame)? {
+            Value::Array(array) => Ok(array),
+            other => Err(ExpressionError::expression_type_error(
+                "array",
+                crate::value_utils::value_type_name(&other),
+            )),
+        }
+    }
+
+    /// Extract the `(param, body)` pair from a lambda argument.
+    ///
+    /// Higher-order functions accept a lambda in a fixed argument slot; a
+    /// non-lambda there is a type error, not a fall-through to the builtin
+    /// registry.
+    fn lambda_parts(args: &[Expr], index: usize) -> ExpressionResult<(&str, &Expr)> {
+        match &args[index] {
+            Expr::Lambda { param, body } => Ok((param.as_ref(), body.as_ref())),
+            _ => Err(ExpressionError::expression_type_error(
+                "lambda expression",
+                "non-lambda",
+            )),
+        }
+    }
+
     /// Handle higher-order functions that require lambda expressions.
     /// Returns Some(result) if the function was handled, None if it should
     /// be passed to the regular builtin registry.
@@ -1527,28 +1504,14 @@ impl Evaluator {
         }
 
         // Evaluate the array argument
-        let array_val = self.eval_with_frame(&args[0], context, frame)?;
-        let array = array_val.as_array().ok_or_else(|| {
-            ExpressionError::expression_type_error(
-                "array",
-                crate::value_utils::value_type_name(&array_val),
-            )
-        })?;
+        let array = self.eval_array_argument(args, context, frame)?;
 
         // Extract the lambda
-        let (param, body) = match &args[1] {
-            Expr::Lambda { param, body } => (param.as_ref(), body.as_ref()),
-            _ => {
-                return Err(ExpressionError::expression_type_error(
-                    "lambda expression",
-                    "non-lambda",
-                ));
-            },
-        };
+        let (param, body) = Self::lambda_parts(args, 1)?;
 
         // Filter the array
         let mut result = Vec::with_capacity(array.len());
-        for item in array {
+        for item in &array {
             let predicate_result = self.eval_lambda(param, body, item, context, frame)?;
             if self.coerce_boolean(&predicate_result, context)? {
                 result.push(item.clone());
@@ -1576,31 +1539,17 @@ impl Evaluator {
         }
 
         // Evaluate the array argument
-        let array_val = self.eval_with_frame(&args[0], context, frame)?;
-        let array = array_val.as_array().ok_or_else(|| {
-            ExpressionError::expression_type_error(
-                "array",
-                crate::value_utils::value_type_name(&array_val),
-            )
-        })?;
+        let array = self.eval_array_argument(args, context, frame)?;
 
         // Extract the lambda
-        let (param, body) = match &args[1] {
-            Expr::Lambda { param, body } => (param.as_ref(), body.as_ref()),
-            _ => {
-                return Err(ExpressionError::expression_type_error(
-                    "lambda expression",
-                    "non-lambda",
-                ));
-            },
-        };
+        let (param, body) = Self::lambda_parts(args, 1)?;
 
         // Map the array
         let output = crate::BuiltinOutputBuilder::new(self.builtin_output_limits(context));
         output.ensure_collection_items(array.len())?;
         let mut budget = crate::builtins::ArrayOutputBudget::new(output)?;
         let mut result = Vec::with_capacity(array.len());
-        for item in array {
+        for item in &array {
             let transformed = self.eval_lambda(param, body, item, context, frame)?;
             budget.push(&transformed)?;
             result.push(transformed);
@@ -1630,34 +1579,20 @@ impl Evaluator {
         }
 
         // Evaluate the array argument
-        let array_val = self.eval_with_frame(&args[0], context, frame)?;
-        let array = array_val.as_array().ok_or_else(|| {
-            ExpressionError::expression_type_error(
-                "array",
-                crate::value_utils::value_type_name(&array_val),
-            )
-        })?;
+        let array = self.eval_array_argument(args, context, frame)?;
 
         // Evaluate the initial value
         let initial = self.eval_with_frame(&args[1], context, frame)?;
 
         // Extract the lambda
-        let (param, body) = match &args[2] {
-            Expr::Lambda { param, body } => (param.as_ref(), body.as_ref()),
-            _ => {
-                return Err(ExpressionError::expression_type_error(
-                    "lambda expression",
-                    "non-lambda",
-                ));
-            },
-        };
+        let (param, body) = Self::lambda_parts(args, 2)?;
 
         // Reduce the array. Each iteration reuses the caller's frame
         // so the step budget is enforced across every element — the
         // previous `self.eval(body, ...)` pattern reset the counter on
         // every element and was the CO-C1-01 DoS bypass.
         let mut accumulator = initial;
-        for item in array {
+        for item in &array {
             // Create context with both accumulator and current item
             let mut reduce_context = context.clone();
             reduce_context.set_lambda_var("$acc", accumulator.clone());
@@ -1685,25 +1620,11 @@ impl Evaluator {
             ));
         }
 
-        let array_val = self.eval_with_frame(&args[0], context, frame)?;
-        let array = array_val.as_array().ok_or_else(|| {
-            ExpressionError::expression_type_error(
-                "array",
-                crate::value_utils::value_type_name(&array_val),
-            )
-        })?;
+        let array = self.eval_array_argument(args, context, frame)?;
 
-        let (param, body) = match &args[1] {
-            Expr::Lambda { param, body } => (param.as_ref(), body.as_ref()),
-            _ => {
-                return Err(ExpressionError::expression_type_error(
-                    "lambda expression",
-                    "non-lambda",
-                ));
-            },
-        };
+        let (param, body) = Self::lambda_parts(args, 1)?;
 
-        for item in array {
+        for item in &array {
             let predicate_result = self.eval_lambda(param, body, item, context, frame)?;
             if self.coerce_boolean(&predicate_result, context)? {
                 return Ok(item.clone());
@@ -1730,25 +1651,11 @@ impl Evaluator {
             ));
         }
 
-        let array_val = self.eval_with_frame(&args[0], context, frame)?;
-        let array = array_val.as_array().ok_or_else(|| {
-            ExpressionError::expression_type_error(
-                "array",
-                crate::value_utils::value_type_name(&array_val),
-            )
-        })?;
+        let array = self.eval_array_argument(args, context, frame)?;
 
-        let (param, body) = match &args[1] {
-            Expr::Lambda { param, body } => (param.as_ref(), body.as_ref()),
-            _ => {
-                return Err(ExpressionError::expression_type_error(
-                    "lambda expression",
-                    "non-lambda",
-                ));
-            },
-        };
+        let (param, body) = Self::lambda_parts(args, 1)?;
 
-        for item in array {
+        for item in &array {
             let predicate_result = self.eval_lambda(param, body, item, context, frame)?;
             if !self.coerce_boolean(&predicate_result, context)? {
                 return Ok(Value::Bool(false));
@@ -1775,25 +1682,11 @@ impl Evaluator {
             ));
         }
 
-        let array_val = self.eval_with_frame(&args[0], context, frame)?;
-        let array = array_val.as_array().ok_or_else(|| {
-            ExpressionError::expression_type_error(
-                "array",
-                crate::value_utils::value_type_name(&array_val),
-            )
-        })?;
+        let array = self.eval_array_argument(args, context, frame)?;
 
-        let (param, body) = match &args[1] {
-            Expr::Lambda { param, body } => (param.as_ref(), body.as_ref()),
-            _ => {
-                return Err(ExpressionError::expression_type_error(
-                    "lambda expression",
-                    "non-lambda",
-                ));
-            },
-        };
+        let (param, body) = Self::lambda_parts(args, 1)?;
 
-        for item in array {
+        for item in &array {
             let predicate_result = self.eval_lambda(param, body, item, context, frame)?;
             if self.coerce_boolean(&predicate_result, context)? {
                 return Ok(Value::Bool(true));
@@ -1820,23 +1713,9 @@ impl Evaluator {
             ));
         }
 
-        let array_val = self.eval_with_frame(&args[0], context, frame)?;
-        let array = array_val.as_array().ok_or_else(|| {
-            ExpressionError::expression_type_error(
-                "array",
-                crate::value_utils::value_type_name(&array_val),
-            )
-        })?;
+        let array = self.eval_array_argument(args, context, frame)?;
 
-        let (param, body) = match &args[1] {
-            Expr::Lambda { param, body } => (param.as_ref(), body.as_ref()),
-            _ => {
-                return Err(ExpressionError::expression_type_error(
-                    "lambda expression",
-                    "non-lambda",
-                ));
-            },
-        };
+        let (param, body) = Self::lambda_parts(args, 1)?;
 
         for (i, item) in array.iter().enumerate() {
             let predicate_result = self.eval_lambda(param, body, item, context, frame)?;
@@ -1866,28 +1745,14 @@ impl Evaluator {
             ));
         }
 
-        let array_val = self.eval_with_frame(&args[0], context, frame)?;
-        let array = array_val.as_array().ok_or_else(|| {
-            ExpressionError::expression_type_error(
-                "array",
-                crate::value_utils::value_type_name(&array_val),
-            )
-        })?;
+        let array = self.eval_array_argument(args, context, frame)?;
 
-        let (param, body) = match &args[1] {
-            Expr::Lambda { param, body } => (param.as_ref(), body.as_ref()),
-            _ => {
-                return Err(ExpressionError::expression_type_error(
-                    "lambda expression",
-                    "non-lambda",
-                ));
-            },
-        };
+        let (param, body) = Self::lambda_parts(args, 1)?;
 
         let output = crate::BuiltinOutputBuilder::new(self.builtin_output_limits(context));
         let mut budget = crate::builtins::GroupOutputBudget::new(output)?;
         let mut groups = serde_json::Map::new();
-        for item in array {
+        for item in &array {
             let key_val = self.eval_lambda(param, body, item, context, frame)?;
             let key = match &key_val {
                 Value::String(s) => s.clone(),
@@ -1940,28 +1805,14 @@ impl Evaluator {
             ));
         }
 
-        let array_val = self.eval_with_frame(&args[0], context, frame)?;
-        let array = array_val.as_array().ok_or_else(|| {
-            ExpressionError::expression_type_error(
-                "array",
-                crate::value_utils::value_type_name(&array_val),
-            )
-        })?;
+        let array = self.eval_array_argument(args, context, frame)?;
 
-        let (param, body) = match &args[1] {
-            Expr::Lambda { param, body } => (param.as_ref(), body.as_ref()),
-            _ => {
-                return Err(ExpressionError::expression_type_error(
-                    "lambda expression",
-                    "non-lambda",
-                ));
-            },
-        };
+        let (param, body) = Self::lambda_parts(args, 1)?;
 
         let output = crate::BuiltinOutputBuilder::new(self.builtin_output_limits(context));
         let mut budget = crate::builtins::ArrayOutputBudget::new(output)?;
         let mut result = Vec::new();
-        for item in array {
+        for item in &array {
             let transformed = self.eval_lambda(param, body, item, context, frame)?;
             match transformed {
                 Value::Array(inner) => {
