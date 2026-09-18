@@ -71,36 +71,6 @@ pub use traits::{Validatable, Validate, ValidateExt};
 pub use validatable::AsValidatable;
 
 // ============================================================================
-// PRELUDE
-// ============================================================================
-
-/// Common imports for working with the validator core.
-///
-/// Combinator types (`And`, `Or`, `Not`, `When`) live in [`crate::combinators`] —
-/// import them from there or use the top-level [`crate::prelude`] which re-exports both.
-///
-/// ```rust
-/// use nebula_validator::foundation::prelude::*;
-/// // The foundation prelude brings in the traits; import validator constructors
-/// // from the `validators` module (combinators live in `combinators`).
-/// use nebula_validator::validators::{min, min_length};
-///
-/// // Extension method style
-/// "hello".validate_with(&min_length(3))?;
-/// 42.validate_with(&min(10))?;
-///
-/// // Direct method style
-/// min_length(3).validate("hello")?;
-/// # Ok::<(), nebula_validator::foundation::ValidationError>(())
-/// ```
-pub mod prelude {
-    pub use super::{
-        AnyValidator, ErrorSeverity, Validatable, Validate, ValidateExt, ValidationError,
-        ValidationErrors,
-    };
-}
-
-// ============================================================================
 // TESTS
 // ============================================================================
 

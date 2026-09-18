@@ -119,36 +119,6 @@ pub use unless::{Unless, unless};
 pub use when::{When, when};
 
 // ============================================================================
-// PRELUDE
-// ============================================================================
-
-/// Common combinator imports.
-///
-/// # Examples
-///
-/// ```rust
-/// use nebula_validator::combinators::prelude::*;
-/// use nebula_validator::validators::{exact_length, max_length, min_length};
-/// use nebula_validator::foundation::{Validate, ValidateExt};
-///
-/// let validator = min_length(5)
-///     .and(max_length(20))
-///     .or(exact_length(0));
-///
-/// assert!(validator.validate("hello").is_ok()); // within 5..=20
-/// assert!(validator.validate("").is_ok()); // matches exact_length(0)
-/// assert!(validator.validate("hi").is_err()); // too short, non-empty
-/// ```
-pub mod prelude {
-    pub use super::{
-        AllOf, And, AndAll, AnyOf, CollectJsonFields, Each, Field, FieldValidateExt, JsonField,
-        Lazy, Not, Optional, Or, OrAny, Unless, When, WithCode, WithMessage, all_of, and, and_all,
-        any_of, collect_json_fields, each, each_fail_fast, field, json_field, json_field_optional,
-        lazy, named_field, not, optional, or, or_any, unless, when, with_code, with_message,
-    };
-}
-
-// ============================================================================
 // COMBINATOR LAWS
 // ============================================================================
 
