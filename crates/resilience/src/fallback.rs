@@ -546,6 +546,67 @@ impl<T: Send + Sync + 'static, E: Send + 'static> FallbackStrategy<T, E>
     }
 }
 
+// =============================================================================
+// SHARED ORCHESTRATION
+// =============================================================================
+
+/// Outcome of attempting a fallback after a primary failure.
+///
+/// Produced by [`orchestrate_fallback`]; the caller translates it into its own
+/// completion event (`PipelineOutcome` for the pipeline, the bare event pair
+/// for [`FallbackOperation`]).
+pub(crate) enum FallbackOutcome<T, E> {
+    /// The strategy was not asked: it declined the error.
+    Declined(CallError<E>),
+    /// The strategy recovered a value.
+    Recovered(T),
+    /// The strategy was asked and failed.
+    Failed(CallError<E>),
+}
+
+/// The one fallback orchestration: decide, emit `FallbackAttempted`, recover,
+/// emit the result event.
+///
+/// `FallbackOperation` and `ResiliencePipeline::call_with_fallback*` both drive
+/// fallback through this function rather than keeping parallel copies of the
+/// sequence, because two copies let the event contract drift between the
+/// standalone and pipeline entry points.
+///
+/// Cancellation and context-deadline errors are never offered to the strategy:
+/// shutdown and action deadlines must not be reported as successful graceful
+/// degradation. The caller keeps responsibility for the stronger check that
+/// requires its own cancellation handle (the pipeline's `select!` against a
+/// live token).
+pub(crate) async fn orchestrate_fallback<T, E>(
+    strategy: &dyn FallbackStrategy<T, E>,
+    sink: &dyn MetricsSink,
+    error: CallError<E>,
+) -> FallbackOutcome<T, E>
+where
+    T: Send + Sync,
+    E: Send,
+{
+    if matches!(error, CallError::Cancelled { .. }) || !strategy.should_fallback(&error) {
+        return FallbackOutcome::Declined(error);
+    }
+
+    let primary_error = error.kind();
+    sink.record(ResilienceEvent::FallbackAttempted { primary_error });
+    match strategy.recover(error).await {
+        Ok(value) => {
+            sink.record(ResilienceEvent::FallbackSucceeded { primary_error });
+            FallbackOutcome::Recovered(value)
+        },
+        Err(fallback_error) => {
+            sink.record(ResilienceEvent::FallbackFailed {
+                primary_error,
+                fallback_error: fallback_error.kind(),
+            });
+            FallbackOutcome::Failed(fallback_error)
+        },
+    }
+}
+
 /// Fallback with operation — combines primary and fallback operations.
 ///
 /// # Examples
@@ -573,6 +634,22 @@ impl<T: Send + Sync + 'static, E: Send + 'static> FallbackStrategy<T, E>
 pub struct FallbackOperation<T, E> {
     fallback_strategy: Arc<dyn FallbackStrategy<T, E>>,
     sink: Arc<dyn MetricsSink>,
+}
+
+impl<T, E> FallbackOperation<T, E> {
+    /// Delegate one primary failure to the strategy through the shared
+    /// orchestration and translate its outcome.
+    async fn apply(&self, error: CallError<E>) -> Result<T, CallError<E>>
+    where
+        T: Send + Sync,
+        E: Send,
+    {
+        match orchestrate_fallback(self.fallback_strategy.as_ref(), self.sink.as_ref(), error).await
+        {
+            FallbackOutcome::Declined(error) | FallbackOutcome::Failed(error) => Err(error),
+            FallbackOutcome::Recovered(value) => Ok(value),
+        }
+    }
 }
 
 impl<T, E> fmt::Debug for FallbackOperation<T, E> {
@@ -605,10 +682,6 @@ impl<T, E> FallbackOperation<T, E> {
         self
     }
 
-    fn record(&self, event: ResilienceEvent) {
-        self.sink.record(event);
-    }
-
     /// Call with fallback.
     ///
     /// # Errors
@@ -624,27 +697,7 @@ impl<T, E> FallbackOperation<T, E> {
     {
         match operation().await {
             Ok(value) => Ok(value),
-            Err(error) => {
-                if self.fallback_strategy.should_fallback(&error) {
-                    let primary_error = error.kind();
-                    self.record(ResilienceEvent::FallbackAttempted { primary_error });
-                    match self.fallback_strategy.recover(error).await {
-                        Ok(value) => {
-                            self.record(ResilienceEvent::FallbackSucceeded { primary_error });
-                            Ok(value)
-                        },
-                        Err(error) => {
-                            self.record(ResilienceEvent::FallbackFailed {
-                                primary_error,
-                                fallback_error: error.kind(),
-                            });
-                            Err(error)
-                        },
-                    }
-                } else {
-                    Err(error)
-                }
-            },
+            Err(error) => self.apply(error).await,
         }
     }
 
@@ -684,28 +737,10 @@ impl<T, E> FallbackOperation<T, E> {
                 if matches!(error, CallError::Timeout(_)) && context.is_deadline_expired() {
                     return Err(error);
                 }
-                if self.fallback_strategy.should_fallback(&error) {
-                    let primary_error = error.kind();
-                    self.record(ResilienceEvent::FallbackAttempted { primary_error });
-                    match context
-                        .run_result(self.fallback_strategy.recover(error))
-                        .await
-                    {
-                        Ok(value) => {
-                            self.record(ResilienceEvent::FallbackSucceeded { primary_error });
-                            Ok(value)
-                        },
-                        Err(error) => {
-                            self.record(ResilienceEvent::FallbackFailed {
-                                primary_error,
-                                fallback_error: error.kind(),
-                            });
-                            Err(error)
-                        },
-                    }
-                } else {
-                    Err(error)
-                }
+                // The fallback phase stays bounded by the same context as the
+                // primary: a deadline that expires during recovery turns into
+                // `Timeout` rather than waiting for a slow strategy.
+                context.run_result(self.apply(error)).await
             },
         }
     }

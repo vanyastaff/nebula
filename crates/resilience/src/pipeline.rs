@@ -971,44 +971,54 @@ impl<E: Send + 'static> ResiliencePipeline<E> {
                     );
                     return Err(cancelled);
                 }
-                if fallback.should_fallback(&err) {
-                    self.sink
-                        .record(ResilienceEvent::FallbackAttempted { primary_error });
-                    let result = if let Some(cancellation) = cancellation.clone() {
+                // The strategy runs through the shared fallback
+                // orchestration; the pipeline only adds the live-token
+                // `select!`, which needs the cancellation handle the
+                // orchestrator does not own.
+                let orchestrated = {
+                    let recover =
+                        crate::fallback::orchestrate_fallback(fallback, self.sink.as_ref(), err);
+                    if let Some(cancellation) = cancellation.clone() {
                         tokio::select! {
-                            result = fallback.recover(err) => result,
-                            () = cancellation.token().cancelled() => Err(cancellation.cancelled_error()),
+                            outcome = recover => outcome,
+                            () = cancellation.token().cancelled() => {
+                                crate::fallback::FallbackOutcome::Declined(
+                                    cancellation.cancelled_error(),
+                                )
+                            },
                         }
                     } else {
-                        fallback.recover(err).await
-                    };
-                    let pipeline_outcome = match &result {
-                        Ok(_) => {
-                            self.sink
-                                .record(ResilienceEvent::FallbackSucceeded { primary_error });
-                            PipelineOutcome::FallbackSucceeded { primary_error }
-                        },
-                        Err(fallback_error) => {
-                            self.sink.record(ResilienceEvent::FallbackFailed {
-                                primary_error,
-                                fallback_error: fallback_error.kind(),
-                            });
+                        recover.await
+                    }
+                };
+                match orchestrated {
+                    crate::fallback::FallbackOutcome::Recovered(value) => {
+                        self.record_pipeline_completed_for_scope(
+                            completion_scope,
+                            PipelineOutcome::FallbackSucceeded { primary_error },
+                        );
+                        Ok(value)
+                    },
+                    crate::fallback::FallbackOutcome::Failed(fallback_error) => {
+                        let fallback_error_kind = fallback_error.kind();
+                        self.record_pipeline_completed_for_scope(
+                            completion_scope,
                             PipelineOutcome::FallbackFailed {
                                 primary_error,
-                                fallback_error: fallback_error.kind(),
-                            }
-                        },
-                    };
-                    self.record_pipeline_completed_for_scope(completion_scope, pipeline_outcome);
-                    result
-                } else {
-                    self.record_pipeline_completed_for_scope(
-                        completion_scope,
-                        PipelineOutcome::Failure {
-                            error: primary_error,
-                        },
-                    );
-                    Err(err)
+                                fallback_error: fallback_error_kind,
+                            },
+                        );
+                        Err(fallback_error)
+                    },
+                    crate::fallback::FallbackOutcome::Declined(declined) => {
+                        self.record_pipeline_completed_for_scope(
+                            completion_scope,
+                            PipelineOutcome::Failure {
+                                error: declined.kind(),
+                            },
+                        );
+                        Err(declined)
+                    },
                 }
             },
         }
