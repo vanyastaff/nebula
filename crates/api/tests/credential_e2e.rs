@@ -35,7 +35,9 @@ use axum::{
     http::{Request, StatusCode, header},
 };
 use common::{
-    TEST_CSRF_COOKIE, TEST_CSRF_TOKEN, create_state_with_queue, create_test_jwt, ws_path,
+    TEST_CSRF_COOKIE, TEST_CSRF_TOKEN, create_state_with_queue, create_test_jwt,
+    http_helpers::{auth_get_csrf, auth_json, body_string},
+    ws_path,
 };
 use nebula_api::{ApiConfig, app, error::ApiError, state::WorkspaceResolver};
 use nebula_core::{OrgId, WorkspaceId};
@@ -142,38 +144,6 @@ where
     );
 }
 
-// ── HTTP helpers ──────────────────────────────────────────────────────────────
-
-fn auth_get(uri: &str, token: &str) -> Request<Body> {
-    Request::builder()
-        .method("GET")
-        .uri(uri)
-        .header("authorization", format!("Bearer {token}"))
-        .header("x-csrf-token", TEST_CSRF_TOKEN)
-        .header("cookie", TEST_CSRF_COOKIE)
-        .body(Body::empty())
-        .unwrap()
-}
-
-fn auth_json(method: &str, uri: &str, token: &str, body: &serde_json::Value) -> Request<Body> {
-    Request::builder()
-        .method(method)
-        .uri(uri)
-        .header("content-type", "application/json")
-        .header("authorization", format!("Bearer {token}"))
-        .header("x-csrf-token", TEST_CSRF_TOKEN)
-        .header("cookie", TEST_CSRF_COOKIE)
-        .body(Body::from(serde_json::to_vec(body).unwrap()))
-        .unwrap()
-}
-
-async fn body_string(resp: axum::response::Response) -> String {
-    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    String::from_utf8_lossy(&bytes).into_owned()
-}
-
 fn create_body() -> serde_json::Value {
     serde_json::json!({
         "credential_key": "api_key",
@@ -221,7 +191,7 @@ async fn credential_crud_round_trips_and_never_echoes_secret() {
     // GET — metadata only, no secret
     let app = app::build_app(state.clone(), &config);
     let resp = app
-        .oneshot(auth_get(
+        .oneshot(auth_get_csrf(
             &ws_path(&format!("/credentials/{cred_id}")),
             &token,
         ))
@@ -243,7 +213,7 @@ async fn credential_crud_round_trips_and_never_echoes_secret() {
     // LIST — summaries only, no secret
     let app = app::build_app(state.clone(), &config);
     let resp = app
-        .oneshot(auth_get(&ws_path("/credentials"), &token))
+        .oneshot(auth_get_csrf(&ws_path("/credentials"), &token))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -298,7 +268,7 @@ async fn credential_crud_round_trips_and_never_echoes_secret() {
     // GET after delete → 404, no secret in the problem body
     let app = app::build_app(state.clone(), &config);
     let resp = app
-        .oneshot(auth_get(
+        .oneshot(auth_get_csrf(
             &ws_path(&format!("/credentials/{cred_id}")),
             &token,
         ))
@@ -461,7 +431,10 @@ async fn credential_created_in_one_workspace_is_404_from_another_workspace() {
     );
 
     let app = app::build_app(state, &config);
-    let probe = app.oneshot(auth_get(&other_ws_path, &token)).await.unwrap();
+    let probe = app
+        .oneshot(auth_get_csrf(&other_ws_path, &token))
+        .await
+        .unwrap();
 
     assert_eq!(
         probe.status(),
@@ -524,7 +497,7 @@ async fn credential_secret_never_appears_in_logs_across_lifecycle() {
         // the secret blob must keep it out of tracing output.
         let app = app::build_app(state.clone(), &config);
         let _ = app
-            .oneshot(auth_get(
+            .oneshot(auth_get_csrf(
                 &ws_path(&format!("/credentials/{cred_id}")),
                 &token,
             ))
@@ -533,7 +506,7 @@ async fn credential_secret_never_appears_in_logs_across_lifecycle() {
 
         let app = app::build_app(state.clone(), &config);
         let _ = app
-            .oneshot(auth_get(&ws_path("/credentials"), &token))
+            .oneshot(auth_get_csrf(&ws_path("/credentials"), &token))
             .await
             .unwrap();
 
@@ -782,7 +755,7 @@ async fn credential_lifecycle_and_acquisition_answer_through_the_facade() {
     // a known key resolves.
     let app = app::build_app(state.clone(), &config);
     let resp = app
-        .oneshot(auth_get("/api/v1/credentials/types", &token))
+        .oneshot(auth_get_csrf("/api/v1/credentials/types", &token))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -800,14 +773,17 @@ async fn credential_lifecycle_and_acquisition_answer_through_the_facade() {
 
     let app = app::build_app(state.clone(), &config);
     let resp = app
-        .oneshot(auth_get("/api/v1/credentials/types/api_key", &token))
+        .oneshot(auth_get_csrf("/api/v1/credentials/types/api_key", &token))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK, "known type key resolves");
 
     let app = app::build_app(state.clone(), &config);
     let resp = app
-        .oneshot(auth_get("/api/v1/credentials/types/no_such_type", &token))
+        .oneshot(auth_get_csrf(
+            "/api/v1/credentials/types/no_such_type",
+            &token,
+        ))
         .await
         .unwrap();
     assert_eq!(
@@ -838,7 +814,10 @@ async fn tenancy_still_rejects_non_ulid_cred_segment_before_handler() {
 
     let app = app::build_app(state.clone(), &config);
     let resp = app
-        .oneshot(auth_get(&ws_path(&format!("/credentials/{bad}")), &token))
+        .oneshot(auth_get_csrf(
+            &ws_path(&format!("/credentials/{bad}")),
+            &token,
+        ))
         .await
         .unwrap();
     assert_eq!(

@@ -5,6 +5,8 @@
 //! without dragging in auth, CSRF, or tenant-scope concerns from the
 //! production stack.
 
+mod common;
+
 use std::{
     sync::{
         Arc,
@@ -15,11 +17,12 @@ use std::{
 
 use axum::{
     Router,
-    body::{Body, to_bytes},
+    body::Body,
     http::{Request, StatusCode},
     response::IntoResponse,
     routing::{get, post},
 };
+use common::http_helpers::{body_string, post_with_key, post_without_key};
 use nebula_api::middleware::idempotency::{
     IDEMPOTENCY_KEY_HEADER, IDEMPOTENT_REPLAY_HEADER, IdempotencyConfig, IdempotencyLayer,
     InMemoryIdempotencyStore,
@@ -75,30 +78,6 @@ fn build_app(counter: Arc<AtomicUsize>, store: Arc<InMemoryIdempotencyStore>) ->
             }),
         )
         .layer(IdempotencyLayer::new(store).with_replay_safe_routes(["/echo", "/fail"]))
-}
-
-fn post_with_key(uri: &str, key: &str, body: &'static str) -> Request<Body> {
-    Request::builder()
-        .method("POST")
-        .uri(uri)
-        .header("content-type", "text/plain")
-        .header(IDEMPOTENCY_KEY_HEADER, key)
-        .body(Body::from(body))
-        .unwrap()
-}
-
-fn post_without_key(uri: &str, body: &'static str) -> Request<Body> {
-    Request::builder()
-        .method("POST")
-        .uri(uri)
-        .header("content-type", "text/plain")
-        .body(Body::from(body))
-        .unwrap()
-}
-
-async fn body_string(response: axum::response::Response) -> String {
-    let bytes = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
-    String::from_utf8(bytes.to_vec()).unwrap()
 }
 
 #[tokio::test]

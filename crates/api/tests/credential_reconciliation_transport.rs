@@ -63,8 +63,7 @@ use axum::{
 };
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use common::{
-    TEST_CSRF_COOKIE, TEST_CSRF_TOKEN, create_state_with_queue, create_test_jwt, port_scope,
-    ws_path,
+    create_state_with_queue, create_test_jwt, http_helpers::auth_json, port_scope, ws_path,
 };
 use nebula_api::{
     ApiConfig, AppState, app,
@@ -525,20 +524,6 @@ impl ProbeFixture {
             .await
             .expect("acquisition must not fail")
     }
-}
-
-fn auth_json(method: &str, uri: &str, token: &str, body: &serde_json::Value) -> Request<Body> {
-    Request::builder()
-        .method(method)
-        .uri(uri)
-        .header("content-type", "application/json")
-        .header("authorization", format!("Bearer {token}"))
-        .header("x-csrf-token", TEST_CSRF_TOKEN)
-        .header("cookie", TEST_CSRF_COOKIE)
-        .body(Body::from(
-            serde_json::to_vec(body).expect("the request body must serialize"),
-        ))
-        .expect("the request must build")
 }
 
 /// RFC 9457 `type` of a problem response, which is the machine-readable half of

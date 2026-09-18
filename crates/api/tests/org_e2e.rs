@@ -48,7 +48,8 @@ use axum::{
     http::{Request, StatusCode},
 };
 use common::{
-    TEST_CSRF_COOKIE, TEST_CSRF_TOKEN, TEST_ORG,
+    TEST_ORG,
+    http_helpers::{auth_get, body_json, mutating},
     org_support::{
         OrgActor, create_org_state, create_org_state_with_role, create_org_state_without_store,
         seed_member,
@@ -56,7 +57,6 @@ use common::{
 };
 use nebula_api::{ApiConfig, app, state::MembershipStore};
 use nebula_core::{OrgRole, Principal, UserId};
-use serde_json::Value;
 use tower::ServiceExt;
 
 fn members_path() -> String {
@@ -65,41 +65,6 @@ fn members_path() -> String {
 
 fn member_path(principal_id: &str) -> String {
     format!("/api/v1/orgs/{TEST_ORG}/members/{principal_id}")
-}
-
-fn get(uri: &str, jwt: &str) -> Request<Body> {
-    Request::builder()
-        .method("GET")
-        .uri(uri)
-        .header("authorization", format!("Bearer {jwt}"))
-        .body(Body::empty())
-        .unwrap()
-}
-
-/// State-changing request with the double-submit CSRF pair the JWT auth
-/// path requires (identical contract to the 2 mutating helper).
-fn mutating(method: &str, uri: &str, jwt: &str, json_body: Option<&str>) -> Request<Body> {
-    let mut b = Request::builder()
-        .method(method)
-        .uri(uri)
-        .header("authorization", format!("Bearer {jwt}"))
-        .header("x-csrf-token", TEST_CSRF_TOKEN)
-        .header("cookie", TEST_CSRF_COOKIE);
-    let body = match json_body {
-        Some(j) => {
-            b = b.header("content-type", "application/json");
-            Body::from(j.to_owned())
-        },
-        None => Body::empty(),
-    };
-    b.body(body).unwrap()
-}
-
-async fn body_json(response: axum::response::Response) -> Value {
-    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("body readable");
-    serde_json::from_slice(&bytes).expect("body is JSON")
 }
 
 fn ct_is_problem(response: &axum::response::Response) -> bool {
@@ -126,7 +91,7 @@ async fn added_member_is_immediately_rbac_authorized() {
     let newcomer = OrgActor::new_user();
     let app = app::build_app(state.clone(), &api_config);
     let pre = app
-        .oneshot(get(&members_path(), &newcomer.jwt))
+        .oneshot(auth_get(&members_path(), &newcomer.jwt))
         .await
         .unwrap();
     assert_eq!(
@@ -155,7 +120,7 @@ async fn added_member_is_immediately_rbac_authorized() {
     // the write landed in the store RBAC consults.
     let app = app::build_app(state, &api_config);
     let post = app
-        .oneshot(get(&members_path(), &newcomer.jwt))
+        .oneshot(auth_get(&members_path(), &newcomer.jwt))
         .await
         .unwrap();
     assert_eq!(
@@ -174,7 +139,10 @@ async fn list_members_returns_seeded_admin() {
     let api_config = ApiConfig::for_test();
     let app = app::build_app(state, &api_config);
 
-    let response = app.oneshot(get(&members_path(), &admin.jwt)).await.unwrap();
+    let response = app
+        .oneshot(auth_get(&members_path(), &admin.jwt))
+        .await
+        .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_json(response).await;
     let members = body["members"].as_array().expect("members array");
@@ -215,7 +183,12 @@ async fn add_member_grants_role_and_is_listed() {
 
     // Now visible in the list.
     let app = app::build_app(state, &api_config);
-    let listed = body_json(app.oneshot(get(&members_path(), &admin.jwt)).await.unwrap()).await;
+    let listed = body_json(
+        app.oneshot(auth_get(&members_path(), &admin.jwt))
+            .await
+            .unwrap(),
+    )
+    .await;
     assert!(
         listed["members"]
             .as_array()
@@ -533,7 +506,7 @@ async fn non_member_caller_is_404_not_403() {
 
     let app = app::build_app(state, &api_config);
     let response = app
-        .oneshot(get(&members_path(), &stranger.jwt))
+        .oneshot(auth_get(&members_path(), &stranger.jwt))
         .await
         .unwrap();
     assert_eq!(
@@ -570,7 +543,7 @@ async fn remove_member_deletes_and_revokes_rbac() {
     // the shared store).
     let app = app::build_app(state, &api_config);
     let after = app
-        .oneshot(get(&members_path(), &target.jwt))
+        .oneshot(auth_get(&members_path(), &target.jwt))
         .await
         .unwrap();
     assert_eq!(
@@ -690,7 +663,7 @@ async fn list_members_without_membership_store_is_503_not_404() {
     let api_config = ApiConfig::for_test();
     let app = app::build_app(state, &api_config);
 
-    let response = app.oneshot(get(&members_path(), &jwt)).await.unwrap();
+    let response = app.oneshot(auth_get(&members_path(), &jwt)).await.unwrap();
     assert_eq!(
         response.status(),
         StatusCode::SERVICE_UNAVAILABLE,

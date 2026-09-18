@@ -32,7 +32,7 @@ use axum::{
     http::{Request, StatusCode},
 };
 use common::{
-    TEST_CSRF_COOKIE, TEST_CSRF_TOKEN,
+    http_helpers::{auth_get, body_json, mutating},
     me_support::{create_me_state, create_me_state_without_backend, jwt_for},
 };
 // `AuthBackend` is in scope so the white-box test seams can call port
@@ -42,44 +42,7 @@ use nebula_api::{ApiConfig, app, domain::auth::backend::AuthBackend};
 use serde_json::Value;
 use tower::ServiceExt;
 
-/// Build a state-changing (PATCH/POST/DELETE) request with the
-/// double-submit CSRF pair the JWT auth path requires (same contract the
-/// Phase-1 execution tests use). Without these a JWT-authenticated
-/// mutating request is correctly rejected with 403 by `csrf_middleware`.
-fn mutating(method: &str, uri: &str, jwt: &str, json_body: Option<&str>) -> Request<Body> {
-    let mut b = Request::builder()
-        .method(method)
-        .uri(uri)
-        .header("authorization", format!("Bearer {jwt}"))
-        .header("x-csrf-token", TEST_CSRF_TOKEN)
-        .header("cookie", TEST_CSRF_COOKIE);
-    let body = match json_body {
-        Some(j) => {
-            b = b.header("content-type", "application/json");
-            Body::from(j.to_owned())
-        },
-        None => Body::empty(),
-    };
-    b.body(body).unwrap()
-}
-
 const PAT_PLAINTEXT_PREFIX: &str = "pat_";
-
-async fn body_json(response: axum::response::Response) -> Value {
-    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("body readable");
-    serde_json::from_slice(&bytes).expect("body is JSON")
-}
-
-fn get(uri: &str, jwt: &str) -> Request<Body> {
-    Request::builder()
-        .method("GET")
-        .uri(uri)
-        .header("authorization", format!("Bearer {jwt}"))
-        .body(Body::empty())
-        .unwrap()
-}
 
 // ── GET /me ──────────────────────────────────────────────────────────────────
 
@@ -113,7 +76,10 @@ async fn get_me_returns_profile_with_real_token_count() {
         .unwrap();
 
     let app = app::build_app(state, &api_config);
-    let response = app.oneshot(get("/api/v1/me", &user.jwt)).await.unwrap();
+    let response = app
+        .oneshot(auth_get("/api/v1/me", &user.jwt))
+        .await
+        .unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_json(response).await;
@@ -155,7 +121,7 @@ async fn get_me_orgs_count_absent_when_membership_store_unwired() {
     let api_config = ApiConfig::for_test();
     let app = app::build_app(state, &api_config);
 
-    let response = app.oneshot(get("/api/v1/me", &jwt)).await.unwrap();
+    let response = app.oneshot(auth_get("/api/v1/me", &jwt)).await.unwrap();
     assert_eq!(
         response.status(),
         StatusCode::SERVICE_UNAVAILABLE,
@@ -263,7 +229,7 @@ async fn get_me_with_backend_absent_is_503() {
     let api_config = ApiConfig::for_test();
     let app = app::build_app(state, &api_config);
 
-    let response = app.oneshot(get("/api/v1/me", &jwt)).await.unwrap();
+    let response = app.oneshot(auth_get("/api/v1/me", &jwt)).await.unwrap();
 
     assert_eq!(
         response.status(),
@@ -385,7 +351,7 @@ async fn list_my_orgs_returns_seeded_membership() {
     let app = app::build_app(state, &api_config);
 
     let response = app
-        .oneshot(get("/api/v1/me/orgs", &user.jwt))
+        .oneshot(auth_get("/api/v1/me/orgs", &user.jwt))
         .await
         .unwrap();
     assert_eq!(
@@ -450,7 +416,7 @@ async fn list_my_tokens_returns_metadata_only() {
 
     let app = app::build_app(state, &api_config);
     let response = app
-        .oneshot(get("/api/v1/me/tokens", &user.jwt))
+        .oneshot(auth_get("/api/v1/me/tokens", &user.jwt))
         .await
         .unwrap();
 

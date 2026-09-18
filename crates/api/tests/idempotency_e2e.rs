@@ -26,10 +26,13 @@ use std::sync::{
 
 use async_trait::async_trait;
 use axum::{
-    body::{Body, to_bytes},
+    body::Body,
     http::{Request, StatusCode},
 };
-use common::create_state_with_queue;
+use common::{
+    create_state_with_queue,
+    http_helpers::{body_string, post_with_key},
+};
 use nebula_api::{
     ApiConfig, AppState, app,
     middleware::idempotency::{
@@ -77,21 +80,6 @@ impl IdempotencyStore for CountingIdempotencyStore {
 async fn state_with_idempotency() -> AppState {
     let (state, _queue) = create_state_with_queue().await;
     state.with_idempotency_store(Arc::new(InMemoryIdempotencyStore::new()))
-}
-
-fn post_with_key(uri: &str, key: &str, body: &'static str) -> Request<Body> {
-    Request::builder()
-        .method("POST")
-        .uri(uri)
-        .header("content-type", "text/plain")
-        .header(IDEMPOTENCY_KEY_HEADER, key)
-        .body(Body::from(body))
-        .unwrap()
-}
-
-async fn body_string(response: axum::response::Response) -> String {
-    let bytes = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
-    String::from_utf8(bytes.to_vec()).unwrap()
 }
 
 #[tokio::test]

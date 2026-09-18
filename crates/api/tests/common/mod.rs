@@ -51,6 +51,121 @@ pub(crate) fn org_path(suffix: &str) -> String {
     format!("/api/v1/orgs/{TEST_ORG}{suffix}")
 }
 
+// ── Shared HTTP request / response helpers ───────────────────────────────────
+//
+// Each file under `tests/` is a separate Cargo compilation unit, so duplicating
+// small builder functions is easy. Centralizing the common shapes keeps the
+// test files focused on the scenario under test and avoids half a dozen nearly
+// identical copies of `auth_get` / `body_string`.
+
+pub(crate) mod http_helpers {
+    use axum::{body::Body, http::Request};
+    use nebula_api::middleware::idempotency::IDEMPOTENCY_KEY_HEADER;
+    use serde_json::Value;
+
+    use super::{TEST_CSRF_COOKIE, TEST_CSRF_TOKEN};
+
+    /// Read a response body into a `String`, converting lossily if it is not
+    /// valid UTF-8. Panics only on stream failure; invalid UTF-8 is preserved
+    /// as replacement characters rather than failing the test.
+    pub(crate) async fn body_string(resp: axum::response::Response) -> String {
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("body readable");
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+
+    /// Read a response body and parse it as JSON.
+    pub(crate) async fn body_json(resp: axum::response::Response) -> Value {
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("body readable");
+        serde_json::from_slice(&bytes).expect("body is JSON")
+    }
+
+    /// `GET` with a bearer token and no CSRF pair (read-only request).
+    pub(crate) fn auth_get(uri: &str, token: &str) -> Request<Body> {
+        Request::builder()
+            .method("GET")
+            .uri(uri)
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap()
+    }
+
+    /// `GET` with a bearer token plus the double-submit CSRF pair. Some
+    /// fixtures attach the pair to reads too, so one shape covers both.
+    pub(crate) fn auth_get_csrf(uri: &str, token: &str) -> Request<Body> {
+        Request::builder()
+            .method("GET")
+            .uri(uri)
+            .header("authorization", format!("Bearer {token}"))
+            .header("x-csrf-token", TEST_CSRF_TOKEN)
+            .header("cookie", TEST_CSRF_COOKIE)
+            .body(Body::empty())
+            .unwrap()
+    }
+
+    /// Mutating request (PATCH/POST/PUT/DELETE) with bearer auth and CSRF.
+    /// `json_body` selects between an empty body and a JSON payload with the
+    /// correct `content-type`.
+    pub(crate) fn mutating(
+        method: &str,
+        uri: &str,
+        token: &str,
+        json_body: Option<&str>,
+    ) -> Request<Body> {
+        let mut b = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("authorization", format!("Bearer {token}"))
+            .header("x-csrf-token", TEST_CSRF_TOKEN)
+            .header("cookie", TEST_CSRF_COOKIE);
+        let body = match json_body {
+            Some(j) => {
+                b = b.header("content-type", "application/json");
+                Body::from(j.to_owned())
+            },
+            None => Body::empty(),
+        };
+        b.body(body).unwrap()
+    }
+
+    /// JSON request with bearer auth and CSRF.
+    pub(crate) fn auth_json(method: &str, uri: &str, token: &str, body: &Value) -> Request<Body> {
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {token}"))
+            .header("x-csrf-token", TEST_CSRF_TOKEN)
+            .header("cookie", TEST_CSRF_COOKIE)
+            .body(Body::from(serde_json::to_vec(body).unwrap()))
+            .unwrap()
+    }
+
+    /// `POST` carrying an idempotency key.
+    pub(crate) fn post_with_key(uri: &str, key: &str, body: &'static str) -> Request<Body> {
+        Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("content-type", "text/plain")
+            .header(IDEMPOTENCY_KEY_HEADER, key)
+            .body(Body::from(body))
+            .unwrap()
+    }
+
+    /// `POST` without an idempotency key.
+    pub(crate) fn post_without_key(uri: &str, body: &'static str) -> Request<Body> {
+        Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("content-type", "text/plain")
+            .body(Body::from(body))
+            .unwrap()
+    }
+}
+
 /// Stub OrgResolver that accepts any slug and returns a fixed OrgId.
 pub(crate) struct TestOrgResolver;
 

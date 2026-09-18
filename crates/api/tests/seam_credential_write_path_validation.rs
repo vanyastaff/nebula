@@ -12,44 +12,15 @@ use axum::{
     http::{Request, StatusCode},
 };
 use common::{
-    TEST_CSRF_COOKIE, TEST_CSRF_TOKEN, create_state_with_queue,
-    create_state_with_queue_no_credential_port, create_test_jwt, ws_path,
+    create_state_with_queue, create_state_with_queue_no_credential_port, create_test_jwt,
+    http_helpers::{auth_get_csrf, auth_json, body_string},
+    ws_path,
 };
 use nebula_api::{
     ApiConfig, app,
     domain::auth::backend::{AuthBackend, InMemoryAuthBackend, SignupRequest, dto::SecretString},
 };
 use tower::ServiceExt;
-
-fn auth_json(method: &str, uri: &str, token: &str, body: &serde_json::Value) -> Request<Body> {
-    Request::builder()
-        .method(method)
-        .uri(uri)
-        .header("content-type", "application/json")
-        .header("authorization", format!("Bearer {token}"))
-        .header("x-csrf-token", TEST_CSRF_TOKEN)
-        .header("cookie", TEST_CSRF_COOKIE)
-        .body(Body::from(serde_json::to_vec(body).unwrap()))
-        .unwrap()
-}
-
-fn auth_get(uri: &str, token: &str) -> Request<Body> {
-    Request::builder()
-        .method("GET")
-        .uri(uri)
-        .header("authorization", format!("Bearer {token}"))
-        .header("x-csrf-token", TEST_CSRF_TOKEN)
-        .header("cookie", TEST_CSRF_COOKIE)
-        .body(Body::empty())
-        .unwrap()
-}
-
-async fn body_string(resp: axum::response::Response) -> String {
-    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    String::from_utf8_lossy(&bytes).into_owned()
-}
 
 const NEVER_LEAK: &str = "SUPERSECRET-must-never-surface-0xDEADBEEF";
 
@@ -145,7 +116,7 @@ async fn create_credential_uses_canonical_validation_without_catalog_port() {
     // though type discovery is unavailable.
     let app = app::build_app(state, &config);
     let list = app
-        .oneshot(auth_get(&ws_path("/credentials"), &token))
+        .oneshot(auth_get_csrf(&ws_path("/credentials"), &token))
         .await
         .unwrap();
     assert_eq!(list.status(), StatusCode::OK, "list must be reachable");

@@ -7,11 +7,11 @@ mod common;
 
 use std::sync::Arc;
 
-use axum::{
-    body::Body,
-    http::{Request, StatusCode},
+use axum::http::StatusCode;
+use common::{
+    create_state_with_queue_no_credential_port, create_test_jwt,
+    http_helpers::{auth_get, body_string},
 };
-use common::{create_state_with_queue_no_credential_port, create_test_jwt};
 use nebula_api::{
     ApiConfig, app,
     ports::credential_schema::{
@@ -63,22 +63,6 @@ impl OneTypePort {
             }),
         }
     }
-}
-
-fn auth_get(uri: &str, token: &str) -> Request<Body> {
-    Request::builder()
-        .method("GET")
-        .uri(uri)
-        .header("authorization", format!("Bearer {token}"))
-        .body(Body::empty())
-        .unwrap()
-}
-
-async fn body_string(resp: axum::response::Response) -> String {
-    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 #[tokio::test]
