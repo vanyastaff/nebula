@@ -167,7 +167,7 @@ pub mod pipeline;
 // Core types
 // Patterns
 pub use bulkhead::{Bulkhead, BulkheadConfig};
-pub use cancellation::{CancellableFuture, CancellationContext, CancellationExt};
+pub use cancellation::{CancellationContext, CancellationExt};
 pub use circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, CircuitState};
 pub use classifier::{
     AlwaysPermanent, AlwaysTransient, ErrorClass, ErrorClassifier, FnClassifier, NebulaClassifier,

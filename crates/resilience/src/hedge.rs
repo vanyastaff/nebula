@@ -4,6 +4,18 @@
 //! Because hedging can execute the operation concurrently, duplicate requests are disabled
 //! by default and must be explicitly marked as safe for idempotent operations.
 //!
+//! # Where hedging is allowed
+//!
+//! Only for operations that are safe to run twice **concurrently**. In Nebula
+//! terms that excludes every durable remote effect: the effect driver accounts
+//! each provider invocation against a minted `OperationCallId` and the policy's
+//! `max_invocations`, so a second concurrent call would either spend budget the
+//! ledger never granted or produce an outcome the protocol cannot attribute.
+//! Hedging is therefore for read-only or genuinely idempotent outbound calls
+//! (cache/probe/health lookups), never for effecting ones — even under
+//! `RemoteDestinationGuarantee::StableKey`, which authorizes *sequential*
+//! re-invocation of a prepared operation, not speculative duplication.
+//!
 //! # Cancel safety
 //!
 //! Dropping the `HedgeExecutor::call` future aborts any tasks owned by that call.
