@@ -19,7 +19,7 @@ use crate::{
     engine::DiagnosticDisclosure,
     foundation::{Validate, ValidationError, validatable::json_type_name},
     validators::{
-        content::{EMAIL_PATTERN, URL_PATTERN},
+        content::{EMAIL_REGEX, URL_REGEX},
         max_length, max_size, min_length, min_size,
     },
 };
@@ -258,11 +258,7 @@ impl ValueRule {
                 let s = value
                     .as_str()
                     .ok_or_else(|| type_mismatch(value, "string", disclosure))?;
-                static EMAIL_RE: std::sync::LazyLock<regex::Regex> =
-                    std::sync::LazyLock::new(|| {
-                        regex::Regex::new(EMAIL_PATTERN).expect("email regex")
-                    });
-                if !EMAIL_RE.is_match(s) {
+                if !EMAIL_REGEX.is_match(s) {
                     return Err(with_input_value(
                         ValidationError::invalid_format("", "email"),
                         value,
@@ -275,9 +271,7 @@ impl ValueRule {
                 let s = value
                     .as_str()
                     .ok_or_else(|| type_mismatch(value, "string", disclosure))?;
-                static URL_RE: std::sync::LazyLock<regex::Regex> =
-                    std::sync::LazyLock::new(|| regex::Regex::new(URL_PATTERN).expect("url regex"));
-                if !URL_RE.is_match(s) {
+                if !URL_REGEX.is_match(s) {
                     return Err(with_input_value(
                         ValidationError::invalid_format("", "url"),
                         value,

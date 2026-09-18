@@ -37,10 +37,12 @@ pub(crate) const EMAIL_PATTERN: &str = r"^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA
 /// URL regex pattern (shared with `Rule::Url` in `rule.rs`).
 pub(crate) const URL_PATTERN: &str = r"^https?://[^\s/$.?#]+\.[^\s]+$";
 
-static EMAIL_REGEX: LazyLock<regex::Regex> =
+/// Compiled [`EMAIL_PATTERN`], shared with `rule::ValueRule::Email`.
+pub(crate) static EMAIL_REGEX: LazyLock<regex::Regex> =
     LazyLock::new(|| regex::Regex::new(EMAIL_PATTERN).unwrap());
 
-static URL_REGEX: LazyLock<regex::Regex> =
+/// Compiled [`URL_PATTERN`], shared with `rule::ValueRule::Url`.
+pub(crate) static URL_REGEX: LazyLock<regex::Regex> =
     LazyLock::new(|| regex::Regex::new(URL_PATTERN).unwrap());
 
 crate::validator! {
