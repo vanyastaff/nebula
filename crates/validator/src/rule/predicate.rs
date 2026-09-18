@@ -62,6 +62,22 @@ impl std::fmt::Debug for Predicate {
     }
 }
 
+/// Whether a JSON value is "empty": null, an empty string, or an empty array.
+///
+/// [`Predicate::Set`] and [`Predicate::Empty`] are exact negations of each
+/// other, so both consult this one classifier. Objects, numbers, booleans, and
+/// non-empty containers are never empty.
+fn is_empty_value(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Null => true,
+        serde_json::Value::String(s) => s.is_empty(),
+        serde_json::Value::Array(a) => a.is_empty(),
+        serde_json::Value::Bool(_)
+        | serde_json::Value::Number(_)
+        | serde_json::Value::Object(_) => false,
+    }
+}
+
 impl Predicate {
     /// Returns the `FieldPath` this predicate references.
     pub fn field(&self) -> &FieldPath {
@@ -109,22 +125,8 @@ impl Predicate {
             Self::Lte(f, v) => cmp_number_predicate(ctx.get(f), v, std::cmp::Ordering::is_le),
             Self::IsTrue(f) => ctx.get(f).and_then(serde_json::Value::as_bool) == Some(true),
             Self::IsFalse(f) => ctx.get(f).and_then(serde_json::Value::as_bool) == Some(false),
-            Self::Set(f) => ctx.get(f).is_some_and(|v| {
-                !v.is_null()
-                    && match v {
-                        serde_json::Value::String(s) => !s.is_empty(),
-                        serde_json::Value::Array(a) => !a.is_empty(),
-                        _ => true,
-                    }
-            }),
-            Self::Empty(f) => ctx.get(f).is_none_or(|v| {
-                v.is_null()
-                    || match v {
-                        serde_json::Value::String(s) => s.is_empty(),
-                        serde_json::Value::Array(a) => a.is_empty(),
-                        _ => false,
-                    }
-            }),
+            Self::Set(f) => ctx.get(f).is_some_and(|v| !is_empty_value(v)),
+            Self::Empty(f) => ctx.get(f).is_none_or(is_empty_value),
             Self::Contains(f, v) => ctx.get(f).is_some_and(|x| match x {
                 serde_json::Value::String(s) => v.as_str().is_some_and(|needle| s.contains(needle)),
                 serde_json::Value::Array(items) => items.contains(v),
