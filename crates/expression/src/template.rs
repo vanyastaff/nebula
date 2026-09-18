@@ -408,18 +408,17 @@ impl Template {
     }
 
     /// Render the template with the given context
+    ///
+    /// Uses the text render path rather than `evaluate_compiled`: the latter
+    /// converts the output through `serde_json::Value` (and, internally, an
+    /// owned `RuntimeValue` copy), which on this hot path would copy the whole
+    /// rendered string twice for no benefit.
     pub fn render(
         &self,
         engine: &ExpressionEngine,
         context: &EvaluationContext,
     ) -> ExpressionResult<String> {
-        match engine.evaluate_compiled(&self.program, context)? {
-            serde_json::Value::String(text) => Ok(text),
-            other => Err(ExpressionError::type_error(
-                "template string",
-                crate::value_utils::value_type_name(&crate::RuntimeValue::from_json(&other)),
-            )),
-        }
+        engine.render_compiled(&self.program, context)
     }
 
     /// Parse a template string into parts

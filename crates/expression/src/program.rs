@@ -222,24 +222,51 @@ impl CompiledProgram {
         context: &EvaluationContext,
         frame: &EvalFrame,
     ) -> ExpressionResult<RuntimeValue> {
-        let nodes = match self.body.as_ref() {
+        match self.body.as_ref() {
             ProgramBody::Expression(expression) => {
-                return evaluator.eval_with_frame(expression, context, frame);
+                evaluator.eval_with_frame(expression, context, frame)
             },
-            ProgramBody::Template(nodes) => nodes,
-        };
+            ProgramBody::Template(_) => Ok(RuntimeValue::string(
+                self.render_text(evaluator, context, frame)?,
+            )),
+        }
+    }
 
-        let mut output = String::with_capacity(self.source.len());
-        let mut strip_next_leading = false;
-        render_nodes(
-            nodes,
-            evaluator,
-            context,
-            frame,
-            &mut output,
-            &mut strip_next_leading,
-        )?;
-        Ok(RuntimeValue::string(output))
+    /// Whether the retained body renders text rather than a typed value.
+    pub(crate) fn is_template(&self) -> bool {
+        matches!(self.body.as_ref(), ProgramBody::Template(_))
+    }
+
+    /// Render a template body to text.
+    ///
+    /// Separate from [`Self::evaluate`] so the text path never round-trips
+    /// through `RuntimeValue`: wrapping the rendered `String` in an `Arc<str>`
+    /// and unwrapping it again would copy the whole output twice.
+    pub(crate) fn render_text(
+        &self,
+        evaluator: &Evaluator,
+        context: &EvaluationContext,
+        frame: &EvalFrame,
+    ) -> ExpressionResult<String> {
+        match self.body.as_ref() {
+            ProgramBody::Template(nodes) => {
+                let mut output = String::with_capacity(self.source.len());
+                let mut strip_next_leading = false;
+                render_nodes(
+                    nodes,
+                    evaluator,
+                    context,
+                    frame,
+                    &mut output,
+                    &mut strip_next_leading,
+                )?;
+                Ok(output)
+            },
+            // An auto-compiled lone envelope renders its value as text.
+            ProgramBody::Expression(expression) => evaluator
+                .eval_borrowed_with_frame(expression, context, frame)
+                .map(|value| value.to_display_string()),
+        }
     }
 }
 
@@ -303,7 +330,13 @@ fn render_nodes(
                 let value = evaluator
                     .eval_borrowed_with_frame(expression, context, frame)
                     .map_err(|error| template_error(error, *position))?;
-                append_output(output, &value.to_display_string(), frame)?;
+                // A string renders by reference: `to_display_string` would
+                // allocate a copy of every interpolated string, and this is
+                // the hot path of template rendering.
+                match value.as_ref() {
+                    RuntimeValue::String(text) => append_output(output, text, frame)?,
+                    other => append_output(output, &other.to_display_string(), frame)?,
+                }
                 *strip_next_leading = *strip_right;
             },
             TemplateNode::If {

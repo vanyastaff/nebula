@@ -345,8 +345,25 @@ impl ExpressionEngine {
         program: &CompiledProgram,
         context: &EvaluationContext,
     ) -> ExpressionResult<Value> {
+        // A template is already text: going through `RuntimeValue` would copy
+        // the rendered string into an `Arc<str>` only to copy it out again.
+        if program.is_template() {
+            return self.render_compiled(program, context).map(Value::String);
+        }
         self.evaluate_compiled_runtime(program, context)
             .map(|value| value.to_json())
+    }
+
+    /// Render a template program to its text, avoiding the JSON boundary.
+    ///
+    /// [`Self::evaluate_compiled`] on a template program returns
+    /// `Value::String` produced through this path.
+    pub(crate) fn render_compiled(
+        &self,
+        program: &CompiledProgram,
+        context: &EvaluationContext,
+    ) -> ExpressionResult<String> {
+        self.evaluator.render_program(program, context)
     }
 
     /// Evaluate retained syntax, returning the runtime value directly.

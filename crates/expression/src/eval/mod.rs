@@ -520,6 +520,19 @@ impl Evaluator {
         Ok(result)
     }
 
+    /// Render a template program to text under this evaluator's policy.
+    ///
+    /// The text counterpart of [`Self::eval_program`]; output bounds are
+    /// enforced per appended piece inside the renderer.
+    pub(crate) fn render_program(
+        &self,
+        program: &crate::CompiledProgram,
+        context: &EvaluationContext,
+    ) -> ExpressionResult<String> {
+        let frame = EvalFrame::new(self.resolve_effective_policy(context));
+        program.render_text(self, context, &frame)
+    }
+
     /// Evaluate an expression using the caller's step/depth frame.
     ///
     /// Internal recursive paths MUST use this method — calling
