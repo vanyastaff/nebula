@@ -749,23 +749,7 @@ impl ResourceStore for SqliteResourceStore {
     }
 
     async fn soft_delete(&self, scope: &Scope, id: &str) -> Result<(), StorageError> {
-        let res = sqlx::query(
-            "UPDATE port_resources SET deleted_at = ? \
-             WHERE workspace_id = ? AND org_id = ? AND id = ? \
-             AND deleted_at IS NULL",
-        )
-        .bind(now_rfc3339())
-        .bind(&scope.workspace_id)
-        .bind(&scope.org_id)
-        .bind(id)
-        .execute(&self.pool)
-        .await
-        .map_err(conn_err)?;
-        if res.rows_affected() > 0 {
-            Ok(())
-        } else {
-            Err(StorageError::not_found("resource", id))
-        }
+        soft_delete_scoped(&self.pool, "port_resources", "resource", scope, id).await
     }
 }
 
@@ -926,23 +910,7 @@ impl TriggerStore for SqliteTriggerStore {
     }
 
     async fn soft_delete(&self, scope: &Scope, id: &str) -> Result<(), StorageError> {
-        let res = sqlx::query(
-            "UPDATE port_triggers SET deleted_at = ? \
-             WHERE workspace_id = ? AND org_id = ? AND id = ? \
-             AND deleted_at IS NULL",
-        )
-        .bind(now_rfc3339())
-        .bind(&scope.workspace_id)
-        .bind(&scope.org_id)
-        .bind(id)
-        .execute(&self.pool)
-        .await
-        .map_err(conn_err)?;
-        if res.rows_affected() > 0 {
-            Ok(())
-        } else {
-            Err(StorageError::not_found("trigger", id))
-        }
+        soft_delete_scoped(&self.pool, "port_triggers", "trigger", scope, id).await
     }
 }
 
@@ -1327,6 +1295,34 @@ async fn soft_delete_by_id(
     let sql = format!("UPDATE {table} SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL");
     let res = sqlx::query(sqlx::AssertSqlSafe(sql))
         .bind(now_rfc3339())
+        .bind(id)
+        .execute(pool)
+        .await
+        .map_err(conn_err)?;
+    if res.rows_affected() > 0 {
+        Ok(())
+    } else {
+        Err(StorageError::not_found(entity, id))
+    }
+}
+
+/// Soft-delete a workspace-scoped `id` row (active rows only); zero rows ⇒
+/// `NotFound`.
+async fn soft_delete_scoped(
+    pool: &SqlitePool,
+    table: &str,
+    entity: &'static str,
+    scope: &Scope,
+    id: &str,
+) -> Result<(), StorageError> {
+    let sql = format!(
+        "UPDATE {table} SET deleted_at = ? \
+         WHERE workspace_id = ? AND org_id = ? AND id = ? AND deleted_at IS NULL"
+    );
+    let res = sqlx::query(sqlx::AssertSqlSafe(sql))
+        .bind(now_rfc3339())
+        .bind(&scope.workspace_id)
+        .bind(&scope.org_id)
         .bind(id)
         .execute(pool)
         .await
