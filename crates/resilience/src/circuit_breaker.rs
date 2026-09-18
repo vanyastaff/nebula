@@ -37,7 +37,7 @@ use parking_lot::Mutex;
 
 use crate::{
     CallError, ConfigError, PolicyContext,
-    clock::{Clock, SystemClock},
+    clock::{InstantSource, SystemInstant},
     sink::{MetricsSink, NoopSink, ResilienceEvent},
 };
 
@@ -218,7 +218,7 @@ type StateChangeCallback = Box<dyn Fn(CircuitState, CircuitState) + Send + Sync>
 
 /// Circuit breaker — protects downstream calls by rejecting requests when failure rate is high.
 ///
-/// Shared state via `Arc<CircuitBreaker>`. Inject [`MockClock`](crate::clock::MockClock) and
+/// Shared state via `Arc<CircuitBreaker>`. Inject [`MockInstant`](crate::clock::MockInstant) and
 /// [`RecordingSink`](crate::RecordingSink) for tests.
 ///
 /// # Cancel safety
@@ -273,7 +273,7 @@ pub struct CircuitBreaker {
     /// Lock-free state mirror for observability. Offset 0 = cache line 0.
     atomic_state: AtomicU32,
     config: CircuitBreakerConfig,
-    clock: Arc<dyn Clock>,
+    instant_source: Arc<dyn InstantSource>,
     sink: Arc<dyn MetricsSink>,
     state: Mutex<InnerState>,
     on_state_change: Option<StateChangeCallback>,
@@ -313,7 +313,7 @@ impl CircuitBreaker {
                 consecutive_opens: 0,
                 slow_calls: 0,
             }),
-            clock: Arc::new(SystemClock),
+            instant_source: Arc::new(SystemInstant),
             sink: Arc::new(NoopSink),
             on_state_change: None,
         })
@@ -326,10 +326,14 @@ impl CircuitBreaker {
         self
     }
 
-    /// Replace the clock (builder-style, for testing).
+    /// Replace the monotonic instant source (builder-style, for testing).
+    ///
+    /// Named `instant_source` rather than `clock` because this crate's source
+    /// carries only `Instant`; `nebula_core::accessor::Clock` (wall time plus
+    /// monotonic) is a different contract on a different type.
     #[must_use]
-    pub fn with_clock(mut self, clock: Arc<dyn Clock>) -> Self {
-        self.clock = clock;
+    pub fn with_instant_source(mut self, source: Arc<dyn InstantSource>) -> Self {
+        self.instant_source = source;
         self
     }
 
@@ -382,10 +386,10 @@ impl CircuitBreaker {
         self.config.slow_call_threshold.is_some()
     }
 
-    /// Return the current instant from the breaker clock.
+    /// Return the current instant from the breaker's instant source.
     #[must_use]
-    pub(crate) fn clock_now(&self) -> std::time::Instant {
-        self.clock.now()
+    pub(crate) fn monotonic_now(&self) -> std::time::Instant {
+        self.instant_source.now()
     }
 
     /// Manually force the circuit open, rejecting all calls until reset timeout or
@@ -394,7 +398,7 @@ impl CircuitBreaker {
         let mut inner = self.state.lock();
         let prev = to_circuit_state(inner.state);
         inner.state = State::Open {
-            opened_at: self.clock.now(),
+            opened_at: self.instant_source.now(),
         };
         inner.half_open_probes = 0;
         inner.half_open_successes = 0;
@@ -489,9 +493,9 @@ impl CircuitBreaker {
     {
         self.try_acquire()?;
         let mut guard = ProbeGuard::new(self);
-        let start = self.clock.now();
+        let start = self.instant_source.now();
         let result = f().await;
-        let duration = self.clock.now().duration_since(start);
+        let duration = self.instant_source.now().duration_since(start);
         let outcome = self.classify_outcome(result.is_ok(), duration);
         guard.defuse();
         self.record_outcome(outcome);
@@ -548,9 +552,9 @@ impl CircuitBreaker {
     {
         self.try_acquire()?;
         let mut guard = ProbeGuard::new(self);
-        let start = self.clock.now();
+        let start = self.instant_source.now();
         let result = f().await;
-        let duration = self.clock.now().duration_since(start);
+        let duration = self.instant_source.now().duration_since(start);
 
         let outcome = match &result {
             Ok(_) => self.classify_outcome(true, duration),
@@ -595,11 +599,11 @@ impl CircuitBreaker {
     {
         self.try_acquire()?;
         let mut guard = ProbeGuard::new(self);
-        let start = self.clock.now();
+        let start = self.instant_source.now();
         let result = context
             .run_result(async { f().await.map_err(CallError::Operation) })
             .await;
-        let duration = self.clock.now().duration_since(start);
+        let duration = self.instant_source.now().duration_since(start);
 
         let outcome = match &result {
             Ok(_) => self.classify_outcome(true, duration),
@@ -649,7 +653,7 @@ impl CircuitBreaker {
                 }
             },
             State::Open { opened_at } => {
-                let elapsed = self.clock.now().duration_since(opened_at);
+                let elapsed = self.instant_source.now().duration_since(opened_at);
                 let timeout = self.effective_reset_timeout(inner.consecutive_opens);
                 if elapsed >= timeout {
                     let prev = to_circuit_state(inner.state);
@@ -700,7 +704,7 @@ impl CircuitBreaker {
     fn trip_open(&self, inner: &mut InnerState) -> (CircuitState, CircuitState) {
         let prev = to_circuit_state(inner.state);
         inner.state = State::Open {
-            opened_at: self.clock.now(),
+            opened_at: self.instant_source.now(),
         };
         inner.half_open_probes = 0;
         inner.half_open_successes = 0;

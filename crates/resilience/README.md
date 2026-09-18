@@ -84,7 +84,7 @@ Read the rustdoc of `src/lib.rs` for the exhaustive re-export surface. The entry
 - `policy::{PolicySource, LoadSignal, LoadSnapshot, ConstantLoad}` — adaptive-config seams
   with no in-repo consumer yet. They are seams an embedding host may wire; the pipeline and the
   engine do not read a `LoadSignal` today, so do not assume adaptive behavior from their presence.
-- `clock::{Clock, SystemClock, MockClock}` — injectable time for the circuit breaker.
+- `clock::{InstantSource, SystemInstant, MockInstant}` — injectable monotonic time for the circuit breaker (`clock::Clock` was renamed to avoid colliding with `nebula_core::accessor::Clock` and `nebula_action::webhook::Clock`).
 
 ## Contract
 

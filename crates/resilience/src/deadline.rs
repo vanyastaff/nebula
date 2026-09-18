@@ -10,7 +10,7 @@ use crate::CallError;
 /// A monotonic deadline represented as a start instant plus total budget.
 ///
 /// This is intentionally small and copyable. It does not replace the injectable
-/// [`Clock`](crate::clock::Clock) used by state machines, but it gives async policies
+/// [`InstantSource`](crate::clock::InstantSource) used by state machines, but it gives async policies
 /// one shared way to enforce "remaining budget" for attempts and sleeps.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Deadline {

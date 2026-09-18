@@ -350,8 +350,8 @@ async fn on_state_change_fires_on_open() {
 
 #[tokio::test]
 async fn dynamic_break_duration_increases_on_repeated_opens() {
-    use crate::clock::MockClock;
-    let clock = Arc::new(MockClock::new());
+    use crate::clock::MockInstant;
+    let clock = Arc::new(MockInstant::new());
     let cb = CircuitBreaker::new(CircuitBreakerConfig {
         failure_threshold: 2,
         reset_timeout: Duration::from_millis(100),
@@ -365,7 +365,7 @@ async fn dynamic_break_duration_increases_on_repeated_opens() {
         slow_call_rate_threshold: 1.0,
     })
     .unwrap()
-    .with_clock(Arc::clone(&clock) as Arc<dyn Clock>);
+    .with_instant_source(Arc::clone(&clock) as Arc<dyn InstantSource>);
 
     // First trip
     cb.record_outcome(Outcome::Failure);

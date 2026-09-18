@@ -1135,9 +1135,9 @@ where
                 cb.try_acquire()?;
 
                 let mut guard = ProbeGuard::new(cb);
-                let start = cb.tracks_slow_calls().then(|| cb.clock_now());
+                let start = cb.tracks_slow_calls().then(|| cb.monotonic_now());
                 let result = run_operation_with_shells(ctx.clone(), idx + 1, Arc::clone(&f)).await;
-                let duration = start.map(|start| cb.clock_now().duration_since(start));
+                let duration = start.map(|start| cb.monotonic_now().duration_since(start));
                 guard.defuse();
 
                 let outcome = classify_cb_outcome(cb, &result, ctx.classifier.as_ref(), duration);
