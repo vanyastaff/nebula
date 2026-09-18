@@ -195,58 +195,61 @@ fn failure_reason_label(error: &ProviderError) -> &'static str {
     }
 }
 
+impl ExternalProviderChain {
+    /// Find the first leased child that claims the lease.
+    ///
+    /// The routing walk shared by `renew` and `revoke`: selection composes
+    /// through nested chains and cache layers via each child's own
+    /// `handles_lease`. Returns the child's configured name for the span.
+    fn leased_child<'a>(
+        &'a self,
+        lease: &LeaseHandle,
+    ) -> Option<(&'a str, &'a dyn LeasedProvider)> {
+        self.providers.iter().find_map(|(name, provider)| {
+            let leased = provider.lease_renewal()?;
+            leased
+                .handles_lease(lease)
+                .then_some((name.as_ref(), leased))
+        })
+    }
+}
+
 impl LeasedProvider for ExternalProviderChain {
     /// `true` if any leased child claims the lease via its own
     /// `handles_lease` — composes through nested chains and cache layers.
     fn handles_lease(&self, lease: &LeaseHandle) -> bool {
-        self.providers.iter().any(|(_, provider)| {
-            provider
-                .lease_renewal()
-                .is_some_and(|leased| leased.handles_lease(lease))
-        })
+        self.leased_child(lease).is_some()
     }
 
     fn renew<'a>(&'a self, lease: &'a LeaseHandle) -> ProviderFuture<'a> {
         ProviderFuture::new(async move {
-            for (name, provider) in &self.providers {
-                let Some(leased) = provider.lease_renewal() else {
-                    continue;
-                };
-                if !leased.handles_lease(lease) {
-                    continue;
-                }
-                let span = tracing::debug_span!(
-                    "provider_chain_renew",
-                    provider = %name,
-                    lease_provider = %lease.provider,
-                );
-                return leased.renew(lease).instrument(span).await;
-            }
-            Err(ProviderError::NotFound {
-                path: "no leased provider in chain handles lease".to_owned(),
-            })
+            let Some((name, leased)) = self.leased_child(lease) else {
+                return Err(ProviderError::NotFound {
+                    path: "no leased provider in chain handles lease".to_owned(),
+                });
+            };
+            let span = tracing::debug_span!(
+                "provider_chain_renew",
+                provider = %name,
+                lease_provider = %lease.provider,
+            );
+            leased.renew(lease).instrument(span).await
         })
     }
 
     fn revoke<'a>(&'a self, lease: &'a LeaseHandle) -> ProviderFuture<'a> {
         ProviderFuture::new(async move {
-            for (name, provider) in &self.providers {
-                let Some(leased) = provider.lease_renewal() else {
-                    continue;
-                };
-                if !leased.handles_lease(lease) {
-                    continue;
-                }
-                let span = tracing::debug_span!(
-                    "provider_chain_revoke",
-                    provider = %name,
-                    lease_provider = %lease.provider,
-                );
-                return leased.revoke(lease).instrument(span).await;
-            }
-            Err(ProviderError::NotFound {
-                path: "no leased provider in chain handles lease".to_owned(),
-            })
+            let Some((name, leased)) = self.leased_child(lease) else {
+                return Err(ProviderError::NotFound {
+                    path: "no leased provider in chain handles lease".to_owned(),
+                });
+            };
+            let span = tracing::debug_span!(
+                "provider_chain_revoke",
+                provider = %name,
+                lease_provider = %lease.provider,
+            );
+            leased.revoke(lease).instrument(span).await
         })
     }
 }

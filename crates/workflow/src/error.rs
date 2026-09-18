@@ -273,26 +273,58 @@ pub struct PortSchemaIncompatDetails {
     pub incompatibilities: Vec<nebula_schema::SchemaIncompat>,
 }
 
+/// Render an edge as `from.from_port → to.to_port` with the default port names.
+///
+/// Every edge-diagnostic `Display` shares this port normalization: an absent
+/// `from_port` is the default `"out"` and an absent `to_port` the default flow
+/// input. `arrow` is the ASCII or Unicode direction marker for the diagnostic
+/// family.
+fn write_edge(
+    f: &mut std::fmt::Formatter<'_>,
+    from_node: &NodeKey,
+    from_port: Option<&PortKey>,
+    arrow: &str,
+    to_node: &NodeKey,
+    to_port: Option<&PortKey>,
+    detail: &str,
+) -> std::fmt::Result {
+    write!(
+        f,
+        "{}.{} {} {}.{}: {}",
+        from_node,
+        from_port.map_or("out", PortKey::as_str),
+        arrow,
+        to_node,
+        to_port.map_or("default", PortKey::as_str),
+        detail
+    )
+}
+
+/// Render a parameter reference as `consumer.param ← producer{path}: detail`.
+fn write_reference_edge(
+    f: &mut std::fmt::Formatter<'_>,
+    consumer_node: &NodeKey,
+    param_key: &str,
+    producer_node: &NodeKey,
+    output_path: &nebula_schema::ValuePath,
+    detail: &str,
+) -> std::fmt::Result {
+    write!(
+        f,
+        "{consumer_node}.{param_key} \u{2190} {producer_node}{output_path}: {detail}"
+    )
+}
+
 impl std::fmt::Display for PortSchemaIncompatDetails {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let from_port = self
-            .from_port
-            .as_ref()
-            .map(PortKey::as_str)
-            .unwrap_or("out");
-        let to_port = self
-            .to_port
-            .as_ref()
-            .map(PortKey::as_str)
-            .unwrap_or("default");
-        write!(
+        write_edge(
             f,
-            "{}.{} \u{2192} {}.{}: {}",
-            self.from_node,
-            from_port,
-            self.to_node,
-            to_port,
-            join_display(&self.incompatibilities)
+            &self.from_node,
+            self.from_port.as_ref(),
+            "\u{2192}",
+            &self.to_node,
+            self.to_port.as_ref(),
+            &join_display(&self.incompatibilities),
         )
     }
 }
@@ -323,24 +355,14 @@ pub struct PortSchemaUndecidableDetails {
 
 impl std::fmt::Display for PortSchemaUndecidableDetails {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let from_port = self
-            .from_port
-            .as_ref()
-            .map(PortKey::as_str)
-            .unwrap_or("out");
-        let to_port = self
-            .to_port
-            .as_ref()
-            .map(PortKey::as_str)
-            .unwrap_or("default");
-        write!(
+        write_edge(
             f,
-            "{}.{} \u{2192} {}.{}: {}",
-            self.from_node,
-            from_port,
-            self.to_node,
-            to_port,
-            join_display(&self.reasons)
+            &self.from_node,
+            self.from_port.as_ref(),
+            "\u{2192}",
+            &self.to_node,
+            self.to_port.as_ref(),
+            &join_display(&self.reasons),
         )
     }
 }
@@ -396,14 +418,13 @@ pub struct ReferenceTypeIncompatDetails {
 
 impl std::fmt::Display for ReferenceTypeIncompatDetails {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
+        write_reference_edge(
             f,
-            "{}.{} \u{2190} {}{}: {}",
-            self.consumer_node,
-            self.param_key,
-            self.producer_node,
-            self.output_path,
-            join_display(&self.incompatibilities)
+            &self.consumer_node,
+            &self.param_key,
+            &self.producer_node,
+            &self.output_path,
+            &join_display(&self.incompatibilities),
         )
     }
 }
@@ -432,14 +453,13 @@ pub struct ReferenceTypeUndecidableDetails {
 
 impl std::fmt::Display for ReferenceTypeUndecidableDetails {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
+        write_reference_edge(
             f,
-            "{}.{} \u{2190} {}{}: {}",
-            self.consumer_node,
-            self.param_key,
-            self.producer_node,
-            self.output_path,
-            join_display(&self.reasons)
+            &self.consumer_node,
+            &self.param_key,
+            &self.producer_node,
+            &self.output_path,
+            &join_display(&self.reasons),
         )
     }
 }
