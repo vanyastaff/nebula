@@ -9,7 +9,7 @@ use std::{
 };
 
 use super::*;
-use crate::{CallError, CancellationContext, PolicyContext, RecordingSink, ResilienceEventKind};
+use crate::{CallContext, CallError, CancellationContext, RecordingSink, ResilienceEventKind};
 
 fn timeout_error() -> CallError<&'static str> {
     CallError::Timeout(Duration::from_secs(1))
@@ -280,11 +280,11 @@ async fn fallback_operation_context_cancellation_skips_fallback() {
     let op: FallbackExecutor<u32, &str> =
         FallbackExecutor::new(Arc::new(ValueFallback::new(99u32)));
     let cancellation = CancellationContext::with_reason("shutdown");
-    let context = PolicyContext::from_cancellation(cancellation.clone());
+    let context = CallContext::from_cancellation(cancellation.clone());
     cancellation.cancel();
 
     let result = op
-        .call_with_policy_context(&context, || async { Ok::<u32, CallError<&str>>(42) })
+        .call_with_context(&context, || async { Ok::<u32, CallError<&str>>(42) })
         .await;
 
     assert!(matches!(result, Err(CallError::Cancelled { .. })));
@@ -294,10 +294,10 @@ async fn fallback_operation_context_cancellation_skips_fallback() {
 async fn fallback_operation_preserves_non_context_cancellation_reason() {
     let op: FallbackExecutor<u32, &str> =
         FallbackExecutor::new(Arc::new(ValueFallback::new(99u32)));
-    let context = PolicyContext::empty();
+    let context = CallContext::empty();
 
     let result = op
-        .call_with_policy_context(&context, || async {
+        .call_with_context(&context, || async {
             Err::<u32, _>(CallError::cancelled_with("primary stopped itself"))
         })
         .await;
@@ -317,10 +317,10 @@ async fn fallback_operation_context_deadline_bounds_fallback() {
         Ok::<u32, CallError<()>>(99)
     });
     let op: FallbackExecutor<u32, &str> = FallbackExecutor::new(Arc::new(fallback));
-    let context = PolicyContext::with_timeout(Duration::from_millis(1));
+    let context = CallContext::with_timeout(Duration::from_millis(1));
 
     let result = op
-        .call_with_policy_context(&context, || async { Err::<u32, _>(timeout_error()) })
+        .call_with_context(&context, || async { Err::<u32, _>(timeout_error()) })
         .await;
 
     assert!(matches!(result, Err(CallError::Timeout(_))));

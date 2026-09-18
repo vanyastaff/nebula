@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use super::*;
 use crate::{
-    CallError, CircuitState as CS, PolicyContext, RecordingSink,
+    CallContext, CallError, CircuitState as CS, RecordingSink,
     cancellation::CancellationContext,
     classifier::{ErrorClass, FnClassifier},
 };
@@ -48,20 +48,18 @@ async fn cancelled_does_not_trip_breaker() {
 }
 
 #[tokio::test]
-async fn policy_context_cancellation_does_not_trip_breaker() {
+async fn call_context_cancellation_does_not_trip_breaker() {
     let cb = CircuitBreaker::new(CircuitBreakerConfig {
         failure_threshold: 1,
         ..default_config()
     })
     .unwrap();
     let cancellation = CancellationContext::with_reason("shutdown");
-    let context = PolicyContext::from_cancellation(cancellation.clone());
+    let context = CallContext::from_cancellation(cancellation.clone());
     cancellation.cancel();
 
     let result = cb
-        .call_with_policy_context::<(), &str, _>(&context, || {
-            Box::pin(async { Ok::<(), &str>(()) })
-        })
+        .call_with_context::<(), &str, _>(&context, || Box::pin(async { Ok::<(), &str>(()) }))
         .await;
 
     assert!(matches!(result, Err(CallError::Cancelled { .. })));
@@ -70,7 +68,7 @@ async fn policy_context_cancellation_does_not_trip_breaker() {
 }
 
 #[tokio::test]
-async fn policy_context_deadline_records_timeout_outcome() {
+async fn call_context_deadline_records_timeout_outcome() {
     let cb = CircuitBreaker::new(CircuitBreakerConfig {
         failure_threshold: 1,
         min_operations: 1,
@@ -78,10 +76,10 @@ async fn policy_context_deadline_records_timeout_outcome() {
         ..default_config()
     })
     .unwrap();
-    let context = PolicyContext::with_timeout(Duration::from_millis(1));
+    let context = CallContext::with_timeout(Duration::from_millis(1));
 
     let result = cb
-        .call_with_policy_context::<(), &str, _>(&context, || {
+        .call_with_context::<(), &str, _>(&context, || {
             Box::pin(async {
                 tokio::time::sleep(Duration::from_mins(1)).await;
                 Ok::<(), &str>(())

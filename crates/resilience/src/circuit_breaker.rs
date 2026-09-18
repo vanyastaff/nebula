@@ -36,7 +36,7 @@ use std::{
 use parking_lot::Mutex;
 
 use crate::{
-    CallError, ConfigError, PolicyContext,
+    CallContext, CallError, ConfigError,
     clock::{InstantSource, SystemInstant},
     events::{EventSink, NoopSink, ResilienceEvent},
 };
@@ -518,15 +518,15 @@ impl CircuitBreaker {
     /// `Err(CallError::Cancelled)` if the context is cancelled,
     /// `Err(CallError::Timeout)` if the context deadline expires,
     /// or `Err(CallError::Operation)` if the operation itself fails.
-    pub async fn call_with_policy_context<T, E, Fut>(
+    pub async fn call_with_context<T, E, Fut>(
         &self,
-        context: &PolicyContext,
+        context: &CallContext,
         f: impl FnOnce() -> Fut + Send,
     ) -> Result<T, CallError<E>>
     where
         Fut: Future<Output = Result<T, E>> + Send,
     {
-        self.call_with_policy_context_inner(context, None, f).await
+        self.call_with_context_inner(context, None, f).await
     }
 
     /// Execute a closure under the circuit breaker with error classification.
@@ -578,22 +578,22 @@ impl CircuitBreaker {
     /// `Err(CallError::Cancelled)` if the context is cancelled,
     /// `Err(CallError::Timeout)` if the context deadline expires,
     /// or `Err(CallError::Operation)` if the operation itself fails.
-    pub async fn call_with_classifier_and_policy_context<T, E, Fut>(
+    pub async fn call_with_classifier_and_context<T, E, Fut>(
         &self,
         classifier: &dyn crate::classifier::ErrorClassifier<E>,
-        context: &PolicyContext,
+        context: &CallContext,
         f: impl FnOnce() -> Fut + Send,
     ) -> Result<T, CallError<E>>
     where
         Fut: Future<Output = Result<T, E>> + Send,
     {
-        self.call_with_policy_context_inner(context, Some(classifier), f)
+        self.call_with_context_inner(context, Some(classifier), f)
             .await
     }
 
-    async fn call_with_policy_context_inner<T, E, Fut>(
+    async fn call_with_context_inner<T, E, Fut>(
         &self,
-        context: &PolicyContext,
+        context: &CallContext,
         classifier: Option<&dyn crate::classifier::ErrorClassifier<E>>,
         f: impl FnOnce() -> Fut + Send,
     ) -> Result<T, CallError<E>>

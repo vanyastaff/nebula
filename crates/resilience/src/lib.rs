@@ -29,7 +29,7 @@
 //! no forced mapping, no type erasure.
 //! [`Deadline`] is the shared monotonic helper for policies that need to enforce
 //! remaining time budgets across attempts and sleeps.
-//! [`PolicyContext`] groups cancellation, deadline, and observability scope for
+//! [`CallContext`] groups cancellation, deadline, and observability scope for
 //! workflow-runtime pipeline calls.
 //!
 //! # Quick Start — Pipeline
@@ -166,7 +166,7 @@ pub use circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, CircuitState};
 pub use classifier::{
     AlwaysPermanent, AlwaysTransient, ErrorClass, ErrorClassifier, FnClassifier, NebulaClassifier,
 };
-pub use context::PolicyContext;
+pub use context::CallContext;
 pub use deadline::Deadline;
 pub use error::{CallError, CallErrorKind, CallResult, ConfigError};
 pub use fallback::{FallbackStrategy, ValueFallback};
@@ -176,8 +176,7 @@ pub use gate::{Gate, GateCloseTimeout, GateClosed, GateGuard};
 pub use hedge::LatencyTracker;
 pub use hedge::{AdaptiveHedgeExecutor, HedgeConfig, HedgeExecutor, HedgeSafety};
 pub use load_shed::{
-    load_shed, load_shed_with_policy_context, load_shed_with_policy_context_and_sink,
-    load_shed_with_sink,
+    load_shed, load_shed_with_context, load_shed_with_context_and_sink, load_shed_with_sink,
 };
 pub use pipeline::{
     LoadShedPredicate, PipelineBuilder, PipelineOutcome, RateLimitCheck, ResiliencePipeline,
@@ -195,6 +194,4 @@ pub use events::{
     EventScope, EventSink, NoopSink, RecordingSink, ResilienceEvent, ResilienceEventKind,
     ScopeValue,
 };
-pub use timeout::{
-    TimeoutExecutor, timeout, timeout_with_policy_context, timeout_with_policy_context_and_sink,
-};
+pub use timeout::{TimeoutExecutor, timeout, timeout_with_context, timeout_with_context_and_sink};

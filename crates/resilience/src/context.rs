@@ -1,25 +1,29 @@
-//! Shared execution context for composed resilience policies.
+//! Shared call context for composed resilience policies.
 
 use std::{future::Future, time::Duration};
 
 use crate::{CallError, CancellationContext, Deadline, events::EventScope};
 
-/// Execution context shared by a resilience policy stack.
+/// Execution context for one protected call: cancellation, deadline, and
+/// observability scope.
 ///
-/// A workflow runtime often has one cancellation token, one action deadline, and
-/// one low-cardinality scope for a protected call. Passing those as separate
-/// parameters makes composition easy to misuse. `PolicyContext` groups them into
-/// one value that can be threaded through pipeline execution and future
-/// standalone policy APIs.
+/// A workflow runtime has one cancellation token, one action deadline, and one
+/// low-cardinality scope per call. Passing those as separate parameters makes
+/// composition easy to misuse; `CallContext` threads them as one value through
+/// the pipeline and the standalone policy entry points.
+///
+/// Named `CallContext` rather than `PolicyContext`: "policy" in this crate
+/// already means adaptive configuration (`PolicySource`), and this value
+/// describes the call, not the policy.
 #[derive(Debug, Clone)]
-pub struct PolicyContext {
+pub struct CallContext {
     cancellation: Option<CancellationContext>,
     deadline: Option<Deadline>,
     scope: EventScope,
 }
 
-impl PolicyContext {
-    /// Create an empty policy context.
+impl CallContext {
+    /// Create an empty call context.
     #[must_use]
     pub const fn empty() -> Self {
         Self {
@@ -160,7 +164,7 @@ impl PolicyContext {
     }
 }
 
-impl Default for PolicyContext {
+impl Default for CallContext {
     fn default() -> Self {
         Self::empty()
     }
@@ -176,7 +180,7 @@ mod tests {
     fn child_preserves_deadline_and_scope_and_links_cancellation() {
         let cancellation = CancellationContext::with_reason("shutdown");
         let deadline = Deadline::after(Duration::from_secs(5));
-        let context = PolicyContext::from_cancellation(cancellation.clone())
+        let context = CallContext::from_cancellation(cancellation.clone())
             .with_deadline(deadline)
             .with_scope(EventScope::empty().tenant_id("tenant-a"));
 

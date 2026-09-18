@@ -1,21 +1,21 @@
-//! Benchmarks for shared `PolicyContext` overhead.
+//! Benchmarks for shared `CallContext` overhead.
 //!
-//! `PolicyContext` is the public contract that lets Nebula thread cancellation,
+//! `CallContext` is the public contract that lets Nebula thread cancellation,
 //! deadlines, and low-cardinality scope through a composed policy stack. These
 //! benchmarks keep that composition layer honest by comparing plain hot paths
 //! with their context-aware equivalents.
 //!
 //! Run with:
 //! ```text
-//! cargo bench -p nebula-resilience --bench policy_context
+//! cargo bench -p nebula-resilience --bench call_context
 //! ```
 
 use std::{borrow::Cow, hint::black_box, time::Duration};
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use nebula_resilience::{
-    CallErrorKind, EventScope, PipelineOutcome, PolicyContext, ResilienceEvent, ResiliencePipeline,
-    load_shed, load_shed_with_policy_context, timeout, timeout_with_policy_context,
+    CallContext, CallErrorKind, EventScope, PipelineOutcome, ResilienceEvent, ResiliencePipeline,
+    load_shed, load_shed_with_context, timeout, timeout_with_context,
 };
 
 #[derive(Clone)]
@@ -30,8 +30,8 @@ struct LegacyCowScope {
 fn bench_timeout_context_overhead(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().expect("runtime");
     let local_timeout = Duration::from_secs(5);
-    let empty_context = PolicyContext::empty();
-    let mut group = c.benchmark_group("policy_context/timeout");
+    let empty_context = CallContext::empty();
+    let mut group = c.benchmark_group("call_context/timeout");
 
     group.bench_function("plain_success", |b| {
         b.to_async(&rt).iter(|| async {
@@ -42,7 +42,7 @@ fn bench_timeout_context_overhead(c: &mut Criterion) {
 
     group.bench_function("empty_context_success", |b| {
         b.to_async(&rt).iter(|| async {
-            let result = timeout_with_policy_context(&empty_context, local_timeout, async {
+            let result = timeout_with_context(&empty_context, local_timeout, async {
                 Ok::<u64, &str>(black_box(42))
             })
             .await;
@@ -52,8 +52,8 @@ fn bench_timeout_context_overhead(c: &mut Criterion) {
 
     group.bench_function("deadline_context_success", |b| {
         b.to_async(&rt).iter(|| async {
-            let deadline_context = PolicyContext::with_timeout(Duration::from_mins(10));
-            let result = timeout_with_policy_context(&deadline_context, local_timeout, async {
+            let deadline_context = CallContext::with_timeout(Duration::from_mins(10));
+            let result = timeout_with_context(&deadline_context, local_timeout, async {
                 Ok::<u64, &str>(black_box(42))
             })
             .await;
@@ -66,8 +66,8 @@ fn bench_timeout_context_overhead(c: &mut Criterion) {
 
 fn bench_load_shed_context_overhead(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().expect("runtime");
-    let empty_context = PolicyContext::empty();
-    let mut group = c.benchmark_group("policy_context/load_shed");
+    let empty_context = CallContext::empty();
+    let mut group = c.benchmark_group("call_context/load_shed");
 
     group.bench_function("plain_pass_through", |b| {
         b.to_async(&rt).iter(|| async {
@@ -78,7 +78,7 @@ fn bench_load_shed_context_overhead(c: &mut Criterion) {
 
     group.bench_function("empty_context_pass_through", |b| {
         b.to_async(&rt).iter(|| async {
-            let result = load_shed_with_policy_context(
+            let result = load_shed_with_context(
                 &empty_context,
                 || false,
                 || async { Ok::<u64, ()>(black_box(42)) },
@@ -90,8 +90,8 @@ fn bench_load_shed_context_overhead(c: &mut Criterion) {
 
     group.bench_function("deadline_context_pass_through", |b| {
         b.to_async(&rt).iter(|| async {
-            let deadline_context = PolicyContext::with_timeout(Duration::from_mins(10));
-            let result = load_shed_with_policy_context(
+            let deadline_context = CallContext::with_timeout(Duration::from_mins(10));
+            let result = load_shed_with_context(
                 &deadline_context,
                 || false,
                 || async { Ok::<u64, ()>(black_box(42)) },
@@ -107,8 +107,8 @@ fn bench_load_shed_context_overhead(c: &mut Criterion) {
 fn bench_pipeline_context_overhead(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().expect("runtime");
     let pipeline = ResiliencePipeline::<&str>::builder().build();
-    let empty_context = PolicyContext::empty();
-    let mut group = c.benchmark_group("policy_context/pipeline");
+    let empty_context = CallContext::empty();
+    let mut group = c.benchmark_group("call_context/pipeline");
 
     group.bench_function("call", |b| {
         b.to_async(&rt).iter(|| {
@@ -128,7 +128,7 @@ fn bench_pipeline_context_overhead(c: &mut Criterion) {
             let context = &empty_context;
             async move {
                 let result = pipeline
-                    .call_with_policy_context(context, || {
+                    .call_with_context(context, || {
                         Box::pin(async { Ok::<u64, &str>(black_box(42)) })
                     })
                     .await;
@@ -141,9 +141,9 @@ fn bench_pipeline_context_overhead(c: &mut Criterion) {
         b.to_async(&rt).iter(|| {
             let pipeline = &pipeline;
             async move {
-                let context = PolicyContext::with_timeout(Duration::from_mins(10));
+                let context = CallContext::with_timeout(Duration::from_mins(10));
                 let result = pipeline
-                    .call_with_policy_context(&context, || {
+                    .call_with_context(&context, || {
                         Box::pin(async { Ok::<u64, &str>(black_box(42)) })
                     })
                     .await;
@@ -176,7 +176,7 @@ fn bench_scope_clone(c: &mut Criterion) {
         operation: Some(Cow::Owned(String::from("gmail.poll"))),
     };
 
-    let mut group = c.benchmark_group("policy_context/scope");
+    let mut group = c.benchmark_group("call_context/scope");
 
     group.bench_function("clone_scope_value", |b| {
         b.iter(|| black_box(scope.clone()));

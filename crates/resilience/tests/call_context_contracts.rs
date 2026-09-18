@@ -13,10 +13,9 @@ use std::{
 };
 
 use nebula_resilience::{
-    CallError, CancellationContext, Gate, PolicyContext, RecordingSink, ResilienceEventKind,
+    CallContext, CallError, CancellationContext, Gate, RecordingSink, ResilienceEventKind,
     fallback::{FallbackExecutor, ValueFallback},
-    load_shed_with_policy_context, timeout_with_policy_context,
-    timeout_with_policy_context_and_sink,
+    load_shed_with_context, timeout_with_context, timeout_with_context_and_sink,
 };
 
 /// Generous enough that a correct drain always finishes, short enough that a
@@ -26,14 +25,14 @@ const TEST_CLOSE_BUDGET: Duration = Duration::from_secs(5);
 #[tokio::test]
 async fn timeout_context_cancellation_wins_without_polling_future() {
     let cancellation = CancellationContext::with_reason("shutdown");
-    let context = PolicyContext::from_cancellation(cancellation.clone());
+    let context = CallContext::from_cancellation(cancellation.clone());
     cancellation.cancel();
 
     let polled = Arc::new(AtomicBool::new(false));
     let future_polled = Arc::clone(&polled);
 
     let result: Result<(), CallError<()>> =
-        timeout_with_policy_context(&context, Duration::from_secs(1), async move {
+        timeout_with_context(&context, Duration::from_secs(1), async move {
             future_polled.store(true, Ordering::SeqCst);
             Ok(())
         })
@@ -50,10 +49,10 @@ async fn timeout_context_cancellation_wins_without_polling_future() {
 
 #[tokio::test]
 async fn timeout_local_timeout_emits_event_when_it_wins() {
-    let context = PolicyContext::with_timeout(Duration::from_secs(1));
+    let context = CallContext::with_timeout(Duration::from_secs(1));
     let sink = RecordingSink::new();
 
-    let result: Result<(), CallError<()>> = timeout_with_policy_context_and_sink(
+    let result: Result<(), CallError<()>> = timeout_with_context_and_sink(
         &context,
         Duration::from_millis(1),
         async {
@@ -71,13 +70,13 @@ async fn timeout_local_timeout_emits_event_when_it_wins() {
 #[tokio::test]
 async fn load_shed_context_cancellation_skips_predicate() {
     let cancellation = CancellationContext::with_reason("shutdown");
-    let context = PolicyContext::from_cancellation(cancellation.clone());
+    let context = CallContext::from_cancellation(cancellation.clone());
     cancellation.cancel();
 
     let predicate_called = Arc::new(AtomicBool::new(false));
     let predicate_observed = Arc::clone(&predicate_called);
 
-    let result: Result<u32, CallError<()>> = load_shed_with_policy_context(
+    let result: Result<u32, CallError<()>> = load_shed_with_context(
         &context,
         move || {
             predicate_observed.store(true, Ordering::SeqCst);
@@ -98,9 +97,9 @@ async fn load_shed_context_cancellation_skips_predicate() {
 
 #[tokio::test]
 async fn load_shed_context_deadline_bounds_operation() {
-    let context = PolicyContext::with_timeout(Duration::from_millis(1));
+    let context = CallContext::with_timeout(Duration::from_millis(1));
 
-    let result: Result<u32, CallError<()>> = load_shed_with_policy_context(
+    let result: Result<u32, CallError<()>> = load_shed_with_context(
         &context,
         || false,
         || async {
@@ -116,7 +115,7 @@ async fn load_shed_context_deadline_bounds_operation() {
 #[tokio::test]
 async fn fallback_context_cancellation_emits_no_fallback_events() {
     let cancellation = CancellationContext::with_reason("shutdown");
-    let context = PolicyContext::from_cancellation(cancellation.clone());
+    let context = CallContext::from_cancellation(cancellation.clone());
     cancellation.cancel();
 
     let sink = RecordingSink::new();
@@ -124,7 +123,7 @@ async fn fallback_context_cancellation_emits_no_fallback_events() {
         FallbackExecutor::new(Arc::new(ValueFallback::new(99))).with_sink(sink.clone());
 
     let result = operation
-        .call_with_policy_context(&context, || async {
+        .call_with_context(&context, || async {
             Err(CallError::Timeout(Duration::from_millis(1)))
         })
         .await;

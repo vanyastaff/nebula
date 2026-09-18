@@ -107,7 +107,7 @@ name = "load_shed"
 harness = false
 
 [[bench]]
-name = "policy_context"
+name = "call_context"
 harness = false
 
 [[bench]]

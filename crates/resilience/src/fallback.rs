@@ -17,7 +17,7 @@ use std::{fmt, future::Future, pin::Pin, sync::Arc};
 use tokio::sync::RwLock;
 
 use crate::{
-    EventSink, NoopSink, PolicyContext, ResilienceEvent,
+    CallContext, EventSink, NoopSink, ResilienceEvent,
     error::{CallError, CallErrorKind},
 };
 
@@ -720,9 +720,9 @@ impl<T, E> FallbackExecutor<T, E> {
     /// `Err(CallError::Timeout)` if the context deadline expires, the fallback
     /// strategy's error if both primary and fallback fail, or the original error
     /// if fallback declines it.
-    pub async fn call_with_policy_context<F, Fut>(
+    pub async fn call_with_context<F, Fut>(
         &self,
-        context: &PolicyContext,
+        context: &CallContext,
         operation: F,
     ) -> Result<T, CallError<E>>
     where

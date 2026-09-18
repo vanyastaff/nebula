@@ -5,7 +5,7 @@ use std::{fmt, future::Future, sync::Arc, time::Duration};
 use tokio::time::timeout as tokio_timeout;
 
 use crate::{
-    CallError, ConfigError, PolicyContext,
+    CallContext, CallError, ConfigError,
     events::{EventSink, NoopSink, ResilienceEvent},
 };
 
@@ -85,7 +85,7 @@ where
     }
 }
 
-/// Like [`timeout`] but also observes a shared [`PolicyContext`].
+/// Like [`timeout`] but also observes a shared [`CallContext`].
 ///
 /// The effective deadline is the earlier of `duration` and the context deadline.
 /// Context cancellation wins over timeout before and during the future.
@@ -103,8 +103,8 @@ where
 /// timeout bookkeeping — no crate-owned state is left partially mutated,
 /// and no work is detached via `spawn`. Whether a *partially executed*
 /// operation is safe to abandon is the supplied operation's own contract.
-pub async fn timeout_with_policy_context<T, E, F>(
-    context: &PolicyContext,
+pub async fn timeout_with_context<T, E, F>(
+    context: &CallContext,
     duration: Duration,
     future: F,
 ) -> Result<T, CallError<E>>
@@ -112,10 +112,10 @@ where
     F: Future<Output = Result<T, E>> + Send,
     E: Send,
 {
-    timeout_with_policy_context_and_sink(context, duration, future, &NoopSink).await
+    timeout_with_context_and_sink(context, duration, future, &NoopSink).await
 }
 
-/// Like [`timeout_with_policy_context`] but emits [`ResilienceEvent::TimeoutElapsed`]
+/// Like [`timeout_with_context`] but emits [`ResilienceEvent::TimeoutElapsed`]
 /// via `sink` when the local timeout expires.
 ///
 /// If the context deadline fires first, the returned error is still
@@ -134,8 +134,8 @@ where
 /// timeout bookkeeping — no crate-owned state is left partially mutated,
 /// and no work is detached via `spawn`. Whether a *partially executed*
 /// operation is safe to abandon is the supplied operation's own contract.
-pub async fn timeout_with_policy_context_and_sink<T, E, F>(
-    context: &PolicyContext,
+pub async fn timeout_with_context_and_sink<T, E, F>(
+    context: &CallContext,
     duration: Duration,
     future: F,
     sink: &dyn EventSink,
@@ -192,7 +192,7 @@ impl TimeoutExecutor {
     ///
     /// A zero duration is rejected: it never polls the protected future, so it
     /// can only be a misconfigured workflow timeout. Immediate cancellation is
-    /// what [`PolicyContext`] cancellation is for — this constructor refuses to
+    /// what [`CallContext`] cancellation is for — this constructor refuses to
     /// express it as a timeout.
     ///
     /// # Errors
@@ -262,17 +262,16 @@ impl TimeoutExecutor {
     /// timeout bookkeeping — no crate-owned state is left partially mutated,
     /// and no work is detached via `spawn`. Whether a *partially executed*
     /// operation is safe to abandon is the supplied operation's own contract.
-    pub async fn call_with_policy_context<T, E, F>(
+    pub async fn call_with_context<T, E, F>(
         &self,
-        context: &PolicyContext,
+        context: &CallContext,
         future: F,
     ) -> Result<T, CallError<E>>
     where
         F: Future<Output = Result<T, E>> + Send,
         E: Send,
     {
-        timeout_with_policy_context_and_sink(context, self.duration, future, self.sink.as_ref())
-            .await
+        timeout_with_context_and_sink(context, self.duration, future, self.sink.as_ref()).await
     }
 }
 
@@ -372,15 +371,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn policy_context_cancellation_wins_without_polling_future() {
+    async fn call_context_cancellation_wins_without_polling_future() {
         let cancellation = CancellationContext::with_reason("shutdown");
-        let context = PolicyContext::from_cancellation(cancellation.clone());
+        let context = CallContext::from_cancellation(cancellation.clone());
         cancellation.cancel();
         let polled = Arc::new(AtomicBool::new(false));
         let polled_for_call = Arc::clone(&polled);
 
         let result: Result<(), CallError<()>> =
-            timeout_with_policy_context(&context, Duration::from_secs(1), async move {
+            timeout_with_context(&context, Duration::from_secs(1), async move {
                 polled_for_call.store(true, Ordering::SeqCst);
                 Ok(())
             })
@@ -396,10 +395,10 @@ mod tests {
         let executor = TimeoutExecutor::new(Duration::from_mins(1))
             .expect("non-zero duration")
             .with_sink(sink.clone());
-        let context = PolicyContext::with_timeout(Duration::from_millis(1));
+        let context = CallContext::with_timeout(Duration::from_millis(1));
 
         let result: Result<(), CallError<()>> = executor
-            .call_with_policy_context(&context, async {
+            .call_with_context(&context, async {
                 tokio::time::sleep(Duration::from_mins(1)).await;
                 Ok(())
             })

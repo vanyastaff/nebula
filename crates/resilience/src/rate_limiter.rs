@@ -86,7 +86,7 @@ use std::{
 
 use parking_lot::{Mutex, RwLock};
 
-use crate::{CallError, PolicyContext};
+use crate::{CallContext, CallError};
 
 fn retry_after_from_rate(units_needed: f64, units_per_second: f64) -> Option<Duration> {
     if !units_needed.is_finite() || !units_per_second.is_finite() || units_per_second <= 0.0 {
@@ -231,9 +231,9 @@ pub trait RateLimiter: Send + Sync {
     ///
     /// Implementations do not need to override this unless they can enforce the
     /// context more efficiently internally.
-    fn acquire_with_policy_context<'a>(
+    fn acquire_with_context<'a>(
         &'a self,
-        context: &'a PolicyContext,
+        context: &'a CallContext,
     ) -> impl Future<Output = Result<(), CallError<()>>> + Send + 'a {
         async move { context.run_result(self.acquire()).await }
     }
@@ -269,9 +269,9 @@ pub trait RateLimiter: Send + Sync {
     ///
     /// The operation is not invoked when the limiter rejects, the context is
     /// cancelled, or the context deadline expires before a permit is acquired.
-    fn call_with_policy_context<'a, T, E, F, Fut>(
+    fn call_with_context<'a, T, E, F, Fut>(
         &'a self,
-        context: &'a PolicyContext,
+        context: &'a CallContext,
         operation: F,
     ) -> impl Future<Output = Result<T, CallError<E>>> + Send + 'a
     where
@@ -281,7 +281,7 @@ pub trait RateLimiter: Send + Sync {
         E: Send + 'a,
     {
         async move {
-            self.acquire_with_policy_context(context)
+            self.acquire_with_context(context)
                 .await
                 .map_err(map_acquire_error)?;
             context
@@ -334,9 +334,9 @@ pub trait ErasedRateLimiter: Send + Sync {
 
     /// Attempt to consume one permit with cancellation/deadline from a shared
     /// policy context.
-    fn acquire_with_policy_context_boxed<'a>(
+    fn acquire_with_context_boxed<'a>(
         &'a self,
-        context: &'a PolicyContext,
+        context: &'a CallContext,
     ) -> BoxRateLimiterFuture<'a, Result<(), CallError<()>>> {
         Box::pin(context.run_result(self.acquire_boxed()))
     }
@@ -356,11 +356,11 @@ where
         Box::pin(self.acquire())
     }
 
-    fn acquire_with_policy_context_boxed<'a>(
+    fn acquire_with_context_boxed<'a>(
         &'a self,
-        context: &'a PolicyContext,
+        context: &'a CallContext,
     ) -> BoxRateLimiterFuture<'a, Result<(), CallError<()>>> {
-        Box::pin(self.acquire_with_policy_context(context))
+        Box::pin(self.acquire_with_context(context))
     }
 
     fn status_boxed(&self) -> BoxRateLimiterFuture<'_, RateLimiterStatus> {
@@ -1166,9 +1166,9 @@ impl RateLimiter for AdaptiveRateLimiter {
         result.map_err(CallError::Operation)
     }
 
-    async fn call_with_policy_context<'a, T, E, F, Fut>(
+    async fn call_with_context<'a, T, E, F, Fut>(
         &'a self,
-        context: &'a PolicyContext,
+        context: &'a CallContext,
         operation: F,
     ) -> Result<T, CallError<E>>
     where
@@ -1177,7 +1177,7 @@ impl RateLimiter for AdaptiveRateLimiter {
         T: Send + 'a,
         E: Send + 'a,
     {
-        self.acquire_with_policy_context(context)
+        self.acquire_with_context(context)
             .await
             .map_err(map_acquire_error)?;
 

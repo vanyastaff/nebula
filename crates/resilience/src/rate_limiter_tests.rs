@@ -4,7 +4,7 @@ use std::sync::{
 };
 
 use super::*;
-use crate::PolicyContext;
+use crate::CallContext;
 
 #[tokio::test]
 async fn token_bucket_respects_capacity() {
@@ -44,12 +44,12 @@ async fn rate_limiter_call_preserves_retry_after_hint() {
 }
 
 #[tokio::test]
-async fn policy_context_deadline_bounds_rate_limited_operation() {
+async fn call_context_deadline_bounds_rate_limited_operation() {
     let limiter = TokenBucket::new(1, 0.001).unwrap();
-    let context = PolicyContext::with_timeout(Duration::from_millis(1));
+    let context = CallContext::with_timeout(Duration::from_millis(1));
 
     let err = limiter
-        .call_with_policy_context(&context, || async {
+        .call_with_context(&context, || async {
             tokio::time::sleep(Duration::from_mins(1)).await;
             Ok::<(), ()>(())
         })
@@ -63,11 +63,11 @@ async fn policy_context_deadline_bounds_rate_limited_operation() {
 async fn erased_rate_limiter_context_acquire_observes_cancellation() {
     let limiter: Arc<dyn ErasedRateLimiter> = Arc::new(TokenBucket::new(1, 0.001).unwrap());
     let cancellation = crate::CancellationContext::with_reason("shutdown");
-    let context = PolicyContext::from_cancellation(cancellation.clone());
+    let context = CallContext::from_cancellation(cancellation.clone());
     cancellation.cancel();
 
     let err = limiter
-        .acquire_with_policy_context_boxed(&context)
+        .acquire_with_context_boxed(&context)
         .await
         .unwrap_err();
 
@@ -87,9 +87,9 @@ async fn erased_rate_limiter_forwards_specialized_context_acquire() {
             Ok(())
         }
 
-        async fn acquire_with_policy_context<'a>(
+        async fn acquire_with_context<'a>(
             &'a self,
-            _context: &'a PolicyContext,
+            _context: &'a CallContext,
         ) -> Result<(), CallError<()>> {
             self.context_acquires.fetch_add(1, Ordering::SeqCst);
             Err(CallError::cancelled_with("specialized path"))
@@ -109,7 +109,7 @@ async fn erased_rate_limiter_forwards_specialized_context_acquire() {
     let erased: Arc<dyn ErasedRateLimiter> = limiter.clone();
 
     let err = erased
-        .acquire_with_policy_context_boxed(&PolicyContext::empty())
+        .acquire_with_context_boxed(&CallContext::empty())
         .await
         .unwrap_err();
 
@@ -121,15 +121,15 @@ async fn erased_rate_limiter_forwards_specialized_context_acquire() {
 #[tokio::test]
 async fn adaptive_rate_limiter_context_call_records_operation_outcome() {
     let limiter = AdaptiveRateLimiter::new(10.0, 1.0, 100.0).unwrap();
-    let context = PolicyContext::empty();
+    let context = CallContext::empty();
 
     let ok = limiter
-        .call_with_policy_context(&context, || async { Ok::<_, ()>(()) })
+        .call_with_context(&context, || async { Ok::<_, ()>(()) })
         .await;
     assert!(ok.is_ok());
 
     let err = limiter
-        .call_with_policy_context(&context, || async { Err::<(), _>(()) })
+        .call_with_context(&context, || async { Err::<(), _>(()) })
         .await;
     assert!(matches!(err, Err(CallError::Operation(()))));
 

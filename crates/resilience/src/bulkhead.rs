@@ -11,7 +11,7 @@ use std::{
 use tokio::sync::Semaphore;
 
 use crate::{
-    CallError, ConfigError, PolicyContext,
+    CallContext, CallError, ConfigError,
     events::{EventSink, NoopSink, ResilienceEvent},
 };
 
@@ -197,15 +197,15 @@ impl Bulkhead {
     /// `Err(CallError::Timeout)` if the context deadline or bulkhead queue timeout
     /// expires, `Err(CallError::BulkheadFull)` when capacity/queue is exhausted,
     /// or `Err(CallError::Operation)` if the operation itself fails.
-    pub async fn call_with_policy_context<T, E, Fut>(
+    pub async fn call_with_context<T, E, Fut>(
         &self,
-        context: &PolicyContext,
+        context: &CallContext,
         f: impl FnOnce() -> Fut + Send,
     ) -> Result<T, CallError<E>>
     where
         Fut: Future<Output = Result<T, E>> + Send,
     {
-        let _permit = self.acquire_with_policy_context(context).await?;
+        let _permit = self.acquire_with_context(context).await?;
         context
             .run_result(async { f().await.map_err(CallError::Operation) })
             .await
@@ -233,9 +233,9 @@ impl Bulkhead {
     /// Returns `Err(CallError::Cancelled)` if the context is cancelled,
     /// `Err(CallError::Timeout)` if the context deadline or configured queue
     /// timeout expires, or `Err(CallError::BulkheadFull)` when the queue is full.
-    pub async fn acquire_with_policy_context<E>(
+    pub async fn acquire_with_context<E>(
         &self,
-        context: &PolicyContext,
+        context: &CallContext,
     ) -> Result<BulkheadPermit, CallError<E>> {
         context.run_result(self.acquire_permit()).await
     }
@@ -371,7 +371,7 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::{CallError, PolicyContext, RecordingSink, ResilienceEventKind};
+    use crate::{CallContext, CallError, RecordingSink, ResilienceEventKind};
 
     fn cfg(max: usize) -> BulkheadConfig {
         BulkheadConfig {
@@ -464,17 +464,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn policy_context_cancelled_acquire_releases_queue_slot() {
+    async fn call_context_cancelled_acquire_releases_queue_slot() {
         let bh = Bulkhead::new(BulkheadConfig {
             max_concurrency: 1,
             queue_size: 1,
             queue_wait_timeout: None,
         })
         .unwrap();
-        let context = PolicyContext::from_cancellation(crate::CancellationContext::new());
+        let context = CallContext::from_cancellation(crate::CancellationContext::new());
 
         let permit = bh.acquire::<&str>().await.unwrap();
-        let mut queued = Box::pin(bh.acquire_with_policy_context::<&str>(&context));
+        let mut queued = Box::pin(bh.acquire_with_context::<&str>(&context));
 
         tokio::select! {
             result = &mut queued => {
@@ -493,17 +493,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn policy_context_deadline_releases_operation_permit() {
+    async fn call_context_deadline_releases_operation_permit() {
         let bh = Bulkhead::new(BulkheadConfig {
             max_concurrency: 1,
             queue_size: 0,
             queue_wait_timeout: None,
         })
         .unwrap();
-        let context = PolicyContext::with_timeout(Duration::from_millis(1));
+        let context = CallContext::with_timeout(Duration::from_millis(1));
 
         let err = bh
-            .call_with_policy_context::<(), &str, _>(&context, || {
+            .call_with_context::<(), &str, _>(&context, || {
                 Box::pin(async {
                     tokio::time::sleep(Duration::from_mins(1)).await;
                     Ok(())

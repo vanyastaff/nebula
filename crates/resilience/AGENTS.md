@@ -26,7 +26,7 @@
 - `src/lib.rs` — crate docs + re-export surface (the public API map)
 - `src/pipeline.rs` — `ResiliencePipeline<E>` / `PipelineBuilder`; composes the patterns
 - `src/error.rs` — `CallError<E>` (`#[non_exhaustive]`, no type erasure); per-pattern variants
-- `src/classifier.rs` + `src/context.rs` — `ErrorClassifier` (Classify seam) and `PolicyContext` (cancel/deadline/scope)
+- `src/classifier.rs` + `src/context.rs` — `ErrorClassifier` (Classify seam) and `CallContext` (cancel/deadline/scope)
 - `src/circuit_breaker.rs` · `src/retry.rs` · `src/bulkhead.rs` · `src/rate_limiter.rs` · `src/hedge.rs` — the standalone patterns
 - `src/fallback.rs` — strategies + the single `orchestrate_fallback` shared by `FallbackExecutor` and the pipeline
 - `src/gate.rs` — cooperative-shutdown barrier; `src/events.rs` — `EventSink` observability hooks
@@ -50,7 +50,7 @@
 
 | Change | Relevant evidence |
 |--------|-------------------|
-| Cancellation/deadline composition | [cancel_safety](tests/cancel_safety.rs), [policy_context_contracts](tests/policy_context_contracts.rs), [pipeline](tests/pipeline.rs). |
+| Cancellation/deadline composition | [cancel_safety](tests/cancel_safety.rs), [call_context_contracts](tests/call_context_contracts.rs), [pipeline](tests/pipeline.rs). |
 | Limiter/backoff behavior | [rate_limiter](tests/rate_limiter.rs), [proptest_backoff](tests/proptest_backoff.rs); retry-budget bounds live in `src/retry_tests.rs`. |
 | Circuit-breaker accounting | `src/circuit_breaker_tests.rs` plus [circuit_breaker](tests/circuit_breaker.rs); Layer-1/Layer-2 backoff parity is pinned in `crates/engine/src/engine/tests.rs`. |
 

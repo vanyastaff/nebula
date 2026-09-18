@@ -26,9 +26,6 @@ use crate::CallError;
 /// // Cancelling the parent propagates to the child.
 /// ctx.cancel();
 /// assert!(child.is_cancelled());
-///
-/// let result: Result<i32, CallError<&str>> = child.call(|| async { Ok(1) }).await;
-/// assert!(matches!(result, Err(CallError::Cancelled { .. })));
 /// # Ok(())
 /// # }
 /// ```
@@ -96,76 +93,6 @@ impl CancellationContext {
             reason: self.reason.clone(),
         }
     }
-
-    /// Call an operation with cancellation support.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err(CallError::Cancelled)` if the cancellation token fires
-    /// before the operation completes. Propagates any `CallError` returned by `operation`.
-    #[tracing::instrument(skip(self, operation), fields(
-        cancellation_reason = self.reason.as_deref().unwrap_or("none")
-    ))]
-    pub async fn call<F, Fut, T, E>(&self, operation: F) -> Result<T, CallError<E>>
-    where
-        F: FnOnce() -> Fut,
-        Fut: Future<Output = Result<T, CallError<E>>>,
-    {
-        tokio::select! {
-            result = operation() => {
-                tracing::debug!("Operation completed before cancellation");
-                result
-            }
-            () = self.token.cancelled() => {
-                tracing::info!("Operation cancelled");
-                Err(CallError::Cancelled {
-                    reason: self.reason.clone(),
-                })
-            }
-        }
-    }
-
-    /// Call with timeout and cancellation.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err(CallError::Timeout)` if the operation exceeds `timeout`.
-    /// Returns `Err(CallError::Cancelled)` if cancellation fires first.
-    /// Propagates any `CallError` returned by `operation`.
-    #[tracing::instrument(skip(self, operation), fields(
-        timeout_ms = timeout.as_millis(),
-        cancellation_reason = self.reason.as_deref().unwrap_or("none")
-    ))]
-    pub async fn call_with_timeout<F, Fut, T, E>(
-        &self,
-        operation: F,
-        timeout: std::time::Duration,
-    ) -> Result<T, CallError<E>>
-    where
-        F: FnOnce() -> Fut,
-        Fut: Future<Output = Result<T, CallError<E>>>,
-    {
-        tokio::select! {
-            result = tokio::time::timeout(timeout, operation()) => {
-                result.map_or_else(
-                    |_| {
-                        tracing::warn!(?timeout, "Operation timed out");
-                        Err(CallError::Timeout(timeout))
-                    },
-                    |op_result| {
-                        tracing::debug!("Operation completed within timeout");
-                        op_result
-                    },
-                )
-            }
-            () = self.token.cancelled() => {
-                tracing::info!("Operation cancelled before timeout");
-                Err(CallError::Cancelled {
-                    reason: self.reason.clone(),
-                })
-            }
-        }
-    }
 }
 
 impl Default for CancellationContext {
@@ -212,3 +139,65 @@ pub trait CancellationExt<T>: Future<Output = T> + Sized + Send {
 }
 
 impl<F, T> CancellationExt<T> for F where F: Future<Output = T> + Send {}
+
+#[cfg(test)]
+mod cancellation_wakeup_tests {
+    //! Regression for #632: the cancellation wait is stored, not rebuilt on
+    //! every poll.
+
+    use std::time::Duration;
+
+    use tokio_util::sync::CancellationToken;
+
+    use super::{CallError, CancellationExt};
+
+    /// A future that yields many times must still be woken by cancellation.
+    ///
+    /// Storing the wait instead of rebuilding it changes *when* the waker is
+    /// registered, so this pins the property that matters: after any number of
+    /// yields, cancelling still completes the future promptly.
+    #[tokio::test]
+    async fn cancellation_wakes_a_frequently_yielding_future() {
+        let token = CancellationToken::new();
+        let canceller = token.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            canceller.cancel();
+        });
+
+        let yielding = async {
+            loop {
+                tokio::task::yield_now().await;
+            }
+        };
+
+        let outcome: Result<(), CallError<()>> =
+            tokio::time::timeout(Duration::from_secs(5), yielding.with_cancellation(token))
+                .await
+                .expect("cancellation must wake the future long before this bound");
+
+        assert!(
+            matches!(outcome, Err(CallError::Cancelled { .. })),
+            "a cancelled yielding future must report Cancelled, got {outcome:?}"
+        );
+    }
+
+    /// Completion still wins when the inner future is already done.
+    #[tokio::test]
+    async fn a_ready_future_completes_even_after_many_yields() {
+        let token = CancellationToken::new();
+        let work = async {
+            for _ in 0..10_000 {
+                tokio::task::yield_now().await;
+            }
+            7_u32
+        };
+
+        let outcome: Result<u32, CallError<()>> = work.with_cancellation(token).await;
+        assert_eq!(
+            outcome.expect("an uncancelled future must complete"),
+            7,
+            "repeated yields must not change the result"
+        );
+    }
+}

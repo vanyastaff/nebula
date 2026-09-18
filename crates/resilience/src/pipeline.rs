@@ -37,7 +37,7 @@
 use std::{fmt, future::Future, pin::Pin, sync::Arc, time::Duration};
 
 use crate::{
-    CallError, CallErrorKind, PolicyContext,
+    CallContext, CallError, CallErrorKind,
     bulkhead::Bulkhead,
     cancellation::CancellationContext,
     circuit_breaker::{CircuitBreaker, Outcome, ProbeGuard},
@@ -621,47 +621,9 @@ impl<E: Send + 'static> ResiliencePipeline<E> {
         result
     }
 
-    /// Execute `f` through all pipeline steps, stopping promptly when `cancellation`
-    /// is cancelled.
+    /// Execute `f` through all pipeline steps under one call context.
     ///
-    /// # Errors
-    ///
-    /// Returns `Err(CallError::Cancelled)` if cancellation fires before the pipeline
-    /// completes, or the normal pipeline error otherwise.
-    ///
-    /// # Cancel safety
-    ///
-    /// Dropping the returned future drops the in-flight operation at its
-    /// current `.await`, and the pipeline does not detach work via `spawn`.
-    /// Most step bookkeeping is stack-local or a drop guard — bulkhead
-    /// permits and circuit-breaker probe slots are released on drop. The
-    /// exception is a rate-limiter step: once its permit is acquired the
-    /// limiter's shared quota is consumed, and dropping the future before
-    /// the operation finishes does *not* refund it — cancellation can still
-    /// burn rate-limit capacity, by design. Whether a *partially executed*
-    /// operation is safe to abandon is the supplied operation's own
-    /// contract.
-    pub async fn call_with_context<T, F, Fut>(
-        &self,
-        cancellation: &CancellationContext,
-        f: F,
-    ) -> Result<T, CallError<E>>
-    where
-        T: Send + 'static,
-        F: Fn() -> Fut + Clone + Send + Sync + 'static,
-        Fut: Future<Output = Result<T, E>> + Send + 'static,
-    {
-        let result = self.call_inner(Some(cancellation.clone()), f).await;
-        self.record_pipeline_completed(match &result {
-            Ok(_) => PipelineOutcome::Success,
-            Err(err) => PipelineOutcome::Failure { error: err.kind() },
-        });
-        result
-    }
-
-    /// Execute `f` through all pipeline steps using a shared policy context.
-    ///
-    /// `PolicyContext` groups cancellation, deadline, and observability scope so
+    /// [`CallContext`] groups cancellation, deadline, and observability scope so
     /// a workflow runtime can pass one execution contract through the policy
     /// stack. If the context has a deadline, it bounds the whole pipeline call.
     ///
@@ -683,9 +645,9 @@ impl<E: Send + 'static> ResiliencePipeline<E> {
     /// burn rate-limit capacity, by design. Whether a *partially executed*
     /// operation is safe to abandon is the supplied operation's own
     /// contract.
-    pub async fn call_with_policy_context<T, F, Fut>(
+    pub async fn call_with_context<T, F, Fut>(
         &self,
-        context: &PolicyContext,
+        context: &CallContext,
         f: F,
     ) -> Result<T, CallError<E>>
     where
@@ -748,7 +710,7 @@ impl<E: Send + 'static> ResiliencePipeline<E> {
             .record(ResilienceEvent::PipelineCompleted { scope, outcome });
     }
 
-    fn effective_scope(&self, context: Option<&PolicyContext>) -> EventScope {
+    fn effective_scope(&self, context: Option<&CallContext>) -> EventScope {
         context.map_or_else(
             || self.scope.clone(),
             |context| {
@@ -763,7 +725,7 @@ impl<E: Send + 'static> ResiliencePipeline<E> {
 
     async fn run_with_policy_deadline<T, Fut>(
         &self,
-        context: &PolicyContext,
+        context: &CallContext,
         future: Fut,
     ) -> Result<T, CallError<E>>
     where
@@ -851,46 +813,6 @@ impl<E: Send + 'static> ResiliencePipeline<E> {
             .await
     }
 
-    /// Execute `f` through the pipeline with both cancellation and fallback.
-    ///
-    /// Cancellation wins over fallback: if the context is cancelled before or
-    /// during fallback execution, the method returns [`CallError::Cancelled`].
-    /// This prevents engine shutdown from being reported as a successful
-    /// fallback recovery.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err(CallError::Cancelled)` if cancellation fires before the
-    /// pipeline/fallback completes, or the normal pipeline/fallback error
-    /// otherwise.
-    ///
-    /// # Cancel safety
-    ///
-    /// Dropping the returned future drops the in-flight operation at its
-    /// current `.await`, and the pipeline does not detach work via `spawn`.
-    /// Most step bookkeeping is stack-local or a drop guard — bulkhead
-    /// permits and circuit-breaker probe slots are released on drop. The
-    /// exception is a rate-limiter step: once its permit is acquired the
-    /// limiter's shared quota is consumed, and dropping the future before
-    /// the operation finishes does *not* refund it — cancellation can still
-    /// burn rate-limit capacity, by design. Whether a *partially executed*
-    /// operation is safe to abandon is the supplied operation's own
-    /// contract.
-    pub async fn call_with_context_and_fallback<T, F, Fut>(
-        &self,
-        cancellation: &CancellationContext,
-        f: F,
-        fallback: &dyn crate::fallback::FallbackStrategy<T, E>,
-    ) -> Result<T, CallError<E>>
-    where
-        T: Send + Sync + 'static,
-        F: Fn() -> Fut + Clone + Send + Sync + 'static,
-        Fut: Future<Output = Result<T, E>> + Send + 'static,
-    {
-        self.call_with_fallback_inner(Some(cancellation.clone()), self.scope.clone(), f, fallback)
-            .await
-    }
-
     /// Execute `f` through the pipeline with shared context and fallback.
     ///
     /// This is the most explicit workflow-runtime entry point: cancellation,
@@ -916,9 +838,9 @@ impl<E: Send + 'static> ResiliencePipeline<E> {
     /// burn rate-limit capacity, by design. Whether a *partially executed*
     /// operation is safe to abandon is the supplied operation's own
     /// contract.
-    pub async fn call_with_policy_context_and_fallback<T, F, Fut>(
+    pub async fn call_with_context_and_fallback<T, F, Fut>(
         &self,
-        context: &PolicyContext,
+        context: &CallContext,
         f: F,
         fallback: &dyn crate::fallback::FallbackStrategy<T, E>,
     ) -> Result<T, CallError<E>>

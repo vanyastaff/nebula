@@ -56,7 +56,7 @@ Read the rustdoc of `src/lib.rs` for the exhaustive re-export surface. The entry
   `.scope()`, `.timeout()`, `.retry()`, `.circuit_breaker()`, `.bulkhead()`,
   `.rate_limiter_from()` / `.rate_limiter_erased()`, `.load_shed()`, then `build()` (warns on
   suboptimal order), `build_checked()` (rejects it), or `build_recommended_order()` (sorts it).
-  Call through `call()`, `call_with_context()`, or `call_with_policy_context[_and_fallback]()`.
+  Call through `call()`, `call_with_context()`, or `call_with_context_and_fallback()`.
   Hedging is deliberately not a builder step (see `hedge` docs for why).
 - `CallError<E>` — error of every pattern; carries the caller's `E` and a variant per rejection
   kind. `TaskPanicked` exists so a panicked attempt is never reported as cancellation.
@@ -68,13 +68,13 @@ Read the rustdoc of `src/lib.rs` for the exhaustive re-export surface. The entry
 - `rate_limiter::{RateLimiter, ErasedRateLimiter, TokenBucket, LeakyBucket, SlidingWindow,
   AdaptiveRateLimiter}` — `ErasedRateLimiter` is the object-safe facade for heterogeneous
   registries.
-- `timeout::{timeout, timeout_with_policy_context, TimeoutExecutor}`,
-  `load_shed::{load_shed, load_shed_with_policy_context[_and_sink]}` — standalone combinators.
+- `timeout::{timeout, timeout_with_context, TimeoutExecutor}`,
+  `load_shed::{load_shed, load_shed_with_context[_and_sink]}`, `bulkhead.acquire_with_context` — standalone combinators.
 - `fallback::{FallbackStrategy, ValueFallback, FunctionFallback, CacheFallback, ChainFallback,
   PriorityFallback, FallbackExecutor}` — one shared orchestration (`orchestrate_fallback`)
   serves both `FallbackExecutor` and the pipeline's `call_with_fallback*`, so the event contract
   cannot drift between them.
-- `PolicyContext`, `Deadline` — the cancellation/deadline/scope contract and its budget helper.
+- `CallContext`, `Deadline` — the cancellation/deadline/scope contract of one call and its budget helper.
 - `gate::{Gate, GateGuard, GateCloseTimeout}` — cooperative shutdown drain with a caller-chosen
   budget. In-process only; see `gate` docs for the drain contract.
 - `hedge::{HedgeConfig, HedgeSafety, HedgeExecutor, AdaptiveHedgeExecutor}` — speculative
