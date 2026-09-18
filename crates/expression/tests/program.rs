@@ -733,3 +733,22 @@ fn missing_lookup_policy_switches_between_error_and_undefined() {
         json!(null)
     );
 }
+
+#[test]
+fn default_budget_admits_the_largest_template_the_count_limit_allows() {
+    // Two independent DoS guards must not contradict each other: the template
+    // parser admits up to 1000 expressions, and the default work budget must
+    // be able to evaluate that admitted maximum. A budget calibrated below the
+    // parser's ceiling would reject templates the parser promised to accept.
+    let context = EvaluationContext::builder()
+        .input(json!({"name": "ada"}))
+        .build();
+    let engine = ExpressionEngine::new();
+    let source = vec!["{{ $input.name.toUpperCase() }}"; 1000].join(" ");
+    let template =
+        Template::new(source.as_str()).expect("1000 expressions is the admitted maximum");
+    let rendered = template
+        .render(&engine, &context)
+        .expect("the default budget must admit the largest permitted template");
+    assert_eq!(rendered.matches("ADA").count(), 1000);
+}
