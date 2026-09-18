@@ -42,9 +42,9 @@ use crate::{
     cancellation::CancellationContext,
     circuit_breaker::{CircuitBreaker, Outcome, ProbeGuard},
     classifier::{ErrorClass, ErrorClassifier, FnClassifier},
+    events::{EventScope, EventSink, NoopSink, ResilienceEvent},
     rate_limiter::{ErasedRateLimiter, map_acquire_error},
     retry::{RetryConfig, retry_with},
-    sink::{MetricsSink, NoopSink, PolicyScope, ResilienceEvent},
 };
 
 // ── Execution ────────────────────────────────────────────────────────────────
@@ -109,9 +109,9 @@ enum Step<E: 'static> {
 pub struct PipelineBuilder<E: 'static> {
     steps: Vec<Step<E>>,
     classifier: Option<Arc<dyn ErrorClassifier<E>>>,
-    sink: Option<Arc<dyn MetricsSink>>,
+    sink: Option<Arc<dyn EventSink>>,
     retry_hint: Option<RetryHintFn<E>>,
-    scope: PolicyScope,
+    scope: EventScope,
 }
 
 impl<E: 'static> fmt::Debug for PipelineBuilder<E> {
@@ -137,7 +137,7 @@ impl<E: Send + 'static> PipelineBuilder<E> {
             classifier: None,
             sink: None,
             retry_hint: None,
-            scope: PolicyScope::empty(),
+            scope: EventScope::empty(),
         }
     }
 
@@ -169,7 +169,7 @@ impl<E: Send + 'static> PipelineBuilder<E> {
     /// for retry attempts configured through this builder. Circuit breakers and
     /// bulkheads passed in as pre-built `Arc`s keep their own sinks.
     #[must_use]
-    pub fn with_sink(mut self, sink: impl MetricsSink + 'static) -> Self {
+    pub fn with_sink(mut self, sink: impl EventSink + 'static) -> Self {
         self.sink = Some(Arc::new(sink));
         self
     }
@@ -178,7 +178,7 @@ impl<E: Send + 'static> PipelineBuilder<E> {
     ///
     /// Keep values low-cardinality when forwarding these events to metrics.
     #[must_use]
-    pub fn scope(mut self, scope: PolicyScope) -> Self {
+    pub fn scope(mut self, scope: EventScope) -> Self {
         self.scope = scope;
         self
     }
@@ -518,16 +518,16 @@ fn validate_order<E>(steps: &[Step<E>]) {
 pub struct ResiliencePipeline<E: 'static> {
     steps: Arc<Vec<Step<E>>>,
     classifier: Option<Arc<dyn ErrorClassifier<E>>>,
-    sink: Arc<dyn MetricsSink>,
+    sink: Arc<dyn EventSink>,
     sink_overrides_steps: bool,
     retry_hint: Option<RetryHintFn<E>>,
-    scope: PolicyScope,
+    scope: EventScope,
 }
 
 struct PipelineRunContext<E: 'static> {
     steps: Arc<Vec<Step<E>>>,
     classifier: Option<Arc<dyn ErrorClassifier<E>>>,
-    sink: Arc<dyn MetricsSink>,
+    sink: Arc<dyn EventSink>,
     sink_overrides_steps: bool,
     retry_hint: Option<RetryHintFn<E>>,
     cancellation: Option<CancellationContext>,
@@ -740,7 +740,7 @@ impl<E: Send + 'static> ResiliencePipeline<E> {
         self.record_pipeline_completed_for_scope(self.scope.clone(), outcome);
     }
 
-    fn record_pipeline_completed_for_scope(&self, scope: PolicyScope, outcome: PipelineOutcome) {
+    fn record_pipeline_completed_for_scope(&self, scope: EventScope, outcome: PipelineOutcome) {
         if !self.sink_overrides_steps {
             return;
         }
@@ -748,7 +748,7 @@ impl<E: Send + 'static> ResiliencePipeline<E> {
             .record(ResilienceEvent::PipelineCompleted { scope, outcome });
     }
 
-    fn effective_scope(&self, context: Option<&PolicyContext>) -> PolicyScope {
+    fn effective_scope(&self, context: Option<&PolicyContext>) -> EventScope {
         context.map_or_else(
             || self.scope.clone(),
             |context| {
@@ -957,7 +957,7 @@ impl<E: Send + 'static> ResiliencePipeline<E> {
     async fn call_with_fallback_inner<T, F, Fut>(
         &self,
         cancellation: Option<CancellationContext>,
-        completion_scope: PolicyScope,
+        completion_scope: EventScope,
         f: F,
         fallback: &dyn crate::fallback::FallbackStrategy<T, E>,
     ) -> Result<T, CallError<E>>
@@ -1054,7 +1054,7 @@ impl<E: Send + 'static> ResiliencePipeline<E> {
 async fn execute_pipeline<T, E, F>(
     steps: Arc<Vec<Step<E>>>,
     classifier: Option<Arc<dyn ErrorClassifier<E>>>,
-    sink: Arc<dyn MetricsSink>,
+    sink: Arc<dyn EventSink>,
     sink_overrides_steps: bool,
     retry_hint: Option<RetryHintFn<E>>,
     cancellation: Option<CancellationContext>,

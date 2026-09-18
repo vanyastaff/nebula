@@ -58,7 +58,7 @@ use tokio::{
 
 use crate::{
     CallError,
-    sink::{MetricsSink, NoopSink, ResilienceEvent},
+    events::{EventSink, NoopSink, ResilienceEvent},
 };
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -167,7 +167,7 @@ impl HedgeConfig {
 /// ```
 pub struct HedgeExecutor {
     config: HedgeConfig,
-    sink: Arc<dyn MetricsSink>,
+    sink: Arc<dyn EventSink>,
 }
 
 impl fmt::Debug for HedgeExecutor {
@@ -194,7 +194,7 @@ impl HedgeExecutor {
 
     /// Inject a metrics sink.
     #[must_use]
-    pub fn with_sink(mut self, sink: impl MetricsSink + 'static) -> Self {
+    pub fn with_sink(mut self, sink: impl EventSink + 'static) -> Self {
         self.sink = Arc::new(sink);
         self
     }
@@ -320,7 +320,7 @@ pub struct AdaptiveHedgeExecutor {
     // parking_lot::RwLock is used because neither record() nor percentile() cross .await points.
     latency_tracker: Arc<RwLock<LatencyTracker>>,
     target_percentile: f64,
-    sink: Arc<dyn MetricsSink>,
+    sink: Arc<dyn EventSink>,
 }
 
 impl fmt::Debug for AdaptiveHedgeExecutor {
@@ -366,7 +366,7 @@ impl AdaptiveHedgeExecutor {
 
     /// Inject a metrics sink.
     #[must_use]
-    pub fn with_sink(mut self, sink: impl MetricsSink + 'static) -> Self {
+    pub fn with_sink(mut self, sink: impl EventSink + 'static) -> Self {
         self.sink = Arc::new(sink);
         self
     }

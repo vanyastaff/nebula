@@ -17,7 +17,7 @@ use std::{fmt, future::Future, pin::Pin, sync::Arc};
 use tokio::sync::RwLock;
 
 use crate::{
-    MetricsSink, NoopSink, PolicyContext, ResilienceEvent,
+    EventSink, NoopSink, PolicyContext, ResilienceEvent,
     error::{CallError, CallErrorKind},
 };
 
@@ -580,7 +580,7 @@ pub(crate) enum FallbackOutcome<T, E> {
 /// live token).
 pub(crate) async fn orchestrate_fallback<T, E>(
     strategy: &dyn FallbackStrategy<T, E>,
-    sink: &dyn MetricsSink,
+    sink: &dyn EventSink,
     error: CallError<E>,
 ) -> FallbackOutcome<T, E>
 where
@@ -639,7 +639,7 @@ where
 /// ```
 pub struct FallbackExecutor<T, E> {
     fallback_strategy: Arc<dyn FallbackStrategy<T, E>>,
-    sink: Arc<dyn MetricsSink>,
+    sink: Arc<dyn EventSink>,
 }
 
 impl<T, E> FallbackExecutor<T, E> {
@@ -676,14 +676,14 @@ impl<T, E> FallbackExecutor<T, E> {
 
     /// Attach a metrics/event sink for standalone fallback lifecycle events.
     #[must_use = "builder methods must be chained or built"]
-    pub fn with_sink(mut self, sink: impl MetricsSink + 'static) -> Self {
+    pub fn with_sink(mut self, sink: impl EventSink + 'static) -> Self {
         self.sink = Arc::new(sink);
         self
     }
 
     /// Attach a shared metrics/event sink for standalone fallback lifecycle events.
     #[must_use = "builder methods must be chained or built"]
-    pub fn with_shared_sink(mut self, sink: Arc<dyn MetricsSink>) -> Self {
+    pub fn with_shared_sink(mut self, sink: Arc<dyn EventSink>) -> Self {
         self.sink = sink;
         self
     }

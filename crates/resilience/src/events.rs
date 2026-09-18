@@ -1,7 +1,10 @@
-//! `MetricsSink` — event sink for resilience observability.
+//! Event sink for resilience observability.
 //!
-//! Replaces the custom `ObservabilityHook` system. The default is [`NoopSink`].
-//! In nebula-engine, `EventBusSink` wraps nebula-eventbus — no direct dep here.
+//! Patterns emit [`ResilienceEvent`]s to an [`EventSink`]; the default is
+//! [`NoopSink`] and tests use [`RecordingSink`]. The sink contract is
+//! "deliver this observation", so an adapter that forwards to
+//! `nebula-eventbus` or a metrics registry implements [`EventSink`] — the
+//! trait carries no metrics or export policy of its own.
 
 use std::{borrow::Cow, ops::Deref, sync::Arc, time::Duration};
 
@@ -9,10 +12,10 @@ use parking_lot::Mutex;
 
 use crate::{CallErrorKind, circuit_breaker::CircuitState, pipeline::PipelineOutcome};
 
-/// Low-cardinality scope string shared by [`PolicyScope`].
+/// Low-cardinality scope string shared by [`EventScope`].
 ///
 /// Scope values are copied into an `Arc<str>` once at construction time. Cloning
-/// a [`PolicyScope`] or [`ResilienceEvent::PipelineCompleted`] then increments a
+/// a [`EventScope`] or [`ResilienceEvent::PipelineCompleted`] then increments a
 /// refcount instead of allocating and copying tenant/workflow/action strings on
 /// every pipeline completion event.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -86,7 +89,7 @@ impl<'a> From<Cow<'a, str>> for ScopeValue {
 /// without deep-copying owned strings on every event clone.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
-pub struct PolicyScope {
+pub struct EventScope {
     /// Tenant identifier, when safe to expose.
     pub tenant_id: Option<ScopeValue>,
     /// Workflow identifier or workflow type.
@@ -99,7 +102,7 @@ pub struct PolicyScope {
     pub operation: Option<ScopeValue>,
 }
 
-impl PolicyScope {
+impl EventScope {
     /// Empty scope.
     #[must_use]
     pub const fn empty() -> Self {
@@ -158,7 +161,7 @@ impl PolicyScope {
     }
 }
 
-/// Events emitted by resilience patterns to the [`MetricsSink`].
+/// Events emitted by resilience patterns to the [`EventSink`].
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -213,7 +216,7 @@ pub enum ResilienceEvent {
     /// A pipeline invocation completed.
     PipelineCompleted {
         /// Caller-provided workflow/resource scope.
-        scope: PolicyScope,
+        scope: EventScope,
         /// Final pipeline outcome, including fallback recovery if used.
         outcome: PipelineOutcome,
     },
@@ -258,14 +261,14 @@ pub enum ResilienceEventKind {
 /// ```rust,no_run
 /// use std::sync::atomic::{AtomicUsize, Ordering};
 ///
-/// use nebula_resilience::{MetricsSink, ResilienceEvent};
+/// use nebula_resilience::{EventSink, ResilienceEvent};
 ///
 /// #[derive(Default)]
 /// struct CountingSink {
 ///     calls: AtomicUsize,
 /// }
 ///
-/// impl MetricsSink for CountingSink {
+/// impl EventSink for CountingSink {
 ///     fn record(&self, _event: ResilienceEvent) {
 ///         self.calls.fetch_add(1, Ordering::Relaxed);
 ///     }
@@ -275,7 +278,7 @@ pub enum ResilienceEventKind {
 /// sink.record(ResilienceEvent::LoadShed);
 /// assert_eq!(sink.calls.load(Ordering::Relaxed), 1);
 /// ```
-pub trait MetricsSink: Send + Sync {
+pub trait EventSink: Send + Sync {
     /// Record a resilience event.
     fn record(&self, event: ResilienceEvent);
 }
@@ -284,7 +287,7 @@ pub trait MetricsSink: Send + Sync {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NoopSink;
 
-impl MetricsSink for NoopSink {
+impl EventSink for NoopSink {
     fn record(&self, _: ResilienceEvent) {}
 }
 
@@ -296,7 +299,7 @@ impl MetricsSink for NoopSink {
 /// # Examples
 ///
 /// ```rust,no_run
-/// use nebula_resilience::{MetricsSink, RecordingSink, ResilienceEvent, ResilienceEventKind};
+/// use nebula_resilience::{EventSink, RecordingSink, ResilienceEvent, ResilienceEventKind};
 ///
 /// let sink = RecordingSink::new();
 /// sink.record(ResilienceEvent::BulkheadRejected);
@@ -342,7 +345,7 @@ impl RecordingSink {
     }
 }
 
-impl MetricsSink for RecordingSink {
+impl EventSink for RecordingSink {
     fn record(&self, event: ResilienceEvent) {
         self.events.lock().push(event);
     }
@@ -401,7 +404,7 @@ mod tests {
     fn policy_scope_builders_set_fields() {
         let tenant = String::from("tenant-a");
         let resource = Cow::Borrowed("resource-a");
-        let scope = PolicyScope::empty()
+        let scope = EventScope::empty()
             .tenant_id(tenant)
             .workflow_id("workflow-a")
             .action_id("action-a")
@@ -416,7 +419,7 @@ mod tests {
     #[test]
     fn policy_scope_clone_shares_owned_values() {
         let tenant = Arc::<str>::from("tenant-a");
-        let scope = PolicyScope::empty().tenant_id(Arc::clone(&tenant));
+        let scope = EventScope::empty().tenant_id(Arc::clone(&tenant));
         let cloned = scope.clone();
 
         let original = scope.tenant_id.as_ref().unwrap();
@@ -431,7 +434,7 @@ mod tests {
     #[test]
     fn scoped_pipeline_event_serde_round_trips() {
         let event = ResilienceEvent::PipelineCompleted {
-            scope: PolicyScope::empty()
+            scope: EventScope::empty()
                 .tenant_id("tenant-a")
                 .workflow_id("workflow-a")
                 .operation("gmail.poll"),

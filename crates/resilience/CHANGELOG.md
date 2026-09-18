@@ -8,6 +8,51 @@ managed inside the Nebula repository rather than through crates.io releases.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Renamed — terminology alignment
+
+Names were aligned with the industry vocabulary each pattern already cites
+(Release It!, AWS Builders' Library, RFC 9110, Resilience4j/Polly) and with
+RFC 1574 summary conventions. The crate is unpublished, so no compatibility
+shims are kept; serialized config field aliases preserve old JSON keys where a
+field was renamed.
+
+| Old | New | Reason |
+|---|---|---|
+| `JitterConfig::Full { factor }` | `JitterConfig::Additive { max_fraction }` | `base + rand(0, f*base)` is additive jitter; full jitter is `rand(0, base)` |
+| `RateLimiter::current_rate() -> f64` | `RateLimiter::status() -> RateLimiterStatus` | the old method had four meanings across implementations; `remaining`/`limit_per_second` follow the `RateLimit` header vocabulary |
+| `clock::{Clock, SystemClock, MockClock}` | `clock::{InstantSource, SystemInstant, MockInstant}` | avoids collision with `nebula_core::accessor::Clock` and `nebula_action::webhook::Clock`; matches `java.time.InstantSource` |
+| `CircuitBreaker::with_clock` / `clock_now` | `with_instant_source` / `monotonic_now` | names the injected contract, not a second "clock" |
+| `MetricsSink`, `src/sink.rs` | `EventSink`, `src/events.rs` | the sink receives events, not metrics |
+| `PolicyScope` | `EventScope` | groups event attributes; "policy" already means adaptive config in this crate |
+| `FallbackOperation` | `FallbackExecutor` | matches `HedgeExecutor`/`TimeoutExecutor`; it executes calls, it is not an operation |
+| `CircuitBreakerConfig::{break_duration_multiplier, max_break_duration}` | `{reset_timeout_multiplier, max_reset_timeout}` | one "reset timeout" vocabulary (Release It!) |
+| `BulkheadConfig::timeout` | `queue_wait_timeout` | it bounds queue wait, not the call |
+| `PolicyContext` | `CallContext` | the context of one protected call |
+| `flat_map_inner` | `flat_map_operation` | one error-mapping vocabulary in the crate |
+
+### Removed
+
+- `ResiliencePipeline::call_with_context` and `call_with_context_and_fallback` —
+  `call_with_context`/`call_with_context_and_fallback` now take the richer
+  context directly, so the cancellation-only duplicates are gone.
+- `CancellationContext::call` / `call_with_timeout` — replaced by the composable
+  `timeout_with_policy_context` / `bulkhead.call_with_policy_context` paths.
+- The unconsumed loom harness and its `loom` feature; the dead `full` feature
+  alias (it only re-enabled the default `serde`).
+- The `sliding_window_size` / `failure_rate_threshold` circuit-breaker config
+  and its `OutcomeWindow` (one accounting model remains).
+
+### Fixed
+
+- A panicking hedge attempt is reported as `CallError::TaskPanicked` instead of
+  being masked as cancellation.
+- Server and worker shutdown drains are bounded; an in-flight request or
+  component can no longer delay process exit indefinitely.
+- `credential`'s circuit-breaker read no longer consumes half-open probe slots
+  (`try_acquire` was being used as a predicate).
+
 ## [0.1.0] - 2026-05-05
 
 Initial implementation of the internal Nebula resilience layer.

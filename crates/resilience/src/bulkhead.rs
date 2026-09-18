@@ -12,7 +12,7 @@ use tokio::sync::Semaphore;
 
 use crate::{
     CallError, ConfigError, PolicyContext,
-    sink::{MetricsSink, NoopSink, ResilienceEvent},
+    events::{EventSink, NoopSink, ResilienceEvent},
 };
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -112,7 +112,7 @@ pub struct Bulkhead {
     config: BulkheadConfig,
     semaphore: Arc<Semaphore>,
     waiting_count: Arc<AtomicUsize>,
-    sink: Arc<dyn MetricsSink>,
+    sink: Arc<dyn EventSink>,
 }
 
 impl std::fmt::Debug for Bulkhead {
@@ -142,7 +142,7 @@ impl Bulkhead {
 
     /// Replace the metrics sink (builder-style).
     #[must_use]
-    pub fn with_sink(mut self, sink: impl MetricsSink + 'static) -> Self {
+    pub fn with_sink(mut self, sink: impl EventSink + 'static) -> Self {
         self.sink = Arc::new(sink);
         self
     }

@@ -118,7 +118,7 @@
 //!
 //! # Observability
 //!
-//! Inject a [`MetricsSink`] into any pattern to receive [`ResilienceEvent`]s.
+//! Inject a [`EventSink`] into any pattern to receive [`ResilienceEvent`]s.
 //! Use [`RecordingSink`] in tests for assertion-friendly event capture.
 
 #![warn(clippy::all, clippy::pedantic, clippy::nursery, clippy::perf)]
@@ -139,7 +139,7 @@ pub mod error;
 pub mod policy;
 
 // Observability
-pub mod sink;
+pub mod events;
 
 // Patterns
 pub mod bulkhead;
@@ -191,8 +191,8 @@ pub use rate_limiter::{
 pub use retry::retry_with_inner;
 pub use retry::{BackoffConfig, JitterConfig, RetryConfig, retry, retry_with};
 // Observability
-pub use sink::{
-    MetricsSink, NoopSink, PolicyScope, RecordingSink, ResilienceEvent, ResilienceEventKind,
+pub use events::{
+    EventScope, EventSink, NoopSink, RecordingSink, ResilienceEvent, ResilienceEventKind,
     ScopeValue,
 };
 pub use timeout::{

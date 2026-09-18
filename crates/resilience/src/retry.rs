@@ -42,7 +42,7 @@ use crate::{
     CallError,
     classifier::{ErrorClass, ErrorClassifier, FnClassifier},
     deadline::Deadline,
-    sink::{MetricsSink, NoopSink, ResilienceEvent},
+    events::{EventSink, NoopSink, ResilienceEvent},
 };
 
 // ── Backoff ───────────────────────────────────────────────────────────────────
@@ -282,7 +282,7 @@ pub struct RetryConfig<E = ()> {
     total_budget: Option<Duration>,
     pub(crate) classifier: Option<Arc<dyn ErrorClassifier<E>>>,
     pub(crate) on_retry: Option<RetryNotify<E>>,
-    pub(crate) sink: Arc<dyn MetricsSink>,
+    pub(crate) sink: Arc<dyn EventSink>,
 }
 
 impl<E> fmt::Debug for RetryConfig<E> {
@@ -411,7 +411,7 @@ impl<E: 'static> RetryConfig<E> {
 
     /// Inject a metrics sink.
     #[must_use]
-    pub fn with_sink(mut self, sink: impl MetricsSink + 'static) -> Self {
+    pub fn with_sink(mut self, sink: impl EventSink + 'static) -> Self {
         self.sink = Arc::new(sink);
         self
     }

@@ -14,9 +14,8 @@ use std::{borrow::Cow, hint::black_box, time::Duration};
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use nebula_resilience::{
-    CallErrorKind, PipelineOutcome, PolicyContext, PolicyScope, ResilienceEvent,
-    ResiliencePipeline, load_shed, load_shed_with_policy_context, timeout,
-    timeout_with_policy_context,
+    CallErrorKind, EventScope, PipelineOutcome, PolicyContext, ResilienceEvent, ResiliencePipeline,
+    load_shed, load_shed_with_policy_context, timeout, timeout_with_policy_context,
 };
 
 #[derive(Clone)]
@@ -157,7 +156,7 @@ fn bench_pipeline_context_overhead(c: &mut Criterion) {
 }
 
 fn bench_scope_clone(c: &mut Criterion) {
-    let scope = PolicyScope::empty()
+    let scope = EventScope::empty()
         .tenant_id(String::from("tenant-a"))
         .workflow_id(String::from("workflow-a"))
         .action_id(String::from("action-a"))

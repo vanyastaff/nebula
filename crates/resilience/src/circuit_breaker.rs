@@ -38,7 +38,7 @@ use parking_lot::Mutex;
 use crate::{
     CallError, ConfigError, PolicyContext,
     clock::{InstantSource, SystemInstant},
-    sink::{MetricsSink, NoopSink, ResilienceEvent},
+    events::{EventSink, NoopSink, ResilienceEvent},
 };
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -277,7 +277,7 @@ pub struct CircuitBreaker {
     atomic_state: AtomicU32,
     config: CircuitBreakerConfig,
     instant_source: Arc<dyn InstantSource>,
-    sink: Arc<dyn MetricsSink>,
+    sink: Arc<dyn EventSink>,
     state: Mutex<InnerState>,
     on_state_change: Option<StateChangeCallback>,
 }
@@ -324,7 +324,7 @@ impl CircuitBreaker {
 
     /// Replace the metrics sink (builder-style).
     #[must_use]
-    pub fn with_sink(mut self, sink: impl MetricsSink + 'static) -> Self {
+    pub fn with_sink(mut self, sink: impl EventSink + 'static) -> Self {
         self.sink = Arc::new(sink);
         self
     }

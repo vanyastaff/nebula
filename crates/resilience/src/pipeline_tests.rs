@@ -897,10 +897,10 @@ async fn pipeline_context_cancels_inflight_fallback() {
 async fn policy_context_deadline_bounds_entire_pipeline() {
     let sink = RecordingSink::new();
     let context = PolicyContext::with_timeout(Duration::from_millis(1))
-        .with_scope(PolicyScope::empty().tenant_id("tenant-context"));
+        .with_scope(EventScope::empty().tenant_id("tenant-context"));
     let pipeline = ResiliencePipeline::<&'static str>::builder()
         .with_sink(sink.clone())
-        .scope(PolicyScope::empty().tenant_id("tenant-builder"))
+        .scope(EventScope::empty().tenant_id("tenant-builder"))
         .build();
 
     let result = pipeline
@@ -971,7 +971,7 @@ async fn pipeline_completion_event_carries_scope() {
     let pipeline = ResiliencePipeline::<&str>::builder()
         .with_sink(sink.clone())
         .scope(
-            PolicyScope::empty()
+            EventScope::empty()
                 .tenant_id("tenant-a")
                 .operation("gmail.poll"),
         )

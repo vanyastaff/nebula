@@ -2,7 +2,7 @@
 
 use std::{future::Future, time::Duration};
 
-use crate::{CallError, CancellationContext, Deadline, sink::PolicyScope};
+use crate::{CallError, CancellationContext, Deadline, events::EventScope};
 
 /// Execution context shared by a resilience policy stack.
 ///
@@ -15,7 +15,7 @@ use crate::{CallError, CancellationContext, Deadline, sink::PolicyScope};
 pub struct PolicyContext {
     cancellation: Option<CancellationContext>,
     deadline: Option<Deadline>,
-    scope: PolicyScope,
+    scope: EventScope,
 }
 
 impl PolicyContext {
@@ -25,7 +25,7 @@ impl PolicyContext {
         Self {
             cancellation: None,
             deadline: None,
-            scope: PolicyScope::empty(),
+            scope: EventScope::empty(),
         }
     }
 
@@ -57,7 +57,7 @@ impl PolicyContext {
 
     /// Attach observability scope.
     #[must_use]
-    pub fn with_scope(mut self, scope: PolicyScope) -> Self {
+    pub fn with_scope(mut self, scope: EventScope) -> Self {
         self.scope = scope;
         self
     }
@@ -93,7 +93,7 @@ impl PolicyContext {
 
     /// Get the observability scope.
     #[must_use]
-    pub const fn scope(&self) -> &PolicyScope {
+    pub const fn scope(&self) -> &EventScope {
         &self.scope
     }
 
@@ -178,7 +178,7 @@ mod tests {
         let deadline = Deadline::after(Duration::from_secs(5));
         let context = PolicyContext::from_cancellation(cancellation.clone())
             .with_deadline(deadline)
-            .with_scope(PolicyScope::empty().tenant_id("tenant-a"));
+            .with_scope(EventScope::empty().tenant_id("tenant-a"));
 
         let child = context.child();
         cancellation.cancel();

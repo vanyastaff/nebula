@@ -6,7 +6,7 @@ use tokio::time::timeout as tokio_timeout;
 
 use crate::{
     CallError, ConfigError, PolicyContext,
-    sink::{MetricsSink, NoopSink, ResilienceEvent},
+    events::{EventSink, NoopSink, ResilienceEvent},
 };
 
 /// Execute `future` with a timeout.
@@ -65,7 +65,7 @@ where
 pub async fn timeout_with_sink<T, E, F>(
     duration: Duration,
     future: F,
-    sink: &dyn MetricsSink,
+    sink: &dyn EventSink,
 ) -> Result<T, CallError<E>>
 where
     F: Future<Output = Result<T, E>>,
@@ -138,7 +138,7 @@ pub async fn timeout_with_policy_context_and_sink<T, E, F>(
     context: &PolicyContext,
     duration: Duration,
     future: F,
-    sink: &dyn MetricsSink,
+    sink: &dyn EventSink,
 ) -> Result<T, CallError<E>>
 where
     F: Future<Output = Result<T, E>> + Send,
@@ -149,7 +149,7 @@ where
         .await
 }
 
-/// A timeout executor with an injectable [`MetricsSink`].
+/// A timeout executor with an injectable [`EventSink`].
 ///
 /// Construct once and reuse across many calls when you want a stable timeout
 /// budget plus uniform observability. For one-off use, prefer the free
@@ -176,7 +176,7 @@ where
 /// ```
 pub struct TimeoutExecutor {
     duration: Duration,
-    sink: Arc<dyn MetricsSink>,
+    sink: Arc<dyn EventSink>,
 }
 
 impl fmt::Debug for TimeoutExecutor {
@@ -214,14 +214,14 @@ impl TimeoutExecutor {
 
     /// Inject a metrics sink.
     #[must_use]
-    pub fn with_sink(mut self, sink: impl MetricsSink + 'static) -> Self {
+    pub fn with_sink(mut self, sink: impl EventSink + 'static) -> Self {
         self.sink = Arc::new(sink);
         self
     }
 
     /// Inject a shared metrics sink.
     #[must_use = "builder methods must be chained or built"]
-    pub fn with_shared_sink(mut self, sink: Arc<dyn MetricsSink>) -> Self {
+    pub fn with_shared_sink(mut self, sink: Arc<dyn EventSink>) -> Self {
         self.sink = sink;
         self
     }

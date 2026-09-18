@@ -79,8 +79,9 @@ Read the rustdoc of `src/lib.rs` for the exhaustive re-export surface. The entry
   budget. In-process only; see `gate` docs for the drain contract.
 - `hedge::{HedgeConfig, HedgeSafety, HedgeExecutor, AdaptiveHedgeExecutor}` — speculative
   duplication, restricted to duplicate-safe non-effecting calls.
-- `sink::{MetricsSink, PolicyScope, ScopeValue, ResilienceEvent, RecordingSink}` — observability
-  hooks; the default is the zero-cost `NoopSink`.
+- `events::{EventSink, EventScope, ScopeValue, ResilienceEvent, RecordingSink}` — observability
+  hooks; the default is the zero-cost `NoopSink`. (`EventSink` was `MetricsSink`; it
+  receives events, not metrics.)
 - `policy::{PolicySource, LoadSignal, LoadSnapshot, ConstantLoad}` — adaptive-config seams
   with no in-repo consumer yet. They are seams an embedding host may wire; the pipeline and the
   engine do not read a `LoadSignal` today, so do not assume adaptive behavior from their presence.

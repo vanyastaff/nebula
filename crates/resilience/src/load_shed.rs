@@ -4,7 +4,7 @@ use std::future::Future;
 
 use crate::{
     CallError, PolicyContext,
-    sink::{MetricsSink, NoopSink, ResilienceEvent},
+    events::{EventSink, NoopSink, ResilienceEvent},
 };
 
 /// Shed load immediately when `should_shed()` returns `true`.
@@ -72,7 +72,7 @@ where
 pub async fn load_shed_with_sink<T, E, S, Fut, F>(
     should_shed: S,
     f: F,
-    sink: &dyn MetricsSink,
+    sink: &dyn EventSink,
 ) -> Result<T, CallError<E>>
 where
     S: Fn() -> bool,
@@ -143,7 +143,7 @@ pub async fn load_shed_with_policy_context_and_sink<T, E, S, Fut, F>(
     context: &PolicyContext,
     should_shed: S,
     f: F,
-    sink: &dyn MetricsSink,
+    sink: &dyn EventSink,
 ) -> Result<T, CallError<E>>
 where
     S: FnOnce() -> bool + Send,
