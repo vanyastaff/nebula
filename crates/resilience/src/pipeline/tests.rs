@@ -12,8 +12,8 @@ use nebula_error::{Classify, ErrorCategory, ErrorCode, RetryHint, codes};
 
 use super::*;
 use crate::{
-    CallContext, CallError, CancellationContext, CircuitBreaker, RecordingSink,
-    ResilienceEventKind, retry::BackoffConfig,
+    CallContext, CallError, CancellationContext, CircuitBreaker, EventScope, RecordingSink,
+    ResilienceEvent, ResilienceEventKind, retry::BackoffConfig,
 };
 
 #[derive(Debug, Clone, Copy)]
