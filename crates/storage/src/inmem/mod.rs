@@ -30,9 +30,9 @@ pub use control_queue::InMemoryControlQueue;
 pub use execution::{InMemoryExecutionStore, InMemoryIdempotencyGuard};
 pub use idempotency_store::{InMemoryIdempotencyStore, InMemoryWebhookActivationStore};
 pub use identity::{
-    InMemoryAuditStore, InMemoryBlobStore, InMemoryMembershipStore, InMemoryOrgStore,
-    InMemoryQuotaStore, InMemoryResourceStore, InMemoryTriggerStore, InMemoryUserStore,
-    InMemoryWorkspaceStore,
+    InMemoryAuditStore, InMemoryBlobStore, InMemoryIdentityDirectory, InMemoryMembershipStore,
+    InMemoryOrgStore, InMemoryQuotaStore, InMemoryResourceStore, InMemoryTriggerStore,
+    InMemoryUserStore, InMemoryWorkspaceStore,
 };
 pub use job_dispatch::InMemoryJobDispatchQueue;
 pub use journal::InMemoryJournalReader;

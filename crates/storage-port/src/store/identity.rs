@@ -7,8 +7,9 @@
 use std::sync::Arc;
 
 use crate::dto::{
-    AuditLogRow, BlobRow, MembershipRow, OrgRow, PrincipalKind, QuotaRow, ResourceRow, ScopeKind,
-    TriggerRow, UserRow, WorkspaceRow,
+    AuditLogRow, BlobRow, MembershipRow, OrgMemberRemoveOutcome, OrgMemberUpsert,
+    OrgMemberUpsertOutcome, OrgRow, PrincipalKind, PrincipalOrgMembership, QuotaRow, ResourceRow,
+    ScopeKind, TenantMembershipSnapshot, TriggerRow, UserRow, WorkspaceMemberUpsert, WorkspaceRow,
 };
 use crate::error::StorageError;
 use crate::scope::Scope;
@@ -62,8 +63,65 @@ pub trait WorkspaceStore: Send + Sync + std::fmt::Debug {
 /// `org_members` + `workspace_members` aggregate.
 #[async_trait::async_trait]
 pub trait MembershipStore: Send + Sync + std::fmt::Debug {
-    /// Add (or replace) a membership row.
-    async fn upsert(&self, row: MembershipRow) -> Result<(), StorageError>;
+    /// Read explicit organization and optional workspace roles for one principal
+    /// from one logical snapshot. Two independent reads are not sufficient.
+    /// The adapter must reject unknown persisted roles, never treat them as absent.
+    /// A workspace role may be returned only for a live workspace belonging to
+    /// `org_id`, verified in the same snapshot. A missing/deleted/wrong-parent
+    /// workspace yields no workspace role. Because the legacy membership key
+    /// omits the parent organization, an id present under any second organization
+    /// is ambiguous (including a deleted alias) and must also yield no role.
+    /// This operation reads membership evidence and does not grant authority.
+    async fn get_tenant_membership(
+        &self,
+        org_id: &str,
+        workspace_id: Option<&str>,
+        principal_kind: PrincipalKind,
+        principal_id: &str,
+    ) -> Result<TenantMembershipSnapshot, StorageError>;
+
+    /// Enumerate explicit organization memberships for exactly this principal.
+    /// Unknown persisted organization roles fail the whole read closed.
+    async fn list_orgs_for_principal(
+        &self,
+        principal_kind: PrincipalKind,
+        principal_id: &str,
+    ) -> Result<Vec<PrincipalOrgMembership>, StorageError>;
+
+    /// Atomically replace an organization membership only when the resulting
+    /// organization retains at least one owner or administrator. This also
+    /// applies to the first insert: bootstrap must insert a privileged role.
+    /// The role read,
+    /// privileged-member count, and write must share an exclusive organization
+    /// critical section across replicas, including concurrent removals.
+    /// Unknown roles encountered by the invariant check fail closed with no write.
+    /// The adapter records `added_at` using its own clock inside the atomic write;
+    /// callers cannot supply the persisted write timestamp.
+    async fn upsert_org_member_guarded(
+        &self,
+        request: OrgMemberUpsert,
+    ) -> Result<OrgMemberUpsertOutcome, StorageError>;
+
+    /// Atomically remove membership unless it is the last owner/administrator.
+    /// Shares the organization critical section used by guarded upsert; neither
+    /// a count-then-delete sequence nor a process-local lock suffices for SQL.
+    /// Unknown roles encountered by the invariant check fail closed with no write.
+    async fn remove_org_member_guarded(
+        &self,
+        org_id: &str,
+        principal_kind: PrincipalKind,
+        principal_id: &str,
+    ) -> Result<OrgMemberRemoveOutcome, StorageError>;
+
+    /// Replace explicit workspace membership after verifying a live workspace
+    /// under the requested organization. Missing, wrong-parent, or ambiguous
+    /// workspace ids return `StorageError::NotFound`; this cannot mutate
+    /// organization roles.
+    /// The adapter records `added_at` using its own clock inside the atomic write.
+    async fn upsert_workspace_member(
+        &self,
+        request: WorkspaceMemberUpsert,
+    ) -> Result<(), StorageError>;
     /// Read one membership by (scope_kind, scope_id, principal).
     async fn get(
         &self,
@@ -78,14 +136,17 @@ pub trait MembershipStore: Send + Sync + std::fmt::Debug {
         scope_kind: ScopeKind,
         scope_id: &str,
     ) -> Result<Vec<MembershipRow>, StorageError>;
-    /// Remove a membership.
-    async fn remove(
+    /// Remove explicit workspace membership, scoped through a live workspace's
+    /// organization. Returns false for absent membership, wrong/missing parent,
+    /// or a workspace id that is ambiguous across organizations.
+    /// Organization memberships are writable only through the guarded methods.
+    async fn remove_workspace_member(
         &self,
-        scope_kind: ScopeKind,
-        scope_id: &str,
+        org_id: &str,
+        workspace_id: &str,
         principal_kind: PrincipalKind,
         principal_id: &str,
-    ) -> Result<(), StorageError>;
+    ) -> Result<bool, StorageError>;
 }
 
 /// `resources` aggregate (workspace-scoped).

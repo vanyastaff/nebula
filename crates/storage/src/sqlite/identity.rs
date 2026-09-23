@@ -23,6 +23,11 @@ use nebula_storage_port::dto::{
     AuditLogRow, BlobRow, MembershipRow, OrgRow, PrincipalKind, QuotaRow, ResourceRow, ScopeKind,
     TriggerRow, UserRow, WorkspaceRow,
 };
+use nebula_storage_port::dto::{
+    OrgMemberRemoveOutcome, OrgMemberUpsert, OrgMemberUpsertOutcome, OrgMembershipRole,
+    PrincipalOrgMembership, TenantMembershipSnapshot, WorkspaceMemberUpsert,
+    WorkspaceMembershipRole,
+};
 use nebula_storage_port::store::{
     AuditStore, BlobStore, MembershipStore, OrgStore, QuotaStore, ResourceStore, TriggerStore,
     UserStore, WorkspaceStore,
@@ -512,24 +517,227 @@ fn membership_from_row(r: &sqlx::sqlite::SqliteRow) -> Result<MembershipRow, Sto
 
 #[async_trait::async_trait]
 impl MembershipStore for SqliteMembershipStore {
-    async fn upsert(&self, row: MembershipRow) -> Result<(), StorageError> {
-        sqlx::query(
-            "INSERT INTO port_memberships (scope_kind, scope_id, principal_kind, \
-             principal_id, role, added_at, added_by) VALUES (?, ?, ?, ?, ?, ?, ?) \
-             ON CONFLICT (scope_kind, scope_id, principal_kind, principal_id) \
-             DO UPDATE SET role = excluded.role, added_at = excluded.added_at, \
-             added_by = excluded.added_by",
+    // Historical grants lack an organization column. Reject workspace ids
+    // with any other parent, including deleted aliases, rather than reuse grants.
+    #[tracing::instrument(skip_all)]
+    async fn get_tenant_membership(
+        &self,
+        org_id: &str,
+        workspace_id: Option<&str>,
+        principal_kind: PrincipalKind,
+        principal_id: &str,
+    ) -> Result<TenantMembershipSnapshot, StorageError> {
+        let rows = sqlx::query(
+            "SELECT m.* \
+             FROM port_memberships m \
+             WHERE m.principal_kind = ?1 \
+             AND m.principal_id = ?2 \
+             AND ((m.scope_kind = 'org' \
+             AND m.scope_id = ?3) \
+             OR (m.scope_kind = 'workspace' \
+             AND m.scope_id = ?4 \
+             AND EXISTS (SELECT 1 \
+             FROM port_workspaces w \
+             WHERE w.org_id = ?3 \
+             AND w.id = ?4 \
+             AND w.deleted_at IS NULL AND NOT EXISTS (SELECT 1 FROM port_workspaces other WHERE other.id = w.id AND other.org_id <> w.org_id))))",
         )
-        .bind(row.scope_kind.as_str())
-        .bind(&row.scope_id)
-        .bind(row.principal_kind.as_str())
-        .bind(&row.principal_id)
-        .bind(&row.role)
-        .bind(&row.added_at)
-        .bind(&row.added_by)
-        .execute(&self.pool)
+        .bind(principal_kind.as_str())
+        .bind(principal_id)
+        .bind(org_id)
+        .bind(workspace_id)
+        .fetch_all(&self.pool)
         .await
         .map_err(conn_err)?;
+        let mut snapshot = TenantMembershipSnapshot::default();
+        for raw in &rows {
+            let row = membership_from_row(raw)?;
+            match row.scope_kind {
+                ScopeKind::Org => snapshot.org_role = Some(parse_org_role(&row.role)?),
+                ScopeKind::Workspace => {
+                    snapshot.workspace_role =
+                        Some(WorkspaceMembershipRole::parse(&row.role).map_err(|_| {
+                            StorageError::Serialization("membership role is invalid".into())
+                        })?);
+                },
+            }
+        }
+        Ok(snapshot)
+    }
+
+    #[tracing::instrument(skip_all)]
+    async fn list_orgs_for_principal(
+        &self,
+        principal_kind: PrincipalKind,
+        principal_id: &str,
+    ) -> Result<Vec<PrincipalOrgMembership>, StorageError> {
+        let rows = sqlx::query(
+            "SELECT * \
+             FROM port_memberships \
+             WHERE scope_kind = 'org' \
+             AND principal_kind = ?1 \
+             AND principal_id = ?2 \
+             ORDER BY scope_id",
+        )
+        .bind(principal_kind.as_str())
+        .bind(principal_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(conn_err)?;
+        rows.iter()
+            .map(|raw| {
+                let row = membership_from_row(raw)?;
+                Ok(PrincipalOrgMembership {
+                    org_id: row.scope_id,
+                    role: parse_org_role(&row.role)?,
+                })
+            })
+            .collect()
+    }
+
+    #[tracing::instrument(skip_all)]
+    async fn upsert_org_member_guarded(
+        &self,
+        request: OrgMemberUpsert,
+    ) -> Result<OrgMemberUpsertOutcome, StorageError> {
+        let mut tx = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(conn_err)?;
+        let org = sqlx::query("SELECT id FROM port_orgs WHERE id = ?1 AND deleted_at IS NULL")
+            .bind(&request.org_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(conn_err)?;
+        if org.is_none() {
+            return Err(StorageError::not_found("org", request.org_id));
+        }
+        // BEGIN IMMEDIATE serializes the invariant read with every writer.
+        let rows = sqlx::query(
+            "SELECT * FROM port_memberships WHERE scope_kind = 'org' AND scope_id = ?1",
+        )
+        .bind(&request.org_id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(conn_err)?;
+        let mut privileged_other = false;
+        for raw in &rows {
+            let row = membership_from_row(raw)?;
+            let role = parse_org_role(&row.role)?;
+            privileged_other |= role.is_privileged()
+                && (row.principal_kind != request.principal_kind
+                    || row.principal_id != request.principal_id);
+        }
+        if !request.role.is_privileged() && !privileged_other {
+            return Ok(OrgMemberUpsertOutcome::WouldLockOut);
+        }
+        sqlx::query(
+            "INSERT INTO port_memberships (scope_kind, scope_id, principal_kind, principal_id, role, added_at, added_by) \
+             VALUES ('org', ?1, ?2, ?3, ?4, ?5, ?6) \
+             ON CONFLICT (scope_kind, scope_id, principal_kind, principal_id) \
+             DO UPDATE \
+             SET role = excluded.role, added_at = excluded.added_at, added_by = excluded.added_by",
+        )
+            .bind(&request.org_id)
+            .bind(request.principal_kind.as_str())
+            .bind(&request.principal_id)
+            .bind(request.role.as_str())
+            .bind(now_rfc3339())
+            .bind(&request.added_by)
+            .execute(&mut *tx)
+            .await
+            .map_err(conn_err)?;
+        tx.commit().await.map_err(conn_err)?;
+        Ok(OrgMemberUpsertOutcome::Applied)
+    }
+
+    #[tracing::instrument(skip_all)]
+    async fn remove_org_member_guarded(
+        &self,
+        org_id: &str,
+        principal_kind: PrincipalKind,
+        principal_id: &str,
+    ) -> Result<OrgMemberRemoveOutcome, StorageError> {
+        let mut tx = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(conn_err)?;
+        let org = sqlx::query("SELECT id FROM port_orgs WHERE id = ?1 AND deleted_at IS NULL")
+            .bind(org_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(conn_err)?;
+        if org.is_none() {
+            return Err(StorageError::not_found("org", org_id));
+        }
+        let rows = sqlx::query(
+            "SELECT * FROM port_memberships WHERE scope_kind = 'org' AND scope_id = ?1",
+        )
+        .bind(org_id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(conn_err)?;
+        let mut found = false;
+        let mut privileged_other = false;
+        for raw in &rows {
+            let row = membership_from_row(raw)?;
+            let role = parse_org_role(&row.role)?;
+            let target = row.principal_kind == principal_kind && row.principal_id == principal_id;
+            found |= target;
+            privileged_other |= role.is_privileged() && !target;
+        }
+        if !found {
+            return Ok(OrgMemberRemoveOutcome::NotFound);
+        }
+        if !privileged_other {
+            return Ok(OrgMemberRemoveOutcome::WouldLockOut);
+        }
+        sqlx::query("DELETE FROM port_memberships WHERE scope_kind = 'org' AND scope_id = ?1 AND principal_kind = ?2 AND principal_id = ?3")
+            .bind(org_id).bind(principal_kind.as_str()).bind(principal_id).execute(&mut *tx).await.map_err(conn_err)?;
+        tx.commit().await.map_err(conn_err)?;
+        Ok(OrgMemberRemoveOutcome::Removed)
+    }
+
+    #[tracing::instrument(skip_all)]
+    async fn upsert_workspace_member(
+        &self,
+        request: WorkspaceMemberUpsert,
+    ) -> Result<(), StorageError> {
+        let mut tx = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(conn_err)?;
+        let workspace = sqlx::query(
+            "SELECT id FROM port_workspaces WHERE org_id = ?1 AND id = ?2 AND deleted_at IS NULL AND NOT EXISTS (SELECT 1 FROM port_workspaces other WHERE other.id = ?2 AND other.org_id <> ?1)",
+        )
+        .bind(&request.org_id)
+        .bind(&request.workspace_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(conn_err)?;
+        if workspace.is_none() {
+            return Err(StorageError::not_found("workspace", request.workspace_id));
+        }
+        sqlx::query(
+            "INSERT INTO port_memberships (scope_kind, scope_id, principal_kind, principal_id, role, added_at, added_by) \
+             VALUES ('workspace', ?1, ?2, ?3, ?4, ?5, ?6) \
+             ON CONFLICT (scope_kind, scope_id, principal_kind, principal_id) \
+             DO UPDATE \
+             SET role = excluded.role, added_at = excluded.added_at, added_by = excluded.added_by",
+        )
+            .bind(&request.workspace_id)
+            .bind(request.principal_kind.as_str())
+            .bind(&request.principal_id)
+            .bind(request.role.as_str())
+            .bind(now_rfc3339())
+            .bind(&request.added_by)
+            .execute(&mut *tx)
+            .await
+            .map_err(conn_err)?;
+        tx.commit().await.map_err(conn_err)?;
         Ok(())
     }
 
@@ -571,26 +779,52 @@ impl MembershipStore for SqliteMembershipStore {
         rows.iter().map(membership_from_row).collect()
     }
 
-    async fn remove(
+    #[tracing::instrument(skip_all)]
+    async fn remove_workspace_member(
         &self,
-        scope_kind: ScopeKind,
-        scope_id: &str,
+        org_id: &str,
+        workspace_id: &str,
         principal_kind: PrincipalKind,
         principal_id: &str,
-    ) -> Result<(), StorageError> {
-        sqlx::query(
-            "DELETE FROM port_memberships WHERE scope_kind = ? AND scope_id = ? \
-             AND principal_kind = ? AND principal_id = ?",
+    ) -> Result<bool, StorageError> {
+        let mut tx = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(conn_err)?;
+        let workspace = sqlx::query(
+            "SELECT id FROM port_workspaces WHERE org_id = ?1 AND id = ?2 AND deleted_at IS NULL AND NOT EXISTS (SELECT 1 FROM port_workspaces other WHERE other.id = ?2 AND other.org_id <> ?1)",
         )
-        .bind(scope_kind.as_str())
-        .bind(scope_id)
-        .bind(principal_kind.as_str())
-        .bind(principal_id)
-        .execute(&self.pool)
+        .bind(org_id)
+        .bind(workspace_id)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(conn_err)?;
-        Ok(())
+        if workspace.is_none() {
+            return Ok(false);
+        }
+        let result = sqlx::query(
+            "DELETE \
+             FROM port_memberships \
+             WHERE scope_kind = 'workspace' \
+             AND scope_id = ?1 \
+             AND principal_kind = ?2 \
+             AND principal_id = ?3",
+        )
+        .bind(workspace_id)
+        .bind(principal_kind.as_str())
+        .bind(principal_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(conn_err)?;
+        tx.commit().await.map_err(conn_err)?;
+        Ok(result.rows_affected() != 0)
     }
+}
+
+fn parse_org_role(value: &str) -> Result<OrgMembershipRole, StorageError> {
+    OrgMembershipRole::parse(value)
+        .map_err(|_| StorageError::Serialization("membership role is invalid".into()))
 }
 
 // ── Resources (workspace-scoped) ──────────────────────────────────────────

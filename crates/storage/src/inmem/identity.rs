@@ -1,6 +1,7 @@
 //! In-memory identity-zoo stores.
 //!
-//! One `parking_lot::Mutex`-guarded map per aggregate. Tenant-scoped
+//! Directory views share one `parking_lot::Mutex` for membership snapshots;
+//! other aggregates own independent maps. Tenant-scoped
 //! lookups fold the parent id (org / workspace) or `Scope` into the map
 //! key, so a cross-tenant `get` returns `Ok(None)` exactly as the SQL
 //! backends' `WHERE … = ?` predicate would — an id outside the caller's
@@ -19,6 +20,11 @@ use std::sync::Arc;
 use nebula_storage_port::dto::{
     AuditLogRow, BlobRow, MembershipRow, OrgRow, PrincipalKind, QuotaRow, ResourceRow, ScopeKind,
     TriggerRow, UserRow, WorkspaceRow,
+};
+use nebula_storage_port::dto::{
+    OrgMemberRemoveOutcome, OrgMemberUpsert, OrgMemberUpsertOutcome, OrgMembershipRole,
+    PrincipalOrgMembership, TenantMembershipSnapshot, WorkspaceMemberUpsert,
+    WorkspaceMembershipRole,
 };
 use nebula_storage_port::store::{
     AuditStore, BlobStore, MembershipStore, OrgStore, QuotaStore, ResourceStore, TriggerStore,
@@ -155,10 +161,59 @@ impl UserStore for InMemoryUserStore {
 
 // ── Orgs ──────────────────────────────────────────────────────────────────
 
+/// Directory rows and grants share a snapshot and mutation critical section.
+#[derive(Debug, Default)]
+struct InMemoryDirectoryState {
+    orgs: HashMap<String, OrgRow>,
+    workspaces: HashMap<WsKey, WorkspaceRow>,
+    memberships: HashMap<MemKey, MembershipRow>,
+}
+
+/// Composition root for in-memory tenant directory stores.
+///
+/// The three projections share one lock so parent checks, membership reads,
+/// and guarded mutations observe one logical snapshot.
+#[derive(Debug, Default, Clone)]
+pub struct InMemoryIdentityDirectory {
+    inner: Arc<Mutex<InMemoryDirectoryState>>,
+}
+
+impl InMemoryIdentityDirectory {
+    /// Create an empty tenant directory.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Organization projection over the shared directory state.
+    #[must_use]
+    pub fn org_store(&self) -> InMemoryOrgStore {
+        InMemoryOrgStore {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+
+    /// Workspace projection over the shared directory state.
+    #[must_use]
+    pub fn workspace_store(&self) -> InMemoryWorkspaceStore {
+        InMemoryWorkspaceStore {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+
+    /// Membership projection over the shared directory state.
+    #[must_use]
+    pub fn membership_store(&self) -> InMemoryMembershipStore {
+        InMemoryMembershipStore {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+}
+
 /// In-memory `orgs` store. Slug is unique among active rows.
 #[derive(Debug, Default, Clone)]
 pub struct InMemoryOrgStore {
-    inner: Arc<Mutex<HashMap<String, OrgRow>>>,
+    inner: Arc<Mutex<InMemoryDirectoryState>>,
 }
 
 impl InMemoryOrgStore {
@@ -172,7 +227,8 @@ impl InMemoryOrgStore {
 #[async_trait::async_trait]
 impl OrgStore for InMemoryOrgStore {
     async fn create(&self, row: OrgRow) -> Result<(), StorageError> {
-        let mut map = self.inner.lock();
+        let mut state = self.inner.lock();
+        let map = &mut state.orgs;
         if map.contains_key(&row.id) {
             return Err(StorageError::Duplicate {
                 entity: "org",
@@ -196,6 +252,7 @@ impl OrgStore for InMemoryOrgStore {
         Ok(self
             .inner
             .lock()
+            .orgs
             .get(id)
             .filter(|o| o.deleted_at.is_none())
             .cloned())
@@ -205,13 +262,15 @@ impl OrgStore for InMemoryOrgStore {
         Ok(self
             .inner
             .lock()
+            .orgs
             .values()
             .find(|o| o.deleted_at.is_none() && o.slug == slug)
             .cloned())
     }
 
     async fn update(&self, row: OrgRow, expected_version: u64) -> Result<(), StorageError> {
-        let mut map = self.inner.lock();
+        let mut state = self.inner.lock();
+        let map = &mut state.orgs;
         let Some(cur) = map.get(&row.id).filter(|o| o.deleted_at.is_none()) else {
             return Err(StorageError::not_found("org", row.id));
         };
@@ -239,7 +298,8 @@ impl OrgStore for InMemoryOrgStore {
     }
 
     async fn soft_delete(&self, id: &str) -> Result<(), StorageError> {
-        let mut map = self.inner.lock();
+        let mut state = self.inner.lock();
+        let map = &mut state.orgs;
         let Some(row) = map.get_mut(id).filter(|o| o.deleted_at.is_none()) else {
             return Err(StorageError::not_found("org", id));
         };
@@ -257,7 +317,7 @@ type WsKey = (String, String);
 /// among active rows *per org*.
 #[derive(Debug, Default, Clone)]
 pub struct InMemoryWorkspaceStore {
-    inner: Arc<Mutex<HashMap<WsKey, WorkspaceRow>>>,
+    inner: Arc<Mutex<InMemoryDirectoryState>>,
 }
 
 impl InMemoryWorkspaceStore {
@@ -272,7 +332,8 @@ impl InMemoryWorkspaceStore {
 impl WorkspaceStore for InMemoryWorkspaceStore {
     async fn create(&self, row: WorkspaceRow) -> Result<(), StorageError> {
         let key = (row.org_id.clone(), row.id.clone());
-        let mut map = self.inner.lock();
+        let mut state = self.inner.lock();
+        let map = &mut state.workspaces;
         if map.contains_key(&key) {
             return Err(StorageError::Duplicate {
                 entity: "workspace",
@@ -299,6 +360,7 @@ impl WorkspaceStore for InMemoryWorkspaceStore {
         Ok(self
             .inner
             .lock()
+            .workspaces
             .get(&(org_id.to_string(), id.to_string()))
             .filter(|w| w.deleted_at.is_none())
             .cloned())
@@ -308,6 +370,7 @@ impl WorkspaceStore for InMemoryWorkspaceStore {
         Ok(self
             .inner
             .lock()
+            .workspaces
             .values()
             .filter(|w| w.deleted_at.is_none() && w.org_id == org_id)
             .cloned()
@@ -316,7 +379,8 @@ impl WorkspaceStore for InMemoryWorkspaceStore {
 
     async fn update(&self, row: WorkspaceRow, expected_version: u64) -> Result<(), StorageError> {
         let key = (row.org_id.clone(), row.id.clone());
-        let mut map = self.inner.lock();
+        let mut state = self.inner.lock();
+        let map = &mut state.workspaces;
         let Some(cur) = map.get(&key).filter(|w| w.deleted_at.is_none()) else {
             return Err(StorageError::not_found("workspace", row.id));
         };
@@ -346,7 +410,8 @@ impl WorkspaceStore for InMemoryWorkspaceStore {
     }
 
     async fn soft_delete(&self, org_id: &str, id: &str) -> Result<(), StorageError> {
-        let mut map = self.inner.lock();
+        let mut state = self.inner.lock();
+        let map = &mut state.workspaces;
         let Some(row) = map
             .get_mut(&(org_id.to_string(), id.to_string()))
             .filter(|w| w.deleted_at.is_none())
@@ -382,7 +447,7 @@ fn mem_key(
 /// In-memory `org_members` + `workspace_members` store.
 #[derive(Debug, Default, Clone)]
 pub struct InMemoryMembershipStore {
-    inner: Arc<Mutex<HashMap<MemKey, MembershipRow>>>,
+    inner: Arc<Mutex<InMemoryDirectoryState>>,
 }
 
 impl InMemoryMembershipStore {
@@ -395,14 +460,183 @@ impl InMemoryMembershipStore {
 
 #[async_trait::async_trait]
 impl MembershipStore for InMemoryMembershipStore {
-    async fn upsert(&self, row: MembershipRow) -> Result<(), StorageError> {
-        let key = mem_key(
-            row.scope_kind,
-            &row.scope_id,
-            row.principal_kind,
-            &row.principal_id,
+    #[tracing::instrument(skip_all)]
+    async fn get_tenant_membership(
+        &self,
+        org_id: &str,
+        workspace_id: Option<&str>,
+        principal_kind: PrincipalKind,
+        principal_id: &str,
+    ) -> Result<TenantMembershipSnapshot, StorageError> {
+        let state = self.inner.lock();
+        let org_role = state
+            .memberships
+            .get(&mem_key(
+                ScopeKind::Org,
+                org_id,
+                principal_kind,
+                principal_id,
+            ))
+            .map(|row| parse_org_role(&row.role))
+            .transpose()?;
+        let workspace_role = workspace_id
+            .filter(|id| live_membership_workspace(&state, org_id, id))
+            .and_then(|id| {
+                state.memberships.get(&mem_key(
+                    ScopeKind::Workspace,
+                    id,
+                    principal_kind,
+                    principal_id,
+                ))
+            })
+            .map(|row| {
+                WorkspaceMembershipRole::parse(&row.role)
+                    .map_err(|_| StorageError::Serialization("membership role is invalid".into()))
+            })
+            .transpose()?;
+        Ok(TenantMembershipSnapshot {
+            org_role,
+            workspace_role,
+        })
+    }
+
+    #[tracing::instrument(skip_all)]
+    async fn list_orgs_for_principal(
+        &self,
+        principal_kind: PrincipalKind,
+        principal_id: &str,
+    ) -> Result<Vec<PrincipalOrgMembership>, StorageError> {
+        let state = self.inner.lock();
+        let mut result = state
+            .memberships
+            .values()
+            .filter(|row| {
+                row.scope_kind == ScopeKind::Org
+                    && row.principal_kind == principal_kind
+                    && row.principal_id == principal_id
+            })
+            .map(|row| {
+                Ok(PrincipalOrgMembership {
+                    org_id: row.scope_id.clone(),
+                    role: parse_org_role(&row.role)?,
+                })
+            })
+            .collect::<Result<Vec<_>, StorageError>>()?;
+        result.sort_by(|a, b| a.org_id.cmp(&b.org_id));
+        Ok(result)
+    }
+
+    #[tracing::instrument(skip_all)]
+    async fn upsert_org_member_guarded(
+        &self,
+        request: OrgMemberUpsert,
+    ) -> Result<OrgMemberUpsertOutcome, StorageError> {
+        let mut state = self.inner.lock();
+        if state
+            .orgs
+            .get(&request.org_id)
+            .is_none_or(|org| org.deleted_at.is_some())
+        {
+            return Err(StorageError::not_found("org", request.org_id));
+        }
+        let mut privileged_other = false;
+        for row in state
+            .memberships
+            .values()
+            .filter(|row| row.scope_kind == ScopeKind::Org && row.scope_id == request.org_id)
+        {
+            let role = parse_org_role(&row.role)?;
+            privileged_other |= role.is_privileged()
+                && (row.principal_kind != request.principal_kind
+                    || row.principal_id != request.principal_id);
+        }
+        if !request.role.is_privileged() && !privileged_other {
+            return Ok(OrgMemberUpsertOutcome::WouldLockOut);
+        }
+        let row = MembershipRow {
+            scope_kind: ScopeKind::Org,
+            scope_id: request.org_id,
+            principal_kind: request.principal_kind,
+            principal_id: request.principal_id,
+            role: request.role.as_str().into(),
+            added_at: now_rfc3339(),
+            added_by: request.added_by,
+        };
+        state.memberships.insert(
+            mem_key(
+                row.scope_kind,
+                &row.scope_id,
+                row.principal_kind,
+                &row.principal_id,
+            ),
+            row,
         );
-        self.inner.lock().insert(key, row);
+        Ok(OrgMemberUpsertOutcome::Applied)
+    }
+
+    #[tracing::instrument(skip_all)]
+    async fn remove_org_member_guarded(
+        &self,
+        org_id: &str,
+        principal_kind: PrincipalKind,
+        principal_id: &str,
+    ) -> Result<OrgMemberRemoveOutcome, StorageError> {
+        let mut state = self.inner.lock();
+        if state
+            .orgs
+            .get(org_id)
+            .is_none_or(|org| org.deleted_at.is_some())
+        {
+            return Err(StorageError::not_found("org", org_id));
+        }
+        let key = mem_key(ScopeKind::Org, org_id, principal_kind, principal_id);
+        let mut privileged_other = false;
+        for row in state
+            .memberships
+            .values()
+            .filter(|row| row.scope_kind == ScopeKind::Org && row.scope_id == org_id)
+        {
+            let role = parse_org_role(&row.role)?;
+            privileged_other |= role.is_privileged()
+                && (row.principal_kind != principal_kind || row.principal_id != principal_id);
+        }
+        if !state.memberships.contains_key(&key) {
+            return Ok(OrgMemberRemoveOutcome::NotFound);
+        }
+        if !privileged_other {
+            return Ok(OrgMemberRemoveOutcome::WouldLockOut);
+        }
+        state.memberships.remove(&key);
+        Ok(OrgMemberRemoveOutcome::Removed)
+    }
+
+    #[tracing::instrument(skip_all)]
+    async fn upsert_workspace_member(
+        &self,
+        request: WorkspaceMemberUpsert,
+    ) -> Result<(), StorageError> {
+        let mut state = self.inner.lock();
+        if !live_membership_workspace(&state, &request.org_id, &request.workspace_id) {
+            return Err(StorageError::not_found("workspace", request.workspace_id));
+        }
+        let row = MembershipRow {
+            scope_kind: ScopeKind::Workspace,
+            scope_id: request.workspace_id,
+            principal_kind: request.principal_kind,
+            principal_id: request.principal_id,
+            role: request.role.as_str().into(),
+            added_at: now_rfc3339(),
+            added_by: request.added_by,
+        };
+        state.memberships.insert(
+            mem_key(
+                row.scope_kind,
+                &row.scope_id,
+                row.principal_kind,
+                &row.principal_id,
+            ),
+            row,
+        );
         Ok(())
     }
 
@@ -416,6 +650,7 @@ impl MembershipStore for InMemoryMembershipStore {
         Ok(self
             .inner
             .lock()
+            .memberships
             .get(&mem_key(scope_kind, scope_id, principal_kind, principal_id))
             .cloned())
     }
@@ -428,24 +663,57 @@ impl MembershipStore for InMemoryMembershipStore {
         Ok(self
             .inner
             .lock()
+            .memberships
             .values()
-            .filter(|m| m.scope_kind == scope_kind && m.scope_id == scope_id)
+            .filter(|row| row.scope_kind == scope_kind && row.scope_id == scope_id)
             .cloned()
             .collect())
     }
 
-    async fn remove(
+    #[tracing::instrument(skip_all)]
+    async fn remove_workspace_member(
         &self,
-        scope_kind: ScopeKind,
-        scope_id: &str,
+        org_id: &str,
+        workspace_id: &str,
         principal_kind: PrincipalKind,
         principal_id: &str,
-    ) -> Result<(), StorageError> {
-        self.inner
-            .lock()
-            .remove(&mem_key(scope_kind, scope_id, principal_kind, principal_id));
-        Ok(())
+    ) -> Result<bool, StorageError> {
+        let mut state = self.inner.lock();
+        if !live_membership_workspace(&state, org_id, workspace_id) {
+            return Ok(false);
+        }
+        Ok(state
+            .memberships
+            .remove(&mem_key(
+                ScopeKind::Workspace,
+                workspace_id,
+                principal_kind,
+                principal_id,
+            ))
+            .is_some())
     }
+}
+
+// Grants are keyed by workspace id in the existing schema. A second parent,
+// even a deleted one, makes that identity ambiguous; never reuse its grants.
+fn live_membership_workspace(
+    state: &InMemoryDirectoryState,
+    org_id: &str,
+    workspace_id: &str,
+) -> bool {
+    state
+        .workspaces
+        .get(&(org_id.to_owned(), workspace_id.to_owned()))
+        .is_some_and(|row| row.deleted_at.is_none())
+        && !state
+            .workspaces
+            .values()
+            .any(|row| row.id == workspace_id && row.org_id != org_id)
+}
+
+fn parse_org_role(value: &str) -> Result<OrgMembershipRole, StorageError> {
+    OrgMembershipRole::parse(value)
+        .map_err(|_| StorageError::Serialization("membership role is invalid".into()))
 }
 
 // ── Resources (workspace-scoped) ──────────────────────────────────────────
