@@ -378,7 +378,13 @@ where
         config: &R::Config,
         ctx: &ResourceContext,
     ) -> Result<PoolEntry<R>, Error> {
-        let deadline = Instant::now() + self.config.create_timeout;
+        // `create_timeout` is operator-supplied; a huge value means "no
+        // practical deadline", not a panic on `Instant` overflow.
+        let deadline = crate::deadline::deadline_after(
+            Instant::now(),
+            self.config.create_timeout,
+            crate::deadline::UNBOUNDED_HORIZON,
+        );
 
         let _create_permit = match tokio::time::timeout_at(
             deadline.into(),

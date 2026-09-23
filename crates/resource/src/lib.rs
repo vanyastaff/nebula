@@ -235,6 +235,7 @@
 pub mod context;
 #[cfg(feature = "rotation")]
 pub mod credential_fanout;
+pub(crate) mod deadline;
 pub mod dedup;
 pub mod error;
 pub mod events;

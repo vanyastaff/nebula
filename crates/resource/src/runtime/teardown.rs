@@ -20,11 +20,10 @@ use crate::{
 /// [`Provider::teardown_budget`] is larger. See ADR-0093.
 pub(crate) const REVOKE_TEARDOWN_CAP: Duration = Duration::from_secs(5);
 
-/// Far-future fallback horizon used when a declared teardown budget is so large
-/// that `Instant::now() + budget` would overflow `Instant` (operator
-/// misconfiguration). Library code must not panic, so we cap at a
-/// far-future-but-representable deadline instead. One hour is orders of
-/// magnitude beyond any real graceful teardown.
+/// Fallback horizon used when a declared teardown budget is so large that
+/// `Instant::now() + budget` would overflow `Instant` (operator
+/// misconfiguration). One hour is orders of magnitude beyond any real
+/// graceful teardown.
 const MAX_TEARDOWN_HORIZON: Duration = Duration::from_hours(1);
 
 /// Compose the teardown deadline: the resource's declared
@@ -37,13 +36,9 @@ pub(crate) fn teardown_deadline<R: Provider>(resource: &R, reason: TeardownReaso
     } else {
         budget
     };
-    // Guard against `Instant` overflow — library code must not panic. A budget
-    // large enough to overflow `now + effective` is misconfiguration; fall back
-    // to a far-future horizon (then, defensively, `now`). See ADR-0093.
-    let now = Instant::now();
-    now.checked_add(effective)
-        .or_else(|| now.checked_add(MAX_TEARDOWN_HORIZON))
-        .unwrap_or(now)
+    // A budget large enough to overflow `now + effective` is
+    // misconfiguration; saturate instead of panicking. See ADR-0093.
+    crate::deadline::deadline_after(Instant::now(), effective, MAX_TEARDOWN_HORIZON)
 }
 
 /// Tear one instance down under a per-resource, per-context deadline.

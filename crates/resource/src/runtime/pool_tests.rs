@@ -145,6 +145,24 @@ async fn create_entry_builds_pool_entry_with_metrics() {
 }
 
 #[tokio::test]
+async fn create_entry_tolerates_unrepresentable_create_timeout() {
+    // `Instant::now() + Duration::MAX` panicked on the first cold acquire;
+    // an operator-supplied huge timeout must mean "no practical deadline".
+    let resource = MockPool::new();
+    let topo = mock_pool(
+        Config {
+            create_timeout: Duration::MAX,
+            ..Config::default()
+        },
+        0,
+    );
+    topo.create_pool_entry(&resource, &PoolTestConfig, &test_ctx())
+        .await
+        .expect("an unbounded create_timeout must not panic or time out");
+    assert_eq!(resource.created.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
 async fn entry_instance_and_into_owned_instance_round_trip() {
     let resource = MockPool::new();
     let topo = mock_pool(Config::default(), 0);

@@ -31,10 +31,11 @@ enum SlotHookDirection {
 const MAX_SLOT_HOOK_OBSERVATION_HORIZON: Duration = Duration::from_hours(1);
 
 fn slot_hook_observation_deadline(timeout: Duration) -> tokio::time::Instant {
-    let now = tokio::time::Instant::now();
-    now.checked_add(timeout)
-        .or_else(|| now.checked_add(MAX_SLOT_HOOK_OBSERVATION_HORIZON))
-        .unwrap_or(now)
+    tokio::time::Instant::from_std(crate::deadline::deadline_after(
+        tokio::time::Instant::now().into_std(),
+        timeout,
+        MAX_SLOT_HOOK_OBSERVATION_HORIZON,
+    ))
 }
 
 /// Result of the in-flight drain that precedes a slot hook.
