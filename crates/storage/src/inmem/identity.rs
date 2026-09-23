@@ -702,9 +702,13 @@ fn live_membership_workspace(
     workspace_id: &str,
 ) -> bool {
     state
-        .workspaces
-        .get(&(org_id.to_owned(), workspace_id.to_owned()))
+        .orgs
+        .get(org_id)
         .is_some_and(|row| row.deleted_at.is_none())
+        && state
+            .workspaces
+            .get(&(org_id.to_owned(), workspace_id.to_owned()))
+            .is_some_and(|row| row.deleted_at.is_none())
         && !state
             .workspaces
             .values()

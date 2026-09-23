@@ -823,6 +823,26 @@ async fn assert_membership_snapshot(b: &dyn IdentityBackend) {
             .await,
         Err(nebula_storage_port::StorageError::NotFound { .. })
     ));
+
+    workspaces
+        .create(workspace_row("ws_b", "org_b", "b"))
+        .await
+        .unwrap();
+    let mut service_grant = workspace_member("org_b", "ws_b", "same");
+    service_grant.principal_kind = PrincipalKind::ServiceAccount;
+    s.upsert_workspace_member(service_grant.clone())
+        .await
+        .unwrap();
+    orgs.soft_delete("org_b").await.unwrap();
+    assert!(matches!(
+        s.upsert_workspace_member(service_grant).await,
+        Err(nebula_storage_port::StorageError::NotFound { .. })
+    ));
+    assert!(
+        !s.remove_workspace_member("org_b", "ws_b", PrincipalKind::ServiceAccount, "same")
+            .await
+            .unwrap()
+    );
 }
 
 async fn assert_membership_live_and_deleted_workspace_aliases(b: &dyn IdentityBackend) {

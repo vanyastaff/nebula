@@ -662,7 +662,7 @@ impl MembershipStore for PgMembershipStore {
         request: WorkspaceMemberUpsert,
     ) -> Result<(), StorageError> {
         let mut tx = self.pool.begin().await.map_err(conn_err)?;
-        let workspace = sqlx::query("SELECT id FROM port_workspaces WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL AND NOT EXISTS (SELECT 1 FROM port_workspaces other WHERE other.id = $2 AND other.org_id <> $1) FOR UPDATE")
+        let workspace = sqlx::query("SELECT id FROM port_workspaces WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL AND EXISTS (SELECT 1 FROM port_orgs o WHERE o.id = $1 AND o.deleted_at IS NULL) AND NOT EXISTS (SELECT 1 FROM port_workspaces other WHERE other.id = $2 AND other.org_id <> $1) FOR UPDATE")
             .bind(&request.org_id).bind(&request.workspace_id).fetch_optional(&mut *tx).await.map_err(conn_err)?;
         if workspace.is_none() {
             return Err(StorageError::not_found("workspace", request.workspace_id));
@@ -734,7 +734,7 @@ impl MembershipStore for PgMembershipStore {
         principal_id: &str,
     ) -> Result<bool, StorageError> {
         let mut tx = self.pool.begin().await.map_err(conn_err)?;
-        let workspace = sqlx::query("SELECT id FROM port_workspaces WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL AND NOT EXISTS (SELECT 1 FROM port_workspaces other WHERE other.id = $2 AND other.org_id <> $1) FOR UPDATE")
+        let workspace = sqlx::query("SELECT id FROM port_workspaces WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL AND EXISTS (SELECT 1 FROM port_orgs o WHERE o.id = $1 AND o.deleted_at IS NULL) AND NOT EXISTS (SELECT 1 FROM port_workspaces other WHERE other.id = $2 AND other.org_id <> $1) FOR UPDATE")
             .bind(org_id).bind(workspace_id).fetch_optional(&mut *tx).await.map_err(conn_err)?;
         if workspace.is_none() {
             return Ok(false);

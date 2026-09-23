@@ -711,7 +711,7 @@ impl MembershipStore for SqliteMembershipStore {
             .await
             .map_err(conn_err)?;
         let workspace = sqlx::query(
-            "SELECT id FROM port_workspaces WHERE org_id = ?1 AND id = ?2 AND deleted_at IS NULL AND NOT EXISTS (SELECT 1 FROM port_workspaces other WHERE other.id = ?2 AND other.org_id <> ?1)",
+            "SELECT id FROM port_workspaces WHERE org_id = ?1 AND id = ?2 AND deleted_at IS NULL AND EXISTS (SELECT 1 FROM port_orgs o WHERE o.id = ?1 AND o.deleted_at IS NULL) AND NOT EXISTS (SELECT 1 FROM port_workspaces other WHERE other.id = ?2 AND other.org_id <> ?1)",
         )
         .bind(&request.org_id)
         .bind(&request.workspace_id)
@@ -793,7 +793,7 @@ impl MembershipStore for SqliteMembershipStore {
             .await
             .map_err(conn_err)?;
         let workspace = sqlx::query(
-            "SELECT id FROM port_workspaces WHERE org_id = ?1 AND id = ?2 AND deleted_at IS NULL AND NOT EXISTS (SELECT 1 FROM port_workspaces other WHERE other.id = ?2 AND other.org_id <> ?1)",
+            "SELECT id FROM port_workspaces WHERE org_id = ?1 AND id = ?2 AND deleted_at IS NULL AND EXISTS (SELECT 1 FROM port_orgs o WHERE o.id = ?1 AND o.deleted_at IS NULL) AND NOT EXISTS (SELECT 1 FROM port_workspaces other WHERE other.id = ?2 AND other.org_id <> ?1)",
         )
         .bind(org_id)
         .bind(workspace_id)
