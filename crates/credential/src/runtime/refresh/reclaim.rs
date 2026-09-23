@@ -24,6 +24,7 @@ use super::{
 /// Handle for the background reclaim sweep task.
 pub struct ReclaimSweepHandle {
     handle: tokio::task::JoinHandle<()>,
+    scheduler_metrics: super::metrics::RefreshSchedulerMetrics,
 }
 
 impl std::fmt::Debug for ReclaimSweepHandle {
@@ -48,11 +49,15 @@ impl ReclaimSweepHandle {
     ) -> Self {
         let cadence = coord.config().reclaim_sweep_interval;
         let metrics = coord.metrics().clone();
+        let scheduler_metrics = metrics.scheduler.clone();
         let audit_sink = coord.audit_sink().cloned();
         let handle = tokio::spawn(async move {
             sweep_loop(reclaimer, policy, cadence, event_bus, metrics, audit_sink).await;
         });
-        Self { handle }
+        Self {
+            handle,
+            scheduler_metrics,
+        }
     }
 
     /// Abort the running sweep task. Safe to call multiple times.
@@ -75,6 +80,10 @@ impl ReclaimSweepHandle {
     pub fn is_finished(&self) -> bool {
         self.handle.is_finished()
     }
+
+    pub(crate) fn scheduler_metrics(&self) -> super::metrics::RefreshSchedulerMetrics {
+        self.scheduler_metrics.clone()
+    }
 }
 
 impl Drop for ReclaimSweepHandle {
@@ -91,7 +100,7 @@ async fn sweep_loop(
     metrics: RefreshCoordMetrics,
     audit_sink: Option<Arc<dyn AuditSink>>,
 ) {
-    if let Err(error) = run_one_sweep(
+    if let Err(error) = run_one_sweep_recording_failure(
         reclaimer.as_ref(),
         policy,
         event_bus.as_ref(),
@@ -112,7 +121,7 @@ async fn sweep_loop(
     )]
     loop {
         ticker.tick().await;
-        if let Err(error) = run_one_sweep(
+        if let Err(error) = run_one_sweep_recording_failure(
             reclaimer.as_ref(),
             policy,
             event_bus.as_ref(),
@@ -126,6 +135,20 @@ async fn sweep_loop(
     }
 }
 
+pub(super) async fn run_one_sweep_recording_failure(
+    reclaimer: &dyn RefreshClaimReclaimer,
+    policy: SentinelEscalationPolicy,
+    event_bus: Option<&Arc<EventBus<CredentialEvent>>>,
+    metrics: &RefreshCoordMetrics,
+    audit_sink: Option<&dyn AuditSink>,
+) -> Result<(), RefreshClaimError> {
+    let result = run_one_sweep(reclaimer, policy, event_bus, metrics, audit_sink).await;
+    if result.is_err() {
+        metrics.reclaim_failed.inc();
+    }
+    result
+}
+
 pub(super) async fn run_one_sweep(
     reclaimer: &dyn RefreshClaimReclaimer,
     policy: SentinelEscalationPolicy,
@@ -134,6 +157,12 @@ pub(super) async fn run_one_sweep(
     audit_sink: Option<&dyn AuditSink>,
 ) -> Result<(), RefreshClaimError> {
     let stuck = reclaimer.reclaim_stuck(policy).await?;
+    metrics.reclaimed_claims.inc_by(
+        stuck
+            .iter()
+            .filter(|claim| matches!(claim, ExpiredClaim::ReclaimedNormal { .. }))
+            .count() as u64,
+    );
     if stuck.is_empty() {
         metrics.reclaim_no_work.inc();
     } else if stuck

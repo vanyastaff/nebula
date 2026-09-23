@@ -13,7 +13,10 @@ use super::{
     NEBULA_CREDENTIAL_REFRESH_COORD_COALESCED_TOTAL,
     NEBULA_CREDENTIAL_REFRESH_COORD_HOLD_DURATION_SECONDS,
     NEBULA_CREDENTIAL_REFRESH_COORD_RECLAIM_SWEEPS_TOTAL,
+    NEBULA_CREDENTIAL_REFRESH_COORD_RECLAIMED_CLAIMS_TOTAL,
     NEBULA_CREDENTIAL_REFRESH_COORD_SENTINEL_EVENTS_TOTAL,
+    NEBULA_CREDENTIAL_REFRESH_SCHEDULER_CANDIDATES_TOTAL,
+    NEBULA_CREDENTIAL_REFRESH_SCHEDULER_CYCLES_TOTAL,
     NEBULA_CREDENTIAL_RESOLVER_REAUTH_PERSIST_CAS_EXHAUSTED_TOTAL,
     NEBULA_CREDENTIAL_ROTATION_DURATION_SECONDS, NEBULA_CREDENTIAL_ROTATION_FAILURES_TOTAL,
     NEBULA_CREDENTIAL_ROTATIONS_TOTAL, NEBULA_ORCHESTRATOR_DISPATCH_TOTAL,
@@ -36,6 +39,7 @@ use super::{
     idempotency_reject_reason, orchestrator_dispatch_outcome, orchestrator_handoff_outcome,
     orchestrator_reclaim_outcome, recycle_outcome, refresh_coord_claim_outcome,
     refresh_coord_coalesced_tier, refresh_coord_reclaim_outcome, refresh_coord_sentinel_action,
+    refresh_scheduler_candidate_outcome, refresh_scheduler_cycle_outcome,
     revision_catalog_operation, rotation_outcome, webhook_rate_limit_tier,
     webhook_signature_failure_reason,
 };
@@ -157,12 +161,13 @@ const CREDENTIAL_METRIC_NAMES: [&str; 6] = [
 
 /// Refresh-coordinator metrics (sub-spec §6).
 ///
-/// Four counters + one histogram = 5 series.
-const CREDENTIAL_REFRESH_COORD_METRIC_NAMES: [&str; 5] = [
+/// Five counters + one histogram = 6 metric names.
+const CREDENTIAL_REFRESH_COORD_METRIC_NAMES: [&str; 6] = [
     NEBULA_CREDENTIAL_REFRESH_COORD_CLAIMS_TOTAL,
     NEBULA_CREDENTIAL_REFRESH_COORD_COALESCED_TOTAL,
     NEBULA_CREDENTIAL_REFRESH_COORD_SENTINEL_EVENTS_TOTAL,
     NEBULA_CREDENTIAL_REFRESH_COORD_RECLAIM_SWEEPS_TOTAL,
+    NEBULA_CREDENTIAL_REFRESH_COORD_RECLAIMED_CLAIMS_TOTAL,
     NEBULA_CREDENTIAL_REFRESH_COORD_HOLD_DURATION_SECONDS,
 ];
 
@@ -241,8 +246,8 @@ fn credential_constants_are_accessible_unique_and_registry_safe() {
     assert_eq!(unique.len(), 6);
 }
 
-/// Sub-spec §6 — five refresh-coordinator metrics. The histogram
-/// observes hold-duration in seconds; the four counters carry
+/// Refresh-coordinator metrics. The histogram observes hold-duration
+/// in seconds; labeled counters carry
 /// closed label sets defined in this module's `refresh_coord_*`
 /// submodules.
 ///
@@ -298,6 +303,10 @@ fn credential_refresh_coord_constants_are_accessible_unique_and_registry_safe() 
             let histogram = registry.histogram(metric_name).unwrap();
             histogram.observe(0.5);
             assert_eq!(histogram.count(), 1);
+        } else if metric_name == NEBULA_CREDENTIAL_REFRESH_COORD_RECLAIMED_CLAIMS_TOTAL {
+            let counter = registry.counter(metric_name).unwrap();
+            counter.inc();
+            assert_eq!(counter.get(), 1);
         } else {
             // Find the matching label_key and sample_value for this
             // counter — the table above is the source of truth.
@@ -311,7 +320,7 @@ fn credential_refresh_coord_constants_are_accessible_unique_and_registry_safe() 
             assert_eq!(counter.get(), 1);
         }
     }
-    assert_eq!(unique.len(), 5);
+    assert_eq!(unique.len(), 6);
 }
 
 /// Closed label sets per sub-spec §6 — assert each module's
@@ -346,13 +355,78 @@ fn refresh_coord_label_constants_are_unique_per_module() {
         refresh_coord_reclaim_outcome::RECLAIMED,
         refresh_coord_reclaim_outcome::OUTCOME_UNKNOWN_ACCOUNTED,
         refresh_coord_reclaim_outcome::NO_WORK,
+        refresh_coord_reclaim_outcome::FAILED,
     ];
     let reclaim_set: HashSet<&str> = reclaim.iter().copied().collect();
     assert_eq!(
         reclaim_set.len(),
-        3,
+        4,
         "reclaim outcome labels must be unique"
     );
+}
+
+#[test]
+fn credential_refresh_scheduler_names_and_labels_are_closed_and_registry_safe() {
+    let registry = MetricsRegistry::new();
+    let names = [
+        NEBULA_CREDENTIAL_REFRESH_SCHEDULER_CYCLES_TOTAL,
+        NEBULA_CREDENTIAL_REFRESH_SCHEDULER_CANDIDATES_TOTAL,
+    ];
+    assert_ne!(names[0], names[1]);
+    for name in names {
+        assert!(name.starts_with("nebula_credential_refresh_scheduler_"));
+        assert!(
+            name.chars()
+                .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_')
+        );
+    }
+
+    let cycle_outcomes = [
+        refresh_scheduler_cycle_outcome::COMPLETED,
+        refresh_scheduler_cycle_outcome::SCAN_FAILED,
+        refresh_scheduler_cycle_outcome::PAGE_BOUND,
+    ];
+    let candidate_outcomes = [
+        refresh_scheduler_candidate_outcome::REFRESHED,
+        refresh_scheduler_candidate_outcome::NO_LONGER_DUE,
+        refresh_scheduler_candidate_outcome::UNSUPPORTED,
+        refresh_scheduler_candidate_outcome::DEFERRED,
+        refresh_scheduler_candidate_outcome::BLOCKED,
+        refresh_scheduler_candidate_outcome::REAUTH_REQUIRED,
+        refresh_scheduler_candidate_outcome::TRANSIENT_FAILURE,
+        refresh_scheduler_candidate_outcome::OUTCOME_UNKNOWN,
+        refresh_scheduler_candidate_outcome::TASK_FAILED,
+    ];
+    assert_eq!(
+        cycle_outcomes.iter().copied().collect::<HashSet<_>>().len(),
+        3
+    );
+    assert_eq!(
+        candidate_outcomes
+            .iter()
+            .copied()
+            .collect::<HashSet<_>>()
+            .len(),
+        9
+    );
+
+    for outcome in cycle_outcomes {
+        let labels = registry.interner().single("outcome", outcome);
+        registry
+            .counter_labeled(NEBULA_CREDENTIAL_REFRESH_SCHEDULER_CYCLES_TOTAL, &labels)
+            .unwrap()
+            .inc();
+    }
+    for outcome in candidate_outcomes {
+        let labels = registry.interner().single("outcome", outcome);
+        registry
+            .counter_labeled(
+                NEBULA_CREDENTIAL_REFRESH_SCHEDULER_CANDIDATES_TOTAL,
+                &labels,
+            )
+            .unwrap()
+            .inc();
+    }
 }
 
 /// API idempotency metrics (M3.4.

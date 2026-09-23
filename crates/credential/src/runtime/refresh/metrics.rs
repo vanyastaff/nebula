@@ -5,14 +5,15 @@
 //! call) pays only an atomic increment / observation — no string interning,
 //! no map lookup, no allocation.
 //!
-//! The five metrics declared in
+//! The coordinator metrics declared in
 //! `nebula_metrics::naming::NEBULA_CREDENTIAL_REFRESH_COORD_*` are bound
 //! to their closed label sets here:
 //!
 //! - `claims_total{outcome=acquired|contended|outcome_unknown|exhausted}`
 //! - `coalesced_total{tier=l1|l2}`
 //! - `sentinel_events_total{action=recorded|reauth_triggered}`
-//! - `reclaim_sweeps_total{outcome=reclaimed|outcome_unknown_accounted|no_work}`
+//! - `reclaim_sweeps_total{outcome=reclaimed|outcome_unknown_accounted|no_work|failed}`
+//! - `reclaimed_claims_total` (counter, no labels)
 //! - `hold_duration_seconds` (histogram, no labels)
 //!
 //! Production composition threads the engine-shared registry via
@@ -28,8 +29,12 @@ use nebula_metrics::{
     NEBULA_CREDENTIAL_REFRESH_COORD_CLAIMS_TOTAL, NEBULA_CREDENTIAL_REFRESH_COORD_COALESCED_TOTAL,
     NEBULA_CREDENTIAL_REFRESH_COORD_HOLD_DURATION_SECONDS,
     NEBULA_CREDENTIAL_REFRESH_COORD_RECLAIM_SWEEPS_TOTAL,
-    NEBULA_CREDENTIAL_REFRESH_COORD_SENTINEL_EVENTS_TOTAL, refresh_coord_claim_outcome,
+    NEBULA_CREDENTIAL_REFRESH_COORD_RECLAIMED_CLAIMS_TOTAL,
+    NEBULA_CREDENTIAL_REFRESH_COORD_SENTINEL_EVENTS_TOTAL,
+    NEBULA_CREDENTIAL_REFRESH_SCHEDULER_CANDIDATES_TOTAL,
+    NEBULA_CREDENTIAL_REFRESH_SCHEDULER_CYCLES_TOTAL, refresh_coord_claim_outcome,
     refresh_coord_coalesced_tier, refresh_coord_reclaim_outcome, refresh_coord_sentinel_action,
+    refresh_scheduler_candidate_outcome, refresh_scheduler_cycle_outcome,
 };
 
 /// Pre-bound handles for the five refresh-coordinator metrics declared
@@ -37,6 +42,7 @@ use nebula_metrics::{
 /// the hood).
 #[derive(Clone, Debug)]
 pub struct RefreshCoordMetrics {
+    pub(crate) scheduler: RefreshSchedulerMetrics,
     // claims_total
     pub(crate) claims_acquired: Counter,
     pub(crate) claims_contended: Counter,
@@ -52,6 +58,8 @@ pub struct RefreshCoordMetrics {
     pub(crate) reclaim_reclaimed: Counter,
     pub(crate) reclaim_outcome_unknown_accounted: Counter,
     pub(crate) reclaim_no_work: Counter,
+    pub(crate) reclaim_failed: Counter,
+    pub(crate) reclaimed_claims: Counter,
     // hold_duration_seconds
     pub(crate) hold_duration: Histogram,
 }
@@ -67,6 +75,7 @@ impl RefreshCoordMetrics {
         let reclaim_label = |val: &str| interner.single("outcome", val);
 
         Ok(Self {
+            scheduler: RefreshSchedulerMetrics::with_registry(registry)?,
             claims_acquired: registry.counter_labeled(
                 NEBULA_CREDENTIAL_REFRESH_COORD_CLAIMS_TOTAL,
                 &claim_label(refresh_coord_claim_outcome::ACQUIRED),
@@ -111,6 +120,12 @@ impl RefreshCoordMetrics {
                 NEBULA_CREDENTIAL_REFRESH_COORD_RECLAIM_SWEEPS_TOTAL,
                 &reclaim_label(refresh_coord_reclaim_outcome::NO_WORK),
             )?,
+            reclaim_failed: registry.counter_labeled(
+                NEBULA_CREDENTIAL_REFRESH_COORD_RECLAIM_SWEEPS_TOTAL,
+                &reclaim_label(refresh_coord_reclaim_outcome::FAILED),
+            )?,
+            reclaimed_claims: registry
+                .counter(NEBULA_CREDENTIAL_REFRESH_COORD_RECLAIMED_CLAIMS_TOTAL)?,
             hold_duration: registry
                 .histogram(NEBULA_CREDENTIAL_REFRESH_COORD_HOLD_DURATION_SECONDS)?,
         })
@@ -124,6 +139,78 @@ impl RefreshCoordMetrics {
     /// engine-shared registry so a scraper actually observes the series.
     #[cfg(test)]
     pub fn for_tests() -> MetricsResult<Self> {
+        Self::with_registry(&MetricsRegistry::new())
+    }
+}
+
+/// Pre-bound, bounded-cardinality handles for due-refresh scheduling.
+#[derive(Clone, Debug)]
+pub(crate) struct RefreshSchedulerMetrics {
+    pub(crate) cycles_completed: Counter,
+    pub(crate) cycles_scan_failed: Counter,
+    pub(crate) cycles_page_bound: Counter,
+    pub(crate) candidates_refreshed: Counter,
+    pub(crate) candidates_no_longer_due: Counter,
+    pub(crate) candidates_unsupported: Counter,
+    pub(crate) candidates_deferred: Counter,
+    pub(crate) candidates_blocked: Counter,
+    pub(crate) candidates_reauth_required: Counter,
+    pub(crate) candidates_transient_failure: Counter,
+    pub(crate) candidates_outcome_unknown: Counter,
+    pub(crate) candidates_task_failed: Counter,
+}
+
+impl RefreshSchedulerMetrics {
+    /// Build all handles against the process-wide registry.
+    pub(crate) fn with_registry(registry: &MetricsRegistry) -> MetricsResult<Self> {
+        let interner = registry.interner();
+        let cycle = |value: &str| interner.single("outcome", value);
+        let candidate = |value: &str| interner.single("outcome", value);
+        let cycle_counter = |value| {
+            registry.counter_labeled(
+                NEBULA_CREDENTIAL_REFRESH_SCHEDULER_CYCLES_TOTAL,
+                &cycle(value),
+            )
+        };
+        let candidate_counter = |value| {
+            registry.counter_labeled(
+                NEBULA_CREDENTIAL_REFRESH_SCHEDULER_CANDIDATES_TOTAL,
+                &candidate(value),
+            )
+        };
+
+        Ok(Self {
+            cycles_completed: cycle_counter(refresh_scheduler_cycle_outcome::COMPLETED)?,
+            cycles_scan_failed: cycle_counter(refresh_scheduler_cycle_outcome::SCAN_FAILED)?,
+            cycles_page_bound: cycle_counter(refresh_scheduler_cycle_outcome::PAGE_BOUND)?,
+            candidates_refreshed: candidate_counter(
+                refresh_scheduler_candidate_outcome::REFRESHED,
+            )?,
+            candidates_no_longer_due: candidate_counter(
+                refresh_scheduler_candidate_outcome::NO_LONGER_DUE,
+            )?,
+            candidates_unsupported: candidate_counter(
+                refresh_scheduler_candidate_outcome::UNSUPPORTED,
+            )?,
+            candidates_deferred: candidate_counter(refresh_scheduler_candidate_outcome::DEFERRED)?,
+            candidates_blocked: candidate_counter(refresh_scheduler_candidate_outcome::BLOCKED)?,
+            candidates_reauth_required: candidate_counter(
+                refresh_scheduler_candidate_outcome::REAUTH_REQUIRED,
+            )?,
+            candidates_transient_failure: candidate_counter(
+                refresh_scheduler_candidate_outcome::TRANSIENT_FAILURE,
+            )?,
+            candidates_outcome_unknown: candidate_counter(
+                refresh_scheduler_candidate_outcome::OUTCOME_UNKNOWN,
+            )?,
+            candidates_task_failed: candidate_counter(
+                refresh_scheduler_candidate_outcome::TASK_FAILED,
+            )?,
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_tests() -> MetricsResult<Self> {
         Self::with_registry(&MetricsRegistry::new())
     }
 }

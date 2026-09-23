@@ -388,7 +388,10 @@ provider egress. Expired pre-provider claims may be reclaimed; expired
 `RefreshInFlight` claims remain durable
 `OutcomeUnknown` poison, are accounted exactly once, and never become
 replayable merely because TTL elapsed. There is no in-memory claim fallback in
-the production composition.
+the production composition. The lifecycle runtime binds scheduler and recovery
+counters to the server's shared metrics registry. Their labels are closed
+outcome classes only: no tenant, credential, provider, or replica identifiers
+enter the metrics cardinality boundary.
 
 ## Email delivery (SMTP)
 
