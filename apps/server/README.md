@@ -235,12 +235,41 @@ cutover; mixed old/new auth nodes are unsupported.
    under the incident-retention policy. Live-row encryption does not erase
    plaintext from those historical media.
 
-Do not retire an old encryption key while any retained backup contains an
-envelope produced by it. The library exposes explicit decrypt-only legacy keys
-for controlled rotation, but the first-party server currently resolves only
-the current `NEBULA_CRED_MASTER_KEY`; retain the old key and use a reviewed
-explicit composition, or re-enroll MFA in strict environments. Never rotate the
-environment key in place and assume old backups or rows remain recoverable.
+### Credential master-key rotation runbook
+
+`NEBULA_CRED_MASTER_KEY` is the current base64 AES-256 key. Every new or
+updated identity secret and credential payload is encrypted with this key.
+`NEBULA_CRED_LEGACY_MASTER_KEYS` is an optional comma-separated list of at
+most eight base64 AES-256 keys. Legacy entries are decrypt-only: they can open
+matching historical envelopes, but every replacement or ordinary write uses
+`NEBULA_CRED_MASTER_KEY`. Startup rejects malformed, duplicate, current-key,
+or over-limit entries instead of silently dropping them.
+
+Use a two-stage rolling deployment so old and new replicas can read each
+other's writes during the cutover:
+
+1. Generate the new key and retain the old key. First roll out the old key as
+   `NEBULA_CRED_MASTER_KEY` while adding the new key to
+   `NEBULA_CRED_LEGACY_MASTER_KEYS`, together with any older keys still needed.
+   Complete this bridge rollout on every replica before changing the writer
+   key.
+2. Roll out the new key as `NEBULA_CRED_MASTER_KEY` and move the old key into
+   `NEBULA_CRED_LEGACY_MASTER_KEYS`. During this mixed-key window, every
+   replica can decrypt both generations while each replica writes only with
+   its configured current key.
+3. Migrate and verify all live rows under the new key. Plane-A startup
+   convergence re-encrypts admitted identity envelopes. Plane-B credential
+   reads are side-effect free; a supported credential mutation writes the
+   replacement with the current key. There is no automatic credential
+   re-encryption scanner, so operators must plan and verify this convergence.
+4. Test restores of every retained backup, snapshot, replica, and WAL recovery
+   set that can contain old-key envelopes. Keep the old key available to those
+   restore environments until their rows are migrated, or until the media is
+   expired or quarantined under the retention policy.
+5. Remove the old key from `NEBULA_CRED_LEGACY_MASTER_KEYS` only after no live
+   row and no retained recovery material requires it, then complete that
+   configuration rollout on every replica. Never delete old key material
+   earlier: removing it makes any remaining envelope permanently unreadable.
 
 The composition root also owns the only supported Plane-A OAuth runtime
 lifecycle:

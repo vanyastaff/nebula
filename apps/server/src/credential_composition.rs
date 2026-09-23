@@ -4,7 +4,7 @@
 //! process lifecycle belong to the deployment application. `nebula-api`
 //! receives only its object-safe command gateway and catalog read model.
 
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
 use nebula_api::ports::credential_schema::CredentialSchemaPort;
 use nebula_credential::{
@@ -17,6 +17,7 @@ use nebula_credential::{
         SentinelTrigger,
     },
 };
+use nebula_crypto::EncryptionKey;
 use nebula_metrics::MetricsRegistry;
 #[cfg(feature = "postgres")]
 use nebula_storage::credential::PgCredentialPersistence;
@@ -30,12 +31,72 @@ use nebula_storage_port::{
 };
 use thiserror::Error;
 use uuid::Uuid;
+use zeroize::Zeroizing;
 
 use crate::credential_adapters::{RegistryCredentialSchema, ReqwestOAuthTransport};
 
 const DEFAULT_CREDENTIAL_DB: &str = "sqlite://nebula-credentials.db?mode=rwc";
 const DEVELOPMENT_KEY_BASE64: &str = "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI=";
 const CREDENTIAL_EVENT_BUFFER: usize = 256;
+const LEGACY_MASTER_KEYS_ENV: &str = "NEBULA_CRED_LEGACY_MASTER_KEYS";
+const MAX_LEGACY_MASTER_KEYS: usize = 8;
+
+/// Process-wide encryption keyring shared by credential and identity storage.
+///
+/// The current provider is the only write key. Historical keys are bounded and
+/// decrypt-only, so both persistence paths observe one rotation policy.
+pub(crate) struct FirstPartyKeyring {
+    current: Arc<dyn KeyProvider>,
+    legacy: Vec<(String, Arc<EncryptionKey>)>,
+}
+
+impl FirstPartyKeyring {
+    fn from_legacy_config(
+        current: Arc<dyn KeyProvider>,
+        configured: Option<&str>,
+    ) -> Result<Self, CredentialCompositionError> {
+        let current_id = current
+            .current()
+            .map_err(|error| CredentialCompositionError::KeyProvider(error.to_string()))?
+            .key_id()
+            .to_owned();
+        let Some(configured) = configured.filter(|value| !value.trim().is_empty()) else {
+            return Ok(Self {
+                current,
+                legacy: Vec::new(),
+            });
+        };
+        let encoded_keys: Vec<_> = configured.split(',').map(str::trim).collect();
+        if encoded_keys.len() > MAX_LEGACY_MASTER_KEYS
+            || encoded_keys.iter().any(|key| key.is_empty())
+        {
+            return Err(CredentialCompositionError::InvalidLegacyKeyring);
+        }
+
+        let mut seen = HashSet::with_capacity(encoded_keys.len());
+        let mut legacy = Vec::with_capacity(encoded_keys.len());
+        for encoded_key in encoded_keys {
+            let snapshot = EnvKeyProvider::from_base64(encoded_key)
+                .and_then(|provider| provider.current())
+                .map_err(|_| CredentialCompositionError::InvalidLegacyKeyring)?;
+            let (key_id, key) = snapshot.into_parts();
+            let key_id = key_id.to_string();
+            if key_id == current_id || !seen.insert(key_id.clone()) {
+                return Err(CredentialCompositionError::InvalidLegacyKeyring);
+            }
+            legacy.push((key_id, key));
+        }
+        Ok(Self { current, legacy })
+    }
+
+    pub(crate) fn current(&self) -> Arc<dyn KeyProvider> {
+        Arc::clone(&self.current)
+    }
+
+    pub(crate) fn legacy(&self) -> Vec<(String, Arc<EncryptionKey>)> {
+        self.legacy.clone()
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CredentialDatabaseBackend {
@@ -80,6 +141,10 @@ pub(crate) enum CredentialCompositionError {
     Service(#[from] CredentialServiceError),
     #[error("credential key provider initialization failed: {0}")]
     KeyProvider(String),
+    #[error(
+        "NEBULA_CRED_LEGACY_MASTER_KEYS must contain at most eight distinct decrypt-only AES-256 base64 keys, excluding the current key"
+    )]
+    InvalidLegacyKeyring,
     #[error("credential store initialization failed")]
     Store(#[source] CredentialStoreStartupError),
     #[error(
@@ -97,32 +162,46 @@ pub(crate) enum CredentialCompositionError {
     RefreshCoordinator(String),
 }
 
-/// Resolve the process-wide credential/identity key provider.
-pub(crate) fn resolve_first_party_key_provider()
--> Result<Arc<dyn KeyProvider>, CredentialCompositionError> {
-    if std::env::var("NEBULA_CRED_DEV_KEY").as_deref() == Ok("1") {
-        tracing::warn!(
-            "security: NEBULA_CRED_DEV_KEY=1 — using a fixed development key; \
+/// Resolve the process-wide credential/identity encryption keyring.
+pub(crate) fn resolve_first_party_keyring() -> Result<FirstPartyKeyring, CredentialCompositionError>
+{
+    let current: Arc<dyn KeyProvider> =
+        if std::env::var("NEBULA_CRED_DEV_KEY").as_deref() == Ok("1") {
+            tracing::warn!(
+                "security: NEBULA_CRED_DEV_KEY=1 — using a fixed development key; \
              credential and Plane-A identity secrets are not securely encrypted"
-        );
-        EnvKeyProvider::from_base64(DEVELOPMENT_KEY_BASE64)
-            .map(|provider| Arc::new(provider) as Arc<dyn KeyProvider>)
-            .map_err(|error| CredentialCompositionError::KeyProvider(error.to_string()))
-    } else {
-        EnvKeyProvider::from_env()
-            .map(|provider| Arc::new(provider) as Arc<dyn KeyProvider>)
-            .map_err(|error| CredentialCompositionError::KeyProvider(error.to_string()))
-    }
+            );
+            Arc::new(
+                EnvKeyProvider::from_base64(DEVELOPMENT_KEY_BASE64)
+                    .map_err(|error| CredentialCompositionError::KeyProvider(error.to_string()))?,
+            )
+        } else {
+            Arc::new(
+                EnvKeyProvider::from_env()
+                    .map_err(|error| CredentialCompositionError::KeyProvider(error.to_string()))?,
+            )
+        };
+    let configured = std::env::var(LEGACY_MASTER_KEYS_ENV)
+        .ok()
+        .map(Zeroizing::new);
+    FirstPartyKeyring::from_legacy_config(current, configured.as_deref().map(String::as_str))
 }
 
 /// Compose the durable first-party runtime and its shared catalog projection.
 pub(crate) async fn compose_first_party_runtime(
     key_provider: Arc<dyn KeyProvider>,
+    legacy_keys: Vec<(String, Arc<EncryptionKey>)>,
     metrics_registry: Arc<MetricsRegistry>,
 ) -> Result<CredentialRuntime, CredentialCompositionError> {
     let database_url =
         std::env::var("NEBULA_CRED_DB").unwrap_or_else(|_| DEFAULT_CREDENTIAL_DB.to_owned());
-    compose_first_party_runtime_for_database(&database_url, key_provider, metrics_registry).await
+    compose_first_party_runtime_for_database(
+        &database_url,
+        key_provider,
+        legacy_keys,
+        metrics_registry,
+    )
+    .await
 }
 
 #[cfg(test)]
@@ -138,6 +217,7 @@ pub(crate) async fn compose_memory_service(
         claim_repo,
         adjudicator,
         key_provider,
+        Vec::new(),
         Arc::new(MetricsRegistry::new()),
     )?;
     let service = Arc::clone(&runtime.service);
@@ -150,6 +230,7 @@ pub(crate) async fn compose_memory_service(
 async fn compose_first_party_runtime_for_database(
     database_url: &str,
     key_provider: Arc<dyn KeyProvider>,
+    legacy_keys: Vec<(String, Arc<EncryptionKey>)>,
     metrics_registry: Arc<MetricsRegistry>,
 ) -> Result<CredentialRuntime, CredentialCompositionError> {
     let backend = classify_credential_database(database_url)?;
@@ -171,6 +252,7 @@ async fn compose_first_party_runtime_for_database(
                 claim_repo,
                 adjudicator,
                 key_provider,
+                legacy_keys,
                 metrics_registry,
             )
         },
@@ -190,12 +272,13 @@ async fn compose_first_party_runtime_for_database(
                     claim_repo,
                     adjudicator,
                     key_provider,
+                    legacy_keys,
                     metrics_registry,
                 )
             }
             #[cfg(not(feature = "postgres"))]
             {
-                let _ = (key_provider, metrics_registry);
+                let _ = (key_provider, legacy_keys, metrics_registry);
                 Err(CredentialCompositionError::PostgresStoreUnavailable)
             }
         },
@@ -235,6 +318,7 @@ fn compose_runtime<P>(
     claim_repo: Arc<dyn RefreshClaimStore>,
     adjudicator: Arc<dyn RefreshClaimAdjudicator>,
     key_provider: Arc<dyn KeyProvider>,
+    legacy_keys: Vec<(String, Arc<EncryptionKey>)>,
     metrics_registry: Arc<MetricsRegistry>,
 ) -> Result<CredentialRuntime, CredentialCompositionError>
 where
@@ -249,8 +333,11 @@ where
     tracing::warn!(
         "credential audit sink is trace-only; durable audit persistence is scheduled for K3"
     );
-    let encrypted: Arc<dyn CredentialPersistence> =
-        Arc::new(EncryptionLayer::new(raw_store, key_provider));
+    let encrypted: Arc<dyn CredentialPersistence> = Arc::new(EncryptionLayer::with_legacy_keys(
+        raw_store,
+        key_provider,
+        legacy_keys,
+    ));
     let audit_sink: Arc<dyn AuditSink> = Arc::new(TracingAuditSink);
     let store: Arc<dyn CredentialPersistence> =
         Arc::new(AuditLayer::new(encrypted, Arc::clone(&audit_sink)));
@@ -419,8 +506,76 @@ impl AuditSink for TracingAuditSink {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine as _;
 
     const TEST_KEY_BASE64: &str = "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI=";
+
+    fn encoded_key(byte: u8) -> String {
+        base64::engine::general_purpose::STANDARD.encode([byte; 32])
+    }
+
+    fn test_provider(byte: u8) -> Arc<dyn KeyProvider> {
+        Arc::new(EnvKeyProvider::from_base64(&encoded_key(byte)).expect("valid fixed test key"))
+    }
+
+    #[test]
+    fn keyring_accepts_bounded_distinct_decrypt_only_keys() {
+        let configured = format!("{},{}", encoded_key(2), encoded_key(3));
+        let keyring =
+            FirstPartyKeyring::from_legacy_config(test_provider(1), Some(configured.as_str()))
+                .expect("distinct legacy keys compose");
+
+        assert_eq!(keyring.legacy().len(), 2);
+        let current_id = keyring
+            .current()
+            .current()
+            .expect("current key")
+            .key_id()
+            .to_owned();
+        assert!(
+            keyring
+                .legacy()
+                .iter()
+                .all(|(key_id, _)| key_id != &current_id)
+        );
+    }
+
+    #[test]
+    fn keyring_rejects_duplicate_current_and_malformed_entries_without_echoing_secrets() {
+        let duplicate = encoded_key(2);
+        let cases = [
+            format!("{duplicate},{duplicate}"),
+            encoded_key(1),
+            format!("{},,{}", encoded_key(2), encoded_key(3)),
+            "not-base64-secret".to_owned(),
+        ];
+
+        for configured in cases {
+            let error = match FirstPartyKeyring::from_legacy_config(
+                test_provider(1),
+                Some(configured.as_str()),
+            ) {
+                Err(error) => error,
+                Ok(_) => panic!("unsafe keyring configuration must fail closed"),
+            };
+            let diagnostic = format!("{error:?}: {error}");
+            assert!(matches!(
+                error,
+                CredentialCompositionError::InvalidLegacyKeyring
+            ));
+            assert!(!diagnostic.contains(&configured));
+        }
+    }
+
+    #[test]
+    fn keyring_rejects_more_than_eight_legacy_keys() {
+        let configured = (2..=10).map(encoded_key).collect::<Vec<_>>().join(",");
+
+        assert!(matches!(
+            FirstPartyKeyring::from_legacy_config(test_provider(1), Some(configured.as_str()),),
+            Err(CredentialCompositionError::InvalidLegacyKeyring)
+        ));
+    }
 
     #[test]
     fn process_replica_ids_are_unique_and_diagnostic() {
@@ -445,6 +600,7 @@ mod tests {
             claim_repo,
             adjudicator,
             key_provider,
+            Vec::new(),
             Arc::new(MetricsRegistry::new()),
         )
         .expect("credential runtime composes");
@@ -529,6 +685,7 @@ mod tests {
         let result = compose_first_party_runtime_for_database(
             database_url,
             key_provider,
+            Vec::new(),
             Arc::new(MetricsRegistry::new()),
         )
         .await;

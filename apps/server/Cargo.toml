@@ -35,6 +35,7 @@ nebula-storage = { path = "../../crates/storage", features = ["credential-in-mem
 # storage-port crate must be a real dependency, not accessed through re-exports.
 # nebula-server is in deny.toml's nebula-storage-port `wrappers` allowlist.
 nebula-storage-port = { path = "../../crates/storage-port" }
+nebula-crypto = { path = "../../crates/crypto" }
 # First-party trust bridge: the server composition root binds API-authenticated
 # principals to the credential-owned authority/controller. Neither dependency
 # crosses into API handlers or wire DTOs.
