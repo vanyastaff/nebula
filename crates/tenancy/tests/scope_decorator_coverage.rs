@@ -167,6 +167,10 @@ const INTENTIONALLY_UNSCOPED_PORTS: &[&str] = &[
     "ResourceRuntimeRecovery",
     "ResumeProducer",
     "StartReservationMaintenance",
+    // First-tenant creation is an operator-authorized composition-root command.
+    // Its validated request carries stable org/workspace ids and is never a
+    // tenant-facing arbitrary-scope storage capability.
+    "TenantProvisioningStore",
     "TurnRecovery",
     "UserStore",
     "WorkspaceStore",
@@ -417,6 +421,7 @@ fn every_port_has_an_explicit_tenancy_classification() {
 /// | `OrgStore`        | global org id / slug                     | Org *is* the tenancy root; there is no enclosing scope to substitute.             |
 /// | `WorkspaceStore`  | parent `org_id` + workspace id           | Parent-org authorization is resolved at the composition root, not via `&Scope`.   |
 /// | `MembershipStore` | (`scope_kind`, `scope_id`, principal)    | The authz domain itself; substituting a scope would corrupt the ACL it defines.  |
+/// | `TenantProvisioningStore` | validated initial tenant command | Operator bootstrap creates the tenancy root before tenant authority exists.      |
 /// | `QuotaStore`      | parent `org_id`                          | Org-level CAS counters; org id is the resolved boundary, no `&Scope` surface.     |
 /// | `AuditStore`      | parent `org_id` (append-only)            | Append-only org-scoped log; org id resolved at root; nothing to substitute.      |
 /// | `BlobStore`       | parent `workspace_id`                    | Workspace-id-keyed at the root; no `&Scope` arg a deputy could forge.             |
