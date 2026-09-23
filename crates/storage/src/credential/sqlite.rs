@@ -841,13 +841,21 @@ impl CredentialRefreshSchedule for SqliteCredentialRefreshSchedule {
                 )
             })
             .unwrap_or((None, None));
-        let rows: Vec<(String, String, String, i64, Option<String>, Option<i64>)> = sqlx::query_as(
+        let rows: Vec<(
+            String,
+            String,
+            String,
+            i64,
+            Option<String>,
+            Option<i64>,
+            i64,
+        )> = sqlx::query_as(
             "WITH backend_clock AS (
                  SELECT (CAST(strftime('%s', 'now') AS INTEGER) * 1000
                          + CAST(substr(strftime('%f', 'now'), 4, 3) AS INTEGER)) AS now_ms
              )
              SELECT c.id, c.owner_id, c.credential_key, c.expires_at,
-                    c.refresh_retry_mode, c.refresh_retry_not_before
+                    c.refresh_retry_mode, c.refresh_retry_not_before, clock.now_ms
              FROM credentials AS c CROSS JOIN backend_clock AS clock
              WHERE c.record_state = 'live'
                AND c.expires_at IS NOT NULL
@@ -877,7 +885,7 @@ impl CredentialRefreshSchedule for SqliteCredentialRefreshSchedule {
 
         rows.into_iter()
             .map(
-                |(id, owner, credential_key, expires_at, mode, not_before)| {
+                |(id, owner, credential_key, expires_at, mode, not_before, observed_at)| {
                     match (mode.as_deref(), not_before) {
                         (None, None) | (Some(retry_gate::MODE_NOT_BEFORE), Some(_)) => {},
                         _ => return Err(CredentialRefreshScheduleError::CorruptRecord),
@@ -886,6 +894,8 @@ impl CredentialRefreshSchedule for SqliteCredentialRefreshSchedule {
                         .map_err(|_| CredentialRefreshScheduleError::CorruptRecord)?;
                     let expires_at = millis_to_utc(expires_at)
                         .map_err(|_| CredentialRefreshScheduleError::CorruptRecord)?;
+                    let observed_at = millis_to_utc(observed_at)
+                        .map_err(|_| CredentialRefreshScheduleError::CorruptRecord)?;
                     Ok(DueCredentialRefresh::new(
                         CredentialSelector::new(
                             CredentialOwner::from_canonical(owner),
@@ -893,6 +903,7 @@ impl CredentialRefreshSchedule for SqliteCredentialRefreshSchedule {
                         ),
                         credential_key,
                         expires_at,
+                        observed_at,
                     ))
                 },
             )

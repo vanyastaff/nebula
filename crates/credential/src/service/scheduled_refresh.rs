@@ -1,7 +1,6 @@
 //! Credential-owned execution seam for at-least-once due-refresh delivery.
 
 use async_trait::async_trait;
-use chrono::Utc;
 use nebula_storage_port::DueCredentialRefresh;
 use sha2::{Digest, Sha256};
 
@@ -35,7 +34,7 @@ impl ScheduledRefreshExecutor for CredentialService {
         {
             return ScheduledRefreshDisposition::NoLongerDue;
         }
-        if !is_due_with_policy(&candidate, policy, Utc::now()) {
+        if !is_due_with_policy(&candidate, policy) {
             return ScheduledRefreshDisposition::NoLongerDue;
         }
         match current.lifecycle {
@@ -66,23 +65,34 @@ impl ScheduledRefreshExecutor for CredentialService {
             Err(CredentialServiceError::ReauthRequired { .. }) => {
                 ScheduledRefreshDisposition::ReauthRequired
             },
-            Err(
-                CredentialServiceError::OutcomeUnknown
-                | CredentialServiceError::RefreshReconciliationRequired
-                | CredentialServiceError::RefreshRetryGateFinalization
-                | CredentialServiceError::ReauthDecisionFinalization
-                | CredentialServiceError::RefreshPostProviderPersistence,
-            ) => ScheduledRefreshDisposition::OutcomeUnknown,
-            Err(_) => ScheduledRefreshDisposition::TransientFailure,
+            Err(error) => exact_failure_disposition(&error)
+                .unwrap_or(ScheduledRefreshDisposition::TransientFailure),
         }
     }
 }
 
-fn is_due_with_policy(
-    candidate: &DueCredentialRefresh,
-    policy: crate::RefreshPolicy,
-    now: chrono::DateTime<Utc>,
-) -> bool {
+fn exact_failure_disposition(
+    error: &CredentialServiceError,
+) -> Option<ScheduledRefreshDisposition> {
+    match error {
+        CredentialServiceError::OutcomeUnknown => Some(ScheduledRefreshDisposition::OutcomeUnknown),
+        CredentialServiceError::RefreshReconciliationRequired => {
+            Some(ScheduledRefreshDisposition::ReconciliationRequired)
+        },
+        CredentialServiceError::RefreshRetryGateFinalization => {
+            Some(ScheduledRefreshDisposition::RetryGateFinalization)
+        },
+        CredentialServiceError::ReauthDecisionFinalization => {
+            Some(ScheduledRefreshDisposition::ReauthDecisionFinalization)
+        },
+        CredentialServiceError::RefreshPostProviderPersistence => {
+            Some(ScheduledRefreshDisposition::PostProviderPersistence)
+        },
+        _ => None,
+    }
+}
+
+fn is_due_with_policy(candidate: &DueCredentialRefresh, policy: crate::RefreshPolicy) -> bool {
     let jitter_nanos = policy.jitter.as_nanos();
     let jitter = if jitter_nanos == 0 {
         std::time::Duration::ZERO
@@ -102,23 +112,28 @@ fn is_due_with_policy(
     let Ok(window) = chrono::Duration::from_std(window) else {
         return true;
     };
-    candidate.expires_at() <= now + window
+    candidate.expires_at() <= candidate.observed_at() + window
 }
 
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
 
-    use chrono::TimeDelta;
+    use chrono::{TimeDelta, Utc};
     use nebula_storage_port::{CredentialId, CredentialOwner, CredentialSelector};
 
     use super::*;
 
-    fn candidate(id: CredentialId, expires_at: chrono::DateTime<Utc>) -> DueCredentialRefresh {
+    fn candidate(
+        id: CredentialId,
+        expires_at: chrono::DateTime<Utc>,
+        observed_at: chrono::DateTime<Utc>,
+    ) -> DueCredentialRefresh {
         DueCredentialRefresh::new(
             CredentialSelector::new(CredentialOwner::from_canonical("policy-test-owner"), id),
             "policy-test".to_owned(),
             expires_at,
+            observed_at,
         )
     }
 
@@ -126,7 +141,7 @@ mod tests {
     fn policy_gate_honours_each_credential_early_refresh_window() {
         let now =
             chrono::DateTime::from_timestamp(1_800_000_000, 0).expect("fixture timestamp is valid");
-        let due = candidate(CredentialId::new(), now + TimeDelta::minutes(9));
+        let due = candidate(CredentialId::new(), now + TimeDelta::minutes(9), now);
 
         assert!(is_due_with_policy(
             &due,
@@ -135,7 +150,6 @@ mod tests {
                 min_retry_backoff: Duration::ZERO,
                 jitter: Duration::ZERO,
             },
-            now,
         ));
         assert!(!is_due_with_policy(
             &due,
@@ -144,7 +158,6 @@ mod tests {
                 min_retry_backoff: Duration::ZERO,
                 jitter: Duration::ZERO,
             },
-            now,
         ));
     }
 
@@ -152,14 +165,64 @@ mod tests {
     fn jitter_is_stable_for_the_same_credential() {
         let now =
             chrono::DateTime::from_timestamp(1_800_000_000, 0).expect("fixture timestamp is valid");
-        let due = candidate(CredentialId::new(), now + TimeDelta::minutes(6));
+        let due = candidate(CredentialId::new(), now + TimeDelta::minutes(6), now);
         let policy = crate::RefreshPolicy {
             early_refresh: Duration::from_mins(5),
             min_retry_backoff: Duration::ZERO,
             jitter: Duration::from_mins(2),
         };
 
-        let first = is_due_with_policy(&due, policy, now);
-        assert_eq!(is_due_with_policy(&due, policy, now), first);
+        let first = is_due_with_policy(&due, policy);
+        assert_eq!(is_due_with_policy(&due, policy), first);
+    }
+
+    #[test]
+    fn policy_gate_uses_the_backend_clock_sample() {
+        let backend_now =
+            chrono::DateTime::from_timestamp(1_800_000_000, 0).expect("fixture timestamp is valid");
+        let due = candidate(
+            CredentialId::new(),
+            backend_now + TimeDelta::minutes(4),
+            backend_now,
+        );
+
+        assert!(is_due_with_policy(
+            &due,
+            crate::RefreshPolicy {
+                early_refresh: Duration::from_mins(5),
+                min_retry_backoff: Duration::ZERO,
+                jitter: Duration::ZERO,
+            },
+        ));
+    }
+
+    #[test]
+    fn exact_finalization_failures_keep_distinct_scheduler_dispositions() {
+        let cases = [
+            (
+                CredentialServiceError::OutcomeUnknown,
+                ScheduledRefreshDisposition::OutcomeUnknown,
+            ),
+            (
+                CredentialServiceError::RefreshReconciliationRequired,
+                ScheduledRefreshDisposition::ReconciliationRequired,
+            ),
+            (
+                CredentialServiceError::RefreshRetryGateFinalization,
+                ScheduledRefreshDisposition::RetryGateFinalization,
+            ),
+            (
+                CredentialServiceError::ReauthDecisionFinalization,
+                ScheduledRefreshDisposition::ReauthDecisionFinalization,
+            ),
+            (
+                CredentialServiceError::RefreshPostProviderPersistence,
+                ScheduledRefreshDisposition::PostProviderPersistence,
+            ),
+        ];
+
+        for (error, expected) in cases {
+            assert_eq!(exact_failure_disposition(&error), Some(expected));
+        }
     }
 }

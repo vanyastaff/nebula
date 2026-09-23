@@ -287,6 +287,18 @@ impl RefreshNotAppliedContext {
         self.retry
     }
 
+    pub(crate) fn apply_min_retry_backoff(&mut self, minimum: std::time::Duration) {
+        let RetryAdvice::After(current) = self.retry else {
+            return;
+        };
+        if minimum.is_zero() {
+            return;
+        }
+        let minimum = RetryDelay::new(minimum)
+            .unwrap_or_else(|_| RetryDelay::from_seconds(RetryDelay::MAX_SECS).unwrap_or(current));
+        self.retry = RetryAdvice::After(current.max(minimum));
+    }
+
     /// Optional validated diagnostic code.
     #[must_use]
     pub fn diagnostic_code(&self) -> Option<&RefreshDiagnosticCode> {
@@ -783,6 +795,28 @@ mod tests {
         assert_eq!(
             RetryDelay::new(std::time::Duration::from_secs(RetryDelay::MAX_SECS + 1)),
             Err(RetryDelayError::TooLong)
+        );
+    }
+
+    #[test]
+    fn refresh_context_applies_registered_retry_floor() {
+        let provider_delay =
+            RetryDelay::new(std::time::Duration::from_secs(2)).expect("provider delay is valid");
+        let mut context = RefreshNotAppliedContext::from_spec(
+            RefreshNotAppliedPhase::BeforeDispatch,
+            RefreshFailureSpec::new(
+                RefreshErrorKind::ProviderUnavailable,
+                RetryAdvice::After(provider_delay),
+            ),
+        );
+
+        context.apply_min_retry_backoff(std::time::Duration::from_secs(30));
+
+        assert_eq!(
+            context.retry(),
+            RetryAdvice::After(
+                RetryDelay::new(std::time::Duration::from_secs(30)).expect("policy floor is valid")
+            )
         );
     }
 

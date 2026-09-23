@@ -807,7 +807,15 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
 
         match outcome {
             RefreshReportKind::NotApplied(context) => {
-                match persist_retry_gate(self.store.as_ref(), selector, stored, context).await {
+                match persist_retry_gate(
+                    self.store.as_ref(),
+                    selector,
+                    stored,
+                    context,
+                    C::REFRESH_POLICY.min_retry_backoff,
+                )
+                .await
+                {
                     RetryGateWrite::Applied(context) => {
                         RefreshDisposition::state_advanced(Err(ResolveError::RefreshNotApplied {
                             credential_id: credential_id_text,

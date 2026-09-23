@@ -138,6 +138,7 @@ impl CredentialRefreshSchedule for ReferenceCredentialPersistence {
                         CredentialSelector::new(owned.owner.clone(), live.credential_id()),
                         live.credential_key().to_owned(),
                         expires_at,
+                        now,
                     ),
                 ))
             })

@@ -395,6 +395,10 @@ fn credential_refresh_scheduler_names_and_labels_are_closed_and_registry_safe() 
         refresh_scheduler_candidate_outcome::REAUTH_REQUIRED,
         refresh_scheduler_candidate_outcome::TRANSIENT_FAILURE,
         refresh_scheduler_candidate_outcome::OUTCOME_UNKNOWN,
+        refresh_scheduler_candidate_outcome::RECONCILIATION_REQUIRED,
+        refresh_scheduler_candidate_outcome::RETRY_GATE_FINALIZATION,
+        refresh_scheduler_candidate_outcome::REAUTH_DECISION_FINALIZATION,
+        refresh_scheduler_candidate_outcome::POST_PROVIDER_PERSISTENCE,
         refresh_scheduler_candidate_outcome::TASK_FAILED,
     ];
     assert_eq!(
@@ -407,7 +411,7 @@ fn credential_refresh_scheduler_names_and_labels_are_closed_and_registry_safe() 
             .copied()
             .collect::<HashSet<_>>()
             .len(),
-        9
+        13
     );
 
     for outcome in cycle_outcomes {
