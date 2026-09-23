@@ -275,7 +275,11 @@ pub enum CredentialMaterialTransition {
 /// Row version remains the ordinary optimistic-concurrency fence. Interactive
 /// reauthorization also captures the material epoch and immutable credential
 /// key before provider egress; this fence makes a stale or type-substituted
-/// completion fail closed under the same backend lock as replacement.
+/// completion fail closed under the same backend lock as replacement. A fence
+/// mismatch uses the existing closed
+/// [`CredentialPersistenceError::VersionConflict`] classification; its
+/// expected and actual row versions may therefore be equal when the row CAS
+/// passed but the additional aggregate fence did not.
 #[derive(Clone, PartialEq, Eq)]
 pub struct CredentialReplacementFence {
     expected_material_epoch: CredentialMaterialEpoch,

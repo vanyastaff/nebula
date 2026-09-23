@@ -1246,16 +1246,22 @@ impl SqliteCredentialPersistence {
                 actual: actual_version,
             });
         }
-        let next_version = actual_version.next_live()?;
         let actual_material_epoch = stored_material_epoch(lifecycle.material_epoch)?;
         if let Some(fence) = replacement.fence() {
             if actual_material_epoch != fence.expected_material_epoch() {
-                return Err(CredentialPersistenceError::MaterialEpochConflict);
+                return Err(CredentialPersistenceError::VersionConflict {
+                    expected: replacement.expected_version(),
+                    actual: actual_version,
+                });
             }
             if lifecycle.credential_key != fence.expected_credential_key() {
-                return Err(CredentialPersistenceError::CredentialKeyConflict);
+                return Err(CredentialPersistenceError::VersionConflict {
+                    expected: replacement.expected_version(),
+                    actual: actual_version,
+                });
             }
         }
+        let next_version = actual_version.next_live()?;
         let next_material_epoch = if replacement.material_transition().advances_epoch() {
             actual_material_epoch.next()?
         } else {

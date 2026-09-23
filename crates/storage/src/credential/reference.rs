@@ -436,10 +436,16 @@ impl CredentialPersistence for ReferenceCredentialPersistence {
         }
         if let Some(fence) = replacement.fence() {
             if current.material_epoch() != fence.expected_material_epoch() {
-                return Err(CredentialPersistenceError::MaterialEpochConflict);
+                return Err(CredentialPersistenceError::VersionConflict {
+                    expected: replacement.expected_version(),
+                    actual: current.version(),
+                });
             }
             if current.credential_key() != fence.expected_credential_key() {
-                return Err(CredentialPersistenceError::CredentialKeyConflict);
+                return Err(CredentialPersistenceError::VersionConflict {
+                    expected: replacement.expected_version(),
+                    actual: current.version(),
+                });
             }
         }
         let next_version = current.version().next_live()?;

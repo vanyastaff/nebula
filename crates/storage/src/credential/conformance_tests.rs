@@ -521,7 +521,10 @@ where
             )
             .await
             .expect_err("stale material epoch must fail closed"),
-        CredentialPersistenceError::MaterialEpochConflict
+        CredentialPersistenceError::VersionConflict {
+            expected: version_two,
+            actual: version_two,
+        }
     );
     assert_eq!(
         store
@@ -541,7 +544,10 @@ where
             )
             .await
             .expect_err("credential-key substitution must fail closed"),
-        CredentialPersistenceError::CredentialKeyConflict
+        CredentialPersistenceError::VersionConflict {
+            expected: version_two,
+            actual: version_two,
+        }
     );
     assert_eq!(
         store
@@ -821,6 +827,37 @@ where
     store
         .force_live_version_for_conformance(&headroom_key, CredentialVersion::MAX_LIVE)
         .await?;
+    for fence in [
+        CredentialReplacementFence::new(
+            CredentialMaterialEpoch::MIN.next()?,
+            "provider.api-token".to_owned(),
+        ),
+        CredentialReplacementFence::new(
+            CredentialMaterialEpoch::MIN,
+            "provider.substituted".to_owned(),
+        ),
+    ] {
+        assert_eq!(
+            store
+                .replace(
+                    &headroom_key,
+                    replacement(
+                        CredentialVersion::MAX_LIVE,
+                        None,
+                        b"fenced-overflow",
+                        "fenced-overflow",
+                        CredentialMaterialTransition::advance(),
+                    )
+                    .with_fence(fence),
+                )
+                .await
+                .expect_err("strict fence must be checked before version exhaustion"),
+            CredentialPersistenceError::VersionConflict {
+                expected: CredentialVersion::MAX_LIVE,
+                actual: CredentialVersion::MAX_LIVE,
+            }
+        );
+    }
     assert_eq!(
         store
             .replace(

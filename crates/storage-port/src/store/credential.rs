@@ -40,14 +40,6 @@ pub enum CredentialPersistenceError {
         actual: CredentialVersion,
     },
 
-    /// Authority-changing replacement observed a different material epoch.
-    #[error("credential material epoch conflict")]
-    MaterialEpochConflict,
-
-    /// Authority-changing replacement targeted a different credential type.
-    #[error("credential key conflict")]
-    CredentialKeyConflict,
-
     /// Create collided with a permanently reserved id or live name.
     #[error("credential already exists")]
     AlreadyExists {
@@ -248,8 +240,6 @@ mod tests {
                 key: CredentialAlreadyExistsKey::Name,
             },
             CredentialPersistenceError::VersionExhausted,
-            CredentialPersistenceError::MaterialEpochConflict,
-            CredentialPersistenceError::CredentialKeyConflict,
             CredentialPersistenceError::MaterialEpochExhausted,
             CredentialPersistenceError::CorruptRecord,
             CredentialPersistenceError::Unavailable,

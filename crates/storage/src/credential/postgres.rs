@@ -1014,10 +1014,6 @@ impl CredentialPersistence for PgCredentialPersistence {
             Ok(actual) => actual,
             Err(error) => return rollback_as(transaction, error).await,
         };
-        let next_version = match actual.next_live() {
-            Ok(next_version) => next_version,
-            Err(error) => return rollback_as(transaction, error).await,
-        };
         let actual_material_epoch = match parse_material_epoch(locked.material_epoch) {
             Ok(epoch) => epoch,
             Err(error) => return rollback_as(transaction, error).await,
@@ -1026,18 +1022,22 @@ impl CredentialPersistence for PgCredentialPersistence {
             if actual_material_epoch != fence.expected_material_epoch() {
                 return rollback_as(
                     transaction,
-                    CredentialPersistenceError::MaterialEpochConflict,
+                    CredentialPersistenceError::VersionConflict { expected, actual },
                 )
                 .await;
             }
             if locked.credential_key != fence.expected_credential_key() {
                 return rollback_as(
                     transaction,
-                    CredentialPersistenceError::CredentialKeyConflict,
+                    CredentialPersistenceError::VersionConflict { expected, actual },
                 )
                 .await;
             }
         }
+        let next_version = match actual.next_live() {
+            Ok(next_version) => next_version,
+            Err(error) => return rollback_as(transaction, error).await,
+        };
         let next_material_epoch = if replacement.material_transition().advances_epoch() {
             match actual_material_epoch.next() {
                 Ok(epoch) => epoch,
