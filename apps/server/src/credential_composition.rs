@@ -4,7 +4,7 @@
 //! process lifecycle belong to the deployment application. `nebula-api`
 //! receives only its object-safe command gateway and catalog read model.
 
-use std::{collections::HashSet, sync::Arc};
+use std::sync::Arc;
 
 use nebula_api::ports::credential_schema::CredentialSchemaPort;
 use nebula_credential::{
@@ -22,8 +22,9 @@ use nebula_metrics::MetricsRegistry;
 #[cfg(feature = "postgres")]
 use nebula_storage::credential::PgCredentialPersistence;
 use nebula_storage::credential::{
-    AuditEvent, AuditLayer, AuditSink, CredentialStoreStartupError, EncryptionLayer,
-    EnvKeyProvider, InMemoryPendingStore, KeyProvider, SqliteCredentialPersistence,
+    AuditEvent, AuditLayer, AuditSink, CredentialKeyring, CredentialKeyringError,
+    CredentialStoreStartupError, EncryptionLayer, EnvKeyProvider, InMemoryPendingStore,
+    KeyProvider, SqliteCredentialPersistence,
 };
 use nebula_storage_port::{
     CredentialPersistence, CredentialPersistenceError,
@@ -31,95 +32,12 @@ use nebula_storage_port::{
 };
 use thiserror::Error;
 use uuid::Uuid;
-use zeroize::Zeroizing;
 
 use crate::credential_adapters::{RegistryCredentialSchema, ReqwestOAuthTransport};
 
 const DEFAULT_CREDENTIAL_DB: &str = "sqlite://nebula-credentials.db?mode=rwc";
 const DEVELOPMENT_KEY_BASE64: &str = "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI=";
 const CREDENTIAL_EVENT_BUFFER: usize = 256;
-const LEGACY_MASTER_KEYS_ENV: &str = "NEBULA_CRED_LEGACY_MASTER_KEYS";
-const LEGACY_EMPTY_ID_MASTER_KEY_ENV: &str = "NEBULA_CRED_LEGACY_EMPTY_ID_MASTER_KEY";
-const MAX_LEGACY_MASTER_KEYS: usize = 8;
-
-/// Process-wide encryption keyring shared by credential and identity storage.
-///
-/// The current provider is the only write key. Historical keys are bounded and
-/// decrypt-only, so both persistence paths observe one rotation policy.
-pub(crate) struct FirstPartyKeyring {
-    current: Arc<dyn KeyProvider>,
-    legacy: Vec<(String, Arc<EncryptionKey>)>,
-    credential_empty_id_key: Option<Arc<EncryptionKey>>,
-}
-
-impl FirstPartyKeyring {
-    fn from_legacy_config(
-        current: Arc<dyn KeyProvider>,
-        configured: Option<&str>,
-        empty_id_configured: Option<&str>,
-    ) -> Result<Self, CredentialCompositionError> {
-        let current_id = current
-            .current()
-            .map_err(|error| CredentialCompositionError::KeyProvider(error.to_string()))?
-            .key_id()
-            .to_owned();
-        let encoded_keys: Vec<_> = configured
-            .filter(|value| !value.trim().is_empty())
-            .map_or_else(Vec::new, |value| value.split(',').map(str::trim).collect());
-        if encoded_keys.len() > MAX_LEGACY_MASTER_KEYS
-            || encoded_keys.iter().any(|key| key.is_empty())
-        {
-            return Err(CredentialCompositionError::InvalidLegacyKeyring);
-        }
-
-        let mut seen = HashSet::with_capacity(encoded_keys.len());
-        let mut legacy = Vec::with_capacity(encoded_keys.len());
-        for encoded_key in encoded_keys {
-            let snapshot = EnvKeyProvider::from_base64(encoded_key)
-                .and_then(|provider| provider.current())
-                .map_err(|_| CredentialCompositionError::InvalidLegacyKeyring)?;
-            let (key_id, key) = snapshot.into_parts();
-            let key_id = key_id.to_string();
-            if key_id == current_id || !seen.insert(key_id.clone()) {
-                return Err(CredentialCompositionError::InvalidLegacyKeyring);
-            }
-            legacy.push((key_id, key));
-        }
-        let credential_empty_id_key = empty_id_configured
-            .map(str::trim)
-            .map(|encoded_key| {
-                if encoded_key.is_empty() {
-                    return Err(CredentialCompositionError::InvalidLegacyKeyring);
-                }
-                EnvKeyProvider::from_base64(encoded_key)
-                    .and_then(|provider| provider.current())
-                    .map(|snapshot| snapshot.into_parts().1)
-                    .map_err(|_| CredentialCompositionError::InvalidLegacyKeyring)
-            })
-            .transpose()?;
-        Ok(Self {
-            current,
-            legacy,
-            credential_empty_id_key,
-        })
-    }
-
-    pub(crate) fn current(&self) -> Arc<dyn KeyProvider> {
-        Arc::clone(&self.current)
-    }
-
-    pub(crate) fn identity_legacy(&self) -> Vec<(String, Arc<EncryptionKey>)> {
-        self.legacy.clone()
-    }
-
-    pub(crate) fn credential_legacy(&self) -> Vec<(String, Arc<EncryptionKey>)> {
-        let mut legacy = self.legacy.clone();
-        if let Some(key) = &self.credential_empty_id_key {
-            legacy.push((String::new(), Arc::clone(key)));
-        }
-        legacy
-    }
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CredentialDatabaseBackend {
@@ -164,10 +82,8 @@ pub(crate) enum CredentialCompositionError {
     Service(#[from] CredentialServiceError),
     #[error("credential key provider initialization failed: {0}")]
     KeyProvider(String),
-    #[error(
-        "credential legacy master-key configuration is malformed, duplicated, over limit, or conflicts with the current key"
-    )]
-    InvalidLegacyKeyring,
+    #[error("credential legacy master-key configuration is invalid")]
+    InvalidLegacyKeyring(#[source] CredentialKeyringError),
     #[error("credential store initialization failed")]
     Store(#[source] CredentialStoreStartupError),
     #[error(
@@ -186,8 +102,10 @@ pub(crate) enum CredentialCompositionError {
 }
 
 /// Resolve the process-wide credential/identity encryption keyring.
-pub(crate) fn resolve_first_party_keyring() -> Result<FirstPartyKeyring, CredentialCompositionError>
+pub(crate) fn resolve_first_party_keyring() -> Result<CredentialKeyring, CredentialCompositionError>
 {
+    let span = tracing::info_span!("credential_keyring_resolution");
+    let _guard = span.enter();
     let current: Arc<dyn KeyProvider> =
         if std::env::var("NEBULA_CRED_DEV_KEY").as_deref() == Ok("1") {
             tracing::warn!(
@@ -204,25 +122,13 @@ pub(crate) fn resolve_first_party_keyring() -> Result<FirstPartyKeyring, Credent
                     .map_err(|error| CredentialCompositionError::KeyProvider(error.to_string()))?,
             )
         };
-    let configured = optional_secret_env(LEGACY_MASTER_KEYS_ENV)?;
-    let empty_id_configured = optional_secret_env(LEGACY_EMPTY_ID_MASTER_KEY_ENV)?;
-    FirstPartyKeyring::from_legacy_config(
-        current,
-        configured.as_deref().map(String::as_str),
-        empty_id_configured.as_deref().map(String::as_str),
-    )
-}
-
-fn optional_secret_env(
-    name: &'static str,
-) -> Result<Option<Zeroizing<String>>, CredentialCompositionError> {
-    match std::env::var(name) {
-        Ok(value) => Ok(Some(Zeroizing::new(value))),
-        Err(std::env::VarError::NotPresent) => Ok(None),
-        Err(std::env::VarError::NotUnicode(_)) => {
-            Err(CredentialCompositionError::InvalidLegacyKeyring)
-        },
-    }
+    CredentialKeyring::from_env(current).map_err(|error| {
+        tracing::error!(
+            reason = error.category(),
+            "credential keyring configuration rejected"
+        );
+        CredentialCompositionError::InvalidLegacyKeyring(error)
+    })
 }
 
 /// Compose the durable first-party runtime and its shared catalog projection.
@@ -559,12 +465,9 @@ mod tests {
     #[test]
     fn keyring_accepts_bounded_distinct_decrypt_only_keys() {
         let configured = format!("{},{}", encoded_key(2), encoded_key(3));
-        let keyring = FirstPartyKeyring::from_legacy_config(
-            test_provider(1),
-            Some(configured.as_str()),
-            None,
-        )
-        .expect("distinct legacy keys compose");
+        let keyring =
+            CredentialKeyring::from_config(test_provider(1), Some(configured.as_str()), None)
+                .expect("distinct legacy keys compose");
 
         assert_eq!(keyring.identity_legacy().len(), 2);
         let current_id = keyring
@@ -592,7 +495,7 @@ mod tests {
         ];
 
         for configured in cases {
-            let error = match FirstPartyKeyring::from_legacy_config(
+            let error = match CredentialKeyring::from_config(
                 test_provider(1),
                 Some(configured.as_str()),
                 None,
@@ -601,10 +504,6 @@ mod tests {
                 Ok(_) => panic!("unsafe keyring configuration must fail closed"),
             };
             let diagnostic = format!("{error:?}: {error}");
-            assert!(matches!(
-                error,
-                CredentialCompositionError::InvalidLegacyKeyring
-            ));
             assert!(!diagnostic.contains(&configured));
         }
     }
@@ -614,24 +513,17 @@ mod tests {
         let configured = (2..=10).map(encoded_key).collect::<Vec<_>>().join(",");
 
         assert!(matches!(
-            FirstPartyKeyring::from_legacy_config(
-                test_provider(1),
-                Some(configured.as_str()),
-                None,
-            ),
-            Err(CredentialCompositionError::InvalidLegacyKeyring)
+            CredentialKeyring::from_config(test_provider(1), Some(configured.as_str()), None,),
+            Err(CredentialKeyringError::TooManyLegacyKeys)
         ));
     }
 
     #[test]
     fn empty_id_alias_is_credential_only() {
         let empty_id_key = encoded_key(1);
-        let keyring = FirstPartyKeyring::from_legacy_config(
-            test_provider(1),
-            None,
-            Some(empty_id_key.as_str()),
-        )
-        .expect("explicit empty-id alias composes");
+        let keyring =
+            CredentialKeyring::from_config(test_provider(1), None, Some(empty_id_key.as_str()))
+                .expect("explicit empty-id alias composes");
 
         assert!(keyring.identity_legacy().is_empty());
         assert_eq!(keyring.credential_legacy().len(), 1);

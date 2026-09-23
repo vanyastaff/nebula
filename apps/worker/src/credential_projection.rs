@@ -16,8 +16,9 @@ use nebula_credential::{
 #[cfg(feature = "postgres")]
 use nebula_storage::credential::PgCredentialPersistence;
 use nebula_storage::credential::{
-    AuditEvent, AuditLayer, AuditSink, CredentialStoreStartupError, EncryptionLayer,
-    EnvKeyProvider, KeyProvider, ProviderError, SqliteCredentialPersistence,
+    AuditEvent, AuditLayer, AuditSink, CredentialKeyring, CredentialKeyringError,
+    CredentialStoreStartupError, EncryptionLayer, EnvKeyProvider, KeyProvider, ProviderError,
+    SqliteCredentialPersistence,
 };
 use nebula_storage_port::{CredentialPersistence, CredentialPersistenceError};
 
@@ -52,6 +53,9 @@ pub enum CredentialProjectionCompositionError {
     /// The process credential key could not be loaded.
     #[error("credential key provider initialization failed")]
     KeyProvider(#[source] ProviderError),
+    /// The bounded decrypt-only keyring configuration was rejected.
+    #[error("credential legacy master-key configuration is invalid")]
+    Keyring(#[source] CredentialKeyringError),
     /// The selected durable credential store could not be opened or migrated.
     #[error("credential store initialization failed")]
     Store(#[source] CredentialStoreStartupError),
@@ -75,7 +79,8 @@ pub enum CredentialProjectionCompositionError {
 ///
 /// `NEBULA_CRED_DB` defaults to the same SQLite URL as the server. Key loading
 /// uses `NEBULA_CRED_MASTER_KEY`, except when `NEBULA_CRED_DEV_KEY=1`
-/// explicitly opts into the shared fixed development key.
+/// explicitly opts into the shared fixed development key. The same bounded
+/// decrypt-only legacy keyring as the server is installed for projection.
 ///
 /// # Errors
 ///
@@ -83,10 +88,10 @@ pub enum CredentialProjectionCompositionError {
 /// first-party registration, or projection construction fails.
 pub async fn compose_first_party_projection()
 -> Result<Arc<dyn CredentialSlotResolver>, CredentialProjectionCompositionError> {
-    let key_provider = resolve_first_party_key_provider()?;
+    let keyring = resolve_first_party_keyring()?;
     let database_url =
         std::env::var("NEBULA_CRED_DB").unwrap_or_else(|_| DEFAULT_CREDENTIAL_DB.to_owned());
-    compose_first_party_projection_for_database(&database_url, key_provider).await
+    compose_first_party_projection_for_database(&database_url, keyring).await
 }
 
 /// Build the first-party projection runtime around one raw credential store.
@@ -105,13 +110,28 @@ pub fn build_first_party_projection<P>(
 where
     P: CredentialPersistence + 'static,
 {
+    let keyring = CredentialKeyring::from_config(key_provider, None, None)
+        .map_err(CredentialProjectionCompositionError::Keyring)?;
+    build_first_party_projection_with_keyring(raw_store, keyring)
+}
+
+fn build_first_party_projection_with_keyring<P>(
+    raw_store: P,
+    keyring: CredentialKeyring,
+) -> Result<Arc<dyn CredentialSlotResolver>, CredentialProjectionCompositionError>
+where
+    P: CredentialPersistence + 'static,
+{
     let registry = Arc::new(first_party_registry()?);
     let ops = Arc::new(first_party_ops()?);
     tracing::warn!(
         "credential audit sink is trace-only; durable audit persistence is scheduled for K3"
     );
-    let encrypted: Arc<dyn CredentialPersistence> =
-        Arc::new(EncryptionLayer::new(raw_store, key_provider));
+    let encrypted: Arc<dyn CredentialPersistence> = Arc::new(EncryptionLayer::with_legacy_keys(
+        raw_store,
+        keyring.current(),
+        keyring.credential_legacy(),
+    ));
     let audit_sink: Arc<dyn AuditSink> = Arc::new(TracingAuditSink);
     let store: Arc<dyn CredentialPersistence> = Arc::new(AuditLayer::new(encrypted, audit_sink));
     let projection = CredentialProjectionRuntime::from_secure_parts(
@@ -123,25 +143,38 @@ where
     Ok(Arc::new(projection))
 }
 
-fn resolve_first_party_key_provider()
--> Result<Arc<dyn KeyProvider>, CredentialProjectionCompositionError> {
-    if std::env::var("NEBULA_CRED_DEV_KEY").as_deref() == Ok("1") {
+fn resolve_first_party_keyring() -> Result<CredentialKeyring, CredentialProjectionCompositionError>
+{
+    let span = tracing::info_span!("credential_keyring_resolution", process = "worker");
+    let _guard = span.enter();
+    let current: Arc<dyn KeyProvider> = if std::env::var("NEBULA_CRED_DEV_KEY").as_deref()
+        == Ok("1")
+    {
         tracing::warn!(
             "security: NEBULA_CRED_DEV_KEY=1 - using a fixed development key; credential secrets are not securely encrypted"
         );
-        EnvKeyProvider::from_base64(DEVELOPMENT_KEY_BASE64)
-            .map(|provider| Arc::new(provider) as Arc<dyn KeyProvider>)
-            .map_err(CredentialProjectionCompositionError::KeyProvider)
+        Arc::new(
+            EnvKeyProvider::from_base64(DEVELOPMENT_KEY_BASE64)
+                .map_err(CredentialProjectionCompositionError::KeyProvider)?,
+        )
     } else {
-        EnvKeyProvider::from_env()
-            .map(|provider| Arc::new(provider) as Arc<dyn KeyProvider>)
-            .map_err(CredentialProjectionCompositionError::KeyProvider)
-    }
+        Arc::new(
+            EnvKeyProvider::from_env()
+                .map_err(CredentialProjectionCompositionError::KeyProvider)?,
+        )
+    };
+    CredentialKeyring::from_env(current).map_err(|error| {
+        tracing::error!(
+            reason = error.category(),
+            "credential keyring configuration rejected"
+        );
+        CredentialProjectionCompositionError::Keyring(error)
+    })
 }
 
 async fn compose_first_party_projection_for_database(
     database_url: &str,
-    key_provider: Arc<dyn KeyProvider>,
+    keyring: CredentialKeyring,
 ) -> Result<Arc<dyn CredentialSlotResolver>, CredentialProjectionCompositionError> {
     let backend = classify_credential_database(database_url)?;
     match backend {
@@ -153,7 +186,7 @@ async fn compose_first_party_projection_for_database(
                 backend = backend.as_str(),
                 "credential projection store opened"
             );
-            build_first_party_projection(store, key_provider)
+            build_first_party_projection_with_keyring(store, keyring)
         },
         CredentialDatabaseBackend::Postgres => {
             #[cfg(feature = "postgres")]
@@ -165,11 +198,11 @@ async fn compose_first_party_projection_for_database(
                     backend = backend.as_str(),
                     "credential projection store opened"
                 );
-                build_first_party_projection(store, key_provider)
+                build_first_party_projection_with_keyring(store, keyring)
             }
             #[cfg(not(feature = "postgres"))]
             {
-                let _ = key_provider;
+                let _ = keyring;
                 Err(CredentialProjectionCompositionError::PostgresStoreUnavailable)
             }
         },
@@ -240,6 +273,8 @@ mod tests {
         CredentialDatabaseBackend, CredentialProjectionCompositionError,
         build_first_party_projection, classify_credential_database,
     };
+    #[cfg(not(feature = "postgres"))]
+    use nebula_storage::credential::CredentialKeyring;
 
     const TEST_KEY_BASE64: &str = "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI=";
 
@@ -354,11 +389,12 @@ mod tests {
             "postgres://operator:super-secret@example.invalid/tenant-private?sslmode=require";
         let key_provider: Arc<dyn KeyProvider> =
             Arc::new(EnvKeyProvider::from_base64(TEST_KEY_BASE64).expect("valid fixed test key"));
-        let error =
-            match compose_first_party_projection_for_database(database_url, key_provider).await {
-                Err(error) => error,
-                Ok(_) => panic!("PostgreSQL must not fall back without the feature"),
-            };
+        let keyring = CredentialKeyring::from_config(key_provider, None, None)
+            .expect("empty legacy keyring composes");
+        let error = match compose_first_party_projection_for_database(database_url, keyring).await {
+            Err(error) => error,
+            Ok(_) => panic!("PostgreSQL must not fall back without the feature"),
+        };
         let diagnostic = format!("{error:?}: {error}");
 
         assert_matches!(

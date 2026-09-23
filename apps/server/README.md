@@ -263,8 +263,13 @@ other's writes during the cutover:
 2. Roll out the new key as `NEBULA_CRED_MASTER_KEY` and move the old key into
    `NEBULA_CRED_LEGACY_MASTER_KEYS`. During this mixed-key window, every
    replica can decrypt both generations while each replica writes only with
-   its configured current key.
-3. Migrate and verify all live rows under the new key. Plane-A startup
+   its configured current key. The server and first-party worker must receive
+   the same current and legacy configuration.
+3. Drain every bridge replica that still writes with the old current key, then
+   run one final new-key server startup convergence before verification. This
+   ordering prevents an old Plane-A writer from reintroducing an old-key MFA
+   envelope after another replica's startup migrator has passed it. Migrate
+   and verify all live rows under the new key. Plane-A startup
    convergence re-encrypts admitted identity envelopes. Plane-B credential
    reads are side-effect free; a supported credential mutation writes the
    replacement with the current key. There is no automatic credential
