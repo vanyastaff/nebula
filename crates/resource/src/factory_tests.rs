@@ -256,6 +256,7 @@ fn request(expr_engine: &ExpressionEngine) -> RegisterRequest<'_> {
         scope: ScopeLevel::Global,
         recovery_gate: None,
         topology: None,
+        rate_limit: None,
     }
 }
 
@@ -411,6 +412,7 @@ async fn identity_mismatch_is_typed_and_rolls_back_manager_and_fanout_state() {
                 scope: ScopeLevel::Global,
                 recovery_gate: None,
                 topology: None,
+                rate_limit: None,
             },
             Some(&fanout_index),
         )
@@ -478,6 +480,7 @@ async fn conflicting_duplicate_slot_bindings_fail_before_manager_publication() {
                 scope: ScopeLevel::Global,
                 recovery_gate: None,
                 topology: None,
+                rate_limit: None,
             },
             Some(&fanout_index),
         )
@@ -674,4 +677,42 @@ fn topology_schema_is_published_only_for_configurable_kinds() {
             .expect("no schema is not an error")
             .is_none()
     );
+}
+
+#[tokio::test]
+async fn invalid_rate_limit_settings_fail_before_manager_publication() {
+    let manager = Manager::new();
+    let expr_engine = ExpressionEngine::with_cache_size(16);
+    let mut registry = ResourceActivatorRegistry::new();
+    registry
+        .insert("limited", test_factory(Arc::new(AtomicU64::new(0))))
+        .expect("test resource metadata admits");
+
+    for invalid in [
+        serde_json::json!({ "requests": 0, "period_ms": 1000 }),
+        serde_json::json!({ "requests": 10 }),
+        serde_json::json!({ "requests": 10, "period_ms": 1000, "per_minute": 1 }),
+    ] {
+        let mut bad_request = request(&expr_engine);
+        bad_request.rate_limit = Some(invalid.clone());
+        assert!(
+            registry
+                .register("limited", &manager, bad_request)
+                .await
+                .is_err(),
+            "{invalid} must reject the registration"
+        );
+    }
+    assert!(
+        manager
+            .get_any(&TestRes::key(), &ScopeLevel::Global)
+            .is_none()
+    );
+
+    let mut good_request = request(&expr_engine);
+    good_request.rate_limit = Some(serde_json::json!({ "requests": 30, "period_ms": 1000 }));
+    registry
+        .register("limited", &manager, good_request)
+        .await
+        .expect("valid rate limit registers");
 }

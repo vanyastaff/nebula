@@ -412,6 +412,7 @@ async fn engine_acquires_org_scoped_resource_through_accessor() {
             slot_identity: SlotIdentity::Unbound,
             topology: Resident::<IntegrationProbeResource>::new(ResidentConfig::default()),
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("register org-scoped resource");
 
@@ -795,6 +796,7 @@ mod shared_resource {
                 slot_identity: SlotIdentity::Unbound,
                 topology: resident_rt,
                 recovery_gate: None,
+                rate_limit: None,
             })
             .expect("register should succeed");
 
@@ -869,6 +871,7 @@ mod shared_resource {
                 slot_identity: SlotIdentity::Unbound,
                 topology: Resident::<TelegramBot>::new(ResidentConfig::default()),
                 recovery_gate: None,
+                rate_limit: None,
             })
             .expect("register A should succeed");
         manager
@@ -879,6 +882,7 @@ mod shared_resource {
                 slot_identity: SlotIdentity::Unbound,
                 topology: Resident::<AlternateBot>::new(ResidentConfig::default()),
                 recovery_gate: None,
+                rate_limit: None,
             })
             .expect("register B should succeed");
 
@@ -939,6 +943,7 @@ mod shared_resource {
                 slot_identity: SlotIdentity::Unbound,
                 topology: Resident::<TelegramBot>::new(ResidentConfig::default()),
                 recovery_gate: None,
+                rate_limit: None,
             })
             .expect("register org_a should succeed");
         manager
@@ -949,6 +954,7 @@ mod shared_resource {
                 slot_identity: SlotIdentity::Unbound,
                 topology: Resident::<TelegramBot>::new(ResidentConfig::default()),
                 recovery_gate: None,
+                rate_limit: None,
             })
             .expect("register org_b should succeed");
 
@@ -1009,6 +1015,7 @@ mod shared_resource {
                 slot_identity: SlotIdentity::Unbound,
                 topology: resident_rt,
                 recovery_gate: None,
+                rate_limit: None,
             })
             .expect("register should succeed");
 
@@ -1086,6 +1093,7 @@ mod shared_resource {
                 slot_identity: SlotIdentity::Unbound,
                 topology: resident_rt,
                 recovery_gate: None,
+                rate_limit: None,
             })
             .expect("register should succeed");
 

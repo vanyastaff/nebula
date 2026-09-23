@@ -348,6 +348,11 @@ pub struct RegistrationSpec<R: Provider> {
     pub topology: R::Topology,
     /// Optional recovery gate for thundering-herd prevention.
     pub recovery_gate: Option<Arc<RecoveryGate>>,
+    /// Optional rate limit on this row, consumed on every acquire and
+    /// available per call through
+    /// [`ResourceGuard::rate_limiter`](crate::ResourceGuard::rate_limiter).
+    /// Share one [`Arc`] across registrations that draw on the same quota.
+    pub rate_limit: Option<Arc<crate::rate_limit::RateLimiter>>,
 }
 
 impl<R: Provider> std::fmt::Debug for RegistrationSpec<R> {
@@ -361,6 +366,7 @@ impl<R: Provider> std::fmt::Debug for RegistrationSpec<R> {
             .field("scope", &self.scope)
             .field("slot_identity", &self.slot_identity)
             .field("recovery_gate", &self.recovery_gate.is_some())
+            .field("rate_limit", &self.rate_limit.is_some())
             .finish_non_exhaustive()
     }
 }

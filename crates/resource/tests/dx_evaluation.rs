@@ -141,6 +141,7 @@ async fn use_case_1_pooled_http_client() {
             slot_identity: SlotIdentity::Unbound,
             topology: Pooled::<HttpResource>::new(PoolConfig::default(), fingerprint),
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("registration should succeed");
 
@@ -190,6 +191,7 @@ async fn use_case_1_invalid_config_is_rejected() {
         slot_identity: SlotIdentity::Unbound,
         topology: Pooled::<HttpResource>::new(PoolConfig::default(), fingerprint),
         recovery_gate: None,
+        rate_limit: None,
     });
     let err = result.expect_err("empty base_url must fail validation at register time");
     assert!(
@@ -288,6 +290,7 @@ async fn use_case_2_resident_config_store() {
             slot_identity: SlotIdentity::Unbound,
             topology: Resident::<ConfigStoreResource>::new(ResidentConfig::default()),
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("registration should succeed");
 
@@ -427,6 +430,7 @@ async fn use_case_3_db_with_recovery_and_shutdown() {
             slot_identity: SlotIdentity::Unbound,
             topology: Pooled::<DbResource>::new(pool_config, fingerprint),
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("registration should succeed");
 
@@ -523,6 +527,7 @@ async fn error_cancelled_after_shutdown() {
             slot_identity: SlotIdentity::Unbound,
             topology: Pooled::<HttpResource>::new(PoolConfig::default(), fingerprint),
             recovery_gate: None,
+            rate_limit: None,
         })
         .unwrap();
 

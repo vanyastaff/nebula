@@ -214,6 +214,10 @@ pub struct RegisterRequest<'a> {
     /// kept separate from the resource [`config`](Self::config). `None` uses
     /// the kind's defaults; see [`crate::topology::settings`] for the format.
     pub topology: Option<serde_json::Value>,
+    /// Operator rate limit for this row
+    /// ([`RateLimitSettings`](crate::rate_limit::RateLimitSettings) JSON);
+    /// `None` means unlimited.
+    pub rate_limit: Option<serde_json::Value>,
 }
 
 impl std::fmt::Debug for RegisterRequest<'_> {
@@ -229,6 +233,7 @@ impl std::fmt::Debug for RegisterRequest<'_> {
             .field("scope", &self.scope)
             .field("recovery_gate", &self.recovery_gate.is_some())
             .field("topology", &self.topology.is_some())
+            .field("rate_limit", &self.rate_limit.is_some())
             .finish()
     }
 }
@@ -718,6 +723,10 @@ where
             })?;
             let topology = (self.topology_factory)(request.topology.as_ref())
                 .map_err(|error| error.with_resource_key(R::key()))?;
+            let rate_limit =
+                crate::rate_limit::RateLimiter::from_value(request.rate_limit.as_ref())
+                    .map_err(|error| error.with_resource_key(R::key()))?
+                    .map(Arc::new);
             let resource = (self.resource_factory)();
             // The typed register validates declared slots and derives the
             // structural identity from the (slot → credential-key) view; the
@@ -760,6 +769,7 @@ where
                     request.scope,
                     topology,
                     request.recovery_gate,
+                    rate_limit,
                     expected_slot_identity,
                 )
                 .await

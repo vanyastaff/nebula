@@ -131,6 +131,7 @@ async fn pool_saturated_phase_and_load() {
             slot_identity: SlotIdentity::Unbound,
             topology: pool_rt,
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("register succeeds");
 
@@ -187,6 +188,7 @@ async fn admission_status_reports_saturated_snapshot_and_none_for_unknown() {
             slot_identity: SlotIdentity::Unbound,
             topology: pool_rt,
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("register succeeds");
 
@@ -243,6 +245,7 @@ async fn acquire_any_saturated_returns_backpressure() {
             slot_identity: SlotIdentity::Unbound,
             topology: pool_rt,
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("register succeeds");
 
@@ -285,6 +288,7 @@ async fn resident_always_ready_no_load() {
             slot_identity: SlotIdentity::Unbound,
             topology: rt,
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("register succeeds");
 

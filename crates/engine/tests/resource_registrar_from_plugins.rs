@@ -331,6 +331,7 @@ async fn wired_registrar_performs_typed_registration() {
                 scope: ScopeLevel::Global,
                 recovery_gate: None,
                 topology: None,
+                rate_limit: None,
             },
         )
         .await

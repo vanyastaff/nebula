@@ -245,6 +245,7 @@ fn register_topo(manager: &Manager, ffmpeg: Ffmpeg, topology: FfmpegPool) {
         slot_identity: SlotIdentity::Unbound,
         topology,
         recovery_gate: None,
+        rate_limit: None,
     };
     manager
         .register(spec)

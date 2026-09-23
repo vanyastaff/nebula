@@ -64,6 +64,7 @@
 //!     slot_identity: SlotIdentity::Unbound,
 //!     topology: Pooled::<HttpClient>::new(PoolConfig::default(), 0),
 //!     recovery_gate: None,
+//!     rate_limit: None,
 //! })?;
 //!
 //! let ctx = ResourceContext::minimal(

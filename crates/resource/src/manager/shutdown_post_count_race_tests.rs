@@ -99,6 +99,7 @@ fn register_race_resident(manager: &Manager, topology: Resident<ShutdownRaceResi
         slot_identity: crate::dedup::SlotIdentity::Unbound,
         topology,
         recovery_gate: None,
+        rate_limit: None,
     };
     assert!(manager.register(spec).is_ok(), "register succeeds");
 }
@@ -117,6 +118,7 @@ async fn registration_after_shutdown_cannot_repopulate_registry() {
         slot_identity: crate::dedup::SlotIdentity::Unbound,
         topology: Resident::new(ResidentConfig::default()),
         recovery_gate: None,
+        rate_limit: None,
     });
     assert_eq!(
         result.expect_err("closed admission").kind(),
@@ -200,6 +202,7 @@ async fn registration_validation_cannot_commit_after_shutdown_snapshot() {
             slot_identity: crate::dedup::SlotIdentity::Unbound,
             topology: Resident::new(ResidentConfig::default()),
             recovery_gate: None,
+            rate_limit: None,
         })
     });
     entered.wait();
@@ -265,6 +268,7 @@ async fn saturated_retirement_queue_leaves_registry_ownership_unchanged() {
             slot_identity: crate::dedup::SlotIdentity::Unbound,
             topology: Resident::new(ResidentConfig::default()),
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("brand-new row does not consume retirement capacity");
     assert_eq!(
@@ -293,6 +297,7 @@ async fn saturated_retirement_queue_leaves_registry_ownership_unchanged() {
         slot_identity: crate::dedup::SlotIdentity::Unbound,
         topology: Resident::new(ResidentConfig::default()),
         recovery_gate: None,
+        rate_limit: None,
     });
     assert_eq!(
         replacement
@@ -328,6 +333,7 @@ async fn saturated_retirement_queue_leaves_registry_ownership_unchanged() {
                 slot_identity: crate::dedup::SlotIdentity::Unbound,
                 topology: Resident::new(ResidentConfig::default()),
                 recovery_gate: None,
+                rate_limit: None,
             })
             .expect("additional row exceeds command capacity, not row capacity");
     }

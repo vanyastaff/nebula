@@ -464,6 +464,20 @@ impl Manager {
         Fut: Future<Output = Result<crate::guard::ResourceGuard<R>, Error>> + Send,
     {
         let started = Instant::now();
+        // Rate limit first, before this acquire is counted as in flight: a
+        // caller queued for a slot must not hold up a revoke drain or
+        // graceful shutdown. The post-count checks below still reject it if
+        // either began while it waited. Local state, so it runs before the
+        // recovery gate and a denial never reads as backend ill health.
+        if let Some(limiter) = managed.rate_limiter.as_deref() {
+            let deadline = options.deadline.map(tokio::time::Instant::from_std);
+            tokio::select! {
+                ready = limiter.until_ready(1, deadline) => {
+                    ready.map_err(|error| error.with_resource_key(R::key()))?;
+                },
+                () = self.cancel.cancelled() => return Err(Error::cancelled()),
+            }
+        }
         // Pre-count this acquire on both the manager-wide and per-resource
         // in-flight trackers, from the moment `lookup()` succeeds. RAII
         // decrements + notifies on every failure / cancel / panic path; on

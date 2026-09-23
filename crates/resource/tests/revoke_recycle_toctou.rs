@@ -251,6 +251,7 @@ async fn revoked_credential_not_reserved_via_idle_recycle() {
         slot_identity: SlotIdentity::Unbound,
         topology: Pooled::<PoolResource>::new(pool_config(), PoolCfg.fingerprint()),
         recovery_gate: None,
+        rate_limit: None,
     })
     .expect("pooled registration must succeed");
 
@@ -341,6 +342,7 @@ async fn in_flight_create_completing_after_revoke_is_destroyed() {
         slot_identity: SlotIdentity::Unbound,
         topology: Pooled::<PoolResource>::new(pool_config(), PoolCfg.fingerprint()),
         recovery_gate: None,
+        rate_limit: None,
     })
     .expect("pooled registration must succeed");
 
@@ -422,6 +424,7 @@ async fn revoked_pre_existing_idle_instance_not_reserved() {
         slot_identity: SlotIdentity::Unbound,
         topology: Pooled::<PoolResource>::new(pool_config(), PoolCfg.fingerprint()),
         recovery_gate: None,
+        rate_limit: None,
     })
     .expect("pooled registration must succeed");
 
@@ -534,6 +537,7 @@ async fn warmup_after_revoke_does_not_admit_revoked_instance() {
         slot_identity: SlotIdentity::Unbound,
         topology: Pooled::<PoolResource>::new(cfg, PoolCfg.fingerprint()),
         recovery_gate: None,
+        rate_limit: None,
     })
     .expect("pooled registration must succeed");
 

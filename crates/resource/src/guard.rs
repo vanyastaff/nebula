@@ -259,6 +259,15 @@ impl<R: Provider> ResourceGuard<R> {
         self.acquired_at.elapsed()
     }
 
+    /// The row's rate limiter, if one was registered.
+    ///
+    /// Every acquire already consumed one permit; call
+    /// [`until_ready`](crate::rate_limit::RateLimiter::until_ready) before
+    /// each outbound call to also pace calls made within this lease.
+    pub fn rate_limiter(&self) -> Option<&crate::rate_limit::RateLimiter> {
+        self.managed.rate_limiter.as_deref()
+    }
+
     /// Returns the resource key for this guard.
     pub fn resource_key(&self) -> &ResourceKey {
         &self.resource_key

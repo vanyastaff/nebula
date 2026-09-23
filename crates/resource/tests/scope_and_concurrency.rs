@@ -116,6 +116,7 @@ async fn manager_scope_exact_match() {
             slot_identity: SlotIdentity::Unbound,
             topology: resident_rt,
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("registration should succeed");
 
@@ -153,6 +154,7 @@ async fn manager_scope_fallback_to_global() {
             slot_identity: SlotIdentity::Unbound,
             topology: resident_rt,
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("registration should succeed");
 
@@ -192,6 +194,7 @@ async fn manager_scope_mismatch_not_found() {
             slot_identity: SlotIdentity::Unbound,
             topology: resident_rt,
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("registration should succeed");
 
@@ -241,6 +244,7 @@ async fn manager_multiple_resources_coexist() {
             slot_identity: SlotIdentity::Unbound,
             topology: pool_rt,
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("pool registration should succeed");
 
@@ -256,6 +260,7 @@ async fn manager_multiple_resources_coexist() {
             slot_identity: SlotIdentity::Unbound,
             topology: resident_rt,
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("resident registration should succeed");
 

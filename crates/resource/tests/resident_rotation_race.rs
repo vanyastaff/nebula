@@ -247,6 +247,7 @@ fn build(park: bool) -> (Arc<Manager>, ResourceKey, RaceResource) {
         slot_identity: SlotIdentity::Unbound,
         topology: Resident::<RaceResource>::new(ResidentConfig::default()),
         recovery_gate: None,
+        rate_limit: None,
     })
     .expect("resident registration must succeed");
     (Arc::new(mgr), RaceResource::key(), resource)

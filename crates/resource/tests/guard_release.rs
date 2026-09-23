@@ -91,6 +91,7 @@ fn nested_cleanup_manager() -> (Manager, NestedCleanupResource) {
             slot_identity: SlotIdentity::Unbound,
             topology: nebula_resource::Bounded::unbounded(),
             recovery_gate: None,
+            rate_limit: None,
         })
         .unwrap();
     (manager, resource)
@@ -318,6 +319,7 @@ fn resident_lifecycle_manager() -> (Manager, ResidentLifecycleResource) {
                 ..Default::default()
             }),
             recovery_gate: None,
+            rate_limit: None,
         })
         .unwrap();
     (manager, resource)
@@ -343,6 +345,7 @@ async fn graceful_shutdown_reports_terminal_failure_and_finishes_sibling_rows() 
             slot_identity: identity.clone(),
             topology: Resident::new(ResidentConfig::default()),
             recovery_gate: None,
+            rate_limit: None,
         })
         .unwrap();
     let first_outcome = manager
@@ -684,6 +687,7 @@ async fn release_teardown_survives_caller_cancellation() {
             slot_identity: SlotIdentity::Unbound,
             topology: pool_rt,
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("registration should succeed");
 
@@ -1707,6 +1711,7 @@ async fn release_owned_resident_guard_returns_ok() {
             slot_identity: SlotIdentity::Unbound,
             topology: resident_rt,
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("registration should succeed");
 
@@ -1747,6 +1752,7 @@ async fn release_then_drop_emits_exactly_one_released_event() {
             slot_identity: SlotIdentity::Unbound,
             topology: resident_rt,
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("registration should succeed");
 
@@ -1805,6 +1811,7 @@ async fn rejected_release_never_emits_released() {
             slot_identity: SlotIdentity::Unbound,
             topology: resident_rt,
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("registration should succeed");
 

@@ -167,6 +167,7 @@ fn register_with_order<const ID: usize>(
             slot_identity: SlotIdentity::Unbound,
             topology: Resident::new(ResidentConfig::default()),
             recovery_gate: None,
+            rate_limit: None,
         })
         .unwrap();
     destroyed
@@ -233,6 +234,7 @@ async fn idle_pooled_parent_releases_same_manager_child_during_graceful_shutdown
             slot_identity: SlotIdentity::Unbound,
             topology: Pooled::new(Default::default(), 0),
             recovery_gate: None,
+            rate_limit: None,
         })
         .unwrap();
     let release_outcome = manager

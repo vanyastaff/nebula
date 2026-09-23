@@ -134,6 +134,24 @@ impl RateLimiter {
         })
     }
 
+    /// Parses operator JSON (`None` or `null` = no limit) into a limiter.
+    ///
+    /// # Errors
+    ///
+    /// Returns a permanent [`Error`] for malformed or unknown fields and for
+    /// every error [`new`](Self::new) returns.
+    pub fn from_value(value: Option<&serde_json::Value>) -> Result<Option<Self>, Error> {
+        match value {
+            None | Some(serde_json::Value::Null) => Ok(None),
+            Some(value) => {
+                let settings = RateLimitSettings::deserialize(value).map_err(|error| {
+                    Error::permanent(format!("invalid rate limit settings: {error}"))
+                })?;
+                Self::new(settings).map(Some)
+            },
+        }
+    }
+
     /// The settings this limiter was built from.
     #[must_use]
     pub const fn settings(&self) -> RateLimitSettings {

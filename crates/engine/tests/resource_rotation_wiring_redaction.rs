@@ -272,6 +272,7 @@ async fn wired_rotation_fanout_observability_is_redaction_clean() {
         slot_identity: slot_identity.clone(),
         topology: Resident::<SecretRes>::new(ResidentConfig::default()),
         recovery_gate: None,
+        rate_limit: None,
     })
     .expect("register resolved-credential row");
 

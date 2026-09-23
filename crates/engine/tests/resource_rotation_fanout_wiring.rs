@@ -209,6 +209,7 @@ async fn wire(behaviour: Behaviour) -> Wired {
         slot_identity: slot_identity.clone(),
         topology: Resident::<Recording>::new(ResidentConfig::default()),
         recovery_gate: None,
+        rate_limit: None,
     })
     .expect("register resolved-credential row");
 
@@ -650,6 +651,7 @@ async fn engine_spawn_resource_rotation_fanout_is_idempotent() {
         slot_identity: slot_identity.clone(),
         topology: Resident::<Recording>::new(ResidentConfig::default()),
         recovery_gate: None,
+        rate_limit: None,
     })
     .expect("register resolved-credential row");
 

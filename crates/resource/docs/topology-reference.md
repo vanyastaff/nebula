@@ -80,6 +80,7 @@ manager.register(RegistrationSpec {
     slot_identity: SlotIdentity::Unbound,
     topology: Pooled::new(PoolConfig { max_size: 8, ..Default::default() }, pg_config.fingerprint()),
     recovery_gate: None,
+    rate_limit: None,
 })?;
 ```
 
@@ -149,6 +150,7 @@ manager.register(RegistrationSpec {
     slot_identity: SlotIdentity::Unbound,
     topology: Resident::new(ResidentConfig::default()),
     recovery_gate: None,
+    rate_limit: None,
 })?;
 ```
 
@@ -243,6 +245,7 @@ manager.register(RegistrationSpec {
     slot_identity: SlotIdentity::Unbound,
     topology: Bounded::exclusive(),      // or Bounded::capped(seats)? / Bounded::unbounded()
     recovery_gate: None,
+    rate_limit: None,
 })?;
 ```
 

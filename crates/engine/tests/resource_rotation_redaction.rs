@@ -411,6 +411,7 @@ async fn setup(
             slot_identity: id.clone(),
             topology: Resident::<SecretBearingResource>::new(ResidentConfig::default()),
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("register resolved-credential row");
 

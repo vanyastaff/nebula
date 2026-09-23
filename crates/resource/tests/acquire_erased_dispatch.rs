@@ -91,6 +91,7 @@ async fn acquire_erased_returns_guard_and_runs_create_once() {
             slot_identity: SlotIdentity::Unbound,
             topology: Resident::<ProbeResource>::new(ResidentConfig::default()),
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("register");
 
@@ -127,6 +128,7 @@ async fn acquire_erased_finds_org_scoped_row_from_execution_scope_bag() {
             slot_identity: SlotIdentity::Unbound,
             topology: Resident::<ProbeResource>::new(ResidentConfig::default()),
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("register at org scope");
 
@@ -187,6 +189,7 @@ async fn acquire_erased_and_typed_pick_org_not_global_fallback() {
             slot_identity: SlotIdentity::Unbound,
             topology: Resident::<ProbeResource>::new(ResidentConfig::default()),
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("register global row");
 
@@ -198,6 +201,7 @@ async fn acquire_erased_and_typed_pick_org_not_global_fallback() {
             slot_identity: SlotIdentity::Unbound,
             topology: Resident::<ProbeResource>::new(ResidentConfig::default()),
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("register org row");
 
@@ -358,6 +362,7 @@ mod pool_parity {
                     PoolParityCfg.fingerprint(),
                 ),
                 recovery_gate: None,
+                rate_limit: None,
             })
             .expect("register pooled Global");
 
@@ -477,6 +482,7 @@ mod resident_erased_reuses_runtime {
                 slot_identity: SlotIdentity::Unbound,
                 topology: rt,
                 recovery_gate: None,
+                rate_limit: None,
             })
             .expect("ResidentReuse must register without error");
         assert_eq!(
@@ -605,6 +611,7 @@ mod pool_erased_distinct_instances {
                 slot_identity: SlotIdentity::Unbound,
                 topology: pool_rt,
                 recovery_gate: None,
+                rate_limit: None,
             })
             .expect("PoolErased must register without error");
 

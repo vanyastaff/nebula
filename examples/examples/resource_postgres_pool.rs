@@ -392,6 +392,7 @@ async fn main() -> anyhow::Result<()> {
         slot_identity: SlotIdentity::Unbound,
         topology: pool_runtime,
         recovery_gate: None,
+        rate_limit: None,
     })?;
     println!("[1] Postgres pool registered (min=0, max=4)");
 

@@ -157,6 +157,7 @@ async fn register_from_value(
                 scope: ScopeLevel::Global,
                 recovery_gate: None,
                 topology: None,
+                rate_limit: None,
             },
             &expected_slot_identity,
         )

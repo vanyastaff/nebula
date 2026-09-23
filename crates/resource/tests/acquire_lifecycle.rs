@@ -304,6 +304,7 @@ async fn manager_register_and_acquire_pooled() {
             slot_identity: SlotIdentity::Unbound,
             topology: pool_rt,
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("registration should succeed");
 
@@ -354,6 +355,7 @@ async fn pool_maintenance_reaper_evicts_idle_timed_out_instance() {
             slot_identity: SlotIdentity::Unbound,
             topology: pool_rt,
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("registration should succeed");
 
@@ -432,6 +434,7 @@ async fn pool_maintenance_reaper_not_spawned_without_ttl() {
             slot_identity: SlotIdentity::Unbound,
             topology: pool_rt,
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("registration should succeed");
 
@@ -498,6 +501,7 @@ async fn manager_register_and_acquire_resident() {
             slot_identity: SlotIdentity::Unbound,
             topology: resident_rt,
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("registration should succeed");
 
@@ -525,6 +529,7 @@ async fn manager_shutdown_rejects_acquire() {
             slot_identity: SlotIdentity::Unbound,
             topology: resident_rt,
             recovery_gate: None,
+            rate_limit: None,
         })
         .unwrap();
 
@@ -691,6 +696,7 @@ async fn pool_create_path_respects_max_concurrent_creates() {
                 test_config().fingerprint(),
             ),
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("register");
 
@@ -798,6 +804,7 @@ async fn pool_acquire_over_slow_threshold_still_succeeds() {
                 test_config().fingerprint(),
             ),
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("register");
 
@@ -842,6 +849,7 @@ async fn pool_acquire_under_manager_wide_slow_threshold_still_succeeds() {
                 test_config().fingerprint(),
             ),
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("register");
 
@@ -917,6 +925,7 @@ async fn pool_resource_acquires_through_pool_path() {
             slot_identity: SlotIdentity::Unbound,
             topology: pool_rt,
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("pool registration must succeed");
 

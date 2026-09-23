@@ -57,6 +57,7 @@ async fn register_from_value(
                 scope: ScopeLevel::Global,
                 recovery_gate: None,
                 topology: None,
+                rate_limit: None,
             },
             &expected_slot_identity,
         )
@@ -276,6 +277,7 @@ fn register_admission_resource<const CREDENTIALS: bool>(
         slot_identity: nebula_resource::SlotIdentity::Unbound,
         topology: AdmissionTopology { handles_revoke },
         recovery_gate: None,
+        rate_limit: None,
     })
 }
 
@@ -356,6 +358,7 @@ async fn register_from_value_resolves_template_and_registers() {
                 scope: ScopeLevel::Global,
                 recovery_gate: None,
                 topology: None,
+                rate_limit: None,
             },
             &expected_slot_identity,
         )

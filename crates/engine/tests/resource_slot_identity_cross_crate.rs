@@ -218,6 +218,7 @@ fn request<'a>(expr: &'a ExpressionEngine, bindings: &[(&str, &str)]) -> Registe
         scope: ScopeLevel::Global,
         recovery_gate: None,
         topology: None,
+        rate_limit: None,
     }
 }
 

@@ -342,6 +342,7 @@ async fn register_config<C: ResourceConfig + serde::de::DeserializeOwned>(
                 scope: nebula_core::ScopeLevel::Global,
                 recovery_gate: None,
                 topology: None,
+                rate_limit: None,
             },
             &expected_slot_identity,
         )
@@ -549,6 +550,7 @@ async fn equal_schema_factory_rechecks_its_typed_config_contract() {
                 scope: nebula_core::ScopeLevel::Global,
                 recovery_gate: None,
                 topology: None,
+                rate_limit: None,
             },
             &expected_slot_identity,
         )
@@ -607,6 +609,7 @@ async fn different_schema_factory_rechecks_its_own_schema() {
                 scope: nebula_core::ScopeLevel::Global,
                 recovery_gate: None,
                 topology: None,
+                rate_limit: None,
             },
             &expected_slot_identity,
         )

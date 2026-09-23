@@ -145,6 +145,7 @@ fn register_pool_res(
         slot_identity,
         topology: Pooled::<PoolRes>::new(pool_cfg(), fingerprint),
         recovery_gate: opts.recovery_gate,
+        rate_limit: None,
     })
 }
 
@@ -162,6 +163,7 @@ fn register_res_res(
         slot_identity,
         topology: Resident::<ResRes>::new(nebula_resource::ResidentConfig::default()),
         recovery_gate: opts.recovery_gate,
+        rate_limit: None,
     })
 }
 

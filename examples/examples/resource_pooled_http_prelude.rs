@@ -112,6 +112,7 @@ async fn main() {
             slot_identity: SlotIdentity::Unbound,
             topology: Pooled::<HttpResource>::new(PoolConfig::default(), fingerprint),
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("register");
 

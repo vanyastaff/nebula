@@ -119,6 +119,7 @@ async fn acquire(resource: DummyResource) -> (Manager, ResourceGuard<DummyResour
                 0,
             ),
             recovery_gate: None,
+            rate_limit: None,
         })
         .unwrap();
     let guard = manager

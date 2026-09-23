@@ -46,6 +46,7 @@ async fn register_transitions_phase_to_ready() {
             slot_identity: SlotIdentity::Unbound,
             topology: resident_rt,
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("register");
 
@@ -70,6 +71,7 @@ async fn reload_config_bumps_status_generation() {
             slot_identity: SlotIdentity::Unbound,
             topology: resident_rt,
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("register");
 
@@ -111,6 +113,7 @@ async fn reload_config_rebuilds_resident_master_with_new_config() {
             slot_identity: SlotIdentity::Unbound,
             topology: resident_rt,
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("register");
 
@@ -161,6 +164,7 @@ async fn graceful_shutdown_report_marks_registry_cleared() {
             slot_identity: SlotIdentity::Unbound,
             topology: resident_rt,
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("register");
 
@@ -376,6 +380,7 @@ async fn reload_config_rebuilds_bounded_exclusive_instance_with_new_config() {
             slot_identity: SlotIdentity::Unbound,
             topology: Bounded::<ReloadExclusiveResource>::exclusive(),
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("register");
 
@@ -438,6 +443,7 @@ async fn reload_config_swaps_config_and_bumps_generation() {
             slot_identity: SlotIdentity::Unbound,
             topology: pool_rt,
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("register should succeed");
 
@@ -475,6 +481,7 @@ async fn reload_config_rejects_invalid_config() {
             slot_identity: SlotIdentity::Unbound,
             topology: pool_rt,
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("register should succeed");
 
@@ -519,6 +526,7 @@ async fn reload_config_emits_event() {
             slot_identity: SlotIdentity::Unbound,
             topology: pool_rt,
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("register should succeed");
 
@@ -554,6 +562,7 @@ async fn reload_config_evicts_stale_pool_instances() {
             slot_identity: SlotIdentity::Unbound,
             topology: pool_rt,
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("register should succeed");
 
@@ -630,6 +639,7 @@ async fn stale_pool_destroy_does_not_block_fresh_acquire_under_topology_permit()
             slot_identity: SlotIdentity::Unbound,
             topology: Pooled::<ReloadPoolResource>::new(pool_config, 1),
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("register should succeed");
 
@@ -711,6 +721,7 @@ async fn reload_config_rejected_when_shutdown() {
             slot_identity: SlotIdentity::Unbound,
             topology: pool_rt,
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("register should succeed");
 

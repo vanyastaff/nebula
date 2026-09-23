@@ -197,6 +197,7 @@ async fn created_entry_is_acquired_and_released_through_manager() {
             slot_identity: SlotIdentity::Unbound,
             topology: EntryPool::new(2),
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("custom topology registration must succeed");
 

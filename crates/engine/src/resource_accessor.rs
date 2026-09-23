@@ -283,6 +283,7 @@ mod tests {
                 slot_identity: SlotIdentity::Unbound,
                 topology: Resident::<AccResource>::new(ResidentConfig::default()),
                 recovery_gate: None,
+                rate_limit: None,
             })
             .expect("register");
 
@@ -319,6 +320,7 @@ mod tests {
                 slot_identity: bound.clone(),
                 topology: Resident::<AccResource>::new(ResidentConfig::default()),
                 recovery_gate: None,
+                rate_limit: None,
             })
             .expect("register cred-bound row");
 

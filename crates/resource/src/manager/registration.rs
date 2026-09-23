@@ -128,6 +128,7 @@ impl Manager {
     ///     slot_identity: SlotIdentity::Unbound,
     ///     topology: Pooled::<HttpClient>::new(PoolConfig::default(), 0),
     ///     recovery_gate: None,
+    ///     rate_limit: None,
     /// })?;
     ///
     /// let ctx = ResourceContext::minimal(
@@ -158,6 +159,7 @@ impl Manager {
             slot_identity,
             topology,
             recovery_gate,
+            rate_limit,
         } = spec;
 
         let credential_slot_names = R::credential_slot_names();
@@ -240,6 +242,7 @@ impl Manager {
             generation: AtomicU64::new(0),
             status: arc_swap::ArcSwap::from_pointee(crate::state::ResourceStatus::new()),
             recovery_gate,
+            rate_limiter: rate_limit,
             tainted: std::sync::atomic::AtomicBool::new(false),
             in_flight: Arc::new((AtomicU64::new(0), Notify::new())),
             maintenance_sweeps: AtomicU64::new(0),
@@ -539,6 +542,7 @@ impl Manager {
         scope: ScopeLevel,
         topology: R::Topology,
         recovery_gate: Option<Arc<RecoveryGate>>,
+        rate_limit: Option<Arc<crate::rate_limit::RateLimiter>>,
         expected_slot_identity: &crate::dedup::SlotIdentity,
     ) -> Result<crate::dedup::SlotIdentity, Error>
     where
@@ -697,6 +701,7 @@ impl Manager {
             slot_identity: slot_identity.clone(),
             topology,
             recovery_gate,
+            rate_limit,
         })?;
         Ok(slot_identity)
     }

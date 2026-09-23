@@ -133,6 +133,7 @@ fn register(manager: &Manager, seats: Seats, topology: Bounded<Seats>) {
         slot_identity: SlotIdentity::Unbound,
         topology,
         recovery_gate: None,
+        rate_limit: None,
     };
     manager
         .register(spec)
