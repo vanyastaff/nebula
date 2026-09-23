@@ -3,11 +3,10 @@
 //!
 //! This adapter implements the complete authorization-policy contract,
 //! including consistent role snapshots and atomic last-admin guards, but its
-//! state is process-local. `nebula-storage-port` also defines a generic
-//! row-level `MembershipStore`; that lower-level port does not implement this
-//! API policy contract, and there is currently no bridge that combines it with
-//! the required authorization/lockout semantics. Do not wire the row store
-//! directly as request authority.
+//! state is process-local. `nebula-storage-port` defines the durable snapshot
+//! and guarded-mutation contracts, with backend implementations in storage.
+//! An apps-owned bridge must translate those contracts into this API policy
+//! port; durable operator composition is not yet wired in the default server.
 //!
 //! ## One shared store — RBAC coherence
 //!
@@ -51,7 +50,7 @@
 use std::{collections::HashMap, str::FromStr, sync::Arc};
 
 use async_trait::async_trait;
-use nebula_core::{OrgId, OrgRole, UserId, WorkspaceId, WorkspaceRole, scope::Principal};
+use nebula_core::{OrgId, OrgRole, UserId, WorkspaceId, scope::Principal};
 use thiserror::Error;
 use tokio::sync::RwLock;
 
@@ -152,10 +151,8 @@ fn is_privileged(role: OrgRole) -> bool {
 ///
 /// Counts the privileged principals **excluding** `target_key`, then adds
 /// the target back iff its post-write role is privileged. A write is
-/// refused exactly when that post-write privileged count would be zero
-/// *and* it actually changes things (the target was or would stop being
-/// the last privileged principal). Removing/keeping a non-privileged
-/// member can never reduce the privileged set, so it is always safe.
+/// refused whenever that post-write privileged count would be zero, including
+/// a first insert of a non-privileged member into an empty organization.
 fn write_keeps_an_admin(
     members: &HashMap<String, Entry>,
     target_key: &str,
@@ -174,7 +171,7 @@ fn write_keeps_an_admin(
 pub struct InMemoryMembershipStore {
     /// `org_id → (principal_key → Entry)`. Workspace-level explicit roles
     /// are not modelled here (none of the graduated endpoints touch them);
-    /// `get_workspace_role` returns `None` so RBAC falls back to the
+    /// the snapshot's workspace role is `None` so RBAC falls back to the
     /// org-implied role via `effective_workspace_role`. This differs from an
     /// unwired store, which makes tenant policy unavailable and returns 503.
     orgs: RwLock<HashMap<OrgId, HashMap<String, Entry>>>,
@@ -261,7 +258,8 @@ impl InMemoryMembershipStore {
     /// bypasses the handler authz gate intentionally (it *is* the
     /// root-of-trust seed, not a request path). The sync [`Self::seeded`]
     /// is the composition-root counterpart.
-    pub async fn seed(&self, org_id: OrgId, principal: Principal, role: OrgRole) {
+    #[cfg(any(test, feature = "test-util"))]
+    pub async fn seed_for_test(&self, org_id: OrgId, principal: Principal, role: OrgRole) {
         let mut guard = self.orgs.write().await;
         guard
             .entry(org_id)
@@ -301,18 +299,6 @@ impl MembershipStore for InMemoryMembershipStore {
             .map(|e| e.role))
     }
 
-    async fn get_workspace_role(
-        &self,
-        _workspace_id: WorkspaceId,
-        _principal: &Principal,
-    ) -> Result<Option<WorkspaceRole>, ApiError> {
-        // No explicit workspace-role grants in this index — RBAC derives
-        // the effective workspace role from the org role
-        // (`effective_workspace_role`). An unwired store is a separate,
-        // fail-closed 503 path and never implies an administrator role.
-        Ok(None)
-    }
-
     async fn list_members(&self, org_id: OrgId) -> Result<Vec<OrgMember>, ApiError> {
         let guard = self.orgs.read().await;
         Ok(guard
@@ -327,31 +313,6 @@ impl MembershipStore for InMemoryMembershipStore {
                     .collect()
             })
             .unwrap_or_default())
-    }
-
-    async fn add_member(
-        &self,
-        org_id: OrgId,
-        principal: &Principal,
-        role: OrgRole,
-    ) -> Result<(), ApiError> {
-        let mut guard = self.orgs.write().await;
-        guard.entry(org_id).or_default().insert(
-            principal_key(principal),
-            Entry {
-                principal: principal.clone(),
-                role,
-            },
-        );
-        Ok(())
-    }
-
-    async fn remove_member(&self, org_id: OrgId, principal: &Principal) -> Result<bool, ApiError> {
-        let mut guard = self.orgs.write().await;
-        let Some(members) = guard.get_mut(&org_id) else {
-            return Ok(false);
-        };
-        Ok(members.remove(&principal_key(principal)).is_some())
     }
 
     async fn add_member_guarded(
@@ -502,11 +463,17 @@ mod tests {
         let p = user();
 
         assert_eq!(store.get_org_role(org, &p).await.unwrap(), None);
-        store.add_member(org, &p, OrgRole::OrgAdmin).await.unwrap();
+        assert_eq!(
+            store
+                .add_member_guarded(org, &p, OrgRole::OrgAdmin)
+                .await
+                .unwrap(),
+            AddMemberOutcome::Added,
+        );
         assert_eq!(
             store.get_org_role(org, &p).await.unwrap(),
             Some(OrgRole::OrgAdmin),
-            "add_member must be immediately visible to get_org_role (RBAC coherence)"
+            "guarded addition must be immediately visible to get_org_role (RBAC coherence)"
         );
     }
 
@@ -515,8 +482,16 @@ mod tests {
         let store = InMemoryMembershipStore::new();
         let org = OrgId::new();
         let p = user();
-        store.add_member(org, &p, OrgRole::OrgMember).await.unwrap();
-        store.add_member(org, &p, OrgRole::OrgAdmin).await.unwrap();
+        store
+            .seed_for_test(org, p.clone(), OrgRole::OrgMember)
+            .await;
+        assert_eq!(
+            store
+                .add_member_guarded(org, &p, OrgRole::OrgAdmin)
+                .await
+                .unwrap(),
+            AddMemberOutcome::Added,
+        );
         let members = store.list_members(org).await.unwrap();
         assert_eq!(members.len(), 1, "upsert must not duplicate the row");
         assert_eq!(members[0].role, OrgRole::OrgAdmin);
@@ -527,12 +502,19 @@ mod tests {
         let store = InMemoryMembershipStore::new();
         let org = OrgId::new();
         let p = user();
-        assert!(
-            !store.remove_member(org, &p).await.unwrap(),
-            "removing a non-member must report false (handler → 404)"
+        assert_eq!(
+            store.remove_member_guarded(org, &p).await.unwrap(),
+            RemoveMemberOutcome::NotFound,
+            "removing a non-member must report absence (handler → 404)"
         );
-        store.add_member(org, &p, OrgRole::OrgMember).await.unwrap();
-        assert!(store.remove_member(org, &p).await.unwrap());
+        store.seed_for_test(org, user(), OrgRole::OrgOwner).await;
+        store
+            .seed_for_test(org, p.clone(), OrgRole::OrgMember)
+            .await;
+        assert_eq!(
+            store.remove_member_guarded(org, &p).await.unwrap(),
+            RemoveMemberOutcome::Removed
+        );
         assert_eq!(store.get_org_role(org, &p).await.unwrap(), None);
     }
 
@@ -544,17 +526,14 @@ mod tests {
         let org_b = OrgId::new();
         let other = user();
         store
-            .add_member(org_a, &p, OrgRole::OrgOwner)
-            .await
-            .unwrap();
+            .seed_for_test(org_a, p.clone(), OrgRole::OrgOwner)
+            .await;
         store
-            .add_member(org_b, &p, OrgRole::OrgMember)
-            .await
-            .unwrap();
+            .seed_for_test(org_b, p.clone(), OrgRole::OrgMember)
+            .await;
         store
-            .add_member(org_b, &other, OrgRole::OrgAdmin)
-            .await
-            .unwrap();
+            .seed_for_test(org_b, other.clone(), OrgRole::OrgAdmin)
+            .await;
 
         let mut mine = store.list_orgs_for_principal(&p).await.unwrap();
         mine.sort_by_key(|(_, r)| *r);
@@ -574,9 +553,8 @@ mod tests {
         let org_b = OrgId::new();
         let p = user();
         store
-            .add_member(org_a, &p, OrgRole::OrgAdmin)
-            .await
-            .unwrap();
+            .seed_for_test(org_a, p.clone(), OrgRole::OrgAdmin)
+            .await;
         assert_eq!(
             store.get_org_role(org_b, &p).await.unwrap(),
             None,
@@ -595,9 +573,8 @@ mod tests {
         let org = OrgId::new();
         let owner = user();
         store
-            .add_member(org, &owner, OrgRole::OrgOwner)
-            .await
-            .unwrap();
+            .seed_for_test(org, owner.clone(), OrgRole::OrgOwner)
+            .await;
 
         assert_eq!(
             store
@@ -621,13 +598,11 @@ mod tests {
         let owner = user();
         let admin2 = user();
         store
-            .add_member(org, &owner, OrgRole::OrgOwner)
-            .await
-            .unwrap();
+            .seed_for_test(org, owner.clone(), OrgRole::OrgOwner)
+            .await;
         store
-            .add_member(org, &admin2, OrgRole::OrgAdmin)
-            .await
-            .unwrap();
+            .seed_for_test(org, admin2.clone(), OrgRole::OrgAdmin)
+            .await;
 
         assert_eq!(
             store
@@ -649,9 +624,8 @@ mod tests {
         let org = OrgId::new();
         let owner = user();
         store
-            .add_member(org, &owner, OrgRole::OrgOwner)
-            .await
-            .unwrap();
+            .seed_for_test(org, owner.clone(), OrgRole::OrgOwner)
+            .await;
 
         // Last privileged → WouldLockOut, row untouched.
         assert_eq!(
@@ -685,13 +659,11 @@ mod tests {
         let owner = user();
         let plain = user();
         store
-            .add_member(org, &owner, OrgRole::OrgOwner)
-            .await
-            .unwrap();
+            .seed_for_test(org, owner.clone(), OrgRole::OrgOwner)
+            .await;
         store
-            .add_member(org, &plain, OrgRole::OrgMember)
-            .await
-            .unwrap();
+            .seed_for_test(org, plain.clone(), OrgRole::OrgMember)
+            .await;
         assert_eq!(
             store.remove_member_guarded(org, &plain).await.unwrap(),
             RemoveMemberOutcome::Removed
@@ -712,8 +684,8 @@ mod tests {
             let org = OrgId::new();
             let a = user();
             let b = user();
-            store.add_member(org, &a, OrgRole::OrgAdmin).await.unwrap();
-            store.add_member(org, &b, OrgRole::OrgAdmin).await.unwrap();
+            store.seed_for_test(org, a.clone(), OrgRole::OrgAdmin).await;
+            store.seed_for_test(org, b.clone(), OrgRole::OrgAdmin).await;
 
             let (s1, s2) = (Arc::clone(&store), Arc::clone(&store));
             let (a1, b1) = (a.clone(), b.clone());
@@ -759,8 +731,8 @@ mod tests {
             let org = OrgId::new();
             let a = user();
             let b = user();
-            store.add_member(org, &a, OrgRole::OrgAdmin).await.unwrap();
-            store.add_member(org, &b, OrgRole::OrgAdmin).await.unwrap();
+            store.seed_for_test(org, a.clone(), OrgRole::OrgAdmin).await;
+            store.seed_for_test(org, b.clone(), OrgRole::OrgAdmin).await;
 
             let (s1, s2) = (Arc::clone(&store), Arc::clone(&store));
             let (a1, b1) = (a.clone(), b.clone());

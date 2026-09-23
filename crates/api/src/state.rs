@@ -150,6 +150,9 @@ pub enum RemoveMemberOutcome {
 /// point lookups and enumeration/mutation methods back member-management
 /// endpoints and focused queries. An unwired or failed source is unavailable;
 /// a successful snapshot with no organization role is an authorization denial.
+/// Organization mutations are available only through the guarded operations.
+/// Workspace authorization reads require an organization-bound snapshot;
+/// there is no workspace-only role lookup or unguarded mutation primitive.
 #[async_trait]
 pub trait MembershipStore: Send + Sync {
     /// Resolve org and optional workspace roles from one logical snapshot.
@@ -167,13 +170,6 @@ pub trait MembershipStore: Send + Sync {
         principal: &Principal,
     ) -> Result<Option<OrgRole>, ApiError>;
 
-    /// Return the caller's workspace-level role, if they are a workspace member.
-    async fn get_workspace_role(
-        &self,
-        workspace_id: WorkspaceId,
-        principal: &Principal,
-    ) -> Result<Option<WorkspaceRole>, ApiError>;
-
     /// List every member of an org (`GET /orgs/{org}/members`).
     ///
     /// Returns role-index rows only — no user-directory fields (see
@@ -181,34 +177,11 @@ pub trait MembershipStore: Send + Sync {
     /// (membership sets are bounded per org).
     async fn list_members(&self, org_id: OrgId) -> Result<Vec<OrgMember>, ApiError>;
 
-    /// Low-level upsert primitive — **not** for request paths.
-    ///
-    /// Idempotent on `(org_id, principal)`. This performs **no**
-    /// org-lockout check, so a request handler MUST use
-    /// [`Self::add_member_guarded`] instead (the unguarded path could
-    /// demote the last `OrgOwner`/`OrgAdmin` and permanently lock the org
-    /// out). Retained only as a building block for seeding/tests and as
-    /// the primitive `add_member_guarded` is implemented on top of.
-    async fn add_member(
-        &self,
-        org_id: OrgId,
-        principal: &Principal,
-        role: OrgRole,
-    ) -> Result<(), ApiError>;
-
-    /// Low-level removal primitive — **not** for request paths.
-    ///
-    /// `Ok(true)` when a row was removed, `Ok(false)` when absent. This
-    /// performs **no** org-lockout check; a request handler MUST use
-    /// [`Self::remove_member_guarded`]. Retained as a seeding/test
-    /// building block and the primitive the guarded variant builds on.
-    async fn remove_member(&self, org_id: OrgId, principal: &Principal) -> Result<bool, ApiError>;
-
     /// Upsert a member **with the org-lockout invariant enforced
     /// atomically** (`POST /orgs/{org}/members`).
     ///
     /// The implementation MUST, under a single exclusive critical section
-    /// (the in-memory impl: one write-guard; a future storage impl: one
+    /// (the in-memory impl: one write-guard; a storage impl: one
     /// transaction), compute the post-write privileged
     /// (`OrgOwner | OrgAdmin`) count and refuse with
     /// [`AddMemberOutcome::WouldLockOut`] if the upsert would drop it

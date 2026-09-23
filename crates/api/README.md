@@ -569,14 +569,21 @@ The org **member** endpoints (`GET`/`POST`/`DELETE` under
 end-to-end** (`crates/api/tests/org_e2e.rs`) against the in-memory
 `MembershipStore` (`nebula_api::domain::org::InMemoryMembershipStore`) —
 the **single shared store** `rbac_middleware` also consults, so an
-`add_member` is immediately visible to the next RBAC check (no
-propagation window). `nebula-storage-port` has a generic row-level membership
-store with backend implementations, but no adapter currently satisfies this
-API port's consistent authorization snapshot and atomic guarded-mutation
-contract. It must not be wired directly as request authority. The in-memory
+guarded membership addition is immediately visible to the next RBAC check (no
+propagation window). `nebula-storage-port` provides consistent membership snapshots
+and atomic guarded organization mutations, implemented by its storage backends.
+The API contract still needs an apps-owned bridge and durable operator wiring.
+The in-memory
 implementation is the §4.5-honest reference backing, with the same
 restart/replica limits as `API_AUTH_BACKEND=memory`; unlike Plane-A identity,
 the API policy port has no selectable PostgreSQL implementation yet.
+
+The technical API `MembershipStore` exposes only guarded organization mutations.
+The legacy `add_member`, `remove_member`, and workspace-only `get_workspace_role`
+methods have been removed. Use `add_member_guarded` / `remove_member_guarded` and
+an organization-bound `get_tenant_membership` snapshot. Tests may populate the concrete
+`InMemoryMembershipStore::seed_for_test` helper under `test-util`; fixture seeding is
+not part of the production policy trait.
 
 **The default `nebula-server` binary does NOT auto-wire a
 `MembershipStore`.** The current in-memory seam is an internal/reference

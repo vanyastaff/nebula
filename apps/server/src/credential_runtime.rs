@@ -756,34 +756,8 @@ mod tests {
             Ok(self.snapshot.org_role)
         }
 
-        async fn get_workspace_role(
-            &self,
-            _workspace_id: WorkspaceId,
-            _principal: &CorePrincipal,
-        ) -> Result<Option<WorkspaceRole>, ApiError> {
-            self.point_calls.fetch_add(1, Ordering::SeqCst);
-            Ok(self.snapshot.workspace_role)
-        }
-
         async fn list_members(&self, _org_id: OrgId) -> Result<Vec<OrgMember>, ApiError> {
             Ok(Vec::new())
-        }
-
-        async fn add_member(
-            &self,
-            _org_id: OrgId,
-            _principal: &CorePrincipal,
-            _role: OrgRole,
-        ) -> Result<(), ApiError> {
-            Ok(())
-        }
-
-        async fn remove_member(
-            &self,
-            _org_id: OrgId,
-            _principal: &CorePrincipal,
-        ) -> Result<bool, ApiError> {
-            Ok(false)
         }
 
         async fn add_member_guarded(

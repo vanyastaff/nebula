@@ -64,18 +64,6 @@ impl MembershipStore for FixedMembershipStore {
         }
     }
 
-    async fn get_workspace_role(
-        &self,
-        workspace_id: WorkspaceId,
-        principal: &Principal,
-    ) -> Result<Option<WorkspaceRole>, ApiError> {
-        if workspace_id == test_ws_id() && principal == &self.principal {
-            Ok(Some(self.workspace_role))
-        } else {
-            Ok(None)
-        }
-    }
-
     async fn list_members(&self, org_id: OrgId) -> Result<Vec<OrgMember>, ApiError> {
         if org_id == test_org_id() {
             Ok(vec![OrgMember {
@@ -85,23 +73,6 @@ impl MembershipStore for FixedMembershipStore {
         } else {
             Ok(Vec::new())
         }
-    }
-
-    async fn add_member(
-        &self,
-        _org_id: OrgId,
-        _principal: &Principal,
-        _role: OrgRole,
-    ) -> Result<(), ApiError> {
-        Ok(())
-    }
-
-    async fn remove_member(
-        &self,
-        _org_id: OrgId,
-        _principal: &Principal,
-    ) -> Result<bool, ApiError> {
-        Ok(false)
     }
 
     async fn add_member_guarded(
