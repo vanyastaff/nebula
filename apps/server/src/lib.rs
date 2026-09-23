@@ -14,6 +14,8 @@ mod email;
 mod execution_binding_resolver;
 mod execution_store_backends;
 mod oauth_egress;
+mod tenant_bootstrap;
+mod tenant_directory;
 mod transport;
 mod webhook_credential_resolver;
 

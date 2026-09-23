@@ -137,6 +137,10 @@ pub(crate) enum TransportInitError {
         /// What is missing for that backend to work.
         requirement: &'static str,
     },
+    /// Explicit tenant bootstrap was incomplete, invalid, or could not be
+    /// reconciled with the selected identity and storage authorities.
+    #[error("{0}")]
+    TenantBootstrap(#[from] crate::tenant_bootstrap::TenantBootstrapError),
     /// The `CredentialService` facade could not be composed (registry
     /// registration, encryption key provider init, dispatch-ops
     /// registration, or the final secure-store build failed). Most common
@@ -221,6 +225,8 @@ pub(crate) enum TransportInitError {
 /// Webhook dispatch uses the composed `WorkflowStartService` and its shared
 /// start-acceptance port on every backend.
 pub(crate) struct ExecutionStoreBundle {
+    /// Tenant-directory projections created from one backend authority.
+    pub(super) tenant_directory: crate::tenant_directory::TenantDirectoryStores,
     pub(super) revision_catalog: Arc<dyn nebula_storage_port::PlanFlavorCatalog>,
     pub(super) revision_installer: Arc<dyn nebula_storage_port::PlanFlavorCatalogWriter>,
     pub(super) workflow_store: Arc<dyn nebula_storage_port::store::WorkflowStore>,
@@ -378,6 +384,29 @@ impl ServerRuntime {
         // resolution and management routes share one service instance.
         let key_provider = resolve_first_party_key_provider()
             .map_err(|error| TransportInitError::CredentialServiceInit(error.to_string()))?;
+        // Identity must exist before tenant authority can be granted. Build
+        // the selected Plane-A backend before consuming the execution bundle,
+        // then let the opt-in bootstrap verify its stable owner against it.
+        let email_port = build_email_port(&api_config)?;
+        let oauth_config = std::mem::take(&mut api_config.auth.oauth);
+        let auth_backend = build_auth_backend(
+            api_config.auth.backend.clone(),
+            oauth_config,
+            Arc::clone(&email_port),
+            Some(Arc::clone(&metrics_registry)),
+            Arc::clone(&key_provider),
+        )
+        .await?;
+        let tenant_bootstrap = crate::tenant_bootstrap::TenantBootstrapConfig::from_env()
+            .map_err(TransportInitError::from)?;
+        let tenant_provisioner = execution_bundle.tenant_directory.provisioner();
+        crate::tenant_bootstrap::bootstrap_tenant(
+            tenant_bootstrap,
+            &auth_backend,
+            &tenant_provisioner,
+        )
+        .await
+        .map_err(TransportInitError::from)?;
         let credential_runtime =
             compose_first_party_runtime(Arc::clone(&key_provider), Arc::clone(&metrics_registry))
                 .await
@@ -437,27 +466,6 @@ impl ServerRuntime {
                  authority is not provisioned"
             );
         }
-        // Build ONE shared `Arc<dyn EmailPort>` and pass the same Arc
-        // to both `AppState::email_port` and the selected auth backend.
-        // `API_SMTP_HOST` unset → dev `EchoSink` (unchanged local-first
-        // default); set → production `SmtpEmailPort` (fails CLOSED on
-        // malformed config per the policy on `ApiConfig::smtp`).
-        // Forward-compat non-auth email consumers (org invitations,
-        // billing notices) read from `state.email_port` and work
-        // uniformly regardless of which transport is wired.
-        let email_port = build_email_port(&api_config)?;
-        // Transfer the only owned OAuth credential set into the runtime.
-        // `ApiConfig` remains available to router construction, but no
-        // duplicate `SecretString` allocation survives composition.
-        let oauth_config = std::mem::take(&mut api_config.auth.oauth);
-        let auth_backend = build_auth_backend(
-            api_config.auth.backend.clone(),
-            oauth_config,
-            Arc::clone(&email_port),
-            Some(Arc::clone(&metrics_registry)),
-            key_provider,
-        )
-        .await?;
         state = state
             .with_auth_backend(auth_backend)
             .with_email_port(email_port);
@@ -658,35 +666,10 @@ pub(crate) fn default_state(
     // (`AuthBackendKind::Memory` vs `Postgres`) is honored there with
     // the same fail-closed contract `build_idempotency_store` uses.
 
-    // NOTE: `membership_store` is intentionally LEFT UNWIRED (`None`) in
-    // the default local-first composition.
-    //
-    // A `MembershipStore` is required by RBAC on every org/workspace route
-    // and by the credential command authority. With this default `AuthBackend`
-    // empty (no users registered — `register_user` mints a *random*
-    // `UserId`), no principal could authenticate as any auto-seeded
-    // bootstrap owner, so a seeded store would deadlock EVERY
-    // org/workspace route with a 404 (a deployment-level §4.5 false
-    // capability: the spec would advertise org member endpoints no real
-    // caller can reach). Auto-seeding a fixed admin identity would also
-    // be a hardcoded-credential / privileged-by-default surface (canon
-    // §12.5) — both are strictly worse than honest degradation.
-    //
-    // With `membership_store == None`, every tenant route fails closed with
-    // **503** before its handler; direct credential-gateway use also returns
-    // authority-unavailable. This matches `me/*` when `auth_backend` is absent and
-    // as Postgres-for-durable-idempotency: the production path is
-    // explicitly provisioned, never silently faked). An operator/
-    // integrator provisions org membership by wiring a `MembershipStore`
-    // whose bootstrap owner is ALSO authenticatable via the wired
-    // `AuthBackend` (the library constructor
-    // `nebula_api::domain::org::InMemoryMembershipStore::seeded_bootstrap`
-    // is the documented entry point). The feature is implemented and
-    // tested (`crates/api/tests/org_e2e.rs`) — it is simply not
-    // auto-enabled in the un-provisioned default binary, by design.
-    // Process-local durability + this provisioning contract are
-    // documented in `crates/api/README.md` ("Org membership durability")
-    // and `nebula_api::domain::org` module docs (canon §11.6).
+    // Tenant directory projections are attached below from this same selected
+    // backend. Startup deliberately does not seed an owner: authorization
+    // remains empty until an operator provisions stable tenant IDs and an
+    // owner who already exists in the selected authentication authority.
 
     // Validate Plane-A OAuth providers at boot per ADR-0085
     // REQ-compose-001 Invariant 1. Empty providers map is
@@ -717,6 +700,7 @@ pub(crate) fn default_state(
     // Activation and start admission share these selected backend handles
     // with AppState and the worker projection.
     let ExecutionStoreBundle {
+        tenant_directory,
         revision_catalog,
         revision_installer,
         workflow_store,
@@ -781,6 +765,18 @@ pub(crate) fn default_state(
     .with_public_url(api_config.public_url.clone())
     .with_trigger_store(trigger_store)
     .with_webhook_spec_lookup(trigger_spec_lookup);
+
+    // A single adapter instance fronts all tenant reads and membership writes,
+    // and all of its storage projections came from the selected execution
+    // backend above. Existing durable tenants therefore become usable without
+    // inventing an owner or granting privilege during process startup.
+    let tenant_directory = Arc::new(crate::tenant_directory::ServerTenantDirectory::new(
+        tenant_directory,
+    ));
+    state = state
+        .with_membership_store(Arc::clone(&tenant_directory) as _)
+        .with_org_resolver(Arc::clone(&tenant_directory) as _)
+        .with_workspace_resolver(tenant_directory);
 
     // W-S3d: wire the resume-token store and rate-limiter components.
     //
