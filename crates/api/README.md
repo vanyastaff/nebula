@@ -553,8 +553,8 @@ protocol; it does not restore provider-specific ceremony routes. When no command
 > **Operator warning:** completed credentials survive a normal process restart.
 > The default SQLite database is not shared across replicas; use the explicit
 > PostgreSQL `NEBULA_CRED_DB` profile for multi-replica credential and refresh
-> coordination. Pending acquisition state is still process-local and expires
-> after at most ten minutes; an interrupted interactive flow must be restarted.
+> coordination. Pending acquisition state shares the selected credential backend,
+> remains encrypted at rest, and expires after at most ten minutes.
 >
 > The tenancy path resolver special-cases the literal `resolve`
 > sub-route, so `resolve` / `resolve/continue` are **not** shadowed by
