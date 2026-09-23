@@ -3694,6 +3694,7 @@ dependencies = [
  "nebula-api",
  "nebula-core",
  "nebula-credential",
+ "nebula-crypto",
  "nebula-engine",
  "nebula-eventbus",
  "nebula-execution",

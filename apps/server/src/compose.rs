@@ -24,7 +24,7 @@ use nebula_metrics::{MetricsRegistry, OtlpInitError};
 use nebula_storage::credential::KeyProvider;
 
 use crate::{
-    credential_composition::{compose_first_party_runtime, resolve_first_party_key_provider},
+    credential_composition::{compose_first_party_runtime, resolve_first_party_keyring},
     credential_runtime::{ServerCredentialAuthority, ServerCredentialGateway},
     email::{SmtpEmailPort, SmtpEmailPortBuildError},
     execution_binding_resolver::ServerExecutionBindingResolver,
@@ -382,7 +382,7 @@ impl ServerRuntime {
                 .map_err(TransportInitError::from)?;
         // Compose credential persistence before workflow start so binding
         // resolution and management routes share one service instance.
-        let key_provider = resolve_first_party_key_provider()
+        let keyring = resolve_first_party_keyring()
             .map_err(|error| TransportInitError::CredentialServiceInit(error.to_string()))?;
         // Identity must exist before tenant authority can be granted. Build
         // the selected Plane-A backend before consuming the execution bundle,
@@ -401,7 +401,8 @@ impl ServerRuntime {
             oauth_config,
             Arc::clone(&email_port),
             Some(Arc::clone(&metrics_registry)),
-            Arc::clone(&key_provider),
+            keyring.current(),
+            keyring.identity_legacy(),
         )
         .await?;
         let tenant_provisioner = execution_bundle.tenant_directory.provisioner();
@@ -412,10 +413,13 @@ impl ServerRuntime {
         )
         .await
         .map_err(TransportInitError::from)?;
-        let credential_runtime =
-            compose_first_party_runtime(Arc::clone(&key_provider), Arc::clone(&metrics_registry))
-                .await
-                .map_err(|error| TransportInitError::CredentialServiceInit(error.to_string()))?;
+        let credential_runtime = compose_first_party_runtime(
+            keyring.current(),
+            keyring.credential_legacy(),
+            Arc::clone(&metrics_registry),
+        )
+        .await
+        .map_err(|error| TransportInitError::CredentialServiceInit(error.to_string()))?;
         let credential_service = Arc::clone(&credential_runtime.service);
         let binding_resolver: Arc<dyn nebula_engine::ExecutionBindingResolver> =
             Arc::new(ServerExecutionBindingResolver::new(
@@ -864,6 +868,7 @@ pub(crate) async fn build_auth_backend(
     email_port: Arc<dyn EmailPort>,
     metrics_registry: Option<Arc<MetricsRegistry>>,
     key_provider: Arc<dyn KeyProvider>,
+    legacy_keys: Vec<(String, Arc<nebula_crypto::EncryptionKey>)>,
 ) -> Result<Arc<dyn AuthBackend>, TransportInitError> {
     let oauth_runtime = OAuthIdentityRuntime::from_config(oauth_config)
         .map_err(|source| TransportInitError::OAuthRuntimeInit { source })?
@@ -880,7 +885,14 @@ pub(crate) async fn build_auth_backend(
             Ok(Arc::new(backend))
         },
         AuthBackendKind::Postgres => {
-            build_pg_auth_backend(email_port, metrics_registry, oauth_runtime, key_provider).await
+            build_pg_auth_backend(
+                email_port,
+                metrics_registry,
+                oauth_runtime,
+                key_provider,
+                legacy_keys,
+            )
+            .await
         },
     }
 }
@@ -983,6 +995,7 @@ async fn build_pg_auth_backend(
     metrics_registry: Option<Arc<MetricsRegistry>>,
     oauth_runtime: Option<Arc<OAuthIdentityRuntime>>,
     key_provider: Arc<dyn KeyProvider>,
+    legacy_keys: Vec<(String, Arc<nebula_crypto::EncryptionKey>)>,
 ) -> Result<Arc<dyn AuthBackend>, TransportInitError> {
     use nebula_api::domain::auth::backend::PgAuthBackend;
     use nebula_storage::{identity_secret::IdentitySecretCodec, pg::PgIdentitySecretMigrator};
@@ -1006,11 +1019,13 @@ async fn build_pg_auth_backend(
         backend = "postgres",
         "auth: PG-backed identity backend wired"
     );
-    let identity_secrets = Arc::new(IdentitySecretCodec::new(key_provider).map_err(|error| {
-        TransportInitError::ContextFactory(format!(
-            "auth: identity secret codec initialization failed: {error}"
-        ))
-    })?);
+    let identity_secrets = Arc::new(
+        IdentitySecretCodec::with_legacy_keys(key_provider, legacy_keys).map_err(|error| {
+            TransportInitError::ContextFactory(format!(
+                "auth: identity secret codec initialization failed: {error}"
+            ))
+        })?,
+    );
     let _migration_report =
         PgIdentitySecretMigrator::new(pool.clone(), Arc::clone(&identity_secrets))
             .run()
@@ -1035,6 +1050,7 @@ async fn build_pg_auth_backend(
     _metrics_registry: Option<Arc<MetricsRegistry>>,
     _oauth_runtime: Option<Arc<OAuthIdentityRuntime>>,
     _key_provider: Arc<dyn KeyProvider>,
+    _legacy_keys: Vec<(String, Arc<nebula_crypto::EncryptionKey>)>,
 ) -> Result<Arc<dyn AuthBackend>, TransportInitError> {
     Err(TransportInitError::AuthBackendUnavailable {
         requested: "postgres",

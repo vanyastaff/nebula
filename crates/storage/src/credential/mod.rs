@@ -22,6 +22,7 @@ mod conformance;
 #[cfg(test)]
 mod conformance_tests;
 pub mod key_provider;
+pub mod keyring;
 pub mod layer;
 pub mod provider_cache;
 #[cfg(any(test, feature = "sqlite", feature = "postgres"))]
@@ -46,6 +47,7 @@ pub mod postgres;
 #[cfg(test)]
 pub(crate) use conformance::CredentialPersistenceConformance;
 pub use key_provider::{EnvKeyProvider, FileKeyProvider, KeyProvider, KeySnapshot, ProviderError};
+pub use keyring::{CredentialKeyring, CredentialKeyringError};
 pub use layer::{
     AuditEvent, AuditLayer, AuditOperation, AuditResult, AuditSink, CacheConfig, CacheLayer,
     CacheStats, EncryptionLayer,

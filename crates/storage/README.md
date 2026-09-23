@@ -383,9 +383,12 @@ the same startup convergence before serving authentication traffic.
 Strict environments that cannot accept that historical-retention window must
 invalidate affected MFA factors and require re-enrollment; live-row
 convergence must not be described as forensic erasure. The built-in server
-resolves only the current `NEBULA_CRED_MASTER_KEY`; old-key recovery requires
-an explicit composition using `IdentitySecretCodec::with_legacy_keys` until a
-reviewed first-party legacy-key configuration surface ships.
+accepts up to eight comma-separated decrypt-only keys through
+`NEBULA_CRED_LEGACY_MASTER_KEYS` while `NEBULA_CRED_MASTER_KEY` remains the
+only write key. Historical credential envelopes with an empty key ID require
+the separate `NEBULA_CRED_LEGACY_EMPTY_ID_MASTER_KEY` alias. See the server
+master-key rotation runbook for the two-stage rollout, convergence, restore,
+and retirement procedure; automatic credential re-encryption is not shipped.
 
 ## Related
 
