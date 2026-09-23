@@ -131,6 +131,7 @@ impl CredentialService {
             expires_at: resolved.expires_at,
             last_validated_at: Some(now),
             lifecycle: crate::CredentialLifecycleState::Ready,
+            reauth_required: false,
             display,
         })
     }
@@ -357,6 +358,7 @@ impl CredentialService {
             expires_at,
             last_validated_at,
             lifecycle,
+            reauth_required,
             display,
         })
     }

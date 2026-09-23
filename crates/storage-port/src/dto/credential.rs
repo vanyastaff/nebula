@@ -983,6 +983,42 @@ impl StoredCredentialHead {
         updated_at: chrono::DateTime<chrono::Utc>,
         expires_at: Option<chrono::DateTime<chrono::Utc>>,
         reauth_required: bool,
+        metadata: Map<String, Value>,
+    ) -> Result<Self, CredentialPersistenceError> {
+        Self::new_with_refresh_retry(
+            credential_id,
+            name,
+            credential_key,
+            state_kind,
+            state_version,
+            version,
+            material_epoch,
+            created_at,
+            updated_at,
+            expires_at,
+            reauth_required,
+            None,
+            metadata,
+        )
+    }
+
+    /// Construct a live secret-free projection including durable retry state.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the constructor is the explicit validation boundary for a secret-free database projection"
+    )]
+    pub fn new_with_refresh_retry(
+        credential_id: CredentialId,
+        name: Option<String>,
+        credential_key: String,
+        state_kind: String,
+        state_version: u32,
+        version: CredentialVersion,
+        material_epoch: CredentialMaterialEpoch,
+        created_at: chrono::DateTime<chrono::Utc>,
+        updated_at: chrono::DateTime<chrono::Utc>,
+        expires_at: Option<chrono::DateTime<chrono::Utc>>,
+        reauth_required: bool,
         refresh_retry: Option<RefreshRetryProjection>,
         metadata: Map<String, Value>,
     ) -> Result<Self, CredentialPersistenceError> {

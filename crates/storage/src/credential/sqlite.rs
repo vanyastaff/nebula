@@ -600,7 +600,7 @@ impl CredentialHeadRow {
                 .transpose()?,
             millis_to_utc(self.backend_now)?,
         )?;
-        StoredCredentialHead::new(
+        StoredCredentialHead::new_with_refresh_retry(
             stored_credential_id(&self.id)?,
             self.name,
             self.credential_key,

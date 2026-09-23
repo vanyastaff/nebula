@@ -117,7 +117,7 @@ fn project_head(
             })
         },
     };
-    StoredCredentialHead::new(
+    StoredCredentialHead::new_with_refresh_retry(
         live.credential_id(),
         live.name().map(str::to_owned),
         live.credential_key().to_owned(),

@@ -47,6 +47,9 @@ pub struct CredentialHead {
     pub last_validated_at: Option<DateTime<Utc>>,
     /// Durable, secret-free credential availability state.
     pub lifecycle: CredentialLifecycleState,
+    /// Compatibility projection for technical callers. Public clients should
+    /// match [`Self::lifecycle`] instead.
+    pub reauth_required: bool,
     /// Per-instance display metadata (name / description / tags). Empty
     /// for system-acquired credentials that were never named.
     pub display: CredentialDisplay,
@@ -84,6 +87,7 @@ impl CredentialHead {
                     },
                 }
             },
+            reauth_required: stored.reauth_required(),
             display,
         }
     }
@@ -115,7 +119,6 @@ mod tests {
             now,
             expires_at,
             false,
-            None,
             serde_json::Map::new(),
         )
         .expect("fixture is a live head")
@@ -130,6 +133,7 @@ mod tests {
         assert_eq!(head.version, 4);
         assert_eq!(head.last_validated_at, None);
         assert_eq!(head.lifecycle, CredentialLifecycleState::Ready);
+        assert!(!head.reauth_required);
         assert!(head.display.is_empty());
         // No `data` field exists on either persistence or service projection.
         let json = serde_json::to_value(&head).expect("serialize head");

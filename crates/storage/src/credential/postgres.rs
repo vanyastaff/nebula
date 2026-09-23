@@ -533,7 +533,7 @@ impl CredentialHeadRow {
             self.refresh_retry_not_before,
             self.backend_now,
         )?;
-        StoredCredentialHead::new(
+        StoredCredentialHead::new_with_refresh_retry(
             parse_credential_id(&self.id)?,
             self.name,
             self.credential_key,
