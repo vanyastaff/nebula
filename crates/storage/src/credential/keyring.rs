@@ -73,7 +73,9 @@ impl CredentialKeyring {
                 if encoded_key.is_empty() {
                     return Err(CredentialKeyringError::MalformedEmptyIdKey);
                 }
-                parse_key(encoded_key).map(|snapshot| snapshot.into_parts().1)
+                parse_key(encoded_key)
+                    .map(|snapshot| snapshot.into_parts().1)
+                    .map_err(|_| CredentialKeyringError::MalformedEmptyIdKey)
             })
             .transpose()?;
         Ok(Self {
@@ -162,5 +164,27 @@ impl CredentialKeyringError {
             Self::DuplicateLegacyKey => "duplicate_legacy_key",
             Self::MalformedEmptyIdKey => "malformed_empty_id_key",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use base64::Engine as _;
+
+    #[test]
+    fn malformed_empty_id_key_has_its_own_safe_category() {
+        let encoded_current = base64::engine::general_purpose::STANDARD.encode([1_u8; 32]);
+        let current: Arc<dyn KeyProvider> = Arc::new(
+            EnvKeyProvider::from_base64(&encoded_current).expect("valid current test key"),
+        );
+
+        let error = match CredentialKeyring::from_config(current, None, Some("not-base64")) {
+            Err(error) => error,
+            Ok(_) => panic!("malformed empty-ID key must fail closed"),
+        };
+
+        assert!(matches!(error, CredentialKeyringError::MalformedEmptyIdKey));
+        assert_eq!(error.category(), "malformed_empty_id_key");
     }
 }
