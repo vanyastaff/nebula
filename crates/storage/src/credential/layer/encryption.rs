@@ -520,7 +520,6 @@ mod tests {
             refresh_token: Some(SecretString::new(PLAINTEXT_REFRESH)),
             expires_at: None,
             scopes: vec!["s1".to_owned()],
-            grant_type: nebula_credential::GrantType::AuthorizationCode,
             client_id: SecretString::new("c"),
             client_secret: SecretString::new("s"),
             token_url: "https://example.invalid/token".to_owned(),
