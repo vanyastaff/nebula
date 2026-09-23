@@ -3,8 +3,8 @@
 //! lacks — one that is **non-interactive *and* Revocable *and* Refreshable**.
 //!
 //! The default static credentials (`api_key`, `basic_auth`, `signing_key`) are
-//! not Revocable or Refreshable; interactive `oauth2` is parked until the
-//! universal pending-flow transport is integrated. The harness therefore
+//! not Revocable or Refreshable. First-party `oauth2` is Interactive and
+//! Refreshable, but not Revocable. The harness therefore
 //! registers a local `TestLifecycleCred` via the custom-registry factory
 //! variant ([`with_memory_store_parts`]) over the real
 //! `Audit(Encryption(SQLite))` stack.

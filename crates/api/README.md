@@ -537,15 +537,15 @@ credential-acquisition HTTP contract. The former raw Plane-B
 `credentials/{id}/oauth2/{auth,callback}` ceremony is parked and returns
 404; provider-specific interaction must be represented through the
 facade's typed pending interaction before it can become a supported
-surface. Accordingly, the default registry/catalog does not register or
-advertise `oauth2`; attempts to create or resolve that key fail as an unknown
-credential type. When no command gateway is wired, every credential endpoint returns an honest
+surface. The default registry/catalog registers the universal `oauth2`
+credential and dispatches authorization-code acquisition through that pending
+protocol; it does not restore provider-specific ceremony routes. When no command gateway is wired, every credential endpoint returns an honest
 503 — there is no service/store fallback.
 
 | Aspect | First-party credential storage composition (after membership authority is provisioned) |
 |---|---|
-| Restart-survival | **Yes for completed credentials** — `NEBULA_CRED_DB` selects the default file-backed SQLite store or PostgreSQL; in-flight pending interactions remain ephemeral |
-| Multi-replica share | **Yes with PostgreSQL** — build `nebula-server` with `--features postgres` and set `NEBULA_CRED_DB=postgres://…`; the credential rows and refresh-claim repository share one admitted credential-owned pool. SQLite remains instance-local. |
+| Restart-survival | **Yes** — `NEBULA_CRED_DB` selects the default file-backed SQLite store or PostgreSQL; completed credentials and encrypted pending interactions share the admitted backend. |
+| Multi-replica share | **Yes with PostgreSQL** — build `nebula-server` with `--features postgres` and set `NEBULA_CRED_DB=postgres://…`; credential rows, pending interactions, and the refresh-claim repository share one admitted credential-owned pool. SQLite remains instance-local. |
 | Encryption at rest | **Yes** — the facade composes the `EncryptionLayer` adjacent to the backend (AES-256-GCM; key from `NEBULA_CRED_MASTER_KEY`, fail-closed) |
 | Cross-workspace isolation | **Yes** — authority verifies workspace existence/parentage, revalidates membership/role, reproduces the authenticated scope, and every persistence predicate uses the derived `(owner, credential_id)` selector; cross-workspace IDs collapse to a flat 404. The default server shares one backend-bound tenant directory across RBAC and credential authority. |
 | Lifecycle dispatch | **Live** — `test`/`refresh`/`revoke` dispatch the registered type's capability; a type without it is refused with 400 (capability gate), never a faked success. Provider rejection requiring an integration reconnect is the typed 409 `API:CREDENTIAL_REAUTH_REQUIRED`, not Plane-A 401. The test response is a tagged `status` union: success has no code; failure requires a frozen v1, payload-free code, and future core codes map to `other`. |

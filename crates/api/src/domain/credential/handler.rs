@@ -447,8 +447,8 @@ pub async fn reconcile_credential(
 /// the appropriate `Credential::resolve()` implementation. Returns either:
 /// - `Complete { credential_id }` for default static credentials (`api_key`, `basic_auth`,
 ///   `signing_key`)
-/// - `Pending { pending_token, interaction }` for an explicitly composed interactive type (the
-///   default registry currently contains none)
+/// - `Pending { pending_token, interaction }` for an interactive type such as the first-party
+///   OAuth2 authorization-code flow
 #[utoipa::path(
     post,
     path = "/orgs/{org}/workspaces/{ws}/credentials/resolve",
