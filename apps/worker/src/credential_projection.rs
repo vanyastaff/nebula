@@ -10,8 +10,8 @@ use std::sync::Arc;
 use nebula_credential::{
     ApiKeyCredential, BasicAuthCredential, CredentialProjectionRuntime,
     CredentialProjectionRuntimeBuildError, CredentialRegistry, CredentialSlotResolver,
-    DispatchError, DispatchOps, ErasedPendingStore, SigningKeyCredential, StateSource,
-    register_runtime_ops,
+    DispatchError, DispatchOps, ErasedPendingStore, OAuth2Credential, SigningKeyCredential,
+    StateSource, register_interactive_ops, register_refreshable_ops, register_runtime_ops,
 };
 #[cfg(feature = "postgres")]
 use nebula_storage::credential::PgCredentialPersistence;
@@ -233,6 +233,7 @@ fn first_party_registry() -> Result<CredentialRegistry, nebula_credential::Regis
     let mut registry = CredentialRegistry::new();
     registry.register(ApiKeyCredential, "nebula-credential")?;
     registry.register(BasicAuthCredential, "nebula-credential")?;
+    registry.register(OAuth2Credential, "nebula-credential")?;
     registry.register(SigningKeyCredential, "nebula-credential")?;
     Ok(registry)
 }
@@ -241,6 +242,9 @@ fn first_party_ops() -> Result<DispatchOps<ErasedPendingStore>, DispatchError> {
     let mut ops = DispatchOps::new();
     register_runtime_ops::<ApiKeyCredential, ErasedPendingStore>(&mut ops)?;
     register_runtime_ops::<BasicAuthCredential, ErasedPendingStore>(&mut ops)?;
+    register_runtime_ops::<OAuth2Credential, ErasedPendingStore>(&mut ops)?;
+    register_interactive_ops::<OAuth2Credential, ErasedPendingStore>(&mut ops)?;
+    register_refreshable_ops::<OAuth2Credential, ErasedPendingStore>(&mut ops)?;
     register_runtime_ops::<SigningKeyCredential, ErasedPendingStore>(&mut ops)?;
     Ok(ops)
 }
@@ -314,6 +318,21 @@ mod tests {
             false,
             serde_json::Map::new(),
         )
+    }
+
+    #[test]
+    fn first_party_projection_registers_oauth2_with_its_advertised_operations() {
+        let registry = super::first_party_registry().expect("first-party registry is valid");
+        let ops = super::first_party_ops().expect("first-party operation table is valid");
+        let key = credential_key!("oauth2");
+
+        let advertised = registry
+            .capabilities_of(key.as_str())
+            .expect("OAuth2 is present in the worker registry");
+        let dispatched = ops.capabilities_of(key.as_str());
+        assert!(advertised.contains(Capabilities::INTERACTIVE));
+        assert!(advertised.contains(Capabilities::REFRESHABLE));
+        assert_eq!(advertised.difference(dispatched), Capabilities::empty());
     }
 
     #[tokio::test]
