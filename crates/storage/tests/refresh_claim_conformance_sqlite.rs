@@ -25,19 +25,21 @@
 #[macro_use]
 #[path = "support/refresh_claim_oracle.rs"]
 mod oracle;
+use oracle::RefreshClaimFixture as _;
 
 use std::{str::FromStr, sync::Mutex, time::Duration};
 
 use chrono::{Duration as ChronoDuration, Utc};
-use nebula_core::CredentialId;
 use nebula_storage::credential::refresh_claim::{
     RefreshAdjudication, RefreshClaimAdjudicationError, RefreshClaimAdjudicator,
     RefreshOutcomeDecision,
 };
 use nebula_storage::credential::{
-    ClaimAttempt, ClaimToken, ExpiredClaim, HeartbeatError, RefreshClaimRepo, ReplicaId, RepoError,
+    ClaimAttempt, ClaimToken, ExpiredClaim, HeartbeatError, ReauthEscalation,
+    RefreshClaimReclaimer, RefreshClaimRepo, ReplicaId, RepoError, SentinelEscalationPolicy,
     SqliteRefreshClaimRepo,
 };
+use nebula_storage_port::CredentialSelector;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::{AssertSqlSafe, SqlitePool};
 
@@ -87,8 +89,8 @@ impl SqliteRefreshClaimFixture {
 
     /// A trigger name for `credential`, which the caller has already checked is
     /// identifier-safe.
-    fn trigger_name(&self, credential: &CredentialId) -> String {
-        format!("refresh_claim_inject_{credential}")
+    fn trigger_name(&self, credential: &CredentialSelector) -> String {
+        format!("refresh_claim_inject_{}", credential.credential_id())
     }
 }
 
@@ -96,12 +98,12 @@ impl SqliteRefreshClaimFixture {
 /// unsafe.
 ///
 /// Trigger names and trigger bodies are both rendered by interpolation, so the
-/// credential is validated rather than escaped: `CredentialId`'s `Display` is
+/// credential is validated rather than escaped: `CredentialSelector`'s `Display` is
 /// Crockford base32 behind a `cred_` prefix, and this fails loudly if that ever
 /// stops being true instead of interpolating something a SQL parser reads
 /// differently than this test intends.
-fn sql_literal(credential: &CredentialId) -> String {
-    let rendered = credential.to_string();
+fn sql_literal(credential: &CredentialSelector) -> String {
+    let rendered = credential.credential_id().to_string();
     assert!(
         rendered
             .chars()
@@ -115,11 +117,23 @@ fn sql_literal(credential: &CredentialId) -> String {
 impl RefreshClaimRepo for SqliteRefreshClaimFixture {
     async fn try_claim(
         &self,
-        credential_id: &CredentialId,
+        selector: &CredentialSelector,
         holder: &ReplicaId,
         ttl: Duration,
     ) -> Result<ClaimAttempt, RepoError> {
-        self.repo.try_claim(credential_id, holder, ttl).await
+        sqlx::query(
+            "INSERT OR IGNORE INTO credentials (id, owner_id, credential_key, state_kind, \
+             state_version, data, version, material_epoch, created_at, updated_at, \
+             reauth_required, metadata, record_state) \
+             VALUES (?1, ?2, 'test.key', 'test.state', 1, X'00', 1, 1, ?3, ?3, 0, '{}', 'live')",
+        )
+        .bind(selector.credential_id().to_string())
+        .bind(selector.owner().as_str())
+        .bind(Utc::now().timestamp_millis())
+        .execute(&self.pool)
+        .await
+        .map_err(|_| RepoError::Storage)?;
+        self.repo.try_claim(selector, holder, ttl).await
     }
 
     async fn heartbeat(&self, token: &ClaimToken, ttl: Duration) -> Result<(), HeartbeatError> {
@@ -133,19 +147,15 @@ impl RefreshClaimRepo for SqliteRefreshClaimFixture {
     async fn mark_sentinel(&self, token: &ClaimToken) -> Result<(), RepoError> {
         self.repo.mark_sentinel(token).await
     }
+}
 
-    async fn reclaim_stuck(&self) -> Result<Vec<ExpiredClaim>, RepoError> {
-        self.repo.reclaim_stuck().await
-    }
-
-    async fn count_sentinel_events_in_window(
+#[async_trait::async_trait]
+impl RefreshClaimReclaimer for SqliteRefreshClaimFixture {
+    async fn reclaim_stuck(
         &self,
-        credential_id: &CredentialId,
-        window: Duration,
-    ) -> Result<u32, RepoError> {
-        self.repo
-            .count_sentinel_events_in_window(credential_id, window)
-            .await
+        policy: SentinelEscalationPolicy,
+    ) -> Result<Vec<ExpiredClaim>, RepoError> {
+        self.repo.reclaim_stuck(policy).await
     }
 }
 
@@ -153,19 +163,17 @@ impl RefreshClaimRepo for SqliteRefreshClaimFixture {
 impl RefreshClaimAdjudicator for SqliteRefreshClaimFixture {
     async fn adjudicate(
         &self,
-        credential_id: &CredentialId,
+        selector: &CredentialSelector,
         decision: RefreshOutcomeDecision,
         evidence: &str,
     ) -> Result<RefreshAdjudication, RefreshClaimAdjudicationError> {
-        self.repo
-            .adjudicate(credential_id, decision, evidence)
-            .await
+        self.repo.adjudicate(selector, decision, evidence).await
     }
 }
 
 #[async_trait::async_trait]
 impl oracle::RefreshClaimFixture for SqliteRefreshClaimFixture {
-    fn credential(&self, case: &str) -> CredentialId {
+    fn credential(&self, case: &str) -> CredentialSelector {
         oracle::case_credential(&self.namespace, case)
     }
 
@@ -180,59 +188,91 @@ impl oracle::RefreshClaimFixture for SqliteRefreshClaimFixture {
         Duration::from_secs(30)
     }
 
-    async fn expire_claims(&self, credential: &CredentialId) {
+    async fn expire_claims(&self, credential: &CredentialSelector) {
         let expired_at = (Utc::now() - ChronoDuration::seconds(1)).timestamp_millis();
         sqlx::query(
             "UPDATE credential_refresh_claims \
              SET expires_at = ?1 \
-             WHERE credential_id = ?2",
+             WHERE owner_id = ?2 AND credential_id = ?3",
         )
         .bind(expired_at)
-        .bind(credential.to_string())
+        .bind(credential.owner().as_str())
+        .bind(credential.credential_id().to_string())
         .execute(&self.pool)
         .await
         .expect("backdating the claim row must not fail");
     }
 
-    async fn seed_unresolved_incidents(&self, credential: &CredentialId, count: u32) {
+    async fn seed_unresolved_incidents(&self, credential: &CredentialSelector, count: u32) {
         oracle::replay_poisoned_lifecycles(self, credential, count).await;
     }
 
-    async fn incident_count(&self, credential: &CredentialId) -> u64 {
-        u64::from(
-            self.count_sentinel_events_in_window(credential, oracle::INCIDENT_WINDOW)
-                .await
-                .expect("the sentinel count must be readable"),
-        )
-    }
-
-    async fn resolved_incident_count(&self, credential: &CredentialId) -> u64 {
+    async fn incident_count(&self, credential: &CredentialSelector) -> u64 {
         let (count,): (i64,) = sqlx::query_as(
             "SELECT COUNT(*) FROM credential_sentinel_events \
-             WHERE credential_id = ?1 AND adjudicated_at IS NOT NULL",
+             WHERE owner_id = ?1 AND credential_id = ?2",
         )
-        .bind(credential.to_string())
+        .bind(credential.owner().as_str())
+        .bind(credential.credential_id().to_string())
+        .fetch_one(&self.pool)
+        .await
+        .expect("the sentinel count must be readable");
+        u64::try_from(count).expect("a row count is not negative")
+    }
+
+    async fn count_sentinel_events_in_window(
+        &self,
+        credential: &CredentialSelector,
+        window: Duration,
+    ) -> Result<u32, RepoError> {
+        if window.is_zero() {
+            return Ok(0);
+        }
+        let window_ms = i64::try_from(window.as_millis()).map_err(|_| RepoError::InvalidState)?;
+        let (count,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM credential_sentinel_events \
+             WHERE owner_id = ?1 AND credential_id = ?2 \
+               AND detected_at > (unixepoch('now') * 1000 \
+                 + CAST(substr(strftime('%f', 'now'), 4, 3) AS INTEGER) - ?3)",
+        )
+        .bind(credential.owner().as_str())
+        .bind(credential.credential_id().to_string())
+        .bind(window_ms)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|_| RepoError::Storage)?;
+        Ok(u32::try_from(count).unwrap_or(u32::MAX))
+    }
+
+    async fn resolved_incident_count(&self, credential: &CredentialSelector) -> u64 {
+        let (count,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM credential_sentinel_events \
+             WHERE owner_id = ?1 AND credential_id = ?2 AND adjudicated_at IS NOT NULL",
+        )
+        .bind(credential.owner().as_str())
+        .bind(credential.credential_id().to_string())
         .fetch_one(&self.pool)
         .await
         .expect("counting decisions must not fail");
         u64::try_from(count).expect("a row count is not negative")
     }
 
-    async fn age_incidents(&self, credential: &CredentialId, by: Duration) {
+    async fn age_incidents(&self, credential: &CredentialSelector, by: Duration) {
         let by_ms = i64::try_from(by.as_millis()).expect("an age fits an i64");
         sqlx::query(
             "UPDATE credential_sentinel_events \
              SET detected_at = detected_at - ?1 \
-             WHERE credential_id = ?2",
+             WHERE owner_id = ?2 AND credential_id = ?3",
         )
         .bind(by_ms)
-        .bind(credential.to_string())
+        .bind(credential.owner().as_str())
+        .bind(credential.credential_id().to_string())
         .execute(&self.pool)
         .await
         .expect("aging an incident must not fail");
     }
 
-    async fn inject_decision_write_failure(&self, credential: &CredentialId) {
+    async fn inject_decision_write_failure(&self, credential: &CredentialSelector) {
         let name = self.trigger_name(credential);
         // Interpolation is safe: the trigger name is built from a validated
         // credential, and the body's only other literal is that same value.
@@ -261,7 +301,7 @@ impl oracle::RefreshClaimFixture for SqliteRefreshClaimFixture {
             .push(name);
     }
 
-    async fn clear_decision_write_failure(&self, credential: &CredentialId) {
+    async fn clear_decision_write_failure(&self, credential: &CredentialSelector) {
         // The named trigger goes first so the credential argument cannot be
         // ignored; the retained list is what proves one was installed.
         let name = self.trigger_name(credential);
@@ -275,17 +315,19 @@ impl oracle::RefreshClaimFixture for SqliteRefreshClaimFixture {
             .expect("dropping the failure trigger must not fail");
     }
 
-    async fn poisoned_claim_exists(&self, credential: &CredentialId) -> bool {
+    async fn poisoned_claim_exists(&self, credential: &CredentialSelector) -> bool {
         // Character for character the predicate the adapter answers
         // `OutcomeUnknown` with: an expired `sentinel = 1` row, compared
         // against the same millisecond clock the adapter binds.
         let (exists,): (i64,) = sqlx::query_as(
             "SELECT EXISTS ( \
                  SELECT 1 FROM credential_refresh_claims \
-                 WHERE credential_id = ?1 AND expires_at < ?2 AND sentinel = 1 \
+                 WHERE owner_id = ?1 AND credential_id = ?2 \
+                   AND expires_at < ?3 AND sentinel = 1 \
              )",
         )
-        .bind(credential.to_string())
+        .bind(credential.owner().as_str())
+        .bind(credential.credential_id().to_string())
         .bind(Utc::now().timestamp_millis())
         .fetch_one(&self.pool)
         .await
@@ -305,3 +347,69 @@ refresh_claim_case!(
     0x2D,
     fixture()
 );
+
+#[tokio::test]
+async fn threshold_incident_atomically_advances_reauth_authority_once() {
+    let fixture = SqliteRefreshClaimFixture::new().await;
+    let selector =
+        fixture.credential("threshold_incident_atomically_advances_reauth_authority_once");
+    let claim = match fixture
+        .try_claim(&selector, &fixture.replica(1), fixture.claim_ttl())
+        .await
+        .expect("claim")
+    {
+        ClaimAttempt::Acquired(claim) => claim,
+        other => panic!("fresh aggregate must be claimable: {other:?}"),
+    };
+    fixture
+        .mark_sentinel(&claim.token)
+        .await
+        .expect("mark egress");
+    fixture.expire_claims(&selector).await;
+
+    let policy =
+        SentinelEscalationPolicy::new(1, Duration::from_hours(1)).expect("valid threshold policy");
+    let outcomes = fixture.reclaim_stuck(policy).await.expect("atomic reclaim");
+    assert!(matches!(
+        outcomes.as_slice(),
+        [ExpiredClaim::OutcomeUnknownAccounted {
+            event_count: 1,
+            escalation: ReauthEscalation::ReauthRequired {
+                changed: true,
+                version,
+                material_epoch,
+            },
+            ..
+        }] if version.get() == 2 && material_epoch.get() == 2
+    ));
+
+    type CredentialAuthorityRow = (
+        i64,
+        i64,
+        i64,
+        Option<String>,
+        Option<i64>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    );
+    let row: CredentialAuthorityRow = sqlx::query_as(
+        "SELECT reauth_required, version, material_epoch, refresh_retry_mode, \
+             refresh_retry_not_before, refresh_retry_phase, refresh_retry_kind, \
+             refresh_retry_diagnostic_code FROM credentials \
+             WHERE owner_id = ?1 AND id = ?2",
+    )
+    .bind(selector.owner().as_str())
+    .bind(selector.credential_id().to_string())
+    .fetch_one(&fixture.pool)
+    .await
+    .expect("durable credential state");
+    assert_eq!(row, (1, 2, 2, None, None, None, None, None));
+    assert!(
+        fixture
+            .reclaim_stuck(policy)
+            .await
+            .expect("idempotent sweep")
+            .is_empty()
+    );
+}

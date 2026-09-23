@@ -32,6 +32,7 @@ use nebula_credential::runtime::{
     RefreshCoordConfig, RefreshCoordinator, RefreshDisposition, RefreshError, RefreshRecheck,
 };
 use nebula_storage::credential::{InMemoryRefreshClaimRepo, RefreshClaimRepo, ReplicaId};
+use nebula_storage_port::{CredentialOwner, CredentialSelector, Scope};
 use parking_lot::Mutex;
 
 #[derive(Clone, Copy, Debug)]
@@ -95,6 +96,7 @@ impl CredentialProbe {
 #[derive(Debug)]
 struct CredentialHarness {
     id: CredentialId,
+    selector: CredentialSelector,
     probe: Arc<CredentialProbe>,
 }
 
@@ -105,9 +107,14 @@ async fn three_replicas_never_double_dispatch_one_refresh_epoch() {
     let repo: Arc<dyn RefreshClaimRepo> = Arc::new(InMemoryRefreshClaimRepo::new());
     let credentials: Arc<Vec<CredentialHarness>> = Arc::new(
         (0..params.credentials)
-            .map(|_| CredentialHarness {
-                id: CredentialId::new(),
-                probe: Arc::new(CredentialProbe::new()),
+            .map(|_| {
+                let id = CredentialId::new();
+                let owner = CredentialOwner::from_scope(&Scope::new("ws-chaos", "org-chaos"));
+                CredentialHarness {
+                    id,
+                    selector: CredentialSelector::new(owner, id),
+                    probe: Arc::new(CredentialProbe::new()),
+                }
             })
             .collect(),
     );
@@ -168,7 +175,7 @@ async fn three_replicas_never_double_dispatch_one_refresh_epoch() {
                     let credential_id = credential.id;
                     let outcome = coordinator
                         .refresh_coalesced(
-                            &credential.id,
+                            &credential.selector,
                             move |_| {
                                 let probe = Arc::clone(&predicate_probe);
                                 async move {

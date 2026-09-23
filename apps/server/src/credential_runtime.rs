@@ -553,9 +553,12 @@ mod tests {
     use nebula_core::{OrgRole, WorkspaceRole};
     use nebula_credential::CredentialService;
     use nebula_storage::credential::EnvKeyProvider;
-    use nebula_storage_port::store::{
-        RefreshAdjudication, RefreshClaimAdjudicationError, RefreshClaimAdjudicator,
-        RefreshOutcomeDecision,
+    use nebula_storage_port::{
+        CredentialOwner, CredentialSelector,
+        store::{
+            RefreshAdjudication, RefreshClaimAdjudicationError, RefreshClaimAdjudicator,
+            RefreshOutcomeDecision,
+        },
     };
     use sha2::{Digest, Sha256};
 
@@ -861,19 +864,19 @@ mod tests {
     /// Records what the controller asked it to adjudicate and reports a change.
     #[derive(Debug, Default)]
     struct RecordingAdjudicator {
-        calls: Mutex<Vec<(CredentialId, RefreshOutcomeDecision, String)>>,
+        calls: Mutex<Vec<(CredentialSelector, RefreshOutcomeDecision, String)>>,
     }
 
     #[async_trait]
     impl RefreshClaimAdjudicator for RecordingAdjudicator {
         async fn adjudicate(
             &self,
-            credential_id: &CredentialId,
+            selector: &CredentialSelector,
             decision: RefreshOutcomeDecision,
             evidence: &str,
         ) -> Result<RefreshAdjudication, RefreshClaimAdjudicationError> {
             self.calls.lock().expect("test adjudication lock").push((
-                *credential_id,
+                selector.clone(),
                 decision,
                 evidence.to_owned(),
             ));
@@ -896,7 +899,7 @@ mod tests {
     impl RefreshClaimAdjudicator for RefusingAdjudicator {
         async fn adjudicate(
             &self,
-            _credential_id: &CredentialId,
+            _selector: &CredentialSelector,
             _decision: RefreshOutcomeDecision,
             _evidence: &str,
         ) -> Result<RefreshAdjudication, RefreshClaimAdjudicationError> {
@@ -927,7 +930,7 @@ mod tests {
     impl RefreshClaimAdjudicator for OneShotFailingAdjudicator {
         async fn adjudicate(
             &self,
-            _credential_id: &CredentialId,
+            _selector: &CredentialSelector,
             _decision: RefreshOutcomeDecision,
             _evidence: &str,
         ) -> Result<RefreshAdjudication, RefreshClaimAdjudicationError> {
@@ -1018,7 +1021,7 @@ mod tests {
                 .expect("test adjudication lock")
                 .as_slice(),
             &[(
-                credential_id,
+                CredentialSelector::new(CredentialOwner::from_scope(&scope), credential_id),
                 RefreshOutcomeDecision::ProviderApplied,
                 "provider support ticket 4417".to_owned(),
             )]

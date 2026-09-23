@@ -1279,7 +1279,10 @@ mod tests {
 
         let result = claim_repo
             .try_claim(
-                &CredentialId::new(),
+                &CredentialSelector::new(
+                    CredentialOwner::from_canonical("same-pool-owner"),
+                    CredentialId::new(),
+                ),
                 &ReplicaId::new("same-pool-probe"),
                 Duration::from_secs(30),
             )

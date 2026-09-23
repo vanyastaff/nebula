@@ -5,8 +5,8 @@
 //! and a real refresh coordinator over a real claim store:
 //!
 //! 1. refresh a credential through `/credentials/{cred}/refresh`; put its claim
-//!    row into the poisoned state the sweep leaves behind when a provider
-//!    outcome is unknown; read the refresh route refusing that credential with
+//!    row into expired fail-closed poison after a provider outcome becomes
+//!    unknown; read the refresh route refusing that credential with
 //!    409; record the provider outcome through `/credentials/{cred}/reconcile`;
 //!    then refresh again and watch it work. That last step is what gives the
 //!    route its meaning — without it the suite would pass on a route that
@@ -103,7 +103,9 @@ use nebula_storage::credential::{
 use nebula_storage_port::store::{
     ClaimAttempt, RefreshClaimAdjudicator, RefreshClaimStore, ReplicaId,
 };
-use nebula_storage_port::{CredentialPersistence, CredentialPersistenceError};
+use nebula_storage_port::{
+    CredentialOwner, CredentialPersistence, CredentialPersistenceError, CredentialSelector,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -474,15 +476,22 @@ impl ProbeFixture {
     }
 
     /// Take the credential's claim across the provider boundary and past its
-    /// lease, then account the incident — the retained poison.
+    /// lease, producing retained poison that reconciliation can adjudicate.
     ///
     /// Every step is the port's own lifecycle: the adapter's expiry predicate
-    /// is the clock, `reclaim_stuck` is the sweep's accounting entry point, and
-    /// neither is reached by writing SQL behind the service's back.
+    /// is the clock, and no state is reached by writing behind the service's
+    /// back.
     async fn poison(&self) {
         let acquired = self
             .claims
-            .try_claim(&self.credential, &self.holder(), CLAIM_TTL)
+            .try_claim(
+                &CredentialSelector::new(
+                    CredentialOwner::from_scope(&port_scope()),
+                    self.credential,
+                ),
+                &self.holder(),
+                CLAIM_TTL,
+            )
             .await
             .expect("a free claim is acquirable");
         let ClaimAttempt::Acquired(claim) = acquired else {
@@ -500,16 +509,9 @@ impl ProbeFixture {
             .advance(ChronoDuration::from_std(CLAIM_TTL).expect("the ttl fits a chrono duration"));
         self.clock.advance(ChronoDuration::seconds(1));
 
-        let accounted = self
-            .claims
-            .reclaim_stuck()
-            .await
-            .expect("the sweep must account the expired in-flight claim");
-        assert_eq!(
-            accounted.len(),
-            1,
-            "exactly one claim passed its lease with provider egress open: {accounted:?}"
-        );
+        // Reconciliation can adjudicate the expired poison directly. Threshold
+        // accounting belongs to a backend that also owns the credential
+        // aggregate; this reference claim adapter deliberately does not.
     }
 
     /// Ask the port for the credential's claim, on the same trait object the
@@ -520,7 +522,14 @@ impl ProbeFixture {
     /// claim, so no case may probe and then expect the coordinator to acquire.
     async fn attempt(&self) -> ClaimAttempt {
         self.claims
-            .try_claim(&self.credential, &self.holder(), CLAIM_TTL)
+            .try_claim(
+                &CredentialSelector::new(
+                    CredentialOwner::from_scope(&port_scope()),
+                    self.credential,
+                ),
+                &self.holder(),
+                CLAIM_TTL,
+            )
             .await
             .expect("acquisition must not fail")
     }

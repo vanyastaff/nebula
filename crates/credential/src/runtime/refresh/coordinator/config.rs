@@ -39,12 +39,9 @@ pub struct RefreshCoordConfig {
     /// Cadence of the background reclaim sweep (Stage 3.3).
     pub reclaim_sweep_interval: Duration,
     /// Distinct accounted incidents inside `sentinel_window` required before
-    /// emitting the `ReauthRequired` escalation decision/observation.
-    ///
-    /// The threshold does not mutate the credential aggregate; the
-    /// owner-qualified durable command is K3 work.
+    /// atomically installing the `ReauthRequired` aggregate transition.
     pub sentinel_threshold: u32,
-    /// Rolling window for sentinel-event counting (Stage 3.2).
+    /// Database-clock rolling window for atomic sentinel escalation.
     pub sentinel_window: Duration,
 }
 

@@ -1,41 +1,14 @@
 use super::*;
-
-/// A clock this module moves by hand, so "expired" and "an hour ago" cost
-/// no sleeping. The adapter's own clock is the seam; nothing else in the
-/// claim path reads time.
-struct ManualClock {
-    now: Mutex<DateTime<Utc>>,
-}
-
-impl ManualClock {
-    fn starting_now() -> Arc<Self> {
-        Arc::new(Self {
-            now: Mutex::new(Utc::now()),
-        })
-    }
-
-    fn advance(&self, by: chrono::Duration) {
-        *self.now.lock() += by;
-    }
-}
-
-impl Clock for ManualClock {
-    fn now(&self) -> DateTime<Utc> {
-        *self.now.lock()
-    }
-
-    fn monotonic(&self) -> std::time::Instant {
-        std::time::Instant::now()
-    }
-}
+use nebula_core::CredentialId;
+use nebula_storage_port::{CredentialOwner, CredentialSelector};
 
 async fn acquired_claim(
     repo: &InMemoryRefreshClaimRepo,
-    credential_id: &CredentialId,
+    selector: &CredentialSelector,
 ) -> RefreshClaim {
     match repo
         .try_claim(
-            credential_id,
+            selector,
             &ReplicaId::new("original-holder"),
             Duration::from_secs(30),
         )
@@ -48,10 +21,10 @@ async fn acquired_claim(
     }
 }
 
-fn expire_claim(repo: &InMemoryRefreshClaimRepo, credential_id: &CredentialId) {
+fn expire_claim(repo: &InMemoryRefreshClaimRepo, selector: &CredentialSelector) {
     let mut guard = repo.inner.lock();
     let row = guard
-        .get_mut(credential_id)
+        .get_mut(selector)
         .expect("acquired claim row must exist");
     row.expires_at = repo.clock.now() - chrono::Duration::seconds(1);
 }
@@ -59,9 +32,12 @@ fn expire_claim(repo: &InMemoryRefreshClaimRepo, credential_id: &CredentialId) {
 #[tokio::test]
 async fn expired_claim_cannot_be_marked_in_flight() {
     let repo = InMemoryRefreshClaimRepo::new();
-    let credential_id = CredentialId::new();
-    let claim = acquired_claim(&repo, &credential_id).await;
-    expire_claim(&repo, &credential_id);
+    let selector = CredentialSelector::new(
+        CredentialOwner::from_canonical("owner-a"),
+        CredentialId::new(),
+    );
+    let claim = acquired_claim(&repo, &selector).await;
+    expire_claim(&repo, &selector);
 
     let error = repo
         .mark_sentinel(&claim.token)
@@ -72,7 +48,7 @@ async fn expired_claim_cannot_be_marked_in_flight() {
     assert_eq!(
         repo.inner
             .lock()
-            .get(&credential_id)
+            .get(&selector)
             .expect("rejected mark must preserve the claim row")
             .sentinel,
         SentinelState::Normal,
@@ -83,16 +59,19 @@ async fn expired_claim_cannot_be_marked_in_flight() {
 #[tokio::test]
 async fn expired_in_flight_claim_is_preserved_until_reclaim() {
     let repo = InMemoryRefreshClaimRepo::new();
-    let credential_id = CredentialId::new();
-    let claim = acquired_claim(&repo, &credential_id).await;
+    let selector = CredentialSelector::new(
+        CredentialOwner::from_canonical("owner-a"),
+        CredentialId::new(),
+    );
+    let claim = acquired_claim(&repo, &selector).await;
     repo.mark_sentinel(&claim.token)
         .await
         .expect("live holder may mark provider egress");
-    expire_claim(&repo, &credential_id);
+    expire_claim(&repo, &selector);
 
     let attempt = repo
         .try_claim(
-            &credential_id,
+            &selector,
             &ReplicaId::new("challenger"),
             Duration::from_secs(30),
         )
@@ -104,65 +83,28 @@ async fn expired_in_flight_claim_is_preserved_until_reclaim() {
     );
     let repeated = repo
         .try_claim(
-            &credential_id,
+            &selector,
             &ReplicaId::new("second-challenger"),
             Duration::from_secs(30),
         )
         .await
         .expect("repeated poisoned acquisition");
     assert!(matches!(repeated, ClaimAttempt::OutcomeUnknown { .. }));
-
-    let reclaimed = repo.reclaim_stuck().await.expect("reclaim expired claim");
-    assert_eq!(reclaimed.len(), 1);
-    assert!(matches!(
-        &reclaimed[0],
-        ExpiredClaim::OutcomeUnknownAccounted {
-            credential_id: accounted_id,
-            previous_holder,
-            previous_generation: 0,
-        } if *accounted_id == credential_id
-            && *previous_holder == ReplicaId::new("original-holder")
-    ));
-    let recorded = repo
-        .count_sentinel_events_in_window(&credential_id, Duration::from_mins(1))
-        .await
-        .expect("count atomically recorded evidence");
-    assert_eq!(
-        recorded, 1,
-        "reclaim must durably account in-flight evidence while retaining poison"
-    );
-
-    let next = repo
-        .try_claim(
-            &credential_id,
-            &ReplicaId::new("challenger"),
-            Duration::from_secs(30),
-        )
-        .await
-        .expect("poisoned claim result");
-    assert!(
-        matches!(next, ClaimAttempt::OutcomeUnknown { .. }),
-        "accounting must not release an unknown provider outcome"
-    );
-    assert!(
-        repo.reclaim_stuck()
-            .await
-            .expect("idempotent poison accounting")
-            .is_empty(),
-        "the retained poison event must be accounted exactly once"
-    );
 }
 
 #[tokio::test]
 async fn expired_normal_claim_can_be_taken_over_in_place() {
     let repo = InMemoryRefreshClaimRepo::new();
-    let credential_id = CredentialId::new();
-    let first = acquired_claim(&repo, &credential_id).await;
-    expire_claim(&repo, &credential_id);
+    let selector = CredentialSelector::new(
+        CredentialOwner::from_canonical("owner-a"),
+        CredentialId::new(),
+    );
+    let first = acquired_claim(&repo, &selector).await;
+    expire_claim(&repo, &selector);
 
     let second = repo
         .try_claim(
-            &credential_id,
+            &selector,
             &ReplicaId::new("challenger"),
             Duration::from_secs(30),
         )
@@ -178,19 +120,22 @@ async fn expired_normal_claim_can_be_taken_over_in_place() {
 #[tokio::test]
 async fn exact_confirmed_release_clears_expired_in_flight_claim() {
     let repo = InMemoryRefreshClaimRepo::new();
-    let credential_id = CredentialId::new();
-    let claim = acquired_claim(&repo, &credential_id).await;
+    let selector = CredentialSelector::new(
+        CredentialOwner::from_canonical("owner-a"),
+        CredentialId::new(),
+    );
+    let claim = acquired_claim(&repo, &selector).await;
     repo.mark_sentinel(&claim.token)
         .await
         .expect("mark provider boundary");
-    expire_claim(&repo, &credential_id);
+    expire_claim(&repo, &selector);
 
     repo.release(claim.token)
         .await
         .expect("exact confirmed finalization");
     let next = repo
         .try_claim(
-            &credential_id,
+            &selector,
             &ReplicaId::new("next-holder"),
             Duration::from_secs(30),
         )
@@ -203,91 +148,124 @@ async fn exact_confirmed_release_clears_expired_in_flight_claim() {
 }
 
 #[tokio::test]
-async fn old_generation_zero_evidence_does_not_mask_a_new_claim_lifecycle() {
+async fn owner_partitions_are_independent_for_the_same_credential_id() {
     let repo = InMemoryRefreshClaimRepo::new();
-    let credential_id = CredentialId::new();
+    let id = CredentialId::new();
+    let owner_a = CredentialSelector::new(CredentialOwner::from_canonical("owner-a"), id);
+    let owner_b = CredentialSelector::new(CredentialOwner::from_canonical("owner-b"), id);
 
-    let first = acquired_claim(&repo, &credential_id).await;
-    repo.mark_sentinel(&first.token)
-        .await
-        .expect("mark first provider boundary");
-    expire_claim(&repo, &credential_id);
-    assert_eq!(
-        repo.reclaim_stuck()
+    assert!(matches!(
+        repo.try_claim(&owner_a, &ReplicaId::new("a"), Duration::from_secs(30))
             .await
-            .expect("account first poison")
-            .len(),
-        1
-    );
-    // Reconciliation, not release, is how a poisoned lifecycle ends: the
-    // incident the sweep just recorded must be resolved before the row can
-    // go away, and `release` would now refuse it.
-    repo.adjudicate(
-        &credential_id,
-        RefreshOutcomeDecision::ProviderNotApplied,
-        "operator confirmed the first provider call never landed",
-    )
-    .await
-    .expect("reconcile the first lifecycle's unknown outcome");
+            .expect("owner A claim"),
+        ClaimAttempt::Acquired(_)
+    ));
+    assert!(matches!(
+        repo.try_claim(&owner_b, &ReplicaId::new("b"), Duration::from_secs(30))
+            .await
+            .expect("owner B claim"),
+        ClaimAttempt::Acquired(_)
+    ));
+}
 
-    let second = acquired_claim(&repo, &credential_id).await;
-    assert_eq!(
-        second.token.generation, 0,
-        "a new row demonstrates why generation alone is not event identity"
+#[tokio::test]
+async fn heartbeat_rejects_a_forged_generation_without_extending_the_claim() {
+    let repo = InMemoryRefreshClaimRepo::new();
+    let selector = CredentialSelector::new(
+        CredentialOwner::from_canonical("owner-a"),
+        CredentialId::new(),
     );
-    repo.mark_sentinel(&second.token)
-        .await
-        .expect("mark second provider boundary");
-    expire_claim(&repo, &credential_id);
+    let claim = acquired_claim(&repo, &selector).await;
+    let original_expiry = claim.expires_at;
+    let forged = ClaimToken {
+        selector: selector.clone(),
+        claim_id: claim.token.claim_id,
+        generation: claim.token.generation + 1,
+    };
 
+    assert!(matches!(
+        repo.heartbeat(&forged, Duration::from_mins(1)).await,
+        Err(HeartbeatError::ClaimLost)
+    ));
     assert_eq!(
-        repo.reclaim_stuck()
-            .await
-            .expect("account second poison")
-            .len(),
-        1,
-        "evidence from the prior row lifecycle must not suppress new poison"
-    );
-    assert_eq!(
-        repo.count_sentinel_events_in_window(&credential_id, Duration::from_mins(1))
-            .await
-            .expect("count both lifecycle events"),
-        2
+        repo.inner
+            .lock()
+            .get(&selector)
+            .expect("claim row")
+            .expires_at,
+        original_expiry
     );
 }
 
 #[tokio::test]
-async fn sentinel_window_excludes_evidence_older_than_the_window() -> Result<(), RepoError> {
-    let clock = ManualClock::starting_now();
-    let repo = InMemoryRefreshClaimRepo::with_clock(Arc::clone(&clock) as Arc<dyn Clock>);
-    let credential_id = CredentialId::new();
-
-    let claim = acquired_claim(&repo, &credential_id).await;
+async fn adjudication_is_idempotent_and_conflicting_evidence_is_refused() {
+    let repo = InMemoryRefreshClaimRepo::new();
+    let selector = CredentialSelector::new(
+        CredentialOwner::from_canonical("owner-a"),
+        CredentialId::new(),
+    );
+    let claim = acquired_claim(&repo, &selector).await;
     repo.mark_sentinel(&claim.token)
         .await
-        .expect("mark provider boundary");
-    clock.advance(chrono::Duration::seconds(31));
-    assert_eq!(
-        repo.reclaim_stuck()
-            .await
-            .expect("account the in-flight expiry")
-            .len(),
-        1
-    );
+        .expect("mark provider egress");
+    expire_claim(&repo, &selector);
 
-    let window = Duration::from_hours(24);
-    assert_eq!(
-        repo.count_sentinel_events_in_window(&credential_id, window)
-            .await?,
-        1,
-        "the accounted incident is inside the window"
+    let first = repo
+        .adjudicate(
+            &selector,
+            RefreshOutcomeDecision::ProviderNotApplied,
+            "provider confirmed no mutation",
+        )
+        .await
+        .expect("first decision");
+    assert!(first.changed);
+
+    let repeat = repo
+        .adjudicate(
+            &selector,
+            RefreshOutcomeDecision::ProviderNotApplied,
+            "provider confirmed no mutation",
+        )
+        .await
+        .expect("idempotent recommit");
+    assert!(!repeat.changed);
+
+    let conflict = repo
+        .adjudicate(
+            &selector,
+            RefreshOutcomeDecision::ProviderApplied,
+            "different evidence",
+        )
+        .await
+        .expect_err("a recorded outcome cannot be overwritten");
+    assert!(matches!(
+        conflict,
+        RepoAdjudicationError::EvidenceConflict { .. }
+    ));
+}
+
+#[tokio::test]
+async fn adjudication_evidence_bounds_preserve_poison() {
+    let repo = InMemoryRefreshClaimRepo::new();
+    let selector = CredentialSelector::new(
+        CredentialOwner::from_canonical("owner-a"),
+        CredentialId::new(),
     );
-    clock.advance(chrono::Duration::hours(25));
-    assert_eq!(
-        repo.count_sentinel_events_in_window(&credential_id, window)
-            .await?,
-        0,
-        "events before the window must be excluded"
-    );
-    Ok(())
+    let claim = acquired_claim(&repo, &selector).await;
+    repo.mark_sentinel(&claim.token)
+        .await
+        .expect("mark provider egress");
+    expire_claim(&repo, &selector);
+
+    assert!(matches!(
+        repo.adjudicate(&selector, RefreshOutcomeDecision::ProviderNotApplied, "",)
+            .await,
+        Err(RepoAdjudicationError::InvalidEvidence)
+    ));
+    assert!(matches!(
+        repo.try_claim(&selector, &ReplicaId::new("next"), Duration::from_secs(30))
+            .await
+            .expect("poison check"),
+        ClaimAttempt::OutcomeUnknown { .. }
+    ));
 }

@@ -10,8 +10,7 @@ use chrono::Utc;
 use nebula_core::auth::{AuthPattern, EgressShape, RefreshStrategyKind};
 use nebula_storage_port::SecretBytes;
 use nebula_storage_port::store::{
-    ClaimAttempt, ClaimToken, ExpiredClaim, HeartbeatError, RefreshClaimError, RefreshClaimStore,
-    ReplicaId,
+    ClaimAttempt, ClaimToken, HeartbeatError, RefreshClaimError, RefreshClaimStore, ReplicaId,
 };
 use nebula_storage_port::{
     CredentialAlreadyExistsKey, CredentialCommit, CredentialCreate, CredentialMaterialEpoch,
@@ -46,7 +45,7 @@ struct StubClaimRepo;
 impl RefreshClaimStore for StubClaimRepo {
     async fn try_claim(
         &self,
-        credential_id: &CredentialId,
+        selector: &CredentialSelector,
         _holder: &ReplicaId,
         ttl: Duration,
     ) -> Result<ClaimAttempt, RefreshClaimError> {
@@ -54,8 +53,9 @@ impl RefreshClaimStore for StubClaimRepo {
         let ttl = chrono::Duration::from_std(ttl).expect("test refresh-claim TTL is representable");
         Ok(ClaimAttempt::Acquired(
             nebula_storage_port::store::RefreshClaim {
-                credential_id: credential_id.to_owned(),
+                selector: selector.clone(),
                 token: ClaimToken {
+                    selector: selector.clone(),
                     claim_id: "00000000-0000-0000-0000-000000000001"
                         .parse()
                         .expect("test claim id is a UUID"),
@@ -74,16 +74,6 @@ impl RefreshClaimStore for StubClaimRepo {
     }
     async fn mark_sentinel(&self, _token: &ClaimToken) -> Result<(), RefreshClaimError> {
         Ok(())
-    }
-    async fn reclaim_stuck(&self) -> Result<Vec<ExpiredClaim>, RefreshClaimError> {
-        Ok(Vec::new())
-    }
-    async fn count_sentinel_events_in_window(
-        &self,
-        _credential_id: &CredentialId,
-        _window: Duration,
-    ) -> Result<u32, RefreshClaimError> {
-        Ok(0)
     }
 }
 
@@ -118,7 +108,7 @@ impl StatefulClaimRepo {
 impl RefreshClaimStore for StatefulClaimRepo {
     async fn try_claim(
         &self,
-        credential_id: &CredentialId,
+        selector: &CredentialSelector,
         _holder: &ReplicaId,
         ttl: Duration,
     ) -> Result<ClaimAttempt, RefreshClaimError> {
@@ -138,8 +128,9 @@ impl RefreshClaimStore for StatefulClaimRepo {
 
         Ok(ClaimAttempt::Acquired(
             nebula_storage_port::store::RefreshClaim {
-                credential_id: credential_id.to_owned(),
+                selector: selector.clone(),
                 token: ClaimToken {
+                    selector: selector.clone(),
                     claim_id: "00000000-0000-0000-0000-000000000002"
                         .parse()
                         .expect("test claim id is a UUID"),
@@ -172,18 +163,6 @@ impl RefreshClaimStore for StatefulClaimRepo {
         } else {
             Err(RefreshClaimError::InvalidState)
         }
-    }
-
-    async fn reclaim_stuck(&self) -> Result<Vec<ExpiredClaim>, RefreshClaimError> {
-        Ok(Vec::new())
-    }
-
-    async fn count_sentinel_events_in_window(
-        &self,
-        _credential_id: &CredentialId,
-        _window: Duration,
-    ) -> Result<u32, RefreshClaimError> {
-        Ok(0)
     }
 }
 

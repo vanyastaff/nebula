@@ -146,7 +146,11 @@ Providerless local completion is explicit. Coalescing, persistence, and claim di
 framework-owned and cannot be synthesized by an integration.
 After TTL, storage keeps an expired `RefreshInFlight` row as durable fail-closed poison:
 `try_claim` returns `OutcomeUnknown`, provider dispatch remains forbidden, and the reclaim sweep
-atomically records evidence without deleting the row. Provider transport/read failure, a malformed
+atomically records evidence without deleting the row. The owner-qualified reclaimer evaluates the
+sentinel window in that same transaction; crossing the threshold advances revision and material
+epoch, clears stale retry evidence, and commits `reauth_required`. Metrics, audit, and EventBus
+notifications consume the committed result and are never the source of truth. Provider
+transport/read failure, a malformed
 successful response, and an opaque integration error are likewise
 `OutcomeUnknown`: dispatch began, so lack of a complete acknowledgement cannot prove the rotating
 grant survived. Exact `invalid_grant` is instead persisted as `reauth_required`; missing local
@@ -270,8 +274,9 @@ shared metadata authoring foundation is tracked in the
 - **K3 closure:** owner-qualified reconciliation, the persisted-state version envelope, and
   crate-private service management methods are implemented. External service management callers
   now enter through the controller, but a global sole semantic writer plus operation-ledger
-  idempotency is not yet structurally enforced. Transactional audit/outbox evidence, durable
-  cross-aggregate convergence, and the durable sentinel-to-reauth command also remain open.
+  idempotency is not yet structurally enforced. Transactional audit/outbox evidence and durable
+  cross-aggregate convergence also remain open. Sentinel threshold escalation now commits within
+  the credential aggregate's owner-qualified storage transaction.
 - **K4:** provide supported membership/deployment wiring and finish curated SDK
   `client`/`embedded` façades without exposing internal authority. Production credential adapters
   already live in `apps/server`; the API-side factory is an unsupported test fixture only.

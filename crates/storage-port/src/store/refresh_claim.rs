@@ -30,7 +30,7 @@
 //! | [`RefreshClaimStore::mark_sentinel`] | `RefreshCoordinator` (immediately pre-provider-egress) |
 //! | [`RefreshClaimStore::heartbeat`] | the `RefreshCoordinator` lease heartbeat task (`spawn_heartbeat`) |
 //! | [`RefreshClaimStore::release`] | the two `RefreshLease` authorities below (caller discipline; see the method's own docs) |
-//! | [`RefreshClaimStore::reclaim_stuck`] | `reclaim::run_one_sweep`, spawned by `ReclaimSweepHandle` |
+//! | [`RefreshClaimReclaimer::reclaim_stuck`] | `reclaim::run_one_sweep`, spawned by `ReclaimSweepHandle` |
 //! | [`RefreshClaimAdjudicator::adjudicate`] | `CredentialController::reconcile` — the sole management writer |
 //!
 //! The two `release` authorities share one boundary, stated as caller
@@ -45,19 +45,19 @@
 //! The seams by which a store or adjudicator handle could leave its authority,
 //! each with a single consumer:
 //!
-//! - `RefreshCoordinator::repo()` is `pub(crate)`; its only consumer is
-//!   `ReclaimSweepHandle::spawn`, which clones it into the sweep task.
+//! - `ReclaimSweepHandle` receives a separate [`RefreshClaimReclaimer`]
+//!   capability; `RefreshCoordinator` never exposes its request-path store.
 //! - `CredentialRuntime.adjudicator` (first-party composition root) is
 //!   `pub(crate)`; its only production clone-out feeds
 //!   `CredentialController::new`, and the server gateway holds the
 //!   `CredentialController`, never the raw adjudicator handle.
-//! - `SentinelTrigger` holds its repo handle privately and reads only; it
-//!   exposes no write path.
+//! - threshold evaluation and the aggregate reauthentication transition live
+//!   inside the reclaimer's atomic backend transaction.
 
 use std::time::Duration;
 
+use crate::{CredentialMaterialEpoch, CredentialSelector, CredentialVersion};
 use chrono::{DateTime, Utc};
-use nebula_core::CredentialId;
 use uuid::Uuid;
 
 /// Stable identifier for a Nebula replica process. Bounded length so it
@@ -102,6 +102,8 @@ impl std::fmt::Display for ReplicaId {
 /// holder's heartbeat cannot extend a reclaimed claim.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ClaimToken {
+    /// Complete owner-bound identity of the claimed credential.
+    pub selector: CredentialSelector,
     /// Per-claim UUID stamped on acquisition.
     pub claim_id: Uuid,
     /// Bumped each time the row is overwritten on reclaim.
@@ -111,8 +113,8 @@ pub struct ClaimToken {
 /// A successfully acquired refresh claim.
 #[derive(Clone, Debug)]
 pub struct RefreshClaim {
-    /// Credential the claim is held against.
-    pub credential_id: CredentialId,
+    /// Owner-qualified credential the claim is held against.
+    pub selector: CredentialSelector,
     /// Holder-side proof of ownership.
     pub token: ClaimToken,
     /// When the claim was acquired.
@@ -185,7 +187,7 @@ pub enum SentinelState {
     RefreshInFlight,
 }
 
-/// One newly-accounted result returned by [`RefreshClaimStore::reclaim_stuck`].
+/// One newly-accounted result returned by [`RefreshClaimReclaimer::reclaim_stuck`].
 ///
 /// The variants are structural: a normal expiry is released, while an
 /// in-flight expiry is retained as durable poison after its sentinel evidence
@@ -194,8 +196,8 @@ pub enum SentinelState {
 pub enum ExpiredClaim {
     /// A claim that expired before provider egress and was deleted.
     ReclaimedNormal {
-        /// Credential whose stale claim was released.
-        credential_id: CredentialId,
+        /// Owner-qualified credential whose stale claim was released.
+        selector: CredentialSelector,
         /// Replica that previously held the claim.
         previous_holder: ReplicaId,
         /// Generation of the previous holder's claim.
@@ -204,13 +206,93 @@ pub enum ExpiredClaim {
     /// A claim that expired after provider egress began. Its evidence was
     /// durably recorded while the claim row remained as fail-closed poison.
     OutcomeUnknownAccounted {
-        /// Credential retained in the poisoned claim row.
-        credential_id: CredentialId,
+        /// Owner-qualified credential retained in the poisoned claim row.
+        selector: CredentialSelector,
         /// Replica whose provider outcome is unknown.
         previous_holder: ReplicaId,
         /// Generation whose provider outcome is unknown.
         previous_generation: u64,
+        /// Number of distinct incidents inside the configured rolling window.
+        event_count: u32,
+        /// Durable aggregate decision committed with the incident accounting.
+        escalation: ReauthEscalation,
     },
+}
+
+/// Durable aggregate result committed while accounting an expired in-flight
+/// refresh claim.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReauthEscalation {
+    /// The incident count remains below the configured threshold.
+    BelowThreshold,
+    /// The live credential now durably requires reauthentication.
+    ReauthRequired {
+        /// Whether this sweep changed the credential row. `false` means an
+        /// earlier decision had already installed the same durable state.
+        changed: bool,
+        /// Credential version committed by, or observed during, this atomic
+        /// decision.
+        version: CredentialVersion,
+        /// Material authority committed by, or observed during, this atomic
+        /// decision.
+        material_epoch: CredentialMaterialEpoch,
+    },
+    /// The credential became terminal before escalation. There is no live
+    /// aggregate on which to install reauthentication state.
+    AggregateTerminal,
+}
+
+/// Validated threshold used by the atomic reclaim boundary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SentinelEscalationPolicy {
+    threshold: u32,
+    window: Duration,
+}
+
+impl SentinelEscalationPolicy {
+    /// Construct a non-zero threshold and a rolling window representable by
+    /// every supported persistence backend.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SentinelEscalationPolicyError`] when the threshold is zero or
+    /// the window is shorter than one millisecond.
+    pub const fn new(
+        threshold: u32,
+        window: Duration,
+    ) -> Result<Self, SentinelEscalationPolicyError> {
+        if threshold == 0 {
+            return Err(SentinelEscalationPolicyError::ZeroThreshold);
+        }
+        if window.as_nanos() < Duration::from_millis(1).as_nanos() {
+            return Err(SentinelEscalationPolicyError::WindowBelowPrecision);
+        }
+        Ok(Self { threshold, window })
+    }
+
+    /// Return the number of distinct incidents required for escalation.
+    #[must_use]
+    pub const fn threshold(self) -> u32 {
+        self.threshold
+    }
+
+    /// Return the database-clock rolling window.
+    #[must_use]
+    pub const fn window(self) -> Duration {
+        self.window
+    }
+}
+
+/// Invalid atomic reclaim policy.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum SentinelEscalationPolicyError {
+    /// A zero threshold would escalate every incident.
+    #[error("sentinel escalation threshold must be greater than zero")]
+    ZeroThreshold,
+    /// The window is below the common millisecond precision of supported
+    /// persistence backends.
+    #[error("sentinel escalation window must be at least one millisecond")]
+    WindowBelowPrecision,
 }
 
 /// Cross-replica claim store.
@@ -220,13 +302,13 @@ pub enum ExpiredClaim {
 /// atomic operation exposed through this port.
 #[async_trait::async_trait]
 pub trait RefreshClaimStore: Send + Sync + 'static {
-    /// Try to acquire a refresh claim for `credential_id` on behalf of
-    /// `holder`. A missing row or expired [`SentinelState::Normal`] row can
+    /// Try to acquire a refresh claim for `selector` on behalf of `holder`.
+    /// A missing row or expired [`SentinelState::Normal`] row can
     /// be acquired. An expired [`SentinelState::RefreshInFlight`] row returns
     /// [`ClaimAttempt::OutcomeUnknown`] and remains durable fail-closed poison.
     async fn try_claim(
         &self,
-        credential_id: &CredentialId,
+        selector: &CredentialSelector,
         holder: &ReplicaId,
         ttl: Duration,
     ) -> Result<ClaimAttempt, RefreshClaimError>;
@@ -244,7 +326,7 @@ pub trait RefreshClaimStore: Send + Sync + 'static {
     /// certainty from the token alone.
     ///
     /// Those two authorities share one boundary, and the sweep moves it.
-    /// Before [`RefreshClaimStore::reclaim_stuck`] has accounted the claim's
+    /// Before [`RefreshClaimReclaimer::reclaim_stuck`] has accounted the claim's
     /// incident, release with the exact token deletes the row, so a `Confirmed`
     /// finalization that lands after lease expiry still cleans up. Once the
     /// sweep has accounted it, the row is retained as poison and
@@ -276,28 +358,27 @@ pub trait RefreshClaimStore: Send + Sync + 'static {
     /// The token must still identify an unexpired claim; an expired token
     /// cannot authorize provider egress.
     async fn mark_sentinel(&self, token: &ClaimToken) -> Result<(), RefreshClaimError>;
+}
 
-    /// Account claims past TTL in one atomic storage boundary.
+/// Sole background authority for expired refresh-claim recovery.
+///
+/// This role is deliberately separate from [`RefreshClaimStore`]: ordinary
+/// refresh coordination cannot acquire the authority to mutate credential
+/// aggregate state merely by holding its claim port.
+#[async_trait::async_trait]
+pub trait RefreshClaimReclaimer: Send + Sync + 'static {
+    /// Account expired claims and apply threshold-driven reauthentication in
+    /// one backend transaction.
     ///
-    /// Expired Normal rows are deleted and returned as
-    /// [`ExpiredClaim::ReclaimedNormal`]. Expired `RefreshInFlight` rows are
-    /// never deleted: their sentinel event is inserted idempotently under the
-    /// claim-row lock, keyed by the globally unique claim UUID, and only a
-    /// newly recorded event is returned as
-    /// [`ExpiredClaim::OutcomeUnknownAccounted`]. If accounting fails, neither
-    /// the event nor claim state is partially advanced.
-    async fn reclaim_stuck(&self) -> Result<Vec<ExpiredClaim>, RefreshClaimError>;
-
-    /// Count sentinel events for `credential_id` strictly inside `window`.
-    ///
-    /// SQL adapters derive the cutoff from the same database clock that
-    /// authors `detected_at`; callers provide a duration, never a
-    /// replica-clock timestamp.
-    async fn count_sentinel_events_in_window(
+    /// Normal claims are deleted. For an expired in-flight claim the backend
+    /// inserts its unique incident, evaluates `policy` against the same
+    /// database clock, and, when the threshold is met, advances the live
+    /// credential's material authority and installs `reauth_required`. The
+    /// incident and aggregate transition either both commit or neither does.
+    async fn reclaim_stuck(
         &self,
-        credential_id: &CredentialId,
-        window: Duration,
-    ) -> Result<u32, RefreshClaimError>;
+        policy: SentinelEscalationPolicy,
+    ) -> Result<Vec<ExpiredClaim>, RefreshClaimError>;
 }
 
 /// What the provider side did for a refresh whose claim expired in flight.
@@ -450,7 +531,7 @@ pub enum RefreshClaimAdjudicationError {
 /// sentinel incident it resolves.
 #[async_trait::async_trait]
 pub trait RefreshClaimAdjudicator: Send + Sync + 'static {
-    /// Record `decision` as the resolution of `credential_id`'s poisoned
+    /// Record `decision` as the resolution of `selector`'s poisoned
     /// claim, or of the resolution already on record for it.
     ///
     /// `evidence` is an operator-supplied, secret-free note recording *why*
@@ -483,7 +564,7 @@ pub trait RefreshClaimAdjudicator: Send + Sync + 'static {
     /// commit was dispatched but its acknowledgement was lost.
     async fn adjudicate(
         &self,
-        credential_id: &CredentialId,
+        selector: &CredentialSelector,
         decision: RefreshOutcomeDecision,
         evidence: &str,
     ) -> Result<RefreshAdjudication, RefreshClaimAdjudicationError>;
@@ -491,9 +572,11 @@ pub trait RefreshClaimAdjudicator: Send + Sync + 'static {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::{
         MAX_ADJUDICATION_EVIDENCE_BYTES, RefreshClaimAdjudicationError, RefreshClaimError,
-        RefreshOutcomeDecision,
+        RefreshOutcomeDecision, SentinelEscalationPolicy, SentinelEscalationPolicyError,
     };
 
     /// Every variant renders its own message.
@@ -604,5 +687,26 @@ mod tests {
         // The bound is a durable-row size limit, not a message-size preference:
         // the note is digested and persisted verbatim on the incident row.
         assert_eq!(MAX_ADJUDICATION_EVIDENCE_BYTES, 4096);
+    }
+
+    #[test]
+    fn escalation_policy_rejects_vacuous_thresholds() {
+        assert_eq!(
+            SentinelEscalationPolicy::new(0, Duration::from_secs(1)),
+            Err(SentinelEscalationPolicyError::ZeroThreshold)
+        );
+        assert_eq!(
+            SentinelEscalationPolicy::new(1, Duration::ZERO),
+            Err(SentinelEscalationPolicyError::WindowBelowPrecision)
+        );
+        assert_eq!(
+            SentinelEscalationPolicy::new(1, Duration::from_nanos(1)),
+            Err(SentinelEscalationPolicyError::WindowBelowPrecision)
+        );
+
+        let policy = SentinelEscalationPolicy::new(3, Duration::from_hours(1))
+            .expect("non-zero policy is valid");
+        assert_eq!(policy.threshold(), 3);
+        assert_eq!(policy.window(), Duration::from_hours(1));
     }
 }

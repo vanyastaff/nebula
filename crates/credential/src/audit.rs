@@ -120,9 +120,9 @@ pub enum AuditOperation {
         /// detection (includes the new event).
         recent_count: u32,
     },
-    /// The sentinel threshold was crossed and the reclaim sweep emitted
-    /// its reauthentication-required observation. This audit operation
-    /// does not claim that the credential row was durably mutated.
+    /// The sentinel threshold was crossed after the reclaim transaction
+    /// durably installed or observed reauthentication-required state. This
+    /// audit operation remains a best-effort post-commit observation.
     /// `reason` is the textual form of the `ReauthReason` observation.
     RefreshCoordReauthThresholdReached {
         /// Sanitized reason string. For sentinel-driven escalations:

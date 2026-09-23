@@ -34,9 +34,9 @@ pub use postgres::PgRefreshClaimRepo;
 // trait, `RepoError` the port's `RefreshClaimError`. Not a shim: there is
 // exactly one definition (in the port); this is a rename-on-import.
 pub use nebula_storage_port::store::{
-    ClaimAttempt, ClaimToken, ExpiredClaim, HeartbeatError, RefreshClaim,
-    RefreshClaimError as RepoError, RefreshClaimStore as RefreshClaimRepo, ReplicaId,
-    SentinelState,
+    ClaimAttempt, ClaimToken, ExpiredClaim, HeartbeatError, ReauthEscalation, RefreshClaim,
+    RefreshClaimError as RepoError, RefreshClaimReclaimer, RefreshClaimStore as RefreshClaimRepo,
+    ReplicaId, SentinelEscalationPolicy, SentinelState,
 };
 
 // The adjudication role is new with the reconciliation mechanism, so it has no

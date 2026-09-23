@@ -1324,6 +1324,14 @@ mod tests {
     }
 
     ///
+    /// Head 0054 owner-qualifies refresh claims and sentinel incidents by
+    /// backfilling the canonical owner from the credential aggregate. It is an
+    /// aggregate transform: an orphan makes the migration fail closed, and
+    /// credential readiness remains the owner preflight before catalog setup.
+    /// The general floor remains at 0040 because every database admitted there
+    /// has owner-qualified credentials and the migration derives no authority
+    /// from caller-controlled metadata.
+    ///
     /// Head 0053 adds the operator reconciliation record to credential sentinel
     /// incidents. Every column is nullable and NULL for incidents recorded
     /// earlier, which stays the fail-closed "no provider outcome is known"
@@ -1357,9 +1365,9 @@ mod tests {
     fn new_catalog_head_requires_explicit_admission_policy_review() {
         assert_eq!(GENERAL_CATALOG_SUPPORTED_FLOOR, 40);
         #[cfg(feature = "sqlite")]
-        assert_eq!(catalog::catalog_head(&super::SQLITE_MIGRATOR), 53);
+        assert_eq!(catalog::catalog_head(&super::SQLITE_MIGRATOR), 54);
         #[cfg(feature = "postgres")]
-        assert_eq!(catalog::catalog_head(&super::POSTGRES_MIGRATOR), 53);
+        assert_eq!(catalog::catalog_head(&super::POSTGRES_MIGRATOR), 54);
     }
 
     /// The setup guard must never hold a descriptor on the database file.

@@ -56,9 +56,9 @@ pub enum CredentialEvent {
     ///
     /// Consumers tolerate loss, duplication, and reordering. UI and monitoring
     /// may surface a re-auth prompt, but this event is not aggregate write
-    /// authority and does not prove that `reauth_required` was persisted.
-    /// Provider rejection persists that flag before emitting; the
-    /// owner-qualified sentinel command remains K3 work.
+    /// authority. Provider rejection and sentinel-threshold escalation persist
+    /// the flag before emitting; consumers that need authoritative state must
+    /// read the credential aggregate.
     ///
     /// [credential-refresh-coordination]: https://github.com/nebula-engine/nebula/blob/main/docs/INTEGRATION_MODEL.md (credential refresh)
     ReauthRequired {

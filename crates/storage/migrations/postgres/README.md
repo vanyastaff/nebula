@@ -58,6 +58,11 @@ Spec-16 compliant schema for Nebula's PostgreSQL backend.
 | 0040 | `credential_refresh_retry_gate` | Credentials | durable structural refresh-retry admission gate |
 | 0041 | `port_plan_flavor_revision_catalog` | Runtime control | dormant immutable plan/flavor records and exact execution revision references |
 
+Migration `0054_owner_qualified_refresh_incidents.sql` derives the owner of
+every refresh claim and sentinel incident from the credential aggregate. It
+fails closed on orphaned rows and makes both claim CAS and threshold windows
+owner-qualified.
+
 ## Storage-port adapter schema (0027)
 
 `0027_port_adapter_schema.sql` is the historical migration that introduced

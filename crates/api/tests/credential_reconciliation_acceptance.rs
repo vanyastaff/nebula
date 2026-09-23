@@ -63,7 +63,7 @@ use nebula_core::{CredentialId, UserId};
 use nebula_credential::{AuditEvent, AuditOperation, AuditSink, CredentialService};
 use nebula_storage::credential::{EnvKeyProvider, SqliteCredentialPersistence};
 use nebula_storage_port::{
-    CredentialPersistenceError, Scope,
+    CredentialOwner, CredentialPersistenceError, CredentialSelector, Scope,
     store::{
         ClaimAttempt, RefreshClaimAdjudicator, RefreshClaimStore, RefreshOutcomeDecision, ReplicaId,
     },
@@ -228,9 +228,11 @@ impl ReconciliationFixture {
     /// predicate is SQLite's own clock, so there is no port-level way to reach
     /// this state and the adapter's seam deliberately exposes none.
     async fn poison(&self, credential: &CredentialId) {
+        let selector =
+            CredentialSelector::new(CredentialOwner::from_scope(&self.scope()), *credential);
         let acquired = self
             .claim_store
-            .try_claim(credential, &self.holder(), CLAIM_TTL)
+            .try_claim(&selector, &self.holder(), CLAIM_TTL)
             .await
             .expect("a free claim is acquirable");
         let ClaimAttempt::Acquired(claim) = acquired else {
@@ -258,8 +260,10 @@ impl ReconciliationFixture {
     /// probe reporting "no longer poisoned" has also *taken* the claim, and no
     /// test may probe and then acquire the same credential again.
     async fn attempt(&self, credential: &CredentialId) -> ClaimAttempt {
+        let selector =
+            CredentialSelector::new(CredentialOwner::from_scope(&self.scope()), *credential);
         self.claim_store
-            .try_claim(credential, &self.holder(), CLAIM_TTL)
+            .try_claim(&selector, &self.holder(), CLAIM_TTL)
             .await
             .expect("acquisition must not fail")
     }
@@ -270,8 +274,8 @@ impl ReconciliationFixture {
     /// verdict and nothing else — so this queries `credential_sentinel_events`
     /// directly. `adjudicated_at` is the column the resolution write stamps, and
     /// reading it is what tells a *recorded resolution* from an incident that
-    /// merely exists: `count_sentinel_events_in_window` counts incidents over a
-    /// window and is resolution-blind by design, so it cannot stand in for this.
+    /// merely exists. The reclaimer's internal threshold count is
+    /// resolution-blind by design, so it cannot stand in for this assertion.
     async fn recorded_resolution_count(&self, credential: &CredentialId) -> i64 {
         let (count,): (i64,) = sqlx::query_as(
             "SELECT COUNT(*) FROM credential_sentinel_events \

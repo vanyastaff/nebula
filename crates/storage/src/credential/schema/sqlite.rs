@@ -146,6 +146,20 @@ const RECONCILED_SENTINEL_EVENT_SHAPE: [ExpectedColumnShape; 10] = [
     column("adjudication_evidence_digest", "BLOB", false, None, 0),
 ];
 
+const OWNER_QUALIFIED_SENTINEL_EVENT_SHAPE: [ExpectedColumnShape; 11] = [
+    column("id", "INTEGER", false, None, 1),
+    column("owner_id", "TEXT", true, None, 0),
+    column("credential_id", "TEXT", true, None, 0),
+    column("detected_at", "INTEGER", true, None, 0),
+    column("crashed_holder", "TEXT", true, None, 0),
+    column("generation", "INTEGER", true, None, 0),
+    column("claim_id", "TEXT", false, None, 0),
+    column("adjudicated_at", "INTEGER", false, None, 0),
+    column("adjudication_decision", "TEXT", false, None, 0),
+    column("adjudication_evidence", "TEXT", false, None, 0),
+    column("adjudication_evidence_digest", "BLOB", false, None, 0),
+];
+
 pub(crate) async fn admit(
     connection: &mut SqliteConnection,
 ) -> Result<SchemaAdmission, CredentialStoreStartupError> {
@@ -309,7 +323,9 @@ async fn validate_sentinel_events_relation(
     latest: i64,
 ) -> Result<(), CredentialStoreStartupError> {
     let columns = table_shape(connection, "credential_sentinel_events").await?;
-    let expected = if latest >= 53 {
+    let expected = if latest >= 54 {
+        OWNER_QUALIFIED_SENTINEL_EVENT_SHAPE.as_slice()
+    } else if latest >= 53 {
         RECONCILED_SENTINEL_EVENT_SHAPE.as_slice()
     } else if latest >= 39 {
         CURRENT_SENTINEL_EVENT_SHAPE.as_slice()
@@ -324,7 +340,12 @@ async fn validate_sentinel_events_relation(
         .fetch_all(&mut *connection)
         .await
         .map_err(|_| CredentialStoreStartupError::Unavailable)?;
-    let expected_names = if latest >= 39 {
+    let expected_names = if latest >= 54 {
+        BTreeSet::from([
+            "idx_credential_sentinel_events_claim_id".to_owned(),
+            "idx_sentinel_events_owner_cred_time".to_owned(),
+        ])
+    } else if latest >= 39 {
         BTreeSet::from([
             "idx_credential_sentinel_events_claim_id".to_owned(),
             "idx_sentinel_events_cred_time".to_owned(),
@@ -352,7 +373,12 @@ async fn validate_sentinel_events_relation(
                 )
             })
     };
-    if attributes("idx_sentinel_events_cred_time") != Some((0, 0, "c".to_owned()))
+    let time_index = if latest >= 54 {
+        "idx_sentinel_events_owner_cred_time"
+    } else {
+        "idx_sentinel_events_cred_time"
+    };
+    if attributes(time_index) != Some((0, 0, "c".to_owned()))
         || (latest >= 39
             && attributes("idx_credential_sentinel_events_claim_id")
                 != Some((1, 1, "c".to_owned())))
@@ -362,13 +388,19 @@ async fn validate_sentinel_events_relation(
 
     let time_columns: Vec<String> = sqlx::query_scalar(
         "SELECT name
-         FROM pragma_index_info('idx_sentinel_events_cred_time')
+         FROM pragma_index_info(?1)
          ORDER BY seqno",
     )
+    .bind(time_index)
     .fetch_all(&mut *connection)
     .await
     .map_err(|_| CredentialStoreStartupError::Unavailable)?;
-    if time_columns != ["credential_id", "detected_at"] {
+    let expected_time_columns = if latest >= 54 {
+        &["owner_id", "credential_id", "detected_at"][..]
+    } else {
+        &["credential_id", "detected_at"][..]
+    };
+    if time_columns != expected_time_columns {
         return unsupported(AdmissionReason::InvalidSentinelEventsRelation);
     }
 

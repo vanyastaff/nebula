@@ -477,7 +477,7 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
     async fn refresh_via_coordinator<C>(
         &self,
         selector: &CredentialSelector,
-        typed_id: &CredentialId,
+        _typed_id: &CredentialId,
         stored: StoredLiveCredential,
         ctx: &CredentialContext,
     ) -> Result<CoordinatedResolve<C::Scheme>, ResolveError>
@@ -551,7 +551,7 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
 
         let outcome: Result<Result<CoordinatedResolve<C::Scheme>, ResolveError>, RefreshError> =
             coord
-                .refresh_coalesced(typed_id, needs_refresh_after_backoff, move || async move {
+                .refresh_coalesced(selector, needs_refresh_after_backoff, move || async move {
                     // The coordinator has durably marked RefreshInFlight and
                     // transferred both claim and heartbeat into this owned task
                     // before invoking us. From this point provider contact and

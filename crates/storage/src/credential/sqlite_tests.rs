@@ -126,20 +126,18 @@ async fn curated_refresh_claim_repositories_share_the_admitted_private_pool() {
     let first = store.refresh_claim_repo();
     let second = store.refresh_claim_repo();
     let credential_id = nebula_core::CredentialId::new();
+    let selector =
+        CredentialSelector::new(CredentialOwner::from_canonical("owner-a"), credential_id);
 
     let acquired = first
-        .try_claim(
-            &credential_id,
-            &ReplicaId::new("first"),
-            Duration::from_secs(30),
-        )
+        .try_claim(&selector, &ReplicaId::new("first"), Duration::from_secs(30))
         .await
         .expect("first claim attempt");
     assert!(matches!(acquired, ClaimAttempt::Acquired(_)));
 
     let observed = second
         .try_claim(
-            &credential_id,
+            &selector,
             &ReplicaId::new("second"),
             Duration::from_secs(30),
         )

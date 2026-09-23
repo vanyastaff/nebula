@@ -26,15 +26,15 @@
 
 use std::time::Duration;
 
-use nebula_core::CredentialId;
 use nebula_storage::credential::refresh_claim::{
     MAX_ADJUDICATION_EVIDENCE_BYTES, RefreshAdjudication, RefreshClaimAdjudicationError,
     RefreshClaimAdjudicator, RefreshOutcomeDecision,
 };
 use nebula_storage::credential::{
-    ClaimAttempt, ClaimToken, ExpiredClaim, HeartbeatError, RefreshClaim, RefreshClaimRepo,
-    ReplicaId, RepoError,
+    ClaimAttempt, ClaimToken, ExpiredClaim, HeartbeatError, RefreshClaim, RefreshClaimReclaimer,
+    RefreshClaimRepo, ReplicaId, RepoError, SentinelEscalationPolicy,
 };
+use nebula_storage_port::{CredentialOwner, CredentialSelector};
 
 /// The reconciliation role's error type, under a name that reads in case bodies.
 type AdjudicationError = RefreshClaimAdjudicationError;
@@ -57,14 +57,14 @@ fn evidence_digest(evidence: &str) -> [u8; 32] {
 /// SQL adapters derive it from the database and must be backdated instead.
 #[async_trait::async_trait]
 pub(crate) trait RefreshClaimFixture:
-    RefreshClaimRepo + RefreshClaimAdjudicator + Send + Sync
+    RefreshClaimRepo + RefreshClaimAdjudicator + RefreshClaimReclaimer + Send + Sync
 {
     /// A credential unique to `case`, to this run, and to this backend.
     ///
     /// Two SQL runs share one database, and every case in this inventory
     /// touches poison and incident rows, so identity — not cleanup — is what
     /// keeps cases independent.
-    fn credential(&self, case: &str) -> CredentialId;
+    fn credential(&self, case: &str) -> CredentialSelector;
 
     /// A replica identity derived from `seed`, so cases do not share holders.
     fn replica(&self, seed: u8) -> ReplicaId;
@@ -79,7 +79,7 @@ pub(crate) trait RefreshClaimFixture:
     fn claim_ttl(&self) -> Duration;
 
     /// Put `credential`'s claim past its lease deadline without waiting.
-    async fn expire_claims(&self, credential: &CredentialId);
+    async fn expire_claims(&self, credential: &CredentialSelector);
 
     /// Leave `count` incidents on record for `credential`, the last unresolved.
     ///
@@ -87,34 +87,42 @@ pub(crate) trait RefreshClaimFixture:
     /// claim id, so at most one incident can be unresolved at a time: `count`
     /// replays of the real lifecycle, all but the last reconciled, are what a
     /// caller observes as "an incident that has not been decided".
-    async fn seed_unresolved_incidents(&self, credential: &CredentialId, count: u32);
+    async fn seed_unresolved_incidents(&self, credential: &CredentialSelector, count: u32);
 
     /// Incidents on record for `credential`, over a window wide enough to hold
     /// everything this run recorded.
     ///
     /// Resolution-blind, like the sentinel threshold itself: a reconciled
     /// incident still counts.
-    async fn incident_count(&self, credential: &CredentialId) -> u64;
+    async fn incident_count(&self, credential: &CredentialSelector) -> u64;
+
+    /// Test-only window query over durable incidents. Production threshold
+    /// evaluation is part of the atomic reclaimer operation.
+    async fn count_sentinel_events_in_window(
+        &self,
+        credential: &CredentialSelector,
+        window: Duration,
+    ) -> Result<u32, RepoError>;
 
     /// Incidents on record for `credential` that carry a reconciliation.
-    async fn resolved_incident_count(&self, credential: &CredentialId) -> u64;
+    async fn resolved_incident_count(&self, credential: &CredentialSelector) -> u64;
 
     /// Push `credential`'s incidents `by` further into the past.
     ///
     /// The sentinel window is derived from the backend's own clock, so a case
     /// that wants an incident *outside* a window ages the incident rather than
     /// the window.
-    async fn age_incidents(&self, credential: &CredentialId, by: Duration);
+    async fn age_incidents(&self, credential: &CredentialSelector, by: Duration);
 
     /// Make the next resolution write for `credential` fail.
-    async fn inject_decision_write_failure(&self, credential: &CredentialId);
+    async fn inject_decision_write_failure(&self, credential: &CredentialSelector);
 
     /// Remove the injection installed by [`Self::inject_decision_write_failure`].
-    async fn clear_decision_write_failure(&self, credential: &CredentialId);
+    async fn clear_decision_write_failure(&self, credential: &CredentialSelector);
 
     /// Does `credential` still hold the poison `try_claim` answers
     /// `OutcomeUnknown` with?
-    async fn poisoned_claim_exists(&self, credential: &CredentialId) -> bool;
+    async fn poisoned_claim_exists(&self, credential: &CredentialSelector) -> bool;
 }
 
 /// A credential id derived from `namespace` and `case`, with no randomness.
@@ -124,11 +132,14 @@ pub(crate) trait RefreshClaimFixture:
 /// namespace per fixture, so the id differs between runs; that randomness is
 /// what keeps a durable backend from meeting an earlier run's rows.
 #[must_use]
-pub(crate) fn case_credential(namespace: &str, case: &str) -> CredentialId {
+pub(crate) fn case_credential(namespace: &str, case: &str) -> CredentialSelector {
     let mut bytes = [0u8; 16];
     bytes[..8].copy_from_slice(&fnv1a(namespace, case, 0x11).to_be_bytes());
     bytes[8..].copy_from_slice(&fnv1a(namespace, case, 0x5D).to_be_bytes());
-    CredentialId::from_bytes(bytes)
+    CredentialSelector::new(
+        CredentialOwner::from_canonical(namespace),
+        nebula_core::CredentialId::from_bytes(bytes),
+    )
 }
 
 /// FNV-1a over `namespace`, `case`, and a discriminator, so one case can mint
@@ -154,10 +165,15 @@ fn fnv1a(namespace: &str, case: &str, discriminator: u8) -> u64 {
 /// of minutes, and the in-memory fixture's manual clock advances by seconds.
 pub(crate) const INCIDENT_WINDOW: Duration = Duration::from_hours(24);
 
+fn escalation_policy() -> SentinelEscalationPolicy {
+    SentinelEscalationPolicy::new(u32::MAX, INCIDENT_WINDOW)
+        .expect("the shared oracle policy is non-zero")
+}
+
 /// Acquire `credential` for `holder` and return the claim.
 async fn claim(
     fixture: &impl RefreshClaimFixture,
-    credential: &CredentialId,
+    credential: &CredentialSelector,
     holder: u8,
     ttl: Duration,
 ) -> RefreshClaim {
@@ -178,7 +194,7 @@ async fn claim(
 /// — `previous_holder` in a reclaim outcome — can name it again.
 async fn acquire(
     fixture: &impl RefreshClaimFixture,
-    credential: &CredentialId,
+    credential: &CredentialSelector,
     seed: u8,
 ) -> RefreshClaim {
     claim(fixture, credential, seed, fixture.claim_ttl()).await
@@ -192,7 +208,7 @@ async fn acquire(
 /// cases.
 async fn poison(
     fixture: &impl RefreshClaimFixture,
-    credential: &CredentialId,
+    credential: &CredentialSelector,
     seed: u8,
 ) -> RefreshClaim {
     let claim = acquire(fixture, credential, seed).await;
@@ -207,21 +223,21 @@ async fn poison(
 /// Is `credential` in `outcomes`, and as an accounted poison?
 fn accounted_poison<'a>(
     outcomes: &'a [ExpiredClaim],
-    credential: &CredentialId,
+    credential: &CredentialSelector,
 ) -> Option<&'a ExpiredClaim> {
     outcomes.iter().find(|outcome| match outcome {
-        ExpiredClaim::OutcomeUnknownAccounted { credential_id, .. }
-        | ExpiredClaim::ReclaimedNormal { credential_id, .. } => credential_id == credential,
+        ExpiredClaim::OutcomeUnknownAccounted { selector, .. }
+        | ExpiredClaim::ReclaimedNormal { selector, .. } => selector == credential,
     })
 }
 
 /// Reclaim and assert this credential's poisoned generation was accounted once.
 async fn sweep_accounts_poison(
     fixture: &impl RefreshClaimFixture,
-    credential: &CredentialId,
+    credential: &CredentialSelector,
 ) -> ExpiredClaim {
     let outcomes = fixture
-        .reclaim_stuck()
+        .reclaim_stuck(escalation_policy())
         .await
         .expect("the reclaim sweep must run");
     let ours = accounted_poison(&outcomes, credential)
@@ -240,7 +256,7 @@ async fn sweep_accounts_poison(
 /// digest of the evidence this call just stored.
 async fn adjudicate_fresh(
     fixture: &impl RefreshClaimFixture,
-    credential: &CredentialId,
+    credential: &CredentialSelector,
     decision: RefreshOutcomeDecision,
     evidence: &str,
 ) -> RefreshAdjudication {
@@ -272,7 +288,7 @@ async fn adjudicate_fresh(
 /// clock and the poison predicate its backend needs.
 pub(crate) async fn replay_poisoned_lifecycles(
     fixture: &impl RefreshClaimFixture,
-    credential: &CredentialId,
+    credential: &CredentialSelector,
     count: u32,
 ) {
     for index in 0..count {
@@ -284,7 +300,7 @@ pub(crate) async fn replay_poisoned_lifecycles(
             .expect("a live holder may mark provider egress");
         fixture.expire_claims(credential).await;
         let outcomes = fixture
-            .reclaim_stuck()
+            .reclaim_stuck(escalation_policy())
             .await
             .expect("the reclaim sweep must run");
         assert!(
@@ -325,7 +341,7 @@ pub(crate) async fn try_claim_acquires_when_no_holder(
     let ClaimAttempt::Acquired(claim) = attempt else {
         panic!("a credential nobody holds must be acquirable, got {attempt:?}");
     };
-    assert_eq!(claim.credential_id, credential);
+    assert_eq!(claim.selector, credential);
     assert!(
         claim.expires_at > claim.acquired_at,
         "a lease must expire after it begins"
@@ -443,6 +459,7 @@ pub(crate) async fn heartbeat_extends_expiry_and_rejects_a_stale_token(
     // The same claim id with a generation that never held it is not an
     // authority: the CAS is (claim id, generation), not claim id alone.
     let stale = ClaimToken {
+        selector: credential.clone(),
         claim_id: claim.token.claim_id,
         generation: claim.token.generation.wrapping_add(1),
     };
@@ -512,7 +529,7 @@ pub(crate) async fn reclaim_accounts_expired_in_flight_as_retained_poison(
     std::assert_matches!(attempt, ClaimAttempt::OutcomeUnknown { .. });
 
     let repeat = fixture
-        .reclaim_stuck()
+        .reclaim_stuck(escalation_policy())
         .await
         .expect("the sweep must be repeatable");
     assert!(
@@ -532,7 +549,7 @@ pub(crate) async fn mark_sentinel_after_reclaim_returns_invalid_state(
     fixture.expire_claims(&credential).await;
 
     let outcomes = fixture
-        .reclaim_stuck()
+        .reclaim_stuck(escalation_policy())
         .await
         .expect("the reclaim sweep must run");
     let ours = accounted_poison(&outcomes, &credential)
@@ -566,7 +583,7 @@ pub(crate) async fn expired_normal_claim_can_be_taken_over_in_place(
         first.token.generation + 1,
         "a takeover in place must bump the generation"
     );
-    assert_eq!(second.credential_id, credential);
+    assert_eq!(second.selector, credential);
     assert!(
         matches!(
             fixture.heartbeat(&first.token, fixture.claim_ttl()).await,
@@ -584,6 +601,7 @@ pub(crate) async fn out_of_range_generation_is_rejected_without_touching_the_cla
         fixture.credential("out_of_range_generation_is_rejected_without_touching_the_claim");
     let claim = acquire(fixture, &credential, seed).await;
     let forged = ClaimToken {
+        selector: credential.clone(),
         claim_id: claim.token.claim_id,
         generation: u64::MAX,
     };
@@ -693,7 +711,7 @@ pub(crate) async fn expired_in_flight_claim_is_preserved_until_reclaim(
         "accounting must not release an unknown provider outcome"
     );
     let repeat = fixture
-        .reclaim_stuck()
+        .reclaim_stuck(escalation_policy())
         .await
         .expect("the sweep must be repeatable");
     assert!(
@@ -831,14 +849,17 @@ pub(crate) async fn concurrent_reclaim_accounts_each_poison_exactly_once(
         expected.insert(credential);
     }
 
-    let (left, right) = tokio::join!(fixture.reclaim_stuck(), fixture.reclaim_stuck());
+    let (left, right) = tokio::join!(
+        fixture.reclaim_stuck(escalation_policy()),
+        fixture.reclaim_stuck(escalation_policy())
+    );
     let left = left.expect("the left sweep must not fail");
     let right = right.expect("the right sweep must not fail");
     let accounted_ids = |outcomes: &[ExpiredClaim]| {
         outcomes
             .iter()
             .filter_map(|outcome| match outcome {
-                ExpiredClaim::OutcomeUnknownAccounted { credential_id, .. } => Some(*credential_id),
+                ExpiredClaim::OutcomeUnknownAccounted { selector, .. } => Some(selector.clone()),
                 ExpiredClaim::ReclaimedNormal { .. } => None,
             })
             .collect::<std::collections::HashSet<_>>()
@@ -849,8 +870,8 @@ pub(crate) async fn concurrent_reclaim_accounts_each_poison_exactly_once(
         left_ids.is_disjoint(&right_ids),
         "one poisoned generation must be observed by exactly one sweeper"
     );
-    let accounted: std::collections::HashSet<_> = left_ids.union(&right_ids).copied().collect();
-    let ours: std::collections::HashSet<_> = accounted.intersection(&expected).copied().collect();
+    let accounted: std::collections::HashSet<_> = left_ids.union(&right_ids).cloned().collect();
+    let ours: std::collections::HashSet<_> = accounted.intersection(&expected).cloned().collect();
     assert_eq!(
         ours, expected,
         "every poisoned generation must be accounted exactly once"

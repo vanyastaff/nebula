@@ -439,8 +439,10 @@ cancellation cannot cancel the owned provider→persistence section. A confirmed
 the exact claim, while an ambiguous or post-provider unpersisted result retains it. Once expired,
 that row is durable poison: it records one incident by claim UUID, denies all provider replay, and
 requires an explicit owner-qualified reconciliation command. The N-in-window sentinel threshold
-is an operational escalation observation, not retry authority and not itself a durable
-`ReauthRequired` mutation.
+is evaluated inside the same owner-qualified storage transaction that records the incident. When
+the threshold is reached, that transaction advances the credential revision and material epoch,
+clears any stale refresh-retry gate, and durably sets `ReauthRequired`. Event-bus publication is a
+post-commit observation only; the threshold never grants provider retry authority.
 
 **Where to read:** `crates/credential/README.md`, `crates/credential/src/lib.rs`, **ADR-0033** — Integration credentials (Plane B).
 
