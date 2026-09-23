@@ -265,18 +265,183 @@ mod tests {
     use std::assert_matches;
     use std::sync::Arc;
 
-    use nebula_storage::credential::{EnvKeyProvider, KeyProvider, SqliteCredentialPersistence};
+    use nebula_core::{CredentialId, credential_key};
+    use nebula_credential::{
+        Capabilities, CredentialSlotResolveError, SecretString, TenantScope, scheme::SecretToken,
+        serde_secret,
+    };
+    use nebula_storage::credential::{
+        EncryptionLayer, EnvKeyProvider, KeyProvider, SqliteCredentialPersistence,
+    };
+    use nebula_storage_port::{
+        CredentialCreate, CredentialMaterialTransition, CredentialOwner, CredentialPersistence,
+        CredentialReplacement, CredentialSelector, Scope, SecretBytes, StoredCredential,
+    };
+    use tokio_util::sync::CancellationToken;
 
     #[cfg(not(feature = "postgres"))]
     use super::compose_first_party_projection_for_database;
     use super::{
         CredentialDatabaseBackend, CredentialProjectionCompositionError,
-        build_first_party_projection, classify_credential_database,
+        build_first_party_projection, build_first_party_projection_with_keyring,
+        classify_credential_database,
     };
-    #[cfg(not(feature = "postgres"))]
     use nebula_storage::credential::CredentialKeyring;
 
     const TEST_KEY_BASE64: &str = "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI=";
+    const OLD_KEY_BASE64: &str = "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE=";
+
+    fn key_provider(encoded: &str) -> Arc<dyn KeyProvider> {
+        Arc::new(EnvKeyProvider::from_base64(encoded).expect("valid fixed test key"))
+    }
+
+    fn api_key_data(secret: &str) -> SecretBytes {
+        let token = SecretToken::new(SecretString::new(secret));
+        let data = serde_secret::expose_for_serialization(|| serde_json::to_vec(&token))
+            .expect("test credential serializes");
+        SecretBytes::new(data)
+    }
+
+    fn api_key_create(secret: &str) -> CredentialCreate {
+        CredentialCreate::new(
+            "api_key".to_owned(),
+            api_key_data(secret),
+            "secret_token".to_owned(),
+            1,
+            None,
+            None,
+            false,
+            serde_json::Map::new(),
+        )
+    }
+
+    #[tokio::test]
+    async fn rolling_keyring_projects_legacy_server_rows_and_current_only_fails_closed() {
+        let raw_store = Arc::new(
+            SqliteCredentialPersistence::connect_memory()
+                .await
+                .expect("ready in-memory credential store"),
+        );
+        let scope = TenantScope::new("org-rotation", "workspace-rotation");
+        let credential_id = CredentialId::new();
+        let owner = CredentialOwner::from_scope(&Scope::new("workspace-rotation", "org-rotation"));
+        let selector = CredentialSelector::new(owner, credential_id);
+
+        // Model a server replica that still writes with the old current key.
+        let old_writer = EncryptionLayer::new(Arc::clone(&raw_store), key_provider(OLD_KEY_BASE64));
+        old_writer
+            .create(&selector, api_key_create("rolling-secret"))
+            .await
+            .expect("old-key server write succeeds");
+
+        // A bridge worker must project the old row through its explicit
+        // decrypt-only key while continuing to use the new key as current.
+        let bridge_keyring = CredentialKeyring::from_config(
+            key_provider(TEST_KEY_BASE64),
+            Some(OLD_KEY_BASE64),
+            None,
+        )
+        .expect("rolling keyring is valid");
+        let bridge =
+            build_first_party_projection_with_keyring(Arc::clone(&raw_store), bridge_keyring)
+                .expect("bridge projection composes");
+        let guard = bridge
+            .resolve_slot(
+                &scope,
+                credential_id,
+                credential_key!("api_key"),
+                Capabilities::empty(),
+                CancellationToken::new(),
+            )
+            .await
+            .expect("bridge worker projects an old-key row");
+        let token = guard
+            .into_typed::<SecretToken>()
+            .expect("API key projects as a secret token");
+        assert_eq!(token.token().expose_secret(), "rolling-secret");
+
+        let current_only =
+            build_first_party_projection(Arc::clone(&raw_store), key_provider(TEST_KEY_BASE64))
+                .expect("current-only projection composes");
+        let error = current_only
+            .resolve_slot(
+                &scope,
+                credential_id,
+                credential_key!("api_key"),
+                Capabilities::empty(),
+                CancellationToken::new(),
+            )
+            .await
+            .expect_err("removing a still-required legacy key must fail closed");
+        assert_eq!(error, CredentialSlotResolveError::InvalidState);
+
+        // A supported server mutation reads with the rolling keyring and
+        // writes the replacement with the new current key. It must advance
+        // the row exactly once; projection reads remain side-effect free.
+        let rotating_store = EncryptionLayer::with_legacy_keys(
+            Arc::clone(&raw_store),
+            key_provider(TEST_KEY_BASE64),
+            CredentialKeyring::from_config(
+                key_provider(TEST_KEY_BASE64),
+                Some(OLD_KEY_BASE64),
+                None,
+            )
+            .expect("rolling keyring is valid")
+            .credential_legacy(),
+        );
+        let before = match rotating_store
+            .get(&selector)
+            .await
+            .expect("server reads the old-key row")
+        {
+            StoredCredential::Live(row) => row,
+            StoredCredential::Tombstoned(_) => panic!("rotation fixture must remain live"),
+        };
+        let commit = rotating_store
+            .replace(
+                &selector,
+                CredentialReplacement::new(
+                    before.version(),
+                    api_key_data("rolling-secret"),
+                    "secret_token".to_owned(),
+                    1,
+                    None,
+                    None,
+                    false,
+                    serde_json::Map::new(),
+                    CredentialMaterialTransition::advance(),
+                ),
+            )
+            .await
+            .expect("new-key server mutation rewrites the row");
+        assert_eq!(commit.version().get(), before.version().get() + 1);
+
+        let current_only =
+            build_first_party_projection(Arc::clone(&raw_store), key_provider(TEST_KEY_BASE64))
+                .expect("current-only projection composes after rotation");
+        let guard = current_only
+            .resolve_slot(
+                &scope,
+                credential_id,
+                credential_key!("api_key"),
+                Capabilities::empty(),
+                CancellationToken::new(),
+            )
+            .await
+            .expect("current-only worker projects the rewritten row");
+        let token = guard
+            .into_typed::<SecretToken>()
+            .expect("API key projects as a secret token");
+        assert_eq!(token.token().expose_secret(), "rolling-secret");
+        let after_projection = raw_store
+            .get(&selector)
+            .await
+            .expect("raw rewritten row remains readable");
+        let StoredCredential::Live(after_projection) = after_projection else {
+            panic!("rotation fixture must remain live");
+        };
+        assert_eq!(after_projection.version(), commit.version());
+    }
 
     #[tokio::test(flavor = "current_thread")]
     async fn projection_composition_spawns_no_lifecycle_owner_tasks() {
