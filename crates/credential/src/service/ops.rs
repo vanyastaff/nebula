@@ -249,7 +249,7 @@ type RevokeFn = Arc<
 ///
 /// The erased value never leaves this crate: [`CredentialService`](super::CredentialService)
 /// immediately seals it inside an opaque
-/// [`ErasedCredentialGuard`](super::ErasedCredentialGuard).
+/// [`ErasedCredentialGuard`](crate::ErasedCredentialGuard).
 type ProjectFn = Arc<
     dyn Fn(&[u8], &str, u32) -> Result<Box<dyn Any + Send + Sync>, CredentialServiceError>
         + Send
