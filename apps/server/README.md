@@ -401,6 +401,18 @@ only as digests; the state envelope is encrypted and bound to credential kind,
 owner, session, and expiry. A binding failure leaves the row available for the
 matching callback, while a successful callback consumes it atomically.
 
+The server composition regression
+`oauth_acquisition_continues_once_after_restart_and_projects_after_reopen`
+starts authorization-code acquisition through the controller, drops and
+reopens the file-SQLite runtime, rejects a wrong authentication binding,
+completes exactly one TLS token exchange, rejects callback replay, and projects
+the encrypted credential after another reopening. It verifies composition
+recovery; it does not simulate a process crash or PostgreSQL failover.
+
+```bash
+cargo nextest run -p nebula-server -E 'test(oauth_acquisition_continues_once)'
+```
+
 ## Email delivery (SMTP)
 
 The API needs an `EmailPort` to ship sign-up verification and
