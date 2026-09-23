@@ -509,7 +509,9 @@ pub mod v1 {
     }
 }
 
-pub use v1::CredentialLifecycleState;
+// Preserve the pre-v1 public type identity until a declared breaking release.
+// New remote-client code should use `v1::CredentialLifecycleState`.
+pub use nebula_credential::CredentialLifecycleState;
 
 #[cfg(test)]
 mod tests {
