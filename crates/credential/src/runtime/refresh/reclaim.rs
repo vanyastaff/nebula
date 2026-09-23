@@ -57,6 +57,16 @@ impl ReclaimSweepHandle {
         self.handle.abort();
     }
 
+    /// Abort and join the sweep task.
+    pub async fn shutdown(&mut self) {
+        self.handle.abort();
+        if let Err(error) = (&mut self.handle).await
+            && !error.is_cancelled()
+        {
+            tracing::error!(%error, "credential reclaim sweep task failed during shutdown");
+        }
+    }
+
     /// Whether the underlying task has finished.
     #[must_use]
     pub fn is_finished(&self) -> bool {

@@ -413,7 +413,7 @@ impl ServerRuntime {
         )
         .await
         .map_err(TransportInitError::from)?;
-        let credential_runtime = compose_first_party_runtime(
+        let mut credential_runtime = compose_first_party_runtime(
             keyring.current(),
             keyring.credential_legacy(),
             Arc::clone(&metrics_registry),

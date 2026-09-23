@@ -70,7 +70,7 @@ impl CredentialRuntime {
         self.lifecycle.service()
     }
 
-    pub(crate) async fn shutdown(&self) {
+    pub(crate) async fn shutdown(&mut self) {
         self.lifecycle.shutdown().await;
     }
 
@@ -572,7 +572,7 @@ mod tests {
         let (claim_repo, reclaimer, adjudicator) = shared_claim_repo(store.refresh_claim_repo());
         let key_provider: Arc<dyn KeyProvider> =
             Arc::new(EnvKeyProvider::from_base64(TEST_KEY_BASE64).expect("valid fixed test key"));
-        let runtime = compose_runtime(
+        let mut runtime = compose_runtime(
             store,
             claim_repo,
             reclaimer,

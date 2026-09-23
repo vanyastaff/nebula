@@ -68,9 +68,9 @@ impl CredentialLifecycleRuntime {
     ///
     /// Durable refresh claims are deliberately left to their storage-defined
     /// expiry and reclaim semantics when work was already past provider egress.
-    pub async fn shutdown(&self) {
+    pub async fn shutdown(&mut self) {
         self.lease.shutdown().await;
-        self.reclaim_sweep.abort();
+        self.reclaim_sweep.shutdown().await;
     }
 
     /// Whether the periodic reclaim task has stopped.
