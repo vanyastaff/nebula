@@ -21,6 +21,14 @@ does **not** implement any backend.
 - **Port-local DTOs.** Row/record types are defined here and depend only on
   `serde_json::Value` — never on `ActionResult` or any higher-tier type
   (prevents a Core-tier dependency inversion).
+- **Closed tenant-membership writes.** Organization and workspace roles use
+  separate closed enums. Organization mutations preserve at least one owner or
+  administrator inside the backend's cross-replica critical section, while
+  workspace mutations require the exact live parent organization. Authorization
+  reads return both roles from one logical snapshot and reject malformed roles.
+  Legacy workspace ids that occur under more than one organization are treated
+  as ambiguous, including deleted aliases, because the historical membership
+  key did not persist the parent organization.
 - **Durable shared-resource fanout.** Exact scoped resource identities resolve
   independently of author-facing rows. Bounded subscription reconciliation,
   source fencing, exact event replay, delivery claims, and delivery-keyed

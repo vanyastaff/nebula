@@ -100,6 +100,10 @@
   failed workspace resolver or membership source disables tenant routes with 503; a valid snapshot
   without organization membership denies access (enumeration-safe 404 where the route contract
   requires it). Neither case implies administrator access.
+- `MembershipStore` exposes only guarded organization mutations. Do not restore unguarded
+  add/remove methods or a workspace-role lookup without the parent organization. Populate
+  reference fixtures through the concrete `InMemoryMembershipStore::seed_for_test` helper
+  (`test-util`), never by adding a bypass to the production policy trait.
 
 ## Change checks
 

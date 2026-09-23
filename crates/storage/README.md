@@ -41,7 +41,14 @@ the plain-data `Scope`). This crate
 provides the adapters:
 
 - `inmem::*` — internal test/reference/conformance adapters and the loom probe;
-  not a supported deployment backend.
+  not a supported deployment backend. `InMemoryIdentityDirectory` is the
+  composition root for organization, workspace, and membership projections
+  that must share one snapshot lock.
+- Tenant-membership adapters expose only guarded organization writes and
+  parent-qualified workspace writes. PostgreSQL serializes organization
+  lockout checks with an organization-row lock; SQLite uses `BEGIN IMMEDIATE`;
+  the in-memory reference uses the directory's shared mutex. All three reject
+  unknown persisted roles and ambiguous cross-organization workspace ids.
 - `InMemoryPlanFlavorCatalog` — component/reference adapter over the execution
   store's shared lock. Exact immutable load, drain, guarded delete, reference
   mutation, and row-derived blockers mirror the SQLite and PostgreSQL

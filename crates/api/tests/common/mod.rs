@@ -970,7 +970,7 @@ pub(crate) mod org_support {
         role: OrgRole,
     ) {
         let org_id = TEST_ORG.parse().expect("valid test org id");
-        store.seed(org_id, principal, role).await;
+        store.seed_for_test(org_id, principal, role).await;
     }
 
     /// Build an `AppState` whose `membership_store` is **absent** (`None`)

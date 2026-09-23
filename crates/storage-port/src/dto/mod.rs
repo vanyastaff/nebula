@@ -13,6 +13,7 @@ mod idempotency;
 mod identity;
 mod job_dispatch;
 mod journal;
+mod membership;
 mod node_result;
 mod operation_ledger;
 mod operation_protocol;
@@ -50,6 +51,11 @@ pub use identity::{
 };
 pub use job_dispatch::JobDispatchMsg;
 pub use journal::JournalEntry;
+pub use membership::{
+    MembershipRoleParseError, OrgMemberRemoveOutcome, OrgMemberUpsert, OrgMemberUpsertOutcome,
+    OrgMembershipRole, PrincipalOrgMembership, TenantMembershipSnapshot, WorkspaceMemberUpsert,
+    WorkspaceMembershipRole,
+};
 pub use node_result::{MAX_SUPPORTED_RESULT_SCHEMA_VERSION, NodeResultRecord};
 pub use operation_ledger::{
     AttemptGeneration, DestinationCapability, DestinationCapabilityParseError, EffectOccurrenceKey,
