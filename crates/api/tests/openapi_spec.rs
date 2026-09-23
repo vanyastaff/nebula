@@ -535,6 +535,80 @@ async fn credential_test_response_is_a_frozen_tagged_v1_union() {
 }
 
 #[tokio::test]
+async fn credential_lifecycle_is_a_frozen_secret_free_v1_union() {
+    let spec = fetch_spec_json().await;
+    let schemas = spec
+        .get("components")
+        .and_then(|components| components.get("schemas"))
+        .and_then(Value::as_object)
+        .expect("spec.components.schemas must be present");
+
+    for projection in ["CredentialResponse", "CredentialSummary"] {
+        let properties = schemas
+            .get(projection)
+            .and_then(|schema| schema.get("properties"))
+            .and_then(Value::as_object)
+            .unwrap_or_else(|| panic!("{projection} must publish object properties"));
+        assert!(properties.contains_key("lifecycle"));
+        assert!(!properties.contains_key("reauth_required"));
+    }
+
+    let lifecycle = schemas
+        .get("CredentialLifecycleState")
+        .expect("credential lifecycle schema must be registered");
+    let branches = lifecycle
+        .get("oneOf")
+        .and_then(Value::as_array)
+        .unwrap_or_else(|| panic!("credential lifecycle must be a oneOf union: {lifecycle}"));
+    assert_eq!(branches.len(), 4, "v1 lifecycle has exactly four states");
+
+    let forbidden = [
+        "claim",
+        "claim_id",
+        "generation",
+        "fencing_token",
+        "material_epoch",
+        "tenant",
+        "owner",
+        "evidence",
+    ];
+    let mut statuses = HashSet::new();
+    for branch in branches {
+        let properties = branch
+            .get("properties")
+            .and_then(Value::as_object)
+            .unwrap_or_else(|| panic!("lifecycle branch needs properties: {branch}"));
+        let status = properties
+            .get("status")
+            .and_then(|schema| schema.get("enum"))
+            .and_then(Value::as_array)
+            .and_then(|values| values.first())
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| panic!("branch status must be a literal: {branch}"));
+        assert!(statuses.insert(status.to_owned()));
+        for field in forbidden {
+            assert!(
+                !properties.contains_key(field),
+                "public lifecycle leaked `{field}`"
+            );
+        }
+        assert_eq!(
+            properties.contains_key("retry_at"),
+            status == "refresh_deferred"
+        );
+    }
+    assert_eq!(
+        statuses,
+        HashSet::from([
+            "ready".to_owned(),
+            "refresh_deferred".to_owned(),
+            "refresh_blocked".to_owned(),
+            "reauth_required".to_owned(),
+        ])
+    );
+}
+
+#[tokio::test]
 async fn served_spec_pins_openapi_3_1_0() {
     let spec = fetch_spec_json().await;
     let version = spec

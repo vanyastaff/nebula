@@ -1,6 +1,57 @@
 use super::*;
 
 #[test]
+fn public_lifecycle_state_has_a_stable_secret_free_wire_shape() {
+    let retry_at = DateTime::parse_from_rfc3339("2026-09-24T01:02:03Z")
+        .expect("fixed timestamp is valid")
+        .with_timezone(&Utc);
+    let cases = [
+        (
+            CredentialLifecycleState::Ready,
+            serde_json::json!({ "status": "ready" }),
+        ),
+        (
+            CredentialLifecycleState::RefreshDeferred { retry_at },
+            serde_json::json!({
+                "status": "refresh_deferred",
+                "retry_at": "2026-09-24T01:02:03Z"
+            }),
+        ),
+        (
+            CredentialLifecycleState::RefreshBlocked,
+            serde_json::json!({ "status": "refresh_blocked" }),
+        ),
+        (
+            CredentialLifecycleState::ReauthRequired,
+            serde_json::json!({ "status": "reauth_required" }),
+        ),
+    ];
+
+    for (state, expected) in cases {
+        let status = match state {
+            CredentialLifecycleState::Ready => "ready",
+            CredentialLifecycleState::RefreshDeferred { .. } => "refresh_deferred",
+            CredentialLifecycleState::RefreshBlocked => "refresh_blocked",
+            CredentialLifecycleState::ReauthRequired => "reauth_required",
+        };
+        let encoded = serde_json::to_value(state).expect("public lifecycle state serializes");
+        assert_eq!(encoded, expected);
+        assert_eq!(encoded["status"], status);
+        let decoded: CredentialLifecycleState =
+            serde_json::from_value(encoded).expect("public lifecycle state deserializes");
+        assert_eq!(decoded, state);
+    }
+
+    assert!(
+        serde_json::from_value::<CredentialLifecycleState>(
+            serde_json::json!({ "status": "refreshing" })
+        )
+        .is_err(),
+        "in-flight claim ownership is not a public lifecycle status"
+    );
+}
+
+#[test]
 fn static_secret_is_inert() {
     let p = CredentialPolicy::static_secret();
     assert!(!p.is_expiring());

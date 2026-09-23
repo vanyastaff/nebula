@@ -33,7 +33,7 @@ re-exported: crate-boundary refactors must not become integration migrations.
 ## Public API
 
 Supported entry points are `nebula_sdk::prelude`, the `action` / `workflow` authoring modules,
-`integration`, `runtime`, and feature-gated `testing`. The sole supported credential-test path is
+`integration`, `client`, `runtime`, and feature-gated `testing`. The sole supported credential-test path is
 `nebula_sdk::integration::credential::{TestFailureCode, TestResult}`. A hidden `__private` module
 exists only so exported declarative and procedural macros can resolve their implementation dependencies; it is
 not a compatibility namespace or a supported persona.
@@ -46,6 +46,7 @@ Integration authors consume credential contracts through curated SDK personas:
 |--------|----------------|
 | **Curated integration contract** | `nebula_sdk::integration::credential::{TestFailureCode, TestResult}` for provider credential-test outcomes. This is the supported SDK path for this contract. |
 | **Prelude** | `nebula_sdk::prelude::*` re-exports the common credential and OAuth2 types used in actions (`Credential`, `OAuth2Credential`, `OAuth2Token`, `CredentialContext`, `CredentialSnapshot`, …) — see `prelude.rs`. |
+| **Client state** | `nebula_sdk::client::credential::CredentialLifecycleState` is the secret-free durable availability projection. In-flight claims, leases, generations, fencing tokens, tenant proofs, and persistence tombstones are not client state. |
 
 **Not in the SDK:** HTTP token exchange/refresh against a provider, storage encryption, and engine `CredentialResolver` — those are product/runtime concerns. If a contract needed by integration authors is absent from a curated SDK persona, treat that as an SDK API gap rather than depending directly on an implementation crate.
 

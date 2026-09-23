@@ -135,8 +135,8 @@ pub struct CredentialGatewayRecord {
     pub updated_at: DateTime<Utc>,
     /// Material expiry, when applicable.
     pub expires_at: Option<DateTime<Utc>>,
-    /// Whether interactive re-authorization is required.
-    pub reauth_required: bool,
+    /// Durable, secret-free credential availability state.
+    pub lifecycle: CredentialGatewayLifecycleState,
     /// Optional human-facing name.
     pub display_name: Option<String>,
     /// Optional human-facing description.
@@ -155,12 +155,28 @@ impl fmt::Debug for CredentialGatewayRecord {
             .field("created_at", &self.created_at)
             .field("updated_at", &self.updated_at)
             .field("expires_at", &self.expires_at)
-            .field("reauth_required", &self.reauth_required)
+            .field("lifecycle", &self.lifecycle)
             .field("display_name_present", &self.display_name.is_some())
             .field("description_present", &self.description.is_some())
             .field("tag_count", &self.tags.len())
             .finish()
     }
+}
+
+/// Durable credential availability projected across the API composition seam.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CredentialGatewayLifecycleState {
+    /// No durable retry or authorization gate prevents use.
+    Ready,
+    /// Automatic refresh is deferred until the backend-authored instant.
+    RefreshDeferred {
+        /// Backend-authored instant after which refresh may resume.
+        retry_at: DateTime<Utc>,
+    },
+    /// Automatic refresh is durably blocked until material changes.
+    RefreshBlocked,
+    /// Interactive authorization must complete before the credential is usable.
+    ReauthRequired,
 }
 
 /// Secret-free provider-test classification crossing the API port.
@@ -646,7 +662,7 @@ mod tests {
             created_at: now,
             updated_at: now,
             expires_at: None,
-            reauth_required: false,
+            lifecycle: CredentialGatewayLifecycleState::Ready,
             display_name: Some(CANARY.to_owned()),
             description: Some(CANARY.to_owned()),
             tags: BTreeMap::from([(CANARY.to_owned(), CANARY.to_owned())]),

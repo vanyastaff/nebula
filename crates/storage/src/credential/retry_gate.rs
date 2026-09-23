@@ -4,7 +4,7 @@ use nebula_storage_port::CredentialMaterialTransition;
 use nebula_storage_port::{
     CredentialPersistenceError, RefreshRetryAdmission, RefreshRetryBlock, RefreshRetryDelay,
     RefreshRetryDiagnosticCode, RefreshRetryEvidence, RefreshRetryGate, RefreshRetryKind,
-    RefreshRetryPhase, RefreshRetryTransition,
+    RefreshRetryPhase, RefreshRetryProjection, RefreshRetryTransition,
 };
 
 pub(crate) const MODE_NEVER: &str = "never";
@@ -157,6 +157,22 @@ pub(crate) fn decode_gate(
     }
 }
 
+pub(crate) fn decode_projection(
+    mode: Option<String>,
+    not_before: Option<DateTime<Utc>>,
+    backend_now: DateTime<Utc>,
+) -> Result<Option<RefreshRetryProjection>, CredentialPersistenceError> {
+    match (mode.as_deref(), not_before) {
+        (None, None) => Ok(None),
+        (Some(MODE_NEVER), None) => Ok(Some(RefreshRetryProjection::Never)),
+        (Some(MODE_NOT_BEFORE), Some(not_before)) if not_before <= backend_now => Ok(None),
+        (Some(MODE_NOT_BEFORE), Some(not_before)) => {
+            Ok(Some(RefreshRetryProjection::NotBefore { not_before }))
+        },
+        _ => Err(CredentialPersistenceError::CorruptRecord),
+    }
+}
+
 pub(crate) fn evaluate_gate(
     gate: Option<&RefreshRetryGate>,
     now: DateTime<Utc>,
@@ -226,7 +242,7 @@ mod tests {
         RefreshRetryGate, RefreshRetryKind, RefreshRetryPhase,
     };
 
-    use super::{decode_gate, evaluate_gate};
+    use super::{decode_gate, decode_projection, evaluate_gate};
 
     fn evidence() -> RefreshRetryEvidence {
         RefreshRetryEvidence::new(
@@ -304,6 +320,30 @@ mod tests {
         assert_eq!(
             evaluate_gate(Some(&expired), now),
             Ok(RefreshRetryAdmission::Open)
+        );
+    }
+
+    #[test]
+    fn management_projection_uses_absolute_time_and_hides_expired_gates() {
+        let now = Utc
+            .timestamp_opt(1_700_000_000, 0)
+            .single()
+            .expect("test timestamp");
+        let future = now + chrono::Duration::seconds(30);
+
+        assert_eq!(
+            decode_projection(Some("not_before".to_owned()), Some(future), now),
+            Ok(Some(
+                nebula_storage_port::RefreshRetryProjection::NotBefore { not_before: future }
+            ))
+        );
+        assert_eq!(
+            decode_projection(Some("not_before".to_owned()), Some(now), now),
+            Ok(None)
+        );
+        assert_eq!(
+            decode_projection(Some("never".to_owned()), None, now),
+            Ok(Some(nebula_storage_port::RefreshRetryProjection::Never))
         );
     }
 }

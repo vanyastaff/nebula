@@ -245,7 +245,10 @@ async fn crud_round_trips_without_secret_in_projection() {
     assert_eq!(created.version, 1);
     assert_eq!(created.name, "Unit Key");
     assert_eq!(created.auth_pattern, "SecretToken");
-    assert!(!created.reauth_required);
+    assert_eq!(
+        created.lifecycle,
+        crate::domain::credential::dto::CredentialLifecycleState::Ready
+    );
     let dbg = format!("{created:?}");
     assert!(
         !dbg.contains(secret),

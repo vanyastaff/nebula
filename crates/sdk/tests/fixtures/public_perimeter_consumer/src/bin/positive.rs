@@ -1,4 +1,5 @@
 use nebula_sdk::{
+    client::credential::CredentialLifecycleState,
     integration::action::{
         CancellationToken, EffectInvocationContext, EffectPreparationContext, EffectQueryContext,
         ExecutionId, NodeKey, OperationCallId, OperationId, OrgId, WorkflowId, WorkspaceId,
@@ -13,6 +14,32 @@ use nebula_sdk::{
     },
     simple_action,
 };
+
+fn assert_credential_lifecycle_contract() {
+    let wire_values = [
+        nebula_sdk::serde_json::json!({ "status": "ready" }),
+        nebula_sdk::serde_json::json!({
+            "status": "refresh_deferred",
+            "retry_at": "2026-09-24T01:02:03Z"
+        }),
+        nebula_sdk::serde_json::json!({ "status": "refresh_blocked" }),
+        nebula_sdk::serde_json::json!({ "status": "reauth_required" }),
+    ];
+
+    for expected in wire_values {
+        let state: CredentialLifecycleState = nebula_sdk::serde_json::from_value(expected.clone())
+            .expect("credential lifecycle state must deserialize through the SDK");
+        match state {
+            CredentialLifecycleState::Ready
+            | CredentialLifecycleState::RefreshDeferred { .. }
+            | CredentialLifecycleState::RefreshBlocked
+            | CredentialLifecycleState::ReauthRequired => {},
+        }
+        let actual = nebula_sdk::serde_json::to_value(state)
+            .expect("credential lifecycle state must serialize through the SDK");
+        assert_eq!(actual, expected);
+    }
+}
 
 #[derive(Debug, Deserialize, Schema)]
 #[serde(crate = "nebula_sdk::serde")]
@@ -123,6 +150,7 @@ where
 }
 
 fn main() {
+    assert_credential_lifecycle_contract();
     catalog_constructor_parity();
     assert_typed_action_contract::<EchoAction>();
     let metadata: ActionMetadataDraft = EchoAction::metadata();

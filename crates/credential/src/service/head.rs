@@ -13,7 +13,11 @@
 //! produces a typed guard, and the engine resolver owns snapshot projection.
 
 use chrono::{DateTime, Utc};
-use nebula_credential::{CredentialDisplay, LAST_VALIDATED_AT_METADATA_KEY, StoredCredentialHead};
+use nebula_credential::{
+    CredentialDisplay, CredentialLifecycleState, LAST_VALIDATED_AT_METADATA_KEY,
+    StoredCredentialHead,
+};
+use nebula_storage_port::RefreshRetryProjection;
 use serde::Serialize;
 use serde_json::Value;
 
@@ -41,9 +45,10 @@ pub struct CredentialHead {
     /// When the credential material was last validated or refreshed, if the
     /// runtime has established that anchor.
     pub last_validated_at: Option<DateTime<Utc>>,
-    /// True when the credential cannot be used until re-authorized (e.g.
-    /// an interactive flow was started but not completed, or a refresh
-    /// failed terminally).
+    /// Durable, secret-free credential availability state.
+    pub lifecycle: CredentialLifecycleState,
+    /// Compatibility projection for technical callers. Public clients should
+    /// match [`Self::lifecycle`] instead.
     pub reauth_required: bool,
     /// Per-instance display metadata (name / description / tags). Empty
     /// for system-acquired credentials that were never named.
@@ -69,6 +74,19 @@ impl CredentialHead {
                 .and_then(Value::as_str)
                 .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
                 .map(|instant| instant.with_timezone(&Utc)),
+            lifecycle: if stored.reauth_required() {
+                CredentialLifecycleState::ReauthRequired
+            } else {
+                match stored.refresh_retry() {
+                    None => CredentialLifecycleState::Ready,
+                    Some(RefreshRetryProjection::Never) => CredentialLifecycleState::RefreshBlocked,
+                    Some(RefreshRetryProjection::NotBefore { not_before }) => {
+                        CredentialLifecycleState::RefreshDeferred {
+                            retry_at: not_before,
+                        }
+                    },
+                }
+            },
             reauth_required: stored.reauth_required(),
             display,
         }
@@ -114,6 +132,7 @@ mod tests {
         assert_eq!(head.credential_key, "api_key");
         assert_eq!(head.version, 4);
         assert_eq!(head.last_validated_at, None);
+        assert_eq!(head.lifecycle, CredentialLifecycleState::Ready);
         assert!(!head.reauth_required);
         assert!(head.display.is_empty());
         // No `data` field exists on either persistence or service projection.

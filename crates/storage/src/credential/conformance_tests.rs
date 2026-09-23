@@ -13,7 +13,7 @@ use nebula_storage_port::{
     CredentialRecordState, CredentialReplacement, CredentialSelector, CredentialTombstone,
     CredentialVersion, RefreshRetryAdmission, RefreshRetryBlock, RefreshRetryDelay,
     RefreshRetryDiagnosticCode, RefreshRetryEvidence, RefreshRetryKind, RefreshRetryPhase,
-    RefreshRetryTransition, SecretBytes, StoredCredential,
+    RefreshRetryProjection, RefreshRetryTransition, SecretBytes, StoredCredential,
 };
 use serde_json::{Map, Value};
 
@@ -147,6 +147,11 @@ where
         Some(nebula_storage_port::RefreshRetryGate::Never { evidence: stored })
             if stored == &evidence
     ));
+    assert_eq!(
+        store.get_head(&gate_key).await?.refresh_retry(),
+        Some(RefreshRetryProjection::Never),
+        "management heads must omit adjudication evidence"
+    );
 
     let preserve = replacement(
         gate_never.version(),
@@ -187,6 +192,26 @@ where
         }),
     );
     let gate_after = store.replace(&gate_key, set_after).await?;
+    let persisted_not_before = store
+        .get(&gate_key)
+        .await?
+        .as_live()
+        .and_then(|live| live.refresh_retry_gate())
+        .and_then(nebula_storage_port::RefreshRetryGate::not_before)
+        .expect("timed gate stores an absolute backend-authored instant");
+    assert_eq!(
+        store.get_head(&gate_key).await?.refresh_retry(),
+        Some(RefreshRetryProjection::NotBefore {
+            not_before: persisted_not_before,
+        })
+    );
+    assert!(store.list_heads(&owner_a, None).await?.iter().any(|head| {
+        head.credential_id() == gate_id
+            && head.refresh_retry()
+                == Some(RefreshRetryProjection::NotBefore {
+                    not_before: persisted_not_before,
+                })
+    }));
     match store
         .refresh_retry_snapshot(&gate_key)
         .await?
