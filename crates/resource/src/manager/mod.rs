@@ -342,6 +342,8 @@ use crate::{
 };
 
 pub(crate) mod acquire;
+#[cfg(test)]
+mod event_bus_tests;
 mod gate;
 pub(crate) mod options;
 mod registration;
@@ -471,7 +473,9 @@ impl Manager {
     /// Creates a new empty manager with the given configuration.
     pub fn with_config(config: ManagerConfig) -> Self {
         Self::warn_once_if_panic_abort();
-        let event_bus = Arc::new(EventBus::new(256));
+        // `max(1)`: the public field bypasses the setter's clamp, and a
+        // zero-sized bus panics.
+        let event_bus = Arc::new(EventBus::new(config.event_bus_capacity.max(1)));
         let cancel = CancellationToken::new();
         let (release_queue, release_queue_handle) = ReleaseQueue::new(config.release_queue_workers);
         let release_queue = Arc::new(release_queue);
@@ -561,7 +565,8 @@ impl Manager {
     ///
     /// Returns a [`Subscriber`](crate::Subscriber) that receives
     /// [`ResourceEvent`]s emitted during registration, removal, and
-    /// acquisition. The buffer is fixed at 256 events: a slow consumer that
+    /// acquisition. The buffer holds
+    /// [`ManagerConfig::event_bus_capacity`] events: a slow consumer that
     /// falls behind has the *oldest* unread events skipped (the subscriber
     /// auto-recovers and re-positions to the latest event — it never returns
     /// a lag error). Use
@@ -569,6 +574,15 @@ impl Manager {
     /// observe how many events were skipped.
     pub fn subscribe_events(&self) -> crate::Subscriber<ResourceEvent> {
         self.event_bus.subscribe()
+    }
+
+    /// Snapshot of the lifecycle event bus counters.
+    ///
+    /// A growing `dropped_count` means lifecycle events are being lost —
+    /// raise [`ManagerConfig::event_bus_capacity`] or speed up consumers.
+    /// See [`EventBusStats`](crate::EventBusStats) for how drops are counted.
+    pub fn event_bus_stats(&self) -> crate::EventBusStats {
+        self.event_bus.stats()
     }
 
     /// Defense A against the `graceful_shutdown` race: reject any acquire

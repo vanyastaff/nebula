@@ -277,9 +277,10 @@ pub use metrics::{
     ResourceOpsMetrics, ResourceOpsSnapshot,
 };
 pub use nebula_core::{ExecutionId, ResourceKey, ScopeLevel, WorkflowId, resource_key};
-/// Re-export [`Subscriber`] so callers of [`Manager::subscribe_events`] do not
-/// need a direct `nebula-eventbus` dependency.
-pub use nebula_eventbus::Subscriber;
+/// Re-export [`Subscriber`] and [`EventBusStats`] so callers of
+/// [`Manager::subscribe_events`] / [`Manager::event_bus_stats`] do not need a
+/// direct `nebula-eventbus` dependency.
+pub use nebula_eventbus::{EventBusStats, Subscriber};
 pub use nebula_metadata::{
     DeprecationNotice, Icon, MaturityLevel, MetadataError, MetadataName, MetadataReadmissionError,
     metadata_name,
