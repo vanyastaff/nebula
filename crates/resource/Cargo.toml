@@ -46,6 +46,7 @@ arc-swap = { workspace = true }
 serde = { workspace = true }
 semver = { workspace = true }
 dashmap = { workspace = true }
+indexmap = { workspace = true }
 smallvec = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }

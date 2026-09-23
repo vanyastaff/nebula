@@ -3574,6 +3574,7 @@ dependencies = [
  "codspeed-criterion-compat",
  "dashmap",
  "futures",
+ "indexmap",
  "insta",
  "nebula-core",
  "nebula-credential",
