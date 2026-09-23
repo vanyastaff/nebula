@@ -5,8 +5,8 @@
 //! including consistent role snapshots and atomic last-admin guards, but its
 //! state is process-local. `nebula-storage-port` defines the durable snapshot
 //! and guarded-mutation contracts, with backend implementations in storage.
-//! An apps-owned bridge must translate those contracts into this API policy
-//! port; durable operator composition is not yet wired in the default server.
+//! The first-party server translates those contracts into this API policy
+//! port through one backend-bound tenant directory.
 //!
 //! ## One shared store — RBAC coherence
 //!
@@ -19,21 +19,13 @@
 //!
 //! ## Provisioning (honest capability contract / credential secrecy — NOT auto-wired)
 //!
-//! The default `apps/server` binary deliberately leaves
-//! [`crate::AppState::membership_store`] **unwired** (`None`). It is an
-//! unavailable capability: every org/workspace route returns an
-//! honest **503** before its handler in the unprovisioned default binary,
-//! and credential command authority fails unavailable. Auto-seeding a bootstrap owner was removed (PR #671 P1) —
-//! the default `AuthBackend` is empty, so an auto-seeded owner could
-//! never authenticate and a seeded store would 404-deadlock every
-//! org/workspace route (a deployment-level honest capability false capability); a
-//! hardcoded auto-seeded admin would also be a default-credential
-//! surface (credential secrecy). Internal/reference API composition can exercise the seam via
+//! This adapter is the process-local reference implementation. The first-party
+//! server instead wires the durable storage-backed tenant directory and can
+//! bootstrap it only from explicit operator configuration tied to an existing
+//! authenticatable owner. Internal/reference API composition can exercise this seam via
 //! [`InMemoryMembershipStore::seeded_bootstrap`] +
-//! [`crate::AppState::with_membership_store`], registering the same
-//! bootstrap-owner identity in the wired `AuthBackend`. This is not a supported
-//! downstream deployment recipe; the default binary does not yet expose K4
-//! operator configuration for this seam.
+//! [`crate::AppState::with_membership_store`], registering the same owner
+//! identity in the wired `AuthBackend`.
 //!
 //! ## Durability
 //!
@@ -50,14 +42,15 @@
 use std::{collections::HashMap, str::FromStr, sync::Arc};
 
 use async_trait::async_trait;
-use nebula_core::{OrgId, OrgRole, UserId, WorkspaceId, scope::Principal};
+use nebula_core::{OrgId, OrgRole, UserId, WorkspaceId, WorkspaceRole, scope::Principal};
 use thiserror::Error;
 use tokio::sync::RwLock;
 
 use crate::{
     error::ApiError,
     state::{
-        AddMemberOutcome, MembershipStore, OrgMember, RemoveMemberOutcome, TenantMembershipSnapshot,
+        AddMemberOutcome, MembershipStore, OrgMember, RemoveMemberOutcome,
+        TenantMembershipSnapshot, WorkspaceMember,
     },
 };
 
@@ -127,6 +120,18 @@ struct Entry {
     role: OrgRole,
 }
 
+#[derive(Debug, Clone)]
+struct WorkspaceEntry {
+    principal: Principal,
+    role: WorkspaceRole,
+}
+
+#[derive(Debug, Default)]
+struct MembershipState {
+    orgs: HashMap<OrgId, HashMap<String, Entry>>,
+    workspaces: HashMap<(OrgId, WorkspaceId), HashMap<String, WorkspaceEntry>>,
+}
+
 /// Is this an org-administrative ("privileged") role?
 ///
 /// The org-lockout invariant is "an org always retains ≥ 1 principal with
@@ -169,12 +174,9 @@ fn write_keeps_an_admin(
 /// In-memory, process-local [`MembershipStore`] reference adapter.
 #[derive(Debug, Default)]
 pub struct InMemoryMembershipStore {
-    /// `org_id → (principal_key → Entry)`. Workspace-level explicit roles
-    /// are not modelled here (none of the graduated endpoints touch them);
-    /// the snapshot's workspace role is `None` so RBAC falls back to the
-    /// org-implied role via `effective_workspace_role`. This differs from an
-    /// unwired store, which makes tenant policy unavailable and returns 503.
-    orgs: RwLock<HashMap<OrgId, HashMap<String, Entry>>>,
+    /// One lock covers org and workspace roles so authorization snapshots
+    /// cannot splice grants observed at different instants.
+    state: RwLock<MembershipState>,
 }
 
 impl InMemoryMembershipStore {
@@ -203,7 +205,10 @@ impl InMemoryMembershipStore {
         members.insert(principal_key(&principal), Entry { principal, role });
         orgs.insert(org_id, members);
         Self {
-            orgs: RwLock::new(orgs),
+            state: RwLock::new(MembershipState {
+                orgs,
+                workspaces: HashMap::new(),
+            }),
         }
     }
 
@@ -214,13 +219,9 @@ impl InMemoryMembershipStore {
     /// member-management feature: internal composition wires
     /// `AppState::with_membership_store(this)` **and** registers the same
     /// `owner_id_str` in its `AuthBackend` so the bootstrap owner can actually
-    /// authenticate. It is not a supported downstream deployment surface; K4
-    /// must provide apps-owned operator wiring. It is deliberately
-    /// **not** called by the default `apps/server` composition — see
-    /// `apps/server/src/compose.rs::default_state` for why auto-seeding
-    /// would deadlock RBAC (no authenticatable owner) or introduce a
-    /// hardcoded-credential surface (credential secrecy); the default binary
-    /// returns an honest 503 for org member endpoints instead.
+    /// authenticate. It is not a supported downstream deployment surface;
+    /// first-party operator provisioning lives in `apps/server` and uses the
+    /// durable storage authority instead.
     ///
     /// String-typed (not `OrgId`/`UserId`) so technical composition code need
     /// not duplicate parsing — the id
@@ -260,8 +261,9 @@ impl InMemoryMembershipStore {
     /// is the composition-root counterpart.
     #[cfg(any(test, feature = "test-util"))]
     pub async fn seed_for_test(&self, org_id: OrgId, principal: Principal, role: OrgRole) {
-        let mut guard = self.orgs.write().await;
+        let mut guard = self.state.write().await;
         guard
+            .orgs
             .entry(org_id)
             .or_default()
             .insert(principal_key(&principal), Entry { principal, role });
@@ -273,17 +275,25 @@ impl MembershipStore for InMemoryMembershipStore {
     async fn get_tenant_membership(
         &self,
         org_id: OrgId,
-        _workspace_id: Option<WorkspaceId>,
+        workspace_id: Option<WorkspaceId>,
         principal: &Principal,
     ) -> Result<TenantMembershipSnapshot, ApiError> {
-        let guard = self.orgs.read().await;
+        let guard = self.state.read().await;
         let org_role = guard
+            .orgs
             .get(&org_id)
             .and_then(|members| members.get(&principal_key(principal)))
             .map(|entry| entry.role);
+        let workspace_role = workspace_id.and_then(|workspace_id| {
+            guard
+                .workspaces
+                .get(&(org_id, workspace_id))
+                .and_then(|members| members.get(&principal_key(principal)))
+                .map(|entry| entry.role)
+        });
         Ok(TenantMembershipSnapshot {
             org_role,
-            workspace_role: None,
+            workspace_role,
         })
     }
 
@@ -292,16 +302,18 @@ impl MembershipStore for InMemoryMembershipStore {
         org_id: OrgId,
         principal: &Principal,
     ) -> Result<Option<OrgRole>, ApiError> {
-        let guard = self.orgs.read().await;
+        let guard = self.state.read().await;
         Ok(guard
+            .orgs
             .get(&org_id)
             .and_then(|members| members.get(&principal_key(principal)))
             .map(|e| e.role))
     }
 
     async fn list_members(&self, org_id: OrgId) -> Result<Vec<OrgMember>, ApiError> {
-        let guard = self.orgs.read().await;
+        let guard = self.state.read().await;
         Ok(guard
+            .orgs
             .get(&org_id)
             .map(|members| {
                 members
@@ -315,6 +327,70 @@ impl MembershipStore for InMemoryMembershipStore {
             .unwrap_or_default())
     }
 
+    async fn list_workspace_members(
+        &self,
+        org_id: OrgId,
+        workspace_id: WorkspaceId,
+    ) -> Result<Vec<WorkspaceMember>, ApiError> {
+        let guard = self.state.read().await;
+        Ok(guard
+            .workspaces
+            .get(&(org_id, workspace_id))
+            .map(|members| {
+                members
+                    .values()
+                    .map(|entry| WorkspaceMember {
+                        principal: entry.principal.clone(),
+                        role: entry.role,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
+    async fn upsert_workspace_member(
+        &self,
+        org_id: OrgId,
+        workspace_id: WorkspaceId,
+        principal: &Principal,
+        role: WorkspaceRole,
+    ) -> Result<(), ApiError> {
+        let mut guard = self.state.write().await;
+        let key = principal_key(principal);
+        if !guard
+            .orgs
+            .get(&org_id)
+            .is_some_and(|members| members.contains_key(&key))
+        {
+            return Err(ApiError::NotFound("member not found".to_owned()));
+        }
+        guard
+            .workspaces
+            .entry((org_id, workspace_id))
+            .or_default()
+            .insert(
+                key,
+                WorkspaceEntry {
+                    principal: principal.clone(),
+                    role,
+                },
+            );
+        Ok(())
+    }
+
+    async fn remove_workspace_member(
+        &self,
+        org_id: OrgId,
+        workspace_id: WorkspaceId,
+        principal: &Principal,
+    ) -> Result<bool, ApiError> {
+        let mut guard = self.state.write().await;
+        Ok(guard
+            .workspaces
+            .get_mut(&(org_id, workspace_id))
+            .is_some_and(|members| members.remove(&principal_key(principal)).is_some()))
+    }
+
     async fn add_member_guarded(
         &self,
         org_id: OrgId,
@@ -326,9 +402,9 @@ impl MembershipStore for InMemoryMembershipStore {
         // demotion/removal can observe a stale privileged count and slip
         // the org below one admin (closes the TOCTOU the handler-level
         // check had).
-        let mut guard = self.orgs.write().await;
+        let mut guard = self.state.write().await;
         let key = principal_key(principal);
-        let members = guard.entry(org_id).or_default();
+        let members = guard.orgs.entry(org_id).or_default();
 
         if !write_keeps_an_admin(members, &key, Some(role)) {
             return Ok(AddMemberOutcome::WouldLockOut);
@@ -348,9 +424,9 @@ impl MembershipStore for InMemoryMembershipStore {
         org_id: OrgId,
         principal: &Principal,
     ) -> Result<RemoveMemberOutcome, ApiError> {
-        let mut guard = self.orgs.write().await;
+        let mut guard = self.state.write().await;
         let key = principal_key(principal);
-        let Some(members) = guard.get_mut(&org_id) else {
+        let Some(members) = guard.orgs.get_mut(&org_id) else {
             return Ok(RemoveMemberOutcome::NotFound);
         };
         if !members.contains_key(&key) {
@@ -362,6 +438,11 @@ impl MembershipStore for InMemoryMembershipStore {
             return Ok(RemoveMemberOutcome::WouldLockOut);
         }
         members.remove(&key);
+        for ((workspace_org_id, _), workspace_members) in &mut guard.workspaces {
+            if *workspace_org_id == org_id {
+                workspace_members.remove(&key);
+            }
+        }
         Ok(RemoveMemberOutcome::Removed)
     }
 
@@ -370,8 +451,9 @@ impl MembershipStore for InMemoryMembershipStore {
         principal: &Principal,
     ) -> Result<Vec<(OrgId, OrgRole)>, ApiError> {
         let key = principal_key(principal);
-        let guard = self.orgs.read().await;
+        let guard = self.state.read().await;
         Ok(guard
+            .orgs
             .iter()
             .filter_map(|(org_id, members)| members.get(&key).map(|e| (*org_id, e.role)))
             .collect())
@@ -516,6 +598,29 @@ mod tests {
             RemoveMemberOutcome::Removed
         );
         assert_eq!(store.get_org_role(org, &p).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn workspace_upsert_requires_current_org_membership_at_write_seam() {
+        let store = InMemoryMembershipStore::new();
+        let org = OrgId::new();
+        let workspace = WorkspaceId::new();
+        let owner = user();
+        let target = user();
+        store.seed_for_test(org, owner, OrgRole::OrgOwner).await;
+
+        let error = store
+            .upsert_workspace_member(org, workspace, &target, WorkspaceRole::WorkspaceViewer)
+            .await
+            .expect_err("a workspace grant must not outlive its org membership authority");
+        assert!(matches!(error, ApiError::NotFound(_)));
+        assert!(
+            store
+                .list_workspace_members(org, workspace)
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]

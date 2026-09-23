@@ -19,7 +19,8 @@ use nebula_api::{
     },
     error::ApiError,
     state::{
-        AddMemberOutcome, MembershipStore, OrgMember, RemoveMemberOutcome, TenantMembershipSnapshot,
+        AddMemberOutcome, MembershipStore, OrgMember, RemoveMemberOutcome,
+        TenantMembershipSnapshot, WorkspaceMember,
     },
 };
 use nebula_core::{OrgId, OrgRole, Principal, UserId, WorkspaceId, WorkspaceRole};
@@ -73,6 +74,40 @@ impl MembershipStore for FixedMembershipStore {
         } else {
             Ok(Vec::new())
         }
+    }
+
+    async fn list_workspace_members(
+        &self,
+        org_id: OrgId,
+        workspace_id: WorkspaceId,
+    ) -> Result<Vec<WorkspaceMember>, ApiError> {
+        if org_id == test_org_id() && workspace_id == test_ws_id() {
+            Ok(vec![WorkspaceMember {
+                principal: self.principal.clone(),
+                role: self.workspace_role,
+            }])
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
+    async fn upsert_workspace_member(
+        &self,
+        _org_id: OrgId,
+        _workspace_id: WorkspaceId,
+        _principal: &Principal,
+        _role: WorkspaceRole,
+    ) -> Result<(), ApiError> {
+        Ok(())
+    }
+
+    async fn remove_workspace_member(
+        &self,
+        _org_id: OrgId,
+        _workspace_id: WorkspaceId,
+        _principal: &Principal,
+    ) -> Result<bool, ApiError> {
+        Ok(false)
     }
 
     async fn add_member_guarded(
@@ -175,6 +210,69 @@ async fn post_workflows_with_pat(state: AppState, pat: &str) -> Response<Body> {
     )
     .await
     .expect("app must respond")
+}
+
+async fn workspace_members_with_pat(state: AppState, pat: &str, method: &str) -> Response<Body> {
+    let path = match method {
+        "GET" => ws_path("/members"),
+        "PUT" => format!("{}/{}", ws_path("/members"), UserId::new()),
+        _ => unreachable!("test supports GET and PUT only"),
+    };
+    let mut request = Request::builder()
+        .method(method)
+        .uri(path)
+        .header("authorization", format!("Bearer {pat}"));
+    let body = if method == "PUT" {
+        request = request.header("content-type", "application/json");
+        Body::from(r#"{"role":"viewer"}"#)
+    } else {
+        Body::empty()
+    };
+    app::build_app(state, &ApiConfig::for_test())
+        .oneshot(request.body(body).unwrap())
+        .await
+        .expect("app must respond")
+}
+
+#[tokio::test]
+async fn workspace_member_routes_require_both_pat_scope_and_tenant_role() {
+    let (state, pat) = state_with_pat_and_workspace_role(
+        vec!["workspace_members:read"],
+        WorkspaceRole::WorkspaceAdmin,
+    )
+    .await;
+    assert_eq!(
+        workspace_members_with_pat(state, &pat, "GET")
+            .await
+            .status(),
+        StatusCode::OK
+    );
+
+    let (state, pat) = state_with_pat_and_workspace_role(
+        vec!["workspace_members:read"],
+        WorkspaceRole::WorkspaceAdmin,
+    )
+    .await;
+    assert_eq!(
+        workspace_members_with_pat(state, &pat, "PUT")
+            .await
+            .status(),
+        StatusCode::FORBIDDEN,
+        "admin role cannot substitute for the missing manage token scope"
+    );
+
+    let (state, pat) = state_with_pat_and_workspace_role(
+        vec!["workspace_members:manage"],
+        WorkspaceRole::WorkspaceViewer,
+    )
+    .await;
+    assert_eq!(
+        workspace_members_with_pat(state, &pat, "PUT")
+            .await
+            .status(),
+        StatusCode::FORBIDDEN,
+        "manage token scope cannot substitute for workspace-admin membership"
+    );
 }
 
 #[tokio::test]

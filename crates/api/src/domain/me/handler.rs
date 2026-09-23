@@ -11,20 +11,10 @@
 //!
 //! ## Durability (provisioning durability / engine durability — operator-facing)
 //!
-//! These endpoints are **implemented and work end-to-end**, but the only
-//! wired `AuthBackend` is the in-memory one (`InMemoryAuthBackend`) and
-//! the only wired `MembershipStore` is the in-memory one
-//! (`InMemoryMembershipStore`). All `me/*` profile, PAT, **and org
-//! membership** state is therefore **process-local: it is lost on restart
-//! and is NOT shared across replicas.** A PAT minted via `POST /me/tokens`
-//! stops authenticating the moment the process exits; an org membership is
-//! likewise process-local. This is the same local-first caveat the
-//! in-memory idempotency backend carries (see the `crates/api/README.md`
-//! idempotency note) — it persists once storage-backed `AuthBackend` /
-//! `MembershipStore` adapters land (no such impls exist today;
-//! `nebula_storage` ships no `UserRepo`/`PatRepo`/`SessionRepo` and no
-//! membership repo). The durability gap is strictly about persistence,
-//! not capability.
+//! These endpoints are implemented end-to-end. Durability follows the
+//! composition root: the first-party server can select PostgreSQL for identity
+//! and memory, SQLite, or PostgreSQL for the shared tenant directory. The
+//! API-owned in-memory adapters remain reference/test implementations.
 //!
 //! [`AuthBackend`]: crate::domain::auth::backend::AuthBackend
 

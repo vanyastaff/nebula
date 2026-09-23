@@ -22,24 +22,11 @@
 //!
 //! ## Provisioning & durability (provisioning durability / credential secrecy)
 //!
-//! The member endpoints require an explicitly-provisioned
-//! [`MembershipStore`](crate::state::MembershipStore) — the default
-//! `apps/server` binary deliberately leaves it **unwired** (`None`), so
-//! these endpoints return an honest **503** there (the
-//! `membership_or_503` port-absent path), and
-//! [`crate::middleware::rbac`] stays inert (no spurious 404 on any
-//! route). Auto-seeding a bootstrap owner into the default binary was
-//! removed (PR #671 P1): the default `AuthBackend` is empty, so an
-//! auto-seeded owner could never authenticate and a seeded store would
-//! 404-deadlock every org/workspace route (a deployment-level honest capability false
-//! capability); a hardcoded auto-seeded admin would also be a
-//! default-credential surface (credential secrecy). An operator/integrator provisions
-//! it via [`membership::InMemoryMembershipStore::seeded_bootstrap`] +
-//! [`crate::AppState::with_membership_store`], registering the same
-//! bootstrap-owner identity in the wired `AuthBackend` so it can
-//! authenticate. State is process-local (lost on restart; not shared
-//! across replicas) — same local-first posture as `me/*` and the
-//! `memory` idempotency backend. See `crates/api/README.md`
+//! The first-party server wires [`MembershipStore`](crate::state::MembershipStore)
+//! to the selected tenant-directory backend. Optional operator bootstrap accepts
+//! only an owner identity already present in the configured authentication backend
+//! and provisions the tenant atomically. The in-memory reference adapter remains
+//! available for tests and embedded composition. See `crates/api/README.md`
 //! ("Org membership durability") and
 //! `apps/server/src/compose.rs::default_state`.
 
