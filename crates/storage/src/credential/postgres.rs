@@ -36,16 +36,13 @@ use nebula_storage_port::{
 };
 use serde_json::{Map, Value};
 use sqlx::{PgPool, Postgres, Transaction};
-use std::fmt;
 #[cfg(test)]
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::{fmt, sync::Arc};
 
 use super::{
-    CredentialStoreStartupError, refresh_claim::PgRefreshClaimRepo, retry_gate,
-    schema::postgres as schema,
+    CredentialStoreStartupError, pending::PgPendingStateStore, refresh_claim::PgRefreshClaimRepo,
+    retry_gate, schema::postgres as schema,
 };
 use crate::migration::setup_postgres_pool_with;
 
@@ -133,6 +130,16 @@ impl PgCredentialPersistence {
     #[must_use]
     pub fn refresh_claim_repo(&self) -> PgRefreshClaimRepo {
         PgRefreshClaimRepo::new(self.pool.clone())
+    }
+
+    /// Create an encrypted durable pending-state store on this admitted pool.
+    #[must_use]
+    pub fn pending_state_store(
+        &self,
+        key_provider: Arc<dyn super::KeyProvider>,
+        legacy_keys: Vec<(String, Arc<nebula_crypto::EncryptionKey>)>,
+    ) -> PgPendingStateStore {
+        PgPendingStateStore::new(self.pool.clone(), key_provider, legacy_keys)
     }
 
     /// Create the due-refresh schedule adapter on this store's admitted pool.

@@ -28,7 +28,12 @@ pub mod provider_cache;
 #[cfg(any(test, feature = "sqlite", feature = "postgres"))]
 mod schema;
 
-#[cfg(any(test, feature = "credential-in-memory"))]
+#[cfg(any(
+    test,
+    feature = "credential-in-memory",
+    feature = "sqlite",
+    feature = "postgres"
+))]
 pub mod pending;
 #[cfg(test)]
 mod reference;
@@ -54,6 +59,10 @@ pub use layer::{
 };
 #[cfg(any(test, feature = "credential-in-memory"))]
 pub use pending::InMemoryPendingStore;
+#[cfg(feature = "postgres")]
+pub use pending::PgPendingStateStore;
+#[cfg(feature = "sqlite")]
+pub use pending::SqlitePendingStateStore;
 #[cfg(feature = "postgres")]
 pub use postgres::{PgCredentialPersistence, PgCredentialRefreshSchedule};
 pub use provider_cache::{ProviderCacheConfig, ProviderCacheLayer, ProviderCacheStats};

@@ -1323,7 +1323,9 @@ mod tests {
         assert!(!is_transient_sqlite_lock(&sqlx::Error::WorkerCrashed));
     }
 
-    ///
+    /// Head 0055 adds an empty encrypted pending-state relation for interactive
+    /// credentials. It neither infers prior pending flows nor rewrites an
+    /// aggregate, so the general floor remains at 0040.
     /// Head 0054 owner-qualifies refresh claims and sentinel incidents by
     /// backfilling the canonical owner from the credential aggregate. It is an
     /// aggregate transform: an orphan makes the migration fail closed, and
@@ -1365,9 +1367,9 @@ mod tests {
     fn new_catalog_head_requires_explicit_admission_policy_review() {
         assert_eq!(GENERAL_CATALOG_SUPPORTED_FLOOR, 40);
         #[cfg(feature = "sqlite")]
-        assert_eq!(catalog::catalog_head(&super::SQLITE_MIGRATOR), 54);
+        assert_eq!(catalog::catalog_head(&super::SQLITE_MIGRATOR), 55);
         #[cfg(feature = "postgres")]
-        assert_eq!(catalog::catalog_head(&super::POSTGRES_MIGRATOR), 54);
+        assert_eq!(catalog::catalog_head(&super::POSTGRES_MIGRATOR), 55);
     }
 
     /// The setup guard must never hold a descriptor on the database file.
