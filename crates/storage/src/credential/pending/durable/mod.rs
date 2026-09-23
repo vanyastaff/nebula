@@ -171,6 +171,12 @@ mod migration_contract_tests {
             include_str!("../../../../migrations/sqlite/0055_credential_pending_states.sql");
         let postgres =
             include_str!("../../../../migrations/postgres/0055_credential_pending_states.sql");
+        let sqlite_follow_up = include_str!(
+            "../../../../migrations/sqlite/0056_credential_pending_nonnegative_ttl.sql"
+        );
+        let postgres_follow_up = include_str!(
+            "../../../../migrations/postgres/0056_credential_pending_nonnegative_ttl.sql"
+        );
         for column in [
             "token_digest",
             "credential_kind",
@@ -188,8 +194,10 @@ mod migration_contract_tests {
         }
         assert!(sqlite.contains("length(token_digest) = 32"));
         assert!(postgres.contains("octet_length(token_digest) = 32"));
-        assert!(sqlite.contains("CHECK (expires_at >= created_at)"));
-        assert!(postgres.contains("CHECK (expires_at >= created_at)"));
+        assert!(sqlite.contains("CHECK (expires_at > created_at)"));
+        assert!(postgres.contains("CHECK (expires_at > created_at)"));
+        assert!(sqlite_follow_up.contains("CHECK (expires_at >= created_at)"));
+        assert!(postgres_follow_up.contains("CHECK (expires_at >= created_at)"));
     }
 
     #[test]

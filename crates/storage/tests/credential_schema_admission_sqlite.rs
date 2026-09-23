@@ -1262,3 +1262,50 @@ async fn pending_state_expiry_index_drift_is_rejected() {
 
     assert_invalid_current_shape(&path).await;
 }
+
+#[tokio::test]
+async fn canonical_0055_pending_rows_upgrade_without_rewriting_released_history() {
+    let directory = tempfile::tempdir().expect("temporary directory must be created");
+    let path = directory.path().join("pending-0055-upgrade.sqlite");
+    let pool = raw_pool(&path).await;
+    MIGRATOR
+        .run_to(55, &pool)
+        .await
+        .expect("released 0055 schema must install");
+    sqlx::query(
+        "INSERT INTO credential_pending_states (
+             token_digest, credential_kind, owner_id, session_id,
+             state_encrypted, created_at, expires_at
+         ) VALUES (zeroblob(32), 'oauth2', 'owner-a', 'session-a', x'01', 1000, 1001)",
+    )
+    .execute(&pool)
+    .await
+    .expect("0055-valid pending row must seed");
+    MIGRATOR
+        .run(&pool)
+        .await
+        .expect("0055 schema must upgrade through 0056");
+
+    let row: (String, i64, i64) =
+        sqlx::query_as("SELECT owner_id, created_at, expires_at FROM credential_pending_states")
+            .fetch_one(&pool)
+            .await
+            .expect("pending row must survive the relation rebuild");
+    assert_eq!(row, ("owner-a".to_owned(), 1000, 1001));
+    sqlx::query(
+        "INSERT INTO credential_pending_states (
+             token_digest, credential_kind, owner_id, session_id,
+             state_encrypted, created_at, expires_at
+         ) VALUES (randomblob(32), 'oauth2', 'owner-b', 'session-b', x'02', 2000, 2000)",
+    )
+    .execute(&pool)
+    .await
+    .expect("0056 must admit an immediately expired row");
+    pool.close().await;
+
+    drop(
+        SqliteCredentialPersistence::connect(&file_url(&path))
+            .await
+            .expect("upgraded pending-state relation must pass readiness"),
+    );
+}

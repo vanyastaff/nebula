@@ -277,7 +277,11 @@ async fn observe(
         if !relation_exists(connection, "credential_pending_states").await? {
             return unsupported(AdmissionReason::InvalidCredentialsRelation);
         }
-        validate_pending_states_relation(connection).await?;
+        validate_pending_states_relation(
+            connection,
+            latest.ok_or(CredentialStoreStartupError::Unavailable)?,
+        )
+        .await?;
     }
     let credentials =
         if credentials_exists && latest_is_supported && latest.is_some_and(|version| version >= 30)
@@ -377,6 +381,7 @@ fn constraints_match(actual: &[ConstraintShape], expected: &[(&str, &str, &str)]
 
 async fn validate_pending_states_relation(
     connection: &mut PgConnection,
+    latest: i64,
 ) -> Result<(), CredentialStoreStartupError> {
     if !columns_match(
         connection,
@@ -388,14 +393,15 @@ async fn validate_pending_states_relation(
         return unsupported(AdmissionReason::InvalidCredentialsRelation);
     }
     let constraints = constraint_shapes(connection, "credential_pending_states").await?;
+    let expiry_constraint = if latest >= 56 {
+        "CHECK (expires_at >= created_at)"
+    } else {
+        "CHECK (expires_at > created_at)"
+    };
     if !constraints_match(
         &constraints,
         &[
-            (
-                "credential_pending_states_check",
-                "c",
-                "CHECK (expires_at >= created_at)",
-            ),
+            ("credential_pending_states_check", "c", expiry_constraint),
             (
                 "credential_pending_states_pkey",
                 "p",

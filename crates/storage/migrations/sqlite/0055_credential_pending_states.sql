@@ -9,7 +9,7 @@ CREATE TABLE credential_pending_states (
     state_encrypted  BLOB NOT NULL,
     created_at       INTEGER NOT NULL,
     expires_at       INTEGER NOT NULL,
-    CHECK (expires_at >= created_at)
+    CHECK (expires_at > created_at)
 );
 
 CREATE INDEX idx_credential_pending_states_expiry

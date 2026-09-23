@@ -2,6 +2,23 @@ use super::*;
 use chrono::{TimeZone, Utc};
 use sqlx::{PgPool, Row};
 
+fn pending_timestamps(
+    now: chrono::DateTime<Utc>,
+    ttl: Duration,
+) -> Result<(chrono::DateTime<Utc>, chrono::DateTime<Utc>), PendingStoreError> {
+    let now_ms = now.timestamp_millis();
+    let created_at = Utc
+        .timestamp_millis_opt(now_ms)
+        .single()
+        .ok_or_else(|| backend(DurablePendingError::Unavailable))?;
+    let expires_ms = expiry_from(now_ms, ttl)?;
+    let expires_at = Utc
+        .timestamp_millis_opt(expires_ms)
+        .single()
+        .ok_or_else(|| backend(DurablePendingError::Unavailable))?;
+    Ok((created_at, expires_at))
+}
+
 /// PostgreSQL-backed encrypted pending state store.
 pub struct PgPendingStateStore {
     pool: PgPool,
@@ -117,12 +134,8 @@ impl DynPendingStateStore for PgPendingStateStore {
                 .fetch_one(&self.pool)
                 .await
                 .map_err(|_| backend(DurablePendingError::Unavailable))?;
-            let now_ms = now.timestamp_millis();
-            let expires_ms = expiry_from(now_ms, ttl)?;
-            let expires = Utc
-                .timestamp_millis_opt(expires_ms)
-                .single()
-                .ok_or_else(|| backend(DurablePendingError::Unavailable))?;
+            let (created_at, expires) = pending_timestamps(now, ttl)?;
+            let expires_ms = expires.timestamp_millis();
             sqlx::query(
                 "DELETE FROM credential_pending_states WHERE expires_at <= clock_timestamp()",
             )
@@ -135,7 +148,7 @@ impl DynPendingStateStore for PgPendingStateStore {
                 let aad =
                     pending_aad(&digest, kind, owner, session, expires_ms).map_err(backend)?;
                 let encrypted = self.cipher.encrypt(&data, &aad).map_err(backend)?;
-                let inserted = sqlx::query("INSERT INTO credential_pending_states (token_digest, credential_kind, owner_id, session_id, state_encrypted, created_at, expires_at) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (token_digest) DO NOTHING").bind(digest.as_slice()).bind(kind).bind(owner).bind(session).bind(encrypted).bind(now).bind(expires).execute(&self.pool).await.map_err(|_| backend(DurablePendingError::Unavailable))?;
+                let inserted = sqlx::query("INSERT INTO credential_pending_states (token_digest, credential_kind, owner_id, session_id, state_encrypted, created_at, expires_at) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (token_digest) DO NOTHING").bind(digest.as_slice()).bind(kind).bind(owner).bind(session).bind(encrypted).bind(created_at).bind(expires).execute(&self.pool).await.map_err(|_| backend(DurablePendingError::Unavailable))?;
                 if inserted.rows_affected() == 1 {
                     return Ok(token);
                 }
@@ -184,5 +197,25 @@ impl DynPendingStateStore for PgPendingStateStore {
                 .map_err(|_| backend(DurablePendingError::Unavailable))?;
             Ok(())
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zero_and_sub_millisecond_ttl_share_created_at_precision() {
+        let now = Utc
+            .timestamp_micros(1_700_000_000_123_456)
+            .single()
+            .expect("test timestamp must be valid");
+
+        for ttl in [Duration::ZERO, Duration::from_nanos(999_999)] {
+            let (created_at, expires_at) =
+                pending_timestamps(now, ttl).expect("bounded timestamps must compute");
+            assert_eq!(created_at, expires_at);
+            assert_eq!(created_at.timestamp_subsec_nanos() % 1_000_000, 0);
+        }
     }
 }
