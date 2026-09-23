@@ -547,14 +547,22 @@ impl RecoveryGate {
 }
 
 /// Computes exponential backoff: `base * 2^(attempt - 1)`, capped at 5 min.
+///
+/// Computed in `u128` nanoseconds so a sub-millisecond `base` still
+/// escalates (instead of truncating to a zero delay) and no `base`/`attempt`
+/// combination can wrap below the cap. A zero `base` stays zero.
 fn compute_backoff(base: Duration, attempt: u32) -> Duration {
-    let multiplier = 1u64
+    if base.is_zero() {
+        return Duration::ZERO;
+    }
+    let backoff = 1u128
         .checked_shl(attempt.saturating_sub(1))
-        .unwrap_or(u64::MAX);
-    // Use u64 arithmetic to avoid truncation for large attempts.
-    let backoff_millis = (base.as_millis() as u64).saturating_mul(multiplier);
-    let max_millis = MAX_BACKOFF.as_millis() as u64;
-    Duration::from_millis(backoff_millis.min(max_millis))
+        .and_then(|multiplier| base.as_nanos().checked_mul(multiplier))
+        .map_or(MAX_BACKOFF, |nanos| {
+            // Anything at or below the cap fits in `u64` nanoseconds.
+            u64::try_from(nanos).map_or(MAX_BACKOFF, Duration::from_nanos)
+        });
+    backoff.min(MAX_BACKOFF)
 }
 
 /// Spread of the equal-jitter band below `nominal`, passed to
