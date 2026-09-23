@@ -294,9 +294,17 @@ impl RefreshNotAppliedContext {
         if minimum.is_zero() {
             return;
         }
-        let minimum = RetryDelay::new(minimum)
-            .unwrap_or_else(|_| RetryDelay::from_seconds(RetryDelay::MAX_SECS).unwrap_or(current));
-        self.retry = RetryAdvice::After(current.max(minimum));
+        match RetryDelay::new(minimum) {
+            Ok(minimum) => self.retry = RetryAdvice::After(current.max(minimum)),
+            Err(error) => {
+                tracing::error!(
+                    minimum_retry_backoff_seconds = minimum.as_secs_f64(),
+                    ?error,
+                    "invalid refresh retry floor reached runtime; disabling automatic retry"
+                );
+                self.retry = RetryAdvice::Never;
+            },
+        }
     }
 
     /// Optional validated diagnostic code.
@@ -818,6 +826,26 @@ mod tests {
                 RetryDelay::new(std::time::Duration::from_secs(30)).expect("policy floor is valid")
             )
         );
+    }
+
+    #[test]
+    fn refresh_context_fails_closed_for_unregistered_invalid_retry_floor() {
+        let provider_delay =
+            RetryDelay::new(std::time::Duration::from_secs(2)).expect("provider delay is valid");
+        let mut context = RefreshNotAppliedContext::from_spec(
+            RefreshNotAppliedPhase::BeforeDispatch,
+            RefreshFailureSpec::new(
+                RefreshErrorKind::ProviderUnavailable,
+                RetryAdvice::After(provider_delay),
+            ),
+        );
+
+        context.apply_min_retry_backoff(
+            std::time::Duration::from_secs(RetryDelay::MAX_SECS)
+                .saturating_add(std::time::Duration::from_nanos(1)),
+        );
+
+        assert_eq!(context.retry(), RetryAdvice::Never);
     }
 
     #[test]
