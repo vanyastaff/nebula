@@ -918,7 +918,7 @@ impl CredentialPersistence for PgCredentialPersistence {
                  state_version = $6,
                  version = $7,
                  material_epoch = $8,
-                 updated_at = CURRENT_TIMESTAMP,
+                 updated_at = clock_timestamp(),
                  expires_at = $9,
                  reauth_required = $10,
                  metadata = $11,
@@ -1035,21 +1035,23 @@ impl CredentialPersistence for PgCredentialPersistence {
         };
 
         let updated: Result<Option<CredentialCommitRow>, sqlx::Error> = sqlx::query_as(
-            "UPDATE credentials
+            "WITH mutation_clock AS MATERIALIZED (SELECT clock_timestamp() AS now)
+             UPDATE credentials
              SET name = NULL,
                  data = ''::bytea,
                  version = $3,
-                 updated_at = CURRENT_TIMESTAMP,
+                 updated_at = mutation_clock.now,
                  expires_at = NULL,
                  reauth_required = FALSE,
                  metadata = '{}',
                  record_state = 'tombstoned',
-                 tombstoned_at = CURRENT_TIMESTAMP,
+                 tombstoned_at = mutation_clock.now,
                  refresh_retry_mode = NULL,
                  refresh_retry_not_before = NULL,
                  refresh_retry_phase = NULL,
                  refresh_retry_kind = NULL,
                  refresh_retry_diagnostic_code = NULL
+             FROM mutation_clock
              WHERE id = $1
                AND owner_id = $2
                AND record_state = 'live'
@@ -1231,6 +1233,10 @@ mod tests {
             .expect("the production adapter must precede its test module")
             .0;
         assert!(production_source.contains("clock_timestamp() AS backend_now"));
+        assert!(
+            production_source.contains("updated_at = clock_timestamp()"),
+            "mutation timestamps used for lifecycle projection must observe time after lock waits"
+        );
         assert!(
             production_source
                 .contains("WHEN 3 THEN clock_timestamp() + ($13::BIGINT * INTERVAL '1 second')")
