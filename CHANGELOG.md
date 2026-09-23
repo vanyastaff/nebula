@@ -11,6 +11,14 @@ changes are expected between minor releases — call them out here.
 
 ### Breaking
 
+- **Tenant membership advances development packages to 0.15.0 in lockstep.**
+  The storage port replaces raw membership writes with typed, backend-guarded
+  organization and parent-qualified workspace mutations. Organization writes
+  cannot remove the last owner or administrator, role decoding fails closed,
+  and authorization reads observe organization and workspace evidence in one
+  logical snapshot. The API membership port removes its workspace-only lookup
+  and unguarded mutation primitives. Exact-version SDK consumers and renamed
+  leaf fixtures must update every Nebula pin together.
 - **Credential management advances development packages to 0.14.0 in
   lockstep.** External callers can no longer invoke semantic mutations on
   `CredentialService` or construct its scheme factory. Submit `CredentialCommand`
