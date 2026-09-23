@@ -21,6 +21,7 @@ pub mod bounded;
 pub mod contract;
 pub mod pooled;
 pub mod resident;
+pub mod settings;
 pub mod store;
 
 pub use crate::{
@@ -34,6 +35,10 @@ pub use contract::{
 };
 pub use pooled::{BrokenCheck, InstanceMetrics, PoolProvider, RecycleDecision};
 pub use resident::ResidentProvider;
+pub use settings::{
+    BoundedSettings, ConfigurableTopology, PoolSettings, PoolStrategySetting, ResidentSettings,
+    WarmupSetting,
+};
 pub use store::{CheckedOut, Checkout, InstanceStore, PoolStrategy, ReturnOutcome};
 
 /// Framework topology structs that implement the open [`Topology`] contract.

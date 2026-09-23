@@ -682,3 +682,43 @@ async fn store_return_is_revoke_fenced() {
     );
     assert_eq!(store.len().await, 1, "the post-revoke entry recycled");
 }
+
+#[test]
+fn try_new_rejects_a_zero_create_timeout() {
+    let result = Pooled::<MockPool>::try_new(
+        Config {
+            create_timeout: Duration::ZERO,
+            ..Config::default()
+        },
+        0,
+    );
+    assert!(result.is_err(), "a zero create budget can never create");
+}
+
+#[test]
+fn operator_settings_build_a_pool_or_fail_without_panicking() {
+    use crate::topology::ConfigurableTopology;
+
+    let pool = Pooled::<MockPool>::from_settings_value(
+        Some(&serde_json::json!({ "max_size": 3, "min_size": 1 })),
+        7,
+    )
+    .expect("valid operator settings build a pool");
+    assert_eq!(pool.config.max_size, 3);
+
+    for invalid in [
+        serde_json::json!({ "max_size": 0 }),
+        serde_json::json!({ "min_size": 5, "max_size": 2 }),
+        serde_json::json!({ "create_timeout_ms": 0 }),
+        serde_json::json!({ "unknown": true }),
+    ] {
+        assert!(
+            Pooled::<MockPool>::from_settings_value(Some(&invalid), 0).is_err(),
+            "{invalid} must be rejected as a typed error"
+        );
+    }
+    assert!(
+        Pooled::<MockPool>::from_settings_value(None, 0).is_ok(),
+        "absent = defaults"
+    );
+}

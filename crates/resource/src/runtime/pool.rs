@@ -43,6 +43,10 @@ use crate::{
 const ERR_MAX_SIZE_ZERO: &str = "Pooled: config.max_size must be > 0 (got 0 — would \
      deadlock the checkout semaphore on first acquire)";
 
+/// Pool cannot operate with a zero create budget.
+const ERR_CREATE_TIMEOUT_ZERO: &str = "Pooled: config.create_timeout must be positive (got 0 — \
+     every create would time out immediately)";
+
 /// The create-semaphore was closed (pool is shutting down).
 const ERR_CREATE_SEMAPHORE_CLOSED: &str = "pool: create semaphore closed";
 
@@ -215,6 +219,10 @@ impl<R: Provider> Pooled<R> {
                 "Pooled: config.min_size ({}) must be <= max_size ({})",
                 config.min_size, config.max_size,
             )));
+        }
+        if config.create_timeout.is_zero() {
+            // A zero budget times out every create before it can start.
+            return Err(Error::permanent(ERR_CREATE_TIMEOUT_ZERO));
         }
 
         Ok(Self::build(config, fingerprint))
