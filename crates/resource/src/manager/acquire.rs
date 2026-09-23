@@ -213,6 +213,71 @@ impl Manager {
         }
     }
 
+    /// Acquires a lease on resource `R`, whatever its topology.
+    ///
+    /// `R::Topology` fixes the topology at compile time, so the caller does
+    /// not name it: this works the same for [`Pooled`](crate::Pooled),
+    /// [`Resident`](crate::Resident), [`Bounded`](crate::Bounded) and custom
+    /// [`Topology`] implementations, and switching a resource's topology does
+    /// not break its callers. The `acquire_{pooled,resident,bounded}` methods
+    /// are equivalent spellings that additionally assert the topology.
+    ///
+    /// # Errors
+    ///
+    /// - [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if no resource of type `R` is
+    ///   registered for the context scope.
+    /// - [`ErrorKind::Cancelled`](crate::error::ErrorKind::Cancelled) if the manager is shutting
+    ///   down.
+    /// - [`ErrorKind::Ambiguous`](crate::error::ErrorKind::Ambiguous) if more than one
+    ///   resolved-credential registration exists for `(R, scope)`; use
+    ///   [`acquire_for_identity`](Self::acquire_for_identity) then.
+    /// - Propagates topology-specific acquire errors.
+    ///
+    /// # Cancel safety
+    ///
+    /// Cancel safe: dropping the future releases the topology permit, settles
+    /// the drain accounting and auto-fails a held recovery-gate probe; an
+    /// instance in flight is destroyed asynchronously via the release queue.
+    pub async fn acquire<R>(
+        &self,
+        ctx: &ResourceContext,
+        options: &AcquireOptions,
+    ) -> Result<crate::guard::ResourceGuard<R>, Error>
+    where
+        R: Provider,
+        R::Topology: Topology<R>,
+    {
+        let managed = self.lookup_for_acquire_scope::<R>(ctx)?;
+        self.run_acquire_dispatch(managed, ctx, options).await
+    }
+
+    /// [`acquire`](Self::acquire) pinned to the **collision-free structural**
+    /// resolved per-slot credential identity, so a caller that resolved
+    /// tenant A's credential reaches tenant A's row and never tenant B's.
+    ///
+    /// # Errors
+    ///
+    /// - [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if no row of type `R` matches
+    ///   `(scope, slot_identity)`.
+    /// - Otherwise as [`acquire`](Self::acquire).
+    ///
+    /// # Cancel safety
+    ///
+    /// Same contract as [`acquire`](Self::acquire).
+    pub async fn acquire_for_identity<R>(
+        &self,
+        ctx: &ResourceContext,
+        options: &AcquireOptions,
+        slot_identity: &crate::dedup::SlotIdentity,
+    ) -> Result<crate::guard::ResourceGuard<R>, Error>
+    where
+        R: Provider,
+        R::Topology: Topology<R>,
+    {
+        let managed = self.lookup_for_acquire_with_identity::<R>(ctx, slot_identity)?;
+        self.run_acquire_dispatch(managed, ctx, options).await
+    }
+
     /// Acquires a handle to a pooled resource.
     ///
     /// Performs typed lookup, then dispatches to the pool runtime's acquire.
