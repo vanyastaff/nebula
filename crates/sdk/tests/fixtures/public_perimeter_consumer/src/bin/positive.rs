@@ -1,5 +1,11 @@
 use nebula_sdk::{
-    client::credential::CredentialLifecycleState,
+    client::credential::{
+        CredentialLifecycleState,
+        v1::{
+            ContinueResolveCredentialRequest, CredentialProblemKind, DeleteCredentialResponse,
+            ResolveCredentialResponse, RetryAfter, UpdateCredentialRequest,
+        },
+    },
     integration::action::{
         CancellationToken, EffectInvocationContext, EffectPreparationContext, EffectQueryContext,
         ExecutionId, NodeKey, OperationCallId, OperationId, OrgId, WorkflowId, WorkspaceId,
@@ -34,11 +40,51 @@ fn assert_credential_lifecycle_contract() {
             | CredentialLifecycleState::RefreshDeferred { .. }
             | CredentialLifecycleState::RefreshBlocked
             | CredentialLifecycleState::ReauthRequired => {},
+            _ => {},
         }
         let actual = nebula_sdk::serde_json::to_value(state)
             .expect("credential lifecycle state must serialize through the SDK");
         assert_eq!(actual, expected);
     }
+}
+
+fn assert_credential_wire_v1_contract() {
+    let update = UpdateCredentialRequest {
+        name: None,
+        description: Some("updated".to_owned()),
+        data: None,
+        tags: None,
+        version: Some(1),
+    };
+    let _: nebula_sdk::serde_json::Value =
+        nebula_sdk::serde_json::to_value(update).expect("update request serializes");
+
+    let request = ContinueResolveCredentialRequest {
+        credential_key: "oauth2".to_owned(),
+        pending_token: "opaque".to_owned(),
+        user_input: nebula_sdk::json!("Poll"),
+    };
+    let _: nebula_sdk::serde_json::Value =
+        nebula_sdk::serde_json::to_value(request).expect("request serializes");
+
+    let response: ResolveCredentialResponse = nebula_sdk::serde_json::from_value(
+        nebula_sdk::json!({"status": "complete", "credential_id": "cred_01"}),
+    )
+    .expect("response deserializes");
+    match response {
+        ResolveCredentialResponse::Complete { credential_id } => assert_eq!(credential_id, "cred_01"),
+        _ => panic!("unexpected acquisition response"),
+    }
+
+    let ack: DeleteCredentialResponse =
+        nebula_sdk::serde_json::from_value(nebula_sdk::json!({"ok": true}))
+            .expect("delete response deserializes");
+    assert!(ack.ok);
+    assert_eq!(
+        CredentialProblemKind::ReauthRequired.code(),
+        Some("API:CREDENTIAL_REAUTH_REQUIRED")
+    );
+    assert_eq!(RetryAfter::from_seconds(5).map(RetryAfter::seconds), Some(5));
 }
 
 #[derive(Debug, Deserialize, Schema)]
@@ -151,6 +197,7 @@ where
 
 fn main() {
     assert_credential_lifecycle_contract();
+    assert_credential_wire_v1_contract();
     catalog_constructor_parity();
     assert_typed_action_contract::<EchoAction>();
     let metadata: ActionMetadataDraft = EchoAction::metadata();

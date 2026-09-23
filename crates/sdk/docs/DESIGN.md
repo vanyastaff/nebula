@@ -72,8 +72,9 @@ Data ingress never turns expression-looking JSON into a program.
 
 The façade imports lower product layers and projects only author-facing contracts. Product crates
 never depend upward on the SDK. Durable runtime commands do not travel through the SDK; the future
-`client` façade submits versioned transport requests and the future `embedded` façade submits typed
-runtime commands through curated builders.
+The `client::credential::v1` façade defines versioned transport requests, responses, lifecycle
+state, and typed RFC 9457 failures. It intentionally has no HTTP executor yet. The future
+`embedded` façade submits typed runtime commands through curated builders.
 
 ## Contract proofs
 
@@ -109,7 +110,8 @@ This fixture does not prove procedural-derive authoring. The independent
 
 ## Known gaps
 
-- The dedicated `client` and `embedded` persona façades are not shipped yet.
+- The credential client v1 wire contract is shipped, but its HTTP executor and the other client
+  domains remain gaps. The dedicated `embedded` persona façade is not shipped yet.
 - Derive expansion is covered for representative Action, Credential, Plugin, Resource,
   Schema, and Validator inputs. New generated paths still need SDK-only and renamed
   consumer proofs; direct leaf dependencies are not a supported workaround for gaps.
