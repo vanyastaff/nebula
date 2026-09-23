@@ -72,6 +72,7 @@ fn mutation_dtos_have_private_fields_and_no_authority_or_identity_smuggling() {
             "reauth_required",
             "metadata",
             "material_transition",
+            "fence",
         ]
     );
     assert_eq!(field_names(tombstone), ["expected_version"]);

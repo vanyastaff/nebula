@@ -434,6 +434,14 @@ impl CredentialPersistence for ReferenceCredentialPersistence {
                 actual: current.version(),
             });
         }
+        if let Some(fence) = replacement.fence() {
+            if current.material_epoch() != fence.expected_material_epoch() {
+                return Err(CredentialPersistenceError::MaterialEpochConflict);
+            }
+            if current.credential_key() != fence.expected_credential_key() {
+                return Err(CredentialPersistenceError::CredentialKeyConflict);
+            }
+        }
         let next_version = current.version().next_live()?;
         if Self::name_is_taken(
             &records,

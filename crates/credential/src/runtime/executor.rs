@@ -2,6 +2,9 @@
 
 use std::time::Duration;
 
+use crate::service::acquisition_intent::{
+    AcquisitionExpectation, AcquisitionIntent, AcquisitionPending,
+};
 use crate::{
     Credential, CredentialContext, Interactive, PendingToken,
     error::CredentialError,
@@ -110,6 +113,25 @@ where
     C: Interactive,
     S: PendingStateStore,
 {
+    execute_begin_with_intent::<C, S>(
+        properties,
+        ctx,
+        pending_store,
+        AcquisitionIntent::create_for_key(C::KEY),
+    )
+    .await
+}
+
+pub(crate) async fn execute_begin_with_intent<C, S>(
+    properties: &C::Properties,
+    ctx: &CredentialContext,
+    pending_store: &S,
+    intent: AcquisitionIntent,
+) -> Result<ResolveResponse<C::State>, ExecutorError>
+where
+    C: Interactive,
+    S: PendingStateStore,
+{
     let session_id = ctx.session_id().ok_or(ExecutorError::MissingSessionId)?;
     let result = tokio::time::timeout(CREDENTIAL_TIMEOUT, C::begin(properties, ctx))
         .await
@@ -122,7 +144,12 @@ where
         ResolveResult::Complete(state) => Ok(ResolveResponse::Complete(state)),
         ResolveResult::Pending { state, interaction } => {
             let token = pending_store
-                .put(C::KEY, ctx.owner_id(), session_id, state)
+                .put(
+                    C::KEY,
+                    ctx.owner_id(),
+                    session_id,
+                    AcquisitionPending::new(intent, state),
+                )
                 .await
                 .map_err(ExecutorError::PendingStore)?;
             Ok(ResolveResponse::Pending { token, interaction })
@@ -156,9 +183,32 @@ where
     C: Interactive,
     S: PendingStateStore,
 {
+    execute_continue_with_expectation::<C, S>(
+        token,
+        input,
+        ctx,
+        pending_store,
+        AcquisitionExpectation::Create {
+            credential_key: C::KEY.to_owned(),
+        },
+    )
+    .await
+}
+
+pub(crate) async fn execute_continue_with_expectation<C, S>(
+    token: &PendingToken,
+    input: &UserInput,
+    ctx: &CredentialContext,
+    pending_store: &S,
+    expected_intent: AcquisitionExpectation,
+) -> Result<ResolveResponse<C::State>, ExecutorError>
+where
+    C: Interactive,
+    S: PendingStateStore,
+{
     let session_id = ctx.session_id().ok_or(ExecutorError::MissingSessionId)?;
     let polling = matches!(input, UserInput::Poll);
-    let pending: <C as Interactive>::Pending = if polling {
+    let pending: AcquisitionPending<<C as Interactive>::Pending> = if polling {
         pending_store
             .get_bound(C::KEY, token, ctx.owner_id(), session_id)
             .await
@@ -168,10 +218,17 @@ where
             .await
     }
     .map_err(ExecutorError::PendingStore)?;
+    if !pending.intent_matches(&expected_intent) {
+        return Err(ExecutorError::PendingStore(
+            PendingStoreError::ValidationFailed {
+                reason: "credential acquisition intent does not match".to_owned(),
+            },
+        ));
+    }
 
     let result = tokio::time::timeout(
         CREDENTIAL_TIMEOUT,
-        <C as Interactive>::continue_resolve(&pending, input, ctx),
+        <C as Interactive>::continue_resolve(pending.protocol(), input, ctx),
     )
     .await
     .map_err(|_| {
@@ -188,7 +245,7 @@ where
     match result {
         ResolveResult::Complete(state) => {
             if polling {
-                let _consumed: <C as Interactive>::Pending = pending_store
+                let _consumed: AcquisitionPending<<C as Interactive>::Pending> = pending_store
                     .consume(C::KEY, token, ctx.owner_id(), session_id)
                     .await
                     .map_err(ExecutorError::PendingStore)?;
@@ -196,14 +253,20 @@ where
             Ok(ResolveResponse::Complete(state))
         },
         ResolveResult::Pending { state, interaction } => {
+            let intent = pending.intent();
             let next_token = pending_store
-                .put(C::KEY, ctx.owner_id(), session_id, state)
+                .put(
+                    C::KEY,
+                    ctx.owner_id(),
+                    session_id,
+                    AcquisitionPending::new(intent, state),
+                )
                 .await
                 .map_err(ExecutorError::PendingStore)?;
 
             if polling
                 && let Err(err) = pending_store
-                    .consume::<<C as Interactive>::Pending>(
+                    .consume::<AcquisitionPending<<C as Interactive>::Pending>>(
                         C::KEY,
                         token,
                         ctx.owner_id(),
@@ -239,10 +302,11 @@ where
 mod tests {
     use std::assert_matches;
 
+    use crate::service::acquisition_intent::{AcquisitionIntent, AcquisitionPending};
     use crate::{
-        CredentialContext, OAuth2Credential, OAuth2Pending, PendingState, PendingStateStore,
-        PendingStoreError, PendingToken, SecretString, credentials::OAuth2Config,
-        resolve::UserInput, scheme::AuthStyle,
+        Credential, CredentialContext, OAuth2Credential, OAuth2Pending, PendingState,
+        PendingStateStore, PendingStoreError, PendingToken, SecretString,
+        credentials::OAuth2Config, resolve::UserInput, scheme::AuthStyle,
     };
 
     use super::{ExecutorError, execute_continue};
@@ -308,6 +372,10 @@ mod tests {
             state: "expected-state".to_owned(),
             redirect_uri: "https://client.example/callback".to_owned(),
         };
+        let pending = AcquisitionPending::new(
+            AcquisitionIntent::create_for_key(OAuth2Credential::KEY),
+            pending,
+        );
         let pending =
             crate::serde_secret::expose_for_serialization(|| serde_json::to_vec(&pending))
                 .expect("serialize pending fixture");

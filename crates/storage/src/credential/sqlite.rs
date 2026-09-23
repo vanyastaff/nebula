@@ -764,6 +764,7 @@ impl CredentialCommitRow {
 struct CredentialLifecycleRow {
     version: i64,
     material_epoch: i64,
+    credential_key: String,
     record_state: String,
 }
 
@@ -1220,7 +1221,7 @@ impl SqliteCredentialPersistence {
     ) -> Result<CredentialCommit, CredentialPersistenceError> {
         let credential_id = selector.credential_id().to_string();
         let lifecycle: Option<CredentialLifecycleRow> = sqlx::query_as(
-            "SELECT version, material_epoch, record_state FROM credentials \
+            "SELECT version, material_epoch, credential_key, record_state FROM credentials \
              WHERE id = ?1 AND owner_id = ?2",
         )
         .bind(&credential_id)
@@ -1247,6 +1248,14 @@ impl SqliteCredentialPersistence {
         }
         let next_version = actual_version.next_live()?;
         let actual_material_epoch = stored_material_epoch(lifecycle.material_epoch)?;
+        if let Some(fence) = replacement.fence() {
+            if actual_material_epoch != fence.expected_material_epoch() {
+                return Err(CredentialPersistenceError::MaterialEpochConflict);
+            }
+            if lifecycle.credential_key != fence.expected_credential_key() {
+                return Err(CredentialPersistenceError::CredentialKeyConflict);
+            }
+        }
         let next_material_epoch = if replacement.material_transition().advances_epoch() {
             actual_material_epoch.next()?
         } else {
@@ -1356,7 +1365,7 @@ impl SqliteCredentialPersistence {
     ) -> Result<CredentialCommit, CredentialPersistenceError> {
         let credential_id = selector.credential_id().to_string();
         let lifecycle: Option<CredentialLifecycleRow> = sqlx::query_as(
-            "SELECT version, material_epoch, record_state FROM credentials \
+            "SELECT version, material_epoch, credential_key, record_state FROM credentials \
              WHERE id = ?1 AND owner_id = ?2",
         )
         .bind(&credential_id)

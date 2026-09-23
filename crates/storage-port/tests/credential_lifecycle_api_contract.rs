@@ -197,6 +197,8 @@ fn closed_error_code(error: &CredentialPersistenceError) -> &'static str {
             key: CredentialAlreadyExistsKey::Name,
         } => "already_exists_name",
         CredentialPersistenceError::VersionExhausted => "version_exhausted",
+        CredentialPersistenceError::MaterialEpochConflict => "material_epoch_conflict",
+        CredentialPersistenceError::CredentialKeyConflict => "credential_key_conflict",
         CredentialPersistenceError::MaterialEpochExhausted => "material_epoch_exhausted",
         CredentialPersistenceError::CorruptRecord => "corrupt_record",
         CredentialPersistenceError::Unavailable => "unavailable",

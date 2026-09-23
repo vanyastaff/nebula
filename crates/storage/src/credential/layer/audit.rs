@@ -242,7 +242,9 @@ fn audit_result<T>(result: &Result<T, CredentialPersistenceError>) -> AuditResul
         Err(CredentialPersistenceError::NotFound) => AuditResult::NotFound,
         Err(
             CredentialPersistenceError::VersionConflict { .. }
-            | CredentialPersistenceError::AlreadyExists { .. },
+            | CredentialPersistenceError::AlreadyExists { .. }
+            | CredentialPersistenceError::MaterialEpochConflict
+            | CredentialPersistenceError::CredentialKeyConflict,
         ) => AuditResult::Conflict,
         Err(CredentialPersistenceError::VersionExhausted) => {
             AuditResult::Error("version_exhausted".to_owned())

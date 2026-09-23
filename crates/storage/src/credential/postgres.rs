@@ -411,7 +411,7 @@ async fn lock_owner_credential(
     owner: &CredentialOwner,
 ) -> Result<Option<LockedCredentialRow>, sqlx::Error> {
     sqlx::query_as(
-        "SELECT record_state, version, material_epoch
+        "SELECT record_state, version, material_epoch, credential_key
          FROM credentials
          WHERE id = $1 AND owner_id = $2
          FOR UPDATE",
@@ -433,6 +433,7 @@ struct LockedCredentialRow {
     record_state: String,
     version: i64,
     material_epoch: i64,
+    credential_key: String,
 }
 
 #[derive(sqlx::FromRow)]
@@ -1021,6 +1022,22 @@ impl CredentialPersistence for PgCredentialPersistence {
             Ok(epoch) => epoch,
             Err(error) => return rollback_as(transaction, error).await,
         };
+        if let Some(fence) = replacement.fence() {
+            if actual_material_epoch != fence.expected_material_epoch() {
+                return rollback_as(
+                    transaction,
+                    CredentialPersistenceError::MaterialEpochConflict,
+                )
+                .await;
+            }
+            if locked.credential_key != fence.expected_credential_key() {
+                return rollback_as(
+                    transaction,
+                    CredentialPersistenceError::CredentialKeyConflict,
+                )
+                .await;
+            }
+        }
         let next_material_epoch = if replacement.material_transition().advances_epoch() {
             match actual_material_epoch.next() {
                 Ok(epoch) => epoch,

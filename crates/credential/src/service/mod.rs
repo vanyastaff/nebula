@@ -10,6 +10,7 @@
 //! read/project collaborators and cannot construct lifecycle or authority.
 /// Initial acquisition and interactive continuation.
 mod acquire;
+pub(crate) mod acquisition_intent;
 pub(crate) mod binding;
 /// Managed testing, refresh, and revocation.
 mod capabilities;

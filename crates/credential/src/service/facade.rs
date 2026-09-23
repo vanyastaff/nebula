@@ -384,6 +384,8 @@ impl CredentialService {
             | CredentialPersistenceError::MaterialEpochExhausted => {
                 CredentialServiceError::VersionExhausted
             },
+            CredentialPersistenceError::MaterialEpochConflict
+            | CredentialPersistenceError::CredentialKeyConflict => CredentialServiceError::Store,
             CredentialPersistenceError::OutcomeUnknown => CredentialServiceError::OutcomeUnknown,
             CredentialPersistenceError::CorruptRecord => CredentialServiceError::Store,
             CredentialPersistenceError::Unavailable => {

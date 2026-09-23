@@ -11,10 +11,10 @@ use nebula_storage_port::{
     CredentialAlreadyExistsKey, CredentialCreate, CredentialMaterialEpoch,
     CredentialMaterialTransition, CredentialOwner, CredentialPersistenceError,
     CredentialRecordState, CredentialRefreshHorizon, CredentialRefreshPageSize,
-    CredentialReplacement, CredentialSelector, CredentialTombstone, CredentialVersion,
-    RefreshRetryAdmission, RefreshRetryBlock, RefreshRetryDelay, RefreshRetryDiagnosticCode,
-    RefreshRetryEvidence, RefreshRetryKind, RefreshRetryPhase, RefreshRetryProjection,
-    RefreshRetryTransition, SecretBytes, StoredCredential,
+    CredentialReplacement, CredentialReplacementFence, CredentialSelector, CredentialTombstone,
+    CredentialVersion, RefreshRetryAdmission, RefreshRetryBlock, RefreshRetryDelay,
+    RefreshRetryDiagnosticCode, RefreshRetryEvidence, RefreshRetryKind, RefreshRetryPhase,
+    RefreshRetryProjection, RefreshRetryTransition, SecretBytes, StoredCredential,
 };
 use serde_json::{Map, Value};
 
@@ -502,6 +502,67 @@ where
     assert_eq!(live.state_version(), 8);
     assert_eq!(live.material_epoch(), CredentialMaterialEpoch::MIN.next()?);
     assert!(live.reauth_required());
+    let current_epoch = CredentialMaterialEpoch::MIN.next()?;
+    assert_eq!(
+        store
+            .replace(
+                &key,
+                replacement(
+                    version_two,
+                    Some("Epoch stale"),
+                    b"epoch-stale",
+                    "epoch-stale",
+                    CredentialMaterialTransition::advance(),
+                )
+                .with_fence(CredentialReplacementFence::new(
+                    CredentialMaterialEpoch::MIN,
+                    "provider.api-token".to_owned(),
+                )),
+            )
+            .await
+            .expect_err("stale material epoch must fail closed"),
+        CredentialPersistenceError::MaterialEpochConflict
+    );
+    assert_eq!(
+        store
+            .replace(
+                &key,
+                replacement(
+                    version_two,
+                    Some("Key substituted"),
+                    b"key-substituted",
+                    "key-substituted",
+                    CredentialMaterialTransition::advance(),
+                )
+                .with_fence(CredentialReplacementFence::new(
+                    current_epoch,
+                    "provider.substituted".to_owned(),
+                )),
+            )
+            .await
+            .expect_err("credential-key substitution must fail closed"),
+        CredentialPersistenceError::CredentialKeyConflict
+    );
+    assert_eq!(
+        store
+            .replace(
+                &selector(&owner_b, credential_id),
+                replacement(
+                    version_two,
+                    Some("Owner substituted"),
+                    b"owner-substituted",
+                    "owner-substituted",
+                    CredentialMaterialTransition::advance(),
+                )
+                .with_fence(CredentialReplacementFence::new(
+                    current_epoch,
+                    "provider.api-token".to_owned(),
+                )),
+            )
+            .await
+            .expect_err("owner substitution must preserve existence hiding"),
+        CredentialPersistenceError::NotFound
+    );
     assert_eq!(
         store
             .replace(
