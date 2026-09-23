@@ -343,6 +343,7 @@ async fn postgres_lifecycle_enforces_precedence_cas_and_terminal_visibility() ->
     assert_eq!(tombstoned.version(), version(3));
     assert_eq!(tombstoned.state(), CredentialRecordState::Tombstoned);
     assert!(tombstoned.tombstoned_at().is_some());
+    assert_eq!(tombstoned.tombstoned_at(), Some(tombstoned.updated_at()));
 
     let physical = store.get(&named_selector).await?;
     match physical {

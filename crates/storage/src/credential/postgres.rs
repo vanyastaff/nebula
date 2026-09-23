@@ -1035,21 +1035,23 @@ impl CredentialPersistence for PgCredentialPersistence {
         };
 
         let updated: Result<Option<CredentialCommitRow>, sqlx::Error> = sqlx::query_as(
-            "UPDATE credentials
+            "WITH mutation_clock AS MATERIALIZED (SELECT clock_timestamp() AS now)
+             UPDATE credentials
              SET name = NULL,
                  data = ''::bytea,
                  version = $3,
-                 updated_at = clock_timestamp(),
+                 updated_at = mutation_clock.now,
                  expires_at = NULL,
                  reauth_required = FALSE,
                  metadata = '{}',
                  record_state = 'tombstoned',
-                 tombstoned_at = CURRENT_TIMESTAMP,
+                 tombstoned_at = mutation_clock.now,
                  refresh_retry_mode = NULL,
                  refresh_retry_not_before = NULL,
                  refresh_retry_phase = NULL,
                  refresh_retry_kind = NULL,
                  refresh_retry_diagnostic_code = NULL
+             FROM mutation_clock
              WHERE id = $1
                AND owner_id = $2
                AND record_state = 'live'
