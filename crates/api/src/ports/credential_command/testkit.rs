@@ -51,7 +51,23 @@ use crate::{
 pub fn test_gateway_from_service(
     service: Arc<CredentialService>,
 ) -> Arc<dyn CredentialCommandGateway> {
-    test_gateway_from_service_with_reconciliation(service, Arc::new(RefusingAdjudicator), None)
+    Arc::new(TestGateway {
+        controller: Arc::new(test_controller_from_service(service)),
+    })
+}
+
+/// Build the same authority-bound controller used by test gateways.
+///
+/// Fixture setup must use management commands, even when it holds a composed
+/// service for read-only assertions. This unsupported `test-util` helper injects
+/// the test authority and refuses reconciliation without a real claim store.
+pub fn test_controller_from_service(service: Arc<CredentialService>) -> CredentialController {
+    CredentialController::new(
+        service,
+        Arc::new(TestAuthority),
+        Arc::new(RefusingAdjudicator),
+        None,
+    )
 }
 
 /// Build the test-only gateway with the reconciliation seam supplied.

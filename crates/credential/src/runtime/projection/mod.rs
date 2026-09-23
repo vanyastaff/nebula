@@ -9,11 +9,14 @@ use crate::{
     DispatchOps, ErasedPendingStore, StateSource,
 };
 
-use super::TenantScope;
-use super::slot::{
-    CredentialSlotResolveError, CredentialSlotResolver, ErasedCredentialGuard,
-    SlotResolutionRequest, resolve_slot_with,
+use crate::TenantScope;
+pub(crate) mod slot;
+
+pub use slot::{
+    CredentialGuardMetadata, CredentialSlotResolveError, CredentialSlotResolver,
+    ErasedCredentialGuard, ErasedCredentialGuardTypeError,
 };
+use slot::{SlotResolutionRequest, resolve_slot_with};
 
 /// Construction failure for [`CredentialProjectionRuntime`].
 ///

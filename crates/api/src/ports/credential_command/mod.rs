@@ -571,7 +571,10 @@ pub trait CredentialCommandGateway: fmt::Debug + Send + Sync {
 #[cfg(feature = "test-util")]
 mod testkit;
 #[cfg(feature = "test-util")]
-pub use testkit::{test_gateway_from_service, test_gateway_from_service_with_reconciliation};
+pub use testkit::{
+    test_controller_from_service, test_gateway_from_service,
+    test_gateway_from_service_with_reconciliation,
+};
 
 #[cfg(test)]
 mod tests {

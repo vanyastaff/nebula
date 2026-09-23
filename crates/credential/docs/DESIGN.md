@@ -3,7 +3,7 @@
 | Field | Value |
 |---|---|
 | Status | Current implementation boundary; pre-1.0 |
-| Reviewed | 2026-09-16 |
+| Reviewed | 2026-09-22 |
 | Layer | Core/shared infrastructure |
 
 ## Bounded contexts
@@ -13,6 +13,11 @@ The crate contains three tightly coupled contexts that share the typed credentia
 1. **Type system** — `Credential`, typed properties/state/scheme, capability traits, registry.
 2. **Runtime** — resolve/project, refresh, lease, pending-state, cached typed handles.
 3. **Management** — semantic service plus the authority-bound command controller.
+
+The read-only worker runtime and shared slot projection live in `src/runtime/projection/`.
+`src/service/slot.rs` owns service-specific adapters and binding validation. Shared tenant
+identity lives in `src/scope.rs`, and material-source selection in `src/runtime/state_source.rs`.
+Crate-root re-exports remain the canonical imports across these internal boundaries.
 
 SQL backends and persistence decorators are not a fourth context here. The object-safe contract is
 `nebula_storage_port::CredentialPersistence`; implementations are owned exclusively by
@@ -44,9 +49,14 @@ sequenceDiagram
 
 `AuthorizedCredentialCommand` is private, non-cloneable, and non-serializable. Public controller
 commands contain intent only and accept no storage selector, owner key, tenant proof, raw writer, or
-optional system actor. This is the supported authenticated HTTP management path, not yet a claim
-that every technical `CredentialService`/runtime call is forced through the controller; that
-sole-semantic-writer closure is K3 work.
+optional system actor. Service management methods (`create`, `update`, `delete`, `test`, `refresh`,
+`revoke`, `resolve`, `continue_resolve`) are crate-private, so external service callers must submit
+`CredentialCommand` through the controller. Public technical reads, binding validation, and slot
+projection remain available. The `compile_fail_service_mutations_private` suite checks this
+visibility boundary; controller tests separately exercise authorization and command dispatch.
+Lower-level runtime and persistence contracts remain technical composition seams. Closing service
+visibility does not add operation-ledger idempotency, transactional audit/outbox, or the global
+sole-semantic-writer guarantee; those remain K3 work.
 
 The first-party trust bridge lives in `apps/server`: it converts the API's private-field
 `AuthenticatedPrincipal` into typed credential actor claims, re-reads one consistent role snapshot
@@ -257,16 +267,16 @@ shared metadata authoring foundation is tracked in the
 
 ## Remaining design work
 
-- **Recorded follow-ups (former K3 residue):** transactional audit/outbox evidence to replace
-  the trace-only audit; durable cross-aggregate convergence; the durable sentinel-to-reauth
-  command. The K3 gate itself is closed: owner-qualified reconciliation ships as the credential
-  reconcile command, `CredentialController` is the sole management writer, and persisted state
-  carries the ADR-0107 version envelope.
+- **K3 closure:** owner-qualified reconciliation, the persisted-state version envelope, and
+  crate-private service management methods are implemented. External service management callers
+  now enter through the controller, but a global sole semantic writer plus operation-ledger
+  idempotency is not yet structurally enforced. Transactional audit/outbox evidence, durable
+  cross-aggregate convergence, and the durable sentinel-to-reauth command also remain open.
 - **K4:** provide supported membership/deployment wiring and finish curated SDK
   `client`/`embedded` façades without exposing internal authority. Production credential adapters
   already live in `apps/server`; the API-side factory is an unsupported test fixture only.
 
-### ADR-0088 status, updated 2026-09-16
+### ADR-0088 status, updated 2026-09-22
 
 Each item carries the ADR's own state as of 2026-06-12, then what the tree shows now.
 
@@ -279,23 +289,22 @@ Each item carries the ADR's own state as of 2026-06-12, then what the tree shows
 - **D2 — ADR: "partial"; "runtime does not yet route policy-first in all paths".** Now: it routes
   policy-first in **no** production path, so the ADR's hedge understates the gap. `C::policy` has one
   production-code call site (`src/runtime/resolver/mod.rs`), and no in-repo path reaches it: the sole
-  caller of `CredentialResolver::resolve_with_refresh` is `CredentialResolver::scheme_factory`, and
-  its only entry, `CredentialService::scheme_factory` (`src/service/slot.rs:519`), has no callers.
-  The capability
-  sub-traits plus the durable `reauth_required` bit are the gate (`src/service/slot.rs:73-81`).
+  caller of `CredentialResolver::resolve_with_refresh` is `CredentialResolver::scheme_factory`.
+  The unused `CredentialService::scheme_factory` wrapper has been removed; the low-level resolver
+  APIs remain technical APIs with tests, without production slot-refresh wiring. The capability
+  sub-traits plus the durable `reauth_required` bit are the gate (`src/runtime/projection/slot.rs`).
   **Recorded as a deliberate cut, not pending wiring:** the production seam is type-erased
   (`CredentialSlotResolver::resolve_slot` returns an `ErasedCredentialGuard`), so routing a policy
   through it needs a new erased port and red-to-green evidence, which is a design change rather than
-  a documentation one. So 1.0 ships the capability traits as the governing model. The dead public
-  entries stay `pub` pending the 1.0 API decision; deprecating or closing
-  `CredentialService::scheme_factory` and `resolve_with_refresh` is a design action this section
-  records and leaves open. The authoring
+  a documentation one. Capability traits remain the governing production model; the future
+  supported role of the low-level policy-driven resolver requires a separate design decision.
+  The authoring
   obligation survives the cut: an author must still hand-write `fn policy` where the synthesized
   value would be wrong.
 - **D6 — ADR: "seam exists, producer is a frontier gap (M12.4)".** Now: split. The credential
-  slot-resolution path landed 2026-09-13 with `CredentialSlotResolver` (`src/service/slot.rs:268`).
+  slot-resolution path landed 2026-09-13 with `CredentialSlotResolver` (now in `src/runtime/projection/slot.rs`).
   The crate carries two impls of it, and the one the engine's execution path reaches is
-  `CredentialProjectionRuntime` (`src/service/projection.rs:44`), wired through
+  `CredentialProjectionRuntime` (`src/runtime/projection/mod.rs`), wired through
   `with_credential_resolver`. Production plan-binding resolution landed in the same commit in
   `apps/server` (`ServerExecutionBindingResolver`). The resource **reverse-index** producer is still
   absent: `register_and_bind` has one caller, `WorkflowEngine::register_resource_and_bind`

@@ -1,5 +1,5 @@
-//! Facade lifecycle E2E (Increment 3b): exercise `CredentialService` refresh /
-//! revoke / binding-validation against a credential type the default API set
+//! Facade lifecycle E2E (Increment 3b): exercise controller refresh/revoke
+//! commands and service binding-validation against a credential type the default API set
 //! lacks — one that is **non-interactive *and* Revocable *and* Refreshable**.
 //!
 //! The default static credentials (`api_key`, `basic_auth`, `signing_key`) are
@@ -25,6 +25,7 @@ use std::sync::{
 };
 use std::time::Duration;
 
+use nebula_api::ports::credential_command::test_controller_from_service;
 use nebula_api::ports::credential_service_factory::{
     with_memory_store_external, with_memory_store_parts,
 };
@@ -37,10 +38,11 @@ use nebula_credential::provider::{
 };
 use nebula_credential::resolve::StaticResolveResult;
 use nebula_credential::{
-    CredentialContext, CredentialDisplay, CredentialMetadataDraft, CredentialRegistry,
-    CredentialService, CredentialServiceError, DispatchOps, ErasedPendingStore, RefreshAttempt,
-    RefreshReport, SecretString, StateWireFingerprint, TenantScope,
-    ValidatedCredentialBindingError, identity_state, register_refreshable_ops,
+    CredentialActor, CredentialCommand, CredentialCommandResult, CredentialContext,
+    CredentialControllerError, CredentialDisplay, CredentialDisplayPatch, CredentialMetadataDraft,
+    CredentialRegistry, CredentialService, CredentialServiceError, DispatchOps, ErasedPendingStore,
+    ManagementRefreshReport, RefreshAttempt, RefreshReport, SecretString, StateWireFingerprint,
+    TenantScope, ValidatedCredentialBindingError, identity_state, register_refreshable_ops,
     register_revocable_ops, register_runtime_ops,
 };
 use nebula_schema::Schema;
@@ -285,20 +287,77 @@ fn scope() -> TenantScope {
     TenantScope::new("org", "ws")
 }
 
-async fn create_cred(svc: &CredentialService) -> String {
+async fn create_cred(svc: &Arc<CredentialService>) -> String {
     create_cred_with_token(svc, "v1").await
 }
 
-async fn create_cred_with_token(svc: &CredentialService, token: &str) -> String {
-    svc.create(
-        &scope(),
-        "test_lifecycle",
-        json!({ "token": token }),
-        CredentialDisplay::default(),
+async fn create_cred_with_token(svc: &Arc<CredentialService>, token: &str) -> String {
+    let result = command(
+        svc,
+        CredentialCommand::Create {
+            credential_key: nebula_core::credential_key!("test_lifecycle"),
+            properties: json!({ "token": token }),
+            display: CredentialDisplay::default(),
+        },
     )
     .await
-    .expect("create succeeds")
-    .id
+    .expect("create succeeds");
+    let CredentialCommandResult::Head(head) = result else {
+        panic!("create command must return the stored head");
+    };
+    head.id
+}
+
+// Mutations exercise the controller; reads keep using the composed service.
+// Preserve service error variants so the existing persistence and cancellation
+// assertions remain exact. An unexpected authorization failure is a test failure.
+async fn command(
+    svc: &Arc<CredentialService>,
+    command: CredentialCommand,
+) -> Result<CredentialCommandResult, CredentialServiceError> {
+    let controller = test_controller_from_service(Arc::clone(svc));
+    let actor = CredentialActor::user(nebula_core::UserId::new());
+    match controller
+        .execute(
+            &actor,
+            &nebula_storage_port::Scope::new("ws", "org"),
+            command,
+        )
+        .await
+    {
+        Ok(result) => Ok(result),
+        Err(CredentialControllerError::Service(error)) => Err(error),
+        Err(other) => panic!("fixture command must pass authorization: {other:?}"),
+    }
+}
+
+async fn refresh_cred(
+    svc: &Arc<CredentialService>,
+    id: &str,
+) -> Result<ManagementRefreshReport, CredentialServiceError> {
+    let result = command(
+        svc,
+        CredentialCommand::Refresh {
+            credential_id: nebula_core::CredentialId::parse(id).expect("fixture credential id"),
+        },
+    )
+    .await?;
+    let CredentialCommandResult::Refreshed(report) = result else {
+        panic!("refresh command must return its report");
+    };
+    Ok(report)
+}
+
+async fn revoke_cred(svc: &Arc<CredentialService>, id: &str) -> Result<(), CredentialServiceError> {
+    let result = command(
+        svc,
+        CredentialCommand::Revoke {
+            credential_id: nebula_core::CredentialId::parse(id).expect("fixture credential id"),
+        },
+    )
+    .await?;
+    assert!(matches!(result, CredentialCommandResult::Revoked));
+    Ok(())
 }
 
 // ── Regressions ──────────────────────────────────────────────────────────
@@ -317,7 +376,7 @@ async fn refresh_advances_last_validated_at() {
     // distinguishable from an advanced one (t1 > t0).
     tokio::time::sleep(Duration::from_millis(10)).await;
 
-    svc.refresh(&scope(), &id).await.expect("refresh succeeds");
+    refresh_cred(&svc, &id).await.expect("refresh succeeds");
 
     let t1 = last_validated(&svc, &id).await;
     assert!(
@@ -336,7 +395,7 @@ async fn concurrent_management_refreshes_coalesce_to_one_provider_call() {
     let first = tokio::spawn({
         let svc = Arc::clone(&svc);
         let id = id.clone();
-        async move { svc.refresh(&scope(), &id).await }
+        async move { refresh_cred(&svc, &id).await }
     });
     tokio::time::timeout(
         Duration::from_secs(1),
@@ -348,7 +407,7 @@ async fn concurrent_management_refreshes_coalesce_to_one_provider_call() {
     let second = tokio::spawn({
         let svc = Arc::clone(&svc);
         let id = id.clone();
-        async move { svc.refresh(&scope(), &id).await }
+        async move { refresh_cred(&svc, &id).await }
     });
     // Give the second call time to complete its real SQLite load and park
     // behind the first request's L1 lease before releasing provider work.
@@ -387,7 +446,7 @@ async fn dropping_management_refresh_caller_cannot_cancel_provider_and_cas() {
     let caller = tokio::spawn({
         let svc = Arc::clone(&svc);
         let id = id.clone();
-        async move { svc.refresh(&scope(), &id).await }
+        async move { refresh_cred(&svc, &id).await }
     });
     tokio::time::timeout(
         Duration::from_secs(1),
@@ -426,7 +485,7 @@ async fn concurrent_management_revokes_coalesce_to_one_provider_call() {
     let first = tokio::spawn({
         let svc = Arc::clone(&svc);
         let id = id.clone();
-        async move { svc.revoke(&scope(), &id).await }
+        async move { revoke_cred(&svc, &id).await }
     });
     tokio::time::timeout(
         Duration::from_secs(1),
@@ -438,7 +497,7 @@ async fn concurrent_management_revokes_coalesce_to_one_provider_call() {
     let second = tokio::spawn({
         let svc = Arc::clone(&svc);
         let id = id.clone();
-        async move { svc.revoke(&scope(), &id).await }
+        async move { revoke_cred(&svc, &id).await }
     });
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(COALESCED_REVOKE_CALLS.load(Ordering::SeqCst), 1);
@@ -466,7 +525,7 @@ async fn dropping_management_revoke_caller_cannot_cancel_provider_and_tombstone(
     let caller = tokio::spawn({
         let svc = Arc::clone(&svc);
         let id = id.clone();
-        async move { svc.revoke(&scope(), &id).await }
+        async move { revoke_cred(&svc, &id).await }
     });
     tokio::time::timeout(
         Duration::from_secs(1),
@@ -500,16 +559,17 @@ async fn stale_update_is_rejected_before_provider_resolution() {
     let svc = build_service().await;
     let id = create_cred(&svc).await;
 
-    let error = svc
-        .update(
-            &scope(),
-            &id,
-            Some(json!({ "token": "must-not-resolve" })),
-            Some(2),
-            CredentialDisplay::default(),
-        )
-        .await
-        .expect_err("a deterministically stale update must fail before provider work");
+    let error = command(
+        &svc,
+        CredentialCommand::Update {
+            credential_id: nebula_core::CredentialId::parse(&id).expect("fixture credential id"),
+            properties: Some(json!({ "token": "must-not-resolve" })),
+            expected_version: Some(2),
+            display: CredentialDisplayPatch::default(),
+        },
+    )
+    .await
+    .expect_err("a deterministically stale update must fail before provider work");
 
     assert!(matches!(
         error,
@@ -533,9 +593,9 @@ async fn revoke_then_refresh_and_get_are_not_found() {
     let svc = build_service().await;
     let id = create_cred(&svc).await;
 
-    svc.revoke(&scope(), &id).await.expect("revoke succeeds");
+    revoke_cred(&svc, &id).await.expect("revoke succeeds");
 
-    let refreshed = svc.refresh(&scope(), &id).await;
+    let refreshed = refresh_cred(&svc, &id).await;
     assert!(
         matches!(refreshed, Err(CredentialServiceError::NotFound { .. })),
         "refresh of a revoked credential must fail closed as NotFound, got {refreshed:?}"
@@ -560,7 +620,7 @@ async fn validate_credential_binding_rejects_tombstoned() {
         .await
         .expect("a live credential binds");
 
-    svc.revoke(&scope(), &id).await.expect("revoke succeeds");
+    revoke_cred(&svc, &id).await.expect("revoke succeeds");
 
     let err = svc
         .validate_credential_binding(&scope(), &id)
@@ -583,15 +643,16 @@ async fn external_source_rejects_create() {
     // resolves props → state, so it fails closed with ExternalSourceNotWired.
     let svc = build_external_service().await;
 
-    let err = svc
-        .create(
-            &scope(),
-            "test_lifecycle",
-            json!({ "token": "v1" }),
-            CredentialDisplay::default(),
-        )
-        .await
-        .expect_err("create against an unwired external source must fail closed");
+    let err = command(
+        &svc,
+        CredentialCommand::Create {
+            credential_key: nebula_core::credential_key!("test_lifecycle"),
+            properties: json!({ "token": "v1" }),
+            display: CredentialDisplay::default(),
+        },
+    )
+    .await
+    .expect_err("create against an unwired external source must fail closed");
     // Assert the provider value, not just the variant: a provider-mapping
     // regression (wrong/empty name) must fail this test, locking the
     // source → error contract.

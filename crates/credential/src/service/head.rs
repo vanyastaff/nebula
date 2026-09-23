@@ -30,7 +30,7 @@ pub struct CredentialHead {
     /// `Credential::KEY` of the stored type (e.g. `"api_key"`, `"oauth2"`).
     pub credential_key: String,
     /// Store version — the optimistic-concurrency token for
-    /// [`update`](crate::CredentialService::update) compare-and-swap.
+    /// [`CredentialCommand::Update`](crate::CredentialCommand::Update) compare-and-swap.
     pub version: u64,
     /// When the row was created.
     pub created_at: DateTime<Utc>,

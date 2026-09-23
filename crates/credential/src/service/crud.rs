@@ -18,7 +18,7 @@ use crate::{
 use super::error::CredentialServiceError;
 use super::facade::CredentialService;
 use super::head::CredentialHead;
-use super::scope::TenantScope;
+use crate::TenantScope;
 
 impl CredentialService {
     /// Create a credential: validate `props` against the type's schema,
@@ -37,7 +37,7 @@ impl CredentialService {
     /// - [`CredentialServiceError::Store`] — a definite persistence failure.
     /// - [`CredentialServiceError::OutcomeUnknown`] — commit acknowledgement
     ///   was lost; reconcile before replaying the command.
-    pub async fn create(
+    pub(crate) async fn create(
         &self,
         scope: &TenantScope,
         credential_key: &str,
@@ -213,7 +213,7 @@ impl CredentialService {
     /// - [`CredentialServiceError::ValidationFailed`] — schema / typed-deserialize / resolve.
     /// - [`CredentialServiceError::VersionConflict`] — stale `expected_version`.
     /// - [`CredentialServiceError::Store`] — persistence failure.
-    pub async fn update(
+    pub(crate) async fn update(
         &self,
         scope: &TenantScope,
         id: &str,
@@ -347,7 +347,7 @@ impl CredentialService {
     ///
     /// [`CredentialServiceError::NotFound`] if absent or cross-tenant;
     /// [`CredentialServiceError::Store`] on a backend failure.
-    pub async fn delete(
+    pub(crate) async fn delete(
         &self,
         scope: &TenantScope,
         id: &str,

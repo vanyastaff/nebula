@@ -4,14 +4,14 @@
 //! (`Interactive`/`Refreshable`/`Revocable`/`Testable`/`Dynamic`) plus the durable
 //! `reauth_required` bit. Production slot resolution reads the registered capability
 //! set and rejects on `MissingCapabilities` or `ReauthRequired` before any material is
-//! decrypted (`crate::service::slot`).
+//! decrypted (`crate::runtime::projection::slot`).
 //!
 //! **What is cut** is [`CredentialPolicy`] as the routing model. The type ships, and the
 //! `#[credential]` macro derives [`CredentialLifecycle`] for every annotated credential,
 //! but the only code that consults a policy is `CredentialResolver::resolve_with_refresh`
-//! (`crate::runtime::resolver`), whose sole caller is `CredentialResolver::scheme_factory`
-//! and whose only entry, `CredentialService::scheme_factory` (`crate::service::slot`), has
-//! no callers. So no live production path reaches it. The `Protocol` trait that would
+//! (`crate::runtime::resolver`) and its low-level `CredentialResolver::scheme_factory`
+//! adapter. These technical APIs remain available, but production slot resolution
+//! does not call them. The `Protocol` trait that would
 //! compute a policy from state, and the migration off the sub-traits, remain unwritten.
 //! 1.0 ships the capability traits as the governing model, and this cut is deliberate
 //! rather than pending.

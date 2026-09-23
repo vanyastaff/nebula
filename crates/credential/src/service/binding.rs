@@ -11,7 +11,7 @@ use std::fmt;
 use nebula_core::CredentialId;
 use nebula_storage_port::CredentialOwner;
 
-use super::scope::TenantScope;
+use crate::TenantScope;
 
 /// Tenant-scope-checked credential binding.
 ///

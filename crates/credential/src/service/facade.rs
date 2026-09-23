@@ -44,15 +44,16 @@ use super::error::CredentialServiceError;
 use super::head::CredentialHead;
 use super::observer::CredentialObserver;
 use super::ops::DispatchOps;
-use super::scope::TenantScope;
-use super::state_source::StateSource;
+use crate::StateSource;
+use crate::TenantScope;
 
 /// Metadata key holding the facade-owned [`CredentialDisplay`] sub-object
 /// Single-writer: only the facade reads or writes it, so the multi-writer shape
 /// conflict that affected the api's old top-level metadata layout cannot recur.
 const DISPLAY_KEY: &str = "display";
 
-/// Outcome of [`CredentialService::refresh`]. `refreshed` distinguishes a
+/// Outcome of [`CredentialCommand::Refresh`](crate::CredentialCommand::Refresh).
+/// `refreshed` distinguishes a
 /// real provider refresh from the pre-dispatch fallback path that served the
 /// still-valid stored material after coordination failed before provider I/O.
 /// Errors returned after entering an erased integration are outcome-unknown
@@ -70,8 +71,9 @@ pub struct ManagementRefreshReport {
     pub refreshed: bool,
 }
 
-/// Outcome of [`CredentialService::resolve`] /
-/// [`CredentialService::continue_resolve`]. Secret-free: the `Complete`
+/// Outcome of [`CredentialCommand::Resolve`](crate::CredentialCommand::Resolve) /
+/// [`CredentialCommand::ContinueResolve`](crate::CredentialCommand::ContinueResolve).
+/// Secret-free: the `Complete`
 /// arm carries the management-plane [`CredentialHead`] (id + row
 /// metadata, no state bytes); the `Pending` arm carries the opaque token
 /// string + the UI instruction.
@@ -83,7 +85,7 @@ pub enum Acquisition {
         head: CredentialHead,
     },
     /// Interactive acquisition kicked off; resume via
-    /// [`continue_resolve`](CredentialService::continue_resolve) with
+    /// [`CredentialCommand::ContinueResolve`](crate::CredentialCommand::ContinueResolve) with
     /// `token`.
     Pending {
         /// Opaque pending-acquisition token (round-trips as a string).
@@ -156,16 +158,15 @@ pub struct CredentialTypeInfo {
 /// Supported authenticated HTTP management enters through
 /// [`CredentialController`](super::CredentialController), which authorizes
 /// before calling this service. Runtime/webhook technical consumers also use
-/// selected service methods directly; K3 will make the controller plus
-/// operation ledger the sole semantic management writer. First-party secure
+/// read-only service methods directly; mutations are crate-private. K3 will make
+/// the controller plus operation ledger the sole semantic management writer. First-party secure
 /// production construction belongs to the deployment application; API is a
 /// transport boundary, not a composition root.
 pub struct CredentialService {
     pub(crate) store: Arc<dyn CredentialPersistence>,
-    /// Engine resolver wired through the layered store stack (erased at the
-    /// store→resolver boundary). Used by
-    /// [`resolve_for_slot`](Self::resolve_for_slot) to produce a typed
-    /// [`CredentialGuard`](crate::CredentialGuard) for action slot consumption.
+    /// Credential-owned resolver for managed refresh/revoke coordination.
+    /// Read-only slot projection uses the shared
+    /// projection runtime directly over `store` and `ops`.
     pub(crate) resolver: CredentialResolver<dyn CredentialPersistence>,
     pub(crate) lease: LeaseLifecycle,
     pub(crate) pending: ErasedPendingStore,
@@ -207,8 +208,7 @@ impl CredentialService {
         // Tie the resolver's source gate to the configured source at the single
         // construction point: a service built with an external (unwired) source
         // CANNOT hold a resolver that still reads local bytes. This makes the
-        // direct-resolver paths (`scheme_factory` → `resolve_with_refresh`, which
-        // bypass the facade's per-call source check) fail-closed by construction,
+        // resolver operations fail-closed independently of per-call source checks,
         // so the gate cannot drift from the source a future code path forgets.
         let resolver = resolver.gate_external_source(matches!(source, StateSource::External(_)));
         Self {

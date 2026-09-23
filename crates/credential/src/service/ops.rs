@@ -964,7 +964,7 @@ where
 /// `Revocable::revoke` takes `&mut state` and may mutate it (e.g. clear a
 /// server-side handle). Those mutations are intentionally **not**
 /// re-persisted: after this closure returns,
-/// [`CredentialService::revoke`](crate::CredentialService::revoke) writes a
+/// the [`CredentialCommand::Revoke`](crate::CredentialCommand::Revoke) handler writes a
 /// **tombstone** over the row (zeroing the secret bytes), not a delete — so
 /// the id is non-resurrectable and slot bindings still pointing at it surface
 /// a typed `CredentialTombstoned` rather than a bare `NotFound`. This is
