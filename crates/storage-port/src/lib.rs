@@ -54,8 +54,11 @@ pub use ids::{CredentialId, FencingToken, OperationCallId, OperationId};
 pub use scope::Scope;
 pub use store::{
     CredentialAlreadyExistsKey, CredentialPersistence, CredentialPersistenceError,
-    ExecutionTurnHandoff, OperationLedger, OperationLedgerAdjudicator, PlanFlavorCatalog,
-    PlanFlavorCatalogAdmin, PlanFlavorCatalogWriter, ResourceEventFanoutStore,
+    CredentialRefreshCursor, CredentialRefreshHorizon, CredentialRefreshHorizonError,
+    CredentialRefreshPageSize, CredentialRefreshPageSizeError, CredentialRefreshSchedule,
+    CredentialRefreshScheduleError, DueCredentialRefresh, ExecutionTurnHandoff,
+    MAX_CREDENTIAL_REFRESH_HORIZON_SECS, OperationLedger, OperationLedgerAdjudicator,
+    PlanFlavorCatalog, PlanFlavorCatalogAdmin, PlanFlavorCatalogWriter, ResourceEventFanoutStore,
     ResourceExecutionHandoffStore, ResourceRuntimeRecovery, ResourceSourceLeaseStore,
     ResourceSubscriptionStore, SharedResourceStore, TurnAcceptance, TurnHandoff, TurnRecovery,
 };

@@ -36,7 +36,10 @@ impl std::fmt::Debug for ReclaimSweepHandle {
 }
 
 impl ReclaimSweepHandle {
-    /// Spawn the sole periodic reclaim authority.
+    /// Spawn the sole reclaim authority.
+    ///
+    /// One sweep runs immediately so expired claims are recovered during
+    /// startup; later sweeps follow the configured cadence.
     pub fn spawn(
         coord: Arc<RefreshCoordinator>,
         reclaimer: Arc<dyn RefreshClaimReclaimer>,
@@ -88,6 +91,18 @@ async fn sweep_loop(
     metrics: RefreshCoordMetrics,
     audit_sink: Option<Arc<dyn AuditSink>>,
 ) {
+    if let Err(error) = run_one_sweep(
+        reclaimer.as_ref(),
+        policy,
+        event_bus.as_ref(),
+        &metrics,
+        audit_sink.as_deref(),
+    )
+    .await
+    {
+        tracing::warn!(?error, "credential refresh reclaim startup sweep failed");
+    }
+
     let mut ticker = tokio::time::interval(cadence);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     ticker.tick().await;

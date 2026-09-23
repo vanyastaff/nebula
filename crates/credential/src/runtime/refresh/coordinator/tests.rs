@@ -255,6 +255,16 @@ async fn wait_until_l1_empty(coordinator: &RefreshCoordinator) {
     panic!("L1 completion was not released after exact disposition");
 }
 
+async fn wait_for_reclaim_count(repo: &PoisonClaimRepo, target: usize) {
+    for _ in 0..8 {
+        if repo.reclaim_count.load(Ordering::SeqCst) >= target {
+            return;
+        }
+        tokio::task::yield_now().await;
+    }
+    panic!("reclaim task did not reach the scripted repository");
+}
+
 #[test]
 fn zero_durations_are_rejected_before_provider_work() {
     for (field, config) in [
@@ -432,6 +442,51 @@ async fn repeated_poison_denials_leave_threshold_observation_to_periodic_owner()
         events.try_recv().is_none(),
         "already-accounted poison must not emit a duplicate threshold observation"
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn reclaim_sweep_runs_at_startup_then_waits_for_cadence() {
+    use super::super::reclaim::ReclaimSweepHandle;
+
+    let credential_id = CredentialId::new();
+    let repo = Arc::new(PoisonClaimRepo::new(credential_id));
+    let claim_repo: Arc<dyn RefreshClaimRepo> = repo.clone();
+    let config = paused_config();
+    let cadence = config.reclaim_sweep_interval;
+    let coordinator = Arc::new(
+        RefreshCoordinator::new_with(claim_repo, ReplicaId::new("startup-reclaim-test"), config)
+            .expect("test coordinator config is valid"),
+    );
+    let reclaimer: Arc<dyn RefreshClaimReclaimer> = repo.clone();
+    let policy = SentinelEscalationPolicy::new(
+        coordinator.config.sentinel_threshold,
+        coordinator.config.sentinel_window,
+    )
+    .expect("coordinator already validated sentinel policy");
+
+    let mut handle = ReclaimSweepHandle::spawn(coordinator, reclaimer, policy, None);
+
+    wait_for_reclaim_count(&repo, 1).await;
+    assert_eq!(repo.reclaim_count.load(Ordering::SeqCst), 1);
+
+    tokio::time::advance(
+        cadence
+            .checked_sub(Duration::from_millis(1))
+            .expect("test cadence exceeds one millisecond"),
+    )
+    .await;
+    tokio::task::yield_now().await;
+    assert_eq!(
+        repo.reclaim_count.load(Ordering::SeqCst),
+        1,
+        "the periodic sweep must still wait for the configured cadence"
+    );
+
+    tokio::time::advance(Duration::from_millis(1)).await;
+    wait_for_reclaim_count(&repo, 2).await;
+    assert_eq!(repo.reclaim_count.load(Ordering::SeqCst), 2);
+
+    handle.shutdown().await;
 }
 
 #[tokio::test]

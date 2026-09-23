@@ -9,6 +9,7 @@
 mod checkpoint;
 mod control_queue;
 mod credential;
+mod credential_refresh_schedule;
 mod execution;
 mod idempotency;
 mod identity;
@@ -31,6 +32,11 @@ pub use checkpoint::CheckpointStore;
 pub use control_queue::{ControlClaim, ControlClaimToken, ControlQueue, ReclaimOutcome};
 pub use credential::{
     CredentialAlreadyExistsKey, CredentialPersistence, CredentialPersistenceError,
+};
+pub use credential_refresh_schedule::{
+    CredentialRefreshCursor, CredentialRefreshHorizon, CredentialRefreshHorizonError,
+    CredentialRefreshPageSize, CredentialRefreshPageSizeError, CredentialRefreshSchedule,
+    CredentialRefreshScheduleError, DueCredentialRefresh, MAX_CREDENTIAL_REFRESH_HORIZON_SECS,
 };
 pub use execution::ExecutionStore;
 pub use idempotency::{IdempotencyGuard, IdempotencyStore};

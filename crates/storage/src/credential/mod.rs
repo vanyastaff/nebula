@@ -55,7 +55,7 @@ pub use layer::{
 #[cfg(any(test, feature = "credential-in-memory"))]
 pub use pending::InMemoryPendingStore;
 #[cfg(feature = "postgres")]
-pub use postgres::PgCredentialPersistence;
+pub use postgres::{PgCredentialPersistence, PgCredentialRefreshSchedule};
 pub use provider_cache::{ProviderCacheConfig, ProviderCacheLayer, ProviderCacheStats};
 #[cfg(test)]
 pub(crate) use reference::ReferenceCredentialPersistence;
@@ -74,7 +74,7 @@ pub use schema::{
     UnsupportedSchemaVersion,
 };
 #[cfg(feature = "sqlite")]
-pub use sqlite::SqliteCredentialPersistence;
+pub use sqlite::{SqliteCredentialPersistence, SqliteCredentialRefreshSchedule};
 
 /// Crate-local helpers for constructing credential lifecycle test commands.
 /// Gated on `sqlite` because all callers are `#[cfg(all(test, feature = "sqlite"))]` test modules.

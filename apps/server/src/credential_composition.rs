@@ -12,8 +12,10 @@ use nebula_credential::{
     CredentialService, CredentialServiceError, DispatchError, DispatchOps, ErasedPendingStore,
     EventMetricObserver, SigningKeyCredential, StateSource, register_runtime_ops,
     runtime::{
-        CredentialLifecycleRuntime, CredentialResolver, LeaseLifecycleConfig, ReclaimSweepHandle,
-        RefreshCoordConfig, RefreshCoordMetrics, RefreshCoordinator, SentinelEscalationPolicy,
+        CredentialLifecycleRuntime, CredentialRefreshSchedulerConfig,
+        CredentialRefreshSchedulerConfigError, CredentialResolver, LeaseLifecycleConfig,
+        ReclaimSweepHandle, RefreshCoordConfig, RefreshCoordMetrics, RefreshCoordinator,
+        SentinelEscalationPolicy,
     },
 };
 use nebula_crypto::EncryptionKey;
@@ -26,7 +28,7 @@ use nebula_storage::credential::{
     KeyProvider, SqliteCredentialPersistence,
 };
 use nebula_storage_port::{
-    CredentialPersistence, CredentialPersistenceError,
+    CredentialPersistence, CredentialPersistenceError, CredentialRefreshSchedule,
     store::{RefreshClaimAdjudicator, RefreshClaimReclaimer, RefreshClaimStore, ReplicaId},
 };
 use thiserror::Error;
@@ -110,6 +112,8 @@ pub(crate) enum CredentialCompositionError {
     RefreshTransport(String),
     #[error("credential refresh coordinator initialization failed: {0}")]
     RefreshCoordinator(String),
+    #[error("credential refresh scheduler configuration is invalid")]
+    RefreshScheduler(#[from] CredentialRefreshSchedulerConfigError),
 }
 
 /// Resolve the process-wide credential/identity encryption keyring.
@@ -166,12 +170,10 @@ pub(crate) async fn compose_memory_service(
     let store = SqliteCredentialPersistence::connect_memory()
         .await
         .map_err(CredentialCompositionError::Store)?;
-    let (claim_repo, reclaimer, adjudicator) = shared_claim_repo(store.refresh_claim_repo());
+    let refresh_ports = refresh_runtime_ports(store.refresh_schedule(), store.refresh_claim_repo());
     let runtime = compose_runtime(
         store,
-        claim_repo,
-        reclaimer,
-        adjudicator,
+        refresh_ports,
         key_provider,
         Vec::new(),
         Arc::new(MetricsRegistry::new()),
@@ -196,8 +198,8 @@ async fn compose_first_party_runtime_for_database(
             let store = SqliteCredentialPersistence::connect(database_url)
                 .await
                 .map_err(CredentialCompositionError::Store)?;
-            let (claim_repo, reclaimer, adjudicator) =
-                shared_claim_repo(store.refresh_claim_repo());
+            let refresh_ports =
+                refresh_runtime_ports(store.refresh_schedule(), store.refresh_claim_repo());
             // Database URLs can carry credentials or tenant-specific
             // filesystem paths. Record only the closed backend class.
             tracing::info!(
@@ -206,9 +208,7 @@ async fn compose_first_party_runtime_for_database(
             );
             compose_runtime(
                 store,
-                claim_repo,
-                reclaimer,
-                adjudicator,
+                refresh_ports,
                 key_provider,
                 legacy_keys,
                 metrics_registry,
@@ -220,17 +220,15 @@ async fn compose_first_party_runtime_for_database(
                 let store = PgCredentialPersistence::connect(database_url)
                     .await
                     .map_err(CredentialCompositionError::Store)?;
-                let (claim_repo, reclaimer, adjudicator) =
-                    shared_claim_repo(store.refresh_claim_repo());
+                let refresh_ports =
+                    refresh_runtime_ports(store.refresh_schedule(), store.refresh_claim_repo());
                 tracing::info!(
                     backend = backend.as_str(),
                     "credential durable store opened"
                 );
                 compose_runtime(
                     store,
-                    claim_repo,
-                    reclaimer,
-                    adjudicator,
+                    refresh_ports,
                     key_provider,
                     legacy_keys,
                     metrics_registry,
@@ -275,9 +273,7 @@ fn classify_credential_database(
 
 fn compose_runtime<P>(
     raw_store: P,
-    claim_repo: Arc<dyn RefreshClaimStore>,
-    reclaimer: Arc<dyn RefreshClaimReclaimer>,
-    adjudicator: Arc<dyn RefreshClaimAdjudicator>,
+    refresh_ports: CredentialRefreshRuntimePorts,
     key_provider: Arc<dyn KeyProvider>,
     legacy_keys: Vec<(String, Arc<EncryptionKey>)>,
     metrics_registry: Arc<MetricsRegistry>,
@@ -285,6 +281,12 @@ fn compose_runtime<P>(
 where
     P: CredentialPersistence + 'static,
 {
+    let CredentialRefreshRuntimePorts {
+        schedule: refresh_schedule,
+        claims: claim_repo,
+        reclaimer,
+        adjudicator,
+    } = refresh_ports;
     let registry = Arc::new(first_party_registry()?);
     let catalog: Arc<dyn CredentialSchemaPort> =
         Arc::new(RegistryCredentialSchema::new(Arc::clone(&registry))?);
@@ -339,7 +341,9 @@ where
         oauth_transport.clone(),
     )
     .with_event_bus(credential_events);
-    let lifecycle = CredentialLifecycleRuntime::compose(
+    let lifecycle = CredentialLifecycleRuntime::compose_with_refresh_schedule(
+        refresh_schedule,
+        CredentialRefreshSchedulerConfig::default(),
         reclaim_sweep,
         LeaseLifecycleConfig::default(),
         observer.lease_bus(),
@@ -358,7 +362,7 @@ where
                 StateSource::LocalEncrypted,
             ))
         },
-    );
+    )?;
 
     Ok(CredentialRuntime {
         lifecycle,
@@ -368,8 +372,8 @@ where
     })
 }
 
-/// Build the request, reclaim, and adjudication capabilities over **one**
-/// adapter instance.
+/// Group due-scan, request, reclaim, and adjudication capabilities for one
+/// durable credential backend.
 ///
 /// `refresh_claim_repo()` clones a pool handle, so two calls are two handles
 /// onto one store rather than two stores. All three trait objects below are
@@ -380,22 +384,25 @@ where
 /// `SqliteCredentialPersistence::connect_memory`, a SQLite **in-memory
 /// database** whose repo is `SqliteRefreshClaimRepo`. `InMemoryRefreshClaimRepo`
 /// exists, but this path does not build it.
-fn shared_claim_repo<R>(
-    repo: R,
-) -> (
-    Arc<dyn RefreshClaimStore>,
-    Arc<dyn RefreshClaimReclaimer>,
-    Arc<dyn RefreshClaimAdjudicator>,
-)
+struct CredentialRefreshRuntimePorts {
+    schedule: Arc<dyn CredentialRefreshSchedule>,
+    claims: Arc<dyn RefreshClaimStore>,
+    reclaimer: Arc<dyn RefreshClaimReclaimer>,
+    adjudicator: Arc<dyn RefreshClaimAdjudicator>,
+}
+
+fn refresh_runtime_ports<S, R>(schedule: S, repo: R) -> CredentialRefreshRuntimePorts
 where
+    S: CredentialRefreshSchedule,
     R: RefreshClaimStore + RefreshClaimReclaimer + RefreshClaimAdjudicator + 'static,
 {
     let repo = Arc::new(repo);
-    (
-        Arc::clone(&repo) as Arc<dyn RefreshClaimStore>,
-        Arc::clone(&repo) as Arc<dyn RefreshClaimReclaimer>,
-        repo as Arc<dyn RefreshClaimAdjudicator>,
-    )
+    CredentialRefreshRuntimePorts {
+        schedule: Arc::new(schedule),
+        claims: Arc::clone(&repo) as Arc<dyn RefreshClaimStore>,
+        reclaimer: Arc::clone(&repo) as Arc<dyn RefreshClaimReclaimer>,
+        adjudicator: repo as Arc<dyn RefreshClaimAdjudicator>,
+    }
 }
 
 fn server_replica_id() -> ReplicaId {
@@ -569,14 +576,13 @@ mod tests {
         let store = SqliteCredentialPersistence::connect_memory()
             .await
             .expect("ready in-memory credential store");
-        let (claim_repo, reclaimer, adjudicator) = shared_claim_repo(store.refresh_claim_repo());
+        let refresh_ports =
+            refresh_runtime_ports(store.refresh_schedule(), store.refresh_claim_repo());
         let key_provider: Arc<dyn KeyProvider> =
             Arc::new(EnvKeyProvider::from_base64(TEST_KEY_BASE64).expect("valid fixed test key"));
         let mut runtime = compose_runtime(
             store,
-            claim_repo,
-            reclaimer,
-            adjudicator,
+            refresh_ports,
             key_provider,
             Vec::new(),
             Arc::new(MetricsRegistry::new()),

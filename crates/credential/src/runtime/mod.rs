@@ -36,7 +36,8 @@ pub use oauth_egress::{
     OAuthServerEndpoint, oauth_egress_ip_is_globally_routable, validate_oauth_dns_answers,
 };
 pub use refresh::{
-    ConfigError, ReclaimSweepHandle, RefreshCoordConfig, RefreshCoordMetrics, RefreshCoordinator,
+    ConfigError, CredentialRefreshSchedulerConfig, CredentialRefreshSchedulerConfigError,
+    ReclaimSweepHandle, RefreshCoordConfig, RefreshCoordMetrics, RefreshCoordinator,
     RefreshDisposition, RefreshError, RefreshRecheck, RefreshRecheckError, RefreshTransport,
     RefreshTransportError, SentinelEscalationPolicy, SentinelEscalationPolicyError,
     TokenPostRequest, TokenPostResponse, TokenPostResponseError,
