@@ -57,6 +57,32 @@ where
     }
 }
 
+impl<R, FResource>
+    ResourceContributionBridge<
+        R,
+        FResource,
+        nebula_resource::factory::SettingsTopologyFactory<R::Topology>,
+    >
+where
+    R: nebula_resource::Provider + nebula_core::DeclaresDependencies,
+    R::Config: serde::de::DeserializeOwned,
+    R::Topology: nebula_resource::topology::ConfigurableTopology<R>,
+    FResource: Fn() -> R + Send + Sync + 'static,
+{
+    /// Creates an opaque contribution whose topology is built from operator
+    /// settings and whose settings schema is published with it.
+    pub fn configurable(resource_factory: FResource) -> Self {
+        let factory =
+            nebula_resource::KindActivator::<R, FResource, _>::configurable(resource_factory);
+        Self {
+            factory: Arc::new(factory),
+            resource_marker: PhantomData,
+            resource_factory_marker: PhantomData,
+            topology_factory_marker: PhantomData,
+        }
+    }
+}
+
 impl<R, FResource, FTopology> fmt::Debug for ResourceContributionBridge<R, FResource, FTopology> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter

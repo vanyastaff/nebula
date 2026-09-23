@@ -65,7 +65,7 @@ use std::{
 };
 
 use crate::resource::{ResourceMetadata, ResourceMetadataDraft};
-use crate::topology::Topology;
+use crate::topology::{ConfigurableTopology, Topology};
 use crate::{Manager, ScopeLevel, SlotIdentity, recovery::RecoveryGate, resource::Provider};
 use nebula_core::Dependencies;
 
@@ -426,6 +426,18 @@ pub trait ResourceFactory: private::Sealed + Send + Sync + 'static {
     /// unworkable settings, or for settings sent to a kind that takes none.
     fn validate_topology(&self, settings: Option<&serde_json::Value>) -> Result<(), crate::Error>;
 
+    /// Schema of the operator topology settings this kind accepts, for
+    /// catalog and form rendering. `Ok(None)` means the kind publishes no
+    /// settings schema (a [`fixed`](crate::topology::fixed) topology, or a
+    /// custom factory built with [`KindActivator::new`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::MetadataBuildError`] if the settings schema is invalid.
+    fn topology_schema(
+        &self,
+    ) -> Result<Option<nebula_schema::ValidSchema>, crate::MetadataBuildError>;
+
     /// Construct and register this resource type against `manager` using the
     /// caller-threaded [`RegisterRequest`] plus the per-`R` resource and
     /// topology this factory owns. `expected_slot_identity` is the canonical
@@ -463,7 +475,7 @@ pub trait ResourceFactory: private::Sealed + Send + Sync + 'static {
 /// invoked multiple times (re-activation, multiple scopes). The topology
 /// factory receives the operator's topology settings from
 /// [`RegisterRequest::topology`] and builds `R::Topology` from them — use
-/// [`ConfigurableTopology::from_registration`](crate::topology::ConfigurableTopology::from_registration)
+/// [`ConfigurableTopology::from_registration`]
 /// for the built-in topologies, or [`fixed`](crate::topology::settings::fixed)
 /// for a topology that takes no operator settings.
 ///
@@ -478,6 +490,7 @@ where
 {
     resource_factory: FRes,
     topology_factory: FTopo,
+    topology_schema: Option<TopologySchemaFn>,
     dependencies: Dependencies,
     metadata_draft: Option<ResourceMetadataDraft>,
     metadata: OnceLock<Result<ResourceMetadata, crate::MetadataBuildError>>,
@@ -522,6 +535,7 @@ where
         Self {
             resource_factory,
             topology_factory,
+            topology_schema: None,
             dependencies: R::dependencies(),
             metadata_draft: None,
             metadata: OnceLock::new(),
@@ -541,6 +555,7 @@ where
         Self {
             resource_factory,
             topology_factory,
+            topology_schema: None,
             dependencies: R::dependencies(),
             metadata_draft: Some(metadata_draft),
             metadata: OnceLock::new(),
@@ -564,6 +579,56 @@ where
             return Err(crate::MetadataBuildError::KeyMismatch { expected, actual });
         }
         Ok(metadata)
+    }
+}
+
+/// Builds a topology settings schema; stored so the erased factory can
+/// publish the schema of the settings type it was built with.
+type TopologySchemaFn = fn() -> Result<nebula_schema::ValidSchema, nebula_schema::ValidationReport>;
+
+/// Topology factory type of a [`KindActivator::configurable`] activator.
+pub type SettingsTopologyFactory<T> =
+    for<'a> fn(Option<&'a serde_json::Value>) -> Result<T, crate::Error>;
+
+impl<R, FRes> KindActivator<R, FRes, SettingsTopologyFactory<R::Topology>>
+where
+    R: Provider + nebula_core::DeclaresDependencies,
+    R::Config: serde::de::DeserializeOwned,
+    R::Topology: ConfigurableTopology<R>,
+    FRes: Fn() -> R + Send + Sync,
+{
+    /// Builds an activator whose topology comes from operator settings.
+    ///
+    /// The topology factory is
+    /// [`ConfigurableTopology::from_registration`] and the published
+    /// [`topology_schema`](ResourceFactory::topology_schema) is the schema of
+    /// the same settings type, so the two cannot disagree.
+    pub fn configurable(resource_factory: FRes) -> Self {
+        Self::new(
+            resource_factory,
+            <R::Topology as ConfigurableTopology<R>>::from_registration,
+        )
+        .with_settings_schema()
+    }
+
+    /// [`configurable`](Self::configurable) with explicit schema-free resource
+    /// author intent (see [`with_metadata`](Self::with_metadata)).
+    pub fn configurable_with_metadata(
+        metadata_draft: ResourceMetadataDraft,
+        resource_factory: FRes,
+    ) -> Self {
+        Self::with_metadata(
+            metadata_draft,
+            resource_factory,
+            <R::Topology as ConfigurableTopology<R>>::from_registration,
+        )
+        .with_settings_schema()
+    }
+
+    fn with_settings_schema(mut self) -> Self {
+        self.topology_schema =
+            Some(nebula_schema::schema_of::<<R::Topology as ConfigurableTopology<R>>::Settings>);
+        self
     }
 }
 
@@ -630,6 +695,14 @@ where
         (self.topology_factory)(settings)
             .map(drop)
             .map_err(|error| error.with_resource_key(R::key()))
+    }
+
+    fn topology_schema(
+        &self,
+    ) -> Result<Option<nebula_schema::ValidSchema>, crate::MetadataBuildError> {
+        self.topology_schema
+            .map(|schema| schema().map_err(crate::MetadataBuildError::from))
+            .transpose()
     }
 
     fn register<'a>(
@@ -930,6 +1003,30 @@ impl ResourceActivatorRegistry {
             .map_err(|source| RegistrarError::Register {
                 kind: kind.to_owned(),
                 source,
+            })
+    }
+
+    /// Schema of the operator topology settings `kind` accepts (`None` when
+    /// the kind publishes none).
+    ///
+    /// # Errors
+    ///
+    /// - [`RegistrarError::UnknownKind`] — not in allowlist.
+    /// - [`RegistrarError::Register`] — the settings schema is invalid.
+    pub fn topology_schema(
+        &self,
+        kind: &str,
+    ) -> Result<Option<nebula_schema::ValidSchema>, RegistrarError> {
+        let factory = self
+            .factories
+            .get(kind)
+            .ok_or_else(|| RegistrarError::UnknownKind(kind.to_owned()))?;
+        factory
+            .topology_schema()
+            .map_err(|source| RegistrarError::Register {
+                kind: kind.to_owned(),
+                source: crate::Error::permanent("resource topology settings schema is invalid")
+                    .with_source(source),
             })
     }
 

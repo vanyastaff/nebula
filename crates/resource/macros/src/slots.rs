@@ -204,20 +204,6 @@ fn emit_factory(
 ) -> proc_macro2::TokenStream {
     let factory_name = format_ident!("{}Factory", struct_name, span = Span::call_site());
 
-    // Build the topology factory closure based on the chosen kind.
-    let topology_factory = match kind {
-        topology_attr::TopologyKind::Resident => quote! {
-            <::nebula_resource::topology::Resident<#struct_name>
-                as ::nebula_resource::topology::ConfigurableTopology<#struct_name>>::from_registration
-        },
-        topology_attr::TopologyKind::Pooled => quote! {
-            // Operator topology settings arrive per registration; absent
-            // settings build the defaults.
-            <::nebula_resource::topology::Pooled<#struct_name>
-                as ::nebula_resource::topology::ConfigurableTopology<#struct_name>>::from_registration
-        },
-    };
-
     let kind_str = kind.as_str();
 
     quote! {
@@ -252,10 +238,10 @@ fn emit_factory(
             #[must_use]
             pub fn new() -> Self {
                 use ::nebula_resource::factory::KindActivator;
-                let activator = KindActivator::<#struct_name, _, _>::new(
-                    || #struct_name::default(),
-                    #topology_factory,
-                );
+                // Topology settings arrive per registration; the activator
+                // publishes their schema. `kind` only selects `R::Topology`.
+                let activator =
+                    KindActivator::<#struct_name, _, _>::configurable(|| #struct_name::default());
                 Self {
                     inner: ::std::sync::Arc::new(activator),
                 }

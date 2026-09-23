@@ -33,6 +33,12 @@ impl ResourceFactory for ForgedFactory {
         Ok(())
     }
 
+    fn topology_schema(
+        &self,
+    ) -> Result<Option<nebula_schema::ValidSchema>, MetadataBuildError> {
+        Ok(None)
+    }
+
     fn register<'a>(
         &'a self,
         _manager: &'a Manager,

@@ -226,6 +226,12 @@ impl ResourceFactory for DivergentIdentityFactory {
         self.inner.validate_topology(settings)
     }
 
+    fn topology_schema(
+        &self,
+    ) -> Result<Option<nebula_schema::ValidSchema>, crate::MetadataBuildError> {
+        self.inner.topology_schema()
+    }
+
     fn register<'a>(
         &'a self,
         manager: &'a Manager,
@@ -565,10 +571,9 @@ async fn empty_registry_rejects_every_kind() {
 // ── Operator topology settings ───────────────────────────────────────────
 
 fn configurable_factory(create_counter: Arc<AtomicU64>) -> Arc<dyn ResourceFactory> {
-    Arc::new(KindActivator::<TestRes, _, _>::new(
-        move || TestRes::new(create_counter.clone()),
-        <Resident<TestRes> as crate::topology::ConfigurableTopology<TestRes>>::from_registration,
-    ))
+    Arc::new(KindActivator::<TestRes, _, _>::configurable(move || {
+        TestRes::new(create_counter.clone())
+    }))
 }
 
 #[tokio::test]
@@ -637,4 +642,36 @@ fn fixed_topology_rejects_operator_settings_instead_of_ignoring_them() {
         registry.validate_topology("missing", None),
         Err(RegistrarError::UnknownKind(_))
     ));
+}
+
+#[test]
+fn topology_schema_is_published_only_for_configurable_kinds() {
+    let mut registry = ResourceActivatorRegistry::new();
+    registry
+        .insert(
+            "configurable",
+            configurable_factory(Arc::new(AtomicU64::new(0))),
+        )
+        .expect("test resource metadata admits");
+    registry
+        .insert("fixed", test_factory(Arc::new(AtomicU64::new(0))))
+        .expect("test resource metadata admits");
+
+    let schema = registry
+        .topology_schema("configurable")
+        .expect("schema builds")
+        .expect("a configurable kind publishes its settings schema");
+    assert!(
+        schema
+            .properties()
+            .iter()
+            .any(|property| property.key().as_str() == "create_timeout_ms"),
+        "the published schema is the resident settings schema"
+    );
+    assert!(
+        registry
+            .topology_schema("fixed")
+            .expect("no schema is not an error")
+            .is_none()
+    );
 }

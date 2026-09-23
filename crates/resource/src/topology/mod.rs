@@ -36,8 +36,8 @@ pub use contract::{
 pub use pooled::{BrokenCheck, InstanceMetrics, PoolProvider, RecycleDecision};
 pub use resident::ResidentProvider;
 pub use settings::{
-    BoundedSettings, ConfigurableTopology, PoolSettings, PoolStrategySetting, ResidentSettings,
-    WarmupSetting, fixed,
+    BoundedModeSetting, BoundedSettings, ConfigurableTopology, PoolSettings, PoolStrategySetting,
+    ResidentSettings, WarmupSetting, fixed,
 };
 pub use store::{CheckedOut, Checkout, InstanceStore, PoolStrategy, ReturnOutcome};
 

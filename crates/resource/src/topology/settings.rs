@@ -4,8 +4,11 @@
 //! [`Provider::Config`] (how to connect) and the
 //! topology (how much capacity to hold). This module is the wire format for
 //! the second one. Every field is optional, so `{}` or an absent value means
-//! the built-in defaults. Durations are integer milliseconds with an explicit
-//! `_ms` suffix, unknown fields are rejected, and every value is validated
+//! the built-in defaults. The format is flat (no tagged unions) so it maps to
+//! a form: modes are string selects and a mode's extra parameter is a sibling
+//! field that is rejected when the mode does not use it. Durations are integer
+//! milliseconds with an explicit `_ms` suffix, unknown fields are rejected,
+//! and every value is validated
 //! through the topology's fallible constructor — operator input never reaches
 //! a panicking path.
 //!
@@ -15,6 +18,7 @@
 
 use std::{num::NonZeroUsize, time::Duration};
 
+use nebula_schema::{EnumSelect, HasSchema, Schema};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::{
@@ -30,8 +34,9 @@ use crate::{
 
 /// A topology that can be built from operator-supplied settings.
 pub trait ConfigurableTopology<R: Provider>: Topology<R> + Sized {
-    /// Wire format of this topology's settings.
-    type Settings: DeserializeOwned;
+    /// Wire format of this topology's settings; its schema is published
+    /// through [`ResourceFactory::topology_schema`](crate::ResourceFactory::topology_schema).
+    type Settings: DeserializeOwned + HasSchema;
 
     /// Builds the topology from parsed settings (`None` = defaults).
     ///
@@ -97,59 +102,91 @@ where
 }
 
 /// Idle-queue order for [`PoolSettings::strategy`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, EnumSelect)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum PoolStrategySetting {
     /// Reuse the most recently returned instance.
+    #[field(label = "LIFO — reuse the hottest instance")]
     Lifo,
     /// Rotate through every instance.
+    #[field(label = "FIFO — rotate evenly")]
     Fifo,
 }
 
 /// Startup warmup for [`PoolSettings::warmup`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, EnumSelect)]
+#[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum WarmupSetting {
     /// Create instances on demand.
+    #[field(label = "None — create on first use")]
     None,
     /// Create `min_size` instances one at a time.
+    #[field(label = "Sequential")]
     Sequential,
     /// Create `min_size` instances concurrently.
+    #[field(label = "Parallel")]
     Parallel,
-    /// Create instances with a fixed delay between them.
-    Staggered {
-        /// Delay between successive creations, in milliseconds.
-        interval_ms: u64,
-    },
+    /// Create instances with [`PoolSettings::warmup_interval_ms`] between them.
+    #[field(label = "Staggered")]
+    Staggered,
 }
 
 /// Operator settings for a [`Pooled`] topology. Absent fields keep the
 /// [`PoolConfig`] defaults.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Schema)]
 #[serde(default, deny_unknown_fields)]
 #[non_exhaustive]
 pub struct PoolSettings {
     /// Warmup target and minimum idle instances.
+    #[field(
+        label = "Minimum size",
+        description = "Warmup target and minimum idle instances"
+    )]
     pub min_size: Option<u32>,
     /// Hard cap on instances (idle and checked out); must be at least 1.
+    #[field(
+        label = "Maximum size",
+        description = "Cap on idle plus checked-out instances; at least 1"
+    )]
     pub max_size: Option<u32>,
     /// Idle eviction threshold in milliseconds; `0` disables idle eviction.
+    #[field(label = "Idle timeout (ms)", description = "0 disables idle eviction")]
     pub idle_timeout_ms: Option<u64>,
     /// Maximum instance lifetime in milliseconds; `0` disables it.
+    #[field(
+        label = "Max lifetime (ms)",
+        description = "0 disables the lifetime limit"
+    )]
     pub max_lifetime_ms: Option<u64>,
     /// Budget for one `Provider::create`, in milliseconds; must be positive.
+    #[field(
+        label = "Create timeout (ms)",
+        description = "Budget for one create; must be positive"
+    )]
     pub create_timeout_ms: Option<u64>,
     /// Idle-queue order.
+    #[field(label = "Idle order", enum_select)]
     pub strategy: Option<PoolStrategySetting>,
     /// Startup warmup.
+    #[field(label = "Warmup", enum_select)]
     pub warmup: Option<WarmupSetting>,
+    /// Delay between staggered warmup creations, in milliseconds. Required
+    /// with `warmup = staggered` and rejected otherwise.
+    #[field(
+        label = "Warmup interval (ms)",
+        description = "Only with staggered warmup"
+    )]
+    pub warmup_interval_ms: Option<u64>,
     /// Run `Provider::check` on every checkout.
+    #[field(label = "Test on checkout")]
     pub test_on_checkout: Option<bool>,
     /// Background maintenance interval in milliseconds; must be positive.
+    #[field(label = "Maintenance interval (ms)", description = "Must be positive")]
     pub maintenance_interval_ms: Option<u64>,
     /// Cap on concurrent `Provider::create` calls; must be at least 1.
+    #[field(label = "Concurrent creates", description = "At least 1")]
     pub max_concurrent_creates: Option<u32>,
 }
 
@@ -159,8 +196,9 @@ impl PoolSettings {
     /// # Errors
     ///
     /// Returns a permanent [`Error`] for a zero `create_timeout_ms`,
-    /// `maintenance_interval_ms` or `max_concurrent_creates`. Size invariants
-    /// are checked by [`Pooled::try_new`].
+    /// `maintenance_interval_ms` or `max_concurrent_creates`, and for a
+    /// `warmup_interval_ms` that does not match the warmup mode. Size
+    /// invariants are checked by [`Pooled::try_new`].
     pub fn into_config(self) -> Result<PoolConfig, Error> {
         let mut config = PoolConfig::default();
         if let Some(min_size) = self.min_size {
@@ -184,15 +222,26 @@ impl PoolSettings {
                 PoolStrategySetting::Fifo => PoolStrategy::Fifo,
             };
         }
-        if let Some(warmup) = self.warmup {
-            config.warmup = match warmup {
-                WarmupSetting::None => WarmupStrategy::None,
-                WarmupSetting::Sequential => WarmupStrategy::Sequential,
-                WarmupSetting::Parallel => WarmupStrategy::Parallel,
-                WarmupSetting::Staggered { interval_ms } => WarmupStrategy::Staggered {
-                    interval: Duration::from_millis(interval_ms),
-                },
-            };
+        match (self.warmup, self.warmup_interval_ms) {
+            (Some(WarmupSetting::Staggered), Some(ms)) => {
+                config.warmup = WarmupStrategy::Staggered {
+                    interval: positive_millis("warmup_interval_ms", ms)?,
+                };
+            },
+            (Some(WarmupSetting::Staggered), None) => {
+                return Err(Error::permanent(
+                    "pool settings: staggered warmup requires warmup_interval_ms",
+                ));
+            },
+            (_, Some(_)) => {
+                return Err(Error::permanent(
+                    "pool settings: warmup_interval_ms applies only to staggered warmup",
+                ));
+            },
+            (Some(WarmupSetting::None), None) => config.warmup = WarmupStrategy::None,
+            (Some(WarmupSetting::Sequential), None) => config.warmup = WarmupStrategy::Sequential,
+            (Some(WarmupSetting::Parallel), None) => config.warmup = WarmupStrategy::Parallel,
+            (None, None) => {},
         }
         if let Some(test_on_checkout) = self.test_on_checkout {
             config.test_on_checkout = test_on_checkout;
@@ -214,13 +263,18 @@ impl PoolSettings {
 
 /// Operator settings for a [`Resident`] topology. Absent fields keep the
 /// [`ResidentConfig`] defaults.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Schema)]
 #[serde(default, deny_unknown_fields)]
 #[non_exhaustive]
 pub struct ResidentSettings {
     /// Recreate the shared instance when its liveness check fails.
+    #[field(label = "Recreate on failure")]
     pub recreate_on_failure: Option<bool>,
     /// Budget for one `Provider::create`, in milliseconds; must be positive.
+    #[field(
+        label = "Create timeout (ms)",
+        description = "Budget for one create; must be positive"
+    )]
     pub create_timeout_ms: Option<u64>,
 }
 
@@ -242,21 +296,56 @@ impl ResidentSettings {
     }
 }
 
-/// Operator settings for a [`Bounded`] topology. There is no default mode:
-/// a bounded resource must state its concurrency policy explicitly.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
+/// Concurrency policy for [`BoundedSettings::mode`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, EnumSelect)]
+#[serde(rename_all = "snake_case")]
 #[non_exhaustive]
-pub enum BoundedSettings {
-    /// At most `max_concurrent` leases; must be at least 1.
-    Capped {
-        /// Concurrent lease cap.
-        max_concurrent: usize,
-    },
+pub enum BoundedModeSetting {
+    /// At most [`BoundedSettings::max_concurrent`] leases.
+    #[field(label = "Capped")]
+    Capped,
     /// Exactly one lease at a time over a reused instance.
+    #[field(label = "Exclusive")]
     Exclusive,
     /// No concurrency limit.
+    #[field(label = "Unbounded")]
     Unbounded,
+}
+
+/// Operator settings for a [`Bounded`] topology. There is no default mode:
+/// a bounded resource must state its concurrency policy explicitly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct BoundedSettings {
+    /// Concurrency policy.
+    #[field(label = "Mode", enum_select)]
+    pub mode: BoundedModeSetting,
+    /// Concurrent lease cap. Required with `mode = capped` (at least 1) and
+    /// rejected otherwise.
+    #[field(label = "Max concurrent leases", description = "Only with capped mode")]
+    #[serde(default)]
+    pub max_concurrent: Option<u32>,
+}
+
+impl BoundedSettings {
+    /// Settings for `Capped(max_concurrent)`.
+    #[must_use]
+    pub const fn capped(max_concurrent: u32) -> Self {
+        Self {
+            mode: BoundedModeSetting::Capped,
+            max_concurrent: Some(max_concurrent),
+        }
+    }
+
+    /// Settings for `Exclusive` or `Unbounded` (no cap).
+    #[must_use]
+    pub const fn uncapped(mode: BoundedModeSetting) -> Self {
+        Self {
+            mode,
+            max_concurrent: None,
+        }
+    }
 }
 
 impl<R> ConfigurableTopology<R> for Pooled<R>
@@ -288,18 +377,28 @@ where
     type Settings = BoundedSettings;
 
     fn from_settings(settings: Option<BoundedSettings>, _fingerprint: u64) -> Result<Self, Error> {
-        match settings {
-            None => Err(Error::permanent(
+        let Some(settings) = settings else {
+            return Err(Error::permanent(
                 "bounded topology settings are required: set mode to capped, exclusive or \
                  unbounded",
-            )),
-            Some(BoundedSettings::Capped { max_concurrent }) => NonZeroUsize::new(max_concurrent)
+            ));
+        };
+        match (settings.mode, settings.max_concurrent) {
+            (BoundedModeSetting::Capped, Some(cap)) => usize::try_from(cap)
+                .ok()
+                .and_then(NonZeroUsize::new)
                 .ok_or_else(|| {
                     Error::permanent("bounded settings: max_concurrent must be at least 1")
                 })
                 .and_then(|cap| Self::capped(cap.get())),
-            Some(BoundedSettings::Exclusive) => Ok(Self::exclusive()),
-            Some(BoundedSettings::Unbounded) => Ok(Self::unbounded()),
+            (BoundedModeSetting::Capped, None) => Err(Error::permanent(
+                "bounded settings: capped mode requires max_concurrent",
+            )),
+            (_, Some(_)) => Err(Error::permanent(
+                "bounded settings: max_concurrent applies only to capped mode",
+            )),
+            (BoundedModeSetting::Exclusive, None) => Ok(Self::exclusive()),
+            (BoundedModeSetting::Unbounded, None) => Ok(Self::unbounded()),
         }
     }
 }

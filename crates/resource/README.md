@@ -113,18 +113,28 @@ resource config.
 
 Topology capacity is configured separately from the resource config.
 `RegisterRequest::topology` carries operator settings as JSON
-(`topology::PoolSettings`, `ResidentSettings`, `BoundedSettings`): every field
-is optional, durations are `_ms` integers, unknown fields are rejected, and
-values reach the topology only through its fallible constructor. The
-`KindActivator` topology factory is `Fn(Option<&Value>) -> Result<R::Topology,
-Error>`; use `ConfigurableTopology::from_registration` for the built-in
-topologies (the derive does), or `topology::fixed(|| …)` for a topology that
-takes no settings — `fixed` rejects settings instead of ignoring them.
+(`topology::PoolSettings`, `ResidentSettings`, `BoundedSettings`). The format is
+flat so it maps to a form: every field is optional (Bounded's `mode` is
+required), modes are string selects, durations are `_ms` integers, unknown
+fields are rejected, and a mode-specific field (`warmup_interval_ms`,
+`max_concurrent`) is rejected when its mode does not use it. Values reach the
+topology only through its fallible constructor.
+
+`KindActivator::configurable(|| R::default())` (what the derive emits) builds
+the topology from those settings and publishes their schema through
+`ResourceFactory::topology_schema` / `ResourceActivatorRegistry::topology_schema`.
+A settings-free topology uses `KindActivator::new(res, topology::fixed(|| …))`;
+`fixed` rejects settings instead of ignoring them.
 `ResourceActivatorRegistry::validate_topology` dry-runs settings without
 registering.
 
 ```json
-{ "max_size": 20, "min_size": 2, "create_timeout_ms": 5000, "strategy": "fifo" }
+{ "max_size": 20, "min_size": 2, "create_timeout_ms": 5000,
+  "strategy": "fifo", "warmup": "staggered", "warmup_interval_ms": 250 }
+```
+
+```json
+{ "mode": "capped", "max_concurrent": 4 }
 ```
 
 Admitted `ResourceMetadata` has private fields, getters, and `Serialize` only.

@@ -391,3 +391,35 @@ async fn exclusive_permit_held_until_reset_completes_on_drop() -> Result<(), Err
     );
     Ok(())
 }
+
+#[test]
+fn bounded_settings_build_each_mode_and_reject_mismatched_caps() {
+    use nebula_resource::topology::{BoundedModeSetting, BoundedSettings, ConfigurableTopology};
+
+    let build = |value: serde_json::Value| Bounded::<Seats>::from_settings_value(Some(&value), 0);
+    assert!(build(serde_json::json!({ "mode": "capped", "max_concurrent": 2 })).is_ok());
+    assert!(build(serde_json::json!({ "mode": "exclusive" })).is_ok());
+    assert!(build(serde_json::json!({ "mode": "unbounded" })).is_ok());
+
+    for invalid in [
+        serde_json::json!({ "mode": "capped" }),
+        serde_json::json!({ "mode": "capped", "max_concurrent": 0 }),
+        serde_json::json!({ "mode": "exclusive", "max_concurrent": 4 }),
+    ] {
+        assert!(
+            build(invalid.clone()).is_err(),
+            "{invalid} must be rejected"
+        );
+    }
+    assert!(
+        Bounded::<Seats>::from_settings(None, 0).is_err(),
+        "a bounded kind has no default concurrency policy"
+    );
+    assert!(
+        Bounded::<Seats>::from_settings(
+            Some(BoundedSettings::uncapped(BoundedModeSetting::Unbounded)),
+            0
+        )
+        .is_ok()
+    );
+}
