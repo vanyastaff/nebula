@@ -452,14 +452,22 @@ async fn try_reserve_grants_then_saturates() {
         0,
     );
     let store: InstanceStore<PoolEntry<MockPool>> = InstanceStore::new(None);
-    let ticket = topo.try_reserve(&store).expect("first ticket");
+    let ticket = topo
+        .try_reserve(StoreView::new(&store))
+        .expect("first ticket");
     assert!(
-        matches!(topo.try_reserve(&store), Err(Unavailable::Saturated { .. })),
+        matches!(
+            topo.try_reserve(StoreView::new(&store)),
+            Err(Unavailable::Saturated { .. })
+        ),
         "a pool of 1 is saturated after one ticket"
     );
-    assert_eq!(topo.phase(&store), AdmissionPhase::Saturated);
+    assert_eq!(
+        topo.phase(StoreView::new(&store)),
+        AdmissionPhase::Saturated
+    );
     drop(ticket);
-    assert_eq!(topo.phase(&store), AdmissionPhase::Ready);
+    assert_eq!(topo.phase(StoreView::new(&store)), AdmissionPhase::Ready);
 }
 
 #[tokio::test]
@@ -472,10 +480,12 @@ async fn load_reflects_usage() {
         0,
     );
     let store: InstanceStore<PoolEntry<MockPool>> = InstanceStore::new(None);
-    let load = topo.load(&store).expect("pool reports load");
+    let load = topo
+        .load(StoreView::new(&store))
+        .expect("pool reports load");
     assert!(load.saturation.abs() < f32::EPSILON, "idle pool is 0.0");
-    let _t = topo.try_reserve(&store).expect("ticket");
-    let load = topo.load(&store).expect("load");
+    let _t = topo.try_reserve(StoreView::new(&store)).expect("ticket");
+    let load = topo.load(StoreView::new(&store)).expect("load");
     assert!(
         (load.saturation - 0.5).abs() < f32::EPSILON,
         "one of two used"
@@ -541,7 +551,7 @@ async fn dispatch_credential_hook_walks_idle_store() {
 
     topo.dispatch_credential_hook(
         &resource,
-        &store,
+        StoreView::new(&store),
         &crate::RetainedStore::for_test(),
         "db",
         false,
@@ -584,7 +594,7 @@ async fn dispatch_credential_hook_isolates_a_panicking_entry_and_continues() {
     let outcome = topo
         .dispatch_credential_hook(
             &resource,
-            &store,
+            StoreView::new(&store),
             &crate::RetainedStore::for_test(),
             "db",
             false,

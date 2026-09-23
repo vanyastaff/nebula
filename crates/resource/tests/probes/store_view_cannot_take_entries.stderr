@@ -1,0 +1,23 @@
+error[E0599]: no method named `checkout` found for struct `StoreView<'a, S>` in the current scope
+ --> tests/probes/store_view_cannot_take_entries.rs:4:18
+  |
+4 |     let _ = view.checkout().await;
+  |                  ^^^^^^^^ method not found in `StoreView<'_, u32>`
+
+error[E0599]: no method named `drain_all` found for struct `StoreView<'a, S>` in the current scope
+ --> tests/probes/store_view_cannot_take_entries.rs:5:18
+  |
+5 |     let _ = view.drain_all().await;
+  |                  ^^^^^^^^^ method not found in `StoreView<'_, u32>`
+
+error[E0599]: no method named `bump_revoke_epoch` found for struct `StoreView<'a, S>` in the current scope
+ --> tests/probes/store_view_cannot_take_entries.rs:6:10
+  |
+6 |     view.bump_revoke_epoch();
+  |          ^^^^^^^^^^^^^^^^^
+  |
+help: there is a method `current_revoke_epoch` with a similar name
+  |
+6 -     view.bump_revoke_epoch();
+6 +     view.current_revoke_epoch();
+  |

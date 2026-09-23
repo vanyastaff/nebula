@@ -7,13 +7,12 @@ use std::{marker::PhantomData, sync::Arc};
 
 use tokio::sync::Mutex;
 
+use crate::topology::store::StoreView;
 use crate::{
     context::ResourceContext,
     error::Error,
     resource::Provider,
-    topology::{
-        CreatedEntry, Ticket, Topology, Unavailable, resident::config::Config, store::InstanceStore,
-    },
+    topology::{CreatedEntry, Ticket, Topology, Unavailable, resident::config::Config},
     topology_tag::TopologyTag,
 };
 
@@ -294,7 +293,7 @@ where
     type Entry = Arc<R::Instance>;
 
     /// Always succeeds — resident is unbounded (one shared instance).
-    fn try_reserve(&self, _store: &InstanceStore<Self::Entry>) -> Result<Ticket, Unavailable> {
+    fn try_reserve(&self, _store: StoreView<'_, Self::Entry>) -> Result<Ticket, Unavailable> {
         Ok(Ticket::infallible())
     }
 
@@ -342,7 +341,7 @@ where
     async fn dispatch_credential_hook(
         &self,
         resource: &R,
-        _store: &InstanceStore<Self::Entry>,
+        _store: StoreView<'_, Self::Entry>,
         retained: &crate::RetainedStore<Self::Entry>,
         slot: &str,
         refresh: bool,

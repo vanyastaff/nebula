@@ -32,7 +32,7 @@ use crate::{
     topology::{
         AdmissionPhase, Load, MaintenanceSchedule, Ticket, Topology, Unavailable,
         pooled::{InstanceMetrics, PoolProvider, RecycleDecision, config::Config},
-        store::InstanceStore,
+        store::{InstanceStore, StoreView},
     },
     topology_tag::TopologyTag,
 };
@@ -444,7 +444,7 @@ where
 {
     type Entry = PoolEntry<R>;
 
-    fn try_reserve(&self, _store: &InstanceStore<PoolEntry<R>>) -> Result<Ticket, Unavailable> {
+    fn try_reserve(&self, _store: StoreView<'_, PoolEntry<R>>) -> Result<Ticket, Unavailable> {
         self.semaphore
             .clone()
             .try_acquire_owned()
@@ -561,7 +561,7 @@ where
     async fn dispatch_credential_hook(
         &self,
         resource: &R,
-        store: &InstanceStore<PoolEntry<R>>,
+        store: StoreView<'_, PoolEntry<R>>,
         _retained: &crate::RetainedStore<Self::Entry>,
         slot: &str,
         refresh: bool,
@@ -590,14 +590,14 @@ where
         // not every idle instance is guaranteed a hook attempt — accepted
         // (rotation is rare, and a hung per-entry hook is itself the
         // pathological case this bounds).
-        let idle = store.lock_idle().await;
+        let idle = store.read_idle().await;
         let mut first_fault: Option<crate::topology::HookFault> = None;
         let hook_op = if refresh {
             "on_credential_refresh"
         } else {
             "on_credential_revoke"
         };
-        for item in &*idle {
+        for entry in idle.iter() {
             // Bound + isolate this one entry's hook.
             //
             // SAFETY (unwind): `idle` (the idle-lock `MutexGuard`) is a local
@@ -611,13 +611,9 @@ where
                 crate::hook_guard::DEFAULT_AUTHOR_HOOK_CEILING,
                 async {
                     if refresh {
-                        resource
-                            .on_credential_refresh(slot, &item.entry.instance)
-                            .await
+                        resource.on_credential_refresh(slot, &entry.instance).await
                     } else {
-                        resource
-                            .on_credential_revoke(slot, &item.entry.instance)
-                            .await
+                        resource.on_credential_revoke(slot, &entry.instance).await
                     }
                 },
             )
@@ -677,7 +673,7 @@ where
             .store(fingerprint, Ordering::Release);
     }
 
-    fn phase(&self, _store: &InstanceStore<PoolEntry<R>>) -> AdmissionPhase {
+    fn phase(&self, _store: StoreView<'_, PoolEntry<R>>) -> AdmissionPhase {
         if self.semaphore.available_permits() == 0 {
             AdmissionPhase::Saturated
         } else {
@@ -685,7 +681,7 @@ where
         }
     }
 
-    fn load(&self, _store: &InstanceStore<PoolEntry<R>>) -> Option<Load> {
+    fn load(&self, _store: StoreView<'_, PoolEntry<R>>) -> Option<Load> {
         let available = self.semaphore.available_permits();
         let capacity = self.config.max_size as usize;
         let used = capacity.saturating_sub(available);

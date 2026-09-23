@@ -237,7 +237,7 @@ impl<const CREDENTIALS: bool> nebula_resource::topology::Topology<AdmissionResou
 
     fn try_reserve(
         &self,
-        _store: &nebula_resource::topology::InstanceStore<()>,
+        _store: nebula_resource::topology::StoreView<'_, ()>,
     ) -> Result<nebula_resource::topology::Ticket, nebula_resource::topology::Unavailable> {
         Ok(nebula_resource::topology::Ticket::infallible())
     }

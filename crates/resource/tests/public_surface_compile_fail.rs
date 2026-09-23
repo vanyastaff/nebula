@@ -13,4 +13,5 @@ fn lifecycle_authority_is_not_publicly_callable() {
     tests.compile_fail("tests/probes/resource_config_input_rejects_valid_values.rs");
     tests.compile_fail("tests/probes/resource_config_input_rejects_resolved_values.rs");
     tests.compile_fail("tests/probes/resource_factory_direct_impl.rs");
+    tests.compile_fail("tests/probes/store_view_cannot_take_entries.rs");
 }

@@ -17,7 +17,7 @@ use crate::{
     Error, ResourceContext, ResourceGuard, RetainStatus, RetainedStore, ScopeLevel, SlotIdentity,
     TeardownCx,
     resource::{Provider, ResourceConfig, ResourceMetadataDraft},
-    topology::{CreatedEntry, Ticket, Topology, Unavailable, store::InstanceStore},
+    topology::{CreatedEntry, Ticket, Topology, Unavailable, store::StoreView},
 };
 
 #[test]
@@ -86,7 +86,7 @@ struct QuiescingTopology {
 
 impl Topology<LeasedResource> for QuiescingTopology {
     type Entry = Arc<AtomicUsize>;
-    fn try_reserve(&self, _: &InstanceStore<Self::Entry>) -> Result<Ticket, Unavailable> {
+    fn try_reserve(&self, _: StoreView<'_, Self::Entry>) -> Result<Ticket, Unavailable> {
         Ok(Ticket::infallible())
     }
     async fn create_entry(

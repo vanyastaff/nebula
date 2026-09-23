@@ -176,7 +176,7 @@ where
         //    guard drop.
         let permit = self
             .topology
-            .try_reserve(&self.store)
+            .try_reserve(crate::topology::store::StoreView::new(&self.store))
             .map_err(|u| u.into_error(R::key()))?
             .into_permit();
 

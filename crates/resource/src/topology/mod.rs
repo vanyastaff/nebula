@@ -39,7 +39,9 @@ pub use settings::{
     BoundedModeSetting, BoundedSettings, ConfigurableTopology, PoolSettings, PoolStrategySetting,
     ResidentSettings, WarmupSetting, fixed,
 };
-pub use store::{CheckedOut, Checkout, InstanceStore, PoolStrategy, ReturnOutcome};
+pub use store::{
+    CheckedOut, Checkout, IdleRead, InstanceStore, PoolStrategy, ReturnOutcome, StoreView,
+};
 
 /// Framework topology structs that implement the open [`Topology`] contract.
 ///

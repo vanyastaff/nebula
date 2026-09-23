@@ -17,7 +17,10 @@ use crate::{
         acquire_loop::{SlotHookSettlement, SlotHookWaitOutcome},
         managed::ManagedResource,
     },
-    topology::{CreatedEntry, Ticket, Topology, Unavailable, store::InstanceStore},
+    topology::{
+        CreatedEntry, Ticket, Topology, Unavailable,
+        store::{InstanceStore, StoreView},
+    },
 };
 
 #[derive(Clone, nebula_schema::Schema)]
@@ -122,7 +125,7 @@ crate::no_credential_slots!(RetainedResource);
 impl Topology<RetainedResource> for RetainedTopology {
     type Entry = Arc<Root>;
 
-    fn try_reserve(&self, _store: &InstanceStore<Self::Entry>) -> Result<Ticket, Unavailable> {
+    fn try_reserve(&self, _store: StoreView<'_, Self::Entry>) -> Result<Ticket, Unavailable> {
         Ok(Ticket::infallible())
     }
 
@@ -163,7 +166,7 @@ impl Topology<RetainedResource> for RetainedTopology {
     async fn dispatch_credential_hook(
         &self,
         _resource: &RetainedResource,
-        _store: &InstanceStore<Self::Entry>,
+        _store: StoreView<'_, Self::Entry>,
         retained: &RetainedStore<Self::Entry>,
         _slot: &str,
         _refresh: bool,

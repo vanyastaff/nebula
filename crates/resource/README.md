@@ -282,11 +282,10 @@ Aliases intentionally exposed by a provider's instance remain the author's respo
   the mandatory lifecycle contract and escapes framework accounting.
 - Retained state is manipulated only through the borrowed store. The store is
   not cloneable and exposes no public remove-and-take capability; closing and
-  destruction remain framework-owned on the supported path. `InstanceStore`,
-  however, exposes ownership-transferring `drain_all` to trusted in-process
-  topology code. The type system cannot prevent a custom plugin from draining,
-  dropping, or aliasing an entry outside framework submission, and framework
-  abandonment metrics cannot observe that loss. `Topology::quiesce` may stop
+  destruction remain framework-owned on the supported path. Idle entries are
+  out of a plugin's reach entirely: hooks get a read-only `StoreView` (size,
+  capacity, order, revoke epoch, and an in-place `read_idle`), with no
+  checkout, return, eviction, drain or fence operation. `Topology::quiesce` may stop
   policy-owned background work, but must not invalidate or await issued guards.
   Physical shutdown belongs to final-owner `Provider::destroy`.
 - Retained lease fences are per generation, not global to the resource row.
@@ -350,7 +349,8 @@ Aliases intentionally exposed by a provider's instance remain the author's respo
 - Topology configs / constructors: `PoolConfig`, `ResidentConfig`, `BoundedMode` (`Bounded::capped`/`exclusive`/`unbounded`).
 - `PoolStats` — point-in-time pool snapshot (`idle`, `capacity`, `available_permits`, `in_use`) via `Manager::pool_stats`.
 - `TopologyTag` — the runtime topology discriminant (`Pool` / `Resident` / `Bounded` / custom) carried on a `ResourceGuard`; read via `guard.topology_tag()`.
-- Custom-topology surface: framework-owned `InstanceStore` for idle entries and
+- Custom-topology surface: a read-only `StoreView` (+ `IdleRead`) of the
+  framework-owned `InstanceStore` for idle entries and
   non-cloneable `RetainedStore` + opaque `RetainedId` for topology-retained
   roots, plus `Checkout`, `CheckedOut`, `ReturnOutcome`, `Ticket`, `Unavailable`,
   `Load`, `MaintenanceSchedule`, `AdmissionPhase`, `AdmissionStatus`,
@@ -560,8 +560,8 @@ cancel-safe guard wrap, and the on-release return-or-destroy. The topology
 supplies only thin R-aware hooks (`create_entry`, `entry_instance`,
 `into_owned_instance`, `quiesce`, `accept`, `prepare`, `on_release`, `pools`,
 `store_capacity`, `dispatch_credential_hook`, …). Hooks receive borrowed
-framework stores: `InstanceStore` for idle entries and `RetainedStore` for
-long-lived roots. A custom topology may publish or retire retained roots only
+framework stores: a read-only `StoreView` of the idle store and the
+`RetainedStore` for long-lived roots. A custom topology may publish or retire retained roots only
 through the latter and must keep opaque `RetainedId`s rather than hidden strong owners.
 Every retained generation has its own lease fence, so a live lease blocks only
 that generation; ready retired siblings remain independently drainable.

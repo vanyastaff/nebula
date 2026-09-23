@@ -33,7 +33,7 @@ use nebula_resource::{
     SlotIdentity,
     error::{Error, ErrorKind},
     resource::{Provider, ResourceConfig, ResourceMetadataDraft},
-    topology::{InstanceStore, Ticket, Topology, Unavailable},
+    topology::{StoreView, Ticket, Topology, Unavailable},
 };
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
@@ -177,7 +177,7 @@ impl Topology<Ffmpeg> for FfmpegPool {
     // and hands it back on checkout — the author never touches the store.
     type Entry = Transcoder;
 
-    fn try_reserve(&self, _store: &InstanceStore<Transcoder>) -> Result<Ticket, Unavailable> {
+    fn try_reserve(&self, _store: StoreView<'_, Transcoder>) -> Result<Ticket, Unavailable> {
         self.sem
             .clone()
             .try_acquire_owned()

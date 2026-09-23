@@ -12,11 +12,12 @@
 //!
 //! This is the inversion the open trait exists for: a custom topology author
 //! normally writes zero `store.checkout()` / `resource.destroy()` / stale-loop /
-//! epoch-compare code. Custom topology code is nevertheless a trusted in-process
-//! plugin: hooks receive an [`InstanceStore`] whose public capabilities include
-//! ownership-transferring operations such as [`InstanceStore::drain_all`]. The
-//! type system cannot prevent a plugin from draining, dropping, or aliasing an
-//! entry outside framework submission.
+//! epoch-compare code — and for idle entries it *cannot*: hooks receive a
+//! read-only [`StoreView`] of the framework store, which exposes no checkout,
+//! return, eviction, drain or revoke-fence operation. Custom topology code is
+//! still a trusted in-process plugin for long-lived roots, which it manages
+//! through the borrowed [`RetainedStore`]; the type system cannot stop it from
+//! hiding an alias of a retained lease.
 //!
 //! # Storage safety
 //!
@@ -32,12 +33,13 @@ use std::{future::Future, time::Duration};
 
 use tokio::sync::OwnedSemaphorePermit;
 
+use crate::topology::store::StoreView;
 use crate::{
     RetainedStore,
     context::ResourceContext,
     error::{Error, ErrorKind},
     resource::Provider,
-    topology::store::{InstanceStore, PoolStrategy},
+    topology::store::PoolStrategy,
     topology_tag::TopologyTag,
 };
 
@@ -385,7 +387,7 @@ pub struct MaintenanceSchedule {
 /// # Entry-centric
 ///
 /// [`Entry`](Topology::Entry) is the leasable unit the framework stores in its
-/// [`InstanceStore<Self::Entry>`]. The guard holds the same `Entry` for the
+/// [`InstanceStore<Self::Entry>`](crate::topology::store::InstanceStore). The guard holds the same `Entry` for the
 /// whole lease, so per-entry metadata (`created_at` for max-lifetime,
 /// `fingerprint`, `checkout_count`) survives the checkout → lease → return
 /// round-trip:
@@ -409,8 +411,9 @@ pub struct MaintenanceSchedule {
 ///
 /// # Storage and trust
 ///
-/// Cloning a borrowed `InstanceStore` shares its fences; borrowing alone does
-/// not prevent retention. The store and `SlotIdentity` are not tenant authority.
+/// Hooks see the idle store only through a read-only [`StoreView`], so they
+/// cannot take or re-fence idle entries. The store and `SlotIdentity` are not
+/// tenant authority.
 /// Trusted custom topologies must preserve registration scope and transfer
 /// retained owners in [`RetainedStore`]; they must not hide lifecycle owners
 /// inside topology fields. Terminal `quiesce` receives no entry ownership.
@@ -468,7 +471,7 @@ pub trait Topology<R: Provider>: Send + Sync + 'static {
     /// typed [`Backpressure`](crate::error::ErrorKind::Backpressure), never a
     /// bare timeout; see [`into_error`](Unavailable::into_error) for the full
     /// per-variant mapping.
-    fn try_reserve(&self, store: &InstanceStore<Self::Entry>) -> Result<Ticket, Unavailable>;
+    fn try_reserve(&self, store: StoreView<'_, Self::Entry>) -> Result<Ticket, Unavailable>;
 
     // ── entry lifecycle (framework-driven) ───────────────────────────────────
 
@@ -668,11 +671,11 @@ pub trait Topology<R: Provider>: Send + Sync + 'static {
 
     /// Per-slot credential rotation hook, framework-driven over the live store.
     ///
-    /// The framework passes the borrowed `&InstanceStore<Self::Entry>` so a
-    /// pooling topology can walk its idle entries under the store lock (the
-    /// same lock `checkout` / `return_entry` take, so no checkout can
-    /// interleave mid-rotation). A cloned store still shares its fences;
-    /// trusted policy must not retain entries beyond their registration scope.
+    /// The framework passes a read-only [`StoreView`] so a pooling topology
+    /// can walk its idle entries through
+    /// [`read_idle`](StoreView::read_idle), which holds the same lock
+    /// `checkout` / `return_entry` take, so no checkout can interleave
+    /// mid-rotation. The view cannot take or retain idle entries.
     ///
     /// `refresh = true` selects `Provider::on_credential_refresh`, `false`
     /// `Provider::on_credential_revoke`. Default no-op: a topology with no
@@ -701,7 +704,7 @@ pub trait Topology<R: Provider>: Send + Sync + 'static {
     fn dispatch_credential_hook(
         &self,
         _resource: &R,
-        _store: &InstanceStore<Self::Entry>,
+        _store: StoreView<'_, Self::Entry>,
         _retained: &RetainedStore<Self::Entry>,
         _slot: &str,
         _refresh: bool,
@@ -719,12 +722,12 @@ pub trait Topology<R: Provider>: Send + Sync + 'static {
     ///
     /// Advisory only — do not gate admission on this value. The authoritative
     /// gate is [`try_reserve`](Topology::try_reserve).
-    fn phase(&self, _store: &InstanceStore<Self::Entry>) -> AdmissionPhase {
+    fn phase(&self, _store: StoreView<'_, Self::Entry>) -> AdmissionPhase {
         AdmissionPhase::Ready
     }
 
     /// Returns an optional load snapshot.
-    fn load(&self, _store: &InstanceStore<Self::Entry>) -> Option<Load> {
+    fn load(&self, _store: StoreView<'_, Self::Entry>) -> Option<Load> {
         None
     }
 
@@ -759,7 +762,7 @@ pub struct NoTopology;
 impl<R: Provider> Topology<R> for NoTopology {
     type Entry = R::Instance;
 
-    fn try_reserve(&self, _store: &InstanceStore<R::Instance>) -> Result<Ticket, Unavailable> {
+    fn try_reserve(&self, _store: StoreView<'_, R::Instance>) -> Result<Ticket, Unavailable> {
         Ok(Ticket::infallible())
     }
 

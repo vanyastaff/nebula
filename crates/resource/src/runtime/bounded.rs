@@ -28,14 +28,12 @@ use std::{
 
 use tokio::sync::{Semaphore, TryAcquireError};
 
+use crate::topology::store::StoreView;
 use crate::{
     context::ResourceContext,
     error::Error,
     resource::Provider,
-    topology::{
-        AdmissionPhase, Load, Ticket, Topology, Unavailable, bounded::BoundedMode,
-        store::InstanceStore,
-    },
+    topology::{AdmissionPhase, Load, Ticket, Topology, Unavailable, bounded::BoundedMode},
     topology_tag::TopologyTag,
 };
 
@@ -210,7 +208,7 @@ where
 {
     type Entry = R::Instance;
 
-    fn try_reserve(&self, _store: &InstanceStore<R::Instance>) -> Result<Ticket, Unavailable> {
+    fn try_reserve(&self, _store: StoreView<'_, R::Instance>) -> Result<Ticket, Unavailable> {
         match &self.sem {
             // Unbounded: no gate.
             None => Ok(Ticket::infallible()),
@@ -324,14 +322,14 @@ where
         }
     }
 
-    fn phase(&self, _store: &InstanceStore<R::Instance>) -> AdmissionPhase {
+    fn phase(&self, _store: StoreView<'_, R::Instance>) -> AdmissionPhase {
         match &self.sem {
             Some(sem) if sem.available_permits() == 0 => AdmissionPhase::Saturated,
             _ => AdmissionPhase::Ready,
         }
     }
 
-    fn load(&self, _store: &InstanceStore<R::Instance>) -> Option<Load> {
+    fn load(&self, _store: StoreView<'_, R::Instance>) -> Option<Load> {
         let sem = self.sem.as_ref()?;
         let total = self.cap.load(Ordering::Acquire);
         let used = total.saturating_sub(sem.available_permits());

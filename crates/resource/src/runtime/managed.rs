@@ -448,12 +448,14 @@ where
 
     /// Admission phase snapshot from the topology.
     pub(crate) fn admission_phase(&self) -> AdmissionPhase {
-        self.topology.phase(&self.store)
+        self.topology
+            .phase(crate::topology::store::StoreView::new(&self.store))
     }
 
     /// Admission load snapshot from the topology.
     pub(crate) fn admission_load(&self) -> Option<Load> {
-        self.topology.load(&self.store)
+        self.topology
+            .load(crate::topology::store::StoreView::new(&self.store))
     }
 
     /// Sync capacity gate from the topology — an **advisory** yes/no pre-check
@@ -469,7 +471,9 @@ where
     /// `Ticket` IS held for the lease. A gate `Err(Saturated)` likewise releases
     /// its permit; it reports the rejection, it does not hold it.
     pub(crate) fn try_reserve_gate(&self) -> Result<(), Unavailable> {
-        self.topology.try_reserve(&self.store).map(|_ticket| ())
+        self.topology
+            .try_reserve(crate::topology::store::StoreView::new(&self.store))
+            .map(|_ticket| ())
     }
 }
 

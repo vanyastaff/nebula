@@ -1,6 +1,7 @@
 //! A custom topology has no fence logic; the framework rejects stale checkout.
 
 use super::*;
+use crate::topology::store::StoreView;
 
 #[derive(Clone, Default)]
 struct CustomResource {
@@ -47,7 +48,7 @@ impl Topology<CustomResource> for CustomTopology {
 
     fn try_reserve(
         &self,
-        _: &InstanceStore<u64>,
+        _: StoreView<'_, u64>,
     ) -> Result<crate::topology::Ticket, crate::topology::Unavailable> {
         Ok(crate::topology::Ticket::infallible())
     }
