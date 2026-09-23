@@ -420,7 +420,7 @@ impl ServerRuntime {
         )
         .await
         .map_err(|error| TransportInitError::CredentialServiceInit(error.to_string()))?;
-        let credential_service = Arc::clone(&credential_runtime.service);
+        let credential_service = credential_runtime.service();
         let binding_resolver: Arc<dyn nebula_engine::ExecutionBindingResolver> =
             Arc::new(ServerExecutionBindingResolver::new(
                 Arc::clone(&credential_service),
@@ -553,8 +553,9 @@ impl ServerRuntime {
         {
             tracing::warn!(%error, "start-key reservation sweep did not stop cleanly");
         }
-        // Keep credential background ownership (notably the reclaim sweep)
-        // alive for the entire serving lifecycle, then abort it by Drop.
+        // Stop every credential lifecycle task through its single owner after
+        // request handling has drained. Drop remains the fail-safe path.
+        credential_runtime.shutdown();
         drop(credential_runtime);
         serve_result?;
         Ok(())

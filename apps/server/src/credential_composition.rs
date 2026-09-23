@@ -12,8 +12,9 @@ use nebula_credential::{
     CredentialService, CredentialServiceError, DispatchError, DispatchOps, ErasedPendingStore,
     EventMetricObserver, SigningKeyCredential, StateSource, register_runtime_ops,
     runtime::{
-        CredentialResolver, LeaseLifecycle, LeaseLifecycleConfig, ReclaimSweepHandle,
-        RefreshCoordConfig, RefreshCoordMetrics, RefreshCoordinator, SentinelEscalationPolicy,
+        CredentialLifecycleRuntime, CredentialResolver, LeaseLifecycle, LeaseLifecycleConfig,
+        ReclaimSweepHandle, RefreshCoordConfig, RefreshCoordMetrics, RefreshCoordinator,
+        SentinelEscalationPolicy,
     },
 };
 use nebula_crypto::EncryptionKey;
@@ -55,7 +56,7 @@ impl CredentialDatabaseBackend {
 
 /// Fully composed first-party credential runtime parts.
 pub(crate) struct CredentialRuntime {
-    pub(crate) service: Arc<CredentialService>,
+    lifecycle: CredentialLifecycleRuntime,
     pub(crate) catalog: Arc<dyn CredentialSchemaPort>,
     /// Privileged reconciliation seam, sharing this runtime's claim storage so
     /// the adjudicator clears the same poison row `try_claim` reads.
@@ -63,9 +64,21 @@ pub(crate) struct CredentialRuntime {
     /// The runtime's audit sink, so `AuditOperation::Reconcile` reaches the same
     /// sink as every other credential operation rather than a second one.
     pub(crate) audit_sink: Arc<dyn AuditSink>,
-    /// Retains the sole periodic poison-accounting owner for the full server
-    /// lifecycle. Drop aborts the task during shutdown.
-    _reclaim_sweep: ReclaimSweepHandle,
+}
+
+impl CredentialRuntime {
+    pub(crate) fn service(&self) -> Arc<CredentialService> {
+        self.lifecycle.service()
+    }
+
+    pub(crate) fn shutdown(&self) {
+        self.lifecycle.shutdown();
+    }
+
+    #[cfg(test)]
+    fn reclaim_sweep_is_finished(&self) -> bool {
+        self.lifecycle.reclaim_sweep_is_finished()
+    }
 }
 
 /// Failure to compose the first-party credential runtime.
@@ -164,7 +177,7 @@ pub(crate) async fn compose_memory_service(
         Vec::new(),
         Arc::new(MetricsRegistry::new()),
     )?;
-    let service = Arc::clone(&runtime.service);
+    let service = runtime.service();
     // Isolated tests do not exercise periodic maintenance. Production keeps
     // the complete runtime guard until `app::serve` exits.
     drop(runtime);
@@ -327,11 +340,12 @@ where
         oauth_transport.clone(),
     )
     .with_event_bus(credential_events);
+    let shutdown = tokio_util::sync::CancellationToken::new();
     let lease = LeaseLifecycle::spawn(
         LeaseLifecycleConfig::default(),
         observer.lease_bus(),
         observer.metrics(),
-        tokio_util::sync::CancellationToken::new(),
+        shutdown.clone(),
     );
     let pending = ErasedPendingStore::new(Arc::new(InMemoryPendingStore::new()));
     let service = Arc::new(CredentialService::from_secure_parts(
@@ -346,12 +360,13 @@ where
         StateSource::LocalEncrypted,
     ));
 
+    let lifecycle = CredentialLifecycleRuntime::new(service, reclaim_sweep, shutdown);
+
     Ok(CredentialRuntime {
-        service,
+        lifecycle,
         catalog,
         adjudicator,
         audit_sink,
-        _reclaim_sweep: reclaim_sweep,
     })
 }
 
@@ -571,18 +586,18 @@ mod tests {
         .expect("credential runtime composes");
 
         assert!(
-            !runtime._reclaim_sweep.is_finished(),
+            !runtime.reclaim_sweep_is_finished(),
             "composition must retain a live periodic poison-accounting owner"
         );
-        runtime._reclaim_sweep.abort();
+        runtime.shutdown();
         for _ in 0..8 {
-            if runtime._reclaim_sweep.is_finished() {
+            if runtime.reclaim_sweep_is_finished() {
                 break;
             }
             tokio::task::yield_now().await;
         }
         assert!(
-            runtime._reclaim_sweep.is_finished(),
+            runtime.reclaim_sweep_is_finished(),
             "shutdown must abort the retained reclaim task"
         );
     }

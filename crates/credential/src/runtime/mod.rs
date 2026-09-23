@@ -9,6 +9,7 @@ pub mod acquisition;
 pub mod dispatchers;
 pub mod executor;
 pub mod lease;
+mod lifecycle;
 pub mod oauth_egress;
 /// Read-only projection shared by management and execution-worker runtimes.
 pub(crate) mod projection;
@@ -29,6 +30,7 @@ pub use lease::{
     LeaseLifecycle, LeaseLifecycleConfig, LeaseLifecycleError, LeaseToken, RenewalPolicy,
     StalenessCeiling, StalenessCeilingError,
 };
+pub use lifecycle::CredentialLifecycleRuntime;
 pub use oauth_egress::{
     OAUTH_DNS_MAX_ANSWERS, OAUTH_ENDPOINT_MAX_BYTES, OAuthDnsAnswerError, OAuthEndpointError,
     OAuthServerEndpoint, oauth_egress_ip_is_globally_routable, validate_oauth_dns_answers,
