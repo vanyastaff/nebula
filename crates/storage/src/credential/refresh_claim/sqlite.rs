@@ -384,9 +384,9 @@ impl RefreshClaimReclaimer for SqliteRefreshClaimRepo {
         // write lock. A pool or lock wait must not make a newly inserted
         // incident older than the rolling-window count that follows it.
         let (now_ms,): (i64,) = sqlx::query_as(SQLITE_NOW_MS_SQL)
-        .fetch_one(&mut *transaction)
-        .await
-        .store_err()?;
+            .fetch_one(&mut *transaction)
+            .await
+            .store_err()?;
         let rows: Vec<(String, String, String, String, i64, i64)> = sqlx::query_as(
             "SELECT owner_id, credential_id, claim_id, holder_replica_id, generation, sentinel \
              FROM credential_refresh_claims AS claim \
