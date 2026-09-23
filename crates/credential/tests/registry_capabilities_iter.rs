@@ -165,6 +165,8 @@ impl plugin_capability_report::IsInteractive for RefreshableProbe {
 }
 impl plugin_capability_report::IsRefreshable for RefreshableProbe {
     const VALUE: bool = true;
+    const POLICY: Option<nebula_credential::RefreshPolicy> =
+        Some(<Self as Refreshable>::REFRESH_POLICY);
 }
 impl plugin_capability_report::IsRevocable for RefreshableProbe {
     const VALUE: bool = true;
@@ -173,6 +175,71 @@ impl plugin_capability_report::IsTestable for RefreshableProbe {
     const VALUE: bool = false;
 }
 impl plugin_capability_report::IsDynamic for RefreshableProbe {
+    const VALUE: bool = false;
+}
+
+/// Hand-written refreshable whose report omits the implementation policy.
+/// This models the pre-fix path where registry admission silently substituted
+/// `RefreshPolicy::DEFAULT` for a potentially different actual policy.
+pub struct UnreportedRefreshPolicyProbe;
+
+impl Credential for UnreportedRefreshPolicyProbe {
+    type Properties = ();
+    type Scheme = ProbeToken;
+    type State = ProbeToken;
+
+    const KEY: &'static str = "probe.unreported_refresh_policy";
+
+    fn metadata() -> CredentialMetadataDraft {
+        CredentialMetadataDraft::new(
+            nebula_core::credential_key!("probe.unreported_refresh_policy"),
+            nebula_credential::metadata_name!("UnreportedRefreshPolicyProbe"),
+            "hand-written refresh policy report probe",
+        )
+    }
+
+    fn project(state: &ProbeToken) -> ProbeToken {
+        state.clone()
+    }
+
+    async fn resolve(
+        _properties: &(),
+        _ctx: &CredentialContext,
+    ) -> Result<StaticResolveResult<ProbeToken>, CredentialError> {
+        Ok(StaticResolveResult::Complete(ProbeToken(
+            "unreported-policy-probe".to_owned(),
+        )))
+    }
+}
+
+impl Refreshable for UnreportedRefreshPolicyProbe {
+    const REFRESH_EXECUTION_MODE: nebula_credential::RefreshExecutionMode =
+        nebula_credential::RefreshExecutionMode::Local;
+    const REFRESH_POLICY: nebula_credential::RefreshPolicy = nebula_credential::RefreshPolicy {
+        early_refresh: std::time::Duration::from_mins(5),
+        min_retry_backoff: std::time::Duration::from_secs(nebula_credential::RetryDelay::MAX_SECS)
+            .saturating_add(std::time::Duration::from_nanos(1)),
+        jitter: std::time::Duration::from_secs(30),
+    };
+
+    async fn refresh(_state: &mut ProbeToken, attempt: RefreshAttempt<'_>) -> RefreshReport {
+        attempt.local_refresh_completed()
+    }
+}
+
+impl plugin_capability_report::IsInteractive for UnreportedRefreshPolicyProbe {
+    const VALUE: bool = false;
+}
+impl plugin_capability_report::IsRefreshable for UnreportedRefreshPolicyProbe {
+    const VALUE: bool = true;
+}
+impl plugin_capability_report::IsRevocable for UnreportedRefreshPolicyProbe {
+    const VALUE: bool = false;
+}
+impl plugin_capability_report::IsTestable for UnreportedRefreshPolicyProbe {
+    const VALUE: bool = false;
+}
+impl plugin_capability_report::IsDynamic for UnreportedRefreshPolicyProbe {
     const VALUE: bool = false;
 }
 
@@ -210,6 +277,25 @@ fn capabilities_of_reports_refreshable_probe_as_refreshable_plus_revocable() {
         Capabilities::REFRESHABLE | Capabilities::REVOCABLE,
         "refreshable probe declares Refreshable + Revocable; bitflag set must reflect that"
     );
+}
+
+#[test]
+fn registration_rejects_handwritten_refreshable_without_policy_report() {
+    let mut registry = CredentialRegistry::new();
+    let error = registry
+        .register(UnreportedRefreshPolicyProbe, env!("CARGO_CRATE_NAME"))
+        .expect_err("missing hand-written policy report must fail admission");
+
+    assert!(
+        registry.is_empty(),
+        "failed admission must not mutate registry"
+    );
+    assert!(matches!(
+        error,
+        nebula_credential::RegisterError::MissingRefreshPolicyReport {
+            key: "probe.unreported_refresh_policy"
+        }
+    ));
 }
 
 #[test]

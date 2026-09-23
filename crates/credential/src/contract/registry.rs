@@ -57,6 +57,14 @@ pub enum RegisterError {
     /// The metadata key disagrees with the credential's static identity.
     #[error("credential metadata identity mismatch")]
     MetadataKeyMismatch,
+    /// A hand-written refreshable capability report omitted the credential's
+    /// actual timing policy. Admission fails instead of substituting defaults
+    /// that may shorten the implementation's retry floor.
+    #[error("credential '{key}' is refreshable but did not report its refresh policy")]
+    MissingRefreshPolicyReport {
+        /// The credential whose refresh policy report was absent.
+        key: &'static str,
+    },
     /// A refreshable credential's retry floor cannot be represented by the
     /// durable retry gate. The credential is rejected at startup rather than
     /// silently shortening its declared minimum.
@@ -193,10 +201,19 @@ impl CredentialRegistry {
         }
 
         let capabilities = compute_capabilities::<C>();
-        let refresh_policy = capabilities
-            .contains(Capabilities::REFRESHABLE)
-            .then_some(<C as plugin_capability_report::IsRefreshable>::POLICY)
-            .flatten();
+        let refresh_policy = if capabilities.contains(Capabilities::REFRESHABLE) {
+            let Some(policy) = <C as plugin_capability_report::IsRefreshable>::POLICY else {
+                tracing::error!(
+                    credential.key = key,
+                    registering_crate,
+                    "refreshable credential rejected: capability report omitted its policy"
+                );
+                return Err(RegisterError::MissingRefreshPolicyReport { key });
+            };
+            Some(policy)
+        } else {
+            None
+        };
 
         if let Some(policy) = refresh_policy
             && !policy.min_retry_backoff.is_zero()
