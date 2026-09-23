@@ -12,7 +12,7 @@ use nebula_eventbus::EventBus;
 
 use crate::{CredentialService, LeaseEvent};
 
-use super::{LeaseLifecycle, LeaseLifecycleConfig, ReclaimSweepHandle};
+use super::{LeaseLifecycle, LeaseLifecycleConfig, ReclaimSweepHandle, lease::LeaseLifecycleTask};
 
 /// Owns the credential service and its process-local lifecycle tasks.
 ///
@@ -21,7 +21,7 @@ use super::{LeaseLifecycle, LeaseLifecycleConfig, ReclaimSweepHandle};
 /// aborts the periodic reclaim sweep.
 pub struct CredentialLifecycleRuntime {
     service: Arc<CredentialService>,
-    lease: LeaseLifecycle,
+    lease_task: LeaseLifecycleTask,
     reclaim_sweep: ReclaimSweepHandle,
 }
 
@@ -44,16 +44,11 @@ impl CredentialLifecycleRuntime {
         metrics: Option<Arc<dyn MetricsEmitter>>,
         build_service: impl FnOnce(LeaseLifecycle) -> Arc<CredentialService>,
     ) -> Self {
-        let lease = LeaseLifecycle::spawn(
-            lease_config,
-            lease_bus,
-            metrics,
-            tokio_util::sync::CancellationToken::new(),
-        );
-        let service = build_service(lease.clone());
+        let (lease, lease_task) = LeaseLifecycle::spawn_owned(lease_config, lease_bus, metrics);
+        let service = build_service(lease);
         Self {
             service,
-            lease,
+            lease_task,
             reclaim_sweep,
         }
     }
@@ -69,7 +64,7 @@ impl CredentialLifecycleRuntime {
     /// Durable refresh claims are deliberately left to their storage-defined
     /// expiry and reclaim semantics when work was already past provider egress.
     pub async fn shutdown(&mut self) {
-        self.lease.shutdown().await;
+        self.lease_task.shutdown().await;
         self.reclaim_sweep.shutdown().await;
     }
 

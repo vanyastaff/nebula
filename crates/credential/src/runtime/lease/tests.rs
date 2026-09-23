@@ -152,6 +152,12 @@ fn make_resolution(provider: &str, ttl_secs: u64, id: &str) -> ProviderResolutio
 // attempts fire deterministically.
 // ────────────────────────────────────────────────────────────────────
 
+#[test]
+fn lease_lifecycle_preserves_public_unwind_safety() {
+    fn assert_unwind_safe<T: std::panic::UnwindSafe + std::panic::RefUnwindSafe>() {}
+    assert_unwind_safe::<LeaseLifecycle>();
+}
+
 #[tokio::test(start_paused = true)]
 async fn track_returns_token_and_increments_active_count() {
     let shutdown = CancellationToken::new();
@@ -181,8 +187,8 @@ async fn track_returns_token_and_increments_active_count() {
 
 #[tokio::test(start_paused = true)]
 async fn shutdown_aborts_a_blocked_provider_call_and_joins_scheduler() {
-    let shutdown = CancellationToken::new();
-    let lifecycle = LeaseLifecycle::spawn(LeaseLifecycleConfig::default(), None, None, shutdown);
+    let (lifecycle, mut task) =
+        LeaseLifecycle::spawn_owned(LeaseLifecycleConfig::default(), None, None);
     let provider = Arc::new(BlockingProvider::default());
 
     lifecycle
@@ -203,7 +209,7 @@ async fn shutdown_aborts_a_blocked_provider_call_and_joins_scheduler() {
     }
     assert_eq!(provider.renew_calls.load(Ordering::SeqCst), 1);
 
-    lifecycle.shutdown().await;
+    task.shutdown().await;
 
     assert_eq!(lifecycle.active_lease_count().await, 0);
 }

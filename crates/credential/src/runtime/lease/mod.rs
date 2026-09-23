@@ -113,8 +113,12 @@ pub struct LeaseLifecycle {
 
 struct LeaseLifecycleInner {
     commands: mpsc::Sender<Command>,
+}
+
+/// Owned scheduler task retained by the process-lifecycle runtime.
+pub(super) struct LeaseLifecycleTask {
     shutdown: CancellationToken,
-    task: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    task: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl LeaseLifecycle {
@@ -125,40 +129,47 @@ impl LeaseLifecycle {
         metrics: Option<Arc<dyn MetricsEmitter>>,
         shutdown: CancellationToken,
     ) -> Self {
+        let (lifecycle, _task) = Self::spawn_parts(config, lease_bus, metrics, shutdown);
+        lifecycle
+    }
+
+    pub(super) fn spawn_owned(
+        config: LeaseLifecycleConfig,
+        lease_bus: Option<Arc<EventBus<LeaseEvent>>>,
+        metrics: Option<Arc<dyn MetricsEmitter>>,
+    ) -> (Self, LeaseLifecycleTask) {
+        let shutdown = CancellationToken::new();
+        let (lifecycle, task) = Self::spawn_parts(config, lease_bus, metrics, shutdown.clone());
+        (
+            lifecycle,
+            LeaseLifecycleTask {
+                shutdown,
+                task: Some(task),
+            },
+        )
+    }
+
+    fn spawn_parts(
+        config: LeaseLifecycleConfig,
+        lease_bus: Option<Arc<EventBus<LeaseEvent>>>,
+        metrics: Option<Arc<dyn MetricsEmitter>>,
+        shutdown: CancellationToken,
+    ) -> (Self, tokio::task::JoinHandle<()>) {
         let (tx, rx) = mpsc::channel(LEASE_COMMAND_CHANNEL_CAPACITY);
         let inputs = SchedulerInputs {
             config,
             commands: rx,
             lease_bus,
             metrics,
-            shutdown: shutdown.clone(),
+            shutdown,
         };
         let task = tokio::spawn(scheduler::run(inputs));
-        Self {
-            inner: Arc::new(LeaseLifecycleInner {
-                commands: tx,
-                shutdown,
-                task: tokio::sync::Mutex::new(Some(task)),
-            }),
-        }
-    }
-
-    /// Cancel and join the scheduler task.
-    ///
-    /// Provider futures are cancelled by aborting the task after signalling
-    /// cooperative shutdown, so this method is bounded even when a provider
-    /// call is stalled.
-    pub async fn shutdown(&self) {
-        self.inner.shutdown.cancel();
-        let task = self.inner.task.lock().await.take();
-        if let Some(task) = task {
-            task.abort();
-            if let Err(error) = task.await
-                && !error.is_cancelled()
-            {
-                tracing::error!(%error, "credential lease scheduler task failed during shutdown");
-            }
-        }
+        (
+            Self {
+                inner: Arc::new(LeaseLifecycleInner { commands: tx }),
+            },
+            task,
+        )
     }
 
     /// Register a lease for proactive renewal.
@@ -289,10 +300,24 @@ impl LeaseLifecycle {
     }
 }
 
-impl Drop for LeaseLifecycleInner {
+impl LeaseLifecycleTask {
+    pub(super) async fn shutdown(&mut self) {
+        self.shutdown.cancel();
+        if let Some(task) = self.task.take() {
+            task.abort();
+            if let Err(error) = task.await
+                && !error.is_cancelled()
+            {
+                tracing::error!(%error, "credential lease scheduler task failed during shutdown");
+            }
+        }
+    }
+}
+
+impl Drop for LeaseLifecycleTask {
     fn drop(&mut self) {
         self.shutdown.cancel();
-        if let Some(task) = self.task.get_mut().take() {
+        if let Some(task) = self.task.take() {
             task.abort();
         }
     }
