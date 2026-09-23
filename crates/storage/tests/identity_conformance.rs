@@ -35,12 +35,13 @@ use nebula_storage_port::Scope;
 use nebula_storage_port::dto::{
     AuditLogRow, BlobRow, OrgMemberRemoveOutcome, OrgMemberUpsert, OrgMemberUpsertOutcome,
     OrgMembershipRole, OrgRow, PrincipalKind, QuotaRow, ResourceRow, ScopeKind,
-    TenantMembershipSnapshot, TriggerRow, UserRow, WorkspaceMemberUpsert, WorkspaceMembershipRole,
-    WorkspaceRow,
+    TenantDefaultWorkspaceCreate, TenantMembershipSnapshot, TenantOrgCreate,
+    TenantProvisioningConflict, TenantProvisioningOutcome, TenantProvisioningRequest, TriggerRow,
+    UserRow, WorkspaceMemberUpsert, WorkspaceMembershipRole, WorkspaceRow,
 };
 use nebula_storage_port::store::{
-    AuditStore, BlobStore, MembershipStore, OrgStore, QuotaStore, ResourceStore, TriggerStore,
-    UserStore, WorkspaceStore,
+    AuditStore, BlobStore, MembershipStore, OrgStore, QuotaStore, ResourceStore,
+    TenantProvisioningStore, TriggerStore, UserStore, WorkspaceStore,
 };
 use rstest::rstest;
 
@@ -52,6 +53,7 @@ trait IdentityBackend: Send + Sync {
     async fn org_store(&self) -> Arc<dyn OrgStore>;
     async fn workspace_store(&self) -> Arc<dyn WorkspaceStore>;
     async fn membership_store(&self) -> Arc<dyn MembershipStore>;
+    async fn tenant_provisioning_store(&self) -> Arc<dyn TenantProvisioningStore>;
     async fn resource_store(&self) -> Arc<dyn ResourceStore>;
     async fn trigger_store(&self) -> Arc<dyn TriggerStore>;
     async fn quota_store(&self) -> Arc<dyn QuotaStore>;
@@ -82,6 +84,9 @@ impl IdentityBackend for InMemoryBackend {
     }
     async fn membership_store(&self) -> Arc<dyn MembershipStore> {
         Arc::new(self.directory.membership_store())
+    }
+    async fn tenant_provisioning_store(&self) -> Arc<dyn TenantProvisioningStore> {
+        Arc::new(self.directory.provisioning_store())
     }
     async fn resource_store(&self) -> Arc<dyn ResourceStore> {
         Arc::new(nebula_storage::inmem::InMemoryResourceStore::new())
@@ -177,6 +182,16 @@ impl IdentityBackend for SqliteBackend {
         #[cfg(feature = "sqlite")]
         {
             Arc::new(nebula_storage::sqlite::SqliteMembershipStore::new(
+                self.pool().await,
+            ))
+        }
+        #[cfg(not(feature = "sqlite"))]
+        unimplemented!("built without the `sqlite` feature")
+    }
+    async fn tenant_provisioning_store(&self) -> Arc<dyn TenantProvisioningStore> {
+        #[cfg(feature = "sqlite")]
+        {
+            Arc::new(nebula_storage::sqlite::SqliteTenantProvisioningStore::new(
                 self.pool().await,
             ))
         }
@@ -316,6 +331,16 @@ impl IdentityBackend for PostgresBackend {
         #[cfg(feature = "postgres")]
         {
             Arc::new(nebula_storage::postgres::PgMembershipStore::new(
+                self.pool().await,
+            ))
+        }
+        #[cfg(not(feature = "postgres"))]
+        unimplemented!("built without the `postgres` feature")
+    }
+    async fn tenant_provisioning_store(&self) -> Arc<dyn TenantProvisioningStore> {
+        #[cfg(feature = "postgres")]
+        {
+            Arc::new(nebula_storage::postgres::PgTenantProvisioningStore::new(
                 self.pool().await,
             ))
         }
@@ -494,6 +519,36 @@ fn workspace_member(org_id: &str, workspace_id: &str, principal_id: &str) -> Wor
     }
 }
 
+fn tenant_request(org_id: &str, org_slug: &str, workspace_id: &str) -> TenantProvisioningRequest {
+    let org = TenantOrgCreate::new(
+        org_id.into(),
+        org_slug.into(),
+        "Test Org".into(),
+        "usr_1".into(),
+        "free".into(),
+        None,
+        serde_json::json!({}),
+    )
+    .unwrap();
+    let workspace = TenantDefaultWorkspaceCreate::new(
+        workspace_id.into(),
+        "default".into(),
+        "Test Workspace".into(),
+        None,
+        "usr_1".into(),
+        serde_json::json!({}),
+    )
+    .unwrap();
+    TenantProvisioningRequest::new(
+        org,
+        workspace,
+        PrincipalKind::User,
+        "owner".into(),
+        Some("bootstrap".into()),
+    )
+    .unwrap()
+}
+
 fn resource_row(id: &str, workspace_id: &str, slug: &str) -> ResourceRow {
     let credential_bindings =
         std::collections::BTreeMap::from([("auth".to_owned(), "cred_test".to_owned())]);
@@ -657,9 +712,19 @@ async fn assert_workspace_contract(b: &dyn IdentityBackend) {
     );
     // cross-org get is a miss (no existence oracle)
     assert!(s.get("org_2", "ws_1").await.unwrap().is_none());
+    assert_eq!(
+        s.get_by_slug("org_1", "main").await.unwrap().unwrap().id,
+        "ws_1"
+    );
+    assert_eq!(
+        s.get_by_slug("org_2", "main").await.unwrap().unwrap().id,
+        "ws_2"
+    );
+    assert!(s.get_by_slug("org_2", "missing").await.unwrap().is_none());
     assert_eq!(s.list_for_org("org_1").await.unwrap().len(), 1);
     s.soft_delete("org_1", "ws_1").await.expect("soft_delete");
     assert!(s.get("org_1", "ws_1").await.unwrap().is_none());
+    assert!(s.get_by_slug("org_1", "main").await.unwrap().is_none());
     assert_eq!(s.list_for_org("org_1").await.unwrap().len(), 0);
 }
 
@@ -980,6 +1045,258 @@ async fn assert_membership_lockout(b: &dyn IdentityBackend) {
     );
 }
 
+async fn assert_tenant_provisioning(b: &dyn IdentityBackend) {
+    let store = b.tenant_provisioning_store().await;
+    let orgs = b.org_store().await;
+    let workspaces = b.workspace_store().await;
+    let memberships = b.membership_store().await;
+
+    let request = tenant_request("org_bootstrap", "bootstrap", "ws_bootstrap");
+    let (left, right) = tokio::join!(
+        store.provision_tenant(request.clone()),
+        store.provision_tenant(request.clone())
+    );
+    let mut outcomes = [left.unwrap(), right.unwrap()];
+    outcomes.sort_by_key(|outcome| match outcome {
+        TenantProvisioningOutcome::Created => 0,
+        TenantProvisioningOutcome::Replayed => 1,
+        TenantProvisioningOutcome::Conflict(_) => 2,
+    });
+    let observed_org = orgs.get("org_bootstrap").await.unwrap();
+    let observed_workspace = workspaces
+        .get("org_bootstrap", "ws_bootstrap")
+        .await
+        .unwrap();
+    let observed_owner = memberships
+        .get(
+            ScopeKind::Org,
+            "org_bootstrap",
+            PrincipalKind::User,
+            "owner",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        outcomes,
+        [
+            TenantProvisioningOutcome::Created,
+            TenantProvisioningOutcome::Replayed
+        ],
+        "persisted org={observed_org:?}, workspace={observed_workspace:?}, owner={observed_owner:?}"
+    );
+    let persisted_org = orgs.get("org_bootstrap").await.unwrap().unwrap();
+    assert!(request.org().matches_persisted(&persisted_org));
+    let persisted_workspace = workspaces
+        .get("org_bootstrap", "ws_bootstrap")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        request
+            .default_workspace()
+            .matches_persisted("org_bootstrap", &persisted_workspace)
+    );
+    let owner_before = memberships
+        .get(
+            ScopeKind::Org,
+            "org_bootstrap",
+            PrincipalKind::User,
+            "owner",
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(owner_before.role, OrgMembershipRole::Owner.as_str());
+    assert_eq!(owner_before.added_by.as_deref(), Some("bootstrap"));
+    assert_eq!(
+        store.provision_tenant(request.clone()).await.unwrap(),
+        TenantProvisioningOutcome::Replayed
+    );
+    let owner_after = memberships
+        .get(
+            ScopeKind::Org,
+            "org_bootstrap",
+            PrincipalKind::User,
+            "owner",
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(owner_after.added_at, owner_before.added_at);
+
+    memberships
+        .upsert_org_member_guarded(org_member(
+            "org_bootstrap",
+            "second-admin",
+            OrgMembershipRole::Admin,
+        ))
+        .await
+        .unwrap();
+    memberships
+        .upsert_org_member_guarded(org_member(
+            "org_bootstrap",
+            "owner",
+            OrgMembershipRole::Member,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        store.provision_tenant(request.clone()).await.unwrap(),
+        TenantProvisioningOutcome::Conflict(TenantProvisioningConflict::ExistingState)
+    );
+    assert_eq!(
+        memberships
+            .get(
+                ScopeKind::Org,
+                "org_bootstrap",
+                PrincipalKind::User,
+                "owner"
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .role,
+        OrgMembershipRole::Member.as_str()
+    );
+
+    let same_slug_org = TenantOrgCreate::new(
+        "org_other".into(),
+        "bootstrap".into(),
+        "Test Org".into(),
+        "usr_1".into(),
+        "free".into(),
+        None,
+        serde_json::json!({}),
+    )
+    .unwrap();
+    let same_slug_workspace = TenantDefaultWorkspaceCreate::new(
+        "ws_other".into(),
+        "default".into(),
+        "Test Workspace".into(),
+        None,
+        "usr_1".into(),
+        serde_json::json!({}),
+    )
+    .unwrap();
+    let same_slug = TenantProvisioningRequest::new(
+        same_slug_org,
+        same_slug_workspace,
+        PrincipalKind::User,
+        "other-owner".into(),
+        Some("bootstrap".into()),
+    )
+    .unwrap();
+    assert_eq!(
+        store.provision_tenant(same_slug).await.unwrap(),
+        TenantProvisioningOutcome::Conflict(TenantProvisioningConflict::ExistingState)
+    );
+    assert!(orgs.get("org_other").await.unwrap().is_none());
+
+    let collision_request = tenant_request("org_extra_default", "extra-default", "ws_primary");
+    assert_eq!(
+        store
+            .provision_tenant(collision_request.clone())
+            .await
+            .unwrap(),
+        TenantProvisioningOutcome::Created
+    );
+    let mut extra_default = workspace_row("ws_extra", "org_extra_default", "extra");
+    extra_default.is_default = true;
+    workspaces.create(extra_default).await.unwrap();
+    assert_eq!(
+        store.provision_tenant(collision_request).await.unwrap(),
+        TenantProvisioningOutcome::Conflict(TenantProvisioningConflict::ExistingState)
+    );
+
+    let id_collision_request =
+        tenant_request("org_workspace_id", "workspace-id", "ws_global_collision");
+    assert_eq!(
+        store
+            .provision_tenant(id_collision_request.clone())
+            .await
+            .unwrap(),
+        TenantProvisioningOutcome::Created
+    );
+    orgs.create(org_row("org_workspace_alias", "workspace-alias"))
+        .await
+        .unwrap();
+    workspaces
+        .create(workspace_row(
+            "ws_global_collision",
+            "org_workspace_alias",
+            "alias",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        store.provision_tenant(id_collision_request).await.unwrap(),
+        TenantProvisioningOutcome::Conflict(TenantProvisioningConflict::ExistingState)
+    );
+
+    let race_a = tenant_request("org_race_a", "race-a", "ws_race_shared");
+    let race_b = tenant_request("org_race_b", "race-b", "ws_race_shared");
+    let (race_a_outcome, race_b_outcome) = tokio::join!(
+        store.provision_tenant(race_a),
+        store.provision_tenant(race_b)
+    );
+    let race_outcomes = [race_a_outcome.unwrap(), race_b_outcome.unwrap()];
+    assert_eq!(
+        race_outcomes
+            .iter()
+            .filter(|outcome| **outcome == TenantProvisioningOutcome::Created)
+            .count(),
+        1
+    );
+    assert_eq!(
+        race_outcomes
+            .iter()
+            .filter(|outcome| {
+                **outcome
+                    == TenantProvisioningOutcome::Conflict(
+                        TenantProvisioningConflict::ExistingState,
+                    )
+            })
+            .count(),
+        1
+    );
+
+    orgs.create(org_row("org_partial", "partial"))
+        .await
+        .unwrap();
+    let partial = tenant_request("org_partial", "partial", "ws_partial");
+    assert_eq!(
+        store.provision_tenant(partial).await.unwrap(),
+        TenantProvisioningOutcome::Conflict(TenantProvisioningConflict::ExistingState)
+    );
+    assert!(
+        workspaces
+            .get("org_partial", "ws_partial")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        memberships
+            .list_for_scope(ScopeKind::Org, "org_partial")
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    assert!(
+        TenantDefaultWorkspaceCreate::new(
+            String::new(),
+            "default".into(),
+            "Test Workspace".into(),
+            None,
+            "usr_1".into(),
+            serde_json::json!({}),
+        )
+        .is_err()
+    );
+    assert!(orgs.get("org_invalid").await.unwrap().is_none());
+}
+
 async fn assert_resource_contract(b: &dyn IdentityBackend) {
     let s = b.resource_store().await;
     let a = Scope::new("ws_a", "org_a");
@@ -1113,6 +1430,7 @@ identity_matrix!(
     assert_membership_live_and_deleted_workspace_aliases
 );
 identity_matrix!(membership_lockout, assert_membership_lockout);
+identity_matrix!(tenant_provisioning, assert_tenant_provisioning);
 identity_matrix!(resource_store_contract, assert_resource_contract);
 identity_matrix!(trigger_store_contract, assert_trigger_contract);
 identity_matrix!(quota_store_contract, assert_quota_contract);

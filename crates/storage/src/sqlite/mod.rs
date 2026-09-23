@@ -33,7 +33,8 @@ pub use execution::{SqliteExecutionStore, SqliteIdempotencyGuard};
 pub use idempotency_store::{SqliteIdempotencyStore, SqliteWebhookActivationStore};
 pub use identity::{
     SqliteAuditStore, SqliteBlobStore, SqliteMembershipStore, SqliteOrgStore, SqliteQuotaStore,
-    SqliteResourceStore, SqliteTriggerStore, SqliteUserStore, SqliteWorkspaceStore,
+    SqliteResourceStore, SqliteTenantProvisioningStore, SqliteTriggerStore, SqliteUserStore,
+    SqliteWorkspaceStore,
 };
 pub use job_dispatch::SqliteJobDispatchQueue;
 pub use operation_ledger::SqliteOperationLedger;

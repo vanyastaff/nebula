@@ -25,12 +25,13 @@ use nebula_storage_port::dto::{
 };
 use nebula_storage_port::dto::{
     OrgMemberRemoveOutcome, OrgMemberUpsert, OrgMemberUpsertOutcome, OrgMembershipRole,
-    PrincipalOrgMembership, TenantMembershipSnapshot, WorkspaceMemberUpsert,
+    PrincipalOrgMembership, TenantMembershipSnapshot, TenantProvisioningConflict,
+    TenantProvisioningOutcome, TenantProvisioningRequest, WorkspaceMemberUpsert,
     WorkspaceMembershipRole,
 };
 use nebula_storage_port::store::{
-    AuditStore, BlobStore, MembershipStore, OrgStore, QuotaStore, ResourceStore, TriggerStore,
-    UserStore, WorkspaceStore,
+    AuditStore, BlobStore, MembershipStore, OrgStore, QuotaStore, ResourceStore,
+    TenantProvisioningStore, TriggerStore, UserStore, WorkspaceStore,
 };
 use nebula_storage_port::{Scope, StorageError};
 use sqlx::{Row, SqlitePool};
@@ -57,6 +58,16 @@ where
                 "NOT NULL column '{col}' contained SQL NULL (schema/data inconsistency)"
             ))
         })
+}
+
+fn optional<'r, T>(
+    row: &'r sqlx::sqlite::SqliteRow,
+    col: &'static str,
+) -> Result<Option<T>, StorageError>
+where
+    T: sqlx::Decode<'r, sqlx::Sqlite> + sqlx::Type<sqlx::Sqlite>,
+{
+    row.try_get::<Option<T>, _>(col).map_err(conn_err)
 }
 
 fn json_to_text(v: &serde_json::Value) -> String {
@@ -239,8 +250,8 @@ fn org_from_row(r: &sqlx::sqlite::SqliteRow) -> Result<OrgRow, StorageError> {
         settings: text_to_json(&required::<String>(r, "settings")?)?,
         version: required::<i64>(r, "version")? as u64,
         // Nullable columns.
-        billing_email: r.try_get("billing_email").ok(),
-        deleted_at: r.try_get("deleted_at").ok(),
+        billing_email: optional(r, "billing_email")?,
+        deleted_at: optional(r, "deleted_at")?,
     })
 }
 
@@ -352,8 +363,8 @@ fn workspace_from_row(r: &sqlx::sqlite::SqliteRow) -> Result<WorkspaceRow, Stora
         settings: text_to_json(&required::<String>(r, "settings")?)?,
         version: required::<i64>(r, "version")? as u64,
         // Nullable columns.
-        description: r.try_get("description").ok(),
-        deleted_at: r.try_get("deleted_at").ok(),
+        description: optional(r, "description")?,
+        deleted_at: optional(r, "deleted_at")?,
     })
 }
 
@@ -400,6 +411,23 @@ impl WorkspaceStore for SqliteWorkspaceStore {
         )
         .bind(org_id)
         .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(conn_err)?;
+        row.as_ref().map(workspace_from_row).transpose()
+    }
+
+    async fn get_by_slug(
+        &self,
+        org_id: &str,
+        slug: &str,
+    ) -> Result<Option<WorkspaceRow>, StorageError> {
+        let row = sqlx::query(
+            "SELECT * FROM port_workspaces \
+             WHERE org_id = ? AND slug = ? AND deleted_at IS NULL",
+        )
+        .bind(org_id)
+        .bind(slug)
         .fetch_optional(&self.pool)
         .await
         .map_err(conn_err)?;
@@ -477,6 +505,136 @@ impl WorkspaceStore for SqliteWorkspaceStore {
     }
 }
 
+/// SQLite atomic tenant-provisioning store.
+#[derive(Clone, Debug)]
+pub struct SqliteTenantProvisioningStore {
+    pool: SqlitePool,
+}
+
+impl SqliteTenantProvisioningStore {
+    /// Wrap a pool whose schema was installed via [`super::init_schema`].
+    #[must_use]
+    pub fn new(pool: SqlitePool) -> Self {
+        Self { pool }
+    }
+}
+
+#[async_trait::async_trait]
+impl TenantProvisioningStore for SqliteTenantProvisioningStore {
+    #[tracing::instrument(skip_all)]
+    async fn provision_tenant(
+        &self,
+        request: TenantProvisioningRequest,
+    ) -> Result<TenantProvisioningOutcome, StorageError> {
+        let org_values = request.org();
+        let workspace_values = request.default_workspace();
+        let created_at = now_rfc3339();
+        let org = org_values.materialize(created_at.clone());
+        let workspace = workspace_values.materialize(org.id.clone(), created_at);
+        let mut tx = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(conn_err)?;
+        let org_rows = sqlx::query(
+            "SELECT * FROM port_orgs WHERE id = ?1 OR (slug = ?2 AND deleted_at IS NULL)",
+        )
+        .bind(&org.id)
+        .bind(&org.slug)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(conn_err)?;
+        let workspace_rows = sqlx::query(
+            "SELECT * FROM port_workspaces WHERE id = ?2 OR (org_id = ?1 AND (slug = ?3 OR is_default = 1) AND deleted_at IS NULL)",
+        )
+        .bind(&org.id)
+        .bind(&workspace.id)
+        .bind(&workspace.slug)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(conn_err)?;
+        let owner_row = sqlx::query(
+            "SELECT * FROM port_memberships WHERE scope_kind = 'org' AND scope_id = ?1 AND principal_kind = ?2 AND principal_id = ?3",
+        )
+        .bind(&org.id)
+        .bind(request.owner_principal_kind().as_str())
+        .bind(request.owner_principal_id())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(conn_err)?;
+
+        let exact_org =
+            org_rows.len() == 1 && org_values.matches_persisted(&org_from_row(&org_rows[0])?);
+        let exact_workspace = workspace_rows.len() == 1
+            && workspace_values
+                .matches_persisted(&org.id, &workspace_from_row(&workspace_rows[0])?);
+        let exact_owner = owner_row
+            .as_ref()
+            .map(membership_from_row)
+            .transpose()?
+            .is_some_and(|row| {
+                row.role == OrgMembershipRole::Owner.as_str()
+                    && row.added_by.as_deref() == request.owner_added_by()
+            });
+        if exact_org && exact_workspace && exact_owner {
+            return Ok(TenantProvisioningOutcome::Replayed);
+        }
+        if !org_rows.is_empty() || !workspace_rows.is_empty() || owner_row.is_some() {
+            return Ok(TenantProvisioningOutcome::Conflict(
+                TenantProvisioningConflict::ExistingState,
+            ));
+        }
+
+        sqlx::query(
+            "INSERT INTO port_orgs (id, slug, display_name, created_at, created_by, plan, billing_email, settings, version, deleted_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        )
+        .bind(&org.id)
+        .bind(&org.slug)
+        .bind(&org.display_name)
+        .bind(&org.created_at)
+        .bind(&org.created_by)
+        .bind(&org.plan)
+        .bind(&org.billing_email)
+        .bind(json_to_text(&org.settings))
+        .bind(org.version as i64)
+        .bind(&org.deleted_at)
+        .execute(&mut *tx)
+        .await
+        .map_err(conn_err)?;
+        sqlx::query(
+            "INSERT INTO port_workspaces (id, org_id, slug, display_name, description, created_at, created_by, is_default, settings, version, deleted_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        )
+        .bind(&workspace.id)
+        .bind(&workspace.org_id)
+        .bind(&workspace.slug)
+        .bind(&workspace.display_name)
+        .bind(&workspace.description)
+        .bind(&workspace.created_at)
+        .bind(&workspace.created_by)
+        .bind(i64::from(workspace.is_default))
+        .bind(json_to_text(&workspace.settings))
+        .bind(workspace.version as i64)
+        .bind(&workspace.deleted_at)
+        .execute(&mut *tx)
+        .await
+        .map_err(conn_err)?;
+        sqlx::query(
+            "INSERT INTO port_memberships (scope_kind, scope_id, principal_kind, principal_id, role, added_at, added_by) VALUES ('org', ?1, ?2, ?3, ?4, ?5, ?6)",
+        )
+        .bind(&org.id)
+        .bind(request.owner_principal_kind().as_str())
+        .bind(request.owner_principal_id())
+        .bind(OrgMembershipRole::Owner.as_str())
+        .bind(now_rfc3339())
+        .bind(request.owner_added_by())
+        .execute(&mut *tx)
+        .await
+        .map_err(conn_err)?;
+        tx.commit().await.map_err(conn_err)?;
+        Ok(TenantProvisioningOutcome::Created)
+    }
+}
+
 // ── Memberships ───────────────────────────────────────────────────────────
 
 /// SQLite-backed `org_members` + `workspace_members` store.
@@ -511,7 +669,7 @@ fn membership_from_row(r: &sqlx::sqlite::SqliteRow) -> Result<MembershipRow, Sto
         role: required(r, "role")?,
         added_at: required(r, "added_at")?,
         // Nullable column.
-        added_by: r.try_get("added_by").ok(),
+        added_by: optional(r, "added_by")?,
     })
 }
 

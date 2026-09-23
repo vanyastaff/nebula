@@ -54,6 +54,7 @@ fn _assert_identity_object_safe(
     _g: &dyn QuotaStore,
     _h: &dyn AuditStore,
     _i: &dyn BlobStore,
+    _j: &dyn TenantProvisioningStore,
 ) {
 }
 
