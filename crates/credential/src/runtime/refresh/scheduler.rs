@@ -90,6 +90,10 @@ pub(crate) enum ScheduledRefreshDisposition {
     ReauthRequired,
     TransientFailure,
     OutcomeUnknown,
+    ReconciliationRequired,
+    RetryGateFinalization,
+    ReauthDecisionFinalization,
+    PostProviderPersistence,
 }
 
 #[async_trait]
@@ -299,6 +303,18 @@ fn metric_for_disposition(
         ScheduledRefreshDisposition::ReauthRequired => &metrics.candidates_reauth_required,
         ScheduledRefreshDisposition::TransientFailure => &metrics.candidates_transient_failure,
         ScheduledRefreshDisposition::OutcomeUnknown => &metrics.candidates_outcome_unknown,
+        ScheduledRefreshDisposition::ReconciliationRequired => {
+            &metrics.candidates_reconciliation_required
+        },
+        ScheduledRefreshDisposition::RetryGateFinalization => {
+            &metrics.candidates_retry_gate_finalization
+        },
+        ScheduledRefreshDisposition::ReauthDecisionFinalization => {
+            &metrics.candidates_reauth_decision_finalization
+        },
+        ScheduledRefreshDisposition::PostProviderPersistence => {
+            &metrics.candidates_post_provider_persistence
+        },
     }
 }
 
@@ -430,6 +446,7 @@ mod tests {
                 CredentialId::new(),
             ),
             "oauth2".to_owned(),
+            expires_at,
             expires_at,
         )
     }
@@ -575,6 +592,10 @@ mod tests {
             ScheduledRefreshDisposition::ReauthRequired,
             ScheduledRefreshDisposition::TransientFailure,
             ScheduledRefreshDisposition::OutcomeUnknown,
+            ScheduledRefreshDisposition::ReconciliationRequired,
+            ScheduledRefreshDisposition::RetryGateFinalization,
+            ScheduledRefreshDisposition::ReauthDecisionFinalization,
+            ScheduledRefreshDisposition::PostProviderPersistence,
         ]);
         let candidates = (0..dispositions.len())
             .map(|offset| candidate(offset as i64))
@@ -600,6 +621,10 @@ mod tests {
         assert_eq!(metrics.candidates_reauth_required.get(), 1);
         assert_eq!(metrics.candidates_transient_failure.get(), 1);
         assert_eq!(metrics.candidates_outcome_unknown.get(), 1);
+        assert_eq!(metrics.candidates_reconciliation_required.get(), 1);
+        assert_eq!(metrics.candidates_retry_gate_finalization.get(), 1);
+        assert_eq!(metrics.candidates_reauth_decision_finalization.get(), 1);
+        assert_eq!(metrics.candidates_post_provider_persistence.get(), 1);
         assert_eq!(metrics.candidates_task_failed.get(), 0);
     }
 

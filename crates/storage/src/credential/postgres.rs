@@ -759,10 +759,11 @@ impl CredentialRefreshSchedule for PgCredentialRefreshSchedule {
             DateTime<Utc>,
             Option<String>,
             Option<DateTime<Utc>>,
+            DateTime<Utc>,
         )> = sqlx::query_as(
             "WITH backend_clock AS MATERIALIZED (SELECT clock_timestamp() AS now_at)
              SELECT c.id, c.owner_id, c.credential_key, c.expires_at,
-                    c.refresh_retry_mode, c.refresh_retry_not_before
+                    c.refresh_retry_mode, c.refresh_retry_not_before, clock.now_at
              FROM credentials AS c CROSS JOIN backend_clock AS clock
              WHERE c.record_state = 'live'
                AND c.expires_at IS NOT NULL
@@ -792,7 +793,7 @@ impl CredentialRefreshSchedule for PgCredentialRefreshSchedule {
 
         rows.into_iter()
             .map(
-                |(id, owner, credential_key, expires_at, mode, not_before)| {
+                |(id, owner, credential_key, expires_at, mode, not_before, observed_at)| {
                     match (mode.as_deref(), not_before) {
                         (None, None) | (Some(retry_gate::MODE_NOT_BEFORE), Some(_)) => {},
                         _ => return Err(CredentialRefreshScheduleError::CorruptRecord),
@@ -806,6 +807,7 @@ impl CredentialRefreshSchedule for PgCredentialRefreshSchedule {
                         ),
                         credential_key,
                         expires_at,
+                        observed_at,
                     ))
                 },
             )

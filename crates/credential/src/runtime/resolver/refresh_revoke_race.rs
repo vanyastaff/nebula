@@ -2586,7 +2586,7 @@ async fn stale_same_epoch_retry_gate_cannot_reattach_after_durable_reauth() {
         ),
     ));
     assert!(matches!(
-        persist_retry_gate(store.as_ref(), &selector, observed, context).await,
+        persist_retry_gate(store.as_ref(), &selector, observed, context, Duration::ZERO,).await,
         RetryGateWrite::Superseded(CredentialPersistenceError::VersionConflict { .. })
     ));
 
@@ -2621,7 +2621,14 @@ async fn bounded_display_churn_is_definite_conflict_not_unknown_outcome() {
         ),
     ));
     assert!(matches!(
-        persist_retry_gate(gate_store.as_ref(), &selector, gate_observed, context).await,
+        persist_retry_gate(
+            gate_store.as_ref(),
+            &selector,
+            gate_observed,
+            context,
+            Duration::ZERO,
+        )
+        .await,
         RetryGateWrite::DefiniteFailure(CredentialPersistenceError::VersionConflict { .. })
     ));
     assert!(
@@ -3124,7 +3131,13 @@ async fn timed_retry_gate_blocks_all_replicas_until_backend_expiry() {
     let ResolveError::RefreshNotApplied { context, .. } = first else {
         panic!("timed exact failure must preserve its typed context");
     };
-    assert!(matches!(context.retry(), crate::RetryAdvice::After(_)));
+    assert_eq!(
+        context.retry(),
+        crate::RetryAdvice::After(
+            crate::RetryDelay::new(TestCred::REFRESH_POLICY.min_retry_backoff)
+                .expect("the registered retry floor is valid")
+        )
+    );
     assert_eq!(AFTER_PROVIDER_CALLS.load(Ordering::SeqCst), 1);
     tokio::time::timeout(Duration::from_secs(1), claims.wait_for_release_count(1))
         .await
@@ -3141,7 +3154,8 @@ async fn timed_retry_gate_blocks_all_replicas_until_backend_expiry() {
     assert!(matches!(immediate, ResolveError::RefreshNotApplied { .. }));
     assert_eq!(AFTER_PROVIDER_CALLS.load(Ordering::SeqCst), 1);
 
-    tokio::time::sleep(Duration::from_millis(1_100)).await;
+    tokio::time::sleep(TestCred::REFRESH_POLICY.min_retry_backoff + Duration::from_millis(100))
+        .await;
 
     let left = resolver_with_runtime(
         Arc::clone(&store),

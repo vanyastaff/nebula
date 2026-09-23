@@ -115,6 +115,7 @@ pub struct DueCredentialRefresh {
     selector: CredentialSelector,
     credential_key: String,
     expires_at: DateTime<Utc>,
+    observed_at: DateTime<Utc>,
 }
 
 impl DueCredentialRefresh {
@@ -124,11 +125,13 @@ impl DueCredentialRefresh {
         selector: CredentialSelector,
         credential_key: String,
         expires_at: DateTime<Utc>,
+        observed_at: DateTime<Utc>,
     ) -> Self {
         Self {
             selector,
             credential_key,
             expires_at,
+            observed_at,
         }
     }
 
@@ -148,6 +151,12 @@ impl DueCredentialRefresh {
     #[must_use]
     pub const fn expires_at(&self) -> DateTime<Utc> {
         self.expires_at
+    }
+
+    /// Return the backend clock sample that admitted this candidate.
+    #[must_use]
+    pub const fn observed_at(&self) -> DateTime<Utc> {
+        self.observed_at
     }
 
     /// Return the stable cursor naming this candidate's position.
@@ -229,6 +238,7 @@ mod tests {
             CredentialSelector::new(owner, id),
             "oauth2".to_owned(),
             DateTime::from_timestamp(1_800_000_000, 0).expect("fixture timestamp is valid"),
+            DateTime::from_timestamp(1_799_999_900, 0).expect("fixture timestamp is valid"),
         );
         let debug = format!("{candidate:?}");
         assert!(!debug.contains("secret-owner-canary"));

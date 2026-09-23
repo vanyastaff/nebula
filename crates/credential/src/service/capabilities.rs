@@ -163,6 +163,11 @@ impl CredentialService {
                 key: stored.credential_key().to_owned(),
             });
         }
+        let minimum_retry_backoff = self
+            .registry
+            .refresh_policy(stored.credential_key())
+            .unwrap_or(crate::RefreshPolicy::DEFAULT)
+            .min_retry_backoff;
         let credential_id = stored.credential_id();
         let observed_material_epoch = stored.material_epoch();
         let selector = scope.selector(credential_id);
@@ -348,6 +353,7 @@ impl CredentialService {
                                 &selector_for_task,
                                 stored,
                                 context,
+                                minimum_retry_backoff,
                             )
                             .await
                             {

@@ -217,6 +217,7 @@ where
     let first_page = store.scan_due(None, horizon, one).await?;
     assert_eq!(first_page.len(), 1, "schedule pages must honor their bound");
     assert_eq!(first_page[0].selector().credential_id(), due_ids[0]);
+    assert!(first_page[0].observed_at() <= common_expiry);
     let second_page = store
         .scan_due(Some(&first_page[0].cursor()), horizon, one)
         .await?;

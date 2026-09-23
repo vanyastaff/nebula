@@ -157,6 +157,10 @@ pub(crate) struct RefreshSchedulerMetrics {
     pub(crate) candidates_reauth_required: Counter,
     pub(crate) candidates_transient_failure: Counter,
     pub(crate) candidates_outcome_unknown: Counter,
+    pub(crate) candidates_reconciliation_required: Counter,
+    pub(crate) candidates_retry_gate_finalization: Counter,
+    pub(crate) candidates_reauth_decision_finalization: Counter,
+    pub(crate) candidates_post_provider_persistence: Counter,
     pub(crate) candidates_task_failed: Counter,
 }
 
@@ -202,6 +206,18 @@ impl RefreshSchedulerMetrics {
             )?,
             candidates_outcome_unknown: candidate_counter(
                 refresh_scheduler_candidate_outcome::OUTCOME_UNKNOWN,
+            )?,
+            candidates_reconciliation_required: candidate_counter(
+                refresh_scheduler_candidate_outcome::RECONCILIATION_REQUIRED,
+            )?,
+            candidates_retry_gate_finalization: candidate_counter(
+                refresh_scheduler_candidate_outcome::RETRY_GATE_FINALIZATION,
+            )?,
+            candidates_reauth_decision_finalization: candidate_counter(
+                refresh_scheduler_candidate_outcome::REAUTH_DECISION_FINALIZATION,
+            )?,
+            candidates_post_provider_persistence: candidate_counter(
+                refresh_scheduler_candidate_outcome::POST_PROVIDER_PERSISTENCE,
             )?,
             candidates_task_failed: candidate_counter(
                 refresh_scheduler_candidate_outcome::TASK_FAILED,

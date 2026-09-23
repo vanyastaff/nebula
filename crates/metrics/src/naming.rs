@@ -912,6 +912,14 @@ pub mod refresh_scheduler_candidate_outcome {
     pub const TRANSIENT_FAILURE: &str = "transient_failure";
     /// Provider egress may have happened but its durable outcome is unknown.
     pub const OUTCOME_UNKNOWN: &str = "outcome_unknown";
+    /// Durable evidence requires reconciliation before another provider call.
+    pub const RECONCILIATION_REQUIRED: &str = "reconciliation_required";
+    /// The retry gate could not be durably finalized.
+    pub const RETRY_GATE_FINALIZATION: &str = "retry_gate_finalization";
+    /// The reauthentication decision could not be durably finalized.
+    pub const REAUTH_DECISION_FINALIZATION: &str = "reauth_decision_finalization";
+    /// Provider egress completed but the resulting state was not durably persisted.
+    pub const POST_PROVIDER_PERSISTENCE: &str = "post_provider_persistence";
     /// The spawned candidate task failed before returning a disposition.
     pub const TASK_FAILED: &str = "task_failed";
 }
