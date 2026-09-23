@@ -11,6 +11,14 @@ changes are expected between minor releases — call them out here.
 
 ### Breaking
 
+- **Credential management advances development packages to 0.14.0 in
+  lockstep.** External callers can no longer invoke semantic mutations on
+  `CredentialService` or construct its scheme factory. Submit `CredentialCommand`
+  through an authority-bound `CredentialController`; public reads, binding
+  validation, and slot projection remain technical surfaces. Worker projection
+  now lives under `runtime::projection` and cannot construct management,
+  refresh, or lease authority. Exact-version SDK consumers and renamed leaf
+  fixtures must update every Nebula pin together.
 - **Expression evaluation advances development packages to 0.13.0 in
   lockstep.** Evaluation now works on `RuntimeValue` instead of
   `serde_json::Value`, the `BuiltinFunction` contract takes `Argument`s and
