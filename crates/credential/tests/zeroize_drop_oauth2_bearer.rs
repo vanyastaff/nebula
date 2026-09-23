@@ -39,6 +39,7 @@ fn make_state(access_token: &str) -> OAuth2State {
         refresh_token: None,
         expires_at: None,
         scopes: vec![],
+        grant_type: nebula_credential::GrantType::AuthorizationCode,
         client_id: SecretString::new("client"),
         client_secret: SecretString::new("secret"),
         token_url: "https://example.test/token".to_owned(),

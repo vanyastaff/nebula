@@ -1,4 +1,12 @@
-use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
+use std::{
+    collections::HashMap,
+    future::Future,
+    pin::Pin,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 use nebula_storage_port::SecretBytes;
 
@@ -34,6 +42,51 @@ impl crate::runtime::AcquisitionTransport for FixedAcquisitionTransport {
     }
 }
 
+struct InspectingClientCredentialsRefresh {
+    saw_saved_material: Arc<AtomicBool>,
+}
+
+impl crate::runtime::RefreshTransport for InspectingClientCredentialsRefresh {
+    fn post_token<'a>(
+        &'a self,
+        request: TokenPostRequest,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<TokenPostResponse, crate::runtime::RefreshTransportError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        let saw_saved_material = Arc::clone(&self.saw_saved_material);
+        Box::pin(async move {
+            let form_matches = request.form().iter().any(|(key, value)| {
+                key == "grant_type" && value.expose_secret() == "client_credentials"
+            }) && request
+                .form()
+                .iter()
+                .any(|(key, value)| key == "scope" && value.expose_secret() == "read write");
+            let basic_matches = request.basic_auth().is_some_and(|(client_id, secret)| {
+                client_id.expose_secret() == "test_client_id"
+                    && secret.expose_secret() == "test_client_secret"
+            });
+            let endpoint_matches =
+                request.endpoint().expose_url().as_str() == "https://idp.example.com/token";
+            saw_saved_material.store(
+                form_matches && basic_matches && endpoint_matches,
+                Ordering::SeqCst,
+            );
+            TokenPostResponse::try_new(
+                200,
+                SecretBytes::new(
+                    br#"{"access_token":"renewed-access","token_type":"Bearer","expires_in":3600,"scope":"read write"}"#
+                        .to_vec(),
+                ),
+            )
+            .map_err(|_| crate::runtime::RefreshTransportError::ReadBody)
+        })
+    }
+}
+
 fn acquisition_context(status: u16, body: &'static [u8]) -> CredentialContext {
     CredentialContext::for_owner("test-user")
         .for_acquisition(Arc::new(FixedAcquisitionTransport { status, body }))
@@ -46,6 +99,7 @@ fn make_state() -> OAuth2State {
         refresh_token: Some(SecretString::new("ref_xyz")),
         expires_at: Some(Utc::now() + chrono::Duration::seconds(3600)),
         scopes: vec!["read".into(), "write".into()],
+        grant_type: GrantType::AuthorizationCode,
         client_id: SecretString::new("cid"),
         client_secret: SecretString::new("csecret"),
         token_url: "https://example.com/token?routing=state-url-canary".into(),
@@ -81,6 +135,31 @@ fn lifecycle_policy_reflects_refresh_token_presence() {
         }
     );
     assert!(!p2.is_auto_renewable());
+}
+
+#[test]
+fn legacy_state_without_grant_type_keeps_interactive_reacquisition() {
+    let state: OAuth2State = serde_json::from_value(serde_json::json!({
+        "access_token": "legacy-access",
+        "token_type": "Bearer",
+        "refresh_token": null,
+        "expires_at": null,
+        "scopes": [],
+        "client_id": "legacy-client",
+        "client_secret": "legacy-secret",
+        "token_url": "https://idp.example.com/token",
+        "auth_style": "header"
+    }))
+    .expect("legacy OAuth2 state remains decodable");
+
+    assert_eq!(state.grant_type, GrantType::AuthorizationCode);
+    assert_eq!(
+        OAuth2Credential::policy(&state).refresh,
+        RefreshStrategy::ReAcquire {
+            from: None,
+            interactive: true,
+        }
+    );
 }
 
 // Capability membership names only the implemented provider paths.
@@ -269,7 +348,53 @@ async fn client_credentials_resolve_completes_through_acquisition_transport() {
     };
     assert_eq!(state.access_token.expose_secret(), "access-canary");
     assert_eq!(state.scopes, ["read", "write"]);
+    assert_eq!(state.grant_type, GrantType::ClientCredentials);
     assert!(!format!("{state:?}").contains("access-canary"));
+}
+
+#[tokio::test]
+async fn expired_client_credentials_without_refresh_token_repeat_exchange() {
+    let properties = OAuth2Properties::ClientCredentials(client_credentials_properties());
+    let acquired = OAuth2Credential::resolve(
+        &properties,
+        &acquisition_context(
+            200,
+            br#"{"access_token":"first-access","token_type":"Bearer","expires_in":1,"scope":"read write"}"#,
+        ),
+    )
+    .await
+    .expect("initial client credentials exchange succeeds");
+    let StaticResolveResult::Complete(mut state) = acquired else {
+        panic!("client credentials resolve must complete");
+    };
+    assert!(state.refresh_token.is_none());
+    assert_eq!(
+        OAuth2Credential::policy(&state).refresh,
+        RefreshStrategy::RefreshToken
+    );
+
+    let saw_saved_material = Arc::new(AtomicBool::new(false));
+    let transport = Arc::new(InspectingClientCredentialsRefresh {
+        saw_saved_material: Arc::clone(&saw_saved_material),
+    });
+    let ctx = CredentialContext::for_owner("test-user").for_refresh_critical_section(transport);
+    let report = OAuth2Credential::refresh(
+        &mut state,
+        RefreshAttempt::new(&ctx, crate::RefreshExecutionMode::Provider),
+    )
+    .await
+    .into_kind();
+
+    assert!(matches!(
+        report,
+        crate::contract::RefreshReportKind::ProviderRefreshed
+    ));
+    assert_eq!(state.access_token.expose_secret(), "renewed-access");
+    assert_eq!(state.grant_type, GrantType::ClientCredentials);
+    assert!(state.refresh_token.is_none());
+    assert!(saw_saved_material.load(Ordering::SeqCst));
+    assert!(!format!("{state:?}").contains("renewed-access"));
+    assert!(!format!("{state:?}").contains("test_client_secret"));
 }
 
 #[tokio::test]
@@ -447,6 +572,7 @@ async fn refresh_returns_reauth_when_no_refresh_token() {
         refresh_token: None,
         expires_at: None,
         scopes: vec![],
+        grant_type: GrantType::AuthorizationCode,
         client_id: SecretString::new("cid"),
         client_secret: SecretString::new("cs"),
         token_url: "https://t.com/token".into(),
@@ -504,6 +630,7 @@ fn state_is_expired_with_margin() {
         refresh_token: None,
         expires_at: Some(Utc::now() + chrono::Duration::seconds(30)),
         scopes: vec![],
+        grant_type: GrantType::AuthorizationCode,
         client_id: SecretString::new("cid"),
         client_secret: SecretString::new("cs"),
         token_url: "https://t.com/token".into(),
@@ -523,6 +650,7 @@ fn no_expiry_never_expired() {
         refresh_token: None,
         expires_at: None,
         scopes: vec![],
+        grant_type: GrantType::AuthorizationCode,
         client_id: SecretString::new("cid"),
         client_secret: SecretString::new("cs"),
         token_url: "https://t.com/token".into(),

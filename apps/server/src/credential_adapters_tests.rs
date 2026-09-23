@@ -377,6 +377,7 @@ fn oauth_state(endpoint: String) -> OAuth2State {
                 .expect("fixed RFC 3339 timestamp"),
         ),
         scopes: vec!["read".to_owned()],
+        grant_type: nebula_credential::GrantType::AuthorizationCode,
         client_id: SecretString::new("client"),
         client_secret: SecretString::new("client-secret"),
         token_url: endpoint,

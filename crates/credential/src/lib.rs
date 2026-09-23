@@ -155,7 +155,7 @@ pub use contract::{
 pub use credential_ref::CredentialRef;
 pub use credentials::{
     ApiKeyCredential, ApiKeyProperties, BasicAuthCredential, BasicAuthProperties,
-    BearerTokenCredential, BearerTokenProperties, OAuth2Credential, OAuth2Pending,
+    BearerTokenCredential, BearerTokenProperties, GrantType, OAuth2Credential, OAuth2Pending,
     OAuth2Properties, OAuth2State, SharedKeyCredential, SharedKeyProperties, SigningKeyCredential,
     SigningKeyProperties, register_builtins,
 };

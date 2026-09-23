@@ -11,6 +11,7 @@ fn sample_state() -> OAuth2State {
         refresh_token: Some(SecretString::new("refresh-1")),
         expires_at: None,
         scopes: vec!["read".to_owned(), "write".to_owned()],
+        grant_type: crate::GrantType::AuthorizationCode,
         client_id: SecretString::new("client"),
         client_secret: SecretString::new("secret"),
         token_url: "https://example.com/token".to_owned(),
