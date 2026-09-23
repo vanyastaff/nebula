@@ -34,12 +34,17 @@ use crate::{
     metadata::CredentialMetadataDraft,
     resolve::{InteractionRequest, ResolveResult, StaticResolveResult, UserInput},
     runtime::refresh::token_refresh::{
-        CompletedTokenRefresh, PrepareTokenRefreshError, interpret_oauth2_refresh_response,
-        prepare_oauth2_refresh,
+        CompletedTokenRefresh, OAuthProviderErrorCode, PrepareTokenRefreshError,
+        interpret_oauth2_refresh_response, prepare_oauth2_refresh,
     },
     runtime::{OAUTH_ENDPOINT_MAX_BYTES, OAuthServerEndpoint, TokenPostRequest, TokenPostResponse},
     scheme::{AuthStyle, OAuth2Token},
 };
+
+// This value cannot be returned by a conforming provider because OAuth token
+// values reject control characters at the response boundary. It is encrypted
+// with the rest of OAuth2State and is never projected or sent to a provider.
+const CLIENT_CREDENTIALS_REFRESH_MARKER: &str = "\0nebula.oauth2.client_credentials.v1";
 
 // ── OAuth2State ────────────────────────────────────────────────────────
 
@@ -449,20 +454,22 @@ impl OAuth2Credential {
             pending.auth_style,
             form,
         )?;
-        let state = dispatch_acquisition(
-            request,
-            &pending.client_id,
-            &pending.client_secret,
-            &pending.config.token_url,
-            pending.auth_style,
-            &pending.config.scopes,
-            ctx,
-        )
-        .await?;
+        let acquisition = AcquisitionStateContext {
+            client_id: &pending.client_id,
+            client_secret: &pending.client_secret,
+            token_url: &pending.config.token_url,
+            auth_style: pending.auth_style,
+            requested_scopes: &pending.config.scopes,
+            grant_type: GrantType::AuthorizationCode,
+        };
+        let state = dispatch_acquisition(request, acquisition, ctx).await?;
         Ok(ResolveResult::Complete(state))
     }
 
     async fn refresh(state: &mut OAuth2State, attempt: RefreshAttempt<'_>) -> RefreshReport {
+        if has_client_credentials_marker(state) {
+            return refresh_client_credentials(state, attempt).await;
+        }
         let prepared = match prepare_oauth2_refresh(state) {
             Ok(prepared) => prepared,
             Err(PrepareTokenRefreshError::MissingRefreshToken) => {
@@ -526,9 +533,9 @@ impl OAuth2Credential {
     }
 
     // OAuth2 is a refresh-pair credential (ADR-0088 D2). The policy is computed
-    // from live state: `RefreshToken` while a refresh token is held (the runtime
-    // can renew non-interactively), otherwise `ReAcquire` (the refresh path
-    // returns `ReauthRequired`). Provider revocation is not implemented; expiry
+    // from live state: `RefreshToken` while renewable secret state is held,
+    // including the private client-credentials reacquisition marker; otherwise
+    // `ReAcquire`. Provider revocation is not implemented; expiry
     // is the access token's inline `expires_at`. The hand-written `policy` is kept
     // (not macro-synthesized) because the strategy depends on live state: the
     // synthesized default reads state for its expiry but emits a constant
@@ -554,6 +561,17 @@ impl OAuth2Credential {
 }
 
 // ── Private helpers ────────────────────────────────────────────────────
+
+fn has_client_credentials_marker(state: &OAuth2State) -> bool {
+    state.refresh_token.as_ref().is_some_and(|token| {
+        bool::from(
+            token
+                .expose_secret()
+                .as_bytes()
+                .ct_eq(CLIENT_CREDENTIALS_REFRESH_MARKER.as_bytes()),
+        )
+    })
+}
 
 fn initiate_authorization_code(
     properties: &OAuth2AuthorizationCodeProperties,
@@ -609,16 +627,115 @@ async fn acquire_client_credentials(
         properties.auth_style,
         form,
     )?;
-    dispatch_acquisition(
-        request,
-        &properties.client.client_id,
-        &properties.client.client_secret,
-        &properties.token_url,
-        properties.auth_style,
-        scopes,
-        ctx,
-    )
-    .await
+    let acquisition = AcquisitionStateContext {
+        client_id: &properties.client.client_id,
+        client_secret: &properties.client.client_secret,
+        token_url: &properties.token_url,
+        auth_style: properties.auth_style,
+        requested_scopes: scopes,
+        grant_type: GrantType::ClientCredentials,
+    };
+    dispatch_acquisition(request, acquisition, ctx).await
+}
+
+#[tracing::instrument(
+    name = "credential.oauth2.client_credentials.refresh",
+    skip_all,
+    fields(grant_type = "client_credentials")
+)]
+async fn refresh_client_credentials(
+    state: &mut OAuth2State,
+    attempt: RefreshAttempt<'_>,
+) -> RefreshReport {
+    if validate_requested_scopes(&state.scopes).is_err()
+        || state.client_id.is_empty()
+        || state.client_id.expose_secret().len() > 4096
+        || state.client_secret.is_empty()
+        || state.client_secret.expose_secret().len() > 16 * 1024
+    {
+        return attempt.not_dispatched(refresh_failure_spec(
+            RefreshErrorKind::ProtocolError,
+            RetryAdvice::Never,
+            "oauth.invalid_client_credentials_state",
+        ));
+    }
+    let mut form = vec![(
+        "grant_type".to_owned(),
+        SecretString::new("client_credentials"),
+    )];
+    if !state.scopes.is_empty() {
+        form.push((
+            "scope".to_owned(),
+            SecretString::new(state.scopes.join(" ")),
+        ));
+    }
+    let request = match build_token_request(
+        &state.token_url,
+        state.client_id.expose_secret(),
+        &state.client_secret,
+        state.auth_style,
+        form,
+    ) {
+        Ok(request) => request,
+        Err(_) => {
+            return attempt.not_dispatched(refresh_failure_spec(
+                RefreshErrorKind::ProtocolError,
+                RetryAdvice::Never,
+                "oauth.invalid_endpoint",
+            ));
+        },
+    };
+    let Some(transport) = attempt.context().refresh_transport() else {
+        let retry = crate::RetryDelay::new(Duration::from_mins(1))
+            .map(RetryAdvice::After)
+            .unwrap_or(RetryAdvice::Never);
+        return attempt.not_dispatched(refresh_failure_spec(
+            RefreshErrorKind::ProviderUnavailable,
+            retry,
+            "oauth.transport_not_configured",
+        ));
+    };
+    let clock = attempt.context().clock();
+    let completed = match attempt.dispatch(|| transport.post_token(request)).await {
+        Ok(completed) => completed,
+        Err(unknown) => return unknown.into_report(),
+    };
+    let (response, proof) = completed.into_parts();
+    if !(200..300).contains(&response.status()) {
+        return match interpret_oauth2_refresh_response(state, response) {
+            CompletedTokenRefresh::InvalidGrant { .. }
+            | CompletedTokenRefresh::DefinitiveNoEffect {
+                code: OAuthProviderErrorCode::InvalidClient,
+                ..
+            } => proof.provider_rejected(),
+            CompletedTokenRefresh::DefinitiveNoEffect { code, .. } => {
+                proof.confirmed_not_applied(refresh_failure_spec(
+                    RefreshErrorKind::ProtocolError,
+                    RetryAdvice::Never,
+                    code.as_str(),
+                ))
+            },
+            CompletedTokenRefresh::AmbiguousDenial { .. }
+            | CompletedTokenRefresh::MalformedSuccess { .. }
+            | CompletedTokenRefresh::Refreshed => proof.outcome_unknown(),
+        };
+    }
+    let now = clock.now();
+    let acquisition = AcquisitionStateContext {
+        client_id: state.client_id.expose_secret(),
+        client_secret: &state.client_secret,
+        token_url: &state.token_url,
+        auth_style: state.auth_style,
+        requested_scopes: &state.scopes,
+        grant_type: GrantType::ClientCredentials,
+    };
+    match interpret_acquisition_response(response, acquisition, now) {
+        Ok(refreshed) => {
+            *state = refreshed;
+            proof.refreshed()
+        },
+        Err(_) => proof.outcome_unknown(),
+    }
 }
 
 fn build_token_request(
@@ -656,13 +773,19 @@ fn encode_basic_component(raw: &str) -> SecretString {
     SecretString::new(std::mem::take(&mut *encoded))
 }
 
+#[derive(Clone, Copy)]
+struct AcquisitionStateContext<'a> {
+    client_id: &'a str,
+    client_secret: &'a SecretString,
+    token_url: &'a str,
+    auth_style: AuthStyle,
+    requested_scopes: &'a [String],
+    grant_type: GrantType,
+}
+
 async fn dispatch_acquisition(
     request: TokenPostRequest,
-    client_id: &str,
-    client_secret: &SecretString,
-    token_url: &str,
-    auth_style: AuthStyle,
-    requested_scopes: &[String],
+    acquisition: AcquisitionStateContext<'_>,
     ctx: &CredentialContext,
 ) -> Result<OAuth2State, CredentialError> {
     let Some(transport) = ctx.acquisition_transport() else {
@@ -673,15 +796,7 @@ async fn dispatch_acquisition(
         .post_token(request)
         .await
         .map_err(|_| CredentialError::OutcomeUnknown)?;
-    interpret_acquisition_response(
-        response,
-        client_id,
-        client_secret,
-        token_url,
-        auth_style,
-        requested_scopes,
-        ctx.clock().now(),
-    )
+    interpret_acquisition_response(response, acquisition, ctx.clock().now())
 }
 
 #[derive(Deserialize, Zeroize)]
@@ -707,11 +822,7 @@ impl fmt::Debug for AcquisitionTokenResponse {
 
 fn interpret_acquisition_response(
     response: TokenPostResponse,
-    client_id: &str,
-    client_secret: &SecretString,
-    token_url: &str,
-    auth_style: AuthStyle,
-    requested_scopes: &[String],
+    acquisition: AcquisitionStateContext<'_>,
     now: DateTime<Utc>,
 ) -> Result<OAuth2State, CredentialError> {
     if !(200..300).contains(&response.status()) {
@@ -756,18 +867,26 @@ fn interpret_acquisition_response(
                 .ok_or(CredentialError::OutcomeUnknown)
         })
         .transpose()?;
-    let scopes = parse_granted_scopes(body.scope.as_ref(), requested_scopes)?;
+    let scopes = parse_granted_scopes(body.scope.as_ref(), acquisition.requested_scopes)?;
+
+    let refresh_token = match (body.refresh_token.take(), acquisition.grant_type) {
+        (Some(refresh_token), _) => Some(refresh_token),
+        (None, GrantType::ClientCredentials) => {
+            Some(SecretString::new(CLIENT_CREDENTIALS_REFRESH_MARKER))
+        },
+        (None, GrantType::AuthorizationCode) => None,
+    };
 
     Ok(OAuth2State {
         access_token,
         token_type: "Bearer".to_owned(),
-        refresh_token: body.refresh_token.take(),
+        refresh_token,
         expires_at,
         scopes,
-        client_id: SecretString::new(client_id),
-        client_secret: client_secret.clone(),
-        token_url: token_url.to_owned(),
-        auth_style,
+        client_id: SecretString::new(acquisition.client_id),
+        client_secret: acquisition.client_secret.clone(),
+        token_url: acquisition.token_url.to_owned(),
+        auth_style: acquisition.auth_style,
     })
 }
 
