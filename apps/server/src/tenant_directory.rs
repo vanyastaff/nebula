@@ -12,7 +12,7 @@ use nebula_api::{
     ApiError,
     state::{
         AddMemberOutcome, MembershipStore as ApiMembershipStore, OrgMember, OrgResolver,
-        RemoveMemberOutcome, TenantMembershipSnapshot, WorkspaceResolver,
+        RemoveMemberOutcome, TenantMembershipSnapshot, WorkspaceMember, WorkspaceResolver,
     },
 };
 use nebula_core::{
@@ -22,7 +22,7 @@ use nebula_storage_port::{
     StorageError,
     dto::{
         OrgMemberRemoveOutcome, OrgMemberUpsert, OrgMemberUpsertOutcome, OrgMembershipRole,
-        PrincipalKind, ScopeKind, WorkspaceMembershipRole,
+        PrincipalKind, ScopeKind, WorkspaceMemberUpsert, WorkspaceMembershipRole,
     },
     store::{MembershipStore, OrgStore, TenantProvisioningStore, WorkspaceStore},
 };
@@ -124,6 +124,14 @@ fn unavailable(operation: &'static str, error: &StorageError) -> ApiError {
     ApiError::ServiceUnavailable("Tenant directory is unavailable".to_owned())
 }
 
+fn workspace_membership_error(operation: &'static str, error: &StorageError) -> ApiError {
+    if matches!(error, StorageError::NotFound { .. }) {
+        ApiError::NotFound("member not found".to_owned())
+    } else {
+        unavailable(operation, error)
+    }
+}
+
 fn corrupt(operation: &'static str) -> ApiError {
     tracing::error!(
         operation,
@@ -172,14 +180,30 @@ const fn workspace_role_from_storage(role: WorkspaceMembershipRole) -> Workspace
     }
 }
 
-fn stored_principal(kind: PrincipalKind, id: &str) -> Result<Principal, ApiError> {
+fn workspace_role_to_storage(role: WorkspaceRole) -> Result<WorkspaceMembershipRole, ApiError> {
+    match role {
+        WorkspaceRole::WorkspaceViewer => Ok(WorkspaceMembershipRole::Viewer),
+        WorkspaceRole::WorkspaceRunner => Ok(WorkspaceMembershipRole::Runner),
+        WorkspaceRole::WorkspaceEditor => Ok(WorkspaceMembershipRole::Editor),
+        WorkspaceRole::WorkspaceAdmin => Ok(WorkspaceMembershipRole::Admin),
+        _ => Err(ApiError::ServiceUnavailable(
+            "Tenant role is unsupported".to_owned(),
+        )),
+    }
+}
+
+fn stored_principal(
+    operation: &'static str,
+    kind: PrincipalKind,
+    id: &str,
+) -> Result<Principal, ApiError> {
     match kind {
         PrincipalKind::User => UserId::from_str(id)
             .map(Principal::User)
-            .map_err(|_| corrupt("list_members")),
+            .map_err(|_| corrupt(operation)),
         PrincipalKind::ServiceAccount => ServiceAccountId::from_str(id)
             .map(Principal::ServiceAccount)
-            .map_err(|_| corrupt("list_members")),
+            .map_err(|_| corrupt(operation)),
     }
 }
 
@@ -272,11 +296,72 @@ impl ApiMembershipStore for ServerTenantDirectory {
                     .map(org_role_from_storage)
                     .map_err(|_| corrupt("list_members"))?;
                 Ok(OrgMember {
-                    principal: stored_principal(row.principal_kind, &row.principal_id)?,
+                    principal: stored_principal(
+                        "list_members",
+                        row.principal_kind,
+                        &row.principal_id,
+                    )?,
                     role,
                 })
             })
             .collect()
+    }
+
+    async fn list_workspace_members(
+        &self,
+        org_id: OrgId,
+        workspace_id: WorkspaceId,
+    ) -> Result<Vec<WorkspaceMember>, ApiError> {
+        self.memberships
+            .list_workspace_members(&org_id.to_string(), &workspace_id.to_string())
+            .await
+            .map_err(|error| workspace_membership_error("list_workspace_members", &error))?
+            .into_iter()
+            .map(|row| {
+                Ok(WorkspaceMember {
+                    principal: stored_principal(
+                        "list_workspace_members",
+                        row.principal_kind,
+                        &row.principal_id,
+                    )?,
+                    role: workspace_role_from_storage(row.role),
+                })
+            })
+            .collect()
+    }
+
+    async fn upsert_workspace_member(
+        &self,
+        org_id: OrgId,
+        workspace_id: WorkspaceId,
+        principal: &Principal,
+        role: WorkspaceRole,
+    ) -> Result<(), ApiError> {
+        let (kind, id) = principal_parts(principal)?;
+        self.memberships
+            .upsert_workspace_member(WorkspaceMemberUpsert {
+                org_id: org_id.to_string(),
+                workspace_id: workspace_id.to_string(),
+                principal_kind: kind,
+                principal_id: id,
+                role: workspace_role_to_storage(role)?,
+                added_by: None,
+            })
+            .await
+            .map_err(|error| workspace_membership_error("upsert_workspace_member", &error))
+    }
+
+    async fn remove_workspace_member(
+        &self,
+        org_id: OrgId,
+        workspace_id: WorkspaceId,
+        principal: &Principal,
+    ) -> Result<bool, ApiError> {
+        let (kind, id) = principal_parts(principal)?;
+        self.memberships
+            .remove_workspace_member(&org_id.to_string(), &workspace_id.to_string(), kind, &id)
+            .await
+            .map_err(|error| workspace_membership_error("remove_workspace_member", &error))
     }
 
     async fn add_member_guarded(
@@ -343,7 +428,7 @@ impl ApiMembershipStore for ServerTenantDirectory {
 #[cfg(test)]
 mod tests {
     use nebula_api::state::{MembershipStore as _, WorkspaceResolver as _};
-    use nebula_core::{OrgId, OrgRole, UserId, WorkspaceId, scope::Principal};
+    use nebula_core::{OrgId, OrgRole, UserId, WorkspaceId, WorkspaceRole, scope::Principal};
     use nebula_storage::inmem::InMemoryIdentityDirectory;
     use nebula_storage_port::{
         dto::{OrgRow, WorkspaceRow},
@@ -445,6 +530,41 @@ mod tests {
                 .await
                 .expect("guarded removal has a typed outcome"),
             nebula_api::state::RemoveMemberOutcome::WouldLockOut
+        );
+    }
+
+    #[tokio::test]
+    async fn workspace_membership_round_trips_through_storage_authority() {
+        let (directory, org_id, workspace_id, owner) = directory().await;
+        directory
+            .add_member_guarded(org_id, &owner, OrgRole::OrgOwner)
+            .await
+            .expect("owner is inserted");
+
+        directory
+            .upsert_workspace_member(org_id, workspace_id, &owner, WorkspaceRole::WorkspaceAdmin)
+            .await
+            .expect("workspace grant is inserted");
+        let listed = directory
+            .list_workspace_members(org_id, workspace_id)
+            .await
+            .expect("workspace grants are listed");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].principal, owner);
+        assert_eq!(listed[0].role, WorkspaceRole::WorkspaceAdmin);
+
+        assert!(
+            directory
+                .remove_workspace_member(org_id, workspace_id, &owner)
+                .await
+                .expect("workspace grant is removed")
+        );
+        assert!(
+            directory
+                .list_workspace_members(org_id, workspace_id)
+                .await
+                .expect("workspace grants remain readable")
+                .is_empty()
         );
     }
 
