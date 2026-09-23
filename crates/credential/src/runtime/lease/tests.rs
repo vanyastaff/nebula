@@ -31,6 +31,40 @@ struct CountingProvider {
     name: &'static str,
 }
 
+#[derive(Debug, Default)]
+struct BlockingProvider {
+    renew_calls: AtomicU32,
+}
+
+impl ExternalProvider for BlockingProvider {
+    fn resolve<'a>(&'a self, _reference: &'a ExternalReference) -> ProviderFuture<'a> {
+        ProviderFuture::ready(Ok(ProviderResolution::from_secret(SecretString::new(
+            "ignored",
+        ))))
+    }
+
+    fn provider_name(&self) -> &'static str {
+        "blocking"
+    }
+
+    fn lease_renewal(&self) -> Option<&dyn LeasedProvider> {
+        Some(self)
+    }
+}
+
+impl LeasedProvider for BlockingProvider {
+    fn renew<'a>(&'a self, _lease: &'a LeaseHandle) -> ProviderFuture<'a> {
+        self.renew_calls.fetch_add(1, Ordering::SeqCst);
+        ProviderFuture::new(std::future::pending::<
+            Result<ProviderResolution, ProviderError>,
+        >())
+    }
+
+    fn revoke<'a>(&'a self, _lease: &'a LeaseHandle) -> ProviderFuture<'a> {
+        ProviderFuture::ready(Ok(ProviderResolution::empty()))
+    }
+}
+
 impl CountingProvider {
     fn new(name: &'static str, renew_ttl_secs: u32) -> Arc<Self> {
         let p = Arc::new(Self {
@@ -118,6 +152,12 @@ fn make_resolution(provider: &str, ttl_secs: u64, id: &str) -> ProviderResolutio
 // attempts fire deterministically.
 // ────────────────────────────────────────────────────────────────────
 
+#[test]
+fn lease_lifecycle_preserves_public_unwind_safety() {
+    fn assert_unwind_safe<T: std::panic::UnwindSafe + std::panic::RefUnwindSafe>() {}
+    assert_unwind_safe::<LeaseLifecycle>();
+}
+
 #[tokio::test(start_paused = true)]
 async fn track_returns_token_and_increments_active_count() {
     let shutdown = CancellationToken::new();
@@ -143,6 +183,35 @@ async fn track_returns_token_and_increments_active_count() {
     assert_eq!(token, LeaseToken(0));
 
     shutdown.cancel();
+}
+
+#[tokio::test(start_paused = true)]
+async fn shutdown_aborts_a_blocked_provider_call_and_joins_scheduler() {
+    let (lifecycle, mut task) =
+        LeaseLifecycle::spawn_owned(LeaseLifecycleConfig::default(), None, None);
+    let provider = Arc::new(BlockingProvider::default());
+
+    lifecycle
+        .track(
+            Arc::clone(&provider) as Arc<dyn LeasedProvider>,
+            make_resolution("blocking", 1, "blocked-lease"),
+            None,
+        )
+        .await
+        .expect("track succeeds");
+    tokio::task::yield_now().await;
+    tokio::time::advance(Duration::from_secs(1)).await;
+    for _ in 0..8 {
+        if provider.renew_calls.load(Ordering::SeqCst) > 0 {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(provider.renew_calls.load(Ordering::SeqCst), 1);
+
+    task.shutdown().await;
+
+    assert_eq!(lifecycle.active_lease_count().await, 0);
 }
 
 #[tokio::test(start_paused = true)]

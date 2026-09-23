@@ -69,6 +69,7 @@ describe ownership, not separate supported APIs:
 | `scope.rs` | Shared tenant identity and interactive authentication binding; neither grants authority |
 | `runtime/projection/` | Read-only slot contract, guarded projection, and worker runtime construction |
 | `runtime/resolver/`, `runtime/refresh/`, `runtime/lease/` | Typed resolution and credential-owned lifecycle orchestration |
+| `runtime/lifecycle.rs` | Process-lifetime owner for the service, lease scheduler shutdown, and reclaim maintenance |
 | `runtime/state_source.rs` | Material-source selection shared by service and projection |
 | `service/` | Management commands, authorization, semantic mutations, catalog dispatch, and service adapters |
 | `provider/`, `secrets/`, `state_envelope.rs` | External-provider contracts, secret handling, and persisted-state encoding |
