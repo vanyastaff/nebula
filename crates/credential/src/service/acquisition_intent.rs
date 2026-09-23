@@ -1,10 +1,10 @@
 //! Service-owned identity and fencing context for interactive continuations.
 //!
 //! Version 1 readers accept the legacy raw protocol payload as a Create
-//! continuation. This preserves pending sessions created before an upgrade.
-//! Older readers cannot decode the versioned envelope, so a rolling deploy
-//! must route continuation traffic to upgraded readers before upgraded nodes
-//! begin new interactive sessions, or drain the old readers first.
+//! continuation. Create also continues to serialize as that raw payload, so
+//! old and new readers remain bidirectionally compatible during a rolling
+//! deploy. Only the future, currently unexposed ReauthorizeExisting path emits
+//! the versioned service envelope and therefore requires upgraded readers.
 
 use std::time::Duration;
 
@@ -197,15 +197,15 @@ where
     where
         S: Serializer,
     {
-        let intent = self.intent.as_ref().ok_or_else(|| {
-            serde::ser::Error::custom("legacy pending state must be promoted before serialization")
-        })?;
-        VersionedPendingRef {
-            version: 1,
-            intent,
-            protocol: &self.protocol,
+        match self.intent.as_ref() {
+            Some(intent @ AcquisitionIntent::ReauthorizeExisting { .. }) => VersionedPendingRef {
+                version: 1,
+                intent,
+                protocol: &self.protocol,
+            }
+            .serialize(serializer),
+            Some(AcquisitionIntent::Create { .. }) | None => self.protocol.serialize(serializer),
         }
-        .serialize(serializer)
     }
 }
 
@@ -265,7 +265,7 @@ mod tests {
     }
 
     #[test]
-    fn wire_is_versioned_and_legacy_raw_protocol_decodes_only_as_create() {
+    fn create_wire_stays_legacy_while_reauthorization_is_versioned() {
         let legacy: AcquisitionPending<ProtocolPending> =
             serde_json::from_str(r#""legacy-secret""#).expect("legacy payload decodes");
         let create = AcquisitionExpectation::Create {
@@ -280,15 +280,41 @@ mod tests {
                 credential_key: "provider.test".to_owned(),
             })
         );
+        let next_create = AcquisitionPending::new(
+            legacy
+                .intent_for_next(&create)
+                .expect("legacy create intent promotes for the next step"),
+            ProtocolPending("next-protocol-secret".to_owned()),
+        );
+        let next_create_wire =
+            crate::serde_secret::expose_for_serialization(|| serde_json::to_value(&next_create))
+                .expect("next create payload serializes");
+        assert_eq!(next_create_wire, "next-protocol-secret");
 
-        let pending = AcquisitionPending::new(
+        let create_pending = AcquisitionPending::new(
             AcquisitionIntent::create_for_key("provider.test"),
             ProtocolPending("protocol-secret".to_owned()),
         );
-        let wire = crate::serde_secret::expose_for_serialization(|| serde_json::to_value(&pending))
-            .expect("versioned payload serializes");
-        assert_eq!(wire["version"], 1);
-        assert_eq!(wire["protocol"], "protocol-secret");
+        let create_wire =
+            crate::serde_secret::expose_for_serialization(|| serde_json::to_value(&create_pending))
+                .expect("create payload serializes");
+        assert_eq!(create_wire, "protocol-secret");
+
+        let reauthorization = AcquisitionPending::new(
+            AcquisitionIntent::ReauthorizeExisting {
+                credential_id: "credential".to_owned(),
+                observed_version: 1,
+                observed_material_epoch: 1,
+                credential_key: "provider.test".to_owned(),
+            },
+            ProtocolPending("protocol-secret".to_owned()),
+        );
+        let reauthorization_wire = crate::serde_secret::expose_for_serialization(|| {
+            serde_json::to_value(&reauthorization)
+        })
+        .expect("reauthorization payload serializes");
+        assert_eq!(reauthorization_wire["version"], 1);
+        assert_eq!(reauthorization_wire["protocol"], "protocol-secret");
     }
 
     #[test]

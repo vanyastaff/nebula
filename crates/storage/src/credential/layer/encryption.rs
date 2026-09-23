@@ -242,22 +242,23 @@ impl<S: CredentialPersistence> CredentialPersistence for EncryptionLayer<S> {
         replacement: CredentialReplacement,
     ) -> Result<CredentialCommit, CredentialPersistenceError> {
         let encrypted = self.encrypt_data(replacement.data(), selector.credential_id())?;
-        self.inner
-            .replace(
-                selector,
-                CredentialReplacement::new(
-                    replacement.expected_version(),
-                    SecretBytes::new(encrypted),
-                    replacement.state_kind().to_owned(),
-                    replacement.state_version(),
-                    replacement.name().map(str::to_owned),
-                    replacement.expires_at(),
-                    replacement.reauth_required(),
-                    replacement.metadata().clone(),
-                    replacement.material_transition().clone(),
-                ),
-            )
-            .await
+        let fence = replacement.fence().cloned();
+        let encrypted_replacement = CredentialReplacement::new(
+            replacement.expected_version(),
+            SecretBytes::new(encrypted),
+            replacement.state_kind().to_owned(),
+            replacement.state_version(),
+            replacement.name().map(str::to_owned),
+            replacement.expires_at(),
+            replacement.reauth_required(),
+            replacement.metadata().clone(),
+            replacement.material_transition().clone(),
+        );
+        let encrypted_replacement = match fence {
+            Some(fence) => encrypted_replacement.with_fence(fence),
+            None => encrypted_replacement,
+        };
+        self.inner.replace(selector, encrypted_replacement).await
     }
 
     async fn tombstone(
@@ -342,9 +343,10 @@ mod tests {
     use nebula_core::CredentialId;
     use nebula_credential::{AuthStyle, SecretString, credentials::oauth2::OAuth2State};
     use nebula_storage_port::{
-        CredentialOwner, CredentialSelector, CredentialTombstone, CredentialVersion,
-        RefreshRetryAdmission, RefreshRetryBlock, RefreshRetryEvidence, RefreshRetryKind,
-        RefreshRetryPhase, RefreshRetryTransition, StoredCredential, StoredLiveCredential,
+        CredentialMaterialEpoch, CredentialOwner, CredentialReplacementFence, CredentialSelector,
+        CredentialTombstone, CredentialVersion, RefreshRetryAdmission, RefreshRetryBlock,
+        RefreshRetryEvidence, RefreshRetryKind, RefreshRetryPhase, RefreshRetryTransition,
+        StoredCredential, StoredLiveCredential,
     };
 
     use crate::credential::test_support::{make_credential, make_replacement};
@@ -475,6 +477,42 @@ mod tests {
         // Read directly from inner store — data should NOT be plaintext
         let raw = into_live(inner.get(&selector).await?);
         assert_ne!(raw.data().as_ref(), b"plaintext-secret");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn replacement_fence_survives_encryption_decorator()
+    -> Result<(), CredentialPersistenceError> {
+        let store = EncryptionLayer::new(
+            SqliteCredentialPersistence::connect_memory().await?,
+            default_provider(),
+        );
+        let selector = selector(CredentialId::new());
+        let created = store.create(&selector, make_credential(b"v1")).await?;
+        let replacement = make_replacement(
+            created.version(),
+            b"must-not-apply",
+            RefreshRetryTransition::Preserve,
+        )
+        .with_fence(CredentialReplacementFence::new(
+            CredentialMaterialEpoch::MIN.next()?,
+            "test".to_owned(),
+        ));
+
+        assert_eq!(
+            store
+                .replace(&selector, replacement)
+                .await
+                .expect_err("decorator must forward the stale material fence"),
+            CredentialPersistenceError::VersionConflict {
+                expected: created.version(),
+                actual: created.version(),
+            }
+        );
+        assert_eq!(
+            into_live(store.get(&selector).await?).data().as_ref(),
+            b"v1"
+        );
         Ok(())
     }
 
