@@ -491,6 +491,7 @@ mod tests {
         env.set("NEBULA_CRED_DB", &database_url);
         env.set("NEBULA_CRED_MASTER_KEY", TEST_KEY_BASE64);
         env.set("NEBULA_CRED_LEGACY_MASTER_KEYS", OLD_KEY_BASE64);
+        env.remove("NEBULA_CRED_LEGACY_EMPTY_ID_MASTER_KEY");
         env.remove("NEBULA_CRED_DEV_KEY");
 
         let projection = compose_first_party_projection()
