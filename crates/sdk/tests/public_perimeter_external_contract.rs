@@ -337,8 +337,8 @@ fn macro_private_surface_matches_the_explicit_allowlist() {
                 pub use nebula_credential::{
                     AuthScheme, Credential, CredentialGuard, CredentialLifecycle,
                     CredentialMetadataDraft, CredentialPolicy, CredentialState, Dynamic,
-                    ErasedCredentialGuard, Interactive, RefreshStrategy, Refreshable, Revocable,
-                    RevokeStrategy, Testable,
+                    ErasedCredentialGuard, Interactive, RefreshPolicy, RefreshStrategy,
+                    Refreshable, Revocable, RevokeStrategy, Testable,
                     credential_key, metadata_name, schema_of,
                 };
                 pub mod contract {

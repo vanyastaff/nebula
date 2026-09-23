@@ -380,8 +380,12 @@ logged.
 Plane-B credential persistence and refresh coordination share the same admitted
 private pool for either supported backend. The server creates a unique
 `nebula-server:<uuid>` replica identity on each process start and retains one
-periodic reclaim-sweep guard until `serve` exits. Expired pre-provider claims
-may be reclaimed; expired `RefreshInFlight` claims remain durable
+credential lifecycle runtime until `serve` exits. It immediately reclaims stale
+claims at startup and scans backend-clock expiry pages for refresh work using
+bounded pagination and concurrency. Every due candidate is rechecked against
+current state and passes through the existing durable cross-replica claim before
+provider egress. Expired pre-provider claims may be reclaimed; expired
+`RefreshInFlight` claims remain durable
 `OutcomeUnknown` poison, are accounted exactly once, and never become
 replayable merely because TTL elapsed. There is no in-memory claim fallback in
 the production composition.

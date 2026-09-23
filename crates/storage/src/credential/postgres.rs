@@ -28,9 +28,11 @@ use chrono::{DateTime, Utc};
 use nebula_core::CredentialId;
 use nebula_storage_port::{
     CredentialAlreadyExistsKey, CredentialCommit, CredentialCreate, CredentialMaterialEpoch,
-    CredentialOwner, CredentialPersistence, CredentialPersistenceError, CredentialReplacement,
-    CredentialSelector, CredentialTombstone, CredentialVersion, RefreshRetrySnapshot, SecretBytes,
-    StoredCredential, StoredCredentialHead, StoredLiveCredential, StoredTombstonedCredential,
+    CredentialOwner, CredentialPersistence, CredentialPersistenceError, CredentialRefreshCursor,
+    CredentialRefreshHorizon, CredentialRefreshPageSize, CredentialRefreshSchedule,
+    CredentialRefreshScheduleError, CredentialReplacement, CredentialSelector, CredentialTombstone,
+    CredentialVersion, DueCredentialRefresh, RefreshRetrySnapshot, SecretBytes, StoredCredential,
+    StoredCredentialHead, StoredLiveCredential, StoredTombstonedCredential,
 };
 use serde_json::{Map, Value};
 use sqlx::{PgPool, Postgres, Transaction};
@@ -56,6 +58,18 @@ pub struct PgCredentialPersistence {
     pool: PgPool,
     #[cfg(test)]
     lose_next_commit_acknowledgement: Arc<AtomicBool>,
+}
+
+/// Read-only due-refresh schedule over an admitted PostgreSQL credential pool.
+#[derive(Clone)]
+pub struct PgCredentialRefreshSchedule {
+    pool: PgPool,
+}
+
+impl fmt::Debug for PgCredentialRefreshSchedule {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("PgCredentialRefreshSchedule")
+    }
 }
 
 impl fmt::Debug for PgCredentialPersistence {
@@ -119,6 +133,14 @@ impl PgCredentialPersistence {
     #[must_use]
     pub fn refresh_claim_repo(&self) -> PgRefreshClaimRepo {
         PgRefreshClaimRepo::new(self.pool.clone())
+    }
+
+    /// Create the due-refresh schedule adapter on this store's admitted pool.
+    #[must_use]
+    pub fn refresh_schedule(&self) -> PgCredentialRefreshSchedule {
+        PgCredentialRefreshSchedule {
+            pool: self.pool.clone(),
+        }
     }
 
     async fn begin_mutation(
@@ -701,6 +723,100 @@ impl super::CredentialPersistenceConformance for PgCredentialPersistence {
             return Err(CredentialPersistenceError::NotFound);
         }
         Ok(())
+    }
+}
+
+#[async_trait]
+impl CredentialRefreshSchedule for PgCredentialRefreshSchedule {
+    #[tracing::instrument(skip_all, fields(credential.operation = "scan_due_refresh"))]
+    async fn scan_due(
+        &self,
+        after: Option<&CredentialRefreshCursor>,
+        horizon: CredentialRefreshHorizon,
+        limit: CredentialRefreshPageSize,
+    ) -> Result<Vec<DueCredentialRefresh>, CredentialRefreshScheduleError> {
+        let horizon_secs = i64::try_from(horizon.get().as_secs())
+            .map_err(|_| CredentialRefreshScheduleError::CorruptRecord)?;
+        let (after_expiry, after_id) = after
+            .map(|cursor| {
+                (
+                    Some(cursor.expires_at()),
+                    Some(cursor.credential_id().to_string()),
+                )
+            })
+            .unwrap_or((None, None));
+        let rows: Vec<(
+            String,
+            String,
+            String,
+            DateTime<Utc>,
+            Option<String>,
+            Option<DateTime<Utc>>,
+        )> = sqlx::query_as(
+            "WITH backend_clock AS MATERIALIZED (SELECT clock_timestamp() AS now_at)
+             SELECT c.id, c.owner_id, c.credential_key, c.expires_at,
+                    c.refresh_retry_mode, c.refresh_retry_not_before
+             FROM credentials AS c CROSS JOIN backend_clock AS clock
+             WHERE c.record_state = 'live'
+               AND c.expires_at IS NOT NULL
+               AND c.reauth_required = FALSE
+               AND c.expires_at <= clock.now_at + ($1 * INTERVAL '1 second')
+               AND (
+                    c.refresh_retry_mode IS NULL
+                    OR (c.refresh_retry_mode <> $3
+                        AND (c.refresh_retry_mode <> $2
+                             OR c.refresh_retry_not_before IS NULL
+                             OR c.refresh_retry_not_before <= clock.now_at))
+               )
+               AND ($4::timestamptz IS NULL OR c.expires_at > $4
+                    OR (c.expires_at = $4 AND c.id > $5))
+             ORDER BY c.expires_at, c.id
+             LIMIT $6",
+        )
+        .bind(horizon_secs)
+        .bind(retry_gate::MODE_NOT_BEFORE)
+        .bind(retry_gate::MODE_NEVER)
+        .bind(after_expiry)
+        .bind(after_id)
+        .bind(i64::from(limit.get()))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|_| CredentialRefreshScheduleError::Unavailable)?;
+
+        rows.into_iter()
+            .map(
+                |(id, owner, credential_key, expires_at, mode, not_before)| {
+                    match (mode.as_deref(), not_before) {
+                        (None, None) | (Some(retry_gate::MODE_NOT_BEFORE), Some(_)) => {},
+                        _ => return Err(CredentialRefreshScheduleError::CorruptRecord),
+                    }
+                    let credential_id = parse_credential_id(&id)
+                        .map_err(|_| CredentialRefreshScheduleError::CorruptRecord)?;
+                    Ok(DueCredentialRefresh::new(
+                        CredentialSelector::new(
+                            CredentialOwner::from_canonical(owner),
+                            credential_id,
+                        ),
+                        credential_key,
+                        expires_at,
+                    ))
+                },
+            )
+            .collect()
+    }
+}
+
+#[async_trait]
+impl CredentialRefreshSchedule for PgCredentialPersistence {
+    async fn scan_due(
+        &self,
+        after: Option<&CredentialRefreshCursor>,
+        horizon: CredentialRefreshHorizon,
+        limit: CredentialRefreshPageSize,
+    ) -> Result<Vec<DueCredentialRefresh>, CredentialRefreshScheduleError> {
+        self.refresh_schedule()
+            .scan_due(after, horizon, limit)
+            .await
     }
 }
 

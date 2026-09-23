@@ -24,6 +24,7 @@ pub(crate) mod facade;
 pub(crate) mod head;
 pub(crate) mod observer;
 pub(crate) mod ops;
+mod scheduled_refresh;
 /// Binding validation and service adapters to the shared projection runtime.
 mod slot;
 

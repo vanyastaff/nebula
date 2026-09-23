@@ -7,13 +7,15 @@
 
 use async_trait::async_trait;
 use nebula_storage_port::{
-    CredentialMaterialEpoch, CredentialPersistence, CredentialPersistenceError, CredentialSelector,
-    CredentialVersion,
+    CredentialMaterialEpoch, CredentialPersistence, CredentialPersistenceError,
+    CredentialRefreshSchedule, CredentialSelector, CredentialVersion,
 };
 
 /// Physical fixture controls used only by credential backend conformance.
 #[async_trait]
-pub(crate) trait CredentialPersistenceConformance: CredentialPersistence {
+pub(crate) trait CredentialPersistenceConformance:
+    CredentialPersistence + CredentialRefreshSchedule
+{
     /// Move an existing live fixture to an exact valid live version.
     async fn force_live_version_for_conformance(
         &self,

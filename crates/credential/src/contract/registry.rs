@@ -126,6 +126,7 @@ struct RegistryEntry {
     instance: Box<dyn AnyCredential>,
     metadata: crate::CredentialMetadata,
     capabilities: Capabilities,
+    refresh_policy: Option<crate::RefreshPolicy>,
     registering_crate: &'static str,
 }
 
@@ -183,6 +184,10 @@ impl CredentialRegistry {
         }
 
         let capabilities = compute_capabilities::<C>();
+        let refresh_policy = capabilities
+            .contains(Capabilities::REFRESHABLE)
+            .then_some(<C as plugin_capability_report::IsRefreshable>::POLICY)
+            .flatten();
 
         // F3 containment law (fail-closed at boot, not at first refresh): a
         // `Refreshable` credential's `fn refresh` renews non-interactively or
@@ -223,6 +228,7 @@ impl CredentialRegistry {
                 instance: Box::new(instance),
                 metadata,
                 capabilities,
+                refresh_policy,
                 registering_crate,
             },
         );
@@ -277,6 +283,23 @@ impl CredentialRegistry {
     pub fn is_refreshable(&self, key: &str) -> bool {
         self.capabilities_of(key)
             .is_some_and(|c| c.contains(Capabilities::REFRESHABLE))
+    }
+
+    /// Return the registered timing policy for a refreshable credential type.
+    #[must_use]
+    pub(crate) fn refresh_policy(&self, key: &str) -> Option<crate::RefreshPolicy> {
+        self.entries.get(key).and_then(|entry| entry.refresh_policy)
+    }
+
+    /// Largest look-ahead required by any registered refreshable type.
+    #[must_use]
+    pub(crate) fn maximum_refresh_horizon(&self) -> std::time::Duration {
+        self.entries
+            .values()
+            .filter_map(|entry| entry.refresh_policy)
+            .filter_map(|policy| policy.early_refresh.checked_add(policy.jitter))
+            .max()
+            .unwrap_or_default()
     }
 
     /// Whether the credential at `key` implements

@@ -113,6 +113,8 @@ pub mod plugin_capability_report {
     pub trait IsRefreshable {
         /// `true` when the credential type implements `Refreshable`.
         const VALUE: bool;
+        /// Timing policy for a refreshable credential.
+        const POLICY: Option<crate::RefreshPolicy> = Some(crate::RefreshPolicy::DEFAULT);
     }
 
     /// Reports whether the credential implements
@@ -192,6 +194,7 @@ mod tests {
     }
     impl plugin_capability_report::IsRefreshable for TestCred {
         const VALUE: bool = true;
+        const POLICY: Option<crate::RefreshPolicy> = Some(crate::RefreshPolicy::DEFAULT);
     }
     impl plugin_capability_report::IsRevocable for TestCred {
         const VALUE: bool = false;
@@ -231,6 +234,7 @@ mod tests {
     }
     impl plugin_capability_report::IsRefreshable for RichCred {
         const VALUE: bool = true;
+        const POLICY: Option<crate::RefreshPolicy> = Some(crate::RefreshPolicy::DEFAULT);
     }
     impl plugin_capability_report::IsRevocable for RichCred {
         const VALUE: bool = true;
