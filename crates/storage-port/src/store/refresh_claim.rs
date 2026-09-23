@@ -250,11 +250,13 @@ pub struct SentinelEscalationPolicy {
 }
 
 impl SentinelEscalationPolicy {
-    /// Construct a non-zero threshold and rolling window.
+    /// Construct a non-zero threshold and a rolling window representable by
+    /// every supported persistence backend.
     ///
     /// # Errors
     ///
-    /// Returns [`SentinelEscalationPolicyError`] when either value is zero.
+    /// Returns [`SentinelEscalationPolicyError`] when the threshold is zero or
+    /// the window is shorter than one millisecond.
     pub const fn new(
         threshold: u32,
         window: Duration,
@@ -262,8 +264,8 @@ impl SentinelEscalationPolicy {
         if threshold == 0 {
             return Err(SentinelEscalationPolicyError::ZeroThreshold);
         }
-        if window.is_zero() {
-            return Err(SentinelEscalationPolicyError::ZeroWindow);
+        if window.as_nanos() < Duration::from_millis(1).as_nanos() {
+            return Err(SentinelEscalationPolicyError::WindowBelowPrecision);
         }
         Ok(Self { threshold, window })
     }
@@ -287,9 +289,10 @@ pub enum SentinelEscalationPolicyError {
     /// A zero threshold would escalate every incident.
     #[error("sentinel escalation threshold must be greater than zero")]
     ZeroThreshold,
-    /// A zero window has no meaningful incident history.
-    #[error("sentinel escalation window must be greater than zero")]
-    ZeroWindow,
+    /// The window is below the common millisecond precision of supported
+    /// persistence backends.
+    #[error("sentinel escalation window must be at least one millisecond")]
+    WindowBelowPrecision,
 }
 
 /// Cross-replica claim store.
@@ -694,7 +697,11 @@ mod tests {
         );
         assert_eq!(
             SentinelEscalationPolicy::new(1, Duration::ZERO),
-            Err(SentinelEscalationPolicyError::ZeroWindow)
+            Err(SentinelEscalationPolicyError::WindowBelowPrecision)
+        );
+        assert_eq!(
+            SentinelEscalationPolicy::new(1, Duration::from_nanos(1)),
+            Err(SentinelEscalationPolicyError::WindowBelowPrecision)
         );
 
         let policy = SentinelEscalationPolicy::new(3, Duration::from_hours(1))
