@@ -165,17 +165,17 @@ never-implemented spec-16 trait placeholders were deleted (ADR-0072).
 
 Credential coordination — durable refresh claim (П2 / ADR-0041):
 
-- `credential::refresh_claim::RefreshClaimRepo` — cross-replica claim seam for the engine's
+- `credential::refresh_claim::RefreshClaimRepo` — owner-qualified cross-replica claim seam for the engine's
   two-tier `RefreshCoordinator` (L1 in-process coalescer + L2 durable claim). Provides
   CAS-based `try_claim` (one acquirer wins under contention), `heartbeat` (TTL extension
-  validated against `ClaimToken` generation), idempotent `release`, and `reclaim_stuck`
-  (deletes expired Normal rows, but atomically records and retains expired in-flight rows as
-  durable poison). `mark_sentinel` flags an in-flight IdP POST so the sweep can account a
-  mid-refresh crash exactly once by the globally unique claim UUID;
-  `count_sentinel_events_in_window` backs the engine's
-  N=3 distinct, explicitly reconciled incidents in 1h `ReauthRequired` observation. Repeated
-  requests and sweeps against one poisoned claim count once; N is an escalation signal, never a
-  provider retry budget. The count uses the
+  validated against `ClaimToken` generation), idempotent `release`, and `mark_sentinel`.
+- `RefreshClaimReclaimer` is the separate aggregate-writing role. Its `reclaim_stuck` operation
+  deletes expired Normal rows. For an expired in-flight row, one transaction records the incident,
+  evaluates the configured N-in-window threshold, and, on escalation, advances the live
+  credential revision and material epoch, clears its retry gate, and sets `reauth_required`.
+  The poisoned claim remains until owner-qualified adjudication. Repeated requests and sweeps
+  against one claim count once; N is an escalation threshold, never a provider retry budget.
+  Incident time and the rolling-window decision use the
   database clock rather than replica wall clocks, per sub-spec
   credential refresh coordination design (design records are maintained in the maintainers' private design vault, not in this public repository)
   §3.4-§3.6.
@@ -185,11 +185,13 @@ Credential coordination — durable refresh claim (П2 / ADR-0041):
 - `InMemoryRefreshClaimRepo` — internal reference implementation for tests and
   conformance; not a supported single-replica deployment backend.
 - Feature `sqlite` adds `SqliteRefreshClaimRepo` (default local backend; `SQLITE` migrations
-  `0022_credential_refresh_claims` + `0023_credential_sentinel_events` + the incident-key
-  extension in `0039_credentials_owner_and_record_state`).
+  `0022_credential_refresh_claims` + `0023_credential_sentinel_events`, the incident-key
+  extension in `0039_credentials_owner_and_record_state`, and owner-qualified atomic escalation
+  in `0054_owner_qualified_refresh_incidents`).
 - Feature `postgres` adds `PgRefreshClaimRepo` (production multi-replica backend; `POSTGRES`
-  migrations `0022_credential_refresh_claims` + `0023_credential_sentinel_events` + the
-  incident-key extension in `0039_credentials_owner_and_record_state`).
+  migrations `0022_credential_refresh_claims` + `0023_credential_sentinel_events`, the
+  incident-key extension in `0039_credentials_owner_and_record_state`, and owner-qualified atomic
+  escalation in `0054_owner_qualified_refresh_incidents`).
 
 ## Contract
 

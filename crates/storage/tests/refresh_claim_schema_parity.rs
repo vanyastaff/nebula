@@ -1,6 +1,7 @@
 //! Schema parity check for refresh-claim migrations 0022, 0023, the
 //! incident-identity extension in 0039, the structural retry gate in 0040,
-//! and the operator reconciliation record in 0053.
+//! the operator reconciliation record in 0053, and owner qualification in
+//! 0054.
 //!
 //! Both SQLite and Postgres dialects must define the same tables with the
 //! same logical column names. The driver-specific types differ
@@ -263,21 +264,59 @@ fn reconciliation_record_is_paired_and_optional_in_both_dialects() {
 }
 
 #[test]
+fn refresh_claim_authority_is_owner_qualified_in_both_dialects() {
+    let sqlite = read("migrations/sqlite/0054_owner_qualified_refresh_incidents.sql");
+    let pg = read("migrations/postgres/0054_owner_qualified_refresh_incidents.sql");
+
+    for (backend, migration) in [("SQLite", &sqlite), ("Postgres", &pg)] {
+        assert!(
+            migration.contains("owner_id"),
+            "{backend} 0054 must persist the canonical owner"
+        );
+        assert!(
+            migration.contains("owner_id, credential_id"),
+            "{backend} claim identity must be owner-qualified"
+        );
+        assert!(
+            migration.contains("idx_sentinel_events_owner_cred_time"),
+            "{backend} threshold window must be owner-qualified"
+        );
+        assert!(
+            migration.contains("credential.owner_id") && migration.contains("credential.id"),
+            "{backend} owner backfill must come from the credential aggregate"
+        );
+    }
+
+    assert!(
+        sqlite.contains("owner_id         TEXT    NOT NULL")
+            && sqlite.contains("owner_id                        TEXT    NOT NULL"),
+        "SQLite rebuilt claim and incident relations must reject orphaned authority"
+    );
+    assert_eq!(
+        pg.matches("ALTER COLUMN owner_id SET NOT NULL").count(),
+        2,
+        "Postgres must reject orphaned claim and incident rows"
+    );
+}
+
+#[test]
 fn both_dialects_define_the_same_indices() {
     let sqlite = format!(
-        "{}{}",
+        "{}{}{}",
         read("migrations/sqlite/0022_credential_refresh_claims.sql"),
-        read("migrations/sqlite/0023_credential_sentinel_events.sql")
+        read("migrations/sqlite/0023_credential_sentinel_events.sql"),
+        read("migrations/sqlite/0054_owner_qualified_refresh_incidents.sql")
     );
     let pg = format!(
-        "{}{}",
+        "{}{}{}",
         read("migrations/postgres/0022_credential_refresh_claims.sql"),
-        read("migrations/postgres/0023_credential_sentinel_events.sql")
+        read("migrations/postgres/0023_credential_sentinel_events.sql"),
+        read("migrations/postgres/0054_owner_qualified_refresh_incidents.sql")
     );
 
     for index_name in [
         "idx_refresh_claims_expires",
-        "idx_sentinel_events_cred_time",
+        "idx_sentinel_events_owner_cred_time",
     ] {
         assert!(
             sqlite.contains(index_name),

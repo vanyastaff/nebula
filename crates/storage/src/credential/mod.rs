@@ -64,8 +64,9 @@ pub use refresh_claim::PgRefreshClaimRepo;
 #[cfg(feature = "sqlite")]
 pub use refresh_claim::SqliteRefreshClaimRepo;
 pub use refresh_claim::{
-    ClaimAttempt, ClaimToken, ExpiredClaim, HeartbeatError, InMemoryRefreshClaimRepo, RefreshClaim,
-    RefreshClaimRepo, ReplicaId, RepoError, SentinelState,
+    ClaimAttempt, ClaimToken, ExpiredClaim, HeartbeatError, InMemoryRefreshClaimRepo,
+    ReauthEscalation, RefreshClaim, RefreshClaimReclaimer, RefreshClaimRepo, ReplicaId, RepoError,
+    SentinelEscalationPolicy, SentinelState,
 };
 #[cfg(any(test, feature = "sqlite", feature = "postgres"))]
 pub use schema::{

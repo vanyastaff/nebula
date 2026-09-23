@@ -209,15 +209,17 @@ fn repository_catalog_matches_k2_contract() {
     let postgres = Catalog::load("postgres").expect("Postgres catalog must be valid");
     let sqlite = Catalog::load("sqlite").expect("SQLite catalog must be valid");
 
-    let expected_postgres = (1_u16..=53).collect::<Vec<_>>();
+    let expected_postgres = (1_u16..=54).collect::<Vec<_>>();
     let expected_sqlite = (1_u16..=28)
         .chain(30..=35)
-        .chain([39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53])
+        .chain([
+            39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54,
+        ])
         .collect::<Vec<_>>();
     assert_eq!(
         postgres.versions(),
         expected_postgres,
-        "Postgres must reserve every logical migration through version 0053"
+        "Postgres must reserve every logical migration through version 0054"
     );
     assert_eq!(
         sqlite.versions(),

@@ -36,8 +36,8 @@ pub use oauth_egress::{
 pub use refresh::{
     ConfigError, ReclaimSweepHandle, RefreshCoordConfig, RefreshCoordMetrics, RefreshCoordinator,
     RefreshDisposition, RefreshError, RefreshRecheck, RefreshRecheckError, RefreshTransport,
-    RefreshTransportError, SentinelThresholdConfig, SentinelTrigger, TokenPostRequest,
-    TokenPostResponse, TokenPostResponseError,
+    RefreshTransportError, SentinelEscalationPolicy, SentinelEscalationPolicyError,
+    TokenPostRequest, TokenPostResponse, TokenPostResponseError,
 };
 pub use resolve_error::ResolveError;
 pub use resolver::CredentialResolver;

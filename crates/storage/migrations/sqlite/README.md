@@ -34,6 +34,11 @@ plan/flavor records and exact execution revision references in parity with
 PostgreSQL. It is constrained storage layout, not a runtime adapter or
 activation claim.
 
+Migration `0054_owner_qualified_refresh_incidents.sql` rebuilds refresh claims
+and sentinel incidents with the credential aggregate's canonical owner. A
+missing aggregate row violates the target `NOT NULL` constraint and rolls the
+migration back rather than inventing tenant authority.
+
 ## Storage-port adapter schema (0027)
 
 `crates/storage/src/sqlite/schema.sql` is the **cumulative** `port_*` schema,

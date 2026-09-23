@@ -11,7 +11,7 @@ use std::{collections::BTreeMap, fmt, sync::Arc};
 use async_trait::async_trait;
 use nebula_core::{CredentialId, CredentialKey, Permission, ServiceAccountId, UserId, WorkflowId};
 use nebula_storage_port::{
-    Scope,
+    CredentialOwner, CredentialSelector, Scope,
     store::{
         RefreshAdjudication, RefreshClaimAdjudicationError, RefreshClaimAdjudicator,
         RefreshOutcomeDecision,
@@ -592,36 +592,18 @@ impl CredentialController {
         decision: RefreshOutcomeDecision,
         evidence: &str,
     ) -> Result<RefreshAdjudication, CredentialControllerError> {
-        // The adjudication port carries no scope operand, so this arm is the
-        // one place the caller's tenant meets the credential being reconciled.
-        // Without this read, a workspace admin of one workspace could clear
-        // another workspace's poison given its credential id — every other arm
-        // of `execute_authorized` reaches the store through the scoped service,
-        // and this one would be the exception.
-        //
-        // The read is the owner-scoped one every sibling arm uses, so ownership
-        // is a query predicate (`WHERE id = ?1 AND owner_id = ?2 AND
-        // record_state = 'live'`) rather than a comparison after the fetch.
-        // That is what keeps it clear of the post-read tenant check the
-        // credential design rules out, and it is why the check-then-act is
-        // sound: `owner_id` is immutable — nothing in the workspace writes it —
-        // so the ownership proven here cannot be transferred to another tenant
-        // between this read and the adjudication.
-        //
-        // One consequence to read as intended rather than as a regression: a
-        // claim row can outlive a credential that is no longer live.
-        // `credential_refresh_claims` carries no foreign key to `credentials`
-        // and no cascade, nothing removes a claim row but the clear and sweep
-        // paths, and credential deletion is a `record_state` transition rather
-        // than a `DELETE`. A credential tombstoned while its claim row stands is
-        // therefore `NotFound` here where the unscoped adjudicator would have
-        // cleared the poison. Fail-closed, and what the sibling arms already
-        // answer in the same state.
+        // Preserve the live-record gate used by sibling management commands,
+        // then carry the same owner through the adjudication predicate. The
+        // port never accepts a bare globally unique id as tenant authority.
         self.service.get(scope, &credential_id.to_string()).await?;
+        let selector = CredentialSelector::new(
+            CredentialOwner::from_canonical(scope.owner_id()),
+            *credential_id,
+        );
 
         let adjudication = self
             .adjudicator
-            .adjudicate(credential_id, decision, evidence)
+            .adjudicate(&selector, decision, evidence)
             .await;
         let outcome = if adjudication.is_ok() {
             CredentialMetrics::OUTCOME_SUCCESS

@@ -17,7 +17,7 @@ use nebula_credential::{
     CredentialTenantAuthority, InteractionRequest, TestFailureCode, UserInput,
 };
 use nebula_storage_port::{
-    Scope,
+    CredentialSelector, Scope,
     store::{
         RefreshAdjudication, RefreshClaimAdjudicationError, RefreshClaimAdjudicator,
         RefreshOutcomeDecision,
@@ -101,7 +101,7 @@ struct RefusingAdjudicator;
 impl RefreshClaimAdjudicator for RefusingAdjudicator {
     async fn adjudicate(
         &self,
-        _credential_id: &CredentialId,
+        _selector: &CredentialSelector,
         _decision: RefreshOutcomeDecision,
         _evidence: &str,
     ) -> Result<RefreshAdjudication, RefreshClaimAdjudicationError> {

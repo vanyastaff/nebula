@@ -11,8 +11,8 @@
 //! - `RefreshCoordSentinelTriggered { credential_id, recent_count }` — fires once for each
 //!   newly-accounted poisoned claim UUID.
 //! - `RefreshCoordReauthThresholdReached { credential_id, reason }` — fires once for each
-//!   newly-accounted incident whose rolling-window count is at or above the threshold. It records
-//!   an observation, not a durable credential transition.
+//!   newly-accounted incident whose rolling-window count is at or above the threshold, after the
+//!   backend transaction durably installs or observes `ReauthRequired`.
 //!
 //! Sink failures are logged at `warn` level but do NOT propagate to the
 //! caller. Audit on the refresh path is observational; failing the

@@ -2,14 +2,21 @@ use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 
 use crate::RefreshNotAppliedContext;
 use chrono::Utc;
-use nebula_storage_port::store::ExpiredClaim;
-use nebula_storage_port::store::RefreshClaimError as RepoError;
+use nebula_storage_port::store::{
+    ExpiredClaim, ReauthEscalation, RefreshClaimError as RepoError, RefreshClaimReclaimer,
+    SentinelEscalationPolicy,
+};
+use nebula_storage_port::{CredentialOwner, CredentialSelector};
 use tokio::sync::Notify;
 
 use super::*;
 
 const HEARTBEAT_OK: u8 = 0;
 const HEARTBEAT_LOST: u8 = 1;
+
+fn test_selector(credential_id: CredentialId) -> CredentialSelector {
+    CredentialSelector::new(CredentialOwner::from_canonical("test-owner"), credential_id)
+}
 
 struct ScriptedClaimRepo {
     active: AtomicBool,
@@ -89,7 +96,7 @@ impl ScriptedClaimRepo {
 impl RefreshClaimRepo for ScriptedClaimRepo {
     async fn try_claim(
         &self,
-        credential_id: &CredentialId,
+        selector: &CredentialSelector,
         _holder: &ReplicaId,
         ttl: Duration,
     ) -> Result<ClaimAttempt, RepoError> {
@@ -106,8 +113,9 @@ impl RefreshClaimRepo for ScriptedClaimRepo {
             });
         }
         Ok(ClaimAttempt::Acquired(RefreshClaim {
-            credential_id: *credential_id,
+            selector: selector.clone(),
             token: ClaimToken {
+                selector: selector.clone(),
                 claim_id: "00000000-0000-0000-0000-000000000001"
                     .parse()
                     .expect("test claim id is a UUID"),
@@ -145,29 +153,17 @@ impl RefreshClaimRepo for ScriptedClaimRepo {
         }
         Ok(())
     }
-
-    async fn reclaim_stuck(&self) -> Result<Vec<ExpiredClaim>, RepoError> {
-        Ok(Vec::new())
-    }
-
-    async fn count_sentinel_events_in_window(
-        &self,
-        _credential_id: &CredentialId,
-        _window: Duration,
-    ) -> Result<u32, RepoError> {
-        Ok(0)
-    }
 }
 
 #[async_trait::async_trait]
 impl RefreshClaimRepo for PoisonClaimRepo {
     async fn try_claim(
         &self,
-        credential_id: &CredentialId,
+        selector: &CredentialSelector,
         _holder: &ReplicaId,
         _ttl: Duration,
     ) -> Result<ClaimAttempt, RepoError> {
-        assert_eq!(*credential_id, self.credential_id);
+        assert_eq!(selector.credential_id(), self.credential_id);
         self.try_claim_count.fetch_add(1, Ordering::SeqCst);
         Ok(ClaimAttempt::OutcomeUnknown {
             expired_at: Utc::now() - chrono::Duration::seconds(1),
@@ -186,30 +182,34 @@ impl RefreshClaimRepo for PoisonClaimRepo {
     async fn mark_sentinel(&self, _token: &ClaimToken) -> Result<(), RepoError> {
         Err(RepoError::InvalidState)
     }
+}
 
-    async fn reclaim_stuck(&self) -> Result<Vec<ExpiredClaim>, RepoError> {
+#[async_trait::async_trait]
+impl RefreshClaimReclaimer for PoisonClaimRepo {
+    async fn reclaim_stuck(
+        &self,
+        _policy: SentinelEscalationPolicy,
+    ) -> Result<Vec<ExpiredClaim>, RepoError> {
         self.reclaim_count.fetch_add(1, Ordering::SeqCst);
         let newly_accounted = !self.evidence_recorded.swap(true, Ordering::SeqCst);
         let result = if newly_accounted {
             self.evidence_count.fetch_add(1, Ordering::SeqCst);
             vec![ExpiredClaim::OutcomeUnknownAccounted {
-                credential_id: self.credential_id,
+                selector: test_selector(self.credential_id),
                 previous_holder: ReplicaId::new("crashed-provider-holder"),
                 previous_generation: 7,
+                event_count: u32::try_from(self.evidence_count.load(Ordering::SeqCst))
+                    .unwrap_or(u32::MAX),
+                escalation: ReauthEscalation::ReauthRequired {
+                    changed: true,
+                    version: nebula_storage_port::CredentialVersion::MIN,
+                    material_epoch: nebula_storage_port::CredentialMaterialEpoch::MIN,
+                },
             }]
         } else {
             Vec::new()
         };
         Ok(result)
-    }
-
-    async fn count_sentinel_events_in_window(
-        &self,
-        credential_id: &CredentialId,
-        _window: Duration,
-    ) -> Result<u32, RepoError> {
-        assert_eq!(*credential_id, self.credential_id);
-        Ok(u32::try_from(self.evidence_count.load(Ordering::SeqCst)).unwrap_or(u32::MAX))
     }
 }
 
@@ -330,10 +330,7 @@ async fn repeated_poison_denials_leave_threshold_observation_to_periodic_owner()
 
     use crate::{CredentialEvent, contract::resolve::ReauthReason};
 
-    use super::super::{
-        reclaim::run_one_sweep,
-        sentinel::{SentinelThresholdConfig, SentinelTrigger},
-    };
+    use super::super::reclaim::run_one_sweep;
 
     let credential_id = CredentialId::new();
     let repo = Arc::new(PoisonClaimRepo::new(credential_id));
@@ -355,7 +352,7 @@ async fn repeated_poison_denials_leave_threshold_observation_to_periodic_owner()
         let calls = Arc::clone(&provider_calls);
         let outcome = coordinator
             .refresh_coalesced(
-                &credential_id,
+                &test_selector(credential_id),
                 |_| async { Ok(RefreshRecheck::Needed) },
                 move || async move {
                     calls.fetch_add(1, Ordering::SeqCst);
@@ -375,16 +372,14 @@ async fn repeated_poison_denials_leave_threshold_observation_to_periodic_owner()
 
     let event_bus = Arc::new(EventBus::new(8));
     let mut events = event_bus.subscribe();
-    let sentinel = Arc::new(SentinelTrigger::new(
-        Arc::clone(&repo_port),
-        SentinelThresholdConfig {
-            threshold: coordinator.config.sentinel_threshold,
-            window: coordinator.config.sentinel_window,
-        },
-    ));
+    let policy = SentinelEscalationPolicy::new(
+        coordinator.config.sentinel_threshold,
+        coordinator.config.sentinel_window,
+    )
+    .expect("coordinator already validated sentinel policy");
     run_one_sweep(
-        &repo_port,
-        &sentinel,
+        repo.as_ref(),
+        policy,
         Some(&event_bus),
         coordinator.metrics(),
         None,
@@ -408,8 +403,8 @@ async fn repeated_poison_denials_leave_threshold_observation_to_periodic_owner()
     ));
 
     run_one_sweep(
-        &repo_port,
-        &sentinel,
+        repo.as_ref(),
+        policy,
         Some(&event_bus),
         coordinator.metrics(),
         None,
@@ -440,6 +435,41 @@ async fn repeated_poison_denials_leave_threshold_observation_to_periodic_owner()
 }
 
 #[tokio::test]
+async fn dropped_reauth_observation_cannot_undo_durable_escalation() {
+    use nebula_eventbus::EventBus;
+
+    use crate::CredentialEvent;
+
+    use super::super::reclaim::run_one_sweep;
+
+    let credential_id = CredentialId::new();
+    let repo = PoisonClaimRepo::new(credential_id);
+    let event_bus = Arc::new(EventBus::<CredentialEvent>::new(1));
+    let metrics = RefreshCoordMetrics::for_tests().expect("test metrics registry is valid");
+    let policy = SentinelEscalationPolicy::new(1, Duration::from_mins(1))
+        .expect("test sentinel policy is valid");
+
+    run_one_sweep(&repo, policy, Some(&event_bus), &metrics, None)
+        .await
+        .expect("best-effort observation loss must not fail an already-committed escalation");
+
+    assert_eq!(
+        repo.evidence_count.load(Ordering::SeqCst),
+        1,
+        "the reclaimer's durable escalation result must remain authoritative"
+    );
+    assert_eq!(event_bus.stats().dropped_count, 1);
+    assert_eq!(metrics.sentinel_reauth_triggered.get(), 1);
+
+    run_one_sweep(&repo, policy, Some(&event_bus), &metrics, None)
+        .await
+        .expect("retry after observation loss must remain idempotent");
+
+    assert_eq!(repo.evidence_count.load(Ordering::SeqCst), 1);
+    assert_eq!(event_bus.stats().dropped_count, 1);
+}
+
+#[tokio::test]
 async fn caller_drop_cannot_release_or_duplicate_owned_provider_commit() {
     let repo = Arc::new(ScriptedClaimRepo::new());
     let coordinator = coordinator(Arc::clone(&repo), RefreshCoordConfig::default());
@@ -457,7 +487,7 @@ async fn caller_drop_cannot_release_or_duplicate_owned_provider_commit() {
     let winner = tokio::spawn(async move {
         winner_coordinator
             .refresh_coalesced(
-                &credential_id,
+                &test_selector(credential_id),
                 |_| async { Ok(RefreshRecheck::Needed) },
                 move || async move {
                     winner_provider_calls.fetch_add(1, Ordering::SeqCst);
@@ -485,7 +515,7 @@ async fn caller_drop_cannot_release_or_duplicate_owned_provider_commit() {
     let waiter = tokio::spawn(async move {
         waiter_coordinator
             .refresh_coalesced(
-                &credential_id,
+                &test_selector(credential_id),
                 move |_| {
                     let writes = Arc::clone(&waiter_writes);
                     async move {
@@ -538,7 +568,7 @@ async fn state_advanced_completion_can_elect_one_winner_for_a_newer_epoch() {
     let winner = tokio::spawn(async move {
         winner_coordinator
             .refresh_coalesced(
-                &winner_id,
+                &test_selector(winner_id),
                 |_| async { Ok(RefreshRecheck::Needed) },
                 move || async move {
                     winner_entered.notify_one();
@@ -563,7 +593,7 @@ async fn state_advanced_completion_can_elect_one_winner_for_a_newer_epoch() {
     let waiter = tokio::spawn(async move {
         waiter_coordinator
             .refresh_coalesced(
-                &waiter_id,
+                &test_selector(waiter_id),
                 move |_| {
                     let entered = Arc::clone(&waiter_recheck_entered);
                     let continue_recheck = Arc::clone(&waiter_recheck_continue);
@@ -634,7 +664,7 @@ async fn exact_no_progress_completion_does_not_turn_waiters_into_a_retry_herd() 
     let winner = tokio::spawn(async move {
         winner_coordinator
             .refresh_coalesced(
-                &winner_id,
+                &test_selector(winner_id),
                 |_| async { Ok(RefreshRecheck::Needed) },
                 move || async move {
                     winner_entered.notify_one();
@@ -653,7 +683,7 @@ async fn exact_no_progress_completion_does_not_turn_waiters_into_a_retry_herd() 
     let waiter = tokio::spawn(async move {
         waiter_coordinator
             .refresh_coalesced(
-                &waiter_id,
+                &test_selector(waiter_id),
                 |_| async { Ok(RefreshRecheck::Needed) },
                 move || async move {
                     waiter_provider_calls.fetch_add(1, Ordering::SeqCst);
@@ -703,7 +733,7 @@ async fn exact_local_finalization_failure_requires_waiter_reconciliation() {
     let winner = tokio::spawn(async move {
         winner_coordinator
             .refresh_coalesced(
-                &winner_id,
+                &test_selector(winner_id),
                 |_| async { Ok(RefreshRecheck::Needed) },
                 move || async move {
                     winner_entered.notify_one();
@@ -725,7 +755,7 @@ async fn exact_local_finalization_failure_requires_waiter_reconciliation() {
     let waiter = tokio::spawn(async move {
         waiter_coordinator
             .refresh_coalesced(
-                &waiter_id,
+                &test_selector(waiter_id),
                 |_| async { Ok(RefreshRecheck::Needed) },
                 move || async move {
                     waiter_provider_calls.fetch_add(1, Ordering::SeqCst);
@@ -778,7 +808,7 @@ async fn outcome_unknown_completion_keeps_waiters_unknown_and_fail_closed() {
     let winner = tokio::spawn(async move {
         winner_coordinator
             .refresh_coalesced(
-                &winner_id,
+                &test_selector(winner_id),
                 |_| async { Ok(RefreshRecheck::Needed) },
                 move || async move {
                     winner_entered.notify_one();
@@ -797,7 +827,7 @@ async fn outcome_unknown_completion_keeps_waiters_unknown_and_fail_closed() {
     let waiter = tokio::spawn(async move {
         waiter_coordinator
             .refresh_coalesced(
-                &waiter_id,
+                &test_selector(waiter_id),
                 |_| async { Ok(RefreshRecheck::Needed) },
                 move || async move {
                     waiter_provider_calls.fetch_add(1, Ordering::SeqCst);
@@ -856,7 +886,7 @@ async fn released_contended_claim_is_polled_well_before_its_ttl() {
     let task = tokio::spawn(async move {
         task_coordinator
             .refresh_coalesced(
-                &credential_id,
+                &test_selector(credential_id),
                 |_| async { Ok(RefreshRecheck::Needed) },
                 move || async move {
                     task_provider_calls.fetch_add(1, Ordering::SeqCst);
@@ -895,7 +925,7 @@ async fn post_contention_recheck_failure_denies_provider_dispatch() {
     let task = tokio::spawn(async move {
         task_coordinator
             .refresh_coalesced(
-                &credential_id,
+                &test_selector(credential_id),
                 |_| async { Err(RefreshRecheckError::Unavailable) },
                 move || async move {
                     task_provider_calls.fetch_add(1, Ordering::SeqCst);
@@ -942,7 +972,7 @@ async fn l1_waiter_timeout_is_bounded_without_false_coalesced_success() {
     let winner = tokio::spawn(async move {
         winner_coordinator
             .refresh_coalesced(
-                &winner_id,
+                &test_selector(winner_id),
                 |_| async { Ok(RefreshRecheck::Needed) },
                 move || async move {
                     winner_calls.fetch_add(1, Ordering::SeqCst);
@@ -961,7 +991,7 @@ async fn l1_waiter_timeout_is_bounded_without_false_coalesced_success() {
     let waiter = tokio::spawn(async move {
         waiter_coordinator
             .refresh_coalesced(
-                &waiter_id,
+                &test_selector(waiter_id),
                 |_| async { Ok(RefreshRecheck::Needed) },
                 move || async move {
                     waiter_duplicate_calls.fetch_add(1, Ordering::SeqCst);
@@ -1042,7 +1072,7 @@ async fn caller_timeout_detaches_and_heartbeat_keeps_lease_past_original_ttl() {
     let waiter = tokio::spawn(async move {
         task_coordinator
             .refresh_coalesced(
-                &credential_id,
+                &test_selector(credential_id),
                 |_| async { Ok(RefreshRecheck::Needed) },
                 move || async move {
                     task_entered.notify_one();
@@ -1099,7 +1129,7 @@ async fn heartbeat_loss_after_provider_boundary_cannot_cancel_commit() {
     let waiter = tokio::spawn(async move {
         task_coordinator
             .refresh_coalesced(
-                &credential_id,
+                &test_selector(credential_id),
                 |_| async { Ok(RefreshRecheck::Needed) },
                 move || async move {
                     task_provider_calls.fetch_add(1, Ordering::SeqCst);
@@ -1142,7 +1172,7 @@ async fn heartbeat_loss_before_provider_boundary_starts_no_provider_work() {
     let waiter = tokio::spawn(async move {
         task_coordinator
             .refresh_coalesced(
-                &credential_id,
+                &test_selector(credential_id),
                 |_| async { Ok(RefreshRecheck::Needed) },
                 move || async move {
                     task_provider_calls.fetch_add(1, Ordering::SeqCst);
@@ -1181,7 +1211,7 @@ async fn post_acquire_recheck_closes_stale_open_preflight_window() {
         async move {
             coordinator
                 .refresh_coalesced(
-                    &credential_id,
+                    &test_selector(credential_id),
                     move |_| {
                         let gate_installed = Arc::clone(&gate_installed);
                         async move {
@@ -1249,7 +1279,7 @@ async fn l1_waiter_receives_typed_gate_written_by_winner() {
         async move {
             coordinator
                 .refresh_coalesced(
-                    &credential_id,
+                    &test_selector(credential_id),
                     move |_| {
                         let gate = Arc::clone(&gate_for_recheck);
                         async move {
@@ -1289,7 +1319,7 @@ async fn l1_waiter_receives_typed_gate_written_by_winner() {
         async move {
             coordinator
                 .refresh_coalesced(
-                    &credential_id,
+                    &test_selector(credential_id),
                     move |_| {
                         let gate = Arc::clone(&gate_installed);
                         async move {
@@ -1348,7 +1378,7 @@ async fn hung_l2_release_cannot_wedge_l1_or_global_permit() {
 
     let result = coordinator
         .refresh_coalesced(
-            &credential_id,
+            &test_selector(credential_id),
             |_| async { Ok(RefreshRecheck::Needed) },
             || async { RefreshDisposition::state_advanced(55_u8) },
         )
@@ -1373,7 +1403,7 @@ async fn hung_l2_release_cannot_wedge_l1_or_global_permit() {
     let waiter = tokio::spawn(async move {
         waiter_coordinator
             .refresh_coalesced(
-                &credential_id,
+                &test_selector(credential_id),
                 |_| async { Ok(RefreshRecheck::Needed) },
                 move || async move {
                     waiter_duplicate_calls.fetch_add(1, Ordering::SeqCst);
@@ -1407,7 +1437,7 @@ async fn unknown_commit_ack_retains_claim_as_durable_poison() {
 
     let result = coordinator
         .refresh_coalesced(
-            &credential_id,
+            &test_selector(credential_id),
             |_| async { Ok(RefreshRecheck::Needed) },
             || async { RefreshDisposition::outcome_unknown(21_u8) },
         )
@@ -1428,7 +1458,7 @@ async fn definite_post_provider_failure_also_blocks_immediate_replay() {
 
     let result = coordinator
         .refresh_coalesced(
-            &credential_id,
+            &test_selector(credential_id),
             |_| async { Ok(RefreshRecheck::Needed) },
             || async { RefreshDisposition::retry_unsafe(34_u8) },
         )

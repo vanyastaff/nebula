@@ -14,6 +14,7 @@ fn _assert_object_safe(
     _j: &dyn WebhookActivationStore,
     _k: &dyn RefreshClaimStore,
     _l: &dyn ResumeTokenStore,
+    _m: &dyn RefreshClaimReclaimer,
 ) {
 }
 

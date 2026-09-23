@@ -216,7 +216,7 @@ impl CredentialService {
             .resolver
             .refresh_coordinator()
             .refresh_coalesced(
-                &credential_id,
+                &selector,
                 needs_refresh_after_backoff,
                 move || async move {
                     // Merge any display-only mutation that landed between the
@@ -657,7 +657,7 @@ impl CredentialService {
         let result = self
             .resolver
             .refresh_coordinator()
-            .refresh_coalesced(&credential_id, still_same_live_row, move || async move {
+            .refresh_coalesced(&selector, still_same_live_row, move || async move {
                 match ops
                     .revoke(
                         stored.credential_key(),

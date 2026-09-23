@@ -22,7 +22,7 @@ Legend:
 | nebula-api           | frontier | stable  | stable | partial (pure library; `apps/server` is its HTTP composition root and submits starts plus control commands through durable acceptance ports. `apps/worker` owns exact-flavor consumption and accepted-turn recovery. A supported deployment must point both roots at the same SQLite or PostgreSQL authority and declare the same runtime contract; the repository verifies each composition and cross-process recovery, but does not claim a packaged multi-process deployment profile yet.) | partial |
 | nebula-server        | frontier | stable  | partial | partial (thin composition root; selects transport via `--transport=api\|webhook\|realtime\|all`; verbatim-ported transport runtime from pre-refactor `nebula-api` bins; 3 nextest tests green; Postgres idempotency path gated behind `postgres` feature) | n/a |
 | nebula-core          | frontier (adds default-public `ExecutionContractBundleId`, `ExecutablePlanRevisionId`, `ExecutionContractBundleFingerprint`, and existing flavor digest vocabulary; representation only, with operational policy owned above) | stable  | stable | stable for existing shared vocabulary; the new execution-contract identities have no engine production-consumption claim | n/a |
-| nebula-credential    | stable | stable  | stable | stable (K3 closed 2026-09: owner-qualified reconciliation of durable `OutcomeUnknown` poison ships as the credential reconcile command; `CredentialController` is the sole management writer (writer-inventory test pins the authority structure); persisted credential state carries the ADR-0107 version envelope with fail-closed decode. Remaining debts — the durable sentinel-to-reauth command, transactional audit/outbox evidence, durable cross-aggregate convergence — and the ADR-0088 D1/D2/D6 status are recorded in `crates/credential/docs/DESIGN.md`.) | n/a |
+| nebula-credential    | stable | stable  | stable | stable (K3 authority closure advanced 2026-09: owner-qualified reconciliation of durable `OutcomeUnknown` poison ships as the credential reconcile command; threshold escalation atomically records the incident and commits `ReauthRequired`; `CredentialController` is the sole management writer (writer-inventory test pins the authority structure); persisted credential state carries the ADR-0107 version envelope with fail-closed decode. Remaining debts — transactional audit/outbox evidence and durable cross-aggregate convergence — and the ADR-0088 D1/D2/D6 status are recorded in `crates/credential/docs/DESIGN.md`.) | n/a |
 | nebula-crypto        | stable   | stable  | stable | n/a (cross-cutting leaf — AES-256-GCM + Argon2id + `Cipher`/`Kdf` ports + `EncryptedData`/`key_id` envelope; extracted from `nebula-credential` per ADR-0088/0092; consumed by `nebula-credential` + `nebula-storage`) | n/a |
 | nebula-env           | stable   | stable  | stable | n/a (cross-cutting typed environment reader — ADR-0086) | n/a |
 | nebula-engine        | partial  | stable  | stable | partial (the first-party worker constructs the exact-flavor `ControlConsumer`, atomically accepts claimed Start/Resume/Restart turns, recovers accepted turns, and drives remote effects through the durable operation ledger. Execution state carries exact plan, flavor, and bundle pins; genuine resume never reloads a newer workflow. Runtime authority is covered across the reference adapter, SQLite, and required live PostgreSQL conformance. Broader engine maturity remains partial: recorded non-default workflow checkpoint configuration, variables, and per-node timeouts are rejected, and internal stateful iteration recovery has no production checkpoint sink. Retry is intentionally operator-policy-driven, not result-driven.) | n/a |
@@ -56,8 +56,9 @@ Credential authority/persistence delivery is intentionally staged:
   and live PostgreSQL owner/concurrency suites are a required gate. Refresh/revoke now run behind
   one cancel-safe L1/L2 boundary: ambiguous provider or commit outcomes retain UUID-identified
   durable poison and never gain replay authority from elapsed TTL.
-- **K3 (debt):** add the durable sentinel-to-reauth command; replace trace-only audit with transactional
-  audit/outbox evidence.
+- **K3 (partial debt):** durable sentinel-to-reauth is implemented inside the owner-qualified
+  aggregate transaction; replace trace-only audit with transactional audit/outbox evidence and
+  close global operation-ledger idempotency.
 - **K4 (debt):** ship supported apps-owned membership/deployment composition and complete SDK
   client/embedded/procedural-derive paths. Concrete credential adapters now live in `apps/server`,
   but the default server still leaves workspace-directory and membership policy unwired, so tenant
@@ -177,13 +178,13 @@ ADR-0041 (refresh coordination; design archived — see the maintainers' private
 6 stages — Stage 1 storage infrastructure (`RefreshClaimRepo` trait + 3 impls + migrations
 0022/0023 + loom CAS probe); Stage 2 engine refactor (`L1RefreshCoalescer` private + new
 outer two-tier `RefreshCoordinator` composing L1 + L2 claim repo + sentinel set before
-IdP POST); Stage 3 sentinel N=3-in-1h threshold + lossy `ReauthRequired` observation +
-reclaim sweep with framework-owned coalesced re-read handling; the
-`reauth_required` field exists on `StoredCredential` and provider rejection persists it,
-but the sentinel-driven owner-qualified durable command remains K3; Stage 4 observability (5 metrics + 3 spans + 3
+IdP POST); Stage 3 originally shipped sentinel N=3-in-1h as a lossy observation and was later
+closed by owner-qualified migration 0054 plus atomic incident/aggregate convergence. The
+`reauth_required` field is now persisted both for exact provider rejection and threshold
+escalation; Stage 4 observability (5 metrics + 3 spans + 3
 audit events) + nightly chaos test (3 replicas × 100 creds × 10 min); Stage 5 doc sync.
 `nebula-credential` Engine integration handles the multi-replica mid-refresh race through
-the durable claim repo but remains `partial` until the K3 sentinel command lands. Closes n8n #13088 class production race
+the durable claim repo and atomic reauthentication escalation. Closes n8n #13088 class production race
 where rotated `refresh_token_v2` invalidates `refresh_token_v1` on a parallel replica.
 The concrete shared-L2 chaos harness lives in `nebula-storage`, is always ignored by ordinary
 test gates, and nightly CI opts into its 10-minute plane with `--features chaos-full

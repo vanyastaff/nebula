@@ -1323,11 +1323,10 @@ impl WorkflowEngine {
     /// Attach the background credential refresh reclaim sweep handle.
     ///
     /// Per sub-spec + the engine spawns a periodic task that
-    /// calls `RefreshClaimRepo::reclaim_stuck`, routes
-    /// `RefreshInFlight`-flagged stale claims through
-    /// [`nebula_credential::runtime::SentinelTrigger`], and publishes
-    /// `CredentialEvent::ReauthRequired` once the rolling-window
-    /// threshold is exceeded.
+    /// calls the owner-qualified `RefreshClaimReclaimer`, which atomically
+    /// accounts `RefreshInFlight` poison and commits the threshold-driven
+    /// credential transition. It publishes `CredentialEvent::ReauthRequired`
+    /// only after the durable transition is confirmed.
     ///
     /// The composition root constructs the handle via
     /// [`nebula_credential::runtime::ReclaimSweepHandle::spawn`] and

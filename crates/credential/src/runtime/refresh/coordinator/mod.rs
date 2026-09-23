@@ -10,7 +10,7 @@
 //! - **L2** -- `Arc<dyn nebula_storage_port::store::RefreshClaimStore>` (durable CAS-based claim
 //!   with TTL + heartbeat).
 //!
-//! Callers invoke `refresh_coalesced(credential_id, do_refresh)`. The
+//! Callers invoke `refresh_coalesced(selector, do_refresh)`. The
 //! coordinator acquires L1 first (fast in-process coalesce), then a
 //! durable L2 claim with contention backoff, runs the user's refresh
 //! closure under both locks, then finalizes L1 synchronously and L2 according
@@ -24,6 +24,7 @@ use std::{
 };
 
 use nebula_core::CredentialId;
+use nebula_storage_port::CredentialSelector;
 use nebula_storage_port::store::{
     ClaimAttempt, ClaimToken, HeartbeatError, RefreshClaim, RefreshClaimStore as RefreshClaimRepo,
     ReplicaId,
@@ -133,11 +134,9 @@ impl RefreshCoordinator {
     /// (`RefreshCoordClaimAcquired`, `RefreshCoordSentinelTriggered`, and
     /// `RefreshCoordReauthThresholdReached`).
     ///
-    /// These events are non-authoritative: the sentinel threshold path
-    /// publishes a lossy observation and does not itself durably set the
-    /// credential reauth bit. That durable consumer/command seam is K3 work.
-    /// Without a sink, audit emission is a no-op (the metric / tracing surfaces
-    /// still observe).
+    /// These events observe a transition already committed by the atomic
+    /// reclaim boundary. Without a sink, audit emission is a no-op (the metric
+    /// and tracing surfaces still observe).
     #[must_use = "builder methods must be chained or used"]
     pub fn with_audit_sink(mut self, sink: Arc<dyn AuditSink>) -> Self {
         self.audit_sink = Some(sink);
@@ -153,8 +152,8 @@ impl RefreshCoordinator {
 
     /// Borrow the audit sink (`None` if not configured). Used by the
     /// reclaim sweep to emit sentinel/threshold observations. The
-    /// `RefreshCoordReauthThresholdReached` is not proof of a durable
-    /// credential-state transition.
+    /// `RefreshCoordReauthThresholdReached` is emitted only after the durable
+    /// transition result is returned.
     #[must_use]
     pub(crate) fn audit_sink(&self) -> Option<&Arc<dyn AuditSink>> {
         self.audit_sink.as_ref()
@@ -165,15 +164,6 @@ impl RefreshCoordinator {
     #[must_use]
     pub(crate) fn config(&self) -> &RefreshCoordConfig {
         &self.config
-    }
-
-    /// Borrow the underlying claim repo for maintenance wiring such as the
-    /// reclaim sweep (Stage 3.3).
-    ///
-    /// Normal provider work must enter through [`Self::refresh_coalesced`],
-    /// which owns sentinel marking; callers must not reproduce that boundary.
-    pub(crate) fn repo(&self) -> &Arc<dyn RefreshClaimRepo> {
-        &self.repo
     }
 
     /// Acquire L1 mutex + L2 claim, run the refresh closure, release
@@ -254,14 +244,14 @@ impl RefreshCoordinator {
         name = "credential.refresh.coordinate",
         skip(self, needs_refresh_after_backoff, do_refresh),
         fields(
-            credential_id = %credential_id,
+            credential_id = %selector.credential_id(),
             replica_id = %self.replica_id,
             tier = tracing::field::Empty,
         ),
     )]
     pub async fn refresh_coalesced<F, Fut, T, P, PFut>(
         &self,
-        credential_id: &CredentialId,
+        selector: &CredentialSelector,
         needs_refresh_after_backoff: P,
         do_refresh: F,
     ) -> Result<T, RefreshError>
@@ -279,6 +269,7 @@ impl RefreshCoordinator {
         P: Fn(&CredentialId) -> PFut + Sync,
         PFut: Future<Output = Result<RefreshRecheck, RefreshRecheckError>> + Send,
     {
+        let credential_id = selector.credential_id();
         // L1: in-process coalescing.
         //
         // The L1 layer is keyed by string, so we hash on the typed id's
@@ -348,7 +339,7 @@ impl RefreshCoordinator {
                     // refresh epoch before this waiter runs.
                     let still_needs_refresh = match tokio::time::timeout(
                         self.config.refresh_timeout,
-                        needs_refresh_after_backoff(credential_id),
+                        needs_refresh_after_backoff(&credential_id),
                     )
                     .await
                     {
@@ -476,7 +467,7 @@ impl RefreshCoordinator {
 
         // L2: durable claim with backoff.
         let claim = self
-            .try_acquire_l2_with_backoff(credential_id, &needs_refresh_after_backoff)
+            .try_acquire_l2_with_backoff(selector, &needs_refresh_after_backoff)
             .await?;
 
         // Sub-spec -- record the claim acquisition once we know we own
@@ -492,7 +483,7 @@ impl RefreshCoordinator {
         self.metrics.claims_acquired.inc();
         emit_claim_acquired(
             self.audit_sink.as_deref(),
-            credential_id,
+            &credential_id,
             self.replica_id.as_str(),
             self.config.claim_ttl.as_secs(),
         );
@@ -510,7 +501,7 @@ impl RefreshCoordinator {
             claim.token.clone(),
             heartbeat_stop.clone(),
             claim_lost.clone(),
-            *credential_id,
+            credential_id,
         );
         let mut lease = RefreshLease::new(
             Arc::clone(&self.repo),
@@ -529,7 +520,7 @@ impl RefreshCoordinator {
         // sentinel/provider boundary without ever observing the gate.
         let post_claim_recheck = tokio::time::timeout(
             self.config.refresh_timeout,
-            needs_refresh_after_backoff(credential_id),
+            needs_refresh_after_backoff(&credential_id),
         )
         .await;
         match post_claim_recheck {
@@ -644,7 +635,7 @@ impl RefreshCoordinator {
     /// `try_claim` until we win the claim or exhaust the contention budget.
     async fn try_acquire_l2_with_backoff<P, PFut>(
         &self,
-        credential_id: &CredentialId,
+        selector: &CredentialSelector,
         needs_refresh_after_backoff: &P,
     ) -> Result<RefreshClaim, RefreshError>
     where
@@ -654,6 +645,7 @@ impl RefreshCoordinator {
         P: Fn(&CredentialId) -> PFut + Sync,
         PFut: Future<Output = Result<RefreshRecheck, RefreshRecheckError>> + Send,
     {
+        let credential_id = selector.credential_id();
         const POLL_CADENCE: [Duration; 4] = [
             Duration::from_millis(25),
             Duration::from_millis(50),
@@ -676,7 +668,7 @@ impl RefreshCoordinator {
             );
             let outcome = async {
                 self.repo
-                    .try_claim(credential_id, &self.replica_id, self.config.claim_ttl)
+                    .try_claim(selector, &self.replica_id, self.config.claim_ttl)
                     .await
             }
             .instrument(span)
@@ -744,7 +736,7 @@ impl RefreshCoordinator {
                     // contender's row is gone), invalidating any
                     // refresh_token rotation the contender just
                     // committed (n8n #13088 lineage).
-                    match needs_refresh_after_backoff(credential_id).await {
+                    match needs_refresh_after_backoff(&credential_id).await {
                         Ok(RefreshRecheck::Needed) => {
                             if tokio::time::Instant::now() >= contention_deadline {
                                 break;

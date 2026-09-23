@@ -60,7 +60,7 @@ use std::path::{Path, PathBuf};
 
 use syn::visit::Visit;
 
-/// The six claim-store write methods and their expected production call-site
+/// The claim lifecycle write methods and their expected production call-site
 /// counts on this tree.
 const EXPECTED_STORE_WRITES: [(&str, usize); 5] = [
     ("try_claim", 1),
@@ -70,7 +70,7 @@ const EXPECTED_STORE_WRITES: [(&str, usize); 5] = [
     ("reclaim_stuck", 1),
 ];
 
-/// Method names that are write calls on `RefreshClaimStore` / `RefreshClaimAdjudicator`.
+/// Method names that are write calls on the claim, reclaim, and adjudication roles.
 const WRITE_METHODS: [&str; 6] = [
     "try_claim",
     "mark_sentinel",
@@ -80,11 +80,16 @@ const WRITE_METHODS: [&str; 6] = [
     "adjudicate",
 ];
 
-/// The claim-store port traits a path-form write call may name (assertion (a)):
+/// The claim port traits a path-form write call may name (assertion (a)):
 /// `RefreshClaimStore::try_claim(..)`, `RefreshClaimAdjudicator::adjudicate(..)`,
-/// or `Self::<method>` inside either trait's impl. The provider contract's
+/// `RefreshClaimReclaimer::reclaim_stuck(..)`, or `Self::<method>` inside
+/// one of these trait impls. The provider contract's
 /// `Dynamic::release` is a path-form `release` and must not count.
-const CLAIM_SURFACE_TYPES: [&str; 2] = ["RefreshClaimStore", "RefreshClaimAdjudicator"];
+const CLAIM_SURFACE_TYPES: [&str; 3] = [
+    "RefreshClaimStore",
+    "RefreshClaimReclaimer",
+    "RefreshClaimAdjudicator",
+];
 
 /// The three claim-repo adapters whose inherent (non-trait) public surface
 /// must stay constructors-only.
@@ -1184,7 +1189,11 @@ fn sole_management_writer_inventory() {
             .any(|ident| ident == "CredentialController"),
         "ServerCredentialGateway must hold the CredentialController, found fields {gateway_fields:?}"
     );
-    for handle_ident in ["RefreshClaimAdjudicator", "RefreshClaimStore"] {
+    for handle_ident in [
+        "RefreshClaimAdjudicator",
+        "RefreshClaimReclaimer",
+        "RefreshClaimStore",
+    ] {
         assert!(
             !gateway_fields.iter().any(|ident| ident == handle_ident),
             "ServerCredentialGateway must never hold {handle_ident}, found fields {gateway_fields:?}"

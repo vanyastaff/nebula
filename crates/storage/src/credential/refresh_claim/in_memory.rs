@@ -1,18 +1,18 @@
 //! In-memory `RefreshClaimRepo` impl for tests + desktop-mode fallback.
 //!
 //! Single-process scope — no cross-replica coordination. CAS uses a
-//! `parking_lot::Mutex` over `HashMap<CredentialId, ClaimRow>`.
+//! `parking_lot::Mutex` over `HashMap<CredentialSelector, ClaimRow>`.
 
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use chrono::{DateTime, Utc};
-use nebula_core::CredentialId;
 use nebula_core::accessor::{Clock, SystemClock};
+use nebula_storage_port::CredentialSelector;
 use parking_lot::Mutex;
 use uuid::Uuid;
 
 use super::{
-    ClaimAttempt, ClaimToken, ExpiredClaim, HeartbeatError, RefreshAdjudication, RefreshClaim,
+    ClaimAttempt, ClaimToken, HeartbeatError, RefreshAdjudication, RefreshClaim,
     RefreshClaimAdjudicationError as RepoAdjudicationError, RefreshClaimAdjudicator,
     RefreshClaimRepo, RefreshOutcomeDecision, ReplicaId, RepoError, SentinelState,
     adjudicate_against_recorded_resolution, adjudication_evidence_digest,
@@ -46,8 +46,9 @@ struct SentinelAdjudication {
 /// One sentinel event record kept in the in-memory ring.
 #[derive(Clone, Debug)]
 struct SentinelEventRow {
-    credential_id: CredentialId,
+    selector: CredentialSelector,
     claim_id: Uuid,
+    #[expect(dead_code, reason = "retained as incident observability evidence")]
     detected_at: DateTime<Utc>,
     #[expect(dead_code, reason = "retained as incident observability evidence")]
     crashed_holder: ReplicaId,
@@ -62,7 +63,7 @@ struct SentinelEventRow {
 /// In-memory `RefreshClaimRepo`. Cheap to clone (Arc-backed inner).
 #[derive(Clone)]
 pub struct InMemoryRefreshClaimRepo {
-    inner: Arc<Mutex<HashMap<CredentialId, ClaimRow>>>,
+    inner: Arc<Mutex<HashMap<CredentialSelector, ClaimRow>>>,
     sentinel_events: Arc<Mutex<Vec<SentinelEventRow>>>,
     /// This adapter's clock, and the **only** clock the reconciliation
     /// mechanism accepts from a caller.
@@ -118,14 +119,14 @@ impl std::fmt::Debug for InMemoryRefreshClaimRepo {
 impl RefreshClaimRepo for InMemoryRefreshClaimRepo {
     async fn try_claim(
         &self,
-        credential_id: &CredentialId,
+        selector: &CredentialSelector,
         holder: &ReplicaId,
         ttl: Duration,
     ) -> Result<ClaimAttempt, RepoError> {
         let mut guard = self.inner.lock();
         let now = self.clock.now();
 
-        if let Some(existing) = guard.get(credential_id) {
+        if let Some(existing) = guard.get(selector) {
             if existing.expires_at >= now {
                 return Ok(ClaimAttempt::Contended {
                     existing_expires_at: existing.expires_at,
@@ -144,7 +145,7 @@ impl RefreshClaimRepo for InMemoryRefreshClaimRepo {
         // if we're overwriting.
 
         let claim_id = Uuid::new_v4();
-        let generation = guard.get(credential_id).map_or(0, |row| row.generation + 1);
+        let generation = guard.get(selector).map_or(0, |row| row.generation + 1);
         let acquired_at = now;
         let expires_at =
             now + chrono::Duration::from_std(ttl).map_err(|_| RepoError::InvalidState)?;
@@ -159,11 +160,12 @@ impl RefreshClaimRepo for InMemoryRefreshClaimRepo {
             // this reset cannot erase unaccounted in-flight evidence.
             sentinel: SentinelState::Normal,
         };
-        guard.insert(*credential_id, row);
+        guard.insert(selector.clone(), row);
 
         Ok(ClaimAttempt::Acquired(RefreshClaim {
-            credential_id: *credential_id,
+            selector: selector.clone(),
             token: ClaimToken {
+                selector: selector.clone(),
                 claim_id,
                 generation,
             },
@@ -179,8 +181,8 @@ impl RefreshClaimRepo for InMemoryRefreshClaimRepo {
         let now = self.clock.now();
 
         let row = guard
-            .values_mut()
-            .find(|r| r.claim_id == token.claim_id && r.generation == token.generation);
+            .get_mut(&token.selector)
+            .filter(|row| row.claim_id == token.claim_id && row.generation == token.generation);
         match row {
             Some(r) if r.expires_at > now => {
                 // Extend by `ttl` past now. Caller (RefreshCoordinator) must
@@ -211,9 +213,12 @@ impl RefreshClaimRepo for InMemoryRefreshClaimRepo {
             return Err(RepoError::ReleaseRefused);
         }
 
-        guard.retain(|_, row| {
-            !(row.claim_id == token.claim_id && row.generation == token.generation)
-        });
+        if guard
+            .get(&token.selector)
+            .is_some_and(|row| row.claim_id == token.claim_id && row.generation == token.generation)
+        {
+            guard.remove(&token.selector);
+        }
         Ok(())
     }
 
@@ -224,8 +229,8 @@ impl RefreshClaimRepo for InMemoryRefreshClaimRepo {
         // locking the row could mark a claim that expired meanwhile.
         let now = self.clock.now();
         let row = guard
-            .values_mut()
-            .find(|r| r.claim_id == token.claim_id && r.generation == token.generation);
+            .get_mut(&token.selector)
+            .filter(|row| row.claim_id == token.claim_id && row.generation == token.generation);
         // Mirrors heartbeat's claim-validity check: an absent or expired row
         // no longer authorizes provider egress. Silently succeeding would
         // let a holder whose TTL elapsed proceed to the IdP POST while the
@@ -238,86 +243,13 @@ impl RefreshClaimRepo for InMemoryRefreshClaimRepo {
             _ => Err(RepoError::InvalidState),
         }
     }
-
-    async fn reclaim_stuck(&self) -> Result<Vec<ExpiredClaim>, RepoError> {
-        let mut guard = self.inner.lock();
-        let mut events = self.sentinel_events.lock();
-        let now = self.clock.now();
-        let mut out = Vec::new();
-
-        let stuck: Vec<CredentialId> = guard
-            .iter()
-            .filter(|(credential_id, row)| {
-                if row.expires_at >= now {
-                    return false;
-                }
-                row.sentinel == SentinelState::Normal
-                    || !events.iter().any(|event| {
-                        event.credential_id == **credential_id && event.claim_id == row.claim_id
-                    })
-            })
-            .map(|(k, _)| *k)
-            .collect();
-
-        for cid in stuck {
-            let Some(row) = guard.get(&cid) else {
-                continue;
-            };
-            match row.sentinel {
-                SentinelState::Normal => {
-                    let row = guard.remove(&cid).ok_or(RepoError::InvalidState)?;
-                    out.push(ExpiredClaim::ReclaimedNormal {
-                        credential_id: cid,
-                        previous_holder: row.holder,
-                        previous_generation: row.generation,
-                    });
-                },
-                SentinelState::RefreshInFlight => {
-                    events.push(SentinelEventRow {
-                        credential_id: cid,
-                        claim_id: row.claim_id,
-                        detected_at: now,
-                        crashed_holder: row.holder.clone(),
-                        generation: row.generation,
-                        // Accounting records the incident; only an adjudication
-                        // may resolve it.
-                        adjudication: None,
-                    });
-                    out.push(ExpiredClaim::OutcomeUnknownAccounted {
-                        credential_id: cid,
-                        previous_holder: row.holder.clone(),
-                        previous_generation: row.generation,
-                    });
-                },
-            }
-        }
-
-        Ok(out)
-    }
-
-    async fn count_sentinel_events_in_window(
-        &self,
-        credential_id: &CredentialId,
-        window: Duration,
-    ) -> Result<u32, RepoError> {
-        let guard = self.sentinel_events.lock();
-        let window = chrono::Duration::from_std(window).map_err(|_| RepoError::InvalidState)?;
-        let window_start = self.clock.now() - window;
-        let count = guard
-            .iter()
-            .filter(|row| row.credential_id == *credential_id && row.detected_at > window_start)
-            .count();
-        // u32 is plenty — even at one sentinel event per second, 1h
-        // window caps at 3600.
-        Ok(u32::try_from(count).unwrap_or(u32::MAX))
-    }
 }
 
 #[async_trait::async_trait]
 impl RefreshClaimAdjudicator for InMemoryRefreshClaimRepo {
     async fn adjudicate(
         &self,
-        credential_id: &CredentialId,
+        selector: &CredentialSelector,
         decision: RefreshOutcomeDecision,
         evidence: &str,
     ) -> Result<RefreshAdjudication, RepoAdjudicationError> {
@@ -337,7 +269,7 @@ impl RefreshClaimAdjudicator for InMemoryRefreshClaimRepo {
         // predicate, same clock as `try_claim`, so a caller that just observed
         // `OutcomeUnknown` can always adjudicate what it saw.
         let poisoned = claims
-            .get(credential_id)
+            .get(selector)
             .filter(|row| row.expires_at < now && row.sentinel == SentinelState::RefreshInFlight)
             .map(|row| (row.claim_id, row.holder.clone(), row.generation));
 
@@ -353,7 +285,7 @@ impl RefreshClaimAdjudicator for InMemoryRefreshClaimRepo {
             // refusal names, since a set has no single incident to point at.
             let resolved: Vec<&SentinelAdjudication> = events
                 .iter()
-                .filter(|event| event.credential_id == *credential_id)
+                .filter(|event| event.selector == *selector)
                 .filter_map(|event| event.adjudication.as_ref())
                 .collect();
             let Some(newest) = resolved.last() else {
@@ -391,11 +323,11 @@ impl RefreshClaimAdjudicator for InMemoryRefreshClaimRepo {
                 &digest,
                 decision,
             )?;
-            claims.remove(credential_id);
+            claims.remove(selector);
             return Ok(recorded_adjudication);
         }
 
-        claims.remove(credential_id);
+        claims.remove(selector);
         let resolution = SentinelAdjudication {
             decision,
             evidence: evidence.to_owned(),
@@ -415,7 +347,7 @@ impl RefreshClaimAdjudicator for InMemoryRefreshClaimRepo {
                 // The sweep has not run yet, so the incident is created from
                 // the claim row's own identity rather than awaited.
                 events.push(SentinelEventRow {
-                    credential_id: *credential_id,
+                    selector: selector.clone(),
                     claim_id,
                     detected_at: now,
                     crashed_holder,
