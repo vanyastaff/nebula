@@ -149,7 +149,12 @@ impl TlsFixture {
                     if matches!(behavior, ServerBehavior::AbortAfterRequest) {
                         return;
                     }
-                    let _ = write_response(&mut stream, behavior, addr.port()).await;
+                    if write_response(&mut stream, behavior, addr.port())
+                        .await
+                        .is_ok()
+                    {
+                        let _ = stream.shutdown().await;
+                    }
                 });
             }
         });
