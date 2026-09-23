@@ -46,7 +46,7 @@ Integration authors consume credential contracts through curated SDK personas:
 |--------|----------------|
 | **Curated integration contract** | `nebula_sdk::integration::credential::{TestFailureCode, TestResult}` for provider credential-test outcomes. This is the supported SDK path for this contract. |
 | **Prelude** | `nebula_sdk::prelude::*` re-exports the common credential and OAuth2 types used in actions (`Credential`, `OAuth2Credential`, `OAuth2Token`, `CredentialContext`, `CredentialSnapshot`, …) — see `prelude.rs`. |
-| **Client state** | `nebula_sdk::client::credential::CredentialLifecycleState` is the secret-free durable availability projection. In-flight claims, leases, generations, fencing tokens, tenant proofs, and persistence tombstones are not client state. |
+| **Remote credential client contract** | `nebula_sdk::client::credential::v1` provides transport-neutral request/response models for create/list/get/delete, universal resolve/continue, revoke, lifecycle state, RFC 9457 credential problems, and `Retry-After`. The legacy `client::credential::CredentialLifecycleState` path remains a re-export of the SDK-owned v1 type. In-flight claims, leases, generations, fencing tokens, tenant proofs, and persistence tombstones are not client state. An HTTP executor is not shipped yet. |
 
 **Not in the SDK:** HTTP token exchange/refresh against a provider, storage encryption, and engine `CredentialResolver` — those are product/runtime concerns. If a contract needed by integration authors is absent from a curated SDK persona, treat that as an SDK API gap rather than depending directly on an implementation crate.
 
