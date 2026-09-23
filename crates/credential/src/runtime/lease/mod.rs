@@ -113,6 +113,8 @@ pub struct LeaseLifecycle {
 
 struct LeaseLifecycleInner {
     commands: mpsc::Sender<Command>,
+    shutdown: CancellationToken,
+    task: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl LeaseLifecycle {
@@ -129,11 +131,33 @@ impl LeaseLifecycle {
             commands: rx,
             lease_bus,
             metrics,
-            shutdown,
+            shutdown: shutdown.clone(),
         };
-        tokio::spawn(scheduler::run(inputs));
+        let task = tokio::spawn(scheduler::run(inputs));
         Self {
-            inner: Arc::new(LeaseLifecycleInner { commands: tx }),
+            inner: Arc::new(LeaseLifecycleInner {
+                commands: tx,
+                shutdown,
+                task: tokio::sync::Mutex::new(Some(task)),
+            }),
+        }
+    }
+
+    /// Cancel and join the scheduler task.
+    ///
+    /// Provider futures are cancelled by aborting the task after signalling
+    /// cooperative shutdown, so this method is bounded even when a provider
+    /// call is stalled.
+    pub async fn shutdown(&self) {
+        self.inner.shutdown.cancel();
+        let task = self.inner.task.lock().await.take();
+        if let Some(task) = task {
+            task.abort();
+            if let Err(error) = task.await
+                && !error.is_cancelled()
+            {
+                tracing::error!(%error, "credential lease scheduler task failed during shutdown");
+            }
         }
     }
 
@@ -262,6 +286,15 @@ impl LeaseLifecycle {
             );
             0
         })
+    }
+}
+
+impl Drop for LeaseLifecycleInner {
+    fn drop(&mut self) {
+        self.shutdown.cancel();
+        if let Some(task) = self.task.get_mut().take() {
+            task.abort();
+        }
     }
 }
 

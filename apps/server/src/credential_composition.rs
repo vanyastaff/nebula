@@ -12,9 +12,8 @@ use nebula_credential::{
     CredentialService, CredentialServiceError, DispatchError, DispatchOps, ErasedPendingStore,
     EventMetricObserver, SigningKeyCredential, StateSource, register_runtime_ops,
     runtime::{
-        CredentialLifecycleRuntime, CredentialResolver, LeaseLifecycle, LeaseLifecycleConfig,
-        ReclaimSweepHandle, RefreshCoordConfig, RefreshCoordMetrics, RefreshCoordinator,
-        SentinelEscalationPolicy,
+        CredentialLifecycleRuntime, CredentialResolver, LeaseLifecycleConfig, ReclaimSweepHandle,
+        RefreshCoordConfig, RefreshCoordMetrics, RefreshCoordinator, SentinelEscalationPolicy,
     },
 };
 use nebula_crypto::EncryptionKey;
@@ -71,8 +70,8 @@ impl CredentialRuntime {
         self.lifecycle.service()
     }
 
-    pub(crate) fn shutdown(&self) {
-        self.lifecycle.shutdown();
+    pub(crate) async fn shutdown(&self) {
+        self.lifecycle.shutdown().await;
     }
 
     #[cfg(test)]
@@ -340,27 +339,26 @@ where
         oauth_transport.clone(),
     )
     .with_event_bus(credential_events);
-    let shutdown = tokio_util::sync::CancellationToken::new();
-    let lease = LeaseLifecycle::spawn(
+    let lifecycle = CredentialLifecycleRuntime::compose(
+        reclaim_sweep,
         LeaseLifecycleConfig::default(),
         observer.lease_bus(),
         observer.metrics(),
-        shutdown.clone(),
+        |lease| {
+            let pending = ErasedPendingStore::new(Arc::new(InMemoryPendingStore::new()));
+            Arc::new(CredentialService::from_secure_parts(
+                store,
+                resolver,
+                lease,
+                pending,
+                registry,
+                ops,
+                observer,
+                oauth_transport,
+                StateSource::LocalEncrypted,
+            ))
+        },
     );
-    let pending = ErasedPendingStore::new(Arc::new(InMemoryPendingStore::new()));
-    let service = Arc::new(CredentialService::from_secure_parts(
-        store,
-        resolver,
-        lease,
-        pending,
-        registry,
-        ops,
-        observer,
-        oauth_transport,
-        StateSource::LocalEncrypted,
-    ));
-
-    let lifecycle = CredentialLifecycleRuntime::new(service, reclaim_sweep, shutdown);
 
     Ok(CredentialRuntime {
         lifecycle,
@@ -589,7 +587,7 @@ mod tests {
             !runtime.reclaim_sweep_is_finished(),
             "composition must retain a live periodic poison-accounting owner"
         );
-        runtime.shutdown();
+        runtime.shutdown().await;
         for _ in 0..8 {
             if runtime.reclaim_sweep_is_finished() {
                 break;

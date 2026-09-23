@@ -555,7 +555,7 @@ impl ServerRuntime {
         }
         // Stop every credential lifecycle task through its single owner after
         // request handling has drained. Drop remains the fail-safe path.
-        credential_runtime.shutdown();
+        credential_runtime.shutdown().await;
         drop(credential_runtime);
         serve_result?;
         Ok(())
