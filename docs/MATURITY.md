@@ -59,11 +59,12 @@ Credential authority/persistence delivery is intentionally staged:
 - **K3 (partial debt):** durable sentinel-to-reauth is implemented inside the owner-qualified
   aggregate transaction; replace trace-only audit with transactional audit/outbox evidence and
   close global operation-ledger idempotency.
-- **K4 (partial):** the supported first-party server now owns membership and workspace-directory
-  composition over the selected memory, SQLite, or PostgreSQL backend and shares that authority
-  with credential policy. It creates no implicit tenant or privileged owner; the operator bootstrap
-  path provisions them durably before serving. The supported SDK client and embedded deployment
-  facades remain debt.
+- **K4 (partial):** the first-party server owns membership and workspace-directory composition
+  over the selected backend and shares that authority with credential policy. SQLite and
+  PostgreSQL are the durable deployment profiles; memory is a process-local development/test
+  profile whose tenant authority disappears on restart. No profile creates an implicit tenant or
+  privileged owner. The operator bootstrap path provisions durable authority for SQLite/PostgreSQL
+  before serving. The supported SDK client and embedded deployment facades remain debt.
 
 ---
 

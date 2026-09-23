@@ -3,7 +3,7 @@
 | Field | Value |
 |---|---|
 | Status | Current implementation boundary; pre-1.0 |
-| Reviewed | 2026-09-22 |
+| Reviewed | 2026-09-23 |
 | Layer | Core/shared infrastructure |
 
 ## Bounded contexts
@@ -277,9 +277,11 @@ shared metadata authoring foundation is tracked in the
   idempotency is not yet structurally enforced. Transactional audit/outbox evidence and durable
   cross-aggregate convergence also remain open. Sentinel threshold escalation now commits within
   the credential aggregate's owner-qualified storage transaction.
-- **K4:** provide supported membership/deployment wiring and finish curated SDK
-  `client`/`embedded` façades without exposing internal authority. Production credential adapters
-  already live in `apps/server`; the API-side factory is an unsupported test fixture only.
+- **K4:** first-party membership and workspace-directory wiring is implemented in `apps/server`.
+  SQLite and PostgreSQL provide durable tenant authority after explicit operator bootstrap; memory
+  is a process-local development/test profile. Finish the curated SDK `client`/`embedded` façades
+  without exposing internal authority. Production credential adapters live in `apps/server`; the
+  API-side factory is an unsupported test fixture only.
 
 ### ADR-0088 status, updated 2026-09-22
 

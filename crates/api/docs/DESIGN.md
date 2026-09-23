@@ -101,9 +101,11 @@ handler/port adapter boundary, and public errors are always `application/problem
 - Google ID-token claim checks are live, but local rotating-JWKS signature verification remains an
   explicit security follow-up.
 - The first-party server wires the API directory and membership policy ports through one
-  apps-owned adapter over the selected memory, SQLite, or PostgreSQL identity stores. It reuses
-  the execution backend's admitted pool and preserves the API port's snapshot and atomic lockout
-  semantics. A fresh deployment still has no implicit tenant or owner: operators must provision
-  the durable organization, workspace, and initial owner before tenant routes can authorize it.
+  apps-owned adapter over the selected memory, SQLite, or PostgreSQL tenant-directory backend. It
+  reuses the execution backend's admitted pool and preserves the API port's snapshot and atomic
+  lockout semantics. This selection is independent of the Plane-A identity backend. A fresh
+  deployment still has no implicit tenant or owner: operators using SQLite or PostgreSQL must
+  provision the durable organization, workspace, and initial owner before tenant routes can
+  authorize it; memory is process-local development/test state.
   Several deliberately advertised 501 surfaces remain.
 - Live PostgreSQL suites are release evidence; skip-clean local tests do not constitute that proof.

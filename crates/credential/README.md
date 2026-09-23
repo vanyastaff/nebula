@@ -286,9 +286,10 @@ wired to a hardened injected transport.
   K3 still requires semantic idempotency/operation-ledger enforcement and a global sole management
   writer; technical runtime and persistence seams remain available to trusted composition.
 - The first-party server supplies the apps-owned workspace-directory and membership composition
-  over its selected memory, SQLite, or PostgreSQL backend. It creates no implicit tenant or owner;
-  the operator bootstrap path must provision durable authority before credential commands can be
-  authorized. K4 still owes the supported SDK client and embedded deployment facades.
+  over its selected memory, SQLite, or PostgreSQL tenant-directory backend. It creates no implicit
+  tenant or owner. SQLite and PostgreSQL require operator bootstrap of durable authority before
+  credential commands can be authorized; memory remains a process-local development/test profile.
+  K4 still owes the supported SDK client and embedded deployment facades.
 
 ## Related
 
