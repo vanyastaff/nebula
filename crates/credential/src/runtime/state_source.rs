@@ -1,8 +1,8 @@
-//! Polymorphic credential state source. Replaces the resolver's
-//! hardcoded "state always from `CredentialPersistence`" (spec §8 — no
-//! adapter/bridge). `External` fulfils external provider's deferred Phase-D
-//! non-goal: resolved secrets carrying a lease are tracked via
-//! `LeaseLifecycle`.
+//! Credential material source selected by application composition.
+//!
+//! Local encrypted persistence is the implemented service/projection path.
+//! External providers have a contract but are not wired into that path; selecting
+//! one fails closed rather than falling back to local material.
 
 use std::sync::Arc;
 
@@ -15,9 +15,8 @@ pub enum StateSource {
     /// The crate-private layered encrypted store (default).
     #[default]
     LocalEncrypted,
-    /// An external secret provider chain (Vault, etc.). A
-    /// `ProviderResolution` carrying a lease is handed to
-    /// `LeaseLifecycle::track`.
+    /// An external secret provider chain (Vault, etc.). Service and projection
+    /// resolution reject this source until its provider/lease bridge is wired.
     External(Arc<dyn ExternalProvider>),
 }
 

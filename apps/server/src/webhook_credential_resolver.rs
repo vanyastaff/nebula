@@ -131,7 +131,10 @@ mod tests {
         MockClock, RequiredPolicy, SignatureError, SignatureScheme, WebhookRequest,
         hmac_sha256_compute,
     };
-    use nebula_credential::CredentialDisplay;
+    use nebula_api::ports::credential_command::test_controller_from_service;
+    use nebula_credential::{
+        CredentialActor, CredentialCommand, CredentialCommandResult, CredentialDisplay,
+    };
     use nebula_storage::credential::{EnvKeyProvider, KeyProvider};
     use serde_json::json;
 
@@ -219,18 +222,25 @@ mod tests {
     async fn resolver_round_trips_stored_signing_material() {
         let service = service().await;
         let scope = Scope::new("ws_round_trip", "org_round_trip");
-        let tenant = TenantScope::from_scope(&scope);
         let expected = [0x5a_u8; 32];
         let stored = format!("whsec_{}", BASE64_STANDARD.encode(expected));
-        let head = service
-            .create(
-                &tenant,
-                "signing_key",
-                json!({ "key": stored, "algorithm": "hmac-sha256" }),
-                CredentialDisplay::default(),
+        let controller = test_controller_from_service(Arc::clone(&service));
+        let actor = CredentialActor::user(nebula_core::UserId::new());
+        let result = controller
+            .execute(
+                &actor,
+                &scope,
+                CredentialCommand::Create {
+                    credential_key: nebula_core::credential_key!("signing_key"),
+                    properties: json!({ "key": stored, "algorithm": "hmac-sha256" }),
+                    display: CredentialDisplay::default(),
+                },
             )
             .await
             .expect("signing credential is created");
+        let CredentialCommandResult::Head(head) = result else {
+            panic!("create command must return the stored head");
+        };
 
         let resolver = CredentialBackedWebhookSecretResolver::new(service);
         let actual = resolver
@@ -263,17 +273,24 @@ mod tests {
     async fn resolver_rejects_cross_tenant_credential_without_leaking_material() {
         let service = service().await;
         let owner_scope = Scope::new("ws_owner", "org_owner");
-        let owner = TenantScope::from_scope(&owner_scope);
         let stored = format!("whsec_{}", BASE64_STANDARD.encode([0x6b_u8; 32]));
-        let head = service
-            .create(
-                &owner,
-                "signing_key",
-                json!({ "key": stored, "algorithm": "hmac-sha256" }),
-                CredentialDisplay::default(),
+        let controller = test_controller_from_service(Arc::clone(&service));
+        let actor = CredentialActor::user(nebula_core::UserId::new());
+        let result = controller
+            .execute(
+                &actor,
+                &owner_scope,
+                CredentialCommand::Create {
+                    credential_key: nebula_core::credential_key!("signing_key"),
+                    properties: json!({ "key": stored, "algorithm": "hmac-sha256" }),
+                    display: CredentialDisplay::default(),
+                },
             )
             .await
             .expect("owner credential is created");
+        let CredentialCommandResult::Head(head) = result else {
+            panic!("create command must return the stored head");
+        };
 
         let resolver = CredentialBackedWebhookSecretResolver::new(service);
         let error = resolver

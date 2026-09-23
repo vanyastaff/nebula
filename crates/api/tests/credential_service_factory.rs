@@ -1,5 +1,5 @@
 //! The credential-service factory composes a working service and the wired
-//! service performs a real create/get round-trip.
+//! service performs a real controller-create/service-get round-trip.
 //!
 //! This is the runtime proof for the factory's two load-bearing invariants:
 //! (1) `CredentialServiceBuilder::build` runs a capability⊆ops gate, so a
@@ -9,9 +9,11 @@
 
 use std::sync::Arc;
 
+use nebula_api::ports::credential_command::test_controller_from_service;
 use nebula_api::ports::credential_service_factory::{with_memory_store, with_store};
-use nebula_credential::CredentialDisplay;
-use nebula_credential::TenantScope;
+use nebula_credential::{
+    CredentialActor, CredentialCommand, CredentialCommandResult, CredentialDisplay, TenantScope,
+};
 use nebula_storage::credential::{EnvKeyProvider, SqliteCredentialPersistence};
 use serde_json::json;
 
@@ -30,18 +32,26 @@ async fn factory_builds_service_and_create_round_trips() {
 
     // A non-interactive create round-trips through the wired ops + display.
     let scope = TenantScope::new("org", "ws");
-    let head = svc
-        .create(
-            &scope,
-            "api_key",
-            json!({ "api_key": "k-factory-test" }),
-            CredentialDisplay {
-                display_name: Some("Test key".to_owned()),
-                ..Default::default()
+    let controller = test_controller_from_service(Arc::clone(&svc));
+    let actor = CredentialActor::user(nebula_core::UserId::new());
+    let result = controller
+        .execute(
+            &actor,
+            &nebula_storage_port::Scope::new("ws", "org"),
+            CredentialCommand::Create {
+                credential_key: nebula_core::credential_key!("api_key"),
+                properties: json!({ "api_key": "k-factory-test" }),
+                display: CredentialDisplay {
+                    display_name: Some("Test key".to_owned()),
+                    ..Default::default()
+                },
             },
         )
         .await
         .expect("api_key create succeeds");
+    let CredentialCommandResult::Head(head) = result else {
+        panic!("create command must return the stored head");
+    };
     assert_eq!(head.credential_key, "api_key");
     assert_eq!(head.display.display_name.as_deref(), Some("Test key"));
 
@@ -68,18 +78,26 @@ async fn factory_composes_over_durable_sqlite_store_and_round_trips() {
     let svc = with_store(store, key).expect("service composes over SQLite backend");
 
     let scope = TenantScope::new("org", "ws");
-    let head = svc
-        .create(
-            &scope,
-            "api_key",
-            json!({ "api_key": "k-sqlite-test" }),
-            CredentialDisplay {
-                display_name: Some("Durable key".to_owned()),
-                ..Default::default()
+    let controller = test_controller_from_service(Arc::clone(&svc));
+    let actor = CredentialActor::user(nebula_core::UserId::new());
+    let result = controller
+        .execute(
+            &actor,
+            &nebula_storage_port::Scope::new("ws", "org"),
+            CredentialCommand::Create {
+                credential_key: nebula_core::credential_key!("api_key"),
+                properties: json!({ "api_key": "k-sqlite-test" }),
+                display: CredentialDisplay {
+                    display_name: Some("Durable key".to_owned()),
+                    ..Default::default()
+                },
             },
         )
         .await
         .expect("api_key create succeeds against SQLite store");
+    let CredentialCommandResult::Head(head) = result else {
+        panic!("create command must return the stored head");
+    };
     assert_eq!(head.credential_key, "api_key");
 
     let got = svc

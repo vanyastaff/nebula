@@ -22,7 +22,7 @@ use crate::{
 use super::error::CredentialServiceError;
 use super::facade::{CredentialService, ManagementRefreshReport};
 use super::head::CredentialHead;
-use super::scope::TenantScope;
+use crate::TenantScope;
 
 enum CoordinatedRefreshResult {
     Committed(CredentialHead),
@@ -43,7 +43,7 @@ impl CredentialService {
     /// - [`CredentialServiceError::NotFound`] — absent or cross-tenant id.
     /// - [`CredentialServiceError::CapabilityUnsupported`] — type is not `Testable`.
     /// - [`CredentialServiceError::Provider`] — the probe itself failed.
-    pub async fn test(
+    pub(crate) async fn test(
         &self,
         scope: &TenantScope,
         id: &str,
@@ -117,7 +117,7 @@ impl CredentialService {
     ///   retained for an explicit caller policy.
     /// - [`CredentialServiceError::TransientProvider`] — coordination failed
     ///   before provider dispatch and stored material is expired.
-    pub async fn refresh(
+    pub(crate) async fn refresh(
         &self,
         scope: &TenantScope,
         id: &str,
@@ -610,7 +610,7 @@ impl CredentialService {
     /// - [`CredentialServiceError::RevokePostProviderPersistence`] — provider
     ///   revoke completed exactly, but durable tombstone finalization failed or
     ///   a concurrent exact winner requires reconciliation.
-    pub async fn revoke(
+    pub(crate) async fn revoke(
         &self,
         scope: &TenantScope,
         id: &str,

@@ -1,74 +1,48 @@
-//! # nebula-credential
+//! Typed integration credentials, lifecycle runtime, and authorized management.
 //!
-//! **Role:** Credential Contract — stored state vs projected auth material;
-//! engine-owned rotation and refresh. Integration-model boundary; credential secrecy.
+//! [`Credential`] separates validated setup [`Properties`](Credential::Properties),
+//! encrypted stored [`State`](Credential::State), and consumer-facing
+//! [`Scheme`](Credential::Scheme). Capability traits such as [`Refreshable`] and
+//! [`Interactive`] declare the operations an integration implements.
 //!
-//! The engine owns the split between stored `State` (encrypted at rest) and the
-//! projected auth material action code receives. Action authors bind to a
-//! `Credential` type; they never hand-roll token refresh, never hold plaintext
-//! secrets longer than necessary, and never see secrets in logs.
+//! This crate owns resolution, refresh coordination, and lease lifecycle. The
+//! engine consumes credential ports; it does not own credential state or refresh.
+//! Persistence contracts live in `nebula-storage-port`, their implementations in
+//! `nebula-storage`, and production composition in `apps/server` and `apps/worker`.
 //!
-//! ## Quick start
+//! # Entry points
 //!
-//! Secrets are zeroizing wrappers — redacted in `Debug`, wiped from memory on drop:
+//! - Integration authors implement [`Credential`] and its capability traits.
+//!   `nebula-sdk` provides the supported authoring surface.
+//! - Execution consumers resolve slots through [`CredentialSlotResolver`] and
+//!   receive an [`ErasedCredentialGuard`] with checked typed extraction.
+//! - Workers compose [`CredentialProjectionRuntime`], which owns no management,
+//!   refresh, or lease authority.
+//! - Authenticated management enters through [`CredentialController`]. The
+//!   underlying [`CredentialService`] remains a trusted technical API, not an
+//!   independently authorized public management surface.
+//!
+//! Canonical imports use flat root re-exports, such as
+//! `use nebula_credential::SecretString;`. Module paths expose implementation
+//! organization; direct use of this crate is not a separately supported SDK.
+//!
+//! # Secret handling
 //!
 //! ```
 //! use nebula_credential::SecretString;
 //!
-//! let token = SecretString::new("xoxb-secret-value".to_owned());
-//! assert_eq!(token.expose_secret(), "xoxb-secret-value");
-//! // The secret never leaks through Debug formatting:
-//! assert!(!format!("{token:?}").contains("xoxb-secret-value"));
-//! // `token` is zeroized as it drops at end of scope.
+//! let token = SecretString::new("example-token".to_owned());
+//! assert_eq!(token.expose_secret(), "example-token");
+//! assert!(!format!("{token:?}").contains("example-token"));
 //! ```
 //!
-//! Action authors bind to a [`Credential`] type that maps stored `Properties`
-//! into projected auth material; the engine owns refresh and rotation, so action
-//! code never hand-rolls token lifecycles.
+//! Secret wrappers redact diagnostics and zeroize on drop. The secure storage
+//! composition encrypts state with authenticated encryption; operator key policy
+//! belongs to the composition root. Credential properties are literal data and
+//! never execute workflow expressions. Consumers receive projected schemes,
+//! not stored state or persistence handles.
 //!
-//! ## Canonical import paths
-//!
-//! This crate follows the tokio/tracing idiom: submodules (`contract`,
-//! `secrets`, `credentials`) are `pub` for escape hatches, but the canonical
-//! public surface is **flat re-exports at the root**. Prefer
-//! `use nebula_credential::SecretString;` over
-//! `use nebula_credential::secrets::SecretString;`.
-//!
-//! ## Key types
-//!
-//! - `Credential` — base trait: `resolve()`, `project()`. Capability methods
-//!   (`continue_resolve`, `refresh`, `revoke`, `test`, `release`) live on dedicated sub-traits per
-//!   Tech Spec §15.4 — `Interactive`, `Refreshable`, `Revocable`, `Testable`, `Dynamic`. Phase 5 of
-//!   the M6 redesign renamed `Credential::Input` → `Credential::Properties` to mirror
-//!   `Action::Input` / `Resource::Config`; the `Properties: HasSchema` bound is the single
-//!   source of truth, read via `nebula_schema::schema_of::<C::Properties>()` (schema-of properties — no
-//!   per-trait schema method).
-//! - `CredentialMetadata` — static type descriptor: key, name, schema, `AuthPattern`.
-//! - `CredentialRecord` — runtime operational state (created_at, version, expiry, tags). Previously
-//!   named `Metadata` (ADR 0004).
-//! - `nebula_storage_port::CredentialPersistence` — the directly object-safe,
-//!   owner-scoped persistence port. Concrete adapters and encryption/cache/audit
-//!   decorators live in `nebula-storage`; this crate retains the controller,
-//!   never a parallel store trait or dyn bridge.
-//! - Runtime resolution (resolver / refresh-coordinator / lease / rotation-state)
-//!   lives in this crate's `runtime` module (relocated from `nebula-engine` per
-//!   ADR-0092); the engine keeps only the accessor bridges + a test coordinator.
-//! - `SecretString`, `CredentialGuard` — zeroizing secret wrappers.
-//! - AES-256-GCM primitives (`EncryptedData`, `EncryptionKey`, `encrypt_with_aad`,
-//!   `encrypt_with_key_id`, `decrypt`, `decrypt_with_aad`) moved to `nebula-crypto`
-//!   (ADR-0088). The AAD-free `encrypt` path is intentionally not exposed (SEC-11).
-//! - `#[credential]` (attribute), `#[derive(AuthScheme)]` — authoring macros.
-//!
-//! ## Security invariant (credential secrecy)
-//!
-//! Encryption at rest: AES-256-GCM with an operator-supplied 256-bit key and
-//! credential ID bound as AAD. `nebula-crypto` also provides Argon2id for
-//! password-derived keys, but the default `EnvKeyProvider` consumes raw key
-//! material and does not run a KDF. No bypass for debugging. All intermediate
-//! plaintext lives in `Zeroizing<Vec<u8>>`; credential `Debug` implementations
-//! redact secret and user-controlled display fields.
-//!
-//! See `crates/credential/README.md` for the full contract and canon invariants.
+//! See the crate README and `docs/DESIGN.md` for current guarantees and limits.
 #![forbid(unsafe_code)]
 // Library-first API-surface hardening: a `pub` item unreachable from outside
 // the crate should be `pub(crate)` so the public surface stays intentional
@@ -83,8 +57,8 @@
 extern crate self as nebula_credential;
 
 // ── Submodules ──────────────────────────────────────────────────────────────
-// Thematic groupings; each is `pub` for escape hatches but the canonical
-// public surface is the flat root re-exports below.
+// Public contract groupings and private implementation modules. Canonical
+// imports use the flat root re-exports below.
 
 /// Credential contract surface — Credential trait + associated types + resolve types.
 pub mod contract;
@@ -103,7 +77,7 @@ pub mod scheme;
 /// credential secrecy primitives — guards, zeroizing wrappers, PKCE + serde helpers (AES-256-GCM moved to nebula-crypto).
 pub mod secrets;
 
-// ── Flattened modules (previously nested under accessor/ and metadata/) ───
+// ── Shared domain types ─────────────────────────────────────────────────────
 
 /// Credential accessor stub — NoopCredentialAccessor + default_credential_accessor.
 ///
@@ -130,6 +104,8 @@ pub use nebula_metadata::{MetadataError, MetadataName, metadata_name};
 mod no_credential;
 /// Credential record — runtime operational state (timestamps, version, tags).
 mod record;
+/// Shared tenant identity and interactive authentication binding.
+mod scope;
 
 // ── Utility modules ─────────────────────────────────────────────────────────
 // Free-standing concerns: errors, storage, refresh coordinator, etc.
@@ -138,18 +114,16 @@ mod record;
 pub(crate) mod erased;
 /// Error types for credential operations.
 pub mod error;
-/// Credential lifecycle events for cross-crate signaling.
+/// Ephemeral lifecycle observations; never durable command delivery.
 pub(crate) mod event;
 /// Pending state store trait for interactive credential flows.
 pub mod pending_store;
-/// Credential lifecycle orchestration the execution engine drives —
-/// resolution executor, capability dispatchers, scoped accessor (ADR-0092,
-/// relocated from `nebula-engine::credential`).
+/// Credential-owned resolution, projection, refresh coordination, and lease lifecycle.
 pub mod runtime;
 /// Credential semantic service plus the authority-bound management controller
 /// (ADR-0092, relocated from `nebula-credential-runtime`). Supported
 /// authenticated HTTP management enters through the controller; technical
-/// runtime/service seams remain direct until K3.
+/// service mutations are crate-private. Global ledger enforcement remains K3 work.
 pub(crate) mod service;
 /// Credential snapshot.
 pub(crate) mod snapshot;
@@ -280,22 +254,29 @@ pub use crate::{
     state_envelope::StateEnvelopeError,
 };
 
-// CredentialService facade (ADR-0092, relocated from nebula-credential-runtime).
-// The `CredentialServiceBuilder` is NOT re-exported here: it pulls in
-// `nebula-storage` + `nebula-engine` deps and lives at the api composition root.
+// Management contracts and trusted application-composition collaborators.
+// Production composition belongs to apps/server; these are not SDK authoring APIs.
 pub use service::{
-    Acquisition, AuthorizationDecision, CredentialActor, CredentialAuthenticationBinding,
-    CredentialAuthenticationBindingError, CredentialAuthorizationError, CredentialCommand,
-    CredentialCommandResult, CredentialController, CredentialControllerError,
-    CredentialDisplayPatch, CredentialGuardMetadata, CredentialHead, CredentialObserver,
-    CredentialOperation, CredentialProjectionRuntime, CredentialProjectionRuntimeBuildError,
-    CredentialService, CredentialServiceError, CredentialSlotResolveError, CredentialSlotResolver,
-    CredentialTenantAuthority, CredentialTypeInfo, CredentialValidationIssue,
-    CredentialValidationReport, DispatchError, DispatchOps, ErasedCredentialGuard,
-    ErasedCredentialGuardTypeError, EventMetricObserver, ManagementRefreshReport, NoopObserver,
-    StateSource, TenantFingerprint, TenantScope, TypeCapabilities, ValidatedCredentialBinding,
-    ValidatedCredentialBindingError, register_all_builtin_ops, register_interactive_ops,
-    register_refreshable_ops, register_revocable_ops, register_runtime_ops, register_testable_ops,
+    Acquisition, AuthorizationDecision, CredentialActor, CredentialAuthorizationError,
+    CredentialCommand, CredentialCommandResult, CredentialController, CredentialControllerError,
+    CredentialDisplayPatch, CredentialHead, CredentialObserver, CredentialOperation,
+    CredentialService, CredentialServiceError, CredentialTenantAuthority, CredentialTypeInfo,
+    CredentialValidationIssue, CredentialValidationReport, DispatchError, DispatchOps,
+    EventMetricObserver, ManagementRefreshReport, NoopObserver, TenantFingerprint,
+    TypeCapabilities, ValidatedCredentialBinding, ValidatedCredentialBindingError,
+    register_all_builtin_ops, register_interactive_ops, register_refreshable_ops,
+    register_revocable_ops, register_runtime_ops, register_testable_ops,
+};
+
+// Execution consumers receive projected guards through a read-only boundary.
+pub use runtime::projection::{
+    CredentialGuardMetadata, CredentialProjectionRuntime, CredentialProjectionRuntimeBuildError,
+    CredentialSlotResolveError, CredentialSlotResolver, ErasedCredentialGuard,
+    ErasedCredentialGuardTypeError,
+};
+pub use runtime::state_source::StateSource;
+pub use scope::{
+    CredentialAuthenticationBinding, CredentialAuthenticationBindingError, TenantScope,
 };
 
 // ── Prelude ───────────────────────────────────────────────────────────────────

@@ -16,7 +16,7 @@
 ## Commands
 
 - Feature flags: `rotation` (gated, evolving)
-- `tests/compile_fail_*.rs` encode capability, sensitivity, guard, and slot invariants. For a timeout, reproduce the affected target with `cargo test -p nebula-credential --test <target>` to distinguish compilation cost from a hang, then rerun the required nextest check. Never accept a timeout as passing evidence.
+- `tests/compile_fail_*.rs` encode capability, sensitivity, guard, slot, and service-management visibility invariants. For a timeout, reproduce the affected target with `cargo test -p nebula-credential --test <target>` to distinguish compilation cost from a hang, then rerun the required nextest check. Never accept a timeout as passing evidence.
 
 ## Key files
 
@@ -25,7 +25,9 @@
 - `src/scheme/` — `AuthScheme` base + `SensitiveScheme`/`PublicScheme` dichotomy (§15.5) + 9 built-in scheme types.
 - `src/secrets/` — `SecretString`, `CredentialGuard`, `SchemeGuard`/`SchemeFactory` refresh surface, PKCE helpers (AES-GCM crypto moved out, see below).
 - `src/runtime/resolver/mod.rs` — `CredentialResolver` (cached handles, `scheme_factory`, `resolve_with_refresh`).
-- `src/service/facade.rs` — `CredentialService` (`resolve_for_slot`, `scheme_factory` for §15.7 resource pools).
+- `src/service/facade.rs` — `CredentialService` construction; public technical reads and slot projection, crate-private management operations.
+- `src/runtime/projection/` — shared read-only slot projection and worker composition; service adapters delegate here.
+- `src/scope.rs` — shared tenant identity/authentication binding; `src/runtime/state_source.rs` — configured material source.
 - `src/service/controller.rs` — one-decision authority boundary; `src/service/crud.rs` — semantic mutations and property validation.
 - `src/lifecycle.rs` — capabilities-as-data (`CredentialPolicy`/`RefreshStrategy`/`RevokeStrategy`, ADR-0088 D2).
 - `src/provider/` — `ExternalProvider` chain for Vault/AWS/GCP/Azure secret managers (ADR-0051); error-discriminated fallback (only `NotFound` falls through).
@@ -61,6 +63,7 @@
 - Refresh authority is the backend-authored material epoch, not serialized-byte equality or the general row version. Display/gate transitions preserve it; explicit material/reconnect, every durable reauthentication decision, and every successful refresh advance it even for byte-identical data and clear the old gate. Exact local finalization failures remain distinct from `OutcomeUnknown` for both winners and payload-free L1 waiters, and both retain the claim fail-closed.
 - First-party management/refresh wiring belongs in `apps/server`; worker wiring is limited to `CredentialProjectionRuntime` and must not construct refresh, lease, reclaim, or management authority. `nebula-api::ports::credential_service_factory` is an unsupported `test-util` fixture and must never acquire production or provider policy.
 - Supported authenticated HTTP management calls enter through `CredentialController`: one injected `CredentialTenantAuthority` decision, then one privately minted owner-bound command. Port-local owner/selector constructors and `CredentialPersistence` are public technical data/contracts, not authority and not supported SDK/API surfaces. Never add `None == admin`, expose those handles to handlers/integrations, or describe K1 as the K3 sole-writer/ledger closure.
+- Service management operations (`create`, `update`, `delete`, `test`, `refresh`, `revoke`, `resolve`, `continue_resolve`) are crate-private. External callers submit `CredentialCommand` through `CredentialController`; do not reopen direct service operations for fixtures. Public technical reads, binding validation, and slot projection remain available. The low-level resolver's `scheme_factory`/`resolve_with_refresh` remain technical APIs; they are not production slot-refresh wiring or proof of K3 closure.
 
 ## Change checks
 
@@ -69,6 +72,7 @@
 | Validation and secrecy | [properties_pipeline](tests/properties_pipeline.rs), [redaction](tests/redaction.rs), [serde_redaction](tests/serde_redaction.rs). |
 | Capability registration | [registry_capabilities_iter](tests/registry_capabilities_iter.rs), [runtime_duplicate_key_fatal](tests/runtime_duplicate_key_fatal.rs), and the affected compile-fail suite. |
 | Refresh and persistence boundary | [refresh_routing_architecture](tests/refresh_routing_architecture.rs), plus the affected storage refresh/lifecycle tests; local runtime tests alone do not prove backend atomicity. |
+| Service management visibility | [compile_fail_service_mutations_private](tests/compile_fail_service_mutations_private.rs); controller tests separately cover authority and dispatch. Visibility alone does not prove operation-ledger idempotency or a global sole-writer boundary. |
 
 ## See also
 

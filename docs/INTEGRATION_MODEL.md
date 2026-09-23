@@ -424,6 +424,14 @@ Long-lived managed object: connection pool, SDK client, file handle. Resource li
 
 **Plane B (integration credentials):** workflow-facing secrets for **external** systems (API keys, OAuth to third parties, certificates, …) live in this model. They are **not** the same as authenticating **to Nebula**. Plane-A identity policy, fixed Google/GitHub.com sign-in profiles, provider client secrets, browser/API sessions, PATs, and MFA belong to the `nebula-api` auth boundary plus the server composition root — never `CredentialService`. The selected Memory backend provides process-local atomicity; PostgreSQL delegates its short user/link/session-or-MFA finalizer and globally capped OAuth-state admission to storage-owned seams. Provider egress never runs under finalizer locks, `(provider, subject)` is authoritative, and verified email alone never authorizes account linking. Future SSO/LDAP work must extend Plane A rather than leaking host identity into `nebula-credential`. This crate split is an implementation boundary: `nebula-sdk` remains the sole supported, branded Rust surface.
 
+**Management and execution boundaries:** external management callers submit `CredentialCommand`
+through `CredentialController`; `CredentialService` management methods are crate-private.
+Execution workers use the read-only `CredentialProjectionRuntime`, sharing slot projection with
+the service without acquiring refresh/lease authority. The service's unused `scheme_factory`
+wrapper has been removed. Low-level resolver APIs remain technical composition seams; neither
+this visibility boundary nor slot projection provides global operation-ledger enforcement or
+automatic execution-time refresh.
+
 **Rotation/refresh failure contract:** an integration receives projected auth material, never claim
 tokens or storage mutation authority. Refresh/revoke is single-flight in-process and across
 replicas. The durable claim is marked `RefreshInFlight` before provider egress; caller

@@ -1,20 +1,24 @@
-//! Credential lifecycle orchestration (ADR-0092).
+//! Credential-owned execution and lifecycle machinery.
 //!
-//! These modules host the runtime resolution/dispatch primitives the execution
-//! engine drives. They were relocated here from `nebula-engine::credential` so
-//! the whole credential subsystem lives in one crate; they depend only on the
-//! contract types in this crate (no `nebula-engine` / `nebula-storage` edge).
+//! Projection is read-only and shared by management and worker runtimes.
+//! Acquisition, refresh coordination, and lease lifecycle belong to the
+//! management runtime. Provider transport implementations and persistence
+//! backends are injected by the application composition roots.
 
 pub mod acquisition;
 pub mod dispatchers;
 pub mod executor;
 pub mod lease;
 pub mod oauth_egress;
+/// Read-only projection shared by management and execution-worker runtimes.
+pub(crate) mod projection;
 pub mod refresh;
 /// Resolution error taxonomy + fail-closed owner/tombstone gates (split from
 /// `resolver` for size; behaviour-preserving).
 mod resolve_error;
 pub mod resolver;
+/// Configured source of credential material, independent of management authority.
+pub(crate) mod state_source;
 
 pub use acquisition::{AcquisitionTransport, AcquisitionTransportError};
 pub use dispatchers::{dispatch_release, dispatch_revoke, dispatch_test};

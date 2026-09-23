@@ -13,7 +13,7 @@ use crate::{CredentialDisplay, CredentialId, PendingToken};
 
 use super::error::CredentialServiceError;
 use super::facade::{Acquisition, CredentialService};
-use super::scope::TenantScope;
+use crate::TenantScope;
 
 impl CredentialService {
     /// Acquire a credential of `credential_key` from `props`, persisting
@@ -34,7 +34,7 @@ impl CredentialService {
     ///   went `Pending` (interactive kickoff) but `scope` carries no
     ///   session, so the issued token could never be redeemed.
     /// - [`CredentialServiceError::Store`] — persistence failure on the `Complete` path.
-    pub async fn resolve(
+    pub(crate) async fn resolve(
         &self,
         scope: &TenantScope,
         credential_key: &str,
@@ -73,7 +73,7 @@ impl CredentialService {
     /// - [`CredentialServiceError::CapabilityUnsupported`] — type is not `Interactive`.
     /// - [`CredentialServiceError::ValidationFailed`] — continuation failed.
     /// - [`CredentialServiceError::Store`] — persistence failure on the `Complete` path.
-    pub async fn continue_resolve(
+    pub(crate) async fn continue_resolve(
         &self,
         scope: &TenantScope,
         credential_key: &str,

@@ -23,12 +23,11 @@ use thiserror::Error;
 use crate::audit::{AuditEvent, AuditOperation, AuditResult, AuditSink};
 use crate::metrics::CredentialMetrics;
 use crate::resolve::{TestResult, UserInput};
-use crate::{CredentialDisplay, CredentialServiceError};
-
-use super::{
-    Acquisition, CredentialAuthenticationBinding, CredentialHead, CredentialService,
-    ManagementRefreshReport, TenantScope,
+use crate::{
+    CredentialAuthenticationBinding, CredentialDisplay, CredentialServiceError, TenantScope,
 };
+
+use super::{Acquisition, CredentialHead, CredentialService, ManagementRefreshReport};
 
 /// Typed authenticated actor presenting a credential command.
 ///

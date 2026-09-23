@@ -2,7 +2,7 @@
 name: nebula-credential
 role: Typed credential contract, runtime, and authority-bound management
 status: partial
-last-reviewed: 2026-07-22
+last-reviewed: 2026-09-22
 canon-invariants: [L2-12.5, L2-13.2]
 related: [nebula-core, nebula-schema, nebula-storage-port, nebula-storage, nebula-resource]
 ---
@@ -57,6 +57,26 @@ owner-bound. Generic overwrite and ordinary hard delete do not exist. Metadata m
 compatibility/audit owner stamp, but storage never reads it as authority; the owner-qualified
 selector and physical owner column are authoritative. Wrong-owner and missing rows are
 intentionally indistinguishable.
+
+### Code organization
+
+Canonical Rust imports remain the flat crate-root re-exports. Private module paths
+describe ownership, not separate supported APIs:
+
+| Location | Responsibility |
+|---|---|
+| `contract/`, `scheme/`, `credentials/` | Authoring contracts, projected auth types, and built-in implementations |
+| `scope.rs` | Shared tenant identity and interactive authentication binding; neither grants authority |
+| `runtime/projection/` | Read-only slot contract, guarded projection, and worker runtime construction |
+| `runtime/resolver/`, `runtime/refresh/`, `runtime/lease/` | Typed resolution and credential-owned lifecycle orchestration |
+| `runtime/state_source.rs` | Material-source selection shared by service and projection |
+| `service/` | Management commands, authorization, semantic mutations, catalog dispatch, and service adapters |
+| `provider/`, `secrets/`, `state_envelope.rs` | External-provider contracts, secret handling, and persisted-state encoding |
+
+Management and worker consumers share one head-check/load/project implementation.
+`service/slot.rs` adapts that boundary to the service API and owns binding validation;
+it does not own a second projection implementation. Worker construction does not
+acquire a management service or refresh/lease collaborators.
 
 ## Main public contracts
 
@@ -115,7 +135,8 @@ credential IDs in different owner partitions cannot share a handle.
 
 ### Management
 
-- `CredentialService` for semantic CRUD, acquisition, lifecycle operations, and slot resolution.
+- `CredentialService` for crate-private semantic CRUD, acquisition, and lifecycle implementation,
+  with public technical reads, binding validation, and slot resolution.
 - `CredentialController`, `CredentialCommand`, and `CredentialCommandResult` for authenticated
   management calls.
 - `CredentialTenantAuthority`, `CredentialActor`, `CredentialOperation`, and
@@ -125,6 +146,25 @@ credential IDs in different owner partitions cannot share a handle.
 
 The service does not expose a store handle or an unscoped resolver. Runtime construction remains a
 composition concern rather than an integration-author API.
+
+### Breaking technical API migration
+
+Direct `CredentialService::create`, `update`, `delete`, `test`, `refresh`, `revoke`, `resolve`,
+and `continue_resolve` calls from outside this crate no longer compile. Submit the corresponding
+`CredentialCommand` through `CredentialController` with the actor and resolved scope, then handle
+`CredentialCommandResult`. This also applies to cross-crate test fixtures: inject a test authority
+at the controller boundary instead of reopening service methods. `get`, `list`, binding validation,
+and slot projection remain public technical reads; their scope inputs do not grant authority.
+
+The unused `CredentialService::scheme_factory` entry point has been removed. The low-level
+`CredentialResolver::scheme_factory` and `resolve_with_refresh` APIs remain available for trusted
+technical composition and retain their tests. Production slot resolution does not route through
+them; this change introduces no policy-driven refresh wiring. Resource consumers should use the
+slot projection contract rather than assume that a service factory refreshes their credentials.
+
+The `compile_fail_service_mutations_private` suite checks the external visibility boundary.
+This restriction does not implement an operation ledger, transactional audit/outbox, or a global
+sole-semantic-writer guarantee; those remain K3 work.
 
 ## Property validation and secrecy
 
@@ -177,7 +217,8 @@ wired to a hardened injected transport.
   rest; no supported API/SDK debug bypass exists.
 - Consumers receive projected schemes, not stored state or persistence rows.
 - Supported authenticated HTTP management reaches persistence only after one authority decision for
-  the exact command. Technical runtime/service seams remain below that supported boundary until K3.
+  the exact command. External service management callers must use the controller; lower-level
+  runtime and persistence contracts still prevent treating this as global K3 closure.
 - Owner identity is mandatory and selector-bound; there is no optional/global owner shortcut.
 - Revocation and management deletion are the same terminal, version-fenced tombstone transition;
   a tombstone cannot carry secret bytes or other live-only fields and its id cannot be resurrected.
@@ -210,8 +251,8 @@ wired to a hardened injected transport.
 - `rotation` gates evolving rotation support.
 - `cargo nextest run -p nebula-credential`
 - `cargo test -p nebula-credential --doc`
-- Compile-fail suites under `tests/compile_fail_*` lock down capability, sensitivity, guard, and
-  slot invariants.
+- Compile-fail suites under `tests/compile_fail_*` lock down capability, sensitivity, guard, slot,
+  and service-management visibility invariants.
 
 ## Known limits
 
@@ -226,7 +267,7 @@ wired to a hardened injected transport.
   global-unicast DNS validation. A downstream implementation of the technical `RefreshTransport`
   seam must enforce the same connect policy; only the first-party adapter is mechanically covered
   by this workspace's DNS/redirect/proxy behavior tests. The first-party server binds claims to
-  the admitted credential SQLite pool, uses a process-unique replica ID, and retains the sole
+  the selected admitted SQLite/PostgreSQL credential pool, uses a process-unique replica ID, and retains the sole
   periodic poison-accounting sweep for its complete serving lifecycle.
 - A lost database acknowledgement after commit is `OutcomeUnknown`. K2 never replays it
   automatically. An expired provider-side-effect claim remains durable fail-closed poison, and
@@ -237,8 +278,9 @@ wired to a hardened injected transport.
   atomic audit/outbox evidence belongs to K3.
 - Tombstoning clears current live material but does not claim historical erasure from database
   WAL, snapshots, or backups; retention/key-destruction policy is a separate operator concern.
-- K3 must make the controller plus semantic idempotency/operation ledger the sole management writer;
-  K1 intentionally proves only the authenticated HTTP command path.
+- Service management methods are crate-private, closing direct external calls at that boundary.
+  K3 still requires semantic idempotency/operation-ledger enforcement and a global sole management
+  writer; technical runtime and persistence seams remain available to trusted composition.
 - K4 must provide supported workspace-directory and membership/deployment composition. The default
   server leaves both policy ports unwired, so tenant routes return 503.
 

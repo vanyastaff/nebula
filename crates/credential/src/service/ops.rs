@@ -249,7 +249,7 @@ type RevokeFn = Arc<
 ///
 /// The erased value never leaves this crate: [`CredentialService`](super::CredentialService)
 /// immediately seals it inside an opaque
-/// [`ErasedCredentialGuard`](super::ErasedCredentialGuard).
+/// [`ErasedCredentialGuard`](crate::ErasedCredentialGuard).
 type ProjectFn = Arc<
     dyn Fn(&[u8], &str, u32) -> Result<Box<dyn Any + Send + Sync>, CredentialServiceError>
         + Send
@@ -964,7 +964,7 @@ where
 /// `Revocable::revoke` takes `&mut state` and may mutate it (e.g. clear a
 /// server-side handle). Those mutations are intentionally **not**
 /// re-persisted: after this closure returns,
-/// [`CredentialService::revoke`](crate::CredentialService::revoke) writes a
+/// the [`CredentialCommand::Revoke`](crate::CredentialCommand::Revoke) handler writes a
 /// **tombstone** over the row (zeroing the secret bytes), not a delete — so
 /// the id is non-resurrectable and slot bindings still pointing at it surface
 /// a typed `CredentialTombstoned` rather than a bare `NotFound`. This is

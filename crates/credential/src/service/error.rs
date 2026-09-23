@@ -205,7 +205,6 @@ pub enum CredentialServiceError {
     /// because the trait cannot prove a rotating grant was not consumed.
     ///
     /// [`Provider`]: Self::Provider
-    /// [`CredentialService::refresh`]: crate::CredentialService::refresh
     #[error("transient provider error during refresh")]
     TransientProvider(String),
 

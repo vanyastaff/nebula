@@ -183,9 +183,9 @@ slot/tenant authority; semantic decoupling требует будущей version
 **Resource.** Per-slot rotation **fan-out** уехал в `nebula-resource`
 (`credential_fanout/`, ex-engine). Engine остаётся:
 - **bind-population (M12.4): credential-сторона закрыта 2026-09-13.** `CredentialSlotResolver`
-  (`nebula_credential::service::slot`) подключён через `with_credential_resolver` и вызывается на
+  (`nebula_credential::CredentialSlotResolver`) подключён через `with_credential_resolver` и вызывается на
   execution-пути (`engine/frontier.rs:2322`); доходит он до `CredentialProjectionRuntime`
-  (`service/projection.rs:44`). Открыт остаётся resource-half: `register_and_bind` живых вызывающих
+  (`crates/credential/src/runtime/projection/mod.rs`). Открыт остаётся resource-half: `register_and_bind` живых вызывающих
   не получил;
 - `resource/registrar.rs` — seam активации kinds в `nebula_resource::Manager` (stored row → typed);
 - `rotation.rs` — в дереве отсутствует (строка сохранена как историческая пометка; shim fan-out
@@ -210,7 +210,7 @@ slot/tenant authority; semantic decoupling требует будущей version
   feedback_no_shims прямо требует «replace the wrong thing directly».
 - **Bind-population producer (M12.4) — остался resource-half.** Credential→slot резолвер в
   production есть: `CredentialSlotResolver` с impl `CredentialProjectionRuntime`
-  (`nebula_credential::service::projection`), подключён `with_credential_resolver`, вызывается из
+  (`nebula_credential::CredentialProjectionRuntime`), подключён `with_credential_resolver`, вызывается из
   `engine/frontier.rs:2322`. Осталось то же самое для resource reverse index: подключить producer, чтобы
   `register_and_bind` (`nebula_resource::factory`) получил живой вызывающий путь (quiesce-контракт
   есть; единственный вызов — `WorkflowEngine::register_resource_and_bind`, под non-default
