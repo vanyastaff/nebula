@@ -10,7 +10,8 @@ use nebula_api::ports::credential_schema::CredentialSchemaPort;
 use nebula_credential::{
     ApiKeyCredential, BasicAuthCredential, Capabilities, CredentialObserver, CredentialRegistry,
     CredentialService, CredentialServiceError, DispatchError, DispatchOps, ErasedPendingStore,
-    EventMetricObserver, SigningKeyCredential, StateSource, register_runtime_ops,
+    EventMetricObserver, OAuth2Credential, SigningKeyCredential, StateSource,
+    register_interactive_ops, register_refreshable_ops, register_runtime_ops,
     runtime::{
         CredentialLifecycleRuntime, CredentialRefreshSchedulerConfig,
         CredentialRefreshSchedulerConfigError, CredentialResolver, LeaseLifecycleConfig,
@@ -442,6 +443,7 @@ fn first_party_registry() -> Result<CredentialRegistry, nebula_credential::Regis
     let mut registry = CredentialRegistry::new();
     registry.register(ApiKeyCredential, "nebula-credential")?;
     registry.register(BasicAuthCredential, "nebula-credential")?;
+    registry.register(OAuth2Credential, "nebula-credential")?;
     registry.register(SigningKeyCredential, "nebula-credential")?;
     Ok(registry)
 }
@@ -450,6 +452,9 @@ fn first_party_ops() -> Result<DispatchOps<ErasedPendingStore>, DispatchError> {
     let mut ops = DispatchOps::new();
     register_runtime_ops::<ApiKeyCredential, ErasedPendingStore>(&mut ops)?;
     register_runtime_ops::<BasicAuthCredential, ErasedPendingStore>(&mut ops)?;
+    register_runtime_ops::<OAuth2Credential, ErasedPendingStore>(&mut ops)?;
+    register_interactive_ops::<OAuth2Credential, ErasedPendingStore>(&mut ops)?;
+    register_refreshable_ops::<OAuth2Credential, ErasedPendingStore>(&mut ops)?;
     register_runtime_ops::<SigningKeyCredential, ErasedPendingStore>(&mut ops)?;
     Ok(ops)
 }
@@ -602,6 +607,23 @@ mod tests {
         assert_ne!(first, second);
         assert!(first.as_str().starts_with("nebula-server:"));
         assert!(second.as_str().starts_with("nebula-server:"));
+    }
+
+    #[test]
+    fn first_party_composition_admits_universal_oauth2_capabilities() {
+        let registry = first_party_registry().expect("first-party registry composes");
+        let ops = first_party_ops().expect("first-party dispatch composes");
+
+        assert_eq!(
+            registry.capabilities_of("oauth2"),
+            Some(Capabilities::INTERACTIVE | Capabilities::REFRESHABLE)
+        );
+        assert_eq!(
+            ops.capabilities_of("oauth2"),
+            Capabilities::INTERACTIVE | Capabilities::REFRESHABLE
+        );
+        validate_capability_dispatch(&registry, &ops)
+            .expect("every advertised OAuth2 capability has runtime dispatch");
     }
 
     #[tokio::test]

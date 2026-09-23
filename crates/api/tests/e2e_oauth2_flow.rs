@@ -289,7 +289,7 @@ async fn oauth_callback_query_rejections_are_fixed_problem_details_without_cooki
 }
 
 #[tokio::test]
-async fn default_credential_composition_parks_oauth2_until_universal_pending_flow_exists() {
+async fn default_credential_composition_exposes_oauth2_through_universal_pending_flow() {
     let (state, token) = state_with_real_credential_rbac().await;
     let config = ApiConfig::for_test();
 
@@ -314,6 +314,10 @@ async fn default_credential_composition_parks_oauth2_until_universal_pending_flo
         advertised_keys.contains(&"api_key"),
         "a supported static type must remain advertised as a positive control: {advertised_keys:?}"
     );
+    assert!(
+        advertised_keys.contains(&"oauth2"),
+        "the first-party catalog must advertise universal oauth2: {advertised_keys:?}"
+    );
 
     let oauth_type_response = app::build_app(state.clone(), &config)
         .oneshot(protected_request(
@@ -322,8 +326,14 @@ async fn default_credential_composition_parks_oauth2_until_universal_pending_flo
             &token,
         ))
         .await
-        .expect("parked OAuth2 type response");
-    let oauth_type_status = oauth_type_response.status();
+        .expect("OAuth2 type response");
+    assert_eq!(oauth_type_response.status(), StatusCode::OK);
+    let oauth_type: serde_json::Value =
+        serde_json::from_str(&response_body(oauth_type_response).await)
+            .expect("OAuth2 type descriptor");
+    assert_eq!(oauth_type["key"], "oauth2");
+    assert_eq!(oauth_type["capabilities"]["interactive"], true);
+    assert_eq!(oauth_type["capabilities"]["refreshable"], true);
 
     let resolve_response = app::build_app(state, &config)
         .oneshot(protected_json_request(
@@ -332,41 +342,44 @@ async fn default_credential_composition_parks_oauth2_until_universal_pending_flo
             &serde_json::json!({
                 "credential_key": "oauth2",
                 "data": {
-                    "client_id": "parked-client",
-                    "client_secret": OAUTH_SECRET_CANARY,
-                    "token_url": "https://provider.example.com/oauth/token",
-                    "grant_type": "client_credentials"
+                    "authorization_code": {
+                        "client": {
+                            "client_id": "first-party-client",
+                            "client_secret": OAUTH_SECRET_CANARY
+                        },
+                        "auth_url": "https://provider.example.com/oauth/authorize",
+                        "token_url": "https://provider.example.com/oauth/token",
+                        "scopes": ["profile"],
+                        "redirect_uri": "https://app.example.com/oauth/callback",
+                        "auth_style": "header"
+                    }
                 }
             }),
         ))
         .await
-        .expect("parked OAuth2 resolve response");
-    let resolve_status = resolve_response.status();
+        .expect("OAuth2 resolve response");
+    assert_eq!(resolve_response.status(), StatusCode::OK);
     let resolve_body = response_body(resolve_response).await;
     assert!(
         !resolve_body.contains(OAUTH_SECRET_CANARY),
-        "unknown-type rejection must never echo caller-supplied secret material: {resolve_body}"
+        "pending response must never echo caller-supplied secret material: {resolve_body}"
     );
-
-    assert_eq!(
-        (
-            advertised_keys.contains(&"oauth2"),
-            oauth_type_status,
-            resolve_status,
-        ),
-        (false, StatusCode::NOT_FOUND, StatusCode::BAD_REQUEST),
-        "the default public composition must neither advertise nor dispatch the parked oauth2 type"
+    let pending: serde_json::Value =
+        serde_json::from_str(&resolve_body).expect("pending OAuth2 response");
+    assert_eq!(pending["status"], "pending");
+    assert_eq!(pending["interaction"]["type"], "redirect");
+    assert!(
+        pending["pending_token"]
+            .as_str()
+            .is_some_and(|token| !token.is_empty()),
+        "pending OAuth2 response must carry continuation authority: {resolve_body}"
     );
-    let resolve_problem: serde_json::Value =
-        serde_json::from_str(&resolve_body).expect("unknown-type ProblemDetails");
-    assert_eq!(
-        resolve_problem["errors"][0]["code"], "unknown_credential_type",
-        "resolve must fail with the structured unknown-type classification: {resolve_body}"
-    );
-    assert_eq!(
-        resolve_problem["errors"][0]["pointer"], "/credential_key",
-        "the unknown-type error must identify the credential-key field: {resolve_body}"
-    );
+    let redirect = pending["interaction"]["url"]
+        .as_str()
+        .expect("redirect interaction URL");
+    assert!(redirect.starts_with("https://provider.example.com/oauth/authorize?"));
+    assert!(redirect.contains("code_challenge="));
+    assert!(redirect.contains("state="));
 }
 
 #[test]

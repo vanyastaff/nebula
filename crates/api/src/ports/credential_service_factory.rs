@@ -15,11 +15,12 @@ use nebula_credential::runtime::{
     RefreshTransportError, TokenPostRequest, TokenPostResponse,
 };
 use nebula_credential::{
-    ApiKeyCredential, BasicAuthCredential, ErasedPendingStore, SigningKeyCredential,
+    ApiKeyCredential, BasicAuthCredential, ErasedPendingStore, OAuth2Credential,
+    SigningKeyCredential,
 };
 use nebula_credential::{
     CredentialRegistry, CredentialService, CredentialServiceError, DispatchError, DispatchOps,
-    NoopObserver, register_runtime_ops,
+    NoopObserver, register_interactive_ops, register_refreshable_ops, register_runtime_ops,
 };
 
 use super::credential_builder::CredentialServiceBuilder;
@@ -50,10 +51,11 @@ impl AuditSink for TracingAuditSink {
 
 /// Deterministic no-network refresh transport for API-only fixtures.
 ///
-/// The default fixture catalog contains no OAuth credential type. Tests that
-/// need real HTTP transport policy belong to the first-party composition root
-/// in `apps/server`; injecting this collaborator prevents an API fixture from
-/// silently acquiring proxy, redirect, retry, or DNS behavior.
+/// Authorization-code initiation remains local and can therefore exercise the
+/// universal pending protocol. Any token exchange fails closed. Tests of real
+/// HTTP policy belong to the first-party composition root in `apps/server`;
+/// this collaborator prevents the API fixture from silently acquiring proxy,
+/// redirect, retry, or DNS behavior.
 #[derive(Debug)]
 struct NoNetworkRefreshTransport;
 
@@ -135,9 +137,9 @@ pub async fn with_memory_store(
 /// caller-supplied [`KeyProvider`].
 ///
 /// The ordinary test path (`with_memory_store`) passes an ephemeral in-memory
-/// SQLite adapter. The pending-state store is **always** the ephemeral
-/// in-memory `InMemoryPendingStore` (typed universal acquisition state,
-/// TTL ≤ 10 min; durable multi-replica pending is a 1.1 concern, ADR-0084).
+/// SQLite adapter. This API-only fixture deliberately keeps pending state in
+/// `InMemoryPendingStore`; the supported server composition injects the
+/// admitted backend's encrypted durable pending-state adapter.
 /// Registers the first-party type set (shared with the schema port via
 /// `credential_schema_registry::default_registry`) and the matching dispatch
 /// ops; the advertised capabilities MUST match the ops table.
@@ -159,6 +161,9 @@ pub fn with_store<S: CredentialPersistence + 'static>(
     let mut ops = DispatchOps::<ErasedPendingStore>::new();
     register_runtime_ops::<ApiKeyCredential, ErasedPendingStore>(&mut ops)?;
     register_runtime_ops::<BasicAuthCredential, ErasedPendingStore>(&mut ops)?;
+    register_runtime_ops::<OAuth2Credential, ErasedPendingStore>(&mut ops)?;
+    register_interactive_ops::<OAuth2Credential, ErasedPendingStore>(&mut ops)?;
+    register_refreshable_ops::<OAuth2Credential, ErasedPendingStore>(&mut ops)?;
     // signing_key: static non-interactive credential (HMAC webhook secret).
     // No capability ops beyond base runtime ops — it carries no
     // INTERACTIVE/REFRESHABLE/REVOCABLE/TESTABLE caps in the registry.
