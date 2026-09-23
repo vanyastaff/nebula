@@ -170,6 +170,13 @@ pub fn router() -> OpenApiRouter<AppState> {
             )
             .layer(middleware::from_fn(no_store_authority_response)),
         )
+        .routes(
+            access::protected(
+                Permission::CredentialWrite,
+                routes!(credential::reauthorize_credential),
+            )
+            .layer(middleware::from_fn(no_store_authority_response)),
+        )
         .routes(access::protected(
             Permission::CredentialRead,
             routes!(credential::list_credentials),

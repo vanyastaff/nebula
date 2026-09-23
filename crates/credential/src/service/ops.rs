@@ -21,10 +21,7 @@ use zeroize::{Zeroize, Zeroizing};
 
 use crate::pending_store::PendingStateStore;
 use crate::resolve::{InteractionRequest, TestResult, UserInput};
-use crate::runtime::{
-    ResolveResponse, dispatch_revoke, dispatch_test, execute_begin, execute_continue,
-    execute_resolve,
-};
+use crate::runtime::{ResolveResponse, dispatch_revoke, dispatch_test, execute_resolve};
 use crate::state_envelope::{StateEnvelopeError, decode_state_payload, encode_state_payload};
 use crate::{
     Capabilities, Credential, CredentialContext, CredentialState, Interactive, PendingToken,
@@ -33,7 +30,9 @@ use crate::{
     contract::{RefreshReauthPhase, RefreshReportKind},
 };
 
+use super::acquisition_intent::{AcquisitionExpectation, AcquisitionIntent, AcquisitionPending};
 use super::error::{CredentialServiceError, CredentialValidationIssue, CredentialValidationReport};
+use crate::runtime::executor::{execute_begin_with_intent, execute_continue_with_expectation};
 
 #[cfg(test)]
 #[path = "ops_tests.rs"]
@@ -91,11 +90,11 @@ pub(crate) struct ResolvedState {
 /// Outcome of an acquisition attempt before the service decides whether
 /// to persist (`Complete`) or surface an interaction (`Pending`). This is
 /// the raw [`ResolveResponse`] shape projected to secret-free pieces: the
-/// `Complete` arm carries serialized state for the create-persist path,
+/// `Complete` arm carries serialized state for the service's persistence decision,
 /// the `Pending` arm carries only the opaque token + the UI instruction.
 pub(crate) enum AcquireOutcome {
     /// Credential resolved synchronously — `state` is ready to persist
-    /// through the same path `create` uses.
+    /// through creation or fenced reauthorization replacement.
     Complete(ResolvedState),
     /// Interactive acquisition kicked off — the caller surfaces the
     /// token + interaction and resumes via the continue path.
@@ -131,13 +130,18 @@ type AcquireFuture<'a> =
 /// `Pending`) into [`AcquireOutcome`] — the create path's `ResolveFn`
 /// rejects `Pending`, this one surfaces it.
 type AcquireFn<PS> = Arc<
-    dyn for<'a> Fn(serde_json::Value, &'a CredentialContext, &'a PS) -> AcquireFuture<'a>
+    dyn for<'a> Fn(
+            serde_json::Value,
+            &'a CredentialContext,
+            &'a PS,
+            AcquisitionIntent,
+        ) -> AcquireFuture<'a>
         + Send
         + Sync,
 >;
 
 /// Erased interactive continuation: loads the typed pending state for
-/// `C: Interactive`, drives [`execute_continue`], maps the result into
+/// `C: Interactive`, drives [`crate::runtime::execute_continue`], maps the result into
 /// [`AcquireOutcome`]. Only registered for `C: Interactive`.
 type ContinueFn<PS> = Arc<
     dyn for<'a> Fn(
@@ -145,7 +149,16 @@ type ContinueFn<PS> = Arc<
             &'a UserInput,
             &'a CredentialContext,
             &'a PS,
+            AcquisitionExpectation,
         ) -> AcquireFuture<'a>
+        + Send
+        + Sync,
+>;
+
+type IntentFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<AcquisitionIntent, CredentialServiceError>> + Send + 'a>>;
+type IntentFn<PS> = Arc<
+    dyn for<'a> Fn(&'a PendingToken, &'a CredentialContext, &'a PS) -> IntentFuture<'a>
         + Send
         + Sync,
 >;
@@ -274,6 +287,7 @@ struct OpsEntry<PS> {
     refresh_fn: Option<RefreshFn>,
     revoke_fn: Option<RevokeFn>,
     continue_fn: Option<ContinueFn<PS>>,
+    intent_fn: Option<IntentFn<PS>>,
 }
 
 /// Key → erased operation closures. Built alongside the
@@ -413,24 +427,16 @@ impl<PS: PendingStateStore> DispatchOps<PS> {
             .ok_or_else(|| CredentialServiceError::TypeUnknown {
                 key: key.to_owned(),
             })?;
-        (entry.acquire)(props, ctx, pending).await
+        (entry.acquire)(props, ctx, pending, AcquisitionIntent::create_for_key(key)).await
     }
 
-    /// Continue an interactive acquisition for the type at `key`.
-    ///
-    /// # Errors
-    ///
-    /// [`CredentialServiceError::TypeUnknown`] when `key` is absent;
-    /// [`CredentialServiceError::CapabilityUnsupported`] when the type is
-    /// not interactive (no continuation closure registered); any executor
-    /// error mapped to a [`CredentialServiceError`].
-    pub(crate) async fn continue_resolve(
+    pub(crate) async fn acquire_with_intent(
         &self,
         key: &str,
-        token: &PendingToken,
-        input: &UserInput,
+        props: serde_json::Value,
         ctx: &CredentialContext,
         pending: &PS,
+        intent: AcquisitionIntent,
     ) -> Result<AcquireOutcome, CredentialServiceError> {
         let entry = self
             .entries
@@ -438,13 +444,59 @@ impl<PS: PendingStateStore> DispatchOps<PS> {
             .ok_or_else(|| CredentialServiceError::TypeUnknown {
                 key: key.to_owned(),
             })?;
-        let continue_fn = entry.continue_fn.as_ref().ok_or_else(|| {
+        if entry.continue_fn.is_none() {
+            return Err(CredentialServiceError::CapabilityUnsupported {
+                capability: "interactive".to_owned(),
+                key: key.to_owned(),
+            });
+        }
+        (entry.acquire)(props, ctx, pending, intent).await
+    }
+
+    pub(crate) async fn pending_intent(
+        &self,
+        key: &str,
+        token: &PendingToken,
+        ctx: &CredentialContext,
+        pending: &PS,
+    ) -> Result<AcquisitionIntent, CredentialServiceError> {
+        let entry = self
+            .entries
+            .get(key)
+            .ok_or_else(|| CredentialServiceError::TypeUnknown {
+                key: key.to_owned(),
+            })?;
+        let inspect = entry.intent_fn.as_ref().ok_or_else(|| {
             CredentialServiceError::CapabilityUnsupported {
                 capability: "interactive".to_owned(),
                 key: key.to_owned(),
             }
         })?;
-        continue_fn(token, input, ctx, pending).await
+        inspect(token, ctx, pending).await
+    }
+
+    pub(crate) async fn continue_with_intent(
+        &self,
+        token: &PendingToken,
+        input: &UserInput,
+        ctx: &CredentialContext,
+        pending: &PS,
+        expected: AcquisitionExpectation,
+    ) -> Result<AcquireOutcome, CredentialServiceError> {
+        let key = expected.credential_key();
+        let entry = self
+            .entries
+            .get(key)
+            .ok_or_else(|| CredentialServiceError::TypeUnknown {
+                key: key.to_owned(),
+            })?;
+        let continuation = entry.continue_fn.as_ref().ok_or_else(|| {
+            CredentialServiceError::CapabilityUnsupported {
+                capability: "interactive".to_owned(),
+                key: key.to_owned(),
+            }
+        })?;
+        continuation(token, input, ctx, pending, expected).await
     }
 
     /// Run the provider health probe for the type at `key`.
@@ -600,7 +652,10 @@ where
     });
 
     let acquire: AcquireFn<PS> = Arc::new(
-        move |props: serde_json::Value, ctx: &CredentialContext, _pending: &PS| {
+        move |props: serde_json::Value,
+              ctx: &CredentialContext,
+              _pending: &PS,
+              _intent: AcquisitionIntent| {
             let schema = Arc::clone(&acquire_schema);
             Box::pin(async move {
                 let properties = prepare_properties::<C>(&schema, props)?;
@@ -641,6 +696,7 @@ where
             refresh_fn: None,
             revoke_fn: None,
             continue_fn: None,
+            intent_fn: None,
         },
     );
     tracing::info!(credential.key = key, "credential runtime ops registered");
@@ -1038,27 +1094,55 @@ where
         .ok_or(DispatchError::BaseOpsMissing { key })?;
     let schema = Arc::new(entry.schema.clone());
     let acquire: AcquireFn<PS> = Arc::new(
-        move |props: serde_json::Value, ctx: &CredentialContext, pending: &PS| {
+        move |props: serde_json::Value,
+              ctx: &CredentialContext,
+              pending: &PS,
+              intent: AcquisitionIntent| {
             let schema = Arc::clone(&schema);
             Box::pin(async move {
                 let properties = prepare_properties::<C>(&schema, props)?;
-                let response = execute_begin::<C, PS>(&properties, ctx, pending)
-                    .await
-                    .map_err(executor_error_to_service_error)?;
+                let response =
+                    execute_begin_with_intent::<C, PS>(&properties, ctx, pending, intent)
+                        .await
+                        .map_err(executor_error_to_service_error)?;
                 map_resolve_response::<C>(response)
             }) as AcquireFuture<'_>
         },
     );
     let continue_fn: ContinueFn<PS> = Arc::new(
-        |token: &PendingToken, input: &UserInput, ctx: &CredentialContext, pending: &PS| {
+        |token: &PendingToken,
+         input: &UserInput,
+         ctx: &CredentialContext,
+         pending: &PS,
+         expected: AcquisitionExpectation| {
             Box::pin(async move {
-                let response = execute_continue::<C, PS>(token, input, ctx, pending)
-                    .await
-                    .map_err(executor_error_to_service_error)?;
+                let response = execute_continue_with_expectation::<C, PS>(
+                    token, input, ctx, pending, expected,
+                )
+                .await
+                .map_err(executor_error_to_service_error)?;
                 map_resolve_response::<C>(response)
             }) as AcquireFuture<'_>
         },
     );
+    entry.intent_fn = Some(Arc::new(|token, ctx, pending| {
+        Box::pin(async move {
+            let session = ctx
+                .session_id()
+                .ok_or(CredentialServiceError::SessionRequired {
+                    capability: "continue",
+                })?;
+            let stored: AcquisitionPending<C::Pending> = pending
+                .get_bound(C::KEY, token, ctx.owner_id(), session)
+                .await
+                .map_err(|error| {
+                    executor_error_to_service_error(crate::runtime::ExecutorError::PendingStore(
+                        error,
+                    ))
+                })?;
+            Ok(stored.service_intent(C::KEY))
+        })
+    }));
     entry.acquire = acquire;
     entry.continue_fn = Some(continue_fn);
     tracing::info!(

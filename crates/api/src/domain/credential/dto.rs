@@ -225,6 +225,28 @@ pub struct ListCredentialsQuery {
 
 const REDACTED: &str = "[REDACTED]";
 
+/// New authorization properties for an existing credential.
+/// Identity, type, and concurrency evidence are derived by the server.
+#[derive(Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReauthorizeCredentialRequest {
+    /// Type-specific properties for the new authorization attempt.
+    #[schema(schema_with = write_only_object_schema)]
+    pub data: serde_json::Value,
+}
+
+impl fmt::Debug for ReauthorizeCredentialRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ReauthorizeCredentialRequest")
+            .field("data", &REDACTED)
+            .finish()
+    }
+}
+
+/// Reauthorization uses the universal acquisition response and continuation.
+pub type ReauthorizeCredentialResponse = ResolveCredentialResponse;
+
 /// Request body for initiating credential acquisition/resolution.
 #[derive(Deserialize, ToSchema)]
 pub struct ResolveCredentialRequest {

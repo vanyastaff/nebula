@@ -561,6 +561,20 @@ protocol; it does not restore provider-specific ceremony routes. When no command
 > the `{cred}` matcher — they reach the handler; the genuine
 > `/credentials/{cred}` position stays strictly ULID-validated.
 
+### Reauthorizing an existing credential
+
+`POST /orgs/{org}/workspaces/{ws}/credentials/{cred}/reauthorize` accepts only
+`{"data": {...}}`, requires `credentials:write`, and returns the universal acquisition
+response with `Cache-Control: no-store`. The server derives the credential type and
+concurrency fence from the existing row. Completion retains its ID and display metadata;
+an intervening write or deletion prevents stale replacement. The request cannot supply
+another key, revision, or material epoch.
+
+Pending results use the existing `resolve/continue` endpoint. Its `credential_key` remains
+a routing hint checked against the bound pending record; it cannot choose a target or
+convert a create intent into replacement. Continuation stays bound to the initiating
+authentication session. Neither endpoint advertises automatic replay or HTTP idempotency.
+
 ### Org membership durability (canon §11.6 / §11.5)
 
 The org **member** endpoints (`GET`/`POST`/`DELETE` under

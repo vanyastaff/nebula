@@ -259,6 +259,14 @@ impl ServerCredentialGateway {
                     properties: request.data,
                     authentication_binding,
                 },
+                CredentialGatewayCommand::Reauthorize {
+                    credential_id,
+                    request,
+                } => CredentialCommand::Reauthorize {
+                    credential_id: Self::credential_id(&credential_id)?,
+                    properties: request.data,
+                    authentication_binding,
+                },
                 CredentialGatewayCommand::ContinueResolve(request) => {
                     let user_input: UserInput = serde_json::from_value(request.user_input)
                         .map_err(|_| CredentialGatewayError::ValidationFailed {
@@ -1239,6 +1247,21 @@ mod tests {
             } if authentication_binding == expected_binding
         ));
         assert_ne!(principal.authentication_binding(), principal.subject());
+        let credential_id = CredentialId::new();
+        let reauthorize = ServerCredentialGateway::command(
+            &principal,
+            CredentialGatewayCommand::Reauthorize {
+                credential_id: credential_id.to_string(),
+                request: nebula_api::domain::credential::dto::ReauthorizeCredentialRequest {
+                    data: serde_json::json!({"secret":"replacement"}),
+                },
+            },
+        )
+        .expect("reauthorize maps");
+        assert!(
+            matches!(reauthorize, CredentialCommand::Reauthorize { credential_id: actual, authentication_binding, properties }
+            if actual == credential_id && authentication_binding == expected_binding && properties == serde_json::json!({"secret":"replacement"}))
+        );
     }
 
     #[test]
@@ -1348,6 +1371,11 @@ mod tests {
                 credential_key: CredentialKey::new("oauth2").expect("valid test credential key"),
                 pending_token: "opaque".to_owned(),
                 user_input: UserInput::Poll,
+                authentication_binding: binding.clone(),
+            },
+            CredentialCommand::Reauthorize {
+                credential_id,
+                properties: serde_json::json!({}),
                 authentication_binding: binding,
             },
             CredentialCommand::Reconcile {
@@ -1367,6 +1395,7 @@ mod tests {
             CredentialOperation::Revoke,
             CredentialOperation::Resolve,
             CredentialOperation::ContinueResolve,
+            CredentialOperation::Reauthorize,
             CredentialOperation::Reconcile,
         ];
         let credential_service = service().await;
@@ -1530,6 +1559,7 @@ mod tests {
             CredentialOperation::Revoke,
             CredentialOperation::Resolve,
             CredentialOperation::ContinueResolve,
+            CredentialOperation::Reauthorize,
             CredentialOperation::Reconcile,
         ];
 

@@ -102,6 +102,8 @@ pub enum CredentialOperation {
     Revoke,
     /// Begin an acquisition flow.
     Resolve,
+    /// Begin reauthorization of an existing credential.
+    Reauthorize,
     /// Continue an acquisition flow.
     ContinueResolve,
     /// Resolve a poisoned refresh claim with an operator outcome decision.
@@ -127,6 +129,7 @@ impl CredentialOperation {
             | Self::Test
             | Self::Refresh
             | Self::Resolve
+            | Self::Reauthorize
             | Self::ContinueResolve => Permission::CredentialWrite,
             Self::Delete | Self::Revoke => Permission::CredentialDelete,
             Self::Reconcile => Permission::CredentialReconcile,
@@ -258,6 +261,15 @@ pub enum CredentialCommand {
         /// Opaque Plane-A authentication binding for pending state.
         authentication_binding: CredentialAuthenticationBinding,
     },
+    /// Authorize an existing credential again without replacing its identity.
+    Reauthorize {
+        /// Credential whose owner-qualified material is being replaced.
+        credential_id: CredentialId,
+        /// Type-specific properties, potentially containing secrets.
+        properties: Value,
+        /// Opaque Plane-A authentication binding for pending state.
+        authentication_binding: CredentialAuthenticationBinding,
+    },
     /// Continue credential acquisition.
     ContinueResolve {
         /// Registered credential type key.
@@ -302,6 +314,7 @@ impl CredentialCommand {
             Self::Refresh { .. } => CredentialOperation::Refresh,
             Self::Revoke { .. } => CredentialOperation::Revoke,
             Self::Resolve { .. } => CredentialOperation::Resolve,
+            Self::Reauthorize { .. } => CredentialOperation::Reauthorize,
             Self::ContinueResolve { .. } => CredentialOperation::ContinueResolve,
             Self::Reconcile { .. } => CredentialOperation::Reconcile,
         }
@@ -531,6 +544,18 @@ impl CredentialController {
                 CredentialCommandResult::Acquisition(
                     self.service
                         .resolve(&scope, credential_key.as_str(), properties)
+                        .await?,
+                )
+            },
+            CredentialCommand::Reauthorize {
+                credential_id,
+                properties,
+                authentication_binding,
+            } => {
+                let scope = scope.with_authentication_binding(authentication_binding);
+                CredentialCommandResult::Acquisition(
+                    self.service
+                        .reauthorize(&scope, credential_id, properties)
                         .await?,
                 )
             },

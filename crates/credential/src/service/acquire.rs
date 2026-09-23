@@ -8,8 +8,15 @@
 
 use serde_json::Value;
 
+use super::acquisition_intent::AcquisitionIntent;
+use super::head::CredentialHead;
+use super::ops::ResolvedState;
 use crate::resolve::UserInput;
-use crate::{CredentialDisplay, CredentialId, PendingToken};
+use crate::{
+    CredentialDisplay, CredentialId, CredentialMaterialTransition, CredentialReplacement,
+    LAST_VALIDATED_AT_METADATA_KEY, PendingToken, StoredLiveCredential,
+};
+use nebula_storage_port::CredentialReplacementFence;
 
 use super::error::CredentialServiceError;
 use super::facade::{Acquisition, CredentialService};
@@ -51,18 +58,42 @@ impl CredentialService {
             .ops
             .acquire(credential_key, props, &ctx, &self.pending)
             .await?;
-        self.finish_acquire(scope, credential_key, outcome).await
+        self.finish_acquire(
+            scope,
+            credential_key,
+            outcome,
+            &AcquisitionIntent::create_for_key(credential_key),
+        )
+        .await
     }
 
-    /// Continue an interactive acquisition with the user's input.
-    ///
-    /// Threads the service's pending store through the engine's
-    /// `execute_continue` for the concrete interactive type. The three
-    /// first-party builtins are non-interactive, so no continuation
-    /// closure is registered for them and this returns
-    /// [`CapabilityUnsupported`](CredentialServiceError::CapabilityUnsupported)
-    /// (or [`TypeUnknown`](CredentialServiceError::TypeUnknown) for an
-    /// unregistered key).
+    /// Begin authorization again for one existing owner-bound aggregate.
+    #[tracing::instrument(name = "credential.reauthorize", skip_all, fields(credential.id = %credential_id))]
+    pub(crate) async fn reauthorize(
+        &self,
+        scope: &TenantScope,
+        credential_id: CredentialId,
+        props: Value,
+    ) -> Result<Acquisition, CredentialServiceError> {
+        self.ensure_local_source()?;
+        let existing = self.load_owned(scope, &credential_id.to_string()).await?;
+        let key = existing.credential_key();
+        let intent = AcquisitionIntent::ReauthorizeExisting {
+            credential_id: credential_id.to_string(),
+            observed_version: existing.version().get() as u64,
+            observed_material_epoch: existing.material_epoch().get() as u64,
+            credential_key: key.to_owned(),
+        };
+        let ctx = self.owner_context(scope);
+        let outcome = self
+            .ops
+            .acquire_with_intent(key, props, &ctx, &self.pending, intent.clone())
+            .await?;
+        self.finish_acquire(scope, key, outcome, &intent).await
+    }
+
+    /// Continue an acquisition according to its authenticated durable intent.
+    /// Reauthorization validates the original aggregate fence before provider work.
     ///
     /// # Errors
     ///
@@ -102,11 +133,24 @@ impl CredentialService {
             CredentialServiceError::validation("/pending_token", "credential.pending_token_invalid")
         })?;
         let ctx = self.owner_context(scope);
+        let intent = self
+            .ops
+            .pending_intent(credential_key, &token, &ctx, &self.pending)
+            .await?;
+        self.validate_acquisition_intent(scope, credential_key, &intent)
+            .await?;
         let outcome = self
             .ops
-            .continue_resolve(credential_key, &token, &user_input, &ctx, &self.pending)
+            .continue_with_intent(
+                &token,
+                &user_input,
+                &ctx,
+                &self.pending,
+                intent.expectation(),
+            )
             .await?;
-        self.finish_acquire(scope, credential_key, outcome).await
+        self.finish_acquire(scope, credential_key, outcome, &intent)
+            .await
     }
 
     /// Map an [`AcquireOutcome`](super::ops::AcquireOutcome) into the public [`Acquisition`]:
@@ -117,9 +161,16 @@ impl CredentialService {
         scope: &TenantScope,
         credential_key: &str,
         outcome: super::ops::AcquireOutcome,
+        intent: &AcquisitionIntent,
     ) -> Result<Acquisition, CredentialServiceError> {
         match outcome {
             super::ops::AcquireOutcome::Complete(resolved) => {
+                if matches!(intent, AcquisitionIntent::ReauthorizeExisting { .. }) {
+                    let head = self
+                        .replace_reauthorized(scope, credential_key, intent, resolved)
+                        .await?;
+                    return Ok(Acquisition::Complete { head });
+                }
                 let id = CredentialId::new();
                 // Acquisition carries no caller-supplied display metadata
                 // (the interactive/resolve flow names nothing); a later
@@ -160,5 +211,181 @@ impl CredentialService {
             },
             super::ops::AcquireOutcome::Retry { after } => Ok(Acquisition::Retry { after }),
         }
+    }
+    async fn validate_acquisition_intent(
+        &self,
+        scope: &TenantScope,
+        key: &str,
+        intent: &AcquisitionIntent,
+    ) -> Result<Option<StoredLiveCredential>, CredentialServiceError> {
+        match intent {
+            AcquisitionIntent::Create { credential_key } if credential_key == key => Ok(None),
+            AcquisitionIntent::ReauthorizeExisting { credential_id, .. } => {
+                let existing = self.load_owned(scope, credential_id).await?;
+                validate_reauthorization_fence(key, intent, &existing)?;
+                Ok(Some(existing))
+            },
+            _ => Err(CredentialServiceError::validation(
+                "/pending_token",
+                "credential.acquisition_intent_mismatch",
+            )),
+        }
+    }
+
+    async fn replace_reauthorized(
+        &self,
+        scope: &TenantScope,
+        key: &str,
+        intent: &AcquisitionIntent,
+        resolved: ResolvedState,
+    ) -> Result<CredentialHead, CredentialServiceError> {
+        let existing = self
+            .validate_acquisition_intent(scope, key, intent)
+            .await?
+            .ok_or_else(|| {
+                CredentialServiceError::validation(
+                    "/pending_token",
+                    "credential.acquisition_intent_mismatch",
+                )
+            })?;
+        let display = Self::display_from_metadata(existing.metadata());
+        let mut metadata = existing.metadata().clone();
+        let now = chrono::Utc::now();
+        metadata.insert(
+            LAST_VALIDATED_AT_METADATA_KEY.to_owned(),
+            Value::String(now.to_rfc3339()),
+        );
+        let replacement = CredentialReplacement::new(
+            existing.version(),
+            resolved.data.to_vec().into(),
+            resolved.state_kind,
+            resolved.state_version,
+            display.display_name.clone(),
+            resolved.expires_at,
+            false,
+            metadata,
+            CredentialMaterialTransition::advance(),
+        )
+        .with_fence(CredentialReplacementFence::new(
+            existing.material_epoch(),
+            key.to_owned(),
+        ));
+        let id = existing.credential_id();
+        let commit = self
+            .store
+            .replace(&scope.selector(id), replacement)
+            .await
+            .map_err(|error| Self::map_store_err_for(&id.to_string(), error))?;
+        self.observer.on_resolve(&id);
+        tracing::info!(credential.id = %id, "credential reauthorized");
+        Ok(CredentialHead {
+            id: id.to_string(),
+            credential_key: key.to_owned(),
+            version: commit.version().get() as u64,
+            created_at: commit.created_at(),
+            updated_at: commit.updated_at(),
+            expires_at: resolved.expires_at,
+            last_validated_at: Some(now),
+            lifecycle: crate::CredentialLifecycleState::Ready,
+            reauth_required: false,
+            display,
+        })
+    }
+}
+
+fn validate_reauthorization_fence(
+    key: &str,
+    intent: &AcquisitionIntent,
+    existing: &StoredLiveCredential,
+) -> Result<(), CredentialServiceError> {
+    let AcquisitionIntent::ReauthorizeExisting {
+        credential_id,
+        observed_version,
+        observed_material_epoch,
+        credential_key,
+    } = intent
+    else {
+        return Err(CredentialServiceError::validation(
+            "/pending_token",
+            "credential.acquisition_intent_mismatch",
+        ));
+    };
+    if credential_key != key
+        || credential_id != &existing.credential_id().to_string()
+        || existing.credential_key() != key
+        || *observed_version != existing.version().get() as u64
+        || *observed_material_epoch != existing.material_epoch().get() as u64
+    {
+        tracing::warn!("credential reauthorization rejected stale aggregate fence");
+        return Err(CredentialServiceError::VersionConflict {
+            id: existing.credential_id().to_string(),
+            expected: *observed_version,
+            actual: existing.version().get() as u64,
+        });
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nebula_storage_port::{CredentialMaterialEpoch, CredentialVersion};
+
+    fn row(id: CredentialId, key: &str, version: u64, epoch: u64) -> StoredLiveCredential {
+        let now = chrono::Utc::now();
+        StoredLiveCredential::new(
+            id,
+            Some("Original display".to_owned()),
+            key.to_owned(),
+            vec![1].into(),
+            "token".to_owned(),
+            1,
+            CredentialVersion::try_from(version).expect("version"),
+            CredentialMaterialEpoch::try_from(epoch).expect("epoch"),
+            now,
+            now,
+            None,
+            true,
+            serde_json::Map::new(),
+            None,
+        )
+        .expect("live fixture")
+    }
+
+    #[test]
+    fn reauthorization_fence_rejects_each_stale_or_substituted_axis() {
+        let id = CredentialId::new();
+        let intent = AcquisitionIntent::ReauthorizeExisting {
+            credential_id: id.to_string(),
+            observed_version: 4,
+            observed_material_epoch: 2,
+            credential_key: "oauth2".to_owned(),
+        };
+        assert!(
+            validate_reauthorization_fence("oauth2", &intent, &row(id, "oauth2", 4, 2)).is_ok()
+        );
+        for stored in [
+            row(id, "oauth2", 5, 2),
+            row(id, "oauth2", 4, 3),
+            row(id, "different", 4, 2),
+            row(CredentialId::new(), "oauth2", 4, 2),
+        ] {
+            assert!(matches!(
+                validate_reauthorization_fence("oauth2", &intent, &stored),
+                Err(CredentialServiceError::VersionConflict { .. })
+            ));
+        }
+        assert!(matches!(
+            validate_reauthorization_fence("different", &intent, &row(id, "oauth2", 4, 2)),
+            Err(CredentialServiceError::VersionConflict { .. })
+        ));
+        assert!(matches!(
+            validate_reauthorization_fence(
+                "oauth2",
+                &AcquisitionIntent::create_for_key("oauth2"),
+                &row(id, "oauth2", 4, 2)
+            ),
+            Err(CredentialServiceError::ValidationFailed { .. })
+        ));
     }
 }

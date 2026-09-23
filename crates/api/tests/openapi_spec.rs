@@ -132,6 +132,7 @@ async fn credential_oauth_ceremony_is_absent_while_identity_oauth_stays_public()
     for universal_acquisition in [
         "/api/v1/orgs/{org}/workspaces/{ws}/credentials/resolve",
         "/api/v1/orgs/{org}/workspaces/{ws}/credentials/resolve/continue",
+        "/api/v1/orgs/{org}/workspaces/{ws}/credentials/{cred}/reauthorize",
     ] {
         let operation = paths
             .get(universal_acquisition)
@@ -897,6 +898,11 @@ async fn selected_operations_publish_expected_permissions() {
         (
             "post",
             "/api/v1/orgs/{org}/workspaces/{ws}/credentials/{cred}/test",
+            "credentials:write",
+        ),
+        (
+            "post",
+            "/api/v1/orgs/{org}/workspaces/{ws}/credentials/{cred}/reauthorize",
             "credentials:write",
         ),
         (

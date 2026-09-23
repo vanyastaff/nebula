@@ -13,6 +13,25 @@ const REDACTED: &str = "[REDACTED]";
 pub mod v1 {
     use super::*;
 
+    /// New authorization properties for an existing credential.
+    /// Submit to POST /credentials/{id}/reauthorize in the selected workspace.
+    #[derive(Serialize)]
+    pub struct ReauthorizeCredentialRequest {
+        /// Potentially secret type-specific authorization properties.
+        pub data: serde_json::Value,
+    }
+
+    impl fmt::Debug for ReauthorizeCredentialRequest {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.debug_struct("ReauthorizeCredentialRequest")
+                .field("data", &REDACTED)
+                .finish()
+        }
+    }
+
+    /// Existing-id reauthorization returns the universal acquisition outcome.
+    pub type ReauthorizeCredentialResponse = ResolveCredentialResponse;
+
     /// Capability flags advertised for a credential type.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
     pub struct CredentialCapabilities {
@@ -517,6 +536,24 @@ pub use nebula_credential::CredentialLifecycleState;
 mod tests {
     use super::v1::*;
     use serde_json::json;
+
+    #[test]
+    fn reauthorization_request_has_only_properties_and_redacts_debug() {
+        let request = ReauthorizeCredentialRequest {
+            data: json!({"secret":"reauthorize-secret-canary"}),
+        };
+        assert!(!format!("{request:?}").contains("reauthorize-secret-canary"));
+        assert_eq!(
+            serde_json::to_value(request).expect("serialize"),
+            json!({"data":{"secret":"reauthorize-secret-canary"}})
+        );
+        let response: ReauthorizeCredentialResponse =
+            serde_json::from_value(json!({"status":"complete","credential_id":"cred_existing"}))
+                .expect("decode");
+        assert!(
+            matches!(response, ResolveCredentialResponse::Complete { credential_id } if credential_id == "cred_existing")
+        );
+    }
 
     #[test]
     fn lifecycle_and_acquisition_tags_match_v1_wire_shape() {

@@ -50,6 +50,12 @@ Integration authors consume credential contracts through curated SDK personas:
 
 **Not in the SDK:** HTTP token exchange/refresh against a provider, storage encryption, and engine `CredentialResolver` — those are product/runtime concerns. If a contract needed by integration authors is absent from a curated SDK persona, treat that as an SDK API gap rather than depending directly on an implementation crate.
 
+`client::credential::v1::ReauthorizeCredentialRequest { data }` describes authorization
+replacement for an existing credential at `POST /credentials/{id}/reauthorize` in the
+selected workspace. The response uses the universal acquisition shape. Pending results
+continue through the existing continuation contract; the server-bound intent preserves
+the original ID and determines whether completion creates or replaces material.
+
 **Migration:** Provider tests import `TestFailureCode` and `TestResult` only from the curated integration path above and construct `TestResult::Failed { code }`; the removed `reason` field is not accepted. Old `nebula_sdk::nebula_*` paths are intentionally gone. If a needed contract has no curated path, open an SDK gap instead of adding a direct implementation-crate dependency.
 
 ### Procedural derive status

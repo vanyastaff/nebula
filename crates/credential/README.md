@@ -148,6 +148,15 @@ credential IDs in different owner partitions cannot share a handle.
 The service does not expose a store handle or an unscoped resolver. Runtime construction remains a
 composition concern rather than an integration-author API.
 
+`CredentialCommand::Reauthorize` starts interactive authorization for an existing
+owner-qualified credential. The service derives its immutable type and records the
+observed version and material epoch inside encrypted pending state. Universal
+continuation reads this durable intent: create flows still create a new credential,
+while reauthorization replaces only the original fenced aggregate and preserves its
+identity and display metadata. Stale intent is rejected before provider work where
+observable and checked again atomically at replacement. Callers never supply aggregate
+fences; the continuation's credential key is only a bound dispatch hint.
+
 ### Breaking technical API migration
 
 Direct `CredentialService::create`, `update`, `delete`, `test`, `refresh`, `revoke`, `resolve`,
@@ -260,8 +269,8 @@ wired to a hardened injected transport.
 
 ## Known limits
 
-- Universal first-party interactive OAuth acquisition remains parked pending the universal
-  acquisition and authority flow.
+- First-party OAuth acquisition uses the universal authenticated resolve/continue flow;
+  reauthorization preserves the existing credential identity through a durable fenced intent.
 - Proactive pre-expiry refresh and some rotation behavior remain evolving.
 - Production management composition (key policy, catalog, refresh transport, lease lifecycle, and
   authority) lives in `apps/server`; workers may compose only the read/project runtime over the

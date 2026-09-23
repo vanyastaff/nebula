@@ -103,7 +103,6 @@ where
 /// Returns [`ExecutorError::MissingSessionId`] before provider code runs when
 /// the context cannot bind pending state to an authenticated session. Other
 /// failures preserve their typed credential or pending-store category.
-#[tracing::instrument(name = "credential.execute.begin", skip_all, fields(credential_key = C::KEY))]
 pub async fn execute_begin<C, S>(
     properties: &C::Properties,
     ctx: &CredentialContext,
@@ -122,6 +121,7 @@ where
     .await
 }
 
+#[tracing::instrument(name = "credential.execute.begin", skip_all, fields(credential_key = C::KEY))]
 pub(crate) async fn execute_begin_with_intent<C, S>(
     properties: &C::Properties,
     ctx: &CredentialContext,
@@ -172,7 +172,6 @@ where
 /// `session_id`; a missing session id returns
 /// [`ExecutorError::MissingSessionId`] rather than collapsing into a
 /// silent shared bucket.
-#[tracing::instrument(name = "credential.execute.continue", skip_all, fields(credential_key = C::KEY))]
 pub async fn execute_continue<C, S>(
     token: &PendingToken,
     input: &UserInput,
@@ -195,6 +194,7 @@ where
     .await
 }
 
+#[tracing::instrument(name = "credential.execute.continue", skip_all, fields(credential_key = C::KEY))]
 pub(crate) async fn execute_continue_with_expectation<C, S>(
     token: &PendingToken,
     input: &UserInput,
