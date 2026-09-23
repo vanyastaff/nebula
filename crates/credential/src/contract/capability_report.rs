@@ -113,8 +113,11 @@ pub mod plugin_capability_report {
     pub trait IsRefreshable {
         /// `true` when the credential type implements `Refreshable`.
         const VALUE: bool;
-        /// Timing policy for a refreshable credential.
-        const POLICY: Option<crate::RefreshPolicy> = Some(crate::RefreshPolicy::DEFAULT);
+        /// Timing policy for a refreshable credential. Macro-generated
+        /// reports bind this directly to `Refreshable::REFRESH_POLICY`.
+        /// Hand-written refreshable reports must override the fail-closed
+        /// `None`; registry admission rejects a missing report.
+        const POLICY: Option<crate::RefreshPolicy> = None;
     }
 
     /// Reports whether the credential implements
