@@ -21,11 +21,11 @@ use std::time::Duration;
 use nebula_credential::{
     Capabilities, Credential, CredentialContext, CredentialLifecycle, CredentialPolicy,
     CredentialRegistry, LeaseRef, PendingState, RefreshAttempt, RefreshExecutionMode,
-    RefreshReport, RefreshStrategy, RegisterError, RevokeStrategy, SecretString,
-    compute_capabilities,
+    RefreshPolicy, RefreshReport, RefreshStrategy, RegisterError, RetryDelay, RevokeStrategy,
+    SecretString, compute_capabilities,
     error::CredentialError,
     resolve::{InteractionRequest, ResolveResult, StaticResolveResult, TestResult, UserInput},
-    scheme::SecretToken,
+    scheme::{OAuth2Token, SecretToken},
 };
 use serde::{Deserialize, Serialize};
 
@@ -360,4 +360,55 @@ fn register_accepts_non_refreshable_on_static_family() {
     registry
         .register(RevTest, "test_crate")
         .expect("non-Refreshable credential on a Static family is sound");
+}
+
+struct InvalidRetryFloor;
+
+#[nebula_credential::credential(key = "test_invalid_retry_floor", name = "Invalid Retry Floor")]
+impl InvalidRetryFloor {
+    type Properties = serde_json::Value;
+    type Scheme = OAuth2Token;
+    type State = SecretToken;
+
+    const REFRESH_POLICY: RefreshPolicy = RefreshPolicy {
+        early_refresh: Duration::from_mins(5),
+        min_retry_backoff: Duration::from_secs(RetryDelay::MAX_SECS)
+            .saturating_add(Duration::from_nanos(1)),
+        jitter: Duration::from_secs(30),
+    };
+
+    fn project(state: &SecretToken) -> OAuth2Token {
+        OAuth2Token::new(state.token().clone())
+    }
+
+    async fn resolve(
+        _properties: &serde_json::Value,
+        _ctx: &CredentialContext,
+    ) -> Result<StaticResolveResult<SecretToken>, CredentialError> {
+        Ok(StaticResolveResult::Complete(token()))
+    }
+
+    async fn refresh(_state: &mut SecretToken, attempt: RefreshAttempt<'_>) -> RefreshReport {
+        attempt.local_refresh_completed()
+    }
+}
+
+#[test]
+fn registration_rejects_retry_floor_above_durable_limit() {
+    let mut registry = CredentialRegistry::new();
+    let error = registry
+        .register(InvalidRetryFloor, "invalid-retry-floor-test")
+        .expect_err("an unrepresentable retry floor must fail startup admission");
+
+    assert!(
+        registry.is_empty(),
+        "failed admission must not mutate the registry"
+    );
+    assert!(matches!(
+        error,
+        RegisterError::InvalidRefreshRetryBackoff {
+            key: "test_invalid_retry_floor",
+            source: nebula_credential::RetryDelayError::TooLong,
+        }
+    ));
 }

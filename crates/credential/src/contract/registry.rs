@@ -44,8 +44,6 @@ use super::{
 
 /// Errors raised by [`CredentialRegistry::register`].
 ///
-/// Currently single-variant — duplicate KEY is the only registration-time
-/// failure that §15.6 promotes from "stealthy overwrite" to "hard error".
 /// Marked `#[non_exhaustive]` so future registration-time validations
 /// (e.g., metadata schema mismatch, plugin signature failures from the
 /// post-MVP `arch-signing-infra` work) extend the enum without breaking
@@ -59,6 +57,17 @@ pub enum RegisterError {
     /// The metadata key disagrees with the credential's static identity.
     #[error("credential metadata identity mismatch")]
     MetadataKeyMismatch,
+    /// A refreshable credential's retry floor cannot be represented by the
+    /// durable retry gate. The credential is rejected at startup rather than
+    /// silently shortening its declared minimum.
+    #[error("credential '{key}' declares an invalid minimum refresh retry backoff")]
+    InvalidRefreshRetryBackoff {
+        /// The credential whose refresh policy was rejected.
+        key: &'static str,
+        /// The structural reason the durable delay rejected the policy.
+        #[source]
+        source: crate::RetryDelayError,
+    },
     /// Two registrations submitted credentials sharing the same
     /// `Credential::KEY`. The first registration remains authoritative;
     /// the second is rejected. Operator resolves via plugin uninstall,
@@ -152,8 +161,8 @@ impl CredentialRegistry {
     /// # Errors
     ///
     /// Returns [`RegisterError::DuplicateKey`] if `C::KEY` is already
-    /// present in the registry. Operators resolve via plugin uninstall,
-    /// version pin, or namespace fix.
+    /// present in the registry, or [`RegisterError::InvalidRefreshRetryBackoff`]
+    /// when a refresh policy cannot be represented by the durable retry gate.
     #[tracing::instrument(name = "credential.catalog.register", skip_all, err)]
     pub fn register<C>(
         &mut self,
@@ -188,6 +197,20 @@ impl CredentialRegistry {
             .contains(Capabilities::REFRESHABLE)
             .then_some(<C as plugin_capability_report::IsRefreshable>::POLICY)
             .flatten();
+
+        if let Some(policy) = refresh_policy
+            && !policy.min_retry_backoff.is_zero()
+            && let Err(source) = crate::RetryDelay::new(policy.min_retry_backoff)
+        {
+            tracing::error!(
+                credential.key = key,
+                registering_crate,
+                min_retry_backoff_seconds = policy.min_retry_backoff.as_secs_f64(),
+                ?source,
+                "credential refresh policy rejected: minimum retry backoff is not durable"
+            );
+            return Err(RegisterError::InvalidRefreshRetryBackoff { key, source });
+        }
 
         // F3 containment law (fail-closed at boot, not at first refresh): a
         // `Refreshable` credential's `fn refresh` renews non-interactively or
