@@ -553,11 +553,10 @@ impl TenantProvisioningStore for PgTenantProvisioningStore {
         let org = org_values.materialize(created_at.clone());
         let workspace = workspace_values.materialize(org.id.clone(), created_at);
         let mut tx = self.pool.begin().await.map_err(conn_err)?;
+        lock_workspace_org(&mut tx, &org.id).await?;
         let mut lock_keys = [
             format!("tenant-provisioning:id:{}", org.id),
             format!("tenant-provisioning:slug:{}", org.slug),
-            format!("tenant-workspace-id:{}", workspace.id),
-            format!("tenant-workspace-org:{}", org.id),
         ];
         lock_keys.sort();
         for key in lock_keys {
@@ -575,6 +574,7 @@ impl TenantProvisioningStore for PgTenantProvisioningStore {
         .fetch_all(&mut *tx)
         .await
         .map_err(conn_err)?;
+        lock_workspace_identity(&mut tx, &workspace.id).await?;
         let workspace_rows = sqlx::query(
             "SELECT * FROM port_workspaces WHERE id = $2 OR (org_id = $1 AND (slug = $3 OR is_default = TRUE) AND deleted_at IS NULL) FOR UPDATE",
         )
@@ -797,9 +797,19 @@ impl MembershipStore for PgMembershipStore {
         workspace_id: &str,
     ) -> Result<Vec<WorkspaceMembership>, StorageError> {
         let mut tx = self.pool.begin().await.map_err(conn_err)?;
+        lock_workspace_org(&mut tx, org_id).await?;
+        let org =
+            sqlx::query("SELECT id FROM port_orgs WHERE id = $1 AND deleted_at IS NULL FOR SHARE")
+                .bind(org_id)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(conn_err)?;
+        if org.is_none() {
+            return Err(StorageError::not_found("workspace", workspace_id));
+        }
         lock_workspace_identity(&mut tx, workspace_id).await?;
         let workspace = sqlx::query(
-            "SELECT w.id FROM port_workspaces w JOIN port_orgs o ON o.id = w.org_id WHERE w.org_id = $1 AND w.id = $2 AND w.deleted_at IS NULL AND o.deleted_at IS NULL AND NOT EXISTS (SELECT 1 FROM port_workspaces other WHERE other.id = $2 AND other.org_id <> $1) FOR SHARE OF w, o",
+            "SELECT id FROM port_workspaces WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL AND NOT EXISTS (SELECT 1 FROM port_workspaces other WHERE other.id = $2 AND other.org_id <> $1) FOR SHARE",
         )
         .bind(org_id)
         .bind(workspace_id)
@@ -883,6 +893,7 @@ impl MembershipStore for PgMembershipStore {
         principal_id: &str,
     ) -> Result<OrgMemberRemoveOutcome, StorageError> {
         let mut tx = self.pool.begin().await.map_err(conn_err)?;
+        lock_workspace_org(&mut tx, org_id).await?;
         let org =
             sqlx::query("SELECT id FROM port_orgs WHERE id = $1 AND deleted_at IS NULL FOR UPDATE")
                 .bind(org_id)
@@ -957,6 +968,7 @@ impl MembershipStore for PgMembershipStore {
         request: WorkspaceMemberUpsert,
     ) -> Result<(), StorageError> {
         let mut tx = self.pool.begin().await.map_err(conn_err)?;
+        lock_workspace_org(&mut tx, &request.org_id).await?;
         let org =
             sqlx::query("SELECT id FROM port_orgs WHERE id = $1 AND deleted_at IS NULL FOR UPDATE")
                 .bind(&request.org_id)
@@ -1055,6 +1067,7 @@ impl MembershipStore for PgMembershipStore {
         principal_id: &str,
     ) -> Result<bool, StorageError> {
         let mut tx = self.pool.begin().await.map_err(conn_err)?;
+        lock_workspace_org(&mut tx, org_id).await?;
         let org =
             sqlx::query("SELECT id FROM port_orgs WHERE id = $1 AND deleted_at IS NULL FOR UPDATE")
                 .bind(org_id)
