@@ -31,9 +31,9 @@ pub use batch::{
 pub use dto::credential::{
     CredentialCommit, CredentialCreate, CredentialMaterialEpoch, CredentialMaterialEpochError,
     CredentialMaterialTransition, CredentialOwner, CredentialRecordState, CredentialReplacement,
-    CredentialSelector, CredentialTombstone, CredentialVersion, CredentialVersionError,
-    SecretBytes, StoredCredential, StoredCredentialHead, StoredLiveCredential,
-    StoredTombstonedCredential,
+    CredentialReplacementFence, CredentialSelector, CredentialTombstone, CredentialVersion,
+    CredentialVersionError, SecretBytes, StoredCredential, StoredCredentialHead,
+    StoredLiveCredential, StoredTombstonedCredential,
 };
 pub use dto::resume_token::{ResumeTokenRow, ResumeTokenWaitKind, TokenHash, TokenHashLengthError};
 pub use dto::{

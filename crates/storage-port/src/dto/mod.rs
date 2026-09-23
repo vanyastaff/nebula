@@ -34,9 +34,9 @@ pub use control::{ControlCommand, ControlMsg, ResumeTarget};
 pub use credential::{
     CredentialCommit, CredentialCreate, CredentialMaterialEpoch, CredentialMaterialEpochError,
     CredentialMaterialTransition, CredentialOwner, CredentialRecordState, CredentialReplacement,
-    CredentialSelector, CredentialTombstone, CredentialVersion, CredentialVersionError,
-    SecretBytes, StoredCredential, StoredCredentialHead, StoredLiveCredential,
-    StoredTombstonedCredential,
+    CredentialReplacementFence, CredentialSelector, CredentialTombstone, CredentialVersion,
+    CredentialVersionError, SecretBytes, StoredCredential, StoredCredentialHead,
+    StoredLiveCredential, StoredTombstonedCredential,
 };
 pub use credential_refresh_retry::{
     RefreshRetryAdmission, RefreshRetryBlock, RefreshRetryDelay, RefreshRetryDelayError,
