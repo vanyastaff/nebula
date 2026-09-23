@@ -393,6 +393,14 @@ counters to the server's shared metrics registry. Their labels are closed
 outcome classes only: no tenant, credential, provider, or replica identifiers
 enter the metrics cardinality boundary.
 
+Interactive credential pending state uses that same admitted credential pool
+and the same current/decrypt-only keyring as credential material. SQLite flows
+therefore survive a server restart, while PostgreSQL flows can continue on any
+replica connected to the credential database. Pending bearer tokens are stored
+only as digests; the state envelope is encrypted and bound to credential kind,
+owner, session, and expiry. A binding failure leaves the row available for the
+matching callback, while a successful callback consumes it atomically.
+
 ## Email delivery (SMTP)
 
 The API needs an `EmailPort` to ship sign-up verification and

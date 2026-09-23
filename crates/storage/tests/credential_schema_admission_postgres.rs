@@ -989,3 +989,106 @@ async fn unledgered_sequence_is_not_misclassified_as_fresh() -> TestResult<()> {
     database.cleanup().await;
     Ok(())
 }
+
+#[tokio::test]
+async fn current_schema_rejects_pending_state_column_drift() -> TestResult<()> {
+    let Some(database) = IsolatedSchema::connect().await else {
+        panic!(
+            "current_schema_rejects_pending_state_column_drift: backend unreachable — the case \
+             cannot run and must fail rather than pass unchecked; reach the backend (set \
+             DATABASE_URL for postgres) or run without this feature"
+        );
+    };
+    drop(PgCredentialPersistence::connect_with(database.options.clone()).await?);
+    let pool = database.raw_pool().await;
+    sqlx::query(
+        "ALTER TABLE credential_pending_states ALTER COLUMN credential_kind TYPE varchar(64)",
+    )
+    .execute(&pool)
+    .await?;
+    pool.close().await;
+
+    let error = PgCredentialPersistence::connect_with(database.options.clone())
+        .await
+        .expect_err("a drifted pending-state column must fail admission");
+    assert!(matches!(
+        error,
+        CredentialStoreStartupError::UnsupportedSchemaVersion(ref unsupported)
+            if unsupported.reason()
+                == &CredentialSchemaAdmissionReason::InvalidCredentialsRelation
+    ));
+    database.cleanup().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn current_schema_rejects_pending_state_constraint_drift() -> TestResult<()> {
+    let Some(database) = IsolatedSchema::connect().await else {
+        panic!(
+            "current_schema_rejects_pending_state_constraint_drift: backend unreachable — the \
+             case cannot run and must fail rather than pass unchecked; reach the backend (set \
+             DATABASE_URL for postgres) or run without this feature"
+        );
+    };
+    drop(PgCredentialPersistence::connect_with(database.options.clone()).await?);
+    let pool = database.raw_pool().await;
+    sqlx::query(
+        "ALTER TABLE credential_pending_states DROP CONSTRAINT credential_pending_states_check",
+    )
+    .execute(&pool)
+    .await?;
+    sqlx::query(
+        "ALTER TABLE credential_pending_states
+         ADD CONSTRAINT credential_pending_states_check CHECK (expires_at > created_at)",
+    )
+    .execute(&pool)
+    .await?;
+    pool.close().await;
+
+    let error = PgCredentialPersistence::connect_with(database.options.clone())
+        .await
+        .expect_err("a drifted pending-state constraint must fail admission");
+    assert!(matches!(
+        error,
+        CredentialStoreStartupError::UnsupportedSchemaVersion(ref unsupported)
+            if unsupported.reason()
+                == &CredentialSchemaAdmissionReason::InvalidCredentialsRelation
+    ));
+    database.cleanup().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn current_schema_rejects_pending_state_expiry_index_drift() -> TestResult<()> {
+    let Some(database) = IsolatedSchema::connect().await else {
+        panic!(
+            "current_schema_rejects_pending_state_expiry_index_drift: backend unreachable — the \
+             case cannot run and must fail rather than pass unchecked; reach the backend (set \
+             DATABASE_URL for postgres) or run without this feature"
+        );
+    };
+    drop(PgCredentialPersistence::connect_with(database.options.clone()).await?);
+    let pool = database.raw_pool().await;
+    sqlx::query("DROP INDEX idx_credential_pending_states_expiry")
+        .execute(&pool)
+        .await?;
+    sqlx::query(
+        "CREATE INDEX idx_credential_pending_states_expiry
+         ON credential_pending_states(created_at)",
+    )
+    .execute(&pool)
+    .await?;
+    pool.close().await;
+
+    let error = PgCredentialPersistence::connect_with(database.options.clone())
+        .await
+        .expect_err("a drifted pending-state expiry index must fail admission");
+    assert!(matches!(
+        error,
+        CredentialStoreStartupError::UnsupportedSchemaVersion(ref unsupported)
+            if unsupported.reason()
+                == &CredentialSchemaAdmissionReason::InvalidCredentialsRelation
+    ));
+    database.cleanup().await;
+    Ok(())
+}

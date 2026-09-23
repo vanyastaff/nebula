@@ -48,6 +48,17 @@ use nebula_credential::{DynPendingStateStore, PendingStoreError, PendingToken};
 use tokio::sync::RwLock;
 use zeroize::Zeroizing;
 
+const MAX_PENDING_TTL: Duration = Duration::from_mins(10);
+
+fn validate_pending_ttl(expires_in: Duration) -> Result<(), PendingStoreError> {
+    if expires_in > MAX_PENDING_TTL {
+        return Err(PendingStoreError::ValidationFailed {
+            reason: "pending state TTL exceeds the supported limit".to_owned(),
+        });
+    }
+    Ok(())
+}
+
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 mod durable;
 
@@ -152,6 +163,7 @@ impl DynPendingStateStore for InMemoryPendingStore {
         expires_in: Duration,
     ) -> Pin<Box<dyn Future<Output = Result<PendingToken, PendingStoreError>> + Send + 'a>> {
         Box::pin(async move {
+            validate_pending_ttl(expires_in)?;
             let expires_at = Utc::now() + expires_in;
             let token = PendingToken::generate();
 
@@ -183,7 +195,7 @@ impl DynPendingStateStore for InMemoryPendingStore {
                 .get(token.as_str())
                 .ok_or(PendingStoreError::NotFound)?;
 
-            if Utc::now() > entry.expires_at {
+            if Utc::now() >= entry.expires_at {
                 // Expiry is deterministic; evict here too so repeated `get`
                 // probes cannot retain stale rows forever.
                 entries.remove(token.as_str());
@@ -207,7 +219,7 @@ impl DynPendingStateStore for InMemoryPendingStore {
                 .get(token.as_str())
                 .ok_or(PendingStoreError::NotFound)?;
 
-            if Utc::now() > entry.expires_at {
+            if Utc::now() >= entry.expires_at {
                 entries.remove(token.as_str());
                 return Err(PendingStoreError::Expired);
             }
@@ -246,7 +258,7 @@ impl DynPendingStateStore for InMemoryPendingStore {
                 .get(token.as_str())
                 .ok_or(PendingStoreError::NotFound)?;
 
-            if Utc::now() > entry.expires_at {
+            if Utc::now() >= entry.expires_at {
                 // Expiry is deterministic; it's safe to evict the stale row now.
                 entries.remove(token.as_str());
                 return Err(PendingStoreError::Expired);

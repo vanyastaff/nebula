@@ -160,6 +160,16 @@ const OWNER_QUALIFIED_SENTINEL_EVENT_SHAPE: [ExpectedColumnShape; 11] = [
     column("adjudication_evidence_digest", "BLOB", false, None, 0),
 ];
 
+const PENDING_STATE_SHAPE: [ExpectedColumnShape; 7] = [
+    column("token_digest", "BLOB", true, None, 1),
+    column("credential_kind", "TEXT", true, None, 0),
+    column("owner_id", "TEXT", true, None, 0),
+    column("session_id", "TEXT", true, None, 0),
+    column("state_encrypted", "BLOB", true, None, 0),
+    column("created_at", "INTEGER", true, None, 0),
+    column("expires_at", "INTEGER", true, None, 0),
+];
+
 pub(crate) async fn admit(
     connection: &mut SqliteConnection,
 ) -> Result<SchemaAdmission, CredentialStoreStartupError> {
@@ -193,6 +203,12 @@ async fn observe(
             latest.ok_or(CredentialStoreStartupError::Unavailable)?,
         )
         .await?;
+    }
+    if latest_is_supported && latest.is_some_and(|version| version >= 55) {
+        if !relation_exists(connection, "credential_pending_states").await? {
+            return unsupported(AdmissionReason::InvalidCredentialsRelation);
+        }
+        validate_pending_states_relation(connection).await?;
     }
     let credentials =
         if credentials_exists && latest_is_supported && latest.is_some_and(|version| version >= 30)
@@ -238,6 +254,7 @@ async fn table_shape(
     let statement = match table {
         "credentials" => "PRAGMA table_info('credentials')",
         "credential_sentinel_events" => "PRAGMA table_info('credential_sentinel_events')",
+        "credential_pending_states" => "PRAGMA table_info('credential_pending_states')",
         _ => return unsupported(AdmissionReason::InvalidCredentialsRelation),
     };
     let rows = sqlx::query(statement)
@@ -266,6 +283,111 @@ async fn table_shape(
             })
         })
         .collect()
+}
+
+async fn validate_pending_states_relation(
+    connection: &mut SqliteConnection,
+) -> Result<(), CredentialStoreStartupError> {
+    let columns = table_shape(connection, "credential_pending_states").await?;
+    if !matches_shape(&columns, &PENDING_STATE_SHAPE) {
+        return unsupported(AdmissionReason::InvalidCredentialsRelation);
+    }
+
+    let table_sql: Option<String> = sqlx::query_scalar(
+        "SELECT sql FROM sqlite_schema
+         WHERE type = 'table' AND name = 'credential_pending_states'",
+    )
+    .fetch_optional(&mut *connection)
+    .await
+    .map_err(|_| CredentialStoreStartupError::Unavailable)?
+    .flatten();
+    let expected_table_sql = "CREATE TABLE credential_pending_states (
+        token_digest BLOB PRIMARY KEY NOT NULL CHECK (length(token_digest) = 32),
+        credential_kind TEXT NOT NULL,
+        owner_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        state_encrypted BLOB NOT NULL,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        CHECK (expires_at >= created_at)
+    )";
+    if table_sql.as_deref().is_none_or(|actual| {
+        normalize_schema_sql(actual) != normalize_schema_sql(expected_table_sql)
+    }) {
+        return unsupported(AdmissionReason::InvalidCredentialsRelation);
+    }
+
+    let indexes = sqlx::query("PRAGMA index_list('credential_pending_states')")
+        .fetch_all(&mut *connection)
+        .await
+        .map_err(|_| CredentialStoreStartupError::Unavailable)?;
+    let names = indexes
+        .iter()
+        .map(|row| row.get::<String, _>("name"))
+        .collect::<BTreeSet<_>>();
+    if names
+        != BTreeSet::from([
+            "idx_credential_pending_states_expiry".to_owned(),
+            "sqlite_autoindex_credential_pending_states_1".to_owned(),
+        ])
+    {
+        return unsupported(AdmissionReason::InvalidCredentialsRelation);
+    }
+    let attributes = |name: &str| {
+        indexes
+            .iter()
+            .find(|row| row.get::<String, _>("name") == name)
+            .map(|row| {
+                (
+                    row.get::<i64, _>("unique"),
+                    row.get::<i64, _>("partial"),
+                    row.get::<String, _>("origin"),
+                )
+            })
+    };
+    if attributes("idx_credential_pending_states_expiry") != Some((0, 0, "c".to_owned()))
+        || attributes("sqlite_autoindex_credential_pending_states_1")
+            != Some((1, 0, "pk".to_owned()))
+    {
+        return unsupported(AdmissionReason::InvalidCredentialsRelation);
+    }
+
+    let expiry_columns: Vec<String> = sqlx::query_scalar(
+        "SELECT name FROM pragma_index_info('idx_credential_pending_states_expiry')
+         ORDER BY seqno",
+    )
+    .fetch_all(&mut *connection)
+    .await
+    .map_err(|_| CredentialStoreStartupError::Unavailable)?;
+    let primary_key_columns: Vec<String> = sqlx::query_scalar(
+        "SELECT name FROM pragma_index_info('sqlite_autoindex_credential_pending_states_1')
+         ORDER BY seqno",
+    )
+    .fetch_all(&mut *connection)
+    .await
+    .map_err(|_| CredentialStoreStartupError::Unavailable)?;
+    let index_sql: Option<String> = sqlx::query_scalar(
+        "SELECT sql FROM sqlite_schema
+         WHERE type = 'index' AND name = 'idx_credential_pending_states_expiry'",
+    )
+    .fetch_optional(&mut *connection)
+    .await
+    .map_err(|_| CredentialStoreStartupError::Unavailable)?
+    .flatten();
+    if expiry_columns != ["expires_at"]
+        || primary_key_columns != ["token_digest"]
+        || index_sql.as_deref().is_none_or(|actual| {
+            normalize_schema_sql(actual)
+                != normalize_schema_sql(
+                    "CREATE INDEX idx_credential_pending_states_expiry
+                     ON credential_pending_states (expires_at)",
+                )
+        })
+    {
+        return unsupported(AdmissionReason::InvalidCredentialsRelation);
+    }
+
+    Ok(())
 }
 
 fn matches_shape(actual: &[ColumnShape], expected: &[ExpectedColumnShape]) -> bool {
