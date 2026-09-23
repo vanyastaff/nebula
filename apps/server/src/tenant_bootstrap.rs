@@ -4,7 +4,7 @@
 //! make startup retries deterministic, while the storage port owns atomicity
 //! across the organization, default workspace, and initial owner grant.
 
-use std::{collections::HashMap, str::FromStr, sync::Arc};
+use std::{collections::HashMap, future::Future, str::FromStr, sync::Arc};
 
 use nebula_api::domain::auth::backend::{AuthBackend, AuthError, UserProfile};
 use nebula_core::{OrgId, Slug, SlugKind, UserId, WorkspaceId};
@@ -167,12 +167,28 @@ pub(crate) async fn bootstrap_tenant(
     auth_backend: &Arc<dyn AuthBackend>,
     provisioner: &Arc<dyn TenantProvisioningStore>,
 ) -> Result<(), TenantBootstrapError> {
+    bootstrap_tenant_with_lookup(
+        config,
+        |owner_id| async move { auth_backend.get_user_profile(&owner_id).await },
+        provisioner,
+    )
+    .await
+}
+
+async fn bootstrap_tenant_with_lookup<F, Fut>(
+    config: Option<TenantBootstrapConfig>,
+    lookup_owner: F,
+    provisioner: &Arc<dyn TenantProvisioningStore>,
+) -> Result<(), TenantBootstrapError>
+where
+    F: FnOnce(String) -> Fut,
+    Fut: Future<Output = Result<UserProfile, AuthError>>,
+{
     let Some(config) = config else {
         return Ok(());
     };
 
-    let profile = auth_backend
-        .get_user_profile(&config.owner_user_id.to_string())
+    let profile = lookup_owner(config.owner_user_id.to_string())
         .await
         .map_err(map_owner_lookup_error)?;
     validate_owner_profile(&config, &profile)?;
@@ -189,7 +205,7 @@ async fn provision_verified_tenant(
         .await
         .map_err(|error| {
             tracing::error!(
-                error.category = storage_error_category(&error),
+                error.category = crate::storage_diagnostics::storage_error_category(&error),
                 "tenant bootstrap storage operation failed"
             );
             TenantBootstrapError::StorageFailed
@@ -228,24 +244,12 @@ fn validate_owner_profile(
     Ok(())
 }
 
-fn storage_error_category(error: &nebula_storage_port::StorageError) -> &'static str {
-    use nebula_storage_port::StorageError;
-    match error {
-        StorageError::NotFound { .. } => "not_found",
-        StorageError::Conflict { .. } => "conflict",
-        StorageError::Duplicate { .. } => "duplicate",
-        StorageError::Timeout { .. } => "timeout",
-        StorageError::Connection(_) => "connection",
-        StorageError::Configuration(_) => "configuration",
-        StorageError::Serialization(_) => "serialization",
-        StorageError::Internal(_) => "internal",
-        _ => "other",
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::{
+        collections::HashMap,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
 
     use async_trait::async_trait;
     use nebula_storage_port::{StorageError, dto::TenantProvisioningConflict};
@@ -262,6 +266,22 @@ mod tests {
             _request: TenantProvisioningRequest,
         ) -> Result<TenantProvisioningOutcome, StorageError> {
             Ok(self.0)
+        }
+    }
+
+    #[derive(Debug)]
+    struct RecordingProvisioner {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl TenantProvisioningStore for RecordingProvisioner {
+        async fn provision_tenant(
+            &self,
+            _request: TenantProvisioningRequest,
+        ) -> Result<TenantProvisioningOutcome, StorageError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(TenantProvisioningOutcome::Created)
         }
     }
 
@@ -354,6 +374,47 @@ mod tests {
             validate_owner_profile(&config, &profile),
             Err(TenantBootstrapError::OwnerLookupFailed)
         ));
+    }
+
+    #[tokio::test]
+    async fn rejected_owner_never_reaches_provisioning() {
+        let values = complete_values();
+        let config = TenantBootstrapConfig::from_lookup(|name| values.get(name).cloned())
+            .unwrap()
+            .unwrap();
+        let matching_profile = UserProfile {
+            user_id: config.owner_user_id.to_string(),
+            email: "owner@example.com".to_owned(),
+            display_name: "Owner".to_owned(),
+            avatar_url: None,
+            email_verified: true,
+            mfa_enabled: false,
+        };
+        let mut mismatched_profile = matching_profile.clone();
+        mismatched_profile.user_id = UserId::new().to_string();
+        let mut unverified_profile = matching_profile;
+        unverified_profile.email_verified = false;
+
+        let cases = [
+            Err(AuthError::UserNotFound),
+            Err(AuthError::Internal("backend unavailable".to_owned())),
+            Ok(mismatched_profile),
+            Ok(unverified_profile),
+        ];
+        for lookup_result in cases {
+            let recording = Arc::new(RecordingProvisioner {
+                calls: AtomicUsize::new(0),
+            });
+            let provisioner: Arc<dyn TenantProvisioningStore> = recording.clone();
+            let result = bootstrap_tenant_with_lookup(
+                Some(config.clone()),
+                |_| async move { lookup_result },
+                &provisioner,
+            )
+            .await;
+            assert!(result.is_err());
+            assert_eq!(recording.calls.load(Ordering::SeqCst), 0);
+        }
     }
 
     #[tokio::test]
