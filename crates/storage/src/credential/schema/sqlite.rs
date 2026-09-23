@@ -208,7 +208,11 @@ async fn observe(
         if !relation_exists(connection, "credential_pending_states").await? {
             return unsupported(AdmissionReason::InvalidCredentialsRelation);
         }
-        validate_pending_states_relation(connection).await?;
+        validate_pending_states_relation(
+            connection,
+            latest.ok_or(CredentialStoreStartupError::Unavailable)?,
+        )
+        .await?;
     }
     let credentials =
         if credentials_exists && latest_is_supported && latest.is_some_and(|version| version >= 30)
@@ -287,6 +291,7 @@ async fn table_shape(
 
 async fn validate_pending_states_relation(
     connection: &mut SqliteConnection,
+    latest: i64,
 ) -> Result<(), CredentialStoreStartupError> {
     let columns = table_shape(connection, "credential_pending_states").await?;
     if !matches_shape(&columns, &PENDING_STATE_SHAPE) {
@@ -301,7 +306,9 @@ async fn validate_pending_states_relation(
     .await
     .map_err(|_| CredentialStoreStartupError::Unavailable)?
     .flatten();
-    let expected_table_sql = "CREATE TABLE credential_pending_states (
+    let expiry_operator = if latest >= 56 { ">=" } else { ">" };
+    let expected_table_sql = format!(
+        "CREATE TABLE credential_pending_states (
         token_digest BLOB PRIMARY KEY NOT NULL CHECK (length(token_digest) = 32),
         credential_kind TEXT NOT NULL,
         owner_id TEXT NOT NULL,
@@ -309,10 +316,11 @@ async fn validate_pending_states_relation(
         state_encrypted BLOB NOT NULL,
         created_at INTEGER NOT NULL,
         expires_at INTEGER NOT NULL,
-        CHECK (expires_at >= created_at)
-    )";
+        CHECK (expires_at {expiry_operator} created_at)
+    )"
+    );
     if table_sql.as_deref().is_none_or(|actual| {
-        normalize_schema_sql(actual) != normalize_schema_sql(expected_table_sql)
+        normalize_schema_sql(actual) != normalize_schema_sql(&expected_table_sql)
     }) {
         return unsupported(AdmissionReason::InvalidCredentialsRelation);
     }

@@ -1092,3 +1092,50 @@ async fn current_schema_rejects_pending_state_expiry_index_drift() -> TestResult
     database.cleanup().await;
     Ok(())
 }
+
+#[tokio::test]
+async fn canonical_0055_pending_rows_upgrade_and_admit_equal_timestamps() -> TestResult<()> {
+    let Some(database) = IsolatedSchema::connect().await else {
+        panic!(
+            "canonical_0055_pending_rows_upgrade_and_admit_equal_timestamps: backend unreachable \
+             — the case cannot run and must fail rather than pass unchecked; reach the backend \
+             (set DATABASE_URL for postgres) or run without this feature"
+        );
+    };
+    let pool = database.raw_pool().await;
+    MIGRATOR.run_to(55, &pool).await?;
+    sqlx::query(
+        "INSERT INTO credential_pending_states (
+             token_digest, credential_kind, owner_id, session_id,
+             state_encrypted, created_at, expires_at
+         ) VALUES (decode(repeat('00', 32), 'hex'), 'oauth2', 'owner-a', 'session-a',
+                   decode('01', 'hex'), to_timestamp(1), to_timestamp(1.001))",
+    )
+    .execute(&pool)
+    .await?;
+    MIGRATOR.run(&pool).await?;
+
+    let row: (
+        String,
+        chrono::DateTime<chrono::Utc>,
+        chrono::DateTime<chrono::Utc>,
+    ) = sqlx::query_as("SELECT owner_id, created_at, expires_at FROM credential_pending_states")
+        .fetch_one(&pool)
+        .await?;
+    assert_eq!(row.0, "owner-a");
+    assert!(row.2 > row.1);
+    sqlx::query(
+        "INSERT INTO credential_pending_states (
+             token_digest, credential_kind, owner_id, session_id,
+             state_encrypted, created_at, expires_at
+         ) VALUES (decode(repeat('01', 32), 'hex'), 'oauth2', 'owner-b', 'session-b',
+                   decode('02', 'hex'), to_timestamp(2), to_timestamp(2))",
+    )
+    .execute(&pool)
+    .await?;
+    pool.close().await;
+
+    drop(PgCredentialPersistence::connect_with(database.options.clone()).await?);
+    database.cleanup().await;
+    Ok(())
+}

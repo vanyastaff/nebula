@@ -1323,6 +1323,13 @@ mod tests {
         assert!(!is_transient_sqlite_lock(&sqlx::Error::WorkerCrashed));
     }
 
+    /// Head 0056 widens the pending-state expiry constraint to admit equality.
+    /// PostgreSQL replaces only the constraint. SQLite rebuilds the relation
+    /// because it cannot alter a CHECK in place, copying every column without
+    /// changing row values; every 0055 row already satisfies the wider check.
+    /// The transform preserves aggregate state, so the general floor remains
+    /// at 0040.
+    ///
     /// Head 0055 adds an empty encrypted pending-state relation for interactive
     /// credentials. It neither infers prior pending flows nor rewrites an
     /// aggregate, so the general floor remains at 0040.
@@ -1367,9 +1374,9 @@ mod tests {
     fn new_catalog_head_requires_explicit_admission_policy_review() {
         assert_eq!(GENERAL_CATALOG_SUPPORTED_FLOOR, 40);
         #[cfg(feature = "sqlite")]
-        assert_eq!(catalog::catalog_head(&super::SQLITE_MIGRATOR), 55);
+        assert_eq!(catalog::catalog_head(&super::SQLITE_MIGRATOR), 56);
         #[cfg(feature = "postgres")]
-        assert_eq!(catalog::catalog_head(&super::POSTGRES_MIGRATOR), 55);
+        assert_eq!(catalog::catalog_head(&super::POSTGRES_MIGRATOR), 56);
     }
 
     /// The setup guard must never hold a descriptor on the database file.
