@@ -54,6 +54,17 @@ impl CredentialRefreshSchedulerConfig {
         }
         Ok(self)
     }
+
+    pub(crate) fn cover_refresh_horizon(
+        mut self,
+        required: Duration,
+    ) -> Result<Self, CredentialRefreshSchedulerConfigError> {
+        if required > self.horizon.get() {
+            self.horizon = CredentialRefreshHorizon::new(required)
+                .map_err(|_| CredentialRefreshSchedulerConfigError::PolicyHorizonTooLarge)?;
+        }
+        Ok(self)
+    }
 }
 
 /// Invalid due-refresh scheduler configuration.
@@ -62,6 +73,9 @@ pub enum CredentialRefreshSchedulerConfigError {
     /// A zero cadence would create a busy loop.
     #[error("credential refresh scheduler cadence must be non-zero")]
     ZeroCadence,
+    /// A registered credential policy cannot be represented by the storage port.
+    #[error("credential refresh policy horizon exceeds the supported bound")]
+    PolicyHorizonTooLarge,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -142,7 +156,15 @@ async fn run_loop(
     config: CredentialRefreshSchedulerConfig,
     shutdown: CancellationToken,
 ) {
-    run_tick(schedule.as_ref(), Arc::clone(&executor), config, &shutdown).await;
+    let mut after = None;
+    run_tick(
+        schedule.as_ref(),
+        Arc::clone(&executor),
+        config,
+        &shutdown,
+        &mut after,
+    )
+    .await;
     let mut ticker = tokio::time::interval(config.cadence);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     ticker.tick().await;
@@ -150,7 +172,7 @@ async fn run_loop(
         tokio::select! {
             () = shutdown.cancelled() => break,
             _ = ticker.tick() => {
-                run_tick(schedule.as_ref(), Arc::clone(&executor), config, &shutdown).await;
+                run_tick(schedule.as_ref(), Arc::clone(&executor), config, &shutdown, &mut after).await;
             }
         }
     }
@@ -161,8 +183,8 @@ async fn run_tick(
     executor: Arc<dyn ScheduledRefreshExecutor>,
     config: CredentialRefreshSchedulerConfig,
     shutdown: &CancellationToken,
+    after: &mut Option<CredentialRefreshCursor>,
 ) {
-    let mut after: Option<CredentialRefreshCursor> = None;
     for _ in 0..config.max_pages_per_tick.get() {
         if shutdown.is_cancelled() {
             return;
@@ -178,12 +200,14 @@ async fn run_tick(
             },
         };
         if candidates.is_empty() {
+            *after = None;
             return;
         }
-        after = candidates.last().map(DueCredentialRefresh::cursor);
+        *after = candidates.last().map(DueCredentialRefresh::cursor);
         let page_full = candidates.len() == usize::from(config.page_size.get());
         execute_page(candidates, executor.clone(), config.concurrency, shutdown).await;
         if !page_full {
+            *after = None;
             return;
         }
     }
@@ -315,6 +339,15 @@ mod tests {
         )
     }
 
+    #[test]
+    fn scheduler_horizon_covers_the_largest_registered_policy() {
+        let config = CredentialRefreshSchedulerConfig::default()
+            .cover_refresh_horizon(Duration::from_mins(12))
+            .expect("fixture policy horizon is bounded");
+
+        assert_eq!(config.horizon.get(), Duration::from_mins(12));
+    }
+
     #[tokio::test]
     async fn tick_stops_at_page_bound_without_losing_page_work() {
         let schedule = FixedSchedule {
@@ -327,17 +360,42 @@ mod tests {
             max_pages_per_tick: NonZeroU16::MIN,
             ..CredentialRefreshSchedulerConfig::default()
         };
+        let mut after = None;
 
         run_tick(
             &schedule,
             executor.clone(),
             config,
             &CancellationToken::new(),
+            &mut after,
         )
         .await;
 
         assert_eq!(schedule.scans.load(Ordering::SeqCst), 1);
         assert_eq!(executor.0.load(Ordering::SeqCst), 2);
+        assert!(after.is_some());
+    }
+
+    #[tokio::test]
+    async fn consecutive_ticks_continue_after_the_page_bound() {
+        let schedule = FixedSchedule {
+            candidates: vec![candidate(0), candidate(1), candidate(2)],
+            scans: AtomicUsize::new(0),
+        };
+        let executor = Arc::new(CountingExecutor::default());
+        let config = CredentialRefreshSchedulerConfig {
+            page_size: CredentialRefreshPageSize::new(2).expect("fixture page size is valid"),
+            max_pages_per_tick: NonZeroU16::MIN,
+            ..CredentialRefreshSchedulerConfig::default()
+        };
+        let shutdown = CancellationToken::new();
+        let mut after = None;
+
+        run_tick(&schedule, executor.clone(), config, &shutdown, &mut after).await;
+        run_tick(&schedule, executor.clone(), config, &shutdown, &mut after).await;
+
+        assert_eq!(executor.0.load(Ordering::SeqCst), 3);
+        assert!(after.is_none());
     }
 
     #[tokio::test]
@@ -349,12 +407,14 @@ mod tests {
         let executor = Arc::new(CountingExecutor::default());
         let shutdown = CancellationToken::new();
         shutdown.cancel();
+        let mut after = None;
 
         run_tick(
             &schedule,
             executor.clone(),
             CredentialRefreshSchedulerConfig::default(),
             &shutdown,
+            &mut after,
         )
         .await;
 

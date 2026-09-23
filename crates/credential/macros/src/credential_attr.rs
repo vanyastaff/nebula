@@ -370,6 +370,11 @@ fn expand_inner(args: TokenStream2, input: TokenStream) -> syn::Result<TokenStre
     // ── capability report consts ──────────────────────────────────────────
     let is_interactive = items.begin.is_some();
     let is_refreshable = items.refresh.is_some();
+    let refresh_policy_report = if is_refreshable {
+        quote! { Some(<Self as ::nebula_credential::Refreshable>::REFRESH_POLICY) }
+    } else {
+        quote! { None }
+    };
     let is_revocable = items.revoke.is_some();
     let is_testable = items.test.is_some();
     let is_dynamic = items.release.is_some();
@@ -383,7 +388,10 @@ fn expand_inner(args: TokenStream2, input: TokenStream) -> syn::Result<TokenStre
         impl #impl_generics
             ::nebula_credential::contract::plugin_capability_report::IsRefreshable
             for #self_ty #where_clause
-        { const VALUE: bool = #is_refreshable; }
+        {
+            const VALUE: bool = #is_refreshable;
+            const POLICY: Option<::nebula_credential::RefreshPolicy> = #refresh_policy_report;
+        }
         #fwd
         impl #impl_generics
             ::nebula_credential::contract::plugin_capability_report::IsRevocable

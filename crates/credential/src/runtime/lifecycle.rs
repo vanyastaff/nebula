@@ -78,6 +78,8 @@ impl CredentialLifecycleRuntime {
     ) -> Result<Self, CredentialRefreshSchedulerConfigError> {
         let (lease, lease_task) = LeaseLifecycle::spawn_owned(lease_config, lease_bus, metrics);
         let service = build_service(lease);
+        let scheduler_config =
+            scheduler_config.cover_refresh_horizon(service.maximum_refresh_horizon())?;
         let executor: Arc<dyn ScheduledRefreshExecutor> = service.clone();
         let refresh_scheduler =
             CredentialRefreshSchedulerTask::spawn(refresh_schedule, executor, scheduler_config)?;
