@@ -45,6 +45,34 @@ struct PoisonClaimRepo {
     evidence_recorded: AtomicBool,
 }
 
+struct FailingReclaimer;
+
+#[async_trait::async_trait]
+impl RefreshClaimReclaimer for FailingReclaimer {
+    async fn reclaim_stuck(
+        &self,
+        _policy: SentinelEscalationPolicy,
+    ) -> Result<Vec<ExpiredClaim>, RepoError> {
+        Err(RepoError::Storage)
+    }
+}
+
+struct NormalReclaimer(CredentialId);
+
+#[async_trait::async_trait]
+impl RefreshClaimReclaimer for NormalReclaimer {
+    async fn reclaim_stuck(
+        &self,
+        _policy: SentinelEscalationPolicy,
+    ) -> Result<Vec<ExpiredClaim>, RepoError> {
+        Ok(vec![ExpiredClaim::ReclaimedNormal {
+            selector: test_selector(self.0),
+            previous_holder: ReplicaId::new("expired-holder"),
+            previous_generation: 7,
+        }])
+    }
+}
+
 impl PoisonClaimRepo {
     fn new(credential_id: CredentialId) -> Self {
         Self {
@@ -522,6 +550,34 @@ async fn dropped_reauth_observation_cannot_undo_durable_escalation() {
 
     assert_eq!(repo.evidence_count.load(Ordering::SeqCst), 1);
     assert_eq!(event_bus.stats().dropped_count, 1);
+}
+
+#[tokio::test]
+async fn reclaim_metrics_count_storage_failure_and_each_released_claim() {
+    use super::super::reclaim::{run_one_sweep, run_one_sweep_recording_failure};
+
+    let metrics = RefreshCoordMetrics::for_tests().expect("test metrics registry is valid");
+    let policy = SentinelEscalationPolicy::new(1, Duration::from_mins(1))
+        .expect("test sentinel policy is valid");
+
+    let error = run_one_sweep_recording_failure(&FailingReclaimer, policy, None, &metrics, None)
+        .await
+        .expect_err("storage failure must remain visible to the sweep loop");
+    assert!(matches!(error, RepoError::Storage));
+    assert_eq!(metrics.reclaim_failed.get(), 1);
+    assert_eq!(metrics.reclaimed_claims.get(), 0);
+
+    run_one_sweep(
+        &NormalReclaimer(CredentialId::new()),
+        policy,
+        None,
+        &metrics,
+        None,
+    )
+    .await
+    .expect("normal expired claim should be reclaimed");
+    assert_eq!(metrics.reclaim_reclaimed.get(), 1);
+    assert_eq!(metrics.reclaimed_claims.get(), 1);
 }
 
 #[tokio::test]

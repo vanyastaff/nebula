@@ -242,6 +242,9 @@ wired to a hardened injected transport.
   completion becomes `OutcomeUnknown`.
 - Credential properties never resolve workflow expressions.
 - Durable business state never relies on `nebula-eventbus`; events are observations/wake hints.
+- Due-refresh cycles, candidate dispositions, reclaim failures, and released normal claims emit
+  pre-bound metrics with closed outcome labels; credential and tenant identities never become
+  metric labels.
 - Provider-controlled strings never become public validation or HTTP error text.
 - No raw writer, admin repository, runtime constructor, or unscoped resolver is exposed through the
   supported API/SDK. `CredentialPersistence` and construction seams remain unsupported technical

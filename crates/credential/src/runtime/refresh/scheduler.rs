@@ -14,6 +14,8 @@ use nebula_storage_port::{
 use tokio::task::{JoinHandle, JoinSet};
 use tokio_util::sync::CancellationToken;
 
+use super::metrics::RefreshSchedulerMetrics;
+
 /// Validated scheduling policy for one runtime replica.
 #[derive(Debug, Clone, Copy)]
 pub struct CredentialRefreshSchedulerConfig {
@@ -117,12 +119,13 @@ impl CredentialRefreshSchedulerTask {
         schedule: Arc<dyn CredentialRefreshSchedule>,
         executor: Arc<dyn ScheduledRefreshExecutor>,
         config: CredentialRefreshSchedulerConfig,
+        metrics: RefreshSchedulerMetrics,
     ) -> Result<Self, CredentialRefreshSchedulerConfigError> {
         let config = config.validate()?;
         let shutdown = CancellationToken::new();
         let task_shutdown = shutdown.clone();
         let task = tokio::spawn(async move {
-            run_loop(schedule, executor, config, task_shutdown).await;
+            run_loop(schedule, executor, config, metrics, task_shutdown).await;
         });
         Ok(Self {
             shutdown,
@@ -154,6 +157,7 @@ async fn run_loop(
     schedule: Arc<dyn CredentialRefreshSchedule>,
     executor: Arc<dyn ScheduledRefreshExecutor>,
     config: CredentialRefreshSchedulerConfig,
+    metrics: RefreshSchedulerMetrics,
     shutdown: CancellationToken,
 ) {
     let mut after = None;
@@ -161,6 +165,7 @@ async fn run_loop(
         schedule.as_ref(),
         Arc::clone(&executor),
         config,
+        &metrics,
         &shutdown,
         &mut after,
     )
@@ -172,7 +177,14 @@ async fn run_loop(
         tokio::select! {
             () = shutdown.cancelled() => break,
             _ = ticker.tick() => {
-                run_tick(schedule.as_ref(), Arc::clone(&executor), config, &shutdown, &mut after).await;
+                run_tick(
+                    schedule.as_ref(),
+                    Arc::clone(&executor),
+                    config,
+                    &metrics,
+                    &shutdown,
+                    &mut after,
+                ).await;
             }
         }
     }
@@ -182,6 +194,7 @@ async fn run_tick(
     schedule: &dyn CredentialRefreshSchedule,
     executor: Arc<dyn ScheduledRefreshExecutor>,
     config: CredentialRefreshSchedulerConfig,
+    metrics: &RefreshSchedulerMetrics,
     shutdown: &CancellationToken,
     after: &mut Option<CredentialRefreshCursor>,
 ) {
@@ -195,22 +208,36 @@ async fn run_tick(
         {
             Ok(candidates) => candidates,
             Err(error) => {
+                metrics.cycles_scan_failed.inc();
                 tracing::warn!(%error, "credential due-refresh scan failed");
                 return;
             },
         };
         if candidates.is_empty() {
             *after = None;
+            metrics.cycles_completed.inc();
             return;
         }
         *after = candidates.last().map(DueCredentialRefresh::cursor);
         let page_full = candidates.len() == usize::from(config.page_size.get());
-        execute_page(candidates, executor.clone(), config.concurrency, shutdown).await;
+        if !execute_page(
+            candidates,
+            executor.clone(),
+            config.concurrency,
+            metrics,
+            shutdown,
+        )
+        .await
+        {
+            return;
+        }
         if !page_full {
             *after = None;
+            metrics.cycles_completed.inc();
             return;
         }
     }
+    metrics.cycles_page_bound.inc();
     tracing::warn!(
         max_pages = config.max_pages_per_tick.get(),
         "credential due-refresh scan reached its per-tick page bound"
@@ -221,8 +248,9 @@ async fn execute_page(
     candidates: Vec<DueCredentialRefresh>,
     executor: Arc<dyn ScheduledRefreshExecutor>,
     concurrency: NonZeroU16,
+    metrics: &RefreshSchedulerMetrics,
     shutdown: &CancellationToken,
-) {
+) -> bool {
     let mut candidates = candidates.into_iter();
     loop {
         let mut tasks = JoinSet::new();
@@ -231,23 +259,26 @@ async fn execute_page(
             tasks.spawn(async move { executor.refresh_due(candidate).await });
         }
         if tasks.is_empty() {
-            return;
+            return true;
         }
         loop {
             tokio::select! {
                 () = shutdown.cancelled() => {
                     tasks.abort_all();
                     while tasks.join_next().await.is_some() {}
-                    return;
+                    return false;
                 },
                 result = tasks.join_next() => match result {
                     Some(Ok(disposition)) => {
+                        metric_for_disposition(metrics, disposition).inc();
                         tracing::debug!(?disposition, "credential scheduled refresh completed");
                     },
-                    Some(Err(error)) if !error.is_cancelled() => {
-                        tracing::error!(%error, "credential scheduled refresh task failed");
+                    Some(Err(error)) => {
+                        metrics.candidates_task_failed.inc();
+                        if !error.is_cancelled() {
+                            tracing::error!(%error, "credential scheduled refresh task failed");
+                        }
                     },
-                    Some(Err(_)) => {},
                     None => break,
                 },
             }
@@ -255,9 +286,28 @@ async fn execute_page(
     }
 }
 
+fn metric_for_disposition(
+    metrics: &RefreshSchedulerMetrics,
+    disposition: ScheduledRefreshDisposition,
+) -> &nebula_metrics::Counter {
+    match disposition {
+        ScheduledRefreshDisposition::Refreshed => &metrics.candidates_refreshed,
+        ScheduledRefreshDisposition::NoLongerDue => &metrics.candidates_no_longer_due,
+        ScheduledRefreshDisposition::Unsupported => &metrics.candidates_unsupported,
+        ScheduledRefreshDisposition::Deferred => &metrics.candidates_deferred,
+        ScheduledRefreshDisposition::Blocked => &metrics.candidates_blocked,
+        ScheduledRefreshDisposition::ReauthRequired => &metrics.candidates_reauth_required,
+        ScheduledRefreshDisposition::TransientFailure => &metrics.candidates_transient_failure,
+        ScheduledRefreshDisposition::OutcomeUnknown => &metrics.candidates_outcome_unknown,
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::{
+        collections::VecDeque,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
 
     use chrono::{DateTime, Utc};
     use nebula_storage_port::{
@@ -326,6 +376,51 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct FailingSchedule;
+
+    #[async_trait]
+    impl CredentialRefreshSchedule for FailingSchedule {
+        async fn scan_due(
+            &self,
+            _after: Option<&CredentialRefreshCursor>,
+            _horizon: CredentialRefreshHorizon,
+            _limit: CredentialRefreshPageSize,
+        ) -> Result<Vec<DueCredentialRefresh>, CredentialRefreshScheduleError> {
+            Err(CredentialRefreshScheduleError::CorruptRecord)
+        }
+    }
+
+    #[derive(Debug)]
+    struct ScriptedExecutor(std::sync::Mutex<VecDeque<ScheduledRefreshDisposition>>);
+
+    #[async_trait]
+    impl ScheduledRefreshExecutor for ScriptedExecutor {
+        async fn refresh_due(
+            &self,
+            _candidate: DueCredentialRefresh,
+        ) -> ScheduledRefreshDisposition {
+            self.0
+                .lock()
+                .expect("script mutex is not poisoned")
+                .pop_front()
+                .expect("one disposition exists per candidate")
+        }
+    }
+
+    #[derive(Debug)]
+    struct PanickingExecutor;
+
+    #[async_trait]
+    impl ScheduledRefreshExecutor for PanickingExecutor {
+        async fn refresh_due(
+            &self,
+            _candidate: DueCredentialRefresh,
+        ) -> ScheduledRefreshDisposition {
+            panic!("scripted candidate task failure")
+        }
+    }
+
     fn candidate(offset_seconds: i64) -> DueCredentialRefresh {
         let expires_at = DateTime::<Utc>::from_timestamp(1_800_000_000 + offset_seconds, 0)
             .expect("fixture timestamp is valid");
@@ -361,11 +456,13 @@ mod tests {
             ..CredentialRefreshSchedulerConfig::default()
         };
         let mut after = None;
+        let metrics = RefreshSchedulerMetrics::for_tests().expect("test metrics are valid");
 
         run_tick(
             &schedule,
             executor.clone(),
             config,
+            &metrics,
             &CancellationToken::new(),
             &mut after,
         )
@@ -374,6 +471,8 @@ mod tests {
         assert_eq!(schedule.scans.load(Ordering::SeqCst), 1);
         assert_eq!(executor.0.load(Ordering::SeqCst), 2);
         assert!(after.is_some());
+        assert_eq!(metrics.cycles_page_bound.get(), 1);
+        assert_eq!(metrics.candidates_refreshed.get(), 2);
     }
 
     #[tokio::test]
@@ -390,12 +489,31 @@ mod tests {
         };
         let shutdown = CancellationToken::new();
         let mut after = None;
+        let metrics = RefreshSchedulerMetrics::for_tests().expect("test metrics are valid");
 
-        run_tick(&schedule, executor.clone(), config, &shutdown, &mut after).await;
-        run_tick(&schedule, executor.clone(), config, &shutdown, &mut after).await;
+        run_tick(
+            &schedule,
+            executor.clone(),
+            config,
+            &metrics,
+            &shutdown,
+            &mut after,
+        )
+        .await;
+        run_tick(
+            &schedule,
+            executor.clone(),
+            config,
+            &metrics,
+            &shutdown,
+            &mut after,
+        )
+        .await;
 
         assert_eq!(executor.0.load(Ordering::SeqCst), 3);
         assert!(after.is_none());
+        assert_eq!(metrics.cycles_page_bound.get(), 1);
+        assert_eq!(metrics.cycles_completed.get(), 1);
     }
 
     #[tokio::test]
@@ -408,11 +526,13 @@ mod tests {
         let shutdown = CancellationToken::new();
         shutdown.cancel();
         let mut after = None;
+        let metrics = RefreshSchedulerMetrics::for_tests().expect("test metrics are valid");
 
         run_tick(
             &schedule,
             executor.clone(),
             CredentialRefreshSchedulerConfig::default(),
+            &metrics,
             &shutdown,
             &mut after,
         )
@@ -420,6 +540,86 @@ mod tests {
 
         assert_eq!(schedule.scans.load(Ordering::SeqCst), 0);
         assert_eq!(executor.0.load(Ordering::SeqCst), 0);
+        assert_eq!(metrics.cycles_completed.get(), 0);
+        assert_eq!(metrics.cycles_scan_failed.get(), 0);
+        assert_eq!(metrics.cycles_page_bound.get(), 0);
+    }
+
+    #[tokio::test]
+    async fn scan_failure_is_counted_once_without_candidate_work() {
+        let metrics = RefreshSchedulerMetrics::for_tests().expect("test metrics are valid");
+        let mut after = None;
+        run_tick(
+            &FailingSchedule,
+            Arc::new(CountingExecutor::default()),
+            CredentialRefreshSchedulerConfig::default(),
+            &metrics,
+            &CancellationToken::new(),
+            &mut after,
+        )
+        .await;
+
+        assert_eq!(metrics.cycles_scan_failed.get(), 1);
+        assert_eq!(metrics.cycles_completed.get(), 0);
+        assert_eq!(metrics.candidates_refreshed.get(), 0);
+    }
+
+    #[tokio::test]
+    async fn every_candidate_disposition_has_one_prebound_counter() {
+        let dispositions = VecDeque::from([
+            ScheduledRefreshDisposition::Refreshed,
+            ScheduledRefreshDisposition::NoLongerDue,
+            ScheduledRefreshDisposition::Unsupported,
+            ScheduledRefreshDisposition::Deferred,
+            ScheduledRefreshDisposition::Blocked,
+            ScheduledRefreshDisposition::ReauthRequired,
+            ScheduledRefreshDisposition::TransientFailure,
+            ScheduledRefreshDisposition::OutcomeUnknown,
+        ]);
+        let candidates = (0..dispositions.len())
+            .map(|offset| candidate(offset as i64))
+            .collect();
+        let metrics = RefreshSchedulerMetrics::for_tests().expect("test metrics are valid");
+
+        assert!(
+            execute_page(
+                candidates,
+                Arc::new(ScriptedExecutor(std::sync::Mutex::new(dispositions))),
+                NonZeroU16::MIN,
+                &metrics,
+                &CancellationToken::new(),
+            )
+            .await
+        );
+
+        assert_eq!(metrics.candidates_refreshed.get(), 1);
+        assert_eq!(metrics.candidates_no_longer_due.get(), 1);
+        assert_eq!(metrics.candidates_unsupported.get(), 1);
+        assert_eq!(metrics.candidates_deferred.get(), 1);
+        assert_eq!(metrics.candidates_blocked.get(), 1);
+        assert_eq!(metrics.candidates_reauth_required.get(), 1);
+        assert_eq!(metrics.candidates_transient_failure.get(), 1);
+        assert_eq!(metrics.candidates_outcome_unknown.get(), 1);
+        assert_eq!(metrics.candidates_task_failed.get(), 0);
+    }
+
+    #[tokio::test]
+    async fn failed_candidate_task_is_counted_without_a_disposition() {
+        let metrics = RefreshSchedulerMetrics::for_tests().expect("test metrics are valid");
+
+        assert!(
+            execute_page(
+                vec![candidate(0)],
+                Arc::new(PanickingExecutor),
+                NonZeroU16::MIN,
+                &metrics,
+                &CancellationToken::new(),
+            )
+            .await
+        );
+
+        assert_eq!(metrics.candidates_task_failed.get(), 1);
+        assert_eq!(metrics.candidates_refreshed.get(), 0);
     }
 
     #[tokio::test]
@@ -428,11 +628,14 @@ mod tests {
         let shutdown = CancellationToken::new();
         let task_shutdown = shutdown.clone();
         let task_executor = executor.clone();
+        let metrics = RefreshSchedulerMetrics::for_tests().expect("test metrics are valid");
+        let task_metrics = metrics.clone();
         let task = tokio::spawn(async move {
             execute_page(
                 vec![candidate(0)],
                 task_executor,
                 NonZeroU16::MIN,
+                &task_metrics,
                 &task_shutdown,
             )
             .await;
@@ -446,5 +649,7 @@ mod tests {
             .await
             .expect("scheduler cancellation must be bounded")
             .expect("scheduler task must join cleanly");
+        assert_eq!(metrics.candidates_refreshed.get(), 0);
+        assert_eq!(metrics.candidates_task_failed.get(), 0);
     }
 }
