@@ -44,15 +44,13 @@ use nebula_storage_port::{
 use serde_json::Value;
 use sqlx::{Connection, Sqlite, SqlitePool, Transaction};
 
+use std::sync::Arc;
 #[cfg(test)]
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, AtomicUsize, Ordering},
-};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use super::{
-    CredentialStoreStartupError, refresh_claim::SqliteRefreshClaimRepo, retry_gate,
-    schema::sqlite as schema,
+    CredentialStoreStartupError, pending::SqlitePendingStateStore,
+    refresh_claim::SqliteRefreshClaimRepo, retry_gate, schema::sqlite as schema,
 };
 #[cfg(test)]
 use crate::migration::SQLITE_MIGRATOR;
@@ -288,6 +286,16 @@ impl SqliteCredentialPersistence {
     #[must_use]
     pub fn refresh_claim_repo(&self) -> SqliteRefreshClaimRepo {
         SqliteRefreshClaimRepo::new(self.pool.clone())
+    }
+
+    /// Create an encrypted durable pending-state store on this admitted pool.
+    #[must_use]
+    pub fn pending_state_store(
+        &self,
+        key_provider: Arc<dyn super::KeyProvider>,
+        legacy_keys: Vec<(String, Arc<nebula_crypto::EncryptionKey>)>,
+    ) -> SqlitePendingStateStore {
+        SqlitePendingStateStore::new(self.pool.clone(), key_provider, legacy_keys)
     }
 
     /// Create the due-refresh schedule adapter on this store's admitted pool.
