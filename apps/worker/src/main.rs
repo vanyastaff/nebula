@@ -14,6 +14,8 @@
 //! | `NEBULA_WORKER_PROCESSOR_ID` | random UUID v4 per boot | 32 hex chars (16 bytes); set explicitly for stable fence identity |
 //! | `NEBULA_CRED_DB` | `sqlite://nebula-credentials.db?mode=rwc` | Credential projection database; supports SQLite and, with `postgres`, PostgreSQL. |
 //! | `NEBULA_CRED_MASTER_KEY` | required | Base64-encoded 32-byte credential encryption key. |
+//! | `NEBULA_CRED_LEGACY_MASTER_KEYS` | unset | Up to eight comma-separated base64 AES-256 keys accepted only for decrypting historical credential envelopes. |
+//! | `NEBULA_CRED_LEGACY_EMPTY_ID_MASTER_KEY` | unset | One base64 AES-256 decrypt-only key for credential envelopes written by the historical empty-key-ID format. |
 //! | `NEBULA_CRED_DEV_KEY` | unset | Set to `1` only for an insecure fixed development key. |
 //! | `RUST_LOG` | `info` | `tracing` subscriber filter |
 //!
