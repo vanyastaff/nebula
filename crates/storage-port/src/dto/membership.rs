@@ -111,6 +111,20 @@ pub struct PrincipalOrgMembership {
     pub role: OrgMembershipRole,
 }
 
+/// One explicit membership belonging to a parent-qualified workspace.
+///
+/// The workspace identity is supplied to the listing operation, so the row
+/// carries only the principal and its closed role vocabulary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceMembership {
+    /// Principal domain.
+    pub principal_kind: PrincipalKind,
+    /// Principal identifier.
+    pub principal_id: String,
+    /// Explicit workspace role.
+    pub role: WorkspaceMembershipRole,
+}
+
 /// Organization membership replacement subject to the lockout invariant.
 /// The adapter authors the write timestamp inside its atomic operation.
 #[derive(Debug, Clone, PartialEq, Eq)]

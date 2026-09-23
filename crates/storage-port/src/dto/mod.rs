@@ -55,7 +55,7 @@ pub use journal::JournalEntry;
 pub use membership::{
     MembershipRoleParseError, OrgMemberRemoveOutcome, OrgMemberUpsert, OrgMemberUpsertOutcome,
     OrgMembershipRole, PrincipalOrgMembership, TenantMembershipSnapshot, WorkspaceMemberUpsert,
-    WorkspaceMembershipRole,
+    WorkspaceMembership, WorkspaceMembershipRole,
 };
 pub use node_result::{MAX_SUPPORTED_RESULT_SCHEMA_VERSION, NodeResultRecord};
 pub use operation_ledger::{

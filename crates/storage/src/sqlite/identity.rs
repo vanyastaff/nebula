@@ -27,7 +27,7 @@ use nebula_storage_port::dto::{
     OrgMemberRemoveOutcome, OrgMemberUpsert, OrgMemberUpsertOutcome, OrgMembershipRole,
     PrincipalOrgMembership, TenantMembershipSnapshot, TenantProvisioningConflict,
     TenantProvisioningOutcome, TenantProvisioningRequest, WorkspaceMemberUpsert,
-    WorkspaceMembershipRole,
+    WorkspaceMembership, WorkspaceMembershipRole,
 };
 use nebula_storage_port::store::{
     AuditStore, BlobStore, MembershipStore, OrgStore, QuotaStore, ResourceStore,
@@ -744,6 +744,7 @@ impl MembershipStore for SqliteMembershipStore {
              AND m.scope_id = ?3) \
              OR (m.scope_kind = 'workspace' \
              AND m.scope_id = ?4 \
+             AND EXISTS (SELECT 1 FROM port_orgs o WHERE o.id = ?3 AND o.deleted_at IS NULL) \
              AND EXISTS (SELECT 1 \
              FROM port_workspaces w \
              WHERE w.org_id = ?3 \
@@ -801,6 +802,35 @@ impl MembershipStore for SqliteMembershipStore {
                 })
             })
             .collect()
+    }
+
+    #[tracing::instrument(skip_all)]
+    async fn list_workspace_members(
+        &self,
+        org_id: &str,
+        workspace_id: &str,
+    ) -> Result<Vec<WorkspaceMembership>, StorageError> {
+        let mut tx = self.pool.begin().await.map_err(conn_err)?;
+        let workspace = sqlx::query(
+            "SELECT id FROM port_workspaces WHERE org_id = ?1 AND id = ?2 AND deleted_at IS NULL AND EXISTS (SELECT 1 FROM port_orgs o WHERE o.id = ?1 AND o.deleted_at IS NULL) AND NOT EXISTS (SELECT 1 FROM port_workspaces other WHERE other.id = ?2 AND other.org_id <> ?1)",
+        )
+        .bind(org_id)
+        .bind(workspace_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(conn_err)?;
+        if workspace.is_none() {
+            return Err(StorageError::not_found("workspace", workspace_id));
+        }
+        let rows = sqlx::query(
+            "SELECT * FROM port_memberships WHERE scope_kind = 'workspace' AND scope_id = ?1 ORDER BY principal_kind, principal_id",
+        )
+        .bind(workspace_id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(conn_err)?;
+        tx.commit().await.map_err(conn_err)?;
+        rows.iter().map(workspace_membership_from_row).collect()
     }
 
     #[tracing::instrument(skip_all)]
@@ -902,8 +932,29 @@ impl MembershipStore for SqliteMembershipStore {
         if !privileged_other {
             return Ok(OrgMemberRemoveOutcome::WouldLockOut);
         }
+        let ambiguous_workspace = sqlx::query(
+            "SELECT 1 FROM port_workspaces own JOIN port_workspaces other ON own.id = other.id AND own.org_id <> other.org_id WHERE own.org_id = ?1 LIMIT 1",
+        )
+        .bind(org_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(conn_err)?;
+        if ambiguous_workspace.is_some() {
+            return Err(StorageError::Serialization(
+                "workspace identity is ambiguous".into(),
+            ));
+        }
         sqlx::query("DELETE FROM port_memberships WHERE scope_kind = 'org' AND scope_id = ?1 AND principal_kind = ?2 AND principal_id = ?3")
             .bind(org_id).bind(principal_kind.as_str()).bind(principal_id).execute(&mut *tx).await.map_err(conn_err)?;
+        sqlx::query(
+            "DELETE FROM port_memberships WHERE scope_kind = 'workspace' AND principal_kind = ?1 AND principal_id = ?2 AND scope_id IN (SELECT id FROM port_workspaces WHERE org_id = ?3)",
+        )
+        .bind(principal_kind.as_str())
+        .bind(principal_id)
+        .bind(org_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(conn_err)?;
         tx.commit().await.map_err(conn_err)?;
         Ok(OrgMemberRemoveOutcome::Removed)
     }
@@ -919,7 +970,7 @@ impl MembershipStore for SqliteMembershipStore {
             .await
             .map_err(conn_err)?;
         let workspace = sqlx::query(
-            "SELECT id FROM port_workspaces WHERE org_id = ?1 AND id = ?2 AND deleted_at IS NULL AND NOT EXISTS (SELECT 1 FROM port_workspaces other WHERE other.id = ?2 AND other.org_id <> ?1)",
+            "SELECT id FROM port_workspaces WHERE org_id = ?1 AND id = ?2 AND deleted_at IS NULL AND EXISTS (SELECT 1 FROM port_orgs o WHERE o.id = ?1 AND o.deleted_at IS NULL) AND NOT EXISTS (SELECT 1 FROM port_workspaces other WHERE other.id = ?2 AND other.org_id <> ?1)",
         )
         .bind(&request.org_id)
         .bind(&request.workspace_id)
@@ -929,6 +980,22 @@ impl MembershipStore for SqliteMembershipStore {
         if workspace.is_none() {
             return Err(StorageError::not_found("workspace", request.workspace_id));
         }
+        let org_membership = sqlx::query(
+            "SELECT * FROM port_memberships WHERE scope_kind = 'org' AND scope_id = ?1 AND principal_kind = ?2 AND principal_id = ?3",
+        )
+        .bind(&request.org_id)
+        .bind(request.principal_kind.as_str())
+        .bind(&request.principal_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(conn_err)?;
+        let Some(org_membership) = org_membership else {
+            return Err(StorageError::not_found(
+                "org membership",
+                request.principal_id,
+            ));
+        };
+        parse_org_role(&membership_from_row(&org_membership)?.role)?;
         sqlx::query(
             "INSERT INTO port_memberships (scope_kind, scope_id, principal_kind, principal_id, role, added_at, added_by) \
              VALUES ('workspace', ?1, ?2, ?3, ?4, ?5, ?6) \
@@ -1001,7 +1068,7 @@ impl MembershipStore for SqliteMembershipStore {
             .await
             .map_err(conn_err)?;
         let workspace = sqlx::query(
-            "SELECT id FROM port_workspaces WHERE org_id = ?1 AND id = ?2 AND deleted_at IS NULL AND NOT EXISTS (SELECT 1 FROM port_workspaces other WHERE other.id = ?2 AND other.org_id <> ?1)",
+            "SELECT id FROM port_workspaces WHERE org_id = ?1 AND id = ?2 AND deleted_at IS NULL AND EXISTS (SELECT 1 FROM port_orgs o WHERE o.id = ?1 AND o.deleted_at IS NULL) AND NOT EXISTS (SELECT 1 FROM port_workspaces other WHERE other.id = ?2 AND other.org_id <> ?1)",
         )
         .bind(org_id)
         .bind(workspace_id)
@@ -1033,6 +1100,18 @@ impl MembershipStore for SqliteMembershipStore {
 fn parse_org_role(value: &str) -> Result<OrgMembershipRole, StorageError> {
     OrgMembershipRole::parse(value)
         .map_err(|_| StorageError::Serialization("membership role is invalid".into()))
+}
+
+fn workspace_membership_from_row(
+    raw: &sqlx::sqlite::SqliteRow,
+) -> Result<WorkspaceMembership, StorageError> {
+    let row = membership_from_row(raw)?;
+    Ok(WorkspaceMembership {
+        principal_kind: row.principal_kind,
+        principal_id: row.principal_id,
+        role: WorkspaceMembershipRole::parse(&row.role)
+            .map_err(|_| StorageError::Serialization("membership role is invalid".into()))?,
+    })
 }
 
 // ── Resources (workspace-scoped) ──────────────────────────────────────────

@@ -929,6 +929,10 @@ async fn assert_membership_live_and_deleted_workspace_aliases(b: &dyn IdentityBa
         .await
         .unwrap();
     store
+        .upsert_org_member_guarded(org_member("org_a", "user", OrgMembershipRole::Owner))
+        .await
+        .unwrap();
+    store
         .upsert_workspace_member(workspace_member("org_a", "shared", "user"))
         .await
         .unwrap();
@@ -973,6 +977,223 @@ async fn assert_membership_live_and_deleted_workspace_aliases(b: &dyn IdentityBa
             "WorkspaceEditor"
         );
     }
+}
+
+async fn assert_workspace_member_listing_and_org_removal_cleanup(b: &dyn IdentityBackend) {
+    let orgs = b.org_store().await;
+    let workspaces = b.workspace_store().await;
+    let store = b.membership_store().await;
+    orgs.create(org_row("org", "org")).await.unwrap();
+    workspaces
+        .create(workspace_row("active", "org", "active"))
+        .await
+        .unwrap();
+    workspaces
+        .create(workspace_row("deleted", "org", "deleted"))
+        .await
+        .unwrap();
+    store
+        .upsert_org_member_guarded(org_member("org", "owner", OrgMembershipRole::Owner))
+        .await
+        .unwrap();
+    store
+        .upsert_org_member_guarded(org_member("org", "admin", OrgMembershipRole::Admin))
+        .await
+        .unwrap();
+
+    let mut service_org_member = org_member("org", "service", OrgMembershipRole::Member);
+    service_org_member.principal_kind = PrincipalKind::ServiceAccount;
+    store
+        .upsert_org_member_guarded(service_org_member)
+        .await
+        .unwrap();
+
+    let mut service = workspace_member("org", "active", "service");
+    service.principal_kind = PrincipalKind::ServiceAccount;
+    service.role = WorkspaceMembershipRole::Viewer;
+    store.upsert_workspace_member(service).await.unwrap();
+    let mut owner_active = workspace_member("org", "active", "owner");
+    owner_active.role = WorkspaceMembershipRole::Admin;
+    store.upsert_workspace_member(owner_active).await.unwrap();
+    store
+        .upsert_workspace_member(workspace_member("org", "deleted", "owner"))
+        .await
+        .unwrap();
+
+    let listed = store.list_workspace_members("org", "active").await.unwrap();
+    assert_eq!(listed.len(), 2);
+    assert_eq!(listed[0].principal_kind, PrincipalKind::ServiceAccount);
+    assert_eq!(listed[0].principal_id, "service");
+    assert_eq!(listed[0].role, WorkspaceMembershipRole::Viewer);
+    assert_eq!(listed[1].principal_kind, PrincipalKind::User);
+    assert_eq!(listed[1].principal_id, "owner");
+    assert_eq!(listed[1].role, WorkspaceMembershipRole::Admin);
+
+    workspaces.soft_delete("org", "deleted").await.unwrap();
+    assert!(matches!(
+        store.list_workspace_members("org", "deleted").await,
+        Err(PortStorageError::NotFound { .. })
+    ));
+    assert_eq!(
+        store
+            .remove_org_member_guarded("org", PrincipalKind::User, "owner")
+            .await
+            .unwrap(),
+        OrgMemberRemoveOutcome::Removed
+    );
+    for workspace_id in ["active", "deleted"] {
+        assert!(
+            store
+                .get(
+                    ScopeKind::Workspace,
+                    workspace_id,
+                    PrincipalKind::User,
+                    "owner"
+                )
+                .await
+                .unwrap()
+                .is_none(),
+            "org removal must clear grants for {workspace_id}"
+        );
+    }
+    assert_eq!(
+        store
+            .list_workspace_members("org", "active")
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    store
+        .upsert_org_member_guarded(org_member("org", "owner", OrgMembershipRole::Member))
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .list_workspace_members("org", "active")
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    orgs.soft_delete("org").await.unwrap();
+    assert!(matches!(
+        store.list_workspace_members("org", "active").await,
+        Err(PortStorageError::NotFound { .. })
+    ));
+}
+
+async fn assert_workspace_upsert_requires_org_membership_and_serializes_removal(
+    b: &dyn IdentityBackend,
+) {
+    let orgs = b.org_store().await;
+    let workspaces = b.workspace_store().await;
+    let store = b.membership_store().await;
+    orgs.create(org_row("org", "org")).await.unwrap();
+    workspaces
+        .create(workspace_row("ws", "org", "ws"))
+        .await
+        .unwrap();
+    store
+        .upsert_org_member_guarded(org_member("org", "admin", OrgMembershipRole::Admin))
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        store
+            .upsert_workspace_member(workspace_member("org", "ws", "absent"))
+            .await,
+        Err(PortStorageError::NotFound { .. })
+    ));
+    assert!(
+        store
+            .get(ScopeKind::Workspace, "ws", PrincipalKind::User, "absent")
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    store
+        .upsert_org_member_guarded(org_member("org", "target", OrgMembershipRole::Member))
+        .await
+        .unwrap();
+    let removal_store = Arc::clone(&store);
+    let upsert_store = Arc::clone(&store);
+    let (removal, upsert) = tokio::join!(
+        removal_store.remove_org_member_guarded("org", PrincipalKind::User, "target"),
+        upsert_store.upsert_workspace_member(workspace_member("org", "ws", "target"))
+    );
+    assert_eq!(removal.unwrap(), OrgMemberRemoveOutcome::Removed);
+    assert!(upsert.is_ok() || matches!(upsert, Err(PortStorageError::NotFound { .. })));
+    assert!(
+        store
+            .get(ScopeKind::Org, "org", PrincipalKind::User, "target")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        store
+            .get(ScopeKind::Workspace, "ws", PrincipalKind::User, "target")
+            .await
+            .unwrap()
+            .is_none(),
+        "removal must reject or cascade a concurrent workspace grant"
+    );
+}
+
+async fn assert_ambiguous_workspace_blocks_org_removal(b: &dyn IdentityBackend) {
+    let orgs = b.org_store().await;
+    let workspaces = b.workspace_store().await;
+    let store = b.membership_store().await;
+    orgs.create(org_row("org_a", "a")).await.unwrap();
+    orgs.create(org_row("org_b", "b")).await.unwrap();
+    workspaces
+        .create(workspace_row("shared", "org_a", "a"))
+        .await
+        .unwrap();
+    store
+        .upsert_org_member_guarded(org_member("org_a", "owner", OrgMembershipRole::Owner))
+        .await
+        .unwrap();
+    store
+        .upsert_org_member_guarded(org_member("org_a", "admin", OrgMembershipRole::Admin))
+        .await
+        .unwrap();
+    store
+        .upsert_workspace_member(workspace_member("org_a", "shared", "owner"))
+        .await
+        .unwrap();
+    workspaces
+        .create(workspace_row("shared", "org_b", "b"))
+        .await
+        .unwrap();
+    workspaces.soft_delete("org_b", "shared").await.unwrap();
+
+    assert!(matches!(
+        store.list_workspace_members("org_a", "shared").await,
+        Err(PortStorageError::NotFound { .. })
+    ));
+    assert!(matches!(
+        store
+            .remove_org_member_guarded("org_a", PrincipalKind::User, "owner")
+            .await,
+        Err(PortStorageError::Serialization(_))
+    ));
+    assert!(
+        store
+            .get(ScopeKind::Org, "org_a", PrincipalKind::User, "owner")
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        store
+            .get(ScopeKind::Workspace, "shared", PrincipalKind::User, "owner")
+            .await
+            .unwrap()
+            .is_some()
+    );
 }
 
 async fn assert_membership_lockout(b: &dyn IdentityBackend) {
@@ -1460,6 +1681,18 @@ identity_matrix!(
     membership_live_and_deleted_workspace_aliases,
     assert_membership_live_and_deleted_workspace_aliases
 );
+identity_matrix!(
+    workspace_member_listing_and_org_removal_cleanup,
+    assert_workspace_member_listing_and_org_removal_cleanup
+);
+identity_matrix!(
+    ambiguous_workspace_blocks_org_removal,
+    assert_ambiguous_workspace_blocks_org_removal
+);
+identity_matrix!(
+    workspace_upsert_requires_org_membership_and_serializes_removal,
+    assert_workspace_upsert_requires_org_membership_and_serializes_removal
+);
 identity_matrix!(membership_lockout, assert_membership_lockout);
 identity_matrix!(tenant_provisioning, assert_tenant_provisioning);
 identity_matrix!(resource_store_contract, assert_resource_contract);
@@ -1507,6 +1740,142 @@ async fn postgres_provisioning_serializes_with_workspace_create() {
     .await
     .unwrap();
     assert_eq!(active_defaults, 1);
+}
+
+/// Alias creation and membership cleanup share the workspace-id lock. This
+/// prevents a new cross-org alias from appearing between the cascade's
+/// ambiguity check and its deletion of grants keyed only by workspace id.
+#[cfg(feature = "postgres")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn postgres_workspace_alias_create_serializes_with_membership_cascade() {
+    if postgres_skip().is_some() {
+        return;
+    }
+    let backend = PostgresBackend::default();
+    let pool = backend.pool().await;
+    let orgs = backend.org_store().await;
+    let workspaces = backend.workspace_store().await;
+    let memberships = backend.membership_store().await;
+
+    orgs.create(org_row("org_alias_source", "alias-source"))
+        .await
+        .unwrap();
+    orgs.create(org_row("org_alias_target", "alias-target"))
+        .await
+        .unwrap();
+    workspaces
+        .create(workspace_row("ws_alias_race", "org_alias_source", "source"))
+        .await
+        .unwrap();
+    memberships
+        .upsert_org_member_guarded(org_member(
+            "org_alias_source",
+            "target",
+            OrgMembershipRole::Owner,
+        ))
+        .await
+        .unwrap();
+    memberships
+        .upsert_org_member_guarded(org_member(
+            "org_alias_source",
+            "admin",
+            OrgMembershipRole::Admin,
+        ))
+        .await
+        .unwrap();
+    memberships
+        .upsert_workspace_member(workspace_member(
+            "org_alias_source",
+            "ws_alias_race",
+            "target",
+        ))
+        .await
+        .unwrap();
+
+    let mut blocker = pool.begin().await.unwrap();
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind("tenant-workspace-id:ws_alias_race")
+        .execute(&mut *blocker)
+        .await
+        .unwrap();
+
+    let alias_create =
+        workspaces.create(workspace_row("ws_alias_race", "org_alias_target", "target"));
+    let cascade =
+        memberships.remove_org_member_guarded("org_alias_source", PrincipalKind::User, "target");
+    tokio::pin!(alias_create, cascade);
+
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(200), &mut alias_create)
+            .await
+            .is_err(),
+        "alias creation must wait for the workspace-id lock"
+    );
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(200), &mut cascade)
+            .await
+            .is_err(),
+        "membership cascade must wait for the workspace-id lock"
+    );
+    blocker.commit().await.unwrap();
+
+    let (alias_result, cascade_result) = tokio::join!(alias_create, cascade);
+    alias_result.unwrap();
+    match cascade_result {
+        Ok(OrgMemberRemoveOutcome::Removed) => {
+            assert!(
+                memberships
+                    .get(
+                        ScopeKind::Org,
+                        "org_alias_source",
+                        PrincipalKind::User,
+                        "target"
+                    )
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(
+                memberships
+                    .get(
+                        ScopeKind::Workspace,
+                        "ws_alias_race",
+                        PrincipalKind::User,
+                        "target"
+                    )
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+        },
+        Err(PortStorageError::Serialization(_)) => {
+            assert!(
+                memberships
+                    .get(
+                        ScopeKind::Org,
+                        "org_alias_source",
+                        PrincipalKind::User,
+                        "target"
+                    )
+                    .await
+                    .unwrap()
+                    .is_some()
+            );
+            assert!(
+                memberships
+                    .get(
+                        ScopeKind::Workspace,
+                        "ws_alias_race",
+                        PrincipalKind::User,
+                        "target"
+                    )
+                    .await
+                    .unwrap()
+                    .is_some()
+            );
+        },
+        outcome => panic!("unexpected membership cascade outcome: {outcome:?}"),
+    }
 }
 
 /// File SQLite exercises real competing connections rather than relying only
@@ -1617,6 +1986,10 @@ async fn membership_corrupt_roles_fail_closed_sqlite() {
         store
             .get_tenant_membership("org", Some("ws"), PrincipalKind::User, "owner")
             .await,
+        Err(nebula_storage_port::StorageError::Serialization(_))
+    ));
+    assert!(matches!(
+        store.list_workspace_members("org", "ws").await,
         Err(nebula_storage_port::StorageError::Serialization(_))
     ));
 }
