@@ -247,6 +247,7 @@ pub(crate) mod jitter;
 pub mod manager;
 pub mod metrics;
 pub mod options;
+pub mod rate_limit;
 pub mod recovery;
 pub mod registry;
 pub mod release_queue;
