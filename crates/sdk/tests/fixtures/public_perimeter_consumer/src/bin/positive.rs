@@ -40,7 +40,6 @@ fn assert_credential_lifecycle_contract() {
             | CredentialLifecycleState::RefreshDeferred { .. }
             | CredentialLifecycleState::RefreshBlocked
             | CredentialLifecycleState::ReauthRequired => {},
-            _ => {},
         }
         let actual = nebula_sdk::serde_json::to_value(state)
             .expect("credential lifecycle state must serialize through the SDK");
