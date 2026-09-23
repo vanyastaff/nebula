@@ -245,6 +245,13 @@ matching historical envelopes, but every replacement or ordinary write uses
 `NEBULA_CRED_MASTER_KEY`. Startup rejects malformed, duplicate, current-key,
 or over-limit entries instead of silently dropping them.
 
+Credentials written by the historical pre-guard envelope format can carry an
+empty key ID. Set `NEBULA_CRED_LEGACY_EMPTY_ID_MASTER_KEY` to the one base64
+AES-256 key that produced those rows. This explicit decrypt-only alias applies
+only to credential envelopes; Plane-A identity envelopes always require a
+non-empty key ID. Remove the alias after those credential rows and retained
+recovery media have converged.
+
 Use a two-stage rolling deployment so old and new replicas can read each
 other's writes during the cutover:
 

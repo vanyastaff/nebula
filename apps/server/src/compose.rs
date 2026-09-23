@@ -402,7 +402,7 @@ impl ServerRuntime {
             Arc::clone(&email_port),
             Some(Arc::clone(&metrics_registry)),
             keyring.current(),
-            keyring.legacy(),
+            keyring.identity_legacy(),
         )
         .await?;
         let tenant_provisioner = execution_bundle.tenant_directory.provisioner();
@@ -415,7 +415,7 @@ impl ServerRuntime {
         .map_err(TransportInitError::from)?;
         let credential_runtime = compose_first_party_runtime(
             keyring.current(),
-            keyring.legacy(),
+            keyring.credential_legacy(),
             Arc::clone(&metrics_registry),
         )
         .await
