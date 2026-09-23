@@ -114,11 +114,11 @@ impl std::fmt::Debug for PendingCipher {
 }
 
 fn expiry_from(now_ms: i64, expires_in: Duration) -> Result<i64, PendingStoreError> {
+    super::validate_pending_ttl(expires_in)?;
     let ttl_ms = i64::try_from(expires_in.as_millis())
         .map_err(|_| backend(DurablePendingError::Unavailable))?;
     now_ms
         .checked_add(ttl_ms)
-        .filter(|expires_at| *expires_at > now_ms)
         .ok_or_else(|| backend(DurablePendingError::Unavailable))
 }
 
@@ -188,8 +188,8 @@ mod migration_contract_tests {
         }
         assert!(sqlite.contains("length(token_digest) = 32"));
         assert!(postgres.contains("octet_length(token_digest) = 32"));
-        assert!(sqlite.contains("CHECK (expires_at > created_at)"));
-        assert!(postgres.contains("CHECK (expires_at > created_at)"));
+        assert!(sqlite.contains("CHECK (expires_at >= created_at)"));
+        assert!(postgres.contains("CHECK (expires_at >= created_at)"));
     }
 
     #[test]

@@ -24,8 +24,8 @@ use nebula_metrics::MetricsRegistry;
 use nebula_storage::credential::PgCredentialPersistence;
 use nebula_storage::credential::{
     AuditEvent, AuditLayer, AuditSink, CredentialKeyring, CredentialKeyringError,
-    CredentialStoreStartupError, EncryptionLayer, EnvKeyProvider, InMemoryPendingStore,
-    KeyProvider, SqliteCredentialPersistence,
+    CredentialStoreStartupError, EncryptionLayer, EnvKeyProvider, KeyProvider,
+    SqliteCredentialPersistence,
 };
 use nebula_storage_port::{
     CredentialPersistence, CredentialPersistenceError, CredentialRefreshSchedule,
@@ -171,9 +171,11 @@ pub(crate) async fn compose_memory_service(
         .await
         .map_err(CredentialCompositionError::Store)?;
     let refresh_ports = refresh_runtime_ports(store.refresh_schedule(), store.refresh_claim_repo());
+    let pending = sqlite_pending_store(&store, Arc::clone(&key_provider), Vec::new());
     let runtime = compose_runtime(
         store,
         refresh_ports,
+        pending,
         key_provider,
         Vec::new(),
         Arc::new(MetricsRegistry::new()),
@@ -200,6 +202,8 @@ async fn compose_first_party_runtime_for_database(
                 .map_err(CredentialCompositionError::Store)?;
             let refresh_ports =
                 refresh_runtime_ports(store.refresh_schedule(), store.refresh_claim_repo());
+            let pending =
+                sqlite_pending_store(&store, Arc::clone(&key_provider), legacy_keys.clone());
             // Database URLs can carry credentials or tenant-specific
             // filesystem paths. Record only the closed backend class.
             tracing::info!(
@@ -209,6 +213,7 @@ async fn compose_first_party_runtime_for_database(
             compose_runtime(
                 store,
                 refresh_ports,
+                pending,
                 key_provider,
                 legacy_keys,
                 metrics_registry,
@@ -222,6 +227,8 @@ async fn compose_first_party_runtime_for_database(
                     .map_err(CredentialCompositionError::Store)?;
                 let refresh_ports =
                     refresh_runtime_ports(store.refresh_schedule(), store.refresh_claim_repo());
+                let pending =
+                    postgres_pending_store(&store, Arc::clone(&key_provider), legacy_keys.clone());
                 tracing::info!(
                     backend = backend.as_str(),
                     "credential durable store opened"
@@ -229,6 +236,7 @@ async fn compose_first_party_runtime_for_database(
                 compose_runtime(
                     store,
                     refresh_ports,
+                    pending,
                     key_provider,
                     legacy_keys,
                     metrics_registry,
@@ -274,6 +282,7 @@ fn classify_credential_database(
 fn compose_runtime<P>(
     raw_store: P,
     refresh_ports: CredentialRefreshRuntimePorts,
+    pending: ErasedPendingStore,
     key_provider: Arc<dyn KeyProvider>,
     legacy_keys: Vec<(String, Arc<EncryptionKey>)>,
     metrics_registry: Arc<MetricsRegistry>,
@@ -349,7 +358,6 @@ where
         observer.lease_bus(),
         observer.metrics(),
         |lease| {
-            let pending = ErasedPendingStore::new(Arc::new(InMemoryPendingStore::new()));
             Arc::new(CredentialService::from_secure_parts(
                 store,
                 resolver,
@@ -370,6 +378,27 @@ where
         adjudicator,
         audit_sink,
     })
+}
+
+fn sqlite_pending_store(
+    store: &SqliteCredentialPersistence,
+    key_provider: Arc<dyn KeyProvider>,
+    legacy_keys: Vec<(String, Arc<EncryptionKey>)>,
+) -> ErasedPendingStore {
+    ErasedPendingStore::new(Arc::new(
+        store.pending_state_store(key_provider, legacy_keys),
+    ))
+}
+
+#[cfg(feature = "postgres")]
+fn postgres_pending_store(
+    store: &PgCredentialPersistence,
+    key_provider: Arc<dyn KeyProvider>,
+    legacy_keys: Vec<(String, Arc<EncryptionKey>)>,
+) -> ErasedPendingStore {
+    ErasedPendingStore::new(Arc::new(
+        store.pending_state_store(key_provider, legacy_keys),
+    ))
 }
 
 /// Group due-scan, request, reclaim, and adjudication capabilities for one
@@ -482,6 +511,10 @@ impl AuditSink for TracingAuditSink {
 mod tests {
     use super::*;
     use base64::Engine as _;
+    use nebula_credential::{
+        AuthStyle, OAuth2Pending, PendingState, PendingStateStore, PendingStoreError, SecretString,
+        credentials::OAuth2Config,
+    };
 
     const TEST_KEY_BASE64: &str = "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI=";
 
@@ -580,9 +613,11 @@ mod tests {
             refresh_runtime_ports(store.refresh_schedule(), store.refresh_claim_repo());
         let key_provider: Arc<dyn KeyProvider> =
             Arc::new(EnvKeyProvider::from_base64(TEST_KEY_BASE64).expect("valid fixed test key"));
+        let pending = sqlite_pending_store(&store, Arc::clone(&key_provider), Vec::new());
         let mut runtime = compose_runtime(
             store,
             refresh_ports,
+            pending,
             key_provider,
             Vec::new(),
             Arc::new(MetricsRegistry::new()),
@@ -604,6 +639,101 @@ mod tests {
             runtime.reclaim_sweep_is_finished(),
             "shutdown must abort the retained reclaim task"
         );
+    }
+
+    fn oauth_pending(state: &str) -> OAuth2Pending {
+        OAuth2Pending {
+            config: OAuth2Config::authorization_code("https://app.example.test/oauth/callback")
+                .auth_url("https://provider.example.test/authorize")
+                .token_url("https://provider.example.test/token")
+                .build(),
+            client_id: "client-id".to_owned(),
+            client_secret: SecretString::new("client-secret"),
+            auth_style: AuthStyle::Header,
+            pkce_verifier: SecretString::new("pkce-verifier"),
+            state: state.to_owned(),
+            redirect_uri: "https://app.example.test/oauth/callback".to_owned(),
+        }
+    }
+
+    #[tokio::test]
+    async fn sqlite_composition_preserves_oauth_pending_state_across_restart() {
+        const OWNER: &str = "owner-restart";
+        const SESSION: &str = "session-restart";
+        let directory = tempfile::tempdir().expect("temporary credential database directory");
+        let database_path = directory.path().join("credentials.db");
+        let database_url = database_path
+            .to_str()
+            .expect("temporary path is valid UTF-8");
+
+        let first_store = SqliteCredentialPersistence::connect(database_url)
+            .await
+            .expect("first admitted credential store");
+        let first_key = test_provider(19);
+        let first_pending = sqlite_pending_store(&first_store, Arc::clone(&first_key), Vec::new());
+        let first_refresh_ports = refresh_runtime_ports(
+            first_store.refresh_schedule(),
+            first_store.refresh_claim_repo(),
+        );
+        let mut first_runtime = compose_runtime(
+            first_store,
+            first_refresh_ports,
+            first_pending.clone(),
+            first_key,
+            Vec::new(),
+            Arc::new(MetricsRegistry::new()),
+        )
+        .expect("first credential runtime composes");
+        let token = first_pending
+            .put(
+                OAuth2Pending::KIND,
+                OWNER,
+                SESSION,
+                oauth_pending("restart-state"),
+            )
+            .await
+            .expect("OAuth pending state is stored");
+
+        first_runtime.shutdown().await;
+        drop(first_runtime);
+        drop(first_pending);
+
+        let second_store = SqliteCredentialPersistence::connect(database_url)
+            .await
+            .expect("credential store reopens after restart");
+        let second_key = test_provider(19);
+        let second_pending =
+            sqlite_pending_store(&second_store, Arc::clone(&second_key), Vec::new());
+        let second_refresh_ports = refresh_runtime_ports(
+            second_store.refresh_schedule(),
+            second_store.refresh_claim_repo(),
+        );
+        let mut second_runtime = compose_runtime(
+            second_store,
+            second_refresh_ports,
+            second_pending.clone(),
+            second_key,
+            Vec::new(),
+            Arc::new(MetricsRegistry::new()),
+        )
+        .expect("second credential runtime composes");
+
+        let wrong_binding = second_pending
+            .consume::<OAuth2Pending>(OAuth2Pending::KIND, &token, OWNER, "wrong-session")
+            .await
+            .expect_err("wrong session binding must fail closed");
+        assert!(matches!(
+            wrong_binding,
+            PendingStoreError::ValidationFailed { .. }
+        ));
+
+        let consumed = second_pending
+            .consume::<OAuth2Pending>(OAuth2Pending::KIND, &token, OWNER, SESSION)
+            .await
+            .expect("matching OAuth pending state survives restart");
+        assert_eq!(consumed.state, "restart-state");
+
+        second_runtime.shutdown().await;
     }
 
     #[test]

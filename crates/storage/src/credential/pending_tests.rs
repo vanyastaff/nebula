@@ -102,6 +102,26 @@ async fn serialized_byte_core_keeps_zeroizing_buffers_end_to_end() {
 }
 
 #[tokio::test]
+async fn serialized_byte_core_rejects_ttl_above_ten_minutes() {
+    let store = InMemoryPendingStore::new();
+    let result = DynPendingStateStore::put_serialized(
+        &store,
+        "oauth2",
+        "user_1",
+        "sess_1",
+        Zeroizing::new(b"pending-secret-canary".to_vec()),
+        Duration::from_mins(10) + Duration::from_nanos(1),
+    )
+    .await;
+
+    assert!(matches!(
+        result,
+        Err(PendingStoreError::ValidationFailed { .. })
+    ));
+    assert!(store.entries.read().await.is_empty());
+}
+
+#[tokio::test]
 async fn put_and_consume_roundtrip() {
     let store = InMemoryPendingStore::new();
     let pending = test_pending("hello");

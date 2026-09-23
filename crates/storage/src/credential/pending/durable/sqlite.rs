@@ -407,6 +407,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ttl_boundary_matches_the_reference_adapter() {
+        let store = store().await;
+        let zero = store
+            .put_serialized(
+                "oauth2",
+                "owner-a",
+                "session-a",
+                Zeroizing::new(b"secret".to_vec()),
+                Duration::ZERO,
+            )
+            .await
+            .expect("zero TTL is admitted as immediately expired state");
+        assert!(matches!(
+            store.get_serialized(&zero).await,
+            Err(PendingStoreError::Expired)
+        ));
+
+        let oversized = store
+            .put_serialized(
+                "oauth2",
+                "owner-a",
+                "session-a",
+                Zeroizing::new(b"secret".to_vec()),
+                Duration::from_mins(10) + Duration::from_nanos(1),
+            )
+            .await;
+        assert!(matches!(
+            oversized,
+            Err(PendingStoreError::ValidationFailed { .. })
+        ));
+    }
+
+    #[tokio::test]
     async fn explicit_legacy_key_reads_without_rewriting() {
         let persistence = SqliteCredentialPersistence::connect_memory()
             .await

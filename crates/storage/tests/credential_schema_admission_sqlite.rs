@@ -1202,3 +1202,63 @@ async fn extra_index_is_rejected_by_exact_inventory() {
 
     assert_invalid_current_shape(&path).await;
 }
+
+#[tokio::test]
+async fn pending_state_column_and_constraint_drift_are_rejected() {
+    for (file_name, needle, replacement) in [
+        (
+            "pending-wrong-column.sqlite",
+            "credential_kind TEXT NOT NULL",
+            "credential_kind BLOB NOT NULL",
+        ),
+        (
+            "pending-wrong-constraint.sqlite",
+            "CHECK (expires_at >= created_at)",
+            "CHECK (expires_at > created_at)",
+        ),
+    ] {
+        let directory = tempfile::tempdir().expect("temporary directory must be created");
+        let path = directory.path().join(file_name);
+        let pool = raw_pool(&path).await;
+        MIGRATOR
+            .run(&pool)
+            .await
+            .expect("canonical current schema must install");
+        rewrite_schema_sql(
+            &pool,
+            "table",
+            "credential_pending_states",
+            needle,
+            replacement,
+        )
+        .await;
+        pool.close().await;
+
+        assert_invalid_current_shape(&path).await;
+    }
+}
+
+#[tokio::test]
+async fn pending_state_expiry_index_drift_is_rejected() {
+    let directory = tempfile::tempdir().expect("temporary directory must be created");
+    let path = directory.path().join("pending-wrong-expiry-index.sqlite");
+    let pool = raw_pool(&path).await;
+    MIGRATOR
+        .run(&pool)
+        .await
+        .expect("canonical current schema must install");
+    sqlx::query("DROP INDEX idx_credential_pending_states_expiry")
+        .execute(&pool)
+        .await
+        .expect("fixture canonical expiry index must be removed");
+    sqlx::query(
+        "CREATE INDEX idx_credential_pending_states_expiry
+         ON credential_pending_states(created_at)",
+    )
+    .execute(&pool)
+    .await
+    .expect("fixture drifted expiry index must install");
+    pool.close().await;
+
+    assert_invalid_current_shape(&path).await;
+}
