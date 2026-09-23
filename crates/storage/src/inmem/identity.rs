@@ -447,6 +447,20 @@ impl WorkspaceStore for InMemoryWorkspaceStore {
                 ),
             });
         }
+        if row.is_default
+            && row.deleted_at.is_none()
+            && map
+                .values()
+                .any(|w| w.deleted_at.is_none() && w.org_id == row.org_id && w.is_default)
+        {
+            return Err(StorageError::Duplicate {
+                entity: "workspace",
+                detail: format!(
+                    "organization {} already has an active default workspace",
+                    row.org_id
+                ),
+            });
+        }
         map.insert(key, row);
         Ok(())
     }
@@ -511,6 +525,20 @@ impl WorkspaceStore for InMemoryWorkspaceStore {
                 detail: format!(
                     "active workspace with slug {} already exists in org {}",
                     row.slug, row.org_id
+                ),
+            });
+        }
+        if row.is_default
+            && row.deleted_at.is_none()
+            && map.values().any(|w| {
+                w.id != row.id && w.deleted_at.is_none() && w.org_id == row.org_id && w.is_default
+            })
+        {
+            return Err(StorageError::Duplicate {
+                entity: "workspace",
+                detail: format!(
+                    "organization {} already has an active default workspace",
+                    row.org_id
                 ),
             });
         }

@@ -17,7 +17,8 @@ changes are expected between minor releases — call them out here.
   InMemory, SQLite, and PostgreSQL now create an organization, its default
   workspace, and initial owner as one replay-safe operation. The server wires
   one backend-consistent tenant directory and offers an explicit operator
-  bootstrap for an existing verified user. Exact-version SDK consumers and
+  bootstrap for an existing verified user. Workspace writers also enforce one
+  active default per organization across every backend. Exact-version SDK consumers and
   external implementations of the technical storage traits must update every
   Nebula pin and implement the new lookup together.
 - **Tenant membership advances development packages to 0.15.0 in lockstep.**

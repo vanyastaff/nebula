@@ -34,7 +34,7 @@ use nebula_storage_port::store::{
     TenantProvisioningStore, TriggerStore, UserStore, WorkspaceStore,
 };
 use nebula_storage_port::{Scope, StorageError};
-use sqlx::{Row, SqlitePool};
+use sqlx::{Row, SqliteConnection, SqlitePool};
 
 use super::execution::conn_err;
 
@@ -368,9 +368,43 @@ fn workspace_from_row(r: &sqlx::sqlite::SqliteRow) -> Result<WorkspaceRow, Stora
     })
 }
 
+async fn reject_second_active_default(
+    connection: &mut SqliteConnection,
+    row: &WorkspaceRow,
+) -> Result<(), StorageError> {
+    if !row.is_default || row.deleted_at.is_some() {
+        return Ok(());
+    }
+    let existing = sqlx::query_scalar::<_, String>(
+        "SELECT id FROM port_workspaces \
+         WHERE org_id = ?1 AND is_default = 1 AND deleted_at IS NULL AND id <> ?2",
+    )
+    .bind(&row.org_id)
+    .bind(&row.id)
+    .fetch_optional(connection)
+    .await
+    .map_err(conn_err)?;
+    if let Some(existing_id) = existing {
+        return Err(StorageError::Duplicate {
+            entity: "workspace",
+            detail: format!(
+                "organization {} already has active default workspace {existing_id}",
+                row.org_id
+            ),
+        });
+    }
+    Ok(())
+}
+
 #[async_trait::async_trait]
 impl WorkspaceStore for SqliteWorkspaceStore {
     async fn create(&self, row: WorkspaceRow) -> Result<(), StorageError> {
+        let mut tx = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(conn_err)?;
+        reject_second_active_default(&mut tx, &row).await?;
         let res = sqlx::query(
             "INSERT INTO port_workspaces (id, org_id, slug, display_name, \
              description, created_at, created_by, is_default, settings, version, \
@@ -387,10 +421,13 @@ impl WorkspaceStore for SqliteWorkspaceStore {
         .bind(json_to_text(&row.settings))
         .bind(row.version as i64)
         .bind(&row.deleted_at)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await;
         match res {
-            Ok(_) => Ok(()),
+            Ok(_) => {
+                tx.commit().await.map_err(conn_err)?;
+                Ok(())
+            },
             Err(sqlx::Error::Database(db)) if db.is_unique_violation() => {
                 Err(StorageError::Duplicate {
                     entity: "workspace",
@@ -447,6 +484,11 @@ impl WorkspaceStore for SqliteWorkspaceStore {
     }
 
     async fn update(&self, row: WorkspaceRow, expected_version: u64) -> Result<(), StorageError> {
+        let mut tx = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(conn_err)?;
         let res = sqlx::query(
             "UPDATE port_workspaces SET slug = ?, display_name = ?, \
              description = ?, is_default = ?, settings = ?, version = ? \
@@ -461,10 +503,12 @@ impl WorkspaceStore for SqliteWorkspaceStore {
         .bind(&row.org_id)
         .bind(&row.id)
         .bind(expected_version as i64)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(conn_err)?;
         if res.rows_affected() > 0 {
+            reject_second_active_default(&mut tx, &row).await?;
+            tx.commit().await.map_err(conn_err)?;
             return Ok(());
         }
         let current = sqlx::query_scalar::<_, i64>(
@@ -472,7 +516,7 @@ impl WorkspaceStore for SqliteWorkspaceStore {
         )
         .bind(&row.org_id)
         .bind(&row.id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(conn_err)?;
         match current {
@@ -487,6 +531,11 @@ impl WorkspaceStore for SqliteWorkspaceStore {
     }
 
     async fn soft_delete(&self, org_id: &str, id: &str) -> Result<(), StorageError> {
+        let mut tx = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(conn_err)?;
         let res = sqlx::query(
             "UPDATE port_workspaces SET deleted_at = ? \
              WHERE org_id = ? AND id = ? AND deleted_at IS NULL",
@@ -494,10 +543,11 @@ impl WorkspaceStore for SqliteWorkspaceStore {
         .bind(now_rfc3339())
         .bind(org_id)
         .bind(id)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(conn_err)?;
         if res.rows_affected() > 0 {
+            tx.commit().await.map_err(conn_err)?;
             Ok(())
         } else {
             Err(StorageError::not_found("workspace", id))

@@ -31,7 +31,6 @@
 use std::future::Future;
 use std::sync::Arc;
 
-use nebula_storage_port::Scope;
 use nebula_storage_port::dto::{
     AuditLogRow, BlobRow, OrgMemberRemoveOutcome, OrgMemberUpsert, OrgMemberUpsertOutcome,
     OrgMembershipRole, OrgRow, PrincipalKind, QuotaRow, ResourceRow, ScopeKind,
@@ -43,6 +42,7 @@ use nebula_storage_port::store::{
     AuditStore, BlobStore, MembershipStore, OrgStore, QuotaStore, ResourceStore,
     TenantProvisioningStore, TriggerStore, UserStore, WorkspaceStore,
 };
+use nebula_storage_port::{Scope, StorageError as PortStorageError};
 use rstest::rstest;
 
 /// A storage backend under identity conformance test.
@@ -722,6 +722,34 @@ async fn assert_workspace_contract(b: &dyn IdentityBackend) {
     );
     assert!(s.get_by_slug("org_2", "missing").await.unwrap().is_none());
     assert_eq!(s.list_for_org("org_1").await.unwrap().len(), 1);
+
+    let mut default = workspace_row("ws_default", "org_1", "default");
+    default.is_default = true;
+    s.create(default).await.expect("create default workspace");
+    let mut second_default = workspace_row("ws_other_default", "org_1", "other-default");
+    second_default.is_default = true;
+    assert!(matches!(
+        s.create(second_default).await,
+        Err(PortStorageError::Duplicate { .. })
+    ));
+    let mut promote = workspace_row("ws_1", "org_1", "main");
+    promote.is_default = true;
+    assert!(matches!(
+        s.update(promote.clone(), 7).await,
+        Err(PortStorageError::Conflict { .. })
+    ));
+    assert!(matches!(
+        s.update(promote.clone(), 0).await,
+        Err(PortStorageError::Duplicate { .. })
+    ));
+    s.soft_delete("org_1", "ws_default")
+        .await
+        .expect("delete prior default");
+    promote.version = 1;
+    s.update(promote, 0)
+        .await
+        .expect("promote after prior default deletion");
+
     s.soft_delete("org_1", "ws_1").await.expect("soft_delete");
     assert!(s.get("org_1", "ws_1").await.unwrap().is_none());
     assert!(s.get_by_slug("org_1", "main").await.unwrap().is_none());
@@ -1202,10 +1230,13 @@ async fn assert_tenant_provisioning(b: &dyn IdentityBackend) {
     );
     let mut extra_default = workspace_row("ws_extra", "org_extra_default", "extra");
     extra_default.is_default = true;
-    workspaces.create(extra_default).await.unwrap();
+    assert!(matches!(
+        workspaces.create(extra_default).await,
+        Err(PortStorageError::Duplicate { .. })
+    ));
     assert_eq!(
         store.provision_tenant(collision_request).await.unwrap(),
-        TenantProvisioningOutcome::Conflict(TenantProvisioningConflict::ExistingState)
+        TenantProvisioningOutcome::Replayed
     );
 
     let id_collision_request =
@@ -1436,6 +1467,47 @@ identity_matrix!(trigger_store_contract, assert_trigger_contract);
 identity_matrix!(quota_store_contract, assert_quota_contract);
 identity_matrix!(audit_store_contract, assert_audit_contract);
 identity_matrix!(blob_store_contract, assert_blob_contract);
+
+/// Provisioning and ordinary workspace writes use the same per-org lock.
+/// Whichever transaction wins, the organization can retain only one live
+/// default workspace.
+#[cfg(feature = "postgres")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn postgres_provisioning_serializes_with_workspace_create() {
+    if postgres_skip().is_some() {
+        return;
+    }
+    let backend = PostgresBackend::default();
+    let pool = backend.pool().await;
+    let provisioning = backend.tenant_provisioning_store().await;
+    let workspaces = backend.workspace_store().await;
+    let request = tenant_request("org_default_race", "default-race", "ws_provisioned");
+    let mut competing = workspace_row("ws_competing", "org_default_race", "competing");
+    competing.is_default = true;
+
+    let (provisioning_result, workspace_result) = tokio::join!(
+        provisioning.provision_tenant(request),
+        workspaces.create(competing)
+    );
+    match (provisioning_result, workspace_result) {
+        (Ok(TenantProvisioningOutcome::Created), Err(PortStorageError::Duplicate { .. }))
+        | (
+            Ok(TenantProvisioningOutcome::Conflict(TenantProvisioningConflict::ExistingState)),
+            Ok(()),
+        ) => {},
+        outcomes => panic!("unexpected provisioning/workspace race outcomes: {outcomes:?}"),
+    }
+
+    let active_defaults: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM port_workspaces \
+         WHERE org_id = $1 AND is_default = TRUE AND deleted_at IS NULL",
+    )
+    .bind("org_default_race")
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(active_defaults, 1);
+}
 
 /// File SQLite exercises real competing connections rather than relying only
 /// on shared-cache memory's lock behavior.
