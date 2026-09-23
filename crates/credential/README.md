@@ -2,7 +2,7 @@
 name: nebula-credential
 role: Typed credential contract, runtime, and authority-bound management
 status: partial
-last-reviewed: 2026-09-22
+last-reviewed: 2026-09-23
 canon-invariants: [L2-12.5, L2-13.2]
 related: [nebula-core, nebula-schema, nebula-storage-port, nebula-storage, nebula-resource]
 ---
@@ -285,8 +285,10 @@ wired to a hardened injected transport.
 - Service management methods are crate-private, closing direct external calls at that boundary.
   K3 still requires semantic idempotency/operation-ledger enforcement and a global sole management
   writer; technical runtime and persistence seams remain available to trusted composition.
-- K4 must provide supported workspace-directory and membership/deployment composition. The default
-  server leaves both policy ports unwired, so tenant routes return 503.
+- The first-party server supplies the apps-owned workspace-directory and membership composition
+  over its selected memory, SQLite, or PostgreSQL backend. It creates no implicit tenant or owner;
+  the operator bootstrap path must provision durable authority before credential commands can be
+  authorized. K4 still owes the supported SDK client and embedded deployment facades.
 
 ## Related
 
