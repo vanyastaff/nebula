@@ -34,8 +34,8 @@ use crate::{
     metadata::CredentialMetadataDraft,
     resolve::{InteractionRequest, ResolveResult, StaticResolveResult, UserInput},
     runtime::refresh::token_refresh::{
-        CompletedTokenRefresh, PrepareTokenRefreshError, interpret_oauth2_refresh_response,
-        prepare_oauth2_refresh,
+        CompletedTokenRefresh, OAuthProviderErrorCode, PrepareTokenRefreshError,
+        interpret_oauth2_refresh_response, prepare_oauth2_refresh,
     },
     runtime::{OAUTH_ENDPOINT_MAX_BYTES, OAuthServerEndpoint, TokenPostRequest, TokenPostResponse},
     scheme::{AuthStyle, OAuth2Token},
@@ -638,6 +638,11 @@ async fn acquire_client_credentials(
     dispatch_acquisition(request, acquisition, ctx).await
 }
 
+#[tracing::instrument(
+    name = "credential.oauth2.client_credentials.refresh",
+    skip_all,
+    fields(grant_type = "client_credentials")
+)]
 async fn refresh_client_credentials(
     state: &mut OAuth2State,
     attempt: RefreshAttempt<'_>,
@@ -690,13 +695,32 @@ async fn refresh_client_credentials(
             "oauth.transport_not_configured",
         ));
     };
-    let now = attempt.context().clock().now();
+    let clock = attempt.context().clock();
     let completed = match attempt.dispatch(|| transport.post_token(request)).await {
         Ok(completed) => completed,
         Err(unknown) => return unknown.into_report(),
     };
     let (response, proof) = completed.into_parts();
-    let status = response.status();
+    if !(200..300).contains(&response.status()) {
+        return match interpret_oauth2_refresh_response(state, response) {
+            CompletedTokenRefresh::InvalidGrant { .. }
+            | CompletedTokenRefresh::DefinitiveNoEffect {
+                code: OAuthProviderErrorCode::InvalidClient,
+                ..
+            } => proof.provider_rejected(),
+            CompletedTokenRefresh::DefinitiveNoEffect { code, .. } => {
+                proof.confirmed_not_applied(refresh_failure_spec(
+                    RefreshErrorKind::ProtocolError,
+                    RetryAdvice::Never,
+                    code.as_str(),
+                ))
+            },
+            CompletedTokenRefresh::AmbiguousDenial { .. }
+            | CompletedTokenRefresh::MalformedSuccess { .. }
+            | CompletedTokenRefresh::Refreshed => proof.outcome_unknown(),
+        };
+    }
+    let now = clock.now();
     let acquisition = AcquisitionStateContext {
         client_id: state.client_id.expose_secret(),
         client_secret: &state.client_secret,
@@ -709,17 +733,6 @@ async fn refresh_client_credentials(
         Ok(refreshed) => {
             *state = refreshed;
             proof.refreshed()
-        },
-        Err(_) if status == 400 || status == 401 => proof.provider_rejected(),
-        Err(_) if !(200..300).contains(&status) => {
-            let retry = crate::RetryDelay::new(Duration::from_mins(1))
-                .map(RetryAdvice::After)
-                .unwrap_or(RetryAdvice::Never);
-            proof.confirmed_not_applied(refresh_failure_spec(
-                RefreshErrorKind::ProviderUnavailable,
-                retry,
-                "oauth.provider_unavailable",
-            ))
         },
         Err(_) => proof.outcome_unknown(),
     }
