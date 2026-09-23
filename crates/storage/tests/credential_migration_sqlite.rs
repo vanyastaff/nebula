@@ -378,9 +378,10 @@ async fn assert_final_schema(pool: &sqlx::SqlitePool) {
     let incident = uuid::Uuid::new_v4().to_string();
     sqlx::query(
         "INSERT INTO credential_sentinel_events (
-             credential_id, claim_id, detected_at, crashed_holder, generation
-         ) VALUES (?, ?, ?, ?, ?)",
+             owner_id, credential_id, claim_id, detected_at, crashed_holder, generation
+         ) VALUES (?, ?, ?, ?, ?, ?)",
     )
+    .bind("owner-a")
     .bind(NAMED_ID)
     .bind(&incident)
     .bind(1_700_000_000_300_i64)
@@ -391,9 +392,10 @@ async fn assert_final_schema(pool: &sqlx::SqlitePool) {
     .expect("first incident identity must insert");
     let duplicate = sqlx::query(
         "INSERT INTO credential_sentinel_events (
-             credential_id, claim_id, detected_at, crashed_holder, generation
-         ) VALUES (?, ?, ?, ?, ?)",
+             owner_id, credential_id, claim_id, detected_at, crashed_holder, generation
+         ) VALUES (?, ?, ?, ?, ?, ?)",
     )
+    .bind("owner-b")
     .bind(UNNAMED_ID)
     .bind(&incident)
     .bind(1_700_000_000_301_i64)
