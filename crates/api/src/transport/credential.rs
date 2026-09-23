@@ -247,7 +247,7 @@ fn to_response(state: &AppState, record: CredentialGatewayRecord) -> CredentialR
         updated_at: record.updated_at.to_rfc3339(),
         expires_at: record.expires_at.map(|t| t.to_rfc3339()),
         version: record.version,
-        reauth_required: record.reauth_required,
+        lifecycle: lifecycle_response(record.lifecycle),
         tags: record.tags.into_iter().collect(),
     }
 }
@@ -262,7 +262,25 @@ fn to_summary(state: &AppState, record: CredentialGatewayRecord) -> CredentialSu
         auth_pattern,
         expires_at: record.expires_at.map(|t| t.to_rfc3339()),
         version: record.version,
-        reauth_required: record.reauth_required,
+        lifecycle: lifecycle_response(record.lifecycle),
+    }
+}
+
+fn lifecycle_response(
+    lifecycle: crate::ports::credential_command::CredentialGatewayLifecycleState,
+) -> crate::domain::credential::dto::CredentialLifecycleState {
+    use crate::domain::credential::dto::CredentialLifecycleState;
+    use crate::ports::credential_command::CredentialGatewayLifecycleState;
+
+    match lifecycle {
+        CredentialGatewayLifecycleState::Ready => CredentialLifecycleState::Ready,
+        CredentialGatewayLifecycleState::RefreshDeferred { retry_at } => {
+            CredentialLifecycleState::RefreshDeferred {
+                retry_at: retry_at.to_rfc3339(),
+            }
+        },
+        CredentialGatewayLifecycleState::RefreshBlocked => CredentialLifecycleState::RefreshBlocked,
+        CredentialGatewayLifecycleState::ReauthRequired => CredentialLifecycleState::ReauthRequired,
     }
 }
 
@@ -397,7 +415,7 @@ pub async fn delete_credential(
 /// Returns paginated metadata summaries (no secret material). Rows
 /// acquired through the OAuth flow share the facade store, so they
 /// appear here too — a row awaiting authorization is flagged
-/// `reauth_required`.
+/// `lifecycle`.
 #[tracing::instrument(skip_all)]
 pub async fn list_credentials(
     state: &AppState,

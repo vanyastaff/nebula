@@ -471,7 +471,7 @@ impl CredentialService {
                             updated_at: commit.updated_at(),
                             expires_at: refreshed_expires_at,
                             last_validated_at: Some(now),
-                            reauth_required: false,
+                            lifecycle: crate::CredentialLifecycleState::Ready,
                             display,
                         },
                     )))

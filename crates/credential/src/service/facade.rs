@@ -408,7 +408,7 @@ mod tests {
                 updated_at: now,
                 expires_at: None,
                 last_validated_at: Some(now),
-                reauth_required: false,
+                lifecycle: crate::CredentialLifecycleState::Ready,
                 display: CredentialDisplay {
                     display_name: Some(SECRET_CANARY.to_owned()),
                     ..CredentialDisplay::default()

@@ -11,8 +11,8 @@ use nebula_storage_port::{
     CredentialAlreadyExistsKey, CredentialCommit, CredentialCreate, CredentialMaterialEpoch,
     CredentialMaterialTransition, CredentialOwner, CredentialPersistence,
     CredentialPersistenceError, CredentialReplacement, CredentialSelector, CredentialTombstone,
-    CredentialVersion, RefreshRetrySnapshot, StoredCredential, StoredCredentialHead,
-    StoredLiveCredential, StoredTombstonedCredential,
+    CredentialVersion, RefreshRetryProjection, RefreshRetrySnapshot, StoredCredential,
+    StoredCredentialHead, StoredLiveCredential, StoredTombstonedCredential,
 };
 use parking_lot::Mutex;
 use serde_json::{Map, Value};
@@ -95,6 +95,43 @@ impl ReferenceCredentialPersistence {
                     .is_some_and(|live| live.name() == Some(name))
         })
     }
+}
+
+fn project_head(
+    live: &StoredLiveCredential,
+    backend_now: chrono::DateTime<chrono::Utc>,
+) -> Result<StoredCredentialHead, CredentialPersistenceError> {
+    let refresh_retry = match live.refresh_retry_gate() {
+        None => None,
+        Some(nebula_storage_port::RefreshRetryGate::Never { .. }) => {
+            Some(RefreshRetryProjection::Never)
+        },
+        Some(nebula_storage_port::RefreshRetryGate::NotBefore { not_before, .. })
+            if *not_before <= backend_now =>
+        {
+            None
+        },
+        Some(nebula_storage_port::RefreshRetryGate::NotBefore { not_before, .. }) => {
+            Some(RefreshRetryProjection::NotBefore {
+                not_before: *not_before,
+            })
+        },
+    };
+    StoredCredentialHead::new(
+        live.credential_id(),
+        live.name().map(str::to_owned),
+        live.credential_key().to_owned(),
+        live.state_kind().to_owned(),
+        live.state_version(),
+        live.version(),
+        live.material_epoch(),
+        live.created_at(),
+        live.updated_at(),
+        live.expires_at(),
+        live.reauth_required(),
+        refresh_retry,
+        live.metadata().clone(),
+    )
 }
 
 impl fmt::Debug for ReferenceCredentialPersistence {
@@ -242,7 +279,7 @@ impl CredentialPersistence for ReferenceCredentialPersistence {
     ) -> Result<StoredCredentialHead, CredentialPersistenceError> {
         let record = self.get(selector).await?;
         match record {
-            StoredCredential::Live(live) => Ok(StoredCredentialHead::from(&live)),
+            StoredCredential::Live(live) => project_head(&live, self.backend_now()),
             StoredCredential::Tombstoned(_) => Err(CredentialPersistenceError::NotFound),
         }
     }
@@ -475,8 +512,8 @@ impl CredentialPersistence for ReferenceCredentialPersistence {
             .filter(|owned| &owned.owner == owner)
             .filter_map(|owned| owned.record.as_live())
             .filter(|live| state_kind.is_none_or(|kind| live.state_kind() == kind))
-            .map(StoredCredentialHead::from)
-            .collect::<Vec<_>>();
+            .map(|live| project_head(live, self.backend_now()))
+            .collect::<Result<Vec<_>, _>>()?;
         heads.sort_unstable_by_key(StoredCredentialHead::credential_id);
         Ok(heads)
     }

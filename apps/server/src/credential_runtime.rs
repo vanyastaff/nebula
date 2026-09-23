@@ -14,9 +14,10 @@ use nebula_api::{
     middleware::auth::{AuthenticatedPrincipal, AuthenticatedPrincipalKind},
     ports::credential_command::{
         CredentialCommandGateway, CredentialGatewayAcquisition, CredentialGatewayCommand,
-        CredentialGatewayError, CredentialGatewayRecord, CredentialGatewayRefreshRetry,
-        CredentialGatewayResult, CredentialGatewayTestFailure, CredentialGatewayTestResult,
-        CredentialGatewayValidationIssue, CredentialGatewayValidationReport,
+        CredentialGatewayError, CredentialGatewayLifecycleState, CredentialGatewayRecord,
+        CredentialGatewayRefreshRetry, CredentialGatewayResult, CredentialGatewayTestFailure,
+        CredentialGatewayTestResult, CredentialGatewayValidationIssue,
+        CredentialGatewayValidationReport,
     },
     ports::credential_schema::{CredentialValidationCode, CredentialValidationLocation},
     state::{MembershipStore, WorkspaceResolver},
@@ -355,7 +356,20 @@ fn map_head(head: nebula_credential::CredentialHead) -> CredentialGatewayRecord 
         created_at: head.created_at,
         updated_at: head.updated_at,
         expires_at: head.expires_at,
-        reauth_required: head.reauth_required,
+        lifecycle: match head.lifecycle {
+            nebula_credential::CredentialLifecycleState::Ready => {
+                CredentialGatewayLifecycleState::Ready
+            },
+            nebula_credential::CredentialLifecycleState::RefreshDeferred { retry_at } => {
+                CredentialGatewayLifecycleState::RefreshDeferred { retry_at }
+            },
+            nebula_credential::CredentialLifecycleState::RefreshBlocked => {
+                CredentialGatewayLifecycleState::RefreshBlocked
+            },
+            nebula_credential::CredentialLifecycleState::ReauthRequired => {
+                CredentialGatewayLifecycleState::ReauthRequired
+            },
+        },
         display_name: head.display.display_name,
         description: head.display.description,
         tags: head.display.tags,

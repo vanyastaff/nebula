@@ -578,6 +578,9 @@ struct CredentialHeadRow {
     updated_at: i64,
     expires_at: Option<i64>,
     reauth_required: i64,
+    refresh_retry_mode: Option<String>,
+    refresh_retry_not_before: Option<i64>,
+    backend_now: i64,
     metadata: String,
 }
 
@@ -590,6 +593,13 @@ impl CredentialHeadRow {
         };
         let metadata = json_to_meta(&self.metadata)?;
         validate_name_projection(self.name.as_deref(), &metadata)?;
+        let refresh_retry = retry_gate::decode_projection(
+            self.refresh_retry_mode,
+            self.refresh_retry_not_before
+                .map(millis_to_utc)
+                .transpose()?,
+            millis_to_utc(self.backend_now)?,
+        )?;
         StoredCredentialHead::new(
             stored_credential_id(&self.id)?,
             self.name,
@@ -603,6 +613,7 @@ impl CredentialHeadRow {
             millis_to_utc(self.updated_at)?,
             self.expires_at.map(millis_to_utc).transpose()?,
             reauth_required,
+            refresh_retry,
             metadata,
         )
     }
@@ -844,7 +855,10 @@ impl CredentialPersistence for SqliteCredentialPersistence {
     ) -> Result<StoredCredentialHead, CredentialPersistenceError> {
         let row: Option<CredentialHeadRow> = sqlx::query_as(
             "SELECT id, name, credential_key, state_kind, state_version, version, material_epoch, \
-             created_at, updated_at, expires_at, reauth_required, metadata \
+             created_at, updated_at, expires_at, reauth_required, \
+             refresh_retry_mode, refresh_retry_not_before, \
+             (CAST(strftime('%s', 'now') AS INTEGER) * 1000 \
+              + CAST(substr(strftime('%f', 'now'), 4, 3) AS INTEGER)) AS backend_now, metadata \
              FROM credentials \
              WHERE id = ?1 AND owner_id = ?2 AND record_state = 'live'",
         )
@@ -953,7 +967,10 @@ impl CredentialPersistence for SqliteCredentialPersistence {
         let rows: Vec<CredentialHeadRow> = match state_kind {
             Some(kind) => sqlx::query_as(
                 "SELECT id, name, credential_key, state_kind, state_version, version, material_epoch, \
-                 created_at, updated_at, expires_at, reauth_required, metadata \
+                 created_at, updated_at, expires_at, reauth_required, \
+                 refresh_retry_mode, refresh_retry_not_before, \
+                 (CAST(strftime('%s', 'now') AS INTEGER) * 1000 \
+                  + CAST(substr(strftime('%f', 'now'), 4, 3) AS INTEGER)) AS backend_now, metadata \
                  FROM credentials \
                  WHERE owner_id = ?1 AND state_kind = ?2 AND record_state = 'live' \
                  ORDER BY id",
@@ -965,7 +982,10 @@ impl CredentialPersistence for SqliteCredentialPersistence {
             .map_err(read_error)?,
             None => sqlx::query_as(
                 "SELECT id, name, credential_key, state_kind, state_version, version, material_epoch, \
-                 created_at, updated_at, expires_at, reauth_required, metadata \
+                 created_at, updated_at, expires_at, reauth_required, \
+                 refresh_retry_mode, refresh_retry_not_before, \
+                 (CAST(strftime('%s', 'now') AS INTEGER) * 1000 \
+                  + CAST(substr(strftime('%f', 'now'), 4, 3) AS INTEGER)) AS backend_now, metadata \
                  FROM credentials \
                  WHERE owner_id = ?1 AND record_state = 'live' ORDER BY id",
             )

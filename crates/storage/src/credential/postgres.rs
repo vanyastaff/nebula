@@ -513,6 +513,9 @@ struct CredentialHeadRow {
     updated_at: DateTime<Utc>,
     expires_at: Option<DateTime<Utc>>,
     reauth_required: bool,
+    refresh_retry_mode: Option<String>,
+    refresh_retry_not_before: Option<DateTime<Utc>>,
+    backend_now: DateTime<Utc>,
     metadata: String,
     record_state: String,
     tombstoned_at: Option<DateTime<Utc>>,
@@ -525,6 +528,11 @@ impl CredentialHeadRow {
         }
         let metadata = decode_metadata(&self.metadata)?;
         validate_name_projection(self.name.as_deref(), &metadata)?;
+        let refresh_retry = retry_gate::decode_projection(
+            self.refresh_retry_mode,
+            self.refresh_retry_not_before,
+            self.backend_now,
+        )?;
         StoredCredentialHead::new(
             parse_credential_id(&self.id)?,
             self.name,
@@ -537,6 +545,7 @@ impl CredentialHeadRow {
             self.updated_at,
             self.expires_at,
             self.reauth_required,
+            refresh_retry,
             metadata,
         )
     }
@@ -755,7 +764,9 @@ impl CredentialPersistence for PgCredentialPersistence {
         let row: Option<CredentialHeadRow> = sqlx::query_as(
             "SELECT id, name, credential_key, state_kind, state_version,
                     version, material_epoch, created_at, updated_at, expires_at,
-                    reauth_required, metadata, record_state, tombstoned_at
+                    reauth_required, refresh_retry_mode, refresh_retry_not_before,
+                    clock_timestamp() AS backend_now,
+                    metadata, record_state, tombstoned_at
              FROM credentials
              WHERE id = $1 AND owner_id = $2 AND record_state = 'live'",
         )
@@ -1117,7 +1128,9 @@ impl CredentialPersistence for PgCredentialPersistence {
                 sqlx::query_as(
                     "SELECT id, name, credential_key, state_kind, state_version,
                             version, material_epoch, created_at, updated_at, expires_at,
-                            reauth_required, metadata, record_state, tombstoned_at
+                            reauth_required, refresh_retry_mode, refresh_retry_not_before,
+                            clock_timestamp() AS backend_now,
+                            metadata, record_state, tombstoned_at
                      FROM credentials
                      WHERE owner_id = $1
                        AND record_state = 'live'
@@ -1133,7 +1146,9 @@ impl CredentialPersistence for PgCredentialPersistence {
                 sqlx::query_as(
                     "SELECT id, name, credential_key, state_kind, state_version,
                             version, material_epoch, created_at, updated_at, expires_at,
-                            reauth_required, metadata, record_state, tombstoned_at
+                            reauth_required, refresh_retry_mode, refresh_retry_not_before,
+                            clock_timestamp() AS backend_now,
+                            metadata, record_state, tombstoned_at
                      FROM credentials
                      WHERE owner_id = $1 AND record_state = 'live'
                      ORDER BY id",

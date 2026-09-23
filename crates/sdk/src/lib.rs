@@ -34,6 +34,7 @@
 //! ## Modules
 //!
 //! - `prelude` — one-stop import for common types and traits.
+//! - `client` — secret-free public product-state contracts.
 //! - `integration` — curated contracts for integration authors.
 //! - `action` — draft metadata and typed action authoring contracts.
 //! - `workflow` — `WorkflowBuilder` for programmatic workflow construction.
@@ -217,6 +218,7 @@ pub mod __private {
 }
 
 pub mod action;
+pub mod client;
 pub mod integration;
 pub mod prelude;
 pub mod runtime;

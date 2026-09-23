@@ -237,6 +237,33 @@ pub enum RefreshRetryGate {
     },
 }
 
+/// Evidence-free durable retry state for secret-free management projections.
+///
+/// Unlike [`RefreshRetryGate`], this type deliberately omits adjudication
+/// evidence. A timed projection retains the backend-authored absolute instant
+/// so upper layers do not reconstruct wall-clock state from a relative delay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefreshRetryProjection {
+    /// Automatic retry remains blocked until refresh authority changes.
+    Never,
+    /// Automatic retry remains blocked until the backend-authored instant.
+    NotBefore {
+        /// Absolute reopening instant stored by the persistence backend.
+        not_before: chrono::DateTime<chrono::Utc>,
+    },
+}
+
+impl From<&RefreshRetryGate> for RefreshRetryProjection {
+    fn from(gate: &RefreshRetryGate) -> Self {
+        match gate {
+            RefreshRetryGate::Never { .. } => Self::Never,
+            RefreshRetryGate::NotBefore { not_before, .. } => Self::NotBefore {
+                not_before: *not_before,
+            },
+        }
+    }
+}
+
 impl RefreshRetryGate {
     /// Borrow the proof attached to this gate.
     #[must_use]

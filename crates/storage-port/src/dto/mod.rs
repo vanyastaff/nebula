@@ -41,8 +41,8 @@ pub use credential::{
 pub use credential_refresh_retry::{
     RefreshRetryAdmission, RefreshRetryBlock, RefreshRetryDelay, RefreshRetryDelayError,
     RefreshRetryDiagnosticCode, RefreshRetryDiagnosticCodeError, RefreshRetryEvidence,
-    RefreshRetryGate, RefreshRetryKind, RefreshRetryPhase, RefreshRetrySnapshot,
-    RefreshRetryTransition,
+    RefreshRetryGate, RefreshRetryKind, RefreshRetryPhase, RefreshRetryProjection,
+    RefreshRetrySnapshot, RefreshRetryTransition,
 };
 pub use execution::{ExecutionRecord, NewExecution};
 pub use idempotency::CachedRecord;

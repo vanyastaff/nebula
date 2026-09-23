@@ -37,6 +37,29 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 /// paths keep resolving.
 pub use nebula_core::auth::{RefreshStrategy, RefreshStrategyKind, SchemeId};
 
+/// Secret-free durable availability of a persisted credential.
+///
+/// This projection deliberately describes only state that survives process
+/// restart. An in-flight refresh is coordinated by internal claims and leases,
+/// so it is not a public lifecycle state. Likewise, tombstones remain a
+/// persistence invariant: management reads treat them as absent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum CredentialLifecycleState {
+    /// No durable gate prevents ordinary credential use or refresh.
+    Ready,
+    /// Automatic refresh is deferred until a backend-authored instant.
+    RefreshDeferred {
+        /// Earliest instant at which automatic refresh may be attempted again.
+        retry_at: DateTime<Utc>,
+    },
+    /// Automatic refresh is durably blocked until an explicit
+    /// authority-changing transition supplies new material.
+    RefreshBlocked,
+    /// The credential cannot be used until interactive authorization succeeds.
+    ReauthRequired,
+}
+
 /// How a credential can be revoked. The field has **no uniform revoke
 /// endpoint**: Vault revokes by lease handle (RFC 7009 for OAuth2), whereas AWS
 /// STS revokes by an issue-time-keyed deny policy — the bytes stay syntactically

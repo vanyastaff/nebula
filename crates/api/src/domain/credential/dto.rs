@@ -143,10 +143,8 @@ pub struct CredentialResponse {
     pub expires_at: Option<String>,
     /// Monotonic version for CAS operations.
     pub version: u64,
-    /// True when the credential cannot be used until re-authorized
-    /// (e.g. an OAuth2 flow was started but not completed, or a refresh
-    /// failed terminally).
-    pub reauth_required: bool,
+    /// Durable credential availability state.
+    pub lifecycle: CredentialLifecycleState,
     /// User-defined tags.
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     pub tags: HashMap<String, String>,
@@ -168,8 +166,28 @@ pub struct CredentialSummary {
     pub expires_at: Option<String>,
     /// Monotonic version for CAS operations.
     pub version: u64,
-    /// True when the credential cannot be used until re-authorized.
-    pub reauth_required: bool,
+    /// Durable credential availability state.
+    pub lifecycle: CredentialLifecycleState,
+}
+
+/// Public credential availability state.
+///
+/// Active refresh ownership remains internal because claims and leases are
+/// transient implementation details rather than durable client state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum CredentialLifecycleState {
+    /// No durable retry or authorization gate prevents use.
+    Ready,
+    /// Automatic refresh is deferred until the backend-authored instant.
+    RefreshDeferred {
+        /// RFC 3339 instant after which refresh may be attempted again.
+        retry_at: String,
+    },
+    /// Automatic refresh is durably blocked until material changes.
+    RefreshBlocked,
+    /// Interactive authorization must complete before the credential is usable.
+    ReauthRequired,
 }
 
 /// Paginated list of credential summaries.

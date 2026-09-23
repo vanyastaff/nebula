@@ -7,6 +7,7 @@
 //! `owner_matches`, `set_display`, `map_store_err`) as the rest of the
 //! service.
 
+use nebula_storage_port::RefreshRetryGate;
 use serde_json::Value;
 
 use crate::{
@@ -129,7 +130,7 @@ impl CredentialService {
             updated_at: commit.updated_at(),
             expires_at: resolved.expires_at,
             last_validated_at: Some(now),
-            reauth_required: false,
+            lifecycle: crate::CredentialLifecycleState::Ready,
             display,
         })
     }
@@ -327,6 +328,26 @@ impl CredentialService {
             .map_err(|error| Self::map_store_err_for(id, error))?;
 
         tracing::info!(credential.id = %id, "credential updated");
+        let lifecycle = if reauth_required {
+            crate::CredentialLifecycleState::ReauthRequired
+        } else if material_replaced {
+            crate::CredentialLifecycleState::Ready
+        } else {
+            match existing.refresh_retry_gate() {
+                None => crate::CredentialLifecycleState::Ready,
+                Some(RefreshRetryGate::Never { .. }) => {
+                    crate::CredentialLifecycleState::RefreshBlocked
+                },
+                Some(RefreshRetryGate::NotBefore { not_before, .. })
+                    if *not_before > commit.updated_at() =>
+                {
+                    crate::CredentialLifecycleState::RefreshDeferred {
+                        retry_at: *not_before,
+                    }
+                },
+                Some(RefreshRetryGate::NotBefore { .. }) => crate::CredentialLifecycleState::Ready,
+            }
+        };
         Ok(CredentialHead {
             id: commit.credential_id().to_string(),
             credential_key: existing.credential_key().to_owned(),
@@ -335,7 +356,7 @@ impl CredentialService {
             updated_at: commit.updated_at(),
             expires_at,
             last_validated_at,
-            reauth_required,
+            lifecycle,
             display,
         })
     }

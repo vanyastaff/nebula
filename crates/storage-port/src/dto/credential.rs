@@ -13,6 +13,7 @@ use zeroize::Zeroizing;
 
 use crate::Scope;
 use crate::dto::RefreshRetryGate;
+use crate::dto::RefreshRetryProjection;
 use crate::dto::RefreshRetryTransition;
 use crate::store::CredentialPersistenceError;
 
@@ -955,6 +956,7 @@ pub struct StoredCredentialHead {
     updated_at: chrono::DateTime<chrono::Utc>,
     expires_at: Option<chrono::DateTime<chrono::Utc>>,
     reauth_required: bool,
+    refresh_retry: Option<RefreshRetryProjection>,
     metadata: Map<String, Value>,
 }
 
@@ -981,6 +983,7 @@ impl StoredCredentialHead {
         updated_at: chrono::DateTime<chrono::Utc>,
         expires_at: Option<chrono::DateTime<chrono::Utc>>,
         reauth_required: bool,
+        refresh_retry: Option<RefreshRetryProjection>,
         metadata: Map<String, Value>,
     ) -> Result<Self, CredentialPersistenceError> {
         if !version.is_live() {
@@ -998,6 +1001,7 @@ impl StoredCredentialHead {
             updated_at,
             expires_at,
             reauth_required,
+            refresh_retry,
             metadata,
         })
     }
@@ -1068,6 +1072,12 @@ impl StoredCredentialHead {
         self.reauth_required
     }
 
+    /// Return the evidence-free durable refresh-retry projection.
+    #[must_use]
+    pub const fn refresh_retry(&self) -> Option<RefreshRetryProjection> {
+        self.refresh_retry
+    }
+
     /// Borrow the opaque non-secret metadata.
     #[must_use]
     pub fn metadata(&self) -> &Map<String, Value> {
@@ -1077,6 +1087,17 @@ impl StoredCredentialHead {
 
 impl From<&StoredLiveCredential> for StoredCredentialHead {
     fn from(stored: &StoredLiveCredential) -> Self {
+        let refresh_retry = match stored.refresh_retry_gate.as_ref() {
+            Some(RefreshRetryGate::Never { .. }) => Some(RefreshRetryProjection::Never),
+            Some(RefreshRetryGate::NotBefore { not_before, .. })
+                if *not_before > chrono::Utc::now() =>
+            {
+                Some(RefreshRetryProjection::NotBefore {
+                    not_before: *not_before,
+                })
+            },
+            Some(RefreshRetryGate::NotBefore { .. }) | None => None,
+        };
         Self {
             credential_id: stored.credential_id,
             name: stored.name.clone(),
@@ -1089,6 +1110,7 @@ impl From<&StoredLiveCredential> for StoredCredentialHead {
             updated_at: stored.updated_at,
             expires_at: stored.expires_at,
             reauth_required: stored.reauth_required,
+            refresh_retry,
             metadata: stored.metadata.clone(),
         }
     }
@@ -1109,6 +1131,7 @@ impl fmt::Debug for StoredCredentialHead {
             .field("updated_at", &self.updated_at)
             .field("expires_at", &self.expires_at)
             .field("reauth_required", &self.reauth_required)
+            .field("refresh_retry", &self.refresh_retry)
             .field("metadata_key_count", &self.metadata.len())
             .finish()
     }

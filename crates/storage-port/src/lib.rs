@@ -44,9 +44,9 @@ pub use dto::{
     PreparedEffectContract, PreparedEffectPolicy, PreparedEffectPolicyBuilder, PreparedOperation,
     RefreshRetryAdmission, RefreshRetryBlock, RefreshRetryDelay, RefreshRetryDelayError,
     RefreshRetryDiagnosticCode, RefreshRetryDiagnosticCodeError, RefreshRetryEvidence,
-    RefreshRetryGate, RefreshRetryKind, RefreshRetryPhase, RefreshRetrySnapshot,
-    RefreshRetryTransition, RequestFingerprint, RevisionCatalogError, RevisionInsertOutcome,
-    RevisionRecordBytes, RevisionReferenceCounts, WorkerFlavorRecordFormat,
+    RefreshRetryGate, RefreshRetryKind, RefreshRetryPhase, RefreshRetryProjection,
+    RefreshRetrySnapshot, RefreshRetryTransition, RequestFingerprint, RevisionCatalogError,
+    RevisionInsertOutcome, RevisionRecordBytes, RevisionReferenceCounts, WorkerFlavorRecordFormat,
     WorkerFlavorRevisionRecord,
 };
 pub use error::StorageError;
