@@ -995,6 +995,7 @@ fi
     (output, calls)
 }
 
+#[cfg(unix)]
 fn one_package_plan() -> String {
     serde_json::json!({
         "schema_version": 1,
@@ -1009,6 +1010,7 @@ fn one_package_plan() -> String {
     .to_string()
 }
 
+#[cfg(unix)]
 fn empty_plan() -> String {
     serde_json::json!({
         "schema_version": 1,
