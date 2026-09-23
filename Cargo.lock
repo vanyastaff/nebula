@@ -3001,7 +3001,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-action"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "async-trait",
  "base64",
@@ -3041,7 +3041,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-action-macros"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "nebula-macro-support",
  "proc-macro2",
@@ -3052,7 +3052,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-api"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "argon2",
  "async-trait",
@@ -3126,7 +3126,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-core"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "chrono",
  "codspeed-criterion-compat",
@@ -3145,7 +3145,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-credential"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "ahash",
  "arc-swap",
@@ -3194,7 +3194,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-credential-macros"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "nebula-macro-support",
  "proc-macro2",
@@ -3204,7 +3204,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-crypto"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -3217,7 +3217,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-engine"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "async-channel",
  "async-trait",
@@ -3271,14 +3271,14 @@ dependencies = [
 
 [[package]]
 name = "nebula-env"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
 name = "nebula-error"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "insta",
  "nebula-error-macros",
@@ -3291,7 +3291,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-error-macros"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3300,7 +3300,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-eventbus"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "codspeed-criterion-compat",
  "futures-core",
@@ -3316,7 +3316,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-examples"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3344,7 +3344,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-execution"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "chrono",
  "insta",
@@ -3363,7 +3363,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-expression"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "chrono",
  "chrono-tz",
@@ -3383,7 +3383,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-log"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -3416,7 +3416,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-macro-support"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -3426,7 +3426,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-metadata"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "chrono",
  "domain-key",
@@ -3448,7 +3448,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-metrics"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "dashmap",
  "insta",
@@ -3467,7 +3467,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-orchestrator"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "async-trait",
  "nebula-core",
@@ -3486,7 +3486,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-plugin"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "async-trait",
  "indexmap",
@@ -3515,7 +3515,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-plugin-core"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "chrono",
  "nebula-action",
@@ -3538,7 +3538,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-plugin-macros"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "nebula-macro-support",
  "proc-macro2",
@@ -3549,7 +3549,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-resilience"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "codspeed-criterion-compat",
  "fastrand",
@@ -3567,7 +3567,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-resource"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -3601,7 +3601,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-resource-macros"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "nebula-core",
  "nebula-macro-support",
@@ -3612,7 +3612,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-schema"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "blake3",
  "codspeed-criterion-compat",
@@ -3642,7 +3642,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-schema-macros"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "heck",
  "nebula-macro-support",
@@ -3653,7 +3653,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-sdk"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3681,7 +3681,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-server"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -3725,7 +3725,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-storage"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "assert_fs",
  "async-trait",
@@ -3761,14 +3761,14 @@ dependencies = [
 
 [[package]]
 name = "nebula-storage-loom-probe"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "loom",
 ]
 
 [[package]]
 name = "nebula-storage-port"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3786,7 +3786,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-tenancy"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "async-trait",
  "nebula-core",
@@ -3799,7 +3799,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-validator"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "codspeed-criterion-compat",
  "insta",
@@ -3819,7 +3819,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-validator-macros"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "nebula-macro-support",
  "proc-macro2",
@@ -3830,7 +3830,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-worker"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3856,7 +3856,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-worker-bin"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "chrono",
  "nebula-core",
@@ -3884,7 +3884,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-workflow"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "chrono",
  "insta",
@@ -3902,7 +3902,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-xtask"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "cargo_metadata",
  "clap",

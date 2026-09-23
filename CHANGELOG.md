@@ -11,6 +11,14 @@ changes are expected between minor releases — call them out here.
 
 ### Breaking
 
+- **Workspace membership management advances development packages to 0.17.0 in
+  lockstep.** The API membership authority now requires parent-qualified list,
+  upsert, and removal operations for explicit workspace grants. The storage
+  port enforces current organization membership, live parent resources, and
+  grant cleanup during organization-member removal as one atomic authority.
+  The server exposes the new workspace-member routes through the same durable
+  tenant directory used by RBAC. Exact-version SDK consumers and external
+  implementations of either technical membership trait must update together.
 - **Tenant provisioning advances development packages to 0.16.0 in lockstep.**
   `WorkspaceStore` gains a parent-qualified active-slug lookup, and first-party
   storage gains the object-safe `TenantProvisioningStore` atomic boundary.
