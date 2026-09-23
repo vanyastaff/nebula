@@ -349,7 +349,7 @@ mod tests {
         );
         assert_eq!(
             <crate::OAuth2State as StateWireFingerprint>::SCHEMA_FINGERPRINT,
-            0x0df5_5eb4_9cf2_2677,
+            0x3ef6_0bc8_24fe_22ee,
             "OAuth2State"
         );
         assert_eq!(

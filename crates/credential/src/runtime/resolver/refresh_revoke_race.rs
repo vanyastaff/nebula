@@ -1655,7 +1655,6 @@ fn oauth2_row_with_token_url(refresh_token: Option<&str>, token_url: &str) -> St
         refresh_token: refresh_token.map(crate::SecretString::new),
         expires_at: Some(expires_at),
         scopes: vec!["read".to_owned()],
-        grant_type: crate::GrantType::AuthorizationCode,
         client_id: crate::SecretString::new("client-id"),
         client_secret: crate::SecretString::new("client-secret"),
         token_url: token_url.to_owned(),

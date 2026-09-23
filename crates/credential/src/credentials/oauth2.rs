@@ -41,6 +41,11 @@ use crate::{
     scheme::{AuthStyle, OAuth2Token},
 };
 
+// This value cannot be returned by a conforming provider because OAuth token
+// values reject control characters at the response boundary. It is encrypted
+// with the rest of OAuth2State and is never projected or sent to a provider.
+const CLIENT_CREDENTIALS_REFRESH_MARKER: &str = "\0nebula.oauth2.client_credentials.v1";
+
 // ── OAuth2State ────────────────────────────────────────────────────────
 
 /// Internal OAuth2 state with refresh internals.
@@ -75,11 +80,6 @@ pub struct OAuth2State {
     /// Granted scopes — non-secret list of OAuth2 scope identifiers.
     #[zeroize(skip)]
     pub scopes: Vec<String>,
-    /// Grant that produced this state. Legacy states default to authorization
-    /// code, which preserves the historical fail-closed reauthorization path.
-    #[serde(default = "authorization_code_grant")]
-    #[zeroize(skip)]
-    pub grant_type: GrantType,
     /// Stored for refresh operations.
     #[serde(with = "crate::serde_secret")]
     pub client_id: SecretString,
@@ -106,7 +106,6 @@ impl fmt::Debug for OAuth2State {
             )
             .field("expires_at", &self.expires_at)
             .field("scopes", &self.scopes)
-            .field("grant_type", &self.grant_type)
             .field("client_id", &"[REDACTED]")
             .field("client_secret", &"[REDACTED]")
             .field("token_url", &"[REDACTED]")
@@ -158,10 +157,6 @@ impl CredentialState for OAuth2State {
     fn expires_at(&self) -> Option<DateTime<Utc>> {
         self.expires_at
     }
-}
-
-const fn authorization_code_grant() -> GrantType {
-    GrantType::AuthorizationCode
 }
 
 // ── OAuth2Pending ──────────────────────────────────────────────────────
@@ -472,7 +467,7 @@ impl OAuth2Credential {
     }
 
     async fn refresh(state: &mut OAuth2State, attempt: RefreshAttempt<'_>) -> RefreshReport {
-        if state.grant_type == GrantType::ClientCredentials && state.refresh_token.is_none() {
+        if has_client_credentials_marker(state) {
             return refresh_client_credentials(state, attempt).await;
         }
         let prepared = match prepare_oauth2_refresh(state) {
@@ -538,9 +533,9 @@ impl OAuth2Credential {
     }
 
     // OAuth2 is a refresh-pair credential (ADR-0088 D2). The policy is computed
-    // from live state: `RefreshToken` while a refresh token is held or while a
-    // client-credentials grant can repeat its non-interactive exchange,
-    // otherwise `ReAcquire`. Provider revocation is not implemented; expiry
+    // from live state: `RefreshToken` while renewable secret state is held,
+    // including the private client-credentials reacquisition marker; otherwise
+    // `ReAcquire`. Provider revocation is not implemented; expiry
     // is the access token's inline `expires_at`. The hand-written `policy` is kept
     // (not macro-synthesized) because the strategy depends on live state: the
     // synthesized default reads state for its expiry but emits a constant
@@ -550,9 +545,7 @@ impl OAuth2Credential {
         CredentialPolicy {
             expires_at: state.expires_at,
             lease: None,
-            refresh: if state.refresh_token.is_some()
-                || state.grant_type == GrantType::ClientCredentials
-            {
+            refresh: if state.refresh_token.is_some() {
                 RefreshStrategy::RefreshToken
             } else {
                 // No refresh token: re-acquisition is a human-gated OAuth2
@@ -568,6 +561,17 @@ impl OAuth2Credential {
 }
 
 // ── Private helpers ────────────────────────────────────────────────────
+
+fn has_client_credentials_marker(state: &OAuth2State) -> bool {
+    state.refresh_token.as_ref().is_some_and(|token| {
+        bool::from(
+            token
+                .expose_secret()
+                .as_bytes()
+                .ct_eq(CLIENT_CREDENTIALS_REFRESH_MARKER.as_bytes()),
+        )
+    })
+}
 
 fn initiate_authorization_code(
     properties: &OAuth2AuthorizationCodeProperties,
@@ -852,13 +856,20 @@ fn interpret_acquisition_response(
         .transpose()?;
     let scopes = parse_granted_scopes(body.scope.as_ref(), acquisition.requested_scopes)?;
 
+    let refresh_token = match (body.refresh_token.take(), acquisition.grant_type) {
+        (Some(refresh_token), _) => Some(refresh_token),
+        (None, GrantType::ClientCredentials) => {
+            Some(SecretString::new(CLIENT_CREDENTIALS_REFRESH_MARKER))
+        },
+        (None, GrantType::AuthorizationCode) => None,
+    };
+
     Ok(OAuth2State {
         access_token,
         token_type: "Bearer".to_owned(),
-        refresh_token: body.refresh_token.take(),
+        refresh_token,
         expires_at,
         scopes,
-        grant_type: acquisition.grant_type,
         client_id: SecretString::new(acquisition.client_id),
         client_secret: acquisition.client_secret.clone(),
         token_url: acquisition.token_url.to_owned(),
