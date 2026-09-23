@@ -37,7 +37,10 @@ where
     R::Config: serde::de::DeserializeOwned,
     R::Topology: nebula_resource::Topology<R>,
     FResource: Fn() -> R + Send + Sync + 'static,
-    FTopology: Fn() -> R::Topology + Send + Sync + 'static,
+    FTopology: Fn(Option<&serde_json::Value>) -> Result<R::Topology, nebula_resource::Error>
+        + Send
+        + Sync
+        + 'static,
 {
     /// Creates an opaque contribution from typed resource and topology factories.
     pub fn new(resource_factory: FResource, topology_factory: FTopology) -> Self {

@@ -376,7 +376,9 @@ impl Plugin for FixturePlugin {
                 _,
             >::new(
                 || FixtureResource,
-                || nebula_resource::Resident::new(nebula_resource::ResidentConfig::default()),
+                nebula_resource::topology::fixed(|| {
+                    nebula_resource::Resident::new(nebula_resource::ResidentConfig::default())
+                }),
             ))]
         } else {
             vec![]

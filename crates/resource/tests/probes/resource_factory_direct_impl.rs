@@ -29,6 +29,10 @@ impl ResourceFactory for ForgedFactory {
         Ok(())
     }
 
+    fn validate_topology(&self, _settings: Option<&serde_json::Value>) -> Result<(), Error> {
+        Ok(())
+    }
+
     fn register<'a>(
         &'a self,
         _manager: &'a Manager,

@@ -17,10 +17,10 @@ help: the trait `factory::private::Sealed` is implemented for `KindActivator<R, 
    | | where
    | |     R: Provider + nebula_core::DeclaresDependencies,
    | |     R::Config: serde::de::DeserializeOwned,
-   | |     R::Topology: Topology<R>,
-   | |     FRes: Fn() -> R + Send + Sync + 'static,
-   | |     FTopo: Fn() -> R::Topology + Send + Sync + 'static,
-   | |_______________________________________________________^
+...  |
+   | |     FTopo:
+   | |         Fn(Option<&serde_json::Value>) -> Result<R::Topology, crate::Error> + Send + Sync + 'static,
+   | |____________________________________________________________________________________________________^
 note: required by a bound in `ResourceFactory`
   --> src/factory.rs
    |

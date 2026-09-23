@@ -148,7 +148,7 @@ pub mod __private {
         }
 
         pub mod topology {
-            pub use nebula_resource::topology::{Pooled, Resident, Topology};
+            pub use nebula_resource::topology::{ConfigurableTopology, Pooled, Resident, Topology};
 
             pub mod pooled {
                 pub mod config {

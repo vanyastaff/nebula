@@ -123,7 +123,7 @@ impl ResidentProvider for TestRes {
 fn test_factory(create_counter: Arc<AtomicU64>) -> Arc<dyn ResourceFactory> {
     Arc::new(KindActivator::<TestRes, _, _>::new(
         move || TestRes::new(create_counter.clone()),
-        || Resident::<TestRes>::new(resident::config::Config::default()),
+        crate::topology::fixed(|| Resident::<TestRes>::new(resident::config::Config::default())),
     ))
 }
 
@@ -222,6 +222,10 @@ impl ResourceFactory for DivergentIdentityFactory {
         self.inner.validate(config_json)
     }
 
+    fn validate_topology(&self, settings: Option<&serde_json::Value>) -> Result<(), ResourceError> {
+        self.inner.validate_topology(settings)
+    }
+
     fn register<'a>(
         &'a self,
         manager: &'a Manager,
@@ -245,6 +249,7 @@ fn request(expr_engine: &ExpressionEngine) -> RegisterRequest<'_> {
         slot_installs: Vec::new(),
         scope: ScopeLevel::Global,
         recovery_gate: None,
+        topology: None,
     }
 }
 
@@ -372,7 +377,9 @@ async fn identity_mismatch_is_typed_and_rolls_back_manager_and_fanout_state() {
     let fanout_index = crate::ResourceFanoutIndex::new();
     let inner: Arc<dyn ResourceFactory> = Arc::new(KindActivator::<BoundTestRes, _, _>::new(
         || BoundTestRes,
-        || Resident::<BoundTestRes>::new(resident::config::Config::default()),
+        crate::topology::fixed(|| {
+            Resident::<BoundTestRes>::new(resident::config::Config::default())
+        }),
     ));
     let mut registry = ResourceActivatorRegistry::new();
     registry
@@ -397,6 +404,7 @@ async fn identity_mismatch_is_typed_and_rolls_back_manager_and_fanout_state() {
                 slot_installs: Vec::new(),
                 scope: ScopeLevel::Global,
                 recovery_gate: None,
+                topology: None,
             },
             Some(&fanout_index),
         )
@@ -434,7 +442,9 @@ async fn conflicting_duplicate_slot_bindings_fail_before_manager_publication() {
             "test-conflicting-bindings",
             Arc::new(KindActivator::<BoundTestRes, _, _>::new(
                 || BoundTestRes,
-                || Resident::<BoundTestRes>::new(resident::config::Config::default()),
+                crate::topology::fixed(|| {
+                    Resident::<BoundTestRes>::new(resident::config::Config::default())
+                }),
             )),
         )
         .expect("typed fixture metadata admits");
@@ -461,6 +471,7 @@ async fn conflicting_duplicate_slot_bindings_fail_before_manager_publication() {
                 slot_installs: Vec::new(),
                 scope: ScopeLevel::Global,
                 recovery_gate: None,
+                topology: None,
             },
             Some(&fanout_index),
         )
@@ -549,4 +560,81 @@ async fn empty_registry_rejects_every_kind() {
         .await
         .expect_err("an empty allowlist is fail-closed");
     assert!(matches!(err, RegistrarError::UnknownKind(k) if k == "anything"));
+}
+
+// ── Operator topology settings ───────────────────────────────────────────
+
+fn configurable_factory(create_counter: Arc<AtomicU64>) -> Arc<dyn ResourceFactory> {
+    Arc::new(KindActivator::<TestRes, _, _>::new(
+        move || TestRes::new(create_counter.clone()),
+        <Resident<TestRes> as crate::topology::ConfigurableTopology<TestRes>>::from_registration,
+    ))
+}
+
+#[tokio::test]
+async fn invalid_topology_settings_fail_before_manager_publication() {
+    let manager = Manager::new();
+    let expr_engine = ExpressionEngine::with_cache_size(16);
+    let mut registry = ResourceActivatorRegistry::new();
+    registry
+        .insert(
+            "configurable",
+            configurable_factory(Arc::new(AtomicU64::new(0))),
+        )
+        .expect("test resource metadata admits");
+
+    let bad = serde_json::json!({ "create_timeout_ms": 0 });
+    assert!(
+        registry
+            .validate_topology("configurable", Some(&bad))
+            .is_err()
+    );
+
+    let mut bad_request = request(&expr_engine);
+    bad_request.topology = Some(bad);
+    assert!(
+        registry
+            .register("configurable", &manager, bad_request)
+            .await
+            .is_err(),
+        "unworkable topology settings must reject the registration"
+    );
+    assert!(
+        manager
+            .get_any(&TestRes::key(), &ScopeLevel::Global)
+            .is_none(),
+        "a rejected registration must not publish a row"
+    );
+
+    let good = serde_json::json!({ "recreate_on_failure": true, "create_timeout_ms": 5_000 });
+    registry
+        .validate_topology("configurable", Some(&good))
+        .expect("valid settings validate");
+    let mut good_request = request(&expr_engine);
+    good_request.topology = Some(good);
+    registry
+        .register("configurable", &manager, good_request)
+        .await
+        .expect("valid topology settings register");
+}
+
+#[test]
+fn fixed_topology_rejects_operator_settings_instead_of_ignoring_them() {
+    let mut registry = ResourceActivatorRegistry::new();
+    registry
+        .insert("fixed", test_factory(Arc::new(AtomicU64::new(0))))
+        .expect("test resource metadata admits");
+    registry
+        .validate_topology("fixed", None)
+        .expect("no settings is fine for a fixed topology");
+    assert!(
+        registry
+            .validate_topology("fixed", Some(&serde_json::json!({ "max_size": 4 })))
+            .is_err(),
+        "settings sent to a fixed kind must be rejected, not silently dropped"
+    );
+    assert!(matches!(
+        registry.validate_topology("missing", None),
+        Err(RegistrarError::UnknownKind(_))
+    ));
 }

@@ -192,7 +192,9 @@ fn registrars() -> ResourceActivatorRegistry {
             "xcross.widget",
             Arc::new(KindActivator::<XResource, _, _>::new(
                 XResource::new,
-                || Resident::<XResource>::new(resident::config::Config::default()),
+                nebula_resource::topology::fixed(|| {
+                    Resident::<XResource>::new(resident::config::Config::default())
+                }),
             )),
         )
         .expect("test resource metadata admits");
@@ -215,6 +217,7 @@ fn request<'a>(expr: &'a ExpressionEngine, bindings: &[(&str, &str)]) -> Registe
         slot_installs: Vec::new(),
         scope: ScopeLevel::Global,
         recovery_gate: None,
+        topology: None,
     }
 }
 

@@ -207,18 +207,14 @@ fn emit_factory(
     // Build the topology factory closure based on the chosen kind.
     let topology_factory = match kind {
         topology_attr::TopologyKind::Resident => quote! {
-            || ::nebula_resource::topology::Resident::<#struct_name>::new(
-                ::nebula_resource::topology::resident::config::Config::default(),
-            )
+            <::nebula_resource::topology::Resident<#struct_name>
+                as ::nebula_resource::topology::ConfigurableTopology<#struct_name>>::from_registration
         },
         topology_attr::TopologyKind::Pooled => quote! {
-            || ::nebula_resource::topology::Pooled::<#struct_name>::new(
-                ::nebula_resource::topology::pooled::config::Config::default(),
-                // fingerprint = 0: the activator registry is the canonical source
-                // of per-kind fingerprints; the factory-emitted topology is the
-                // default, not a config snapshot.
-                0,
-            )
+            // Operator topology settings arrive per registration; absent
+            // settings build the defaults.
+            <::nebula_resource::topology::Pooled<#struct_name>
+                as ::nebula_resource::topology::ConfigurableTopology<#struct_name>>::from_registration
         },
     };
 
@@ -252,7 +248,7 @@ fn emit_factory(
         }
 
         impl #factory_name {
-            /// Build a new factory with the default topology configuration.
+            /// Build a new factory; topology settings come from each registration.
             #[must_use]
             pub fn new() -> Self {
                 use ::nebula_resource::factory::KindActivator;

@@ -137,7 +137,7 @@ fn topology() -> Resident<Db> {
 }
 
 fn factory() -> impl ResourceFactory {
-    KindActivator::<Db, _, _>::new(|| Db, topology)
+    KindActivator::<Db, _, _>::new(|| Db, nebula_resource::topology::fixed(topology))
 }
 
 async fn register_from_value(
@@ -156,6 +156,7 @@ async fn register_from_value(
                 slot_installs: Vec::new(),
                 scope: ScopeLevel::Global,
                 recovery_gate: None,
+                topology: None,
             },
             &expected_slot_identity,
         )

@@ -111,6 +111,22 @@ programs. Both paths reject undeclared fields and protected secret leaves,
 including nested results. Secrets must enter through credential slots, not
 resource config.
 
+Topology capacity is configured separately from the resource config.
+`RegisterRequest::topology` carries operator settings as JSON
+(`topology::PoolSettings`, `ResidentSettings`, `BoundedSettings`): every field
+is optional, durations are `_ms` integers, unknown fields are rejected, and
+values reach the topology only through its fallible constructor. The
+`KindActivator` topology factory is `Fn(Option<&Value>) -> Result<R::Topology,
+Error>`; use `ConfigurableTopology::from_registration` for the built-in
+topologies (the derive does), or `topology::fixed(|| …)` for a topology that
+takes no settings — `fixed` rejects settings instead of ignoring them.
+`ResourceActivatorRegistry::validate_topology` dry-runs settings without
+registering.
+
+```json
+{ "max_size": 20, "min_size": 2, "create_timeout_ms": 5000, "strategy": "fifo" }
+```
+
 Admitted `ResourceMetadata` has private fields, getters, and `Serialize` only.
 Persisted catalog bytes deserialize as `RecordedResourceMetadata`; callers must
 explicitly call `readmit_against` with a freshly admitted factory definition.

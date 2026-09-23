@@ -1,7 +1,7 @@
 //! Operator-facing topology settings.
 //!
 //! Registration JSON configures two separate things: the resource's own
-//! [`Provider::Config`](crate::Provider::Config) (how to connect) and the
+//! [`Provider::Config`] (how to connect) and the
 //! topology (how much capacity to hold). This module is the wire format for
 //! the second one. Every field is optional, so `{}` or an absent value means
 //! the built-in defaults. Durations are integer milliseconds with an explicit
@@ -63,6 +63,36 @@ pub trait ConfigurableTopology<R: Provider>: Topology<R> + Sized {
             })?),
         };
         Self::from_settings(settings, fingerprint)
+    }
+
+    /// Topology factory for [`KindActivator`](crate::KindActivator): builds
+    /// from the request's topology settings with the initial fingerprint `0`
+    /// (the manager advances it on config reload).
+    ///
+    /// # Errors
+    ///
+    /// As [`from_settings_value`](Self::from_settings_value).
+    fn from_registration(settings: Option<&serde_json::Value>) -> Result<Self, Error> {
+        Self::from_settings_value(settings, 0)
+    }
+}
+
+/// Wraps a settings-free topology constructor as a
+/// [`KindActivator`](crate::KindActivator) topology factory.
+///
+/// Operator settings sent to such a kind are **rejected**, never silently
+/// ignored: an operator who sized a pool must not get a default one.
+pub fn fixed<T, F>(
+    build: F,
+) -> impl Fn(Option<&serde_json::Value>) -> Result<T, Error> + Send + Sync
+where
+    F: Fn() -> T + Send + Sync,
+{
+    move |settings| match settings {
+        None | Some(serde_json::Value::Null) => Ok(build()),
+        Some(_) => Err(Error::permanent(
+            "this resource kind does not accept topology settings",
+        )),
     }
 }
 

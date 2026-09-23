@@ -56,6 +56,7 @@ async fn register_from_value(
                 slot_installs: Vec::new(),
                 scope: ScopeLevel::Global,
                 recovery_gate: None,
+                topology: None,
             },
             &expected_slot_identity,
         )
@@ -65,7 +66,7 @@ async fn register_from_value(
 fn postgres_factory() -> impl ResourceFactory {
     KindActivator::<Postgres, _, _>::new(
         || Postgres,
-        || Resident::<Postgres>::new(ResidentConfig::default()),
+        nebula_resource::topology::fixed(|| Resident::<Postgres>::new(ResidentConfig::default())),
     )
 }
 
@@ -294,9 +295,9 @@ async fn revoke_admission_rejects_resolved_credentialed_custom_topology() {
     let error = register_from_value(
         KindActivator::<AdmissionResource<true>, _, _>::new(
             || AdmissionResource,
-            || AdmissionTopology {
+            nebula_resource::topology::fixed(|| AdmissionTopology {
                 handles_revoke: false,
-            },
+            }),
         ),
         &manager,
         &expression_engine,
@@ -354,6 +355,7 @@ async fn register_from_value_resolves_template_and_registers() {
                 slot_installs: Vec::new(),
                 scope: ScopeLevel::Global,
                 recovery_gate: None,
+                topology: None,
             },
             &expected_slot_identity,
         )
@@ -542,7 +544,7 @@ async fn register_from_value_rejects_drifted_slot_signals() {
     let err = register_from_value(
         KindActivator::<DriftedSlotSignals, _, _>::new(
             || DriftedSlotSignals,
-            || Resident::new(ResidentConfig::default()),
+            nebula_resource::topology::fixed(|| Resident::new(ResidentConfig::default())),
         ),
         &manager,
         &engine,
@@ -644,7 +646,7 @@ async fn register_from_value_rejects_drifted_slot_names() {
     let err = register_from_value(
         KindActivator::<DriftedSlotNames, _, _>::new(
             || DriftedSlotNames,
-            || Resident::new(ResidentConfig::default()),
+            nebula_resource::topology::fixed(|| Resident::new(ResidentConfig::default())),
         ),
         &manager,
         &engine,
@@ -788,7 +790,9 @@ impl DeclaresDependencies for CacheBackend {
 fn cache_backend_factory() -> impl ResourceFactory {
     KindActivator::<CacheBackend, _, _>::new(
         || CacheBackend,
-        || Resident::<CacheBackend>::new(ResidentConfig::default()),
+        nebula_resource::topology::fixed(|| {
+            Resident::<CacheBackend>::new(ResidentConfig::default())
+        }),
     )
 }
 

@@ -160,7 +160,9 @@ impl Plugin for DemoPlugin {
     fn resources(&self) -> Vec<Arc<dyn nebula_resource::ResourceFactory>> {
         vec![Arc::new(KindActivator::<DemoResource, _, _>::new(
             DemoResource::new,
-            || Resident::<DemoResource>::new(resident::config::Config::default()),
+            nebula_resource::topology::fixed(|| {
+                Resident::<DemoResource>::new(resident::config::Config::default())
+            }),
         ))]
     }
 }
@@ -200,7 +202,9 @@ fn demo_registrars(plugins: &PluginRegistry) -> ResourceActivatorRegistry {
             kind.as_str().to_owned(),
             Arc::new(KindActivator::<DemoResource, _, _>::new(
                 DemoResource::new,
-                || Resident::<DemoResource>::new(resident::config::Config::default()),
+                nebula_resource::topology::fixed(|| {
+                    Resident::<DemoResource>::new(resident::config::Config::default())
+                }),
             )),
         )
         .expect("test resource metadata admits");
@@ -326,6 +330,7 @@ async fn wired_registrar_performs_typed_registration() {
                 slot_installs: Vec::new(),
                 scope: ScopeLevel::Global,
                 recovery_gate: None,
+                topology: None,
             },
         )
         .await

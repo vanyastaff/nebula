@@ -131,7 +131,9 @@ fn registry_with_http_pool() -> ResourceActivatorRegistry {
             "http_pool",
             Arc::new(KindActivator::<HttpPool, _, _>::new(
                 || HttpPool,
-                || Resident::<HttpPool>::new(resident::config::Config::default()),
+                nebula_resource::topology::fixed(|| {
+                    Resident::<HttpPool>::new(resident::config::Config::default())
+                }),
             )),
         )
         .expect("test resource metadata admits");

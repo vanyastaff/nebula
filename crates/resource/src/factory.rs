@@ -210,6 +210,10 @@ pub struct RegisterRequest<'a> {
     pub scope: ScopeLevel,
     /// Optional recovery gate shared across a recovery group.
     pub recovery_gate: Option<Arc<RecoveryGate>>,
+    /// Operator topology settings (pool size, timeouts, concurrency mode),
+    /// kept separate from the resource [`config`](Self::config). `None` uses
+    /// the kind's defaults; see [`crate::topology::settings`] for the format.
+    pub topology: Option<serde_json::Value>,
 }
 
 impl std::fmt::Debug for RegisterRequest<'_> {
@@ -224,6 +228,7 @@ impl std::fmt::Debug for RegisterRequest<'_> {
             .field("slot_install_count", &self.slot_installs.len())
             .field("scope", &self.scope)
             .field("recovery_gate", &self.recovery_gate.is_some())
+            .field("topology", &self.topology.is_some())
             .finish()
     }
 }
@@ -412,6 +417,15 @@ pub trait ResourceFactory: private::Sealed + Send + Sync + 'static {
     /// schema, carries an undeclared field, or fails to deserialize.
     fn validate(&self, config_json: serde_json::Value) -> Result<(), crate::Error>;
 
+    /// Validate operator topology settings for this kind **without
+    /// registering anything**, by building and dropping the topology.
+    ///
+    /// # Errors
+    ///
+    /// Returns a permanent [`crate::Error`] for malformed, unknown or
+    /// unworkable settings, or for settings sent to a kind that takes none.
+    fn validate_topology(&self, settings: Option<&serde_json::Value>) -> Result<(), crate::Error>;
+
     /// Construct and register this resource type against `manager` using the
     /// caller-threaded [`RegisterRequest`] plus the per-`R` resource and
     /// topology this factory owns. `expected_slot_identity` is the canonical
@@ -447,9 +461,11 @@ pub trait ResourceFactory: private::Sealed + Send + Sync + 'static {
 ///
 /// Both are factories rather than stored values so one `KindActivator` can be
 /// invoked multiple times (re-activation, multiple scopes). The topology
-/// factory builds an `R::Topology` via `Resident::new(...)` or
-/// `Pooled::new(...)` — acquire dispatch is baked into the topology at
-/// construction.
+/// factory receives the operator's topology settings from
+/// [`RegisterRequest::topology`] and builds `R::Topology` from them — use
+/// [`ConfigurableTopology::from_registration`](crate::topology::ConfigurableTopology::from_registration)
+/// for the built-in topologies, or [`fixed`](crate::topology::settings::fixed)
+/// for a topology that takes no operator settings.
 ///
 /// Used directly by the engine's `ResourceActivatorRegistry` and emitted
 /// internally by the `#[derive(Resource)]`-generated `<Name>Factory`.
@@ -458,7 +474,7 @@ where
     R: Provider + nebula_core::DeclaresDependencies,
     R::Config: serde::de::DeserializeOwned,
     FRes: Fn() -> R + Send + Sync,
-    FTopo: Fn() -> R::Topology + Send + Sync,
+    FTopo: Fn(Option<&serde_json::Value>) -> Result<R::Topology, crate::Error> + Send + Sync,
 {
     resource_factory: FRes,
     topology_factory: FTopo,
@@ -474,7 +490,7 @@ where
     R: Provider + nebula_core::DeclaresDependencies,
     R::Config: serde::de::DeserializeOwned,
     FRes: Fn() -> R + Send + Sync,
-    FTopo: Fn() -> R::Topology + Send + Sync,
+    FTopo: Fn(Option<&serde_json::Value>) -> Result<R::Topology, crate::Error> + Send + Sync,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // `resource_factory` / `topology_factory` are closures — neither is
@@ -491,16 +507,17 @@ where
     R: Provider + nebula_core::DeclaresDependencies,
     R::Config: serde::de::DeserializeOwned,
     FRes: Fn() -> R + Send + Sync,
-    FTopo: Fn() -> R::Topology + Send + Sync,
+    FTopo: Fn(Option<&serde_json::Value>) -> Result<R::Topology, crate::Error> + Send + Sync,
 {
     /// Builds a `KindActivator` for resource type `R`.
     ///
     /// - `resource_factory` — yields the `R` value with credential slots
     ///   already resolved by the engine per registration scope.
-    /// - `topology_factory` — yields the `R::Topology` for this kind. Use
-    ///   `Resident::new(...)` for resident topologies or `Pooled::new(...)`
-    ///   for pooled ones; acquire dispatch is baked into the topology at
-    ///   construction.
+    /// - `topology_factory` — builds the `R::Topology` from the operator's
+    ///   topology settings (`None` when the request carries none) and returns
+    ///   a permanent error for invalid settings. It must be side-effect free:
+    ///   [`ResourceFactory::validate_topology`] calls it to dry-run settings.
+    ///   Acquire dispatch is baked into the topology at construction.
     pub fn new(resource_factory: FRes, topology_factory: FTopo) -> Self {
         Self {
             resource_factory,
@@ -556,7 +573,8 @@ where
     R::Config: serde::de::DeserializeOwned,
     R::Topology: Topology<R>,
     FRes: Fn() -> R + Send + Sync + 'static,
-    FTopo: Fn() -> R::Topology + Send + Sync + 'static,
+    FTopo:
+        Fn(Option<&serde_json::Value>) -> Result<R::Topology, crate::Error> + Send + Sync + 'static,
 {
 }
 
@@ -566,7 +584,8 @@ where
     R::Config: serde::de::DeserializeOwned,
     R::Topology: Topology<R>,
     FRes: Fn() -> R + Send + Sync + 'static,
-    FTopo: Fn() -> R::Topology + Send + Sync + 'static,
+    FTopo:
+        Fn(Option<&serde_json::Value>) -> Result<R::Topology, crate::Error> + Send + Sync + 'static,
 {
     fn key(&self) -> nebula_core::ResourceKey {
         <R as Provider>::key()
@@ -607,6 +626,12 @@ where
             .map(|_| ())
     }
 
+    fn validate_topology(&self, settings: Option<&serde_json::Value>) -> Result<(), crate::Error> {
+        (self.topology_factory)(settings)
+            .map(drop)
+            .map_err(|error| error.with_resource_key(R::key()))
+    }
+
     fn register<'a>(
         &'a self,
         manager: &'a Manager,
@@ -618,8 +643,9 @@ where
                 crate::Error::permanent("resource factory metadata admission failed")
                     .with_source(source)
             })?;
+            let topology = (self.topology_factory)(request.topology.as_ref())
+                .map_err(|error| error.with_resource_key(R::key()))?;
             let resource = (self.resource_factory)();
-            let topology = (self.topology_factory)();
             // The typed register validates declared slots and derives the
             // structural identity from the (slot → credential-key) view; the
             // rotation `CredentialId` lives on the same bindings and is
@@ -901,6 +927,30 @@ impl ResourceActivatorRegistry {
             .ok_or_else(|| RegistrarError::UnknownKind(kind.to_owned()))?;
         factory
             .validate(config_json)
+            .map_err(|source| RegistrarError::Register {
+                kind: kind.to_owned(),
+                source,
+            })
+    }
+
+    /// Validates operator topology settings for `kind` without registering.
+    ///
+    /// # Errors
+    ///
+    /// - [`RegistrarError::UnknownKind`] — not in allowlist.
+    /// - [`RegistrarError::Register`] — settings are malformed, unworkable, or
+    ///   sent to a kind that takes none.
+    pub fn validate_topology(
+        &self,
+        kind: &str,
+        settings: Option<&serde_json::Value>,
+    ) -> Result<(), RegistrarError> {
+        let factory = self
+            .factories
+            .get(kind)
+            .ok_or_else(|| RegistrarError::UnknownKind(kind.to_owned()))?;
+        factory
+            .validate_topology(settings)
             .map_err(|source| RegistrarError::Register {
                 kind: kind.to_owned(),
                 source,
