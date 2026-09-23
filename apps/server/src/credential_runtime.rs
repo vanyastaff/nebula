@@ -545,7 +545,10 @@ mod tests {
         domain::credential::dto::CreateCredentialRequest,
         domain::org::InMemoryMembershipStore,
         error::ApiError,
-        state::{AddMemberOutcome, OrgMember, RemoveMemberOutcome, TenantMembershipSnapshot},
+        state::{
+            AddMemberOutcome, OrgMember, RemoveMemberOutcome, TenantMembershipSnapshot,
+            WorkspaceMember,
+        },
     };
     use nebula_core::{OrgRole, WorkspaceRole};
     use nebula_credential::CredentialService;
@@ -758,6 +761,33 @@ mod tests {
 
         async fn list_members(&self, _org_id: OrgId) -> Result<Vec<OrgMember>, ApiError> {
             Ok(Vec::new())
+        }
+
+        async fn list_workspace_members(
+            &self,
+            _org_id: OrgId,
+            _workspace_id: WorkspaceId,
+        ) -> Result<Vec<WorkspaceMember>, ApiError> {
+            Ok(Vec::new())
+        }
+
+        async fn upsert_workspace_member(
+            &self,
+            _org_id: OrgId,
+            _workspace_id: WorkspaceId,
+            _principal: &CorePrincipal,
+            _role: WorkspaceRole,
+        ) -> Result<(), ApiError> {
+            Ok(())
+        }
+
+        async fn remove_workspace_member(
+            &self,
+            _org_id: OrgId,
+            _workspace_id: WorkspaceId,
+            _principal: &CorePrincipal,
+        ) -> Result<bool, ApiError> {
+            Ok(false)
         }
 
         async fn add_member_guarded(

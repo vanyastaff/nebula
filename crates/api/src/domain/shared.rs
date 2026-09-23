@@ -240,8 +240,66 @@ impl From<nebula_core::OrgRole> for OrgRoleDto {
 /// public spec.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(transparent)]
-#[schema(value_type = String, example = "editor")]
+#[schema(value_type = WorkspaceRoleSchema, example = "editor")]
 pub struct WorkspaceRoleDto(pub String);
+
+/// Closed OpenAPI vocabulary for [`WorkspaceRoleDto`].
+#[derive(Serialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+#[expect(
+    dead_code,
+    reason = "schema-only enum defines the closed wire vocabulary"
+)]
+enum WorkspaceRoleSchema {
+    Viewer,
+    Runner,
+    Editor,
+    Admin,
+}
+
+impl WorkspaceRoleDto {
+    /// Stable public token for an internal workspace role.
+    #[must_use]
+    pub fn token(role: nebula_core::WorkspaceRole) -> &'static str {
+        use nebula_core::WorkspaceRole::{
+            WorkspaceAdmin, WorkspaceEditor, WorkspaceRunner, WorkspaceViewer,
+        };
+        match role {
+            WorkspaceViewer => "viewer",
+            WorkspaceRunner => "runner",
+            WorkspaceEditor => "editor",
+            WorkspaceAdmin => "admin",
+            unknown => {
+                debug_assert!(
+                    false,
+                    "nebula_core::WorkspaceRole gained a variant {unknown:?} without a wire token"
+                );
+                "viewer"
+            },
+        }
+    }
+
+    /// Parse one canonical public token without accepting internal enum names.
+    #[must_use]
+    pub fn parse(token: &str) -> Option<nebula_core::WorkspaceRole> {
+        use nebula_core::WorkspaceRole::{
+            WorkspaceAdmin, WorkspaceEditor, WorkspaceRunner, WorkspaceViewer,
+        };
+        match token {
+            "viewer" => Some(WorkspaceViewer),
+            "runner" => Some(WorkspaceRunner),
+            "editor" => Some(WorkspaceEditor),
+            "admin" => Some(WorkspaceAdmin),
+            _ => None,
+        }
+    }
+}
+
+impl From<nebula_core::WorkspaceRole> for WorkspaceRoleDto {
+    fn from(role: nebula_core::WorkspaceRole) -> Self {
+        Self(Self::token(role).to_owned())
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -298,5 +356,21 @@ mod tests {
         );
         // Internal Rust enum names must NOT be accepted as wire tokens.
         assert_eq!(OrgRoleDto::parse("OrgOwner"), None);
+    }
+
+    #[test]
+    fn workspace_role_token_roundtrips_every_variant() {
+        use nebula_core::WorkspaceRole;
+        for role in [
+            WorkspaceRole::WorkspaceViewer,
+            WorkspaceRole::WorkspaceRunner,
+            WorkspaceRole::WorkspaceEditor,
+            WorkspaceRole::WorkspaceAdmin,
+        ] {
+            let token = WorkspaceRoleDto::token(role);
+            assert_eq!(WorkspaceRoleDto::parse(token), Some(role));
+            assert_eq!(WorkspaceRoleDto::from(role).0, token);
+        }
+        assert_eq!(WorkspaceRoleDto::parse("WorkspaceAdmin"), None);
     }
 }

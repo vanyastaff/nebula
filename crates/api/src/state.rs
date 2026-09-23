@@ -84,6 +84,18 @@ pub struct OrgMember {
     pub role: OrgRole,
 }
 
+/// One explicit workspace membership row exposed to workspace member handlers.
+///
+/// This remains distinct from [`OrgMember`]: workspace grants never imply
+/// organization membership, and the wire layer must not blur those scopes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceMember {
+    /// The member's resolved principal identity.
+    pub principal: Principal,
+    /// The member's explicit workspace role.
+    pub role: WorkspaceRole,
+}
+
 /// Consistent membership-role snapshot for one principal and tenant binding.
 ///
 /// Implementations must obtain both roles from one logical snapshot (one lock
@@ -137,18 +149,17 @@ pub enum RemoveMemberOutcome {
 ///
 /// This is the single contract that [`crate::middleware::rbac`] consults to
 /// authorize every org/workspace request *and* that the
-/// `GET/POST/DELETE /orgs/{org}/members` handlers read/write. A future supported
-/// production composition must wire exactly one shared `Arc<dyn MembershipStore>` so a
+/// organization and workspace membership handlers read/write. A production
+/// composition wires exactly one shared `Arc<dyn MembershipStore>` so a
 /// membership added via [`Self::add_member_guarded`] is immediately visible
 /// to the next RBAC check on the same process (no eventual-consistency
 /// window — proven by
 /// `tests/org_e2e.rs::added_member_is_immediately_rbac_authorized`).
-/// The default server does not wire this port yet; K4 owns the durable bridge
-/// and operator configuration, so tenant routes currently return 503.
-///
 /// `get_tenant_membership` is the consistent hot-path authorization read;
 /// point lookups and enumeration/mutation methods back member-management
-/// endpoints and focused queries. An unwired or failed source is unavailable;
+/// endpoints and focused queries. Every implementation must provide both org
+/// and workspace operations; partial authorities are not representable. An
+/// unwired or failed source is unavailable;
 /// a successful snapshot with no organization role is an authorization denial.
 /// Organization mutations are available only through the guarded operations.
 /// Workspace authorization reads require an organization-bound snapshot;
@@ -176,6 +187,32 @@ pub trait MembershipStore: Send + Sync {
     /// [`OrgMember`]). Order is unspecified; the handler does not paginate
     /// (membership sets are bounded per org).
     async fn list_members(&self, org_id: OrgId) -> Result<Vec<OrgMember>, ApiError>;
+
+    /// List explicit memberships for a workspace proven to belong to `org_id`.
+    async fn list_workspace_members(
+        &self,
+        org_id: OrgId,
+        workspace_id: WorkspaceId,
+    ) -> Result<Vec<WorkspaceMember>, ApiError>;
+
+    /// Insert or replace one explicit workspace grant under its parent org.
+    async fn upsert_workspace_member(
+        &self,
+        org_id: OrgId,
+        workspace_id: WorkspaceId,
+        principal: &Principal,
+        role: WorkspaceRole,
+    ) -> Result<(), ApiError>;
+
+    /// Remove one explicit workspace grant under its parent org.
+    ///
+    /// Returns `false` when that exact parent-qualified membership is absent.
+    async fn remove_workspace_member(
+        &self,
+        org_id: OrgId,
+        workspace_id: WorkspaceId,
+        principal: &Principal,
+    ) -> Result<bool, ApiError>;
 
     /// Upsert a member **with the org-lockout invariant enforced
     /// atomically** (`POST /orgs/{org}/members`).

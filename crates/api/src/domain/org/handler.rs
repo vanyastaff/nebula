@@ -3,7 +3,7 @@
 //! ## honest capability status (Phase 3, "Option 1" honest contract)
 //!
 //! **Graduated stub→implemented** (real end-to-end against the shared
-//! [`MembershipStore`] — the same store
+//! [`crate::state::MembershipStore`] — the same store
 //! [`crate::middleware::rbac`] consults, so a write here is immediately
 //! visible to the next RBAC check):
 //!
@@ -40,8 +40,8 @@
 //!    a privilege-reducing `add_member` upsert (self *or* cross-target;
 //!    the role-precedence self-bypass does **not** bypass this) → 409.
 //!    This invariant is enforced **atomically at the store seam**
-//!    ([`MembershipStore::add_member_guarded`] /
-//!    [`MembershipStore::remove_member_guarded`]) — count-and-mutate
+//!    ([`crate::state::MembershipStore::add_member_guarded`] /
+//!    [`crate::state::MembershipStore::remove_member_guarded`]) — count-and-mutate
 //!    under one lock — so no concurrent demotion/removal can race past a
 //!    handler-level check-then-act;
 //! 6. treats an absent target member as a 404 identical to "no such org"
@@ -49,34 +49,22 @@
 //!
 //! ## Provisioning & durability (honest capability contract / provisioning durability / credential secrecy)
 //!
-//! These endpoints require an explicitly-provisioned `MembershipStore`.
-//! The default `apps/server` binary deliberately leaves it **unwired**
-//! (PR #671 P1: auto-seeding a bootstrap owner the empty default
-//! `AuthBackend` could never authenticate would 404-deadlock every
-//! org/workspace route — a deployment-level honest capability false capability — and
-//! a hardcoded auto-seed would be a default-credential surface). When
-//! unwired, the `membership_or_503` port guard returns an honest **503**
-//! (port-absent, same posture as `me/*` when `auth_backend` is absent) and
-//! [`crate::middleware::rbac`] stays inert. When provisioned, the only
-//! impl is the process-local in-memory
-//! [`super::membership::InMemoryMembershipStore`] (memberships lost on
-//! restart, not shared across replicas — same local-first caveat as
-//! `me/*` and the `memory` idempotency backend). The capability is real
-//! and tested end-to-end (`tests/org_e2e.rs`); see
-//! `apps/server/src/compose.rs::default_state` and
-//! [`super::membership`] for the provisioning contract.
-
-use std::str::FromStr;
+//! The first-party server wires one storage-backed membership authority shared
+//! by these handlers, RBAC, workspace membership, and credential authority.
+//! Optional bootstrap validates an existing authenticated owner before atomic
+//! tenant provisioning. The in-memory implementation remains the process-local
+//! reference adapter used by tests and embedded composition.
 
 use axum::{
     Extension, Json,
     extract::{Path, State},
     http::StatusCode,
 };
-use nebula_core::{OrgRole, Principal, ServiceAccountId, TenantContext, UserId};
+use nebula_core::{OrgRole, Principal, TenantContext};
 
 use crate::{
     domain::{
+        membership_support::{parse_principal, store as membership_store},
         org::dto::{
             AddMemberRequest, CreateServiceAccountRequest, CreateServiceAccountResponse,
             MemberSummary, MembersResponse, OrgResponse, ServiceAccountsResponse, UpdateOrgRequest,
@@ -84,49 +72,19 @@ use crate::{
         shared::{AckResponse, OrgRoleDto},
     },
     error::{ApiError, ApiResult, ProblemDetails},
-    state::{AppState, MembershipStore},
+    state::AppState,
 };
 
 // ── Shared helpers ───────────────────────────────────────────────────────────
-
-/// Borrow the wired membership store, or fail closed with 503.
-///
-/// When the port is unwired the membership surface is genuinely absent;
-/// 503 (honest degradation — same pattern as `me/*` `auth_backend_or_503`)
-/// is correct, not a fabricated empty list. In practice RBAC middleware
-/// would have already 404'd a request whose org is unresolved, but a
-/// handler must never assume an `Option` is `Some`.
-fn membership_or_503(state: &AppState) -> Result<&std::sync::Arc<dyn MembershipStore>, ApiError> {
-    state.membership_store.as_ref().ok_or_else(|| {
-        ApiError::ServiceUnavailable(
-            "membership store is not configured; org member endpoints are unavailable".to_owned(),
-        )
-    })
-}
-
-/// Parse a wire principal-id (`usr_<ULID>` / `svc_<ULID>`) into a
-/// [`Principal`]. Returns a 400 for anything else — we never coerce an
-/// unparsable identity into a guessed principal (honest capability contract).
-fn parse_member_principal(raw: &str) -> Result<Principal, ApiError> {
-    if let Ok(uid) = UserId::from_str(raw) {
-        return Ok(Principal::User(uid));
-    }
-    if let Ok(sid) = ServiceAccountId::from_str(raw) {
-        return Ok(Principal::ServiceAccount(sid));
-    }
-    Err(ApiError::validation_message(format!(
-        "principal_id must be a `usr_<ULID>` or `svc_<ULID>` identity; got {raw:?}"
-    )))
-}
 
 /// The user-facing identity string for a member-row [`Principal`] — the
 /// exact value `DELETE /orgs/{org}/members/{principal}` accepts back.
 ///
 /// Member rows are **only ever** `User`/`ServiceAccount`: every request
-/// path constructs the principal via [`parse_member_principal`], which
+/// path constructs the principal via [`parse_principal`], which
 /// rejects everything else, and the only other writer (`seed`) is a
 /// test/bootstrap path. `Workflow`/`System` would not round-trip through
-/// `parse_member_principal` (a bare `wf_…` id or the literal `"system"`
+/// `parse_principal` (a bare `wf_…` id or the literal `"system"`
 /// is not a `usr_`/`svc_` identity), so emitting one would put an
 /// unparsable `principal_id` on the wire. That is unreachable today;
 /// `debug_assert!` makes a future seeding path that violates the
@@ -272,7 +230,7 @@ pub async fn list_members(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
 ) -> ApiResult<Json<MembersResponse>> {
-    let store = membership_or_503(&state)?;
+    let store = membership_store(&state)?;
     // Caller is guaranteed an org member by RBAC; assert the invariant.
     let _ = caller_role(&tenant)?;
 
@@ -305,7 +263,7 @@ pub async fn list_members(
 /// The **org-lockout invariant** (a privilege-reducing upsert — self OR
 /// cross-target — that would zero the `OrgOwner`/`OrgAdmin` set is
 /// refused with 409) is enforced atomically at the store seam
-/// ([`MembershipStore::add_member_guarded`]), not by a handler-level
+/// ([`crate::state::MembershipStore::add_member_guarded`]), not by a handler-level
 /// check-then-act, so no concurrent demotion can race past it.
 #[utoipa::path(
     post,
@@ -331,13 +289,13 @@ pub async fn add_member(
     Extension(tenant): Extension<TenantContext>,
     Json(body): Json<AddMemberRequest>,
 ) -> ApiResult<(StatusCode, Json<MemberSummary>)> {
-    let store = membership_or_503(&state)?;
+    let store = membership_store(&state)?;
     tenant.require(nebula_core::Permission::MemberInvite)?;
     let caller = caller_role(&tenant)?;
 
     // Validate the request shape → 400 (not 403): a malformed body is a
     // client error, distinct from a privilege violation.
-    let target_principal = parse_member_principal(&body.principal_id)?;
+    let target_principal = parse_principal(&body.principal_id)?;
     let granted = OrgRoleDto::parse(&body.role.0).ok_or_else(|| {
         ApiError::validation_message(format!(
             "role must be one of member|billing|admin|owner; got {:?}",
@@ -438,11 +396,11 @@ pub async fn remove_member(
     Extension(tenant): Extension<TenantContext>,
     Path((_org, principal_id)): Path<(String, String)>,
 ) -> ApiResult<Json<AckResponse>> {
-    let store = membership_or_503(&state)?;
+    let store = membership_store(&state)?;
     tenant.require(nebula_core::Permission::MemberRemove)?;
     let caller = caller_role(&tenant)?;
 
-    let target_principal = parse_member_principal(&principal_id)?;
+    let target_principal = parse_principal(&principal_id)?;
 
     // IDOR-safe: a non-member target is indistinguishable from "no such
     // org" — 404, never a disclosure of who is/ isn't a member.

@@ -29,6 +29,7 @@ pub mod execution;
 pub mod health;
 pub mod internal;
 pub mod me;
+mod membership_support;
 pub mod metrics;
 pub mod org;
 pub mod resource;
@@ -36,6 +37,7 @@ pub mod shared;
 pub mod webhook;
 pub mod workflow;
 pub mod workspace;
+pub mod workspace_membership;
 
 use axum::{Router, middleware};
 use utoipa::openapi::OpenApi;

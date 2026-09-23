@@ -58,6 +58,8 @@ pub fn permission_scope(permission: Permission) -> &'static str {
         Permission::ResourceRead => "resources:read",
         Permission::ResourceWrite => "resources:write",
         Permission::ResourceDelete => "resources:delete",
+        Permission::WorkspaceMemberRead => "workspace_members:read",
+        Permission::WorkspaceMemberManage => "workspace_members:manage",
         Permission::MemberRead => "members:read",
         Permission::MemberInvite => "members:invite",
         Permission::MemberRemove => "members:remove",
@@ -87,6 +89,8 @@ pub fn permission_from_scope(scope: &str) -> Result<Permission, ScopeParseError>
         "resources:read" => Ok(Permission::ResourceRead),
         "resources:write" => Ok(Permission::ResourceWrite),
         "resources:delete" => Ok(Permission::ResourceDelete),
+        "workspace_members:read" => Ok(Permission::WorkspaceMemberRead),
+        "workspace_members:manage" => Ok(Permission::WorkspaceMemberManage),
         "members:read" => Ok(Permission::MemberRead),
         "members:invite" => Ok(Permission::MemberInvite),
         "members:remove" => Ok(Permission::MemberRemove),
@@ -132,8 +136,8 @@ mod tests {
     use nebula_core::Permission;
 
     use super::{
-        FULL_ACCESS_SCOPE, ScopeParseError, UNSUPPORTED_PERMISSION_SCOPE, parse_pat_grant,
-        permission_from_scope, permission_scope, validate_new_pat_scopes,
+        FULL_ACCESS_SCOPE, ScopeParseError, parse_pat_grant, permission_from_scope,
+        permission_scope, validate_new_pat_scopes,
     };
     use crate::access::Grant;
 
@@ -210,7 +214,7 @@ mod tests {
         );
         assert_eq!(
             permission_scope(Permission::WorkspaceMemberRead),
-            UNSUPPORTED_PERMISSION_SCOPE
+            "workspace_members:read"
         );
     }
 

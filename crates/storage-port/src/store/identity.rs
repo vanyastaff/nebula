@@ -10,7 +10,7 @@ use crate::dto::{
     AuditLogRow, BlobRow, MembershipRow, OrgMemberRemoveOutcome, OrgMemberUpsert,
     OrgMemberUpsertOutcome, OrgRow, PrincipalKind, PrincipalOrgMembership, QuotaRow, ResourceRow,
     ScopeKind, TenantMembershipSnapshot, TenantProvisioningOutcome, TenantProvisioningRequest,
-    TriggerRow, UserRow, WorkspaceMemberUpsert, WorkspaceRow,
+    TriggerRow, UserRow, WorkspaceMemberUpsert, WorkspaceMembership, WorkspaceRow,
 };
 use crate::error::StorageError;
 use crate::scope::Scope;
@@ -114,6 +114,18 @@ pub trait MembershipStore: Send + Sync + std::fmt::Debug {
         principal_id: &str,
     ) -> Result<Vec<PrincipalOrgMembership>, StorageError>;
 
+    /// List explicit grants for one live, parent-qualified workspace.
+    ///
+    /// Results use the closed workspace-role vocabulary and deterministic
+    /// principal ordering. A missing/deleted/wrong-parent workspace or an id
+    /// reused under any other organization (including a deleted alias) fails
+    /// closed as `StorageError::NotFound`.
+    async fn list_workspace_members(
+        &self,
+        org_id: &str,
+        workspace_id: &str,
+    ) -> Result<Vec<WorkspaceMembership>, StorageError>;
+
     /// Atomically replace an organization membership only when the resulting
     /// organization retains at least one owner or administrator. This also
     /// applies to the first insert: bootstrap must insert a privileged role.
@@ -132,6 +144,10 @@ pub trait MembershipStore: Send + Sync + std::fmt::Debug {
     /// Shares the organization critical section used by guarded upsert; neither
     /// a count-then-delete sequence nor a process-local lock suffices for SQL.
     /// Unknown roles encountered by the invariant check fail closed with no write.
+    /// A successful removal also deletes every explicit workspace grant for
+    /// the principal beneath this organization in the same transaction. If a
+    /// legacy workspace id is reused by another organization, ownership of its
+    /// grants is ambiguous and the entire operation fails closed with no write.
     async fn remove_org_member_guarded(
         &self,
         org_id: &str,
@@ -140,9 +156,12 @@ pub trait MembershipStore: Send + Sync + std::fmt::Debug {
     ) -> Result<OrgMemberRemoveOutcome, StorageError>;
 
     /// Replace explicit workspace membership after verifying a live workspace
-    /// under the requested organization. Missing, wrong-parent, or ambiguous
-    /// workspace ids return `StorageError::NotFound`; this cannot mutate
-    /// organization roles.
+    /// under the requested organization and a current organization membership
+    /// for the same principal. Missing membership, wrong/missing parent, or an
+    /// ambiguous workspace id returns `StorageError::NotFound`; this cannot
+    /// mutate organization roles. The organization-membership check and write
+    /// serialize with guarded organization-member removal so a concurrent
+    /// removal either rejects this write or atomically deletes its result.
     /// The adapter records `added_at` using its own clock inside the atomic write.
     async fn upsert_workspace_member(
         &self,

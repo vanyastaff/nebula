@@ -502,9 +502,9 @@ The Postgres implementation persists users, sessions, PATs, verification tokens,
 OAuth state, and external identity links. OAuth state is consumed atomically
 with provider and expiry predicates; an expired-state cleanup is also attempted
 when a new flow starts. This identity
-backend does not imply tenant-directory or membership policy: the default server composition
-leaves both `WorkspaceResolver` and org membership unwired. Supported operator-supplied
-directory and `MembershipStore` paths remain K4 work.
+backend is separate from tenant-directory policy. The server composes both against the selected
+execution backend and validates a configured bootstrap owner through this identity backend before
+atomically provisioning the organization, default workspace, and owner membership.
 
 ### Credential CRUD durability (canon §11.6 / §12.5)
 
@@ -547,7 +547,7 @@ credential type. When no command gateway is wired, every credential endpoint ret
 | Restart-survival | **Yes for completed credentials** — `NEBULA_CRED_DB` selects the default file-backed SQLite store or PostgreSQL; in-flight pending interactions remain ephemeral |
 | Multi-replica share | **Yes with PostgreSQL** — build `nebula-server` with `--features postgres` and set `NEBULA_CRED_DB=postgres://…`; the credential rows and refresh-claim repository share one admitted credential-owned pool. SQLite remains instance-local. |
 | Encryption at rest | **Yes** — the facade composes the `EncryptionLayer` adjacent to the backend (AES-256-GCM; key from `NEBULA_CRED_MASTER_KEY`, fail-closed) |
-| Cross-workspace isolation | **Yes once policy is provisioned** — authority verifies workspace existence/parentage, revalidates membership/role, reproduces the authenticated scope, and every persistence predicate uses the derived `(owner, credential_id)` selector; cross-workspace IDs collapse to a flat 404. The default server has no workspace-directory or membership source and returns 503 before this path. |
+| Cross-workspace isolation | **Yes** — authority verifies workspace existence/parentage, revalidates membership/role, reproduces the authenticated scope, and every persistence predicate uses the derived `(owner, credential_id)` selector; cross-workspace IDs collapse to a flat 404. The default server shares one backend-bound tenant directory across RBAC and credential authority. |
 | Lifecycle dispatch | **Live** — `test`/`refresh`/`revoke` dispatch the registered type's capability; a type without it is refused with 400 (capability gate), never a faked success. Provider rejection requiring an integration reconnect is the typed 409 `API:CREDENTIAL_REAUTH_REQUIRED`, not Plane-A 401. The test response is a tagged `status` union: success has no code; failure requires a frozen v1, payload-free code, and future core codes map to `other`. |
 
 > **Operator warning:** completed credentials survive a normal process restart.
@@ -567,65 +567,42 @@ The org **member** endpoints (`GET`/`POST`/`DELETE` under
 `…/orgs/{org}/members`) and the membership-backed `me/*` reads
 (`GET /me/orgs`, `MeResponse.orgs_count`) are **implemented and tested
 end-to-end** (`crates/api/tests/org_e2e.rs`) against the in-memory
-`MembershipStore` (`nebula_api::domain::org::InMemoryMembershipStore`) —
-the **single shared store** `rbac_middleware` also consults, so an
+`MembershipStore` reference adapter (`nebula_api::domain::org::InMemoryMembershipStore`) —
+the **single shared store** `rbac_middleware` also consults, so a
 guarded membership addition is immediately visible to the next RBAC check (no
 propagation window). `nebula-storage-port` provides consistent membership snapshots
-and atomic guarded organization mutations, implemented by its storage backends.
-The API contract still needs an apps-owned bridge and durable operator wiring.
-The in-memory
+and parent-qualified mutations, implemented by its storage backends and wired by
+`apps/server`. The in-memory
 implementation is the §4.5-honest reference backing, with the same
-restart/replica limits as `API_AUTH_BACKEND=memory`; unlike Plane-A identity,
-the API policy port has no selectable PostgreSQL implementation yet.
+restart/replica limits as `API_AUTH_BACKEND=memory`.
 
-The technical API `MembershipStore` exposes only guarded organization mutations.
+The technical API `MembershipStore` exposes guarded organization mutations and
+parent-qualified workspace grant list/upsert/remove operations.
 The legacy `add_member`, `remove_member`, and workspace-only `get_workspace_role`
 methods have been removed. Use `add_member_guarded` / `remove_member_guarded` and
 an organization-bound `get_tenant_membership` snapshot. Tests may populate the concrete
 `InMemoryMembershipStore::seed_for_test` helper under `test-util`; fixture seeding is
 not part of the production policy trait.
 
-**The default `nebula-server` binary does NOT auto-wire a
-`MembershipStore`.** The current in-memory seam is an internal/reference
-composition capability, not a supported operator deployment path; that path remains K4 work.
-This is the same fail-honest posture as other unavailable capabilities: never silently fake
-policy. Rationale: wiring a
-`MembershipStore` is required by RBAC on every org/workspace route and by
-credential command authority (a caller with no org role is 404'd once the
-store is provisioned). The default `AuthBackend` is an *empty*
-`InMemoryAuthBackend` (no users; `register_user` mints a **random**
-`UserId`), so **no principal could authenticate as any auto-seeded
-bootstrap owner** — an auto-seeded store would 404-deadlock every
-org/workspace route (a deployment-level §4.5 false capability), and a
-hardcoded auto-seeded admin identity would be a default-credential /
-privileged-by-default surface (canon §12.5). Both are strictly worse
-than honest degradation.
+The default server wires one backend-bound tenant directory shared by RBAC, member handlers,
+and credential authority. It does not create a privileged identity implicitly: optional operator
+bootstrap requires explicit stable tenant IDs and an owner already accepted by the configured
+`AuthBackend`.
 
-| Aspect | Org membership (in-memory `MembershipStore`) |
+| Aspect | First-party tenant membership composition |
 |---|---|
-| Default binary | **Unwired (`None`)** — every org/workspace route returns an honest **503** before its handler; credential authority also fails unavailable |
-| Restart-survival | **No** — memberships are lost on restart (once provisioned) |
-| Multi-replica share | **No** — state is process-local |
-| Provisioning | Internal tests/reference composition may wire `AppState::with_membership_store(...)` and register the same bootstrap-owner identity in the wired `AuthBackend`. `InMemoryMembershipStore::seeded_bootstrap` is a technical helper, not a supported integration surface. The default binary has no operator configuration; supported deployment composition remains K4 work. |
+| Default binary | Wired to the selected memory, SQLite, or PostgreSQL execution backend |
+| Restart-survival | SQLite/PostgreSQL: **yes**; memory: **no** |
+| Multi-replica share | PostgreSQL: **yes**; SQLite/memory: **no** |
+| Provisioning | Explicit operator bootstrap validates the owner identity, then atomically creates the org, default workspace, and owner grant; exact replay is idempotent and mismatches fail closed |
 
-> **Operator warning:** in the default binary, `GET`/`POST`/`DELETE
-> `…/orgs/{org}/members` (and `GET /me/orgs` / `orgs_count`) return
-> **503** until composition provides a `MembershipStore`. This is honest
-> degradation: it deliberately avoids a default admin credential and never
-> treats missing policy state as access. Internal/reference API composition can
-> exercise the seam by wiring `with_membership_store(...)` with a
-> bootstrap owner that is **also** a registered, authenticatable
-> principal in its `AuthBackend`; this is not a supported downstream deployment
-> recipe. Once provisioned, RBAC applies role
-> enforcement on every
+> RBAC applies role enforcement on every
 > `/orgs/{org}/...` and `/orgs/{org}/workspaces/{ws}/...` route — a
 > caller with no role in the resolved org is `404`'d *before* the
 > handler (enumeration prevention); the bootstrap owner grants further
 > access via `POST /orgs/{org}/members` (org-admin only, abuse-safe:
 > role-clamp, last-admin/demote lockout guard at the atomic store seam,
-> role-precedence, IDOR-404). Memberships are **process-local** and lost
-> on restart — same local-first caveat as `me/*` and the `memory`
-> idempotency backend. The org-record (`GET`/`PATCH`/`DELETE /orgs/{org}`)
+> role-precedence, IDOR-404). The org-record (`GET`/`PATCH`/`DELETE /orgs/{org}`)
 > and service-account endpoints remain **honest 501** (no org-record
 > store; no end-to-end `Principal::ServiceAccount` auth path).
 
@@ -1047,6 +1024,9 @@ above for the enforcement guarantee.
 | `GET`    | `/api/v1/orgs/{org}/members`                                              | List org members (real — shared `MembershipStore`)                         |
 | `POST`   | `/api/v1/orgs/{org}/members`                                              | Add member by principal id (real — Option 1 honest contract, org-admin)    |
 | `DELETE` | `/api/v1/orgs/{org}/members/{principal}`                                  | Remove member (real — abuse-safe: last-admin/role-precedence/IDOR guards)  |
+| `GET`    | `/api/v1/orgs/{org}/workspaces/{ws}/members`                              | List explicit workspace grants                                             |
+| `PUT`    | `/api/v1/orgs/{org}/workspaces/{ws}/members/{principal}`                  | Add or replace an explicit workspace grant                                 |
+| `DELETE` | `/api/v1/orgs/{org}/workspaces/{ws}/members/{principal}`                  | Remove an explicit workspace grant                                         |
 | `GET`    | `/api/v1/orgs/{org}/service-accounts`                                     | List service accounts `(honest 501)`                                       |
 | `POST`   | `/api/v1/orgs/{org}/service-accounts`                                     | Create service account `(honest 501)`                                      |
 | `DELETE` | `/api/v1/orgs/{org}/service-accounts/{sa}`                                | Delete service account `(honest 501)`                                      |

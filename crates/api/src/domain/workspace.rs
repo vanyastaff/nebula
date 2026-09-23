@@ -31,6 +31,7 @@ use crate::{
     domain::{
         credential::handler as credential, execution::handler as execution,
         resource::handler as resource, webhook::handler as webhook, workflow::handler as workflow,
+        workspace_membership::handler as workspace_membership,
     },
     middleware::no_store_authority_response,
     state::AppState,
@@ -39,6 +40,20 @@ use crate::{
 /// Workspace-scoped routes.
 pub fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
+        // Explicit workspace grants. The path remains parent-qualified so
+        // neither reads nor writes can address a workspace outside its org.
+        .routes(access::protected(
+            Permission::WorkspaceMemberRead,
+            routes!(workspace_membership::list_workspace_members),
+        ))
+        .routes(access::protected(
+            Permission::WorkspaceMemberManage,
+            routes!(workspace_membership::upsert_workspace_member),
+        ))
+        .routes(access::protected(
+            Permission::WorkspaceMemberManage,
+            routes!(workspace_membership::remove_workspace_member),
+        ))
         // Workflows
         .routes(access::protected(
             Permission::WorkflowRead,

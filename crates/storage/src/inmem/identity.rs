@@ -25,7 +25,7 @@ use nebula_storage_port::dto::{
     OrgMemberRemoveOutcome, OrgMemberUpsert, OrgMemberUpsertOutcome, OrgMembershipRole,
     PrincipalOrgMembership, TenantMembershipSnapshot, TenantProvisioningConflict,
     TenantProvisioningOutcome, TenantProvisioningRequest, WorkspaceMemberUpsert,
-    WorkspaceMembershipRole,
+    WorkspaceMembership, WorkspaceMembershipRole,
 };
 use nebula_storage_port::store::{
     AuditStore, BlobStore, MembershipStore, OrgStore, QuotaStore, ResourceStore,
@@ -664,6 +664,35 @@ impl MembershipStore for InMemoryMembershipStore {
     }
 
     #[tracing::instrument(skip_all)]
+    async fn list_workspace_members(
+        &self,
+        org_id: &str,
+        workspace_id: &str,
+    ) -> Result<Vec<WorkspaceMembership>, StorageError> {
+        let state = self.inner.lock();
+        if !live_membership_workspace(&state, org_id, workspace_id) {
+            return Err(StorageError::not_found("workspace", workspace_id));
+        }
+        let mut result = state
+            .memberships
+            .values()
+            .filter(|row| row.scope_kind == ScopeKind::Workspace && row.scope_id == workspace_id)
+            .map(|row| {
+                Ok(WorkspaceMembership {
+                    principal_kind: row.principal_kind,
+                    principal_id: row.principal_id.clone(),
+                    role: parse_workspace_role(&row.role)?,
+                })
+            })
+            .collect::<Result<Vec<_>, StorageError>>()?;
+        result.sort_by(|a, b| {
+            (a.principal_kind.as_str(), a.principal_id.as_str())
+                .cmp(&(b.principal_kind.as_str(), b.principal_id.as_str()))
+        });
+        Ok(result)
+    }
+
+    #[tracing::instrument(skip_all)]
     async fn upsert_org_member_guarded(
         &self,
         request: OrgMemberUpsert,
@@ -743,7 +772,15 @@ impl MembershipStore for InMemoryMembershipStore {
         if !privileged_other {
             return Ok(OrgMemberRemoveOutcome::WouldLockOut);
         }
+
+        let workspace_ids = workspace_ids_for_unambiguous_org(&state, org_id)?;
         state.memberships.remove(&key);
+        state.memberships.retain(|_, row| {
+            row.scope_kind != ScopeKind::Workspace
+                || row.principal_kind != principal_kind
+                || row.principal_id != principal_id
+                || !workspace_ids.contains(&row.scope_id)
+        });
         Ok(OrgMemberRemoveOutcome::Removed)
     }
 
@@ -756,6 +793,19 @@ impl MembershipStore for InMemoryMembershipStore {
         if !live_membership_workspace(&state, &request.org_id, &request.workspace_id) {
             return Err(StorageError::not_found("workspace", request.workspace_id));
         }
+        let org_membership = state.memberships.get(&mem_key(
+            ScopeKind::Org,
+            &request.org_id,
+            request.principal_kind,
+            &request.principal_id,
+        ));
+        let Some(org_membership) = org_membership else {
+            return Err(StorageError::not_found(
+                "org membership",
+                request.principal_id,
+            ));
+        };
+        parse_org_role(&org_membership.role)?;
         let row = MembershipRow {
             scope_kind: ScopeKind::Workspace,
             scope_id: request.workspace_id,
@@ -855,6 +905,33 @@ fn live_membership_workspace(
 fn parse_org_role(value: &str) -> Result<OrgMembershipRole, StorageError> {
     OrgMembershipRole::parse(value)
         .map_err(|_| StorageError::Serialization("membership role is invalid".into()))
+}
+
+fn parse_workspace_role(value: &str) -> Result<WorkspaceMembershipRole, StorageError> {
+    WorkspaceMembershipRole::parse(value)
+        .map_err(|_| StorageError::Serialization("membership role is invalid".into()))
+}
+
+fn workspace_ids_for_unambiguous_org(
+    state: &InMemoryDirectoryState,
+    org_id: &str,
+) -> Result<HashSet<String>, StorageError> {
+    let workspace_ids = state
+        .workspaces
+        .values()
+        .filter(|row| row.org_id == org_id)
+        .map(|row| row.id.clone())
+        .collect::<HashSet<_>>();
+    if state
+        .workspaces
+        .values()
+        .any(|row| row.org_id != org_id && workspace_ids.contains(&row.id))
+    {
+        return Err(StorageError::Serialization(
+            "workspace identity is ambiguous".into(),
+        ));
+    }
+    Ok(workspace_ids)
 }
 
 // ── Resources (workspace-scoped) ──────────────────────────────────────────

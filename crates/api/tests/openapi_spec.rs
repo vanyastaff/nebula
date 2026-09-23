@@ -686,6 +686,21 @@ async fn selected_operations_publish_expected_permissions() {
             "/api/v1/orgs/{org}/members/{principal}",
             "members:remove",
         ),
+        (
+            "get",
+            "/api/v1/orgs/{org}/workspaces/{workspace}/members",
+            "workspace_members:read",
+        ),
+        (
+            "put",
+            "/api/v1/orgs/{org}/workspaces/{workspace}/members/{principal}",
+            "workspace_members:manage",
+        ),
+        (
+            "delete",
+            "/api/v1/orgs/{org}/workspaces/{workspace}/members/{principal}",
+            "workspace_members:manage",
+        ),
         // Workspace/workflow
         (
             "get",
@@ -835,6 +850,19 @@ async fn selected_operations_publish_expected_permissions() {
             "{method} {path} must publish `{expected}` as `{REQUIRED_PERMISSION_EXTENSION}`"
         );
     }
+}
+
+#[tokio::test]
+async fn workspace_role_schema_is_closed() {
+    let spec = fetch_spec_json().await;
+    let values = spec
+        .pointer("/components/schemas/WorkspaceRoleSchema/enum")
+        .and_then(Value::as_array)
+        .expect("workspace roles must be published as a closed enum");
+    assert_eq!(
+        values,
+        &["viewer", "runner", "editor", "admin"].map(Value::from)
+    );
 }
 
 fn required_permission_for<'a>(spec: &'a Value, path: &str, method: &str) -> &'a str {

@@ -148,7 +148,7 @@ mod tests {
         OpenApiBuilder, RefOr,
         extensions::Extensions,
         path::{HttpMethod, Operation, OperationBuilder, PathItem, PathsBuilder},
-        schema::{Ref, Schema},
+        schema::Ref,
     };
     use utoipa_axum::{
         router::{OpenApiRouter, UtoipaMethodRouter},
@@ -317,25 +317,6 @@ mod tests {
                 .and_then(|extensions| extensions.get(REQUIRED_PERMISSION_EXTENSION)),
             Some(&json!("workflows:read"))
         );
-    }
-
-    #[test]
-    #[should_panic(expected = "unsupported permission")]
-    fn protected_panics_for_permission_without_pat_scope_mapping() {
-        assert_eq!(
-            permission_scope(Permission::WorkspaceMemberRead),
-            UNSUPPORTED_PERMISSION_SCOPE
-        );
-
-        let routes: UtoipaMethodRouter<()> = (
-            Vec::<(String, RefOr<Schema>)>::new(),
-            PathsBuilder::new()
-                .path("/members", PathItem::new(HttpMethod::Get, Operation::new()))
-                .build(),
-            MethodRouter::<()>::new(),
-        );
-
-        let _ = protected(Permission::WorkspaceMemberRead, routes);
     }
 
     #[test]
