@@ -180,17 +180,14 @@ impl Manager {
 
         config.validate()?;
 
-        // #390 (pool min/max sanity) is enforced at `Pooled`
-        // construction, which the caller has already invoked to build the
-        // `Pooled<R>` topology handed in here. No separate
-        // register-time pool-config check is needed: an invalid
-        // `(min_size, max_size)` from operator/JSON config is rejected by
-        // the fallible `Pooled::try_new` (typed `Error::permanent`)
-        // that the engine registrar uses to construct the topology, so the
-        // failure surfaces *before* this funnel as a registration error
-        // rather than an abort. (The deleted `register_pooled[_with]`
-        // shorthands re-validated the raw config only because they took
-        // it *before* building the runtime.)
+        // #390 (pool min/max sanity) is enforced at `Pooled` construction,
+        // which the caller has already invoked to build the topology handed
+        // in here, so this funnel does not re-check it. A caller building a
+        // pool from runtime input must use the fallible `Pooled::try_new`.
+        // The plugin path (`KindActivator`) does not take operator input
+        // for topology at all: its `Fn() -> R::Topology` factory (and the
+        // derive-emitted one, which uses `PoolConfig::default()`) runs with
+        // no arguments, so operator JSON configures `R::Config` only.
 
         let key = R::key();
 
