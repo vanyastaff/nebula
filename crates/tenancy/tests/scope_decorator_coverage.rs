@@ -160,6 +160,11 @@ const INTENTIONALLY_UNSCOPED_PORTS: &[&str] = &[
     // caller-supplied `&Scope` to substitute, and substituting one would let a
     // tenant clear another tenant's retained poison.
     "RefreshClaimAdjudicator",
+    // Reclamation is a deployment-wide recovery sweep over expired claims. It
+    // is held only by the credential runtime, selects rows by their persisted
+    // owner-qualified credential selector, and exposes no caller-supplied
+    // `&Scope` for a tenancy decorator to substitute.
+    "RefreshClaimReclaimer",
     "RefreshClaimStore",
     // Deployment recovery discovers work across scopes and returns only the
     // authoritative scope stored with each claimed row. It is never exposed

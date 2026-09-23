@@ -34,6 +34,9 @@ use super::{
     adjudication_evidence_digest, validate_adjudication_evidence,
 };
 
+const SQLITE_NOW_MS_SQL: &str = "SELECT unixepoch('now') * 1000 \
+     + CAST(substr(strftime('%f', 'now'), 4, 3) AS INTEGER)";
+
 const COUNT_SENTINEL_EVENTS_SQL: &str = "SELECT COUNT(*) \
      FROM credential_sentinel_events \
      WHERE owner_id = ?1 AND credential_id = ?2 \
@@ -380,10 +383,7 @@ impl RefreshClaimReclaimer for SqliteRefreshClaimRepo {
         // Capture the transaction's effective time only after acquiring the
         // write lock. A pool or lock wait must not make a newly inserted
         // incident older than the rolling-window count that follows it.
-        let (now_ms,): (i64,) = sqlx::query_as(
-            "SELECT unixepoch('now') * 1000 \
-             + CAST(substr(strftime('%f', 'now'), 4, 3) AS INTEGER)",
-        )
+        let (now_ms,): (i64,) = sqlx::query_as(SQLITE_NOW_MS_SQL)
         .fetch_one(&mut *transaction)
         .await
         .store_err()?;
@@ -767,18 +767,18 @@ impl SqliteRefreshClaimRepo {
 mod tests {
     use super::{
         CLAIM_INCIDENT_RESOLUTION_SQL, COUNT_SENTINEL_EVENTS_SQL, NEWEST_RESOLVED_PAIR_SQL,
-        POISONED_CLAIM_SQL, RESOLVED_INCIDENT_MATCH_SQL,
+        POISONED_CLAIM_SQL, RESOLVED_INCIDENT_MATCH_SQL, SQLITE_NOW_MS_SQL,
     };
 
     #[test]
     fn sentinel_window_uses_the_sqlite_clock() {
         assert!(
-            COUNT_SENTINEL_EVENTS_SQL.contains("unixepoch('now') * 1000"),
+            SQLITE_NOW_MS_SQL.contains("unixepoch('now') * 1000"),
             "sentinel windows must be derived from SQLite's clock"
         );
         assert!(
-            COUNT_SENTINEL_EVENTS_SQL.contains("- ?3"),
-            "the caller may provide only a duration"
+            COUNT_SENTINEL_EVENTS_SQL.contains("detected_at > ?3"),
+            "the count must use the transaction-derived absolute window boundary"
         );
     }
 
