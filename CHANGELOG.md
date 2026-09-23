@@ -11,6 +11,14 @@ changes are expected between minor releases — call them out here.
 
 ### Breaking
 
+- **Durable credential reauthentication advances development packages to 0.18.0
+  in lockstep.** Refresh claims and sentinel incidents are owner-qualified, and
+  threshold escalation now records the incident and advances the credential to
+  `ReauthRequired` atomically. `RefreshClaimStore::try_claim` and
+  `RefreshClaimAdjudicator::adjudicate` take `CredentialSelector`; reclaim
+  authority moves to the separate `RefreshClaimReclaimer` port. Exact-version
+  SDK consumers and external implementations of these technical ports must
+  update together.
 - **Workspace membership management advances development packages to 0.17.0 in
   lockstep.** The API membership authority now requires parent-qualified list,
   upsert, and removal operations for explicit workspace grants. The storage

@@ -513,8 +513,8 @@ async fn exercise_migration(pool: &PgPool) -> TestResult<MigrationEvidence> {
     let mut incident_transaction = pool.begin().await?;
     sqlx::query(
         "INSERT INTO credential_sentinel_events (
-             credential_id, claim_id, detected_at, crashed_holder, generation
-         ) VALUES ($1, $2, CURRENT_TIMESTAMP, $3, $4)",
+             owner_id, credential_id, claim_id, detected_at, crashed_holder, generation
+         ) VALUES ('migration-incident-owner', $1, $2, CURRENT_TIMESTAMP, $3, $4)",
     )
     .bind(CredentialId::new().to_string())
     .bind(incident)
@@ -524,8 +524,8 @@ async fn exercise_migration(pool: &PgPool) -> TestResult<MigrationEvidence> {
     .await?;
     let duplicate_incident_rejected = sqlx::query(
         "INSERT INTO credential_sentinel_events (
-             credential_id, claim_id, detected_at, crashed_holder, generation
-         ) VALUES ($1, $2, CURRENT_TIMESTAMP, $3, $4)",
+             owner_id, credential_id, claim_id, detected_at, crashed_holder, generation
+         ) VALUES ('migration-incident-owner', $1, $2, CURRENT_TIMESTAMP, $3, $4)",
     )
     .bind(CredentialId::new().to_string())
     .bind(incident)
