@@ -2,7 +2,7 @@
 name: Nebula crate maturity dashboard
 description: Manual per-crate state dashboard. Edited in PRs that change a crate's API stability, test coverage, doc state, engine integration, or SLI-readiness.
 status: accepted
-last-reviewed: 2026-09-07
+last-reviewed: 2026-09-23
 related: [PRODUCT_CANON.md, STYLE.md]
 ---
 
@@ -59,10 +59,11 @@ Credential authority/persistence delivery is intentionally staged:
 - **K3 (partial debt):** durable sentinel-to-reauth is implemented inside the owner-qualified
   aggregate transaction; replace trace-only audit with transactional audit/outbox evidence and
   close global operation-ledger idempotency.
-- **K4 (debt):** ship supported apps-owned membership/deployment composition and complete SDK
-  client/embedded/procedural-derive paths. Concrete credential adapters now live in `apps/server`,
-  but the default server still leaves workspace-directory and membership policy unwired, so tenant
-  routes return 503.
+- **K4 (partial):** the supported first-party server now owns membership and workspace-directory
+  composition over the selected memory, SQLite, or PostgreSQL backend and shares that authority
+  with credential policy. It creates no implicit tenant or privileged owner; the operator bootstrap
+  path provisions them durably before serving. The supported SDK client and embedded deployment
+  facades remain debt.
 
 ---
 
