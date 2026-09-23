@@ -3,9 +3,11 @@
 Composition-root binary for the Nebula API. Wires the `nebula-api` HTTP
 surface to one of three ingress transports (`api`, `webhook`,
 `realtime`, or `all`) and instantiates the currently configured runtime ports
-(storage adapters, idempotency store, identity backend, email transport,
-metrics + telemetry exporters). Tenant membership policy is deliberately not
-wired by the default binary yet; this is an explicit K4 composition gap.
+(storage adapters, idempotency store, identity backend, tenant directory,
+email transport, metrics + telemetry exporters). The tenant directory uses
+the same selected memory, SQLite, or PostgreSQL backend as execution storage.
+Startup does not create an organization, workspace, or privileged member;
+durable tenants are provisioned explicitly through the operator bootstrap path.
 
 Run the default profile locally:
 
@@ -89,19 +91,41 @@ cargo nextest run -p nebula-server --features runtime-repair-red \
 
 ## Tenant membership and credential authority
 
-The default server has no operator-configurable `MembershipStore`. Every
-org/workspace route, including Plane-B credential management, therefore returns
-an honest 503 before performing tenant work. An unwired or failed policy source
-is unavailable; once a future supported source is wired, a valid snapshot with
-no organization membership is denied rather than treated as administrator.
-The composition root also leaves the credential command gateway unmounted in
-that state, so it does not construct an unusable management surface behind a
-guaranteed authority failure.
+The default server wires organization lookup, workspace lookup, and membership
+authorization to one apps-owned adapter over the selected storage backend. The
+SQLite and PostgreSQL projections reuse the execution database pool; the memory
+profile uses one shared `InMemoryIdentityDirectory`. Tenant changes are visible
+to RBAC and the credential authority through the same durable source.
 
-The in-memory membership adapter and `AppState::with_membership_store` are
-internal/reference composition seams. They do not make direct `nebula-api`
-embedding a supported deployment surface. K4 must ship the apps-owned durable
-bridge/operator configuration and the curated SDK composition façade.
+Composition never creates an implicit owner or tenant. A fresh database has an
+empty directory until the operator bootstrap path provisions stable organization,
+workspace, and owner IDs for an already-authenticatable user. Missing membership
+denies access, while storage and malformed-data failures remain redacted as 503.
+
+Bootstrap is opt-in and runs before the HTTP listener starts. Set all eight
+variables or none of them:
+
+| Variable | Meaning |
+|----------|---------|
+| `NEBULA_BOOTSTRAP_ORG_ID` | Stable `org_<ULID>` identifier. |
+| `NEBULA_BOOTSTRAP_ORG_SLUG` | Valid organization slug. |
+| `NEBULA_BOOTSTRAP_ORG_NAME` | Organization display name. |
+| `NEBULA_BOOTSTRAP_ORG_PLAN` | Initial plan identifier. |
+| `NEBULA_BOOTSTRAP_WORKSPACE_ID` | Stable `ws_<ULID>` identifier. |
+| `NEBULA_BOOTSTRAP_WORKSPACE_SLUG` | Valid workspace slug. |
+| `NEBULA_BOOTSTRAP_WORKSPACE_NAME` | Default workspace display name. |
+| `NEBULA_BOOTSTRAP_OWNER_USER_ID` | Existing `usr_<ULID>` identity with verified email. |
+
+Bootstrap requires `API_AUTH_BACKEND=postgres`. The process-local memory
+backend starts empty and cannot contain a pre-existing verified owner before
+the listener starts, so enabling bootstrap with it fails during startup.
+
+Create and verify the owner in the selected `API_AUTH_BACKEND` first. Startup
+then writes the organization, default workspace, and `OrgOwner` membership in
+one storage transaction. Restarting with exactly the same values is a safe
+replay. Partial configuration, changed values, pre-existing partial state, an
+unknown owner, or an unverified owner aborts startup. A replay never restores a
+membership that an operator removed or downgraded.
 
 ## Webhook credential bridge
 
@@ -288,8 +312,8 @@ and the callback returns
 See `crates/api/README.md` for the full provider matrix and redirect URI shape.
 This is identity OAuth (Plane A); integration credential acquisition (Plane B)
 continues through the universal `resolve` / `resolve/continue` contract once
-tenant membership authority is provisioned. In the default binary those tenant
-routes currently return 503, as described above.
+tenant membership authority is provisioned. The default binary resolves that
+authority through the selected execution storage backend described above.
 
 ## Credential persistence backend
 

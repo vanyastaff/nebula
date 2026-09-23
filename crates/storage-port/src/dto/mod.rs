@@ -26,6 +26,7 @@ pub mod resume_token;
 mod revision_catalog;
 mod shared_resource;
 mod start_materialization;
+mod tenant_provisioning;
 mod webhook;
 mod workflow;
 
@@ -113,6 +114,10 @@ pub use shared_resource::{
 pub use start_materialization::{
     ContractBundleFormat, ContractBundleRecord, MAX_CONTRACT_BUNDLE_BYTES, MaterializedStart,
     StartKey, StartReservation, StoredContractBundle, TriggerStartKey,
+};
+pub use tenant_provisioning::{
+    TenantDefaultWorkspaceCreate, TenantOrgCreate, TenantProvisioningConflict,
+    TenantProvisioningOutcome, TenantProvisioningRequest, TenantProvisioningRequestError,
 };
 pub use webhook::{WebhookActivationRecord, WebhookMode};
 pub use workflow::{WorkflowActivation, WorkflowRecord, WorkflowVersionRecord};

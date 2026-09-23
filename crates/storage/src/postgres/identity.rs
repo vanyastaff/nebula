@@ -24,16 +24,17 @@ use nebula_storage_port::dto::{
 };
 use nebula_storage_port::dto::{
     OrgMemberRemoveOutcome, OrgMemberUpsert, OrgMemberUpsertOutcome, OrgMembershipRole,
-    PrincipalOrgMembership, TenantMembershipSnapshot, WorkspaceMemberUpsert,
+    PrincipalOrgMembership, TenantMembershipSnapshot, TenantProvisioningConflict,
+    TenantProvisioningOutcome, TenantProvisioningRequest, WorkspaceMemberUpsert,
     WorkspaceMembershipRole,
 };
 use nebula_storage_port::store::{
-    AuditStore, BlobStore, MembershipStore, OrgStore, QuotaStore, ResourceStore, TriggerStore,
-    UserStore, WorkspaceStore,
+    AuditStore, BlobStore, MembershipStore, OrgStore, QuotaStore, ResourceStore,
+    TenantProvisioningStore, TriggerStore, UserStore, WorkspaceStore,
 };
 use nebula_storage_port::{Scope, StorageError};
 use sqlx::types::Json;
-use sqlx::{PgPool, Row};
+use sqlx::{PgConnection, PgPool, Row};
 
 use super::execution::conn_err;
 
@@ -300,6 +301,46 @@ impl PgWorkspaceStore {
     }
 }
 
+async fn lock_workspace_org(
+    connection: &mut PgConnection,
+    org_id: &str,
+) -> Result<(), StorageError> {
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(format!("tenant-workspace-org:{org_id}"))
+        .execute(connection)
+        .await
+        .map_err(conn_err)?;
+    Ok(())
+}
+
+async fn reject_second_active_default(
+    connection: &mut PgConnection,
+    row: &WorkspaceRow,
+) -> Result<(), StorageError> {
+    if !row.is_default || row.deleted_at.is_some() {
+        return Ok(());
+    }
+    let existing = sqlx::query_scalar::<_, String>(
+        "SELECT id FROM port_workspaces \
+         WHERE org_id = $1 AND is_default = TRUE AND deleted_at IS NULL AND id <> $2",
+    )
+    .bind(&row.org_id)
+    .bind(&row.id)
+    .fetch_optional(connection)
+    .await
+    .map_err(conn_err)?;
+    if let Some(existing_id) = existing {
+        return Err(StorageError::Duplicate {
+            entity: "workspace",
+            detail: format!(
+                "organization {} already has active default workspace {existing_id}",
+                row.org_id
+            ),
+        });
+    }
+    Ok(())
+}
+
 fn workspace_from_row(r: &sqlx::postgres::PgRow) -> Result<WorkspaceRow, StorageError> {
     Ok(WorkspaceRow {
         id: r.try_get("id").map_err(conn_err)?,
@@ -322,6 +363,9 @@ fn workspace_from_row(r: &sqlx::postgres::PgRow) -> Result<WorkspaceRow, Storage
 #[async_trait::async_trait]
 impl WorkspaceStore for PgWorkspaceStore {
     async fn create(&self, row: WorkspaceRow) -> Result<(), StorageError> {
+        let mut tx = self.pool.begin().await.map_err(conn_err)?;
+        lock_workspace_org(&mut tx, &row.org_id).await?;
+        reject_second_active_default(&mut tx, &row).await?;
         let res = sqlx::query(
             "INSERT INTO port_workspaces (id, org_id, slug, display_name, \
              description, created_at, created_by, is_default, settings, version, \
@@ -338,10 +382,13 @@ impl WorkspaceStore for PgWorkspaceStore {
         .bind(Json(&row.settings))
         .bind(row.version as i64)
         .bind(&row.deleted_at)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await;
         match res {
-            Ok(_) => Ok(()),
+            Ok(_) => {
+                tx.commit().await.map_err(conn_err)?;
+                Ok(())
+            },
             Err(sqlx::Error::Database(db)) if db.is_unique_violation() => {
                 Err(StorageError::Duplicate {
                     entity: "workspace",
@@ -368,6 +415,23 @@ impl WorkspaceStore for PgWorkspaceStore {
         row.as_ref().map(workspace_from_row).transpose()
     }
 
+    async fn get_by_slug(
+        &self,
+        org_id: &str,
+        slug: &str,
+    ) -> Result<Option<WorkspaceRow>, StorageError> {
+        let row = sqlx::query(
+            "SELECT * FROM port_workspaces \
+             WHERE org_id = $1 AND slug = $2 AND deleted_at IS NULL",
+        )
+        .bind(org_id)
+        .bind(slug)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(conn_err)?;
+        row.as_ref().map(workspace_from_row).transpose()
+    }
+
     async fn list_for_org(&self, org_id: &str) -> Result<Vec<WorkspaceRow>, StorageError> {
         let rows = sqlx::query(
             "SELECT * FROM port_workspaces \
@@ -381,6 +445,8 @@ impl WorkspaceStore for PgWorkspaceStore {
     }
 
     async fn update(&self, row: WorkspaceRow, expected_version: u64) -> Result<(), StorageError> {
+        let mut tx = self.pool.begin().await.map_err(conn_err)?;
+        lock_workspace_org(&mut tx, &row.org_id).await?;
         let res = sqlx::query(
             "UPDATE port_workspaces SET slug = $1, display_name = $2, \
              description = $3, is_default = $4, settings = $5, version = $6 \
@@ -396,10 +462,12 @@ impl WorkspaceStore for PgWorkspaceStore {
         .bind(&row.org_id)
         .bind(&row.id)
         .bind(expected_version as i64)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(conn_err)?;
         if res.rows_affected() > 0 {
+            reject_second_active_default(&mut tx, &row).await?;
+            tx.commit().await.map_err(conn_err)?;
             return Ok(());
         }
         let current = sqlx::query_scalar::<_, i64>(
@@ -407,7 +475,7 @@ impl WorkspaceStore for PgWorkspaceStore {
         )
         .bind(&row.org_id)
         .bind(&row.id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(conn_err)?;
         match current {
@@ -422,6 +490,8 @@ impl WorkspaceStore for PgWorkspaceStore {
     }
 
     async fn soft_delete(&self, org_id: &str, id: &str) -> Result<(), StorageError> {
+        let mut tx = self.pool.begin().await.map_err(conn_err)?;
+        lock_workspace_org(&mut tx, org_id).await?;
         let res = sqlx::query(
             "UPDATE port_workspaces SET deleted_at = $1 \
              WHERE org_id = $2 AND id = $3 AND deleted_at IS NULL",
@@ -429,14 +499,162 @@ impl WorkspaceStore for PgWorkspaceStore {
         .bind(now_rfc3339())
         .bind(org_id)
         .bind(id)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(conn_err)?;
         if res.rows_affected() > 0 {
+            tx.commit().await.map_err(conn_err)?;
             Ok(())
         } else {
             Err(StorageError::not_found("workspace", id))
         }
+    }
+}
+
+/// PostgreSQL atomic tenant-provisioning store.
+#[derive(Clone, Debug)]
+pub struct PgTenantProvisioningStore {
+    pool: PgPool,
+}
+
+impl PgTenantProvisioningStore {
+    /// Wrap a pool whose schema was installed via [`super::init_schema`].
+    #[must_use]
+    pub fn new(pool: PgPool) -> Self {
+        Self { pool }
+    }
+}
+
+#[async_trait::async_trait]
+impl TenantProvisioningStore for PgTenantProvisioningStore {
+    #[tracing::instrument(skip_all)]
+    async fn provision_tenant(
+        &self,
+        request: TenantProvisioningRequest,
+    ) -> Result<TenantProvisioningOutcome, StorageError> {
+        let org_values = request.org();
+        let workspace_values = request.default_workspace();
+        let created_at = now_rfc3339();
+        let org = org_values.materialize(created_at.clone());
+        let workspace = workspace_values.materialize(org.id.clone(), created_at);
+        let mut tx = self.pool.begin().await.map_err(conn_err)?;
+        let mut lock_keys = [
+            format!("tenant-provisioning:id:{}", org.id),
+            format!("tenant-provisioning:slug:{}", org.slug),
+            format!("tenant-provisioning:workspace-id:{}", workspace.id),
+            format!("tenant-workspace-org:{}", org.id),
+        ];
+        lock_keys.sort();
+        for key in lock_keys {
+            sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+                .bind(key)
+                .execute(&mut *tx)
+                .await
+                .map_err(conn_err)?;
+        }
+        let org_rows = sqlx::query(
+            "SELECT * FROM port_orgs WHERE id = $1 OR (slug = $2 AND deleted_at IS NULL) FOR UPDATE",
+        )
+        .bind(&org.id)
+        .bind(&org.slug)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(conn_err)?;
+        let workspace_rows = sqlx::query(
+            "SELECT * FROM port_workspaces WHERE id = $2 OR (org_id = $1 AND (slug = $3 OR is_default = TRUE) AND deleted_at IS NULL) FOR UPDATE",
+        )
+        .bind(&org.id)
+        .bind(&workspace.id)
+        .bind(&workspace.slug)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(conn_err)?;
+        let owner_row = sqlx::query(
+            "SELECT * FROM port_memberships WHERE scope_kind = 'org' AND scope_id = $1 AND principal_kind = $2 AND principal_id = $3 FOR UPDATE",
+        )
+        .bind(&org.id)
+        .bind(request.owner_principal_kind().as_str())
+        .bind(request.owner_principal_id())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(conn_err)?;
+
+        let exact_org =
+            org_rows.len() == 1 && org_values.matches_persisted(&org_from_row(&org_rows[0])?);
+        let exact_workspace = workspace_rows.len() == 1
+            && workspace_values
+                .matches_persisted(&org.id, &workspace_from_row(&workspace_rows[0])?);
+        let exact_owner = owner_row
+            .as_ref()
+            .map(membership_from_row)
+            .transpose()?
+            .is_some_and(|row| {
+                row.role == OrgMembershipRole::Owner.as_str()
+                    && row.added_by.as_deref() == request.owner_added_by()
+            });
+        if exact_org && exact_workspace && exact_owner {
+            return Ok(TenantProvisioningOutcome::Replayed);
+        }
+        if !org_rows.is_empty() || !workspace_rows.is_empty() || owner_row.is_some() {
+            return Ok(TenantProvisioningOutcome::Conflict(
+                TenantProvisioningConflict::ExistingState,
+            ));
+        }
+
+        let org_insert = sqlx::query(
+            "INSERT INTO port_orgs (id, slug, display_name, created_at, created_by, plan, billing_email, settings, version, deleted_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+        )
+        .bind(&org.id)
+        .bind(&org.slug)
+        .bind(&org.display_name)
+        .bind(&org.created_at)
+        .bind(&org.created_by)
+        .bind(&org.plan)
+        .bind(&org.billing_email)
+        .bind(Json(&org.settings))
+        .bind(org.version as i64)
+        .bind(&org.deleted_at)
+        .execute(&mut *tx)
+        .await;
+        if let Err(error) = org_insert {
+            if matches!(&error, sqlx::Error::Database(db) if db.is_unique_violation()) {
+                return Ok(TenantProvisioningOutcome::Conflict(
+                    TenantProvisioningConflict::ExistingState,
+                ));
+            }
+            return Err(conn_err(error));
+        }
+        sqlx::query(
+            "INSERT INTO port_workspaces (id, org_id, slug, display_name, description, created_at, created_by, is_default, settings, version, deleted_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+        )
+        .bind(&workspace.id)
+        .bind(&workspace.org_id)
+        .bind(&workspace.slug)
+        .bind(&workspace.display_name)
+        .bind(&workspace.description)
+        .bind(&workspace.created_at)
+        .bind(&workspace.created_by)
+        .bind(workspace.is_default)
+        .bind(Json(&workspace.settings))
+        .bind(workspace.version as i64)
+        .bind(&workspace.deleted_at)
+        .execute(&mut *tx)
+        .await
+        .map_err(conn_err)?;
+        sqlx::query(
+            "INSERT INTO port_memberships (scope_kind, scope_id, principal_kind, principal_id, role, added_at, added_by) VALUES ('org', $1, $2, $3, $4, $5, $6)",
+        )
+        .bind(&org.id)
+        .bind(request.owner_principal_kind().as_str())
+        .bind(request.owner_principal_id())
+        .bind(OrgMembershipRole::Owner.as_str())
+        .bind(now_rfc3339())
+        .bind(request.owner_added_by())
+        .execute(&mut *tx)
+        .await
+        .map_err(conn_err)?;
+        tx.commit().await.map_err(conn_err)?;
+        Ok(TenantProvisioningOutcome::Created)
     }
 }
 

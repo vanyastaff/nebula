@@ -35,8 +35,8 @@ pub use credential::{
 pub use execution::ExecutionStore;
 pub use idempotency::{IdempotencyGuard, IdempotencyStore};
 pub use identity::{
-    AuditStore, BlobStore, MembershipStore, OrgStore, QuotaStore, ResourceStore, TriggerStore,
-    UserStore, WorkspaceStore,
+    AuditStore, BlobStore, MembershipStore, OrgStore, QuotaStore, ResourceStore,
+    TenantProvisioningStore, TriggerStore, UserStore, WorkspaceStore,
 };
 pub use job_dispatch::{ClaimGeneration, JobClaim, JobClaimToken, JobDispatchQueue};
 pub use journal::ExecutionJournalReader;

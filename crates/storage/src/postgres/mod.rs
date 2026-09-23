@@ -32,7 +32,7 @@ pub use execution::{PgExecutionStore, PgIdempotencyGuard};
 pub use idempotency_store::{PgIdempotencyStore, PgWebhookActivationStore};
 pub use identity::{
     PgAuditStore, PgBlobStore, PgMembershipStore, PgOrgStore, PgQuotaStore, PgResourceStore,
-    PgTriggerStore, PgUserStore, PgWorkspaceStore,
+    PgTenantProvisioningStore, PgTriggerStore, PgUserStore, PgWorkspaceStore,
 };
 pub use job_dispatch::PgJobDispatchQueue;
 pub use operation_ledger::PgOperationLedger;

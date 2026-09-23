@@ -34,9 +34,9 @@ fn build_memory_execution_stores(
         InMemoryCheckpointStore, InMemoryIdempotencyGuard, InMemoryOperationLedger,
     };
     use nebula_storage::inmem::{
-        InMemoryControlQueue, InMemoryExecutionStore, InMemoryJournalReader,
-        InMemoryNodeResultStore, InMemoryResourceStore, InMemoryStartAcceptanceStore,
-        InMemoryWorkflowStore, InMemoryWorkflowVersionStore,
+        InMemoryControlQueue, InMemoryExecutionStore, InMemoryIdentityDirectory,
+        InMemoryJournalReader, InMemoryNodeResultStore, InMemoryResourceStore,
+        InMemoryStartAcceptanceStore, InMemoryWorkflowStore, InMemoryWorkflowVersionStore,
     };
 
     let execution_store = InMemoryExecutionStore::new();
@@ -49,6 +49,7 @@ fn build_memory_execution_stores(
     let workflow_versions = InMemoryWorkflowVersionStore::new();
     let workflow_store =
         InMemoryWorkflowStore::new_with_versions(&workflow_versions, &execution_store);
+    let tenant_directory = InMemoryIdentityDirectory::new();
     let shared_control_queue: Arc<dyn nebula_storage_port::store::ControlQueue> =
         Arc::new(control_queue);
     let turn_handoff: Arc<dyn nebula_storage_port::store::ExecutionTurnHandoff> = Arc::new(
@@ -101,6 +102,7 @@ fn build_memory_execution_stores(
     );
     let revision_catalog = Arc::new(execution_store.plan_flavor_catalog());
     Ok(ExecutionStoreBundle {
+        tenant_directory: crate::tenant_directory::TenantDirectoryStores::memory(&tenant_directory),
         revision_catalog: revision_catalog.clone(),
         revision_installer: revision_catalog,
         workflow_store: Arc::new(workflow_store),
@@ -239,6 +241,7 @@ async fn build_sqlite_execution_stores(
     let start_acceptance = Arc::new(SqliteStartAcceptanceStore::new(pool.clone()));
 
     Ok(ExecutionStoreBundle {
+        tenant_directory: crate::tenant_directory::TenantDirectoryStores::sqlite(pool.clone()),
         revision_catalog: revision_catalog.clone(),
         revision_installer: revision_catalog,
         workflow_store,
@@ -370,6 +373,7 @@ async fn build_postgres_execution_stores(
     let start_acceptance = Arc::new(PgStartAcceptanceStore::new(pool.clone()));
 
     Ok(ExecutionStoreBundle {
+        tenant_directory: crate::tenant_directory::TenantDirectoryStores::postgres(pool.clone()),
         revision_catalog: revision_catalog.clone(),
         revision_installer: revision_catalog,
         workflow_store,

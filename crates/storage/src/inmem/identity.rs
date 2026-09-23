@@ -23,12 +23,13 @@ use nebula_storage_port::dto::{
 };
 use nebula_storage_port::dto::{
     OrgMemberRemoveOutcome, OrgMemberUpsert, OrgMemberUpsertOutcome, OrgMembershipRole,
-    PrincipalOrgMembership, TenantMembershipSnapshot, WorkspaceMemberUpsert,
+    PrincipalOrgMembership, TenantMembershipSnapshot, TenantProvisioningConflict,
+    TenantProvisioningOutcome, TenantProvisioningRequest, WorkspaceMemberUpsert,
     WorkspaceMembershipRole,
 };
 use nebula_storage_port::store::{
-    AuditStore, BlobStore, MembershipStore, OrgStore, QuotaStore, ResourceStore, TriggerStore,
-    UserStore, WorkspaceStore,
+    AuditStore, BlobStore, MembershipStore, OrgStore, QuotaStore, ResourceStore,
+    TenantProvisioningStore, TriggerStore, UserStore, WorkspaceStore,
 };
 use nebula_storage_port::{Scope, StorageError};
 use parking_lot::Mutex;
@@ -208,6 +209,100 @@ impl InMemoryIdentityDirectory {
             inner: Arc::clone(&self.inner),
         }
     }
+
+    /// Atomic tenant-provisioning view over the shared directory state.
+    #[must_use]
+    pub fn provisioning_store(&self) -> Self {
+        self.clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl TenantProvisioningStore for InMemoryIdentityDirectory {
+    #[tracing::instrument(skip_all)]
+    async fn provision_tenant(
+        &self,
+        request: TenantProvisioningRequest,
+    ) -> Result<TenantProvisioningOutcome, StorageError> {
+        let mut state = self.inner.lock();
+        let org_request = request.org();
+        let workspace_request = request.default_workspace();
+        let owner_key = mem_key(
+            ScopeKind::Org,
+            org_request.id(),
+            request.owner_principal_kind(),
+            request.owner_principal_id(),
+        );
+        let org = state.orgs.get(org_request.id());
+        let workspace = state.workspaces.get(&(
+            org_request.id().to_owned(),
+            workspace_request.id().to_owned(),
+        ));
+        let owner = state.memberships.get(&owner_key);
+
+        let active_org_collision = state.orgs.values().any(|row| {
+            row.id != org_request.id() && row.deleted_at.is_none() && row.slug == org_request.slug()
+        });
+        let active_workspace_collision = state.workspaces.values().any(|row| {
+            let exact_identity = row.id == workspace_request.id() && row.org_id == org_request.id();
+            if exact_identity {
+                return false;
+            }
+            let id_collision = row.id == workspace_request.id();
+            let live_sibling = row.org_id == org_request.id() && row.deleted_at.is_none();
+            id_collision
+                || (live_sibling && (row.slug == workspace_request.slug() || row.is_default))
+        });
+        if org.is_some_and(|row| org_request.matches_persisted(row))
+            && workspace
+                .is_some_and(|row| workspace_request.matches_persisted(org_request.id(), row))
+            && owner.is_some_and(|row| {
+                row.role == OrgMembershipRole::Owner.as_str()
+                    && row.added_by.as_deref() == request.owner_added_by()
+            })
+            && !active_org_collision
+            && !active_workspace_collision
+        {
+            return Ok(TenantProvisioningOutcome::Replayed);
+        }
+
+        if org.is_some()
+            || workspace.is_some()
+            || owner.is_some()
+            || active_org_collision
+            || active_workspace_collision
+        {
+            return Ok(TenantProvisioningOutcome::Conflict(
+                TenantProvisioningConflict::ExistingState,
+            ));
+        }
+
+        let created_at = now_rfc3339();
+        state.orgs.insert(
+            org_request.id().to_owned(),
+            org_request.materialize(created_at.clone()),
+        );
+        state.workspaces.insert(
+            (
+                org_request.id().to_owned(),
+                workspace_request.id().to_owned(),
+            ),
+            workspace_request.materialize(org_request.id().to_owned(), created_at),
+        );
+        state.memberships.insert(
+            owner_key,
+            MembershipRow {
+                scope_kind: ScopeKind::Org,
+                scope_id: org_request.id().to_owned(),
+                principal_kind: request.owner_principal_kind(),
+                principal_id: request.owner_principal_id().to_owned(),
+                role: OrgMembershipRole::Owner.as_str().to_owned(),
+                added_at: now_rfc3339(),
+                added_by: request.owner_added_by().map(ToOwned::to_owned),
+            },
+        );
+        Ok(TenantProvisioningOutcome::Created)
+    }
 }
 
 /// In-memory `orgs` store. Slug is unique among active rows.
@@ -352,6 +447,20 @@ impl WorkspaceStore for InMemoryWorkspaceStore {
                 ),
             });
         }
+        if row.is_default
+            && row.deleted_at.is_none()
+            && map
+                .values()
+                .any(|w| w.deleted_at.is_none() && w.org_id == row.org_id && w.is_default)
+        {
+            return Err(StorageError::Duplicate {
+                entity: "workspace",
+                detail: format!(
+                    "organization {} already has an active default workspace",
+                    row.org_id
+                ),
+            });
+        }
         map.insert(key, row);
         Ok(())
     }
@@ -363,6 +472,20 @@ impl WorkspaceStore for InMemoryWorkspaceStore {
             .workspaces
             .get(&(org_id.to_string(), id.to_string()))
             .filter(|w| w.deleted_at.is_none())
+            .cloned())
+    }
+
+    async fn get_by_slug(
+        &self,
+        org_id: &str,
+        slug: &str,
+    ) -> Result<Option<WorkspaceRow>, StorageError> {
+        Ok(self
+            .inner
+            .lock()
+            .workspaces
+            .values()
+            .find(|row| row.deleted_at.is_none() && row.org_id == org_id && row.slug == slug)
             .cloned())
     }
 
@@ -402,6 +525,20 @@ impl WorkspaceStore for InMemoryWorkspaceStore {
                 detail: format!(
                     "active workspace with slug {} already exists in org {}",
                     row.slug, row.org_id
+                ),
+            });
+        }
+        if row.is_default
+            && row.deleted_at.is_none()
+            && map.values().any(|w| {
+                w.id != row.id && w.deleted_at.is_none() && w.org_id == row.org_id && w.is_default
+            })
+        {
+            return Err(StorageError::Duplicate {
+                entity: "workspace",
+                detail: format!(
+                    "organization {} already has an active default workspace",
+                    row.org_id
                 ),
             });
         }

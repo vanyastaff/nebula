@@ -9,7 +9,8 @@ use std::sync::Arc;
 use crate::dto::{
     AuditLogRow, BlobRow, MembershipRow, OrgMemberRemoveOutcome, OrgMemberUpsert,
     OrgMemberUpsertOutcome, OrgRow, PrincipalKind, PrincipalOrgMembership, QuotaRow, ResourceRow,
-    ScopeKind, TenantMembershipSnapshot, TriggerRow, UserRow, WorkspaceMemberUpsert, WorkspaceRow,
+    ScopeKind, TenantMembershipSnapshot, TenantProvisioningOutcome, TenantProvisioningRequest,
+    TriggerRow, UserRow, WorkspaceMemberUpsert, WorkspaceRow,
 };
 use crate::error::StorageError;
 use crate::scope::Scope;
@@ -52,12 +53,37 @@ pub trait WorkspaceStore: Send + Sync + std::fmt::Debug {
     async fn create(&self, row: WorkspaceRow) -> Result<(), StorageError>;
     /// Read a workspace by id; `org_id` scopes the lookup.
     async fn get(&self, org_id: &str, id: &str) -> Result<Option<WorkspaceRow>, StorageError>;
+    /// Resolve an active workspace by slug within its parent organization.
+    async fn get_by_slug(
+        &self,
+        org_id: &str,
+        slug: &str,
+    ) -> Result<Option<WorkspaceRow>, StorageError>;
     /// List active workspaces for an org.
     async fn list_for_org(&self, org_id: &str) -> Result<Vec<WorkspaceRow>, StorageError>;
     /// CAS-update a workspace row.
     async fn update(&self, row: WorkspaceRow, expected_version: u64) -> Result<(), StorageError>;
     /// Soft-delete a workspace.
     async fn soft_delete(&self, org_id: &str, id: &str) -> Result<(), StorageError>;
+}
+
+/// Atomic creation boundary for a tenant's initial durable authority.
+///
+/// This port deliberately spans the organization, default workspace, and
+/// initial-owner records because exposing their bootstrap as three writes
+/// permits ownerless or workspace-less tenants after a partial failure.
+#[async_trait::async_trait]
+pub trait TenantProvisioningStore: Send + Sync + std::fmt::Debug {
+    /// Create all initial tenant records in one transaction or critical section.
+    ///
+    /// An exact retry returns [`TenantProvisioningOutcome::Replayed`] without
+    /// rewriting any record or refreshing the owner grant. Any partial state,
+    /// semantic mismatch, id collision, or active-slug collision returns a
+    /// conflict outcome and leaves all existing state unchanged.
+    async fn provision_tenant(
+        &self,
+        request: TenantProvisioningRequest,
+    ) -> Result<TenantProvisioningOutcome, StorageError>;
 }
 
 /// `org_members` + `workspace_members` aggregate.

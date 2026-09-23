@@ -11,6 +11,16 @@ changes are expected between minor releases — call them out here.
 
 ### Breaking
 
+- **Tenant provisioning advances development packages to 0.16.0 in lockstep.**
+  `WorkspaceStore` gains a parent-qualified active-slug lookup, and first-party
+  storage gains the object-safe `TenantProvisioningStore` atomic boundary.
+  InMemory, SQLite, and PostgreSQL now create an organization, its default
+  workspace, and initial owner as one replay-safe operation. The server wires
+  one backend-consistent tenant directory and offers an explicit operator
+  bootstrap for an existing verified user. Workspace writers also enforce one
+  active default per organization across every backend. Exact-version SDK consumers and
+  external implementations of the technical storage traits must update every
+  Nebula pin and implement the new lookup together.
 - **Tenant membership advances development packages to 0.15.0 in lockstep.**
   The storage port replaces raw membership writes with typed, backend-guarded
   organization and parent-qualified workspace mutations. Organization writes
