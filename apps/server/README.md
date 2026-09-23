@@ -116,6 +116,10 @@ variables or none of them:
 | `NEBULA_BOOTSTRAP_WORKSPACE_NAME` | Default workspace display name. |
 | `NEBULA_BOOTSTRAP_OWNER_USER_ID` | Existing `usr_<ULID>` identity with verified email. |
 
+Bootstrap requires `API_AUTH_BACKEND=postgres`. The process-local memory
+backend starts empty and cannot contain a pre-existing verified owner before
+the listener starts, so enabling bootstrap with it fails during startup.
+
 Create and verify the owner in the selected `API_AUTH_BACKEND` first. Startup
 then writes the organization, default workspace, and `OrgOwner` membership in
 one storage transaction. Restarting with exactly the same values is a safe

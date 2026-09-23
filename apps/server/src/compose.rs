@@ -389,6 +389,13 @@ impl ServerRuntime {
         // then let the opt-in bootstrap verify its stable owner against it.
         let email_port = build_email_port(&api_config)?;
         let oauth_config = std::mem::take(&mut api_config.auth.oauth);
+        let tenant_bootstrap = crate::tenant_bootstrap::TenantBootstrapConfig::from_env()
+            .map_err(TransportInitError::from)?;
+        crate::tenant_bootstrap::validate_auth_backend(
+            tenant_bootstrap.as_ref(),
+            &api_config.auth.backend,
+        )
+        .map_err(TransportInitError::from)?;
         let auth_backend = build_auth_backend(
             api_config.auth.backend.clone(),
             oauth_config,
@@ -397,8 +404,6 @@ impl ServerRuntime {
             Arc::clone(&key_provider),
         )
         .await?;
-        let tenant_bootstrap = crate::tenant_bootstrap::TenantBootstrapConfig::from_env()
-            .map_err(TransportInitError::from)?;
         let tenant_provisioner = execution_bundle.tenant_directory.provisioner();
         crate::tenant_bootstrap::bootstrap_tenant(
             tenant_bootstrap,

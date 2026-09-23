@@ -6,6 +6,7 @@
 
 use std::{collections::HashMap, future::Future, str::FromStr, sync::Arc};
 
+use nebula_api::config::AuthBackendKind;
 use nebula_api::domain::auth::backend::{AuthBackend, AuthError, UserProfile};
 use nebula_core::{OrgId, Slug, SlugKind, UserId, WorkspaceId};
 use nebula_storage_port::{
@@ -149,6 +150,8 @@ pub(crate) enum TenantBootstrapError {
     InvalidValue(&'static str),
     #[error("tenant bootstrap request is invalid")]
     InvalidRequest,
+    #[error("tenant bootstrap requires API_AUTH_BACKEND=postgres")]
+    DurableAuthRequired,
     #[error("tenant bootstrap owner does not exist in the selected authentication backend")]
     OwnerNotFound,
     #[error("tenant bootstrap owner must have a verified email")]
@@ -159,6 +162,16 @@ pub(crate) enum TenantBootstrapError {
     StorageFailed,
     #[error("tenant bootstrap conflicts with existing durable state")]
     Conflict,
+}
+
+pub(crate) fn validate_auth_backend(
+    config: Option<&TenantBootstrapConfig>,
+    backend: &AuthBackendKind,
+) -> Result<(), TenantBootstrapError> {
+    if config.is_some() && matches!(backend, AuthBackendKind::Memory) {
+        return Err(TenantBootstrapError::DurableAuthRequired);
+    }
+    Ok(())
 }
 
 /// Validate the owner through Plane A before creating any tenant authority.
@@ -310,6 +323,21 @@ mod tests {
         })
         .unwrap_err();
         assert!(matches!(error, TenantBootstrapError::IncompleteConfig));
+    }
+
+    #[test]
+    fn enabled_bootstrap_requires_durable_authentication() {
+        let values = complete_values();
+        let config = TenantBootstrapConfig::from_lookup(|name| values.get(name).cloned())
+            .unwrap()
+            .unwrap();
+
+        assert!(matches!(
+            validate_auth_backend(Some(&config), &AuthBackendKind::Memory),
+            Err(TenantBootstrapError::DurableAuthRequired)
+        ));
+        assert!(validate_auth_backend(Some(&config), &AuthBackendKind::Postgres).is_ok());
+        assert!(validate_auth_backend(None, &AuthBackendKind::Memory).is_ok());
     }
 
     #[test]
