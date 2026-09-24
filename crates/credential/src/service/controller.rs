@@ -102,12 +102,12 @@ pub enum CredentialOperation {
     Revoke,
     /// Begin an acquisition flow.
     Resolve,
-    /// Begin reauthorization of an existing credential.
-    Reauthorize,
     /// Continue an acquisition flow.
     ContinueResolve,
     /// Resolve a poisoned refresh claim with an operator outcome decision.
     Reconcile,
+    /// Begin reauthorization of an existing credential.
+    Reauthorize,
 }
 
 impl CredentialOperation {
@@ -261,15 +261,6 @@ pub enum CredentialCommand {
         /// Opaque Plane-A authentication binding for pending state.
         authentication_binding: CredentialAuthenticationBinding,
     },
-    /// Authorize an existing credential again without replacing its identity.
-    Reauthorize {
-        /// Credential whose owner-qualified material is being replaced.
-        credential_id: CredentialId,
-        /// Type-specific properties, potentially containing secrets.
-        properties: Value,
-        /// Opaque Plane-A authentication binding for pending state.
-        authentication_binding: CredentialAuthenticationBinding,
-    },
     /// Continue credential acquisition.
     ContinueResolve {
         /// Registered credential type key.
@@ -299,6 +290,15 @@ pub enum CredentialCommand {
         /// known. Digested and persisted on the incident row; never rendered by
         /// `Debug`.
         evidence: String,
+    },
+    /// Authorize an existing credential again without replacing its identity.
+    Reauthorize {
+        /// Credential whose owner-qualified material is being replaced.
+        credential_id: CredentialId,
+        /// Type-specific properties, potentially containing secrets.
+        properties: Value,
+        /// Opaque Plane-A authentication binding for pending state.
+        authentication_binding: CredentialAuthenticationBinding,
     },
 }
 
