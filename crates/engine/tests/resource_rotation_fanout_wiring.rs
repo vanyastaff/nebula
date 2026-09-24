@@ -501,7 +501,17 @@ async fn material_replacement_bounds_projection_concurrency() {
 
     let manager = Arc::new(Manager::new());
     let index = Arc::new(ResourceFanoutIndex::new());
-    let credential_ids = (0..CREDENTIALS)
+    let entered = Arc::new(tokio::sync::Semaphore::new(0));
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let active = Arc::new(AtomicUsize::new(0));
+    let maximum = Arc::new(AtomicUsize::new(0));
+    let resolver = Arc::new(ConcurrencyProbeProjection {
+        entered: Arc::clone(&entered),
+        release: Arc::clone(&release),
+        active: Arc::clone(&active),
+        maximum: Arc::clone(&maximum),
+    });
+    let dispatches = (0..CREDENTIALS)
         .map(|credential| {
             let cid = CredentialId::new();
             for row in 0..ROWS {
@@ -515,23 +525,6 @@ async fn material_replacement_bounds_projection_concurrency() {
                     SlotIdentity::from_bindings([("db", identity_value.as_str())]),
                 );
             }
-            cid
-        })
-        .collect::<Vec<_>>();
-
-    let entered = Arc::new(tokio::sync::Semaphore::new(0));
-    let release = Arc::new(tokio::sync::Semaphore::new(0));
-    let active = Arc::new(AtomicUsize::new(0));
-    let maximum = Arc::new(AtomicUsize::new(0));
-    let resolver = Arc::new(ConcurrencyProbeProjection {
-        entered: Arc::clone(&entered),
-        release: Arc::clone(&release),
-        active: Arc::clone(&active),
-        maximum: Arc::clone(&maximum),
-    });
-    let dispatches = credential_ids
-        .into_iter()
-        .map(|cid| {
             let index = Arc::clone(&index);
             let manager = Arc::clone(&manager);
             let resolver = Arc::clone(&resolver);
