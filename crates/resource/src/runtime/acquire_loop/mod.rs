@@ -753,6 +753,10 @@ where
     /// any in-flight entry via the [`ReleaseQueue`] instead of leaking it;
     /// entries already deposited stay in the store.
     pub(crate) async fn refill_min_idle(self: &Arc<Self>, ctx: &ResourceContext) -> usize {
+        // A revoked (tainted) row creates nothing more with its credential.
+        if self.is_tainted() {
+            return 0;
+        }
         if let Some(gate) = &self.recovery_gate
             && !matches!(gate.state(), crate::recovery::gate::GateState::Idle)
         {
@@ -782,7 +786,7 @@ where
                 // only limit that applies.
                 None => usize::MAX,
             };
-            if headroom == 0 {
+            if headroom == 0 || self.is_tainted() {
                 break;
             }
             match self.create_and_deposit_one(ctx, &config).await {

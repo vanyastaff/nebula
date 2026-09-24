@@ -340,6 +340,9 @@ struct Fixture {
     cancel: CancellationToken,
     #[cfg(feature = "rotation")]
     fanout: nebula_resource::ResourceFanoutIndex,
+    /// Activate as a worker built without the rotation fan-out does, even
+    /// when the feature is compiled in.
+    without_fanout: bool,
 }
 
 impl Fixture {
@@ -359,6 +362,7 @@ impl Fixture {
             cancel: CancellationToken::new(),
             #[cfg(feature = "rotation")]
             fanout: nebula_resource::ResourceFanoutIndex::new(),
+            without_fanout: false,
         }
     }
 
@@ -369,7 +373,7 @@ impl Fixture {
             credentials: with_credentials.then_some(&self.resolver as &dyn CredentialSlotResolver),
             expr_engine: &self.expr_engine,
             #[cfg(feature = "rotation")]
-            fanout: Some(&self.fanout),
+            fanout: (!self.without_fanout).then_some(&self.fanout),
         }
     }
 
@@ -776,7 +780,8 @@ fn bound(credential_id: CredentialId, slot: &str) -> BoundCredential {
 /// is retired and fails.
 #[tokio::test]
 async fn activation_follows_credential_changes_without_a_definition_change() {
-    let fixture = Fixture::new();
+    let mut fixture = Fixture::new();
+    fixture.without_fanout = true;
     let mut events = fixture.manager.subscribe_events();
     let credential = CredentialId::new().to_string();
     let (resource_id, key) = fixture
@@ -884,11 +889,40 @@ async fn a_timed_out_activation_is_recorded_as_failed() {
     );
 }
 
+/// With the rotation fan-out attached, activation leaves credentials to it:
+/// the row it holds is reused without resolving them again, so a refresh
+/// the fan-out already installed does not register the row a second time.
+#[cfg(feature = "rotation")]
+#[tokio::test]
+async fn with_the_fanout_activation_leaves_credentials_to_it() {
+    let fixture = Fixture::new();
+    let mut events = fixture.manager.subscribe_events();
+    let credential = CredentialId::new().to_string();
+    let (resource_id, key) = fixture
+        .store_row(
+            "activation.slotted",
+            "a",
+            &[(AUTH_SLOT, credential.as_str())],
+        )
+        .await;
+    fixture.resolver.answer(Ok((1, 1)));
+    fixture.activate(resource_id, &key).await.unwrap();
+    fixture.resolver.answer(Ok((2, 1)));
+    fixture.activate(resource_id, &key).await.unwrap();
+    assert_eq!(drain(&mut events), (1, 0), "registered once");
+    assert_eq!(
+        fixture.resolver.calls.load(Ordering::SeqCst),
+        1,
+        "credentials resolved only to register"
+    );
+}
+
 /// A credential re-check that timed out is not a lasting failure: the
 /// next activation that finds the row current reports it active again.
 #[tokio::test(start_paused = true)]
 async fn a_timed_out_recheck_clears_on_the_next_activation() {
     let mut fixture = Fixture::new();
+    fixture.without_fanout = true;
     fixture.activator =
         StoredResourceActivator::new(Arc::clone(&fixture.store) as Arc<dyn ResourceStore>)
             .with_activation_timeout(Duration::from_secs(1));

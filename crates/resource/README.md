@@ -153,9 +153,11 @@ limit is a GCRA from `nebula-resilience` behind a `LimitStore`: the manager's
 in-memory store, or `ManagerConfig::with_shared_limit_store` for cluster-wide
 limits.
 
-Every row has a limiter; every acquire consumes one permit before it is
-counted as in flight (so a queued caller never delays revoke or shutdown
-drains). Calls inside a lease are paced by the client itself: in
+Every row has a limiter. An acquire waits for it before it is counted as in
+flight (so a queued caller never delays revoke or shutdown drains): it books
+one permit, or, once the resource has wrapped a client, only honours pauses,
+because the wrapped client then books one permit per provider call. Calls
+inside a lease are paced by the client itself: in
 `Provider::create` the author wraps whatever client the resource holds — an
 HTTP client, `teloxide::Bot`, an SDK — once, with
 `ctx.limits().wrap(client, throttle)`, and actions call it through

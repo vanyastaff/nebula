@@ -43,11 +43,22 @@ impl ResourceStatusStore for PgResourceStatusStore {
         // One statement prunes a long-dead heartbeat together with its
         // snapshots, so a worker that renews concurrently keeps both: the
         // renewed row no longer matches when the DELETE re-checks it.
-        sqlx::query("WITH pruned AS (DELETE FROM port_worker_heartbeats WHERE expires_at_ms < (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::BIGINT - $1 RETURNING worker_id) DELETE FROM port_resource_status WHERE worker_id IN (SELECT worker_id FROM pruned)")
+        //
+        // Best effort: the renewal above has already committed, so a failed
+        // cleanup must not report the heartbeat as failed (the publisher
+        // would then stop publishing and withdrawing while its lease stays
+        // renewed). Dead workers are pruned by a later heartbeat instead.
+        if let Err(error) = sqlx::query("WITH pruned AS (DELETE FROM port_worker_heartbeats WHERE expires_at_ms < (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::BIGINT - $1 RETURNING worker_id) DELETE FROM port_resource_status WHERE worker_id IN (SELECT worker_id FROM pruned)")
             .bind(HEARTBEAT_RETENTION_MS)
             .execute(&self.pool)
             .await
-            .map_err(unavailable)?;
+        {
+            tracing::warn!(
+                target: "nebula_storage::resource_status",
+                %error,
+                "pruning dead status workers failed; retried on a later heartbeat"
+            );
+        }
         Ok(())
     }
 

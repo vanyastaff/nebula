@@ -14,17 +14,15 @@ changes are expected between minor releases — call them out here.
 - **Resource rate limiting and stored-resource activation advance development
   packages to 0.19.0 in lockstep.** `ResourceRow` gains `topology` and
   `resilience_override` (migrations 0057–0059: operator settings, cross-process
-  resource status, PostgreSQL rate limits). Providers declare a
-  `ResiliencePolicy`; `RegistrationSpec` gains `rate_limit` and
-  `RegisterRequest` gains `topology`, `resilience_override`, `limit_key` and
-  `row_id`; `ResourceGuard::rate_limiter` becomes `limits()`; `ResourceFactory`
-  gains `validate_topology`, `resilience_policy` and
-  `validate_resilience_override`. The resource status seam is async and reads
-  worker-published status from storage. The resilience `LimitStore` contract
-  gains `penalty` (read back a key's penalty) and `ReserveRequest::not_before`
-  (book no earlier than another key's slot). Exact-version SDK consumers and
-  external implementations of `ResourceStore` or `LimitStore` must update
-  together.
+  resource status, PostgreSQL rate limits). `RegistrationSpec` gains
+  `rate_limit`; `RegisterRequest` gains `topology`, `resilience_override`,
+  `limit_key` and `row_id`; `ResourceFactory` gains `validate_topology`,
+  `resilience_policy` and `validate_resilience_override`. The resource status
+  seam is async and reads worker-published status from storage. The pool
+  `WarmupStrategy` default is now `Sequential` and every strategy is honoured,
+  including by a background warmup when a stored row activates. Exact-version
+  SDK consumers and external implementations of `ResourceStore` or
+  `ResourceFactory` must update together.
 - **Durable credential reauthentication advances development packages to 0.18.0
   in lockstep.** Refresh claims and sentinel incidents are owner-qualified, and
   threshold escalation now records the incident and advances the credential to
@@ -548,6 +546,23 @@ let admitted = recorded.readmit_against(fresh)?;
 
 ### Added
 
+- **Per-resource rate limits, shared across workers.** `nebula-resilience`
+  gains a GCRA limiter over a `LimitStore` contract (`reserve` with
+  `ReserveRequest::not_before`, `penalize`, `cancel`, `penalty`), with the
+  in-process `MemoryLimitStore` and a `conformance` test kit;
+  `nebula-storage` implements it on PostgreSQL (`PgLimitStore`, migration
+  0059). In `nebula-resource`, providers declare a `ResiliencePolicy` (rate,
+  per-key limits with `keyed`, `account_credential` slots, the `LimitScope`,
+  what stored rows may `overrides`, `max_penalty`); rows override within it.
+  Every row gets a `ResourceLimiter` (`ResourceGuard::limits()`,
+  `ResourceContext::limits()`): `wrap` turns a client into a `Limited` one
+  whose calls book one permit each and pause on a provider's "slow down"
+  recognised by a `Throttle` (`Verdict`, `on_error`, `NoThrottle`,
+  `retry_after_from_header`). `ManagerConfig::with_shared_limit_store` makes
+  cluster-scoped limits shared by every worker. The SDK re-exports these.
+  Stored resources activate per execution with their operator settings,
+  follow credential changes, retire when deleted, and publish their runtime
+  status per worker.
 - **Bounded shutdown drains, and rate limiters that actually share.**
   `nebula-api` gains `ShutdownGate`, which wraps a router in
   `nebula_resilience::Gate`: new requests get 503 once closing, `/health` and

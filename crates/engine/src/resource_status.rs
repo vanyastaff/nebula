@@ -216,6 +216,9 @@ pub struct ResourceStatusPublisher {
     store: Arc<dyn ResourceStatusStore>,
     worker: StatusWorkerId,
     interval: Duration,
+    /// When the heartbeat last succeeded, to tell a lease that lapsed
+    /// between two renewals (a stalled tick, a long pause) from one that held.
+    renewed_at: std::sync::Mutex<Option<tokio::time::Instant>>,
 }
 
 impl fmt::Debug for ResourceStatusPublisher {
@@ -251,6 +254,7 @@ impl ResourceStatusPublisher {
             store,
             worker,
             interval: DEFAULT_STATUS_PUBLISH_INTERVAL,
+            renewed_at: std::sync::Mutex::new(None),
         }
     }
 
@@ -396,7 +400,21 @@ impl ResourceStatusPublisher {
             .heartbeat(&self.worker, self.interval.saturating_mul(3))
             .await
         {
-            Ok(()) => Some(tokio::time::Instant::now()),
+            Ok(()) => {
+                let now = tokio::time::Instant::now();
+                let previous = self
+                    .renewed_at
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .replace(now);
+                // Renewed, but after the lease had already run out: what this
+                // worker published may have expired meanwhile, so it is all
+                // republished rather than trusted from the cache.
+                if previous.is_some_and(|at| now - at > self.interval.saturating_mul(3)) {
+                    published.values_mut().for_each(invalidate);
+                }
+                Some(now)
+            },
             Err(error) => {
                 tracing::warn!(
                     target: "nebula_engine::resource_status",

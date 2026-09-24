@@ -261,9 +261,11 @@ impl<R: Provider> ResourceGuard<R> {
 
     /// The row's limit.
     ///
-    /// Every acquire already consumed one permit. Calls made within the lease
-    /// are paced by the [`Limited`](crate::rate_limit::Limited) client the
-    /// resource built in `create`; use this handle only to
+    /// A resource that wraps its client in `create` with
+    /// [`wrap`](crate::rate_limit::ResourceLimiter::wrap) is paced per call:
+    /// each [`Limited`](crate::rate_limit::Limited) call books one permit,
+    /// and an acquire only honours pauses. Without a wrapped client, each
+    /// acquire books one permit. Use this handle only to
     /// [`penalize`](crate::rate_limit::ResourceLimiter::penalize) on a signal
     /// that does not come back from a call.
     pub fn limits(&self) -> &Arc<crate::rate_limit::ResourceLimiter> {

@@ -669,6 +669,10 @@ pub struct ResourceLimiter {
     /// quota, so an acquire only honours pauses (see
     /// [`ready_to_acquire`](Self::ready_to_acquire)).
     per_call: AtomicBool,
+    /// An acquire booked a permit before the first client was wrapped; the
+    /// next call through a wrapped client uses it (see
+    /// [`ready_to_call`](Self::ready_to_call)).
+    prepaid: AtomicBool,
 }
 
 /// What a caller does once its wait is over.
@@ -784,9 +788,11 @@ impl<'a> Waiting<'a> {
 
 impl Drop for Waiting<'_> {
     fn drop(&mut self) {
-        if self.0.waiters.fetch_sub(1, Ordering::AcqRel) == 1 {
-            self.0.clear();
-        }
+        // The limit is not cleared when the last waiter leaves: a lone caller
+        // at saturation would then report engaged and cleared on every call.
+        // It is cleared when a caller passes without waiting and nobody else
+        // waits (see `wait_out`), which is when it has stopped holding back.
+        self.0.waiters.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
@@ -845,6 +851,7 @@ impl ResourceLimiter {
             paused_until: Mutex::new(None),
             engaged: AtomicBool::new(false),
             per_call: AtomicBool::new(false),
+            prepaid: AtomicBool::new(false),
             waiters: AtomicUsize::new(0),
             store_down: AtomicBool::new(false),
             refusals: AtomicU32::new(0),
@@ -889,8 +896,43 @@ impl ResourceLimiter {
         &self,
         deadline: Option<std::time::Instant>,
     ) -> Result<(), Error> {
-        if !self.per_call.load(Ordering::Acquire) {
-            return self.ready(deadline).await;
+        if self.per_call.load(Ordering::Acquire) {
+            return self.wait_pause_only(deadline).await;
+        }
+        self.ready(deadline).await?;
+        // The resource may wrap its client while creating for this very
+        // acquire: its first call then uses the permit booked here rather
+        // than booking a second one. One such credit at most, so a late
+        // first wrap can never release a burst of unbooked calls.
+        self.prepaid.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    /// What a call through a [`Limited`] client waits for: a permit, unless
+    /// the acquire that preceded the first wrap already booked it, in which
+    /// case only a pause.
+    async fn ready_to_call(&self, deadline: Option<std::time::Instant>) -> Result<(), Error> {
+        if self.prepaid.swap(false, Ordering::AcqRel) {
+            return self.wait_pause_only(deadline).await;
+        }
+        self.ready(deadline).await
+    }
+
+    /// Waits out a local pause only, never past `deadline`, and refuses a
+    /// deadline that has passed (before or after the wait).
+    async fn wait_pause_only(&self, deadline: Option<std::time::Instant>) -> Result<(), Error> {
+        let overran = || {
+            deadline
+                .is_some_and(|deadline| std::time::Instant::now() > deadline)
+                .then(|| {
+                    self.tagged(Error::exhausted(
+                        "rate limit wait overran the deadline",
+                        None,
+                    ))
+                })
+        };
+        if let Some(error) = overran() {
+            return Err(error);
         }
         let pause = self.pause_remaining();
         if pause.is_zero() {
@@ -901,7 +943,7 @@ impl ResourceLimiter {
         }
         let _waiting = Waiting::start(self);
         tokio::time::sleep(pause).await;
-        Ok(())
+        overran().map_or(Ok(()), Err)
     }
 
     /// Waits for one permit, never past `deadline`.
@@ -963,6 +1005,19 @@ impl ResourceLimiter {
             }) {
                 self.aligned_slots(quota, keyed, &key, &rate, deadline)
                     .await?
+            } else if self.quota.is_none() {
+                // No account rate, only its pauses: a pause is waited out
+                // before the key's slot is booked, so the key's calls keep
+                // their spacing instead of all running as the pause ends.
+                let pause = self.account_slot(deadline).await?;
+                if !pause.is_zero() {
+                    let _waiting = Waiting::start(self);
+                    tokio::time::sleep(pause).await;
+                    continue;
+                }
+                self.book(&keyed.store, &key, &rate, deadline, 0)
+                    .await?
+                    .wait
             } else {
                 let key_slot = self.book(&keyed.store, &key, &rate, deadline, 0).await?;
                 match self.account_slot(deadline).await {
@@ -1024,7 +1079,11 @@ impl ResourceLimiter {
             // Given back before rebooking, while it is still the key's last
             // slot: the rebook then lands at the account's slot rather than
             // behind the slot it replaces.
-            let _ = within(deadline, keyed.store.cancel_boxed(key, rate, &key_slot)).await;
+            let key_refunded = matches!(
+                within(deadline, keyed.store.cancel_boxed(key, rate, &key_slot)).await,
+                Some(Ok(true))
+            );
+            let replaced = key_slot;
             key_slot = match self
                 .book(&keyed.store, key, rate, deadline, account.allow_at)
                 .await
@@ -1037,6 +1096,25 @@ impl ResourceLimiter {
             };
             if key_slot.allow_at <= account.allow_at {
                 return Ok(key_slot.wait);
+            }
+            // Neither slot could be given back, and the key moved past the
+            // account again: both keys run on one schedule (a full in-process
+            // store puts new keys on its shared overflow limit), so they
+            // never meet. Run at the later slot, holding both: two slots for
+            // one call errs on sending less, and each limit still holds.
+            if !key_refunded && key_slot.allow_at > replaced.allow_at {
+                let account_refunded = matches!(
+                    within(
+                        deadline,
+                        quota.store.cancel_boxed(&quota.key, &quota.rate, &account),
+                    )
+                    .await,
+                    Some(Ok(true))
+                );
+                if !account_refunded {
+                    return Ok(key_slot.wait.max(account.wait));
+                }
+                continue;
             }
             let _ = within(
                 deadline,
@@ -1490,6 +1568,42 @@ impl ResourceLimiter {
         );
     }
 
+    /// Takes over the pauses `previous` kept in this process: the account
+    /// pause and every key pause kept past its callers. For a limiter that
+    /// replaces another on the same row (a re-registration), so the
+    /// replacement does not forget a provider's "slow down" that only this
+    /// process knows. Pauses held in a limit store need nothing: the new
+    /// limiter reads the same store.
+    pub(crate) fn inherit_pauses(&self, previous: &Self) {
+        let now = tokio::time::Instant::now();
+        let account = *previous
+            .paused_until
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(until) = account.filter(|until| *until > now) {
+            let mut paused_until = self
+                .paused_until
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            *paused_until = Some(paused_until.map_or(until, |current| current.max(until)));
+        }
+        let kept: Vec<(LimitKey, tokio::time::Instant)> = previous
+            .key_waits
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .filter(|(_, wait)| wait.kept)
+            .filter_map(|(key, wait)| {
+                wait.paused_until
+                    .filter(|until| *until > now)
+                    .map(|until| (key.clone(), until))
+            })
+            .collect();
+        for (key, until) in kept {
+            self.keep_key_pause(&key, until.saturating_duration_since(now));
+        }
+    }
+
     fn key_pause_remaining(&self, key: &LimitKey) -> Duration {
         let waits = self
             .key_waits
@@ -1689,7 +1803,7 @@ impl<C, T> Limited<C, T> {
         T: Throttle<R, E>,
     {
         self.limits
-            .ready(deadline)
+            .ready_to_call(deadline)
             .await
             .map_err(LimitedError::Limit)?;
         let outcome = call(&self.client).await;

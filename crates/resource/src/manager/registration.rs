@@ -359,6 +359,7 @@ impl Manager {
         // replacement, the registry invokes this admission callback before
         // mutation so backpressure leaves the old owner installed and unfenced.
         let type_id = std::any::TypeId::of::<ManagedResource<R>>();
+        let maintenance_scope = crate::context::minimal_scope_for_level(&scope);
         let registration = self.registry.register_admitted(
             key.clone(),
             type_id,
@@ -372,6 +373,15 @@ impl Manager {
             admission: permit,
         } = registration
         {
+            // A re-registration in place (a credential refresh, a new stored
+            // version) must not reset a provider's "slow down": pauses the
+            // displaced row kept in this process carry over to its successor.
+            if let Ok(previous) = Arc::clone(&displaced)
+                .as_any_arc()
+                .downcast::<ManagedResource<R>>()
+            {
+                managed.rate_limiter.inherit_pauses(&previous.rate_limiter);
+            }
             self.retire_resource(displaced, permit, RetirementOrigin::Replacement);
         }
 
@@ -384,7 +394,7 @@ impl Manager {
         // Start the background idle/lifetime reaper for pools that expire
         // instances. No-op for non-pool topologies and for pools with no
         // TTL configured (zero background overhead in that case).
-        self.spawn_pool_maintenance(&managed, schedule);
+        self.spawn_pool_maintenance(&managed, schedule, maintenance_scope);
 
         if let Some(m) = &self.metrics {
             m.record_create();
@@ -435,6 +445,7 @@ impl Manager {
         &self,
         managed: &Arc<ManagedResource<R>>,
         schedule: Option<crate::topology::MaintenanceSchedule>,
+        scope: nebula_core::scope::Scope,
     ) where
         R: Provider,
         R::Topology: Topology<R>,
@@ -461,13 +472,12 @@ impl Manager {
         let key = R::key();
         // The reaper has no caller-supplied context (it runs on a timer, not
         // behind an acquire) — `minimal` is exactly the "daemon loop" case
-        // its doc comment names. Built once: scope + cancellation are the
-        // same across every tick, so there is no reason to rebuild it per
-        // sweep.
-        let refill_ctx = crate::context::ResourceContext::minimal(
-            nebula_core::scope::Scope::default(),
-            cancel.clone(),
-        );
+        // its doc comment names. It carries the row's registration scope, as
+        // the warmup does, so a refilled instance is created for the same
+        // tenant as one created on acquire. Built once: scope + cancellation
+        // are the same across every tick, so there is no reason to rebuild it
+        // per sweep.
+        let refill_ctx = crate::context::ResourceContext::minimal(scope, cancel.clone());
 
         let task = tokio::spawn(async move {
             let mut ticker = tokio::time::interval(period);

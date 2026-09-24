@@ -1095,6 +1095,52 @@ async fn a_wrapped_limit_is_booked_per_call_not_per_acquire() {
     );
 }
 
+/// The first acquire of a resource that wraps its client while creating
+/// books the permit its first call then uses: one provider call, one
+/// permit, even on a cold start.
+#[tokio::test(start_paused = true)]
+async fn a_cold_acquire_and_its_first_call_share_one_permit() {
+    let limits = Arc::new(limiter(per_second(1, 1)));
+    limits
+        .ready_to_acquire(None)
+        .await
+        .expect("the cold acquire books");
+    let client = limits.wrap((), NoThrottle);
+    let started = Instant::now();
+    client
+        .run(async |()| Ok::<_, ProviderError>(()))
+        .await
+        .expect("uses the acquire's permit");
+    assert_eq!(
+        started.elapsed(),
+        Duration::ZERO,
+        "no second permit waited for"
+    );
+    client
+        .run(async |()| Ok::<_, ProviderError>(()))
+        .await
+        .expect("the next call books its own");
+    assert_eq!(started.elapsed(), Duration::from_secs(1));
+}
+
+/// Once a client is wrapped, an acquire still never passes its deadline.
+#[tokio::test(start_paused = true)]
+async fn a_wrapped_acquire_keeps_its_deadline() {
+    let limits = Arc::new(limiter(per_second(1, 1)));
+    let _client = limits.wrap((), NoThrottle);
+    let expired = std::time::Instant::now()
+        .checked_sub(Duration::from_millis(1))
+        .expect("an instant a millisecond ago");
+    let error = limits
+        .ready_to_acquire(Some(expired))
+        .await
+        .expect_err("past the deadline");
+    assert!(
+        matches!(error.kind(), ErrorKind::Exhausted { .. }),
+        "{error}"
+    );
+}
+
 /// Callers that booked before a penalty keep their spacing after it: each
 /// books again once the pause is over instead of all running at its end.
 #[tokio::test(start_paused = true)]
@@ -1158,5 +1204,94 @@ async fn equal_account_and_key_intervals_still_align() {
     assert!(
         started.elapsed().saturating_sub(first) >= Duration::from_secs(1),
         "a second apart"
+    );
+}
+
+/// When a full in-process store puts both the account and the key on its
+/// shared overflow limit, alignment cannot meet on one slot; the call still
+/// goes through instead of failing every time.
+#[tokio::test(start_paused = true)]
+async fn alignment_on_a_full_store_still_admits() {
+    let store = Arc::new(MemoryLimitStore::with_max_keys(1));
+    nebula_resilience::rate_limiter::gcra::LimitStore::reserve(
+        &*store,
+        &LimitKey::new("occupant").unwrap(),
+        &Rate::new(nz(1), Duration::from_hours(1)).unwrap(),
+        ReserveRequest::new(1, Duration::ZERO),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let shared: Arc<dyn ErasedLimitStore> = store;
+    let base = LimitKey::new("acct:test").unwrap();
+    let limits = ResourceLimiter::new(
+        Some(Quota::new(
+            Arc::clone(&shared),
+            base.clone(),
+            per_second(1, 1),
+        )),
+        Some(KeyedLimits::new(
+            shared,
+            base,
+            vec![("chat_id", per_second(1, 1))],
+        )),
+        Duration::from_mins(1),
+        ResourceKey::new("test.resource").unwrap(),
+        Arc::new(EventBus::new(16)),
+    );
+    for _ in 0..3 {
+        limits
+            .ready_for(
+                "chat_id",
+                7,
+                Some(std::time::Instant::now() + Duration::from_secs(30)),
+            )
+            .await
+            .expect("admitted on the overflow limit");
+    }
+}
+
+/// With per-key limits but no account rate, callers behind an account
+/// pause keep their key's spacing after it instead of all running as it
+/// ends.
+#[tokio::test(start_paused = true)]
+async fn key_calls_behind_an_account_pause_keep_their_spacing() {
+    let limits = Arc::new(ResourceLimiter::new(
+        None,
+        Some(KeyedLimits::new(
+            Arc::new(MemoryLimitStore::new()),
+            LimitKey::new("acct:test").unwrap(),
+            vec![("chat_id", per_second(1, 1))],
+        )),
+        Duration::from_mins(1),
+        ResourceKey::new("test.resource").unwrap(),
+        Arc::new(EventBus::new(16)),
+    ));
+    limits
+        .penalize(Duration::from_secs(5))
+        .await
+        .expect("local pause");
+    let started = Instant::now();
+    let callers: Vec<_> = (0..2)
+        .map(|_| {
+            let limits = Arc::clone(&limits);
+            tokio::spawn(async move {
+                limits
+                    .ready_for("chat_id", 7, None)
+                    .await
+                    .expect("admitted");
+                started.elapsed()
+            })
+        })
+        .collect();
+    let mut done = Vec::new();
+    for caller in callers {
+        done.push(caller.await.unwrap());
+    }
+    done.sort();
+    assert!(done[0] >= Duration::from_secs(5), "{done:?}");
+    assert!(
+        done[1].saturating_sub(done[0]) >= Duration::from_millis(999),
+        "the chat's calls stay a second apart after the pause: {done:?}"
     );
 }

@@ -587,14 +587,20 @@ impl StoredResourceActivator {
     /// Retires `stale`, the registration row `row` no longer serves, keeping
     /// it for a later sweep when the manager cannot take it yet.
     fn retire(&self, context: &ActivationContext<'_>, row: &(Scope, ResourceId), stale: ActiveRow) {
-        if !retire(context, &stale.activated) {
-            self.pending_retirements
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push(PendingRetirement {
-                    row: row.clone(),
-                    stale,
-                });
+        let mut pending = self
+            .pending_retirements
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if retire(context, &stale.activated) {
+            // Retiring an identity released every reference to it, the ones
+            // an earlier pushed-back registration of it held included: that
+            // entry has nothing left to release.
+            pending.retain(|entry| entry.stale.activated != stale.activated);
+        } else {
+            pending.push(PendingRetirement {
+                row: row.clone(),
+                stale,
+            });
         }
     }
 
@@ -607,6 +613,10 @@ impl StoredResourceActivator {
     /// references the stale registration held. An entry whose row an
     /// activation holds right now waits for a sweep that can see it; every
     /// other entry is retried.
+    ///
+    /// The row's lock is held from the check through the retirement, so an
+    /// activation cannot register the same identity in between and have the
+    /// retry remove that live registration.
     fn retry_retirements(&self, context: &ActivationContext<'_>) {
         let pending = std::mem::take(
             &mut *self
@@ -617,27 +627,37 @@ impl StoredResourceActivator {
         if pending.is_empty() {
             return;
         }
-        let mut still_pending = Vec::new();
+        let mut still_pending: Vec<PendingRetirement> = Vec::new();
+        let mut retired: Vec<ActivatedResource> = Vec::new();
         for entry in pending {
-            let serving = match self.rows.get(&entry.row) {
-                None => Some(false),
-                Some(slot) => slot.value().try_lock().ok().map(|tracked| {
-                    tracked
-                        .active
-                        .as_ref()
-                        .is_some_and(|active| active.activated == entry.stale.activated)
-                }),
-            };
-            match serving {
-                Some(true) => release_bindings(context, &entry.stale),
-                None => still_pending.push(entry),
-                Some(false) => {
-                    if !retire(context, &entry.stale.activated) {
-                        still_pending.push(entry);
-                    }
-                },
+            if retired.contains(&entry.stale.activated) {
+                continue;
             }
+            // A row not tracked any more gets an (empty) entry to lock, which
+            // a concurrent activation then waits behind.
+            let row = entry.row.clone();
+            let slot = Arc::clone(self.rows.entry(row.clone()).or_default().value());
+            let Ok(tracked) = slot.try_lock() else {
+                still_pending.push(entry);
+                continue;
+            };
+            let serving = tracked
+                .active
+                .as_ref()
+                .is_some_and(|active| active.activated == entry.stale.activated);
+            if serving {
+                release_bindings(context, &entry.stale);
+            } else if retire(context, &entry.stale.activated) {
+                retired.push(entry.stale.activated.clone());
+            } else {
+                still_pending.push(entry);
+            }
+            drop(tracked);
+            drop(slot);
+            // The empty entry this retry may have created is not kept.
+            self.reap_if_empty(&row);
         }
+        still_pending.retain(|entry| !retired.contains(&entry.stale.activated));
         self.pending_retirements
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -706,6 +726,18 @@ impl StoredResourceActivator {
                 Ok(registered) => registered,
                 Err(error) => {
                     tracked.failed_version = Some(row.version);
+                    // A credential that can no longer be resolved (revoked,
+                    // deleted, needing re-authentication) must not keep
+                    // serving through the previous registration, whichever
+                    // slot's change led here.
+                    if matches!(
+                        &error,
+                        StoredResourceActivationError::Credential { source, .. }
+                            if !is_transient(source)
+                    ) && let Some(stale) = tracked.active.take()
+                    {
+                        self.retire(context, &(scope.clone(), resource_id), stale);
+                    }
                     return Err(error);
                 },
             };
@@ -893,12 +925,22 @@ async fn register_row(
 /// re-authentication, refused) is an error: the row must stop serving it. A
 /// transient failure (the store or source unavailable, cancellation) keeps
 /// the registration, which is checked again next time.
+///
+/// With a rotation fan-out attached the check is skipped: the fan-out
+/// installs refreshed material into the live row and taints it on revoke,
+/// so the row the activation holds is current by that path, and comparing
+/// against the material it was registered with would re-register a row the
+/// fan-out has already brought up to date.
 async fn credentials_current(
     context: &ActivationContext<'_>,
     scope: &Scope,
     bindings: &[BoundCredential],
     cancel: &CancellationToken,
 ) -> Result<bool, StoredResourceActivationError> {
+    #[cfg(feature = "rotation")]
+    if context.fanout.is_some() {
+        return Ok(true);
+    }
     let Some(resolver) = context.credentials.filter(|_| !bindings.is_empty()) else {
         return Ok(true);
     };
@@ -920,11 +962,7 @@ async fn credentials_current(
                     return Ok(false);
                 }
             },
-            Err(
-                CredentialSlotResolveError::Unavailable
-                | CredentialSlotResolveError::SourceUnavailable
-                | CredentialSlotResolveError::Cancelled,
-            ) => {
+            Err(source) if is_transient(&source) => {
                 tracing::debug!(
                     target: "nebula_engine::resource_activation",
                     slot = %bound.slot,
@@ -940,6 +978,18 @@ async fn credentials_current(
         }
     }
     Ok(true)
+}
+
+/// Whether a credential resolution failed only for now (its store or
+/// source unavailable, or the call cancelled), as opposed to a credential
+/// that can no longer be resolved at all.
+const fn is_transient(error: &CredentialSlotResolveError) -> bool {
+    matches!(
+        error,
+        CredentialSlotResolveError::Unavailable
+            | CredentialSlotResolveError::SourceUnavailable
+            | CredentialSlotResolveError::Cancelled
+    )
 }
 
 /// Releases the rotation-index references `row`'s registration took, one

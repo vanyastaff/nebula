@@ -421,15 +421,23 @@ async fn limit_events_mark_transitions_and_penalties_only() {
         seen
     };
 
-    // Three callers wait at once: the limit engages once and clears once,
-    // when the last of them is admitted, not when a later call arrives.
+    // Three callers wait at once: the limit engages once. It stays engaged
+    // after they are admitted: it clears only when a call passes without
+    // waiting, so a caller kept at saturation reports nothing per call.
     let (first, second, third) =
         tokio::join!(limits.ready(None), limits.ready(None), limits.ready(None));
     first.and(second).and(third).unwrap();
     assert_eq!(
         drain(),
-        ["engaged", "cleared"],
-        "concurrent waits publish one transition each way, not one per call"
+        ["engaged"],
+        "concurrent waits publish one transition, not one per call"
+    );
+    for _ in 0..3 {
+        limits.ready(None).await.unwrap();
+    }
+    assert!(
+        drain().is_empty(),
+        "a caller kept waiting at saturation reports nothing per call"
     );
 
     limits.penalize(Duration::from_secs(2)).await.unwrap();
@@ -439,8 +447,15 @@ async fn limit_events_mark_transitions_and_penalties_only() {
         started.elapsed() >= Duration::from_secs(2),
         "a penalty blocks the next call until the provider's Retry-After"
     );
-    assert_eq!(drain(), ["penalized", "cleared"]);
+    assert_eq!(drain(), ["penalized"]);
 
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    limits.ready(None).await.unwrap();
+    assert_eq!(
+        drain(),
+        ["cleared"],
+        "the first call that waits for nothing clears it"
+    );
     tokio::time::sleep(Duration::from_secs(1)).await;
     limits.ready(None).await.unwrap();
     assert!(

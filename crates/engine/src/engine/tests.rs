@@ -8188,3 +8188,60 @@ async fn status_publisher_shuts_down_during_a_hung_tick() {
         .expect("the publisher stops without waiting on the hung store")
         .unwrap();
 }
+
+/// A heartbeat that renews only after the lease ran out (a stalled worker)
+/// republishes even unchanged rows: they may have expired meanwhile.
+#[tokio::test(start_paused = true)]
+async fn status_publisher_republishes_after_its_lease_lapsed() {
+    let store = Arc::new(nebula_storage::inmem::InMemoryResourceStore::new());
+    let (engine, _) = make_engine(Arc::new(ActionRegistry::new()));
+    let engine = engine
+        .with_resource_manager(Arc::new(nebula_resource::Manager::new()))
+        .with_resource_registrars(crate::resource::activation::tests::registrars())
+        .with_stored_resources(crate::resource::StoredResourceActivator::new(
+            Arc::clone(&store) as Arc<dyn nebula_storage_port::store::ResourceStore>,
+        ));
+    let scope = Scope::new(
+        nebula_core::WorkspaceId::new().to_string(),
+        nebula_core::OrgId::new().to_string(),
+    );
+    let row = store_plain_row(&store, &scope, "activation.plain").await;
+    let manifest = nebula_execution::ExecutionBindingManifestV2::new([resource_binding(
+        &node_key!("reader"),
+        "db",
+        row,
+        "activation.plain",
+    )])
+    .unwrap();
+    engine
+        .activate_bound_resources(
+            ExecutionId::new(),
+            &scope,
+            &manifest,
+            &CancellationToken::new(),
+        )
+        .await;
+
+    let recorder = Arc::new(RecordingStatusStore::default());
+    let interval = Duration::from_secs(1);
+    let publisher = crate::ResourceStatusPublisher::new(
+        Arc::clone(&recorder) as Arc<dyn nebula_storage_port::store::ResourceStatusStore>,
+        nebula_storage_port::dto::StatusWorkerId::new("worker:test").unwrap(),
+    )
+    .with_interval(interval);
+    let mut published = HashMap::new();
+    publisher.tick(&engine, &mut published).await;
+    assert_eq!(recorder.take().len(), 2, "heartbeat + publish");
+
+    publisher.tick(&engine, &mut published).await;
+    assert_eq!(recorder.take(), ["heartbeat"], "within the lease: cached");
+
+    tokio::time::advance(interval * 4).await;
+    publisher.tick(&engine, &mut published).await;
+    let calls = recorder.take();
+    assert_eq!(calls.len(), 2, "{calls:?}");
+    assert!(
+        calls[1].starts_with(&format!("publish {row} ")),
+        "{calls:?}"
+    );
+}
