@@ -22,8 +22,6 @@ fn bound(key: &ResourceKey, scope: &ScopeLevel, slot: &str, identity: SlotIdenti
         scope: scope.clone(),
         slot_name: slot.to_string(),
         slot_identity: identity,
-        credential_scope: None,
-        credential_key: None,
     }
 }
 
@@ -338,6 +336,36 @@ fn staged_bind_refcount_protects_a_concurrent_live_row() {
     assert!(
         idx.affected(&cid).is_empty(),
         "the row is removed only when the last referent is gone"
+    );
+}
+
+#[test]
+fn failed_stage_does_not_promote_reconciliation_context() {
+    let idx = ResourceFanoutIndex::new();
+    let cid = cred();
+    let key = rk("pg");
+    let scope = wf_scope();
+    let bind = bound(
+        &key,
+        &scope,
+        "db",
+        SlotIdentity::from_bindings([("db", "shared-key")]),
+    );
+    idx.bind(cid, key, scope, "db", bind.slot_identity.clone());
+    idx.stage_bind_with_context(
+        cid,
+        bind.clone(),
+        TenantScope::new("org", "workspace"),
+        "oauth".parse().expect("credential key"),
+    );
+
+    idx.unbind_staged_entry(&cid, &bind);
+
+    let published = idx.published_bindings(Some(cid));
+    assert_eq!(published.len(), 1);
+    assert!(
+        published[0].2.is_none(),
+        "rolling back a failed stage must not opt an event-only bind into durable reconciliation"
     );
 }
 
@@ -728,16 +756,16 @@ mod fanout_dispatch {
         let key = CtlResource::key();
         let scope = ScopeLevel::Global;
         let identity = SlotIdentity::from_bindings([("db", "staged-only")]);
-        index.stage_bind(
+        index.stage_bind_with_context(
             credential_id,
             Bind {
                 resource_key: key,
                 scope,
                 slot_name: "db".to_owned(),
                 slot_identity: identity,
-                credential_scope: Some(TenantScope::new("org", "workspace")),
-                credential_key: Some("oauth".parse().expect("credential key")),
             },
+            TenantScope::new("org", "workspace"),
+            "oauth".parse().expect("credential key"),
         );
         let owner = TenantScope::new("org", "workspace");
         let credential_key = nebula_core::credential_key!("oauth");

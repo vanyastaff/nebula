@@ -72,9 +72,9 @@ impl TestRotationBind for ResourceFanoutIndex {
                 scope,
                 slot_name: slot.to_owned(),
                 slot_identity: identity,
-                credential_scope: Some(nebula_credential::TenantScope::new("org", "workspace")),
-                credential_key: Some(nebula_core::credential_key!("oauth")),
             },
+            nebula_credential::TenantScope::new("org", "workspace"),
+            nebula_core::credential_key!("oauth"),
         );
     }
 }

@@ -972,10 +972,13 @@ impl ResourceActivatorRegistry {
                     scope: request.scope.clone(),
                     slot_name: binding.slot_name.clone(),
                     slot_identity: staged_slot_identity.clone(),
-                    credential_scope: Some(credential_scope),
-                    credential_key: Some(binding.credential_key.clone()),
                 };
-                idx.stage_bind(cred_id, bind.clone());
+                idx.stage_bind_with_context(
+                    cred_id,
+                    bind.clone(),
+                    credential_scope,
+                    binding.credential_key.clone(),
+                );
                 staged.push((cred_id, bind));
             }
         }

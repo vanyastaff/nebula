@@ -142,11 +142,8 @@ impl ResourceFanoutIndex {
 
         let mut summary = RotationOutcome::default();
         let mut projections = Vec::new();
-        for (bound_credential_id, binding) in self.published_bindings(credential_id) {
-            let (Some(credential_scope), Some(credential_key)) = (
-                binding.credential_scope.clone(),
-                binding.credential_key.clone(),
-            ) else {
+        for (bound_credential_id, binding, context) in self.published_bindings(credential_id) {
+            let Some((credential_scope, credential_key)) = context else {
                 continue;
             };
             let Ok(managed) = mgr.lookup_any_for_slot_identity_structural(

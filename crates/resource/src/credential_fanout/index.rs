@@ -70,10 +70,6 @@ pub struct Bind {
     /// Resolved **collision-free structural** slot identity disambiguating
     /// multi-tenant rows (exact string equality, not a collidable digest).
     pub slot_identity: SlotIdentity,
-    /// Owner-qualified scope used for authoritative durable rereads.
-    pub credential_scope: Option<TenantScope>,
-    /// Credential contract expected by the bound slot.
-    pub credential_key: Option<CredentialKey>,
 }
 
 /// Aggregate of a per-slot rotation fan-out across every affected resource
@@ -187,6 +183,8 @@ impl RotationOutcome {
 #[derive(Debug, Clone)]
 struct BindRef {
     bind: Bind,
+    published_context: Option<(TenantScope, CredentialKey)>,
+    staged_context: Option<(TenantScope, CredentialKey)>,
     published: usize,
     staged: usize,
 }
@@ -196,6 +194,7 @@ struct BindRef {
 /// allocation, better locality on the rotation fan-out read); larger
 /// families spill to the heap transparently.
 type BindRows = SmallVec<[BindRef; 2]>;
+type PublishedBinding = (CredentialId, Bind, Option<(TenantScope, CredentialKey)>);
 
 #[derive(Clone)]
 pub(super) struct PendingRevokeAdmission {
@@ -318,8 +317,9 @@ impl ResourceFanoutIndex {
     /// one of its credential slots.
     ///
     /// This compatibility path omits the durable owner/key context required
-    /// by startup reconciliation. Production registration stages a complete
-    /// [`Bind`] and publishes it atomically with the manager row.
+    /// by startup reconciliation. Production registration stages that
+    /// context beside the [`Bind`] and publishes both atomically with the
+    /// manager row.
     ///
     /// Re-binding an identical row under the same credential is idempotent
     /// *at the fan-out level* — [`affected`](Self::affected) still returns
@@ -345,29 +345,78 @@ impl ResourceFanoutIndex {
             scope,
             slot_name: slot_name.into(),
             slot_identity,
-            credential_scope: None,
-            credential_key: None,
         };
-        self.add_bind_ref(cid, entry, false);
+        self.add_bind_ref(cid, entry, None, None, false);
     }
 
     /// Publishes a rotation binding with the owner-qualified context needed
     /// for durable startup and periodic reconciliation.
-    pub fn bind_with_context(&self, cid: CredentialId, binding: Bind) {
-        self.add_bind_ref(cid, binding, false);
+    #[doc(hidden)]
+    pub fn bind_with_context(
+        &self,
+        cid: CredentialId,
+        binding: Bind,
+        credential_scope: TenantScope,
+        credential_key: CredentialKey,
+    ) {
+        self.add_bind_ref(
+            cid,
+            binding,
+            Some(credential_scope),
+            Some(credential_key),
+            false,
+        );
     }
 
+    #[cfg(test)]
     pub(crate) fn stage_bind(&self, cid: CredentialId, bind: Bind) {
-        self.add_bind_ref(cid, bind, true);
+        self.add_bind_ref(cid, bind, None, None, true);
     }
 
-    fn add_bind_ref(&self, cid: CredentialId, bind: Bind, staged: bool) {
+    pub(crate) fn stage_bind_with_context(
+        &self,
+        cid: CredentialId,
+        bind: Bind,
+        credential_scope: TenantScope,
+        credential_key: CredentialKey,
+    ) {
+        self.add_bind_ref(
+            cid,
+            bind,
+            Some(credential_scope),
+            Some(credential_key),
+            true,
+        );
+    }
+
+    fn add_bind_ref(
+        &self,
+        cid: CredentialId,
+        bind: Bind,
+        credential_scope: Option<TenantScope>,
+        credential_key: Option<CredentialKey>,
+        staged: bool,
+    ) {
         let mut rows = self.by_credential.entry(cid).or_default();
+        let context = credential_scope.zip(credential_key);
         match rows.iter_mut().find(|row| row.bind == bind) {
-            Some(existing) if staged => existing.staged += 1,
-            Some(existing) => existing.published += 1,
+            Some(existing) => {
+                if staged {
+                    if existing.staged_context.is_none() {
+                        existing.staged_context = context;
+                    }
+                    existing.staged += 1;
+                } else {
+                    if existing.published_context.is_none() {
+                        existing.published_context = context;
+                    }
+                    existing.published += 1;
+                }
+            },
             None => rows.push(BindRef {
                 bind,
+                published_context: if staged { None } else { context.clone() },
+                staged_context: if staged { context } else { None },
                 published: usize::from(!staged),
                 staged: usize::from(staged),
             }),
@@ -394,7 +443,7 @@ impl ResourceFanoutIndex {
     pub(super) fn published_bindings(
         &self,
         credential_id: Option<CredentialId>,
-    ) -> Vec<(CredentialId, Bind)> {
+    ) -> Vec<PublishedBinding> {
         if let Some(credential_id) = credential_id {
             return self
                 .by_credential
@@ -402,7 +451,13 @@ impl ResourceFanoutIndex {
                 .map(|rows| {
                     rows.iter()
                         .filter(|row| row.published != 0)
-                        .map(|row| (credential_id, row.bind.clone()))
+                        .map(|row| {
+                            (
+                                credential_id,
+                                row.bind.clone(),
+                                row.published_context.clone(),
+                            )
+                        })
                         .collect()
                 })
                 .unwrap_or_default();
@@ -415,7 +470,13 @@ impl ResourceFanoutIndex {
                     .value()
                     .iter()
                     .filter(|row| row.published != 0)
-                    .map(move |row| (credential_id, row.bind.clone()))
+                    .map(move |row| {
+                        (
+                            credential_id,
+                            row.bind.clone(),
+                            row.published_context.clone(),
+                        )
+                    })
                     .collect::<Vec<_>>()
             })
             .collect()
@@ -725,6 +786,9 @@ impl ResourceFanoutIndex {
         self.by_credential.remove_if_mut(cid, |_, rows| {
             if let Some(row) = rows.iter_mut().find(|row| &row.bind == bind) {
                 row.staged = row.staged.saturating_sub(1);
+                if row.staged == 0 {
+                    row.staged_context = None;
+                }
             }
             rows.retain(|row| row.published != 0 || row.staged != 0);
             rows.is_empty()
@@ -739,6 +803,12 @@ impl ResourceFanoutIndex {
         {
             row.staged -= 1;
             row.published += 1;
+            if row.published_context.is_none() {
+                row.published_context = row.staged_context.clone();
+            }
+            if row.staged == 0 {
+                row.staged_context = None;
+            }
         }
     }
 
