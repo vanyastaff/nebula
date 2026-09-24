@@ -310,3 +310,36 @@ fn projected_slot_rejects_another_credential_even_at_a_higher_epoch() {
     assert_eq!(cell.load().expect("original guard").0, 1);
     assert_eq!(cell.generation(), 1);
 }
+
+#[test]
+fn unqualified_writes_clear_projection_identity_only_when_applied() {
+    use nebula_credential::{CredentialGuardMetadata, CredentialId, TenantScope};
+    for use_store in [false, true] {
+        let cell = SlotCell::<FakeGuard>::empty();
+        let metadata =
+            CredentialGuardMetadata::new(CredentialId::new(), "oauth".parse().expect("key"), 2, 2)
+                .with_scope(TenantScope::new("org", "workspace"));
+        assert_eq!(
+            cell.install_projected(metadata.clone(), Arc::new(FakeGuard(2)))
+                .expect("projected"),
+            SlotUpdate::Installed
+        );
+        assert!(matches!(
+            cell.install_at_material_epoch(1, Arc::new(FakeGuard(1)))
+                .expect("stale"),
+            SlotUpdate::Stale { .. }
+        ));
+        assert_eq!(cell.projection_metadata(), Some(metadata));
+        if use_store {
+            cell.store(Arc::new(FakeGuard(3)));
+        } else {
+            assert_eq!(
+                cell.install_at_material_epoch(3, Arc::new(FakeGuard(3)))
+                    .expect("unqualified"),
+                SlotUpdate::Installed
+            );
+        }
+        assert_eq!(cell.projection_metadata(), None);
+        assert_eq!(cell.load().expect("live").0, 3);
+    }
+}

@@ -32,7 +32,9 @@
 //! - [`CredentialEvent::Refreshed`] — the credential-runtime facade has
 //!   already CAS-persisted the fresh material into the store before emitting
 //!   this. That is exactly the "engine has stored the fresh material" point,
-//!   so the driver calls [`ResourceFanoutIndex::dispatch_refresh`].
+//!   so a resolver-enabled driver reconciles the stored material epoch before
+//!   dispatching a hook. Without a resolver it uses the legacy
+//!   [`ResourceFanoutIndex::dispatch_refresh`] hook-only path.
 //! - [`CredentialEvent::Revoked`] and [`LeaseEvent::LeaseRevoked`] — the
 //!   credential / dynamic-secret lease was revoked. Either triggers
 //!   [`ResourceFanoutIndex::dispatch_revoke`]. The fan-out itself is already
@@ -86,9 +88,8 @@ use crate::credential_fanout::index::{ResourceFanoutIndex, RotationOutcome};
 /// genuinely *new* revoke of the same credential after re-registration is
 /// not suppressed. Taint is idempotent and a re-revoke after the window
 /// is harmless, so erring slightly long is safe; erring short would
-/// re-introduce the double-fire. Refresh is **not** deduped — a refresh
-/// arrives on one bus only (`CredentialEvent::Refreshed`) and a real
-/// re-refresh must always fan out.
+/// re-introduce the double-fire. Refresh does not use this time window:
+/// resolver-enabled drivers gate refresh hooks by the durable material epoch.
 const REVOKE_DEDUPE_WINDOW: Duration = Duration::from_secs(5);
 
 /// Bounded last-seen set of recently-dispatched credential revokes, used
@@ -290,7 +291,7 @@ impl ResourceFanoutDriver {
                             let resolver = Arc::clone(resolver);
                             // JoinSet aborts the scan when the driver is dropped.
                             // Scans cannot delay reception of revoke observations.
-                            scans.spawn(async move { index.reconcile_material(&manager, resolver.as_ref()).await });
+                            scans.spawn(async move { index.reconcile_material(&manager, resolver.as_ref(), None).await });
                         }
                     },
                     result = scans.join_next(), if !scans.is_empty() => {
@@ -326,11 +327,17 @@ impl ResourceFanoutDriver {
     ) {
         match ev {
             CredentialEvent::Refreshed { credential_id } => {
-                // Refresh is intentionally NOT deduped: it arrives on one
-                // bus only and a real re-refresh must always fan out.
-                let outcome = index
-                    .dispatch_refresh(credential_id, manager, PER_RESOURCE_ROTATION_TIMEOUT)
-                    .await;
+                let outcome = if let Some(resolver) = resolver {
+                    // The event and periodic scan share the material-epoch
+                    // gate, so either order installs before exactly one hook.
+                    index
+                        .reconcile_material(manager, resolver, Some(credential_id))
+                        .await
+                } else {
+                    index
+                        .dispatch_refresh(credential_id, manager, PER_RESOURCE_ROTATION_TIMEOUT)
+                        .await
+                };
                 Self::record(credential_id, "refresh", outcome);
             },
             CredentialEvent::MaterialReplaced {

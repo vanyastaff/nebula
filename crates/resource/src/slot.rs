@@ -136,15 +136,17 @@ impl<S> SlotCell<S> {
     /// guard (from an unrelated panic elsewhere) is recovered rather than
     /// cascading.
     fn with_write<R>(&self, mutate: impl FnOnce(u64) -> R) -> R {
-        let _guard = self
+        let mut guard = self
             .write_lock
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         let generation = self.bump_generation();
+        *guard = None;
         mutate(generation)
     }
 
     /// Install (or replace) the resolved value, advancing the generation.
+    /// This unqualified write clears any retained projection identity.
     ///
     /// The new generation is published atomically *with* the value inside
     /// a single internal entry swap, so a concurrent
@@ -184,7 +186,7 @@ impl<S> SlotCell<S> {
         self.install_projection(None, material_epoch, value)
     }
 
-    /// Install a guard while pinning its credential identity for this slot's lifetime.
+    /// Install a guard while pinning its credential identity for qualified updates.
     ///
     /// # Errors
     /// Returns [`SlotInstallError::CredentialIdentityMismatch`] for a different
@@ -244,9 +246,7 @@ impl<S> SlotCell<S> {
             material_epoch,
             value,
         })));
-        if metadata.is_some() {
-            *identity = metadata;
-        }
+        *identity = metadata;
         Ok(SlotUpdate::Installed)
     }
 

@@ -64,12 +64,16 @@ impl ResourceFanoutIndex {
         &self,
         mgr: &crate::Manager,
         resolver: &dyn CredentialSlotResolver,
+        credential_id: Option<CredentialId>,
     ) -> RotationOutcome {
         use futures::{FutureExt, StreamExt};
 
         let mut projections = Vec::new();
         for managed in mgr.registry.all_managed() {
             for (slot, metadata) in managed.credential_projections() {
+                if credential_id.is_some_and(|cid| cid != metadata.credential_id()) {
+                    continue;
+                }
                 let managed = std::sync::Arc::clone(&managed);
                 projections.push(
                     async move {

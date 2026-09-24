@@ -14,7 +14,7 @@ credential state and its owning runtime remain authoritative.
 
 ## Material replacement recovery
 
-With `spawn_with_resolver`, `MaterialReplaced` is a wake hint for an
+With `spawn_with_resolver`, `MaterialReplaced` and `Refreshed` are wake hints for an
 owner-qualified durable projection. The driver also reconciles live slot metadata
 on startup and every 30 seconds, with at most 32 concurrent projections. This
 recovers replacement observations lost before subscription, during subscriber lag,
@@ -31,7 +31,10 @@ Each projection has a 30-second deadline and a cancellation token cancelled on
 timeout or driver shutdown. The target registration is pinned before projection;
 the slot also rejects another credential or owner even at a higher epoch. Only a
 newer epoch installs a guard and dispatches a hook. Repeated scans are no-ops for
-unchanged epochs. Completed, timed-out, deferred and abandoned hook outcomes stay
+unchanged epochs, including duplicate refresh events arriving before or after a
+scan. Unqualified `store` and successful `install_at_material_epoch` writes clear
+projection metadata so later scans cannot associate their values with an old
+credential. Completed, timed-out, deferred and abandoned hook outcomes stay
 distinct in the fan-out result. Reconciliation does not retry accepted hooks or
 turn the event bus into durable command authority.
 
