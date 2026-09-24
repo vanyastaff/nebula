@@ -351,6 +351,40 @@ async fn tombstone_committed_between_head_and_material_read_is_revoked() {
 }
 
 #[tokio::test]
+async fn wrong_contract_tombstone_committed_after_head_is_not_revoked() {
+    let (mut store, registry, ops, scope, id, key) = fixture();
+    let now = Utc::now();
+    store.row_after_head = Some(
+        StoredTombstonedCredential::new(
+            id,
+            "shared_key".to_owned(),
+            SecretToken::KIND.to_owned(),
+            SecretToken::VERSION,
+            CredentialVersion::MIN,
+            now,
+            now,
+            now,
+        )
+        .into(),
+    );
+
+    let error = resolve_fixture(
+        &store,
+        &registry,
+        &ops,
+        &scope,
+        id,
+        key,
+        Capabilities::empty(),
+        CancellationToken::new(),
+    )
+    .await
+    .expect_err("a tombstone for another contract must not revoke the slot");
+
+    assert_eq!(error, CredentialSlotResolveError::WrongCredentialKey);
+}
+
+#[tokio::test]
 async fn rejects_wrong_key_before_projection() {
     let (store, registry, ops, scope, id, _) = fixture();
     let wrong = CredentialKey::new("shared_key").expect("test key is valid");

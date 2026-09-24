@@ -107,7 +107,15 @@ pub(crate) async fn resolve_slot_with(
             })?;
             let stored = match stored {
                 StoredCredential::Live(stored) => stored,
-                StoredCredential::Tombstoned(_) => {
+                StoredCredential::Tombstoned(tombstone) => {
+                    let actual_key = CredentialKey::new(tombstone.credential_key())
+                        .map_err(|_| CredentialSlotResolveError::InvalidState)?;
+                    if tombstone.credential_id() != head.credential_id() {
+                        return Err(CredentialSlotResolveError::InvalidState);
+                    }
+                    if actual_key != request.expected_key {
+                        return Err(CredentialSlotResolveError::WrongCredentialKey);
+                    }
                     return Err(CredentialSlotResolveError::Revoked);
                 },
             };
