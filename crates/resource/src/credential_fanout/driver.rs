@@ -332,6 +332,7 @@ impl ResourceFanoutDriver {
                                 &mut revoke_dedupe,
                                 &mut revoke_dispatches,
                                 credential_id,
+                                true,
                                 "credential bus",
                             );
                         },
@@ -353,6 +354,7 @@ impl ResourceFanoutDriver {
                                 &mut revoke_dedupe,
                                 &mut revoke_dispatches,
                                 credential_id,
+                                false,
                                 "lease bus",
                             );
                         },
@@ -564,9 +566,17 @@ impl ResourceFanoutDriver {
         revoke_dedupe: &mut RevokeDedupe,
         revoke_dispatches: &mut tokio::task::JoinSet<()>,
         credential_id: CredentialId,
+        retain_terminal_credential_revoke: bool,
         source: &'static str,
     ) {
         if !revoke_dedupe.admit(credential_id, Instant::now()) {
+            // Lease and credential buses may describe the same logical
+            // teardown. The lease arrival may win dedupe, but the later
+            // credential event still carries stronger terminal authority
+            // needed to fence future registration publication.
+            if retain_terminal_credential_revoke {
+                index.remember_revocation(credential_id);
+            }
             tracing::debug!(
                 target: "nebula_resource::credential_fanout",
                 %credential_id,
@@ -577,7 +587,8 @@ impl ResourceFanoutDriver {
             );
             return;
         }
-        let mut outcome = index.prepare_revoke(credential_id, manager);
+        let mut outcome =
+            index.prepare_revoke(credential_id, manager, retain_terminal_credential_revoke);
         let index = Arc::clone(index);
         let manager = Arc::clone(manager);
         revoke_dispatches.spawn(async move {
@@ -712,6 +723,44 @@ mod tests {
             "a different credential's revoke must dispatch even within \
              another credential's window"
         );
+    }
+
+    #[tokio::test]
+    async fn credential_event_retains_terminal_authority_after_lease_dedupe() {
+        let index = Arc::new(ResourceFanoutIndex::new());
+        let manager = Arc::new(Manager::new());
+        let mut dedupe = RevokeDedupe::new();
+        let mut dispatches = tokio::task::JoinSet::new();
+        let credential_id = CredentialId::new();
+
+        ResourceFanoutDriver::spawn_revoke_deduped(
+            &index,
+            &manager,
+            &mut dedupe,
+            &mut dispatches,
+            credential_id,
+            false,
+            "lease bus",
+        );
+        ResourceFanoutDriver::spawn_revoke_deduped(
+            &index,
+            &manager,
+            &mut dedupe,
+            &mut dispatches,
+            credential_id,
+            true,
+            "credential bus",
+        );
+
+        let bind = crate::Bind {
+            resource_key: nebula_core::ResourceKey::new("future").expect("valid resource key"),
+            scope: nebula_core::ScopeLevel::Global,
+            slot_name: "auth".to_owned(),
+            slot_identity: crate::SlotIdentity::from_bindings([("auth", "credential")]),
+        };
+        index.stage_bind(credential_id, bind.clone());
+        assert!(index.publish_staged_entry(&credential_id, &bind));
+        dispatches.abort_all();
     }
 
     /// A genuinely new revoke of the same credential *after* the window

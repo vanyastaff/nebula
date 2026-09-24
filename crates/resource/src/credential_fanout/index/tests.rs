@@ -392,6 +392,26 @@ fn revoke_observation_before_staging_is_applied_at_publication() {
     );
 }
 
+#[tokio::test]
+async fn lease_revoke_does_not_tombstone_a_later_registration() {
+    let idx = ResourceFanoutIndex::new();
+    let cid = cred();
+    let bind = bound(
+        &rk("pg"),
+        &wf_scope(),
+        "db",
+        SlotIdentity::from_bindings([("db", "new-lease")]),
+    );
+
+    let outcome = idx.prepare_revoke(cid, &crate::Manager::new(), false);
+    assert_eq!(outcome, RotationOutcome::default());
+    idx.stage_bind(cid, bind.clone());
+    assert!(
+        !idx.publish_staged_entry(&cid, &bind),
+        "an independently revoked lease must not tombstone the credential id"
+    );
+}
+
 #[test]
 fn failed_stage_does_not_promote_reconciliation_context() {
     let idx = ResourceFanoutIndex::new();

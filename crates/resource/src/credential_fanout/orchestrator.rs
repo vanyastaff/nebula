@@ -24,8 +24,11 @@ impl ResourceFanoutIndex {
         &self,
         cid: CredentialId,
         mgr: &crate::Manager,
+        retain_terminal_credential_revoke: bool,
     ) -> RotationOutcome {
-        self.remember_revocation(cid);
+        if retain_terminal_credential_revoke {
+            self.remember_revocation(cid);
+        }
         let has_staged_binding = self.has_staged_binding(&cid);
         let mut summary = RotationOutcome::default();
         for binding in self.affected(&cid) {
@@ -417,7 +420,6 @@ impl ResourceFanoutIndex {
         mgr: &crate::Manager,
         per_resource_timeout: Duration,
     ) -> RotationOutcome {
-        self.remember_revocation(cid);
         let has_staged_binding = self.has_staged_binding(&cid);
         let mut outcome = self
             .dispatch(cid, mgr, per_resource_timeout, FanoutOp::Revoke)
@@ -729,6 +731,10 @@ async fn project_and_refresh(
     {
         Ok(Ok(guard)) => guard,
         Ok(Err(nebula_credential::CredentialSlotResolveError::Revoked)) => {
+            // This resolver result is an authoritative durable tombstone,
+            // unlike an independently revoked lease observation. Fence any
+            // concurrent or future publication before handling this row.
+            index.remember_revocation(cid);
             let key = managed.resource_key();
             tracing::warn!(
                 credential_id = %cid,

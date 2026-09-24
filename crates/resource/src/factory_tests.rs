@@ -594,7 +594,8 @@ async fn conflicting_duplicate_slot_bindings_fail_before_manager_publication() {
 async fn rotation_binding_without_owner_scope_fails_before_publication() {
     let manager = Manager::new();
     let expression_engine = ExpressionEngine::with_cache_size(16);
-    let credential_id = nebula_credential::CredentialId::new();
+    let valid_credential_id = nebula_credential::CredentialId::new();
+    let invalid_credential_id = nebula_credential::CredentialId::new();
     let fanout_index = Arc::new(crate::ResourceFanoutIndex::new());
     let mut registry = ResourceActivatorRegistry::new();
     registry
@@ -614,12 +615,23 @@ async fn rotation_binding_without_owner_scope_fails_before_publication() {
             RegisterRequest {
                 config: ResourceConfigInput::data(serde_json::json!({ "name": "resource" })),
                 expr_engine: &expression_engine,
-                slot_bindings: vec![SlotBinding {
-                    slot_name: "auth".to_owned(),
-                    credential_key: nebula_core::credential_key!("test.factory-credential"),
-                    credential_id: Some(credential_id),
-                    credential_scope: None,
-                }],
+                slot_bindings: vec![
+                    SlotBinding {
+                        slot_name: "auth".to_owned(),
+                        credential_key: nebula_core::credential_key!("test.factory-credential"),
+                        credential_id: Some(valid_credential_id),
+                        credential_scope: Some(nebula_credential::TenantScope::new(
+                            "org",
+                            "workspace",
+                        )),
+                    },
+                    SlotBinding {
+                        slot_name: "secondary".to_owned(),
+                        credential_key: nebula_core::credential_key!("test.second-credential"),
+                        credential_id: Some(invalid_credential_id),
+                        credential_scope: None,
+                    },
+                ],
                 slot_installs: Vec::new(),
                 scope: ScopeLevel::Global,
                 recovery_gate: None,
@@ -631,7 +643,10 @@ async fn rotation_binding_without_owner_scope_fails_before_publication() {
 
     std::assert_matches!(error, RegistrarError::Register { .. });
     assert!(!manager.contains(&BoundTestRes::key()));
-    assert!(fanout_index.affected(&credential_id).is_empty());
+    assert!(fanout_index.affected(&valid_credential_id).is_empty());
+    assert!(fanout_index.affected(&invalid_credential_id).is_empty());
+    assert!(!fanout_index.has_staged_binding(&valid_credential_id));
+    assert!(!fanout_index.has_staged_binding(&invalid_credential_id));
 }
 
 #[cfg(feature = "rotation")]

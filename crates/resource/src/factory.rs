@@ -943,6 +943,7 @@ impl ResourceActivatorRegistry {
         // mismatched parallel-map entry.
         let mut staged: Vec<(nebula_credential::CredentialId, _)> = Vec::new();
         if let Some(idx) = fanout_index {
+            let mut planned = Vec::new();
             for binding in &request.slot_bindings {
                 let Some(cred_id) = binding.credential_id else {
                     continue;
@@ -982,11 +983,21 @@ impl ResourceActivatorRegistry {
                     slot_name: binding.slot_name.clone(),
                     slot_identity: staged_slot_identity.clone(),
                 };
+                planned.push((
+                    cred_id,
+                    bind,
+                    credential_scope,
+                    binding.credential_key.clone(),
+                ));
+            }
+            // Validation above is side-effect free. Only after every binding
+            // is known valid may any staged reference become visible.
+            for (cred_id, bind, credential_scope, credential_key) in planned {
                 idx.stage_bind_with_context(
                     cred_id,
                     bind.clone(),
                     credential_scope,
-                    binding.credential_key.clone(),
+                    credential_key,
                 );
                 staged.push((cred_id, bind));
             }
