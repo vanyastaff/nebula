@@ -1009,6 +1009,37 @@ impl WorkflowEngine {
         ))
     }
 
+    /// Gracefully stop the attached resource manager within `budget`.
+    ///
+    /// Call once the host has stopped driving executions, so no guard is
+    /// still outstanding: half of the budget drains in-flight handles, the
+    /// other half lets release workers close instances. Best-effort, like
+    /// lease release on shutdown: a failure is logged and the process exits
+    /// anyway, which leaves connections to be dropped as after a crash.
+    /// Without a manager this is a no-op.
+    pub async fn shutdown_resources(&self, budget: Duration) {
+        let Some(manager) = &self.resource_manager else {
+            return;
+        };
+        let half = budget / 2;
+        let config = nebula_resource::ShutdownConfig::default()
+            .with_drain_timeout(half)
+            .with_release_queue_timeout(half);
+        match manager.graceful_shutdown(config).await {
+            Ok(report) => tracing::info!(
+                target: "nebula_engine",
+                outstanding_handles = report.outstanding_handles_after_drain,
+                release_queue_drained = report.release_queue_drained,
+                "resource manager stopped"
+            ),
+            Err(error) => tracing::warn!(
+                target: "nebula_engine",
+                %error,
+                "resource manager did not stop cleanly"
+            ),
+        }
+    }
+
     /// Attach a resource manager for providing resources to actions.
     #[must_use = "builder methods must be chained or built"]
     pub fn with_resource_manager(mut self, manager: Arc<nebula_resource::Manager>) -> Self {

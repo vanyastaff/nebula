@@ -95,10 +95,12 @@ const RESOURCE_FANOUT_BATCH_SIZE: u16 = 1;
 const RESOURCE_FANOUT_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const RESOURCE_FANOUT_MAX_CONSECUTIVE_FAILURES: u32 = 5;
 
-/// Same-backend inputs for durable resource fanout and workflow starts.
+/// Same-backend inputs for durable resource fanout, stored resource rows and
+/// workflow starts.
 #[derive(Clone)]
 pub struct ResourceFanoutInputs {
     workflows: WorkflowStores,
+    rows: Arc<dyn nebula_storage_port::store::ResourceStore>,
     recovery: Arc<dyn ResourceRuntimeRecovery>,
     subscriptions: Arc<dyn ResourceSubscriptionStore>,
     fanout: Arc<dyn ResourceEventFanoutStore>,
@@ -114,9 +116,15 @@ impl std::fmt::Debug for ResourceFanoutInputs {
 }
 
 impl ResourceFanoutInputs {
-    /// Project one concrete resource runtime into every durable coordinator role.
+    /// Project one concrete resource runtime into every durable coordinator
+    /// role. `rows` holds the stored resource rows executions bind; it must
+    /// live on the same backend the API writes them to.
     #[must_use]
-    pub fn from_runtime<T>(workflows: WorkflowStores, runtime: Arc<T>) -> Self
+    pub fn from_runtime<T>(
+        workflows: WorkflowStores,
+        runtime: Arc<T>,
+        rows: Arc<dyn nebula_storage_port::store::ResourceStore>,
+    ) -> Self
     where
         T: ResourceRuntimeRecovery
             + ResourceSubscriptionStore
@@ -125,6 +133,7 @@ impl ResourceFanoutInputs {
     {
         Self {
             workflows,
+            rows,
             recovery: runtime.clone(),
             subscriptions: runtime.clone(),
             fanout: runtime.clone(),
@@ -166,6 +175,11 @@ impl ResourceFanoutInputs {
 ///
 /// Returns [`ComposeError`] if any boot step fails. All failures are
 /// fail-closed: the process must not start with a mis-wired engine.
+///
+/// # Panics
+///
+/// Must be called inside a Tokio runtime: the resource manager it creates
+/// starts its release workers immediately.
 pub fn build_core_flavor_runtime(
     execution_stores: ExecutionStores,
     turn_handoff: Arc<dyn ExecutionTurnHandoff>,
@@ -286,9 +300,15 @@ fn build_core_flavor_runtime_impl(
         #[cfg(feature = "runtime-repair-red")]
         EngineEvidenceInputs::RuntimeRepair(evidence) => Arc::clone(&evidence.clock),
     };
+    // Stored resource rows are activated lazily, per row, when an execution
+    // that binds them is driven; nothing is read or connected at boot.
     let engine = WorkflowEngine::new(action_runtime, metrics.clone())?
         .with_execution_stores(execution_stores.clone())
-        .with_credential_resolver(revisions.credential_resolver);
+        .with_credential_resolver(revisions.credential_resolver)
+        .with_resource_manager(Arc::new(nebula_engine::resource::Manager::new()))
+        .with_stored_resources(nebula_engine::StoredResourceActivator::new(Arc::clone(
+            &resource_fanout.rows,
+        )));
     let engine = match evidence_inputs {
         EngineEvidenceInputs::Ordinary => engine,
         #[cfg(feature = "runtime-repair-red")]
@@ -337,13 +357,17 @@ fn build_core_flavor_runtime_impl(
     let resource_registrars = nebula_engine::resource_registrars_from(
         frozen.all_resources().map(|(_plugin, factory)| factory),
     )?;
-    let engine = Arc::new(engine.with_resource_registrars(resource_registrars).with_plan_flavor_runtime(
-        Arc::new(nebula_engine::PlanFlavorRevisionLoader::new(
-            revisions.catalog,
-        )),
-        frozen,
-        revisions.bundles,
-    ));
+    let engine = Arc::new(
+        engine
+            .with_resource_registrars(resource_registrars)
+            .with_plan_flavor_runtime(
+                Arc::new(nebula_engine::PlanFlavorRevisionLoader::new(
+                    revisions.catalog,
+                )),
+                frozen,
+                revisions.bundles,
+            ),
+    );
 
     // Construct the worker runtime builder.
     //

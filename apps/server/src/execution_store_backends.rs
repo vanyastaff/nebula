@@ -50,6 +50,8 @@ fn build_memory_execution_stores(
     let workflow_store =
         InMemoryWorkflowStore::new_with_versions(&workflow_versions, &execution_store);
     let tenant_directory = InMemoryIdentityDirectory::new();
+    // One row store: rows the API writes are the rows the worker activates.
+    let resource_store = InMemoryResourceStore::new();
     let shared_control_queue: Arc<dyn nebula_storage_port::store::ControlQueue> =
         Arc::new(control_queue);
     let turn_handoff: Arc<dyn nebula_storage_port::store::ExecutionTurnHandoff> = Arc::new(
@@ -92,6 +94,7 @@ fn build_memory_execution_stores(
                     versions: Arc::new(workflow_versions.clone()),
                 },
                 Arc::new(nebula_storage::inmem::InMemoryResourceRuntime::new()),
+                Arc::new(resource_store.clone()),
             ),
         }
     };
@@ -107,7 +110,7 @@ fn build_memory_execution_stores(
         revision_installer: revision_catalog,
         workflow_store: Arc::new(workflow_store),
         workflow_version_store: Arc::new(workflow_versions),
-        resource_store: Arc::new(InMemoryResourceStore::new()),
+        resource_store: Arc::new(resource_store),
         execution_store: Arc::new(execution_store),
         node_result_store: Arc::new(node_results),
         journal_reader: Arc::new(journal),
@@ -229,6 +232,7 @@ async fn build_sqlite_execution_stores(
                 Arc::new(nebula_storage::sqlite::SqliteResourceRuntime::new(
                     pool.clone(),
                 )),
+                Arc::new(SqliteResourceStore::new(pool.clone())),
             ),
         }
     };
@@ -361,6 +365,7 @@ async fn build_postgres_execution_stores(
                 Arc::new(nebula_storage::postgres::PgResourceRuntime::new(
                     pool.clone(),
                 )),
+                Arc::new(PgResourceStore::new(pool.clone())),
             ),
         }
     };

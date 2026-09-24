@@ -64,6 +64,12 @@ use nebula_storage_port::store::{ControlQueue, ExecutionTurnHandoff, TurnRecover
 use tokio::task::{JoinHandle, JoinSet};
 use tokio_util::sync::CancellationToken;
 
+/// Upper bound on closing resource instances once every component stopped.
+///
+/// Kept well inside a host's shutdown drain budget: by then no turn holds a
+/// guard, so draining is immediate and the budget only bounds a slow close.
+const RESOURCE_SHUTDOWN_BUDGET: Duration = Duration::from_secs(10);
+
 /// Errors that can be produced when building a [`WorkerRuntime`].
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -379,6 +385,12 @@ impl WorkerRuntime {
                 shutdown.cancel();
             }
         }
+        // Every component has stopped, so no turn still holds a resource
+        // guard: close resource instances before the process goes away
+        // instead of dropping their connections mid-protocol.
+        self.engine
+            .shutdown_resources(RESOURCE_SHUTDOWN_BUDGET)
+            .await;
         first_failure.map_or(Ok(()), Err)
     }
 

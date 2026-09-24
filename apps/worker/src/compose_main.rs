@@ -199,6 +199,9 @@ async fn build_stores(
             versions: Arc::new(SqliteWorkflowVersionStore::new(pool.clone())),
         },
         resource_runtime,
+        Arc::new(nebula_storage::sqlite::SqliteResourceStore::new(
+            pool.clone(),
+        )),
     );
     let execution_stores = ExecutionStores {
         execution: execution_store,
@@ -298,6 +301,7 @@ async fn build_pg_stores(
             versions: Arc::new(PgWorkflowVersionStore::new(pool.clone())),
         },
         resource_runtime,
+        Arc::new(nebula_storage::postgres::PgResourceStore::new(pool.clone())),
     );
 
     let execution_stores = ExecutionStores {
