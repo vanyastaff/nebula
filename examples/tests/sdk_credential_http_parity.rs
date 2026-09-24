@@ -14,8 +14,20 @@ use nebula_api::{
     state::{OrgResolver, WorkspaceResolver},
 };
 use nebula_core::{OrgId, OrgRole, Principal, UserId, WorkspaceId};
+use nebula_credential::{
+    CredentialContext, CredentialRegistry, DispatchOps, ErasedPendingStore, PendingState,
+    SecretString,
+    error::CredentialError,
+    register_interactive_ops, register_runtime_ops,
+    resolve::{InteractionRequest, ResolveResult, StaticResolveResult, UserInput},
+    scheme::SecretToken,
+};
 use nebula_sdk::client::{
-    credential::v1::{CreateCredentialRequest, ListCredentialsRequest, UpdateCredentialRequest},
+    credential::v1::{
+        ContinueResolveCredentialRequest, CreateCredentialRequest, ListCredentialsRequest,
+        ReauthorizeCredentialRequest, ResolveCredentialRequest, ResolveCredentialResponse,
+        UpdateCredentialRequest,
+    },
     http::{BearerToken, HttpClient, HttpErrorKind, HttpOptions},
 };
 use nebula_storage::inmem::{
@@ -23,11 +35,73 @@ use nebula_storage::inmem::{
     InMemoryStartAcceptanceStore, InMemoryTurnHandoff, InMemoryWorkflowStore,
     InMemoryWorkflowVersionStore,
 };
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::time::Duration;
 
 const ORG: &str = "org_00000000000000000000000001";
 const WORKSPACE: &str = "ws_00000000000000000000000001";
 const SECRET: &str = "sdk-parity-secret-must-not-appear-in-responses";
+
+#[derive(Clone, Serialize, Deserialize, zeroize::Zeroize, zeroize::ZeroizeOnDrop)]
+struct SdkPending {
+    secret: String,
+}
+
+impl PendingState for SdkPending {
+    const KIND: &'static str = "sdk_http_parity_pending";
+
+    fn expires_in(&self) -> Duration {
+        Duration::from_mins(10)
+    }
+}
+
+struct SdkInteractiveCredential;
+
+#[nebula_credential::credential(key = "sdk_interactive", name = "SDK Interactive")]
+impl SdkInteractiveCredential {
+    type Properties = Value;
+    type Scheme = SecretToken;
+    type State = SecretToken;
+    type Pending = SdkPending;
+
+    fn project(state: &SecretToken) -> SecretToken {
+        state.clone()
+    }
+
+    async fn resolve(
+        _properties: &Value,
+        _ctx: &CredentialContext,
+    ) -> Result<StaticResolveResult<SecretToken>, CredentialError> {
+        Ok(StaticResolveResult::Complete(SecretToken::new(
+            SecretString::new("initial"),
+        )))
+    }
+
+    async fn begin(
+        _properties: &Value,
+        _ctx: &CredentialContext,
+    ) -> Result<ResolveResult<SecretToken, SdkPending>, CredentialError> {
+        Ok(ResolveResult::Pending {
+            state: SdkPending {
+                secret: SECRET.to_owned(),
+            },
+            interaction: InteractionRequest::Redirect {
+                url: "https://provider.example/authorize".to_owned(),
+            },
+        })
+    }
+
+    async fn continue_resolve(
+        pending: &SdkPending,
+        _input: &UserInput,
+        _ctx: &CredentialContext,
+    ) -> Result<ResolveResult<SecretToken, SdkPending>, CredentialError> {
+        Ok(ResolveResult::Complete(SecretToken::new(
+            SecretString::new(pending.secret.clone()),
+        )))
+    }
+}
 
 struct TenantDirectory;
 
@@ -89,17 +163,54 @@ impl Server {
     async fn start() -> Self {
         let config = ApiConfig::for_test();
         let user = UserId::new();
-        let now = chrono::Utc::now().timestamp() as u64;
-        let bearer = jsonwebtoken::encode(
-            &jsonwebtoken::Header::default(),
-            &nebula_api::middleware::auth::Claims {
-                sub: user.to_string(),
-                iat: now,
-                exp: now + 3600,
-            },
-            &jsonwebtoken::EncodingKey::from_secret(config.jwt_secret.as_bytes()),
+        let bearer = token_for(&config, user, 3_600);
+        let key = Arc::new(
+            nebula_storage::credential::EnvKeyProvider::from_base64(
+                "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI=",
+            )
+            .unwrap(),
+        );
+        let service = nebula_api::ports::credential_service_factory::with_memory_store(key)
+            .await
+            .unwrap();
+        Self::start_with_service(config, user, bearer, service).await
+    }
+
+    async fn start_acquisition() -> (Self, String) {
+        let config = ApiConfig::for_test();
+        let user = UserId::new();
+        let bearer = token_for(&config, user, 3_600);
+        let second_bearer = token_for(&config, user, 3_601);
+        let mut registry = CredentialRegistry::new();
+        registry
+            .register(SdkInteractiveCredential, "sdk parity")
+            .unwrap();
+        let mut ops = DispatchOps::new();
+        register_runtime_ops::<SdkInteractiveCredential, ErasedPendingStore>(&mut ops).unwrap();
+        register_interactive_ops::<SdkInteractiveCredential, ErasedPendingStore>(&mut ops).unwrap();
+        let key = Arc::new(
+            nebula_storage::credential::EnvKeyProvider::from_base64(
+                "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI=",
+            )
+            .unwrap(),
+        );
+        let service = nebula_api::ports::credential_service_factory::with_memory_store_parts(
+            key, registry, ops,
         )
+        .await
         .unwrap();
+        (
+            Self::start_with_service(config, user, bearer, service).await,
+            second_bearer,
+        )
+    }
+
+    async fn start_with_service(
+        config: ApiConfig,
+        user: UserId,
+        bearer: String,
+        service: Arc<nebula_credential::CredentialService>,
+    ) -> Self {
         let memberships =
             Arc::new(nebula_api::domain::org::membership::InMemoryMembershipStore::new());
         memberships
@@ -127,15 +238,6 @@ impl Server {
         .with_org_resolver(Arc::new(TenantDirectory))
         .with_workspace_resolver(Arc::new(TenantDirectory))
         .with_membership_store(memberships);
-        let key = Arc::new(
-            nebula_storage::credential::EnvKeyProvider::from_base64(
-                "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI=",
-            )
-            .unwrap(),
-        );
-        let service = nebula_api::ports::credential_service_factory::with_memory_store(key)
-            .await
-            .unwrap();
         let state = state.with_credential_gateway(
             nebula_api::ports::credential_command::test_gateway_from_service(service),
         );
@@ -188,6 +290,20 @@ impl Server {
         .credentials("sdk-org", "sdk-workspace")
         .unwrap()
     }
+}
+
+fn token_for(config: &ApiConfig, user: UserId, lifetime: u64) -> String {
+    let now = chrono::Utc::now().timestamp() as u64;
+    jsonwebtoken::encode(
+        &jsonwebtoken::Header::default(),
+        &nebula_api::middleware::auth::Claims {
+            sub: user.to_string(),
+            iat: now,
+            exp: now + lifetime,
+        },
+        &jsonwebtoken::EncodingKey::from_secret(config.jwt_secret.as_bytes()),
+    )
+    .unwrap()
 }
 
 #[tokio::test]
@@ -317,4 +433,81 @@ async fn real_empty_auth_failure_retains_status_without_replaying_mutation() {
     assert_eq!(observations[0].method, "POST");
     assert_eq!(observations[0].status, 401);
     assert!(observations[0].body.is_empty());
+}
+
+#[tokio::test]
+async fn sdk_acquisition_preserves_session_binding_replay_and_existing_identity() {
+    let (server, same_user_different_bearer) = Server::start_acquisition().await;
+    let client = server.client(&server.bearer);
+    let pending = client
+        .resolve(&ResolveCredentialRequest {
+            credential_key: "sdk_interactive".into(),
+            data: json!({}),
+        })
+        .await
+        .unwrap();
+    let pending_token = match pending {
+        ResolveCredentialResponse::Pending { pending_token, .. } => pending_token,
+        other => panic!("expected pending response, got {other:?}"),
+    };
+    let continuation = ContinueResolveCredentialRequest {
+        credential_key: "sdk_interactive".into(),
+        pending_token: pending_token.clone(),
+        user_input: json!("Poll"),
+    };
+
+    let wrong_session = server.client(&same_user_different_bearer);
+    let binding_error = wrong_session
+        .continue_resolve(&continuation)
+        .await
+        .unwrap_err();
+    assert_eq!(binding_error.status(), Some(400));
+    let created_id = match client.continue_resolve(&continuation).await.unwrap() {
+        ResolveCredentialResponse::Complete { credential_id } => credential_id,
+        other => panic!("expected complete response, got {other:?}"),
+    };
+    let replay = client.continue_resolve(&continuation).await.unwrap_err();
+    assert_eq!(replay.status(), Some(401));
+
+    let before = client
+        .list(&ListCredentialsRequest::default())
+        .await
+        .unwrap()
+        .total;
+    let reauth = client
+        .reauthorize(
+            &created_id,
+            &ReauthorizeCredentialRequest { data: json!({}) },
+        )
+        .await
+        .unwrap();
+    let reauth_token = match reauth {
+        ResolveCredentialResponse::Pending { pending_token, .. } => pending_token,
+        other => panic!("expected pending reauthorization, got {other:?}"),
+    };
+    let reauth_continuation = ContinueResolveCredentialRequest {
+        credential_key: "sdk_interactive".into(),
+        pending_token: reauth_token,
+        user_input: json!("Poll"),
+    };
+    let invalid_auth = server.client("invalid-bearer");
+    let auth_error = invalid_auth
+        .continue_resolve(&reauth_continuation)
+        .await
+        .unwrap_err();
+    assert_eq!(auth_error.status(), Some(401));
+    assert_eq!(auth_error.kind(), HttpErrorKind::OutcomeUnknown);
+    let completed_id = match client.continue_resolve(&reauth_continuation).await.unwrap() {
+        ResolveCredentialResponse::Complete { credential_id } => credential_id,
+        other => panic!("expected complete reauthorization, got {other:?}"),
+    };
+    assert_eq!(completed_id, created_id);
+    assert_eq!(
+        client
+            .list(&ListCredentialsRequest::default())
+            .await
+            .unwrap()
+            .total,
+        before
+    );
 }

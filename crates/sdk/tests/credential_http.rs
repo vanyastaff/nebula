@@ -347,6 +347,104 @@ async fn incomplete_response_body_retains_status_and_unknown_mutation_outcome() 
 }
 
 #[tokio::test]
+async fn acquisition_methods_use_exact_paths_bearer_and_public_wire_shapes() {
+    let server = Server::start(vec![
+        response(200, "application/json", "", r#"{"status":"pending","pending_token":"pending-secret","interaction":{"type":"redirect","url":"https://provider.test/authorize"}}"#),
+        response(200, "application/json", "", r#"{"status":"complete","credential_id":"cred_new"}"#),
+        response(200, "application/json", "", r#"{"status":"pending","pending_token":"reauth-secret","interaction":{"type":"display_info","title":"Continue","message":"Authorize","data":{},"expires_in":60}}"#),
+    ])
+    .await;
+    let client = server.client();
+    let pending = client
+        .resolve(&ResolveCredentialRequest {
+            credential_key: "oauth2".into(),
+            data: json!({"client_secret":"resolve-secret"}),
+        })
+        .await
+        .unwrap();
+    assert!(matches!(pending, ResolveCredentialResponse::Pending { .. }));
+    let complete = client
+        .continue_resolve(&ContinueResolveCredentialRequest {
+            credential_key: "oauth2".into(),
+            pending_token: "pending-secret".into(),
+            user_input: json!("Poll"),
+        })
+        .await
+        .unwrap();
+    assert!(
+        matches!(complete, ResolveCredentialResponse::Complete { credential_id } if credential_id == "cred_new")
+    );
+    client
+        .reauthorize(
+            "cred_existing",
+            &ReauthorizeCredentialRequest {
+                data: json!({"client_secret":"replacement-secret"}),
+            },
+        )
+        .await
+        .unwrap();
+
+    let requests = server.seen();
+    assert_eq!(requests.len(), 3);
+    assert!(
+        requests[0].starts_with("POST /api/v1/orgs/org/workspaces/ws/credentials/resolve HTTP/1.1")
+    );
+    assert!(
+        requests[1].starts_with(
+            "POST /api/v1/orgs/org/workspaces/ws/credentials/resolve/continue HTTP/1.1"
+        )
+    );
+    assert!(requests[2].starts_with(
+        "POST /api/v1/orgs/org/workspaces/ws/credentials/cred_existing/reauthorize HTTP/1.1"
+    ));
+    for request in &requests {
+        assert!(request.contains("authorization: Bearer bearer-secret-canary"));
+        assert!(!request.to_lowercase().contains("idempotency-key"));
+    }
+    let reauthorize_body: serde_json::Value =
+        serde_json::from_str(requests[2].split("\r\n\r\n").nth(1).unwrap()).unwrap();
+    assert_eq!(
+        reauthorize_body,
+        json!({"data":{"client_secret":"replacement-secret"}})
+    );
+}
+
+#[tokio::test]
+async fn every_acquisition_failure_is_unknown_and_is_never_replayed() {
+    for operation in ["resolve", "continue", "reauthorize"] {
+        let server = Server::start(vec![Reply::Disconnect]).await;
+        let client = server.client();
+        let error = match operation {
+            "resolve" => client
+                .resolve(&ResolveCredentialRequest {
+                    credential_key: "oauth2".into(),
+                    data: json!({}),
+                })
+                .await
+                .unwrap_err(),
+            "continue" => client
+                .continue_resolve(&ContinueResolveCredentialRequest {
+                    credential_key: "oauth2".into(),
+                    pending_token: "pending-secret".into(),
+                    user_input: json!("Poll"),
+                })
+                .await
+                .unwrap_err(),
+            "reauthorize" => client
+                .reauthorize(
+                    "cred_existing",
+                    &ReauthorizeCredentialRequest { data: json!({}) },
+                )
+                .await
+                .unwrap_err(),
+            _ => unreachable!(),
+        };
+        assert_eq!(error.kind(), HttpErrorKind::OutcomeUnknown);
+        assert_eq!(server.seen().len(), 1);
+    }
+}
+
+#[tokio::test]
 async fn selectors_are_single_segments_and_invalid_configuration_never_sends() {
     let server = Server::start(vec![response(200, "application/json", "", &credential())]).await;
     let http = HttpClient::new(
