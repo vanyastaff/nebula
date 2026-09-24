@@ -140,8 +140,9 @@ pub(crate) trait ManagedHandle: Send + Sync + 'static {
         Err(crate::SlotInstallError::ProjectionChanged)
     }
 
-    /// Runs a synchronous callback while the credential-slot generation is
-    /// still current and the concrete slot writer is excluded.
+    /// Runs a synchronous callback exactly once while the credential-slot
+    /// generation is still current and the concrete slot writer is excluded.
+    /// An error means the callback was not invoked.
     fn fence_credential_slot_at_generation(
         &self,
         _slot: &str,

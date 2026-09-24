@@ -386,8 +386,8 @@ impl Manager {
             })?;
             let submission_managed = Arc::clone(&managed);
             let mut accepted = None;
-            managed
-                .fence_credential_slot_at_generation(slot, generation, &mut || {
+            if let Err(source) =
+                managed.fence_credential_slot_at_generation(slot, generation, &mut || {
                     accepted = Some(self.admit_refresh_resolved(
                         key,
                         slot,
@@ -395,11 +395,14 @@ impl Manager {
                         crate::hook_guard::MAX_ROTATION_DISPATCH_CEILING,
                     ));
                 })
-                .map_err(|source| {
-                    Error::permanent("credential projection superseded before hook admission")
-                        .with_source(source)
-                        .with_resource_key(key.clone())
-                })?;
+            {
+                pending.remove(slot);
+                return Err(Error::permanent(
+                    "credential projection superseded before hook admission",
+                )
+                .with_source(source)
+                .with_resource_key(key.clone()));
+            }
             let accepted = accepted.ok_or_else(|| {
                 Error::permanent("credential projection fence skipped hook admission")
                     .with_source(crate::SlotInstallError::ProjectionChanged)

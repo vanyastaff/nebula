@@ -387,6 +387,21 @@ async fn unqualified_slot_write_fences_refresh_hook_admission() {
         .expect("projection task")
         .expect_err("superseded projection must not submit its hook");
     assert_eq!(error.kind(), &crate::ErrorKind::Permanent);
+    let managed = manager
+        .lookup_any_for_slot_identity_structural(
+            &ProjectionResource::key(),
+            &ScopeLevel::Global,
+            &SlotIdentity::from_bindings([("db", "oauth")]),
+        )
+        .expect("managed row");
+    assert!(
+        managed
+            .pending_projection_hooks()
+            .lock()
+            .expect("pending hooks")
+            .is_empty(),
+        "a superseding raw write must discard the obsolete pending hook"
+    );
     assert_eq!(resource.calls.load(Ordering::SeqCst), 0);
     assert_eq!(resource.slot.load().map(|guard| **guard), Some(123));
     assert!(resource.slot.projection_metadata().is_none());

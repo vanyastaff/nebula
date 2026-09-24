@@ -926,7 +926,8 @@ pub trait HasCredentialSlots {
 
     /// Runs a synchronous resource fence only if the observed slot generation
     /// is still current. Implementations must keep the generation check and
-    /// callback under the same slot writer lock.
+    /// callback under the same slot writer lock, invoke the callback exactly
+    /// once before returning `Ok`, and never invoke it before returning `Err`.
     ///
     /// # Errors
     /// Returns `ProjectionChanged` after an intervening transition, or
