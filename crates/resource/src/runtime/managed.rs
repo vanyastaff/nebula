@@ -182,7 +182,7 @@ pub struct ManagedResource<R: Provider> {
     pub(crate) recovery_gate: Option<Arc<RecoveryGate>>,
     /// Optional rate limit consumed on every acquire and exposed per call
     /// through the guard.
-    pub(crate) rate_limiter: Option<Arc<crate::rate_limit::RateLimiter>>,
+    pub(crate) rate_limiter: Option<Arc<crate::rate_limit::ResourceLimiter>>,
     /// Resource-level taint flag set by [`taint`](Self::taint).
     ///
     /// When `true`, the manager's acquire paths reject new acquires for

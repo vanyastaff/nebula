@@ -227,6 +227,34 @@ pub enum ResourceEvent {
         /// this event to the acquiring span.
         span_id: Option<SpanId>,
     },
+    /// The resource's rate limit started making callers wait or refusing
+    /// them. Published on the transition only, never per call.
+    RateLimitEngaged {
+        /// The limited resource.
+        key: ResourceKey,
+    },
+    /// The resource's rate limit is admitting callers without waiting again.
+    RateLimitCleared {
+        /// The limited resource.
+        key: ResourceKey,
+    },
+    /// A provider's `Retry-After` pushed the resource's limit schedule back.
+    RateLimitPenalized {
+        /// The limited resource.
+        key: ResourceKey,
+        /// The applied pause, after the policy's cap.
+        retry_after: Duration,
+    },
+    /// The shared rate-limit store is unreachable; the limit fails closed.
+    RateLimitStoreUnavailable {
+        /// The limited resource.
+        key: ResourceKey,
+    },
+    /// The shared rate-limit store answers again.
+    RateLimitStoreRecovered {
+        /// The limited resource.
+        key: ResourceKey,
+    },
 }
 
 impl ResourceEvent {
@@ -250,7 +278,12 @@ impl ResourceEvent {
             | Self::RetiredCleanupFailed { key, .. }
             | Self::ResourceTeardownFailed { key, .. }
             | Self::MaintenanceEvicted { key, .. }
-            | Self::HoldDeadlineExceeded { key, .. } => Some(key),
+            | Self::HoldDeadlineExceeded { key, .. }
+            | Self::RateLimitEngaged { key }
+            | Self::RateLimitCleared { key }
+            | Self::RateLimitPenalized { key, .. }
+            | Self::RateLimitStoreUnavailable { key }
+            | Self::RateLimitStoreRecovered { key } => Some(key),
         }
     }
 }

@@ -214,10 +214,15 @@ pub struct RegisterRequest<'a> {
     /// kept separate from the resource [`config`](Self::config). `None` uses
     /// the kind's defaults; see [`crate::topology::settings`] for the format.
     pub topology: Option<serde_json::Value>,
-    /// Operator rate limit for this row
-    /// ([`RateLimitSettings`](crate::rate_limit::RateLimitSettings) JSON);
-    /// `None` means unlimited.
+    /// Operator override of the rate the resource declares
+    /// ([`RateLimitSettings`](crate::rate_limit::RateLimitSettings) JSON),
+    /// checked against its [`ResiliencePolicy`](crate::rate_limit::ResiliencePolicy);
+    /// `None` enforces the declared policy as is.
     pub rate_limit: Option<serde_json::Value>,
+    /// Quota the row draws on: rows with the same key share one limit (the
+    /// engine keys stored rows by provider account). `None` limits this row
+    /// alone.
+    pub limit_key: Option<crate::rate_limit::LimitKey>,
     /// Id of the stored resource row this registration materializes.
     ///
     /// Folded into the registry row identity
@@ -241,6 +246,7 @@ impl std::fmt::Debug for RegisterRequest<'_> {
             .field("recovery_gate", &self.recovery_gate.is_some())
             .field("topology", &self.topology.is_some())
             .field("rate_limit", &self.rate_limit.is_some())
+            .field("limit_key", &self.limit_key.is_some())
             .field("row_id", &self.row_id)
             .finish()
     }
@@ -731,10 +737,15 @@ where
             })?;
             let topology = (self.topology_factory)(request.topology.as_ref())
                 .map_err(|error| error.with_resource_key(R::key()))?;
-            let rate_limit =
-                crate::rate_limit::RateLimiter::from_value(request.rate_limit.as_ref())
-                    .map_err(|error| error.with_resource_key(R::key()))?
-                    .map(Arc::new);
+            let rate =
+                crate::rate_limit::RateLimitSettings::rate_from_value(request.rate_limit.as_ref())
+                    .map_err(|error| error.with_resource_key(R::key()))?;
+            let rate_limit = (rate.is_some() || request.limit_key.is_some()).then(|| {
+                crate::rate_limit::RowLimit {
+                    rate,
+                    key: request.limit_key.clone(),
+                }
+            });
             let resource = (self.resource_factory)();
             // The typed register validates declared slots and derives the
             // structural identity from the (slot → credential-key) view; the

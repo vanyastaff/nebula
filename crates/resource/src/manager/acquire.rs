@@ -470,11 +470,8 @@ impl Manager {
         // either began while it waited. Local state, so it runs before the
         // recovery gate and a denial never reads as backend ill health.
         if let Some(limiter) = managed.rate_limiter.as_deref() {
-            let deadline = options.deadline.map(tokio::time::Instant::from_std);
             tokio::select! {
-                ready = limiter.until_ready(1, deadline) => {
-                    ready.map_err(|error| error.with_resource_key(R::key()))?;
-                },
+                ready = limiter.ready(options.deadline) => ready?,
                 () = self.cancel.cancelled() => return Err(Error::cancelled()),
             }
         }

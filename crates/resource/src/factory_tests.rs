@@ -258,6 +258,7 @@ fn request(expr_engine: &ExpressionEngine) -> RegisterRequest<'_> {
         topology: None,
         rate_limit: None,
         row_id: None,
+        limit_key: None,
     }
 }
 
@@ -457,6 +458,7 @@ async fn identity_mismatch_is_typed_and_rolls_back_manager_and_fanout_state() {
                 topology: None,
                 rate_limit: None,
                 row_id: None,
+                limit_key: None,
             },
             Some(&fanout_index),
         )
@@ -526,6 +528,7 @@ async fn conflicting_duplicate_slot_bindings_fail_before_manager_publication() {
                 topology: None,
                 rate_limit: None,
                 row_id: None,
+                limit_key: None,
             },
             Some(&fanout_index),
         )

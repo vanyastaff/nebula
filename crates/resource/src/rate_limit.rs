@@ -1,37 +1,189 @@
-//! Per-resource rate limiting.
+//! Per-resource rate limiting, declared by the resource author.
 //!
-//! A [`RateLimiter`] spreads work over time with the generic cell rate
-//! algorithm (GCRA): `requests` per `period`, with up to `burst` of them back
-//! to back. One limiter belongs to one registry row and is consumed both when
-//! a lease is acquired and, through the guard, per outbound call — a single
-//! long-lived lease (a `Resident` bot client) can otherwise make any number
-//! of calls.
+//! A provider's limit is known to whoever wrote the integration, so the
+//! [`Provider`](crate::Provider) declares a [`ResiliencePolicy`]; a stored
+//! row may only *override* it within the bounds the policy allows
+//! ([`Override`]). The limit itself is a
+//! [GCRA](nebula_resilience::rate_limiter::gcra) enforced through a
+//! [`LimitStore`](nebula_resilience::rate_limiter::gcra::LimitStore) keyed by
+//! a [`LimitKey`]: two rows with the same key share one quota, which is how
+//! several resources on one provider account stay within that account's
+//! limit.
 //!
-//! When the limit is exhausted the caller waits for its slot, but never past
-//! its deadline: if the slot lands after the deadline the caller gets
-//! [`ErrorKind::Exhausted`](crate::ErrorKind::Exhausted) with a `retry_after`
-//! immediately, and no slot is consumed. The limiter is local process state,
-//! so its denial is not a backend-health signal and never trips a
-//! [`RecoveryGate`](crate::RecoveryGate).
+//! A limiter is consumed once per acquire and, through
+//! [`ResourceGuard::limits`](crate::ResourceGuard::limits), once per
+//! outbound call. When the limit is exhausted the caller waits for its slot,
+//! never past its deadline: beyond it the caller gets
+//! [`ErrorKind::Exhausted`](crate::ErrorKind::Exhausted) with a
+//! `retry_after` at once and nothing is consumed. A limit is local policy,
+//! not backend health, so a denial never trips a
+//! [`RecoveryGate`](crate::RecoveryGate); an unreachable shared store fails
+//! closed as [`ErrorKind::Backpressure`](crate::ErrorKind::Backpressure).
 //!
-//! State is one atomic: the theoretical arrival time of the next request, in
-//! nanoseconds since the limiter was built. Time comes from `tokio::time`, so
-//! paused-clock tests are deterministic. A reservation committed by a caller
-//! that is then cancelled is not refunded — the limiter errs on the side of
-//! sending less, never more.
+//! Lifecycle events are published on *transitions* only —
+//! [`RateLimitEngaged`](crate::ResourceEvent::RateLimitEngaged),
+//! [`RateLimitCleared`](crate::ResourceEvent::RateLimitCleared),
+//! [`RateLimitPenalized`](crate::ResourceEvent::RateLimitPenalized),
+//! [`RateLimitStoreUnavailable`](crate::ResourceEvent::RateLimitStoreUnavailable)
+//! — never per call, so a saturated limiter cannot flood the bounded event
+//! bus. They carry the resource key only, never limit keys.
 
 use std::{
-    sync::atomic::{AtomicU64, Ordering},
+    fmt,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU32, Ordering},
+    },
     time::Duration,
 };
 
+use nebula_core::ResourceKey;
+use nebula_eventbus::EventBus;
+pub use nebula_resilience::rate_limiter::gcra::{
+    Denied, ErasedLimitStore, Grant, LimitKey, LimitStoreError, MemoryLimitStore, Rate, RateConfig,
+    ReserveRequest,
+};
 use nebula_schema::Schema;
 use serde::{Deserialize, Serialize};
-use tokio::time::Instant;
 
-use crate::error::Error;
+use crate::{
+    error::{Error, ErrorKind},
+    events::ResourceEvent,
+};
 
-/// Operator settings for a [`RateLimiter`].
+/// Default cap on how long one provider `Retry-After` may block a key.
+pub const DEFAULT_MAX_PENALTY: Duration = Duration::from_mins(5);
+
+/// Where a limit's state lives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum LimitScope {
+    /// Shared by every worker process: a provider's quota is per account, not
+    /// per process. Falls back to [`Process`](Self::Process), with a warning,
+    /// until the manager is given a shared store.
+    #[default]
+    Cluster,
+    /// This process only: for protecting local capacity.
+    Process,
+}
+
+/// What a stored row may change about the declared limit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum Override {
+    /// Nothing: the declared limit is enforced as is.
+    Fixed,
+    /// Only slower: a longer interval and no larger burst. With no declared
+    /// limit, any limit is a tightening.
+    #[default]
+    TightenOnly,
+    /// Anything up to this ceiling, e.g. a provider's higher paid tier.
+    UpTo(Rate),
+}
+
+/// The resilience behaviour a resource author declares for their resource.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResiliencePolicy {
+    rate: Option<Rate>,
+    scope: LimitScope,
+    overrides: Override,
+    max_penalty: Duration,
+}
+
+impl Default for ResiliencePolicy {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ResiliencePolicy {
+    /// No declared limit; rows may add one ([`Override::TightenOnly`]).
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            rate: None,
+            scope: LimitScope::Cluster,
+            overrides: Override::TightenOnly,
+            max_penalty: DEFAULT_MAX_PENALTY,
+        }
+    }
+
+    /// Declares the provider's limit.
+    #[must_use]
+    pub const fn rate(mut self, rate: Rate) -> Self {
+        self.rate = Some(rate);
+        self
+    }
+
+    /// Chooses where the limit's state lives (default: cluster-wide).
+    #[must_use]
+    pub const fn scope(mut self, scope: LimitScope) -> Self {
+        self.scope = scope;
+        self
+    }
+
+    /// Chooses what stored rows may override (default: tighten only).
+    #[must_use]
+    pub const fn overrides(mut self, overrides: Override) -> Self {
+        self.overrides = overrides;
+        self
+    }
+
+    /// Caps how long one provider `Retry-After` may block the limit.
+    #[must_use]
+    pub const fn max_penalty(mut self, max_penalty: Duration) -> Self {
+        self.max_penalty = max_penalty;
+        self
+    }
+
+    /// The declared limit, if any.
+    #[must_use]
+    pub const fn declared_rate(&self) -> Option<Rate> {
+        self.rate
+    }
+
+    /// Where the limit's state lives.
+    #[must_use]
+    pub const fn limit_scope(&self) -> LimitScope {
+        self.scope
+    }
+
+    /// The longest one provider `Retry-After` may block the limit.
+    #[must_use]
+    pub const fn penalty_cap(&self) -> Duration {
+        self.max_penalty
+    }
+
+    /// The limit to enforce once `requested` is applied.
+    ///
+    /// # Errors
+    ///
+    /// A permanent [`Error`] when the override is not allowed: any override
+    /// under [`Override::Fixed`], a looser one under
+    /// [`Override::TightenOnly`], one above the ceiling under
+    /// [`Override::UpTo`].
+    pub fn effective_rate(&self, requested: Option<Rate>) -> Result<Option<Rate>, Error> {
+        let Some(requested) = requested else {
+            return Ok(self.rate);
+        };
+        let allowed = match (self.overrides, self.rate) {
+            (Override::Fixed, _) => false,
+            (Override::TightenOnly, None) => true,
+            (Override::TightenOnly, Some(declared)) => requested.is_no_looser_than(&declared),
+            (Override::UpTo(ceiling), _) => requested.is_no_looser_than(&ceiling),
+        };
+        if allowed {
+            Ok(Some(requested))
+        } else {
+            Err(Error::permanent(
+                "rate limit override exceeds what the resource's policy allows",
+            ))
+        }
+    }
+}
+
+/// Operator form of a rate-limit override (the UI schema of
+/// [`RateConfig`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -71,168 +223,307 @@ impl RateLimitSettings {
         self.burst = Some(burst);
         self
     }
-}
 
-/// Why a [`RateLimiter::reserve`] was denied.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum RateLimitDenial {
-    /// The slot is further away than the allowed wait; retry after this long.
-    Later(Duration),
-    /// More permits were requested than the burst can ever grant at once.
-    ExceedsBurst,
-}
-
-/// A lock-free GCRA rate limiter. See the [module docs](self).
-#[derive(Debug)]
-pub struct RateLimiter {
-    base: Instant,
-    /// Time between two requests at the steady rate, in nanoseconds.
-    emission_nanos: u64,
-    /// How far ahead of now the schedule may run (`emission * burst`).
-    tolerance_nanos: u64,
-    burst: u32,
-    settings: RateLimitSettings,
-    /// Theoretical arrival time of the next request, nanoseconds since `base`.
-    tat: AtomicU64,
-}
-
-impl RateLimiter {
-    /// Builds a limiter from validated settings.
+    /// The validated rate.
     ///
     /// # Errors
     ///
-    /// Returns a permanent [`Error`] when `requests`, `period_ms` or `burst`
-    /// is zero, or when the rate is too high to represent (less than one
-    /// nanosecond between requests).
-    pub fn new(settings: RateLimitSettings) -> Result<Self, Error> {
-        if settings.requests == 0 {
-            return Err(Error::permanent("rate limit: requests must be at least 1"));
+    /// A permanent [`Error`] for zero requests, period or burst, or an
+    /// unrepresentable rate.
+    pub fn to_rate(self) -> Result<Rate, Error> {
+        let mut config = RateConfig::new(self.requests, self.period_ms);
+        if let Some(burst) = self.burst {
+            config = config.with_burst(burst);
         }
-        if settings.period_ms == 0 {
-            return Err(Error::permanent("rate limit: period_ms must be positive"));
-        }
-        let burst = settings.burst.unwrap_or(1);
-        if burst == 0 {
-            return Err(Error::permanent("rate limit: burst must be at least 1"));
-        }
-        let period_nanos = u128::from(settings.period_ms) * 1_000_000;
-        let emission_nanos = u64::try_from(period_nanos / u128::from(settings.requests))
-            .ok()
-            .filter(|nanos| *nanos > 0)
-            .ok_or_else(|| Error::permanent("rate limit: rate is too high to represent"))?;
-        let tolerance_nanos = emission_nanos
-            .checked_mul(u64::from(burst))
-            .ok_or_else(|| Error::permanent("rate limit: burst window is too large"))?;
-        Ok(Self {
-            base: Instant::now(),
-            emission_nanos,
-            tolerance_nanos,
-            burst,
-            settings,
-            tat: AtomicU64::new(0),
-        })
+        Rate::try_from(config)
+            .map_err(|error| Error::permanent(format!("invalid rate limit: {error}")))
     }
 
-    /// Parses operator JSON (`None` or `null` = no limit) into a limiter.
+    /// Parses operator JSON (`None` or `null` = no override).
     ///
     /// # Errors
     ///
-    /// Returns a permanent [`Error`] for malformed or unknown fields and for
-    /// every error [`new`](Self::new) returns.
-    pub fn from_value(value: Option<&serde_json::Value>) -> Result<Option<Self>, Error> {
+    /// A permanent [`Error`] for malformed JSON, unknown fields, or an
+    /// invalid rate.
+    pub fn rate_from_value(value: Option<&serde_json::Value>) -> Result<Option<Rate>, Error> {
         match value {
             None | Some(serde_json::Value::Null) => Ok(None),
-            Some(value) => {
-                let settings = RateLimitSettings::deserialize(value).map_err(|error| {
-                    Error::permanent(format!("invalid rate limit settings: {error}"))
-                })?;
-                Self::new(settings).map(Some)
-            },
+            Some(value) => Self::deserialize(value)
+                .map_err(|error| Error::permanent(format!("invalid rate limit settings: {error}")))?
+                .to_rate()
+                .map(Some),
         }
     }
+}
 
-    /// The settings this limiter was built from.
+/// Registration-time limit input for one row.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct RowLimit {
+    /// Operator override of the declared rate, checked against the policy.
+    pub rate: Option<Rate>,
+    /// Quota the row draws on. Rows with equal keys share one limit (the
+    /// engine keys stored rows by provider account). `None` keys the limit
+    /// to this registry row alone.
+    pub key: Option<LimitKey>,
+}
+
+impl RowLimit {
+    /// An override of the declared rate.
     #[must_use]
-    pub const fn settings(&self) -> RateLimitSettings {
-        self.settings
-    }
-
-    fn now_nanos(&self) -> u64 {
-        u64::try_from(self.base.elapsed().as_nanos()).unwrap_or(u64::MAX)
-    }
-
-    /// Reserves `permits` and returns how long the caller must wait before
-    /// using them, provided that wait is at most `max_wait` (`None` = no
-    /// bound). A denied reservation consumes nothing.
-    ///
-    /// # Errors
-    ///
-    /// [`RateLimitDenial::Later`] when the slot is further than `max_wait`;
-    /// [`RateLimitDenial::ExceedsBurst`] when `permits` exceeds the burst.
-    pub fn reserve(
-        &self,
-        permits: u32,
-        max_wait: Option<Duration>,
-    ) -> Result<Duration, RateLimitDenial> {
-        if permits == 0 {
-            return Ok(Duration::ZERO);
-        }
-        if permits > self.burst {
-            return Err(RateLimitDenial::ExceedsBurst);
-        }
-        let cost = self.emission_nanos.saturating_mul(u64::from(permits));
-        let mut tat = self.tat.load(Ordering::Acquire);
-        loop {
-            let now = self.now_nanos();
-            let next_tat = tat.max(now).saturating_add(cost);
-            let wait = Duration::from_nanos((next_tat - now).saturating_sub(self.tolerance_nanos));
-            if max_wait.is_some_and(|max| wait > max) {
-                return Err(RateLimitDenial::Later(wait));
-            }
-            match self
-                .tat
-                .compare_exchange_weak(tat, next_tat, Ordering::AcqRel, Ordering::Acquire)
-            {
-                Ok(_) => return Ok(wait),
-                Err(current) => tat = current,
-            }
+    pub const fn rate(rate: Rate) -> Self {
+        Self {
+            rate: Some(rate),
+            key: None,
         }
     }
 
-    /// Waits until `permits` may be used, but never past `deadline`.
+    /// Shares the quota under `key`.
+    #[must_use]
+    pub fn with_key(mut self, key: LimitKey) -> Self {
+        self.key = Some(key);
+        self
+    }
+}
+
+/// A limit store shared by every worker process, for
+/// [`LimitScope::Cluster`] limits.
+#[derive(Clone)]
+pub struct SharedLimitStore(pub Arc<dyn ErasedLimitStore>);
+
+impl fmt::Debug for SharedLimitStore {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("SharedLimitStore")
+    }
+}
+
+/// The enforced limit of one registry row.
+pub struct ResourceLimiter {
+    store: Arc<dyn ErasedLimitStore>,
+    key: LimitKey,
+    rate: Rate,
+    max_penalty: Duration,
+    resource_key: ResourceKey,
+    events: Arc<EventBus<ResourceEvent>>,
+    engaged: AtomicBool,
+    store_down: AtomicBool,
+    refusals: AtomicU32,
+}
+
+impl fmt::Debug for ResourceLimiter {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ResourceLimiter")
+            .field("resource_key", &self.resource_key)
+            .field("rate", &self.rate)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ResourceLimiter {
+    pub(crate) fn new(
+        store: Arc<dyn ErasedLimitStore>,
+        key: LimitKey,
+        rate: Rate,
+        max_penalty: Duration,
+        resource_key: ResourceKey,
+        events: Arc<EventBus<ResourceEvent>>,
+    ) -> Self {
+        Self {
+            store,
+            key,
+            rate,
+            max_penalty,
+            resource_key,
+            events,
+            engaged: AtomicBool::new(false),
+            store_down: AtomicBool::new(false),
+            refusals: AtomicU32::new(0),
+        }
+    }
+
+    /// The enforced rate.
+    #[must_use]
+    pub const fn rate(&self) -> Rate {
+        self.rate
+    }
+
+    /// Waits for one permit, never past `deadline`.
     ///
     /// # Errors
     ///
     /// - [`ErrorKind::Exhausted`](crate::ErrorKind::Exhausted) with a
     ///   `retry_after` when the slot lands after `deadline`; nothing is
     ///   consumed.
-    /// - [`ErrorKind::Permanent`](crate::ErrorKind::Permanent) when `permits`
-    ///   exceeds the configured burst and can never be granted.
+    /// - [`ErrorKind::Backpressure`](crate::ErrorKind::Backpressure) when the
+    ///   limit store cannot be reached (fail closed).
     ///
     /// # Cancel safety
     ///
-    /// Cancelling during the wait forfeits the reserved slot; it is not
-    /// refunded.
-    pub async fn until_ready(&self, permits: u32, deadline: Option<Instant>) -> Result<(), Error> {
-        let max_wait = deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()));
-        match self.reserve(permits, max_wait) {
-            Ok(wait) => {
-                if !wait.is_zero() {
-                    tokio::time::sleep(wait).await;
-                }
-                Ok(())
+    /// Cancelling during the wait forfeits the booked slot: the limiter errs
+    /// on sending less, never more.
+    pub async fn ready(&self, deadline: Option<std::time::Instant>) -> Result<(), Error> {
+        let max_wait = deadline.map_or(Duration::MAX, |deadline| {
+            deadline.saturating_duration_since(std::time::Instant::now())
+        });
+        let decision = self
+            .store
+            .reserve_boxed(&self.key, &self.rate, ReserveRequest::new(1, max_wait))
+            .await;
+        let grant = match decision {
+            Ok(Ok(grant)) => {
+                self.store_recovered();
+                grant
             },
-            Err(RateLimitDenial::Later(retry_after)) => Err(Error::exhausted(
-                "rate limit exhausted before the deadline",
-                Some(retry_after),
-            )),
-            Err(RateLimitDenial::ExceedsBurst) => Err(Error::permanent(format!(
-                "rate limit: {permits} permits exceed the burst of {}",
-                self.burst
-            ))),
+            Ok(Err(Denied::Later { retry_after })) => {
+                self.store_recovered();
+                self.engage();
+                return Err(Error::exhausted(
+                    "rate limit exhausted before the deadline",
+                    Some(retry_after),
+                )
+                .with_resource_key(self.resource_key.clone()));
+            },
+            Ok(Err(Denied::Never { burst })) => {
+                return Err(Error::permanent(format!(
+                    "rate limit: one permit exceeds the burst of {burst}"
+                ))
+                .with_resource_key(self.resource_key.clone()));
+            },
+            Ok(Err(_)) => {
+                return Err(Error::exhausted("rate limit refused the request", None)
+                    .with_resource_key(self.resource_key.clone()));
+            },
+            Err(error) => return Err(self.store_unavailable(&error)),
+        };
+        if grant.wait.is_zero() {
+            self.clear();
+        } else {
+            self.engage();
+            tokio::time::sleep(grant.wait).await;
+        }
+        Ok(())
+    }
+
+    /// Blocks every caller of this limit for the provider's `retry_after`,
+    /// capped at the policy's maximum. Call it on a provider's 429.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorKind::Backpressure`](crate::ErrorKind::Backpressure) when the
+    /// limit store cannot be reached.
+    pub async fn penalize(&self, retry_after: Duration) -> Result<(), Error> {
+        self.store
+            .penalize_boxed(&self.key, &self.rate, retry_after, self.max_penalty)
+            .await
+            .map_err(|error| self.store_unavailable(&error))?;
+        let _ = self.events.emit(ResourceEvent::RateLimitPenalized {
+            key: self.resource_key.clone(),
+            retry_after: retry_after.min(self.max_penalty),
+        });
+        self.engaged.store(true, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Runs one outbound call under the limit.
+    ///
+    /// Waits for a permit (see [`ready`](Self::ready)), runs `call`, and when
+    /// the call fails with [`ErrorKind::Exhausted`](crate::ErrorKind::Exhausted)
+    /// — the provider said "too many requests" — blocks the whole limit key
+    /// for the provider's `retry_after` (capped at the policy's
+    /// `max_penalty`). Without a `retry_after` the block backs off
+    /// exponentially over consecutive refusals, from one second up to the
+    /// cap; the first call that gets through resets it.
+    ///
+    /// # Errors
+    ///
+    /// Whatever [`ready`](Self::ready) or `call` returns. A failure to record
+    /// the penalty is logged, never masks the call's own error.
+    pub async fn call<T, F, Fut>(
+        &self,
+        deadline: Option<std::time::Instant>,
+        call: F,
+    ) -> Result<T, Error>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = Result<T, Error>>,
+    {
+        self.ready(deadline).await?;
+        let result = call().await;
+        match &result {
+            Ok(_) => self.refusals.store(0, Ordering::Relaxed),
+            Err(error) => {
+                if let ErrorKind::Exhausted { retry_after } = error.kind() {
+                    let refusals = self.refusals.fetch_add(1, Ordering::Relaxed);
+                    let block = retry_after.unwrap_or_else(|| backoff(refusals));
+                    if let Err(penalty_error) = self.penalize(block).await {
+                        tracing::debug!(
+                            target: "nebula_resource::rate_limit",
+                            resource_key = %self.resource_key,
+                            %penalty_error,
+                            "could not record a provider refusal"
+                        );
+                    }
+                }
+            },
+        }
+        result
+    }
+
+    fn engage(&self) {
+        if !self.engaged.swap(true, Ordering::Relaxed) {
+            let _ = self.events.emit(ResourceEvent::RateLimitEngaged {
+                key: self.resource_key.clone(),
+            });
         }
     }
+
+    fn clear(&self) {
+        if self.engaged.swap(false, Ordering::Relaxed) {
+            let _ = self.events.emit(ResourceEvent::RateLimitCleared {
+                key: self.resource_key.clone(),
+            });
+        }
+    }
+
+    fn store_recovered(&self) {
+        if self.store_down.swap(false, Ordering::Relaxed) {
+            let _ = self.events.emit(ResourceEvent::RateLimitStoreRecovered {
+                key: self.resource_key.clone(),
+            });
+        }
+    }
+
+    fn store_unavailable(&self, error: &LimitStoreError) -> Error {
+        if !self.store_down.swap(true, Ordering::Relaxed) {
+            tracing::warn!(
+                target: "nebula_resource::rate_limit",
+                resource_key = %self.resource_key,
+                %error,
+                "rate limit store unavailable; failing closed"
+            );
+            let _ = self.events.emit(ResourceEvent::RateLimitStoreUnavailable {
+                key: self.resource_key.clone(),
+            });
+        }
+        Error::backpressure("rate limit store unavailable")
+            .with_resource_key(self.resource_key.clone())
+    }
+}
+
+/// Block after the `refusals`-th consecutive provider refusal that carried no
+/// `retry_after`: 1 s, 2 s, 4 s, … (the policy cap applies on top).
+fn backoff(refusals: u32) -> Duration {
+    Duration::from_secs(1u64 << refusals.min(20))
+}
+
+/// Parses an HTTP `Retry-After` header value given in seconds.
+///
+/// The HTTP-date form is not parsed and yields `None`, as does anything
+/// malformed; callers then fall back to the limiter's own backoff.
+#[must_use]
+pub fn retry_after_from_header(value: &str) -> Option<Duration> {
+    value.trim().parse::<u64>().ok().map(Duration::from_secs)
 }
 
 #[cfg(test)]

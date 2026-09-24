@@ -250,10 +250,10 @@ impl TryFrom<RateConfig> for Rate {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Denied {
-    /// The slot is further away than the allowed wait; a retry with the same
-    /// wait can succeed after `retry_after`.
+    /// The slot is further away than the allowed wait.
     Later {
-        /// How much longer the caller would have had to wait.
+        /// Time until the slot arrives, when a request that waits for
+        /// nothing would pass (the HTTP `Retry-After` meaning).
         retry_after: Duration,
     },
     /// More permits were requested than the burst can ever grant at once.

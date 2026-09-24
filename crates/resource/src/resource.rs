@@ -827,6 +827,18 @@ pub trait Provider: HasCredentialSlots + Send + Sync + Sized + 'static {
     /// The resource factory derives and binds the canonical configuration
     /// schema from [`Self::Config`]. Authors cannot supply an arbitrary schema.
     fn metadata() -> ResourceMetadataDraft;
+
+    /// The provider's limits and how stored rows may override them.
+    ///
+    /// Declare what the upstream API enforces — its rate, where that quota
+    /// is counted, and whether an operator may raise it — so every
+    /// deployment respects it without per-row configuration. The default
+    /// declares no limit and lets rows add one. A Telegram bot, for example,
+    /// returns `ResiliencePolicy::new().rate(Rate::per_second(30)` with a
+    /// burst of 30`)`.
+    fn resilience() -> crate::rate_limit::ResiliencePolicy {
+        crate::rate_limit::ResiliencePolicy::new()
+    }
 }
 
 /// Credential-slot epoch provider — implemented by `#[derive(Resource)]`.

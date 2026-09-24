@@ -48,7 +48,7 @@ pub fn reserve(
     let wait = allow_at - now;
     let max_wait = nanos(max_wait);
     if wait > max_wait {
-        let retry_after = Duration::from_nanos(wait - max_wait);
+        let retry_after = Duration::from_nanos(wait);
         return (Err(Denied::Later { retry_after }), None);
     }
     let next = GcraState {

@@ -59,6 +59,7 @@ async fn register_from_value(
                 topology: None,
                 rate_limit: None,
                 row_id: None,
+                limit_key: None,
             },
             &expected_slot_identity,
         )
@@ -361,6 +362,7 @@ async fn register_from_value_resolves_template_and_registers() {
                 topology: None,
                 rate_limit: None,
                 row_id: None,
+                limit_key: None,
             },
             &expected_slot_identity,
         )

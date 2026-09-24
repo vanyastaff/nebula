@@ -159,6 +159,11 @@ pub struct ManagerConfig {
     /// and watch [`Manager::event_bus_stats`](super::Manager::event_bus_stats)
     /// for drops. Values below 1 are treated as 1. Defaults to 256.
     pub event_bus_capacity: usize,
+    /// Store shared by every worker process for
+    /// [`LimitScope::Cluster`](crate::rate_limit::LimitScope::Cluster) rate
+    /// limits. `None` (the default) keeps every limit in this process, with a
+    /// warning for each row whose policy asks for a cluster-wide limit.
+    pub shared_limit_store: Option<crate::rate_limit::SharedLimitStore>,
 }
 
 impl Default for ManagerConfig {
@@ -169,11 +174,22 @@ impl Default for ManagerConfig {
             metrics_registry: None,
             acquire_slow_threshold: None,
             event_bus_capacity: 256,
+            shared_limit_store: None,
         }
     }
 }
 
 impl ManagerConfig {
+    /// Enforces cluster-wide rate limits through `store`.
+    #[must_use]
+    pub fn with_shared_limit_store(
+        mut self,
+        store: Arc<dyn crate::rate_limit::ErasedLimitStore>,
+    ) -> Self {
+        self.shared_limit_store = Some(crate::rate_limit::SharedLimitStore(store));
+        self
+    }
+
     /// Override the number of background release-queue workers.
     #[must_use]
     pub fn with_release_queue_workers(mut self, workers: usize) -> Self {
@@ -348,11 +364,13 @@ pub struct RegistrationSpec<R: Provider> {
     pub topology: R::Topology,
     /// Optional recovery gate for thundering-herd prevention.
     pub recovery_gate: Option<Arc<RecoveryGate>>,
-    /// Optional rate limit on this row, consumed on every acquire and
-    /// available per call through
-    /// [`ResourceGuard::rate_limiter`](crate::ResourceGuard::rate_limiter).
-    /// Share one [`Arc`] across registrations that draw on the same quota.
-    pub rate_limit: Option<Arc<crate::rate_limit::RateLimiter>>,
+    /// Operator input for this row's rate limit: an override of the rate
+    /// [`Provider::resilience`](crate::Provider::resilience) declares (checked
+    /// against its [`Override`](crate::rate_limit::Override) rule) and the key
+    /// of the quota it draws on. `None` enforces the declared policy on a
+    /// quota of this row alone. The limit is consumed on every acquire and
+    /// per call through [`ResourceGuard::limits`](crate::ResourceGuard::limits).
+    pub rate_limit: Option<crate::rate_limit::RowLimit>,
 }
 
 impl<R: Provider> std::fmt::Debug for RegistrationSpec<R> {

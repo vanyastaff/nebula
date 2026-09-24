@@ -22,6 +22,64 @@ use crate::{
 };
 
 impl Manager {
+    /// Builds the enforced limit of one row from `R`'s declared policy and
+    /// the row's override; `None` when neither declares a limit.
+    ///
+    /// A row without an explicit quota key is limited on its own, in this
+    /// process: its fallback key identifies the registry row, which is only
+    /// meaningful locally. Cluster-wide sharing needs an explicit key.
+    fn row_limiter<R: Provider>(
+        &self,
+        input: Option<crate::rate_limit::RowLimit>,
+        scope: &ScopeLevel,
+        slot_identity: &crate::dedup::SlotIdentity,
+    ) -> Result<Option<Arc<crate::rate_limit::ResourceLimiter>>, Error> {
+        use std::hash::{Hash as _, Hasher as _};
+
+        use crate::rate_limit::{ErasedLimitStore, LimitKey, LimitScope};
+
+        let policy = R::resilience();
+        let input = input.unwrap_or_default();
+        let Some(rate) = policy
+            .effective_rate(input.rate)
+            .map_err(|error| error.with_resource_key(R::key()))?
+        else {
+            return Ok(None);
+        };
+        let local: Arc<dyn ErasedLimitStore> = self.local_limits.clone();
+        let (store, key) = match (input.key, policy.limit_scope(), &self.shared_limits) {
+            (Some(key), LimitScope::Cluster, Some(shared)) => (Arc::clone(&shared.0), key),
+            (Some(key), scope_kind, shared) => {
+                if scope_kind == LimitScope::Cluster && shared.is_none() {
+                    tracing::warn!(
+                        resource.key = %R::key(),
+                        "cluster-wide rate limit enforced per process: no shared limit store configured"
+                    );
+                }
+                (local, key)
+            },
+            (None, _, _) => {
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                scope.hash(&mut hasher);
+                slot_identity.hash(&mut hasher);
+                let key = LimitKey::new(format!("row:{}:{:016x}", R::key(), hasher.finish()))
+                    .map_err(|_| {
+                        Error::permanent("resource key does not form a valid rate-limit key")
+                            .with_resource_key(R::key())
+                    })?;
+                (local, key)
+            },
+        };
+        Ok(Some(Arc::new(crate::rate_limit::ResourceLimiter::new(
+            store,
+            key,
+            rate,
+            policy.penalty_cap(),
+            R::key(),
+            Arc::clone(&self.event_bus),
+        ))))
+    }
+
     /// Registers a resource from a fully-specified [`RegistrationSpec`].
     ///
     /// This is the **single registration funnel**: the former 3-deep
@@ -181,6 +239,7 @@ impl Manager {
         }
 
         config.validate()?;
+        let rate_limiter = self.row_limiter::<R>(rate_limit, &scope, &slot_identity)?;
 
         // #390 (pool min/max sanity) is enforced at `Pooled` construction,
         // which the caller has already invoked to build the topology handed
@@ -242,7 +301,7 @@ impl Manager {
             generation: AtomicU64::new(0),
             status: arc_swap::ArcSwap::from_pointee(crate::state::ResourceStatus::new()),
             recovery_gate,
-            rate_limiter: rate_limit,
+            rate_limiter,
             tainted: std::sync::atomic::AtomicBool::new(false),
             in_flight: Arc::new((AtomicU64::new(0), Notify::new())),
             maintenance_sweeps: AtomicU64::new(0),
@@ -542,7 +601,7 @@ impl Manager {
         scope: ScopeLevel,
         topology: R::Topology,
         recovery_gate: Option<Arc<RecoveryGate>>,
-        rate_limit: Option<Arc<crate::rate_limit::RateLimiter>>,
+        rate_limit: Option<crate::rate_limit::RowLimit>,
         row_id: Option<&str>,
         expected_slot_identity: &crate::dedup::SlotIdentity,
     ) -> Result<crate::dedup::SlotIdentity, Error>

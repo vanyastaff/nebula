@@ -137,16 +137,29 @@ registering.
 { "mode": "capped", "max_concurrent": 4 }
 ```
 
-Rate limits are per registry row: `RegistrationSpec::rate_limit` (typed) or
-`RegisterRequest::rate_limit` (JSON `{"requests": 30, "period_ms": 1000,
-"burst": 5}`) attaches a lock-free GCRA `rate_limit::RateLimiter`. Every
-acquire consumes one permit before it is counted as in flight (so a queued
-caller never delays revoke or shutdown drains), and
-`ResourceGuard::rate_limiter()` paces individual calls inside one lease. A
-caller waits for its slot but never past its acquire deadline: a slot after the
-deadline fails fast with `Exhausted` + `retry_after` and consumes nothing. The
-limiter is local state, so its denials never trip the recovery gate. Share one
-`Arc<RateLimiter>` across registrations that draw on the same quota.
+Rate limits are declared by the resource author: `Provider::resilience()`
+returns a `rate_limit::ResiliencePolicy` (the provider's `Rate`, where the quota
+is counted — `LimitScope::Cluster` by default — how long one `Retry-After` may
+block it, and what a stored row may `Override`: tighten only by default). A row
+may override the rate within those bounds — `RegistrationSpec::rate_limit`
+(`RowLimit`) or `RegisterRequest::rate_limit` (JSON `{"requests": 30,
+"period_ms": 1000, "burst": 5}`) — and names the quota it draws on with a
+`LimitKey`: rows with one key share one limit (the engine keys stored rows by
+provider account; without a key a row is limited alone, in this process). The
+limit is a GCRA from `nebula-resilience` behind a `LimitStore`: the manager's
+in-memory store, or `ManagerConfig::with_shared_limit_store` for cluster-wide
+limits.
+
+Every acquire consumes one permit before it is counted as in flight (so a
+queued caller never delays revoke or shutdown drains), and
+`ResourceGuard::limits()` paces individual calls inside one lease
+(`ready(deadline)`) and applies a provider's 429 to every caller of the quota
+(`penalize(retry_after)`). A caller waits for its slot but never past its
+deadline: a slot after the deadline fails fast with `Exhausted` +
+`retry_after` and consumes nothing; an unreachable shared store fails closed as
+`Backpressure`. Denials never trip the recovery gate. `ResourceEvent`
+publishes `RateLimitEngaged` / `Cleared` / `Penalized` / `StoreUnavailable` /
+`StoreRecovered` on transitions only, never per call.
 
 Admitted `ResourceMetadata` has private fields, getters, and `Serialize` only.
 Persisted catalog bytes deserialize as `RecordedResourceMetadata`; callers must

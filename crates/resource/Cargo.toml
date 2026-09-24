@@ -30,6 +30,7 @@ nebula-eventbus = { path = "../eventbus" }
 nebula-expression = { path = "../expression", default-features = false, features = ["cache"] }
 nebula-metrics = { path = "../metrics" }
 nebula-metadata = { path = "../metadata" }
+nebula-resilience = { path = "../resilience" }
 nebula-resource-macros = { path = "macros" }
 nebula-schema = { path = "../schema" }
 serde_json = { workspace = true }

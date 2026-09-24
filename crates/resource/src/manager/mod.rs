@@ -444,6 +444,11 @@ pub struct Manager {
     /// [`AcquireOptions::acquire_slow_threshold`](crate::options::AcquireOptions::acquire_slow_threshold)
     /// overrides this per call.
     pub(super) acquire_slow_threshold: Option<std::time::Duration>,
+    /// Rate-limit state for process-scoped limits (and for cluster-scoped
+    /// ones while no shared store is configured).
+    pub(super) local_limits: Arc<crate::rate_limit::MemoryLimitStore>,
+    /// Store shared by every worker for cluster-scoped limits.
+    pub(super) shared_limits: Option<crate::rate_limit::SharedLimitStore>,
 }
 
 impl std::fmt::Debug for Manager {
@@ -511,6 +516,8 @@ impl Manager {
             shutting_down: AtomicBool::new(false),
             lifecycle: None,
             acquire_slow_threshold,
+            local_limits: Arc::new(crate::rate_limit::MemoryLimitStore::new()),
+            shared_limits: config.shared_limit_store,
         }
     }
 

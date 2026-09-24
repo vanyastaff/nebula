@@ -486,3 +486,49 @@ async fn a_cancelled_turn_stops_activation() {
         Err(StoredResourceActivationError::Cancelled)
     );
 }
+
+fn binding(slot: &str, credential: CredentialId) -> SlotBinding {
+    SlotBinding {
+        slot_name: slot.to_owned(),
+        credential_key: CredentialKey::new("auth").expect("valid credential key"),
+        credential_id: Some(credential),
+    }
+}
+
+/// Rows bound to the same credentials in one tenant share a quota key; any
+/// other tenant, credential set or secret gets a different one, and the key
+/// never spells the credential ids.
+#[test]
+fn account_limit_key_is_per_tenant_credential_set_and_secret() {
+    let secret = [7_u8; 32];
+    let tenant = Scope::new(
+        WorkspaceId::new().to_string(),
+        nebula_core::OrgId::new().to_string(),
+    );
+    let other_tenant = Scope::new(
+        WorkspaceId::new().to_string(),
+        nebula_core::OrgId::new().to_string(),
+    );
+    let (a, b) = (CredentialId::new(), CredentialId::new());
+
+    let key = account_limit_key(&secret, &tenant, &[binding("x", a), binding("y", b)]).unwrap();
+    assert_eq!(
+        account_limit_key(&secret, &tenant, &[binding("y", b), binding("x", a)]),
+        Some(key.clone()),
+        "slot order does not matter"
+    );
+    assert_ne!(
+        account_limit_key(&secret, &other_tenant, &[binding("x", a), binding("y", b)]),
+        Some(key.clone())
+    );
+    assert_ne!(
+        account_limit_key(&secret, &tenant, &[binding("x", a)]),
+        Some(key.clone())
+    );
+    assert_ne!(
+        account_limit_key(&[8_u8; 32], &tenant, &[binding("x", a), binding("y", b)]),
+        Some(key.clone())
+    );
+    assert!(!key.as_str().contains(&a.to_string()));
+    assert_eq!(account_limit_key(&secret, &tenant, &[]), None);
+}

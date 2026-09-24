@@ -220,6 +220,7 @@ fn request<'a>(expr: &'a ExpressionEngine, bindings: &[(&str, &str)]) -> Registe
         topology: None,
         rate_limit: None,
         row_id: None,
+        limit_key: None,
     }
 }
 

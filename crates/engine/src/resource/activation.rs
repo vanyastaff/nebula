@@ -168,6 +168,50 @@ pub struct StoredResourceActivator {
     store: Arc<dyn ResourceStore>,
     timeout: Duration,
     rows: DashMap<(Scope, ResourceId), RowSlot>,
+    limit_key_secret: Arc<[u8; 32]>,
+}
+
+type HmacSha256 = hmac::Hmac<sha2::Sha256>;
+
+/// The quota key rows bound to the same credentials share: a provider limits
+/// the account behind a credential, not one resource row.
+///
+/// Keyed with an instance secret so the key cannot be recomputed from, or
+/// compared across, tenants' credential ids; the tenant owner is part of the
+/// input so two tenants never share a quota. `None` for a row bound to no
+/// credential, which is then limited on its own.
+fn account_limit_key(
+    secret: &[u8; 32],
+    scope: &Scope,
+    bindings: &[SlotBinding],
+) -> Option<nebula_resource::rate_limit::LimitKey> {
+    use hmac::{KeyInit as _, Mac as _};
+
+    let mut credentials: Vec<String> = bindings
+        .iter()
+        .filter_map(|binding| binding.credential_id.map(|id| id.to_string()))
+        .collect();
+    if credentials.is_empty() {
+        return None;
+    }
+    credentials.sort_unstable();
+    credentials.dedup();
+    let mut mac = HmacSha256::new_from_slice(secret).ok()?;
+    mac.update(scope.credential_owner_id().as_bytes());
+    for credential in &credentials {
+        mac.update(&[0]);
+        mac.update(credential.as_bytes());
+    }
+    let digest = mac.finalize().into_bytes();
+    let hex = digest
+        .iter()
+        .take(16)
+        .fold(String::with_capacity(32), |mut hex, byte| {
+            use std::fmt::Write as _;
+            let _ = write!(hex, "{byte:02x}");
+            hex
+        });
+    nebula_resource::rate_limit::LimitKey::new(format!("acct:{hex}")).ok()
 }
 
 impl std::fmt::Debug for StoredResourceActivator {
@@ -184,11 +228,28 @@ impl StoredResourceActivator {
     /// Activates rows read from `store`.
     #[must_use]
     pub fn new(store: Arc<dyn ResourceStore>) -> Self {
+        use rand::Rng as _;
+
+        let mut secret = [0_u8; 32];
+        rand::rng().fill_bytes(&mut secret);
         Self {
             store,
             timeout: DEFAULT_ACTIVATION_TIMEOUT,
             rows: DashMap::new(),
+            limit_key_secret: Arc::new(secret),
         }
+    }
+
+    /// Sets the secret account quota keys are derived with.
+    ///
+    /// The default is random per process, which is enough while limits live
+    /// in this process. Every worker enforcing a cluster-wide limit must use
+    /// the same secret, or each derives different keys and gets its own
+    /// quota.
+    #[must_use]
+    pub fn with_limit_key_secret(mut self, secret: [u8; 32]) -> Self {
+        self.limit_key_secret = Arc::new(secret);
+        self
     }
 
     /// Bounds one row activation. A slow backend or credential source then
@@ -300,7 +361,7 @@ impl StoredResourceActivator {
             return Ok(current.activated.clone());
         }
 
-        let activated = register_row(context, scope, &row, cancel).await?;
+        let activated = register_row(context, scope, &row, &self.limit_key_secret, cancel).await?;
         let previous = active.replace(ActiveRow {
             version: row.version,
             activated: activated.clone(),
@@ -325,6 +386,7 @@ async fn register_row(
     context: &ActivationContext<'_>,
     scope: &Scope,
     row: &ResourceRow,
+    limit_key_secret: &[u8; 32],
     cancel: &CancellationToken,
 ) -> Result<ActivatedResource, StoredResourceActivationError> {
     let workspace = WorkspaceId::parse(&scope.workspace_id)
@@ -398,6 +460,7 @@ async fn register_row(
     }
 
     let scope_level = ScopeLevel::Workspace(workspace);
+    let limit_key = account_limit_key(limit_key_secret, scope, &slot_bindings);
     let outcome = context
         .registrars
         .register(
@@ -413,6 +476,7 @@ async fn register_row(
                 topology: None,
                 rate_limit: None,
                 row_id: Some(row.id.clone()),
+                limit_key,
             },
         )
         .await
