@@ -54,6 +54,9 @@ tracing = { workspace = true }
 scopeguard = { workspace = true, optional = true }
 # `Retry-After` given as an HTTP date.
 httpdate = { workspace = true }
+# Per-key rate limits hash the key's value (a chat id, an e-mail address)
+# before it reaches a limit store.
+sha2 = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }

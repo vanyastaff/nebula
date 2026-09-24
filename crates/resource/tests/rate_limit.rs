@@ -235,6 +235,13 @@ impl Provider for ChatResource {
         nebula_core::resource_key!("test-chat")
     }
 
+    /// No account rate, but the provider allows one message per second per
+    /// chat.
+    fn resilience() -> nebula_resource::rate_limit::ResiliencePolicy {
+        nebula_resource::rate_limit::ResiliencePolicy::new()
+            .keyed("chat_id", Rate::per_second(NonZeroU32::MIN))
+    }
+
     async fn create(
         &self,
         _config: &common::TestConfig,
@@ -313,6 +320,77 @@ async fn a_provider_pause_reported_through_the_client_holds_every_acquire() {
         error.kind(),
         ErrorKind::Exhausted { retry_after: Some(after) } if *after == Duration::from_secs(30)
     ));
+}
+
+fn register_chat(manager: &Manager, limit: Option<RowLimit>) {
+    manager
+        .register(RegistrationSpec {
+            resource: ChatResource,
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: Resident::new(ResidentConfig::default()),
+            recovery_gate: None,
+            rate_limit: limit,
+        })
+        .expect("registration succeeds");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_declared_per_chat_limit_paces_calls_to_one_chat() {
+    let manager = Manager::new();
+    register_chat(&manager, None);
+    let guard = manager
+        .acquire::<ChatResource>(&test_ctx(), &AcquireOptions::default())
+        .await
+        .expect("acquire");
+    let send = async |chat: &ChatClient| chat.send(None).await;
+    guard.run_for("chat_id", 1, send).await.expect("free");
+    let started = Instant::now();
+    guard
+        .run_for("chat_id", 2, send)
+        .await
+        .expect("another chat");
+    assert_eq!(started.elapsed(), Duration::ZERO);
+    guard
+        .run_for("chat_id", 1, send)
+        .await
+        .expect("waits for chat 1");
+    assert_eq!(started.elapsed(), Duration::from_secs(1));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_row_override_slows_a_per_chat_limit() {
+    let manager = Manager::new();
+    let every_three_seconds = Rate::new(NonZeroU32::MIN, Duration::from_secs(3)).unwrap();
+    register_chat(
+        &manager,
+        Some(RowLimit::default().with_keyed("chat_id", every_three_seconds)),
+    );
+    let guard = manager
+        .acquire::<ChatResource>(&test_ctx(), &AcquireOptions::default())
+        .await
+        .expect("acquire");
+    let send = async |chat: &ChatClient| chat.send(None).await;
+    guard.run_for("chat_id", 1, send).await.expect("free");
+    let started = Instant::now();
+    guard.run_for("chat_id", 1, send).await.expect("waits");
+    assert_eq!(started.elapsed(), Duration::from_secs(3));
+
+    // Faster than declared is refused at registration, before any call.
+    let manager = Manager::new();
+    let error = manager
+        .register(RegistrationSpec {
+            resource: ChatResource,
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: Resident::new(ResidentConfig::default()),
+            recovery_gate: None,
+            rate_limit: Some(RowLimit::default().with_keyed("chat_id", per_second(10, 1))),
+        })
+        .expect_err("tighten only");
+    assert_eq!(error.kind(), &ErrorKind::Permanent);
 }
 
 #[tokio::test(start_paused = true)]

@@ -22,10 +22,30 @@ fn limiter(rate: Rate) -> ResourceLimiter {
             LimitKey::new("test:row").unwrap(),
             rate,
         )),
+        None,
         Duration::from_mins(1),
         ResourceKey::new("test.resource").unwrap(),
         Arc::new(EventBus::new(16)),
     )
+}
+
+/// An account limit of `account` plus one message per second per chat.
+fn chat_limiter(account: Rate) -> (Arc<ResourceLimiter>, Arc<MemoryLimitStore>) {
+    let store = Arc::new(MemoryLimitStore::new());
+    let base = LimitKey::new("acct:test").unwrap();
+    let shared: Arc<dyn ErasedLimitStore> = store.clone();
+    let limiter = ResourceLimiter::new(
+        Some(Quota::new(Arc::clone(&shared), base.clone(), account)),
+        Some(KeyedLimits::new(
+            shared,
+            base,
+            vec![("chat_id", per_second(1, 1))],
+        )),
+        Duration::from_mins(1),
+        ResourceKey::new("test.resource").unwrap(),
+        Arc::new(EventBus::new(16)),
+    );
+    (Arc::new(limiter), store)
 }
 
 /// A provider error in the shape libraries use (`teloxide::RequestError`).
@@ -138,7 +158,7 @@ fn override_refusals_name_the_field_and_rule_never_the_values() {
     );
     assert!(!message.contains("9999"), "{message}");
 
-    let fixed = declared.overrides(Override::Fixed);
+    let fixed = declared.clone().overrides(Override::Fixed);
     let slower = ResilienceOverride::rate(RateLimitSettings::new(1, 1_000));
     assert!(slower.apply(&fixed).is_err());
     assert_eq!(
@@ -281,6 +301,160 @@ async fn a_refused_permit_never_reaches_the_client() {
         .expect_err("next slot is past the deadline");
     assert!(matches!(error, LimitedError::Limit(_)));
     assert!(!reached.load(Ordering::Relaxed));
+}
+
+#[tokio::test(start_paused = true)]
+async fn each_chat_has_its_own_limit_under_the_account_limit() {
+    let (limits, _) = chat_limiter(per_second(100, 100));
+    limits.ready_for("chat_id", 42, None).await.expect("free");
+    let started = Instant::now();
+    limits
+        .ready_for("chat_id", 7, None)
+        .await
+        .expect("another chat");
+    assert_eq!(started.elapsed(), Duration::ZERO, "chats do not share");
+    limits
+        .ready_for("chat_id", 42, None)
+        .await
+        .expect("waits for its chat");
+    assert_eq!(started.elapsed(), Duration::from_secs(1));
+
+    let error = limits
+        .ready_for("chat_id", 42, Some(std::time::Instant::now()))
+        .await
+        .expect_err("the chat's next slot is a second away");
+    assert!(matches!(error.kind(), ErrorKind::Exhausted { .. }));
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_account_limit_still_binds_keyed_calls() {
+    // The account allows one call per second; chats would allow more.
+    let (limits, _) = chat_limiter(per_second(1, 1));
+    limits.ready_for("chat_id", 1, None).await.expect("free");
+    let error = limits
+        .ready_for("chat_id", 2, Some(std::time::Instant::now()))
+        .await
+        .expect_err("a fresh chat, but the account is spent");
+    assert!(matches!(error.kind(), ErrorKind::Exhausted { .. }));
+    // The refused call gave its chat slot back: chat 2 is still free once
+    // the account allows.
+    let started = Instant::now();
+    limits
+        .ready_for("chat_id", 2, None)
+        .await
+        .expect("admitted");
+    assert_eq!(started.elapsed(), Duration::from_secs(1));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_key_throttle_pauses_only_that_key() {
+    let (limits, _) = chat_limiter(per_second(100, 100));
+    let client = limits.wrap((), |outcome: &Result<(), ProviderError>| match outcome {
+        Err(ProviderError::RetryAfter(after)) => Verdict::KeyThrottled {
+            retry_after: Some(*after),
+        },
+        _ => Verdict::Pass,
+    });
+    let _ = client
+        .run_for("chat_id", 42, async |()| {
+            Err::<(), _>(ProviderError::RetryAfter(Duration::from_secs(20)))
+        })
+        .await;
+    let started = Instant::now();
+    client
+        .run_for("chat_id", 7, async |()| Ok::<_, ProviderError>(()))
+        .await
+        .expect("other chats and the account are not paused");
+    assert_eq!(started.elapsed(), Duration::ZERO);
+    client
+        .run_for("chat_id", 42, async |()| Ok::<_, ProviderError>(()))
+        .await
+        .expect("the paused chat waits it out");
+    assert_eq!(started.elapsed(), Duration::from_secs(20));
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_undeclared_dimension_is_a_programming_error() {
+    let (limits, _) = chat_limiter(per_second(100, 100));
+    let error = limits
+        .ready_for("user_id", 1, None)
+        .await
+        .expect_err("not declared");
+    assert_eq!(error.kind(), &ErrorKind::Permanent);
+    let error = limiter(per_second(1, 1))
+        .ready_for("chat_id", 1, None)
+        .await
+        .expect_err("no per-key limits at all");
+    assert_eq!(error.kind(), &ErrorKind::Permanent);
+}
+
+#[test]
+fn key_values_are_hashed_before_they_reach_a_store() {
+    let keyed = KeyedLimits::new(
+        Arc::new(MemoryLimitStore::new()),
+        LimitKey::new("acct:tenant").unwrap(),
+        vec![("email", per_second(1, 1))],
+    );
+    let (key, _) = keyed
+        .limit_for("email", "alice@example.com")
+        .expect("valid");
+    assert!(key.as_str().starts_with("acct:tenant:k:email:"));
+    assert!(!key.as_str().contains("alice"), "{key:?}");
+    let (again, _) = keyed.limit_for("email", "alice@example.com").unwrap();
+    let (other, _) = keyed.limit_for("email", "bob@example.com").unwrap();
+    assert_eq!(key, again, "stable across calls and processes");
+    assert_ne!(key, other);
+}
+
+#[test]
+fn keyed_overrides_follow_the_policy_per_dimension() {
+    let policy = ResiliencePolicy::new()
+        .rate(per_second(30, 30))
+        .keyed("chat_id", per_second(1, 1));
+    assert_eq!(
+        policy.effective_keyed(&[]).unwrap(),
+        vec![("chat_id", per_second(1, 1))]
+    );
+    let slower = Rate::new(nz(1), Duration::from_secs(2)).unwrap();
+    assert_eq!(
+        policy
+            .effective_keyed(&[("chat_id".to_owned(), slower)])
+            .unwrap(),
+        vec![("chat_id", slower)]
+    );
+    let error = policy
+        .effective_keyed(&[("chat_id".to_owned(), per_second(5, 1))])
+        .expect_err("tighten only");
+    assert!(error.to_string().contains("resilience_override.keyed:"));
+    let error = policy
+        .effective_keyed(&[("secret-dimension".to_owned(), slower)])
+        .expect_err("undeclared");
+    assert!(!error.to_string().contains("secret-dimension"), "{error}");
+
+    // `UpTo` lets a dimension rise to its own declared rate, no further.
+    let tiered = policy.overrides(Override::UpTo(per_second(1_000, 1_000)));
+    assert!(
+        tiered
+            .effective_keyed(&[("chat_id".to_owned(), per_second(2, 1))])
+            .is_err()
+    );
+}
+
+#[test]
+fn override_documents_carry_keyed_limits() {
+    let document = ResilienceOverride::from_value(Some(&serde_json::json!({
+        "keyed": [{ "dimension": "chat_id", "rate": { "requests": 1, "period_ms": 2000 } }]
+    })))
+    .expect("valid");
+    let policy = ResiliencePolicy::new().keyed("chat_id", per_second(1, 1));
+    assert_eq!(
+        document.apply_keyed(&policy).unwrap(),
+        vec![("chat_id", Rate::new(nz(1), Duration::from_secs(2)).unwrap())]
+    );
+    let twice = ResilienceOverride::default()
+        .with_keyed("chat_id", RateLimitSettings::new(1, 2_000))
+        .with_keyed("chat_id", RateLimitSettings::new(1, 3_000));
+    assert!(twice.requested_keyed().is_err(), "a dimension named twice");
 }
 
 #[test]

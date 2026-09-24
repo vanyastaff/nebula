@@ -240,17 +240,31 @@ const SWEEP_EVERY: u64 = 1024;
 #[derive(Debug, Default)]
 struct Keys {
     entries: HashMap<LimitKey, Entry>,
+    /// Shared by every key that arrived while the store was full.
+    overflow: Entry,
+    overflowed: u64,
     ops: u64,
 }
+
+/// Default bound on the keys a [`MemoryLimitStore`] holds.
+pub const DEFAULT_MAX_KEYS: usize = 100_000;
 
 /// In-process [`LimitStore`]: limits are per process.
 ///
 /// Idle keys (TAT in the past, nothing pending) are swept every
 /// 1024 operations; their state is indistinguishable from an absent key, so
 /// sweeping never loosens a limit.
+///
+/// The number of keys is bounded, so callers that mint keys from request
+/// data (a limit per chat, per recipient) cannot grow it without end. When
+/// the store is full and sweeping frees nothing, a new key shares one
+/// overflow limit with every other key that arrived meanwhile: stricter than
+/// its own limit, never looser. [`overflowed`](Self::overflowed) counts
+/// those operations.
 #[derive(Debug)]
 pub struct MemoryLimitStore {
     base: Instant,
+    max_keys: usize,
     keys: Mutex<Keys>,
 }
 
@@ -261,11 +275,19 @@ impl Default for MemoryLimitStore {
 }
 
 impl MemoryLimitStore {
-    /// An empty store whose clock starts now (`tokio::time`).
+    /// An empty store holding up to [`DEFAULT_MAX_KEYS`] keys, whose clock
+    /// starts now (`tokio::time`).
     #[must_use]
     pub fn new() -> Self {
+        Self::with_max_keys(DEFAULT_MAX_KEYS)
+    }
+
+    /// An empty store holding up to `max_keys` keys (at least one).
+    #[must_use]
+    pub fn with_max_keys(max_keys: usize) -> Self {
         Self {
             base: Instant::now(),
+            max_keys: max_keys.max(1),
             keys: Mutex::new(Keys::default()),
         }
     }
@@ -274,6 +296,13 @@ impl MemoryLimitStore {
     #[must_use]
     pub fn len(&self) -> usize {
         self.keys.lock().entries.len()
+    }
+
+    /// Operations that ran on the shared overflow limit because the store
+    /// was full.
+    #[must_use]
+    pub fn overflowed(&self) -> u64 {
+        self.keys.lock().overflowed
     }
 
     /// `true` when no key holds state.
@@ -288,10 +317,19 @@ impl MemoryLimitStore {
 
     fn with_entry<T>(&self, key: &LimitKey, apply: impl FnOnce(&mut Entry, u64) -> T) -> T {
         let now = self.now();
-        let mut keys = self.keys.lock();
+        let mut guard = self.keys.lock();
+        let keys = &mut *guard;
         keys.ops = keys.ops.wrapping_add(1);
-        if keys.ops.is_multiple_of(SWEEP_EVERY) {
+        let is_new = !keys.entries.contains_key(key);
+        // A new key into a full store sweeps first: idle keys make room.
+        if keys.ops.is_multiple_of(SWEEP_EVERY) || (is_new && keys.entries.len() >= self.max_keys) {
             keys.entries.retain(|_, entry| !entry.is_idle(now));
+        }
+        if is_new && keys.entries.len() >= self.max_keys {
+            keys.overflowed = keys.overflowed.saturating_add(1);
+            let entry = &mut keys.overflow;
+            entry.pending.retain(|_, grant| grant.allow_at > now);
+            return apply(entry, now);
         }
         let entry = keys.entries.entry(key.clone()).or_default();
         entry.pending.retain(|_, grant| grant.allow_at > now);
@@ -299,6 +337,7 @@ impl MemoryLimitStore {
         if entry.is_idle(now) {
             keys.entries.remove(key);
         }
+        drop(guard);
         result
     }
 }

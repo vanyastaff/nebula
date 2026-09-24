@@ -379,6 +379,38 @@ async fn an_idle_key_forgets_a_stricter_rate() {
     }
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_full_memory_store_shares_one_stricter_limit_for_new_keys() {
+    let store = MemoryLimitStore::with_max_keys(2);
+    let one_per_hour = rate(3_600_000_000_000, 1);
+    let reserve = |name: &str| {
+        let key = LimitKey::new(name).unwrap();
+        let store = &store;
+        async move {
+            store
+                .reserve(&key, &one_per_hour, ReserveRequest::new(1, Duration::ZERO))
+                .await
+                .unwrap()
+        }
+    };
+    assert!(reserve("a").await.is_ok());
+    assert!(reserve("b").await.is_ok());
+    assert_eq!(store.len(), 2);
+    // Full and nothing idle: new keys share the overflow limit.
+    assert!(reserve("c").await.is_ok(), "the overflow limit starts free");
+    assert!(
+        reserve("d").await.is_err(),
+        "another new key shares c's spent overflow limit"
+    );
+    assert_eq!(store.len(), 2, "the store never grows past its bound");
+    assert_eq!(store.overflowed(), 2);
+    // Once keys go idle, new keys get their own entries again.
+    tokio::time::advance(Duration::from_hours(2)).await;
+    assert!(reserve("e").await.is_ok());
+    assert!(reserve("f").await.is_ok());
+    assert_eq!(store.overflowed(), 2);
+}
+
 #[test]
 fn a_clock_that_steps_back_never_loosens_the_limit() {
     let limit = rate(1_000, 2);

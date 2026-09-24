@@ -169,6 +169,20 @@ inside the call never pauses this one. `Limited` has no `Deref`: skipping the
 limit takes an explicit `unlimited()`. A resource that declares no rate pays
 nothing: its limiter paces nothing and only honours pauses, kept in-process.
 
+Limits per key — Telegram's one message per second per chat — are declared
+with `ResiliencePolicy::keyed("chat_id", rate)` on top of the account rate, and
+apply only to calls that name the key: `client.run_for("chat_id", chat_id,
+…)` (or `ResourceLimiter::ready_for`) waits for both that chat's slot and the
+account's, and a `Verdict::KeyThrottled` pauses that chat alone. Key values
+are SHA-256-hashed under the row's limit key, so a chat id or an e-mail
+address never reaches a store and tenants never share a key. A row may
+override a declared dimension (`resilience_override.keyed`, `[{dimension,
+rate}]`) under the same `Override` rule; it cannot add one. The in-process
+store holds at most `DEFAULT_MAX_KEYS` keys: when full, new keys share one
+stricter overflow limit (`MemoryLimitStore::overflowed` counts it) rather
+than growing without bound; a shared store's rows live only while a key is
+busy.
+
 A caller waits for its slot but never past its deadline: a slot after the
 deadline fails fast with `Exhausted` + `retry_after` and consumes nothing; an
 unreachable shared store fails closed as `Backpressure`. Denials never trip the

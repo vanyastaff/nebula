@@ -39,8 +39,8 @@ mod store;
 
 pub use limiter::Gcra;
 pub use store::{
-    ErasedLimitStore, LimitKey, LimitStore, LimitStoreError, MAX_LIMIT_KEY_BYTES, MemoryLimitStore,
-    ReservationId, ReserveRequest,
+    DEFAULT_MAX_KEYS, ErasedLimitStore, LimitKey, LimitStore, LimitStoreError, MAX_LIMIT_KEY_BYTES,
+    MemoryLimitStore, ReservationId, ReserveRequest,
 };
 
 const NANOS_PER_SECOND: u64 = 1_000_000_000;

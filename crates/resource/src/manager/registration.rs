@@ -29,6 +29,8 @@ impl Manager {
     /// A row without an explicit quota key is limited on its own, in this
     /// process: its fallback key identifies the registry row, which is only
     /// meaningful locally. Cluster-wide sharing needs an explicit key.
+    /// Per-key limits live in the same store, under keys derived from the
+    /// quota key, so they are shared exactly as widely as the quota.
     fn row_limiter<R: Provider>(
         &self,
         input: Option<crate::rate_limit::RowLimit>,
@@ -37,21 +39,27 @@ impl Manager {
     ) -> Result<Arc<crate::rate_limit::ResourceLimiter>, Error> {
         use std::hash::{Hash as _, Hasher as _};
 
-        use crate::rate_limit::{ErasedLimitStore, LimitKey, LimitScope, Quota, ResourceLimiter};
+        use crate::rate_limit::{
+            ErasedLimitStore, KeyedLimits, LimitKey, LimitScope, Quota, ResourceLimiter,
+        };
 
         let policy = R::resilience();
         let input = input.unwrap_or_default();
-        let Some(rate) = policy
+        let rate = policy
             .effective_rate(input.rate)
-            .map_err(|error| error.with_resource_key(R::key()))?
-        else {
+            .map_err(|error| error.with_resource_key(R::key()))?;
+        let keyed = policy
+            .effective_keyed(&input.keyed)
+            .map_err(|error| error.with_resource_key(R::key()))?;
+        if rate.is_none() && keyed.is_empty() {
             return Ok(Arc::new(ResourceLimiter::new(
+                None,
                 None,
                 policy.penalty_cap(),
                 R::key(),
                 Arc::clone(&self.event_bus),
             )));
-        };
+        }
         let local: Arc<dyn ErasedLimitStore> = self.local_limits.clone();
         let (store, key) = match (input.key, policy.limit_scope(), &self.shared_limits) {
             (Some(key), LimitScope::Cluster, Some(shared)) => (Arc::clone(&shared.0), key),
@@ -76,8 +84,21 @@ impl Manager {
                 (local, key)
             },
         };
+        // A dimension whose keys cannot be formed fails the registration,
+        // not the first call that names it.
+        for (dimension, _) in &keyed {
+            LimitKey::new(format!("{}:k:{dimension}:{:032x}", key.as_str(), 0)).map_err(|_| {
+                Error::permanent(format!(
+                    "per-key limit `{dimension}` does not form a valid rate-limit key"
+                ))
+                .with_resource_key(R::key())
+            })?;
+        }
+        let keyed =
+            (!keyed.is_empty()).then(|| KeyedLimits::new(Arc::clone(&store), key.clone(), keyed));
         Ok(Arc::new(ResourceLimiter::new(
-            Some(Quota::new(store, key, rate)),
+            rate.map(|rate| Quota::new(store, key, rate)),
+            keyed,
             policy.penalty_cap(),
             R::key(),
             Arc::clone(&self.event_bus),

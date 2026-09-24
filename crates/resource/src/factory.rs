@@ -462,8 +462,11 @@ pub trait ResourceFactory: private::Sealed + Send + Sync + 'static {
         &self,
         value: Option<&serde_json::Value>,
     ) -> Result<(), crate::Error> {
-        crate::rate_limit::ResilienceOverride::from_value(value)?
-            .apply(&self.resilience_policy())
+        let document = crate::rate_limit::ResilienceOverride::from_value(value)?;
+        let policy = self.resilience_policy();
+        document
+            .apply(&policy)
+            .and_then(|_| document.apply_keyed(&policy))
             .map(drop)
             .map_err(|error| error.with_resource_key(self.key()))
     }
@@ -767,17 +770,17 @@ where
             // The manager bounds the requested rate by `R`'s policy on
             // registration, so a document stored before the policy tightened
             // still fails closed.
-            let rate = crate::rate_limit::ResilienceOverride::from_value(
+            let (rate, keyed) = crate::rate_limit::ResilienceOverride::from_value(
                 request.resilience_override.as_ref(),
             )
-            .and_then(|document| document.requested_rate())
+            .and_then(|document| Ok((document.requested_rate()?, document.requested_keyed()?)))
             .map_err(|error| error.with_resource_key(R::key()))?;
-            let rate_limit = (rate.is_some() || request.limit_key.is_some()).then(|| {
-                crate::rate_limit::RowLimit {
+            let rate_limit = (rate.is_some() || !keyed.is_empty() || request.limit_key.is_some())
+                .then(|| crate::rate_limit::RowLimit {
                     rate,
+                    keyed,
                     key: request.limit_key.clone(),
-                }
-            });
+                });
             let resource = (self.resource_factory)();
             // The typed register validates declared slots and derives the
             // structural identity from the (slot → credential-key) view; the

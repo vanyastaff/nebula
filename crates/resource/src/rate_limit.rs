@@ -49,7 +49,7 @@
 //! bus. They carry the resource key only, never limit keys.
 
 use std::{
-    fmt,
+    fmt::{self, Write as _},
     sync::{
         Arc, Mutex, PoisonError,
         atomic::{AtomicBool, AtomicU32, Ordering},
@@ -65,6 +65,8 @@ pub use nebula_resilience::rate_limiter::gcra::{
 };
 use nebula_schema::Schema;
 use serde::{Deserialize, Serialize};
+
+use sha2::{Digest as _, Sha256};
 
 use crate::{error::Error, events::ResourceEvent};
 
@@ -99,9 +101,10 @@ pub enum Override {
 }
 
 /// The resilience behaviour a resource author declares for their resource.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResiliencePolicy {
     rate: Option<Rate>,
+    keyed: Vec<(&'static str, Rate)>,
     scope: LimitScope,
     overrides: Override,
     max_penalty: Duration,
@@ -119,6 +122,7 @@ impl ResiliencePolicy {
     pub const fn new() -> Self {
         Self {
             rate: None,
+            keyed: Vec::new(),
             scope: LimitScope::Cluster,
             overrides: Override::TightenOnly,
             max_penalty: DEFAULT_MAX_PENALTY,
@@ -130,6 +134,26 @@ impl ResiliencePolicy {
     pub const fn rate(mut self, rate: Rate) -> Self {
         self.rate = Some(rate);
         self
+    }
+
+    /// Declares a limit per value of `dimension` — a provider's "one message
+    /// per second per chat" — on top of the account limit.
+    ///
+    /// Calls opt in by naming the value
+    /// ([`Limited::run_for`], [`ResourceLimiter::ready_for`]); only the call
+    /// knows which chat or recipient it addresses. Values are hashed before
+    /// they reach a limit store. Declaring a dimension again replaces it.
+    #[must_use]
+    pub fn keyed(mut self, dimension: &'static str, rate: Rate) -> Self {
+        self.keyed.retain(|(declared, _)| *declared != dimension);
+        self.keyed.push((dimension, rate));
+        self
+    }
+
+    /// The declared per-key limits, by dimension.
+    #[must_use]
+    pub fn keyed_rates(&self) -> &[(&'static str, Rate)] {
+        &self.keyed
     }
 
     /// Chooses where the limit's state lives (default: cluster-wide).
@@ -183,25 +207,76 @@ impl ResiliencePolicy {
         let Some(requested) = requested else {
             return Ok(self.rate);
         };
-        // Messages name the field and the rule, never the values: they reach
-        // API clients verbatim.
-        let refusal = match (self.overrides, self.rate) {
-            (Override::Fixed, _) => {
-                Some("resilience_override.rate: this resource does not allow overriding its rate")
-            },
+        self.check_override(self.rate, requested)
+            .map_err(|rule| Error::permanent(format!("resilience_override.rate: {rule}")))?;
+        Ok(Some(requested))
+    }
+
+    /// The per-key limits to enforce once `requested` overrides are applied,
+    /// by dimension.
+    ///
+    /// Only declared dimensions exist: an override cannot invent one, since
+    /// no call would name it. Each override obeys the same [`Override`] rule
+    /// as the account rate, against its own declared rate; a dimension's
+    /// [`UpTo`](Override::UpTo) ceiling is its declared rate.
+    ///
+    /// # Errors
+    ///
+    /// A permanent [`Error`] for an undeclared dimension or an override the
+    /// policy does not allow. Messages never restate the dimension name, which
+    /// is operator input.
+    pub fn effective_keyed(
+        &self,
+        requested: &[(String, Rate)],
+    ) -> Result<Vec<(&'static str, Rate)>, Error> {
+        let undeclared = requested
+            .iter()
+            .any(|(name, _)| !self.keyed.iter().any(|(declared, _)| declared == name));
+        if undeclared {
+            return Err(Error::permanent(
+                "resilience_override.keyed: names a dimension this resource does not declare",
+            ));
+        }
+        self.keyed
+            .iter()
+            .map(|(dimension, declared)| {
+                let Some((_, rate)) = requested.iter().find(|(name, _)| name == dimension) else {
+                    return Ok((*dimension, *declared));
+                };
+                let ceiling = match self.overrides {
+                    Override::UpTo(_) => Override::UpTo(*declared),
+                    other => other,
+                };
+                Self::check_rule(ceiling, Some(*declared), *rate)
+                    .map(|()| (*dimension, *rate))
+                    .map_err(|rule| Error::permanent(format!("resilience_override.keyed: {rule}")))
+            })
+            .collect()
+    }
+
+    fn check_override(&self, declared: Option<Rate>, requested: Rate) -> Result<(), &'static str> {
+        Self::check_rule(self.overrides, declared, requested)
+    }
+
+    /// Why `requested` may not replace `declared` under `rule`. The reasons
+    /// name the rule, never the values: they reach API clients verbatim.
+    fn check_rule(
+        rule: Override,
+        declared: Option<Rate>,
+        requested: Rate,
+    ) -> Result<(), &'static str> {
+        let refusal = match (rule, declared) {
+            (Override::Fixed, _) => Some("this resource does not allow overriding it"),
             (Override::TightenOnly, None) => None,
             (Override::TightenOnly, Some(declared)) => (!requested.is_no_looser_than(&declared))
                 .then_some(
-                    "resilience_override.rate: may only be slower than the resource's declared \
-                     rate, with no larger burst",
+                    "may only be slower than the resource's declared rate, with no larger burst",
                 ),
-            (Override::UpTo(ceiling), _) => (!requested.is_no_looser_than(&ceiling))
-                .then_some("resilience_override.rate: exceeds the resource's ceiling"),
+            (Override::UpTo(ceiling), _) => {
+                (!requested.is_no_looser_than(&ceiling)).then_some("exceeds the resource's ceiling")
+            },
         };
-        match refusal {
-            Some(message) => Err(Error::permanent(message)),
-            None => Ok(Some(requested)),
-        }
+        refusal.map_or(Ok(()), Err)
     }
 }
 
@@ -267,22 +342,79 @@ impl RateLimitSettings {
 /// resource row (`resilience_override`) and bounded by the resource's
 /// [`ResiliencePolicy`].
 ///
-/// A document rather than a bare rate so later knobs (per-key limits, window
-/// quotas) extend it without another column.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Schema)]
+/// A document rather than a bare rate so later knobs (window quotas) extend
+/// it without another column.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Schema)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
 pub struct ResilienceOverride {
     /// Replaces the resource's declared rate, within its policy.
     #[serde(default)]
     pub rate: Option<RateLimitSettings>,
+    /// Replaces declared per-key limits, one entry per dimension.
+    #[serde(default)]
+    pub keyed: Vec<KeyedOverride>,
+}
+
+/// An override of one declared per-key limit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Schema)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct KeyedOverride {
+    /// The dimension the resource declares, e.g. `chat_id`.
+    #[field(
+        label = "Dimension",
+        description = "Declared by the resource, e.g. chat_id"
+    )]
+    pub dimension: String,
+    /// The limit per value of that dimension.
+    pub rate: RateLimitSettings,
 }
 
 impl ResilienceOverride {
     /// An override of the rate.
     #[must_use]
     pub const fn rate(rate: RateLimitSettings) -> Self {
-        Self { rate: Some(rate) }
+        Self {
+            rate: Some(rate),
+            keyed: Vec::new(),
+        }
+    }
+
+    /// Adds an override of the per-key limit of `dimension`.
+    #[must_use]
+    pub fn with_keyed(mut self, dimension: impl Into<String>, rate: RateLimitSettings) -> Self {
+        self.keyed.push(KeyedOverride {
+            dimension: dimension.into(),
+            rate,
+        });
+        self
+    }
+
+    /// The per-key rates this override asks for, validated, by dimension.
+    ///
+    /// # Errors
+    ///
+    /// A permanent [`Error`] for a dimension named twice or a zero or
+    /// unrepresentable rate.
+    pub fn requested_keyed(&self) -> Result<Vec<(String, Rate)>, Error> {
+        let mut rates: Vec<(String, Rate)> = Vec::with_capacity(self.keyed.len());
+        for entry in &self.keyed {
+            if rates.iter().any(|(name, _)| *name == entry.dimension) {
+                return Err(Error::permanent(
+                    "resilience_override.keyed: names a dimension more than once",
+                ));
+            }
+            let rate = entry.rate.to_rate().map_err(|error| {
+                Error::permanent(
+                    "resilience_override.keyed.rate: requests, period_ms and burst must be \
+                     positive and representable",
+                )
+                .with_source(error)
+            })?;
+            rates.push((entry.dimension.clone(), rate));
+        }
+        Ok(rates)
     }
 
     /// Parses the stored document (`None` or `null` = no override).
@@ -298,7 +430,8 @@ impl ResilienceOverride {
             Some(value) => Self::deserialize(value).map_err(|error| {
                 Error::permanent(
                     "resilience_override: expected an object with an optional `rate` \
-                     ({requests, period_ms, burst?})",
+                     ({requests, period_ms, burst?}) and optional `keyed` \
+                     ([{dimension, rate}])",
                 )
                 .with_source(error)
             }),
@@ -333,6 +466,21 @@ impl ResilienceOverride {
     pub fn apply(&self, policy: &ResiliencePolicy) -> Result<Option<Rate>, Error> {
         policy.effective_rate(self.requested_rate()?)
     }
+
+    /// The per-key limits to enforce under `policy` once this override is
+    /// applied, by dimension.
+    ///
+    /// # Errors
+    ///
+    /// As [`requested_keyed`](Self::requested_keyed), and a permanent
+    /// [`Error`] for an undeclared dimension or an override `policy` does not
+    /// allow.
+    pub fn apply_keyed(
+        &self,
+        policy: &ResiliencePolicy,
+    ) -> Result<Vec<(&'static str, Rate)>, Error> {
+        policy.effective_keyed(&self.requested_keyed()?)
+    }
 }
 
 /// Registration-time limit input for one row.
@@ -341,6 +489,9 @@ impl ResilienceOverride {
 pub struct RowLimit {
     /// Operator override of the declared rate, checked against the policy.
     pub rate: Option<Rate>,
+    /// Operator overrides of declared per-key limits, by dimension, checked
+    /// against the policy.
+    pub keyed: Vec<(String, Rate)>,
     /// Quota the row draws on. Rows with equal keys share one limit (the
     /// engine keys stored rows by provider account). `None` keys the limit
     /// to this registry row alone.
@@ -353,8 +504,16 @@ impl RowLimit {
     pub const fn rate(rate: Rate) -> Self {
         Self {
             rate: Some(rate),
+            keyed: Vec::new(),
             key: None,
         }
+    }
+
+    /// Overrides the per-key limit of `dimension`.
+    #[must_use]
+    pub fn with_keyed(mut self, dimension: impl Into<String>, rate: Rate) -> Self {
+        self.keyed.push((dimension.into(), rate));
+        self
     }
 
     /// Shares the quota under `key`.
@@ -389,6 +548,58 @@ impl Quota {
     }
 }
 
+/// Per-key limits of a row ([`ResiliencePolicy::keyed`]), drawn from the
+/// same store as its quota under keys derived from the row's limit key, so
+/// they are shared exactly as widely as the quota and never across tenants.
+pub(crate) struct KeyedLimits {
+    store: Arc<dyn ErasedLimitStore>,
+    base: LimitKey,
+    rates: Vec<(&'static str, Rate)>,
+}
+
+impl KeyedLimits {
+    pub(crate) fn new(
+        store: Arc<dyn ErasedLimitStore>,
+        base: LimitKey,
+        rates: Vec<(&'static str, Rate)>,
+    ) -> Self {
+        Self { store, base, rates }
+    }
+
+    /// The limit key and rate of one value of `dimension`. The value is
+    /// hashed: a chat id or an e-mail address never reaches a limit store.
+    fn limit_for(&self, dimension: &str, value: &str) -> Result<(LimitKey, Rate), Error> {
+        let Some((dimension, rate)) = self
+            .rates
+            .iter()
+            .find(|(declared, _)| *declared == dimension)
+        else {
+            return Err(Error::permanent(format!(
+                "rate limit: the resource declares no per-key limit named `{dimension}`"
+            )));
+        };
+        let digest = Sha256::new()
+            .chain_update(dimension.as_bytes())
+            .chain_update([0])
+            .chain_update(value.as_bytes())
+            .finalize();
+        let hash = digest[..16]
+            .iter()
+            .fold(String::with_capacity(32), |mut hex, byte| {
+                let _ = write!(hex, "{byte:02x}");
+                hex
+            });
+        let key = LimitKey::new(format!("{}:k:{dimension}:{hash}", self.base.as_str())).map_err(
+            |_| {
+                Error::permanent(format!(
+                    "rate limit: per-key limit `{dimension}` does not form a valid limit key"
+                ))
+            },
+        )?;
+        Ok((key, *rate))
+    }
+}
+
 /// Where a limiter reports: the row's resource key and the manager's bus.
 struct Reporter {
     resource_key: ResourceKey,
@@ -404,6 +615,7 @@ struct Reporter {
 /// resource with no limit pays one uncontended lock per acquire.
 pub struct ResourceLimiter {
     quota: Option<Quota>,
+    keyed: Option<KeyedLimits>,
     max_penalty: Duration,
     reporter: Option<Reporter>,
     /// Pause of a limiter without a quota (a quota keeps its pause in the
@@ -433,12 +645,14 @@ impl fmt::Debug for ResourceLimiter {
 impl ResourceLimiter {
     pub(crate) fn new(
         quota: Option<Quota>,
+        keyed: Option<KeyedLimits>,
         max_penalty: Duration,
         resource_key: ResourceKey,
         events: Arc<EventBus<ResourceEvent>>,
     ) -> Self {
         Self::build(
             quota,
+            keyed,
             max_penalty,
             Some(Reporter {
                 resource_key,
@@ -450,12 +664,18 @@ impl ResourceLimiter {
     /// A limiter of no registry row: no rate, no events, pauses kept in this
     /// value alone.
     pub(crate) fn detached() -> Arc<Self> {
-        Arc::new(Self::build(None, DEFAULT_MAX_PENALTY, None))
+        Arc::new(Self::build(None, None, DEFAULT_MAX_PENALTY, None))
     }
 
-    fn build(quota: Option<Quota>, max_penalty: Duration, reporter: Option<Reporter>) -> Self {
+    fn build(
+        quota: Option<Quota>,
+        keyed: Option<KeyedLimits>,
+        max_penalty: Duration,
+        reporter: Option<Reporter>,
+    ) -> Self {
         Self {
             quota,
+            keyed,
             max_penalty,
             reporter,
             paused_until: Mutex::new(None),
@@ -500,41 +720,102 @@ impl ResourceLimiter {
     /// Cancelling during the wait forfeits the booked slot: the limiter errs
     /// on sending less, never more.
     pub async fn ready(&self, deadline: Option<std::time::Instant>) -> Result<(), Error> {
-        let max_wait = deadline.map_or(Duration::MAX, |deadline| {
-            deadline.saturating_duration_since(std::time::Instant::now())
-        });
-        let wait = if let Some(quota) = &self.quota {
-            self.reserve(quota, max_wait).await?
-        } else {
-            let wait = self.pause_remaining();
-            if wait > max_wait {
-                self.engage();
-                return Err(self.tagged(Error::exhausted(
-                    "resource paused past the deadline",
-                    Some(wait),
-                )));
-            }
-            wait
-        };
+        let wait = self.account_slot(max_wait_until(deadline)).await?;
+        self.wait_out(wait).await;
+        Ok(())
+    }
+
+    /// Waits for one permit of the per-key limit `dimension` for `value` —
+    /// one chat, one recipient — and one of the account limit, never past
+    /// `deadline`.
+    ///
+    /// # Errors
+    ///
+    /// As [`ready`](Self::ready), and a permanent error when the resource
+    /// declares no per-key limit named `dimension`.
+    ///
+    /// # Cancel safety
+    ///
+    /// As [`ready`](Self::ready).
+    pub async fn ready_for(
+        &self,
+        dimension: &str,
+        value: impl fmt::Display,
+        deadline: Option<std::time::Instant>,
+    ) -> Result<(), Error> {
+        let max_wait = max_wait_until(deadline);
+        let keyed = self.keyed_limits()?;
+        let (key, rate) = keyed
+            .limit_for(dimension, &value.to_string())
+            .map_err(|error| self.tagged(error))?;
+        let key_slot = self.book(&keyed.store, &key, &rate, max_wait).await?;
+        match self.account_slot(max_wait).await {
+            Ok(wait) => {
+                self.wait_out(wait.max(key_slot.wait)).await;
+                Ok(())
+            },
+            Err(error) => {
+                // The key's slot goes back while it is still the last one
+                // booked; otherwise it lapses unused, which errs on sending
+                // less.
+                let _ = keyed.store.cancel_boxed(&key, &rate, &key_slot).await;
+                Err(error)
+            },
+        }
+    }
+
+    fn keyed_limits(&self) -> Result<&KeyedLimits, Error> {
+        self.keyed.as_ref().ok_or_else(|| {
+            self.tagged(Error::permanent(
+                "rate limit: the resource declares no per-key limits",
+            ))
+        })
+    }
+
+    /// The wait for one account permit: a slot of the quota, or the end of
+    /// a local pause.
+    async fn account_slot(&self, max_wait: Duration) -> Result<Duration, Error> {
+        if let Some(quota) = &self.quota {
+            return self
+                .book(&quota.store, &quota.key, &quota.rate, max_wait)
+                .await
+                .map(|grant| grant.wait);
+        }
+        let wait = self.pause_remaining();
+        if wait > max_wait {
+            self.engage();
+            return Err(self.tagged(Error::exhausted(
+                "resource paused past the deadline",
+                Some(wait),
+            )));
+        }
+        Ok(wait)
+    }
+
+    async fn wait_out(&self, wait: Duration) {
         if wait.is_zero() {
             self.clear();
         } else {
             self.engage();
             tokio::time::sleep(wait).await;
         }
-        Ok(())
     }
 
-    /// Books one slot on `quota`; the wait until it.
-    async fn reserve(&self, quota: &Quota, max_wait: Duration) -> Result<Duration, Error> {
-        let decision = quota
-            .store
-            .reserve_boxed(&quota.key, &quota.rate, ReserveRequest::new(1, max_wait))
+    /// Books one slot of `key`.
+    async fn book(
+        &self,
+        store: &Arc<dyn ErasedLimitStore>,
+        key: &LimitKey,
+        rate: &Rate,
+        max_wait: Duration,
+    ) -> Result<Grant, Error> {
+        let decision = store
+            .reserve_boxed(key, rate, ReserveRequest::new(1, max_wait))
             .await;
         match decision {
             Ok(Ok(grant)) => {
                 self.store_recovered();
-                Ok(grant.wait)
+                Ok(grant)
             },
             Ok(Err(Denied::Later { retry_after })) => {
                 self.store_recovered();
@@ -604,26 +885,66 @@ impl ResourceLimiter {
         Ok(())
     }
 
-    /// Records the verdict on one call: a pause on a provider's "slow down",
-    /// a backoff reset otherwise.
+    /// Pauses every caller of the per-key limit `dimension` for `value` —
+    /// one chat, not the whole account — for `retry_after`, capped at the
+    /// policy's `max_penalty`.
+    ///
+    /// # Errors
+    ///
+    /// A permanent error when the resource declares no per-key limit named
+    /// `dimension`;
+    /// [`ErrorKind::Backpressure`](crate::ErrorKind::Backpressure) when the
+    /// limit store cannot be reached.
+    pub async fn penalize_for(
+        &self,
+        dimension: &str,
+        value: impl fmt::Display,
+        retry_after: Duration,
+    ) -> Result<(), Error> {
+        let keyed = self.keyed_limits()?;
+        let (key, rate) = keyed
+            .limit_for(dimension, &value.to_string())
+            .map_err(|error| self.tagged(error))?;
+        keyed
+            .store
+            .penalize_boxed(&key, &rate, retry_after, self.max_penalty)
+            .await
+            .map_err(|error| self.store_unavailable(&error))?;
+        self.emit(|key| ResourceEvent::RateLimitPenalized {
+            key,
+            retry_after: retry_after.min(self.max_penalty),
+        });
+        Ok(())
+    }
+
+    /// Records the verdict on one call made under `key` (a per-key limit's
+    /// dimension and value, if the call named one): a pause on a provider's
+    /// "slow down", a backoff reset otherwise.
     ///
     /// Without a `retry_after` the pause backs off exponentially over
     /// consecutive refusals, from one second up to the cap. A failure to
     /// record the pause is logged; it never masks the call's own outcome.
-    async fn report(&self, verdict: Verdict) {
-        match verdict {
-            Verdict::Pass => self.refusals.store(0, Ordering::Relaxed),
-            Verdict::Throttled { retry_after } => {
-                let refusals = self.refusals.fetch_add(1, Ordering::Relaxed);
-                let block = retry_after.unwrap_or_else(|| backoff(refusals));
-                if let Err(error) = self.penalize(block).await {
-                    tracing::debug!(
-                        target: "nebula_resource::rate_limit",
-                        %error,
-                        "could not record a provider refusal"
-                    );
-                }
+    async fn report(&self, verdict: Verdict, key: Option<(&str, &str)>) {
+        let (retry_after, on_key) = match verdict {
+            Verdict::Pass => {
+                self.refusals.store(0, Ordering::Relaxed);
+                return;
             },
+            Verdict::Throttled { retry_after } => (retry_after, false),
+            Verdict::KeyThrottled { retry_after } => (retry_after, true),
+        };
+        let refusals = self.refusals.fetch_add(1, Ordering::Relaxed);
+        let block = retry_after.unwrap_or_else(|| backoff(refusals));
+        let recorded = match key.filter(|_| on_key) {
+            Some((dimension, value)) => self.penalize_for(dimension, value, block).await,
+            None => self.penalize(block).await,
+        };
+        if let Err(error) = recorded {
+            tracing::debug!(
+                target: "nebula_resource::rate_limit",
+                %error,
+                "could not record a provider refusal"
+            );
         }
     }
 
@@ -682,6 +1003,14 @@ pub enum Verdict {
     /// `retry_after` (capped at the policy's `max_penalty`), or for an
     /// exponential backoff when the provider named no time.
     Throttled {
+        /// How long the provider asked to wait, if it said.
+        retry_after: Option<Duration>,
+    },
+    /// The provider asked to slow down for the one key the call named — a
+    /// chat's own flood limit — so only that key pauses
+    /// ([`Limited::run_for`]). A call that named no key pauses the quota, as
+    /// for [`Throttled`](Self::Throttled).
+    KeyThrottled {
         /// How long the provider asked to wait, if it said.
         retry_after: Option<Duration>,
     },
@@ -809,7 +1138,58 @@ impl<C, T> Limited<C, T> {
             .await
             .map_err(LimitedError::Limit)?;
         let outcome = call(&self.client).await;
-        self.limits.report(self.throttle.check(&outcome)).await;
+        self.limits
+            .report(self.throttle.check(&outcome), None)
+            .await;
+        outcome.map_err(LimitedError::Call)
+    }
+
+    /// Runs one call addressed to `value` of a per-key limit — `run_for(
+    /// "chat_id", chat_id, …)` — under both that key's limit and the account
+    /// limit, waiting for both as long as needed. A
+    /// [`Verdict::KeyThrottled`] pauses only this key.
+    ///
+    /// # Errors
+    ///
+    /// As [`run`](Self::run); a permanent [`LimitedError::Limit`] when the
+    /// resource declares no per-key limit named `dimension`.
+    pub async fn run_for<R, E>(
+        &self,
+        dimension: &str,
+        value: impl fmt::Display,
+        call: impl AsyncFnOnce(&C) -> Result<R, E>,
+    ) -> Result<R, LimitedError<E>>
+    where
+        T: Throttle<R, E>,
+    {
+        self.run_for_until(dimension, value, None, call).await
+    }
+
+    /// As [`run_for`](Self::run_for), never waiting past `deadline`.
+    ///
+    /// # Errors
+    ///
+    /// As [`run_for`](Self::run_for); a permit past `deadline` is
+    /// [`LimitedError::Limit`] with `Exhausted` and a `retry_after`.
+    pub async fn run_for_until<R, E>(
+        &self,
+        dimension: &str,
+        value: impl fmt::Display,
+        deadline: Option<std::time::Instant>,
+        call: impl AsyncFnOnce(&C) -> Result<R, E>,
+    ) -> Result<R, LimitedError<E>>
+    where
+        T: Throttle<R, E>,
+    {
+        let value = value.to_string();
+        self.limits
+            .ready_for(dimension, &value, deadline)
+            .await
+            .map_err(LimitedError::Limit)?;
+        let outcome = call(&self.client).await;
+        self.limits
+            .report(self.throttle.check(&outcome), Some((dimension, &value)))
+            .await;
         outcome.map_err(LimitedError::Call)
     }
 
@@ -852,6 +1232,12 @@ impl<E: std::error::Error + 'static> std::error::Error for LimitedError<E> {
             Self::Call(error) => Some(error),
         }
     }
+}
+
+fn max_wait_until(deadline: Option<std::time::Instant>) -> Duration {
+    deadline.map_or(Duration::MAX, |deadline| {
+        deadline.saturating_duration_since(std::time::Instant::now())
+    })
 }
 
 /// Block after the `refusals`-th consecutive provider refusal that carried no
