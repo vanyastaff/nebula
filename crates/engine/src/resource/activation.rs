@@ -180,6 +180,17 @@ pub enum RowState {
         /// The stored row.
         resource_id: ResourceId,
     },
+    /// The last activation read stored version `version` and failed to
+    /// register it (credentials, slots, config); a registration of an older
+    /// version, if any, may still serve.
+    Failed {
+        /// Tenant the row belongs to.
+        scope: Scope,
+        /// The stored row.
+        resource_id: ResourceId,
+        /// Stored version that failed to activate.
+        version: u64,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -195,7 +206,23 @@ struct ActiveRow {
     bindings: Vec<(CredentialId, String)>,
 }
 
-type RowSlot = Arc<tokio::sync::Mutex<Option<ActiveRow>>>;
+/// What an activator tracks for one stored row.
+#[derive(Debug, Default)]
+struct TrackedRow {
+    /// The registration serving the row, if any.
+    active: Option<ActiveRow>,
+    /// Stored version whose activation last failed; cleared once a version
+    /// registers.
+    failed_version: Option<u64>,
+}
+
+impl TrackedRow {
+    const fn is_empty(&self) -> bool {
+        self.active.is_none() && self.failed_version.is_none()
+    }
+}
+
+type RowSlot = Arc<tokio::sync::Mutex<TrackedRow>>;
 
 /// Lazily activates stored resource rows, once per stored version.
 pub struct StoredResourceActivator {
@@ -313,13 +340,14 @@ impl StoredResourceActivator {
             .into_iter()
             .filter_map(|state| match state {
                 RowState::Active(row) => Some(row),
-                RowState::Busy { .. } => None,
+                RowState::Busy { .. } | RowState::Failed { .. } => None,
             })
             .collect()
     }
 
-    /// Every tracked row: active, or busy (an activation holds it right now,
-    /// so its previous registration, if any, may still be serving).
+    /// Every tracked row: active, busy (an activation holds it right now,
+    /// so its previous registration, if any, may still be serving), or
+    /// failed at its latest stored version.
     #[must_use]
     pub fn row_states(&self) -> Vec<RowState> {
         self.rows
@@ -332,7 +360,14 @@ impl StoredResourceActivator {
                         resource_id: *resource_id,
                     });
                 };
-                let active = guard.as_ref()?;
+                if let Some(version) = guard.failed_version {
+                    return Some(RowState::Failed {
+                        scope: scope.clone(),
+                        resource_id: *resource_id,
+                        version,
+                    });
+                }
+                let active = guard.active.as_ref()?;
                 Some(RowState::Active(ActiveResourceRow {
                     scope: scope.clone(),
                     resource_id: *resource_id,
@@ -368,13 +403,13 @@ impl StoredResourceActivator {
                 .value(),
         );
         let work = async {
-            let mut active = slot.lock().await;
+            let mut tracked = slot.lock().await;
             self.refresh(
                 context,
                 scope,
                 resource_id,
                 expected_key,
-                &mut active,
+                &mut tracked,
                 cancel,
             )
             .await
@@ -393,9 +428,10 @@ impl StoredResourceActivator {
     /// where the previous sweep stopped, so a deletion is noticed within a
     /// bounded number of sweeps. Rows an activation holds right now are
     /// skipped (that activation sees the deletion itself); a storage read
-    /// that fails leaves the row as it is until a later sweep. Tracking
-    /// entries left empty (a retired row, or an activation that failed
-    /// before registering) are dropped, so they do not accumulate.
+    /// that fails leaves the row as it is until a later sweep. A deleted
+    /// row's recorded failure is forgotten too, and tracking entries left
+    /// empty (a retired row, or an activation that failed before reading
+    /// its row) are dropped, so they do not accumulate.
     pub async fn retire_deleted(&self, context: &ActivationContext<'_>) {
         use std::sync::atomic::Ordering;
 
@@ -423,10 +459,10 @@ impl StoredResourceActivator {
         let Some(slot) = self.rows.get(key).map(|entry| Arc::clone(entry.value())) else {
             return;
         };
-        let Ok(mut active) = slot.try_lock() else {
+        let Ok(mut tracked) = slot.try_lock() else {
             return;
         };
-        if active.is_none() {
+        if tracked.is_empty() {
             return;
         }
         let (scope, resource_id) = key;
@@ -445,7 +481,8 @@ impl StoredResourceActivator {
         if row.is_some_and(|row| row.deleted_at.is_none()) {
             return;
         }
-        if let Some(stale) = active.take() {
+        tracked.failed_version = None;
+        if let Some(stale) = tracked.active.take() {
             retire(context, &stale.activated);
             tracing::debug!(
                 target: "nebula_engine::resource_activation",
@@ -460,7 +497,7 @@ impl StoredResourceActivator {
     /// lock this check runs under, so a concurrent activation keeps it.
     fn reap_if_empty(&self, key: &(Scope, ResourceId)) {
         self.rows.remove_if(key, |_, slot| {
-            Arc::strong_count(slot) == 1 && slot.try_lock().is_ok_and(|active| active.is_none())
+            Arc::strong_count(slot) == 1 && slot.try_lock().is_ok_and(|tracked| tracked.is_empty())
         });
     }
 
@@ -470,7 +507,7 @@ impl StoredResourceActivator {
         scope: &Scope,
         resource_id: ResourceId,
         expected_key: &ResourceKey,
-        active: &mut Option<ActiveRow>,
+        tracked: &mut TrackedRow,
         cancel: &CancellationToken,
     ) -> Result<ActivatedResource, StoredResourceActivationError> {
         let row = self
@@ -479,7 +516,8 @@ impl StoredResourceActivator {
             .await
             .map_err(StoredResourceActivationError::Storage)?;
         let Some(row) = row.filter(|row| row.deleted_at.is_none()) else {
-            if let Some(stale) = active.take() {
+            tracked.failed_version = None;
+            if let Some(stale) = tracked.active.take() {
                 retire(context, &stale.activated);
             }
             return Err(StoredResourceActivationError::NotFound { resource_id });
@@ -491,16 +529,26 @@ impl StoredResourceActivator {
                 expected: expected_key.clone(),
             });
         }
-        if let Some(current) = active
+        if let Some(current) = tracked
+            .active
             .as_ref()
             .filter(|current| current.version == row.version)
         {
             return Ok(current.activated.clone());
         }
 
+        // A failure is recorded against the version read, so status reports
+        // it as failed rather than never activated.
         let (activated, bindings) =
-            register_row(context, scope, &row, &self.limit_key_secret, cancel).await?;
-        let previous = active.replace(ActiveRow {
+            match register_row(context, scope, &row, &self.limit_key_secret, cancel).await {
+                Ok(registered) => registered,
+                Err(error) => {
+                    tracked.failed_version = Some(row.version);
+                    return Err(error);
+                },
+            };
+        tracked.failed_version = None;
+        let previous = tracked.active.replace(ActiveRow {
             version: row.version,
             activated: activated.clone(),
             bindings,

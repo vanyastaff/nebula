@@ -540,15 +540,42 @@ async fn the_deletion_sweep_is_bounded_and_rotates() {
     );
 }
 
-/// A row whose activation failed before registering leaves no tracking
-/// entry behind once swept.
+/// A row whose stored version failed to register is reported as failed at
+/// that version until it registers or is deleted; an activation that failed
+/// before reading its row leaves no tracking entry once swept.
 #[tokio::test]
-async fn the_sweep_drops_entries_of_failed_activations() {
+async fn a_failed_activation_is_tracked_until_its_row_goes() {
     let fixture = Fixture::new();
     let (resource_id, key) = fixture.store_row("activation.unknown", "a", &[]).await;
     assert!(fixture.activate(resource_id, &key).await.is_err());
-    assert_eq!(fixture.activator.rows.len(), 1);
+    let failed = |fixture: &Fixture| {
+        fixture
+            .activator
+            .row_states()
+            .into_iter()
+            .any(|state| matches!(state, RowState::Failed { .. }))
+    };
+    assert!(failed(&fixture), "{:?}", fixture.activator.row_states());
 
+    fixture
+        .activator
+        .retire_deleted(&fixture.context(false))
+        .await;
+    assert!(failed(&fixture), "a live row's failure is kept");
+
+    fixture
+        .store
+        .soft_delete(&fixture.scope, &resource_id.to_string())
+        .await
+        .unwrap();
+    fixture
+        .activator
+        .retire_deleted(&fixture.context(false))
+        .await;
+    assert!(fixture.activator.rows.is_empty());
+
+    let missing = ResourceId::new();
+    assert!(fixture.activate(missing, &key).await.is_err());
     fixture
         .activator
         .retire_deleted(&fixture.context(false))

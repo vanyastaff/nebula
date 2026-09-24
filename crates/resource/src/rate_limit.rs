@@ -858,6 +858,14 @@ impl ResourceLimiter {
         let _waiting = Waiting::start(self);
         tokio::time::sleep(wait).await;
         loop {
+            // A late wake-up can land past the deadline even though the
+            // booked wait fit it; the call then does not run.
+            if deadline.is_some_and(|deadline| std::time::Instant::now() > deadline) {
+                return Err(self.tagged(Error::exhausted(
+                    "rate limit wait overran the deadline",
+                    None,
+                )));
+            }
             let pause = pause_now();
             if pause.is_zero() {
                 return Ok(());
@@ -961,7 +969,7 @@ impl ResourceLimiter {
         // Recorded locally as well, so callers of this process already
         // sleeping on an earlier booking wake no sooner than the pause ends.
         {
-            let until = tokio::time::Instant::now() + block;
+            let until = pause_deadline(tokio::time::Instant::now(), block);
             let mut paused_until = self
                 .paused_until
                 .lock()
@@ -1068,7 +1076,7 @@ impl ResourceLimiter {
     /// sleeping on that key wake no sooner than it ends.
     fn pause_key(&self, key: &LimitKey, block: Duration) {
         let now = tokio::time::Instant::now();
-        let until = now + block;
+        let until = pause_deadline(now, block);
         let mut pauses = self
             .key_pauses
             .lock()
@@ -1374,6 +1382,16 @@ impl<E: std::error::Error + 'static> std::error::Error for LimitedError<E> {
             Self::Call(error) => Some(error),
         }
     }
+}
+
+/// `now + block`, saturating to a far-future instant: an author's
+/// `max_penalty` may be as large as `Duration::MAX`.
+fn pause_deadline(now: tokio::time::Instant, block: Duration) -> tokio::time::Instant {
+    tokio::time::Instant::from_std(crate::deadline::deadline_after(
+        now.into_std(),
+        block,
+        crate::deadline::UNBOUNDED_HORIZON,
+    ))
 }
 
 fn max_wait_until(deadline: Option<std::time::Instant>) -> Duration {

@@ -100,7 +100,7 @@ impl Manager {
     /// invariant. Taint maps to `Revoked` → `ErrorCategory::Unavailable`
     /// (unchanged from the gate); shutdown maps to `Cancelled` (unchanged
     /// from `lookup`'s Defense A), so neither caller-facing category moves.
-    fn reject_if_tainted_or_shutting_down_post_count<R: Provider>(
+    pub(super) fn reject_if_tainted_or_shutting_down_post_count<R: Provider>(
         &self,
         managed: &Arc<ManagedResource<R>>,
     ) -> Result<(), Error> {

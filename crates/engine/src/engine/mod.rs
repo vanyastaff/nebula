@@ -1257,7 +1257,9 @@ impl WorkflowEngine {
     /// activated, for [`ResourceStatusPublisher`](crate::ResourceStatusPublisher).
     ///
     /// Reads only in-memory state (activator rows and the exact manager row
-    /// each resolved to); a row whose registry row is gone is left out.
+    /// each resolved to); a row whose registry row is gone is left out. A
+    /// row whose latest stored version failed to activate is reported as
+    /// failed at that version.
     #[must_use]
     pub fn resource_status_snapshot(&self) -> crate::resource_status::ResourceStatusView {
         let mut view = crate::resource_status::ResourceStatusView::default();
@@ -1270,6 +1272,23 @@ impl WorkflowEngine {
                 crate::resource::RowState::Active(row) => row,
                 crate::resource::RowState::Busy { scope, resource_id } => {
                     view.busy.push((scope, resource_id.to_string()));
+                    continue;
+                },
+                crate::resource::RowState::Failed {
+                    scope,
+                    resource_id,
+                    version,
+                } => {
+                    view.live.push((
+                        scope,
+                        nebula_storage_port::dto::ResourceStatusSnapshot {
+                            resource_id: resource_id.to_string(),
+                            phase: nebula_storage_port::dto::ResourceStatusPhase::Failed,
+                            healthy: false,
+                            accepting: false,
+                            row_version: version,
+                        },
+                    ));
                     continue;
                 },
             };

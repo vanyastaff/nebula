@@ -536,3 +536,65 @@ async fn concurrent_callers_never_exceed_the_burst() {
         "exactly the burst is admitted under contention"
     );
 }
+
+/// A penalty cap as large as `Duration::MAX` pauses without overflowing
+/// the pause deadline, for the account and for a key.
+#[tokio::test(start_paused = true)]
+async fn an_unbounded_penalty_cap_saturates() {
+    let store: Arc<dyn ErasedLimitStore> = Arc::new(MemoryLimitStore::new());
+    let base = LimitKey::new("acct:test").unwrap();
+    let limits = ResourceLimiter::new(
+        Some(Quota::new(
+            Arc::clone(&store),
+            base.clone(),
+            per_second(100, 100),
+        )),
+        Some(KeyedLimits::new(
+            store,
+            base,
+            vec![("chat_id", per_second(1, 1))],
+        )),
+        Duration::MAX,
+        ResourceKey::new("test.resource").unwrap(),
+        Arc::new(EventBus::new(16)),
+    );
+    limits
+        .penalize_for("chat_id", 1, Duration::MAX)
+        .await
+        .expect("a key pause saturates");
+    limits
+        .penalize(Duration::MAX)
+        .await
+        .expect("an account pause saturates");
+    let deadline = std::time::Instant::now() + Duration::from_secs(1);
+    let error = limits
+        .ready(Some(deadline))
+        .await
+        .expect_err("paused far past the deadline");
+    assert!(
+        matches!(error.kind(), ErrorKind::Exhausted { .. }),
+        "{error}"
+    );
+}
+
+/// A wake-up scheduled within the deadline but run after it (a busy
+/// executor) does not admit the call.
+#[tokio::test(flavor = "current_thread")]
+async fn a_late_wake_up_past_the_deadline_is_refused() {
+    let limits = limiter(Rate::new(nz(1), Duration::from_millis(20)).unwrap());
+    limits.ready(None).await.expect("the burst passes");
+    let deadline = std::time::Instant::now() + Duration::from_millis(40);
+    let waiter = tokio::spawn(async move { limits.ready(Some(deadline)).await });
+    // Let the waiter book its slot and go to sleep, then hold the only
+    // executor thread past the deadline.
+    tokio::task::yield_now().await;
+    std::thread::sleep(Duration::from_millis(80));
+    let error = waiter
+        .await
+        .expect("waiter task")
+        .expect_err("woke after the deadline");
+    assert!(
+        matches!(error.kind(), ErrorKind::Exhausted { .. }),
+        "{error}"
+    );
+}

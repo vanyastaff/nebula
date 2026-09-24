@@ -231,6 +231,15 @@ impl Manager {
         R: Provider,
         R::Topology: Topology<R>,
     {
+        self.install(spec).map(drop)
+    }
+
+    /// [`register`](Self::register), returning the installed row.
+    fn install<R>(&self, spec: RegistrationSpec<R>) -> Result<Arc<ManagedResource<R>>, Error>
+    where
+        R: Provider,
+        R::Topology: Topology<R>,
+    {
         use crate::resource::ResourceConfig as _;
 
         self.shutdown_guard()?;
@@ -377,7 +386,7 @@ impl Manager {
         self.emit(ResourceEvent::Registered { key: key.clone() });
 
         tracing::debug!(%key, "resource registered");
-        Ok(())
+        Ok(managed)
     }
 
     /// Spawns the background maintenance reaper for a freshly-registered
@@ -780,7 +789,7 @@ impl Manager {
             ?slot_identity,
             "all pre-register checks passed; dispatching into typed register"
         );
-        self.register(RegistrationSpec {
+        let managed = self.install(RegistrationSpec {
             resource,
             config,
             scope,
@@ -789,7 +798,68 @@ impl Manager {
             recovery_gate,
             rate_limit,
         })?;
+        // 6. A row activated from its stored definition warms as its
+        //    topology's warmup strategy says, in the background: the
+        //    activation that registered it does not wait on `create`s.
+        self.spawn_warmup(&managed);
         Ok(slot_identity)
+    }
+
+    /// Runs the row's eager warmup (its topology's
+    /// [`warmup_strategy`](Topology::warmup_strategy) over its
+    /// [`warmup_target`](Topology::warmup_target)) in a background task.
+    ///
+    /// The task is counted in-flight like an acquire, so a revoke or a
+    /// graceful shutdown drains it, and it stops when the row's maintenance
+    /// token is cancelled (retirement, shutdown). Author `create` hooks are
+    /// bounded and isolated as in [`warmup_pool`](Self::warmup_pool).
+    fn spawn_warmup<R>(&self, managed: &Arc<ManagedResource<R>>)
+    where
+        R: Provider,
+        R::Topology: Topology<R>,
+    {
+        use crate::{
+            hook_guard::{DEFAULT_AUTHOR_HOOK_CEILING, guard_author_hook},
+            topology::pooled::config::WarmupStrategy,
+        };
+
+        let config = managed.config();
+        if managed.topology.warmup_target(&config) == 0
+            || matches!(managed.topology.warmup_strategy(), WarmupStrategy::None)
+        {
+            return;
+        }
+        let in_flight =
+            super::InFlightCounter::new(self.drain_tracker.clone(), managed.in_flight_tracker());
+        if self
+            .reject_if_tainted_or_shutting_down_post_count::<R>(managed)
+            .is_err()
+        {
+            return;
+        }
+        let cancel = managed.maintenance.cancellation_token();
+        let ctx = crate::context::ResourceContext::minimal(
+            nebula_core::scope::Scope::default(),
+            cancel.clone(),
+        );
+        let managed = Arc::clone(managed);
+        tokio::spawn(async move {
+            let _in_flight = in_flight;
+            // SAFETY (unwind): as in `warmup_pool` — an entry being built is
+            // held by its `EntryCreateGuard` (destroyed on unwind) and an
+            // entry already warmed is deposited into the fenced store before
+            // the next is built, so a caught panic leaves no torn state.
+            let warmup = guard_author_hook(DEFAULT_AUTHOR_HOOK_CEILING, managed.warmup(&ctx));
+            tokio::select! {
+                biased;
+                () = cancel.cancelled() => {},
+                outcome = warmup => {
+                    if let Err(fault) = outcome {
+                        fault.observe(&R::key(), "warmup");
+                    }
+                },
+            }
+        });
     }
 
     /// Looks up a registered `ManagedResource<R>` by type and scope.

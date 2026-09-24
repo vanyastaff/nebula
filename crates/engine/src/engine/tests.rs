@@ -7976,3 +7976,52 @@ async fn status_publisher_writes_changes_only_and_withdraws_retired_rows() {
         "the deleted row is no longer active"
     );
 }
+
+/// A row whose stored version fails to activate is published as failed at
+/// that version, not left looking never activated.
+#[tokio::test]
+async fn status_publisher_reports_a_failed_activation() {
+    let store = Arc::new(nebula_storage::inmem::InMemoryResourceStore::new());
+    let (engine, _) = make_engine(Arc::new(ActionRegistry::new()));
+    let engine = engine
+        .with_resource_manager(Arc::new(nebula_resource::Manager::new()))
+        .with_resource_registrars(crate::resource::activation::tests::registrars())
+        .with_stored_resources(crate::resource::StoredResourceActivator::new(
+            Arc::clone(&store) as Arc<dyn nebula_storage_port::store::ResourceStore>,
+        ));
+    let scope = Scope::new(
+        nebula_core::WorkspaceId::new().to_string(),
+        nebula_core::OrgId::new().to_string(),
+    );
+    // A kind this process does not allow fails registration after its row
+    // was read.
+    let row = store_plain_row(&store, &scope, "activation.unknown").await;
+    let node = node_key!("reader");
+    let manifest = nebula_execution::ExecutionBindingManifestV2::new([resource_binding(
+        &node,
+        "db",
+        row,
+        "activation.unknown",
+    )])
+    .unwrap();
+    engine
+        .activate_bound_resources(
+            ExecutionId::new(),
+            &scope,
+            &manifest,
+            &CancellationToken::new(),
+        )
+        .await;
+
+    let recorder = Arc::new(RecordingStatusStore::default());
+    let publisher = crate::ResourceStatusPublisher::new(
+        Arc::clone(&recorder) as Arc<dyn nebula_storage_port::store::ResourceStatusStore>,
+        nebula_storage_port::dto::StatusWorkerId::new("worker:test").unwrap(),
+    );
+    let mut published = HashMap::new();
+    publisher.tick(&engine, &mut published).await;
+    assert_eq!(
+        recorder.take(),
+        vec!["heartbeat".to_owned(), format!("publish {row} failed v0")]
+    );
+}

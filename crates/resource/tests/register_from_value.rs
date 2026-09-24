@@ -890,3 +890,100 @@ async fn register_from_value_rejects_inlined_field_in_union_variant_payload() {
         "expected a union-variant-payload closed-set rejection naming the inlined key, got: {msg}"
     );
 }
+
+// ── Warmup on resolved registration ───────────────────────────────────────
+
+#[derive(Clone)]
+struct WarmPool {
+    creates: Arc<std::sync::atomic::AtomicU64>,
+}
+
+#[async_trait::async_trait]
+impl Provider for WarmPool {
+    type Config = PgConfig;
+    type Instance = Arc<()>;
+    type Topology = nebula_resource::Pooled<Self>;
+
+    fn key() -> ResourceKey {
+        resource_key!("warm-pool")
+    }
+
+    async fn create(&self, _config: &PgConfig, _ctx: &ResourceContext) -> Result<Arc<()>, Error> {
+        self.creates
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(Arc::new(()))
+    }
+
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("warm-pool"),
+            "",
+        )
+    }
+}
+
+nebula_resource::no_credential_slots!(WarmPool);
+
+impl nebula_resource::topology::pooled::PoolProvider for WarmPool {}
+
+impl DeclaresDependencies for WarmPool {
+    fn dependencies() -> Dependencies {
+        Dependencies::new()
+    }
+}
+
+/// A row registered from its stored definition warms as its pool's warmup
+/// strategy says, without anyone calling `warmup_pool`.
+#[tokio::test]
+async fn a_resolved_registration_runs_the_pool_warmup() {
+    use nebula_resource::topology::pooled::config::{Config, WarmupStrategy};
+
+    for (strategy, expected) in [(WarmupStrategy::Sequential, 2), (WarmupStrategy::None, 0)] {
+        let manager = Manager::new();
+        let engine = ExpressionEngine::new();
+        let creates = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let resource = WarmPool {
+            creates: Arc::clone(&creates),
+        };
+        let factory = KindActivator::<WarmPool, _, _>::new(
+            move || resource.clone(),
+            nebula_resource::topology::fixed(move || {
+                nebula_resource::Pooled::<WarmPool>::new(
+                    Config {
+                        min_size: 2,
+                        max_size: 4,
+                        idle_timeout: None,
+                        max_lifetime: None,
+                        warmup: strategy,
+                        ..Default::default()
+                    },
+                    1,
+                )
+            }),
+        );
+        register_from_value(
+            factory,
+            &manager,
+            &engine,
+            json!({ "host": "db" }),
+            HashMap::new(),
+        )
+        .await
+        .expect("pooled registration succeeds");
+
+        let started = std::time::Instant::now();
+        while creates.load(std::sync::atomic::Ordering::SeqCst) < expected
+            && started.elapsed() < std::time::Duration::from_secs(5)
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        // Room for a stray create beyond the target to show up.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(
+            creates.load(std::sync::atomic::Ordering::SeqCst),
+            expected,
+            "{strategy:?}"
+        );
+    }
+}
