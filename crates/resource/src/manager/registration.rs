@@ -327,7 +327,8 @@ impl Manager {
                         ),
                     }
                 }
-                material_reconciliation_pending |= index.has_material_context(credential_id);
+                material_reconciliation_pending |=
+                    index.material_publication_requires_reconciliation(credential_id);
             }
         }
 

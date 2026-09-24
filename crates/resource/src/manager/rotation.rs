@@ -359,6 +359,36 @@ impl Manager {
             .await
     }
 
+    /// Advances an initialization-fenced row only after every retained
+    /// replacement context targeting that row has settled.
+    #[cfg(feature = "rotation")]
+    pub(crate) fn promote_reconciled_credential_binding(
+        &self,
+        index: &crate::ResourceFanoutIndex,
+        credential_id: &nebula_credential::CredentialId,
+        binding: &crate::Bind,
+    ) {
+        let _admission = self
+            .admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !index.contains_published_binding(credential_id, binding)
+            || index.binding_has_pending_material(binding)
+        {
+            return;
+        }
+        let Ok(managed) = self.lookup_any_for_slot_identity_structural(
+            &binding.resource_key,
+            &binding.scope,
+            &binding.slot_identity,
+        ) else {
+            return;
+        };
+        if managed.phase() == crate::state::ResourcePhase::Initializing && !managed.is_tainted() {
+            managed.set_phase(crate::state::ResourcePhase::Ready);
+        }
+    }
+
     /// Installs a projected guard into one identity-pinned row, then dispatches
     /// the refresh hook. The install completes synchronously before the first
     /// await, so author code cannot observe the old guard after dispatch.

@@ -186,8 +186,21 @@ impl ResourceFanoutIndex {
 
         let mut summary = RotationOutcome::default();
         let mut projections = Vec::new();
+        let targeted_refresh = credential_id.is_some();
         for (bound_credential_id, binding, context) in self.published_bindings(credential_id) {
             let Some((credential_scope, credential_key)) = context else {
+                if targeted_refresh {
+                    projections.push(
+                        refresh_binding(
+                            self,
+                            bound_credential_id,
+                            mgr,
+                            binding,
+                            Duration::from_secs(30),
+                        )
+                        .boxed(),
+                    );
+                }
                 continue;
             };
             let Ok(managed) =
@@ -270,14 +283,19 @@ impl ResourceFanoutIndex {
         let outcomes = futures::future::join_all(projections).await;
         summary.add(summarize_row_outcomes(outcomes));
         if credential_id.is_none() {
-            for (cid, scope, credential_key, context_sequence) in self.pending_material_contexts() {
-                let outcome = self
-                    .dispatch_material_replacement(cid, &scope, &credential_key, resolver, mgr)
-                    .await;
+            let retries = self.pending_material_contexts().into_iter().map(
+                |(cid, scope, credential_key, context_sequence)| async move {
+                    let outcome = self
+                        .dispatch_material_replacement(cid, &scope, &credential_key, resolver, mgr)
+                        .await;
+                    if outcome.failed + outcome.timed_out + outcome.abandoned == 0 {
+                        self.complete_material_context(&cid, context_sequence, mgr);
+                    }
+                    outcome
+                },
+            );
+            for outcome in futures::future::join_all(retries).await {
                 summary.add(outcome);
-                if outcome.failed + outcome.timed_out + outcome.abandoned == 0 {
-                    self.forget_material_context(&cid, context_sequence);
-                }
             }
         }
         summary
@@ -473,60 +491,7 @@ impl ResourceFanoutIndex {
         let dispatches = rows.into_iter().map(|b| async move {
             match op {
                 FanoutOp::Refresh => {
-                    // Admission is synchronous. The manager starts receipt
-                    // observation only after admission. Expiry returns
-                    // Deferred only while the hook remains queued; once it
-                    // starts, its bounded terminal result wins. Neither path
-                    // drops queue ownership or invents a retryable error.
-                    let refresh = mgr.refresh_published_credential_binding(
-                        self,
-                        &cid,
-                        &b,
-                        per_resource_timeout,
-                        per_resource_timeout,
-                    );
-                    match refresh.await {
-                        Ok(crate::SlotDispatchOutcome::Completed { .. }) => {
-                            RowOutcome::Success {
-                                drain_timed_out: false,
-                            }
-                        },
-                        Ok(crate::SlotDispatchOutcome::TimedOut { .. }) => {
-                            RowOutcome::TimedOut {
-                                drain_timed_out: false,
-                            }
-                        },
-                        Ok(crate::SlotDispatchOutcome::Deferred { reason, .. }) => {
-                            RowOutcome::Deferred {
-                                drain_timed_out: false,
-                                observation_timed_out: matches!(
-                                    reason,
-                                    crate::SlotDeferralReason::ObservationTimedOut
-                                ),
-                            }
-                        },
-                        Ok(crate::SlotDispatchOutcome::Abandoned { .. }) => {
-                            RowOutcome::Abandoned {
-                                drain_timed_out: false,
-                            }
-                        },
-                        Err(err) => {
-                            // Resource-crate errors are already
-                            // credential-free (key/slot/scope only).
-                            tracing::warn!(
-                                credential_id = %cid,
-                                resource_key = %b.resource_key,
-                                slot = %b.slot_name,
-                                slot_identity = ?b.slot_identity,
-                                error = %err,
-                                "rotation fan-out: per-resource refresh failed; \
-                                 siblings unaffected",
-                            );
-                            RowOutcome::Failed {
-                                drain_timed_out: false,
-                            }
-                        },
-                    }
+                    refresh_binding(self, cid, mgr, b, per_resource_timeout).await
                 },
                 FanoutOp::Revoke => {
                     // Phase 1 — SYNCHRONOUS taint, OUTSIDE the timeout. It is
@@ -789,13 +754,8 @@ async fn project_and_refresh(
         };
     }
     let key = managed.resource_key();
-    let publication_managed = std::sync::Arc::clone(&managed);
-    let stale_publication_managed = std::sync::Arc::clone(&managed);
     match mgr
         .install_and_refresh_resolved(&key, slot, managed, guard, Some(generation), move || {
-            if publication_managed.phase() == crate::state::ResourcePhase::Initializing {
-                publication_managed.set_phase(crate::state::ResourcePhase::Ready);
-            }
             drop(projection_permit);
         })
         .await
@@ -818,13 +778,8 @@ async fn project_and_refresh(
                 drain_timed_out: false,
             },
         },
-        Ok(crate::manager::EpochRefreshOutcome::Stale { .. }) => {
-            if stale_publication_managed.phase() == crate::state::ResourcePhase::Initializing {
-                stale_publication_managed.set_phase(crate::state::ResourcePhase::Ready);
-            }
-            RowOutcome::Success {
-                drain_timed_out: false,
-            }
+        Ok(crate::manager::EpochRefreshOutcome::Stale { .. }) => RowOutcome::Success {
+            drain_timed_out: false,
         },
         Err(error) => {
             tracing::warn!(credential_id = %cid, error = %error,
@@ -863,6 +818,46 @@ fn revoke_tail_outcome(tail: crate::RevokeTail) -> RowOutcome {
         },
         crate::RevokeTail::Abandoned { drain } => RowOutcome::Abandoned {
             drain_timed_out: matches!(drain, crate::SlotDrainOutcome::TimedOut { .. }),
+        },
+    }
+}
+
+async fn refresh_binding(
+    index: &ResourceFanoutIndex,
+    credential_id: CredentialId,
+    mgr: &crate::Manager,
+    binding: crate::Bind,
+    timeout: Duration,
+) -> RowOutcome {
+    match mgr
+        .refresh_published_credential_binding(index, &credential_id, &binding, timeout, timeout)
+        .await
+    {
+        Ok(crate::SlotDispatchOutcome::Completed { .. }) => RowOutcome::Success {
+            drain_timed_out: false,
+        },
+        Ok(crate::SlotDispatchOutcome::TimedOut { .. }) => RowOutcome::TimedOut {
+            drain_timed_out: false,
+        },
+        Ok(crate::SlotDispatchOutcome::Deferred { reason, .. }) => RowOutcome::Deferred {
+            drain_timed_out: false,
+            observation_timed_out: matches!(reason, crate::SlotDeferralReason::ObservationTimedOut),
+        },
+        Ok(crate::SlotDispatchOutcome::Abandoned { .. }) => RowOutcome::Abandoned {
+            drain_timed_out: false,
+        },
+        Err(error) => {
+            tracing::warn!(
+                credential_id = %credential_id,
+                resource_key = %binding.resource_key,
+                slot = %binding.slot_name,
+                slot_identity = ?binding.slot_identity,
+                error = %error,
+                "rotation fan-out: per-resource refresh failed; siblings unaffected",
+            );
+            RowOutcome::Failed {
+                drain_timed_out: false,
+            }
         },
     }
 }

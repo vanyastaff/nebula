@@ -110,13 +110,13 @@ fn completed_material_dispatch_cannot_forget_a_newer_context() {
 
     let old = idx.remember_material_context(cid, owner.clone(), credential_key.clone());
     let new = idx.remember_material_context(cid, owner.clone(), credential_key.clone());
-    idx.forget_material_context(&cid, old);
+    assert!(!idx.forget_material_context(&cid, old));
     assert_eq!(
         idx.pending_material_contexts(),
         vec![(cid, owner, credential_key, new)]
     );
 
-    idx.forget_material_context(&cid, new);
+    assert!(idx.forget_material_context(&cid, new));
     assert!(idx.pending_material_contexts().is_empty());
 }
 
@@ -142,6 +142,27 @@ fn replacement_context_observed_before_staging_is_retained() {
     assert_eq!(idx.pending_material_contexts().len(), 1);
     assert!(!idx.publish_staged_entry(&cid, &bind));
     assert!(idx.has_material_context(&cid));
+}
+
+#[test]
+fn material_replacement_fence_is_bounded_and_fails_closed_when_saturated() {
+    let idx = ResourceFanoutIndex::new();
+    let owner = TenantScope::new("org", "workspace");
+    let credential_key: CredentialKey = "oauth".parse().expect("credential key");
+    for _ in 0..MAX_RETAINED_MATERIAL_REPLACEMENTS {
+        idx.remember_material_context(cred(), owner.clone(), credential_key.clone());
+    }
+    let overflow = cred();
+    idx.remember_material_context(overflow, owner, credential_key);
+
+    let fence = idx
+        .material_replacement_fence
+        .lock()
+        .expect("material replacement fence lock");
+    assert_eq!(fence.contexts.len(), MAX_RETAINED_MATERIAL_REPLACEMENTS);
+    assert!(fence.saturated);
+    drop(fence);
+    assert!(idx.material_publication_requires_reconciliation(&overflow));
 }
 
 #[test]
@@ -1149,6 +1170,54 @@ mod fanout_dispatch {
             "a cloned binding whose published ownership was removed must fail closed"
         );
         assert_eq!(ledger.refresh_entered.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn targeted_reconciliation_refreshes_event_only_bindings() {
+        let identity = SlotIdentity::from_bindings([("db", "event-only")]);
+        let (index, manager, credential_id, _scope, _org, ledger) =
+            setup(std::slice::from_ref(&identity)).await;
+
+        let outcome = index
+            .reconcile_material(&manager, &UnusedResolver, Some(credential_id))
+            .await;
+
+        assert_eq!(outcome.success(), 1);
+        assert_eq!(ledger.refresh_entered.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn row_stays_initializing_until_every_material_context_settles() {
+        let identity = SlotIdentity::from_bindings([("db", "shared-row")]);
+        let (index, manager, first, scope, _org, _ledger) =
+            setup(std::slice::from_ref(&identity)).await;
+        let second = CredentialId::new();
+        index.bind(
+            second,
+            CtlResource::key(),
+            scope.clone(),
+            "secondary",
+            identity.clone(),
+        );
+        let managed = manager
+            .lookup_any_for_slot_identity_structural(&CtlResource::key(), &scope, &identity)
+            .expect("registered row");
+        managed.set_phase(crate::state::ResourcePhase::Initializing);
+        let owner = TenantScope::new("org", "workspace");
+        let credential_key: CredentialKey = "oauth".parse().expect("credential key");
+        let first_sequence =
+            index.remember_material_context(first, owner.clone(), credential_key.clone());
+        let second_sequence = index.remember_material_context(second, owner, credential_key);
+
+        index.complete_material_context(&first, first_sequence, &manager);
+        assert_eq!(
+            managed.phase(),
+            crate::state::ResourcePhase::Initializing,
+            "one settled slot cannot admit a row with another pending replacement"
+        );
+
+        index.complete_material_context(&second, second_sequence, &manager);
+        assert_eq!(managed.phase(), crate::state::ResourcePhase::Ready);
     }
 
     #[tokio::test]

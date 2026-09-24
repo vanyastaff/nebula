@@ -474,9 +474,10 @@ impl ResourceFanoutDriver {
                         match result {
                             Some(Ok((credential_id, context_sequence, outcome))) => {
                                 if outcome.failed + outcome.timed_out + outcome.abandoned == 0 {
-                                    index.forget_material_context(
+                                    index.complete_material_context(
                                         &credential_id,
                                         context_sequence,
+                                        &manager,
                                     );
                                 }
                                 Self::record(credential_id, "material_replacement", outcome);

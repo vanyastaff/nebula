@@ -259,6 +259,15 @@ impl std::fmt::Debug for PendingRevokeAdmission {
 /// Maximum credential projections admitted across concurrent fan-out calls.
 pub(super) const MAX_CONCURRENT_PROJECTIONS: usize = 32;
 const MAX_RETAINED_TERMINAL_REVOCATIONS: usize = 4_096;
+const MAX_RETAINED_MATERIAL_REPLACEMENTS: usize = 4_096;
+
+#[derive(Debug, Default)]
+struct MaterialReplacementFence {
+    contexts: std::collections::HashMap<CredentialId, (TenantScope, CredentialKey, u64)>,
+    /// Once exact retention capacity is exhausted, new rotation-bound rows
+    /// remain unavailable until this runtime shuts down.
+    saturated: bool,
+}
 
 #[derive(Debug, Default)]
 struct TerminalRevocationFence {
@@ -295,7 +304,7 @@ pub struct ResourceFanoutIndex {
     /// Owner-qualified replacement hints retained until every bound row can
     /// project them. A hint may precede the first staged binding, so it must
     /// not be pruned merely because the reverse index is still empty.
-    material_contexts: DashMap<CredentialId, (TenantScope, CredentialKey, u64)>,
+    material_replacement_fence: std::sync::Mutex<MaterialReplacementFence>,
     material_context_sequence: std::sync::atomic::AtomicU64,
     material_retry_notify: tokio::sync::Notify,
     pending_revoke_admissions: std::sync::Mutex<Vec<PendingRevokeAdmission>>,
@@ -312,7 +321,7 @@ impl Default for ResourceFanoutIndex {
     fn default() -> Self {
         Self {
             by_credential: DashMap::new(),
-            material_contexts: DashMap::new(),
+            material_replacement_fence: std::sync::Mutex::new(MaterialReplacementFence::default()),
             material_context_sequence: std::sync::atomic::AtomicU64::new(1),
             material_retry_notify: tokio::sync::Notify::new(),
             pending_revoke_admissions: std::sync::Mutex::new(Vec::new()),
@@ -405,7 +414,7 @@ impl ResourceFanoutIndex {
             Some(credential_key),
             true,
         );
-        if self.material_contexts.contains_key(&cid) {
+        if self.has_material_context(&cid) {
             self.material_retry_notify.notify_one();
         }
     }
@@ -512,31 +521,106 @@ impl ResourceFanoutIndex {
         let sequence = self
             .material_context_sequence
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        self.material_contexts
-            .insert(cid, (scope, credential_key, sequence));
+        let mut fence = self
+            .material_replacement_fence
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if fence.contexts.contains_key(&cid)
+            || fence.contexts.len() < MAX_RETAINED_MATERIAL_REPLACEMENTS
+        {
+            fence
+                .contexts
+                .insert(cid, (scope, credential_key, sequence));
+        } else if !fence.saturated {
+            fence.saturated = true;
+            tracing::error!(
+                retained = fence.contexts.len(),
+                "material replacement fence saturated; future rotation-bound publication fails closed"
+            );
+        }
         sequence
     }
 
     pub(super) fn pending_material_contexts(
         &self,
     ) -> Vec<(CredentialId, TenantScope, CredentialKey, u64)> {
-        self.material_contexts
+        self.material_replacement_fence
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contexts
             .iter()
-            .filter(|entry| self.by_credential.contains_key(entry.key()))
-            .map(|entry| {
-                let (scope, key, sequence) = entry.value();
-                (*entry.key(), scope.clone(), key.clone(), *sequence)
+            .filter(|entry| self.by_credential.contains_key(entry.0))
+            .map(|(credential_id, (scope, key, sequence))| {
+                (*credential_id, scope.clone(), key.clone(), *sequence)
             })
             .collect()
     }
 
-    pub(super) fn forget_material_context(&self, cid: &CredentialId, sequence: u64) {
-        self.material_contexts
-            .remove_if(cid, |_, context| context.2 == sequence);
+    pub(super) fn forget_material_context(&self, cid: &CredentialId, sequence: u64) -> bool {
+        let mut fence = self
+            .material_replacement_fence
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if fence
+            .contexts
+            .get(cid)
+            .is_some_and(|context| context.2 == sequence)
+        {
+            fence.contexts.remove(cid);
+            true
+        } else {
+            false
+        }
     }
 
     pub(crate) fn has_material_context(&self, cid: &CredentialId) -> bool {
-        self.material_contexts.contains_key(cid)
+        self.material_replacement_fence
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contexts
+            .contains_key(cid)
+    }
+
+    pub(crate) fn material_publication_requires_reconciliation(&self, cid: &CredentialId) -> bool {
+        let fence = self
+            .material_replacement_fence
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        fence.saturated || fence.contexts.contains_key(cid)
+    }
+
+    pub(super) fn complete_material_context(
+        &self,
+        cid: &CredentialId,
+        sequence: u64,
+        mgr: &crate::Manager,
+    ) {
+        if !self.forget_material_context(cid, sequence) {
+            return;
+        }
+        for binding in self.affected(cid) {
+            mgr.promote_reconciled_credential_binding(self, cid, &binding);
+        }
+    }
+
+    pub(crate) fn binding_has_pending_material(&self, binding: &Bind) -> bool {
+        let fence = self
+            .material_replacement_fence
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if fence.saturated {
+            return true;
+        }
+        fence.contexts.keys().any(|credential_id| {
+            self.by_credential.get(credential_id).is_some_and(|rows| {
+                rows.iter().any(|row| {
+                    row.published != 0
+                        && row.bind.resource_key == binding.resource_key
+                        && row.bind.scope == binding.scope
+                        && row.bind.slot_identity == binding.slot_identity
+                })
+            })
+        })
     }
 
     pub(crate) async fn material_retry_notified(&self) {
@@ -575,7 +659,11 @@ impl ResourceFanoutIndex {
         // A revoke is terminal for this credential id. Retain the observation
         // even when no binding is visible yet: register_and_bind may already
         // have resolved revoked material but not inserted its staged row.
-        self.material_contexts.remove(&credential_id);
+        self.material_replacement_fence
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contexts
+            .remove(&credential_id);
         let mut fence = self
             .terminal_revocation_fence
             .lock()
@@ -746,7 +834,11 @@ impl ResourceFanoutIndex {
 
     pub(crate) fn clear_for_manager_shutdown(&self) {
         self.by_credential.clear();
-        self.material_contexts.clear();
+        *self
+            .material_replacement_fence
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            MaterialReplacementFence::default();
         self.pending_revoke_admissions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -877,7 +969,7 @@ impl ResourceFanoutIndex {
                 row.staged_context = None;
             }
         }
-        if self.material_contexts.contains_key(cid) {
+        if self.has_material_context(cid) {
             self.material_retry_notify.notify_one();
         }
         let fence = self
