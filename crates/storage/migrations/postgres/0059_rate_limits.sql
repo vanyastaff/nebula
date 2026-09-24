@@ -14,7 +14,11 @@ CREATE TABLE port_rate_limits (
     tat_ns BIGINT NOT NULL,
     seq BIGINT NOT NULL,
     emission_ns BIGINT NOT NULL CHECK (emission_ns > 0),
-    burst INTEGER NOT NULL CHECK (burst > 0)
+    burst INTEGER NOT NULL CHECK (burst > 0),
+    -- End of the latest provider penalty (server clock, ns), so a caller
+    -- that booked before it can find it after sleeping; the TAT a penalty
+    -- sets is at least this, so the row outlives it.
+    penalized_until_ns BIGINT NOT NULL DEFAULT 0
 );
 CREATE INDEX port_rate_limits_tat ON port_rate_limits (tat_ns);
 

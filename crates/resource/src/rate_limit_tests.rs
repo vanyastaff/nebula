@@ -759,6 +759,10 @@ impl nebula_resilience::rate_limiter::gcra::LimitStore for PenaltyFails {
     ) -> Result<bool, LimitStoreError> {
         nebula_resilience::rate_limiter::gcra::LimitStore::cancel(&self.0, key, rate, grant).await
     }
+
+    async fn penalty(&self, key: &LimitKey) -> Result<Duration, LimitStoreError> {
+        nebula_resilience::rate_limiter::gcra::LimitStore::penalty(&self.0, key).await
+    }
 }
 
 /// The local pause is recorded before the store is asked, so a caller of
@@ -793,4 +797,86 @@ async fn a_pause_holds_locally_when_the_store_cannot_record_it() {
         "woke at {:?}",
         started.elapsed()
     );
+}
+
+/// A penalty another worker records after this caller booked holds the
+/// caller back when it wakes: both limiters share one store, as two worker
+/// processes share a cluster store.
+#[tokio::test(start_paused = true)]
+async fn a_penalty_from_another_worker_holds_back_a_booked_caller() {
+    let store: Arc<dyn ErasedLimitStore> = Arc::new(MemoryLimitStore::new());
+    let worker = || {
+        Arc::new(ResourceLimiter::new(
+            Some(Quota::new(
+                Arc::clone(&store),
+                LimitKey::new("acct:shared").unwrap(),
+                per_second(1, 1),
+            )),
+            None,
+            Duration::from_mins(5),
+            ResourceKey::new("test.resource").unwrap(),
+            Arc::new(EventBus::new(16)),
+        ))
+    };
+    let (a, b) = (worker(), worker());
+    b.ready(None).await.expect("the burst passes");
+    let started = Instant::now();
+    let booked = tokio::spawn({
+        let b = Arc::clone(&b);
+        async move { b.ready(None).await }
+    });
+    // B books its next slot, a second out, and sleeps.
+    tokio::task::yield_now().await;
+    a.penalize(Duration::from_mins(1))
+        .await
+        .expect("recorded in the shared store");
+    booked.await.unwrap().expect("admitted after the penalty");
+    assert!(
+        started.elapsed() >= Duration::from_mins(1),
+        "woke at {:?}",
+        started.elapsed()
+    );
+}
+
+/// A key's pause the store could not record is kept in this process until
+/// it ends, for callers arriving after the throttled call returned.
+#[tokio::test(start_paused = true)]
+async fn an_unrecorded_key_pause_holds_for_later_callers() {
+    let store: Arc<dyn ErasedLimitStore> = Arc::new(PenaltyFails(MemoryLimitStore::new()));
+    let base = LimitKey::new("acct:test").unwrap();
+    let limits = ResourceLimiter::new(
+        Some(Quota::new(
+            Arc::clone(&store),
+            base.clone(),
+            per_second(100, 100),
+        )),
+        Some(KeyedLimits::new(
+            store,
+            base,
+            vec![("chat_id", per_second(100, 100))],
+        )),
+        Duration::from_mins(5),
+        ResourceKey::new("test.resource").unwrap(),
+        Arc::new(EventBus::new(16)),
+    );
+    limits
+        .penalize_for("chat_id", 7, Duration::from_secs(30))
+        .await
+        .expect_err("the store is down");
+    let started = Instant::now();
+    limits
+        .ready_for("chat_id", 7, None)
+        .await
+        .expect("admitted after the pause");
+    assert!(
+        started.elapsed() >= Duration::from_secs(30),
+        "woke at {:?}",
+        started.elapsed()
+    );
+    let other = Instant::now();
+    limits
+        .ready_for("chat_id", 8, None)
+        .await
+        .expect("another chat is not paused");
+    assert_eq!(other.elapsed(), Duration::ZERO);
 }

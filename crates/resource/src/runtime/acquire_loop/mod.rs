@@ -534,9 +534,14 @@ where
     /// acquires cannot push the pool past its hard cap. The caller holds one
     /// in-flight count for the warmup itself ([`Manager::warmup_pool`] and
     /// the background warmup on resolved registration both do), which is
-    /// not counted against the headroom. The check and the reservation of a
-    /// create slot happen together under one lock, so concurrent creates
-    /// never pass on the same stale count. `Parallel` runs at most
+    /// not counted against the headroom. Each create also holds one of the
+    /// topology's checkout permits ([`try_reserve`](Topology::try_reserve)),
+    /// exactly as an acquire does, until its entry is deposited: an acquire
+    /// cannot take that capacity meanwhile and create beside it, so the cap
+    /// holds against acquires too, not only against a count read earlier.
+    /// With no permit free the warmup stops, as the pool is at capacity. The
+    /// check and the reservation happen together under one lock, so
+    /// concurrent warmup creates never pass on the same stale count. `Parallel` runs at most
     /// [`MAX_PARALLEL_WARMUP`] creates at once.
     ///
     /// Each create is bounded and isolated by the author-hook ceiling on
@@ -578,13 +583,23 @@ where
                 if let Some(pause) = pause {
                     tokio::time::sleep(pause).await;
                 }
-                {
+                // The create holds a checkout permit, as an acquire's does,
+                // until its entry is deposited: an acquire racing it cannot
+                // take that capacity and create beside it.
+                let _permit = {
                     let _deciding = deciding.lock().await;
+                    let Ok(ticket) = self
+                        .topology
+                        .try_reserve(crate::topology::store::StoreView::new(&self.store))
+                    else {
+                        return Ok(None);
+                    };
                     if self.warmup_headroom(running.load(Ordering::Acquire)).await == 0 {
                         return Ok(None);
                     }
                     running.fetch_add(1, Ordering::AcqRel);
-                }
+                    ticket.into_permit()
+                };
                 // SAFETY (unwind): an entry being built is held by its
                 // `EntryCreateGuard` (destroyed on unwind) and is deposited
                 // into the fenced store before this step returns, so a

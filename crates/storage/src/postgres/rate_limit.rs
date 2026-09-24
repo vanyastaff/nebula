@@ -231,6 +231,16 @@ impl LimitStore for PgLimitStore {
         let (rate, state) = step::enforce(state, now, stored.as_ref(), rate);
         let next = step::penalize(state, now, &rate, retry_after, max_penalty);
         Self::write(&mut tx, key, next, &rate).await?;
+        let until = now.saturating_add(nanos(retry_after.min(max_penalty)));
+        sqlx::query(
+            "UPDATE port_rate_limits SET penalized_until_ns = GREATEST(penalized_until_ns, $2) \
+             WHERE limit_key = $1",
+        )
+        .bind(key.as_str())
+        .bind(to_db(until))
+        .execute(&mut *tx)
+        .await
+        .map_err(unavailable)?;
         tx.commit().await.map_err(unavailable)?;
         self.maybe_sweep().await;
         Ok(())
@@ -263,6 +273,20 @@ impl LimitStore for PgLimitStore {
             .map_err(unavailable)?;
         tx.commit().await.map_err(unavailable)?;
         Ok(true)
+    }
+
+    #[tracing::instrument(skip_all, fields(storage.role = "rate_limit", storage.operation = "penalty"))]
+    async fn penalty(&self, key: &LimitKey) -> Result<Duration, LimitStoreError> {
+        let left: Option<i64> = sqlx::query_scalar(concat!(
+            "SELECT GREATEST(penalized_until_ns - ",
+            now_ns!(),
+            ", 0) FROM port_rate_limits WHERE limit_key = $1"
+        ))
+        .bind(key.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(unavailable)?;
+        Ok(Duration::from_nanos(left.map_or(0, from_db)))
     }
 }
 

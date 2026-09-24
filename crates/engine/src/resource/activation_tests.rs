@@ -228,6 +228,8 @@ impl resident::ResidentProvider for Slotted {
 struct ScriptedResolver {
     calls: AtomicUsize,
     outcome: std::sync::Mutex<Result<(u64, u64), CredentialSlotResolveError>>,
+    /// Never answer, as a stalled credential backend.
+    stall: std::sync::atomic::AtomicBool,
 }
 
 impl Default for ScriptedResolver {
@@ -235,6 +237,7 @@ impl Default for ScriptedResolver {
         Self {
             calls: AtomicUsize::new(0),
             outcome: std::sync::Mutex::new(Err(CredentialSlotResolveError::NotFound)),
+            stall: std::sync::atomic::AtomicBool::new(false),
         }
     }
 }
@@ -276,7 +279,13 @@ impl CredentialSlotResolver for ScriptedResolver {
                 ),
             )
         });
-        Box::pin(async move { outcome })
+        let stall = self.stall.load(Ordering::SeqCst);
+        Box::pin(async move {
+            if stall {
+                std::future::pending::<()>().await;
+            }
+            outcome
+        })
     }
 }
 
@@ -832,6 +841,38 @@ async fn activation_follows_credential_changes_without_a_definition_change() {
             .row_states()
             .iter()
             .any(|state| matches!(state, RowState::Failed { .. }))
+    );
+}
+
+/// An activation that times out after reading its row records that
+/// version as failed, so status reports it failed rather than inactive.
+#[tokio::test(start_paused = true)]
+async fn a_timed_out_activation_is_recorded_as_failed() {
+    let mut fixture = Fixture::new();
+    fixture.activator =
+        StoredResourceActivator::new(Arc::clone(&fixture.store) as Arc<dyn ResourceStore>)
+            .with_activation_timeout(Duration::from_secs(1));
+    let credential = CredentialId::new().to_string();
+    let (resource_id, key) = fixture
+        .store_row(
+            "activation.slotted",
+            "a",
+            &[(AUTH_SLOT, credential.as_str())],
+        )
+        .await;
+    fixture.resolver.stall.store(true, Ordering::SeqCst);
+    std::assert_matches!(
+        fixture.activate(resource_id, &key).await,
+        Err(StoredResourceActivationError::TimedOut(_))
+    );
+    assert!(
+        fixture
+            .activator
+            .row_states()
+            .iter()
+            .any(|state| matches!(state, RowState::Failed { .. })),
+        "{:?}",
+        fixture.activator.row_states()
     );
 }
 

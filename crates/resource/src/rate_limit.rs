@@ -670,7 +670,21 @@ pub struct ResourceLimiter {
 struct KeyWait {
     callers: usize,
     paused_until: Option<tokio::time::Instant>,
+    /// The pause did not reach the store, so it is kept here past its
+    /// callers, until it ends.
+    kept: bool,
 }
+
+impl KeyWait {
+    fn needed(&self, now: tokio::time::Instant) -> bool {
+        self.callers > 0 || (self.kept && self.paused_until.is_some_and(|until| until > now))
+    }
+}
+
+/// Bound on key pauses kept only in this process (their store write
+/// failed); past it such a pause pauses the whole account locally instead,
+/// which errs on sending less.
+const MAX_KEPT_KEY_PAUSES: usize = 4_096;
 
 /// Bound on the keys whose refusal runs are remembered; past it the key
 /// refused longest ago is forgotten, so its next refusal backs off from
@@ -709,7 +723,7 @@ impl Drop for KeyInterest<'_> {
             .unwrap_or_else(PoisonError::into_inner);
         if let Some(wait) = waits.get_mut(&self.key) {
             wait.callers = wait.callers.saturating_sub(1);
-            if wait.callers == 0 {
+            if !wait.needed(tokio::time::Instant::now()) {
                 waits.remove(&self.key);
             }
         }
@@ -991,8 +1005,10 @@ impl ResourceLimiter {
     /// or for `key`: a caller that booked before a provider's "slow down"
     /// must not wake into it.
     ///
-    /// Pauses are seen here as this process recorded them; a pause recorded
-    /// by another worker holds for new bookings through the shared store.
+    /// After sleeping, pauses are read both from this process and from the
+    /// limit store, so a penalty another worker recorded after this caller
+    /// booked holds it back too. A caller that did not wait needs no such
+    /// read: its slot was booked after any penalty already in the store.
     async fn wait_out(
         &self,
         wait: Duration,
@@ -1030,7 +1046,9 @@ impl ResourceLimiter {
             if let Some(error) = overran() {
                 return Err(error);
             }
-            let pause = pause_now();
+            // A penalty recorded after this caller booked, by this process
+            // or any other sharing the store, holds it back as well.
+            let pause = pause_now().max(self.shared_penalty(key).await?);
             if pause.is_zero() {
                 return Ok(());
             }
@@ -1040,6 +1058,29 @@ impl ResourceLimiter {
             }
             tokio::time::sleep(pause).await;
         }
+    }
+
+    /// Time left of a penalty the limit store holds on the account quota or
+    /// on `key`; zero for a limiter without a store.
+    async fn shared_penalty(&self, key: Option<&LimitKey>) -> Result<Duration, Error> {
+        let mut left = Duration::ZERO;
+        if let Some(quota) = &self.quota {
+            let penalty = quota
+                .store
+                .penalty_boxed(&quota.key)
+                .await
+                .map_err(|error| self.store_unavailable(&error))?;
+            left = left.max(penalty);
+        }
+        if let (Some(key), Some(keyed)) = (key, &self.keyed) {
+            let penalty = keyed
+                .store
+                .penalty_boxed(key)
+                .await
+                .map_err(|error| self.store_unavailable(&error))?;
+            left = left.max(penalty);
+        }
+        Ok(left)
     }
 
     fn paused_past_deadline(&self, pause: Duration) -> Error {
@@ -1171,13 +1212,21 @@ impl ResourceLimiter {
         let (key, rate) = keyed
             .limit_for(dimension, &value.to_string())
             .map_err(|error| self.tagged(error))?;
-        // Local first, as in `penalize`.
-        self.pause_key(&key, retry_after.min(self.max_penalty));
-        keyed
+        // Local first, as in `penalize`, and kept while the store records it:
+        // this call counts as a caller of the key meanwhile, so one arriving
+        // before the store has the penalty still sees it here.
+        let block = retry_after.min(self.max_penalty);
+        let _recording = KeyInterest::start(self, &key);
+        self.pause_key(&key, block);
+        if let Err(error) = keyed
             .store
             .penalize_boxed(&key, &rate, retry_after, self.max_penalty)
             .await
-            .map_err(|error| self.store_unavailable(&error))?;
+        {
+            // The store never got it: keep it here until it ends.
+            self.keep_key_pause(&key, block);
+            return Err(self.store_unavailable(&error));
+        }
         self.emit(|key| ResourceEvent::RateLimitPenalized {
             key,
             retry_after: retry_after.min(self.max_penalty),
@@ -1275,6 +1324,35 @@ impl ResourceLimiter {
                     .map_or(until, |current| current.max(until)),
             );
         }
+    }
+
+    /// Keeps a key's pause in this process until it ends, for a pause the
+    /// store could not record: callers arriving later would otherwise book
+    /// through the store unaware of it.
+    fn keep_key_pause(&self, key: &LimitKey, block: Duration) {
+        let now = tokio::time::Instant::now();
+        let until = pause_deadline(now, block);
+        let mut waits = self
+            .key_waits
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        waits.retain(|_, wait| wait.needed(now));
+        let kept = waits.values().filter(|wait| wait.kept).count();
+        if kept >= MAX_KEPT_KEY_PAUSES && !waits.get(key).is_some_and(|wait| wait.kept) {
+            drop(waits);
+            let mut paused_until = self
+                .paused_until
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            *paused_until = Some(paused_until.map_or(until, |current| current.max(until)));
+            return;
+        }
+        let wait = waits.entry(key.clone()).or_default();
+        wait.kept = true;
+        wait.paused_until = Some(
+            wait.paused_until
+                .map_or(until, |current| current.max(until)),
+        );
     }
 
     fn key_pause_remaining(&self, key: &LimitKey) -> Duration {

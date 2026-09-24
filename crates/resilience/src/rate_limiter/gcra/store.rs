@@ -160,6 +160,18 @@ pub trait LimitStore: Send + Sync {
         rate: &Rate,
         grant: &Grant,
     ) -> impl Future<Output = Result<bool, LimitStoreError>> + Send;
+
+    /// Time left of the latest penalty on `key` ([`penalize`](Self::penalize)),
+    /// on the store's clock; zero when none is in force.
+    ///
+    /// A penalty moves the schedule for new bookings, but a caller that
+    /// booked a slot before it arrived would otherwise wake into it. Such a
+    /// caller asks here after sleeping, so a penalty recorded by any process
+    /// holds it back too. Reads only; changes nothing.
+    fn penalty(
+        &self,
+        key: &LimitKey,
+    ) -> impl Future<Output = Result<Duration, LimitStoreError>> + Send;
 }
 
 type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -191,6 +203,12 @@ pub trait ErasedLimitStore: Send + Sync {
         rate: &'a Rate,
         grant: &'a Grant,
     ) -> BoxFut<'a, Result<bool, LimitStoreError>>;
+
+    /// [`LimitStore::penalty`], boxed.
+    fn penalty_boxed<'a>(
+        &'a self,
+        key: &'a LimitKey,
+    ) -> BoxFut<'a, Result<Duration, LimitStoreError>>;
 }
 
 impl<T: LimitStore> ErasedLimitStore for T {
@@ -221,6 +239,13 @@ impl<T: LimitStore> ErasedLimitStore for T {
     ) -> BoxFut<'a, Result<bool, LimitStoreError>> {
         Box::pin(self.cancel(key, rate, grant))
     }
+
+    fn penalty_boxed<'a>(
+        &'a self,
+        key: &'a LimitKey,
+    ) -> BoxFut<'a, Result<Duration, LimitStoreError>> {
+        Box::pin(self.penalty(key))
+    }
 }
 
 #[derive(Debug, Default)]
@@ -230,6 +255,9 @@ struct Entry {
     rate: Option<Rate>,
     /// Grants still waiting for their slot, by reservation id.
     pending: HashMap<ReservationId, Grant>,
+    /// End of the latest penalty; the TAT a penalty sets is at least this,
+    /// so the entry outlives it.
+    penalized_until: u64,
 }
 
 impl Entry {
@@ -361,6 +389,7 @@ impl MemoryLimitStore {
             state: keys.overflow.state,
             rate: keys.overflow.rate,
             pending: HashMap::new(),
+            penalized_until: keys.overflow.penalized_until,
         });
         let entry = keys
             .entries
@@ -421,8 +450,24 @@ impl LimitStore for MemoryLimitStore {
         self.with_entry(key, |entry, now| {
             let rate = entry.enforce(now, rate);
             entry.state = step::penalize(entry.state, now, &rate, retry_after, max_penalty);
+            let until = now.saturating_add(nanos(retry_after.min(max_penalty)));
+            entry.penalized_until = entry.penalized_until.max(until);
         });
         Ok(())
+    }
+
+    async fn penalty(&self, key: &LimitKey) -> Result<Duration, LimitStoreError> {
+        let now = self.now();
+        let keys = self.keys.lock();
+        // A key without its own entry in a full store runs on the shared
+        // overflow limit, and so under its penalty.
+        let until = match keys.entries.get(key) {
+            Some(entry) => entry.penalized_until,
+            None if keys.entries.len() >= self.max_keys => keys.overflow.penalized_until,
+            None => 0,
+        };
+        drop(keys);
+        Ok(Duration::from_nanos(until.saturating_sub(now)))
     }
 
     async fn cancel(

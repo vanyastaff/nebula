@@ -126,6 +126,37 @@ pub async fn penalty_blocks_an_idle_key_up_to_the_cap<S: LimitStore>(store: &S) 
     assert_about(refused_for(store, &key, &rate).await, cap, "capped penalty");
 }
 
+/// A penalty can be read back, for callers that booked before it; a key
+/// never penalized has none.
+pub async fn penalty_is_readable_until_it_ends<S: LimitStore>(store: &S) {
+    let key = fresh_key("penalty-read");
+    let rate = hourly(1);
+    let none = store
+        .penalty(&key)
+        .await
+        .unwrap_or_else(|error| panic!("store answers: {error}"));
+    assert_eq!(none, Duration::ZERO, "no penalty recorded");
+    store
+        .penalize(&key, &rate, HOUR, 2 * HOUR)
+        .await
+        .unwrap_or_else(|error| panic!("store answers: {error}"));
+    let left = store
+        .penalty(&key)
+        .await
+        .unwrap_or_else(|error| panic!("store answers: {error}"));
+    assert_about(left, HOUR, "the recorded penalty");
+    let capped = fresh_key("penalty-capped");
+    store
+        .penalize(&capped, &rate, 2 * HOUR, HOUR)
+        .await
+        .unwrap_or_else(|error| panic!("store answers: {error}"));
+    let left = store
+        .penalty(&capped)
+        .await
+        .unwrap_or_else(|error| panic!("store answers: {error}"));
+    assert_about(left, HOUR, "the penalty as capped");
+}
+
 /// Only the most recent reservation is refunded, and only once.
 pub async fn cancel_refunds_only_the_tail_once<S: LimitStore>(store: &S) {
     let key = fresh_key("cancel");
@@ -284,6 +315,7 @@ pub async fn run_all<S: LimitStore + 'static>(store: Arc<S>) {
     keys_are_isolated(&*store).await;
     permits_beyond_the_burst_are_never_granted(&*store).await;
     penalty_blocks_an_idle_key_up_to_the_cap(&*store).await;
+    penalty_is_readable_until_it_ends(&*store).await;
     cancel_refunds_only_the_tail_once(&*store).await;
     repeated_reservation_id_returns_the_original_grant(&*store).await;
     a_busy_key_enforces_the_stricter_rate(&*store).await;

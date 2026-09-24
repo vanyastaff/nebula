@@ -228,6 +228,9 @@ struct TrackedRow {
     /// Stored version whose activation last failed; cleared once a version
     /// registers.
     failed_version: Option<u64>,
+    /// Stored version an activation in progress read, so an activation cut
+    /// short by its timeout can still record that version as failed.
+    reading: Option<u64>,
 }
 
 impl TrackedRow {
@@ -431,21 +434,35 @@ impl StoredResourceActivator {
         );
         let work = async {
             let mut tracked = slot.lock().await;
-            self.refresh(
-                context,
-                scope,
-                resource_id,
-                expected_key,
-                &mut tracked,
-                cancel,
-            )
-            .await
+            tracked.reading = None;
+            let outcome = self
+                .refresh(
+                    context,
+                    scope,
+                    resource_id,
+                    expected_key,
+                    &mut tracked,
+                    cancel,
+                )
+                .await;
+            tracked.reading = None;
+            outcome
         };
         tokio::select! {
             biased;
             () = cancel.cancelled() => Err(StoredResourceActivationError::Cancelled),
-            outcome = tokio::time::timeout(self.timeout, work) => outcome
-                .unwrap_or(Err(StoredResourceActivationError::TimedOut(self.timeout))),
+            outcome = tokio::time::timeout(self.timeout, work) => match outcome {
+                Ok(outcome) => outcome,
+                Err(_elapsed) => {
+                    // The work was dropped midway; the version it read, if
+                    // it got that far, failed to activate in time.
+                    let mut tracked = slot.lock().await;
+                    if let Some(version) = tracked.reading.take() {
+                        tracked.failed_version = Some(version);
+                    }
+                    Err(StoredResourceActivationError::TimedOut(self.timeout))
+                },
+            },
         }
     }
 
@@ -608,6 +625,7 @@ impl StoredResourceActivator {
                 expected: expected_key.clone(),
             });
         }
+        tracked.reading = Some(row.version);
         if let Some(current) = tracked
             .active
             .as_ref()
