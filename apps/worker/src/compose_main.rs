@@ -308,7 +308,12 @@ async fn build_pg_stores(
         Arc::new(nebula_storage::postgres::PgResourceStatusStore::new(
             pool.clone(),
         )),
-    );
+    )
+    // Several workers share one PostgreSQL: a provider account's quota and
+    // its "slow down" must hold across all of them, not per process.
+    .with_shared_limits(Arc::new(nebula_storage::postgres::PgLimitStore::new(
+        pool.clone(),
+    )));
 
     let execution_stores = ExecutionStores {
         execution: execution_store,

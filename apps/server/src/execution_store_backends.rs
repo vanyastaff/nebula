@@ -380,7 +380,11 @@ async fn build_postgres_execution_stores(
                 Arc::new(nebula_storage::postgres::PgResourceStatusStore::new(
                     pool.clone(),
                 )),
-            ),
+            )
+            // Resource rate limits hold across every worker on this backend.
+            .with_shared_limits(Arc::new(nebula_storage::postgres::PgLimitStore::new(
+                pool.clone(),
+            ))),
         }
     };
     #[cfg(feature = "runtime-repair-red")]

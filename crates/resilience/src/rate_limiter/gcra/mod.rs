@@ -31,6 +31,8 @@ use std::{fmt, num::NonZeroU32, time::Duration};
 
 use crate::ConfigError;
 
+#[cfg(any(test, feature = "conformance"))]
+pub mod conformance;
 mod limiter;
 pub mod step;
 mod store;
@@ -157,6 +159,44 @@ impl Rate {
             .and_then(NonZeroU32::new)
             .ok_or_else(|| ConfigError::new("limit", "limit is out of range"))?;
         Self::new(slots, window)?.with_burst(burst)
+    }
+
+    /// A rate from its interval between permits and its burst, the form a
+    /// shared store persists.
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError`] when `interval` is zero or the burst window does not
+    /// fit in `u64` nanoseconds.
+    pub fn from_interval(interval: Duration, burst: NonZeroU32) -> Result<Self, ConfigError> {
+        let emission_nanos = nanos(interval);
+        if emission_nanos == 0 {
+            return Err(ConfigError::new("interval", "must be greater than zero"));
+        }
+        Self {
+            emission_nanos,
+            tolerance_nanos: 0,
+            burst: NonZeroU32::MIN,
+        }
+        .with_burst(burst)
+    }
+
+    /// The stricter of two rates: the longer interval and the smaller burst.
+    ///
+    /// What a key enforces when callers declare different rates for it (two
+    /// rows of one provider account, two plugin versions): never looser than
+    /// either.
+    #[must_use]
+    pub fn stricter(&self, other: &Self) -> Self {
+        let emission_nanos = self.emission_nanos.max(other.emission_nanos);
+        let burst = self.burst.min(other.burst);
+        Self {
+            emission_nanos,
+            // Cannot overflow: at most the tolerance of whichever input has
+            // the longer interval, which already fits.
+            tolerance_nanos: emission_nanos.saturating_mul(u64::from(burst.get() - 1)),
+            burst,
+        }
     }
 
     /// Interval between permits at the steady rate.

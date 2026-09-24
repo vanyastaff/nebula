@@ -3744,6 +3744,7 @@ dependencies = [
  "nebula-crypto",
  "nebula-env",
  "nebula-metrics",
+ "nebula-resilience",
  "nebula-storage-port",
  "nebula-tenancy",
  "parking_lot",

@@ -18,8 +18,9 @@ pub use activation::{
     StoredResourceActivator,
 };
 pub use nebula_resource::{
-    KindActivator, Manager, RegisterRequest, RegistrarError, ResourceActivatorRegistry,
-    ResourceConfigInput, ResourceFactory, ResourceRegistrationOutcome, SlotBinding,
+    KindActivator, Manager, ManagerConfig, RegisterRequest, RegistrarError,
+    ResourceActivatorRegistry, ResourceConfigInput, ResourceFactory, ResourceRegistrationOutcome,
+    SlotBinding, rate_limit,
 };
 
 /// Why a plugin set could not be turned into a resource allowlist.

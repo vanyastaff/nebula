@@ -111,7 +111,10 @@ pub enum LimitStoreError {
 /// Store of keyed GCRA state.
 ///
 /// Every method is one atomic transition of one key on the store's own
-/// clock. Implementations must never read a caller's clock.
+/// clock. Implementations must never read a caller's clock, and must apply
+/// [`step::effective_rate`] so callers that disagree on a key's rate get the
+/// stricter one. [`conformance`](super::conformance) holds the behaviour
+/// every implementation is checked against.
 pub trait LimitStore: Send + Sync {
     /// Books permits under `key` (see [`step::reserve`]).
     fn reserve(
@@ -133,6 +136,11 @@ pub trait LimitStore: Send + Sync {
 
     /// Returns `grant`'s permits if it is still the tail of `key`
     /// (see [`step::cancel`]); `false` when nothing was returned.
+    ///
+    /// The refund is `permits` intervals of the caller's `rate`, never of a
+    /// stricter rate the key enforced meanwhile: the key's effective interval
+    /// is at least the caller's, so refunding at the caller's never returns
+    /// more than was booked.
     fn cancel(
         &self,
         key: &LimitKey,
@@ -205,11 +213,20 @@ impl<T: LimitStore> ErasedLimitStore for T {
 #[derive(Debug, Default)]
 struct Entry {
     state: GcraState,
+    /// Rate the key enforced last (see [`step::effective_rate`]).
+    rate: Option<Rate>,
     /// Grants still waiting for their slot, by reservation id.
     pending: HashMap<ReservationId, Grant>,
 }
 
 impl Entry {
+    /// The rate to apply now, recorded as the key's rate.
+    fn enforce(&mut self, now: u64, requested: &Rate) -> Rate {
+        let rate = step::effective_rate(self.state, now, self.rate.as_ref(), requested);
+        self.rate = Some(rate);
+        rate
+    }
+
     /// An entry with nothing pending and a past TAT carries no state: it
     /// behaves exactly like an absent key.
     fn is_idle(&self, now: u64) -> bool {
@@ -300,8 +317,9 @@ impl LimitStore for MemoryLimitStore {
                     ..*original
                 });
             }
+            let rate = entry.enforce(now, rate);
             let (decision, next) =
-                step::reserve(entry.state, now, rate, request.permits, request.max_wait);
+                step::reserve(entry.state, now, &rate, request.permits, request.max_wait);
             if let Some(next) = next {
                 entry.state = next;
             }
@@ -322,7 +340,8 @@ impl LimitStore for MemoryLimitStore {
         max_penalty: Duration,
     ) -> Result<(), LimitStoreError> {
         self.with_entry(key, |entry, now| {
-            entry.state = step::penalize(entry.state, now, rate, retry_after, max_penalty);
+            let rate = entry.enforce(now, rate);
+            entry.state = step::penalize(entry.state, now, &rate, retry_after, max_penalty);
         });
         Ok(())
     }

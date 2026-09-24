@@ -106,6 +106,9 @@ pub struct ResourceFanoutInputs {
     subscriptions: Arc<dyn ResourceSubscriptionStore>,
     fanout: Arc<dyn ResourceEventFanoutStore>,
     handoffs: Arc<dyn ResourceExecutionHandoffStore>,
+    /// Store of rate limits every worker shares; `None` keeps each limit in
+    /// this process.
+    shared_limits: Option<Arc<dyn nebula_engine::resource::rate_limit::ErasedLimitStore>>,
 }
 
 impl std::fmt::Debug for ResourceFanoutInputs {
@@ -142,7 +145,21 @@ impl ResourceFanoutInputs {
             subscriptions: runtime.clone(),
             fanout: runtime.clone(),
             handoffs: runtime,
+            shared_limits: None,
         }
+    }
+
+    /// Enforces cluster-scoped resource rate limits through `store`, shared
+    /// by every worker on the same backend, so a provider's quota and its
+    /// "slow down" hold across processes. Without it each worker enforces
+    /// its limits alone (a single-process deployment needs nothing more).
+    #[must_use]
+    pub fn with_shared_limits(
+        mut self,
+        store: Arc<dyn nebula_engine::resource::rate_limit::ErasedLimitStore>,
+    ) -> Self {
+        self.shared_limits = Some(store);
+        self
     }
 }
 
@@ -306,10 +323,16 @@ fn build_core_flavor_runtime_impl(
     };
     // Stored resource rows are activated lazily, per row, when an execution
     // that binds them is driven; nothing is read or connected at boot.
+    let mut manager_config = nebula_engine::resource::ManagerConfig::default();
+    if let Some(store) = resource_fanout.shared_limits.clone() {
+        manager_config = manager_config.with_shared_limit_store(store);
+    }
     let engine = WorkflowEngine::new(action_runtime, metrics.clone())?
         .with_execution_stores(execution_stores.clone())
         .with_credential_resolver(revisions.credential_resolver)
-        .with_resource_manager(Arc::new(nebula_engine::resource::Manager::new()))
+        .with_resource_manager(Arc::new(nebula_engine::resource::Manager::with_config(
+            manager_config,
+        )))
         .with_stored_resources(nebula_engine::StoredResourceActivator::new(Arc::clone(
             &resource_fanout.rows,
         )));

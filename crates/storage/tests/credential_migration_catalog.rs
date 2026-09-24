@@ -209,7 +209,7 @@ fn repository_catalog_matches_k2_contract() {
     let postgres = Catalog::load("postgres").expect("Postgres catalog must be valid");
     let sqlite = Catalog::load("sqlite").expect("SQLite catalog must be valid");
 
-    let expected_postgres = (1_u16..=56).collect::<Vec<_>>();
+    let expected_postgres = (1_u16..=57).collect::<Vec<_>>();
     let expected_sqlite = (1_u16..=28)
         .chain(30..=35)
         .chain([
@@ -219,7 +219,7 @@ fn repository_catalog_matches_k2_contract() {
     assert_eq!(
         postgres.versions(),
         expected_postgres,
-        "Postgres must reserve every logical migration through version 0056"
+        "Postgres must reserve every logical migration through version 0057"
     );
     assert_eq!(
         sqlite.versions(),
@@ -227,7 +227,7 @@ fn repository_catalog_matches_k2_contract() {
         "SQLite must contain the shared history and leave PostgreSQL-only versions reserved"
     );
 
-    for reserved in [29, 36, 37, 38] {
+    for reserved in [29, 36, 37, 38, 57] {
         assert!(
             !sqlite.by_version().contains_key(&reserved),
             "PostgreSQL-only migration {reserved:04} must remain absent from SQLite"

@@ -63,6 +63,11 @@ every refresh claim and sentinel incident from the credential aggregate. It
 fails closed on orphaned rows and makes both claim CAS and threshold windows
 owner-qualified.
 
+Migration `0057_rate_limits.sql` adds `port_rate_limits` and
+`port_rate_limit_reservations`, the state of cluster-wide GCRA rate limits
+(`PgLimitStore`). It is PostgreSQL-only: a SQLite deployment is one process
+and keeps its limits in memory.
+
 ## Storage-port adapter schema (0027)
 
 `0027_port_adapter_schema.sql` is the historical migration that introduced

@@ -319,6 +319,7 @@ jobs:
             execution_state_bounds \
             operation_ledger_conformance_postgres \
             postgres_control_queue_atomicity \
+            rate_limit_conformance_postgres \
             refresh_claim_conformance_postgres \
             resource_fanout_conformance_postgres \
             resource_status_conformance_postgres \

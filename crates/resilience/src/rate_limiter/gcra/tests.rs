@@ -344,6 +344,70 @@ async fn memory_store_reservations_are_idempotent_and_cancellable() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn memory_store_passes_the_store_conformance_kit() {
+    conformance::run_all(std::sync::Arc::new(MemoryLimitStore::new())).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_idle_key_forgets_a_stricter_rate() {
+    let store = MemoryLimitStore::new();
+    let key = LimitKey::new("idle:forgets").unwrap();
+    let strict = rate(1_000_000_000, 1);
+    let loose = rate(1_000_000_000, 10);
+    store
+        .reserve(&key, &strict, ReserveRequest::new(1, Duration::ZERO))
+        .await
+        .unwrap()
+        .unwrap();
+    // Busy: the loose caller is held to the strict burst of one.
+    assert!(
+        store
+            .reserve(&key, &loose, ReserveRequest::new(1, Duration::ZERO))
+            .await
+            .unwrap()
+            .is_err()
+    );
+    tokio::time::advance(Duration::from_secs(2)).await;
+    // Idle: the loose caller's burst applies again.
+    for _ in 0..10 {
+        store
+            .reserve(&key, &loose, ReserveRequest::new(1, Duration::ZERO))
+            .await
+            .unwrap()
+            .unwrap();
+    }
+}
+
+#[test]
+fn a_clock_that_steps_back_never_loosens_the_limit() {
+    let limit = rate(1_000, 2);
+    let (_, state) = step::reserve(GcraState::default(), 10_000, &limit, 2, Duration::ZERO);
+    let state = state.unwrap();
+    // The store clock steps back by far more than an interval: the booked
+    // schedule still holds, so the next permit waits as long as before.
+    let (early, _) = step::reserve(state, 5_000, &limit, 1, Duration::MAX);
+    let (on_time, _) = step::reserve(state, 10_000, &limit, 1, Duration::MAX);
+    let (early, on_time) = (early.unwrap(), on_time.unwrap());
+    assert_eq!(early.allow_at, on_time.allow_at);
+    assert!(early.wait >= on_time.wait);
+}
+
+#[test]
+fn stricter_takes_the_longer_interval_and_the_smaller_burst() {
+    let fast_burst = rate(1_000, 10);
+    let slow_single = rate(5_000, 1);
+    let strict = fast_burst.stricter(&slow_single);
+    assert_eq!(strict.emission_interval(), Duration::from_micros(5));
+    assert_eq!(strict.burst(), nz(1));
+    assert!(strict.is_no_looser_than(&fast_burst) && strict.is_no_looser_than(&slow_single));
+    assert_eq!(
+        Rate::from_interval(Duration::from_micros(5), nz(3)).unwrap(),
+        rate(5_000, 3)
+    );
+    assert!(Rate::from_interval(Duration::ZERO, nz(1)).is_err());
+}
+
 #[test]
 fn limit_keys_are_bounded_printable_ascii() {
     assert!(LimitKey::new("rate:telegram:abc").is_ok());

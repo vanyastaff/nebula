@@ -9,6 +9,24 @@ use std::time::Duration;
 
 use super::{Denied, GcraState, Grant, Rate, nanos};
 
+/// The rate a key enforces for one call: the caller's `requested` rate when
+/// the key is idle (nothing booked past `now`), otherwise the stricter of
+/// `requested` and the rate the key has been enforcing.
+///
+/// GCRA arithmetic on one TAT assumes one interval, and callers of a shared
+/// key may disagree (two rows of one provider account with different
+/// overrides, two plugin versions mid-rollout). Taking the stricter rate
+/// while any booking is outstanding never admits more than either caller
+/// allows; an idle key forgets, so a loosened limit takes effect as soon as
+/// the key drains.
+#[must_use]
+pub fn effective_rate(state: GcraState, now: u64, stored: Option<&Rate>, requested: &Rate) -> Rate {
+    match stored {
+        Some(stored) if state.tat > now => stored.stricter(requested),
+        _ => *requested,
+    }
+}
+
 /// Books `permits` if their slot is at most `max_wait` away.
 ///
 /// The slot is `max(tat, now) + (permits − 1)·T − τ`; on success the TAT
