@@ -360,7 +360,7 @@ async fn write_response(
         ServerBehavior::RefreshableSuccess => (
             "200 OK",
             String::new(),
-            br#"{"access_token":"new-access","refresh_token":"rotating-refresh","token_type":"Bearer","scope":"read","expires_in":60}"#.as_slice(),
+            br#"{"access_token":"new-access","refresh_token":"rotating-refresh","token_type":"Bearer","scope":"read","expires_in":3600}"#.as_slice(),
         ),
         ServerBehavior::Redirect(status) => (
             if status == 307 {

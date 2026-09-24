@@ -223,6 +223,23 @@ async fn problem_and_retry_after_are_typed_but_error_formatting_is_redacted() {
         CredentialProblemKind::RefreshNotAppliedAfter
     );
     assert!(!format!("{error:?} {error}").contains("secret-canary"));
+    assert!(!format!("{:?}", error.problem().unwrap()).contains("secret-canary"));
+    assert!(!format!("{:?}", error.problem().unwrap().problem).contains("secret-canary"));
+    assert!(
+        !format!(
+            "{:?}",
+            ValidationProblem {
+                code: "server-secret-canary".into(),
+                detail: "server-secret-canary".into(),
+                pointer: Some("server-secret-canary".into()),
+                path: Some("server-secret-canary".into()),
+                expected: Some("server-secret-canary".into()),
+                actual: Some("server-secret-canary".into()),
+                remediation: Some("server-secret-canary".into()),
+            }
+        )
+        .contains("secret-canary")
+    );
     assert!(std::error::Error::source(&error).is_none());
     assert_eq!(server.seen().len(), 1);
 
@@ -236,6 +253,37 @@ async fn problem_and_retry_after_are_typed_but_error_formatting_is_redacted() {
     .await;
     let error = server.client().get("cred_1").await.unwrap_err();
     assert!((1..=60).contains(&error.retry_after().unwrap().seconds()));
+}
+
+#[test]
+fn credential_client_ignores_implicit_system_proxy_configuration() {
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--ignored",
+            "--exact",
+            "implicit_proxy_subprocess_probe",
+            "--nocapture",
+        ])
+        .env("HTTP_PROXY", "http://127.0.0.1:9")
+        .env("HTTPS_PROXY", "http://127.0.0.1:9")
+        .env("ALL_PROXY", "http://127.0.0.1:9")
+        .env("NO_PROXY", "")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "proxy subprocess failed:\n{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[tokio::test]
+#[ignore = "runs in an isolated subprocess with forced proxy variables"]
+async fn implicit_proxy_subprocess_probe() {
+    let server = Server::start(vec![response(200, "application/json", "", &credential())]).await;
+    assert_eq!(server.client().get("cred_1").await.unwrap().id, "cred_1");
+    assert_eq!(server.seen().len(), 1);
 }
 
 #[tokio::test]
@@ -344,6 +392,104 @@ async fn incomplete_response_body_retains_status_and_unknown_mutation_outcome() 
     assert_eq!(error.kind(), HttpErrorKind::OutcomeUnknown);
     assert_eq!(error.status(), Some(200));
     assert_eq!(server.seen().len(), 1);
+}
+
+#[tokio::test]
+async fn acquisition_methods_use_exact_paths_bearer_and_public_wire_shapes() {
+    let server = Server::start(vec![
+        response(200, "application/json", "", r#"{"status":"pending","pending_token":"pending-secret","interaction":{"type":"redirect","url":"https://provider.test/authorize"}}"#),
+        response(200, "application/json", "", r#"{"status":"complete","credential_id":"cred_new"}"#),
+        response(200, "application/json", "", r#"{"status":"pending","pending_token":"reauth-secret","interaction":{"type":"display_info","title":"Continue","message":"Authorize","data":{},"expires_in":60}}"#),
+    ])
+    .await;
+    let client = server.client();
+    let pending = client
+        .resolve(&ResolveCredentialRequest {
+            credential_key: "oauth2".into(),
+            data: json!({"client_secret":"resolve-secret"}),
+        })
+        .await
+        .unwrap();
+    assert!(matches!(pending, ResolveCredentialResponse::Pending { .. }));
+    let complete = client
+        .continue_resolve(&ContinueResolveCredentialRequest {
+            credential_key: "oauth2".into(),
+            pending_token: "pending-secret".into(),
+            user_input: json!("Poll"),
+        })
+        .await
+        .unwrap();
+    assert!(
+        matches!(complete, ResolveCredentialResponse::Complete { credential_id } if credential_id == "cred_new")
+    );
+    client
+        .reauthorize(
+            "cred_existing",
+            &ReauthorizeCredentialRequest {
+                data: json!({"client_secret":"replacement-secret"}),
+            },
+        )
+        .await
+        .unwrap();
+
+    let requests = server.seen();
+    assert_eq!(requests.len(), 3);
+    assert!(
+        requests[0].starts_with("POST /api/v1/orgs/org/workspaces/ws/credentials/resolve HTTP/1.1")
+    );
+    assert!(
+        requests[1].starts_with(
+            "POST /api/v1/orgs/org/workspaces/ws/credentials/resolve/continue HTTP/1.1"
+        )
+    );
+    assert!(requests[2].starts_with(
+        "POST /api/v1/orgs/org/workspaces/ws/credentials/cred_existing/reauthorize HTTP/1.1"
+    ));
+    for request in &requests {
+        assert!(request.contains("authorization: Bearer bearer-secret-canary"));
+        assert!(!request.to_lowercase().contains("idempotency-key"));
+    }
+    let reauthorize_body: serde_json::Value =
+        serde_json::from_str(requests[2].split("\r\n\r\n").nth(1).unwrap()).unwrap();
+    assert_eq!(
+        reauthorize_body,
+        json!({"data":{"client_secret":"replacement-secret"}})
+    );
+}
+
+#[tokio::test]
+async fn every_acquisition_failure_is_unknown_and_is_never_replayed() {
+    for operation in ["resolve", "continue", "reauthorize"] {
+        let server = Server::start(vec![Reply::Disconnect]).await;
+        let client = server.client();
+        let error = match operation {
+            "resolve" => client
+                .resolve(&ResolveCredentialRequest {
+                    credential_key: "oauth2".into(),
+                    data: json!({}),
+                })
+                .await
+                .unwrap_err(),
+            "continue" => client
+                .continue_resolve(&ContinueResolveCredentialRequest {
+                    credential_key: "oauth2".into(),
+                    pending_token: "pending-secret".into(),
+                    user_input: json!("Poll"),
+                })
+                .await
+                .unwrap_err(),
+            "reauthorize" => client
+                .reauthorize(
+                    "cred_existing",
+                    &ReauthorizeCredentialRequest { data: json!({}) },
+                )
+                .await
+                .unwrap_err(),
+            _ => unreachable!(),
+        };
+        assert_eq!(error.kind(), HttpErrorKind::OutcomeUnknown);
+        assert_eq!(server.seen().len(), 1);
+    }
 }
 
 #[tokio::test]

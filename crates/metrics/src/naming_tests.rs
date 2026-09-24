@@ -14,6 +14,7 @@ use super::{
     NEBULA_CREDENTIAL_REFRESH_COORD_HOLD_DURATION_SECONDS,
     NEBULA_CREDENTIAL_REFRESH_COORD_RECLAIM_SWEEPS_TOTAL,
     NEBULA_CREDENTIAL_REFRESH_COORD_RECLAIMED_CLAIMS_TOTAL,
+    NEBULA_CREDENTIAL_REFRESH_COORD_RESULTS_TOTAL,
     NEBULA_CREDENTIAL_REFRESH_COORD_SENTINEL_EVENTS_TOTAL,
     NEBULA_CREDENTIAL_REFRESH_SCHEDULER_CANDIDATES_TOTAL,
     NEBULA_CREDENTIAL_REFRESH_SCHEDULER_CYCLES_TOTAL,
@@ -38,10 +39,10 @@ use super::{
     NEBULA_STORAGE_REVISION_CATALOG_OPERATIONS_TOTAL, auth_oauth_provider, auth_outcome,
     idempotency_reject_reason, orchestrator_dispatch_outcome, orchestrator_handoff_outcome,
     orchestrator_reclaim_outcome, recycle_outcome, refresh_coord_claim_outcome,
-    refresh_coord_coalesced_tier, refresh_coord_reclaim_outcome, refresh_coord_sentinel_action,
-    refresh_scheduler_candidate_outcome, refresh_scheduler_cycle_outcome,
-    revision_catalog_operation, rotation_outcome, webhook_rate_limit_tier,
-    webhook_signature_failure_reason,
+    refresh_coord_coalesced_tier, refresh_coord_reclaim_outcome, refresh_coord_result_outcome,
+    refresh_coord_sentinel_action, refresh_scheduler_candidate_outcome,
+    refresh_scheduler_cycle_outcome, revision_catalog_operation, rotation_outcome,
+    webhook_rate_limit_tier, webhook_signature_failure_reason,
 };
 
 const RESOURCE_METRIC_NAMES: [&str; 24] = [
@@ -162,12 +163,13 @@ const CREDENTIAL_METRIC_NAMES: [&str; 6] = [
 /// Refresh-coordinator metrics (sub-spec §6).
 ///
 /// Five counters + one histogram = 6 metric names.
-const CREDENTIAL_REFRESH_COORD_METRIC_NAMES: [&str; 6] = [
+const CREDENTIAL_REFRESH_COORD_METRIC_NAMES: [&str; 7] = [
     NEBULA_CREDENTIAL_REFRESH_COORD_CLAIMS_TOTAL,
     NEBULA_CREDENTIAL_REFRESH_COORD_COALESCED_TOTAL,
     NEBULA_CREDENTIAL_REFRESH_COORD_SENTINEL_EVENTS_TOTAL,
     NEBULA_CREDENTIAL_REFRESH_COORD_RECLAIM_SWEEPS_TOTAL,
     NEBULA_CREDENTIAL_REFRESH_COORD_RECLAIMED_CLAIMS_TOTAL,
+    NEBULA_CREDENTIAL_REFRESH_COORD_RESULTS_TOTAL,
     NEBULA_CREDENTIAL_REFRESH_COORD_HOLD_DURATION_SECONDS,
 ];
 
@@ -287,6 +289,11 @@ fn credential_refresh_coord_constants_are_accessible_unique_and_registry_safe() 
             "outcome",
             refresh_coord_reclaim_outcome::RECLAIMED,
         ),
+        (
+            NEBULA_CREDENTIAL_REFRESH_COORD_RESULTS_TOTAL,
+            "outcome",
+            refresh_coord_result_outcome::SUCCESS,
+        ),
     ];
 
     for metric_name in CREDENTIAL_REFRESH_COORD_METRIC_NAMES {
@@ -320,7 +327,7 @@ fn credential_refresh_coord_constants_are_accessible_unique_and_registry_safe() 
             assert_eq!(counter.get(), 1);
         }
     }
-    assert_eq!(unique.len(), 6);
+    assert_eq!(unique.len(), 7);
 }
 
 /// Closed label sets per sub-spec §6 — assert each module's
@@ -363,6 +370,16 @@ fn refresh_coord_label_constants_are_unique_per_module() {
         4,
         "reclaim outcome labels must be unique"
     );
+
+    let result = [
+        refresh_coord_result_outcome::SUCCESS,
+        refresh_coord_result_outcome::REAUTH_REQUIRED,
+        refresh_coord_result_outcome::NOT_APPLIED,
+        refresh_coord_result_outcome::OUTCOME_UNKNOWN,
+        refresh_coord_result_outcome::FAILURE,
+    ];
+    let result_set: HashSet<&str> = result.iter().copied().collect();
+    assert_eq!(result_set.len(), 5, "refresh result labels must be unique");
 }
 
 #[test]
