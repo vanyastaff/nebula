@@ -829,10 +829,7 @@ impl Manager {
         R: Provider,
         R::Topology: Topology<R>,
     {
-        use crate::{
-            hook_guard::{DEFAULT_AUTHOR_HOOK_CEILING, guard_author_hook},
-            topology::pooled::config::WarmupStrategy,
-        };
+        use crate::topology::pooled::config::WarmupStrategy;
 
         let config = managed.config();
         if managed.topology.warmup_target(&config) == 0
@@ -853,11 +850,8 @@ impl Manager {
         let managed = Arc::clone(managed);
         tokio::spawn(async move {
             let _in_flight = in_flight;
-            // SAFETY (unwind): as in `warmup_pool` — an entry being built is
-            // held by its `EntryCreateGuard` (destroyed on unwind) and an
-            // entry already warmed is deposited into the fenced store before
-            // the next is built, so a caught panic leaves no torn state.
-            let warmup = guard_author_hook(DEFAULT_AUTHOR_HOOK_CEILING, managed.warmup(&ctx));
+            // `warmup` bounds and isolates each author `create` hook itself.
+            let warmup = managed.warmup(&ctx);
             tokio::select! {
                 biased;
                 () = cancel.cancelled() => {},

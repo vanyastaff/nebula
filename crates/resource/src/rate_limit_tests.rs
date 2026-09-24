@@ -638,3 +638,69 @@ async fn an_account_backlog_does_not_bunch_one_keys_calls() {
         "the chat's calls stay a second apart: {first:?}, {second:?}"
     );
 }
+
+/// A key's pause reaches a caller of this limiter already sleeping on that
+/// key, however many other keys are paused.
+#[tokio::test(start_paused = true)]
+async fn a_key_pause_reaches_its_sleeping_caller_past_many_paused_keys() {
+    let (limits, _) = chat_limiter(per_second(10_000, 10_000));
+    for chat in 0..5_000 {
+        limits
+            .penalize_for("chat_id", chat, Duration::from_secs(30))
+            .await
+            .unwrap();
+    }
+    limits
+        .ready_for("chat_id", "target", None)
+        .await
+        .expect("the chat's first slot");
+    let started = Instant::now();
+    let sleeper = tokio::spawn({
+        let limits = Arc::clone(&limits);
+        async move { limits.ready_for("chat_id", "target", None).await }
+    });
+    // The sleeper books the chat's next slot, one second out.
+    tokio::task::yield_now().await;
+    limits
+        .penalize_for("chat_id", "target", Duration::from_secs(20))
+        .await
+        .unwrap();
+    sleeper.await.unwrap().expect("admitted after the pause");
+    assert!(
+        started.elapsed() >= Duration::from_secs(20),
+        "woke at {:?}",
+        started.elapsed()
+    );
+}
+
+/// Every key keeps its own run of refusals, however many keys there are.
+#[tokio::test(start_paused = true)]
+async fn refusal_runs_are_exact_per_key() {
+    let (limits, _) = chat_limiter(per_second(10_000, 10_000));
+    let values: Vec<String> = (0..200).map(|chat| chat.to_string()).collect();
+    for value in &values {
+        limits
+            .report(
+                Verdict::KeyThrottled { retry_after: None },
+                Some(("chat_id", value)),
+            )
+            .await;
+    }
+    {
+        let runs = limits.key_refusals.lock().unwrap();
+        assert_eq!(runs.len(), values.len());
+        assert!(
+            runs.values().all(|(count, _)| *count == 1),
+            "no key shares a run"
+        );
+    }
+    limits
+        .report(Verdict::Pass, Some(("chat_id", &values[0])))
+        .await;
+    let runs = limits.key_refusals.lock().unwrap();
+    assert_eq!(
+        runs.len(),
+        values.len() - 1,
+        "a pass ends only that key's run"
+    );
+}

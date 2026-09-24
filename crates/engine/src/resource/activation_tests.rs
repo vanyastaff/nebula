@@ -755,24 +755,58 @@ fn account_limit_key_is_per_tenant_credential_set_and_secret() {
     );
     let (a, b) = (CredentialId::new(), CredentialId::new());
 
-    let key = account_limit_key(&secret, &tenant, &[binding("x", a), binding("y", b)]).unwrap();
+    let key =
+        account_limit_key(&secret, &tenant, &[binding("x", a), binding("y", b)], &[]).unwrap();
     assert_eq!(
-        account_limit_key(&secret, &tenant, &[binding("y", b), binding("x", a)]),
+        account_limit_key(&secret, &tenant, &[binding("y", b), binding("x", a)], &[]),
         Some(key.clone()),
         "slot order does not matter"
     );
     assert_ne!(
-        account_limit_key(&secret, &other_tenant, &[binding("x", a), binding("y", b)]),
+        account_limit_key(
+            &secret,
+            &other_tenant,
+            &[binding("x", a), binding("y", b)],
+            &[]
+        ),
         Some(key.clone())
     );
     assert_ne!(
-        account_limit_key(&secret, &tenant, &[binding("x", a)]),
+        account_limit_key(&secret, &tenant, &[binding("x", a)], &[]),
         Some(key.clone())
     );
     assert_ne!(
-        account_limit_key(&[8_u8; 32], &tenant, &[binding("x", a), binding("y", b)]),
+        account_limit_key(
+            &[8_u8; 32],
+            &tenant,
+            &[binding("x", a), binding("y", b)],
+            &[]
+        ),
         Some(key.clone())
     );
     assert!(!key.as_str().contains(&a.to_string()));
-    assert_eq!(account_limit_key(&secret, &tenant, &[]), None);
+    assert_eq!(account_limit_key(&secret, &tenant, &[], &[]), None);
+
+    // With the account slot declared, an auxiliary credential does not
+    // split the quota.
+    let c = CredentialId::new();
+    let account_only = account_limit_key(&secret, &tenant, &[binding("x", a)], &[]);
+    assert_eq!(
+        account_limit_key(
+            &secret,
+            &tenant,
+            &[binding("x", a), binding("y", b)],
+            &["x"]
+        ),
+        account_only
+    );
+    assert_eq!(
+        account_limit_key(
+            &secret,
+            &tenant,
+            &[binding("x", a), binding("y", c)],
+            &["x"]
+        ),
+        account_only
+    );
 }

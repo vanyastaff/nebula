@@ -559,7 +559,7 @@ async fn warmup_fills_store() {
             ..Default::default()
         },
     );
-    let created = mr.warmup(&test_ctx()).await;
+    let created = mr.warmup(&test_ctx()).await.expect("no hook fault");
     assert_eq!(created, 3, "warmup creates `min_size` entries");
     assert_eq!(mr.store.len().await, 3, "warmed entries land in the store");
 }

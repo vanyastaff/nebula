@@ -81,6 +81,9 @@ type EventBus = nebula_eventbus::EventBus<ExecutionEvent>;
 /// Stored-resource registry rows a durable execution binds, per node.
 type NodeResourceRows = HashMap<NodeKey, HashMap<ResourceKey, nebula_resource::SlotIdentity>>;
 
+/// Stored resource rows one execution activates at once.
+const MAX_CONCURRENT_ACTIVATIONS: usize = 8;
+
 /// An identity no registry row carries: stored-row identities are derived
 /// from `res_<ULID>` ids, and this one is not. A node pinned to it fails its
 /// acquire as not-found instead of reaching another row of the same kind.
@@ -1188,14 +1191,26 @@ impl WorkflowEngine {
             .collect();
         distinct.sort_unstable_by_key(|(resource_id, _)| *resource_id);
         distinct.dedup_by(|left, right| left.0 == right.0);
-        let activations =
-            futures::future::join_all(distinct.iter().map(|(resource_id, key)| async {
-                let outcome = activator
-                    .activate(&context, scope, *resource_id, key, cancel)
-                    .await;
-                (*resource_id, outcome)
-            }))
-            .await;
+        // A bounded number at once: a manifest may name many rows, and each
+        // activation reads storage, resolves credentials and registers.
+        let activations: Vec<_> = {
+            use futures::StreamExt as _;
+            // Built up front (futures do nothing until polled): a closure
+            // inside the stream would defeat `Send` inference for callers.
+            let pending: Vec<_> = distinct
+                .iter()
+                .map(|(resource_id, key)| async {
+                    let outcome = activator
+                        .activate(&context, scope, *resource_id, key, cancel)
+                        .await;
+                    (*resource_id, outcome)
+                })
+                .collect();
+            futures::stream::iter(pending)
+                .buffer_unordered(MAX_CONCURRENT_ACTIVATIONS)
+                .collect()
+                .await
+        };
         let mut activated = HashMap::new();
         for (resource_id, outcome) in activations {
             match outcome {

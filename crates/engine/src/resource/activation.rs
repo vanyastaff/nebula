@@ -244,6 +244,11 @@ const DEFAULT_LIMIT_KEY_SECRET: [u8; 32] = *b"nebula.resource.limit-key.v1\0\0\0
 /// The quota key rows bound to the same credentials share: a provider limits
 /// the account behind a credential, not one resource row.
 ///
+/// Only the slots in `account_slots` count when the resource declares them
+/// ([`ResiliencePolicy::account_credential`](nebula_resource::rate_limit::ResiliencePolicy::account_credential)),
+/// so an auxiliary credential does not split one account's quota; every
+/// bound credential counts otherwise.
+///
 /// Derived with a key every worker shares (see
 /// [`StoredResourceActivator::with_limit_key_secret`]), so all workers name
 /// one account's quota alike; the tenant owner is part of the input so two
@@ -253,11 +258,15 @@ fn account_limit_key(
     secret: &[u8; 32],
     scope: &Scope,
     bindings: &[SlotBinding],
+    account_slots: &[&str],
 ) -> Option<nebula_resource::rate_limit::LimitKey> {
     use hmac::{KeyInit as _, Mac as _};
 
     let mut credentials: Vec<String> = bindings
         .iter()
+        .filter(|binding| {
+            account_slots.is_empty() || account_slots.contains(&binding.slot_name.as_str())
+        })
         .filter_map(|binding| binding.credential_id.map(|id| id.to_string()))
         .collect();
     if credentials.is_empty() {
@@ -653,7 +662,13 @@ async fn register_row(
     }
 
     let scope_level = ScopeLevel::Workspace(workspace);
-    let limit_key = account_limit_key(limit_key_secret, scope, &slot_bindings);
+    let policy = factory.resilience_policy();
+    let limit_key = account_limit_key(
+        limit_key_secret,
+        scope,
+        &slot_bindings,
+        policy.account_slots(),
+    );
     let bindings = slot_bindings
         .iter()
         .filter_map(|binding| {

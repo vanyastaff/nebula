@@ -792,12 +792,10 @@ impl Manager {
         // acquire pipeline uses: a careless `Provider::create` that hangs or
         // panics during warmup must fail closed, not wedge or crash the caller.
         let _ = config;
-        // SAFETY (unwind): an entry being built inside `warmup` is held by its
-        // `EntryCreateGuard` (destroyed on unwind) and an entry already warmed is
-        // deposited into the fenced store before the next is built — so a caught
-        // panic tears down only the in-flight entry and leaves no torn state.
-        let count = match guard_author_hook(DEFAULT_AUTHOR_HOOK_CEILING, managed.warmup(ctx)).await
-        {
+        // `warmup` bounds and isolates each `create_entry` hook under the
+        // author-hook ceiling itself (the stagger interval between creates is
+        // not part of that budget) and reports the first fault.
+        let count = match managed.warmup(ctx).await {
             Ok(n) => n,
             Err(fault) => {
                 fault.observe(&R::key(), "warmup");
@@ -811,7 +809,7 @@ impl Manager {
                     },
                     HookFault::TimedOut => {
                         return Err(Error::backpressure(format!(
-                            "{}: warmup exceeded {DEFAULT_AUTHOR_HOOK_CEILING:?} — the topology's \
+                            "{}: a warmup create exceeded {DEFAULT_AUTHOR_HOOK_CEILING:?} — the topology's \
                              `create_entry` hook did not complete in time",
                             R::key()
                         )));

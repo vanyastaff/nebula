@@ -108,6 +108,7 @@ pub struct ResiliencePolicy {
     scope: LimitScope,
     overrides: Override,
     max_penalty: Duration,
+    account_slots: Vec<&'static str>,
 }
 
 impl Default for ResiliencePolicy {
@@ -126,6 +127,7 @@ impl ResiliencePolicy {
             scope: LimitScope::Cluster,
             overrides: Override::TightenOnly,
             max_penalty: DEFAULT_MAX_PENALTY,
+            account_slots: Vec::new(),
         }
     }
 
@@ -148,6 +150,29 @@ impl ResiliencePolicy {
         self.keyed.retain(|(declared, _)| *declared != dimension);
         self.keyed.push((dimension, rate));
         self
+    }
+
+    /// Names the credential slot that identifies the provider account the
+    /// limit belongs to; may be called for several slots.
+    ///
+    /// Rows bound to the same credentials share one account quota. By
+    /// default every bound credential counts, which splits the quota when
+    /// rows share the account credential but differ in an auxiliary one (a
+    /// TLS or signing credential). Declaring the account slots keys the
+    /// quota by those alone.
+    #[must_use]
+    pub fn account_credential(mut self, slot: &'static str) -> Self {
+        if !self.account_slots.contains(&slot) {
+            self.account_slots.push(slot);
+        }
+        self
+    }
+
+    /// The credential slots that identify the provider account; empty when
+    /// every bound credential does.
+    #[must_use]
+    pub fn account_slots(&self) -> &[&'static str] {
+        &self.account_slots
     }
 
     /// The declared per-key limits, by dimension.
@@ -630,19 +655,66 @@ pub struct ResourceLimiter {
     store_down: AtomicBool,
     /// Consecutive refusals of the account quota.
     refusals: AtomicU32,
-    /// Consecutive refusals per key, by key hash.
-    key_refusals: [AtomicU32; KEY_REFUSAL_COUNTERS],
-    /// Per-key pauses this process recorded, for callers already sleeping
-    /// on a key when its pause arrives.
-    key_pauses: Mutex<std::collections::HashMap<LimitKey, tokio::time::Instant>>,
+    /// Consecutive refusals of each key with an unbroken run of them, and
+    /// when the last one came.
+    key_refusals: Mutex<std::collections::HashMap<LimitKey, (u32, tokio::time::Instant)>>,
+    /// Keys callers of this limiter are booking or waiting on right now,
+    /// with the pause recorded for each meanwhile: a pause only has to be
+    /// kept locally for callers that booked before it, and new bookings see
+    /// it through the store. Bounded by the callers in flight.
+    key_waits: Mutex<std::collections::HashMap<LimitKey, KeyWait>>,
 }
 
-/// Counters the per-key refusal counts spread over.
-const KEY_REFUSAL_COUNTERS: usize = 64;
+/// Callers of one key in flight, and the pause recorded for it meanwhile.
+#[derive(Debug, Default)]
+struct KeyWait {
+    callers: usize,
+    paused_until: Option<tokio::time::Instant>,
+}
 
-/// Bound on per-key pauses remembered locally; a pause past it still holds
-/// for new bookings through the store.
-const MAX_LOCAL_KEY_PAUSES: usize = 4_096;
+/// Bound on the keys whose refusal runs are remembered; past it the key
+/// refused longest ago is forgotten, so its next refusal backs off from
+/// the start again.
+const MAX_KEY_REFUSAL_RUNS: usize = 4_096;
+
+/// Registers one caller of a key for as long as it lives, including when
+/// the call is cancelled, so a pause recorded meanwhile reaches it.
+struct KeyInterest<'a> {
+    limiter: &'a ResourceLimiter,
+    key: LimitKey,
+}
+
+impl<'a> KeyInterest<'a> {
+    fn start(limiter: &'a ResourceLimiter, key: &LimitKey) -> Self {
+        limiter
+            .key_waits
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entry(key.clone())
+            .or_default()
+            .callers += 1;
+        Self {
+            limiter,
+            key: key.clone(),
+        }
+    }
+}
+
+impl Drop for KeyInterest<'_> {
+    fn drop(&mut self) {
+        let mut waits = self
+            .limiter
+            .key_waits
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(wait) = waits.get_mut(&self.key) {
+            wait.callers = wait.callers.saturating_sub(1);
+            if wait.callers == 0 {
+                waits.remove(&self.key);
+            }
+        }
+    }
+}
 
 /// Counts one waiting caller for as long as it lives, including when the
 /// wait is cancelled.
@@ -721,8 +793,8 @@ impl ResourceLimiter {
             waiters: AtomicUsize::new(0),
             store_down: AtomicBool::new(false),
             refusals: AtomicU32::new(0),
-            key_refusals: std::array::from_fn(|_| AtomicU32::new(0)),
-            key_pauses: Mutex::new(std::collections::HashMap::new()),
+            key_refusals: Mutex::new(std::collections::HashMap::new()),
+            key_waits: Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -792,6 +864,9 @@ impl ResourceLimiter {
         let (key, rate) = keyed
             .limit_for(dimension, &value.to_string())
             .map_err(|error| self.tagged(error))?;
+        // Registered before booking, so a pause recorded after this caller's
+        // slot was booked still reaches it when it wakes.
+        let _interest = KeyInterest::start(self, &key);
         if let Some(quota) = self
             .quota
             .as_ref()
@@ -1107,12 +1182,18 @@ impl ResourceLimiter {
     async fn report(&self, verdict: Verdict, key: Option<(&str, &str)>) {
         // Consecutive refusals are counted per quota: the account's, and each
         // key's apart, so one chat's refusals never lengthen another's pause.
-        let key_counter = key.map(|(dimension, value)| self.key_refusals(dimension, value));
+        let limit_key = key.and_then(|(dimension, value)| {
+            let (limit_key, _) = self.keyed.as_ref()?.limit_for(dimension, value).ok()?;
+            Some(limit_key)
+        });
         let (retry_after, on_key) = match verdict {
             Verdict::Pass => {
                 self.refusals.store(0, Ordering::Relaxed);
-                if let Some(counter) = key_counter {
-                    counter.store(0, Ordering::Relaxed);
+                if let Some(limit_key) = &limit_key {
+                    self.key_refusals
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .remove(limit_key);
                 }
                 return;
             },
@@ -1120,11 +1201,10 @@ impl ResourceLimiter {
             Verdict::KeyThrottled { retry_after } => (retry_after, true),
         };
         let penalized_key = key.filter(|_| on_key);
-        let counter = match (penalized_key, key_counter) {
-            (Some(_), Some(counter)) => counter,
-            _ => &self.refusals,
+        let refusals = match (penalized_key, &limit_key) {
+            (Some(_), Some(limit_key)) => self.key_refused(limit_key),
+            _ => self.refusals.fetch_add(1, Ordering::Relaxed),
         };
-        let refusals = counter.fetch_add(1, Ordering::Relaxed);
         let block = retry_after.unwrap_or_else(|| backoff(refusals));
         let recorded = match penalized_key {
             Some((dimension, value)) => self.penalize_for(dimension, value, block).await,
@@ -1139,43 +1219,62 @@ impl ResourceLimiter {
         }
     }
 
-    /// The refusal counter of one key: a fixed set of counters indexed by the
-    /// key's hash, so tracking keys costs no memory growth. Two keys sharing
-    /// a counter only share backoff escalation, never a pause.
-    fn key_refusals(&self, dimension: &str, value: &str) -> &AtomicU32 {
-        use std::hash::{Hash as _, Hasher as _};
-
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        dimension.hash(&mut hasher);
-        value.hash(&mut hasher);
-        let slot = usize::try_from(hasher.finish() % KEY_REFUSAL_COUNTERS as u64).unwrap_or(0);
-        &self.key_refusals[slot]
-    }
-
-    /// Records a key's pause locally, so callers of this limiter already
-    /// sleeping on that key wake no sooner than it ends.
-    fn pause_key(&self, key: &LimitKey, block: Duration) {
+    /// Counts one more refusal of `key` and returns the count before it.
+    ///
+    /// Every key keeps its own run; a pass ends it. At most
+    /// [`MAX_KEY_REFUSAL_RUNS`] runs are kept: a new key past that replaces
+    /// the one refused longest ago.
+    fn key_refused(&self, key: &LimitKey) -> u32 {
         let now = tokio::time::Instant::now();
-        let until = pause_deadline(now, block);
-        let mut pauses = self
-            .key_pauses
+        let mut runs = self
+            .key_refusals
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        pauses.retain(|_, until| *until > now);
-        if pauses.len() < MAX_LOCAL_KEY_PAUSES || pauses.contains_key(key) {
-            let entry = pauses.entry(key.clone()).or_insert(until);
-            *entry = (*entry).max(until);
+        if !runs.contains_key(key)
+            && runs.len() >= MAX_KEY_REFUSAL_RUNS
+            && let Some(oldest) = runs
+                .iter()
+                .min_by_key(|(_, (_, last))| *last)
+                .map(|(oldest, _)| oldest.clone())
+        {
+            runs.remove(&oldest);
+        }
+        let (count, last) = runs.entry(key.clone()).or_insert((0, now));
+        let before = *count;
+        *count = count.saturating_add(1);
+        *last = now;
+        before
+    }
+
+    /// Records a key's pause for the callers of this limiter booking or
+    /// waiting on it right now, so none wakes before it ends. With no such
+    /// caller there is nothing to keep: later bookings see the pause in the
+    /// store.
+    fn pause_key(&self, key: &LimitKey, block: Duration) {
+        let until = pause_deadline(tokio::time::Instant::now(), block);
+        let mut waits = self
+            .key_waits
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(wait) = waits.get_mut(key) {
+            wait.paused_until = Some(
+                wait.paused_until
+                    .map_or(until, |current| current.max(until)),
+            );
         }
     }
 
     fn key_pause_remaining(&self, key: &LimitKey) -> Duration {
-        let pauses = self
-            .key_pauses
+        let waits = self
+            .key_waits
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        pauses.get(key).map_or(Duration::ZERO, |until| {
-            until.saturating_duration_since(tokio::time::Instant::now())
-        })
+        waits
+            .get(key)
+            .and_then(|wait| wait.paused_until)
+            .map_or(Duration::ZERO, |until| {
+                until.saturating_duration_since(tokio::time::Instant::now())
+            })
     }
 
     fn tagged(&self, error: Error) -> Error {

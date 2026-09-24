@@ -534,8 +534,16 @@ where
     /// acquires cannot push the pool past its hard cap. The caller holds one
     /// in-flight count for the warmup itself ([`Manager::warmup_pool`] and
     /// the background warmup on resolved registration both do), which is
-    /// not counted against the headroom. `Parallel` runs at most
+    /// not counted against the headroom. The check and the reservation of a
+    /// create slot happen together under one lock, so concurrent creates
+    /// never pass on the same stale count. `Parallel` runs at most
     /// [`MAX_PARALLEL_WARMUP`] creates at once.
+    ///
+    /// Each create is bounded and isolated by the author-hook ceiling on
+    /// its own; the stagger interval between creates is not part of that
+    /// budget. The first hook that panics or overruns stops the warmup with
+    /// its [`HookFault`](crate::hook_guard::HookFault); entries already
+    /// deposited stay.
     ///
     /// [`Manager::warmup_pool`]: crate::Manager::warmup_pool
     ///
@@ -543,7 +551,10 @@ where
     ///
     /// See [`create_and_deposit_one`](Self::create_and_deposit_one);
     /// every concurrent create is its own cancel-safe create→deposit step.
-    pub(crate) async fn warmup(self: &Arc<Self>, ctx: &ResourceContext) -> usize {
+    pub(crate) async fn warmup(
+        self: &Arc<Self>,
+        ctx: &ResourceContext,
+    ) -> Result<usize, crate::hook_guard::HookFault> {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
         use crate::topology::pooled::config::WarmupStrategy;
@@ -554,35 +565,48 @@ where
             target = target.min(capacity);
         }
         if target == 0 {
-            return 0;
+            return Ok(0);
         }
         // Creates started and not yet deposited, so concurrent creates count
-        // against the headroom before their entries reach the store.
+        // against the headroom before their entries reach the store; the
+        // lock makes checking and reserving one step.
         let running = AtomicUsize::new(0);
+        let deciding = tokio::sync::Mutex::new(());
         let attempt = |pause: Option<std::time::Duration>| {
-            let (running, config) = (&running, &config);
+            let (running, deciding, config) = (&running, &deciding, &config);
             async move {
                 if let Some(pause) = pause {
                     tokio::time::sleep(pause).await;
                 }
-                if self.warmup_headroom(running.load(Ordering::Acquire)).await == 0 {
-                    return None;
+                {
+                    let _deciding = deciding.lock().await;
+                    if self.warmup_headroom(running.load(Ordering::Acquire)).await == 0 {
+                        return Ok(None);
+                    }
+                    running.fetch_add(1, Ordering::AcqRel);
                 }
-                running.fetch_add(1, Ordering::AcqRel);
-                let outcome = self.create_and_deposit_one(ctx, config).await;
+                // SAFETY (unwind): an entry being built is held by its
+                // `EntryCreateGuard` (destroyed on unwind) and is deposited
+                // into the fenced store before this step returns, so a
+                // caught panic leaves no torn state.
+                let outcome = crate::hook_guard::guard_author_hook(
+                    crate::hook_guard::DEFAULT_AUTHOR_HOOK_CEILING,
+                    self.create_and_deposit_one(ctx, config),
+                )
+                .await;
                 running.fetch_sub(1, Ordering::AcqRel);
-                Some(outcome)
+                outcome.map(Some)
             }
         };
         let mut created = 0usize;
         match self.topology.warmup_strategy() {
-            WarmupStrategy::None => return 0,
+            WarmupStrategy::None => return Ok(0),
             WarmupStrategy::Parallel => {
                 let mut creates = stream::iter(0..target)
                     .map(|_| attempt(None))
                     .buffer_unordered(MAX_PARALLEL_WARMUP);
                 while let Some(outcome) = creates.next().await {
-                    match outcome {
+                    match outcome? {
                         Some(Ok(true)) => created += 1,
                         Some(Err(error)) => tracing::warn!(
                             key = %R::key(),
@@ -600,7 +624,7 @@ where
                 };
                 for index in 0..target {
                     let pause = interval.filter(|_| index > 0);
-                    match attempt(pause).await {
+                    match attempt(pause).await? {
                         Some(Ok(true)) => created += 1,
                         Some(Ok(false)) => {},
                         Some(Err(error)) => {
@@ -621,7 +645,7 @@ where
         if created > 0 {
             tracing::info!(key = %R::key(), created, target, "resource warmup complete");
         }
-        created
+        Ok(created)
     }
 
     /// Instances the store can still take: capacity minus idle entries,

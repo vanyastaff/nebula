@@ -1043,6 +1043,36 @@ async fn warmup_follows_the_configured_strategy() {
     }
 }
 
+/// The author-hook ceiling bounds each warmup create, not the stagger
+/// schedule: a staggered warmup longer than the ceiling still reaches
+/// `min_size`.
+#[tokio::test(start_paused = true)]
+async fn a_long_staggered_warmup_is_not_cut_short() {
+    use nebula_resource::topology::pooled::config::{Config, WarmupStrategy};
+
+    let manager = Manager::new();
+    let resource = PoolTestResource::new();
+    let pool = Pooled::<PoolTestResource>::new(
+        Config {
+            min_size: 3,
+            max_size: 3,
+            idle_timeout: None,
+            max_lifetime: None,
+            warmup: WarmupStrategy::Staggered {
+                interval: std::time::Duration::from_secs(20),
+            },
+            ..Default::default()
+        },
+        1,
+    );
+    register_pool(&manager, resource.clone(), test_config(), pool);
+    let warmed = manager
+        .warmup_pool::<PoolTestResource>(&test_ctx())
+        .await
+        .expect("warmup succeeds");
+    assert_eq!(warmed, 3);
+}
+
 /// Warmup leaves room for instances already leased: with `max_size` in
 /// use by a lease plus idle entries, it stops at the cap instead of
 /// filling `min_size` idle entries on top.
