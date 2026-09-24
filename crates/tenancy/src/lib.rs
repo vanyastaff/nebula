@@ -29,10 +29,10 @@ pub use decorator::{
     ScopedExecutionTurnHandoff, ScopedIdempotencyGuard, ScopedIdempotencyStore,
     ScopedNodeResultStore, ScopedOperationLedger, ScopedOperationLedgerAdjudicator,
     ScopedResourceEventFanoutStore, ScopedResourceExecutionHandoffStore,
-    ScopedResourceSourceLeaseStore, ScopedResourceStore, ScopedResourceSubscriptionStore,
-    ScopedResumeTokenStore, ScopedSharedResourceStore, ScopedStartAcceptanceStore,
-    ScopedTriggerStore, ScopedWebhookActivationStore, ScopedWorkflowStore,
-    ScopedWorkflowVersionStore,
+    ScopedResourceSourceLeaseStore, ScopedResourceStatusStore, ScopedResourceStore,
+    ScopedResourceSubscriptionStore, ScopedResumeTokenStore, ScopedSharedResourceStore,
+    ScopedStartAcceptanceStore, ScopedTriggerStore, ScopedWebhookActivationStore,
+    ScopedWorkflowStore, ScopedWorkflowVersionStore,
 };
 pub use error::TenancyError;
 pub use resolver::{BindingScopeResolver, Principal, ScopeResolver, request_scope};

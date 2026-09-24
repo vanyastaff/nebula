@@ -43,7 +43,7 @@ fail-fast = false
 # `default-filter` and are not affected by this list; when a new
 # postgres-only evidence binary is added, add it here and to the CI allowlist
 # in `.github/workflows/test-matrix.yml` in the same change.
-default-filter = 'not binary(=runtime_repair_red_scenarios) & not binary(/(refresh_claim|turn_handoff|revision_catalog|operation_ledger|credential_lifecycle|credential_migration|credential_schema_admission|resource_fanout|schema_setup)_(postgres|conformance_postgres|migration_postgres)/) & not binary(=pg_idempotency) & not binary(=postgres_control_queue_atomicity)'
+default-filter = 'not binary(=runtime_repair_red_scenarios) & not binary(/(refresh_claim|turn_handoff|revision_catalog|operation_ledger|credential_lifecycle|credential_migration|credential_schema_admission|resource_fanout|resource_status|schema_setup)_(postgres|conformance_postgres|migration_postgres)/) & not binary(=pg_idempotency) & not binary(=postgres_control_queue_atomicity)'
 
 # Assign the trybuild binaries to the serialized group for EVERY profile
 # (default / ci / agent inherit default-profile overrides). Filter mirrors the

@@ -28,19 +28,19 @@ use nebula_storage_port::store::{
     CheckpointStore, ControlQueue, ExecutionJournalReader, ExecutionStore, ExecutionTurnHandoff,
     IdempotencyGuard, IdempotencyStore, NodeResultStore, OperationLedger,
     OperationLedgerAdjudicator, ResourceEventFanoutStore, ResourceExecutionHandoffStore,
-    ResourceSourceLeaseStore, ResourceStore, ResourceSubscriptionStore, ResumeTokenStore,
-    SharedResourceStore, StartAcceptanceStore, TriggerStore, WebhookActivationStore, WorkflowStore,
-    WorkflowVersionStore,
+    ResourceSourceLeaseStore, ResourceStatusStore, ResourceStore, ResourceSubscriptionStore,
+    ResumeTokenStore, SharedResourceStore, StartAcceptanceStore, TriggerStore,
+    WebhookActivationStore, WorkflowStore, WorkflowVersionStore,
 };
 use nebula_tenancy::{
     ScopedCheckpointStore, ScopedControlQueue, ScopedExecutionJournalReader, ScopedExecutionStore,
     ScopedExecutionTurnHandoff, ScopedIdempotencyGuard, ScopedIdempotencyStore,
     ScopedNodeResultStore, ScopedOperationLedger, ScopedOperationLedgerAdjudicator,
     ScopedResourceEventFanoutStore, ScopedResourceExecutionHandoffStore,
-    ScopedResourceSourceLeaseStore, ScopedResourceStore, ScopedResourceSubscriptionStore,
-    ScopedResumeTokenStore, ScopedSharedResourceStore, ScopedStartAcceptanceStore,
-    ScopedTriggerStore, ScopedWebhookActivationStore, ScopedWorkflowStore,
-    ScopedWorkflowVersionStore,
+    ScopedResourceSourceLeaseStore, ScopedResourceStatusStore, ScopedResourceStore,
+    ScopedResourceSubscriptionStore, ScopedResumeTokenStore, ScopedSharedResourceStore,
+    ScopedStartAcceptanceStore, ScopedTriggerStore, ScopedWebhookActivationStore,
+    ScopedWorkflowStore, ScopedWorkflowVersionStore,
 };
 use syn::{FnArg, GenericArgument, Item, PathArguments, TraitItem, Type, UseTree};
 
@@ -104,6 +104,7 @@ scope_decorator!(ScopedResourceStore, ResourceStore);
 scope_decorator!(ScopedSharedResourceStore, SharedResourceStore);
 scope_decorator!(ScopedResourceSubscriptionStore, ResourceSubscriptionStore);
 scope_decorator!(ScopedResourceSourceLeaseStore, ResourceSourceLeaseStore);
+scope_decorator!(ScopedResourceStatusStore, ResourceStatusStore);
 scope_decorator!(ScopedResourceEventFanoutStore, ResourceEventFanoutStore);
 scope_decorator!(
     ScopedResourceExecutionHandoffStore,
@@ -126,6 +127,7 @@ const DIRECT_SCOPE_PORTS: &[&str] = &[
     "OperationLedger",
     "OperationLedgerAdjudicator",
     "ResourceEventFanoutStore",
+    "ResourceStatusStore",
     "ResourceStore",
     "ResourceSubscriptionStore",
     "ResumeTokenStore",
@@ -400,6 +402,7 @@ fn every_port_has_an_explicit_tenancy_classification() {
     assert_scoped::<ScopedSharedResourceStore, dyn SharedResourceStore>();
     assert_scoped::<ScopedResourceSubscriptionStore, dyn ResourceSubscriptionStore>();
     assert_scoped::<ScopedResourceSourceLeaseStore, dyn ResourceSourceLeaseStore>();
+    assert_scoped::<ScopedResourceStatusStore, dyn ResourceStatusStore>();
     assert_scoped::<ScopedResourceEventFanoutStore, dyn ResourceEventFanoutStore>();
     assert_scoped::<ScopedTriggerStore, dyn TriggerStore>();
     // Resume-token revocation is scope-keyed (`revoke_on_terminal` takes

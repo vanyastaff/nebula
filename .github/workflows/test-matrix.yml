@@ -321,6 +321,7 @@ jobs:
             postgres_control_queue_atomicity \
             refresh_claim_conformance_postgres \
             resource_fanout_conformance_postgres \
+            resource_status_conformance_postgres \
             revision_catalog_conformance_postgres \
             revision_catalog_migration_postgres \
             schema_setup_postgres \

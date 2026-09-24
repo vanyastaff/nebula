@@ -667,7 +667,7 @@ fn resource_row(id: &str, workspace_id: &str) -> ResourceRow {
         config: serde_json::json!({}),
         credential_bindings: std::collections::BTreeMap::new(),
         topology: None,
-        rate_limit: None,
+        resilience_override: None,
         created_at: "2026-01-01T00:00:00Z".into(),
         created_by: "usr_x".into(),
         version: 0,
