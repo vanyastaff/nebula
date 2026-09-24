@@ -145,6 +145,42 @@ fn replacement_context_observed_before_staging_is_retained() {
 }
 
 #[test]
+fn late_staging_reactivates_a_settled_replacement_fence() {
+    let idx = ResourceFanoutIndex::new();
+    let cid = CredentialId::new();
+    let owner = TenantScope::new("org", "workspace");
+    let credential_key: CredentialKey = "oauth".parse().expect("credential key");
+    let binding = bound(
+        &rk("pg"),
+        &ScopeLevel::Global,
+        "db",
+        SlotIdentity::from_bindings([("db", "credential")]),
+    );
+    idx.bind(
+        cid,
+        binding.resource_key.clone(),
+        binding.scope.clone(),
+        &binding.slot_name,
+        binding.slot_identity.clone(),
+    );
+    let dispatched_sequence =
+        idx.remember_material_context(cid, owner.clone(), credential_key.clone());
+    assert!(idx.forget_material_context(&cid, dispatched_sequence));
+    assert!(!idx.has_material_context(&cid));
+
+    idx.stage_bind_with_context(cid, binding, owner, credential_key);
+
+    let pending = idx.pending_material_contexts();
+    assert_eq!(pending.len(), 1);
+    assert!(pending[0].3 > dispatched_sequence);
+    assert!(idx.material_publication_requires_reconciliation(&cid));
+    assert!(
+        !idx.forget_material_context(&cid, dispatched_sequence),
+        "an older dispatch cannot settle the reactivated fence"
+    );
+}
+
+#[test]
 fn material_replacement_fence_is_bounded_and_fails_closed_when_saturated() {
     let idx = ResourceFanoutIndex::new();
     let owner = TenantScope::new("org", "workspace");
