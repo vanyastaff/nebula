@@ -55,6 +55,38 @@ impl ResourceFanoutIndex {
         summary
     }
 
+    fn prepare_durable_tombstone(
+        &self,
+        cid: CredentialId,
+        mgr: &crate::Manager,
+    ) -> RotationOutcome {
+        self.remember_revocation(cid);
+        let has_staged_binding = self.has_staged_binding(&cid);
+        let mut summary = RotationOutcome::default();
+        for binding in self.affected(&cid) {
+            match mgr.revoke_published_credential_binding_terminal(self, &cid, &binding) {
+                Ok(tainted) => self.remember_pending_revoke(
+                    cid,
+                    binding.resource_key,
+                    &binding.slot_name,
+                    tainted.managed_handle(),
+                ),
+                Err(error) => {
+                    tracing::warn!(
+                        credential_id = %cid,
+                        resource_key = %binding.resource_key,
+                        slot = %binding.slot_name,
+                        error = %error,
+                        "durable credential tombstone could not revoke a published sibling"
+                    );
+                    summary.failed += 1;
+                },
+            }
+        }
+        summary.failed += usize::from(has_staged_binding);
+        summary
+    }
+
     pub(crate) async fn finish_prepared_revoke(
         &self,
         cid: CredentialId,
@@ -691,7 +723,6 @@ async fn project_and_refresh(
             // This resolver result is an authoritative durable tombstone,
             // unlike an independently revoked lease observation. Fence any
             // concurrent or future publication before handling this row.
-            index.remember_revocation(cid);
             let key = managed.resource_key();
             tracing::warn!(
                 credential_id = %cid,
@@ -700,21 +731,12 @@ async fn project_and_refresh(
                 "durable credential tombstone discovered during material reconciliation; revoking resource slot"
             );
             let pending_managed = std::sync::Arc::clone(&managed);
-            let tainted = match mgr.revoke_resolved_terminal(&key, slot, managed) {
-                Ok(tainted) => tainted,
-                Err(error) => {
-                    tracing::warn!(
-                        credential_id = %cid,
-                        resource_key = %key,
-                        slot,
-                        error = %error,
-                        "durable credential tombstone could not taint resource slot"
-                    );
-                    return RowOutcome::Failed {
-                        drain_timed_out: false,
-                    };
-                },
-            };
+            let preparation = index.prepare_durable_tombstone(cid, mgr);
+            if preparation.failed != 0 {
+                return RowOutcome::Failed {
+                    drain_timed_out: false,
+                };
+            }
             let Some(claim) = index.claim_revoke_admission(cid, slot, &pending_managed) else {
                 drop(projection_permit);
                 return RowOutcome::Success {
@@ -723,12 +745,20 @@ async fn project_and_refresh(
             };
             drop(projection_permit);
             let mut claim = Some(claim);
+            let retry_key = key;
+            let retry_managed = pending_managed;
             let (tail, admission) = mgr
-                .drain_and_revoke_with_admission(tainted, Duration::from_secs(30), || {
-                    if let Some(claim) = claim.take() {
-                        claim.accepted();
-                    }
-                })
+                .retry_tainted_revoke_admission(
+                    &retry_key,
+                    slot,
+                    retry_managed,
+                    Duration::from_secs(30),
+                    || {
+                        if let Some(claim) = claim.take() {
+                            claim.accepted();
+                        }
+                    },
+                )
                 .await;
             settle_revoke_claim(claim, admission);
             return revoke_tail_outcome(tail);

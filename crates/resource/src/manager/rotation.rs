@@ -321,6 +321,31 @@ impl Manager {
         self.taint_under_admission(&binding.resource_key, &binding.slot_name, managed)
     }
 
+    /// Applies an authoritative durable tombstone to the exact row still
+    /// owned by a published reverse-index binding.
+    #[cfg(feature = "rotation")]
+    pub(crate) fn revoke_published_credential_binding_terminal(
+        &self,
+        index: &crate::ResourceFanoutIndex,
+        credential_id: &nebula_credential::CredentialId,
+        binding: &crate::Bind,
+    ) -> Result<TaintedSlot, Error> {
+        let _admission = self
+            .admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.shutdown_guard()?;
+        if !index.contains_published_binding(credential_id, binding) {
+            return Err(Error::not_found(&binding.resource_key));
+        }
+        let managed = self.lookup_any_for_slot_identity_structural(
+            &binding.resource_key,
+            &binding.scope,
+            &binding.slot_identity,
+        )?;
+        self.revoke_terminal_under_admission(&binding.resource_key, &binding.slot_name, managed)
+    }
+
     /// Revalidates reverse-index ownership and admits a refresh for the same
     /// exact row in one lifecycle-admission critical section.
     #[cfg(feature = "rotation")]
@@ -1164,7 +1189,7 @@ impl Manager {
     /// Unlike a speculative projection update, a verified tombstone must win
     /// over an intervening public slot store/take. Lifecycle admission still
     /// revalidates that the pinned handle is the currently registered row.
-    #[cfg(feature = "rotation")]
+    #[cfg(all(feature = "rotation", test))]
     pub(crate) fn revoke_resolved_terminal(
         &self,
         key: &ResourceKey,
@@ -1179,6 +1204,16 @@ impl Manager {
         if !self.registry.contains_managed(key, &managed) {
             return Err(Error::not_found(key));
         }
+        self.revoke_terminal_under_admission(key, slot, managed)
+    }
+
+    #[cfg(feature = "rotation")]
+    fn revoke_terminal_under_admission(
+        &self,
+        key: &ResourceKey,
+        slot: &str,
+        managed: Arc<dyn crate::registry::ManagedHandle>,
+    ) -> Result<TaintedSlot, Error> {
         match managed.revoke_credential_slot(slot).map_err(|source| {
             Error::permanent("credential slot revoke failed")
                 .with_source(source)

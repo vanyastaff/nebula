@@ -545,6 +545,12 @@ struct GatedRevokedProjection {
     release: Arc<tokio::sync::Semaphore>,
 }
 
+struct SplitTombstoneProjection {
+    calls: Arc<AtomicUsize>,
+    live_entered: Arc<tokio::sync::Semaphore>,
+    release_live: Arc<tokio::sync::Semaphore>,
+}
+
 impl nebula_credential::CredentialSlotResolver for RevokedProjection {
     fn resolve_slot<'a>(
         &'a self,
@@ -594,6 +600,114 @@ impl nebula_credential::CredentialSlotResolver for GatedRevokedProjection {
             Err(nebula_credential::CredentialSlotResolveError::Revoked)
         })
     }
+}
+
+impl nebula_credential::CredentialSlotResolver for SplitTombstoneProjection {
+    fn resolve_slot<'a>(
+        &'a self,
+        scope: &'a nebula_credential::TenantScope,
+        cid: CredentialId,
+        key: nebula_core::CredentialKey,
+        _capabilities: nebula_credential::Capabilities,
+        _cancel: CancellationToken,
+    ) -> std::pin::Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        nebula_credential::ErasedCredentialGuard,
+                        nebula_credential::CredentialSlotResolveError,
+                    >,
+                > + Send
+                + 'a,
+        >,
+    > {
+        let call = self.calls.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async move {
+            if call == 0 {
+                self.live_entered.add_permits(1);
+                self.release_live
+                    .acquire()
+                    .await
+                    .expect("release live projection")
+                    .forget();
+                return Ok(nebula_credential::ErasedCredentialGuard::from_typed(
+                    nebula_credential::CredentialGuard::new(ReplacementMaterial(22)),
+                    nebula_credential::CredentialGuardMetadata::new(cid, key, 2, 2)
+                        .with_scope(scope.clone()),
+                ));
+            }
+            Err(nebula_credential::CredentialSlotResolveError::Revoked)
+        })
+    }
+}
+
+#[tokio::test]
+async fn durable_tombstone_taints_live_sibling_before_its_projection_returns() {
+    let manager = Arc::new(Manager::new());
+    let index = Arc::new(ResourceFanoutIndex::new());
+    let cid = CredentialId::new();
+    let first_identity = SlotIdentity::from_bindings([("db", "first")]);
+    let second_identity = SlotIdentity::from_bindings([("db", "second")]);
+    let first = register_replacement_with_identity(&manager, cid, "first");
+    let second = register_replacement_with_identity(&manager, cid, "second");
+    index.bind_test(
+        cid,
+        ReplacementResource::key(),
+        ScopeLevel::Global,
+        "db",
+        first_identity,
+    );
+    index.bind_test(
+        cid,
+        ReplacementResource::key(),
+        ScopeLevel::Global,
+        "db",
+        second_identity,
+    );
+    let calls = Arc::new(AtomicUsize::new(0));
+    let live_entered = Arc::new(tokio::sync::Semaphore::new(0));
+    let release_live = Arc::new(tokio::sync::Semaphore::new(0));
+    let dispatch = tokio::spawn({
+        let manager = Arc::clone(&manager);
+        let index = Arc::clone(&index);
+        let calls = Arc::clone(&calls);
+        let live_entered = Arc::clone(&live_entered);
+        let release_live = Arc::clone(&release_live);
+        async move {
+            index
+                .dispatch_material_replacement(
+                    cid,
+                    &nebula_credential::TenantScope::new("org", "workspace"),
+                    &"oauth".parse().expect("key"),
+                    &SplitTombstoneProjection {
+                        calls,
+                        live_entered,
+                        release_live,
+                    },
+                    &manager,
+                )
+                .await
+        }
+    });
+    tokio::time::timeout(Duration::from_secs(1), live_entered.acquire())
+        .await
+        .expect("live sibling projection started")
+        .expect("semaphore remains open")
+        .forget();
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while first.slot.load().is_some() || second.slot.load().is_some() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("tombstone clears every sibling before the live result returns");
+
+    release_live.add_permits(1);
+    let _outcome = dispatch.await.expect("material dispatch joins");
+
+    assert!(first.slot.load().is_none());
+    assert!(second.slot.load().is_none());
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
 }
 
 #[tokio::test(start_paused = true)]

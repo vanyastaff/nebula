@@ -526,6 +526,9 @@ impl ResourceFanoutIndex {
             .material_replacement_fence
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !self.by_credential.contains_key(&cid) {
+            return sequence;
+        }
         if fence.contexts.contains_key(&cid)
             || fence.contexts.len() < MAX_RETAINED_MATERIAL_REPLACEMENTS
         {
@@ -954,6 +957,7 @@ impl ResourceFanoutIndex {
             rows.retain(|row| row.published != 0 || row.staged != 0);
             rows.is_empty()
         });
+        self.prune_orphan_material_context(cid);
         self.prune_orphan_contexts();
     }
 
@@ -986,6 +990,16 @@ impl ResourceFanoutIndex {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .retain(|entry| self.has_published_binding(&entry.credential_id));
+    }
+
+    fn prune_orphan_material_context(&self, cid: &CredentialId) {
+        let mut fence = self
+            .material_replacement_fence
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !self.by_credential.contains_key(cid) {
+            fence.contexts.remove(cid);
+        }
     }
 
     fn has_published_binding(&self, cid: &CredentialId) -> bool {

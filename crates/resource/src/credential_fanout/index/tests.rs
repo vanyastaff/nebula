@@ -121,7 +121,7 @@ fn completed_material_dispatch_cannot_forget_a_newer_context() {
 }
 
 #[test]
-fn replacement_context_observed_before_staging_is_retained() {
+fn contextual_staging_creates_authoritative_reread_context() {
     let idx = ResourceFanoutIndex::new();
     let cid = CredentialId::new();
     let owner = TenantScope::new("org", "workspace");
@@ -129,7 +129,10 @@ fn replacement_context_observed_before_staging_is_retained() {
     idx.remember_material_context(cid, owner.clone(), credential_key.clone());
 
     assert!(idx.pending_material_contexts().is_empty());
-    assert!(idx.has_material_context(&cid));
+    assert!(
+        !idx.has_material_context(&cid),
+        "an event with no binding must not consume bounded fence capacity"
+    );
 
     let bind = bound(
         &rk("pg"),
@@ -186,9 +189,24 @@ fn material_replacement_fence_is_bounded_and_fails_closed_when_saturated() {
     let owner = TenantScope::new("org", "workspace");
     let credential_key: CredentialKey = "oauth".parse().expect("credential key");
     for _ in 0..MAX_RETAINED_MATERIAL_REPLACEMENTS {
-        idx.remember_material_context(cred(), owner.clone(), credential_key.clone());
+        let cid = cred();
+        idx.bind(
+            cid,
+            rk("pg"),
+            ScopeLevel::Global,
+            "db",
+            SlotIdentity::from_bindings([("db", cid.to_string().as_str())]),
+        );
+        idx.remember_material_context(cid, owner.clone(), credential_key.clone());
     }
     let overflow = cred();
+    idx.bind(
+        overflow,
+        rk("pg"),
+        ScopeLevel::Global,
+        "db",
+        SlotIdentity::from_bindings([("db", overflow.to_string().as_str())]),
+    );
     idx.remember_material_context(overflow, owner, credential_key);
 
     let fence = idx
@@ -561,6 +579,36 @@ fn failed_stage_does_not_promote_reconciliation_context() {
     assert!(
         published[0].2.is_none(),
         "rolling back a failed stage must not opt an event-only bind into durable reconciliation"
+    );
+}
+
+#[test]
+fn failed_only_stage_releases_authoritative_reread_context() {
+    let idx = ResourceFanoutIndex::new();
+    let cid = cred();
+    let bind = bound(
+        &rk("pg"),
+        &ScopeLevel::Global,
+        "db",
+        SlotIdentity::from_bindings([("db", "rejected")]),
+    );
+    idx.stage_bind_with_context(
+        cid,
+        bind.clone(),
+        TenantScope::new("org", "workspace"),
+        "oauth".parse().expect("credential key"),
+    );
+    assert!(idx.has_material_context(&cid));
+
+    idx.unbind_staged_entry(&cid, &bind);
+
+    assert!(!idx.has_material_context(&cid));
+    assert!(
+        idx.material_replacement_fence
+            .lock()
+            .expect("material replacement fence lock")
+            .contexts
+            .is_empty()
     );
 }
 
