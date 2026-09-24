@@ -19,6 +19,9 @@ pub(crate) trait ResourceStatusTimeControl {
 }
 
 const LIVE_TTL: Duration = Duration::from_mins(1);
+/// A heartbeat meant to expire within a case: long enough to outlive a
+/// round trip to a real server, short enough that waiting it out is cheap.
+const SHORT_TTL: Duration = Duration::from_millis(500);
 const RESOURCE: &str = "res_status_primary";
 
 fn scope() -> Scope {
@@ -252,10 +255,6 @@ pub(crate) async fn expired_heartbeat_hides_snapshots(
 ) {
     let alpha = worker("worker-alpha");
     let beta = worker("worker-beta");
-    store
-        .heartbeat(&alpha, Duration::from_millis(50))
-        .await
-        .expect("short heartbeat");
     store.heartbeat(&beta, LIVE_TTL).await.expect("heartbeat");
     for owner in [&alpha, &beta] {
         store
@@ -267,9 +266,16 @@ pub(crate) async fn expired_heartbeat_hides_snapshots(
             .await
             .expect("publish");
     }
+    // The short heartbeat goes last and outlives the one read below by a
+    // wide margin: on a real server each call is a round trip, and a TTL of
+    // a few of them expires before the assertion that it is still live.
+    store
+        .heartbeat(&alpha, SHORT_TTL)
+        .await
+        .expect("short heartbeat");
     assert_eq!(live(&store, &scope()).await.len(), 2);
 
-    time.pass(Duration::from_millis(150)).await;
+    time.pass(SHORT_TTL * 3).await;
     let statuses = live(&store, &scope()).await;
     assert_eq!(statuses.len(), 1, "the expired worker's snapshot is hidden");
     assert_eq!(statuses[0].worker_id, beta);
