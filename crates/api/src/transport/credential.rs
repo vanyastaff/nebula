@@ -159,6 +159,9 @@ fn map_gateway_err(err: CredentialGatewayError, cred: &str) -> ApiError {
         CredentialGatewayError::RefreshReconciliationRequired => {
             ApiError::CredentialRefreshReconciliationRequired
         },
+        CredentialGatewayError::AcquisitionReconciliationRequired => {
+            ApiError::CredentialAcquisitionReconciliationRequired
+        },
         CredentialGatewayError::RevokeReconciliationRequired => {
             ApiError::CredentialRevokeReconciliationRequired
         },

@@ -2475,3 +2475,75 @@ async fn engine_spawn_resource_rotation_fanout_is_idempotent() {
          created a second subscriber that double-dispatches"
     );
 }
+
+/// A stopped fan-out driver must not consume the engine's spawn slot for the
+/// rest of the engine lifetime. The old handle may also be dropped after its
+/// replacement starts without releasing the replacement's generation.
+#[tokio::test]
+async fn engine_can_replace_stopped_resource_rotation_fanout() {
+    let engine = noop_engine_with_manager(Arc::new(Manager::new()));
+    let cred_bus = Arc::new(EventBus::<CredentialEvent>::new(16));
+    let lease_bus = Arc::new(EventBus::<LeaseEvent>::new(16));
+
+    let first = engine
+        .spawn_resource_rotation_fanout(Arc::clone(&cred_bus), Some(Arc::clone(&lease_bus)))
+        .expect("first spawn must return a driver");
+    first.abort();
+
+    let replacement = engine
+        .spawn_resource_rotation_fanout(Arc::clone(&cred_bus), Some(Arc::clone(&lease_bus)))
+        .expect("an aborted driver must release the spawn slot");
+
+    // `abort` released the first generation before this drop. Its destructor
+    // must not clear the replacement's generation (the ABA regression).
+    drop(first);
+    assert!(
+        engine
+            .spawn_resource_rotation_fanout(Arc::clone(&cred_bus), Some(Arc::clone(&lease_bus)),)
+            .is_none(),
+        "a late drop of the old handle must not release the live replacement"
+    );
+
+    drop(replacement);
+    let _third = engine
+        .spawn_resource_rotation_fanout(cred_bus, Some(lease_bus))
+        .expect("dropping the replacement must permit another spawn");
+}
+
+#[tokio::test]
+async fn engine_can_replace_resource_rotation_fanout_after_credential_bus_closes() {
+    let engine = noop_engine_with_manager(Arc::new(Manager::new()));
+    let closing_bus = Arc::new(EventBus::<CredentialEvent>::new(16));
+    let old_driver = engine
+        .spawn_resource_rotation_fanout(Arc::clone(&closing_bus), None)
+        .expect("first spawn must return a driver");
+
+    // The driver owns a subscriber, not a sender. Dropping the final bus Arc
+    // closes that subscriber and exercises the task's natural-exit callback.
+    drop(closing_bus);
+
+    let replacement_bus = Arc::new(EventBus::<CredentialEvent>::new(16));
+    let replacement = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if let Some(driver) =
+                engine.spawn_resource_rotation_fanout(Arc::clone(&replacement_bus), None)
+            {
+                break driver;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("natural driver completion must release the spawn slot");
+
+    // The old handle outlives its already-finished task. Its eventual drop
+    // must not release the replacement generation.
+    drop(old_driver);
+    assert!(
+        engine
+            .spawn_resource_rotation_fanout(Arc::clone(&replacement_bus), None)
+            .is_none(),
+        "dropping a naturally completed old handle must preserve the replacement claim"
+    );
+    drop(replacement);
+}

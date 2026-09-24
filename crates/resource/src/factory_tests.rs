@@ -473,11 +473,11 @@ async fn known_kind_registers_against_manager() {
 #[cfg(feature = "rotation")]
 #[tokio::test]
 async fn identity_mismatch_is_typed_and_rolls_back_manager_and_fanout_state() {
-    let manager = Manager::new();
+    let manager = Arc::new(Manager::new());
     let expression_engine = ExpressionEngine::with_cache_size(16);
     let credential_id = nebula_credential::CredentialId::new();
     let fanout_index = Arc::new(crate::ResourceFanoutIndex::new());
-    fanout_index.set_authoritative_reconciliation(true);
+    let _reconciliation = fanout_index.acquire_authoritative_reconciliation_for(&manager);
     let inner: Arc<dyn ResourceFactory> = Arc::new(KindActivator::<BoundTestRes, _, _>::new(
         BoundTestRes::new,
         || Resident::<BoundTestRes>::new(resident::config::Config::default()),
@@ -748,8 +748,186 @@ async fn rotation_binding_rejects_unqualified_prepopulated_slot() {
 
 #[cfg(feature = "rotation")]
 #[tokio::test]
-async fn contextual_binding_stays_unavailable_until_authoritative_reread() {
+async fn rotation_binding_requires_a_fanout_index() {
     let manager = Manager::new();
+    let expression_engine = ExpressionEngine::with_cache_size(16);
+    let credential_id = nebula_credential::CredentialId::new();
+    let mut registry = ResourceActivatorRegistry::new();
+    registry
+        .insert(
+            "test-missing-fanout-index",
+            Arc::new(KindActivator::<BoundTestRes, _, _>::new(
+                BoundTestRes::new,
+                || Resident::<BoundTestRes>::new(resident::config::Config::default()),
+            )),
+        )
+        .expect("typed fixture metadata admits");
+
+    let error = registry
+        .register_and_bind(
+            "test-missing-fanout-index",
+            &manager,
+            RegisterRequest {
+                config: ResourceConfigInput::data(serde_json::json!({ "name": "resource" })),
+                expr_engine: &expression_engine,
+                slot_bindings: vec![SlotBinding {
+                    slot_name: "auth".to_owned(),
+                    credential_key: nebula_core::credential_key!("test.factory-credential"),
+                    credential_id: Some(credential_id),
+                    credential_scope: Some(nebula_credential::TenantScope::new("org", "workspace")),
+                }],
+                slot_installs: Vec::new(),
+                scope: ScopeLevel::Global,
+                recovery_gate: None,
+            },
+            None,
+        )
+        .await
+        .expect_err("rotation ownership cannot be published without its fan-out index");
+
+    std::assert_matches!(error, RegistrarError::Register { .. });
+    assert!(!manager.contains(&BoundTestRes::key()));
+}
+
+#[cfg(feature = "rotation")]
+#[tokio::test]
+async fn rotation_authority_is_manager_scoped_and_driver_loss_demotes_ready_rows() {
+    let authorized_manager = Arc::new(Manager::new());
+    let other_manager = Arc::new(Manager::new());
+    let expression_engine = ExpressionEngine::with_cache_size(16);
+    let credential_id = nebula_credential::CredentialId::new();
+    let owner = nebula_credential::TenantScope::new("org", "workspace");
+    let credential_key = nebula_core::credential_key!("test.factory-credential");
+    let fanout_index = Arc::new(crate::ResourceFanoutIndex::new());
+    let reconciliation = fanout_index.acquire_authoritative_reconciliation_for(&authorized_manager);
+    let mut registry = ResourceActivatorRegistry::new();
+    registry
+        .insert(
+            "test-manager-affinity",
+            Arc::new(KindActivator::<BoundTestRes, _, _>::new(
+                BoundTestRes::new,
+                || Resident::<BoundTestRes>::new(resident::config::Config::default()),
+            )),
+        )
+        .expect("typed fixture metadata admits");
+    let request = |credential_id| RegisterRequest {
+        config: ResourceConfigInput::data(serde_json::json!({ "name": "resource" })),
+        expr_engine: &expression_engine,
+        slot_bindings: vec![SlotBinding {
+            slot_name: "auth".to_owned(),
+            credential_key: credential_key.clone(),
+            credential_id: Some(credential_id),
+            credential_scope: Some(owner.clone()),
+        }],
+        slot_installs: Vec::new(),
+        scope: ScopeLevel::Global,
+        recovery_gate: None,
+    };
+
+    registry
+        .register_and_bind(
+            "test-manager-affinity",
+            &other_manager,
+            request(credential_id),
+            Some(&fanout_index),
+        )
+        .await
+        .expect_err("another manager's driver cannot authorize registration");
+    assert!(!other_manager.contains(&BoundTestRes::key()));
+
+    let outcome = registry
+        .register_and_bind(
+            "test-manager-affinity",
+            &authorized_manager,
+            request(credential_id),
+            Some(&fanout_index),
+        )
+        .await
+        .expect("the matching manager is authorized");
+    let managed = authorized_manager
+        .lookup_any_for_slot_identity_structural(
+            &outcome.resource_key,
+            &ScopeLevel::Global,
+            &outcome.slot_identity,
+        )
+        .expect("published row");
+    managed.set_phase(crate::ResourcePhase::Ready);
+
+    drop(reconciliation);
+
+    assert_eq!(managed.phase(), crate::ResourcePhase::Initializing);
+    let context = crate::ResourceContext::minimal(
+        nebula_core::Scope::default(),
+        tokio_util::sync::CancellationToken::new(),
+    );
+    let error = authorized_manager
+        .acquire_resident_for_identity::<BoundTestRes>(
+            &context,
+            &crate::AcquireOptions::default(),
+            &outcome.slot_identity,
+        )
+        .await
+        .expect_err("driver loss must fail closed before a new acquire");
+    assert_eq!(error.kind(), &crate::ErrorKind::Backpressure);
+}
+
+#[cfg(feature = "rotation")]
+#[tokio::test]
+async fn terminal_credential_revoke_clears_material_but_lease_revoke_does_not() {
+    for terminal in [false, true] {
+        let manager = Manager::new();
+        let index = crate::ResourceFanoutIndex::new();
+        let credential_id = nebula_credential::CredentialId::new();
+        let identity = SlotIdentity::from_bindings([("auth", "credential")]);
+        let resource = BoundTestRes::new();
+        assert_eq!(
+            resource.slot.install_projected(
+                nebula_credential::CredentialGuardMetadata::new(
+                    credential_id,
+                    nebula_core::credential_key!("test.factory-credential"),
+                    1,
+                    1,
+                ),
+                Arc::new(nebula_credential::CredentialGuard::new(7_u64)),
+            ),
+            Ok(crate::SlotUpdate::Installed)
+        );
+        let slot = Arc::clone(&resource.slot);
+        manager
+            .register(crate::RegistrationSpec {
+                resource,
+                config: TestConfig {
+                    name: "resource".to_owned(),
+                },
+                scope: ScopeLevel::Global,
+                slot_identity: identity.clone(),
+                topology: Resident::<BoundTestRes>::new(resident::config::Config::default()),
+                recovery_gate: None,
+            })
+            .expect("resource registers");
+        index.bind(
+            credential_id,
+            BoundTestRes::key(),
+            ScopeLevel::Global,
+            "auth",
+            identity,
+        );
+
+        let outcome = index.prepare_revoke(credential_id, &manager, terminal);
+
+        assert_eq!(outcome.failed(), 0);
+        assert_eq!(
+            slot.load().is_none(),
+            terminal,
+            "only credential-level terminal authority may clear projected material"
+        );
+    }
+}
+
+#[cfg(feature = "rotation")]
+#[tokio::test]
+async fn contextual_binding_stays_unavailable_until_authoritative_reread() {
+    let manager = Arc::new(Manager::new());
     let expression_engine = ExpressionEngine::with_cache_size(16);
     let credential_id = nebula_credential::CredentialId::new();
     let owner = nebula_credential::TenantScope::new("org", "workspace");
@@ -790,7 +968,7 @@ async fn contextual_binding_stays_unavailable_until_authoritative_reread() {
     std::assert_matches!(error, RegistrarError::Register { .. });
     assert!(!manager.contains(&BoundTestRes::key()));
 
-    fanout_index.set_authoritative_reconciliation(true);
+    let _reconciliation = fanout_index.acquire_authoritative_reconciliation_for(&manager);
 
     let outcome = registry
         .register_and_bind(
@@ -871,11 +1049,11 @@ async fn durable_tombstone_clears_the_live_slot_before_taint() {
 #[cfg(feature = "rotation")]
 #[tokio::test]
 async fn revoke_observed_before_staging_taints_the_row_at_publication() {
-    let manager = Manager::new();
+    let manager = Arc::new(Manager::new());
     let expression_engine = ExpressionEngine::with_cache_size(16);
     let credential_id = nebula_credential::CredentialId::new();
     let fanout_index = Arc::new(crate::ResourceFanoutIndex::new());
-    fanout_index.set_authoritative_reconciliation(true);
+    let _reconciliation = fanout_index.acquire_authoritative_reconciliation_for(&manager);
     let mut registry = ResourceActivatorRegistry::new();
     registry
         .insert(
@@ -932,14 +1110,14 @@ async fn revoke_observed_before_staging_taints_the_row_at_publication() {
 #[cfg(feature = "rotation")]
 #[tokio::test]
 async fn exact_replacement_publishes_only_successor_staged_binding() {
-    let manager = Manager::new();
+    let manager = Arc::new(Manager::new());
     let expression_engine = ExpressionEngine::with_cache_size(16);
     let old_credential_id = nebula_credential::CredentialId::new();
     let new_credential_id = nebula_credential::CredentialId::new();
     let old_fanout_index = Arc::new(crate::ResourceFanoutIndex::new());
     let new_fanout_index = Arc::new(crate::ResourceFanoutIndex::new());
-    old_fanout_index.set_authoritative_reconciliation(true);
-    new_fanout_index.set_authoritative_reconciliation(true);
+    let _old_reconciliation = old_fanout_index.acquire_authoritative_reconciliation_for(&manager);
+    let _new_reconciliation = new_fanout_index.acquire_authoritative_reconciliation_for(&manager);
     let mut registry = ResourceActivatorRegistry::new();
     registry
         .insert(

@@ -255,6 +255,27 @@ async fn problem_and_retry_after_are_typed_but_error_formatting_is_redacted() {
     assert!((1..=60).contains(&error.retry_after().unwrap().seconds()));
 }
 
+#[tokio::test]
+async fn wrapped_outcome_unknown_keeps_top_level_unknown_classification() {
+    let body = json!({
+        "type": "https://nebula.dev/problems/outcome-unknown",
+        "title": "Operation Outcome Unknown",
+        "status": 409,
+        "detail": "reconcile before retrying"
+    })
+    .to_string();
+    let server = Server::start(vec![response(409, "application/problem+json", "", &body)]).await;
+
+    let error = server.client().create(&create_request()).await.unwrap_err();
+
+    assert_eq!(error.kind(), HttpErrorKind::OutcomeUnknown);
+    assert_eq!(error.status(), Some(409));
+    assert_eq!(
+        error.problem().unwrap().credential_kind(),
+        CredentialProblemKind::OutcomeUnknown
+    );
+}
+
 #[test]
 fn credential_client_ignores_implicit_system_proxy_configuration() {
     let output = std::process::Command::new(std::env::current_exe().unwrap())

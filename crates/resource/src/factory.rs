@@ -371,6 +371,9 @@ pub struct RegistrationBindings<'a> {
     index: Option<&'a crate::ResourceFanoutIndex>,
     #[cfg(feature = "rotation")]
     staged: &'a [(nebula_credential::CredentialId, crate::Bind)],
+    #[cfg(feature = "rotation")]
+    authoritative_proof:
+        Option<&'a crate::credential_fanout::index::AuthoritativeRegistrationProof>,
     marker: std::marker::PhantomData<&'a ()>,
 }
 
@@ -381,6 +384,8 @@ impl RegistrationBindings<'_> {
             index: None,
             #[cfg(feature = "rotation")]
             staged: &[],
+            #[cfg(feature = "rotation")]
+            authoritative_proof: None,
             marker: std::marker::PhantomData,
         }
     }
@@ -389,10 +394,14 @@ impl RegistrationBindings<'_> {
     pub(crate) fn staged<'a>(
         index: Option<&'a crate::ResourceFanoutIndex>,
         staged: &'a [(nebula_credential::CredentialId, crate::Bind)],
+        authoritative_proof: Option<
+            &'a crate::credential_fanout::index::AuthoritativeRegistrationProof,
+        >,
     ) -> RegistrationBindings<'a> {
         RegistrationBindings {
             index,
             staged,
+            authoritative_proof,
             marker: std::marker::PhantomData,
         }
     }
@@ -406,6 +415,12 @@ impl<'a> RegistrationBindings<'a> {
 
     pub(crate) fn staged_entries(self) -> &'a [(nebula_credential::CredentialId, crate::Bind)] {
         self.staged
+    }
+
+    pub(crate) fn authoritative_proof(
+        self,
+    ) -> Option<&'a crate::credential_fanout::index::AuthoritativeRegistrationProof> {
+        self.authoritative_proof
     }
 }
 
@@ -937,6 +952,21 @@ impl ResourceActivatorRegistry {
         let staged_slot_identity = slot_identity_from_request(&request);
         let scope = request.scope.clone();
 
+        if fanout_index.is_none()
+            && request
+                .slot_bindings
+                .iter()
+                .any(|binding| binding.credential_id.is_some())
+        {
+            return Err(RegistrarError::Register {
+                kind: kind.to_owned(),
+                source: crate::Error::permanent(
+                    "rotation binding requires a credential fan-out index",
+                )
+                .with_resource_key(resource_key),
+            });
+        }
+
         if let Some(index) = fanout_index {
             manager.attach_rotation_index(index);
         }
@@ -949,6 +979,7 @@ impl ResourceActivatorRegistry {
         // rotation `CredentialId` is simply skipped — no silent drop of a
         // mismatched parallel-map entry.
         let mut staged: Vec<(nebula_credential::CredentialId, _)> = Vec::new();
+        let mut authoritative_proof = None;
         if let Some(idx) = fanout_index {
             let mut planned = Vec::new();
             for binding in &request.slot_bindings {
@@ -997,14 +1028,17 @@ impl ResourceActivatorRegistry {
                     binding.credential_key.clone(),
                 ));
             }
-            if !planned.is_empty() && !idx.authoritative_reconciliation_available() {
-                return Err(RegistrarError::Register {
-                    kind: kind.to_owned(),
-                    source: crate::Error::permanent(
-                        "rotation binding requires authoritative credential reconciliation",
-                    )
-                    .with_resource_key(resource_key.clone()),
-                });
+            if !planned.is_empty() {
+                authoritative_proof = Some(
+                    idx.authoritative_registration_proof(manager)
+                        .ok_or_else(|| RegistrarError::Register {
+                            kind: kind.to_owned(),
+                            source: crate::Error::permanent(
+                                "rotation binding requires authoritative credential reconciliation",
+                            )
+                            .with_resource_key(resource_key.clone()),
+                        })?,
+                );
             }
             // Validation above is side-effect free. Only after every binding
             // is known valid may any staged reference become visible.
@@ -1045,7 +1079,11 @@ impl ResourceActivatorRegistry {
                 manager,
                 request,
                 &staged_slot_identity,
-                RegistrationBindings::staged(fanout_index.map(Arc::as_ref), &rollback.1),
+                RegistrationBindings::staged(
+                    fanout_index.map(Arc::as_ref),
+                    &rollback.1,
+                    authoritative_proof.as_ref(),
+                ),
             )
             .await
             .map_err(|source| RegistrarError::Register {

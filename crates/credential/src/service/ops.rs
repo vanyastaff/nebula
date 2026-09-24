@@ -85,6 +85,34 @@ pub(crate) struct ResolvedState {
     pub(crate) state_version: u32,
     /// `C::State::expires_at()` at resolve time, if any.
     pub(crate) expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Evidence governing whether a failed durable write may be replayed.
+    pub(crate) completion_evidence: AcquisitionCompletionEvidence,
+}
+
+/// Evidence available when an acquisition reports a complete credential.
+///
+/// The erased [`Credential`] contract does not currently prove that an
+/// initial `resolve`/`begin` completion was purely local. Such completions are
+/// therefore conservatively retry-unsafe if the following durable write
+/// definitely fails. An interactive continuation is stronger evidence: the
+/// pending authority has been consumed and provider work has completed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AcquisitionCompletionEvidence {
+    /// Initial resolution completed, but the erased contract carries no proof
+    /// that it stayed on the local side of the provider boundary.
+    ProviderBoundaryUnproven,
+    /// An interactive continuation completed after its pending authority was
+    /// consumed or authoritatively observed for polling.
+    InteractiveContinuationComplete,
+}
+
+impl AcquisitionCompletionEvidence {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::ProviderBoundaryUnproven => "provider_boundary_unproven",
+            Self::InteractiveContinuationComplete => "interactive_continuation_complete",
+        }
+    }
 }
 
 /// Outcome of an acquisition attempt before the service decides whether
@@ -636,7 +664,10 @@ where
                 .await
                 .map_err(executor_error_to_service_error)?;
             match response {
-                ResolveResponse::Complete(state) => serialize_state(&state),
+                ResolveResponse::Complete(state) => serialize_state(
+                    &state,
+                    AcquisitionCompletionEvidence::ProviderBoundaryUnproven,
+                ),
                 ResolveResponse::Pending { .. } | ResolveResponse::Retry { .. } => {
                     // CRUD `create` is the non-interactive path; an
                     // interactive kickoff or retry is not a stored
@@ -662,7 +693,10 @@ where
                 let response = execute_resolve::<C>(&properties, ctx)
                     .await
                     .map_err(executor_error_to_service_error)?;
-                map_resolve_response::<C>(response)
+                map_resolve_response::<C>(
+                    response,
+                    AcquisitionCompletionEvidence::ProviderBoundaryUnproven,
+                )
             }) as AcquireFuture<'_>
         },
     );
@@ -743,13 +777,16 @@ fn property_report(report: ValidationReport) -> CredentialServiceError {
 /// identically.
 fn map_resolve_response<C>(
     response: ResolveResponse<C::State>,
+    evidence: AcquisitionCompletionEvidence,
 ) -> Result<AcquireOutcome, CredentialServiceError>
 where
     C: Credential,
     C::State: StateWireFingerprint,
 {
     match response {
-        ResolveResponse::Complete(state) => serialize_state(&state).map(AcquireOutcome::Complete),
+        ResolveResponse::Complete(state) => {
+            serialize_state(&state, evidence).map(AcquireOutcome::Complete)
+        },
         ResolveResponse::Pending { token, interaction } => {
             Ok(AcquireOutcome::Pending { token, interaction })
         },
@@ -793,6 +830,7 @@ fn map_state_envelope_error_internal(error: StateEnvelopeError) -> CredentialSer
 #[tracing::instrument(name = "credential.state.serialize", skip_all, fields(state_kind = S::KIND))]
 fn serialize_state<S: CredentialState + StateWireFingerprint>(
     state: &S,
+    completion_evidence: AcquisitionCompletionEvidence,
 ) -> Result<ResolvedState, CredentialServiceError> {
     // Bytes cross directly into the owned encryption boundary. A provider's
     // serializer error can include secret data and must never be formatted.
@@ -806,6 +844,7 @@ fn serialize_state<S: CredentialState + StateWireFingerprint>(
         state_kind: S::KIND.to_owned(),
         state_version: S::VERSION,
         expires_at: state.expires_at(),
+        completion_evidence,
     })
 }
 
@@ -904,6 +943,13 @@ fn executor_error_to_service_error(e: crate::runtime::ExecutorError) -> Credenti
 /// blanket `ValidationFailed`.
 fn credential_error_to_service_error(e: crate::CredentialError) -> CredentialServiceError {
     use nebula_error::{Classify, ErrorCategory};
+    match &e {
+        crate::CredentialError::OutcomeUnknown => return CredentialServiceError::OutcomeUnknown,
+        crate::CredentialError::PostProviderPersistence => {
+            return CredentialServiceError::AcquisitionFinalizationRequired;
+        },
+        _ => {},
+    }
     if e.is_retryable() {
         return CredentialServiceError::TransientProvider(e.to_string());
     }
@@ -1105,7 +1151,10 @@ where
                     execute_begin_with_intent::<C, PS>(&properties, ctx, pending, intent)
                         .await
                         .map_err(executor_error_to_service_error)?;
-                map_resolve_response::<C>(response)
+                map_resolve_response::<C>(
+                    response,
+                    AcquisitionCompletionEvidence::ProviderBoundaryUnproven,
+                )
             }) as AcquireFuture<'_>
         },
     );
@@ -1121,7 +1170,10 @@ where
                 )
                 .await
                 .map_err(executor_error_to_service_error)?;
-                map_resolve_response::<C>(response)
+                map_resolve_response::<C>(
+                    response,
+                    AcquisitionCompletionEvidence::InteractiveContinuationComplete,
+                )
             }) as AcquireFuture<'_>
         },
     );

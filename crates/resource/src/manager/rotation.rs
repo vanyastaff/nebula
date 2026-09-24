@@ -281,6 +281,34 @@ pub enum RevokeTail {
 
 impl Manager {
     #[cfg(feature = "rotation")]
+    pub(crate) fn release_authoritative_reconciliation(
+        &self,
+        index: &crate::ResourceFanoutIndex,
+        manager_identity: usize,
+        epoch: u64,
+    ) {
+        let _admission = self
+            .admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !index.release_authoritative_reconciliation(manager_identity, epoch) {
+            return;
+        }
+        for (_, binding, _) in index.published_bindings(None) {
+            let Ok(managed) = self.lookup_any_for_slot_identity_structural(
+                &binding.resource_key,
+                &binding.scope,
+                &binding.slot_identity,
+            ) else {
+                continue;
+            };
+            if !managed.is_tainted() {
+                managed.set_phase(crate::state::ResourcePhase::Initializing);
+            }
+        }
+    }
+
+    #[cfg(feature = "rotation")]
     pub(crate) fn stage_credential_binding(
         &self,
         index: &crate::ResourceFanoutIndex,
@@ -368,7 +396,11 @@ impl Manager {
                     &binding.slot_identity,
                 )
                 .and_then(|managed| {
-                    if clear_material {
+                    if clear_material
+                        && managed
+                            .credential_slot_projection(&binding.slot_name)
+                            .is_some()
+                    {
                         self.revoke_terminal_under_admission(
                             &binding.resource_key,
                             &binding.slot_name,

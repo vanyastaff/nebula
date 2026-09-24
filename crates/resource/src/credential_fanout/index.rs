@@ -281,6 +281,18 @@ struct TerminalRevocationFence {
     saturated: bool,
 }
 
+#[derive(Debug, Default)]
+struct AuthoritativeReconciliationState {
+    next_epoch: u64,
+    live_by_manager: std::collections::HashMap<usize, std::collections::HashSet<u64>>,
+}
+
+#[derive(Debug)]
+pub(crate) struct AuthoritativeRegistrationProof {
+    manager_identity: usize,
+    live_epochs: Vec<u64>,
+}
+
 /// Reverse index from a rotated `CredentialId` to the resource registry
 /// rows that resolved it.
 ///
@@ -315,7 +327,7 @@ pub struct ResourceFanoutIndex {
     /// Bounded terminal observations retained so a registration that stages
     /// after event delivery cannot publish revoked material.
     terminal_revocation_fence: std::sync::Mutex<TerminalRevocationFence>,
-    authoritative_reconciliation: std::sync::atomic::AtomicUsize,
+    authoritative_reconciliation: std::sync::Mutex<AuthoritativeReconciliationState>,
     revoke_retry_notify: tokio::sync::Notify,
     /// Shared admission keeps direct dispatch and reconciliation under one
     /// provider/persistence concurrency budget.
@@ -331,7 +343,9 @@ impl Default for ResourceFanoutIndex {
             material_retry_notify: tokio::sync::Notify::new(),
             pending_revoke_admissions: std::sync::Mutex::new(Vec::new()),
             terminal_revocation_fence: std::sync::Mutex::new(TerminalRevocationFence::default()),
-            authoritative_reconciliation: std::sync::atomic::AtomicUsize::new(0),
+            authoritative_reconciliation: std::sync::Mutex::new(
+                AuthoritativeReconciliationState::default(),
+            ),
             revoke_retry_notify: tokio::sync::Notify::new(),
             projection_admission: tokio::sync::Semaphore::new(MAX_CONCURRENT_PROJECTIONS),
         }
@@ -475,26 +489,100 @@ impl ResourceFanoutIndex {
         true
     }
 
-    #[cfg(test)]
-    pub(crate) fn set_authoritative_reconciliation(&self, available: bool) {
-        self.authoritative_reconciliation
-            .store(usize::from(available), std::sync::atomic::Ordering::Release);
+    pub(crate) fn authoritative_registration_proof(
+        &self,
+        manager: &crate::Manager,
+    ) -> Option<AuthoritativeRegistrationProof> {
+        let manager_identity = std::ptr::from_ref(manager).addr();
+        let state = self
+            .authoritative_reconciliation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let live_epochs = state
+            .live_by_manager
+            .get(&manager_identity)?
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+        (!live_epochs.is_empty()).then_some(AuthoritativeRegistrationProof {
+            manager_identity,
+            live_epochs,
+        })
     }
 
+    pub(crate) fn validates_authoritative_registration(
+        &self,
+        manager: &crate::Manager,
+        proof: &AuthoritativeRegistrationProof,
+    ) -> bool {
+        if proof.manager_identity != std::ptr::from_ref(manager).addr() {
+            return false;
+        }
+        let state = self
+            .authoritative_reconciliation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state
+            .live_by_manager
+            .get(&proof.manager_identity)
+            .is_some_and(|live| proof.live_epochs.iter().any(|epoch| live.contains(epoch)))
+    }
+
+    #[cfg(test)]
     pub(crate) fn authoritative_reconciliation_available(&self) -> bool {
         self.authoritative_reconciliation
-            .load(std::sync::atomic::Ordering::Acquire)
-            != 0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .live_by_manager
+            .values()
+            .any(|live| !live.is_empty())
     }
 
-    pub(crate) fn acquire_authoritative_reconciliation(
+    pub(crate) fn acquire_authoritative_reconciliation_for(
         self: &std::sync::Arc<Self>,
+        manager: &std::sync::Arc<crate::Manager>,
     ) -> AuthoritativeReconciliationLease {
-        self.authoritative_reconciliation
-            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        let manager_identity = std::sync::Arc::as_ptr(manager).addr();
+        let epoch = {
+            let mut state = self
+                .authoritative_reconciliation
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.next_epoch = state.next_epoch.wrapping_add(1).max(1);
+            let epoch = state.next_epoch;
+            state
+                .live_by_manager
+                .entry(manager_identity)
+                .or_default()
+                .insert(epoch);
+            epoch
+        };
         AuthoritativeReconciliationLease {
             index: std::sync::Arc::clone(self),
+            manager: std::sync::Arc::downgrade(manager),
+            manager_identity,
+            epoch,
         }
+    }
+
+    pub(crate) fn release_authoritative_reconciliation(
+        &self,
+        manager_identity: usize,
+        epoch: u64,
+    ) -> bool {
+        let mut state = self
+            .authoritative_reconciliation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(live) = state.live_by_manager.get_mut(&manager_identity) else {
+            return false;
+        };
+        live.remove(&epoch);
+        if !live.is_empty() {
+            return false;
+        }
+        state.live_by_manager.remove(&manager_identity);
+        true
     }
 
     /// Returns every resource row that resolved `cid`, in registration order.
@@ -514,7 +602,7 @@ impl ResourceFanoutIndex {
             .unwrap_or_default()
     }
 
-    pub(super) fn published_bindings(
+    pub(crate) fn published_bindings(
         &self,
         credential_id: Option<CredentialId>,
     ) -> Vec<PublishedBinding> {
@@ -1054,6 +1142,11 @@ impl ResourceFanoutIndex {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .retain(|entry| self.has_published_binding(&entry.credential_id));
+        self.material_replacement_fence
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contexts
+            .retain(|credential_id, _| self.by_credential.contains_key(credential_id));
     }
 
     fn prune_orphan_material_context(&self, cid: &CredentialId) {
@@ -1088,13 +1181,23 @@ impl ResourceFanoutIndex {
 
 pub(crate) struct AuthoritativeReconciliationLease {
     index: std::sync::Arc<ResourceFanoutIndex>,
+    manager: std::sync::Weak<crate::Manager>,
+    manager_identity: usize,
+    epoch: u64,
 }
 
 impl Drop for AuthoritativeReconciliationLease {
     fn drop(&mut self) {
-        self.index
-            .authoritative_reconciliation
-            .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+        if let Some(manager) = self.manager.upgrade() {
+            manager.release_authoritative_reconciliation(
+                &self.index,
+                self.manager_identity,
+                self.epoch,
+            );
+        } else {
+            self.index
+                .release_authoritative_reconciliation(self.manager_identity, self.epoch);
+        }
     }
 }
 

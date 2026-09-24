@@ -1,4 +1,7 @@
-use std::assert_matches;
+use std::{
+    assert_matches,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 use nebula_schema::{HasSchema, Property, Schema, Transformer, field_key};
 use serde::Deserialize;
@@ -6,8 +9,8 @@ use serde_json::{Value, json};
 
 use super::*;
 use crate::{
-    CredentialError, CredentialMetadataDraft, PendingState, PendingStoreError, SecretString,
-    SecretToken, StaticResolveResult,
+    CredentialError, CredentialMetadataDraft, Interactive, NoPendingState, PendingState,
+    PendingStoreError, ResolveResult, SecretString, SecretToken, StaticResolveResult, UserInput,
 };
 
 struct UnusedPendingStore;
@@ -136,6 +139,173 @@ async fn registered_ops_pass_the_once_normalized_secret_to_the_provider() {
     assert_eq!(state.state_version, SecretToken::VERSION);
 }
 
+#[tokio::test]
+async fn initial_acquisition_carries_conservative_provider_boundary_evidence() {
+    let outcome = dispatch()
+        .acquire(
+            NormalizedCredential::KEY,
+            json!({"token": "value"}),
+            &CredentialContext::for_owner("owner"),
+            &UnusedPendingStore,
+        )
+        .await
+        .expect("fixture acquisition completes");
+
+    assert!(matches!(
+        outcome,
+        AcquireOutcome::Complete(ResolvedState {
+            completion_evidence: AcquisitionCompletionEvidence::ProviderBoundaryUnproven,
+            ..
+        })
+    ));
+}
+
+struct InteractiveEvidenceCredential;
+
+impl Credential for InteractiveEvidenceCredential {
+    type Properties = NormalizedProperties;
+    type State = SecretToken;
+    type Scheme = SecretToken;
+    const KEY: &'static str = "interactive_evidence_test";
+
+    fn metadata() -> CredentialMetadataDraft {
+        CredentialMetadataDraft::new(
+            nebula_core::credential_key!("interactive_evidence_test"),
+            crate::metadata_name!("Interactive evidence"),
+            "Interactive completion evidence fixture",
+        )
+    }
+
+    fn project(state: &Self::State) -> Self::Scheme {
+        state.clone()
+    }
+
+    async fn resolve(
+        properties: &Self::Properties,
+        _: &CredentialContext,
+    ) -> Result<StaticResolveResult<Self::State>, CredentialError> {
+        Ok(StaticResolveResult::Complete(SecretToken::new(
+            properties.token.clone(),
+        )))
+    }
+}
+
+impl Interactive for InteractiveEvidenceCredential {
+    type Pending = NoPendingState;
+
+    async fn begin(
+        properties: &Self::Properties,
+        _: &CredentialContext,
+    ) -> Result<ResolveResult<Self::State, Self::Pending>, CredentialError> {
+        Ok(ResolveResult::Complete(SecretToken::new(
+            properties.token.clone(),
+        )))
+    }
+
+    async fn continue_resolve(
+        _: &Self::Pending,
+        _: &UserInput,
+        _: &CredentialContext,
+    ) -> Result<ResolveResult<Self::State, Self::Pending>, CredentialError> {
+        Ok(ResolveResult::Complete(SecretToken::new(
+            SecretString::new("provider-result"),
+        )))
+    }
+}
+
+struct ConsumedPendingStore {
+    pending: Vec<u8>,
+    consume_calls: AtomicUsize,
+}
+
+impl PendingStateStore for ConsumedPendingStore {
+    async fn put<P: PendingState>(
+        &self,
+        _: &str,
+        _: &str,
+        _: &str,
+        _: P,
+    ) -> Result<PendingToken, PendingStoreError> {
+        panic!("completed continuation must not write pending state")
+    }
+
+    async fn get<P: PendingState>(&self, _: &PendingToken) -> Result<P, PendingStoreError> {
+        panic!("bound continuation must not use unscoped get")
+    }
+
+    async fn get_bound<P: PendingState>(
+        &self,
+        _: &str,
+        _: &PendingToken,
+        _: &str,
+        _: &str,
+    ) -> Result<P, PendingStoreError> {
+        serde_json::from_slice(&self.pending)
+            .map_err(|error| PendingStoreError::Backend(Box::new(error)))
+    }
+
+    async fn consume<P: PendingState>(
+        &self,
+        _: &str,
+        _: &PendingToken,
+        _: &str,
+        _: &str,
+    ) -> Result<P, PendingStoreError> {
+        self.consume_calls.fetch_add(1, Ordering::Relaxed);
+        serde_json::from_slice(&self.pending)
+            .map_err(|error| PendingStoreError::Backend(Box::new(error)))
+    }
+
+    async fn delete(&self, _: &PendingToken) -> Result<(), PendingStoreError> {
+        panic!("completed continuation must not delete pending state")
+    }
+}
+
+#[tokio::test]
+async fn reauthorization_continuation_marks_completion_after_consuming_authority() {
+    let intent = AcquisitionIntent::ReauthorizeExisting {
+        credential_id: "cred-1".to_owned(),
+        observed_version: 4,
+        observed_material_epoch: 2,
+        credential_key: InteractiveEvidenceCredential::KEY.to_owned(),
+    };
+    let expectation = intent.expectation();
+    let pending = AcquisitionPending::new(intent, NoPendingState);
+    let pending = crate::serde_secret::expose_for_serialization(|| serde_json::to_vec(&pending))
+        .expect("serialize pending fixture");
+    let store = ConsumedPendingStore {
+        pending,
+        consume_calls: AtomicUsize::new(0),
+    };
+    let mut ops = DispatchOps::new();
+    register_runtime_ops::<InteractiveEvidenceCredential, _>(&mut ops)
+        .expect("base fixture registration succeeds");
+    register_interactive_ops::<InteractiveEvidenceCredential, _>(&mut ops)
+        .expect("interactive fixture registration succeeds");
+
+    let outcome = ops
+        .continue_with_intent(
+            &PendingToken::generate(),
+            &UserInput::Code {
+                code: "one-time-code".to_owned(),
+            },
+            &CredentialContext::for_owner("owner").with_session_id("session"),
+            &store,
+            expectation,
+        )
+        .await
+        .expect("provider continuation completes");
+
+    assert_eq!(store.consume_calls.load(Ordering::Relaxed), 1);
+    assert!(matches!(
+        outcome,
+        AcquireOutcome::Complete(ResolvedState {
+            completion_evidence: AcquisitionCompletionEvidence::InteractiveContinuationComplete,
+            ..
+        })
+    ));
+}
+
 #[test]
 fn preparation_preserves_template_like_secret_strings_as_data() {
     let schema = NormalizedProperties::schema().unwrap();
@@ -188,6 +358,14 @@ fn property_preparation_decodes_secret_into_the_typed_owner() {
     .unwrap();
     assert_eq!(properties.token.expose_secret(), "SECRET_CANARY");
     assert!(!format!("{properties:?}").contains("SECRET_CANARY"));
+}
+
+#[test]
+fn acquisition_preserves_unknown_provider_outcome() {
+    assert_matches!(
+        credential_error_to_service_error(CredentialError::OutcomeUnknown),
+        CredentialServiceError::OutcomeUnknown
+    );
 }
 
 #[derive(zeroize::ZeroizeOnDrop, crate::StateWireFingerprint)]

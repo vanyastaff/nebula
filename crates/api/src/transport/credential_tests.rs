@@ -506,6 +506,13 @@ fn gateway_error_mapping_statuses() {
     ));
     assert!(matches!(
         map_gateway_err(
+            CredentialGatewayError::AcquisitionReconciliationRequired,
+            "cred_x"
+        ),
+        ApiError::CredentialAcquisitionReconciliationRequired
+    ));
+    assert!(matches!(
+        map_gateway_err(
             CredentialGatewayError::RevokeReconciliationRequired,
             "cred_x"
         ),

@@ -487,6 +487,9 @@ fn map_service_error(error: CredentialServiceError) -> CredentialGatewayError {
         | CredentialServiceError::ExternalSourceNotWired { .. }
         | CredentialServiceError::PersistenceUnavailable => CredentialGatewayError::Unavailable,
         CredentialServiceError::OutcomeUnknown => CredentialGatewayError::OutcomeUnknown,
+        CredentialServiceError::AcquisitionFinalizationRequired => {
+            CredentialGatewayError::AcquisitionReconciliationRequired
+        },
         CredentialServiceError::RefreshPostProviderPersistence
         | CredentialServiceError::RefreshRetryGateFinalization
         | CredentialServiceError::ReauthDecisionFinalization
@@ -548,6 +551,10 @@ mod tests {
                 CredentialGatewayError::RefreshReconciliationRequired,
             );
         }
+        assert_eq!(
+            map_service_error(CredentialServiceError::AcquisitionFinalizationRequired),
+            CredentialGatewayError::AcquisitionReconciliationRequired,
+        );
         assert_eq!(
             map_service_error(CredentialServiceError::RevokePostProviderPersistence),
             CredentialGatewayError::RevokeReconciliationRequired,

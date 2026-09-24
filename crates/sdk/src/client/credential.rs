@@ -124,7 +124,7 @@ pub mod v1 {
     }
 
     /// Secret-free credential metadata returned by create and get.
-    #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+    #[derive(Clone, PartialEq, Eq, Deserialize)]
     pub struct Credential {
         /// Credential identifier.
         pub id: String,
@@ -153,6 +153,25 @@ pub mod v1 {
         pub tags: BTreeMap<String, String>,
     }
 
+    impl fmt::Debug for Credential {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.debug_struct("Credential")
+                .field("id", &self.id)
+                .field("credential_key", &self.credential_key)
+                .field("name", &REDACTED)
+                .field("description_present", &self.description.is_some())
+                .field("auth_pattern", &self.auth_pattern)
+                .field("capabilities", &self.capabilities)
+                .field("created_at", &self.created_at)
+                .field("updated_at", &self.updated_at)
+                .field("expires_at", &self.expires_at)
+                .field("version", &self.version)
+                .field("lifecycle", &self.lifecycle)
+                .field("tag_count", &self.tags.len())
+                .finish()
+        }
+    }
+
     /// Response returned after creating a credential.
     pub type CreateCredentialResponse = Credential;
 
@@ -160,7 +179,7 @@ pub mod v1 {
     pub type GetCredentialResponse = Credential;
 
     /// Secret-free credential projection returned by list.
-    #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+    #[derive(Clone, PartialEq, Eq, Deserialize)]
     pub struct CredentialSummary {
         /// Credential identifier.
         pub id: String,
@@ -176,6 +195,20 @@ pub mod v1 {
         pub version: u64,
         /// Durable availability state.
         pub lifecycle: CredentialLifecycleState,
+    }
+
+    impl fmt::Debug for CredentialSummary {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.debug_struct("CredentialSummary")
+                .field("id", &self.id)
+                .field("credential_key", &self.credential_key)
+                .field("name", &REDACTED)
+                .field("auth_pattern", &self.auth_pattern)
+                .field("expires_at", &self.expires_at)
+                .field("version", &self.version)
+                .field("lifecycle", &self.lifecycle)
+                .finish()
+        }
     }
 
     /// One page of credential summaries.
@@ -457,6 +490,8 @@ pub mod v1 {
         RefreshNotAppliedAfter,
         /// Refresh completed but durable finalization requires reconciliation.
         RefreshReconciliationRequired,
+        /// Acquisition completed but durable finalization requires reconciliation.
+        AcquisitionReconciliationRequired,
         /// Revoke completed but durable finalization requires reconciliation.
         RevokeReconciliationRequired,
         /// A mutation acknowledgement was lost.
@@ -475,6 +510,9 @@ pub mod v1 {
                 "https://nebula.dev/problems/credential-refresh-reconciliation-required" => {
                     Self::RefreshReconciliationRequired
                 },
+                "https://nebula.dev/problems/credential-acquisition-reconciliation-required" => {
+                    Self::AcquisitionReconciliationRequired
+                },
                 "https://nebula.dev/problems/credential-revoke-reconciliation-required" => {
                     Self::RevokeReconciliationRequired
                 },
@@ -492,6 +530,9 @@ pub mod v1 {
                 Self::RefreshNotAppliedAfter => Some("API:CREDENTIAL_REFRESH_NOT_APPLIED_AFTER"),
                 Self::RefreshReconciliationRequired => {
                     Some("API:CREDENTIAL_REFRESH_RECONCILIATION_REQUIRED")
+                },
+                Self::AcquisitionReconciliationRequired => {
+                    Some("API:CREDENTIAL_ACQUISITION_RECONCILIATION_REQUIRED")
                 },
                 Self::RevokeReconciliationRequired => {
                     Some("API:CREDENTIAL_REVOKE_RECONCILIATION_REQUIRED")
@@ -663,8 +704,38 @@ mod tests {
             }
         }))
         .expect("pending response decodes");
+        let credential: Credential = serde_json::from_value(json!({
+            "id": "cred_01",
+            "credential_key": "oauth2",
+            "name": "response-name-secret",
+            "description": "response-description-secret",
+            "auth_pattern": "OAuth2",
+            "capabilities": {
+                "interactive": true,
+                "refreshable": true,
+                "testable": false,
+                "revocable": false
+            },
+            "created_at": "2026-09-24T00:00:00Z",
+            "updated_at": "2026-09-24T00:00:00Z",
+            "version": 1,
+            "lifecycle": {"status": "ready"},
+            "tags": {"response-tag-secret": "response-tag-value-secret"}
+        }))
+        .expect("credential response decodes");
+        let summary: CredentialSummary = serde_json::from_value(json!({
+            "id": "cred_01",
+            "credential_key": "oauth2",
+            "name": "summary-name-secret",
+            "auth_pattern": "OAuth2",
+            "version": 1,
+            "lifecycle": {"status": "ready"}
+        }))
+        .expect("credential summary decodes");
 
-        let debug = format!("{create:?} {update:?} {resolve:?} {continuation:?} {pending:?}");
+        let debug = format!(
+            "{create:?} {update:?} {resolve:?} {continuation:?} {pending:?} {credential:?} {summary:?}"
+        );
         for secret in [
             "name-secret",
             "description-secret",
@@ -677,6 +748,11 @@ mod tests {
             "updated-name-secret",
             "updated-description-secret",
             "updated-input-secret",
+            "response-name-secret",
+            "response-description-secret",
+            "response-tag-secret",
+            "response-tag-value-secret",
+            "summary-name-secret",
         ] {
             assert!(!debug.contains(secret), "Debug leaked {secret}: {debug}");
         }
@@ -786,6 +862,20 @@ mod tests {
         }))
         .expect("lookalike problem decodes");
         assert_eq!(lookalike.credential_kind(), CredentialProblemKind::Other);
+        let acquisition: ProblemDetails = serde_json::from_value(json!({
+            "type": "https://nebula.dev/problems/credential-acquisition-reconciliation-required",
+            "title": "ignored",
+            "status": 409
+        }))
+        .expect("acquisition reconciliation problem decodes");
+        assert_eq!(
+            acquisition.credential_kind(),
+            CredentialProblemKind::AcquisitionReconciliationRequired
+        );
+        assert_eq!(
+            acquisition.credential_kind().code(),
+            Some("API:CREDENTIAL_ACQUISITION_RECONCILIATION_REQUIRED")
+        );
         assert_eq!(
             RetryAfter::from_seconds(17).map(RetryAfter::seconds),
             Some(17)

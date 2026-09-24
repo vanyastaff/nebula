@@ -220,6 +220,20 @@ pub struct ResourceFanoutDriver {
     reconciliation_lease: Arc<
         std::sync::Mutex<Option<crate::credential_fanout::index::AuthoritativeReconciliationLease>>,
     >,
+    lifecycle: Arc<DriverLifecycle>,
+}
+
+struct DriverLifecycle {
+    stopped: std::sync::atomic::AtomicBool,
+    on_stopped: Arc<dyn Fn() + Send + Sync>,
+}
+
+impl DriverLifecycle {
+    fn stop(&self) {
+        if !self.stopped.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            (self.on_stopped)();
+        }
+    }
 }
 
 impl std::fmt::Debug for ResourceFanoutDriver {
@@ -260,22 +274,54 @@ impl ResourceFanoutDriver {
         credential_bus: Arc<EventBus<CredentialEvent>>,
         lease_bus: Option<Arc<EventBus<LeaseEvent>>>,
     ) -> Self {
+        Self::spawn_with_resolver_and_lifecycle(
+            index,
+            manager,
+            resolver,
+            credential_bus,
+            lease_bus,
+            Arc::new(|| {}),
+        )
+    }
+
+    /// Spawns a resolver-backed driver and reports its terminal lifecycle once.
+    ///
+    /// This is an engine composition seam. `on_stopped` runs exactly once for
+    /// natural task completion, task panic, [`abort`](Self::abort), or handle
+    /// drop, after authoritative reconciliation availability is withdrawn.
+    #[doc(hidden)]
+    pub fn spawn_with_resolver_and_lifecycle(
+        index: Arc<ResourceFanoutIndex>,
+        manager: Arc<Manager>,
+        resolver: Option<Arc<dyn CredentialSlotResolver>>,
+        credential_bus: Arc<EventBus<CredentialEvent>>,
+        lease_bus: Option<Arc<EventBus<LeaseEvent>>>,
+        on_stopped: Arc<dyn Fn() + Send + Sync>,
+    ) -> Self {
         manager.attach_rotation_index(&index);
         let reconciliation_lease = resolver
             .as_ref()
-            .map(|_| index.acquire_authoritative_reconciliation());
+            .map(|_| index.acquire_authoritative_reconciliation_for(&manager));
         let reconciliation_lease = Arc::new(std::sync::Mutex::new(reconciliation_lease));
         let task_reconciliation_lease = Arc::clone(&reconciliation_lease);
+        let lifecycle = Arc::new(DriverLifecycle {
+            stopped: std::sync::atomic::AtomicBool::new(false),
+            on_stopped,
+        });
+        let task_lifecycle = Arc::clone(&lifecycle);
         let mut credential_sub = credential_bus.subscribe();
         let mut lease_sub = lease_bus.map(|bus| bus.subscribe());
         let handle = tokio::spawn(async move {
-            let _reconciliation_lease_on_exit =
-                scopeguard::guard(task_reconciliation_lease, |lease| {
+            let _driver_lifecycle_on_exit = scopeguard::guard(
+                (task_reconciliation_lease, task_lifecycle),
+                |(lease, lifecycle)| {
                     lease
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .take();
-                });
+                    lifecycle.stop();
+                },
+            );
             // Per-driver revoke dedupe: one logical credential revoke
             // double-emits (lease bus `LeaseRevoked`(s) + facade
             // `CredentialEvent::Revoked`); this collapses them within
@@ -512,6 +558,7 @@ impl ResourceFanoutDriver {
         Self {
             handle,
             reconciliation_lease,
+            lifecycle,
         }
     }
 
@@ -693,6 +740,7 @@ impl ResourceFanoutDriver {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();
         self.handle.abort();
+        self.lifecycle.stop();
     }
 
     /// Whether the underlying task has finished (e.g. via abort or a
@@ -712,6 +760,7 @@ impl Drop for ResourceFanoutDriver {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();
         self.handle.abort();
+        self.lifecycle.stop();
     }
 }
 

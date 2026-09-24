@@ -32,7 +32,7 @@ impl ResourceFanoutIndex {
             self,
             cid,
             retain_terminal_credential_revoke,
-            false,
+            retain_terminal_credential_revoke,
         ) else {
             return summary;
         };

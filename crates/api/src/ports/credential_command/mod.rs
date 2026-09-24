@@ -479,6 +479,11 @@ pub enum CredentialGatewayError {
     /// integration credential before issuing another refresh.
     #[error("credential refresh requires reconciliation")]
     RefreshReconciliationRequired,
+    /// Acquisition completed but its durable create/replacement finalization
+    /// definitely failed. Replaying may repeat provider work or a one-time
+    /// authorization grant.
+    #[error("credential acquisition requires reconciliation")]
+    AcquisitionReconciliationRequired,
     /// The revoke outcome is known, but durable local finalization definitely
     /// failed.
     ///
@@ -753,8 +758,16 @@ mod tests {
             CredentialGatewayError::OutcomeUnknown
         );
         assert_ne!(
+            CredentialGatewayError::AcquisitionReconciliationRequired,
+            CredentialGatewayError::OutcomeUnknown
+        );
+        assert_ne!(
             CredentialGatewayError::RefreshReconciliationRequired,
             CredentialGatewayError::RevokeReconciliationRequired
+        );
+        assert_ne!(
+            CredentialGatewayError::AcquisitionReconciliationRequired,
+            CredentialGatewayError::RefreshReconciliationRequired
         );
     }
 }

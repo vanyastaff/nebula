@@ -52,7 +52,7 @@ fn index_bind_lookup_unbind_with_identity() {
 }
 
 #[test]
-fn replacement_contexts_survive_queue_scale_and_an_unbound_gap() {
+fn bulk_unbind_prunes_orphaned_replacement_contexts() {
     let idx = ResourceFanoutIndex::new();
     let key = rk("pg");
     let scope = wf_scope();
@@ -77,13 +77,13 @@ fn replacement_contexts_survive_queue_scale_and_an_unbound_gap() {
     idx.unbind_resource(&key, &scope);
     assert!(
         idx.pending_material_contexts().is_empty(),
-        "unbound evidence should not be scanned until a registration stages"
+        "unbound evidence must not remain eligible for scanning"
     );
     assert!(
         credentials
             .iter()
-            .all(|credential_id| idx.has_material_context(credential_id)),
-        "replacement evidence must survive a gap before a later registration stages"
+            .all(|credential_id| !idx.has_material_context(credential_id)),
+        "bulk removal must release bounded material-fence capacity"
     );
     assert!(
         credentials
@@ -581,17 +581,40 @@ fn terminal_revocation_fence_is_bounded_and_fails_closed_when_saturated() {
     );
 }
 
-#[test]
-fn authoritative_reconciliation_lease_tracks_liveness() {
+#[tokio::test]
+async fn authoritative_reconciliation_lease_tracks_liveness() {
     let index = Arc::new(ResourceFanoutIndex::new());
+    let manager = Arc::new(crate::Manager::new());
     assert!(!index.authoritative_reconciliation_available());
-    let first = index.acquire_authoritative_reconciliation();
-    let second = index.acquire_authoritative_reconciliation();
+    let first = index.acquire_authoritative_reconciliation_for(&manager);
+    let second = index.acquire_authoritative_reconciliation_for(&manager);
     assert!(index.authoritative_reconciliation_available());
     drop(first);
     assert!(index.authoritative_reconciliation_available());
     drop(second);
     assert!(!index.authoritative_reconciliation_available());
+}
+
+#[tokio::test]
+async fn authoritative_registration_proof_is_manager_scoped_and_rejects_liveness_aba() {
+    let index = Arc::new(ResourceFanoutIndex::new());
+    let first_manager = Arc::new(crate::Manager::new());
+    let other_manager = Arc::new(crate::Manager::new());
+    let lease = index.acquire_authoritative_reconciliation_for(&first_manager);
+    let proof = index
+        .authoritative_registration_proof(&first_manager)
+        .expect("live manager has registration authority");
+
+    assert!(index.validates_authoritative_registration(&first_manager, &proof));
+    assert!(!index.validates_authoritative_registration(&other_manager, &proof));
+
+    drop(lease);
+    let replacement = index.acquire_authoritative_reconciliation_for(&first_manager);
+    assert!(
+        !index.validates_authoritative_registration(&first_manager, &proof),
+        "a new driver cannot repair a liveness gap in an in-flight registration"
+    );
+    drop(replacement);
 }
 
 #[test]

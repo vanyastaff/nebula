@@ -16,6 +16,7 @@ use crate::{
     OWNER_ID_METADATA_KEY as OWNER_ID_KEY,
 };
 
+use super::acquire::map_acquisition_finalization_error;
 use super::error::CredentialServiceError;
 use super::facade::CredentialService;
 use super::head::CredentialHead;
@@ -35,7 +36,9 @@ impl CredentialService {
     /// - [`CredentialServiceError::TypeUnknown`] — no type registered under `credential_key`.
     /// - [`CredentialServiceError::ValidationFailed`] — schema or typed-deserialize rejection
     ///   (including `$expr` injection), or a resolve failure.
-    /// - [`CredentialServiceError::Store`] — a definite persistence failure.
+    /// - [`CredentialServiceError::AcquisitionFinalizationRequired`] — resolution completed but
+    ///   the following durable create definitely failed. The erased type does
+    ///   not prove that completion was local, so replay is conservatively refused.
     /// - [`CredentialServiceError::OutcomeUnknown`] — commit acknowledgement
     ///   was lost; reconcile before replaying the command.
     pub(crate) async fn create(
@@ -61,10 +64,17 @@ impl CredentialService {
         let ctx = self.owner_context(scope);
 
         let resolved = self.ops.resolve(credential_key, props, &ctx).await?;
+        let completion_evidence = resolved.completion_evidence;
 
         let head = self
             .persist_resolved(scope, credential_key, id, resolved, display)
-            .await?;
+            .await
+            .map_err(|error| {
+                map_acquisition_finalization_error(
+                    completion_evidence,
+                    Self::map_store_err_for(&id.to_string(), error),
+                )
+            })?;
 
         self.observer.on_resolve(&id);
         tracing::info!(
@@ -89,7 +99,7 @@ impl CredentialService {
         id: CredentialId,
         resolved: super::ops::ResolvedState,
         display: CredentialDisplay,
-    ) -> Result<CredentialHead, CredentialServiceError> {
+    ) -> Result<CredentialHead, CredentialPersistenceError> {
         let mut metadata = serde_json::Map::new();
         metadata.insert(
             OWNER_ID_KEY.to_owned(),
@@ -116,11 +126,7 @@ impl CredentialService {
             metadata,
         );
 
-        let commit = self
-            .store
-            .create(&scope.selector(id), create)
-            .await
-            .map_err(|error| Self::map_store_err_for(&id.to_string(), error))?;
+        let commit = self.store.create(&scope.selector(id), create).await?;
 
         Ok(CredentialHead {
             id: commit.credential_id().to_string(),

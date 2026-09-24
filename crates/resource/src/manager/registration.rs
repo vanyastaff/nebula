@@ -272,6 +272,18 @@ impl Manager {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.shutdown_guard()?;
+        #[cfg(feature = "rotation")]
+        if let Some(index) = registration_bindings.rotation_index()
+            && !registration_bindings.staged_entries().is_empty()
+            && !registration_bindings
+                .authoritative_proof()
+                .is_some_and(|proof| index.validates_authoritative_registration(self, proof))
+        {
+            return Err(Error::permanent(
+                "rotation binding lost authoritative credential reconciliation before publication",
+            )
+            .with_resource_key(key));
+        }
         // New rows require no retirement capacity. For an exact-identity
         // replacement, the registry invokes this admission callback before
         // mutation so backpressure leaves the old owner installed and unfenced.
