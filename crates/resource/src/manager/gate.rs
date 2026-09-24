@@ -85,8 +85,8 @@ pub(super) fn admit_through_gate(gate: &Option<Arc<RecoveryGate>>) -> Result<Gat
             message: prior_failure,
             ..
         } => {
-            if Instant::now() < retry_at {
-                let wait = retry_at.saturating_duration_since(Instant::now());
+            let now = Instant::now();
+            if let Some(wait) = remaining_retry_wait(retry_at, now) {
                 return Err(Error::exhausted("backend recovering", Some(wait)));
             }
             match gate.try_begin() {
@@ -128,6 +128,18 @@ fn is_backend_health_signal(error: &Error) -> bool {
         error.kind(),
         ErrorKind::Transient | ErrorKind::Exhausted { .. }
     )
+}
+
+/// Time left before a `Failed` gate admits a probe, or `None` once it is due.
+///
+/// The retry is due **at** `retry_at`, matching [`RecoveryGate::try_begin`],
+/// which only refuses while `now < retry_at`. Taking `now` once and never
+/// returning `Some(Duration::ZERO)` keeps the caller from rejecting an
+/// already-due probe with an `Exhausted` error whose retry hint is zero.
+fn remaining_retry_wait(retry_at: Instant, now: Instant) -> Option<Duration> {
+    retry_at
+        .checked_duration_since(now)
+        .filter(|wait| !wait.is_zero())
 }
 
 /// Resolves the ticket granted by [`admit_through_gate`] based on the
@@ -217,6 +229,20 @@ mod gate_admission_tests {
         assert!(matches!(admission, GateAdmission::Probe { .. }));
         settle_gate_admission::<()>(admission, &Err(Error::backpressure("pool full")));
         assert!(matches!(gate.state(), GateState::Idle));
+    }
+
+    #[test]
+    fn retry_wait_expires_exactly_at_the_boundary() {
+        let now = Instant::now();
+        assert_eq!(remaining_retry_wait(now, now), None);
+        assert_eq!(
+            remaining_retry_wait(now + Duration::from_millis(1), now),
+            Some(Duration::from_millis(1))
+        );
+        assert_eq!(
+            remaining_retry_wait(now, now + Duration::from_millis(1)),
+            None
+        );
     }
 
     /// #322: after `Failed { retry_at = past }`, concurrent callers must
