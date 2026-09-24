@@ -9,7 +9,7 @@
 //!
 //! A key's row stores the rate it last enforced next to its state, so
 //! callers that disagree on the rate get the stricter one while the key is
-//! busy ([`step::effective_rate`]). Rows whose schedule has passed carry no
+//! busy ([`step::enforce`]). Rows whose schedule has passed carry no
 //! state and are swept every [`SWEEP_EVERY`] operations.
 
 use std::{
@@ -171,7 +171,7 @@ impl LimitStore for PgLimitStore {
             tx.rollback().await.map_err(unavailable)?;
             return Ok(Ok(original));
         }
-        let rate = step::effective_rate(state, now, stored.as_ref(), rate);
+        let (rate, state) = step::enforce(state, now, stored.as_ref(), rate);
         let (decision, next) = step::reserve(state, now, &rate, request.permits, request.max_wait);
         if let Some(next) = next {
             Self::write(&mut tx, key, next, &rate).await?;
@@ -212,7 +212,7 @@ impl LimitStore for PgLimitStore {
     ) -> Result<(), LimitStoreError> {
         let mut tx = self.pool.begin().await.map_err(unavailable)?;
         let (state, stored, now) = Self::lock(&mut tx, key, rate).await?;
-        let rate = step::effective_rate(state, now, stored.as_ref(), rate);
+        let (rate, state) = step::enforce(state, now, stored.as_ref(), rate);
         let next = step::penalize(state, now, &rate, retry_after, max_penalty);
         Self::write(&mut tx, key, next, &rate).await?;
         tx.commit().await.map_err(unavailable)?;

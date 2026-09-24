@@ -112,7 +112,7 @@ pub enum LimitStoreError {
 ///
 /// Every method is one atomic transition of one key on the store's own
 /// clock. Implementations must never read a caller's clock, and must apply
-/// [`step::effective_rate`] so callers that disagree on a key's rate get the
+/// [`step::enforce`] so callers that disagree on a key's rate get the
 /// stricter one. `gcra::conformance` (feature `conformance`) holds the behaviour
 /// every implementation is checked against.
 pub trait LimitStore: Send + Sync {
@@ -213,16 +213,18 @@ impl<T: LimitStore> ErasedLimitStore for T {
 #[derive(Debug, Default)]
 struct Entry {
     state: GcraState,
-    /// Rate the key enforced last (see [`step::effective_rate`]).
+    /// Rate the key enforced last (see [`step::enforce`]).
     rate: Option<Rate>,
     /// Grants still waiting for their slot, by reservation id.
     pending: HashMap<ReservationId, Grant>,
 }
 
 impl Entry {
-    /// The rate to apply now, recorded as the key's rate.
+    /// The rate to apply now, recorded as the key's rate, with the state
+    /// rebased onto it.
     fn enforce(&mut self, now: u64, requested: &Rate) -> Rate {
-        let rate = step::effective_rate(self.state, now, self.rate.as_ref(), requested);
+        let (rate, state) = step::enforce(self.state, now, self.rate.as_ref(), requested);
+        self.state = state;
         self.rate = Some(rate);
         rate
     }

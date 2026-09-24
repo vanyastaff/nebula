@@ -421,6 +421,64 @@ async fn a_retired_row_leaves_the_rotation_index() {
     );
 }
 
+/// Re-registering a row under the same identity with a different
+/// credential releases the previous registration's rotation references: the
+/// replaced credential no longer reaches the row, and a credential both
+/// registrations bound keeps the new one's reference.
+#[cfg(feature = "rotation")]
+#[tokio::test]
+async fn a_same_identity_reregistration_releases_replaced_credentials() {
+    let fixture = Fixture::new();
+    let (resource_id, key) = fixture.store_row("activation.plain", "a", &[]).await;
+    let activated = fixture.activate(resource_id, &key).await.unwrap();
+    let (replaced, added, kept) = (
+        CredentialId::new(),
+        CredentialId::new(),
+        CredentialId::new(),
+    );
+    let bind = |credential, slot: &str| {
+        fixture.fanout.bind(
+            credential,
+            activated.resource_key.clone(),
+            activated.scope.clone(),
+            slot,
+            activated.slot_identity.clone(),
+        );
+    };
+    // The previous registration bound `replaced` and `kept`; the new one
+    // bound `added` and `kept` again.
+    bind(replaced, "token");
+    bind(kept, "other");
+    bind(added, "token");
+    bind(kept, "other");
+    let previous = ActiveRow {
+        version: 1,
+        activated: activated.clone(),
+        bindings: vec![(replaced, "token".to_owned()), (kept, "other".to_owned())],
+    };
+
+    release_bindings(&fixture.context(false), &previous);
+
+    assert!(
+        fixture.fanout.affected(&replaced).is_empty(),
+        "the replaced credential no longer reaches the row"
+    );
+    assert_eq!(fixture.fanout.affected(&added).len(), 1);
+    assert_eq!(
+        fixture.fanout.affected(&kept).len(),
+        1,
+        "a credential bound again keeps the new registration's reference"
+    );
+    release_bindings(
+        &fixture.context(false),
+        &ActiveRow {
+            bindings: vec![(kept, "other".to_owned())],
+            ..previous
+        },
+    );
+    assert!(fixture.fanout.affected(&kept).is_empty());
+}
+
 #[tokio::test]
 async fn a_deleted_row_is_retired_from_the_manager() {
     let fixture = Fixture::new();
@@ -438,6 +496,64 @@ async fn a_deleted_row_is_retired_from_the_manager() {
         Err(StoredResourceActivationError::NotFound { .. })
     );
     assert_eq!(drain(&mut events), (1, 1));
+}
+
+/// One sweep re-reads a bounded batch of rows; successive sweeps reach
+/// every row, and retired rows stop being tracked.
+#[tokio::test]
+async fn the_deletion_sweep_is_bounded_and_rotates() {
+    let fixture = Fixture::new();
+    let mut events = fixture.manager.subscribe_events();
+    let total = RETIRE_SWEEP_BATCH + 5;
+    for index in 0..total {
+        let (resource_id, key) = fixture
+            .store_row("activation.plain", &format!("row-{index}"), &[])
+            .await;
+        fixture.activate(resource_id, &key).await.unwrap();
+        fixture
+            .store
+            .soft_delete(&fixture.scope, &resource_id.to_string())
+            .await
+            .unwrap();
+    }
+    assert_eq!(drain(&mut events), (total, 0));
+
+    fixture
+        .activator
+        .retire_deleted(&fixture.context(false))
+        .await;
+    assert_eq!(
+        drain(&mut events),
+        (0, RETIRE_SWEEP_BATCH),
+        "one batch per sweep"
+    );
+    assert_eq!(fixture.activator.rows.len(), total - RETIRE_SWEEP_BATCH);
+
+    fixture
+        .activator
+        .retire_deleted(&fixture.context(false))
+        .await;
+    assert_eq!(drain(&mut events), (0, total - RETIRE_SWEEP_BATCH));
+    assert!(
+        fixture.activator.rows.is_empty(),
+        "retired rows are no longer tracked"
+    );
+}
+
+/// A row whose activation failed before registering leaves no tracking
+/// entry behind once swept.
+#[tokio::test]
+async fn the_sweep_drops_entries_of_failed_activations() {
+    let fixture = Fixture::new();
+    let (resource_id, key) = fixture.store_row("activation.unknown", "a", &[]).await;
+    assert!(fixture.activate(resource_id, &key).await.is_err());
+    assert_eq!(fixture.activator.rows.len(), 1);
+
+    fixture
+        .activator
+        .retire_deleted(&fixture.context(false))
+        .await;
+    assert!(fixture.activator.rows.is_empty());
 }
 
 #[tokio::test]

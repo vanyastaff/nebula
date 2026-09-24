@@ -300,6 +300,10 @@ impl ResourceStatusPublisher {
                 %error,
                 "resource status heartbeat failed"
             );
+            // The worker's lease may lapse before the next heartbeat lands,
+            // expiring what it published; the next tick republishes all of
+            // it instead of trusting a cache of rows that may be gone.
+            published.clear();
             return;
         }
         // Deleted rows go first, so this tick already withdraws their status.

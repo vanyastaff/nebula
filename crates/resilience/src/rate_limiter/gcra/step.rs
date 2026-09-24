@@ -9,9 +9,11 @@ use std::time::Duration;
 
 use super::{Denied, GcraState, Grant, Rate, nanos};
 
-/// The rate a key enforces for one call: the caller's `requested` rate when
-/// the key is idle (nothing booked past `now`), otherwise the stricter of
-/// `requested` and the rate the key has been enforcing.
+/// The rate a key enforces for one call, and its state rebased onto it.
+///
+/// That rate is the caller's `requested` one when the key is idle (nothing
+/// booked past `now`), otherwise the stricter of `requested` and the rate
+/// the key has been enforcing.
 ///
 /// GCRA arithmetic on one TAT assumes one interval, and callers of a shared
 /// key may disagree (two rows of one provider account with different
@@ -19,12 +21,30 @@ use super::{Denied, GcraState, Grant, Rate, nanos};
 /// while any booking is outstanding never admits more than either caller
 /// allows; an idle key forgets, so a loosened limit takes effect as soon as
 /// the key drains.
+///
+/// When the interval tightens, the time already booked past `now` counts
+/// the outstanding permits at the old interval; it is stretched to the new
+/// one (rounded up), so the stricter rate also covers what was booked under
+/// the looser one. A rebase only ever moves the schedule later.
 #[must_use]
-pub fn effective_rate(state: GcraState, now: u64, stored: Option<&Rate>, requested: &Rate) -> Rate {
-    match stored {
-        Some(stored) if state.tat > now => stored.stricter(requested),
-        _ => *requested,
+pub fn enforce(
+    state: GcraState,
+    now: u64,
+    stored: Option<&Rate>,
+    requested: &Rate,
+) -> (Rate, GcraState) {
+    let Some(stored) = stored.filter(|_| state.tat > now) else {
+        return (*requested, state);
+    };
+    let rate = stored.stricter(requested);
+    if rate.emission_nanos() <= stored.emission_nanos() {
+        return (rate, state);
     }
+    let booked = u128::from(state.tat - now);
+    let stretched =
+        (booked * u128::from(rate.emission_nanos())).div_ceil(u128::from(stored.emission_nanos()));
+    let tat = now.saturating_add(u64::try_from(stretched).unwrap_or(u64::MAX));
+    (rate, GcraState { tat, ..state })
 }
 
 /// Books `permits` if their slot is at most `max_wait` away.

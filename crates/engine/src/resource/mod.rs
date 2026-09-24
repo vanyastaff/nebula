@@ -14,7 +14,7 @@ use std::sync::Arc;
 pub mod activation;
 
 pub use activation::{
-    ActivatedResource, ActivationContext, ActiveResourceRow, RowState,
+    ActivatedResource, ActivationContext, ActiveResourceRow, RETIRE_SWEEP_BATCH, RowState,
     StoredResourceActivationError, StoredResourceActivator,
 };
 pub use nebula_resource::{

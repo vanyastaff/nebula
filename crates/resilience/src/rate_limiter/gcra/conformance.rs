@@ -186,6 +186,32 @@ pub async fn a_busy_key_enforces_the_stricter_rate<S: LimitStore>(store: &S) {
     );
 }
 
+/// A busy key tightening its interval stretches what was booked under the
+/// looser one: the stricter rate also covers bookings made before it.
+pub async fn tightening_a_busy_key_rebases_its_schedule<S: LimitStore>(store: &S) {
+    let key = fresh_key("tighten");
+    // One permit per hour is booked; a caller then requires one per day.
+    granted(
+        store,
+        &key,
+        &hourly(1),
+        ReserveRequest::new(1, Duration::ZERO),
+    )
+    .await;
+    let daily = Rate::new(NonZeroU32::MIN, 24 * HOUR)
+        .unwrap_or_else(|error| panic!("test rate is valid: {error}"));
+    let retry_after =
+        match reserve(store, &key, &daily, ReserveRequest::new(1, Duration::ZERO)).await {
+            Err(Denied::Later { retry_after }) => retry_after,
+            other => panic!("expected a refusal with a retry_after, got {other:?}"),
+        };
+    assert_about(
+        retry_after,
+        24 * HOUR,
+        "the hour booked counts as a day's interval under the stricter rate",
+    );
+}
+
 /// Concurrent callers never get more than the burst between them.
 pub async fn concurrent_callers_never_exceed_the_burst<S: LimitStore + 'static>(store: Arc<S>) {
     let key = fresh_key("concurrent");
@@ -224,5 +250,6 @@ pub async fn run_all<S: LimitStore + 'static>(store: Arc<S>) {
     cancel_refunds_only_the_tail_once(&*store).await;
     repeated_reservation_id_returns_the_original_grant(&*store).await;
     a_busy_key_enforces_the_stricter_rate(&*store).await;
+    tightening_a_busy_key_rebases_its_schedule(&*store).await;
     concurrent_callers_never_exceed_the_burst(store).await;
 }

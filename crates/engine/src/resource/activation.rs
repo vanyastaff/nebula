@@ -40,6 +40,11 @@ use tokio_util::sync::CancellationToken;
 /// resolution and registration together).
 pub const DEFAULT_ACTIVATION_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Rows one [`StoredResourceActivator::retire_deleted`] sweep re-reads: the
+/// sweep runs on a status tick, so its storage cost stays bounded however
+/// many rows are tracked; successive sweeps rotate through all of them.
+pub const RETIRE_SWEEP_BATCH: usize = 32;
+
 /// A stored row materialized into the manager: the registry row an acquire
 /// must address to reach it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -181,6 +186,13 @@ pub enum RowState {
 struct ActiveRow {
     version: u64,
     activated: ActivatedResource,
+    /// `(credential, slot)` pairs this registration bound into the rotation
+    /// index, released when a re-registration keeps the same identity.
+    #[cfg_attr(
+        not(feature = "rotation"),
+        expect(dead_code, reason = "only the rotation index reads the bindings")
+    )]
+    bindings: Vec<(CredentialId, String)>,
 }
 
 type RowSlot = Arc<tokio::sync::Mutex<Option<ActiveRow>>>;
@@ -191,6 +203,8 @@ pub struct StoredResourceActivator {
     timeout: Duration,
     rows: DashMap<(Scope, ResourceId), RowSlot>,
     limit_key_secret: Arc<[u8; 32]>,
+    /// Where the next [`retire_deleted`](Self::retire_deleted) sweep starts.
+    sweep_cursor: std::sync::atomic::AtomicUsize,
 }
 
 type HmacSha256 = hmac::Hmac<sha2::Sha256>;
@@ -261,6 +275,7 @@ impl StoredResourceActivator {
             timeout: DEFAULT_ACTIVATION_TIMEOUT,
             rows: DashMap::new(),
             limit_key_secret: Arc::new(DEFAULT_LIMIT_KEY_SECRET),
+            sweep_cursor: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -372,52 +387,81 @@ impl StoredResourceActivator {
         }
     }
 
-    /// Retires every active row whose stored definition was deleted.
+    /// Retires active rows whose stored definition was deleted.
     ///
-    /// Rows an activation holds right now are skipped (that activation sees
-    /// the deletion itself); a storage read that fails leaves the row as it
-    /// is until the next sweep.
+    /// Re-reads at most [`RETIRE_SWEEP_BATCH`] rows per call, continuing
+    /// where the previous sweep stopped, so a deletion is noticed within a
+    /// bounded number of sweeps. Rows an activation holds right now are
+    /// skipped (that activation sees the deletion itself); a storage read
+    /// that fails leaves the row as it is until a later sweep. Tracking
+    /// entries left empty (a retired row, or an activation that failed
+    /// before registering) are dropped, so they do not accumulate.
     pub async fn retire_deleted(&self, context: &ActivationContext<'_>) {
+        use std::sync::atomic::Ordering;
+
         let keys: Vec<(Scope, ResourceId)> =
             self.rows.iter().map(|entry| entry.key().clone()).collect();
-        for (scope, resource_id) in keys {
-            let Some(slot) = self
-                .rows
-                .get(&(scope.clone(), resource_id))
-                .map(|entry| Arc::clone(entry.value()))
-            else {
-                continue;
-            };
-            let Ok(mut active) = slot.try_lock() else {
-                continue;
-            };
-            if active.is_none() {
-                continue;
-            }
-            let row = match self.store.get(&scope, &resource_id.to_string()).await {
-                Ok(row) => row,
-                Err(error) => {
-                    tracing::debug!(
-                        target: "nebula_engine::resource_activation",
-                        %resource_id,
-                        %error,
-                        "stored resource could not be re-read; kept until the next sweep"
-                    );
-                    continue;
-                },
-            };
-            if row.is_some_and(|row| row.deleted_at.is_none()) {
-                continue;
-            }
-            if let Some(stale) = active.take() {
-                retire(context, &stale.activated);
+        if keys.is_empty() {
+            return;
+        }
+        let start = self
+            .sweep_cursor
+            .fetch_add(RETIRE_SWEEP_BATCH, Ordering::Relaxed)
+            % keys.len();
+        let batch = keys
+            .iter()
+            .cycle()
+            .skip(start)
+            .take(RETIRE_SWEEP_BATCH.min(keys.len()));
+        for key in batch {
+            self.retire_if_deleted(context, key).await;
+            self.reap_if_empty(key);
+        }
+    }
+
+    async fn retire_if_deleted(&self, context: &ActivationContext<'_>, key: &(Scope, ResourceId)) {
+        let Some(slot) = self.rows.get(key).map(|entry| Arc::clone(entry.value())) else {
+            return;
+        };
+        let Ok(mut active) = slot.try_lock() else {
+            return;
+        };
+        if active.is_none() {
+            return;
+        }
+        let (scope, resource_id) = key;
+        let row = match self.store.get(scope, &resource_id.to_string()).await {
+            Ok(row) => row,
+            Err(error) => {
                 tracing::debug!(
                     target: "nebula_engine::resource_activation",
                     %resource_id,
-                    "deleted stored resource retired"
+                    %error,
+                    "stored resource could not be re-read; kept until a later sweep"
                 );
-            }
+                return;
+            },
+        };
+        if row.is_some_and(|row| row.deleted_at.is_none()) {
+            return;
         }
+        if let Some(stale) = active.take() {
+            retire(context, &stale.activated);
+            tracing::debug!(
+                target: "nebula_engine::resource_activation",
+                %resource_id,
+                "deleted stored resource retired"
+            );
+        }
+    }
+
+    /// Drops `key`'s tracking entry if it holds no registration and nothing
+    /// else holds it. An activation clones the slot under the same map
+    /// lock this check runs under, so a concurrent activation keeps it.
+    fn reap_if_empty(&self, key: &(Scope, ResourceId)) {
+        self.rows.remove_if(key, |_, slot| {
+            Arc::strong_count(slot) == 1 && slot.try_lock().is_ok_and(|active| active.is_none())
+        });
     }
 
     async fn refresh(
@@ -454,15 +498,23 @@ impl StoredResourceActivator {
             return Ok(current.activated.clone());
         }
 
-        let activated = register_row(context, scope, &row, &self.limit_key_secret, cancel).await?;
+        let (activated, bindings) =
+            register_row(context, scope, &row, &self.limit_key_secret, cancel).await?;
         let previous = active.replace(ActiveRow {
             version: row.version,
             activated: activated.clone(),
+            bindings,
         });
-        // Same identity re-registers in place; a changed binding set leaves
-        // the old registry row behind unless it is retired here.
-        if let Some(previous) = previous.filter(|previous| previous.activated != activated) {
-            retire(context, &previous.activated);
+        // Same identity re-registers in place, but its credentials may have
+        // changed: the previous registration's rotation bindings are
+        // released. A changed identity leaves the old registry row behind
+        // unless it is retired here.
+        if let Some(previous) = previous {
+            if previous.activated == activated {
+                release_bindings(context, &previous);
+            } else {
+                retire(context, &previous.activated);
+            }
         }
         tracing::debug!(
             target: "nebula_engine::resource_activation",
@@ -481,7 +533,7 @@ async fn register_row(
     row: &ResourceRow,
     limit_key_secret: &[u8; 32],
     cancel: &CancellationToken,
-) -> Result<ActivatedResource, StoredResourceActivationError> {
+) -> Result<(ActivatedResource, Vec<(CredentialId, String)>), StoredResourceActivationError> {
     let workspace = WorkspaceId::parse(&scope.workspace_id)
         .map_err(|_| StoredResourceActivationError::InvalidTenantScope)?;
     let factory = context.registrars.factory(&row.kind).ok_or_else(|| {
@@ -554,6 +606,14 @@ async fn register_row(
 
     let scope_level = ScopeLevel::Workspace(workspace);
     let limit_key = account_limit_key(limit_key_secret, scope, &slot_bindings);
+    let bindings = slot_bindings
+        .iter()
+        .filter_map(|binding| {
+            binding
+                .credential_id
+                .map(|id| (id, binding.slot_name.clone()))
+        })
+        .collect();
     let request = RegisterRequest {
         config: ResourceConfigInput::data(row.config.clone()),
         expr_engine: context.expr_engine,
@@ -582,11 +642,32 @@ async fn register_row(
         .register(&row.kind, context.manager, request)
         .await;
     let outcome = outcome.map_err(StoredResourceActivationError::Register)?;
-    Ok(ActivatedResource {
+    let activated = ActivatedResource {
         resource_key: outcome.resource_key,
         scope: scope_level,
         slot_identity: outcome.slot_identity,
-    })
+    };
+    Ok((activated, bindings))
+}
+
+/// Releases the rotation-index references `row`'s registration took, one
+/// per bound credential; a credential the new registration bound again
+/// keeps the reference that registration took.
+fn release_bindings(context: &ActivationContext<'_>, row: &ActiveRow) {
+    #[cfg(feature = "rotation")]
+    if let Some(fanout) = context.fanout {
+        for (credential_id, slot_name) in &row.bindings {
+            let bind = nebula_resource::Bind {
+                resource_key: row.activated.resource_key.clone(),
+                scope: row.activated.scope.clone(),
+                slot_name: slot_name.clone(),
+                slot_identity: row.activated.slot_identity.clone(),
+            };
+            fanout.unbind_staged_entry(credential_id, &bind);
+        }
+    }
+    #[cfg(not(feature = "rotation"))]
+    let _ = (context, row);
 }
 
 fn retire(context: &ActivationContext<'_>, activated: &ActivatedResource) {
