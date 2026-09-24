@@ -11,6 +11,79 @@ These event buses carry ephemeral observations. Delivery may be lost, duplicated
 or reordered; fan-out is not durable revoke authority or an audit log. Persisted
 credential state and its owning runtime remain authoritative.
 
+
+## Material replacement recovery
+
+With `spawn_with_resolver`, `MaterialReplaced` queues an owner-qualified durable
+projection outside the event receive loop, while `Refreshed` requests a coalesced
+durable scan. On startup and every 30 seconds, the driver reconciles live slot metadata
+only when the same credential, slot and exact resource row has a published reverse-index
+binding. A `SlotBinding` without a credential ID therefore remains explicitly opted out
+of rotation even if its slot contains projection metadata. Direct material dispatch and
+reconciliation share one limit of 32 concurrent
+credential projections; the permit is released after installation and hook admission,
+before hook observation. Together, these paths recover replacement observations lost before
+subscription, during subscriber lag, or across driver restart. Ordinary refresh hints
+are coalesced by credential ID and scanned independently, while startup, periodic,
+or bounded-queue overflow requests a full scan. At most one material scan runs at a time.
+Queue-rejected revoke admissions run in a separate periodic task, so a batch of drain or
+hook-observation budgets cannot delay unrelated material projection. Slow projections do
+not block credential or lease revoke reception.
+
+Every published rotation binding retains its durable owner and credential key.
+Material replacement context is retained in the reverse index until projection
+succeeds. Its key space is bounded by live credential bindings, so queue overflow
+cannot lose the owner and key needed to recover a bound but still-empty slot.
+Startup and periodic scans enumerate those bindings directly, including generation-zero
+empty slots and metadata-cleared slots. A live reread installs only into an initially
+empty or matching projection; a tombstone can still taint a metadata-cleared bound row.
+
+If an owner-qualified reread finds a durable credential tombstone, reconciliation
+uses the same terminal path as a revoke observation: it synchronously taints the
+exact registered resource row before awaiting its drain and revoke hook. A lost
+`Revoked` event therefore cannot leave the old credential-backed resource acquirable.
+Physical absence and cross-owner lookups remain indistinguishable to public callers.
+
+The production projection stores its credential ID, contract key and owner scope
+alongside the slot's accepted material epoch. Owner metadata excludes interactive
+authentication bindings. Derived credential slots preserve
+this metadata. A published rotation binding remains the participation authority.
+Hand-written `HasCredentialSlots` implementations must provide
+`supports_credential_slot_projection` for each participating slot,
+`credential_slot_projection` (an atomic generation/metadata snapshot), and
+`install_credential_slot_at_generation` plus
+`fence_credential_slot_at_generation`, forwarding to the matching `SlotCell`
+ports, to participate in reconciliation. Registration rejects a rotation binding when
+that complete projection contract is absent. Metadata without an owner cannot authorize a
+reread and is reported as a failed reconciliation row; metadata without a published
+binding is skipped as an opt-out.
+
+Each projection has a 30-second deadline and a cancellation token cancelled on
+timeout or driver shutdown. The target registration is pinned before projection;
+the slot also rejects another credential or owner even at a higher epoch. The
+observed slot generation is checked under the writer lock before installation
+or a tombstone-driven taint,
+so a concurrent `store`, `take`, or other transition fences the in-flight
+projection. Superseded projections report `ProjectionChanged` without mutation. After I/O,
+the exact registration is revalidated under the manager lifecycle admission lock.
+Validation, slot installation and synchronous hook admission share this lock with
+revoke, row replacement, removal and shutdown; none of these sections awaits
+provider I/O or hook completion. Retired or tainted rows reject refresh admission
+with a typed error, failure metric and lifecycle event. Terminal slot revoke clears
+projection routing metadata, and scans skip tainted rows, so neither is repeatedly
+resolved by startup or periodic reconciliation.
+Only a newer epoch installs a guard. Hook admission is tracked separately: queue rejection
+leaves that installed epoch and slot generation pending, so a later scan retries
+admission only while the same projection is live. Unqualified writes invalidate
+the pending attempt. Acceptance consumes the pending state before any await, even if the hook later fails or its
+observer is cancelled. Repeated scans are no-ops for unchanged, admitted epochs,
+including duplicate refresh events arriving before or after a scan. Unqualified
+`store` and successful `install_at_material_epoch` writes clear
+projection metadata so later scans cannot associate their values with an old
+credential. Completed, timed-out, deferred and abandoned hook outcomes stay
+distinct in the fan-out result. Reconciliation does not retry accepted hooks or
+turn the event bus into durable command authority.
+
 ---
 
 ## Refresh sequence

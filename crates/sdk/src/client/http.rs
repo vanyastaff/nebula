@@ -17,10 +17,11 @@ use serde::{Serialize, de::DeserializeOwned};
 
 use super::credential::v1::{
     ContinueResolveCredentialRequest, ContinueResolveCredentialResponse, CreateCredentialRequest,
-    CreateCredentialResponse, Credential, CredentialProblem, DeleteCredentialResponse,
-    GetCredentialResponse, ListCredentialsRequest, ListCredentialsResponse, ProblemDetails,
-    ReauthorizeCredentialRequest, ReauthorizeCredentialResponse, ResolveCredentialRequest,
-    ResolveCredentialResponse, RetryAfter, UpdateCredentialRequest,
+    CreateCredentialResponse, Credential, CredentialProblem, CredentialProblemKind,
+    DeleteCredentialResponse, GetCredentialResponse, ListCredentialsRequest,
+    ListCredentialsResponse, ProblemDetails, ReauthorizeCredentialRequest,
+    ReauthorizeCredentialResponse, ResolveCredentialRequest, ResolveCredentialResponse, RetryAfter,
+    UpdateCredentialRequest,
 };
 
 /// Bearer authority used only in the Authorization header. Debug is redacted.
@@ -452,11 +453,16 @@ impl CredentialClient {
             && let Ok(problem) = serde_json::from_slice::<ProblemDetails>(&body)
             && problem.status == status.as_u16()
         {
-            failure.kind = HttpErrorKind::Problem;
-            failure.problem = Some(Box::new(CredentialProblem {
+            let problem = CredentialProblem {
                 problem,
                 retry_after: failure.retry_after,
-            }));
+            };
+            failure.kind = if problem.credential_kind() == CredentialProblemKind::OutcomeUnknown {
+                HttpErrorKind::OutcomeUnknown
+            } else {
+                HttpErrorKind::Problem
+            };
+            failure.problem = Some(Box::new(problem));
         }
         Err(failure)
     }

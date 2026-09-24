@@ -869,12 +869,15 @@ fn interpret_acquisition_response(
         .transpose()?;
     let scopes = parse_granted_scopes(body.scope.as_ref(), acquisition.requested_scopes)?;
 
-    let refresh_token = match (body.refresh_token.take(), acquisition.grant_type) {
-        (Some(refresh_token), _) => Some(refresh_token),
-        (None, GrantType::ClientCredentials) => {
+    let refresh_token = match acquisition.grant_type {
+        GrantType::ClientCredentials => {
+            // Client-credentials renewal always repeats the same grant. Some
+            // provider extensions return a refresh_token here despite RFC 6749;
+            // retaining it would silently switch the next renewal to the
+            // refresh-token flow and change invalid_grant/reauth semantics.
             Some(SecretString::new(CLIENT_CREDENTIALS_REFRESH_MARKER))
         },
-        (None, GrantType::AuthorizationCode) => None,
+        GrantType::AuthorizationCode => body.refresh_token.take(),
     };
 
     Ok(OAuth2State {

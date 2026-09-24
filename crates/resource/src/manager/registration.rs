@@ -12,7 +12,7 @@ use super::{Manager, RegistrationSpec};
 use crate::{
     error::Error,
     events::{ResourceEvent, RetirementOrigin},
-    factory::{ResourceConfigInput, ResourceConfigSource},
+    factory::{RegistrationBindings, ResourceConfigInput, ResourceConfigSource},
     recovery::gate::RecoveryGate,
     reload::ReloadOutcome,
     resource::Provider,
@@ -147,7 +147,22 @@ impl Manager {
         R: Provider,
         R::Topology: Topology<R>,
     {
+        self.register_with_staged_bindings(spec, RegistrationBindings::empty())
+    }
+
+    fn register_with_staged_bindings<R>(
+        &self,
+        spec: RegistrationSpec<R>,
+        registration_bindings: RegistrationBindings<'_>,
+    ) -> Result<(), Error>
+    where
+        R: Provider,
+        R::Topology: Topology<R>,
+    {
         use crate::resource::ResourceConfig as _;
+
+        #[cfg(not(feature = "rotation"))]
+        let _ = registration_bindings;
 
         self.shutdown_guard()?;
 
@@ -228,6 +243,7 @@ impl Manager {
         }
 
         let managed = Arc::new(ManagedResource {
+            pending_projection_hooks: Default::default(),
             resource,
             config: arc_swap::ArcSwap::from_pointee(config),
             topology,
@@ -256,10 +272,26 @@ impl Manager {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.shutdown_guard()?;
+        #[cfg(feature = "rotation")]
+        if let Some(index) = registration_bindings.rotation_index()
+            && !registration_bindings.staged_entries().is_empty()
+            && !registration_bindings
+                .authoritative_proof()
+                .is_some_and(|proof| index.validates_authoritative_registration(self, proof))
+        {
+            return Err(Error::permanent(
+                "rotation binding lost authoritative credential reconciliation before publication",
+            )
+            .with_resource_key(key));
+        }
         // New rows require no retirement capacity. For an exact-identity
         // replacement, the registry invokes this admission callback before
         // mutation so backpressure leaves the old owner installed and unfenced.
         let type_id = std::any::TypeId::of::<ManagedResource<R>>();
+        #[cfg(feature = "rotation")]
+        let rotation_identity = (scope.clone(), slot_identity.clone());
+        #[cfg(feature = "rotation")]
+        let rotation_indexes = self.attached_rotation_indexes();
         let registration = self.registry.register_admitted(
             key.clone(),
             type_id,
@@ -273,13 +305,54 @@ impl Manager {
             admission: permit,
         } = registration
         {
+            #[cfg(feature = "rotation")]
+            for index in &rotation_indexes {
+                index.unbind_replaced_resource_identity(
+                    &key,
+                    &rotation_identity.0,
+                    &rotation_identity.1,
+                    &displaced,
+                );
+            }
             self.retire_resource(displaced, permit, RetirementOrigin::Replacement);
         }
+        #[cfg(feature = "rotation")]
+        let mut material_reconciliation_pending = false;
+        #[cfg(feature = "rotation")]
+        if let Some(index) = registration_bindings.rotation_index() {
+            for (credential_id, bind) in registration_bindings.staged_entries() {
+                if index.publish_staged_entry(credential_id, bind) {
+                    let managed_handle: Arc<dyn crate::registry::ManagedHandle> = managed.clone();
+                    match self.taint_under_admission(&key, &bind.slot_name, managed_handle) {
+                        Ok(tainted) => index.remember_pending_revoke(
+                            *credential_id,
+                            key.clone(),
+                            &bind.slot_name,
+                            tainted.managed_handle(),
+                        ),
+                        Err(error) => tracing::warn!(
+                            credential_id = %credential_id,
+                            resource.key = %key,
+                            slot = %bind.slot_name,
+                            error.kind = ?error.kind(),
+                            "staged credential revoke could not taint the published resource"
+                        ),
+                    }
+                }
+                material_reconciliation_pending |=
+                    index.material_publication_requires_reconciliation(credential_id);
+            }
+        }
 
-        // #387: everything below this point is a single funnel — the
-        // resource is installed, so advance its phase from `Initializing`
-        // to `Ready`. Failures are surfaced by `config.validate()` above,
-        // which aborts before we reach this line.
+        // #387: everything below this point is a single funnel. A row whose
+        // material changed before its first staged bind stays unavailable in
+        // `Initializing`; authoritative reconciliation advances it to Ready
+        // only after installing (or proving it already has) current material.
+        #[cfg(feature = "rotation")]
+        if !material_reconciliation_pending {
+            managed.set_phase(crate::state::ResourcePhase::Ready);
+        }
+        #[cfg(not(feature = "rotation"))]
         managed.set_phase(crate::state::ResourcePhase::Ready);
 
         // Start the background idle/lifetime reaper for pools that expire
@@ -543,6 +616,7 @@ impl Manager {
         topology: R::Topology,
         recovery_gate: Option<Arc<RecoveryGate>>,
         expected_slot_identity: &crate::dedup::SlotIdentity,
+        registration_bindings: RegistrationBindings<'_>,
     ) -> Result<crate::dedup::SlotIdentity, Error>
     where
         R: Provider + nebula_core::DeclaresDependencies,
@@ -693,14 +767,17 @@ impl Manager {
             ?slot_identity,
             "all pre-register checks passed; dispatching into typed register"
         );
-        self.register(RegistrationSpec {
-            resource,
-            config,
-            scope,
-            slot_identity: slot_identity.clone(),
-            topology,
-            recovery_gate,
-        })?;
+        self.register_with_staged_bindings(
+            RegistrationSpec {
+                resource,
+                config,
+                scope,
+                slot_identity: slot_identity.clone(),
+                topology,
+                recovery_gate,
+            },
+            registration_bindings,
+        )?;
         Ok(slot_identity)
     }
 
@@ -847,6 +924,10 @@ impl Manager {
             !removed.is_empty(),
             "admission-locked key disappeared before removal"
         );
+        #[cfg(feature = "rotation")]
+        for index in self.attached_rotation_indexes() {
+            index.unbind_removed_resource_key(key, &removed);
+        }
         let retirements = removed
             .into_iter()
             .map(|managed| {
@@ -907,6 +988,10 @@ impl Manager {
             drop(retirement_permit);
             return Err(Error::not_found(key));
         };
+        #[cfg(feature = "rotation")]
+        for index in self.attached_rotation_indexes() {
+            index.unbind_removed_resource_identity(key, scope, slot_identity, &removed);
+        }
         self.retire_resource(removed, retirement_permit, RetirementOrigin::Removal);
 
         if let Some(m) = &self.metrics {

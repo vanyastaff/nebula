@@ -653,3 +653,44 @@ async fn credentialed_pooled_resource_registers() {
     })
     .expect("credentialed pooled registration must succeed (nudge only warns)");
 }
+
+#[test]
+fn derived_projection_install_fences_unqualified_slot_transition() {
+    let resource = TwoSlotDerived::default();
+    let cid = nebula_credential::CredentialId::new();
+    let guard = |epoch| {
+        nebula_credential::ErasedCredentialGuard::from_typed(
+            CredentialGuard::new(FakeCred(99)),
+            nebula_credential::CredentialGuardMetadata::new(
+                cid,
+                "epochfold.fake".parse().expect("key"),
+                epoch,
+                epoch,
+            ),
+        )
+    };
+    let (generation, metadata) = resource
+        .credential_slot_projection("slot_a")
+        .expect("declared slot");
+    assert_eq!(generation, 0);
+    assert!(metadata.is_none());
+    assert_eq!(
+        resource
+            .install_credential_slot_at_generation("slot_a", guard(1), generation)
+            .expect("first installation"),
+        nebula_resource::SlotUpdate::Installed
+    );
+    let (generation, metadata) = resource
+        .credential_slot_projection("slot_a")
+        .expect("live projection");
+    assert_eq!(metadata.expect("identity").credential_id(), cid);
+    resource
+        .slot_a
+        .store(Arc::new(CredentialGuard::new(FakeCred(7))));
+    assert_eq!(
+        resource.install_credential_slot_at_generation("slot_a", guard(2), generation),
+        Err(nebula_resource::SlotInstallError::ProjectionChanged)
+    );
+    assert_eq!(resource.slot_a.load().expect("manual replacement").0, 7);
+    assert!(resource.credential_slot_projection("unknown").is_none());
+}

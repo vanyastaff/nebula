@@ -40,7 +40,7 @@ pub enum ResolveResponse<S> {
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum ExecutorError {
-    /// Credential operation timed out.
+    /// A replay-safe polling operation timed out.
     #[error("credential operation timed out after {timeout:?}")]
     Timeout {
         /// Timeout duration that was exceeded.
@@ -68,13 +68,23 @@ pub enum ExecutorError {
     /// pending state had been consumed.
     #[error("one-shot credential continuation returned a polling outcome")]
     InvalidContinuationOutcome,
+    /// An erased provider-capable operation timed out after dispatch began,
+    /// so provider completion cannot be ruled out.
+    #[error("credential provider outcome is unknown")]
+    ProviderOutcomeUnknown,
+    /// Provider-capable work returned an exact result, but the following
+    /// pending-state finalization failed.
+    #[error("credential acquisition pending-state finalization failed")]
+    PostProviderPendingFinalization(#[source] PendingStoreError),
 }
 
 /// Execute base credential resolution with a timeout.
 ///
 /// Properties have already crossed the canonical schema pipeline and trusted
 /// typed decoder. This executor neither reconstructs a schema nor fabricates a
-/// second proof.
+/// second proof. Once the erased resolver is entered, the framework cannot
+/// prove that a timeout happened before provider work, so timeout is
+/// [`ExecutorError::ProviderOutcomeUnknown`].
 #[tracing::instrument(name = "credential.execute.resolve", skip_all, fields(credential_key = C::KEY))]
 pub async fn execute_resolve<C>(
     properties: &C::Properties,
@@ -85,9 +95,7 @@ where
 {
     let result = tokio::time::timeout(CREDENTIAL_TIMEOUT, C::resolve(properties, ctx))
         .await
-        .map_err(|_| ExecutorError::Timeout {
-            timeout: CREDENTIAL_TIMEOUT,
-        })?
+        .map_err(|_| ExecutorError::ProviderOutcomeUnknown)?
         .map_err(ExecutorError::Credential)?;
 
     match result {
@@ -102,7 +110,9 @@ where
 ///
 /// Returns [`ExecutorError::MissingSessionId`] before provider code runs when
 /// the context cannot bind pending state to an authenticated session. Other
-/// failures preserve their typed credential or pending-store category.
+/// failures preserve their typed credential or phase-aware pending-store
+/// category. A timeout after entering `Interactive::begin` is outcome-unknown
+/// because the erased contract carries no local-only proof.
 pub async fn execute_begin<C, S>(
     properties: &C::Properties,
     ctx: &CredentialContext,
@@ -135,9 +145,7 @@ where
     let session_id = ctx.session_id().ok_or(ExecutorError::MissingSessionId)?;
     let result = tokio::time::timeout(CREDENTIAL_TIMEOUT, C::begin(properties, ctx))
         .await
-        .map_err(|_| ExecutorError::Timeout {
-            timeout: CREDENTIAL_TIMEOUT,
-        })?
+        .map_err(|_| ExecutorError::ProviderOutcomeUnknown)?
         .map_err(ExecutorError::Credential)?;
 
     match result {
@@ -151,7 +159,7 @@ where
                     AcquisitionPending::new(intent, state),
                 )
                 .await
-                .map_err(ExecutorError::PendingStore)?;
+                .map_err(ExecutorError::PostProviderPendingFinalization)?;
             Ok(ResolveResponse::Pending { token, interaction })
         },
         ResolveResult::Retry { after } => Ok(ResolveResponse::Retry { after, token: None }),
@@ -239,7 +247,7 @@ where
                 timeout: CREDENTIAL_TIMEOUT,
             }
         } else {
-            ExecutorError::Credential(CredentialError::OutcomeUnknown)
+            ExecutorError::ProviderOutcomeUnknown
         }
     })?
     .map_err(ExecutorError::Credential)?;
@@ -250,15 +258,17 @@ where
                 let _consumed: AcquisitionPending<<C as Interactive>::Pending> = pending_store
                     .consume(C::KEY, token, ctx.owner_id(), session_id)
                     .await
-                    .map_err(ExecutorError::PendingStore)?;
+                    .map_err(ExecutorError::PostProviderPendingFinalization)?;
             }
             Ok(ResolveResponse::Complete(state))
         },
         ResolveResult::Pending { state, interaction } => {
             let intent = pending.intent_for_next(&expected_intent).ok_or_else(|| {
-                ExecutorError::PendingStore(PendingStoreError::ValidationFailed {
-                    reason: "legacy pending state cannot represent reauthorization".to_owned(),
-                })
+                ExecutorError::PostProviderPendingFinalization(
+                    PendingStoreError::ValidationFailed {
+                        reason: "legacy pending state cannot represent reauthorization".to_owned(),
+                    },
+                )
             })?;
             let next_token = pending_store
                 .put(
@@ -268,7 +278,7 @@ where
                     AcquisitionPending::new(intent, state),
                 )
                 .await
-                .map_err(ExecutorError::PendingStore)?;
+                .map_err(ExecutorError::PostProviderPendingFinalization)?;
 
             if polling
                 && let Err(err) = pending_store
@@ -285,7 +295,7 @@ where
                 // error. Delete it to avoid a permanent store leak.
                 // The delete error (if any) is subordinate to the primary error.
                 let _ = pending_store.delete(&next_token).await;
-                return Err(ExecutorError::PendingStore(err));
+                return Err(ExecutorError::PostProviderPendingFinalization(err));
             }
 
             Ok(ResolveResponse::Pending {

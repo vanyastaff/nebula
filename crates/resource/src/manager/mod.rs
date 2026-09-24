@@ -412,7 +412,11 @@ pub struct ResourceHealthSnapshot {
 /// whenever the resolved slot identity is known.
 pub struct Manager {
     pub(super) registry: Registry,
-    /// Serializes registry commits and terminal snapshots; never held across await.
+    #[cfg(feature = "rotation")]
+    rotation_indexes:
+        std::sync::Mutex<Vec<std::sync::Weak<crate::credential_fanout::ResourceFanoutIndex>>>,
+    /// Serializes registry commits, credential admission/revoke and terminal snapshots.
+    /// Never held across await.
     pub(super) admission: std::sync::Mutex<()>,
     pub(super) cancel: CancellationToken,
     pub(super) metrics: Option<ResourceOpsMetrics>,
@@ -494,6 +498,8 @@ impl Manager {
         ));
         Self {
             registry: Registry::new(),
+            #[cfg(feature = "rotation")]
+            rotation_indexes: std::sync::Mutex::new(Vec::new()),
             admission: std::sync::Mutex::new(()),
             cancel,
             metrics,
@@ -508,6 +514,48 @@ impl Manager {
             lifecycle: None,
             acquire_slow_threshold,
         }
+    }
+
+    /// Wires a production credential reverse index into resource retirement.
+    ///
+    /// Removal visits every distinct live weak reference to delete exact
+    /// routing rows while it still holds lifecycle admission. The manager
+    /// does not own an index and therefore cannot extend a rotation driver's
+    /// lifetime.
+    #[cfg(feature = "rotation")]
+    pub fn attach_rotation_index(
+        &self,
+        index: &Arc<crate::credential_fanout::ResourceFanoutIndex>,
+    ) {
+        let mut indexes = self
+            .rotation_indexes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        indexes.retain(|attached| attached.strong_count() != 0);
+        if indexes
+            .iter()
+            .filter_map(std::sync::Weak::upgrade)
+            .any(|attached| Arc::ptr_eq(&attached, index))
+        {
+            return;
+        }
+        indexes.push(Arc::downgrade(index));
+    }
+
+    #[cfg(feature = "rotation")]
+    pub(super) fn attached_rotation_indexes(
+        &self,
+    ) -> Vec<Arc<crate::credential_fanout::ResourceFanoutIndex>> {
+        let mut indexes = self
+            .rotation_indexes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let live: Vec<_> = indexes
+            .iter()
+            .filter_map(std::sync::Weak::upgrade)
+            .collect();
+        indexes.retain(|attached| attached.strong_count() != 0);
+        live
     }
 
     /// One-time, process-wide honesty check for `panic = "abort"` builds.
@@ -929,3 +977,6 @@ impl Drop for InFlightCounter {
 
 #[cfg(test)]
 mod shutdown_post_count_race_tests;
+
+#[cfg(test)]
+mod projection_admission_tests;

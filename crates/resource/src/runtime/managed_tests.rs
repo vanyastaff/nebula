@@ -131,6 +131,7 @@ fn managed(resource: Mock, config: PoolConfig) -> Arc<ManagedResource<Mock>> {
     let (rq, _handle) = ReleaseQueue::new(1);
     let topology = Pooled::<Mock>::new(config, 0);
     Arc::new(ManagedResource {
+        pending_projection_hooks: Default::default(),
         resource,
         config: ArcSwap::from_pointee(PoolCfg),
         topology,

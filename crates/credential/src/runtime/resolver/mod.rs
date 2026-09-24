@@ -363,7 +363,7 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
     /// Refresh always goes through the two-tier
     /// [`RefreshCoordinator::refresh_coalesced`]: the persistence selector
     /// carries a typed [`CredentialId`], so there is no legacy string-id bypass.
-    /// `CoalescedByOtherReplica` is success — caller re-reads state.
+    /// Coalescing requires an authoritative re-read before classifying the result.
     pub async fn resolve_with_refresh<C>(
         &self,
         selector: &CredentialSelector,
@@ -374,103 +374,128 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
         C: Refreshable + CredentialLifecycle,
         C::State: StateWireFingerprint,
     {
-        self.ensure_source_wired()?;
-        let mut reevaluation = 0;
-        loop {
-            let credential_id = selector.credential_id();
-            let credential_id_text = credential_id.to_string();
-            let stored = self.load_and_verify::<C>(selector).await?;
-            let state: C::State = self.deserialize::<C>(credential_id, &stored)?;
+        let mut coordinated = false;
+        let result = async {
+            self.ensure_source_wired()?;
+            let mut reevaluation = 0;
+            loop {
+                let credential_id = selector.credential_id();
+                let credential_id_text = credential_id.to_string();
+                let stored = self.load_and_verify::<C>(selector).await?;
+                let state: C::State = self.deserialize::<C>(credential_id, &stored)?;
 
-            // Route on the credential's own state-derived policy, not an ad-hoc
-            // inline expiry test: `decide_refresh` is the single, pure, tested
-            // decision. It distinguishes "expiring but nothing to renew" (serve and
-            // let it ride) from "expiring and renewable" (refresh), and applies the
-            // mandatory re-validation floor for a signal-less credential. Jitter is
-            // deliberately not applied on this hot path — proactive jittered refresh
-            // is a scheduler-seam concern, not a per-resolve one.
-            let policy = C::policy(&state);
+                // Route on the credential's own state-derived policy, not an ad-hoc
+                // inline expiry test: `decide_refresh` is the single, pure, tested
+                // decision. It distinguishes "expiring but nothing to renew" (serve and
+                // let it ride) from "expiring and renewable" (refresh), and applies the
+                // mandatory re-validation floor for a signal-less credential. Jitter is
+                // deliberately not applied on this hot path — proactive jittered refresh
+                // is a scheduler-seam concern, not a per-resolve one.
+                let policy = C::policy(&state);
 
-            // F3 containment law, state-level: the live policy's refresh kind must be
-            // one the scheme family sanctions. Registration enforces the
-            // capability-level half at boot (a `Refreshable` credential on a
-            // `Static`-only family is rejected); this runtime guard catches a
-            // hand-written or plugin policy that returns a refresh kind outside its
-            // family's declared classes. `Lease` and `Watched` are exempt (orthogonal
-            // lifecycle wrappers — see `SchemeFamily::refresh_classes`).
-            //
-            // Hard `Err` in all build profiles — a policy drift is a security
-            // containment violation that must not silently proceed even in release.
-            // The structured `RefreshContainmentViolation` error carries all the
-            // diagnostic information (credential id, disallowed kind, family pattern)
-            // that a developer needs to diagnose the drift without a backtrace.
-            if !<C::Scheme as AuthScheme>::Family::permits_refresh(policy.refresh.kind()) {
-                return Err(ResolveError::RefreshContainmentViolation {
-                    credential_id: credential_id_text.clone(),
-                    refresh_kind: format!("{:?}", policy.refresh.kind()),
-                    family_pattern: format!("{:?}", <C::Scheme as AuthScheme>::Family::pattern()),
-                });
-            }
-
-            let decision = policy.decide_refresh(
-                // Measure the re-validation floor from the last real provider
-                // validation, NOT `updated_at` (a display-only rename/tag bumps
-                // `updated_at` without revalidating — it must not postpone the floor).
-                last_validated_or_created(&stored),
-                chrono::Utc::now(),
-                <C as Refreshable>::REFRESH_POLICY.early_refresh,
-                DEFAULT_REVALIDATION_FLOOR,
-            );
-
-            if decision == Decision::Usable {
-                let scheme = C::project(&state);
-                return Ok(self.materialize_handle::<C>(selector, scheme));
-            }
-
-            self.ensure_refresh_admitted(selector).await?;
-
-            if self
-                .refresh_coordinator
-                .is_circuit_open(&credential_id_text)
-            {
-                let now = chrono::Utc::now();
-                let truly_expired = state.expires_at().is_some_and(|exp| exp <= now);
-                if truly_expired {
-                    tracing::warn!(
-                        credential_id = %credential_id,
-                        "circuit breaker open and token has passed its expiry; failing fast"
-                    );
-                    return Err(ResolveError::Refresh {
-                        credential_id: credential_id_text,
-                        reason: "refresh circuit breaker open and token is expired".to_string(),
+                // F3 containment law, state-level: the live policy's refresh kind must be
+                // one the scheme family sanctions. Registration enforces the
+                // capability-level half at boot (a `Refreshable` credential on a
+                // `Static`-only family is rejected); this runtime guard catches a
+                // hand-written or plugin policy that returns a refresh kind outside its
+                // family's declared classes. `Lease` and `Watched` are exempt (orthogonal
+                // lifecycle wrappers — see `SchemeFamily::refresh_classes`).
+                //
+                // Hard `Err` in all build profiles — a policy drift is a security
+                // containment violation that must not silently proceed even in release.
+                // The structured `RefreshContainmentViolation` error carries all the
+                // diagnostic information (credential id, disallowed kind, family pattern)
+                // that a developer needs to diagnose the drift without a backtrace.
+                if !<C::Scheme as AuthScheme>::Family::permits_refresh(policy.refresh.kind()) {
+                    return Err(ResolveError::RefreshContainmentViolation {
+                        credential_id: credential_id_text.clone(),
+                        refresh_kind: format!("{:?}", policy.refresh.kind()),
+                        family_pattern: format!("{:?}", <C::Scheme as AuthScheme>::Family::pattern()),
                     });
                 }
-                tracing::warn!(
-                    credential_id = %credential_id,
-                    "circuit breaker open: too many refresh failures, serving stale-but-valid credential within early-refresh window"
-                );
-                let scheme = C::project(&state);
-                return Ok(self.materialize_handle::<C>(selector, scheme));
-            }
 
-            match self
-                .refresh_via_coordinator::<C>(selector, &credential_id, stored, ctx)
-                .await?
-            {
-                CoordinatedResolve::Resolved(handle) => return Ok(handle),
-                CoordinatedResolve::Reevaluate if reevaluation >= MAX_COORDINATED_REEVALUATIONS => {
-                    return Err(ResolveError::Refresh {
-                        credential_id: credential_id_text,
-                        reason: "credential state kept changing during coordinated refresh"
-                            .to_owned(),
-                    });
-                },
-                CoordinatedResolve::Reevaluate => {
-                    reevaluation += 1;
-                    continue;
-                },
+                let decision = policy.decide_refresh(
+                    // Measure the re-validation floor from the last real provider
+                    // validation, NOT `updated_at` (a display-only rename/tag bumps
+                    // `updated_at` without revalidating — it must not postpone the floor).
+                    last_validated_or_created(&stored),
+                    chrono::Utc::now(),
+                    <C as Refreshable>::REFRESH_POLICY.early_refresh,
+                    DEFAULT_REVALIDATION_FLOOR,
+                );
+
+                if decision == Decision::Usable {
+                    let scheme = C::project(&state);
+                    return Ok(self.materialize_handle::<C>(selector, scheme));
+                }
+
+                self.ensure_refresh_admitted(selector).await?;
+
+                if self
+                    .refresh_coordinator
+                    .is_circuit_open(&credential_id_text)
+                {
+                    let now = chrono::Utc::now();
+                    let truly_expired = state.expires_at().is_some_and(|exp| exp <= now);
+                    if truly_expired {
+                        tracing::warn!(
+                            credential_id = %credential_id,
+                            "circuit breaker open and token has passed its expiry; failing fast"
+                        );
+                        return Err(ResolveError::Refresh {
+                            credential_id: credential_id_text,
+                            reason: "refresh circuit breaker open and token is expired".to_string(),
+                        });
+                    }
+                    tracing::warn!(
+                        credential_id = %credential_id,
+                        "circuit breaker open: too many refresh failures, serving stale-but-valid credential within early-refresh window"
+                    );
+                    let scheme = C::project(&state);
+                    return Ok(self.materialize_handle::<C>(selector, scheme));
+                }
+
+                coordinated = true;
+                match self
+                    .refresh_via_coordinator::<C>(selector, &credential_id, stored, ctx)
+                    .await?
+                {
+                    CoordinatedResolve::Resolved(handle) => return Ok(handle),
+                    CoordinatedResolve::Reevaluate if reevaluation >= MAX_COORDINATED_REEVALUATIONS => {
+                        return Err(ResolveError::Refresh {
+                            credential_id: credential_id_text,
+                            reason: "credential state kept changing during coordinated refresh"
+                                .to_owned(),
+                        });
+                    },
+                    CoordinatedResolve::Reevaluate => {
+                        reevaluation += 1;
+                        continue;
+                    },
+                }
             }
+        }.await;
+        if coordinated {
+            let outcome = match &result {
+                Ok(_) => CoordinatedRefreshResult::Success,
+                Err(ResolveError::ReauthRequired { .. }) => {
+                    CoordinatedRefreshResult::ReauthRequired
+                },
+                Err(ResolveError::RefreshNotApplied { .. }) => CoordinatedRefreshResult::NotApplied,
+                Err(
+                    ResolveError::ProviderOutcomeUnknown { .. }
+                    | ResolveError::RefreshOutcomePending { .. }
+                    | ResolveError::Store(CredentialPersistenceError::OutcomeUnknown)
+                    | ResolveError::PostProviderPersistence {
+                        source: CredentialPersistenceError::OutcomeUnknown,
+                        ..
+                    },
+                ) => CoordinatedRefreshResult::OutcomeUnknown,
+                Err(_) => CoordinatedRefreshResult::Failure,
+            };
+            self.refresh_coordinator.metrics().record_result(outcome);
         }
+        result
     }
 
     /// Two-tier coordinated refresh path for a typed [`CredentialId`].
@@ -591,26 +616,6 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
                     )
                 })
                 .await;
-
-        let metric_result = match &outcome {
-            Ok(Ok(_)) | Err(RefreshError::CoalescedByOtherReplica) => {
-                CoordinatedRefreshResult::Success
-            },
-            Ok(Err(ResolveError::ReauthRequired { .. })) => {
-                CoordinatedRefreshResult::ReauthRequired
-            },
-            Ok(Err(ResolveError::RefreshNotApplied { .. }))
-            | Err(RefreshError::RetrySuppressed(_)) => CoordinatedRefreshResult::NotApplied,
-            Ok(Err(
-                ResolveError::ProviderOutcomeUnknown { .. }
-                | ResolveError::Store(CredentialPersistenceError::OutcomeUnknown),
-            ))
-            | Err(RefreshError::CriticalOutcomePending) => CoordinatedRefreshResult::OutcomeUnknown,
-            _ => CoordinatedRefreshResult::Failure,
-        };
-        self.refresh_coordinator
-            .metrics()
-            .record_result(metric_result);
 
         match outcome {
             Ok(Ok(result)) => {

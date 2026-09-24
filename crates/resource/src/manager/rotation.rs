@@ -28,6 +28,8 @@ enum SlotHookDirection {
     Revoke,
 }
 
+type SlotHookTerminalObserver = Box<dyn FnOnce(&SlotHookObservation) + Send>;
+
 const MAX_SLOT_HOOK_OBSERVATION_HORIZON: Duration = Duration::from_hours(1);
 
 fn slot_hook_observation_deadline(timeout: Duration) -> tokio::time::Instant {
@@ -109,12 +111,18 @@ pub enum SlotDispatchOutcome {
 #[must_use = "refresh installation and hook outcomes must be observed"]
 #[non_exhaustive]
 pub enum EpochRefreshOutcome {
-    /// A newer guard was installed before the hook was dispatched.
+    /// An installed guard had its hook admitted, including retry after queue rejection.
     Applied(SlotDispatchOutcome),
     /// The refresh was stale; neither the slot nor the hook was changed.
     Stale {
         /// Highest material epoch already accepted by the slot.
         current_material_epoch: u64,
+    },
+    /// The matching projection is installed and its exactly-once hook remains
+    /// queue-owned, so readiness must stay fenced.
+    Pending {
+        /// Material epoch whose hook is still awaiting terminal settlement.
+        material_epoch: u64,
     },
 }
 
@@ -192,6 +200,13 @@ impl std::fmt::Debug for TaintedSlot {
     }
 }
 
+impl TaintedSlot {
+    #[cfg(feature = "rotation")]
+    pub(crate) fn managed_handle(&self) -> Arc<dyn crate::registry::ManagedHandle> {
+        Arc::clone(&self.managed)
+    }
+}
+
 /// Outcome of the cancellation-safe revoke tail
 /// ([`Manager::drain_and_revoke`]).
 ///
@@ -265,11 +280,275 @@ pub enum RevokeTail {
 }
 
 impl Manager {
+    #[cfg(feature = "rotation")]
+    pub(crate) fn release_authoritative_reconciliation(
+        &self,
+        index: &crate::ResourceFanoutIndex,
+        manager_identity: usize,
+        epoch: u64,
+    ) {
+        let _admission = self
+            .admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !index.release_authoritative_reconciliation(manager_identity, epoch) {
+            return;
+        }
+        for (_, binding, _) in index.published_bindings(None) {
+            let Ok(managed) = self.lookup_any_for_slot_identity_structural(
+                &binding.resource_key,
+                &binding.scope,
+                &binding.slot_identity,
+            ) else {
+                continue;
+            };
+            if !managed.is_tainted() {
+                managed.set_phase(crate::state::ResourcePhase::Initializing);
+            }
+        }
+    }
+
+    #[cfg(feature = "rotation")]
+    pub(crate) fn stage_credential_binding(
+        &self,
+        index: &crate::ResourceFanoutIndex,
+        credential_id: nebula_credential::CredentialId,
+        binding: crate::Bind,
+        scope: nebula_credential::TenantScope,
+        credential_key: nebula_core::CredentialKey,
+    ) -> bool {
+        let _admission = self
+            .admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let staged = index.stage_bind_with_context(credential_id, binding, scope, credential_key);
+        if staged {
+            self.demote_published_credential_bindings(index, &credential_id);
+        }
+        staged
+    }
+
+    #[cfg(feature = "rotation")]
+    pub(crate) fn remember_material_replacement(
+        &self,
+        index: &crate::ResourceFanoutIndex,
+        credential_id: nebula_credential::CredentialId,
+        scope: nebula_credential::TenantScope,
+        credential_key: nebula_core::CredentialKey,
+    ) -> u64 {
+        let _admission = self
+            .admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.demote_published_credential_bindings(index, &credential_id);
+        index.remember_material_context(credential_id, scope, credential_key)
+    }
+
+    #[cfg(feature = "rotation")]
+    fn demote_published_credential_bindings(
+        &self,
+        index: &crate::ResourceFanoutIndex,
+        credential_id: &nebula_credential::CredentialId,
+    ) {
+        for binding in index.affected(credential_id) {
+            let Ok(managed) = self.lookup_any_for_slot_identity_structural(
+                &binding.resource_key,
+                &binding.scope,
+                &binding.slot_identity,
+            ) else {
+                continue;
+            };
+            if !managed.is_tainted() {
+                managed.set_phase(crate::state::ResourcePhase::Initializing);
+            }
+        }
+    }
+
+    #[cfg(feature = "rotation")]
+    pub(crate) fn fence_published_credential_bindings(
+        &self,
+        index: &crate::ResourceFanoutIndex,
+        credential_id: nebula_credential::CredentialId,
+        terminal: bool,
+        clear_material: bool,
+    ) -> Option<(Vec<(crate::Bind, TaintedSlot)>, usize)> {
+        let _admission = self
+            .admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Saturation rejects every future publication, but it does not prove
+        // this particular revoke was already applied to rows that are live
+        // now. Only an exactly retained credential id can deduplicate the
+        // O(N) sweep.
+        if terminal && index.terminal_revocation_remembered(&credential_id) {
+            return None;
+        }
+        let mut tainted = Vec::new();
+        let mut failed = 0;
+        for binding in index.affected(&credential_id) {
+            if !index.contains_published_binding(&credential_id, &binding) {
+                continue;
+            }
+            let result = self
+                .lookup_any_for_slot_identity_structural(
+                    &binding.resource_key,
+                    &binding.scope,
+                    &binding.slot_identity,
+                )
+                .and_then(|managed| {
+                    if clear_material
+                        && managed
+                            .credential_slot_projection(&binding.slot_name)
+                            .is_some()
+                    {
+                        self.revoke_terminal_under_admission(
+                            &binding.resource_key,
+                            &binding.slot_name,
+                            managed,
+                        )
+                    } else {
+                        self.taint_under_admission(
+                            &binding.resource_key,
+                            &binding.slot_name,
+                            managed,
+                        )
+                    }
+                });
+            match result {
+                Ok(row) => tainted.push((binding, row)),
+                Err(_) => failed += 1,
+            }
+        }
+        if terminal {
+            let _ = index.remember_revocation(credential_id);
+        }
+        Some((tainted, failed))
+    }
+
+    /// Pins the currently published row for one credential reverse-index
+    /// binding under lifecycle admission.
+    #[cfg(feature = "rotation")]
+    pub(crate) fn lookup_published_credential_binding(
+        &self,
+        index: &crate::ResourceFanoutIndex,
+        credential_id: &nebula_credential::CredentialId,
+        binding: &crate::Bind,
+    ) -> Result<Arc<dyn crate::registry::ManagedHandle>, Error> {
+        let _admission = self
+            .admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.shutdown_guard()?;
+        if !index.contains_published_binding(credential_id, binding) {
+            return Err(Error::not_found(&binding.resource_key));
+        }
+        self.lookup_any_for_slot_identity_structural(
+            &binding.resource_key,
+            &binding.scope,
+            &binding.slot_identity,
+        )
+    }
+
+    /// Revalidates reverse-index ownership and taints the same exact row in
+    /// one lifecycle-admission critical section.
+    #[cfg(feature = "rotation")]
+    pub(crate) fn taint_published_credential_binding(
+        &self,
+        index: &crate::ResourceFanoutIndex,
+        credential_id: &nebula_credential::CredentialId,
+        binding: &crate::Bind,
+    ) -> Result<TaintedSlot, Error> {
+        let _admission = self
+            .admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.shutdown_guard()?;
+        if !index.contains_published_binding(credential_id, binding) {
+            return Err(Error::not_found(&binding.resource_key));
+        }
+        let managed = self.lookup_any_for_slot_identity_structural(
+            &binding.resource_key,
+            &binding.scope,
+            &binding.slot_identity,
+        )?;
+        self.taint_under_admission(&binding.resource_key, &binding.slot_name, managed)
+    }
+
+    /// Revalidates reverse-index ownership and admits a refresh for the same
+    /// exact row in one lifecycle-admission critical section.
+    #[cfg(feature = "rotation")]
+    pub(crate) async fn refresh_published_credential_binding(
+        &self,
+        index: &crate::ResourceFanoutIndex,
+        credential_id: &nebula_credential::CredentialId,
+        binding: &crate::Bind,
+        hook_timeout: Duration,
+        observation_timeout: Duration,
+    ) -> Result<SlotDispatchOutcome, Error> {
+        let started = Instant::now();
+        let accepted = {
+            let _admission = self
+                .admission
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            self.shutdown_guard()?;
+            if !index.contains_published_binding(credential_id, binding) {
+                return Err(Error::not_found(&binding.resource_key));
+            }
+            let managed = self.lookup_any_for_slot_identity_structural(
+                &binding.resource_key,
+                &binding.scope,
+                &binding.slot_identity,
+            )?;
+            self.validate_refresh_admission(&binding.resource_key, &binding.slot_name, &managed)?;
+            self.admit_refresh_resolved(
+                &binding.resource_key,
+                &binding.slot_name,
+                managed,
+                hook_timeout,
+                None,
+            )?
+        };
+        self.observe_refresh(accepted, observation_timeout, started)
+            .await
+    }
+
+    /// Advances an initialization-fenced row only after every retained
+    /// replacement context targeting that row has settled.
+    #[cfg(feature = "rotation")]
+    pub(crate) fn promote_reconciled_credential_binding(
+        &self,
+        index: &crate::ResourceFanoutIndex,
+        credential_id: &nebula_credential::CredentialId,
+        binding: &crate::Bind,
+    ) {
+        let _admission = self
+            .admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !index.contains_published_binding(credential_id, binding)
+            || index.binding_is_fenced(credential_id, binding)
+        {
+            return;
+        }
+        let Ok(managed) = self.lookup_any_for_slot_identity_structural(
+            &binding.resource_key,
+            &binding.scope,
+            &binding.slot_identity,
+        ) else {
+            return;
+        };
+        if managed.phase() == crate::state::ResourcePhase::Initializing && !managed.is_tainted() {
+            managed.set_phase(crate::state::ResourcePhase::Ready);
+        }
+    }
+
     /// Installs a projected guard into one identity-pinned row, then dispatches
     /// the refresh hook. The install completes synchronously before the first
     /// await, so author code cannot observe the old guard after dispatch.
     ///
-    /// A stale epoch is a successful no-op and does not invoke the hook.
+    /// A stale epoch is a successful no-op unless its installed guard still needs
+    /// hook admission after a queue rejection. Accepted hooks are never retried.
     /// Type mismatch or unknown slot leaves the previous guard untouched.
     ///
     /// # Errors
@@ -285,34 +564,229 @@ impl Manager {
         guard: nebula_credential::ErasedCredentialGuard,
     ) -> Result<EpochRefreshOutcome, Error> {
         let managed = self.lookup_any_for_slot_identity_structural(key, &scope, slot_identity)?;
-        let update = managed
-            .install_credential_slot(slot, guard)
+        self.install_and_refresh_resolved(
+            key,
+            slot,
+            managed,
+            guard,
+            None,
+            (|| Ok(()), || {}, || {}),
+        )
+        .await
+    }
+
+    pub(crate) async fn install_and_refresh_resolved<C, F, H>(
+        &self,
+        key: &ResourceKey,
+        slot: &str,
+        managed: Arc<dyn crate::registry::ManagedHandle>,
+        guard: nebula_credential::ErasedCredentialGuard,
+        expected_generation: Option<u64>,
+        callbacks: (C, F, H),
+    ) -> Result<EpochRefreshOutcome, Error>
+    where
+        C: FnOnce() -> Result<(), Error>,
+        F: FnOnce(),
+        H: FnOnce() + Send + 'static,
+    {
+        let (admission_check, projection_complete, hook_completed) = callbacks;
+        let started = Instant::now();
+        let accepted = {
+            // Same gate as registration, retirement and terminal revoke. No await
+            // may separate validation, installation and synchronous queue admission.
+            let _admission = self
+                .admission
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            admission_check()?;
+            self.validate_refresh_admission(key, slot, &managed)?;
+            let mut pending = managed
+                .pending_projection_hooks()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let epoch = guard.metadata().material_epoch();
+            let update = match expected_generation {
+                Some(generation) => {
+                    managed.install_credential_slot_at_generation(slot, guard, generation)
+                },
+                None => managed.install_credential_slot(slot, guard),
+            }
             .map_err(|source| {
                 Error::permanent("credential slot installation failed")
                     .with_source(source)
                     .with_resource_key(key.clone())
             })?;
-        match update {
-            crate::SlotUpdate::Installed => self
-                .refresh_resolved(
-                    key,
-                    slot,
-                    managed,
-                    crate::hook_guard::MAX_ROTATION_DISPATCH_CEILING,
-                    crate::hook_guard::MAX_ROTATION_DISPATCH_CEILING,
+            match update {
+                crate::SlotUpdate::Installed => {
+                    let Some((generation, Some(metadata))) =
+                        managed.credential_slot_projection(slot)
+                    else {
+                        pending.remove(slot);
+                        return Err(Error::permanent(
+                            "credential projection superseded before hook admission",
+                        )
+                        .with_source(crate::SlotInstallError::ProjectionChanged));
+                    };
+                    if metadata.material_epoch() != epoch {
+                        pending.remove(slot);
+                        return Err(Error::permanent(
+                            "credential projection superseded before hook admission",
+                        )
+                        .with_source(crate::SlotInstallError::ProjectionChanged));
+                    }
+                    pending.insert(
+                        slot.to_owned(),
+                        crate::registry::ProjectionHookState::Pending { epoch, generation },
+                    );
+                },
+                crate::SlotUpdate::Stale {
+                    current_material_epoch,
+                } => {
+                    let live = managed.credential_slot_projection(slot).and_then(
+                        |(generation, metadata)| {
+                            metadata.map(|metadata| (metadata.material_epoch(), generation))
+                        },
+                    );
+                    let pending_state = pending.get(slot).copied();
+                    if live.is_none()
+                        || pending_state.map(crate::registry::ProjectionHookState::coordinates)
+                            != live
+                    {
+                        pending.remove(slot);
+                        return Ok(EpochRefreshOutcome::Stale {
+                            current_material_epoch,
+                        });
+                    }
+                    if matches!(
+                        pending_state,
+                        Some(crate::registry::ProjectionHookState::Admitted { .. })
+                    ) {
+                        return Ok(EpochRefreshOutcome::Pending {
+                            material_epoch: current_material_epoch,
+                        });
+                    }
+                },
+                crate::SlotUpdate::Revoked | crate::SlotUpdate::AlreadyRevoked => {
+                    return Err(Error::permanent(
+                        "credential slot install returned an invalid revoke outcome",
+                    )
+                    .with_resource_key(key.clone()));
+                },
+            }
+            // Keep the concrete slot writer excluded through synchronous queue
+            // admission. A public `SlotCell::store`/`take` can otherwise clear
+            // the projection after installation but before the hook is owned.
+            let (epoch, generation) = pending
+                .get(slot)
+                .copied()
+                .map(crate::registry::ProjectionHookState::coordinates)
+                .ok_or_else(|| {
+                    Error::permanent("credential projection missing before hook admission")
+                        .with_source(crate::SlotInstallError::ProjectionChanged)
+                        .with_resource_key(key.clone())
+                })?;
+            pending.insert(
+                slot.to_owned(),
+                crate::registry::ProjectionHookState::Admitted { epoch, generation },
+            );
+            drop(pending);
+            let submission_managed = Arc::clone(&managed);
+            let settlement_managed = Arc::clone(&managed);
+            let settlement_slot = slot.to_owned();
+            let mut hook_completed = Some(hook_completed);
+            let terminal_observer: SlotHookTerminalObserver = Box::new(move |observation| {
+                if !matches!(observation, SlotHookObservation::Completed) {
+                    return;
+                }
+                let mut pending = settlement_managed
+                    .pending_projection_hooks()
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if pending.get(&settlement_slot).copied()
+                    == Some(crate::registry::ProjectionHookState::Admitted { epoch, generation })
+                {
+                    pending.remove(&settlement_slot);
+                    drop(pending);
+                    if let Some(completed) = hook_completed.take() {
+                        completed();
+                    }
+                }
+            });
+            let mut terminal_observer = Some(terminal_observer);
+            let mut accepted = None;
+            if let Err(source) =
+                managed.fence_credential_slot_at_generation(slot, generation, &mut || {
+                    accepted = Some(self.admit_refresh_resolved(
+                        key,
+                        slot,
+                        Arc::clone(&submission_managed),
+                        crate::hook_guard::MAX_ROTATION_DISPATCH_CEILING,
+                        terminal_observer.take(),
+                    ));
+                })
+            {
+                let mut pending = managed
+                    .pending_projection_hooks()
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if pending.get(slot).copied()
+                    == Some(crate::registry::ProjectionHookState::Admitted { epoch, generation })
+                {
+                    pending.remove(slot);
+                }
+                return Err(Error::permanent(
+                    "credential projection superseded before hook admission",
                 )
-                .await
-                .map(EpochRefreshOutcome::Applied),
-            crate::SlotUpdate::Stale {
-                current_material_epoch,
-            } => Ok(EpochRefreshOutcome::Stale {
-                current_material_epoch,
-            }),
-            crate::SlotUpdate::Revoked | crate::SlotUpdate::AlreadyRevoked => Err(
-                Error::permanent("credential slot install returned an invalid revoke outcome")
-                    .with_resource_key(key.clone()),
-            ),
-        }
+                .with_source(source)
+                .with_resource_key(key.clone()));
+            }
+            let Some(accepted) = accepted else {
+                let mut pending = managed
+                    .pending_projection_hooks()
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if pending.get(slot).copied()
+                    == Some(crate::registry::ProjectionHookState::Admitted { epoch, generation })
+                {
+                    pending.remove(slot);
+                }
+                return Err(
+                    Error::permanent("credential projection fence skipped hook admission")
+                        .with_source(crate::SlotInstallError::ProjectionChanged)
+                        .with_resource_key(key.clone()),
+                );
+            };
+            let accepted = match accepted {
+                Ok(accepted) => accepted,
+                Err(error) => {
+                    let mut pending = managed
+                        .pending_projection_hooks()
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if pending.get(slot).copied()
+                        == Some(crate::registry::ProjectionHookState::Admitted {
+                            epoch,
+                            generation,
+                        })
+                    {
+                        pending.insert(
+                            slot.to_owned(),
+                            crate::registry::ProjectionHookState::Pending { epoch, generation },
+                        );
+                    }
+                    return Err(error);
+                },
+            };
+            projection_complete();
+            accepted
+        };
+        self.observe_refresh(
+            accepted,
+            crate::hook_guard::MAX_ROTATION_DISPATCH_CEILING,
+            started,
+        )
+        .await
+        .map(EpochRefreshOutcome::Applied)
     }
 
     /// Terminally clears an identity-pinned slot, then synchronously taints
@@ -332,26 +806,34 @@ impl Manager {
         slot: &str,
         slot_identity: &crate::dedup::SlotIdentity,
     ) -> Result<EpochRevokeOutcome, Error> {
-        let managed = self.lookup_any_for_slot_identity_structural(key, &scope, slot_identity)?;
-        let update = managed.revoke_credential_slot(slot).map_err(|source| {
-            Error::permanent("credential slot revoke failed")
-                .with_source(source)
-                .with_resource_key(key.clone())
-        })?;
-        match update {
-            crate::SlotUpdate::Revoked => {
-                let tainted = self.taint_now(key, slot, managed)?;
-                Ok(EpochRevokeOutcome::Applied(
-                    self.drain_and_revoke(tainted, Self::DEFAULT_REVOKE_DRAIN_TIMEOUT)
-                        .await,
-                ))
-            },
-            crate::SlotUpdate::AlreadyRevoked => Ok(EpochRevokeOutcome::AlreadyRevoked),
-            crate::SlotUpdate::Installed | crate::SlotUpdate::Stale { .. } => Err(
-                Error::permanent("credential slot revoke returned an invalid install outcome")
-                    .with_resource_key(key.clone()),
-            ),
-        }
+        let tainted = {
+            let _admission = self
+                .admission
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            self.shutdown_guard()?;
+            let managed =
+                self.lookup_any_for_slot_identity_structural(key, &scope, slot_identity)?;
+            let update = managed.revoke_credential_slot(slot).map_err(|source| {
+                Error::permanent("credential slot revoke failed")
+                    .with_source(source)
+                    .with_resource_key(key.clone())
+            })?;
+            match update {
+                crate::SlotUpdate::Revoked => self.taint_under_admission(key, slot, managed)?,
+                crate::SlotUpdate::AlreadyRevoked => return Ok(EpochRevokeOutcome::AlreadyRevoked),
+                crate::SlotUpdate::Installed | crate::SlotUpdate::Stale { .. } => {
+                    return Err(Error::permanent(
+                        "credential slot revoke returned an invalid install outcome",
+                    )
+                    .with_resource_key(key.clone()));
+                },
+            }
+        };
+        Ok(EpochRevokeOutcome::Applied(
+            self.drain_and_revoke(tainted, Self::DEFAULT_REVOKE_DRAIN_TIMEOUT)
+                .await,
+        ))
     }
 
     fn slot_hook_settlement(
@@ -359,6 +841,7 @@ impl Manager {
         key: ResourceKey,
         slot: String,
         direction: SlotHookDirection,
+        mut terminal_observer: Option<SlotHookTerminalObserver>,
     ) -> (SlotHookSettlement, SlotHookAdmission) {
         let hook_metrics = self.metrics.clone();
         let hook_event_bus = Arc::clone(&self.event_bus);
@@ -367,6 +850,9 @@ impl Manager {
         let cleanup_key = key.clone();
         let cleanup_slot = slot.clone();
         let (settlement, admission) = SlotHookSettlement::new(Box::new(move |observation| {
+            if let Some(observer) = terminal_observer.take() {
+                observer(&observation);
+            }
             let metric_outcome = match &observation {
                 SlotHookObservation::Completed => SlotDispatchMetricOutcome::Success,
                 SlotHookObservation::Failed(_) => SlotDispatchMetricOutcome::Failed,
@@ -642,6 +1128,59 @@ impl Manager {
         observation_timeout: Duration,
     ) -> Result<SlotDispatchOutcome, Error> {
         let started = Instant::now();
+        let accepted = {
+            let _admission = self
+                .admission
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            self.validate_refresh_admission(key, slot, &managed)?;
+            self.admit_refresh_resolved(key, slot, managed, hook_timeout, None)?
+        };
+        self.observe_refresh(accepted, observation_timeout, started)
+            .await
+    }
+
+    /// Caller holds lifecycle admission through synchronous queue submission.
+    fn validate_refresh_admission(
+        &self,
+        key: &ResourceKey,
+        slot: &str,
+        managed: &Arc<dyn crate::registry::ManagedHandle>,
+    ) -> Result<(), Error> {
+        let result = self.shutdown_guard().and_then(|()| {
+            if !self.registry.contains_managed(key, managed) {
+                return Err(Error::not_found(key));
+            }
+            if managed.is_tainted() {
+                return Err(Error::revoked("credential refresh rejected after revoke"));
+            }
+            Ok(())
+        });
+        if let Err(error) = &result {
+            if let Some(metrics) = &self.metrics {
+                metrics.record_slot_refresh_outcome(SlotDispatchMetricOutcome::Failed);
+            }
+            self.emit(ResourceEvent::SlotRefreshFailed {
+                key: key.clone(),
+                slot: slot.to_owned(),
+                kind: error.kind().clone(),
+                message: SecretFreeMessage::new(
+                    "credential refresh rejected by lifecycle admission",
+                ),
+            });
+            tracing::warn!(resource.key = %key, slot, error.kind = ?error.kind(), "credential refresh rejected by lifecycle admission");
+        }
+        result
+    }
+
+    fn admit_refresh_resolved(
+        &self,
+        key: &ResourceKey,
+        slot: &str,
+        managed: Arc<dyn crate::registry::ManagedHandle>,
+        hook_timeout: Duration,
+        terminal_observer: Option<SlotHookTerminalObserver>,
+    ) -> Result<crate::runtime::acquire_loop::AcceptedSlotHook, Error> {
         tracing::Span::current().record("topology", managed.topology_tag().as_str());
 
         // Unknown-slot validation: reject a slot name the resource type does
@@ -678,8 +1217,12 @@ impl Manager {
         // cancelling or double-accounting the admitted task. Once execution
         // starts, the caller awaits the hook's independently bounded terminal
         // result.
-        let (settlement, admission) =
-            self.slot_hook_settlement(key.clone(), slot.to_owned(), SlotHookDirection::Refresh);
+        let (settlement, admission) = self.slot_hook_settlement(
+            key.clone(),
+            slot.to_owned(),
+            SlotHookDirection::Refresh,
+            terminal_observer,
+        );
         let accepted =
             match Arc::clone(&managed).submit_on_refresh(slot, hook_timeout, settlement, admission)
             {
@@ -697,6 +1240,15 @@ impl Manager {
                     return Err(error);
                 },
             };
+        Ok(accepted)
+    }
+
+    async fn observe_refresh(
+        &self,
+        accepted: crate::runtime::acquire_loop::AcceptedSlotHook,
+        observation_timeout: Duration,
+        started: Instant,
+    ) -> Result<SlotDispatchOutcome, Error> {
         // Start the observer budget only after synchronous admission. The
         // provider execution budget starts when the queue dequeues the hook;
         // stamping this deadline before admission would make an equal hook
@@ -855,6 +1407,76 @@ impl Manager {
         slot: &str,
         managed: Arc<dyn crate::registry::ManagedHandle>,
     ) -> Result<TaintedSlot, Error> {
+        let _admission = self
+            .admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.shutdown_guard()?;
+        if !self.registry.contains_managed(key, &managed) {
+            return Err(Error::not_found(key));
+        }
+        self.taint_under_admission(key, slot, managed)
+    }
+
+    /// Applies an authoritative durable tombstone to an exact pinned row,
+    /// clearing its live guard before the row is tainted.
+    ///
+    /// Unlike a speculative projection update, a verified tombstone must win
+    /// over an intervening public slot store/take. Lifecycle admission still
+    /// revalidates that the pinned handle is the currently registered row.
+    #[cfg(all(feature = "rotation", test))]
+    pub(crate) fn revoke_resolved_terminal(
+        &self,
+        key: &ResourceKey,
+        slot: &str,
+        managed: Arc<dyn crate::registry::ManagedHandle>,
+    ) -> Result<TaintedSlot, Error> {
+        let _admission = self
+            .admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.shutdown_guard()?;
+        if !self.registry.contains_managed(key, &managed) {
+            return Err(Error::not_found(key));
+        }
+        self.revoke_terminal_under_admission(key, slot, managed)
+    }
+
+    #[cfg(feature = "rotation")]
+    fn revoke_terminal_under_admission(
+        &self,
+        key: &ResourceKey,
+        slot: &str,
+        managed: Arc<dyn crate::registry::ManagedHandle>,
+    ) -> Result<TaintedSlot, Error> {
+        match managed.revoke_credential_slot(slot).map_err(|source| {
+            Error::permanent("credential slot revoke failed")
+                .with_source(source)
+                .with_resource_key(key.clone())
+        })? {
+            crate::SlotUpdate::Revoked | crate::SlotUpdate::AlreadyRevoked => {},
+            crate::SlotUpdate::Installed | crate::SlotUpdate::Stale { .. } => {
+                return Err(Error::permanent(
+                    "credential slot revoke returned an invalid install outcome",
+                )
+                .with_resource_key(key.clone()));
+            },
+        }
+        managed
+            .pending_projection_hooks()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(slot);
+        self.taint_under_admission(key, slot, managed)
+    }
+
+    /// Caller holds the same lifecycle gate as refresh installation/admission.
+    pub(crate) fn taint_under_admission(
+        &self,
+        key: &ResourceKey,
+        slot: &str,
+        managed: Arc<dyn crate::registry::ManagedHandle>,
+    ) -> Result<TaintedSlot, Error> {
         tracing::Span::current().record("topology", managed.topology_tag().as_str());
         // Unknown-slot validation, checked before any mutation: a rejected
         // slot name must not taint or bump the epoch — the row stays
@@ -947,7 +1569,7 @@ impl Manager {
     #[tracing::instrument(
         level = "debug",
         name = "nebula.resource.slot_drain_revoke",
-        skip(self, tainted),
+        skip(self, tainted, on_admitted),
         fields(
             key = %tainted.key,
             slot = %tainted.slot,
@@ -956,11 +1578,15 @@ impl Manager {
             op = "revoke",
         )
     )]
-    pub async fn drain_and_revoke(
+    pub(crate) async fn drain_and_revoke_with_admission<F>(
         &self,
         tainted: TaintedSlot,
         drain_timeout: Duration,
-    ) -> RevokeTail {
+        on_admitted: F,
+    ) -> (RevokeTail, Option<bool>)
+    where
+        F: FnOnce(),
+    {
         let TaintedSlot {
             key,
             slot,
@@ -994,40 +1620,62 @@ impl Manager {
             Err(outstanding_leases) => SlotDrainOutcome::TimedOut { outstanding_leases },
         };
 
-        // 2. Submit the revoke hook with the same per-resource hook budget.
-        //    Submission itself does not await: success transfers hook and
-        //    settlement ownership to the queue. The absolute observation
-        //    deadline below starts after admission and returns `Deferred` only
-        //    if work is still queued. Once started, the independently bounded
-        //    terminal result wins. Neither state cancels accepted work or turns
-        //    it into a retryable timeout.
-        let (settlement, admission) =
-            self.slot_hook_settlement(key.clone(), slot.clone(), SlotHookDirection::Revoke);
-        let accepted = match Arc::clone(&managed).submit_on_revoke(
-            &slot,
-            drain_timeout,
-            settlement,
-            admission,
-        ) {
-            Ok(accepted) => accepted,
-            Err(error) => {
-                if let Some(metrics) = &self.metrics {
-                    metrics.record_slot_revoke_outcome(SlotDispatchMetricOutcome::Failed);
-                }
-                self.emit(ResourceEvent::SlotRevokeFailed {
-                    key,
-                    slot,
-                    kind: error.kind().clone(),
-                    message: SecretFreeMessage::new("credential revoke hook admission failed"),
-                });
-                return RevokeTail::HookFailed { error, drain };
-            },
+        // Retirement may have detached this pinned runtime while the drain
+        // awaited outstanding leases. Revalidate under the lifecycle gate
+        // immediately before queue submission so a stale handle cannot race
+        // its replacement/removal teardown.
+        let accepted = {
+            let _admission = self
+                .admission
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !self.registry.contains_managed(&key, &managed)
+                || !managed.is_tainted()
+                || !managed.accepts_credential_slot_name(&slot)
+            {
+                return (
+                    RevokeTail::HookFailed {
+                        error: Error::not_found(&key),
+                        drain,
+                    },
+                    None,
+                );
+            }
+
+            // 2. Submit while the same lifecycle gate still protects the
+            // exact-handle revalidation. Submission is synchronous; no await
+            // or retirement window separates the check from queue ownership.
+            let (settlement, admission) = self.slot_hook_settlement(
+                key.clone(),
+                slot.clone(),
+                SlotHookDirection::Revoke,
+                None,
+            );
+            match Arc::clone(&managed).submit_on_revoke(&slot, drain_timeout, settlement, admission)
+            {
+                Ok(accepted) => {
+                    on_admitted();
+                    accepted
+                },
+                Err(error) => {
+                    if let Some(metrics) = &self.metrics {
+                        metrics.record_slot_revoke_outcome(SlotDispatchMetricOutcome::Failed);
+                    }
+                    self.emit(ResourceEvent::SlotRevokeFailed {
+                        key,
+                        slot,
+                        kind: error.kind().clone(),
+                        message: SecretFreeMessage::new("credential revoke hook admission failed"),
+                    });
+                    return (RevokeTail::HookFailed { error, drain }, Some(false));
+                },
+            }
         };
         let deadline = slot_hook_observation_deadline(drain_timeout);
         let hook_outcome = accepted.wait_until(deadline).await;
         tracing::Span::current().record("duration_ms", tainted_at.elapsed().as_millis() as u64);
 
-        match hook_outcome {
+        let tail = match hook_outcome {
             SlotHookWaitOutcome::Completed => {
                 tracing::debug!("slot revoke hook completed");
                 RevokeTail::Done { drain }
@@ -1057,7 +1705,59 @@ impl Manager {
                 );
                 RevokeTail::HookTimedOut { drain }
             },
-        }
+        };
+        (tail, Some(true))
+    }
+
+    /// Runs the cancellation-safe revoke tail and returns its observable outcome.
+    pub async fn drain_and_revoke(
+        &self,
+        tainted: TaintedSlot,
+        drain_timeout: Duration,
+    ) -> RevokeTail {
+        self.drain_and_revoke_with_admission(tainted, drain_timeout, || {})
+            .await
+            .0
+    }
+
+    #[cfg(feature = "rotation")]
+    pub(crate) async fn retry_tainted_revoke_admission<F>(
+        &self,
+        key: &ResourceKey,
+        slot: &str,
+        managed: Arc<dyn crate::registry::ManagedHandle>,
+        timeout: Duration,
+        on_admitted: F,
+    ) -> (RevokeTail, Option<bool>)
+    where
+        F: FnOnce(),
+    {
+        let tainted = {
+            let _admission = self
+                .admission
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !self.registry.contains_managed(key, &managed)
+                || !managed.is_tainted()
+                || !managed.accepts_credential_slot_name(slot)
+            {
+                return (
+                    RevokeTail::HookFailed {
+                        error: Error::not_found(key),
+                        drain: SlotDrainOutcome::NotRequired,
+                    },
+                    None,
+                );
+            }
+            TaintedSlot {
+                key: key.clone(),
+                slot: slot.to_owned(),
+                managed,
+                tainted_at: Instant::now(),
+            }
+        };
+        self.drain_and_revoke_with_admission(tainted, timeout, on_admitted)
+            .await
     }
 
     /// Notifies a registered resource that one of its `#[credential]` slots
@@ -1239,7 +1939,7 @@ impl Manager {
     /// by construction, so there is **no `Ambiguous` case to map** — the
     /// "registry invariant breach" arm the old `u64` digest path had to
     /// fabricate a fail-closed deny for is now type-unrepresentable.
-    fn lookup_any_for_slot_identity_structural(
+    pub(crate) fn lookup_any_for_slot_identity_structural(
         &self,
         key: &ResourceKey,
         scope: &ScopeLevel,
@@ -1284,6 +1984,7 @@ mod tests {
             ResourceKey::new("abandoned-hook").expect("valid static resource key"),
             "credential".to_owned(),
             SlotHookDirection::Refresh,
+            None,
         );
 
         admission.admit();
@@ -1337,6 +2038,7 @@ mod tests {
                 ResourceKey::new("retained-cleanup-fault").expect("valid static resource key"),
                 "credential".to_owned(),
                 SlotHookDirection::Refresh,
+                None,
             );
             admission.admit();
             let cleanup_observer = settlement

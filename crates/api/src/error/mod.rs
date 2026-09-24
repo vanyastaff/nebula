@@ -142,6 +142,19 @@ pub enum ApiError {
     #[error("Credential refresh requires reconciliation")]
     CredentialRefreshReconciliationRequired,
 
+    /// Credential acquisition completed, but its durable create or
+    /// replacement definitely failed (409).
+    ///
+    /// Replaying may repeat provider work or re-submit a one-time grant, so
+    /// the client must reconcile state or restart authorization deliberately.
+    #[classify(
+        category = "conflict",
+        code = "API:CREDENTIAL_ACQUISITION_RECONCILIATION_REQUIRED",
+        retryable = false
+    )]
+    #[error("Credential acquisition requires reconciliation")]
+    CredentialAcquisitionReconciliationRequired,
+
     /// The revoke outcome is known, but durable local finalization definitely
     /// failed (409).
     ///
@@ -337,6 +350,17 @@ pub enum ApiError {
         /// The recorded decision in its wire spelling.
         recorded_decision: String,
     },
+
+    /// Persisted credential state uses a shape this runtime refuses to read
+    /// (409). The refusal is permanent for this runtime build and exposes no
+    /// stored envelope values.
+    #[classify(
+        category = "conflict",
+        code = "API:CREDENTIAL_STATE_REFUSED",
+        retryable = false
+    )]
+    #[error("Stored credential state is not compatible with this runtime")]
+    CredentialStateRefused,
 }
 
 /// Project a [`nebula_tenancy::TenancyError`] (raised when a request's
@@ -421,6 +445,10 @@ impl ApiError {
             Self::CredentialRefreshReconciliationRequired => {
                 credential_problem(CredentialProblem::RefreshReconciliationRequired)
             },
+            Self::CredentialAcquisitionReconciliationRequired => {
+                credential_problem(CredentialProblem::AcquisitionReconciliationRequired)
+            },
+            Self::CredentialStateRefused => credential_problem(CredentialProblem::StateRefused),
             Self::CredentialRevokeReconciliationRequired => {
                 credential_problem(CredentialProblem::RevokeReconciliationRequired)
             },
@@ -596,6 +624,8 @@ enum CredentialProblem {
     RefreshNotApplied,
     RefreshRetryDelayed,
     RefreshReconciliationRequired,
+    AcquisitionReconciliationRequired,
+    StateRefused,
     RevokeReconciliationRequired,
     ReconciliationNotRequired,
     /// The pair the comparison refused against, in wire spelling — named by
@@ -628,6 +658,16 @@ fn credential_problem(error: CredentialProblem) -> (StatusCode, ProblemDetails) 
             "credential-refresh-reconciliation-required",
             "Credential Refresh Reconciliation Required",
             "The refresh outcome is known, but durable local finalization definitely failed. Do not retry automatically; reconcile or reconnect the integration credential.",
+        ),
+        CredentialProblem::AcquisitionReconciliationRequired => (
+            "credential-acquisition-reconciliation-required",
+            "Credential Acquisition Reconciliation Required",
+            "Credential acquisition completed, but durable local finalization definitely failed. Do not retry automatically; reconcile credential state or restart authorization deliberately.",
+        ),
+        CredentialProblem::StateRefused => (
+            "credential-state-refused",
+            "Credential State Refused",
+            "The stored credential state is not compatible with this runtime. Update the runtime or repair the credential state before retrying.",
         ),
         CredentialProblem::RevokeReconciliationRequired => (
             "credential-revoke-reconciliation-required",

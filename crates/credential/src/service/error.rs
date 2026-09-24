@@ -263,6 +263,19 @@ pub enum CredentialServiceError {
     #[error("credential mutation outcome is unknown; reconcile before retrying")]
     OutcomeUnknown,
 
+    /// Credential acquisition completed, but the following durable create or
+    /// fenced replacement definitely failed.
+    ///
+    /// Interactive continuation has already consumed or observed its pending
+    /// authority at the provider boundary. Initial resolution is treated the
+    /// same way conservatively because the erased credential contract does
+    /// not yet prove that a completion was purely local. Automatic replay may
+    /// duplicate provider work or re-submit a one-time authorization grant.
+    #[error(
+        "credential acquisition could not be finalized durably; reconcile or restart authorization"
+    )]
+    AcquisitionFinalizationRequired,
+
     /// A concurrent refresh reached an exact finalization failure whose
     /// operation-specific details are intentionally not shared through L1.
     ///
@@ -402,6 +415,7 @@ impl nebula_error::Classify for CredentialServiceError {
             Self::CapabilityWithoutOps { .. }
             | Self::Store
             | Self::OutcomeUnknown
+            | Self::AcquisitionFinalizationRequired
             | Self::RefreshReconciliationRequired
             | Self::RefreshRetryGateFinalization
             | Self::ReauthDecisionFinalization
@@ -434,6 +448,9 @@ impl nebula_error::Classify for CredentialServiceError {
             Self::Store => "CREDENTIAL_SERVICE:STORE",
             Self::PersistenceUnavailable => "CREDENTIAL_SERVICE:PERSISTENCE_UNAVAILABLE",
             Self::OutcomeUnknown => "CREDENTIAL_SERVICE:OUTCOME_UNKNOWN",
+            Self::AcquisitionFinalizationRequired => {
+                "CREDENTIAL_SERVICE:ACQUISITION_FINALIZATION_REQUIRED"
+            },
             Self::RefreshReconciliationRequired => {
                 "CREDENTIAL_SERVICE:REFRESH_RECONCILIATION_REQUIRED"
             },
@@ -566,6 +583,20 @@ mod tests {
             !error.is_retryable(),
             "an unacknowledged commit requires reconciliation, not replay"
         );
+    }
+
+    #[test]
+    fn acquisition_finalization_is_explicit_and_not_retryable() {
+        use nebula_error::Classify;
+
+        let error = CredentialServiceError::AcquisitionFinalizationRequired;
+        assert_eq!(error.category(), nebula_error::ErrorCategory::Internal);
+        assert_eq!(
+            error.code(),
+            nebula_error::ErrorCode::new("CREDENTIAL_SERVICE:ACQUISITION_FINALIZATION_REQUIRED")
+        );
+        assert!(!error.is_retryable());
+        assert!(error.retry_hint().is_none());
     }
 
     #[test]

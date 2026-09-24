@@ -94,7 +94,7 @@ pub struct SlotCell<S> {
     /// [`load_versioned`](Self::load_versioned),
     /// [`generation`](Self::generation) and [`is_some`](Self::is_some)
     /// stay lock-free on the `ArcSwapOption`.
-    write_lock: Mutex<()>,
+    write_lock: Mutex<Option<nebula_credential::CredentialGuardMetadata>>,
 }
 
 impl<S> SlotCell<S> {
@@ -104,7 +104,7 @@ impl<S> SlotCell<S> {
             inner: ArcSwapOption::empty(),
             next_generation: AtomicU64::new(0),
             material_epoch: AtomicU64::new(0),
-            write_lock: Mutex::new(()),
+            write_lock: Mutex::new(None),
         }
     }
 
@@ -136,15 +136,17 @@ impl<S> SlotCell<S> {
     /// guard (from an unrelated panic elsewhere) is recovered rather than
     /// cascading.
     fn with_write<R>(&self, mutate: impl FnOnce(u64) -> R) -> R {
-        let _guard = self
+        let mut guard = self
             .write_lock
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         let generation = self.bump_generation();
+        *guard = None;
         mutate(generation)
     }
 
     /// Install (or replace) the resolved value, advancing the generation.
+    /// This unqualified write clears any retained projection identity.
     ///
     /// The new generation is published atomically *with* the value inside
     /// a single internal entry swap, so a concurrent
@@ -181,13 +183,106 @@ impl<S> SlotCell<S> {
         material_epoch: u64,
         value: Arc<S>,
     ) -> Result<SlotUpdate, SlotInstallError> {
-        if material_epoch == 0 || material_epoch == REVOKED_AUTHORITY {
-            return Err(SlotInstallError::InvalidMaterialEpoch);
-        }
-        let _guard = self
+        self.install_projection(None, material_epoch, value, None)
+    }
+
+    /// Install a guard while pinning its credential identity for qualified updates.
+    ///
+    /// # Errors
+    /// Returns [`SlotInstallError::CredentialIdentityMismatch`] for a different
+    /// credential or owner, or [`SlotInstallError::InvalidMaterialEpoch`].
+    pub fn install_projected(
+        &self,
+        metadata: nebula_credential::CredentialGuardMetadata,
+        value: Arc<S>,
+    ) -> Result<SlotUpdate, SlotInstallError> {
+        let material_epoch = metadata.material_epoch();
+        self.install_projection(Some(metadata), material_epoch, value, None)
+    }
+
+    /// Installs projected material only if no slot transition superseded the snapshot.
+    /// The generation comparison and publication share the slot writer lock.
+    ///
+    /// # Errors
+    /// Returns [`SlotInstallError::ProjectionChanged`] if the snapshot was superseded,
+    /// or the same validation errors as [`Self::install_projected`].
+    pub fn install_projected_at_generation(
+        &self,
+        expected_generation: u64,
+        metadata: nebula_credential::CredentialGuardMetadata,
+        value: Arc<S>,
+    ) -> Result<SlotUpdate, SlotInstallError> {
+        let epoch = metadata.material_epoch();
+        self.install_projection(Some(metadata), epoch, value, Some(expected_generation))
+    }
+
+    /// Atomically snapshots the slot generation and optional projection metadata.
+    /// Empty and unqualified slots still carry a generation that fences later writes.
+    pub fn projection_snapshot(&self) -> (u64, Option<nebula_credential::CredentialGuardMetadata>) {
+        let metadata = self
             .write_lock
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
+        (self.generation(), metadata.clone())
+    }
+
+    /// Runs a synchronous fence only while the observed projection generation
+    /// is still current. The generation check and fence share the slot writer
+    /// lock, so an unqualified write cannot detach the credential between them.
+    ///
+    /// # Errors
+    /// Returns [`SlotInstallError::ProjectionChanged`] after any intervening
+    /// slot transition.
+    pub fn fence_projection_at_generation(
+        &self,
+        expected_generation: u64,
+        fence: &mut dyn FnMut(),
+    ) -> Result<(), SlotInstallError> {
+        let _identity = self
+            .write_lock
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if self.generation() != expected_generation {
+            return Err(SlotInstallError::ProjectionChanged);
+        }
+        fence();
+        Ok(())
+    }
+
+    /// Routing and ordering metadata for a live projected slot; contains no material.
+    pub fn projection_metadata(&self) -> Option<nebula_credential::CredentialGuardMetadata> {
+        let metadata = self
+            .write_lock
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        self.inner.load().as_ref()?;
+        metadata.clone()
+    }
+
+    fn install_projection(
+        &self,
+        metadata: Option<nebula_credential::CredentialGuardMetadata>,
+        material_epoch: u64,
+        value: Arc<S>,
+        expected_generation: Option<u64>,
+    ) -> Result<SlotUpdate, SlotInstallError> {
+        if material_epoch == 0 || material_epoch == REVOKED_AUTHORITY {
+            return Err(SlotInstallError::InvalidMaterialEpoch);
+        }
+        let mut identity = self
+            .write_lock
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if expected_generation.is_some_and(|expected| expected != self.generation()) {
+            return Err(SlotInstallError::ProjectionChanged);
+        }
+        if let (Some(current), Some(incoming)) = (identity.as_ref(), metadata.as_ref())
+            && (current.credential_id() != incoming.credential_id()
+                || current.credential_key() != incoming.credential_key()
+                || current.scope() != incoming.scope())
+        {
+            return Err(SlotInstallError::CredentialIdentityMismatch);
+        }
         let current = self.material_epoch.load(Ordering::Relaxed);
         if current == REVOKED_AUTHORITY {
             return Ok(SlotUpdate::Revoked);
@@ -204,6 +299,7 @@ impl<S> SlotCell<S> {
             material_epoch,
             value,
         })));
+        *identity = metadata;
         Ok(SlotUpdate::Installed)
     }
 
@@ -302,7 +398,7 @@ impl<S> SlotCell<S> {
     /// Once applied, no later or delayed refresh can repopulate the slot.
     /// Repeating revoke is an idempotent terminal no-op.
     pub fn revoke(&self) -> SlotUpdate {
-        let _guard = self
+        let mut metadata = self
             .write_lock
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
@@ -314,6 +410,7 @@ impl<S> SlotCell<S> {
         self.material_epoch
             .store(REVOKED_AUTHORITY, Ordering::Relaxed);
         self.inner.store(None);
+        *metadata = None;
         SlotUpdate::Revoked
     }
 
@@ -382,6 +479,12 @@ pub enum SlotInstallError {
     /// The epoch collides with a resource-internal authority marker.
     #[error("credential material epoch is reserved for resource slot authority")]
     InvalidMaterialEpoch,
+    /// A projected update belongs to a different credential instance or owner.
+    #[error("projected credential identity does not match the bound slot")]
+    CredentialIdentityMismatch,
+    /// A slot transition superseded the projection snapshot.
+    #[error("credential slot changed after projection snapshot")]
+    ProjectionChanged,
 }
 
 /// Convenience alias for the standard credential slot field type.

@@ -558,6 +558,10 @@ impl Manager {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             self.set_phase_all(crate::state::ResourcePhase::ShuttingDown);
             self.registry.clear();
+            #[cfg(feature = "rotation")]
+            for index in self.attached_rotation_indexes() {
+                index.clear_for_manager_shutdown();
+            }
         }
         let previous_state = std::mem::replace(&mut *state, ShutdownState::Finished);
         let session = match previous_state {

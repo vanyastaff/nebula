@@ -132,6 +132,7 @@ fn map_gateway_err(err: CredentialGatewayError, cred: &str) -> ApiError {
                 })
                 .collect(),
         },
+        CredentialGatewayError::StateEnvelopeRefused => ApiError::CredentialStateRefused,
         CredentialGatewayError::TypeUnknown { key } => ApiError::Validation {
             detail: format!("unknown credential type: {key}"),
             errors: vec![crate::error::ValidationFieldError::field(
@@ -158,6 +159,9 @@ fn map_gateway_err(err: CredentialGatewayError, cred: &str) -> ApiError {
         },
         CredentialGatewayError::RefreshReconciliationRequired => {
             ApiError::CredentialRefreshReconciliationRequired
+        },
+        CredentialGatewayError::AcquisitionReconciliationRequired => {
+            ApiError::CredentialAcquisitionReconciliationRequired
         },
         CredentialGatewayError::RevokeReconciliationRequired => {
             ApiError::CredentialRevokeReconciliationRequired

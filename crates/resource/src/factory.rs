@@ -105,6 +105,10 @@ pub struct SlotBinding {
     /// `None` when this credential does not participate in rotation (no
     /// reverse-index row is staged for it).
     pub credential_id: Option<nebula_credential::CredentialId>,
+    /// Owner-qualified durable lookup scope. Required when
+    /// `credential_id` participates in rotation and absent for opt-out
+    /// bindings.
+    pub credential_scope: Option<nebula_credential::TenantScope>,
 }
 
 /// One resolved projected guard to install before resource publication.
@@ -358,6 +362,68 @@ pub struct ResourceRegistrationOutcome {
     pub slot_identity: SlotIdentity,
 }
 
+/// Internal reverse-index ownership carried through the sealed registration
+/// boundary. Public only because it appears on the sealed factory trait.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy)]
+pub struct RegistrationBindings<'a> {
+    #[cfg(feature = "rotation")]
+    index: Option<&'a crate::ResourceFanoutIndex>,
+    #[cfg(feature = "rotation")]
+    staged: &'a [(nebula_credential::CredentialId, crate::Bind)],
+    #[cfg(feature = "rotation")]
+    authoritative_proof:
+        Option<&'a crate::credential_fanout::index::AuthoritativeRegistrationProof>,
+    marker: std::marker::PhantomData<&'a ()>,
+}
+
+impl RegistrationBindings<'_> {
+    pub(crate) const fn empty() -> Self {
+        Self {
+            #[cfg(feature = "rotation")]
+            index: None,
+            #[cfg(feature = "rotation")]
+            staged: &[],
+            #[cfg(feature = "rotation")]
+            authoritative_proof: None,
+            marker: std::marker::PhantomData,
+        }
+    }
+
+    #[cfg(feature = "rotation")]
+    pub(crate) fn staged<'a>(
+        index: Option<&'a crate::ResourceFanoutIndex>,
+        staged: &'a [(nebula_credential::CredentialId, crate::Bind)],
+        authoritative_proof: Option<
+            &'a crate::credential_fanout::index::AuthoritativeRegistrationProof,
+        >,
+    ) -> RegistrationBindings<'a> {
+        RegistrationBindings {
+            index,
+            staged,
+            authoritative_proof,
+            marker: std::marker::PhantomData,
+        }
+    }
+}
+
+#[cfg(feature = "rotation")]
+impl<'a> RegistrationBindings<'a> {
+    pub(crate) fn rotation_index(self) -> Option<&'a crate::ResourceFanoutIndex> {
+        self.index
+    }
+
+    pub(crate) fn staged_entries(self) -> &'a [(nebula_credential::CredentialId, crate::Bind)] {
+        self.staged
+    }
+
+    pub(crate) fn authoritative_proof(
+        self,
+    ) -> Option<&'a crate::credential_fanout::index::AuthoritativeRegistrationProof> {
+        self.authoritative_proof
+    }
+}
+
 /// Object-safe, type-erased **B+ merged contribution contract** for one
 /// resource type.
 ///
@@ -439,6 +505,17 @@ pub trait ResourceFactory: private::Sealed + Send + Sync + 'static {
         request: RegisterRequest<'a>,
         expected_slot_identity: &'a SlotIdentity,
     ) -> BoxFut<'a, Result<SlotIdentity, crate::Error>>;
+
+    #[doc(hidden)]
+    fn register_with_bindings<'a>(
+        &'a self,
+        manager: &'a Manager,
+        request: RegisterRequest<'a>,
+        expected_slot_identity: &'a SlotIdentity,
+        _registration_bindings: RegistrationBindings<'a>,
+    ) -> BoxFut<'a, Result<SlotIdentity, crate::Error>> {
+        self.register(manager, request, expected_slot_identity)
+    }
 }
 
 /// Per-`R` [`ResourceFactory`] that closes over the pieces the erased
@@ -613,6 +690,21 @@ where
         request: RegisterRequest<'a>,
         expected_slot_identity: &'a SlotIdentity,
     ) -> BoxFut<'a, Result<SlotIdentity, crate::Error>> {
+        self.register_with_bindings(
+            manager,
+            request,
+            expected_slot_identity,
+            RegistrationBindings::empty(),
+        )
+    }
+
+    fn register_with_bindings<'a>(
+        &'a self,
+        manager: &'a Manager,
+        request: RegisterRequest<'a>,
+        expected_slot_identity: &'a SlotIdentity,
+        registration_bindings: RegistrationBindings<'a>,
+    ) -> BoxFut<'a, Result<SlotIdentity, crate::Error>> {
         Box::pin(async move {
             let metadata = self.metadata().map_err(|source| {
                 crate::Error::permanent("resource factory metadata admission failed")
@@ -651,6 +743,47 @@ where
                     },
                 }
             }
+            for binding in &request.slot_bindings {
+                let Some(credential_id) = binding.credential_id else {
+                    continue;
+                };
+                let Some(credential_scope) = binding.credential_scope.as_ref() else {
+                    return Err(crate::Error::permanent(
+                        "rotation binding requires owner-qualified credential scope",
+                    )
+                    .with_resource_key(R::key()));
+                };
+                if !resource.supports_credential_slot_projection(&binding.slot_name) {
+                    return Err(crate::Error::permanent(
+                        "rotation binding requires conditional credential projection support",
+                    )
+                    .with_resource_key(R::key()));
+                }
+                let Some((generation, installed)) =
+                    resource.credential_slot_projection(&binding.slot_name)
+                else {
+                    return Err(crate::Error::permanent(
+                        "rotation binding projection snapshot is unavailable",
+                    )
+                    .with_resource_key(R::key()));
+                };
+                if installed.is_none() && generation != 0 {
+                    return Err(crate::Error::permanent(
+                        "rotation-bound credential slot changed without projection metadata",
+                    )
+                    .with_resource_key(R::key()));
+                }
+                if let Some(installed) = installed
+                    && (installed.credential_id() != credential_id
+                        || installed.credential_key() != &binding.credential_key
+                        || installed.scope() != Some(&credential_scope.durable_owner_scope()))
+                {
+                    return Err(crate::Error::permanent(
+                        "rotation-bound credential install metadata mismatch",
+                    )
+                    .with_resource_key(R::key()));
+                }
+            }
             manager
                 .register_resolved::<R>(
                     metadata.base().schema(),
@@ -662,6 +795,7 @@ where
                     topology,
                     request.recovery_gate,
                     expected_slot_identity,
+                    registration_bindings,
                 )
                 .await
         })
@@ -776,6 +910,7 @@ impl ResourceActivatorRegistry {
             &scope,
             &expected_slot_identity,
             &slot_identity,
+            None,
         )?;
         Ok(ResourceRegistrationOutcome {
             resource_key,
@@ -807,7 +942,7 @@ impl ResourceActivatorRegistry {
         kind: &str,
         manager: &Manager,
         request: RegisterRequest<'_>,
-        fanout_index: Option<&crate::ResourceFanoutIndex>,
+        fanout_index: Option<&Arc<crate::ResourceFanoutIndex>>,
     ) -> Result<ResourceRegistrationOutcome, RegistrarError> {
         let factory = self
             .factories
@@ -817,6 +952,25 @@ impl ResourceActivatorRegistry {
         let staged_slot_identity = slot_identity_from_request(&request);
         let scope = request.scope.clone();
 
+        if fanout_index.is_none()
+            && request
+                .slot_bindings
+                .iter()
+                .any(|binding| binding.credential_id.is_some())
+        {
+            return Err(RegistrarError::Register {
+                kind: kind.to_owned(),
+                source: crate::Error::permanent(
+                    "rotation binding requires a credential fan-out index",
+                )
+                .with_resource_key(resource_key),
+            });
+        }
+
+        if let Some(index) = fanout_index {
+            manager.attach_rotation_index(index);
+        }
+
         // Stage reverse-index binds BEFORE the typed register makes the
         // Manager row discoverable. Each `CredentialId` rides on the SAME
         // `SlotBinding` whose `credential_key` fed `staged_slot_identity`, so
@@ -825,24 +979,88 @@ impl ResourceActivatorRegistry {
         // rotation `CredentialId` is simply skipped — no silent drop of a
         // mismatched parallel-map entry.
         let mut staged: Vec<(nebula_credential::CredentialId, _)> = Vec::new();
+        let mut authoritative_proof = None;
         if let Some(idx) = fanout_index {
+            let mut planned = Vec::new();
             for binding in &request.slot_bindings {
                 let Some(cred_id) = binding.credential_id else {
                     continue;
                 };
+                let Some(credential_scope) = binding.credential_scope.clone() else {
+                    return Err(RegistrarError::Register {
+                        kind: kind.to_owned(),
+                        source: crate::Error::permanent(
+                            "rotation binding requires owner-qualified credential scope",
+                        )
+                        .with_resource_key(resource_key.clone()),
+                    });
+                };
+                let credential_scope = credential_scope.durable_owner_scope();
+                if let Some(install) = request
+                    .slot_installs
+                    .iter()
+                    .find(|install| install.slot_name == binding.slot_name)
+                {
+                    let metadata = install.guard.metadata();
+                    if metadata.credential_id() != cred_id
+                        || metadata.credential_key() != &binding.credential_key
+                        || metadata.scope() != Some(&credential_scope)
+                    {
+                        return Err(RegistrarError::Register {
+                            kind: kind.to_owned(),
+                            source: crate::Error::permanent(
+                                "rotation-bound credential install metadata mismatch",
+                            )
+                            .with_resource_key(resource_key.clone()),
+                        });
+                    }
+                }
                 let bind = crate::Bind {
                     resource_key: resource_key.clone(),
                     scope: request.scope.clone(),
                     slot_name: binding.slot_name.clone(),
                     slot_identity: staged_slot_identity.clone(),
                 };
-                idx.bind(
+                planned.push((
                     cred_id,
-                    resource_key.clone(),
-                    request.scope.clone(),
-                    binding.slot_name.clone(),
-                    staged_slot_identity.clone(),
+                    bind,
+                    credential_scope,
+                    binding.credential_key.clone(),
+                ));
+            }
+            if !planned.is_empty() {
+                authoritative_proof = Some(
+                    idx.authoritative_registration_proof(manager)
+                        .ok_or_else(|| RegistrarError::Register {
+                            kind: kind.to_owned(),
+                            source: crate::Error::permanent(
+                                "rotation binding requires authoritative credential reconciliation",
+                            )
+                            .with_resource_key(resource_key.clone()),
+                        })?,
                 );
+            }
+            // Validation above is side-effect free. Only after every binding
+            // is known valid may any staged reference become visible.
+            for (cred_id, bind, credential_scope, credential_key) in planned {
+                if !manager.stage_credential_binding(
+                    idx,
+                    cred_id,
+                    bind.clone(),
+                    credential_scope,
+                    credential_key,
+                ) {
+                    for (staged_id, staged_bind) in &staged {
+                        idx.unbind_staged_entry(staged_id, staged_bind);
+                    }
+                    return Err(RegistrarError::Register {
+                        kind: kind.to_owned(),
+                        source: crate::Error::permanent(
+                            "conflicting owner context for rotation binding",
+                        )
+                        .with_resource_key(resource_key.clone()),
+                    });
+                }
                 staged.push((cred_id, bind));
             }
         }
@@ -857,7 +1075,16 @@ impl ResourceActivatorRegistry {
         });
 
         let slot_identity = factory
-            .register(manager, request, &staged_slot_identity)
+            .register_with_bindings(
+                manager,
+                request,
+                &staged_slot_identity,
+                RegistrationBindings::staged(
+                    fanout_index.map(Arc::as_ref),
+                    &rollback.1,
+                    authoritative_proof.as_ref(),
+                ),
+            )
             .await
             .map_err(|source| RegistrarError::Register {
                 kind: kind.to_owned(),
@@ -870,6 +1097,7 @@ impl ResourceActivatorRegistry {
             &scope,
             &staged_slot_identity,
             &slot_identity,
+            fanout_index.map(Arc::as_ref),
         )?;
         scopeguard::ScopeGuard::into_inner(rollback);
         Ok(ResourceRegistrationOutcome {
@@ -924,6 +1152,8 @@ fn ensure_registration_identity(
     scope: &ScopeLevel,
     expected: &SlotIdentity,
     actual: &SlotIdentity,
+    #[cfg(feature = "rotation")] fanout_index: Option<&crate::ResourceFanoutIndex>,
+    #[cfg(not(feature = "rotation"))] _fanout_index: Option<&()>,
 ) -> Result<(), RegistrarError> {
     if actual == expected {
         return Ok(());
@@ -948,6 +1178,11 @@ fn ensure_registration_identity(
             actual: actual.clone(),
             source: Box::new(source),
         });
+    }
+
+    #[cfg(feature = "rotation")]
+    if let Some(index) = fanout_index {
+        index.unbind_resource_identity(resource_key, scope, expected);
     }
 
     Err(RegistrarError::IdentityMismatch {

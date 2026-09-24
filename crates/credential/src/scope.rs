@@ -151,7 +151,8 @@ impl TenantScope {
     }
 
     /// Clone only the durable owner partition, excluding interactive proof.
-    pub(crate) fn durable_owner_scope(&self) -> Self {
+    #[must_use]
+    pub fn durable_owner_scope(&self) -> Self {
         Self {
             owner: self.owner.clone(),
             authentication_binding: None,

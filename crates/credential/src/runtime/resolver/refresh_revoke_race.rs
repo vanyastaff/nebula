@@ -1819,6 +1819,96 @@ fn oauth_service_with_runtime(
 // ── Regressions ────────────────────────────────────────────────────
 
 #[tokio::test]
+async fn coalesced_reauth_is_counted_only_after_authoritative_reread() {
+    let store = Arc::new(ScriptedStore::new(live_row(), false));
+    let claims = Arc::new(StatefulClaimRepo::default());
+    claims.active.store(true, Ordering::SeqCst);
+    let resolver = Arc::new(resolver_with_runtime(
+        Arc::clone(&store),
+        claims.clone(),
+        Arc::new(StubTransport),
+    ));
+    let waiter = tokio::spawn({
+        let resolver = Arc::clone(&resolver);
+        async move {
+            resolver
+                .resolve_with_refresh::<TestCred>(
+                    &test_selector(),
+                    &CredentialContext::for_owner("test-owner"),
+                )
+                .await
+        }
+    });
+    tokio::time::timeout(Duration::from_secs(2), claims.wait_for_try_claim_count(1))
+        .await
+        .expect("waiter reaches contended L2");
+    assert_eq!(refresh_result_counts(resolver.as_ref()), [0; 5]);
+    let StoredCredential::Live(observed) = store.snapshot() else {
+        panic!("live fixture");
+    };
+    assert!(matches!(
+        persist_reauth_required(store.as_ref(), &test_selector(), observed).await,
+        ReauthWrite::Applied
+    ));
+    let error = tokio::time::timeout(Duration::from_secs(2), waiter)
+        .await
+        .expect("waiter rechecks durable state")
+        .expect("waiter joins")
+        .expect_err("coalescing must preserve reauthentication");
+    assert!(matches!(error, ResolveError::ReauthRequired { .. }));
+    assert_eq!(refresh_result_counts(resolver.as_ref()), [0, 1, 0, 0, 0]);
+    assert_eq!(store.replacement_count(), 1);
+}
+
+#[tokio::test]
+async fn scheduled_refresh_records_one_terminal_result() {
+    use crate::runtime::refresh::{ScheduledRefreshDisposition, ScheduledRefreshExecutor};
+    for (response, expected, counts) in [
+        (
+            OAuthTransportResult::Success,
+            ScheduledRefreshDisposition::Refreshed,
+            [1, 0, 0, 0, 0],
+        ),
+        (
+            OAuthTransportResult::InvalidGrant,
+            ScheduledRefreshDisposition::ReauthRequired,
+            [0, 1, 0, 0, 0],
+        ),
+        (
+            OAuthTransportResult::AckLost,
+            ScheduledRefreshDisposition::OutcomeUnknown,
+            [0, 0, 0, 1, 0],
+        ),
+    ] {
+        let scope = crate::TenantScope::new("test-org", "test-workspace");
+        let store = Arc::new(ScriptedStore::with_owner(
+            oauth2_row(Some("refresh-grant")),
+            false,
+            CredentialOwner::from_canonical(scope.owner_id()),
+        ));
+        let StoredCredential::Live(row) = store.snapshot() else {
+            panic!("live fixture");
+        };
+        let candidate = nebula_storage_port::DueCredentialRefresh::new(
+            scope.selector(test_id()),
+            OAuth2Credential::KEY.to_owned(),
+            row.expires_at().expect("expired OAuth fixture"),
+            Utc::now(),
+        );
+        let transport = Arc::new(ScriptedOAuthTransport::new(response));
+        let (service, shutdown) = oauth_service_with_runtime(
+            store,
+            Arc::new(StatefulClaimRepo::default()),
+            transport.clone(),
+        );
+        assert_eq!(service.refresh_due(candidate).await, expected);
+        assert_eq!(refresh_result_counts(&service.resolver), counts);
+        assert_eq!(transport.call_count(), 1);
+        shutdown.cancel();
+    }
+}
+
+#[tokio::test]
 async fn linear_refresh_evidence_separates_predispatch_from_unknown_dispatch() {
     let ctx = CredentialContext::for_owner("test-owner");
     let exact = RefreshAttempt::new(&ctx, crate::RefreshExecutionMode::Provider)
@@ -2735,7 +2825,8 @@ async fn post_provider_unknown_commit_outcome_remains_exact_and_non_retryable() 
         live_row_with_token("counted-unknown"),
         CredentialPersistenceError::OutcomeUnknown,
     ));
-    let error = resolver_with(Arc::clone(&store))
+    let resolver = resolver_with(Arc::clone(&store));
+    let error = resolver
         .resolve_with_refresh::<TestCred>(
             &test_selector(),
             &CredentialContext::for_owner("test-owner"),
@@ -2750,6 +2841,7 @@ async fn post_provider_unknown_commit_outcome_remains_exact_and_non_retryable() 
         }
     ));
     assert_eq!(UNKNOWN_PROVIDER_CALLS.load(Ordering::SeqCst), 1);
+    assert_eq!(refresh_result_counts(&resolver), [0, 0, 0, 1, 0]);
     let mapped = resolve_error_to_credential_error(error);
     assert!(matches!(mapped, CredentialError::OutcomeUnknown));
     assert!(!mapped.is_retryable());
@@ -3243,6 +3335,7 @@ async fn service_forced_oauth_refresh_uses_resolver_transport_and_exact_k2_dispo
     let crate::CredentialServiceError::RefreshNotApplied(context) = error else {
         panic!("service must preserve the proof-bearing refresh context");
     };
+    assert_eq!(refresh_result_counts(&service.resolver), [0, 0, 1, 0, 0]);
     assert_eq!(transport.call_count(), 1);
     assert_eq!(context.retry(), crate::error::RetryAdvice::Never);
     assert_eq!(
@@ -3255,6 +3348,49 @@ async fn service_forced_oauth_refresh_uses_resolver_transport_and_exact_k2_dispo
     tokio::time::timeout(Duration::from_secs(1), claims.wait_for_release_count(1))
         .await
         .expect("exact management refresh failure should release L2");
+}
+
+#[tokio::test]
+async fn management_retry_gate_rejection_does_not_count_a_coordinated_result() {
+    let scope = crate::TenantScope::new("test-org", "test-workspace");
+    let store = Arc::new(ScriptedStore::with_owner(
+        oauth2_row(Some("refresh-grant")),
+        false,
+        CredentialOwner::from_canonical(scope.owner_id()),
+    ));
+    let transport = Arc::new(ScriptedOAuthTransport::new(
+        OAuthTransportResult::InvalidClient401,
+    ));
+    let (first, first_shutdown) = oauth_service_with_runtime(
+        Arc::clone(&store),
+        Arc::new(StatefulClaimRepo::default()),
+        transport.clone(),
+    );
+    first
+        .refresh(&scope, &test_id().to_string())
+        .await
+        .expect_err("the first exact denial installs a durable retry gate");
+    first_shutdown.cancel();
+
+    let claims = Arc::new(StatefulClaimRepo::default());
+    let (restarted, restarted_shutdown) = oauth_service_with_runtime(
+        store,
+        claims.clone(),
+        Arc::clone(&transport) as Arc<dyn RefreshTransport>,
+    );
+    let error = restarted
+        .refresh(&scope, &test_id().to_string())
+        .await
+        .expect_err("the durable retry gate rejects before coordinator entry");
+    restarted_shutdown.cancel();
+
+    assert!(matches!(
+        error,
+        crate::CredentialServiceError::RefreshNotApplied(_)
+    ));
+    assert_eq!(refresh_result_counts(&restarted.resolver), [0; 5]);
+    assert_eq!(claims.try_claim_count.load(Ordering::SeqCst), 0);
+    assert_eq!(transport.call_count(), 1);
 }
 
 #[tokio::test]
@@ -3284,6 +3420,7 @@ async fn service_forced_oauth_transient_response_is_unknown_and_retains_l2() {
         error,
         crate::CredentialServiceError::OutcomeUnknown
     ));
+    assert_eq!(refresh_result_counts(&service.resolver), [0, 0, 0, 1, 0]);
     assert_eq!(transport.call_count(), 1);
     assert_eq!(store.replacement_count(), 0);
     assert!(claims.active.load(Ordering::SeqCst));

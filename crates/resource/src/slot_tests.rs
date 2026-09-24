@@ -281,3 +281,128 @@ async fn single_reader_observes_monotone_generations_under_concurrent_store() {
     writer.await.expect("writer task must not panic");
     reader.await.expect("reader task must not panic");
 }
+
+#[test]
+fn projected_slot_rejects_another_credential_even_at_a_higher_epoch() {
+    use nebula_credential::{CredentialGuardMetadata, CredentialId, TenantScope};
+    let cell = SlotCell::<FakeGuard>::empty();
+    let cid = CredentialId::new();
+    let owner = TenantScope::new("org", "workspace");
+    let metadata = CredentialGuardMetadata::new(cid, "oauth".parse().expect("key"), 1, 1)
+        .with_scope(owner.clone());
+    assert_eq!(
+        cell.install_projected(metadata.clone(), Arc::new(FakeGuard(1)))
+            .expect("install"),
+        SlotUpdate::Installed
+    );
+    for incoming in [
+        CredentialGuardMetadata::new(CredentialId::new(), "oauth".parse().expect("key"), 99, 99)
+            .with_scope(owner),
+        CredentialGuardMetadata::new(cid, "oauth".parse().expect("key"), 99, 99)
+            .with_scope(TenantScope::new("other", "workspace")),
+    ] {
+        assert!(matches!(
+            cell.install_projected(incoming, Arc::new(FakeGuard(99))),
+            Err(SlotInstallError::CredentialIdentityMismatch)
+        ));
+    }
+    assert_eq!(cell.projection_metadata(), Some(metadata));
+    assert_eq!(cell.load().expect("original guard").0, 1);
+    assert_eq!(cell.generation(), 1);
+}
+
+#[test]
+fn unqualified_writes_clear_projection_identity_only_when_applied() {
+    use nebula_credential::{CredentialGuardMetadata, CredentialId, TenantScope};
+    for use_store in [false, true] {
+        let cell = SlotCell::<FakeGuard>::empty();
+        let metadata =
+            CredentialGuardMetadata::new(CredentialId::new(), "oauth".parse().expect("key"), 2, 2)
+                .with_scope(TenantScope::new("org", "workspace"));
+        assert_eq!(
+            cell.install_projected(metadata.clone(), Arc::new(FakeGuard(2)))
+                .expect("projected"),
+            SlotUpdate::Installed
+        );
+        assert!(matches!(
+            cell.install_at_material_epoch(1, Arc::new(FakeGuard(1)))
+                .expect("stale"),
+            SlotUpdate::Stale { .. }
+        ));
+        assert_eq!(cell.projection_metadata(), Some(metadata));
+        if use_store {
+            cell.store(Arc::new(FakeGuard(3)));
+        } else {
+            assert_eq!(
+                cell.install_at_material_epoch(3, Arc::new(FakeGuard(3)))
+                    .expect("unqualified"),
+                SlotUpdate::Installed
+            );
+        }
+        assert_eq!(cell.projection_metadata(), None);
+        assert_eq!(cell.load().expect("live").0, 3);
+    }
+}
+
+#[test]
+fn conditional_projection_rejects_superseded_generation_without_mutation() {
+    use nebula_credential::{CredentialGuardMetadata, CredentialId};
+    for transition in 0..3 {
+        let cell = SlotCell::<FakeGuard>::empty();
+        let cid = CredentialId::new();
+        let metadata =
+            |epoch| CredentialGuardMetadata::new(cid, "oauth".parse().expect("key"), epoch, epoch);
+        assert_eq!(
+            cell.install_projected(metadata(1), Arc::new(FakeGuard(1)))
+                .expect("initial projection"),
+            SlotUpdate::Installed
+        );
+        let (generation, snapshot) = cell.projection_snapshot();
+        assert_eq!(snapshot, Some(metadata(1)));
+        match transition {
+            0 => cell.store(Arc::new(FakeGuard(7))),
+            1 => {
+                assert!(cell.take().is_some());
+            },
+            _ => {
+                assert_eq!(
+                    cell.install_at_material_epoch(2, Arc::new(FakeGuard(7)))
+                        .expect("unqualified"),
+                    SlotUpdate::Installed
+                );
+            },
+        }
+        let superseded_generation = cell.generation();
+        assert_eq!(
+            cell.install_projected_at_generation(generation, metadata(99), Arc::new(FakeGuard(99))),
+            Err(SlotInstallError::ProjectionChanged)
+        );
+        assert_eq!(cell.generation(), superseded_generation);
+        assert_eq!(
+            cell.load().map(|guard| guard.0),
+            (transition != 1).then_some(7)
+        );
+        assert!(cell.projection_metadata().is_none());
+    }
+}
+
+#[test]
+fn revoked_projection_snapshot_retains_generation_without_routing_metadata() {
+    use nebula_credential::{CredentialGuardMetadata, CredentialId};
+    let cell = SlotCell::<FakeGuard>::empty();
+    let metadata =
+        CredentialGuardMetadata::new(CredentialId::new(), "oauth".parse().expect("key"), 1, 1);
+    assert_eq!(
+        cell.install_projected(metadata, Arc::new(FakeGuard(1)))
+            .expect("install"),
+        SlotUpdate::Installed
+    );
+    let before = cell.generation();
+    assert_eq!(cell.revoke(), SlotUpdate::Revoked);
+    let snapshot = cell.projection_snapshot();
+    assert!(snapshot.0 > before);
+    assert!(snapshot.1.is_none());
+    assert!(cell.load().is_none());
+    assert_eq!(cell.revoke(), SlotUpdate::AlreadyRevoked);
+    assert_eq!(cell.projection_snapshot(), snapshot);
+}

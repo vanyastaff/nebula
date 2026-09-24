@@ -6,6 +6,7 @@ use nebula_storage_port::{
     CredentialCommit, CredentialCreate, CredentialMaterialEpoch, CredentialOwner,
     CredentialReplacement, CredentialSelector, CredentialTombstone, CredentialVersion,
     RefreshRetrySnapshot, SecretBytes, StoredCredentialHead, StoredLiveCredential,
+    StoredTombstonedCredential,
 };
 
 use super::*;
@@ -20,6 +21,7 @@ const SECRET_CANARY: &str = "slot-resolver-secret-NEVER-DEBUG-994";
 struct SlotStore {
     owner: CredentialOwner,
     row: StoredCredential,
+    row_after_head: Option<StoredCredential>,
     material_loads: AtomicUsize,
 }
 
@@ -31,7 +33,7 @@ impl crate::CredentialPersistence for SlotStore {
     ) -> Result<StoredCredential, CredentialPersistenceError> {
         self.material_loads.fetch_add(1, Ordering::Relaxed);
         if selector.owner() == &self.owner && selector.credential_id() == self.row.credential_id() {
-            Ok(self.row.clone())
+            Ok(self.row_after_head.as_ref().unwrap_or(&self.row).clone())
         } else {
             Err(CredentialPersistenceError::NotFound)
         }
@@ -160,6 +162,7 @@ fn fixture_with_payload(
     let store = SlotStore {
         owner: scope.owner().clone(),
         row: row.into(),
+        row_after_head: None,
         material_loads: AtomicUsize::new(0),
     };
     let mut registry = crate::CredentialRegistry::new();
@@ -250,6 +253,135 @@ async fn resolves_opaque_guard_with_authoritative_ordering_metadata() {
         .into_typed::<SecretToken>()
         .expect("registered scheme type extracts");
     assert_eq!(typed.token().expose_secret(), SECRET_CANARY);
+}
+
+#[tokio::test]
+async fn owner_qualified_tombstone_is_distinct_from_absence() {
+    let (mut store, registry, ops, scope, id, key) = fixture();
+    let now = Utc::now();
+    store.row = StoredTombstonedCredential::new(
+        id,
+        BearerTokenCredential::KEY.to_owned(),
+        SecretToken::KIND.to_owned(),
+        SecretToken::VERSION,
+        CredentialVersion::MIN,
+        now,
+        now,
+        now,
+    )
+    .into();
+    let error = resolve_fixture(
+        &store,
+        &registry,
+        &ops,
+        &scope,
+        id,
+        key,
+        Capabilities::empty(),
+        CancellationToken::new(),
+    )
+    .await
+    .expect_err("tombstone cannot project");
+    assert_eq!(error, CredentialSlotResolveError::Revoked);
+}
+
+#[tokio::test]
+async fn tombstone_with_wrong_contract_does_not_revoke_the_requested_slot() {
+    let (mut store, registry, ops, scope, id, _) = fixture();
+    let now = Utc::now();
+    store.row = StoredTombstonedCredential::new(
+        id,
+        BearerTokenCredential::KEY.to_owned(),
+        SecretToken::KIND.to_owned(),
+        SecretToken::VERSION,
+        CredentialVersion::MIN,
+        now,
+        now,
+        now,
+    )
+    .into();
+    let wrong = CredentialKey::new("shared_key").expect("test key is valid");
+
+    let error = resolve_fixture(
+        &store,
+        &registry,
+        &ops,
+        &scope,
+        id,
+        wrong,
+        Capabilities::empty(),
+        CancellationToken::new(),
+    )
+    .await
+    .expect_err("wrong tombstone contract must not become a revoke signal");
+
+    assert_eq!(error, CredentialSlotResolveError::WrongCredentialKey);
+}
+
+#[tokio::test]
+async fn tombstone_committed_between_head_and_material_read_is_revoked() {
+    let (mut store, registry, ops, scope, id, key) = fixture();
+    let now = Utc::now();
+    store.row_after_head = Some(
+        StoredTombstonedCredential::new(
+            id,
+            BearerTokenCredential::KEY.to_owned(),
+            SecretToken::KIND.to_owned(),
+            SecretToken::VERSION,
+            CredentialVersion::MIN,
+            now,
+            now,
+            now,
+        )
+        .into(),
+    );
+    let error = resolve_fixture(
+        &store,
+        &registry,
+        &ops,
+        &scope,
+        id,
+        key,
+        Capabilities::empty(),
+        CancellationToken::new(),
+    )
+    .await
+    .expect_err("concurrent tombstone cannot project");
+    assert_eq!(error, CredentialSlotResolveError::Revoked);
+}
+
+#[tokio::test]
+async fn wrong_contract_tombstone_committed_after_head_is_not_revoked() {
+    let (mut store, registry, ops, scope, id, key) = fixture();
+    let now = Utc::now();
+    store.row_after_head = Some(
+        StoredTombstonedCredential::new(
+            id,
+            "shared_key".to_owned(),
+            SecretToken::KIND.to_owned(),
+            SecretToken::VERSION,
+            CredentialVersion::MIN,
+            now,
+            now,
+            now,
+        )
+        .into(),
+    );
+
+    let error = resolve_fixture(
+        &store,
+        &registry,
+        &ops,
+        &scope,
+        id,
+        key,
+        Capabilities::empty(),
+        CancellationToken::new(),
+    )
+    .await
+    .expect_err("a tombstone for another contract must not revoke the slot");
+
+    assert_eq!(error, CredentialSlotResolveError::WrongCredentialKey);
 }
 
 #[tokio::test]
@@ -573,4 +705,27 @@ async fn legacy_payload_with_future_row_version_refuses_as_stored_state_refused(
         ),
         "the slot surface must keep the refusal distinct from InvalidState"
     );
+}
+
+#[tokio::test]
+async fn projection_metadata_uses_durable_owner_without_interactive_binding() {
+    let (store, registry, ops, scope, id, key) = fixture();
+    let bound = scope.clone().with_authentication_binding(
+        crate::CredentialAuthenticationBinding::parse("A".repeat(43)).expect("binding"),
+    );
+    let guard = resolve_fixture(
+        &store,
+        &registry,
+        &ops,
+        &bound,
+        id,
+        key.clone(),
+        Capabilities::empty(),
+        CancellationToken::new(),
+    )
+    .await
+    .expect("bound owner resolves");
+    assert_eq!(guard.metadata().scope(), Some(&scope));
+    let adapter = CredentialGuardMetadata::new(id, key, 1, 1).with_scope(bound);
+    assert_eq!(adapter.scope(), Some(&scope));
 }

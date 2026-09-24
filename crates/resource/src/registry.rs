@@ -23,6 +23,22 @@ use crate::{
     topology_tag::TopologyTag,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProjectionHookState {
+    Pending { epoch: u64, generation: u64 },
+    Admitted { epoch: u64, generation: u64 },
+}
+
+impl ProjectionHookState {
+    pub(crate) fn coordinates(self) -> (u64, u64) {
+        match self {
+            Self::Pending { epoch, generation } | Self::Admitted { epoch, generation } => {
+                (epoch, generation)
+            },
+        }
+    }
+}
+
 /// Type-erased trait for managed resources stored in the [`Registry`].
 ///
 /// Every `ManagedResource<R>` implements this trait, allowing the registry
@@ -96,6 +112,9 @@ pub(crate) trait ManagedHandle: Send + Sync + 'static {
     /// `acquire_*` funnel checks.
     fn taint(&self);
 
+    /// Whether credential revoke already fenced this row's refresh admission.
+    fn is_tainted(&self) -> bool;
+
     /// Credential-revoke epoch bump.
     ///
     /// Bumped in the same synchronous pre-`.await` step as [`Self::taint`].
@@ -118,6 +137,41 @@ pub(crate) trait ManagedHandle: Send + Sync + 'static {
     /// internally) before dispatching the rotation hook, so an unknown slot
     /// name is rejected before any author code runs.
     fn accepts_credential_slot_name(&self, slot: &str) -> bool;
+
+    /// Atomic live projection snapshot; missing adapters fail closed.
+    fn credential_slot_projection(
+        &self,
+        _slot: &str,
+    ) -> Option<(u64, Option<nebula_credential::CredentialGuardMetadata>)> {
+        None
+    }
+
+    /// Conditional projection install; missing adapters fail closed.
+    fn install_credential_slot_at_generation(
+        &self,
+        _slot: &str,
+        _guard: nebula_credential::ErasedCredentialGuard,
+        _expected_generation: u64,
+    ) -> Result<crate::SlotUpdate, crate::SlotInstallError> {
+        Err(crate::SlotInstallError::ProjectionChanged)
+    }
+
+    /// Runs a synchronous callback exactly once while the credential-slot
+    /// generation is still current and the concrete slot writer is excluded.
+    /// An error means the callback was not invoked.
+    fn fence_credential_slot_at_generation(
+        &self,
+        _slot: &str,
+        _expected_generation: u64,
+        _fence: &mut dyn FnMut(),
+    ) -> Result<(), crate::SlotInstallError> {
+        Err(crate::SlotInstallError::ProjectionChanged)
+    }
+
+    /// Serializes projected installation with synchronous hook admission.
+    fn pending_projection_hooks(
+        &self,
+    ) -> &std::sync::Mutex<std::collections::HashMap<String, ProjectionHookState>>;
 
     /// Installs a newer projected credential guard through the concrete
     /// resource's derive-generated slot dispatcher.
@@ -283,8 +337,45 @@ where
         ManagedResource::bump_revoke_epoch(self);
     }
 
+    fn is_tainted(&self) -> bool {
+        ManagedResource::is_tainted(self)
+    }
+
     fn accepts_credential_slot_name(&self, slot: &str) -> bool {
         R::credential_slot_names().contains(&slot)
+    }
+
+    fn credential_slot_projection(
+        &self,
+        slot: &str,
+    ) -> Option<(u64, Option<nebula_credential::CredentialGuardMetadata>)> {
+        self.resource.credential_slot_projection(slot)
+    }
+
+    fn install_credential_slot_at_generation(
+        &self,
+        slot: &str,
+        guard: nebula_credential::ErasedCredentialGuard,
+        expected_generation: u64,
+    ) -> Result<crate::SlotUpdate, crate::SlotInstallError> {
+        self.resource
+            .install_credential_slot_at_generation(slot, guard, expected_generation)
+    }
+
+    fn fence_credential_slot_at_generation(
+        &self,
+        slot: &str,
+        expected_generation: u64,
+        fence: &mut dyn FnMut(),
+    ) -> Result<(), crate::SlotInstallError> {
+        self.resource
+            .fence_credential_slot_at_generation(slot, expected_generation, fence)
+    }
+
+    fn pending_projection_hooks(
+        &self,
+    ) -> &std::sync::Mutex<std::collections::HashMap<String, ProjectionHookState>> {
+        &self.pending_projection_hooks
     }
 
     fn install_credential_slot(
@@ -702,6 +793,19 @@ impl Registry {
                 admission,
             },
             None => RegistrationOutcome::Inserted,
+        })
+    }
+
+    /// Revalidates the exact pinned row under the manager lifecycle admission lock.
+    pub(crate) fn contains_managed(
+        &self,
+        key: &ResourceKey,
+        managed: &Arc<dyn ManagedHandle>,
+    ) -> bool {
+        self.entries.get(key).is_some_and(|entries| {
+            entries
+                .iter()
+                .any(|entry| Arc::ptr_eq(&entry.managed, managed))
         })
     }
 

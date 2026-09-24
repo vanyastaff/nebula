@@ -396,7 +396,10 @@ pub(crate) fn emit_credential_slot_epoch_body(slots: &[ParsedCredentialSlot]) ->
 }
 
 /// Emit checked erased-value installation for every declared credential slot.
-pub(crate) fn emit_slot_install_body(slots: &[ParsedCredentialSlot]) -> TokenStream2 {
+pub(crate) fn emit_slot_install_body(
+    slots: &[ParsedCredentialSlot],
+    conditional: bool,
+) -> TokenStream2 {
     let arms = slots.iter().map(|slot| {
         let field = &slot.field_ident;
         let inner = &slot.inner_type;
@@ -406,16 +409,18 @@ pub(crate) fn emit_slot_install_body(slots: &[ParsedCredentialSlot]) -> TokenStr
             quote! { #inner }
         };
         let slot_key = slot.slot_key();
+        let install = if conditional {
+            quote! { self.#field.install_projected_at_generation(expected_generation, metadata, ::std::sync::Arc::new(guard)) }
+        } else {
+            quote! { self.#field.install_projected(metadata, ::std::sync::Arc::new(guard)) }
+        };
         quote! {
             #slot_key => {
-                let material_epoch = guard.metadata().material_epoch();
+                let metadata = guard.metadata().clone();
                 let guard = guard
                     .into_typed::<#projected>()
                     .map_err(|_| ::nebula_resource::SlotInstallError::CredentialTypeMismatch)?;
-                self.#field.install_at_material_epoch(
-                    material_epoch,
-                    ::std::sync::Arc::new(guard),
-                )
+                #install
             }
         }
     });
