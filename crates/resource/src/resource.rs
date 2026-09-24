@@ -892,6 +892,14 @@ pub trait HasCredentialSlots {
         &[]
     }
 
+    /// Owner-qualified metadata retained by a live projected slot for reconciliation.
+    fn credential_slot_metadata(
+        &self,
+        _slot: &str,
+    ) -> Option<nebula_credential::CredentialGuardMetadata> {
+        None
+    }
+
     /// Installs a projected credential guard into one declared slot.
     ///
     /// Implementations must check the erased value against the slot's

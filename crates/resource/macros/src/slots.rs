@@ -102,6 +102,11 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     let slot_accessors = field_slots::emit_slot_accessors(&slots);
     let credential_slot_epoch_body = field_slots::emit_credential_slot_epoch_body(&slots);
     let slot_install_body = field_slots::emit_slot_install_body(&slots);
+    let slot_metadata_arms = slots.iter().map(|slot| {
+        let key = slot.slot_key();
+        let field = &slot.field_ident;
+        quote! { #key => self.#field.projection_metadata() }
+    });
     let slot_revoke_body = field_slots::emit_slot_revoke_body(&slots);
     // Type-level signal: `true` iff the struct declared at least one
     // `#[credential]` field. Emitted explicitly (rather than relying on the
@@ -138,6 +143,13 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
                 ::nebula_resource::SlotInstallError,
             > {
                 #slot_install_body
+            }
+
+            fn credential_slot_metadata(&self, slot: &str) -> Option<::nebula_credential::CredentialGuardMetadata> {
+                match slot {
+                    #(#slot_metadata_arms,)*
+                    _ => None,
+                }
             }
 
             fn revoke_credential_slot(

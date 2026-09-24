@@ -70,6 +70,7 @@ async fn material_replacement_installs_projected_guard_before_refresh_hook() {
             resource: ReplacementResource {
                 slot: Arc::clone(&slot),
                 observed: Arc::clone(&observed),
+                stall_hook: false,
             },
             config: NoCfg,
             scope: scope.clone(),
@@ -105,6 +106,9 @@ async fn material_replacement_installs_projected_guard_before_refresh_hook() {
         None,
     );
 
+    for _ in 0..100 {
+        tokio::task::yield_now().await;
+    }
     bus.emit(CredentialEvent::MaterialReplaced {
         credential_id: cid,
         scope: nebula_credential::TenantScope::new("org", "workspace"),
@@ -126,11 +130,318 @@ async fn material_replacement_installs_projected_guard_before_refresh_hook() {
     assert_eq!(slot.material_epoch(), Some(2));
 }
 
+#[tokio::test(start_paused = true)]
+async fn lost_material_event_is_recovered_on_startup_and_periodic_scan() {
+    let cid = CredentialId::new();
+    let owner = nebula_credential::TenantScope::new("org", "workspace");
+    let key = "oauth".parse().expect("key");
+    let slot = Arc::new(nebula_resource::SlotCell::empty());
+    let observed = Arc::new(AtomicUsize::new(0));
+    let identity = SlotIdentity::from_bindings([("db", "oauth")]);
+    let manager = Arc::new(Manager::new());
+    let resource = ReplacementResource {
+        slot: Arc::clone(&slot),
+        observed: Arc::clone(&observed),
+        stall_hook: false,
+    };
+    let installed = resource
+        .install_credential_slot(
+            "db",
+            nebula_credential::ErasedCredentialGuard::from_typed(
+                nebula_credential::CredentialGuard::new(ReplacementMaterial(11)),
+                nebula_credential::CredentialGuardMetadata::new(cid, key, 1, 1).with_scope(owner),
+            ),
+        )
+        .expect("initial guard");
+    assert_eq!(installed, nebula_resource::SlotUpdate::Installed);
+    manager
+        .register(RegistrationSpec {
+            resource,
+            config: NoCfg,
+            scope: ScopeLevel::Global,
+            slot_identity: identity.clone(),
+            topology: Resident::<ReplacementResource>::new(ResidentConfig::default()),
+            recovery_gate: None,
+        })
+        .expect("register");
+    let context = ResourceContext::minimal(Scope::default(), CancellationToken::new());
+    drop(
+        manager
+            .acquire_resident_for_identity::<ReplacementResource>(
+                &context,
+                &AcquireOptions::default(),
+                &identity,
+            )
+            .await
+            .expect("warm"),
+    );
+    let calls = Arc::new(AtomicUsize::new(0));
+    let bus = Arc::new(EventBus::new(8));
+    // No event and no reverse-index binding: live guard metadata is sufficient.
+    let driver = ResourceFanoutDriver::spawn_with_resolver(
+        Arc::new(ResourceFanoutIndex::new()),
+        Arc::clone(&manager),
+        Some(Arc::new(ReplacementResolver {
+            calls: Arc::clone(&calls),
+        })),
+        Arc::clone(&bus),
+        None,
+    );
+    for _ in 0..100 {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(slot.material_epoch(), Some(2));
+    assert_eq!(observed.load(Ordering::SeqCst), 22);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    tokio::time::advance(Duration::from_secs(31)).await;
+    for _ in 0..100 {
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        calls.load(Ordering::SeqCst) >= 2,
+        "periodic durable reread must run without an event"
+    );
+    assert_eq!(
+        slot.generation(),
+        2,
+        "same durable epoch must not reinstall"
+    );
+    driver.abort();
+}
+
+#[tokio::test(start_paused = true)]
+async fn material_replacement_hook_timeout_is_not_counted_as_success() {
+    let manager = Manager::new();
+    let cid = CredentialId::new();
+    let identity = SlotIdentity::from_bindings([("db", "oauth")]);
+    manager
+        .register(RegistrationSpec {
+            resource: ReplacementResource {
+                slot: Arc::new(nebula_resource::SlotCell::empty()),
+                observed: Arc::new(AtomicUsize::new(0)),
+                stall_hook: true,
+            },
+            config: NoCfg,
+            scope: ScopeLevel::Global,
+            slot_identity: identity.clone(),
+            topology: Resident::<ReplacementResource>::new(ResidentConfig::default()),
+            recovery_gate: None,
+        })
+        .expect("register");
+    let context = ResourceContext::minimal(Scope::default(), CancellationToken::new());
+    drop(
+        manager
+            .acquire_resident_for_identity::<ReplacementResource>(
+                &context,
+                &AcquireOptions::default(),
+                &identity,
+            )
+            .await
+            .expect("warm"),
+    );
+    let index = ResourceFanoutIndex::new();
+    index.bind(
+        cid,
+        ReplacementResource::key(),
+        ScopeLevel::Global,
+        "db",
+        identity,
+    );
+    let resolver = ReplacementResolver {
+        calls: Arc::new(AtomicUsize::new(0)),
+    };
+    let outcome = index
+        .dispatch_material_replacement(
+            cid,
+            &nebula_credential::TenantScope::new("org", "workspace"),
+            &"oauth".parse().expect("key"),
+            &resolver,
+            &manager,
+        )
+        .await;
+    assert_eq!(outcome.timed_out(), 1);
+    assert_eq!(outcome.success(), 0);
+    assert_eq!(outcome.dispatched(), 1);
+}
+
+struct GatedProjection {
+    entered: Arc<tokio::sync::Semaphore>,
+    release: Arc<tokio::sync::Semaphore>,
+    cancelled: Arc<std::sync::Mutex<Option<CancellationToken>>>,
+}
+
+impl nebula_credential::CredentialSlotResolver for GatedProjection {
+    fn resolve_slot<'a>(
+        &'a self,
+        scope: &'a nebula_credential::TenantScope,
+        cid: CredentialId,
+        key: nebula_core::CredentialKey,
+        _capabilities: nebula_credential::Capabilities,
+        cancel: CancellationToken,
+    ) -> std::pin::Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        nebula_credential::ErasedCredentialGuard,
+                        nebula_credential::CredentialSlotResolveError,
+                    >,
+                > + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            *self.cancelled.lock().expect("lock") = Some(cancel);
+            self.entered.add_permits(1);
+            self.release.acquire().await.expect("gate").forget();
+            Ok(nebula_credential::ErasedCredentialGuard::from_typed(
+                nebula_credential::CredentialGuard::new(ReplacementMaterial(99)),
+                nebula_credential::CredentialGuardMetadata::new(cid, key, 99, 99)
+                    .with_scope(scope.clone()),
+            ))
+        })
+    }
+}
+
+fn register_replacement(manager: &Manager, cid: CredentialId) -> ReplacementResource {
+    let resource = ReplacementResource {
+        slot: Arc::new(nebula_resource::SlotCell::empty()),
+        observed: Arc::new(AtomicUsize::new(0)),
+        stall_hook: false,
+    };
+    let installed = resource
+        .install_credential_slot(
+            "db",
+            nebula_credential::ErasedCredentialGuard::from_typed(
+                nebula_credential::CredentialGuard::new(ReplacementMaterial(11)),
+                nebula_credential::CredentialGuardMetadata::new(
+                    cid,
+                    "oauth".parse().expect("key"),
+                    1,
+                    1,
+                )
+                .with_scope(nebula_credential::TenantScope::new("org", "workspace")),
+            ),
+        )
+        .expect("initial projection");
+    assert_eq!(installed, nebula_resource::SlotUpdate::Installed);
+    manager
+        .register(RegistrationSpec {
+            resource: resource.clone(),
+            config: NoCfg,
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::from_bindings([("db", "oauth")]),
+            topology: Resident::<ReplacementResource>::new(ResidentConfig::default()),
+            recovery_gate: None,
+        })
+        .expect("register");
+    resource
+}
+
+#[tokio::test(start_paused = true)]
+async fn material_projection_timeout_cancels_resolver_and_is_not_success() {
+    let manager = Manager::new();
+    let cid = CredentialId::new();
+    let resource = register_replacement(&manager, cid);
+    let index = ResourceFanoutIndex::new();
+    index.bind(
+        cid,
+        ReplacementResource::key(),
+        ScopeLevel::Global,
+        "db",
+        SlotIdentity::from_bindings([("db", "oauth")]),
+    );
+    let resolver = GatedProjection {
+        entered: Arc::new(tokio::sync::Semaphore::new(0)),
+        release: Arc::new(tokio::sync::Semaphore::new(0)),
+        cancelled: Arc::new(std::sync::Mutex::new(None)),
+    };
+    let outcome = index
+        .dispatch_material_replacement(
+            cid,
+            &nebula_credential::TenantScope::new("org", "workspace"),
+            &"oauth".parse().expect("key"),
+            &resolver,
+            &manager,
+        )
+        .await;
+    assert_eq!(outcome.timed_out(), 1);
+    assert_eq!(outcome.success(), 0);
+    assert!(
+        resolver
+            .cancelled
+            .lock()
+            .expect("lock")
+            .as_ref()
+            .expect("token")
+            .is_cancelled()
+    );
+    assert_eq!(resource.slot.material_epoch(), Some(1));
+}
+
+#[tokio::test]
+async fn delayed_projection_cannot_install_into_rebound_registration() {
+    let manager = Arc::new(Manager::new());
+    let cid = CredentialId::new();
+    let _original = register_replacement(&manager, cid);
+    let index = Arc::new(ResourceFanoutIndex::new());
+    index.bind(
+        cid,
+        ReplacementResource::key(),
+        ScopeLevel::Global,
+        "db",
+        SlotIdentity::from_bindings([("db", "oauth")]),
+    );
+    let entered = Arc::new(tokio::sync::Semaphore::new(0));
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let resolver = GatedProjection {
+        entered: Arc::clone(&entered),
+        release: Arc::clone(&release),
+        cancelled: Arc::new(std::sync::Mutex::new(None)),
+    };
+    let dispatch = tokio::spawn({
+        let manager = Arc::clone(&manager);
+        async move {
+            index
+                .dispatch_material_replacement(
+                    cid,
+                    &nebula_credential::TenantScope::new("org", "workspace"),
+                    &"oauth".parse().expect("key"),
+                    &resolver,
+                    &manager,
+                )
+                .await
+        }
+    });
+    tokio::time::timeout(Duration::from_secs(2), entered.acquire())
+        .await
+        .expect("started")
+        .expect("gate")
+        .forget();
+    manager
+        .remove(&ReplacementResource::key())
+        .expect("remove original");
+    let replacement_cid = CredentialId::new();
+    let replacement = register_replacement(&manager, replacement_cid);
+    release.add_permits(1);
+    let _outcome = dispatch.await.expect("dispatch");
+    assert_eq!(replacement.slot.material_epoch(), Some(1));
+    assert_eq!(
+        replacement
+            .slot
+            .projection_metadata()
+            .expect("metadata")
+            .credential_id(),
+        replacement_cid
+    );
+    assert_eq!(replacement.observed.load(Ordering::SeqCst), 0);
+}
+
 #[derive(Zeroize)]
 struct ReplacementMaterial(u64);
 
 #[derive(Clone)]
 struct ReplacementResource {
+    stall_hook: bool,
     slot: Arc<nebula_resource::SlotCell<nebula_credential::CredentialGuard<ReplacementMaterial>>>,
     observed: Arc<AtomicUsize>,
 }
@@ -150,6 +461,9 @@ impl Provider for ReplacementResource {
     }
 
     async fn on_credential_refresh(&self, _slot: &str, _runtime: &()) -> Result<(), ResourceError> {
+        if self.stall_hook {
+            std::future::pending::<()>().await;
+        }
         let value = self
             .slot
             .load()
@@ -168,6 +482,15 @@ impl Provider for ReplacementResource {
 }
 
 impl HasCredentialSlots for ReplacementResource {
+    fn credential_slot_metadata(
+        &self,
+        slot: &str,
+    ) -> Option<nebula_credential::CredentialGuardMetadata> {
+        (slot == "db")
+            .then(|| self.slot.projection_metadata())
+            .flatten()
+    }
+
     fn credential_slot_epoch(&self) -> u64 {
         self.slot.generation()
     }
@@ -188,11 +511,11 @@ impl HasCredentialSlots for ReplacementResource {
         if slot != "db" {
             return Err(nebula_resource::SlotInstallError::UnknownSlot);
         }
-        let epoch = guard.metadata().material_epoch();
+        let metadata = guard.metadata().clone();
         let guard = guard
             .into_typed::<ReplacementMaterial>()
             .map_err(|_| nebula_resource::SlotInstallError::CredentialTypeMismatch)?;
-        self.slot.install_at_material_epoch(epoch, Arc::new(guard))
+        self.slot.install_projected(metadata, Arc::new(guard))
     }
 }
 
@@ -210,7 +533,7 @@ struct ReplacementResolver {
 impl nebula_credential::CredentialSlotResolver for ReplacementResolver {
     fn resolve_slot<'a>(
         &'a self,
-        _scope: &'a nebula_credential::TenantScope,
+        scope: &'a nebula_credential::TenantScope,
         credential_id: CredentialId,
         expected_key: nebula_core::CredentialKey,
         _required_capabilities: nebula_credential::Capabilities,
@@ -228,7 +551,8 @@ impl nebula_credential::CredentialSlotResolver for ReplacementResolver {
     > {
         self.calls.fetch_add(1, Ordering::SeqCst);
         let metadata =
-            nebula_credential::CredentialGuardMetadata::new(credential_id, expected_key, 2, 2);
+            nebula_credential::CredentialGuardMetadata::new(credential_id, expected_key, 2, 2)
+                .with_scope(scope.clone());
         Box::pin(async move {
             Ok(nebula_credential::ErasedCredentialGuard::from_typed(
                 nebula_credential::CredentialGuard::new(ReplacementMaterial(22)),

@@ -28,64 +28,76 @@ impl ResourceFanoutIndex {
         resolver: &dyn CredentialSlotResolver,
         mgr: &crate::Manager,
     ) -> RotationOutcome {
-        let rows = self.affected(&cid);
-        let dispatches = rows.into_iter().map(|binding| async move {
-            let guard = match resolver
-                .resolve_slot(
-                    scope,
-                    cid,
-                    credential_key.clone(),
-                    Capabilities::empty(),
-                    CancellationToken::new(),
-                )
-                .await
-            {
-                Ok(guard) => guard,
-                Err(error) => {
-                    tracing::warn!(
-                        credential_id = %cid,
-                        resource_key = %binding.resource_key,
-                        slot = %binding.slot_name,
-                        error = %error,
-                        "material replacement fan-out projection failed"
-                    );
+        let dispatches = self.affected(&cid).into_iter().map(|binding| async move {
+            // Pin the registration before credential I/O. A replacement row
+            // with identical routing keys must never receive this result.
+            let managed = match mgr.lookup_any_for_slot_identity_structural(
+                &binding.resource_key,
+                &binding.scope,
+                &binding.slot_identity,
+            ) {
+                Ok(managed) => managed,
+                Err(_) => {
                     return RowOutcome::Failed {
                         drain_timed_out: false,
                     };
                 },
             };
-
-            match mgr
-                .install_and_refresh_slot_for_identity(
-                    &binding.resource_key,
-                    binding.scope,
-                    &binding.slot_name,
-                    &binding.slot_identity,
-                    guard,
-                )
-                .await
-            {
-                Ok(crate::manager::EpochRefreshOutcome::Applied(_)) => RowOutcome::Success {
-                    drain_timed_out: false,
-                },
-                Ok(crate::manager::EpochRefreshOutcome::Stale { .. }) => RowOutcome::Success {
-                    drain_timed_out: false,
-                },
-                Err(error) => {
-                    tracing::warn!(
-                        credential_id = %cid,
-                        resource_key = %binding.resource_key,
-                        slot = %binding.slot_name,
-                        error = %error,
-                        "material replacement fan-out install or refresh failed"
-                    );
-                    RowOutcome::Failed {
-                        drain_timed_out: false,
-                    }
-                },
-            }
+            project_and_refresh(
+                mgr,
+                managed,
+                &binding.slot_name,
+                scope,
+                cid,
+                credential_key.clone(),
+                resolver,
+            )
+            .await
         });
         summarize_row_outcomes(futures::future::join_all(dispatches).await)
+    }
+
+    /// Reconcile live projections against credential-owned durable state.
+    /// Events only accelerate this scan; loss, lag and driver restart cannot
+    /// permanently strand a guard at an older material epoch.
+    pub(crate) async fn reconcile_material(
+        &self,
+        mgr: &crate::Manager,
+        resolver: &dyn CredentialSlotResolver,
+    ) -> RotationOutcome {
+        use futures::{FutureExt, StreamExt};
+
+        let mut projections = Vec::new();
+        for managed in mgr.registry.all_managed() {
+            for (slot, metadata) in managed.credential_projections() {
+                let managed = std::sync::Arc::clone(&managed);
+                projections.push(
+                    async move {
+                        let Some(scope) = metadata.scope() else {
+                            return RowOutcome::Failed {
+                                drain_timed_out: false,
+                            };
+                        };
+                        project_and_refresh(
+                            mgr,
+                            managed,
+                            slot,
+                            scope,
+                            metadata.credential_id(),
+                            metadata.credential_key().clone(),
+                            resolver,
+                        )
+                        .await
+                    }
+                    .boxed(),
+                );
+            }
+        }
+        let outcomes = futures::stream::iter(projections)
+            .buffer_unordered(32)
+            .collect::<Vec<_>>()
+            .await;
+        summarize_row_outcomes(outcomes)
     }
 
     /// Fans a completed credential refresh out to every resource registry
@@ -423,6 +435,76 @@ impl ResourceFanoutIndex {
             "rotation fan-out {op_name} complete",
         );
         outcome
+    }
+}
+
+// Bound projection independently of queue-owned hook execution. Cancelling
+// this future also cancels cooperative resolver work through the drop guard.
+async fn project_and_refresh(
+    mgr: &crate::Manager,
+    managed: std::sync::Arc<dyn crate::registry::ManagedHandle>,
+    slot: &str,
+    scope: &TenantScope,
+    cid: CredentialId,
+    credential_key: CredentialKey,
+    resolver: &dyn CredentialSlotResolver,
+) -> RowOutcome {
+    let cancel = CancellationToken::new();
+    let _cancel_on_drop = cancel.clone().drop_guard();
+    let guard = match tokio::time::timeout(
+        Duration::from_secs(30),
+        resolver.resolve_slot(scope, cid, credential_key, Capabilities::empty(), cancel),
+    )
+    .await
+    {
+        Ok(Ok(guard)) => guard,
+        Ok(Err(error)) => {
+            tracing::warn!(credential_id = %cid, error = %error,
+                "material replacement projection failed");
+            return RowOutcome::Failed {
+                drain_timed_out: false,
+            };
+        },
+        Err(_) => {
+            tracing::warn!(credential_id = %cid, "material replacement projection timed out");
+            return RowOutcome::TimedOut {
+                drain_timed_out: false,
+            };
+        },
+    };
+    let key = managed.resource_key();
+    match mgr
+        .install_and_refresh_resolved(&key, slot, managed, guard)
+        .await
+    {
+        Ok(crate::manager::EpochRefreshOutcome::Applied(outcome)) => match outcome {
+            crate::SlotDispatchOutcome::Completed { .. } => RowOutcome::Success {
+                drain_timed_out: false,
+            },
+            crate::SlotDispatchOutcome::TimedOut { .. } => RowOutcome::TimedOut {
+                drain_timed_out: false,
+            },
+            crate::SlotDispatchOutcome::Deferred { reason, .. } => RowOutcome::Deferred {
+                drain_timed_out: false,
+                observation_timed_out: matches!(
+                    reason,
+                    crate::SlotDeferralReason::ObservationTimedOut
+                ),
+            },
+            crate::SlotDispatchOutcome::Abandoned { .. } => RowOutcome::Abandoned {
+                drain_timed_out: false,
+            },
+        },
+        Ok(crate::manager::EpochRefreshOutcome::Stale { .. }) => RowOutcome::Success {
+            drain_timed_out: false,
+        },
+        Err(error) => {
+            tracing::warn!(credential_id = %cid, error = %error,
+                "material replacement installation or hook failed");
+            RowOutcome::Failed {
+                drain_timed_out: false,
+            }
+        },
     }
 }
 

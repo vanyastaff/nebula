@@ -127,7 +127,23 @@ impl CredentialService {
         // The report's `refreshed: false` keeps that fallback honest.
         let cached = self.get(scope, id).await?;
 
-        match self.refresh_inner(scope, id).await {
+        let result = self.refresh_inner(scope, id).await;
+        // Count one refresh request after coalescing has re-read durable state,
+        // before the caller-facing fallback can turn a failure into a usable head.
+        // Scheduled refresh uses this same path; revoke does not.
+        use crate::runtime::refresh::CoordinatedRefreshResult as MetricResult;
+        let outcome = match &result {
+            Ok(_) => MetricResult::Success,
+            Err(CredentialServiceError::ReauthRequired { .. }) => MetricResult::ReauthRequired,
+            Err(CredentialServiceError::RefreshNotApplied(_)) => MetricResult::NotApplied,
+            Err(CredentialServiceError::OutcomeUnknown) => MetricResult::OutcomeUnknown,
+            Err(_) => MetricResult::Failure,
+        };
+        self.resolver
+            .refresh_coordinator()
+            .metrics()
+            .record_result(outcome);
+        match result {
             Ok(head) => Ok(ManagementRefreshReport {
                 head,
                 refreshed: true,
@@ -488,8 +504,8 @@ impl CredentialService {
 
         match result {
             Ok(Ok(CoordinatedRefreshResult::Committed(head))) => Ok(head),
-            Ok(Ok(CoordinatedRefreshResult::Reevaluate)) => self.get(scope, id).await,
-            Err(RefreshError::CoalescedByOtherReplica) => {
+            Ok(Ok(CoordinatedRefreshResult::Reevaluate))
+            | Err(RefreshError::CoalescedByOtherReplica) => {
                 if let Some(context) = self.active_refresh_retry_context(&selector, id).await? {
                     return Err(CredentialServiceError::RefreshNotApplied(context));
                 }

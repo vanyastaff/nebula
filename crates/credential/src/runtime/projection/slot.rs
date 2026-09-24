@@ -116,6 +116,7 @@ pub(crate) async fn resolve_slot_with(
                 credential_key: actual_key,
                 material_epoch: stored.material_epoch().get() as u64,
                 revision: stored.version().get() as u64,
+                scope: Some(request.scope.clone()),
             };
 
             tracing::debug!(
@@ -137,6 +138,7 @@ pub struct CredentialGuardMetadata {
     credential_key: CredentialKey,
     material_epoch: u64,
     revision: u64,
+    scope: Option<TenantScope>,
 }
 
 impl CredentialGuardMetadata {
@@ -153,7 +155,22 @@ impl CredentialGuardMetadata {
             credential_key,
             material_epoch,
             revision,
+            scope: None,
         }
+    }
+
+    /// Retain the owner-qualified read scope for durable reprojection.
+    /// This is routing context, not an authorization grant.
+    #[must_use]
+    pub fn with_scope(mut self, scope: TenantScope) -> Self {
+        self.scope = Some(scope);
+        self
+    }
+
+    /// Owner-qualified read scope, when supplied by the projection adapter.
+    #[must_use]
+    pub fn scope(&self) -> Option<&TenantScope> {
+        self.scope.as_ref()
     }
 
     /// Credential instance that produced the guard.

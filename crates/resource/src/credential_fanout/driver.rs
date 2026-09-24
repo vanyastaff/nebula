@@ -252,6 +252,9 @@ impl ResourceFanoutDriver {
             // `REVOKE_DEDUPE_WINDOW`. Owned by the loop task so it needs
             // no lock.
             let mut revoke_dedupe = RevokeDedupe::new();
+            let mut reconciliation = tokio::time::interval(Duration::from_secs(30));
+            reconciliation.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            let mut scans = tokio::task::JoinSet::new();
             loop {
                 // `tokio::select!` over both subscribers so a refresh and
                 // a lease-revoke are both observed promptly. The two
@@ -262,51 +265,43 @@ impl ResourceFanoutDriver {
                 // the credential bus closing (the composition root went
                 // away — no further rotation signals possible) retires
                 // the driver.
-                match &mut lease_sub {
-                    Some(lsub) => {
-                        tokio::select! {
-                            ev = credential_sub.recv() => match ev {
-                                Some(ev) => {
-                                    Self::on_credential_event(
-                                        &index, &manager, resolver.as_deref(), &mut revoke_dedupe, ev,
-                                    ).await;
-                                },
-                                None => break,
-                            },
-                            ev = lsub.recv() => if let Some(ev) = ev {
-                                Self::on_lease_event(
-                                    &index, &manager, &mut revoke_dedupe, ev,
-                                ).await;
-                            } else {
-                                // Lease bus closed but the credential bus
-                                // is a separate live `Arc` — degrade to
-                                // credential-only instead of retiring (a
-                                // credential-level `CredentialEvent::Revoked`
-                                // still drives revoke fan-out, exactly the
-                                // no-lease-bus deployment path).
-                                lease_sub = None;
-                                tracing::debug!(
-                                    target: "nebula_resource::credential_fanout",
-                                    "resource rotation fan-out driver: lease signal \
-                                     bus closed; degrading to credential-only \
-                                     (CredentialEvent::Revoked still fans out revoke)"
-                                );
-                                continue;
-                            },
+                tokio::select! {
+                    ev = credential_sub.recv() => match ev {
+                        Some(ev) => Self::on_credential_event(
+                            &index, &manager, resolver.as_deref(), &mut revoke_dedupe, ev,
+                        ).await,
+                        None => break,
+                    },
+                    ev = async {
+                        match lease_sub.as_mut() {
+                            Some(sub) => sub.recv().await,
+                            None => std::future::pending().await,
+                        }
+                    } => match ev {
+                        Some(ev) => Self::on_lease_event(
+                            &index, &manager, &mut revoke_dedupe, ev,
+                        ).await,
+                        None => lease_sub = None,
+                    },
+                    _ = reconciliation.tick(), if resolver.is_some() && scans.is_empty() => {
+                        if let Some(resolver) = resolver.as_ref() {
+                            let index = Arc::clone(&index);
+                            let manager = Arc::clone(&manager);
+                            let resolver = Arc::clone(resolver);
+                            // JoinSet aborts the scan when the driver is dropped.
+                            // Scans cannot delay reception of revoke observations.
+                            scans.spawn(async move { index.reconcile_material(&manager, resolver.as_ref()).await });
                         }
                     },
-                    None => match credential_sub.recv().await {
-                        Some(ev) => {
-                            Self::on_credential_event(
-                                &index,
-                                &manager,
-                                resolver.as_deref(),
-                                &mut revoke_dedupe,
-                                ev,
-                            )
-                            .await;
-                        },
-                        None => break,
+                    result = scans.join_next(), if !scans.is_empty() => {
+                        match result {
+                            Some(Ok(outcome)) if outcome.failed + outcome.timed_out + outcome.abandoned == 0 => {
+                                tracing::debug!(?outcome, "credential projection reconciliation complete");
+                            },
+                            Some(Ok(outcome)) => tracing::warn!(?outcome, "credential projection reconciliation incomplete"),
+                            Some(Err(_)) => tracing::warn!("credential projection reconciliation task failed"),
+                            None => {},
+                        }
                     },
                 }
             }

@@ -285,6 +285,17 @@ impl Manager {
         guard: nebula_credential::ErasedCredentialGuard,
     ) -> Result<EpochRefreshOutcome, Error> {
         let managed = self.lookup_any_for_slot_identity_structural(key, &scope, slot_identity)?;
+        self.install_and_refresh_resolved(key, slot, managed, guard)
+            .await
+    }
+
+    pub(crate) async fn install_and_refresh_resolved(
+        &self,
+        key: &ResourceKey,
+        slot: &str,
+        managed: Arc<dyn crate::registry::ManagedHandle>,
+        guard: nebula_credential::ErasedCredentialGuard,
+    ) -> Result<EpochRefreshOutcome, Error> {
         let update = managed
             .install_credential_slot(slot, guard)
             .map_err(|source| {
@@ -1239,7 +1250,7 @@ impl Manager {
     /// by construction, so there is **no `Ambiguous` case to map** — the
     /// "registry invariant breach" arm the old `u64` digest path had to
     /// fabricate a fail-closed deny for is now type-unrepresentable.
-    fn lookup_any_for_slot_identity_structural(
+    pub(crate) fn lookup_any_for_slot_identity_structural(
         &self,
         key: &ResourceKey,
         scope: &ScopeLevel,

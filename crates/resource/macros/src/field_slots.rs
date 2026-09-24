@@ -408,12 +408,12 @@ pub(crate) fn emit_slot_install_body(slots: &[ParsedCredentialSlot]) -> TokenStr
         let slot_key = slot.slot_key();
         quote! {
             #slot_key => {
-                let material_epoch = guard.metadata().material_epoch();
+                let metadata = guard.metadata().clone();
                 let guard = guard
                     .into_typed::<#projected>()
                     .map_err(|_| ::nebula_resource::SlotInstallError::CredentialTypeMismatch)?;
-                self.#field.install_at_material_epoch(
-                    material_epoch,
+                self.#field.install_projected(
+                    metadata,
                     ::std::sync::Arc::new(guard),
                 )
             }

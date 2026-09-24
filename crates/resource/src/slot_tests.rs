@@ -281,3 +281,32 @@ async fn single_reader_observes_monotone_generations_under_concurrent_store() {
     writer.await.expect("writer task must not panic");
     reader.await.expect("reader task must not panic");
 }
+
+#[test]
+fn projected_slot_rejects_another_credential_even_at_a_higher_epoch() {
+    use nebula_credential::{CredentialGuardMetadata, CredentialId, TenantScope};
+    let cell = SlotCell::<FakeGuard>::empty();
+    let cid = CredentialId::new();
+    let owner = TenantScope::new("org", "workspace");
+    let metadata = CredentialGuardMetadata::new(cid, "oauth".parse().expect("key"), 1, 1)
+        .with_scope(owner.clone());
+    assert_eq!(
+        cell.install_projected(metadata.clone(), Arc::new(FakeGuard(1)))
+            .expect("install"),
+        SlotUpdate::Installed
+    );
+    for incoming in [
+        CredentialGuardMetadata::new(CredentialId::new(), "oauth".parse().expect("key"), 99, 99)
+            .with_scope(owner),
+        CredentialGuardMetadata::new(cid, "oauth".parse().expect("key"), 99, 99)
+            .with_scope(TenantScope::new("other", "workspace")),
+    ] {
+        assert!(matches!(
+            cell.install_projected(incoming, Arc::new(FakeGuard(99))),
+            Err(SlotInstallError::CredentialIdentityMismatch)
+        ));
+    }
+    assert_eq!(cell.projection_metadata(), Some(metadata));
+    assert_eq!(cell.load().expect("original guard").0, 1);
+    assert_eq!(cell.generation(), 1);
+}

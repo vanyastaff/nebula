@@ -11,6 +11,30 @@ These event buses carry ephemeral observations. Delivery may be lost, duplicated
 or reordered; fan-out is not durable revoke authority or an audit log. Persisted
 credential state and its owning runtime remain authoritative.
 
+
+## Material replacement recovery
+
+With `spawn_with_resolver`, `MaterialReplaced` is a wake hint for an
+owner-qualified durable projection. The driver also reconciles live slot metadata
+on startup and every 30 seconds, with at most 32 concurrent projections. This
+recovers replacement observations lost before subscription, during subscriber lag,
+or across driver restart. Scans run separately from event reception.
+
+The production projection stores its credential ID, contract key and owner scope
+alongside the slot's accepted material epoch. Derived credential slots preserve
+this metadata. Hand-written `HasCredentialSlots` implementations must provide
+`credential_slot_metadata` and install through `SlotCell::install_projected` to
+participate in reconciliation. Legacy metadata without an owner cannot authorize
+a reread and is reported as a failed reconciliation row.
+
+Each projection has a 30-second deadline and a cancellation token cancelled on
+timeout or driver shutdown. The target registration is pinned before projection;
+the slot also rejects another credential or owner even at a higher epoch. Only a
+newer epoch installs a guard and dispatches a hook. Repeated scans are no-ops for
+unchanged epochs. Completed, timed-out, deferred and abandoned hook outcomes stay
+distinct in the fan-out result. Reconciliation does not retry accepted hooks or
+turn the event bus into durable command authority.
+
 ---
 
 ## Refresh sequence

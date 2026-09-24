@@ -119,6 +119,14 @@ pub(crate) trait ManagedHandle: Send + Sync + 'static {
     /// name is rejected before any author code runs.
     fn accepts_credential_slot_name(&self, slot: &str) -> bool;
 
+    /// Snapshot live projection sources for owner-qualified reconciliation.
+    #[cfg(feature = "rotation")]
+    fn credential_projections(
+        &self,
+    ) -> Vec<(&'static str, nebula_credential::CredentialGuardMetadata)> {
+        Vec::new()
+    }
+
     /// Installs a newer projected credential guard through the concrete
     /// resource's derive-generated slot dispatcher.
     fn install_credential_slot(
@@ -285,6 +293,20 @@ where
 
     fn accepts_credential_slot_name(&self, slot: &str) -> bool {
         R::credential_slot_names().contains(&slot)
+    }
+
+    #[cfg(feature = "rotation")]
+    fn credential_projections(
+        &self,
+    ) -> Vec<(&'static str, nebula_credential::CredentialGuardMetadata)> {
+        R::credential_slot_names()
+            .iter()
+            .filter_map(|slot| {
+                self.resource
+                    .credential_slot_metadata(slot)
+                    .map(|metadata| (*slot, metadata))
+            })
+            .collect()
     }
 
     fn install_credential_slot(
