@@ -9,6 +9,7 @@
 //! | [`LeakyBucket`] | Leaky bucket with constant drain rate | Smoothing bursts into a constant outflow |
 //! | [`SlidingWindow`] | Sliding time-window counter | Hard per-window request caps |
 //! | [`AdaptiveRateLimiter`] | Token bucket auto-tuned by error rate | Self-protecting services with variable load |
+//! | [`Gcra`] | Generic cell rate algorithm, integer time | Provider limits: exact rate, reservations, waiting to a deadline, `Retry-After` penalties, keyed and shared stores |
 //!
 //! # Standalone usage
 //!
@@ -407,11 +408,13 @@ where
 }
 
 pub mod adaptive;
+pub mod gcra;
 pub mod leaky_bucket;
 pub mod sliding_window;
 pub mod token_bucket;
 
 pub use adaptive::AdaptiveRateLimiter;
+pub use gcra::Gcra;
 pub use leaky_bucket::LeakyBucket;
 pub use sliding_window::SlidingWindow;
 pub use token_bucket::TokenBucket;
