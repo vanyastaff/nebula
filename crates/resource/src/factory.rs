@@ -997,15 +997,36 @@ impl ResourceActivatorRegistry {
                     binding.credential_key.clone(),
                 ));
             }
+            if !planned.is_empty() && !idx.authoritative_reconciliation_available() {
+                return Err(RegistrarError::Register {
+                    kind: kind.to_owned(),
+                    source: crate::Error::permanent(
+                        "rotation binding requires authoritative credential reconciliation",
+                    )
+                    .with_resource_key(resource_key.clone()),
+                });
+            }
             // Validation above is side-effect free. Only after every binding
             // is known valid may any staged reference become visible.
             for (cred_id, bind, credential_scope, credential_key) in planned {
-                idx.stage_bind_with_context(
+                if !manager.stage_credential_binding(
+                    idx,
                     cred_id,
                     bind.clone(),
                     credential_scope,
                     credential_key,
-                );
+                ) {
+                    for (staged_id, staged_bind) in &staged {
+                        idx.unbind_staged_entry(staged_id, staged_bind);
+                    }
+                    return Err(RegistrarError::Register {
+                        kind: kind.to_owned(),
+                        source: crate::Error::permanent(
+                            "conflicting owner context for rotation binding",
+                        )
+                        .with_resource_key(resource_key.clone()),
+                    });
+                }
                 staged.push((cred_id, bind));
             }
         }

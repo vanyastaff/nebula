@@ -311,6 +311,7 @@ pub struct ResourceFanoutIndex {
     /// Bounded terminal observations retained so a registration that stages
     /// after event delivery cannot publish revoked material.
     terminal_revocation_fence: std::sync::Mutex<TerminalRevocationFence>,
+    authoritative_reconciliation: std::sync::atomic::AtomicBool,
     revoke_retry_notify: tokio::sync::Notify,
     /// Shared admission keeps direct dispatch and reconciliation under one
     /// provider/persistence concurrency budget.
@@ -326,6 +327,7 @@ impl Default for ResourceFanoutIndex {
             material_retry_notify: tokio::sync::Notify::new(),
             pending_revoke_admissions: std::sync::Mutex::new(Vec::new()),
             terminal_revocation_fence: std::sync::Mutex::new(TerminalRevocationFence::default()),
+            authoritative_reconciliation: std::sync::atomic::AtomicBool::new(false),
             revoke_retry_notify: tokio::sync::Notify::new(),
             projection_admission: tokio::sync::Semaphore::new(MAX_CONCURRENT_PROJECTIONS),
         }
@@ -406,18 +408,21 @@ impl ResourceFanoutIndex {
         bind: Bind,
         credential_scope: TenantScope,
         credential_key: CredentialKey,
-    ) {
+    ) -> bool {
         let fence_scope = credential_scope.clone();
         let fence_key = credential_key.clone();
-        self.add_bind_ref(
+        if !self.add_bind_ref(
             cid,
             bind,
             Some(credential_scope),
             Some(credential_key),
             true,
-        );
+        ) {
+            return false;
+        }
         self.remember_material_context(cid, fence_scope, fence_key);
         self.material_retry_notify.notify_one();
+        true
     }
 
     fn add_bind_ref(
@@ -427,12 +432,23 @@ impl ResourceFanoutIndex {
         credential_scope: Option<TenantScope>,
         credential_key: Option<CredentialKey>,
         staged: bool,
-    ) {
+    ) -> bool {
         let mut rows = self.by_credential.entry(cid).or_default();
         let context = credential_scope.zip(credential_key);
         match rows.iter_mut().find(|row| row.bind == bind) {
             Some(existing) => {
                 if staged {
+                    if existing
+                        .staged_context
+                        .as_ref()
+                        .is_some_and(|existing| Some(existing) != context.as_ref())
+                        || existing
+                            .published_context
+                            .as_ref()
+                            .is_some_and(|existing| Some(existing) != context.as_ref())
+                    {
+                        return false;
+                    }
                     if existing.staged_context.is_none() {
                         existing.staged_context = context;
                     }
@@ -452,6 +468,17 @@ impl ResourceFanoutIndex {
                 staged: usize::from(staged),
             }),
         }
+        true
+    }
+
+    pub(crate) fn set_authoritative_reconciliation(&self, available: bool) {
+        self.authoritative_reconciliation
+            .store(available, std::sync::atomic::Ordering::Release);
+    }
+
+    pub(crate) fn authoritative_reconciliation_available(&self) -> bool {
+        self.authoritative_reconciliation
+            .load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// Returns every resource row that resolved `cid`, in registration order.
@@ -594,6 +621,14 @@ impl ResourceFanoutIndex {
         fence.saturated || fence.contexts.contains_key(cid)
     }
 
+    pub(crate) fn terminal_publication_rejected(&self, cid: &CredentialId) -> bool {
+        let fence = self
+            .terminal_revocation_fence
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        fence.saturated || fence.credentials.contains(cid)
+    }
+
     pub(super) fn complete_material_context(
         &self,
         cid: &CredentialId,
@@ -608,15 +643,19 @@ impl ResourceFanoutIndex {
         }
     }
 
-    pub(crate) fn binding_has_pending_material(&self, binding: &Bind) -> bool {
-        let fence = self
+    pub(crate) fn binding_is_fenced(&self, cid: &CredentialId, binding: &Bind) -> bool {
+        let material = self
             .material_replacement_fence
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if fence.saturated {
+        let terminal = self
+            .terminal_revocation_fence
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if material.saturated || terminal.saturated || terminal.credentials.contains(cid) {
             return true;
         }
-        fence.contexts.keys().any(|credential_id| {
+        material.contexts.keys().any(|credential_id| {
             self.by_credential.get(credential_id).is_some_and(|rows| {
                 rows.iter().any(|row| {
                     row.published != 0
@@ -660,7 +699,7 @@ impl ResourceFanoutIndex {
         self.revoke_retry_notify.notify_one();
     }
 
-    pub(crate) fn remember_revocation(&self, credential_id: CredentialId) {
+    pub(crate) fn remember_revocation(&self, credential_id: CredentialId) -> bool {
         // A revoke is terminal for this credential id. Retain the observation
         // even when no binding is visible yet: register_and_bind may already
         // have resolved revoked material but not inserted its staged row.
@@ -674,7 +713,7 @@ impl ResourceFanoutIndex {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if fence.saturated || fence.credentials.contains(&credential_id) {
-            return;
+            return false;
         }
         if fence.credentials.len() >= MAX_RETAINED_TERMINAL_REVOCATIONS {
             fence.saturated = true;
@@ -682,9 +721,10 @@ impl ResourceFanoutIndex {
                 retained = fence.credentials.len(),
                 "terminal credential revoke fence saturated; future resource publication fails closed"
             );
-            return;
+            return true;
         }
         fence.credentials.insert(credential_id);
+        true
     }
 
     pub(crate) async fn revoke_retry_notified(&self) {

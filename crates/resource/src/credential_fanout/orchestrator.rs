@@ -26,30 +26,24 @@ impl ResourceFanoutIndex {
         mgr: &crate::Manager,
         retain_terminal_credential_revoke: bool,
     ) -> RotationOutcome {
-        if retain_terminal_credential_revoke {
-            self.remember_revocation(cid);
-        }
         let has_staged_binding = self.has_staged_binding(&cid);
         let mut summary = RotationOutcome::default();
-        for binding in self.affected(&cid) {
-            match mgr.taint_published_credential_binding(self, &cid, &binding) {
-                Ok(tainted) => self.remember_pending_revoke(
-                    cid,
-                    binding.resource_key,
-                    &binding.slot_name,
-                    tainted.managed_handle(),
-                ),
-                Err(error) => {
-                    tracing::warn!(
-                        credential_id = %cid,
-                        resource_key = %binding.resource_key,
-                        slot = %binding.slot_name,
-                        error = %error,
-                        "rotation fan-out: synchronous revoke taint failed"
-                    );
-                    summary.failed += 1;
-                },
-            }
+        let Some((tainted, failed)) = mgr.fence_published_credential_bindings(
+            self,
+            cid,
+            retain_terminal_credential_revoke,
+            false,
+        ) else {
+            return summary;
+        };
+        summary.failed += failed;
+        for (binding, tainted) in tainted {
+            self.remember_pending_revoke(
+                cid,
+                binding.resource_key,
+                &binding.slot_name,
+                tainted.managed_handle(),
+            );
         }
         summary.failed += usize::from(has_staged_binding);
         summary
@@ -60,28 +54,21 @@ impl ResourceFanoutIndex {
         cid: CredentialId,
         mgr: &crate::Manager,
     ) -> RotationOutcome {
-        self.remember_revocation(cid);
         let has_staged_binding = self.has_staged_binding(&cid);
         let mut summary = RotationOutcome::default();
-        for binding in self.affected(&cid) {
-            match mgr.revoke_published_credential_binding_terminal(self, &cid, &binding) {
-                Ok(tainted) => self.remember_pending_revoke(
-                    cid,
-                    binding.resource_key,
-                    &binding.slot_name,
-                    tainted.managed_handle(),
-                ),
-                Err(error) => {
-                    tracing::warn!(
-                        credential_id = %cid,
-                        resource_key = %binding.resource_key,
-                        slot = %binding.slot_name,
-                        error = %error,
-                        "durable credential tombstone could not revoke a published sibling"
-                    );
-                    summary.failed += 1;
-                },
-            }
+        let Some((tainted, failed)) =
+            mgr.fence_published_credential_bindings(self, cid, true, true)
+        else {
+            return summary;
+        };
+        summary.failed += failed;
+        for (binding, tainted) in tainted {
+            self.remember_pending_revoke(
+                cid,
+                binding.resource_key,
+                &binding.slot_name,
+                tainted.managed_handle(),
+            );
         }
         summary.failed += usize::from(has_staged_binding);
         summary
@@ -183,6 +170,7 @@ impl ResourceFanoutIndex {
                 mgr,
                 managed,
                 ProjectionTarget {
+                    binding: &binding,
                     slot: &binding.slot_name,
                     generation,
                     scope,
@@ -297,6 +285,7 @@ impl ResourceFanoutIndex {
                         mgr,
                         managed,
                         ProjectionTarget {
+                            binding: &binding,
                             slot: &binding.slot_name,
                             generation,
                             scope: &credential_scope,
@@ -686,6 +675,7 @@ impl ResourceFanoutIndex {
 // Bound projection independently of queue-owned hook execution. Cancelling
 // this future also cancels cooperative resolver work through the drop guard.
 struct ProjectionTarget<'a> {
+    binding: &'a crate::Bind,
     slot: &'a str,
     generation: u64,
     scope: &'a TenantScope,
@@ -703,6 +693,7 @@ async fn project_and_refresh(
     projection_permit: tokio::sync::SemaphorePermit<'_>,
 ) -> RowOutcome {
     let ProjectionTarget {
+        binding,
         slot,
         generation,
         scope,
@@ -784,10 +775,28 @@ async fn project_and_refresh(
         };
     }
     let key = managed.resource_key();
+    let publication_binding = binding.clone();
     match mgr
-        .install_and_refresh_resolved(&key, slot, managed, guard, Some(generation), move || {
-            drop(projection_permit);
-        })
+        .install_and_refresh_resolved(
+            &key,
+            slot,
+            managed,
+            guard,
+            Some(generation),
+            (
+                || {
+                    if !index.contains_published_binding(&cid, &publication_binding)
+                        || index.terminal_publication_rejected(&cid)
+                    {
+                        return Err(crate::Error::not_found(&publication_binding.resource_key));
+                    }
+                    Ok(())
+                },
+                move || {
+                    drop(projection_permit);
+                },
+            ),
+        )
         .await
     {
         Ok(crate::manager::EpochRefreshOutcome::Applied(outcome)) => match outcome {

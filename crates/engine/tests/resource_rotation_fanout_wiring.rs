@@ -105,6 +105,7 @@ async fn material_replacement_installs_projected_guard_before_refresh_hook() {
                 slot: Arc::clone(&slot),
                 observed: Arc::clone(&observed),
                 hooks: Arc::new(AtomicUsize::new(0)),
+                revocations: Arc::new(AtomicUsize::new(0)),
                 stall_hook: false,
             },
             config: NoCfg,
@@ -182,6 +183,7 @@ async fn lost_material_event_is_recovered_on_startup_and_periodic_scan() {
         slot: Arc::clone(&slot),
         observed: Arc::clone(&observed),
         hooks: Arc::new(AtomicUsize::new(0)),
+        revocations: Arc::new(AtomicUsize::new(0)),
         stall_hook: false,
     };
     let installed = resource
@@ -298,6 +300,7 @@ async fn material_replacement_hook_timeout_is_not_counted_as_success() {
                 slot: Arc::new(nebula_resource::SlotCell::empty()),
                 observed: Arc::new(AtomicUsize::new(0)),
                 hooks: Arc::new(AtomicUsize::new(0)),
+                revocations: Arc::new(AtomicUsize::new(0)),
                 stall_hook: true,
             },
             config: NoCfg,
@@ -710,6 +713,39 @@ async fn durable_tombstone_taints_live_sibling_before_its_projection_returns() {
     assert_eq!(calls.load(Ordering::SeqCst), 2);
 }
 
+#[tokio::test]
+async fn concurrent_tombstones_fan_out_once_per_credential() {
+    let manager = Manager::new();
+    let index = ResourceFanoutIndex::new();
+    let cid = CredentialId::new();
+    let first = register_replacement_with_identity(&manager, cid, "first-tombstone");
+    let second = register_replacement_with_identity(&manager, cid, "second-tombstone");
+    for identity in ["first-tombstone", "second-tombstone"] {
+        index.bind_test(
+            cid,
+            ReplacementResource::key(),
+            ScopeLevel::Global,
+            "db",
+            SlotIdentity::from_bindings([("db", identity)]),
+        );
+    }
+    let outcome = index
+        .dispatch_material_replacement(
+            cid,
+            &nebula_credential::TenantScope::new("org", "workspace"),
+            &"oauth".parse().expect("key"),
+            &RevokedProjection {
+                calls: Arc::new(AtomicUsize::new(0)),
+            },
+            &manager,
+        )
+        .await;
+
+    assert_eq!(outcome.failed(), 0);
+    assert_eq!(first.revocations.load(Ordering::SeqCst), 1);
+    assert_eq!(second.revocations.load(Ordering::SeqCst), 1);
+}
+
 #[tokio::test(start_paused = true)]
 async fn durable_tombstone_reconciliation_terminally_revokes_resource() {
     let manager = Arc::new(Manager::new());
@@ -779,6 +815,7 @@ async fn empty_bound_slot_reconciles_a_lost_durable_tombstone() {
         slot: Arc::new(nebula_resource::SlotCell::empty()),
         observed: Arc::new(AtomicUsize::new(0)),
         hooks: Arc::new(AtomicUsize::new(0)),
+        revocations: Arc::new(AtomicUsize::new(0)),
         stall_hook: false,
     };
     manager
@@ -1080,6 +1117,7 @@ fn register_replacement_with_hook_behavior(
         slot: Arc::new(nebula_resource::SlotCell::empty()),
         observed: Arc::new(AtomicUsize::new(0)),
         hooks: Arc::new(AtomicUsize::new(0)),
+        revocations: Arc::new(AtomicUsize::new(0)),
         stall_hook,
     };
     let installed = resource
@@ -1483,6 +1521,7 @@ struct ReplacementResource {
     slot: Arc<nebula_resource::SlotCell<nebula_credential::CredentialGuard<ReplacementMaterial>>>,
     observed: Arc<AtomicUsize>,
     hooks: Arc<AtomicUsize>,
+    revocations: Arc<AtomicUsize>,
 }
 
 #[async_trait::async_trait]
@@ -1602,6 +1641,7 @@ impl HasCredentialSlots for ReplacementResource {
         if slot != "db" {
             return Err(nebula_resource::SlotInstallError::UnknownSlot);
         }
+        self.revocations.fetch_add(1, Ordering::SeqCst);
         Ok(self.slot.revoke())
     }
 }

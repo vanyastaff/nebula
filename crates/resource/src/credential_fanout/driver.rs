@@ -258,6 +258,9 @@ impl ResourceFanoutDriver {
         lease_bus: Option<Arc<EventBus<LeaseEvent>>>,
     ) -> Self {
         manager.attach_rotation_index(&index);
+        if resolver.is_some() {
+            index.set_authoritative_reconciliation(true);
+        }
         let mut credential_sub = credential_bus.subscribe();
         let mut lease_sub = lease_bus.map(|bus| bus.subscribe());
         let handle = tokio::spawn(async move {
@@ -305,7 +308,8 @@ impl ResourceFanoutDriver {
                             scope,
                             credential_key,
                         }) if resolver.is_some() => {
-                            let context_sequence = index.remember_material_context(
+                            let context_sequence = manager.remember_material_replacement(
+                                &index,
                                 credential_id,
                                 scope.clone(),
                                 credential_key.clone(),

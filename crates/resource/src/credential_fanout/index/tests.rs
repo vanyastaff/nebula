@@ -148,6 +148,35 @@ fn contextual_staging_creates_authoritative_reread_context() {
 }
 
 #[test]
+fn identical_staged_binding_rejects_conflicting_owner_context() {
+    let idx = ResourceFanoutIndex::new();
+    let cid = CredentialId::new();
+    let bind = bound(
+        &rk("pg"),
+        &ScopeLevel::Global,
+        "db",
+        SlotIdentity::from_bindings([("db", "credential")]),
+    );
+    assert!(idx.stage_bind_with_context(
+        cid,
+        bind.clone(),
+        TenantScope::new("org-a", "workspace"),
+        "oauth".parse().expect("credential key"),
+    ));
+
+    assert!(!idx.stage_bind_with_context(
+        cid,
+        bind,
+        TenantScope::new("org-b", "workspace"),
+        "oauth".parse().expect("credential key"),
+    ));
+    assert_eq!(
+        idx.pending_material_contexts()[0].1,
+        TenantScope::new("org-a", "workspace")
+    );
+}
+
+#[test]
 fn late_staging_reactivates_a_settled_replacement_fence() {
     let idx = ResourceFanoutIndex::new();
     let cid = CredentialId::new();
@@ -1302,6 +1331,30 @@ mod fanout_dispatch {
 
         index.complete_material_context(&second, second_sequence, &manager);
         assert_eq!(managed.phase(), crate::state::ResourcePhase::Ready);
+    }
+
+    #[tokio::test]
+    async fn durable_fences_and_readiness_transition_share_manager_admission() {
+        let identity = SlotIdentity::from_bindings([("db", "admission-fence")]);
+        let (index, manager, credential_id, scope, _org, _ledger) =
+            setup(std::slice::from_ref(&identity)).await;
+        let managed = manager
+            .lookup_any_for_slot_identity_structural(&CtlResource::key(), &scope, &identity)
+            .expect("registered row");
+        let owner = TenantScope::new("org", "workspace");
+        let credential_key: CredentialKey = "oauth".parse().expect("credential key");
+
+        let sequence =
+            manager.remember_material_replacement(&index, credential_id, owner, credential_key);
+        assert_eq!(managed.phase(), crate::state::ResourcePhase::Initializing);
+        index.complete_material_context(&credential_id, sequence, &manager);
+        assert_eq!(managed.phase(), crate::state::ResourcePhase::Ready);
+
+        assert!(index.remember_revocation(credential_id));
+        managed.set_phase(crate::state::ResourcePhase::Initializing);
+        let binding = index.affected(&credential_id).remove(0);
+        manager.promote_reconciled_credential_binding(&index, &credential_id, &binding);
+        assert_eq!(managed.phase(), crate::state::ResourcePhase::Initializing);
     }
 
     #[tokio::test]

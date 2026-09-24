@@ -272,6 +272,115 @@ pub enum RevokeTail {
 }
 
 impl Manager {
+    #[cfg(feature = "rotation")]
+    pub(crate) fn stage_credential_binding(
+        &self,
+        index: &crate::ResourceFanoutIndex,
+        credential_id: nebula_credential::CredentialId,
+        binding: crate::Bind,
+        scope: nebula_credential::TenantScope,
+        credential_key: nebula_core::CredentialKey,
+    ) -> bool {
+        let _admission = self
+            .admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let staged = index.stage_bind_with_context(credential_id, binding, scope, credential_key);
+        if staged {
+            self.demote_published_credential_bindings(index, &credential_id);
+        }
+        staged
+    }
+
+    #[cfg(feature = "rotation")]
+    pub(crate) fn remember_material_replacement(
+        &self,
+        index: &crate::ResourceFanoutIndex,
+        credential_id: nebula_credential::CredentialId,
+        scope: nebula_credential::TenantScope,
+        credential_key: nebula_core::CredentialKey,
+    ) -> u64 {
+        let _admission = self
+            .admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.demote_published_credential_bindings(index, &credential_id);
+        index.remember_material_context(credential_id, scope, credential_key)
+    }
+
+    #[cfg(feature = "rotation")]
+    fn demote_published_credential_bindings(
+        &self,
+        index: &crate::ResourceFanoutIndex,
+        credential_id: &nebula_credential::CredentialId,
+    ) {
+        for binding in index.affected(credential_id) {
+            let Ok(managed) = self.lookup_any_for_slot_identity_structural(
+                &binding.resource_key,
+                &binding.scope,
+                &binding.slot_identity,
+            ) else {
+                continue;
+            };
+            if !managed.is_tainted() {
+                managed.set_phase(crate::state::ResourcePhase::Initializing);
+            }
+        }
+    }
+
+    #[cfg(feature = "rotation")]
+    pub(crate) fn fence_published_credential_bindings(
+        &self,
+        index: &crate::ResourceFanoutIndex,
+        credential_id: nebula_credential::CredentialId,
+        terminal: bool,
+        clear_material: bool,
+    ) -> Option<(Vec<(crate::Bind, TaintedSlot)>, usize)> {
+        let _admission = self
+            .admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if terminal && index.terminal_publication_rejected(&credential_id) {
+            return None;
+        }
+        let mut tainted = Vec::new();
+        let mut failed = 0;
+        for binding in index.affected(&credential_id) {
+            if !index.contains_published_binding(&credential_id, &binding) {
+                continue;
+            }
+            let result = self
+                .lookup_any_for_slot_identity_structural(
+                    &binding.resource_key,
+                    &binding.scope,
+                    &binding.slot_identity,
+                )
+                .and_then(|managed| {
+                    if clear_material {
+                        self.revoke_terminal_under_admission(
+                            &binding.resource_key,
+                            &binding.slot_name,
+                            managed,
+                        )
+                    } else {
+                        self.taint_under_admission(
+                            &binding.resource_key,
+                            &binding.slot_name,
+                            managed,
+                        )
+                    }
+                });
+            match result {
+                Ok(row) => tainted.push((binding, row)),
+                Err(_) => failed += 1,
+            }
+        }
+        if terminal {
+            let _ = index.remember_revocation(credential_id);
+        }
+        Some((tainted, failed))
+    }
+
     /// Pins the currently published row for one credential reverse-index
     /// binding under lifecycle admission.
     #[cfg(feature = "rotation")]
@@ -319,31 +428,6 @@ impl Manager {
             &binding.slot_identity,
         )?;
         self.taint_under_admission(&binding.resource_key, &binding.slot_name, managed)
-    }
-
-    /// Applies an authoritative durable tombstone to the exact row still
-    /// owned by a published reverse-index binding.
-    #[cfg(feature = "rotation")]
-    pub(crate) fn revoke_published_credential_binding_terminal(
-        &self,
-        index: &crate::ResourceFanoutIndex,
-        credential_id: &nebula_credential::CredentialId,
-        binding: &crate::Bind,
-    ) -> Result<TaintedSlot, Error> {
-        let _admission = self
-            .admission
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        self.shutdown_guard()?;
-        if !index.contains_published_binding(credential_id, binding) {
-            return Err(Error::not_found(&binding.resource_key));
-        }
-        let managed = self.lookup_any_for_slot_identity_structural(
-            &binding.resource_key,
-            &binding.scope,
-            &binding.slot_identity,
-        )?;
-        self.revoke_terminal_under_admission(&binding.resource_key, &binding.slot_name, managed)
     }
 
     /// Revalidates reverse-index ownership and admits a refresh for the same
@@ -398,7 +482,7 @@ impl Manager {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !index.contains_published_binding(credential_id, binding)
-            || index.binding_has_pending_material(binding)
+            || index.binding_is_fenced(credential_id, binding)
         {
             return;
         }
@@ -435,22 +519,24 @@ impl Manager {
         guard: nebula_credential::ErasedCredentialGuard,
     ) -> Result<EpochRefreshOutcome, Error> {
         let managed = self.lookup_any_for_slot_identity_structural(key, &scope, slot_identity)?;
-        self.install_and_refresh_resolved(key, slot, managed, guard, None, || {})
+        self.install_and_refresh_resolved(key, slot, managed, guard, None, (|| Ok(()), || {}))
             .await
     }
 
-    pub(crate) async fn install_and_refresh_resolved<F>(
+    pub(crate) async fn install_and_refresh_resolved<C, F>(
         &self,
         key: &ResourceKey,
         slot: &str,
         managed: Arc<dyn crate::registry::ManagedHandle>,
         guard: nebula_credential::ErasedCredentialGuard,
         expected_generation: Option<u64>,
-        projection_complete: F,
+        callbacks: (C, F),
     ) -> Result<EpochRefreshOutcome, Error>
     where
+        C: FnOnce() -> Result<(), Error>,
         F: FnOnce(),
     {
+        let (admission_check, projection_complete) = callbacks;
         let started = Instant::now();
         let accepted = {
             // Same gate as registration, retirement and terminal revoke. No await
@@ -459,6 +545,7 @@ impl Manager {
                 .admission
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+            admission_check()?;
             self.validate_refresh_admission(key, slot, &managed)?;
             let mut pending = managed
                 .pending_projection_hooks()

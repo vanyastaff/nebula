@@ -477,6 +477,7 @@ async fn identity_mismatch_is_typed_and_rolls_back_manager_and_fanout_state() {
     let expression_engine = ExpressionEngine::with_cache_size(16);
     let credential_id = nebula_credential::CredentialId::new();
     let fanout_index = Arc::new(crate::ResourceFanoutIndex::new());
+    fanout_index.set_authoritative_reconciliation(true);
     let inner: Arc<dyn ResourceFactory> = Arc::new(KindActivator::<BoundTestRes, _, _>::new(
         BoundTestRes::new,
         || Resident::<BoundTestRes>::new(resident::config::Config::default()),
@@ -765,6 +766,32 @@ async fn contextual_binding_stays_unavailable_until_authoritative_reread() {
         )
         .expect("typed fixture metadata admits");
 
+    let error = registry
+        .register_and_bind(
+            "test-authoritative-reread",
+            &manager,
+            RegisterRequest {
+                config: ResourceConfigInput::data(serde_json::json!({ "name": "resource" })),
+                expr_engine: &expression_engine,
+                slot_bindings: vec![SlotBinding {
+                    slot_name: "auth".to_owned(),
+                    credential_key: credential_key.clone(),
+                    credential_id: Some(credential_id),
+                    credential_scope: Some(owner.clone()),
+                }],
+                slot_installs: Vec::new(),
+                scope: ScopeLevel::Global,
+                recovery_gate: None,
+            },
+            Some(&fanout_index),
+        )
+        .await
+        .expect_err("contextual registration requires an authoritative resolver");
+    std::assert_matches!(error, RegistrarError::Register { .. });
+    assert!(!manager.contains(&BoundTestRes::key()));
+
+    fanout_index.set_authoritative_reconciliation(true);
+
     let outcome = registry
         .register_and_bind(
             "test-authoritative-reread",
@@ -848,6 +875,7 @@ async fn revoke_observed_before_staging_taints_the_row_at_publication() {
     let expression_engine = ExpressionEngine::with_cache_size(16);
     let credential_id = nebula_credential::CredentialId::new();
     let fanout_index = Arc::new(crate::ResourceFanoutIndex::new());
+    fanout_index.set_authoritative_reconciliation(true);
     let mut registry = ResourceActivatorRegistry::new();
     registry
         .insert(
@@ -910,6 +938,8 @@ async fn exact_replacement_publishes_only_successor_staged_binding() {
     let new_credential_id = nebula_credential::CredentialId::new();
     let old_fanout_index = Arc::new(crate::ResourceFanoutIndex::new());
     let new_fanout_index = Arc::new(crate::ResourceFanoutIndex::new());
+    old_fanout_index.set_authoritative_reconciliation(true);
+    new_fanout_index.set_authoritative_reconciliation(true);
     let mut registry = ResourceActivatorRegistry::new();
     registry
         .insert(
