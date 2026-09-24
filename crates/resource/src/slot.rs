@@ -226,6 +226,29 @@ impl<S> SlotCell<S> {
         (self.generation(), metadata.clone())
     }
 
+    /// Runs a synchronous fence only while the observed projection generation
+    /// is still current. The generation check and fence share the slot writer
+    /// lock, so an unqualified write cannot detach the credential between them.
+    ///
+    /// # Errors
+    /// Returns [`SlotInstallError::ProjectionChanged`] after any intervening
+    /// slot transition.
+    pub fn fence_projection_at_generation(
+        &self,
+        expected_generation: u64,
+        fence: &mut dyn FnMut(),
+    ) -> Result<(), SlotInstallError> {
+        let _identity = self
+            .write_lock
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if self.generation() != expected_generation {
+            return Err(SlotInstallError::ProjectionChanged);
+        }
+        fence();
+        Ok(())
+    }
+
     /// Routing and ordering metadata for a live projected slot; contains no material.
     pub fn projection_metadata(&self) -> Option<nebula_credential::CredentialGuardMetadata> {
         let metadata = self

@@ -14,7 +14,7 @@ use nebula_core::CredentialKey;
 use nebula_credential::{Capabilities, CredentialId, CredentialSlotResolver, TenantScope};
 use tokio_util::sync::CancellationToken;
 
-use super::index::{MAX_CONCURRENT_PROJECTIONS, ResourceFanoutIndex, RotationOutcome};
+use super::index::{ResourceFanoutIndex, RotationOutcome};
 
 impl ResourceFanoutIndex {
     /// Projects the owner-qualified durable replacement, installs the new
@@ -28,10 +28,8 @@ impl ResourceFanoutIndex {
         resolver: &dyn CredentialSlotResolver,
         mgr: &crate::Manager,
     ) -> RotationOutcome {
-        use futures::StreamExt;
-
         let dispatches = self.affected(&cid).into_iter().map(|binding| async move {
-            let Ok(_projection_permit) = self.projection_admission.acquire().await else {
+            let Ok(projection_permit) = self.projection_admission.acquire().await else {
                 return RowOutcome::Failed {
                     drain_timed_out: false,
                 };
@@ -75,18 +73,19 @@ impl ResourceFanoutIndex {
             project_and_refresh(
                 mgr,
                 managed,
-                (&binding.slot_name, generation),
-                scope,
-                cid,
-                credential_key.clone(),
+                ProjectionTarget {
+                    slot: &binding.slot_name,
+                    generation,
+                    scope,
+                    credential_id: cid,
+                    credential_key: credential_key.clone(),
+                },
                 resolver,
+                projection_permit,
             )
             .await
         });
-        let outcomes = futures::stream::iter(dispatches)
-            .buffer_unordered(MAX_CONCURRENT_PROJECTIONS)
-            .collect::<Vec<_>>()
-            .await;
+        let outcomes = futures::future::join_all(dispatches).await;
         summarize_row_outcomes(outcomes)
     }
 
@@ -99,7 +98,7 @@ impl ResourceFanoutIndex {
         resolver: &dyn CredentialSlotResolver,
         credential_id: Option<CredentialId>,
     ) -> RotationOutcome {
-        use futures::{FutureExt, StreamExt};
+        use futures::FutureExt;
 
         let mut projections = Vec::new();
         for managed in mgr.registry.all_managed() {
@@ -113,7 +112,7 @@ impl ResourceFanoutIndex {
                 let managed = std::sync::Arc::clone(&managed);
                 projections.push(
                     async move {
-                        let Ok(_projection_permit) = self.projection_admission.acquire().await
+                        let Ok(projection_permit) = self.projection_admission.acquire().await
                         else {
                             return RowOutcome::Failed {
                                 drain_timed_out: false,
@@ -127,11 +126,15 @@ impl ResourceFanoutIndex {
                         project_and_refresh(
                             mgr,
                             managed,
-                            (slot, generation),
-                            scope,
-                            metadata.credential_id(),
-                            metadata.credential_key().clone(),
+                            ProjectionTarget {
+                                slot,
+                                generation,
+                                scope,
+                                credential_id: metadata.credential_id(),
+                                credential_key: metadata.credential_key().clone(),
+                            },
                             resolver,
+                            projection_permit,
                         )
                         .await
                     }
@@ -139,11 +142,20 @@ impl ResourceFanoutIndex {
                 );
             }
         }
-        let outcomes = futures::stream::iter(projections)
-            .buffer_unordered(MAX_CONCURRENT_PROJECTIONS)
-            .collect::<Vec<_>>()
-            .await;
-        summarize_row_outcomes(outcomes)
+        let outcomes = futures::future::join_all(projections).await;
+        let mut summary = summarize_row_outcomes(outcomes);
+        if credential_id.is_none() {
+            for (cid, scope, credential_key) in self.pending_material_contexts() {
+                let outcome = self
+                    .dispatch_material_replacement(cid, &scope, &credential_key, resolver, mgr)
+                    .await;
+                summary.add(outcome);
+                if outcome.failed + outcome.timed_out + outcome.abandoned == 0 {
+                    self.forget_material_context(&cid);
+                }
+            }
+        }
+        summary
     }
 
     /// Fans a completed credential refresh out to every resource registry
@@ -486,15 +498,28 @@ impl ResourceFanoutIndex {
 
 // Bound projection independently of queue-owned hook execution. Cancelling
 // this future also cancels cooperative resolver work through the drop guard.
+struct ProjectionTarget<'a> {
+    slot: &'a str,
+    generation: u64,
+    scope: &'a TenantScope,
+    credential_id: CredentialId,
+    credential_key: CredentialKey,
+}
+
 async fn project_and_refresh(
     mgr: &crate::Manager,
     managed: std::sync::Arc<dyn crate::registry::ManagedHandle>,
-    (slot, generation): (&str, u64),
-    scope: &TenantScope,
-    cid: CredentialId,
-    credential_key: CredentialKey,
+    target: ProjectionTarget<'_>,
     resolver: &dyn CredentialSlotResolver,
+    projection_permit: tokio::sync::SemaphorePermit<'_>,
 ) -> RowOutcome {
+    let ProjectionTarget {
+        slot,
+        generation,
+        scope,
+        credential_id: cid,
+        credential_key,
+    } = target;
     let cancel = CancellationToken::new();
     let _cancel_on_drop = cancel.clone().drop_guard();
     let guard = match tokio::time::timeout(
@@ -512,7 +537,7 @@ async fn project_and_refresh(
                 slot,
                 "durable credential tombstone discovered during material reconciliation; revoking resource slot"
             );
-            let tainted = match mgr.taint_resolved(&key, slot, managed) {
+            let tainted = match mgr.taint_resolved_at_generation(&key, slot, managed, generation) {
                 Ok(tainted) => tainted,
                 Err(error) => {
                     tracing::warn!(
@@ -527,6 +552,7 @@ async fn project_and_refresh(
                     };
                 },
             };
+            drop(projection_permit);
             return revoke_tail_outcome(
                 mgr.drain_and_revoke(tainted, Duration::from_secs(30)).await,
             );
@@ -547,7 +573,9 @@ async fn project_and_refresh(
     };
     let key = managed.resource_key();
     match mgr
-        .install_and_refresh_resolved(&key, slot, managed, guard, Some(generation))
+        .install_and_refresh_resolved(&key, slot, managed, guard, Some(generation), move || {
+            drop(projection_permit);
+        })
         .await
     {
         Ok(crate::manager::EpochRefreshOutcome::Applied(outcome)) => match outcome {

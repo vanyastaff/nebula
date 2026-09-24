@@ -57,7 +57,7 @@
 //! fan-out internals already guarantee no credential/secret material reaches
 //! any span; this driver adds only key-free counts.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -203,6 +203,7 @@ const PER_RESOURCE_ROTATION_TIMEOUT: Duration = Duration::from_secs(30);
 /// projection fan-out is running. Repeated observations for one credential
 /// replace its pending hint, and overflow falls back to durable reconciliation.
 const MAX_PENDING_MATERIAL_REPLACEMENTS: usize = 256;
+const MAX_PENDING_REFRESH_SCANS: usize = 256;
 
 /// Handle for the background fan-out driver task.
 ///
@@ -266,7 +267,8 @@ impl ResourceFanoutDriver {
             let mut scans = tokio::task::JoinSet::new();
             let mut material_dispatches = tokio::task::JoinSet::new();
             let mut pending_material = HashMap::<CredentialId, (TenantScope, CredentialKey)>::new();
-            let mut scan_requested = false;
+            let mut pending_refresh_scans = HashSet::<CredentialId>::new();
+            let mut full_scan_requested = false;
             loop {
                 // `tokio::select!` over both subscribers so a refresh and
                 // a lease-revoke are both observed promptly. The two
@@ -279,20 +281,32 @@ impl ResourceFanoutDriver {
                 // the driver.
                 tokio::select! {
                     ev = credential_sub.recv() => match ev {
-                        Some(CredentialEvent::Refreshed { .. }) if resolver.is_some() => {
-                            scan_requested = true;
+                        Some(CredentialEvent::Refreshed { credential_id }) if resolver.is_some() => {
+                            if pending_refresh_scans.contains(&credential_id)
+                                || pending_refresh_scans.len() < MAX_PENDING_REFRESH_SCANS
+                            {
+                                pending_refresh_scans.insert(credential_id);
+                            } else {
+                                pending_refresh_scans.clear();
+                                full_scan_requested = true;
+                            }
                         },
                         Some(CredentialEvent::MaterialReplaced {
                             credential_id,
                             scope,
                             credential_key,
                         }) if resolver.is_some() => {
+                            index.remember_material_context(
+                                credential_id,
+                                scope.clone(),
+                                credential_key.clone(),
+                            );
                             if pending_material.contains_key(&credential_id)
                                 || pending_material.len() < MAX_PENDING_MATERIAL_REPLACEMENTS
                             {
                                 pending_material.insert(credential_id, (scope, credential_key));
                             } else {
-                                scan_requested = true;
+                                full_scan_requested = true;
                                 tracing::warn!(
                                     credential_id = %credential_id,
                                     "material replacement queue full; durable reconciliation requested"
@@ -316,19 +330,34 @@ impl ResourceFanoutDriver {
                         None => lease_sub = None,
                     },
                     _ = reconciliation.tick(), if resolver.is_some() => {
-                        scan_requested = true;
+                        pending_refresh_scans.clear();
+                        full_scan_requested = true;
                     },
-                    () = std::future::ready(()), if scan_requested
+                    () = std::future::ready(()), if (full_scan_requested || !pending_refresh_scans.is_empty())
                         && scans.is_empty()
                         && material_dispatches.is_empty() => {
-                        scan_requested = false;
+                        let credential_id = if full_scan_requested {
+                            full_scan_requested = false;
+                            pending_refresh_scans.clear();
+                            None
+                        } else {
+                            let credential_id = pending_refresh_scans.iter().next().copied();
+                            if let Some(credential_id) = credential_id {
+                                pending_refresh_scans.remove(&credential_id);
+                            }
+                            credential_id
+                        };
                         if let Some(resolver) = resolver.as_ref() {
                             let index = Arc::clone(&index);
                             let manager = Arc::clone(&manager);
                             let resolver = Arc::clone(resolver);
                             // JoinSet aborts the scan when the driver is dropped.
                             // Scans cannot delay reception of revoke observations.
-                            scans.spawn(async move { index.reconcile_material(&manager, resolver.as_ref(), None).await });
+                            scans.spawn(async move {
+                                index
+                                    .reconcile_material(&manager, resolver.as_ref(), credential_id)
+                                    .await
+                            });
                         }
                     },
                     () = std::future::ready(()), if !pending_material.is_empty()
@@ -373,6 +402,9 @@ impl ResourceFanoutDriver {
                     result = material_dispatches.join_next(), if !material_dispatches.is_empty() => {
                         match result {
                             Some(Ok((credential_id, outcome))) => {
+                                if outcome.failed + outcome.timed_out + outcome.abandoned == 0 {
+                                    index.forget_material_context(&credential_id);
+                                }
                                 Self::record(credential_id, "material_replacement", outcome);
                             },
                             Some(Err(_)) => tracing::warn!("material replacement fan-out task failed"),

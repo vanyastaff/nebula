@@ -461,6 +461,11 @@ struct RevokedProjection {
     calls: Arc<AtomicUsize>,
 }
 
+struct GatedRevokedProjection {
+    entered: Arc<tokio::sync::Semaphore>,
+    release: Arc<tokio::sync::Semaphore>,
+}
+
 impl nebula_credential::CredentialSlotResolver for RevokedProjection {
     fn resolve_slot<'a>(
         &'a self,
@@ -482,6 +487,33 @@ impl nebula_credential::CredentialSlotResolver for RevokedProjection {
     > {
         self.calls.fetch_add(1, Ordering::SeqCst);
         Box::pin(async { Err(nebula_credential::CredentialSlotResolveError::Revoked) })
+    }
+}
+
+impl nebula_credential::CredentialSlotResolver for GatedRevokedProjection {
+    fn resolve_slot<'a>(
+        &'a self,
+        _scope: &'a nebula_credential::TenantScope,
+        _cid: CredentialId,
+        _key: nebula_core::CredentialKey,
+        _capabilities: nebula_credential::Capabilities,
+        _cancel: CancellationToken,
+    ) -> std::pin::Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        nebula_credential::ErasedCredentialGuard,
+                        nebula_credential::CredentialSlotResolveError,
+                    >,
+                > + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            self.entered.add_permits(1);
+            self.release.acquire().await.expect("release gate").forget();
+            Err(nebula_credential::CredentialSlotResolveError::Revoked)
+        })
     }
 }
 
@@ -531,6 +563,65 @@ async fn durable_tombstone_reconciliation_terminally_revokes_resource() {
         "startup reconciliation must synchronously taint a tombstoned credential row"
     );
     driver.abort();
+}
+
+#[tokio::test(start_paused = true)]
+async fn superseded_projection_fences_delayed_tombstone_reconciliation() {
+    for replace_with_value in [true, false] {
+        let manager = Arc::new(Manager::new());
+        let cid = CredentialId::new();
+        let resource = register_replacement(&manager, cid);
+        let identity = SlotIdentity::from_bindings([("db", "oauth")]);
+        let context = ResourceContext::minimal(Scope::default(), CancellationToken::new());
+        drop(
+            manager
+                .acquire_resident_for_identity::<ReplacementResource>(
+                    &context,
+                    &AcquireOptions::default(),
+                    &identity,
+                )
+                .await
+                .expect("resource warms before reconciliation"),
+        );
+        let entered = Arc::new(tokio::sync::Semaphore::new(0));
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
+        let bus = Arc::new(EventBus::new(8));
+        let driver = ResourceFanoutDriver::spawn_with_resolver(
+            Arc::new(ResourceFanoutIndex::new()),
+            Arc::clone(&manager),
+            Some(Arc::new(GatedRevokedProjection {
+                entered: Arc::clone(&entered),
+                release: Arc::clone(&release),
+            })),
+            Arc::clone(&bus),
+            None,
+        );
+        entered.acquire().await.expect("projection starts").forget();
+        if replace_with_value {
+            resource
+                .slot
+                .store(Arc::new(nebula_credential::CredentialGuard::new(
+                    ReplacementMaterial(77),
+                )));
+        } else {
+            resource.slot.take();
+        }
+        release.add_permits(1);
+        for _ in 0..100 {
+            tokio::task::yield_now().await;
+        }
+        drop(
+            manager
+                .acquire_resident_for_identity::<ReplacementResource>(
+                    &context,
+                    &AcquireOptions::default(),
+                    &identity,
+                )
+                .await
+                .expect("superseded credential projection must not taint the row"),
+        );
+        driver.abort();
+    }
 }
 
 impl nebula_credential::CredentialSlotResolver for ConcurrencyProbeProjection {
@@ -690,11 +781,20 @@ fn register_replacement_with_identity(
     cid: CredentialId,
     identity: &str,
 ) -> ReplacementResource {
+    register_replacement_with_hook_behavior(manager, cid, identity, false)
+}
+
+fn register_replacement_with_hook_behavior(
+    manager: &Manager,
+    cid: CredentialId,
+    identity: &str,
+    stall_hook: bool,
+) -> ReplacementResource {
     let resource = ReplacementResource {
         slot: Arc::new(nebula_resource::SlotCell::empty()),
         observed: Arc::new(AtomicUsize::new(0)),
         hooks: Arc::new(AtomicUsize::new(0)),
-        stall_hook: false,
+        stall_hook,
     };
     let installed = resource
         .install_credential_slot(
@@ -723,6 +823,51 @@ fn register_replacement_with_identity(
         })
         .expect("register");
     resource
+}
+
+#[tokio::test]
+async fn projection_capacity_is_released_before_hook_observation() {
+    const ROWS: usize = 40;
+    let manager = Arc::new(Manager::new());
+    let index = Arc::new(ResourceFanoutIndex::new());
+    let cid = CredentialId::new();
+    for row in 0..ROWS {
+        let identity_value = format!("oauth-stalled-{row}");
+        register_replacement_with_hook_behavior(&manager, cid, &identity_value, true);
+        index.bind(
+            cid,
+            ReplacementResource::key(),
+            ScopeLevel::Global,
+            "db",
+            SlotIdentity::from_bindings([("db", identity_value.as_str())]),
+        );
+    }
+    let calls = Arc::new(AtomicUsize::new(0));
+    let dispatch = tokio::spawn({
+        let dispatch_calls = Arc::clone(&calls);
+        async move {
+            index
+                .dispatch_material_replacement(
+                    cid,
+                    &nebula_credential::TenantScope::new("org", "workspace"),
+                    &"oauth".parse().expect("key"),
+                    &ReplacementResolver {
+                        calls: dispatch_calls,
+                        epoch: None,
+                    },
+                    &manager,
+                )
+                .await
+        }
+    });
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while calls.load(Ordering::SeqCst) != ROWS {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("rows after the projection limit start while earlier hooks remain stalled");
+    dispatch.abort();
 }
 
 #[tokio::test(start_paused = true)]
@@ -1124,6 +1269,19 @@ impl HasCredentialSlots for ReplacementResource {
             .install_projected_at_generation(expected_generation, metadata, Arc::new(guard))
     }
 
+    fn fence_credential_slot_at_generation(
+        &self,
+        slot: &str,
+        expected_generation: u64,
+        fence: &mut dyn FnMut(),
+    ) -> Result<(), nebula_resource::SlotInstallError> {
+        if slot != "db" {
+            return Err(nebula_resource::SlotInstallError::UnknownSlot);
+        }
+        self.slot
+            .fence_projection_at_generation(expected_generation, fence)
+    }
+
     fn credential_slot_epoch(&self) -> u64 {
         self.slot.generation()
     }
@@ -1164,6 +1322,12 @@ struct ReplacementResolver {
     calls: Arc<AtomicUsize>,
 }
 
+struct TwoCredentialProjection {
+    first: CredentialId,
+    first_calls: Arc<AtomicUsize>,
+    second_calls: Arc<AtomicUsize>,
+}
+
 impl nebula_credential::CredentialSlotResolver for ReplacementResolver {
     fn resolve_slot<'a>(
         &'a self,
@@ -1202,6 +1366,102 @@ impl nebula_credential::CredentialSlotResolver for ReplacementResolver {
             ))
         })
     }
+}
+
+impl nebula_credential::CredentialSlotResolver for TwoCredentialProjection {
+    fn resolve_slot<'a>(
+        &'a self,
+        scope: &'a nebula_credential::TenantScope,
+        credential_id: CredentialId,
+        expected_key: nebula_core::CredentialKey,
+        _required_capabilities: nebula_credential::Capabilities,
+        _cancel: CancellationToken,
+    ) -> std::pin::Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        nebula_credential::ErasedCredentialGuard,
+                        nebula_credential::CredentialSlotResolveError,
+                    >,
+                > + Send
+                + 'a,
+        >,
+    > {
+        if credential_id == self.first {
+            self.first_calls.fetch_add(1, Ordering::SeqCst);
+        } else {
+            self.second_calls.fetch_add(1, Ordering::SeqCst);
+        }
+        let metadata =
+            nebula_credential::CredentialGuardMetadata::new(credential_id, expected_key, 2, 2)
+                .with_scope(scope.clone());
+        Box::pin(async move {
+            Ok(nebula_credential::ErasedCredentialGuard::from_typed(
+                nebula_credential::CredentialGuard::new(ReplacementMaterial(22)),
+                metadata,
+            ))
+        })
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn refreshed_event_scans_only_the_observed_credential() {
+    let manager = Arc::new(Manager::new());
+    let first = CredentialId::new();
+    let second = CredentialId::new();
+    let first_resource = register_replacement_with_identity(&manager, first, "oauth-first");
+    let second_resource = register_replacement_with_identity(&manager, second, "oauth-second");
+    let index = Arc::new(ResourceFanoutIndex::new());
+    index.bind(
+        first,
+        ReplacementResource::key(),
+        ScopeLevel::Global,
+        "db",
+        SlotIdentity::from_bindings([("db", "oauth-first")]),
+    );
+    index.bind(
+        second,
+        ReplacementResource::key(),
+        ScopeLevel::Global,
+        "db",
+        SlotIdentity::from_bindings([("db", "oauth-second")]),
+    );
+    let first_calls = Arc::new(AtomicUsize::new(0));
+    let second_calls = Arc::new(AtomicUsize::new(0));
+    let bus = Arc::new(EventBus::new(8));
+    let driver = ResourceFanoutDriver::spawn_with_resolver(
+        index,
+        manager,
+        Some(Arc::new(TwoCredentialProjection {
+            first,
+            first_calls: Arc::clone(&first_calls),
+            second_calls: Arc::clone(&second_calls),
+        })),
+        Arc::clone(&bus),
+        None,
+    );
+    for _ in 0..100 {
+        if first_resource.observed.load(Ordering::SeqCst) == 22
+            && second_resource.observed.load(Ordering::SeqCst) == 22
+        {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    first_calls.store(0, Ordering::SeqCst);
+    second_calls.store(0, Ordering::SeqCst);
+    bus.emit(CredentialEvent::Refreshed {
+        credential_id: first,
+    });
+    for _ in 0..100 {
+        if first_calls.load(Ordering::SeqCst) == 1 {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(first_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(second_calls.load(Ordering::SeqCst), 0);
+    driver.abort();
 }
 impl std::error::Error for HookError {}
 impl From<HookError> for ResourceError {

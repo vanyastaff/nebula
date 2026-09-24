@@ -924,6 +924,22 @@ pub trait HasCredentialSlots {
         Err(crate::SlotInstallError::ProjectionChanged)
     }
 
+    /// Runs a synchronous resource fence only if the observed slot generation
+    /// is still current. Implementations must keep the generation check and
+    /// callback under the same slot writer lock.
+    ///
+    /// # Errors
+    /// Returns `ProjectionChanged` after an intervening transition, or
+    /// `UnknownSlot` when the resource does not declare the requested slot.
+    fn fence_credential_slot_at_generation(
+        &self,
+        _slot: &str,
+        _expected_generation: u64,
+        _fence: &mut dyn FnMut(),
+    ) -> Result<(), crate::SlotInstallError> {
+        Err(crate::SlotInstallError::ProjectionChanged)
+    }
+
     /// Installs a projected credential guard into one declared slot.
     ///
     /// Implementations must check the erased value against the slot's

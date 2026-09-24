@@ -286,18 +286,22 @@ impl Manager {
         guard: nebula_credential::ErasedCredentialGuard,
     ) -> Result<EpochRefreshOutcome, Error> {
         let managed = self.lookup_any_for_slot_identity_structural(key, &scope, slot_identity)?;
-        self.install_and_refresh_resolved(key, slot, managed, guard, None)
+        self.install_and_refresh_resolved(key, slot, managed, guard, None, || {})
             .await
     }
 
-    pub(crate) async fn install_and_refresh_resolved(
+    pub(crate) async fn install_and_refresh_resolved<F>(
         &self,
         key: &ResourceKey,
         slot: &str,
         managed: Arc<dyn crate::registry::ManagedHandle>,
         guard: nebula_credential::ErasedCredentialGuard,
         expected_generation: Option<u64>,
-    ) -> Result<EpochRefreshOutcome, Error> {
+        projection_complete: F,
+    ) -> Result<EpochRefreshOutcome, Error>
+    where
+        F: FnOnce(),
+    {
         let started = Instant::now();
         let accepted = {
             // Same gate as registration, retirement and terminal revoke. No await
@@ -375,6 +379,7 @@ impl Manager {
                 crate::hook_guard::MAX_ROTATION_DISPATCH_CEILING,
             )?;
             pending.remove(slot);
+            projection_complete();
             accepted
         };
         self.observe_refresh(
@@ -1006,18 +1011,43 @@ impl Manager {
         self.taint_under_admission(key, slot, managed)
     }
 
-    /// Taints the exact registration already pinned by credential projection.
+    /// Taints the exact registration already pinned by credential projection,
+    /// only while its observed slot generation is still current.
     ///
     /// The lifecycle admission gate revalidates that the handle is still the
     /// registered row, so a concurrent remove/rebind cannot taint its successor.
     #[cfg(feature = "rotation")]
-    pub(crate) fn taint_resolved(
+    pub(crate) fn taint_resolved_at_generation(
         &self,
         key: &ResourceKey,
         slot: &str,
         managed: Arc<dyn crate::registry::ManagedHandle>,
+        expected_generation: u64,
     ) -> Result<TaintedSlot, Error> {
-        self.taint_now(key, slot, managed)
+        let _admission = self
+            .admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.shutdown_guard()?;
+        if !self.registry.contains_managed(key, &managed) {
+            return Err(Error::not_found(key));
+        }
+        if !managed.accepts_credential_slot_name(slot) {
+            return Err(Error::unknown_credential_slot(key.clone(), slot));
+        }
+        managed
+            .taint_at_credential_slot_generation(slot, expected_generation)
+            .map_err(|source| {
+                Error::permanent("credential projection changed before revoke fence")
+                    .with_source(source)
+                    .with_resource_key(key.clone())
+            })?;
+        Ok(TaintedSlot {
+            key: key.clone(),
+            slot: slot.to_owned(),
+            managed,
+            tainted_at: Instant::now(),
+        })
     }
 
     /// Caller holds the same lifecycle gate as refresh installation/admission.

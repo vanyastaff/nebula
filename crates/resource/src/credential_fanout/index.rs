@@ -36,7 +36,7 @@
 
 use dashmap::DashMap;
 use nebula_core::{ResourceKey, ScopeLevel};
-use nebula_credential::CredentialId;
+use nebula_credential::{CredentialId, TenantScope};
 use smallvec::SmallVec;
 
 use crate::SlotIdentity;
@@ -109,6 +109,16 @@ pub struct RotationOutcome {
 }
 
 impl RotationOutcome {
+    pub(super) fn add(&mut self, other: Self) {
+        self.success += other.success;
+        self.failed += other.failed;
+        self.timed_out += other.timed_out;
+        self.deferred += other.deferred;
+        self.abandoned += other.abandoned;
+        self.drain_timed_out += other.drain_timed_out;
+        self.observation_timed_out += other.observation_timed_out;
+    }
+
     /// Rows whose resource hook completed successfully.
     #[must_use]
     pub fn success(&self) -> usize {
@@ -212,6 +222,9 @@ pub struct ResourceFanoutIndex {
     /// on a single shard lock). Rotation fan-out — the hot read — is already
     /// a single-key lookup.
     by_credential: DashMap<CredentialId, BindRows>,
+    /// Owner-qualified replacement hints retained until every bound row can
+    /// project them. Its key space is bounded by live reverse-index entries.
+    material_contexts: DashMap<CredentialId, (TenantScope, nebula_core::CredentialKey)>,
     /// Shared admission keeps direct dispatch and reconciliation under one
     /// provider/persistence concurrency budget.
     pub(super) projection_admission: tokio::sync::Semaphore,
@@ -221,6 +234,7 @@ impl Default for ResourceFanoutIndex {
     fn default() -> Self {
         Self {
             by_credential: DashMap::new(),
+            material_contexts: DashMap::new(),
             projection_admission: tokio::sync::Semaphore::new(MAX_CONCURRENT_PROJECTIONS),
         }
     }
@@ -282,6 +296,35 @@ impl ResourceFanoutIndex {
             .get(cid)
             .map(|rows| rows.iter().map(|r| r.bind.clone()).collect())
             .unwrap_or_default()
+    }
+
+    pub(super) fn remember_material_context(
+        &self,
+        cid: CredentialId,
+        scope: TenantScope,
+        credential_key: nebula_core::CredentialKey,
+    ) {
+        if self.by_credential.contains_key(&cid) {
+            self.material_contexts.insert(cid, (scope, credential_key));
+        }
+    }
+
+    pub(super) fn pending_material_contexts(
+        &self,
+    ) -> Vec<(CredentialId, TenantScope, nebula_core::CredentialKey)> {
+        self.material_contexts
+            .retain(|cid, _| self.by_credential.contains_key(cid));
+        self.material_contexts
+            .iter()
+            .map(|entry| {
+                let (scope, key) = entry.value();
+                (*entry.key(), scope.clone(), key.clone())
+            })
+            .collect()
+    }
+
+    pub(super) fn forget_material_context(&self, cid: &CredentialId) {
+        self.material_contexts.remove(cid);
     }
 
     /// Removes every binding under `(resource_key, scope)` across all

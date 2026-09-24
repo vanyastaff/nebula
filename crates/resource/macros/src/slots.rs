@@ -108,6 +108,11 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
         let field = &slot.field_ident;
         quote! { #key => Some(self.#field.projection_snapshot()) }
     });
+    let slot_fence_arms = slots.iter().map(|slot| {
+        let key = slot.slot_key();
+        let field = &slot.field_ident;
+        quote! { #key => self.#field.fence_projection_at_generation(expected_generation, fence) }
+    });
     let slot_metadata_arms = slots.iter().map(|slot| {
         let key = slot.slot_key();
         let field = &slot.field_ident;
@@ -165,6 +170,18 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
                 expected_generation: u64,
             ) -> ::core::result::Result<::nebula_resource::SlotUpdate, ::nebula_resource::SlotInstallError> {
                 #slot_conditional_install_body
+            }
+
+            fn fence_credential_slot_at_generation(
+                &self,
+                slot: &str,
+                expected_generation: u64,
+                fence: &mut dyn FnMut(),
+            ) -> ::core::result::Result<(), ::nebula_resource::SlotInstallError> {
+                match slot {
+                    #(#slot_fence_arms,)*
+                    _ => Err(::nebula_resource::SlotInstallError::UnknownSlot),
+                }
             }
 
             fn credential_slot_metadata(&self, slot: &str) -> Option<::nebula_credential::CredentialGuardMetadata> {

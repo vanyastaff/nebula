@@ -18,11 +18,16 @@ With `spawn_with_resolver`, `MaterialReplaced` queues an owner-qualified durable
 projection outside the event receive loop, while `Refreshed` requests a coalesced
 durable scan. The driver also reconciles live slot metadata on startup and every 30
 seconds. Direct material dispatch and reconciliation share one limit of 32 concurrent
-projections. Together, these paths recover replacement observations lost before
+credential projections; the permit is released after installation and hook admission,
+before hook observation. Together, these paths recover replacement observations lost before
 subscription, during subscriber lag, or across driver restart. Ordinary refresh hints
-request the same background scan;
-at most one scan runs and one further wake remains pending. Slow projections do
+are coalesced by credential ID and scanned independently, while startup, periodic,
+or bounded-queue overflow requests a full scan. At most one scan runs at a time. Slow projections do
 not block credential or lease revoke reception.
+
+Material replacement context is retained in the reverse index until projection
+succeeds. Its key space is bounded by live credential bindings, so queue overflow
+cannot lose the owner and key needed to recover a bound but still-empty slot.
 
 If an owner-qualified reread finds a durable credential tombstone, reconciliation
 uses the same terminal path as a revoke observation: it synchronously taints the
@@ -35,14 +40,16 @@ alongside the slot's accepted material epoch. Owner metadata excludes interactiv
 authentication bindings. Derived credential slots preserve
 this metadata. Hand-written `HasCredentialSlots` implementations must provide
 `credential_slot_projection` (an atomic generation/metadata snapshot) and
-`install_credential_slot_at_generation`, forwarding to the matching `SlotCell`
+`install_credential_slot_at_generation` plus
+`fence_credential_slot_at_generation`, forwarding to the matching `SlotCell`
 ports, to participate in reconciliation. Legacy metadata without an owner cannot authorize
 a reread and is reported as a failed reconciliation row.
 
 Each projection has a 30-second deadline and a cancellation token cancelled on
 timeout or driver shutdown. The target registration is pinned before projection;
 the slot also rejects another credential or owner even at a higher epoch. The
-observed slot generation is checked under the writer lock before installation,
+observed slot generation is checked under the writer lock before installation
+or a tombstone-driven taint,
 so a concurrent `store`, `take`, or other transition fences the in-flight
 projection. Superseded projections report `ProjectionChanged` without mutation. After I/O,
 the exact registration is revalidated under the manager lifecycle admission lock.

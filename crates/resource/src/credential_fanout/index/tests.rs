@@ -52,6 +52,38 @@ fn index_bind_lookup_unbind_with_identity() {
 }
 
 #[test]
+fn replacement_contexts_survive_queue_scale_and_follow_live_bindings() {
+    let idx = ResourceFanoutIndex::new();
+    let key = rk("pg");
+    let scope = wf_scope();
+    let owner = TenantScope::new("org", "workspace");
+    let credential_key = nebula_core::CredentialKey::new("oauth").expect("credential key");
+    let mut credentials = Vec::new();
+    for row in 0..300 {
+        let cid = cred();
+        let identity = format!("oauth-{row}");
+        idx.bind(
+            cid,
+            key.clone(),
+            scope.clone(),
+            "db",
+            SlotIdentity::from_bindings([("db", identity.as_str())]),
+        );
+        idx.remember_material_context(cid, owner.clone(), credential_key.clone());
+        credentials.push(cid);
+    }
+    assert_eq!(idx.pending_material_contexts().len(), 300);
+
+    idx.unbind_resource(&key, &scope);
+    assert!(idx.pending_material_contexts().is_empty());
+    assert!(
+        credentials
+            .into_iter()
+            .all(|cid| idx.affected(&cid).is_empty())
+    );
+}
+
+#[test]
 fn distinct_slot_identity_same_resource_are_distinct_binds() {
     // Same ResourceKey + scope, different resolved slot_identity (e.g.
     // two tenants resolving the same resource type to different
