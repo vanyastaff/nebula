@@ -354,7 +354,7 @@ fn revoke_intent_survives_until_the_last_staged_binding_is_published() {
 
     idx.stage_bind(cid, bind.clone());
     idx.stage_bind(cid, bind.clone());
-    idx.remember_staged_revoke(cid);
+    assert!(idx.remember_staged_revoke_if_present(cid));
 
     assert!(idx.publish_staged_entry(&cid, &bind));
     assert!(
@@ -371,6 +371,29 @@ fn revoke_intent_survives_until_the_last_staged_binding_is_published() {
             .expect("staged revoke lock")
             .contains(&cid),
         "the intent is retired only after every staged registration publishes"
+    );
+}
+
+#[test]
+fn revoke_intent_is_not_retained_after_publication_wins_the_race() {
+    let idx = ResourceFanoutIndex::new();
+    let cid = cred();
+    let bind = bound(
+        &rk("pg"),
+        &wf_scope(),
+        "db",
+        SlotIdentity::from_bindings([("db", "already-published")]),
+    );
+    idx.stage_bind(cid, bind.clone());
+    assert!(!idx.publish_staged_entry(&cid, &bind));
+
+    assert!(!idx.remember_staged_revoke_if_present(cid));
+    assert!(
+        idx.staged_revoke_intents
+            .lock()
+            .expect("staged revoke lock")
+            .is_empty(),
+        "the published-row path handles the revoke without leaving a staged intent"
     );
 }
 

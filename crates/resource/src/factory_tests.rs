@@ -699,7 +699,14 @@ async fn revoke_observed_during_staging_taints_the_row_at_publication() {
 
     // Models the event arriving after register_and_bind staged the reverse
     // index row but before Manager publishes it under lifecycle admission.
-    fanout_index.remember_staged_revoke(credential_id);
+    let staged = crate::Bind {
+        resource_key: BoundTestRes::key(),
+        scope: ScopeLevel::Global,
+        slot_name: "auth".to_owned(),
+        slot_identity: SlotIdentity::from_bindings([("auth", "test.factory-credential")]),
+    };
+    fanout_index.stage_bind(credential_id, staged.clone());
+    assert!(fanout_index.remember_staged_revoke_if_present(credential_id));
     registry
         .register_and_bind(
             "test-staged-revoke",
@@ -721,6 +728,7 @@ async fn revoke_observed_during_staging_taints_the_row_at_publication() {
         )
         .await
         .expect("registration publishes the staged binding");
+    fanout_index.unbind_staged_entry(&credential_id, &staged);
 
     let binding = fanout_index
         .affected(&credential_id)

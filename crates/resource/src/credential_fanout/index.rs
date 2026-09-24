@@ -549,11 +549,21 @@ impl ResourceFanoutIndex {
         self.revoke_retry_notify.notify_one();
     }
 
-    pub(crate) fn remember_staged_revoke(&self, credential_id: CredentialId) {
+    pub(crate) fn remember_staged_revoke_if_present(&self, credential_id: CredentialId) -> bool {
+        let Some(rows) = self.by_credential.get(&credential_id) else {
+            return false;
+        };
+        if !rows.iter().any(|row| row.staged != 0) {
+            return false;
+        }
+        // Keep the bucket's read guard through insertion. Publication needs
+        // the corresponding write guard, so it either observes this intent
+        // or completes first and makes this method return false.
         self.staged_revoke_intents
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(credential_id);
+        true
     }
 
     pub(crate) async fn revoke_retry_notified(&self) {
@@ -859,10 +869,20 @@ impl ResourceFanoutIndex {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .retain(|entry| self.has_published_binding(&entry.credential_id));
+        let staged_credentials = self
+            .by_credential
+            .iter()
+            .filter_map(|entry| {
+                entry
+                    .iter()
+                    .any(|row| row.staged != 0)
+                    .then_some(*entry.key())
+            })
+            .collect::<std::collections::HashSet<_>>();
         self.staged_revoke_intents
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .retain(|credential_id| self.has_staged_binding(credential_id));
+            .retain(|credential_id| staged_credentials.contains(credential_id));
     }
 
     fn has_published_binding(&self, cid: &CredentialId) -> bool {
