@@ -101,7 +101,13 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     let slot_registrations = field_slots::emit_slot_field_registrations_with_purpose(&slots);
     let slot_accessors = field_slots::emit_slot_accessors(&slots);
     let credential_slot_epoch_body = field_slots::emit_credential_slot_epoch_body(&slots);
-    let slot_install_body = field_slots::emit_slot_install_body(&slots);
+    let slot_install_body = field_slots::emit_slot_install_body(&slots, false);
+    let slot_conditional_install_body = field_slots::emit_slot_install_body(&slots, true);
+    let slot_projection_arms = slots.iter().map(|slot| {
+        let key = slot.slot_key();
+        let field = &slot.field_ident;
+        quote! { #key => Some(self.#field.projection_snapshot()) }
+    });
     let slot_metadata_arms = slots.iter().map(|slot| {
         let key = slot.slot_key();
         let field = &slot.field_ident;
@@ -143,6 +149,22 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
                 ::nebula_resource::SlotInstallError,
             > {
                 #slot_install_body
+            }
+
+            fn credential_slot_projection(&self, slot: &str) -> Option<(u64, Option<::nebula_credential::CredentialGuardMetadata>)> {
+                match slot {
+                    #(#slot_projection_arms,)*
+                    _ => None,
+                }
+            }
+
+            fn install_credential_slot_at_generation(
+                &self,
+                slot: &str,
+                guard: ::nebula_credential::ErasedCredentialGuard,
+                expected_generation: u64,
+            ) -> ::core::result::Result<::nebula_resource::SlotUpdate, ::nebula_resource::SlotInstallError> {
+                #slot_conditional_install_body
             }
 
             fn credential_slot_metadata(&self, slot: &str) -> Option<::nebula_credential::CredentialGuardMetadata> {

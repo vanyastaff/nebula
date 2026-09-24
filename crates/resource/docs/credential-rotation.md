@@ -26,18 +26,24 @@ The production projection stores its credential ID, contract key and owner scope
 alongside the slot's accepted material epoch. Owner metadata excludes interactive
 authentication bindings. Derived credential slots preserve
 this metadata. Hand-written `HasCredentialSlots` implementations must provide
-`credential_slot_metadata` and install through `SlotCell::install_projected` to
-participate in reconciliation. Legacy metadata without an owner cannot authorize
+`credential_slot_projection` (an atomic generation/metadata snapshot) and
+`install_credential_slot_at_generation`, forwarding to the matching `SlotCell`
+ports, to participate in reconciliation. Legacy metadata without an owner cannot authorize
 a reread and is reported as a failed reconciliation row.
 
 Each projection has a 30-second deadline and a cancellation token cancelled on
 timeout or driver shutdown. The target registration is pinned before projection;
-the slot also rejects another credential or owner even at a higher epoch. Only a
-newer epoch installs a guard. Hook admission is tracked separately: queue rejection
-leaves that installed epoch pending, so a later scan retries admission. Acceptance
-consumes the pending state before any await, even if the hook later fails or its
+the slot also rejects another credential or owner even at a higher epoch. The
+observed slot generation is checked under the writer lock before installation,
+so a concurrent `store`, `take`, or other transition fences the in-flight
+projection. Superseded projections report `ProjectionChanged` without mutation.
+Only a newer epoch installs a guard. Hook admission is tracked separately: queue rejection
+leaves that installed epoch and slot generation pending, so a later scan retries
+admission only while the same projection is live. Unqualified writes invalidate
+the pending attempt. Acceptance consumes the pending state before any await, even if the hook later fails or its
 observer is cancelled. Repeated scans are no-ops for unchanged, admitted epochs,
-including duplicate refresh events arriving before or after a scan. Unqualified `store` and successful `install_at_material_epoch` writes clear
+including duplicate refresh events arriving before or after a scan. Unqualified
+`store` and successful `install_at_material_epoch` writes clear
 projection metadata so later scans cannot associate their values with an old
 credential. Completed, timed-out, deferred and abandoned hook outcomes stay
 distinct in the fan-out result. Reconciliation does not retry accepted hooks or

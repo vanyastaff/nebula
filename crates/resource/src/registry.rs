@@ -123,13 +123,36 @@ pub(crate) trait ManagedHandle: Send + Sync + 'static {
     #[cfg(feature = "rotation")]
     fn credential_projections(
         &self,
-    ) -> Vec<(&'static str, nebula_credential::CredentialGuardMetadata)> {
+    ) -> Vec<(
+        &'static str,
+        u64,
+        nebula_credential::CredentialGuardMetadata,
+    )> {
         Vec::new()
     }
 
+    /// Atomic live projection snapshot; missing adapters fail closed.
+    fn credential_slot_projection(
+        &self,
+        _slot: &str,
+    ) -> Option<(u64, Option<nebula_credential::CredentialGuardMetadata>)> {
+        None
+    }
+
+    /// Conditional projection install; missing adapters fail closed.
+    fn install_credential_slot_at_generation(
+        &self,
+        _slot: &str,
+        _guard: nebula_credential::ErasedCredentialGuard,
+        _expected_generation: u64,
+    ) -> Result<crate::SlotUpdate, crate::SlotInstallError> {
+        Err(crate::SlotInstallError::ProjectionChanged)
+    }
+
     /// Serializes projected installation with synchronous hook admission.
-    fn pending_projection_hooks(&self)
-    -> &std::sync::Mutex<std::collections::HashMap<String, u64>>;
+    fn pending_projection_hooks(
+        &self,
+    ) -> &std::sync::Mutex<std::collections::HashMap<String, (u64, u64)>>;
 
     /// Installs a newer projected credential guard through the concrete
     /// resource's derive-generated slot dispatcher.
@@ -302,20 +325,43 @@ where
     #[cfg(feature = "rotation")]
     fn credential_projections(
         &self,
-    ) -> Vec<(&'static str, nebula_credential::CredentialGuardMetadata)> {
+    ) -> Vec<(
+        &'static str,
+        u64,
+        nebula_credential::CredentialGuardMetadata,
+    )> {
         R::credential_slot_names()
             .iter()
             .filter_map(|slot| {
                 self.resource
-                    .credential_slot_metadata(slot)
-                    .map(|metadata| (*slot, metadata))
+                    .credential_slot_projection(slot)
+                    .and_then(|(generation, metadata)| {
+                        metadata.map(|metadata| (*slot, generation, metadata))
+                    })
             })
             .collect()
     }
 
+    fn credential_slot_projection(
+        &self,
+        slot: &str,
+    ) -> Option<(u64, Option<nebula_credential::CredentialGuardMetadata>)> {
+        self.resource.credential_slot_projection(slot)
+    }
+
+    fn install_credential_slot_at_generation(
+        &self,
+        slot: &str,
+        guard: nebula_credential::ErasedCredentialGuard,
+        expected_generation: u64,
+    ) -> Result<crate::SlotUpdate, crate::SlotInstallError> {
+        self.resource
+            .install_credential_slot_at_generation(slot, guard, expected_generation)
+    }
+
     fn pending_projection_hooks(
         &self,
-    ) -> &std::sync::Mutex<std::collections::HashMap<String, u64>> {
+    ) -> &std::sync::Mutex<std::collections::HashMap<String, (u64, u64)>> {
         &self.pending_projection_hooks
     }
 

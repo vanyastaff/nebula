@@ -585,6 +585,105 @@ async fn delayed_projection_cannot_install_into_rebound_registration() {
     assert_eq!(replacement.observed.load(Ordering::SeqCst), 0);
 }
 
+#[tokio::test]
+async fn unqualified_writes_fence_in_flight_scans_and_material_events() {
+    for via_event in [false, true] {
+        for use_store in [false, true] {
+            let manager = Arc::new(Manager::new());
+            let cid = CredentialId::new();
+            let resource = register_replacement(&manager, cid);
+            let index = Arc::new(ResourceFanoutIndex::new());
+            index.bind(
+                cid,
+                ReplacementResource::key(),
+                ScopeLevel::Global,
+                "db",
+                SlotIdentity::from_bindings([("db", "oauth")]),
+            );
+            let entered = Arc::new(tokio::sync::Semaphore::new(0));
+            let release = Arc::new(tokio::sync::Semaphore::new(0));
+            let cancelled = Arc::new(std::sync::Mutex::new(None));
+            let resolver = Arc::new(GatedProjection {
+                entered: Arc::clone(&entered),
+                release: Arc::clone(&release),
+                cancelled: Arc::clone(&cancelled),
+            });
+            let bus = Arc::new(EventBus::new(8));
+            let mut dispatch = None;
+            let mut driver = None;
+            if via_event {
+                let manager = Arc::clone(&manager);
+                dispatch = Some(tokio::spawn(async move {
+                    index
+                        .dispatch_material_replacement(
+                            cid,
+                            &nebula_credential::TenantScope::new("org", "workspace"),
+                            &"oauth".parse().expect("key"),
+                            resolver.as_ref(),
+                            &manager,
+                        )
+                        .await
+                }));
+            } else {
+                driver = Some(ResourceFanoutDriver::spawn_with_resolver(
+                    index,
+                    Arc::clone(&manager),
+                    Some(resolver),
+                    Arc::clone(&bus),
+                    None,
+                ));
+            }
+            tokio::time::timeout(Duration::from_secs(2), entered.acquire())
+                .await
+                .expect("projection started")
+                .expect("permit")
+                .forget();
+            if use_store {
+                resource
+                    .slot
+                    .store(Arc::new(nebula_credential::CredentialGuard::new(
+                        ReplacementMaterial(123),
+                    )));
+            } else {
+                assert!(resource.slot.take().is_some());
+            }
+            let generation = resource.slot.generation();
+            release.add_permits(1);
+            if let Some(dispatch) = dispatch {
+                let outcome = dispatch.await.expect("dispatch");
+                assert_eq!(outcome.failed(), 1);
+                assert_eq!(outcome.success(), 0);
+            } else {
+                tokio::time::timeout(Duration::from_secs(2), async {
+                    loop {
+                        if cancelled
+                            .lock()
+                            .expect("lock")
+                            .as_ref()
+                            .is_some_and(CancellationToken::is_cancelled)
+                        {
+                            break;
+                        }
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .expect("scan settled");
+            }
+            assert_eq!(resource.slot.generation(), generation);
+            assert_eq!(
+                resource.slot.load().map(|guard| guard.0),
+                use_store.then_some(123)
+            );
+            assert!(resource.slot.projection_metadata().is_none());
+            assert_eq!(resource.hooks.load(Ordering::SeqCst), 0);
+            if let Some(driver) = driver {
+                driver.abort();
+            }
+        }
+    }
+}
+
 #[derive(Zeroize)]
 struct ReplacementMaterial(u64);
 
@@ -640,6 +739,30 @@ impl HasCredentialSlots for ReplacementResource {
         (slot == "db")
             .then(|| self.slot.projection_metadata())
             .flatten()
+    }
+
+    fn credential_slot_projection(
+        &self,
+        slot: &str,
+    ) -> Option<(u64, Option<nebula_credential::CredentialGuardMetadata>)> {
+        (slot == "db").then(|| self.slot.projection_snapshot())
+    }
+
+    fn install_credential_slot_at_generation(
+        &self,
+        slot: &str,
+        guard: nebula_credential::ErasedCredentialGuard,
+        expected_generation: u64,
+    ) -> Result<nebula_resource::SlotUpdate, nebula_resource::SlotInstallError> {
+        if slot != "db" {
+            return Err(nebula_resource::SlotInstallError::UnknownSlot);
+        }
+        let metadata = guard.metadata().clone();
+        let guard = guard
+            .into_typed::<ReplacementMaterial>()
+            .map_err(|_| nebula_resource::SlotInstallError::CredentialTypeMismatch)?;
+        self.slot
+            .install_projected_at_generation(expected_generation, metadata, Arc::new(guard))
     }
 
     fn credential_slot_epoch(&self) -> u64 {

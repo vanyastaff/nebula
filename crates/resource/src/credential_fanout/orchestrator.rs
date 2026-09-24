@@ -43,10 +43,16 @@ impl ResourceFanoutIndex {
                     };
                 },
             };
+            let Some((generation, _)) = managed.credential_slot_projection(&binding.slot_name)
+            else {
+                return RowOutcome::Failed {
+                    drain_timed_out: false,
+                };
+            };
             project_and_refresh(
                 mgr,
                 managed,
-                &binding.slot_name,
+                (&binding.slot_name, generation),
                 scope,
                 cid,
                 credential_key.clone(),
@@ -70,7 +76,7 @@ impl ResourceFanoutIndex {
 
         let mut projections = Vec::new();
         for managed in mgr.registry.all_managed() {
-            for (slot, metadata) in managed.credential_projections() {
+            for (slot, generation, metadata) in managed.credential_projections() {
                 if credential_id.is_some_and(|cid| cid != metadata.credential_id()) {
                     continue;
                 }
@@ -85,7 +91,7 @@ impl ResourceFanoutIndex {
                         project_and_refresh(
                             mgr,
                             managed,
-                            slot,
+                            (slot, generation),
                             scope,
                             metadata.credential_id(),
                             metadata.credential_key().clone(),
@@ -447,7 +453,7 @@ impl ResourceFanoutIndex {
 async fn project_and_refresh(
     mgr: &crate::Manager,
     managed: std::sync::Arc<dyn crate::registry::ManagedHandle>,
-    slot: &str,
+    (slot, generation): (&str, u64),
     scope: &TenantScope,
     cid: CredentialId,
     credential_key: CredentialKey,
@@ -478,7 +484,7 @@ async fn project_and_refresh(
     };
     let key = managed.resource_key();
     match mgr
-        .install_and_refresh_resolved(&key, slot, managed, guard)
+        .install_and_refresh_resolved(&key, slot, managed, guard, Some(generation))
         .await
     {
         Ok(crate::manager::EpochRefreshOutcome::Applied(outcome)) => match outcome {

@@ -286,7 +286,7 @@ impl Manager {
         guard: nebula_credential::ErasedCredentialGuard,
     ) -> Result<EpochRefreshOutcome, Error> {
         let managed = self.lookup_any_for_slot_identity_structural(key, &scope, slot_identity)?;
-        self.install_and_refresh_resolved(key, slot, managed, guard)
+        self.install_and_refresh_resolved(key, slot, managed, guard, None)
             .await
     }
 
@@ -296,6 +296,7 @@ impl Manager {
         slot: &str,
         managed: Arc<dyn crate::registry::ManagedHandle>,
         guard: nebula_credential::ErasedCredentialGuard,
+        expected_generation: Option<u64>,
     ) -> Result<EpochRefreshOutcome, Error> {
         let started = Instant::now();
         let accepted = {
@@ -304,21 +305,47 @@ impl Manager {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let epoch = guard.metadata().material_epoch();
-            let update = managed
-                .install_credential_slot(slot, guard)
-                .map_err(|source| {
-                    Error::permanent("credential slot installation failed")
-                        .with_source(source)
-                        .with_resource_key(key.clone())
-                })?;
+            let update = match expected_generation {
+                Some(generation) => {
+                    managed.install_credential_slot_at_generation(slot, guard, generation)
+                },
+                None => managed.install_credential_slot(slot, guard),
+            }
+            .map_err(|source| {
+                Error::permanent("credential slot installation failed")
+                    .with_source(source)
+                    .with_resource_key(key.clone())
+            })?;
             match update {
                 crate::SlotUpdate::Installed => {
-                    pending.insert(slot.to_owned(), epoch);
+                    let Some((generation, Some(metadata))) =
+                        managed.credential_slot_projection(slot)
+                    else {
+                        pending.remove(slot);
+                        return Err(Error::permanent(
+                            "credential projection superseded before hook admission",
+                        )
+                        .with_source(crate::SlotInstallError::ProjectionChanged));
+                    };
+                    if metadata.material_epoch() != epoch {
+                        pending.remove(slot);
+                        return Err(Error::permanent(
+                            "credential projection superseded before hook admission",
+                        )
+                        .with_source(crate::SlotInstallError::ProjectionChanged));
+                    }
+                    pending.insert(slot.to_owned(), (epoch, generation));
                 },
                 crate::SlotUpdate::Stale {
                     current_material_epoch,
                 } => {
-                    if pending.get(slot) != Some(&current_material_epoch) {
+                    let live = managed.credential_slot_projection(slot).and_then(
+                        |(generation, metadata)| {
+                            metadata.map(|metadata| (metadata.material_epoch(), generation))
+                        },
+                    );
+                    if live.is_none() || pending.get(slot).copied() != live {
+                        pending.remove(slot);
                         return Ok(EpochRefreshOutcome::Stale {
                             current_material_epoch,
                         });

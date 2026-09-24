@@ -63,6 +63,30 @@ impl HasCredentialSlots for ProjectionResource {
     fn credential_slot_names() -> &'static [&'static str] {
         &["db"]
     }
+    fn credential_slot_projection(
+        &self,
+        slot: &str,
+    ) -> Option<(u64, Option<CredentialGuardMetadata>)> {
+        (slot == "db").then(|| self.slot.projection_snapshot())
+    }
+
+    fn install_credential_slot_at_generation(
+        &self,
+        slot: &str,
+        guard: ErasedCredentialGuard,
+        expected_generation: u64,
+    ) -> Result<SlotUpdate, SlotInstallError> {
+        if slot != "db" {
+            return Err(SlotInstallError::UnknownSlot);
+        }
+        let metadata = guard.metadata().clone();
+        let guard = guard
+            .into_typed::<u64>()
+            .map_err(|_| SlotInstallError::CredentialTypeMismatch)?;
+        self.slot
+            .install_projected_at_generation(expected_generation, metadata, Arc::new(guard))
+    }
+
     fn credential_slot_epoch(&self) -> u64 {
         self.slot.generation()
     }
@@ -90,7 +114,12 @@ impl ResidentProvider for ProjectionResource {
 
 #[tokio::test]
 async fn rejected_projection_hook_retries_once_but_accepted_failure_does_not() {
-    for fail in [false, true] {
+    for (fail, unqualified) in [
+        (false, None),
+        (true, None),
+        (false, Some(true)),
+        (false, Some(false)),
+    ] {
         let manager = Manager::with_config(ManagerConfig::default().with_release_queue_workers(1));
         let resource = ProjectionResource {
             slot: Arc::new(SlotCell::empty()),
@@ -164,6 +193,13 @@ async fn rejected_projection_hook_retries_once_but_accepted_failure_does_not() {
             2
         );
         assert_eq!(resource.calls.load(Ordering::SeqCst), 0);
+        if let Some(use_store) = unqualified {
+            if use_store {
+                resource.slot.store(Arc::new(CredentialGuard::new(123_u64)));
+            } else {
+                assert!(resource.slot.take().is_some());
+            }
+        }
         blocker.cancel();
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
@@ -195,6 +231,17 @@ async fn rejected_projection_hook_retries_once_but_accepted_failure_does_not() {
                 guard()
             )
         );
+        if let Some(use_store) = unqualified {
+            assert!(matches!(first, Ok(EpochRefreshOutcome::Stale { .. })));
+            assert!(matches!(duplicate, Ok(EpochRefreshOutcome::Stale { .. })));
+            assert_eq!(resource.calls.load(Ordering::SeqCst), 0);
+            assert_eq!(
+                resource.slot.load().map(|guard| **guard),
+                use_store.then_some(123)
+            );
+            assert!(resource.slot.projection_metadata().is_none());
+            continue;
+        }
         assert_eq!(first.is_err(), fail);
         if !fail {
             assert!(matches!(first, Ok(EpochRefreshOutcome::Applied(_))));

@@ -343,3 +343,45 @@ fn unqualified_writes_clear_projection_identity_only_when_applied() {
         assert_eq!(cell.load().expect("live").0, 3);
     }
 }
+
+#[test]
+fn conditional_projection_rejects_superseded_generation_without_mutation() {
+    use nebula_credential::{CredentialGuardMetadata, CredentialId};
+    for transition in 0..3 {
+        let cell = SlotCell::<FakeGuard>::empty();
+        let cid = CredentialId::new();
+        let metadata =
+            |epoch| CredentialGuardMetadata::new(cid, "oauth".parse().expect("key"), epoch, epoch);
+        assert_eq!(
+            cell.install_projected(metadata(1), Arc::new(FakeGuard(1)))
+                .expect("initial projection"),
+            SlotUpdate::Installed
+        );
+        let (generation, snapshot) = cell.projection_snapshot();
+        assert_eq!(snapshot, Some(metadata(1)));
+        match transition {
+            0 => cell.store(Arc::new(FakeGuard(7))),
+            1 => {
+                assert!(cell.take().is_some());
+            },
+            _ => {
+                assert_eq!(
+                    cell.install_at_material_epoch(2, Arc::new(FakeGuard(7)))
+                        .expect("unqualified"),
+                    SlotUpdate::Installed
+                );
+            },
+        }
+        let superseded_generation = cell.generation();
+        assert_eq!(
+            cell.install_projected_at_generation(generation, metadata(99), Arc::new(FakeGuard(99))),
+            Err(SlotInstallError::ProjectionChanged)
+        );
+        assert_eq!(cell.generation(), superseded_generation);
+        assert_eq!(
+            cell.load().map(|guard| guard.0),
+            (transition != 1).then_some(7)
+        );
+        assert!(cell.projection_metadata().is_none());
+    }
+}

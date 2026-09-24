@@ -900,6 +900,30 @@ pub trait HasCredentialSlots {
         None
     }
 
+    /// Atomic generation and metadata snapshot for conditional reconciliation.
+    /// Hand-written adapters must forward to `SlotCell::projection_snapshot`.
+    fn credential_slot_projection(
+        &self,
+        _slot: &str,
+    ) -> Option<(u64, Option<nebula_credential::CredentialGuardMetadata>)> {
+        None
+    }
+
+    /// Installs a projection only at the observed slot generation.
+    /// The check and write must be atomic; adapters without this port fail closed.
+    ///
+    /// # Errors
+    /// Returns a slot installation error, including `ProjectionChanged` when
+    /// an intervening transition superseded the observed generation.
+    fn install_credential_slot_at_generation(
+        &self,
+        _slot: &str,
+        _guard: nebula_credential::ErasedCredentialGuard,
+        _expected_generation: u64,
+    ) -> Result<crate::SlotUpdate, crate::SlotInstallError> {
+        Err(crate::SlotInstallError::ProjectionChanged)
+    }
+
     /// Installs a projected credential guard into one declared slot.
     ///
     /// Implementations must check the erased value against the slot's
