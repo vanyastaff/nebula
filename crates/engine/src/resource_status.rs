@@ -295,6 +295,13 @@ impl ResourceStatusPublisher {
         };
         // Deleted rows go first, so this tick already withdraws their status.
         engine.retire_deleted_resources().await;
+        // That sweep reads storage; a slow one must not outlive the lease.
+        if renewed.elapsed() >= self.interval {
+            let Some(now) = self.renew(published).await else {
+                return;
+            };
+            renewed = now;
+        }
         let view = engine.resource_status_snapshot();
         let mut seen: HashSet<PublishedKey> =
             HashSet::with_capacity(view.live.len() + view.busy.len());
@@ -302,9 +309,6 @@ impl ResourceStatusPublisher {
         for (scope, snapshot) in view.live {
             let key = (scope, snapshot.resource_id.clone());
             seen.insert(key.clone());
-            if published.get(&key) == Some(&snapshot) {
-                continue;
-            }
             // Many rows or a slow store can outlast the lease: it is renewed
             // every interval of publishing, not once per tick.
             if renewed.elapsed() >= self.interval {
@@ -312,6 +316,9 @@ impl ResourceStatusPublisher {
                     return;
                 };
                 renewed = now;
+            }
+            if published.get(&key) == Some(&snapshot) {
+                continue;
             }
             match self.store.publish(&key.0, &self.worker, &snapshot).await {
                 Ok(()) => {

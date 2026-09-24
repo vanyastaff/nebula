@@ -577,11 +577,17 @@ where
         // lock makes checking and reserving one step.
         let running = AtomicUsize::new(0);
         let deciding = tokio::sync::Mutex::new(());
+        // A failed create stops the warmup: attempts not yet started give
+        // up, so a backend that is down is not asked `target` times.
+        let failed = std::sync::atomic::AtomicBool::new(false);
         let attempt = |pause: Option<std::time::Duration>| {
-            let (running, deciding, config) = (&running, &deciding, &config);
+            let (running, deciding, failed, config) = (&running, &deciding, &failed, &config);
             async move {
                 if let Some(pause) = pause {
                     tokio::time::sleep(pause).await;
+                }
+                if failed.load(Ordering::Acquire) {
+                    return Ok(None);
                 }
                 // The create holds a checkout permit, as an acquire's does,
                 // until its entry is deposited: an acquire racing it cannot
@@ -610,6 +616,9 @@ where
                 )
                 .await;
                 running.fetch_sub(1, Ordering::AcqRel);
+                if matches!(outcome, Ok(Err(_))) {
+                    failed.store(true, Ordering::Release);
+                }
                 outcome.map(Some)
             }
         };

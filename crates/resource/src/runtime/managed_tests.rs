@@ -43,6 +43,7 @@ struct Mock {
     check_cost: crate::CheckCost,
     check_fails: Arc<AtomicBool>,
     check_panics: Arc<AtomicBool>,
+    fail_create: Arc<AtomicBool>,
 }
 
 impl Mock {
@@ -58,6 +59,7 @@ impl Mock {
             check_cost: crate::CheckCost::Cheap,
             check_fails: Arc::new(AtomicBool::new(false)),
             check_panics: Arc::new(AtomicBool::new(false)),
+            fail_create: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -79,6 +81,9 @@ impl Provider for Mock {
 
     async fn create(&self, _config: &PoolCfg, _ctx: &ResourceContext) -> Result<u64, Error> {
         let id = self.created.fetch_add(1, Ordering::SeqCst);
+        if self.fail_create.load(Ordering::SeqCst) {
+            return Err(Error::transient("mock backend is down"));
+        }
         if self.park_create.swap(false, Ordering::SeqCst) {
             self.create_entered.notify_one();
             self.release_create.notified().await;
@@ -562,6 +567,31 @@ async fn warmup_fills_store() {
     let created = mr.warmup(&test_ctx()).await.expect("no hook fault");
     assert_eq!(created, 3, "warmup creates `min_size` entries");
     assert_eq!(mr.store.len().await, 3, "warmed entries land in the store");
+}
+
+/// A parallel warmup stops asking once a create fails: a backend that is
+/// down is not asked for the whole target.
+#[tokio::test]
+async fn parallel_warmup_stops_after_a_failed_create() {
+    let resource = Mock::new();
+    resource.fail_create.store(true, Ordering::SeqCst);
+    let created = Arc::clone(&resource.created);
+    let mr = managed(
+        resource,
+        PoolConfig {
+            min_size: 200,
+            max_size: 200,
+            warmup: crate::topology::pooled::config::WarmupStrategy::Parallel,
+            ..Default::default()
+        },
+    );
+    let warmed = mr.warmup(&test_ctx()).await.expect("no hook fault");
+    assert_eq!(warmed, 0);
+    let attempts = created.load(Ordering::SeqCst);
+    assert!(
+        (1..=crate::runtime::acquire_loop::MAX_PARALLEL_WARMUP as u64).contains(&attempts),
+        "at most one parallel batch is attempted, got {attempts}"
+    );
 }
 
 // ----- ADR-0093 per-resource teardown deadline -----

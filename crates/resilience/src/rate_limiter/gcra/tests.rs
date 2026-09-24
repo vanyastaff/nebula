@@ -542,3 +542,39 @@ async fn a_wake_up_past_the_deadline_is_refused() {
     let denied = waiter.await.unwrap().unwrap_err();
     assert!(matches!(denied, Denied::Later { .. }), "{denied:?}");
 }
+
+/// A key that ran on the shared overflow limit still sees that limit's
+/// penalty after the store has room again.
+#[tokio::test(start_paused = true)]
+async fn an_overflowed_keys_penalty_outlives_the_full_store() {
+    let store = MemoryLimitStore::with_max_keys(1);
+    let rate = Rate::per_second(nz(1));
+    let (resident, overflowed) = (
+        LimitKey::new("resident").unwrap(),
+        LimitKey::new("overflowed").unwrap(),
+    );
+    store
+        .reserve(&resident, &rate, ReserveRequest::new(1, Duration::ZERO))
+        .await
+        .unwrap()
+        .unwrap();
+    store
+        .penalize(
+            &overflowed,
+            &rate,
+            Duration::from_mins(1),
+            Duration::from_mins(5),
+        )
+        .await
+        .unwrap();
+    // The resident key goes idle and is dropped: the store has room again.
+    tokio::time::advance(Duration::from_secs(2)).await;
+    store
+        .reserve(&resident, &rate, ReserveRequest::new(0, Duration::ZERO))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(store.is_empty());
+    let left = store.penalty(&overflowed).await.unwrap();
+    assert!(left >= Duration::from_secs(57), "{left:?}");
+}

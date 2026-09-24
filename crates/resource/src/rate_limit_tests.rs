@@ -880,3 +880,80 @@ async fn an_unrecorded_key_pause_holds_for_later_callers() {
         .expect("another chat is not paused");
     assert_eq!(other.elapsed(), Duration::ZERO);
 }
+
+/// Books like the in-memory store, but takes ten seconds to answer.
+struct SlowStore(MemoryLimitStore);
+
+impl nebula_resilience::rate_limiter::gcra::LimitStore for SlowStore {
+    async fn reserve(
+        &self,
+        key: &LimitKey,
+        rate: &Rate,
+        request: ReserveRequest,
+    ) -> Result<Result<Grant, Denied>, LimitStoreError> {
+        tokio::time::sleep(Duration::from_secs(10)).await;
+        nebula_resilience::rate_limiter::gcra::LimitStore::reserve(&self.0, key, rate, request)
+            .await
+    }
+
+    async fn penalize(
+        &self,
+        key: &LimitKey,
+        rate: &Rate,
+        retry_after: Duration,
+        max_penalty: Duration,
+    ) -> Result<(), LimitStoreError> {
+        nebula_resilience::rate_limiter::gcra::LimitStore::penalize(
+            &self.0,
+            key,
+            rate,
+            retry_after,
+            max_penalty,
+        )
+        .await
+    }
+
+    async fn cancel(
+        &self,
+        key: &LimitKey,
+        rate: &Rate,
+        grant: &Grant,
+    ) -> Result<bool, LimitStoreError> {
+        nebula_resilience::rate_limiter::gcra::LimitStore::cancel(&self.0, key, rate, grant).await
+    }
+
+    async fn penalty(&self, key: &LimitKey) -> Result<Duration, LimitStoreError> {
+        nebula_resilience::rate_limiter::gcra::LimitStore::penalty(&self.0, key).await
+    }
+}
+
+/// A store slow to answer does not keep the caller past its deadline.
+#[tokio::test(start_paused = true)]
+async fn a_slow_store_does_not_hold_the_caller_past_its_deadline() {
+    let limits = ResourceLimiter::new(
+        Some(Quota::new(
+            Arc::new(SlowStore(MemoryLimitStore::new())),
+            LimitKey::new("test:row").unwrap(),
+            per_second(10, 10),
+        )),
+        None,
+        Duration::from_mins(1),
+        ResourceKey::new("test.resource").unwrap(),
+        Arc::new(EventBus::new(16)),
+    );
+    let started = Instant::now();
+    let deadline = std::time::Instant::now() + Duration::from_secs(1);
+    let error = limits
+        .ready(Some(deadline))
+        .await
+        .expect_err("the store answers too late");
+    assert!(
+        matches!(error.kind(), ErrorKind::Exhausted { .. }),
+        "{error}"
+    );
+    assert!(
+        started.elapsed() <= Duration::from_secs(2),
+        "gave up at {:?}",
+        started.elapsed()
+    );
+}

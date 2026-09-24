@@ -901,7 +901,7 @@ impl ResourceLimiter {
                 // The key's slot goes back while it is still the last one
                 // booked; otherwise it lapses unused, which errs on sending
                 // less.
-                let _ = keyed.store.cancel_boxed(&key, &rate, &key_slot).await;
+                release(&keyed.store, &key, &rate, key_slot);
                 Err(error)
             },
         }
@@ -939,36 +939,30 @@ impl ResourceLimiter {
             {
                 Ok(account) => account,
                 Err(error) => {
-                    let _ = keyed.store.cancel_boxed(key, rate, &key_slot).await;
+                    release(&keyed.store, key, rate, key_slot);
                     return Err(error);
                 },
             };
             if account.allow_at <= key_slot.allow_at {
                 return Ok(account.wait);
             }
-            let _ = keyed.store.cancel_boxed(key, rate, &key_slot).await;
+            release(&keyed.store, key, rate, key_slot);
             key_slot = match self
                 .book(&keyed.store, key, rate, deadline, account.allow_at)
                 .await
             {
                 Ok(key_slot) => key_slot,
                 Err(error) => {
-                    let _ = quota
-                        .store
-                        .cancel_boxed(&quota.key, &quota.rate, &account)
-                        .await;
+                    release(&quota.store, &quota.key, &quota.rate, account);
                     return Err(error);
                 },
             };
             if key_slot.allow_at <= account.allow_at {
                 return Ok(key_slot.wait);
             }
-            let _ = quota
-                .store
-                .cancel_boxed(&quota.key, &quota.rate, &account)
-                .await;
+            release(&quota.store, &quota.key, &quota.rate, account);
         }
-        let _ = keyed.store.cancel_boxed(key, rate, &key_slot).await;
+        release(&keyed.store, key, rate, key_slot);
         self.engage();
         Err(self.tagged(Error::exhausted(
             "rate limit: no instant both the account and the key allow",
@@ -1048,7 +1042,13 @@ impl ResourceLimiter {
             }
             // A penalty recorded after this caller booked, by this process
             // or any other sharing the store, holds it back as well.
-            let pause = pause_now().max(self.shared_penalty(key).await?);
+            let Some(shared) = within(deadline, self.shared_penalty(key)).await else {
+                return Err(self.tagged(Error::exhausted(
+                    "rate limit store did not answer before the deadline",
+                    None,
+                )));
+            };
+            let pause = pause_now().max(shared?);
             if pause.is_zero() {
                 return Ok(());
             }
@@ -1102,7 +1102,16 @@ impl ResourceLimiter {
         not_before: u64,
     ) -> Result<Grant, Error> {
         let request = ReserveRequest::new(1, max_wait_until(deadline)).not_before(not_before);
-        let decision = store.reserve_boxed(key, rate, request).await;
+        // Bounded by the deadline: a store slow to answer (a pool wait, a
+        // row lock) does not keep the caller past it. A grant that lands
+        // after the caller gave up lapses unused, which errs on sending less.
+        let Some(decision) = within(deadline, store.reserve_boxed(key, rate, request)).await else {
+            self.engage();
+            return Err(self.tagged(Error::exhausted(
+                "rate limit store did not answer before the deadline",
+                None,
+            )));
+        };
         match decision {
             Ok(Ok(grant)) => {
                 self.store_recovered();
@@ -1110,7 +1119,7 @@ impl ResourceLimiter {
                 // budget measured before it can lie past the deadline now.
                 // Return it rather than wait past the deadline.
                 if grant.wait > max_wait_until(deadline) {
-                    let _ = store.cancel_boxed(key, rate, &grant).await;
+                    release(store, key, rate, grant);
                     self.engage();
                     return Err(self.tagged(Error::exhausted(
                         "rate limit exhausted before the deadline",
@@ -1668,6 +1677,30 @@ fn pause_deadline(now: tokio::time::Instant, block: Duration) -> tokio::time::In
 /// round moves both slots later, so under contention they meet within a
 /// round or two; the bound only keeps a pathological store from spinning.
 const MAX_ALIGN_ROUNDS: usize = 8;
+
+/// `future`, abandoned at `deadline` (`None` when it did not finish by
+/// then); unbounded without a deadline.
+async fn within<T>(
+    deadline: Option<std::time::Instant>,
+    future: impl Future<Output = T>,
+) -> Option<T> {
+    match deadline {
+        None => Some(future.await),
+        Some(deadline) => tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), future)
+            .await
+            .ok(),
+    }
+}
+
+/// Gives `grant`'s slot back in the background, best effort: it returns
+/// while it is still the last one booked and otherwise lapses unused, and
+/// the caller never waits on the store for it.
+fn release(store: &Arc<dyn ErasedLimitStore>, key: &LimitKey, rate: &Rate, grant: Grant) {
+    let (store, key, rate) = (Arc::clone(store), key.clone(), *rate);
+    tokio::spawn(async move {
+        let _ = store.cancel_boxed(&key, &rate, &grant).await;
+    });
+}
 
 fn max_wait_until(deadline: Option<std::time::Instant>) -> Duration {
     deadline.map_or(Duration::MAX, |deadline| {

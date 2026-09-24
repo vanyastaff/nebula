@@ -459,13 +459,14 @@ impl LimitStore for MemoryLimitStore {
     async fn penalty(&self, key: &LimitKey) -> Result<Duration, LimitStoreError> {
         let now = self.now();
         let keys = self.keys.lock();
-        // A key without its own entry in a full store runs on the shared
-        // overflow limit, and so under its penalty.
-        let until = match keys.entries.get(key) {
-            Some(entry) => entry.penalized_until,
-            None if keys.entries.len() >= self.max_keys => keys.overflow.penalized_until,
-            None => 0,
-        };
+        // A key without its own entry may have run on the shared overflow
+        // limit, even if the store has room again by now, so it answers to
+        // that limit's penalty; for a key that never overflowed this only
+        // errs strict, and only while the overflow limit is penalized.
+        let until = keys
+            .entries
+            .get(key)
+            .map_or(keys.overflow.penalized_until, |entry| entry.penalized_until);
         drop(keys);
         Ok(Duration::from_nanos(until.saturating_sub(now)))
     }
