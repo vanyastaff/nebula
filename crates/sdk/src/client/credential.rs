@@ -498,6 +498,8 @@ pub mod v1 {
         Other,
         /// Acquisition completed but durable finalization requires reconciliation.
         AcquisitionReconciliationRequired,
+        /// Persisted credential state is incompatible with the serving runtime.
+        StateRefused,
     }
 
     impl CredentialProblemKind {
@@ -513,6 +515,7 @@ pub mod v1 {
                 "https://nebula.dev/problems/credential-acquisition-reconciliation-required" => {
                     Self::AcquisitionReconciliationRequired
                 },
+                "https://nebula.dev/problems/credential-state-refused" => Self::StateRefused,
                 "https://nebula.dev/problems/credential-revoke-reconciliation-required" => {
                     Self::RevokeReconciliationRequired
                 },
@@ -534,6 +537,7 @@ pub mod v1 {
                 Self::AcquisitionReconciliationRequired => {
                     Some("API:CREDENTIAL_ACQUISITION_RECONCILIATION_REQUIRED")
                 },
+                Self::StateRefused => Some("API:CREDENTIAL_STATE_REFUSED"),
                 Self::RevokeReconciliationRequired => {
                     Some("API:CREDENTIAL_REVOKE_RECONCILIATION_REQUIRED")
                 },
@@ -875,6 +879,20 @@ mod tests {
         assert_eq!(
             acquisition.credential_kind().code(),
             Some("API:CREDENTIAL_ACQUISITION_RECONCILIATION_REQUIRED")
+        );
+        let state_refused: ProblemDetails = serde_json::from_value(json!({
+            "type": "https://nebula.dev/problems/credential-state-refused",
+            "title": "ignored",
+            "status": 409
+        }))
+        .expect("state refusal problem decodes");
+        assert_eq!(
+            state_refused.credential_kind(),
+            CredentialProblemKind::StateRefused
+        );
+        assert_eq!(
+            state_refused.credential_kind().code(),
+            Some("API:CREDENTIAL_STATE_REFUSED")
         );
         assert_eq!(
             RetryAfter::from_seconds(17).map(RetryAfter::seconds),

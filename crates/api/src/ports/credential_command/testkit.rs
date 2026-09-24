@@ -473,6 +473,9 @@ fn map_service_error(error: CredentialServiceError) -> CredentialGatewayError {
                 ),
             }
         },
+        CredentialServiceError::StateEnvelopeRefused(_) => {
+            CredentialGatewayError::StateEnvelopeRefused
+        },
         CredentialServiceError::TypeUnknown { key } => CredentialGatewayError::TypeUnknown { key },
         CredentialServiceError::CapabilityUnsupported { capability, key } => {
             CredentialGatewayError::CapabilityUnsupported { capability, key }
@@ -558,6 +561,19 @@ mod tests {
         assert_eq!(
             map_service_error(CredentialServiceError::RevokePostProviderPersistence),
             CredentialGatewayError::RevokeReconciliationRequired,
+        );
+    }
+
+    #[test]
+    fn test_gateway_preserves_state_envelope_refusal() {
+        assert_eq!(
+            map_service_error(CredentialServiceError::StateEnvelopeRefused(
+                nebula_credential::StateEnvelopeError::UnknownSchemaVersion {
+                    stored_version: 2,
+                    supported_version: 1,
+                },
+            )),
+            CredentialGatewayError::StateEnvelopeRefused,
         );
     }
 }

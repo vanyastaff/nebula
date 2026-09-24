@@ -450,6 +450,10 @@ fn gateway_error_mapping_statuses() {
         ApiError::Validation { .. }
     ));
     assert!(matches!(
+        map_gateway_err(CredentialGatewayError::StateEnvelopeRefused, "cred_x"),
+        ApiError::CredentialStateRefused
+    ));
+    assert!(matches!(
         map_gateway_err(
             CredentialGatewayError::CapabilityUnsupported {
                 capability: "refresh".into(),
@@ -582,6 +586,7 @@ fn gateway_error_contract_cannot_carry_dynamic_reason_payloads() {
         CredentialGatewayError::Unavailable,
         CredentialGatewayError::OutcomeUnknown,
         CredentialGatewayError::RefreshReconciliationRequired,
+        CredentialGatewayError::StateEnvelopeRefused,
         CredentialGatewayError::RevokeReconciliationRequired,
         CredentialGatewayError::ReconciliationNotRequired,
         CredentialGatewayError::ReconciliationConflict {

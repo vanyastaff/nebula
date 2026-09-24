@@ -426,6 +426,35 @@ fn acquisition_reconciliation_required_is_a_fixed_non_retryable_409() {
 }
 
 #[test]
+fn credential_state_refused_is_a_fixed_non_retryable_409() {
+    use nebula_error::Classify;
+
+    let error = ApiError::CredentialStateRefused;
+    let (status, problem) = error.to_problem_details();
+
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(error.category(), nebula_error::ErrorCategory::Conflict);
+    assert_eq!(error.code().as_str(), "API:CREDENTIAL_STATE_REFUSED");
+    assert!(!error.is_retryable());
+    assert_eq!(error.retry_hint(), None);
+    assert_eq!(
+        problem.type_uri,
+        "https://nebula.dev/problems/credential-state-refused"
+    );
+    assert_eq!(problem.title, "Credential State Refused");
+    assert_eq!(
+        problem.detail.as_deref(),
+        Some(
+            "The stored credential state is not compatible with this runtime. Update the runtime or repair the credential state before retrying."
+        )
+    );
+
+    let response = error.into_response();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert!(!response.headers().contains_key(header::RETRY_AFTER));
+}
+
+#[test]
 fn reconcile_refusals_are_distinguishable_fixed_non_retryable_409s() {
     use nebula_error::Classify;
 

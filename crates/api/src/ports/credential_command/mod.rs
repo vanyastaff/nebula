@@ -536,6 +536,13 @@ pub enum CredentialGatewayError {
     /// byte bound.
     #[error("reconciliation evidence was rejected")]
     ReconciliationEvidenceInvalid,
+    /// Persisted credential state uses a shape this runtime refuses to read.
+    ///
+    /// This is a permanent, fail-closed compatibility refusal rather than a
+    /// request validation failure or an internal fault. No stored values or
+    /// envelope details cross the gateway boundary.
+    #[error("stored credential state is not compatible with this runtime")]
+    StateEnvelopeRefused,
 }
 
 /// Classification of an adjudication failure into this port's taxonomy.
