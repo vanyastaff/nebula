@@ -385,3 +385,24 @@ fn conditional_projection_rejects_superseded_generation_without_mutation() {
         assert!(cell.projection_metadata().is_none());
     }
 }
+
+#[test]
+fn revoked_projection_snapshot_retains_generation_without_routing_metadata() {
+    use nebula_credential::{CredentialGuardMetadata, CredentialId};
+    let cell = SlotCell::<FakeGuard>::empty();
+    let metadata =
+        CredentialGuardMetadata::new(CredentialId::new(), "oauth".parse().expect("key"), 1, 1);
+    assert_eq!(
+        cell.install_projected(metadata, Arc::new(FakeGuard(1)))
+            .expect("install"),
+        SlotUpdate::Installed
+    );
+    let before = cell.generation();
+    assert_eq!(cell.revoke(), SlotUpdate::Revoked);
+    let snapshot = cell.projection_snapshot();
+    assert!(snapshot.0 > before);
+    assert!(snapshot.1.is_none());
+    assert!(cell.load().is_none());
+    assert_eq!(cell.revoke(), SlotUpdate::AlreadyRevoked);
+    assert_eq!(cell.projection_snapshot(), snapshot);
+}

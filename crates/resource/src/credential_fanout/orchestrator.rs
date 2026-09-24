@@ -76,6 +76,9 @@ impl ResourceFanoutIndex {
 
         let mut projections = Vec::new();
         for managed in mgr.registry.all_managed() {
+            if managed.is_tainted() {
+                continue;
+            }
             for (slot, generation, metadata) in managed.credential_projections() {
                 if credential_id.is_some_and(|cid| cid != metadata.credential_id()) {
                     continue;

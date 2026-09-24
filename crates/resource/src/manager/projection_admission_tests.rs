@@ -27,6 +27,14 @@ struct ProjectionResource {
     slot: Arc<SlotCell<CredentialGuard<u64>>>,
     calls: Arc<AtomicUsize>,
     fail: bool,
+    snapshot_gate: Option<Arc<SnapshotGate>>,
+}
+
+struct SnapshotGate {
+    entered: tokio::sync::Semaphore,
+    revoke_entered: tokio::sync::Semaphore,
+    released: std::sync::Mutex<bool>,
+    resume: std::sync::Condvar,
 }
 #[async_trait::async_trait]
 impl Provider for ProjectionResource {
@@ -47,7 +55,9 @@ impl Provider for ProjectionResource {
         Ok(())
     }
     async fn on_credential_refresh(&self, _: &str, (): &()) -> Result<(), Error> {
-        assert_eq!(**self.slot.load().expect("installed guard"), 99);
+        if self.snapshot_gate.is_none() {
+            assert_eq!(**self.slot.load().expect("installed guard"), 99);
+        }
         self.calls.fetch_add(1, Ordering::SeqCst);
         if self.fail {
             Err(Error::permanent("injected hook failure"))
@@ -67,7 +77,22 @@ impl HasCredentialSlots for ProjectionResource {
         &self,
         slot: &str,
     ) -> Option<(u64, Option<CredentialGuardMetadata>)> {
-        (slot == "db").then(|| self.slot.projection_snapshot())
+        if slot != "db" {
+            return None;
+        }
+        let snapshot = self.slot.projection_snapshot();
+        if let Some(gate) = &self.snapshot_gate {
+            gate.entered.add_permits(1);
+            let released = gate.released.lock().expect("gate lock");
+            let (released, _) = gate
+                .resume
+                .wait_timeout_while(released, std::time::Duration::from_secs(5), |released| {
+                    !*released
+                })
+                .expect("gate wait");
+            assert!(*released, "test must release the snapshot gate");
+        }
+        Some(snapshot)
     }
 
     fn install_credential_slot_at_generation(
@@ -85,6 +110,16 @@ impl HasCredentialSlots for ProjectionResource {
             .map_err(|_| SlotInstallError::CredentialTypeMismatch)?;
         self.slot
             .install_projected_at_generation(expected_generation, metadata, Arc::new(guard))
+    }
+
+    fn revoke_credential_slot(&self, slot: &str) -> Result<SlotUpdate, SlotInstallError> {
+        if slot != "db" {
+            return Err(SlotInstallError::UnknownSlot);
+        }
+        if let Some(gate) = &self.snapshot_gate {
+            gate.revoke_entered.add_permits(1);
+        }
+        Ok(self.slot.revoke())
     }
 
     fn credential_slot_epoch(&self) -> u64 {
@@ -125,6 +160,7 @@ async fn rejected_projection_hook_retries_once_but_accepted_failure_does_not() {
             slot: Arc::new(SlotCell::empty()),
             calls: Arc::new(AtomicUsize::new(0)),
             fail,
+            snapshot_gate: None,
         };
         let identity = SlotIdentity::from_bindings([("db", "oauth")]);
         manager
@@ -262,4 +298,130 @@ async fn rejected_projection_hook_retries_once_but_accepted_failure_does_not() {
         ));
         assert_eq!(resource.calls.load(Ordering::SeqCst), 1);
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn terminal_revoke_cannot_split_projection_install_and_hook_admission() {
+    let manager = Arc::new(Manager::new());
+    let gate = Arc::new(SnapshotGate {
+        entered: tokio::sync::Semaphore::new(0),
+        revoke_entered: tokio::sync::Semaphore::new(0),
+        released: std::sync::Mutex::new(false),
+        resume: std::sync::Condvar::new(),
+    });
+    let resource = ProjectionResource {
+        slot: Arc::new(SlotCell::empty()),
+        calls: Arc::new(AtomicUsize::new(0)),
+        fail: false,
+        snapshot_gate: Some(Arc::clone(&gate)),
+    };
+    let identity = SlotIdentity::from_bindings([("db", "oauth")]);
+    manager
+        .register(RegistrationSpec {
+            resource: resource.clone(),
+            config: Config,
+            scope: ScopeLevel::Global,
+            slot_identity: identity.clone(),
+            topology: Resident::new(ResidentConfig::default()),
+            recovery_gate: None,
+        })
+        .expect("register");
+    let context = ResourceContext::minimal(Scope::default(), CancellationToken::new());
+    drop(
+        manager
+            .acquire_resident_for_identity::<ProjectionResource>(
+                &context,
+                &AcquireOptions::default(),
+                &identity,
+            )
+            .await
+            .expect("warm"),
+    );
+    let cid = CredentialId::new();
+    let projection = tokio::spawn({
+        let manager = Arc::clone(&manager);
+        let identity = identity.clone();
+        async move {
+            manager
+                .install_and_refresh_slot_for_identity(
+                    &ProjectionResource::key(),
+                    ScopeLevel::Global,
+                    "db",
+                    &identity,
+                    ErasedCredentialGuard::from_typed(
+                        CredentialGuard::new(99_u64),
+                        CredentialGuardMetadata::new(cid, "oauth".parse().expect("key"), 1, 1),
+                    ),
+                )
+                .await
+        }
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(2), gate.entered.acquire())
+        .await
+        .expect("snapshot reached")
+        .expect("permit")
+        .forget();
+    let (started, ready) = tokio::sync::oneshot::channel();
+    let revoke = tokio::spawn({
+        let manager = Arc::clone(&manager);
+        let identity = identity.clone();
+        async move {
+            started.send(()).expect("revoke observer");
+            manager
+                .revoke_credential_slot_for_identity(
+                    &ProjectionResource::key(),
+                    ScopeLevel::Global,
+                    "db",
+                    &identity,
+                )
+                .await
+        }
+    });
+    ready.await.expect("revoke started");
+    let crossed = tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        gate.revoke_entered.acquire(),
+    )
+    .await
+    .is_ok();
+    *gate.released.lock().expect("gate lock") = true;
+    gate.resume.notify_all();
+    let installed = projection.await.expect("projection task");
+    let revoked = revoke.await.expect("revoke task");
+    assert!(
+        !crossed,
+        "terminal revoke must not enter between projection snapshot and queue admission"
+    );
+    assert!(matches!(installed, Ok(EpochRefreshOutcome::Applied(_))));
+    assert!(matches!(revoked, Ok(super::EpochRevokeOutcome::Applied(_))));
+    assert!(resource.slot.load().is_none());
+    let calls = resource.calls.load(Ordering::SeqCst);
+    let late = manager
+        .install_and_refresh_slot_for_identity(
+            &ProjectionResource::key(),
+            ScopeLevel::Global,
+            "db",
+            &identity,
+            ErasedCredentialGuard::from_typed(
+                CredentialGuard::new(99_u64),
+                CredentialGuardMetadata::new(cid, "oauth".parse().expect("key"), 2, 2),
+            ),
+        )
+        .await;
+    assert_eq!(
+        late.expect_err("revoked admission").kind(),
+        &crate::ErrorKind::Revoked
+    );
+    assert!(
+        manager
+            .refresh_slot_for_identity(
+                &ProjectionResource::key(),
+                ScopeLevel::Global,
+                "db",
+                &identity
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(resource.calls.load(Ordering::SeqCst), calls);
 }

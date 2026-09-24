@@ -81,6 +81,9 @@ impl ManagedHandle for DeferredRetirementHandle {
     }
 
     fn taint(&self) {}
+    fn is_tainted(&self) -> bool {
+        false
+    }
 
     fn bump_revoke_epoch(&self) {}
 

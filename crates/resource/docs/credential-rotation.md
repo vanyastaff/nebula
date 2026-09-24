@@ -36,7 +36,14 @@ timeout or driver shutdown. The target registration is pinned before projection;
 the slot also rejects another credential or owner even at a higher epoch. The
 observed slot generation is checked under the writer lock before installation,
 so a concurrent `store`, `take`, or other transition fences the in-flight
-projection. Superseded projections report `ProjectionChanged` without mutation.
+projection. Superseded projections report `ProjectionChanged` without mutation. After I/O,
+the exact registration is revalidated under the manager lifecycle admission lock.
+Validation, slot installation and synchronous hook admission share this lock with
+revoke, row replacement, removal and shutdown; none of these sections awaits
+provider I/O or hook completion. Retired or tainted rows reject refresh admission
+with a typed error, failure metric and lifecycle event. Terminal slot revoke clears
+projection routing metadata, and scans skip tainted rows, so neither is repeatedly
+resolved by startup or periodic reconciliation.
 Only a newer epoch installs a guard. Hook admission is tracked separately: queue rejection
 leaves that installed epoch and slot generation pending, so a later scan retries
 admission only while the same projection is live. Unqualified writes invalidate

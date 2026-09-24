@@ -412,7 +412,8 @@ pub struct ResourceHealthSnapshot {
 /// whenever the resolved slot identity is known.
 pub struct Manager {
     pub(super) registry: Registry,
-    /// Serializes registry commits and terminal snapshots; never held across await.
+    /// Serializes registry commits, credential admission/revoke and terminal snapshots.
+    /// Never held across await.
     pub(super) admission: std::sync::Mutex<()>,
     pub(super) cancel: CancellationToken,
     pub(super) metrics: Option<ResourceOpsMetrics>,

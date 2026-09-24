@@ -529,60 +529,129 @@ async fn material_projection_timeout_cancels_resolver_and_is_not_success() {
 
 #[tokio::test]
 async fn delayed_projection_cannot_install_into_rebound_registration() {
-    let manager = Arc::new(Manager::new());
-    let cid = CredentialId::new();
-    let _original = register_replacement(&manager, cid);
-    let index = Arc::new(ResourceFanoutIndex::new());
-    index.bind(
-        cid,
-        ReplacementResource::key(),
-        ScopeLevel::Global,
-        "db",
-        SlotIdentity::from_bindings([("db", "oauth")]),
-    );
-    let entered = Arc::new(tokio::sync::Semaphore::new(0));
-    let release = Arc::new(tokio::sync::Semaphore::new(0));
-    let resolver = GatedProjection {
-        entered: Arc::clone(&entered),
-        release: Arc::clone(&release),
-        cancelled: Arc::new(std::sync::Mutex::new(None)),
-    };
-    let dispatch = tokio::spawn({
-        let manager = Arc::clone(&manager);
-        async move {
-            index
-                .dispatch_material_replacement(
-                    cid,
-                    &nebula_credential::TenantScope::new("org", "workspace"),
-                    &"oauth".parse().expect("key"),
-                    &resolver,
-                    &manager,
+    for retirement in 0..3 {
+        let manager = Arc::new(Manager::new());
+        let cid = CredentialId::new();
+        let original = register_replacement(&manager, cid);
+        let context = ResourceContext::minimal(Scope::default(), CancellationToken::new());
+        drop(
+            manager
+                .acquire_resident_for_identity::<ReplacementResource>(
+                    &context,
+                    &AcquireOptions::default(),
+                    &SlotIdentity::from_bindings([("db", "oauth")]),
                 )
                 .await
+                .expect("warm original"),
+        );
+        let index = Arc::new(ResourceFanoutIndex::new());
+        index.bind(
+            cid,
+            ReplacementResource::key(),
+            ScopeLevel::Global,
+            "db",
+            SlotIdentity::from_bindings([("db", "oauth")]),
+        );
+        let entered = Arc::new(tokio::sync::Semaphore::new(0));
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
+        let resolver = GatedProjection {
+            entered: Arc::clone(&entered),
+            release: Arc::clone(&release),
+            cancelled: Arc::new(std::sync::Mutex::new(None)),
+        };
+        let dispatch = tokio::spawn({
+            let manager = Arc::clone(&manager);
+            async move {
+                index
+                    .dispatch_material_replacement(
+                        cid,
+                        &nebula_credential::TenantScope::new("org", "workspace"),
+                        &"oauth".parse().expect("key"),
+                        &resolver,
+                        &manager,
+                    )
+                    .await
+            }
+        });
+        tokio::time::timeout(Duration::from_secs(2), entered.acquire())
+            .await
+            .expect("started")
+            .expect("gate")
+            .forget();
+        match retirement {
+            0 => manager
+                .remove(&ReplacementResource::key())
+                .expect("remove original"),
+            1 => manager
+                .remove_for(
+                    &ReplacementResource::key(),
+                    &ScopeLevel::Global,
+                    &SlotIdentity::from_bindings([("db", "oauth")]),
+                )
+                .expect("remove exact original"),
+            _ => {}, // Registration below retires the exact existing row.
         }
-    });
-    tokio::time::timeout(Duration::from_secs(2), entered.acquire())
-        .await
-        .expect("started")
-        .expect("gate")
-        .forget();
-    manager
-        .remove(&ReplacementResource::key())
-        .expect("remove original");
-    let replacement_cid = CredentialId::new();
-    let replacement = register_replacement(&manager, replacement_cid);
-    release.add_permits(1);
-    let _outcome = dispatch.await.expect("dispatch");
-    assert_eq!(replacement.slot.material_epoch(), Some(1));
-    assert_eq!(
-        replacement
-            .slot
-            .projection_metadata()
-            .expect("metadata")
-            .credential_id(),
-        replacement_cid
-    );
-    assert_eq!(replacement.observed.load(Ordering::SeqCst), 0);
+        let replacement_cid = CredentialId::new();
+        let replacement = register_replacement(&manager, replacement_cid);
+        release.add_permits(1);
+        let outcome = dispatch.await.expect("dispatch");
+        assert_eq!(outcome.failed(), 1);
+        assert_eq!(outcome.success(), 0);
+        assert_eq!(original.slot.material_epoch(), Some(1));
+        assert_eq!(original.hooks.load(Ordering::SeqCst), 0);
+        assert_eq!(replacement.slot.material_epoch(), Some(1));
+        assert_eq!(
+            replacement
+                .slot
+                .projection_metadata()
+                .expect("metadata")
+                .credential_id(),
+            replacement_cid
+        );
+        assert_eq!(replacement.observed.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn revoked_slots_are_not_reprojected_on_startup_or_periodic_scans() {
+    for terminal_cell in [false, true] {
+        let manager = Arc::new(Manager::new());
+        let resource = register_replacement(&manager, CredentialId::new());
+        if terminal_cell {
+            assert_eq!(resource.slot.revoke(), nebula_resource::SlotUpdate::Revoked);
+        } else {
+            let tainted = manager
+                .taint_slot_for_identity(
+                    &ReplacementResource::key(),
+                    ScopeLevel::Global,
+                    "db",
+                    &SlotIdentity::from_bindings([("db", "oauth")]),
+                )
+                .expect("taint");
+            drop(tainted);
+        }
+        let calls = Arc::new(AtomicUsize::new(0));
+        let bus = Arc::new(EventBus::new(8));
+        let driver = ResourceFanoutDriver::spawn_with_resolver(
+            Arc::new(ResourceFanoutIndex::new()),
+            manager,
+            Some(Arc::new(ReplacementResolver {
+                epoch: None,
+                calls: Arc::clone(&calls),
+            })),
+            Arc::clone(&bus),
+            None,
+        );
+        for _ in 0..3 {
+            for _ in 0..100 {
+                tokio::task::yield_now().await;
+            }
+            tokio::time::advance(Duration::from_secs(30)).await;
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert_eq!(resource.hooks.load(Ordering::SeqCst), 0);
+        driver.abort();
+    }
 }
 
 #[tokio::test]
@@ -1336,17 +1405,24 @@ async fn duplicate_revoke_across_both_buses_fans_out_once() {
     })
     .await;
 
-    // Drive a refresh afterwards and wait for it: the driver processes
-    // events in order on its single task, so once the refresh is
-    // observed the duplicate revoke (emitted before it) has definitely
-    // been processed too — and must have been skipped by the dedupe.
+    // A rejected refresh is an observable barrier behind the duplicate on
+    // the credential bus. Revoke is terminal, so this must not invoke a hook.
+    let mut events = w.mgr.subscribe_events();
     w.cred_bus.emit(CredentialEvent::Refreshed {
         credential_id: w.cid,
     });
-    eventually("post-duplicate refresh delivered", || {
-        w.rec.refresh.load(Ordering::SeqCst) == 1
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while let Some(event) = events.recv().await {
+            if let nebula_resource::ResourceEvent::SlotRefreshFailed { kind, .. } = event {
+                assert_eq!(kind, nebula_resource::ErrorKind::Revoked);
+                return;
+            }
+        }
+        panic!("event bus closed before refresh rejection");
     })
-    .await;
+    .await
+    .expect("post-duplicate refresh rejection observed");
+    assert_eq!(w.rec.refresh.load(Ordering::SeqCst), 0);
     assert_eq!(
         w.rec.revoke.load(Ordering::SeqCst),
         1,

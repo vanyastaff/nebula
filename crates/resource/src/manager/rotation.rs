@@ -300,6 +300,13 @@ impl Manager {
     ) -> Result<EpochRefreshOutcome, Error> {
         let started = Instant::now();
         let accepted = {
+            // Same gate as registration, retirement and terminal revoke. No await
+            // may separate validation, installation and synchronous queue admission.
+            let _admission = self
+                .admission
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            self.validate_refresh_admission(key, slot, &managed)?;
             let mut pending = managed
                 .pending_projection_hooks()
                 .lock()
@@ -396,26 +403,34 @@ impl Manager {
         slot: &str,
         slot_identity: &crate::dedup::SlotIdentity,
     ) -> Result<EpochRevokeOutcome, Error> {
-        let managed = self.lookup_any_for_slot_identity_structural(key, &scope, slot_identity)?;
-        let update = managed.revoke_credential_slot(slot).map_err(|source| {
-            Error::permanent("credential slot revoke failed")
-                .with_source(source)
-                .with_resource_key(key.clone())
-        })?;
-        match update {
-            crate::SlotUpdate::Revoked => {
-                let tainted = self.taint_now(key, slot, managed)?;
-                Ok(EpochRevokeOutcome::Applied(
-                    self.drain_and_revoke(tainted, Self::DEFAULT_REVOKE_DRAIN_TIMEOUT)
-                        .await,
-                ))
-            },
-            crate::SlotUpdate::AlreadyRevoked => Ok(EpochRevokeOutcome::AlreadyRevoked),
-            crate::SlotUpdate::Installed | crate::SlotUpdate::Stale { .. } => Err(
-                Error::permanent("credential slot revoke returned an invalid install outcome")
-                    .with_resource_key(key.clone()),
-            ),
-        }
+        let tainted = {
+            let _admission = self
+                .admission
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            self.shutdown_guard()?;
+            let managed =
+                self.lookup_any_for_slot_identity_structural(key, &scope, slot_identity)?;
+            let update = managed.revoke_credential_slot(slot).map_err(|source| {
+                Error::permanent("credential slot revoke failed")
+                    .with_source(source)
+                    .with_resource_key(key.clone())
+            })?;
+            match update {
+                crate::SlotUpdate::Revoked => self.taint_under_admission(key, slot, managed)?,
+                crate::SlotUpdate::AlreadyRevoked => return Ok(EpochRevokeOutcome::AlreadyRevoked),
+                crate::SlotUpdate::Installed | crate::SlotUpdate::Stale { .. } => {
+                    return Err(Error::permanent(
+                        "credential slot revoke returned an invalid install outcome",
+                    )
+                    .with_resource_key(key.clone()));
+                },
+            }
+        };
+        Ok(EpochRevokeOutcome::Applied(
+            self.drain_and_revoke(tainted, Self::DEFAULT_REVOKE_DRAIN_TIMEOUT)
+                .await,
+        ))
     }
 
     fn slot_hook_settlement(
@@ -706,9 +721,49 @@ impl Manager {
         observation_timeout: Duration,
     ) -> Result<SlotDispatchOutcome, Error> {
         let started = Instant::now();
-        let accepted = self.admit_refresh_resolved(key, slot, managed, hook_timeout)?;
+        let accepted = {
+            let _admission = self
+                .admission
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            self.validate_refresh_admission(key, slot, &managed)?;
+            self.admit_refresh_resolved(key, slot, managed, hook_timeout)?
+        };
         self.observe_refresh(accepted, observation_timeout, started)
             .await
+    }
+
+    /// Caller holds lifecycle admission through synchronous queue submission.
+    fn validate_refresh_admission(
+        &self,
+        key: &ResourceKey,
+        slot: &str,
+        managed: &Arc<dyn crate::registry::ManagedHandle>,
+    ) -> Result<(), Error> {
+        let result = self.shutdown_guard().and_then(|()| {
+            if !self.registry.contains_managed(key, managed) {
+                return Err(Error::not_found(key));
+            }
+            if managed.is_tainted() {
+                return Err(Error::revoked("credential refresh rejected after revoke"));
+            }
+            Ok(())
+        });
+        if let Err(error) = &result {
+            if let Some(metrics) = &self.metrics {
+                metrics.record_slot_refresh_outcome(SlotDispatchMetricOutcome::Failed);
+            }
+            self.emit(ResourceEvent::SlotRefreshFailed {
+                key: key.clone(),
+                slot: slot.to_owned(),
+                kind: error.kind().clone(),
+                message: SecretFreeMessage::new(
+                    "credential refresh rejected by lifecycle admission",
+                ),
+            });
+            tracing::warn!(resource.key = %key, slot, error.kind = ?error.kind(), "credential refresh rejected by lifecycle admission");
+        }
+        result
     }
 
     fn admit_refresh_resolved(
@@ -935,6 +990,24 @@ impl Manager {
     /// revoke attempt to any subscriber, not a silent no-op that would
     /// undercount `attempts` relative to `success + failed + timed_out`.
     fn taint_now(
+        &self,
+        key: &ResourceKey,
+        slot: &str,
+        managed: Arc<dyn crate::registry::ManagedHandle>,
+    ) -> Result<TaintedSlot, Error> {
+        let _admission = self
+            .admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.shutdown_guard()?;
+        if !self.registry.contains_managed(key, &managed) {
+            return Err(Error::not_found(key));
+        }
+        self.taint_under_admission(key, slot, managed)
+    }
+
+    /// Caller holds the same lifecycle gate as refresh installation/admission.
+    fn taint_under_admission(
         &self,
         key: &ResourceKey,
         slot: &str,

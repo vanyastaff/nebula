@@ -375,7 +375,7 @@ impl<S> SlotCell<S> {
     /// Once applied, no later or delayed refresh can repopulate the slot.
     /// Repeating revoke is an idempotent terminal no-op.
     pub fn revoke(&self) -> SlotUpdate {
-        let _guard = self
+        let mut metadata = self
             .write_lock
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
@@ -387,6 +387,7 @@ impl<S> SlotCell<S> {
         self.material_epoch
             .store(REVOKED_AUTHORITY, Ordering::Relaxed);
         self.inner.store(None);
+        *metadata = None;
         SlotUpdate::Revoked
     }
 

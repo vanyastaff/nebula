@@ -96,6 +96,9 @@ pub(crate) trait ManagedHandle: Send + Sync + 'static {
     /// `acquire_*` funnel checks.
     fn taint(&self);
 
+    /// Whether credential revoke already fenced this row's refresh admission.
+    fn is_tainted(&self) -> bool;
+
     /// Credential-revoke epoch bump.
     ///
     /// Bumped in the same synchronous pre-`.await` step as [`Self::taint`].
@@ -316,6 +319,10 @@ where
 
     fn bump_revoke_epoch(&self) {
         ManagedResource::bump_revoke_epoch(self);
+    }
+
+    fn is_tainted(&self) -> bool {
+        ManagedResource::is_tainted(self)
     }
 
     fn accepts_credential_slot_name(&self, slot: &str) -> bool {
@@ -780,6 +787,19 @@ impl Registry {
                 admission,
             },
             None => RegistrationOutcome::Inserted,
+        })
+    }
+
+    /// Revalidates the exact pinned row under the manager lifecycle admission lock.
+    pub(crate) fn contains_managed(
+        &self,
+        key: &ResourceKey,
+        managed: &Arc<dyn ManagedHandle>,
+    ) -> bool {
+        self.entries.get(key).is_some_and(|entries| {
+            entries
+                .iter()
+                .any(|entry| Arc::ptr_eq(&entry.managed, managed))
         })
     }
 

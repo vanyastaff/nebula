@@ -37,6 +37,9 @@ macro_rules! impl_fake_handle {
                 TopologyTag::Resident
             }
             fn taint(&self) {}
+            fn is_tainted(&self) -> bool {
+                false
+            }
             fn bump_revoke_epoch(&self) {}
             fn accepts_credential_slot_name(&self, _slot: &str) -> bool {
                 true
