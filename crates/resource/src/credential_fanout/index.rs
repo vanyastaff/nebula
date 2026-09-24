@@ -668,7 +668,7 @@ impl ResourceFanoutIndex {
 
     fn prune_orphan_contexts(&self) {
         self.material_contexts
-            .retain(|cid, _| self.has_published_binding(cid));
+            .retain(|cid, _| self.by_credential.contains_key(cid));
         self.pending_revoke_admissions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)

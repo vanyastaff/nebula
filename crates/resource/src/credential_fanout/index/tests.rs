@@ -739,6 +739,17 @@ mod fanout_dispatch {
         let credential_key = nebula_core::credential_key!("oauth");
         let sequence =
             index.remember_material_context(credential_id, owner.clone(), credential_key.clone());
+        index.unbind_resource(&resource_key!("unrelated"), &ScopeLevel::Global);
+        assert_eq!(
+            index.pending_material_contexts(),
+            vec![(
+                credential_id,
+                owner.clone(),
+                credential_key.clone(),
+                sequence
+            )],
+            "unrelated pruning must retain staged-only material context"
+        );
 
         let outcome = index
             .dispatch_material_replacement(
