@@ -17,7 +17,7 @@ pub(super) async fn rejects_stale_outcome(ports: Ports) -> Value {
         .with_lease_heartbeat_interval(std::time::Duration::from_secs(10));
     let scope = fixture.scope.clone();
     let turn = tokio::spawn(async move { engine.resume_execution(&scope, execution).await });
-    tokio::time::timeout(std::time::Duration::from_secs(5), gate.entered.notified())
+    tokio::time::timeout(HANG_GUARD, gate.entered.notified())
         .await
         .unwrap();
     assert_eq!(fixture.provider.calls.lock().len(), 1);
@@ -64,7 +64,7 @@ pub(super) async fn rejects_stale_outcome(ports: Ports) -> Value {
     let successor_fence_differs = successor != stale;
     assert!(successor_fence_differs);
     gate.release.notify_one();
-    let result = tokio::time::timeout(std::time::Duration::from_secs(5), turn)
+    let result = tokio::time::timeout(HANG_GUARD, turn)
         .await
         .unwrap()
         .unwrap();

@@ -34,6 +34,14 @@ use nebula_workflow::{NodeDefinition, WorkflowBuilder, WorkflowDefinition};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 
+/// Upper bound on how long a test waits for an async milestone (a provider
+/// entering, a cancelled turn finishing) before declaring a hang.
+///
+/// This is a hang detector, not a latency budget: a passing test never waits
+/// for it. It must stay well above storage stalls (SQLite commits of 1-4 s on
+/// a loaded Windows host) yet below nextest's per-test termination.
+const HANG_GUARD: std::time::Duration = std::time::Duration::from_mins(1);
+
 #[path = "effect_protocol/ports.rs"]
 mod ports;
 #[path = "support/postgres_schema.rs"]
@@ -327,10 +335,16 @@ impl Fixture {
                     .build()
             },
             ProviderBehavior::PreparationTimeout | ProviderBehavior::InvocationTimeout => {
+                // The window runs from preparation, so it must cover the prepare
+                // and grant commits before the call starts. At 100 ms a single
+                // slow SQLite commit (1-4 s on a loaded Windows host) left no
+                // budget, the engine correctly skipped the call, and the
+                // "invocation timed out" case saw zero calls. These cases wait
+                // out the whole window, so it is headroom, not a free choice.
                 RemoteEffectPolicy::builder(RemoteDestinationGuarantee::Opaque)
                     .maximum_invocations(1)
                     .maximum_queries(0)
-                    .recovery_window(std::time::Duration::from_millis(100))
+                    .recovery_window(std::time::Duration::from_secs(5))
                     .build()
             },
             _ => RemoteEffectPolicy::builder(RemoteDestinationGuarantee::Opaque)
@@ -465,10 +479,13 @@ impl Fixture {
             )
             .unwrap(),
         );
+        // Production lease timing (30 s TTL, 10 s heartbeat). A 1 s TTL is
+        // shorter than one slow commit on a loaded Windows host (fsync and WAL
+        // checkpoint stalls of 1-4 s are observable), so the lease expired
+        // mid-turn and fenced writes failed with `ExecutionLeaseRejected`.
+        // Tests that need an abandoned lease to lapse expire it explicitly.
         WorkflowEngine::new(runtime, metrics)
             .unwrap()
-            .with_lease_ttl(std::time::Duration::from_secs(1))
-            .with_lease_heartbeat_interval(std::time::Duration::from_millis(250))
             .with_execution_stores(self.ports.stores.clone())
             .with_plan_flavor_runtime(
                 Arc::new(PlanFlavorRevisionLoader::new(self.ports.catalog.clone())),
