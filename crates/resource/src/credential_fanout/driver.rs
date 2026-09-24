@@ -32,8 +32,10 @@
 //! - [`CredentialEvent::Refreshed`] — the credential-runtime facade has
 //!   already CAS-persisted the fresh material into the store before emitting
 //!   this. That is exactly the "engine has stored the fresh material" point,
-//!   so a resolver-enabled driver reconciles the stored material epoch before
-//!   dispatching a hook. Without a resolver it uses the legacy
+//!   so a resolver-enabled driver reconciles the stored material epoch for
+//!   published rotation bindings before dispatching a hook. A slot omitted
+//!   from the reverse index remains opted out even when it carries projection
+//!   metadata. Without a resolver the driver uses the legacy
 //!   [`ResourceFanoutIndex::dispatch_refresh`] hook-only path.
 //! - [`CredentialEvent::Revoked`] and [`LeaseEvent::LeaseRevoked`] — the
 //!   credential / dynamic-secret lease was revoked. Either triggers
@@ -42,6 +44,8 @@
 //!   `taint_slot_for` before the awaited tail, then queue-owned hook
 //!   settlement after admission. This driver does **not**
 //!   re-implement that — it only invokes `dispatch_revoke`.
+//!   Queue-rejected admissions are retried by an independent periodic task,
+//!   so their drain and hook-observation budgets cannot block material scans.
 //!
 //! A `LeaseRevoked` whose `credential_id` is `None` (an orphan lease
 //! tracked without a nebula credential record) cannot address a

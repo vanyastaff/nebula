@@ -16,13 +16,18 @@ credential state and its owning runtime remain authoritative.
 
 With `spawn_with_resolver`, `MaterialReplaced` queues an owner-qualified durable
 projection outside the event receive loop, while `Refreshed` requests a coalesced
-durable scan. The driver also reconciles live slot metadata on startup and every 30
-seconds. Direct material dispatch and reconciliation share one limit of 32 concurrent
+durable scan. On startup and every 30 seconds, the driver reconciles live slot metadata
+only when the same credential, slot and exact resource row has a published reverse-index
+binding. A `SlotBinding` without a credential ID therefore remains explicitly opted out
+of rotation even if its slot contains projection metadata. Direct material dispatch and
+reconciliation share one limit of 32 concurrent
 credential projections; the permit is released after installation and hook admission,
 before hook observation. Together, these paths recover replacement observations lost before
 subscription, during subscriber lag, or across driver restart. Ordinary refresh hints
 are coalesced by credential ID and scanned independently, while startup, periodic,
-or bounded-queue overflow requests a full scan. At most one scan runs at a time. Slow projections do
+or bounded-queue overflow requests a full scan. At most one material scan runs at a time.
+Queue-rejected revoke admissions run in a separate periodic task, so a batch of drain or
+hook-observation budgets cannot delay unrelated material projection. Slow projections do
 not block credential or lease revoke reception.
 
 Material replacement context is retained in the reverse index until projection
@@ -38,12 +43,14 @@ Physical absence and cross-owner lookups remain indistinguishable to public call
 The production projection stores its credential ID, contract key and owner scope
 alongside the slot's accepted material epoch. Owner metadata excludes interactive
 authentication bindings. Derived credential slots preserve
-this metadata. Hand-written `HasCredentialSlots` implementations must provide
+this metadata. A published rotation binding remains the participation authority.
+Hand-written `HasCredentialSlots` implementations must provide
 `credential_slot_projection` (an atomic generation/metadata snapshot) and
 `install_credential_slot_at_generation` plus
 `fence_credential_slot_at_generation`, forwarding to the matching `SlotCell`
-ports, to participate in reconciliation. Legacy metadata without an owner cannot authorize
-a reread and is reported as a failed reconciliation row.
+ports, to participate in reconciliation. Metadata without an owner cannot authorize a
+reread and is reported as a failed reconciliation row; metadata without a published
+binding is skipped as an opt-out.
 
 Each projection has a 30-second deadline and a cancellation token cancelled on
 timeout or driver shutdown. The target registration is pinned before projection;
