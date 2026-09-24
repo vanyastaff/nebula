@@ -695,10 +695,10 @@ impl StoredResourceActivator {
         tracked.reading = Some(row.version);
         if let Some(current) = tracked
             .active
-            .as_ref()
+            .as_mut()
             .filter(|current| current.version == row.version)
         {
-            match credentials_current(context, scope, &current.bindings, cancel).await {
+            match credentials_current(context, scope, &mut current.bindings, cancel).await {
                 // Serving at this version: a failure recorded for it earlier
                 // (a check that timed out) no longer holds.
                 Ok(true) => {
@@ -926,21 +926,22 @@ async fn register_row(
 /// transient failure (the store or source unavailable, cancellation) keeps
 /// the registration, which is checked again next time.
 ///
-/// With a rotation fan-out attached the check is skipped: the fan-out
-/// installs refreshed material into the live row and taints it on revoke,
-/// so the row the activation holds is current by that path, and comparing
-/// against the material it was registered with would re-register a row the
-/// fan-out has already brought up to date.
+/// With a rotation fan-out attached the check still runs, because fan-out
+/// events can be lost, but a changed credential does not re-register the
+/// row: the fan-out (and its periodic reconciliation) installs refreshed
+/// material into the live row, so the new material is recorded here and the
+/// row reused. A credential that can no longer be resolved still stops the
+/// row, fan-out or not.
 async fn credentials_current(
     context: &ActivationContext<'_>,
     scope: &Scope,
-    bindings: &[BoundCredential],
+    bindings: &mut [BoundCredential],
     cancel: &CancellationToken,
 ) -> Result<bool, StoredResourceActivationError> {
     #[cfg(feature = "rotation")]
-    if context.fanout.is_some() {
-        return Ok(true);
-    }
+    let fanout_installs = context.fanout.is_some();
+    #[cfg(not(feature = "rotation"))]
+    let fanout_installs = false;
     let Some(resolver) = context.credentials.filter(|_| !bindings.is_empty()) else {
         return Ok(true);
     };
@@ -958,8 +959,12 @@ async fn credentials_current(
         match resolved {
             Ok(guard) => {
                 let metadata = guard.metadata();
-                if (metadata.material_epoch(), metadata.revision()) != bound.material {
-                    return Ok(false);
+                let material = (metadata.material_epoch(), metadata.revision());
+                if material != bound.material {
+                    if !fanout_installs {
+                        return Ok(false);
+                    }
+                    bound.material = material;
                 }
             },
             Err(source) if is_transient(&source) => {

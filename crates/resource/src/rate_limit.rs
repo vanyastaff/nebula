@@ -996,6 +996,11 @@ impl ResourceLimiter {
         let (key, rate) = keyed
             .limit_for(dimension, &value.to_string())
             .map_err(|error| self.tagged(error))?;
+        // A keyed call books the account itself (aligned with the key), so a
+        // cold acquire's credit is dropped rather than left for a later
+        // call: using it there too would count one account permit twice.
+        // Dropping it errs on sending less.
+        self.prepaid.store(false, Ordering::Release);
         // Registered before booking, so a pause recorded after this caller's
         // slot was booked still reaches it when it wakes.
         let _interest = KeyInterest::start(self, &key);

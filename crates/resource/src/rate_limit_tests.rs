@@ -1123,6 +1123,34 @@ async fn a_cold_acquire_and_its_first_call_share_one_permit() {
     assert_eq!(started.elapsed(), Duration::from_secs(1));
 }
 
+/// A keyed first call books the account itself and drops the cold
+/// acquire's credit, so a following unkeyed call cannot reuse it and run in
+/// the same account slot.
+#[tokio::test(start_paused = true)]
+async fn a_keyed_first_call_drops_the_cold_acquire_credit() {
+    let (limits, _) = chat_limiter(per_second(1, 1));
+    limits
+        .ready_to_acquire(None)
+        .await
+        .expect("the cold acquire books");
+    let client = limits.wrap((), NoThrottle);
+    let started = Instant::now();
+    client
+        .run_for("chat_id", 1, async |()| Ok::<_, ProviderError>(()))
+        .await
+        .expect("keyed call");
+    let keyed_at = started.elapsed();
+    client
+        .run(async |()| Ok::<_, ProviderError>(()))
+        .await
+        .expect("unkeyed call");
+    assert!(
+        started.elapsed().saturating_sub(keyed_at) >= Duration::from_secs(1),
+        "the unkeyed call takes its own account slot: {keyed_at:?} then {:?}",
+        started.elapsed()
+    );
+}
+
 /// Once a client is wrapped, an acquire still never passes its deadline.
 #[tokio::test(start_paused = true)]
 async fn a_wrapped_acquire_keeps_its_deadline() {

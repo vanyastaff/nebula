@@ -889,12 +889,13 @@ async fn a_timed_out_activation_is_recorded_as_failed() {
     );
 }
 
-/// With the rotation fan-out attached, activation leaves credentials to it:
-/// the row it holds is reused without resolving them again, so a refresh
-/// the fan-out already installed does not register the row a second time.
+/// With the rotation fan-out attached, a refreshed credential does not
+/// register the row again (the fan-out installs it into the live row), but
+/// the durable check still runs, so a revoke whose fan-out event was lost
+/// still stops the row.
 #[cfg(feature = "rotation")]
 #[tokio::test]
-async fn with_the_fanout_activation_leaves_credentials_to_it() {
+async fn with_the_fanout_refreshes_are_left_to_it_but_revokes_still_stop_the_row() {
     let fixture = Fixture::new();
     let mut events = fixture.manager.subscribe_events();
     let credential = CredentialId::new().to_string();
@@ -906,14 +907,34 @@ async fn with_the_fanout_activation_leaves_credentials_to_it() {
         )
         .await;
     fixture.resolver.answer(Ok((1, 1)));
-    fixture.activate(resource_id, &key).await.unwrap();
+    let activated = fixture.activate(resource_id, &key).await.unwrap();
     fixture.resolver.answer(Ok((2, 1)));
+    fixture.activate(resource_id, &key).await.unwrap();
     fixture.activate(resource_id, &key).await.unwrap();
     assert_eq!(drain(&mut events), (1, 0), "registered once");
     assert_eq!(
         fixture.resolver.calls.load(Ordering::SeqCst),
-        1,
-        "credentials resolved only to register"
+        3,
+        "the durable check ran on every activation"
+    );
+
+    fixture
+        .resolver
+        .answer(Err(CredentialSlotResolveError::NotFound));
+    std::assert_matches!(
+        fixture.activate(resource_id, &key).await,
+        Err(StoredResourceActivationError::Credential { .. })
+    );
+    assert!(
+        fixture
+            .manager
+            .get_row(
+                &activated.resource_key,
+                &activated.scope,
+                &activated.slot_identity
+            )
+            .is_none(),
+        "a revoke the fan-out missed still stops the row"
     );
 }
 

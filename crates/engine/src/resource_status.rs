@@ -201,6 +201,14 @@ pub(crate) fn project(
 /// Default interval between heartbeats and status diffs.
 pub const DEFAULT_STATUS_PUBLISH_INTERVAL: Duration = Duration::from_secs(10);
 
+/// Shortest publish interval [`ResourceStatusPublisher::with_interval`]
+/// accepts.
+const MIN_STATUS_PUBLISH_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Longest publish interval: its three-interval lease stays within the 24 h
+/// a status store keeps a heartbeat at most.
+const MAX_STATUS_PUBLISH_INTERVAL: Duration = Duration::from_hours(8);
+
 /// How long a withdrawal may take on graceful stop before it is abandoned
 /// (the heartbeat then expires on its own).
 const WITHDRAW_BUDGET: Duration = Duration::from_secs(5);
@@ -258,10 +266,14 @@ impl ResourceStatusPublisher {
         }
     }
 
-    /// Overrides the publish interval (clamped to at least 100 ms).
+    /// Overrides the publish interval, clamped to 100 ms – 8 h.
+    ///
+    /// The heartbeat lease is three intervals, and status stores cap a lease
+    /// at 24 h: past 8 h the lease the store keeps would be shorter than the
+    /// one this publisher assumes, so it could miss that its rows expired.
     #[must_use]
     pub fn with_interval(mut self, interval: Duration) -> Self {
-        self.interval = interval.max(Duration::from_millis(100));
+        self.interval = interval.clamp(MIN_STATUS_PUBLISH_INTERVAL, MAX_STATUS_PUBLISH_INTERVAL);
         self
     }
 
