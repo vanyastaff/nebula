@@ -41,8 +41,8 @@ use nebula_storage_port::Scope;
 use crate::{
     domain::credential::dto::{
         ContinueResolveRequest, ContinueResolveResponse, CreateCredentialRequest,
-        CredentialCapabilities, CredentialReconcileDecisionV1, CredentialResponse,
-        CredentialSummary, CredentialTestFailureCodeV1, CredentialTypeInfo,
+        CredentialCapabilities, CredentialReconcileDecisionV1, CredentialReconcileOperationV1,
+        CredentialResponse, CredentialSummary, CredentialTestFailureCodeV1, CredentialTypeInfo,
         ListCredentialTypesResponse, ListCredentialsQuery, ListCredentialsResponse,
         ReauthorizeCredentialRequest, ReauthorizeCredentialResponse, ReconcileCredentialRequest,
         ReconcileCredentialResponse, RefreshCredentialResponse, ResolveCredentialRequest,
@@ -133,6 +133,11 @@ fn map_gateway_err(err: CredentialGatewayError, cred: &str) -> ApiError {
                 .collect(),
         },
         CredentialGatewayError::StateEnvelopeRefused => ApiError::CredentialStateRefused,
+        CredentialGatewayError::OperationBlocked { operation } => {
+            ApiError::CredentialOperationBlocked {
+                operation: operation.as_str(),
+            }
+        },
         CredentialGatewayError::TypeUnknown { key } => ApiError::Validation {
             detail: format!("unknown credential type: {key}"),
             errors: vec![crate::error::ValidationFieldError::field(
@@ -286,6 +291,17 @@ fn lifecycle_response(
         },
         CredentialGatewayLifecycleState::RefreshBlocked => CredentialLifecycleState::RefreshBlocked,
         CredentialGatewayLifecycleState::ReauthRequired => CredentialLifecycleState::ReauthRequired,
+        CredentialGatewayLifecycleState::OperationInFlight { operation } => {
+            let Some(operation) = CredentialReconcileOperationV1::from_port(operation) else {
+                return CredentialLifecycleState::ReconciliationRequired { operation: None };
+            };
+            CredentialLifecycleState::OperationInFlight { operation }
+        },
+        CredentialGatewayLifecycleState::ReconciliationRequired { operation } => {
+            CredentialLifecycleState::ReconciliationRequired {
+                operation: CredentialReconcileOperationV1::from_port(operation),
+            }
+        },
     }
 }
 
@@ -654,13 +670,16 @@ pub async fn reconcile_credential(
     cred: &str,
     request: &ReconcileCredentialRequest,
 ) -> ApiResult<ReconcileCredentialResponse> {
+    let decision = request.decision.to_port(request.operation).ok_or_else(|| {
+        ApiError::validation_message("reconciliation decision does not match operation")
+    })?;
     let result = gateway(state)?
         .execute(
             principal,
             scope,
             CredentialGatewayCommand::Reconcile {
                 credential_id: cred.to_owned(),
-                decision: request.decision.to_port(),
+                decision,
                 evidence: request.evidence.clone(),
             },
         )
@@ -682,11 +701,30 @@ pub async fn reconcile_credential(
     // conflict: the caller's intent is satisfied either way, and the only thing
     // they can act on differently is whether this call wrote.
     Ok(ReconcileCredentialResponse {
+        operation: CredentialReconcileOperationV1::from_port(port_decision.kind()).ok_or_else(
+            || {
+                ApiError::Internal(
+                    "credential gateway returned a legacy reconcile result".to_owned(),
+                )
+            },
+        )?,
         decision: CredentialReconcileDecisionV1::from_port(port_decision),
         changed,
         evidence_digest: digest_hex(&evidence_digest),
         message: if changed {
-            "provider outcome recorded; the credential can be refreshed again".to_owned()
+            match port_decision.kind() {
+                nebula_storage_port::CredentialOperationKind::Refresh => {
+                    "refresh outcome recorded".to_owned()
+                },
+                nebula_storage_port::CredentialOperationKind::Revoke => {
+                    "revoke outcome recorded".to_owned()
+                },
+                nebula_storage_port::CredentialOperationKind::LegacyUnclassified => {
+                    return Err(ApiError::Internal(
+                        "credential gateway returned a legacy reconcile result".to_owned(),
+                    ));
+                },
+            }
         } else {
             "identical decision was already on record; nothing changed".to_owned()
         },

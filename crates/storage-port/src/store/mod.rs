@@ -32,6 +32,7 @@ pub use checkpoint::CheckpointStore;
 pub use control_queue::{ControlClaim, ControlClaimToken, ControlQueue, ReclaimOutcome};
 pub use credential::{
     CredentialAlreadyExistsKey, CredentialPersistence, CredentialPersistenceError,
+    StoredCredentialOperationalHead,
 };
 pub use credential_refresh_schedule::{
     CredentialRefreshCursor, CredentialRefreshHorizon, CredentialRefreshHorizonError,
@@ -49,11 +50,12 @@ pub use journal::ExecutionJournalReader;
 pub use node_result::NodeResultStore;
 pub use operation_ledger::{OperationLedger, OperationLedgerAdjudicator};
 pub use refresh_claim::{
-    ClaimAttempt, ClaimToken, ExpiredClaim, HeartbeatError, MAX_ADJUDICATION_EVIDENCE_BYTES,
-    ReauthEscalation, RefreshAdjudication, RefreshClaim, RefreshClaimAdjudicationError,
-    RefreshClaimAdjudicator, RefreshClaimError, RefreshClaimReclaimer, RefreshClaimStore,
-    RefreshOutcomeDecision, ReplicaId, SentinelEscalationPolicy, SentinelEscalationPolicyError,
-    SentinelState,
+    ClaimAttempt, ClaimToken, CredentialOperationDecision, CredentialOperationIntent,
+    CredentialOperationKind, CredentialOperationStatus, ExpiredClaim, HeartbeatError,
+    MAX_ADJUDICATION_EVIDENCE_BYTES, ReauthEscalation, RefreshAdjudication, RefreshClaim,
+    RefreshClaimAdjudicationError, RefreshClaimAdjudicator, RefreshClaimError,
+    RefreshClaimReclaimer, RefreshClaimStore, RefreshOutcomeDecision, ReplicaId,
+    RevokeOutcomeDecision, SentinelEscalationPolicy, SentinelEscalationPolicyError, SentinelState,
 };
 pub use resource_subscription::{
     ResourceEventFanoutStore, ResourceExecutionHandoffStore, ResourceRuntimeRecovery,

@@ -65,7 +65,8 @@ use nebula_storage::credential::{EnvKeyProvider, SqliteCredentialPersistence};
 use nebula_storage_port::{
     CredentialOwner, CredentialPersistenceError, CredentialSelector, Scope,
     store::{
-        ClaimAttempt, RefreshClaimAdjudicator, RefreshClaimStore, RefreshOutcomeDecision, ReplicaId,
+        ClaimAttempt, CredentialOperationDecision, CredentialOperationIntent,
+        RefreshClaimAdjudicator, RefreshClaimStore, RefreshOutcomeDecision, ReplicaId,
     },
 };
 use sha2::{Digest, Sha256};
@@ -232,7 +233,12 @@ impl ReconciliationFixture {
             CredentialSelector::new(CredentialOwner::from_scope(&self.scope()), *credential);
         let acquired = self
             .claim_store
-            .try_claim(&selector, &self.holder(), CLAIM_TTL)
+            .try_claim(
+                &selector,
+                &self.holder(),
+                CLAIM_TTL,
+                CredentialOperationIntent::Refresh,
+            )
             .await
             .expect("a free claim is acquirable");
         let ClaimAttempt::Acquired(claim) = acquired else {
@@ -263,7 +269,12 @@ impl ReconciliationFixture {
         let selector =
             CredentialSelector::new(CredentialOwner::from_scope(&self.scope()), *credential);
         self.claim_store
-            .try_claim(&selector, &self.holder(), CLAIM_TTL)
+            .try_claim(
+                &selector,
+                &self.holder(),
+                CLAIM_TTL,
+                CredentialOperationIntent::Refresh,
+            )
             .await
             .expect("acquisition must not fail")
     }
@@ -292,7 +303,7 @@ impl ReconciliationFixture {
     async fn reconcile(
         &self,
         credential: &CredentialId,
-        decision: RefreshOutcomeDecision,
+        decision: CredentialOperationDecision,
         evidence: &str,
     ) -> Result<CredentialGatewayResult, CredentialGatewayError> {
         self.reconcile_in_scope(&self.scope(), credential, decision, evidence)
@@ -308,7 +319,7 @@ impl ReconciliationFixture {
         &self,
         scope: &Scope,
         credential: &CredentialId,
-        decision: RefreshOutcomeDecision,
+        decision: CredentialOperationDecision,
         evidence: &str,
     ) -> Result<CredentialGatewayResult, CredentialGatewayError> {
         self.gateway
@@ -360,7 +371,7 @@ async fn reconciliation_clears_the_poison_and_the_claim_becomes_acquirable() {
     let result = fixture
         .reconcile(
             &credential,
-            RefreshOutcomeDecision::ProviderApplied,
+            CredentialOperationDecision::Refresh(RefreshOutcomeDecision::ProviderApplied),
             EVIDENCE,
         )
         .await
@@ -370,7 +381,7 @@ async fn reconciliation_clears_the_poison_and_the_claim_becomes_acquirable() {
     assert_matches!(
         result,
         CredentialGatewayResult::Reconciled {
-            decision: RefreshOutcomeDecision::ProviderApplied,
+            decision: CredentialOperationDecision::Refresh(RefreshOutcomeDecision::ProviderApplied),
             changed: true,
             evidence_digest,
         } if evidence_digest == expected_digest,
@@ -418,7 +429,7 @@ async fn repeating_the_same_reconciliation_is_a_no_op_success() {
     let first = fixture
         .reconcile(
             &credential,
-            RefreshOutcomeDecision::ProviderNotApplied,
+            CredentialOperationDecision::Refresh(RefreshOutcomeDecision::ProviderNotApplied),
             EVIDENCE,
         )
         .await
@@ -431,7 +442,7 @@ async fn repeating_the_same_reconciliation_is_a_no_op_success() {
     let replay = fixture
         .reconcile(
             &credential,
-            RefreshOutcomeDecision::ProviderNotApplied,
+            CredentialOperationDecision::Refresh(RefreshOutcomeDecision::ProviderNotApplied),
             EVIDENCE,
         )
         .await
@@ -440,7 +451,7 @@ async fn repeating_the_same_reconciliation_is_a_no_op_success() {
     assert_matches!(
         replay,
         CredentialGatewayResult::Reconciled {
-            decision: RefreshOutcomeDecision::ProviderNotApplied,
+            decision: CredentialOperationDecision::Refresh(RefreshOutcomeDecision::ProviderNotApplied),
             changed: false,
             evidence_digest,
         } if evidence_digest == expected_digest,
@@ -473,7 +484,7 @@ async fn a_conflicting_observation_reports_the_recorded_pair() {
     let recorded = fixture
         .reconcile(
             &credential,
-            RefreshOutcomeDecision::ProviderApplied,
+            CredentialOperationDecision::Refresh(RefreshOutcomeDecision::ProviderApplied),
             EVIDENCE,
         )
         .await
@@ -487,7 +498,7 @@ async fn a_conflicting_observation_reports_the_recorded_pair() {
     let conflict = fixture
         .reconcile(
             &credential,
-            RefreshOutcomeDecision::ProviderApplied,
+            CredentialOperationDecision::Refresh(RefreshOutcomeDecision::ProviderApplied),
             disagreeing_evidence,
         )
         .await
@@ -508,7 +519,7 @@ async fn a_conflicting_observation_reports_the_recorded_pair() {
     };
     assert_eq!(
         recorded_decision,
-        RefreshOutcomeDecision::ProviderApplied,
+        CredentialOperationDecision::Refresh(RefreshOutcomeDecision::ProviderApplied),
         "the conflict must name the recorded decision"
     );
     assert_eq!(
@@ -525,7 +536,7 @@ async fn a_conflicting_observation_reports_the_recorded_pair() {
     let recommit = fixture
         .reconcile(
             &credential,
-            RefreshOutcomeDecision::ProviderApplied,
+            CredentialOperationDecision::Refresh(RefreshOutcomeDecision::ProviderApplied),
             EVIDENCE,
         )
         .await
@@ -572,7 +583,7 @@ async fn a_poisoned_claim_stays_denied_without_reconciliation() {
     fixture
         .reconcile(
             &reconciled,
-            RefreshOutcomeDecision::ProviderApplied,
+            CredentialOperationDecision::Refresh(RefreshOutcomeDecision::ProviderApplied),
             EVIDENCE,
         )
         .await
@@ -600,7 +611,11 @@ async fn refusing_evidence_leaves_the_poison_standing() {
     fixture.poison(&credential).await;
 
     let error = fixture
-        .reconcile(&credential, RefreshOutcomeDecision::ProviderApplied, "")
+        .reconcile(
+            &credential,
+            CredentialOperationDecision::Refresh(RefreshOutcomeDecision::ProviderApplied),
+            "",
+        )
         .await
         .expect_err("empty evidence is refused");
 
@@ -627,7 +642,7 @@ async fn reconciling_a_healthy_credential_reports_nothing_to_reconcile() {
     let error = fixture
         .reconcile(
             &credential,
-            RefreshOutcomeDecision::ProviderApplied,
+            CredentialOperationDecision::Refresh(RefreshOutcomeDecision::ProviderApplied),
             EVIDENCE,
         )
         .await
@@ -659,7 +674,7 @@ async fn another_scopes_credential_cannot_be_reconciled_and_keeps_its_poison() {
         .reconcile_in_scope(
             &fixture.other_scope(),
             &credential,
-            RefreshOutcomeDecision::ProviderApplied,
+            CredentialOperationDecision::Refresh(RefreshOutcomeDecision::ProviderApplied),
             EVIDENCE,
         )
         .await
@@ -692,7 +707,7 @@ async fn another_scopes_credential_cannot_be_reconciled_and_keeps_its_poison() {
     let recorded = fixture
         .reconcile(
             &credential,
-            RefreshOutcomeDecision::ProviderApplied,
+            CredentialOperationDecision::Refresh(RefreshOutcomeDecision::ProviderApplied),
             EVIDENCE,
         )
         .await
@@ -700,7 +715,7 @@ async fn another_scopes_credential_cannot_be_reconciled_and_keeps_its_poison() {
     assert_matches!(
         recorded,
         CredentialGatewayResult::Reconciled {
-            decision: RefreshOutcomeDecision::ProviderApplied,
+            decision: CredentialOperationDecision::Refresh(RefreshOutcomeDecision::ProviderApplied),
             changed: true,
             ..
         }

@@ -7,6 +7,7 @@
 use std::time::Duration;
 
 use nebula_core::CredentialId;
+use nebula_storage::credential::refresh_claim::CredentialOperationIntent;
 use nebula_storage::credential::{
     ClaimAttempt, InMemoryRefreshClaimRepo, RefreshClaimRepo, ReplicaId,
 };
@@ -23,7 +24,12 @@ async fn owner_partitions_do_not_contend_for_the_same_credential_id() {
 
     for (selector, holder) in [(&owner_a, "holder-a"), (&owner_b, "holder-b")] {
         let result = repo
-            .try_claim(selector, &ReplicaId::new(holder), Duration::from_secs(30))
+            .try_claim(
+                selector,
+                &ReplicaId::new(holder),
+                Duration::from_secs(30),
+                CredentialOperationIntent::Refresh,
+            )
             .await
             .expect("owner-qualified claim");
         assert!(matches!(result, ClaimAttempt::Acquired(_)));

@@ -27,8 +27,9 @@
 use std::time::Duration;
 
 use nebula_storage::credential::refresh_claim::{
-    MAX_ADJUDICATION_EVIDENCE_BYTES, RefreshAdjudication, RefreshClaimAdjudicationError,
-    RefreshClaimAdjudicator, RefreshOutcomeDecision,
+    CredentialOperationDecision, CredentialOperationIntent, MAX_ADJUDICATION_EVIDENCE_BYTES,
+    RefreshAdjudication, RefreshClaimAdjudicationError, RefreshClaimAdjudicator,
+    RefreshOutcomeDecision,
 };
 use nebula_storage::credential::{
     ClaimAttempt, ClaimToken, ExpiredClaim, HeartbeatError, RefreshClaim, RefreshClaimReclaimer,
@@ -59,6 +60,39 @@ fn evidence_digest(evidence: &str) -> [u8; 32] {
 pub(crate) trait RefreshClaimFixture:
     RefreshClaimRepo + RefreshClaimAdjudicator + RefreshClaimReclaimer + Send + Sync
 {
+    /// Acquire a refresh claim through the typed operation-intent port.
+    async fn try_refresh_claim(
+        &self,
+        selector: &CredentialSelector,
+        holder: &ReplicaId,
+        ttl: Duration,
+    ) -> Result<ClaimAttempt, RepoError> {
+        RefreshClaimRepo::try_claim(
+            self,
+            selector,
+            holder,
+            ttl,
+            CredentialOperationIntent::Refresh,
+        )
+        .await
+    }
+
+    /// Adjudicate one refresh incident through the typed decision port.
+    async fn adjudicate_refresh(
+        &self,
+        selector: &CredentialSelector,
+        decision: RefreshOutcomeDecision,
+        evidence: &str,
+    ) -> Result<RefreshAdjudication, RefreshClaimAdjudicationError> {
+        RefreshClaimAdjudicator::adjudicate(
+            self,
+            selector,
+            CredentialOperationDecision::Refresh(decision),
+            evidence,
+        )
+        .await
+    }
+
     /// A credential unique to `case`, to this run, and to this backend.
     ///
     /// Two SQL runs share one database, and every case in this inventory
@@ -178,7 +212,7 @@ async fn claim(
     ttl: Duration,
 ) -> RefreshClaim {
     match fixture
-        .try_claim(credential, &fixture.replica(holder), ttl)
+        .try_refresh_claim(credential, &fixture.replica(holder), ttl)
         .await
         .expect("acquisition must not fail")
     {
@@ -261,14 +295,17 @@ async fn adjudicate_fresh(
     evidence: &str,
 ) -> RefreshAdjudication {
     let recorded = fixture
-        .adjudicate(credential, decision, evidence)
+        .adjudicate_refresh(credential, decision, evidence)
         .await
         .expect("a poisoned claim must be adjudicable");
     assert!(
         recorded.changed,
         "the first decision for a poisoned claim must be recorded, not reported as a recommit"
     );
-    assert_eq!(recorded.decision, decision);
+    assert_eq!(
+        recorded.decision,
+        CredentialOperationDecision::Refresh(decision)
+    );
     assert_eq!(
         recorded.evidence_digest,
         evidence_digest(evidence),
@@ -312,7 +349,7 @@ pub(crate) async fn replay_poisoned_lifecycles(
         );
         if index + 1 < count {
             let recorded = fixture
-                .adjudicate(
+                .adjudicate_refresh(
                     credential,
                     RefreshOutcomeDecision::ProviderNotApplied,
                     "earlier replay reconciled so the next lifecycle can begin",
@@ -334,7 +371,7 @@ pub(crate) async fn try_claim_acquires_when_no_holder(
 ) {
     let credential = fixture.credential("try_claim_acquires_when_no_holder");
     let attempt = fixture
-        .try_claim(&credential, &fixture.replica(seed), fixture.claim_ttl())
+        .try_refresh_claim(&credential, &fixture.replica(seed), fixture.claim_ttl())
         .await
         .expect("acquisition must not fail");
 
@@ -354,7 +391,7 @@ pub(crate) async fn try_claim_acquires_when_no_holder(
     // an acquisition that never reached the row would show up as a second
     // `Acquired` here.
     let attempt = fixture
-        .try_claim(
+        .try_refresh_claim(
             &credential,
             &fixture.replica(seed.wrapping_add(1)),
             fixture.claim_ttl(),
@@ -375,7 +412,7 @@ pub(crate) async fn try_claim_returns_contended_when_held(
     let held = acquire(fixture, &credential, seed).await;
 
     let attempt = fixture
-        .try_claim(
+        .try_refresh_claim(
             &credential,
             &fixture.replica(seed.wrapping_add(1)),
             fixture.claim_ttl(),
@@ -438,7 +475,7 @@ pub(crate) async fn heartbeat_extends_expiry_and_rejects_a_stale_token(
     // A heartbeat that landed is observable as contention reporting the later
     // deadline — no case needs to read the stored column.
     let attempt = fixture
-        .try_claim(
+        .try_refresh_claim(
             &credential,
             &fixture.replica(seed.wrapping_add(1)),
             fixture.claim_ttl(),
@@ -519,7 +556,7 @@ pub(crate) async fn reclaim_accounts_expired_in_flight_as_retained_poison(
 
     // Accounting is not release: the row stays, and keeps refusing egress.
     let attempt = fixture
-        .try_claim(
+        .try_refresh_claim(
             &credential,
             &fixture.replica(seed.wrapping_add(1)),
             fixture.claim_ttl(),
@@ -624,7 +661,7 @@ pub(crate) async fn out_of_range_generation_is_rejected_without_touching_the_cla
     }
 
     let attempt = fixture
-        .try_claim(
+        .try_refresh_claim(
             &credential,
             &fixture.replica(seed.wrapping_add(1)),
             fixture.claim_ttl(),
@@ -671,7 +708,7 @@ pub(crate) async fn expired_in_flight_claim_is_preserved_until_reclaim(
 
     for challenger in [seed.wrapping_add(1), seed.wrapping_add(2)] {
         let attempt = fixture
-            .try_claim(
+            .try_refresh_claim(
                 &credential,
                 &fixture.replica(challenger),
                 fixture.claim_ttl(),
@@ -698,7 +735,7 @@ pub(crate) async fn expired_in_flight_claim_is_preserved_until_reclaim(
     );
 
     let next = fixture
-        .try_claim(
+        .try_refresh_claim(
             &credential,
             &fixture.replica(seed.wrapping_add(1)),
             fixture.claim_ttl(),
@@ -812,8 +849,8 @@ pub(crate) async fn concurrent_try_claim_yields_one_acquired(
     let right_holder = fixture.replica(seed.wrapping_add(1));
 
     let (left, right) = tokio::join!(
-        fixture.try_claim(&credential, &left_holder, ttl),
-        fixture.try_claim(&credential, &right_holder, ttl),
+        fixture.try_refresh_claim(&credential, &left_holder, ttl),
+        fixture.try_refresh_claim(&credential, &right_holder, ttl),
     );
     let left = left.expect("the left acquisition must not fail");
     let right = right.expect("the right acquisition must not fail");
@@ -884,7 +921,7 @@ pub(crate) async fn concurrent_reclaim_accounts_each_poison_exactly_once(
             "each poisoned generation records one incident"
         );
         let attempt = fixture
-            .try_claim(
+            .try_refresh_claim(
                 credential,
                 &fixture.replica(seed.wrapping_add(1)),
                 fixture.claim_ttl(),
@@ -1144,7 +1181,7 @@ pub(crate) async fn adjudication_clears_poison_and_the_claim_becomes_acquirable(
     );
     assert_eq!(fixture.resolved_incident_count(&swept).await, 1);
     let next = fixture
-        .try_claim(
+        .try_refresh_claim(
             &swept,
             &fixture.replica(seed.wrapping_add(1)),
             fixture.claim_ttl(),
@@ -1161,7 +1198,7 @@ pub(crate) async fn adjudication_of_an_unpoisoned_credential_is_refused(
     let never = fixture.credential("adjudication_of_an_unpoisoned_credential_is_refused/never");
     std::assert_matches!(
         fixture
-            .adjudicate(
+            .adjudicate_refresh(
                 &never,
                 RefreshOutcomeDecision::ProviderApplied,
                 "no claim was ever held"
@@ -1177,7 +1214,7 @@ pub(crate) async fn adjudication_of_an_unpoisoned_credential_is_refused(
     acquire(fixture, &live, seed).await;
     std::assert_matches!(
         fixture
-            .adjudicate(
+            .adjudicate_refresh(
                 &live,
                 RefreshOutcomeDecision::ProviderApplied,
                 "a live holder owns this decision"
@@ -1192,7 +1229,7 @@ pub(crate) async fn adjudication_of_an_unpoisoned_credential_is_refused(
     fixture.expire_claims(&live).await;
     std::assert_matches!(
         fixture
-            .adjudicate(
+            .adjudicate_refresh(
                 &live,
                 RefreshOutcomeDecision::ProviderApplied,
                 "no provider egress ever began"
@@ -1202,7 +1239,7 @@ pub(crate) async fn adjudication_of_an_unpoisoned_credential_is_refused(
         "an expired claim that never crossed the provider boundary is not poison"
     );
     let attempt = fixture
-        .try_claim(
+        .try_refresh_claim(
             &live,
             &fixture.replica(seed.wrapping_add(1)),
             fixture.claim_ttl(),
@@ -1224,7 +1261,7 @@ pub(crate) async fn adjudication_evidence_is_bounded(fixture: &impl RefreshClaim
     for evidence in ["", oversized.as_str()] {
         std::assert_matches!(
             fixture
-                .adjudicate(
+                .adjudicate_refresh(
                     &credential,
                     RefreshOutcomeDecision::ProviderApplied,
                     evidence
@@ -1277,7 +1314,7 @@ pub(crate) async fn recommitting_the_same_adjudication_is_a_no_op_that_adds_no_i
     assert_eq!(fixture.incident_count(&credential).await, 1);
 
     let recommit = fixture
-        .adjudicate(
+        .adjudicate_refresh(
             &credential,
             RefreshOutcomeDecision::ProviderApplied,
             evidence,
@@ -1290,7 +1327,7 @@ pub(crate) async fn recommitting_the_same_adjudication_is_a_no_op_that_adds_no_i
     );
     assert_eq!(
         recommit.decision,
-        RefreshOutcomeDecision::ProviderApplied,
+        CredentialOperationDecision::Refresh(RefreshOutcomeDecision::ProviderApplied),
         "the recommit must return the recorded resolution"
     );
     assert_eq!(
@@ -1359,7 +1396,7 @@ pub(crate) async fn recommit_of_an_older_resolution_is_a_no_op_not_a_conflict(
     );
 
     let recommit = fixture
-        .adjudicate(
+        .adjudicate_refresh(
             &credential,
             RefreshOutcomeDecision::ProviderApplied,
             older_evidence,
@@ -1372,7 +1409,7 @@ pub(crate) async fn recommit_of_an_older_resolution_is_a_no_op_not_a_conflict(
     );
     assert_eq!(
         recommit.decision,
-        RefreshOutcomeDecision::ProviderApplied,
+        CredentialOperationDecision::Refresh(RefreshOutcomeDecision::ProviderApplied),
         "the recommit answers with the resolution it matched"
     );
     assert_eq!(
@@ -1406,7 +1443,7 @@ pub(crate) async fn a_conflicting_adjudication_is_refused(
 
     std::assert_matches!(
         fixture
-            .adjudicate(
+            .adjudicate_refresh(
                 &credential,
                 RefreshOutcomeDecision::ProviderNotApplied,
                 evidence
@@ -1416,13 +1453,14 @@ pub(crate) async fn a_conflicting_adjudication_is_refused(
             recorded_digest,
             recorded_decision,
         }) if recorded_digest == evidence_digest(evidence)
-            && recorded_decision == RefreshOutcomeDecision::ProviderApplied,
+            && recorded_decision
+                == CredentialOperationDecision::Refresh(RefreshOutcomeDecision::ProviderApplied),
         "the same evidence cannot be turned into the opposite decision, and the \
          refusal must name the pair on record"
     );
     std::assert_matches!(
         fixture
-            .adjudicate(
+            .adjudicate_refresh(
                 &credential,
                 RefreshOutcomeDecision::ProviderApplied,
                 "a different reconciliation query reached the same conclusion"
@@ -1432,7 +1470,8 @@ pub(crate) async fn a_conflicting_adjudication_is_refused(
             recorded_digest,
             recorded_decision,
         }) if recorded_digest == evidence_digest(evidence)
-            && recorded_decision == RefreshOutcomeDecision::ProviderApplied,
+            && recorded_decision
+                == CredentialOperationDecision::Refresh(RefreshOutcomeDecision::ProviderApplied),
         "different evidence for a decided incident is a conflict, and the \
          refusal must name the pair on record"
     );
@@ -1444,7 +1483,7 @@ pub(crate) async fn a_conflicting_adjudication_is_refused(
     // conflict leaves the store as it found it, not that it avoided
     // resurrecting a poison that was still there.
     let recorded = fixture
-        .adjudicate(
+        .adjudicate_refresh(
             &credential,
             RefreshOutcomeDecision::ProviderApplied,
             evidence,
@@ -1470,12 +1509,12 @@ pub(crate) async fn concurrent_adjudication_yields_exactly_one_change(
     sweep_accounts_poison(fixture, &credential).await;
 
     let (left, right) = tokio::join!(
-        fixture.adjudicate(
+        fixture.adjudicate_refresh(
             &credential,
             RefreshOutcomeDecision::ProviderApplied,
             evidence
         ),
-        fixture.adjudicate(
+        fixture.adjudicate_refresh(
             &credential,
             RefreshOutcomeDecision::ProviderApplied,
             evidence
@@ -1505,7 +1544,7 @@ pub(crate) async fn concurrent_adjudication_yields_exactly_one_change(
     assert_eq!(fixture.resolved_incident_count(&credential).await, 1);
     assert!(!fixture.poisoned_claim_exists(&credential).await);
     let recorded = fixture
-        .adjudicate(
+        .adjudicate_refresh(
             &credential,
             RefreshOutcomeDecision::ProviderApplied,
             evidence,
@@ -1535,7 +1574,7 @@ pub(crate) async fn release_refuses_an_undecided_incident(
     );
     assert_eq!(fixture.incident_count(&credential).await, 1);
     let attempt = fixture
-        .try_claim(
+        .try_refresh_claim(
             &credential,
             &fixture.replica(seed.wrapping_add(1)),
             fixture.claim_ttl(),
@@ -1600,7 +1639,7 @@ pub(crate) async fn release_deletes_a_claim_that_carries_no_incident(
         .await
         .expect("a superseded generation's release is a no-op");
     let attempt = fixture
-        .try_claim(
+        .try_refresh_claim(
             &superseded,
             &fixture.replica(seed.wrapping_add(2)),
             fixture.claim_ttl(),
@@ -1673,7 +1712,7 @@ pub(crate) async fn a_failed_decision_write_leaves_the_claim_poisoned_and_unreco
 
     fixture.inject_decision_write_failure(&credential).await;
     let error = fixture
-        .adjudicate(
+        .adjudicate_refresh(
             &credential,
             RefreshOutcomeDecision::ProviderApplied,
             evidence,
@@ -1700,7 +1739,7 @@ pub(crate) async fn a_failed_decision_write_leaves_the_claim_poisoned_and_unreco
         "the resolution must not be committed"
     );
     let attempt = fixture
-        .try_claim(
+        .try_refresh_claim(
             &credential,
             &fixture.replica(seed.wrapping_add(1)),
             fixture.claim_ttl(),
@@ -1723,7 +1762,7 @@ pub(crate) async fn a_failed_decision_write_leaves_the_claim_poisoned_and_unreco
     assert!(!fixture.poisoned_claim_exists(&credential).await);
     assert_eq!(fixture.resolved_incident_count(&credential).await, 1);
     let next = fixture
-        .try_claim(
+        .try_refresh_claim(
             &credential,
             &fixture.replica(seed.wrapping_add(1)),
             fixture.claim_ttl(),

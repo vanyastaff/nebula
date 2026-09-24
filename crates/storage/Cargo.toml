@@ -136,6 +136,10 @@ nebula-tenancy = { path = "../tenancy" }
 [lib]
 doctest = false
 
+[[test]]
+name = "credential_operation_runtime"
+required-features = ["credential-in-memory", "sqlite"]
+
 [package.metadata.cargo-shear]
 # Optional backend deps: declared under feature flags (`redis`, `s3`)
 # whose backend implementations live behind the feature guard. Kept

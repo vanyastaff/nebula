@@ -48,6 +48,17 @@ impl ScheduledRefreshExecutor for CredentialService {
             CredentialLifecycleState::ReauthRequired => {
                 return ScheduledRefreshDisposition::ReauthRequired;
             },
+            CredentialLifecycleState::OperationInFlight { .. } => {
+                return ScheduledRefreshDisposition::Blocked;
+            },
+            CredentialLifecycleState::ReconciliationRequired {
+                operation: Some(crate::CredentialLifecycleOperation::Refresh),
+            } => {
+                return ScheduledRefreshDisposition::OutcomeUnknown;
+            },
+            CredentialLifecycleState::ReconciliationRequired { .. } => {
+                return ScheduledRefreshDisposition::ReconciliationRequired;
+            },
         }
 
         match self.refresh(&scope, &id).await {
@@ -75,6 +86,9 @@ fn exact_failure_disposition(
     error: &CredentialServiceError,
 ) -> Option<ScheduledRefreshDisposition> {
     match error {
+        CredentialServiceError::OperationBlocked { .. } => {
+            Some(ScheduledRefreshDisposition::ReconciliationRequired)
+        },
         CredentialServiceError::OutcomeUnknown => Some(ScheduledRefreshDisposition::OutcomeUnknown),
         CredentialServiceError::RefreshReconciliationRequired => {
             Some(ScheduledRefreshDisposition::ReconciliationRequired)

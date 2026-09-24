@@ -28,17 +28,23 @@ use chrono::{DateTime, Utc};
 use nebula_core::CredentialId;
 use nebula_storage_port::{
     CredentialAlreadyExistsKey, CredentialCommit, CredentialCreate, CredentialMaterialEpoch,
-    CredentialOwner, CredentialPersistence, CredentialPersistenceError, CredentialRefreshCursor,
-    CredentialRefreshHorizon, CredentialRefreshPageSize, CredentialRefreshSchedule,
-    CredentialRefreshScheduleError, CredentialReplacement, CredentialSelector, CredentialTombstone,
-    CredentialVersion, DueCredentialRefresh, RefreshRetrySnapshot, SecretBytes, StoredCredential,
-    StoredCredentialHead, StoredLiveCredential, StoredTombstonedCredential,
+    CredentialOperationKind, CredentialOperationStatus, CredentialOwner, CredentialPersistence,
+    CredentialPersistenceError, CredentialRefreshCursor, CredentialRefreshHorizon,
+    CredentialRefreshPageSize, CredentialRefreshSchedule, CredentialRefreshScheduleError,
+    CredentialReplacement, CredentialSelector, CredentialTombstone, CredentialVersion,
+    DueCredentialRefresh, RefreshRetrySnapshot, SecretBytes, StoredCredential,
+    StoredCredentialHead, StoredCredentialOperationalHead, StoredLiveCredential,
+    StoredTombstonedCredential,
 };
 use serde_json::{Map, Value};
 use sqlx::{PgPool, Postgres, Transaction};
 #[cfg(test)]
+use std::sync::Mutex as StdMutex;
+#[cfg(test)]
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::{fmt, sync::Arc};
+#[cfg(test)]
+use tokio::sync::Notify;
 
 use super::{
     CredentialStoreStartupError, pending::PgPendingStateStore, refresh_claim::PgRefreshClaimRepo,
@@ -55,6 +61,15 @@ pub struct PgCredentialPersistence {
     pool: PgPool,
     #[cfg(test)]
     lose_next_commit_acknowledgement: Arc<AtomicBool>,
+    #[cfg(test)]
+    replace_claim_probe_gate: Arc<StdMutex<Option<ReplaceClaimProbeGate>>>,
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+struct ReplaceClaimProbeGate {
+    reached: Arc<Notify>,
+    resume: Arc<Notify>,
 }
 
 /// Read-only due-refresh schedule over an admitted PostgreSQL credential pool.
@@ -81,6 +96,34 @@ impl PgCredentialPersistence {
             pool,
             #[cfg(test)]
             lose_next_commit_acknowledgement: Arc::new(AtomicBool::new(false)),
+            #[cfg(test)]
+            replace_claim_probe_gate: Arc::new(StdMutex::new(None)),
+        }
+    }
+
+    #[cfg(test)]
+    fn arm_replace_claim_probe_gate(&self) -> ReplaceClaimProbeGate {
+        let gate = ReplaceClaimProbeGate {
+            reached: Arc::new(Notify::new()),
+            resume: Arc::new(Notify::new()),
+        };
+        *self
+            .replace_claim_probe_gate
+            .lock()
+            .expect("replace probe gate mutex") = Some(gate.clone());
+        gate
+    }
+
+    #[cfg(test)]
+    async fn pause_after_replace_claim_probe(&self) {
+        let gate = self
+            .replace_claim_probe_gate
+            .lock()
+            .expect("replace probe gate mutex")
+            .take();
+        if let Some(gate) = gate {
+            gate.reached.notify_one();
+            gate.resume.notified().await;
         }
     }
 
@@ -411,7 +454,7 @@ async fn lock_owner_credential(
     owner: &CredentialOwner,
 ) -> Result<Option<LockedCredentialRow>, sqlx::Error> {
     sqlx::query_as(
-        "SELECT record_state, version, material_epoch, credential_key
+        "SELECT record_state, version, material_epoch, credential_key, reauth_required
          FROM credentials
          WHERE id = $1 AND owner_id = $2
          FOR UPDATE",
@@ -434,6 +477,7 @@ struct LockedCredentialRow {
     version: i64,
     material_epoch: i64,
     credential_key: String,
+    reauth_required: bool,
 }
 
 #[derive(sqlx::FromRow)]
@@ -549,9 +593,51 @@ struct CredentialHeadRow {
     metadata: String,
     record_state: String,
     tombstoned_at: Option<DateTime<Utc>>,
+    operation_kind: Option<String>,
+    operation_sentinel: Option<i16>,
+    operation_expires_at: Option<DateTime<Utc>>,
 }
 
 impl CredentialHeadRow {
+    fn operation_status(&self) -> Result<CredentialOperationStatus, CredentialPersistenceError> {
+        let open = || {
+            Ok(CredentialOperationStatus::Open {
+                version: parse_version(self.version)?,
+                material_epoch: parse_material_epoch(self.material_epoch)?,
+                reauth_required: self.reauth_required,
+            })
+        };
+        let (kind, sentinel, expires_at) = match (
+            self.operation_kind.as_deref(),
+            self.operation_sentinel,
+            self.operation_expires_at,
+        ) {
+            (None, None, None) => return open(),
+            (Some(kind), Some(sentinel), Some(expires_at)) => (kind, sentinel, expires_at),
+            _ => return Err(CredentialPersistenceError::CorruptRecord),
+        };
+        let operation = CredentialOperationKind::from_wire(kind)
+            .ok_or(CredentialPersistenceError::CorruptRecord)?;
+        match sentinel {
+            0 if operation == CredentialOperationKind::Refresh || expires_at < self.backend_now => {
+                open()
+            },
+            0 | 1 if expires_at >= self.backend_now => {
+                Ok(CredentialOperationStatus::InFlight { operation })
+            },
+            1 => Ok(CredentialOperationStatus::ReconciliationRequired { operation }),
+            _ => Err(CredentialPersistenceError::CorruptRecord),
+        }
+    }
+
+    fn into_operational_head(
+        self,
+    ) -> Result<StoredCredentialOperationalHead, CredentialPersistenceError> {
+        let status = self.operation_status()?;
+        let head = self.into_stored_head()?;
+        Ok(StoredCredentialOperationalHead::new(head, status))
+    }
+
     fn into_stored_head(self) -> Result<StoredCredentialHead, CredentialPersistenceError> {
         if self.record_state != "live" || self.tombstoned_at.is_some() {
             return Err(CredentialPersistenceError::CorruptRecord);
@@ -589,6 +675,31 @@ struct CredentialCommitRow {
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
     tombstoned_at: Option<DateTime<Utc>>,
+}
+
+#[derive(sqlx::FromRow)]
+struct RevokedMaterialRow {
+    id: String,
+    version: i64,
+    material_epoch: i64,
+    record_state: String,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+    tombstoned_at: Option<DateTime<Utc>>,
+}
+
+impl RevokedMaterialRow {
+    fn into_commit(self) -> Result<CredentialCommit, CredentialPersistenceError> {
+        CredentialCommitRow {
+            id: self.id,
+            version: self.version,
+            record_state: self.record_state,
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+            tombstoned_at: self.tombstoned_at,
+        }
+        .into_commit()
+    }
 }
 
 #[derive(sqlx::FromRow)]
@@ -858,6 +969,57 @@ impl CredentialPersistence for PgCredentialPersistence {
     }
 
     #[tracing::instrument(skip_all)]
+    async fn operation_status(
+        &self,
+        selector: &CredentialSelector,
+    ) -> Result<CredentialOperationStatus, CredentialPersistenceError> {
+        let row: Option<(
+            i64,
+            i64,
+            bool,
+            Option<String>,
+            Option<i16>,
+            Option<DateTime<Utc>>,
+            DateTime<Utc>,
+        )> = sqlx::query_as(
+            "SELECT c.version, c.material_epoch, c.reauth_required, claim.operation_kind, \
+                        claim.sentinel, claim.expires_at, clock_timestamp() \
+                 FROM credentials AS c \
+                 LEFT JOIN credential_refresh_claims AS claim \
+                   ON claim.owner_id = c.owner_id AND claim.credential_id = c.id \
+                 WHERE c.id = $1 AND c.owner_id = $2 AND c.record_state = 'live'",
+        )
+        .bind(selector.credential_id().to_string())
+        .bind(selector.owner().as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(read_error)?;
+        let Some((version, epoch, reauth_required, kind, sentinel, expires_at, now)) = row else {
+            return Err(CredentialPersistenceError::NotFound);
+        };
+        let open = || {
+            Ok(CredentialOperationStatus::Open {
+                version: parse_version(version)?,
+                material_epoch: parse_material_epoch(epoch)?,
+                reauth_required,
+            })
+        };
+        let (kind, sentinel, expires_at) = match (kind, sentinel, expires_at) {
+            (None, None, None) => return open(),
+            (Some(kind), Some(sentinel), Some(expires_at)) => (kind, sentinel, expires_at),
+            _ => return Err(CredentialPersistenceError::CorruptRecord),
+        };
+        let operation = CredentialOperationKind::from_wire(&kind)
+            .ok_or(CredentialPersistenceError::CorruptRecord)?;
+        match sentinel {
+            0 if operation == CredentialOperationKind::Refresh || expires_at < now => open(),
+            0 | 1 if expires_at >= now => Ok(CredentialOperationStatus::InFlight { operation }),
+            1 => Ok(CredentialOperationStatus::ReconciliationRequired { operation }),
+            _ => Err(CredentialPersistenceError::CorruptRecord),
+        }
+    }
+
+    #[tracing::instrument(skip_all)]
     async fn refresh_retry_snapshot(
         &self,
         selector: &CredentialSelector,
@@ -892,7 +1054,8 @@ impl CredentialPersistence for PgCredentialPersistence {
                     version, material_epoch, created_at, updated_at, expires_at,
                     reauth_required, refresh_retry_mode, refresh_retry_not_before,
                     clock_timestamp() AS backend_now,
-                    metadata, record_state, tombstoned_at
+                    metadata, record_state, tombstoned_at, NULL::text AS operation_kind, \
+                    NULL::smallint AS operation_sentinel, NULL::timestamptz AS operation_expires_at
              FROM credentials
              WHERE id = $1 AND owner_id = $2 AND record_state = 'live'",
         )
@@ -904,6 +1067,59 @@ impl CredentialPersistence for PgCredentialPersistence {
 
         row.ok_or(CredentialPersistenceError::NotFound)?
             .into_stored_head()
+    }
+
+    #[tracing::instrument(skip_all)]
+    async fn get_operational_head(
+        &self,
+        selector: &CredentialSelector,
+    ) -> Result<StoredCredentialOperationalHead, CredentialPersistenceError> {
+        let row: Option<CredentialHeadRow> = sqlx::query_as(
+            "SELECT c.id, c.name, c.credential_key, c.state_kind, c.state_version, \
+                    c.version, c.material_epoch, c.created_at, c.updated_at, c.expires_at, \
+                    c.reauth_required, c.refresh_retry_mode, c.refresh_retry_not_before, \
+                    clock_timestamp() AS backend_now, c.metadata, c.record_state, c.tombstoned_at, \
+                    claim.operation_kind, claim.sentinel AS operation_sentinel, \
+                    claim.expires_at AS operation_expires_at \
+             FROM credentials AS c LEFT JOIN credential_refresh_claims AS claim \
+               ON claim.owner_id = c.owner_id AND claim.credential_id = c.id \
+             WHERE c.id = $1 AND c.owner_id = $2 AND c.record_state = 'live'",
+        )
+        .bind(selector.credential_id().to_string())
+        .bind(selector.owner().as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(read_error)?;
+        row.ok_or(CredentialPersistenceError::NotFound)?
+            .into_operational_head()
+    }
+
+    #[tracing::instrument(skip_all)]
+    async fn list_operational_heads(
+        &self,
+        owner: &CredentialOwner,
+        state_kind: Option<&str>,
+    ) -> Result<Vec<StoredCredentialOperationalHead>, CredentialPersistenceError> {
+        let rows: Vec<CredentialHeadRow> = sqlx::query_as(
+            "SELECT c.id, c.name, c.credential_key, c.state_kind, c.state_version, \
+                    c.version, c.material_epoch, c.created_at, c.updated_at, c.expires_at, \
+                    c.reauth_required, c.refresh_retry_mode, c.refresh_retry_not_before, \
+                    clock_timestamp() AS backend_now, c.metadata, c.record_state, c.tombstoned_at, \
+                    claim.operation_kind, claim.sentinel AS operation_sentinel, \
+                    claim.expires_at AS operation_expires_at \
+             FROM credentials AS c LEFT JOIN credential_refresh_claims AS claim \
+               ON claim.owner_id = c.owner_id AND claim.credential_id = c.id \
+             WHERE c.owner_id = $1 AND c.record_state = 'live' \
+               AND ($2::text IS NULL OR c.state_kind = $2) ORDER BY c.id",
+        )
+        .bind(owner.as_str())
+        .bind(state_kind)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(read_error)?;
+        rows.into_iter()
+            .map(CredentialHeadRow::into_operational_head)
+            .collect()
     }
 
     #[tracing::instrument(skip_all)]
@@ -995,6 +1211,21 @@ impl CredentialPersistence for PgCredentialPersistence {
         let metadata = encode_metadata(replacement.metadata())?;
         let expected = replacement.expected_version();
         let mut transaction = self.begin_mutation().await?;
+        let blocking_revoke: Result<Option<(String,)>, sqlx::Error> = sqlx::query_as(
+            "SELECT operation_kind FROM credential_refresh_claims \
+             WHERE owner_id = $1 AND credential_id = $2 AND operation_kind = 'revoke' \
+             FOR UPDATE",
+        )
+        .bind(selector.owner().as_str())
+        .bind(&credential_id)
+        .fetch_optional(&mut *transaction)
+        .await;
+        let blocking_revoke = match blocking_revoke {
+            Ok(value) => value.is_some(),
+            Err(error) => return rollback_as(transaction, read_error(error)).await,
+        };
+        #[cfg(test)]
+        self.pause_after_replace_claim_probe().await;
 
         let Some(locked) = (match lock_owner_credential(
             &mut transaction,
@@ -1018,6 +1249,31 @@ impl CredentialPersistence for PgCredentialPersistence {
             Ok(epoch) => epoch,
             Err(error) => return rollback_as(transaction, error).await,
         };
+        if replacement.material_transition().advances_epoch()
+            || locked.reauth_required != replacement.reauth_required()
+        {
+            let revoke_after_lock: Result<Option<(String,)>, sqlx::Error> = sqlx::query_as(
+                "SELECT operation_kind FROM credential_refresh_claims \
+                 WHERE owner_id = $1 AND credential_id = $2 AND operation_kind = 'revoke'",
+            )
+            .bind(selector.owner().as_str())
+            .bind(&credential_id)
+            .fetch_optional(&mut *transaction)
+            .await;
+            let revoke_after_lock = match revoke_after_lock {
+                Ok(value) => value.is_some(),
+                Err(error) => return rollback_as(transaction, read_error(error)).await,
+            };
+            if blocking_revoke || revoke_after_lock {
+                return rollback_as(
+                    transaction,
+                    CredentialPersistenceError::OperationBlocked {
+                        operation: CredentialOperationKind::Revoke,
+                    },
+                )
+                .await;
+            }
+        }
         if let Some(fence) = replacement.fence() {
             if actual_material_epoch != fence.expected_material_epoch() {
                 return rollback_as(
@@ -1222,6 +1478,105 @@ impl CredentialPersistence for PgCredentialPersistence {
     }
 
     #[tracing::instrument(skip_all)]
+    async fn tombstone_revoked_material(
+        &self,
+        selector: &CredentialSelector,
+        expected_material_epoch: CredentialMaterialEpoch,
+    ) -> Result<CredentialCommit, CredentialPersistenceError> {
+        let credential_id = selector.credential_id().to_string();
+        let owner = selector.owner().as_str();
+        let mut transaction = self.begin_mutation().await?;
+
+        // Keep the global two-table order claim -> aggregate. The claim lock
+        // freezes immutable revoke authority through terminal publication.
+        let claim: Option<(String, Option<i64>, i16)> = sqlx::query_as(
+            "SELECT operation_kind, observed_material_epoch, sentinel
+             FROM credential_refresh_claims
+             WHERE owner_id = $1 AND credential_id = $2
+             FOR UPDATE",
+        )
+        .bind(owner)
+        .bind(&credential_id)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(read_error)?;
+        if !matches!(
+            claim.as_ref(),
+            Some((operation, Some(epoch), sentinel))
+                if operation == "revoke"
+                    && *epoch == expected_material_epoch.get()
+                    && *sentinel == 1_i16
+        ) {
+            return rollback_as(
+                transaction,
+                CredentialPersistenceError::OperationBlocked {
+                    operation: CredentialOperationKind::Revoke,
+                },
+            )
+            .await;
+        }
+
+        let row: Option<RevokedMaterialRow> = sqlx::query_as(
+            "SELECT id, version, material_epoch, record_state, created_at, updated_at, tombstoned_at
+             FROM credentials WHERE owner_id = $1 AND id = $2 FOR UPDATE",
+        )
+        .bind(owner)
+        .bind(&credential_id)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(read_error)?;
+        let Some(row) = row else {
+            return rollback_as(transaction, CredentialPersistenceError::NotFound).await;
+        };
+        if row.material_epoch != expected_material_epoch.get() {
+            return rollback_as(
+                transaction,
+                CredentialPersistenceError::OperationBlocked {
+                    operation: CredentialOperationKind::Revoke,
+                },
+            )
+            .await;
+        }
+        if row.record_state == "tombstoned" {
+            let commit = row.into_commit()?;
+            transaction
+                .commit()
+                .await
+                .map_err(|_| CredentialPersistenceError::OutcomeUnknown)?;
+            return Ok(commit);
+        }
+        if row.record_state != "live" {
+            return rollback_as(transaction, CredentialPersistenceError::CorruptRecord).await;
+        }
+        let current_version = parse_version(row.version)?;
+        let next_version = current_version.next_tombstone()?;
+        let updated: Option<CredentialCommitRow> = sqlx::query_as(
+            "WITH mutation_clock AS MATERIALIZED (SELECT clock_timestamp() AS now)
+             UPDATE credentials SET name = NULL, data = ''::bytea, version = $3,
+                 updated_at = mutation_clock.now, expires_at = NULL, reauth_required = FALSE,
+                 metadata = '{}', record_state = 'tombstoned', tombstoned_at = mutation_clock.now,
+                 refresh_retry_mode = NULL, refresh_retry_not_before = NULL,
+                 refresh_retry_phase = NULL, refresh_retry_kind = NULL,
+                 refresh_retry_diagnostic_code = NULL
+             FROM mutation_clock
+             WHERE owner_id = $1 AND id = $2 AND record_state = 'live'
+               AND material_epoch = $4
+             RETURNING id, version, record_state, created_at, updated_at, tombstoned_at",
+        )
+        .bind(owner)
+        .bind(&credential_id)
+        .bind(next_version.get())
+        .bind(expected_material_epoch.get())
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(read_error)?;
+        let commit = updated
+            .ok_or(CredentialPersistenceError::CorruptRecord)?
+            .into_commit()?;
+        self.commit_acknowledged(transaction, commit).await
+    }
+
+    #[tracing::instrument(skip_all)]
     async fn list(
         &self,
         owner: &CredentialOwner,
@@ -1274,7 +1629,8 @@ impl CredentialPersistence for PgCredentialPersistence {
                             version, material_epoch, created_at, updated_at, expires_at,
                             reauth_required, refresh_retry_mode, refresh_retry_not_before,
                             clock_timestamp() AS backend_now,
-                            metadata, record_state, tombstoned_at
+                            metadata, record_state, tombstoned_at, NULL::text AS operation_kind,
+                            NULL::smallint AS operation_sentinel, NULL::timestamptz AS operation_expires_at
                      FROM credentials
                      WHERE owner_id = $1
                        AND record_state = 'live'
@@ -1292,7 +1648,8 @@ impl CredentialPersistence for PgCredentialPersistence {
                             version, material_epoch, created_at, updated_at, expires_at,
                             reauth_required, refresh_retry_mode, refresh_retry_not_before,
                             clock_timestamp() AS backend_now,
-                            metadata, record_state, tombstoned_at
+                            metadata, record_state, tombstoned_at, NULL::text AS operation_kind,
+                            NULL::smallint AS operation_sentinel, NULL::timestamptz AS operation_expires_at
                      FROM credentials
                      WHERE owner_id = $1 AND record_state = 'live'
                      ORDER BY id",
@@ -1448,6 +1805,7 @@ mod tests {
                 ),
                 &ReplicaId::new("same-pool-probe"),
                 Duration::from_secs(30),
+                nebula_storage_port::CredentialOperationIntent::Refresh,
             )
             .await;
         assert!(
@@ -1551,6 +1909,200 @@ mod tests {
 
         drop(store);
         probe.close().await;
+        sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
+            .execute(&admin)
+            .await?;
+        admin.close().await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn replace_rechecks_revoke_claim_after_aggregate_lock() -> TestResult {
+        let url = match std::env::var("DATABASE_URL") {
+            Ok(url) => url,
+            Err(std::env::VarError::NotPresent) => {
+                assert!(std::env::var_os("NEBULA_REQUIRE_POSTGRES").is_none());
+                return Ok(());
+            },
+            Err(error) => panic!("DATABASE_URL is set but invalid: {error}"),
+        };
+        let admin = PgPoolOptions::new().connect(&url).await?;
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0);
+        let schema = format!("nebula_revoke_replace_race_{}_{nanos}", std::process::id());
+        sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
+            .execute(&admin)
+            .await?;
+        let options = PgConnectOptions::from_str(&url)?.options([("search_path", schema.as_str())]);
+        let store = PgCredentialPersistence::connect_with(options).await?;
+        let selector = CredentialSelector::new(
+            CredentialOwner::from_canonical("replace-race-owner"),
+            CredentialId::new(),
+        );
+        let created = store
+            .create(
+                &selector,
+                CredentialCreate::new(
+                    "oauth".to_owned(),
+                    SecretBytes::new(vec![1]),
+                    "oauth".to_owned(),
+                    1,
+                    None,
+                    None,
+                    false,
+                    Map::new(),
+                ),
+            )
+            .await?;
+        let gate = store.arm_replace_claim_probe_gate();
+        let replacing_store = store.clone();
+        let replacing_selector = selector.clone();
+        let replace = tokio::spawn(async move {
+            replacing_store
+                .replace(
+                    &replacing_selector,
+                    CredentialReplacement::new(
+                        created.version(),
+                        SecretBytes::new(vec![2]),
+                        "oauth".to_owned(),
+                        1,
+                        None,
+                        None,
+                        false,
+                        Map::new(),
+                        nebula_storage_port::CredentialMaterialTransition::advance(),
+                    ),
+                )
+                .await
+        });
+        gate.reached.notified().await;
+        let repo = store.refresh_claim_repo();
+        let claim = match repo
+            .try_claim(
+                &selector,
+                &ReplicaId::new("revoke-racer"),
+                Duration::from_secs(30),
+                nebula_storage_port::CredentialOperationIntent::Revoke {
+                    material_epoch: CredentialMaterialEpoch::MIN,
+                },
+            )
+            .await?
+        {
+            nebula_storage_port::ClaimAttempt::Acquired(claim) => claim,
+            other => panic!("revoke must acquire in the controlled gap: {other:?}"),
+        };
+        gate.resume.notify_one();
+        assert!(matches!(
+            replace.await?,
+            Err(CredentialPersistenceError::OperationBlocked {
+                operation: CredentialOperationKind::Revoke,
+            })
+        ));
+        repo.release(claim.token).await?;
+        drop(store);
+        sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
+            .execute(&admin)
+            .await?;
+        admin.close().await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn revoke_finalizer_accepts_display_version_churn_and_refuses_wrong_epoch() -> TestResult
+    {
+        let url = match std::env::var("DATABASE_URL") {
+            Ok(url) => url,
+            Err(std::env::VarError::NotPresent) => {
+                assert!(std::env::var_os("NEBULA_REQUIRE_POSTGRES").is_none());
+                return Ok(());
+            },
+            Err(error) => panic!("DATABASE_URL is set but invalid: {error}"),
+        };
+        let admin = PgPoolOptions::new().connect(&url).await?;
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0);
+        let schema = format!("nebula_revoke_finalizer_{}_{nanos}", std::process::id());
+        sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
+            .execute(&admin)
+            .await?;
+        let options = PgConnectOptions::from_str(&url)?.options([("search_path", schema.as_str())]);
+        let store = PgCredentialPersistence::connect_with(options).await?;
+        let selector = CredentialSelector::new(
+            CredentialOwner::from_canonical("revoke-finalizer-owner"),
+            CredentialId::new(),
+        );
+        store
+            .create(
+                &selector,
+                CredentialCreate::new(
+                    "oauth".to_owned(),
+                    SecretBytes::new(vec![1]),
+                    "oauth".to_owned(),
+                    1,
+                    None,
+                    None,
+                    false,
+                    Map::new(),
+                ),
+            )
+            .await?;
+        let repo = store.refresh_claim_repo();
+        let claim = match repo
+            .try_claim(
+                &selector,
+                &ReplicaId::new("revoke-holder"),
+                Duration::from_secs(30),
+                nebula_storage_port::CredentialOperationIntent::Revoke {
+                    material_epoch: CredentialMaterialEpoch::MIN,
+                },
+            )
+            .await?
+        {
+            nebula_storage_port::ClaimAttempt::Acquired(claim) => claim,
+            other => panic!("revoke claim must be acquired: {other:?}"),
+        };
+        repo.mark_sentinel(&claim.token).await?;
+        store
+            .replace(
+                &selector,
+                CredentialReplacement::new(
+                    CredentialVersion::try_from(1_i64)?,
+                    SecretBytes::new(vec![1]),
+                    "oauth".to_owned(),
+                    1,
+                    None,
+                    None,
+                    false,
+                    Map::from_iter([("display_revision".to_owned(), Value::from(2))]),
+                    nebula_storage_port::CredentialMaterialTransition::preserve(
+                        nebula_storage_port::RefreshRetryTransition::Preserve,
+                    ),
+                ),
+            )
+            .await?;
+        let wrong_epoch = CredentialMaterialEpoch::MIN.next()?;
+        assert!(matches!(
+            store
+                .tombstone_revoked_material(&selector, wrong_epoch)
+                .await,
+            Err(CredentialPersistenceError::OperationBlocked {
+                operation: CredentialOperationKind::Revoke,
+            })
+        ));
+        let commit = store
+            .tombstone_revoked_material(&selector, CredentialMaterialEpoch::MIN)
+            .await?;
+        assert_eq!(commit.version().get(), 3);
+        assert!(matches!(
+            store.get(&selector).await?,
+            StoredCredential::Tombstoned(_)
+        ));
+
+        drop(store);
         sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
             .execute(&admin)
             .await?;

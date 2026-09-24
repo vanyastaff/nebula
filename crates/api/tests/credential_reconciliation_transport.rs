@@ -101,7 +101,7 @@ use nebula_storage::credential::{
     InMemoryRefreshClaimRepo,
 };
 use nebula_storage_port::store::{
-    ClaimAttempt, RefreshClaimAdjudicator, RefreshClaimStore, ReplicaId,
+    ClaimAttempt, CredentialOperationIntent, RefreshClaimAdjudicator, RefreshClaimStore, ReplicaId,
 };
 use nebula_storage_port::{
     CredentialOwner, CredentialPersistence, CredentialPersistenceError, CredentialSelector,
@@ -491,6 +491,7 @@ impl ProbeFixture {
                 ),
                 &self.holder(),
                 CLAIM_TTL,
+                CredentialOperationIntent::Refresh,
             )
             .await
             .expect("a free claim is acquirable");
@@ -529,6 +530,7 @@ impl ProbeFixture {
                 ),
                 &self.holder(),
                 CLAIM_TTL,
+                CredentialOperationIntent::Refresh,
             )
             .await
             .expect("acquisition must not fail")

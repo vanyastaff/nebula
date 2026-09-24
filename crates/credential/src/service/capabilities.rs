@@ -16,7 +16,7 @@ use crate::runtime::refresh::{
 use crate::runtime::{RefreshDisposition, RefreshError, RefreshRecheck, RefreshRecheckError};
 use crate::{
     CredentialMaterialTransition, CredentialPersistenceError, CredentialReplacement,
-    CredentialTombstone, LAST_VALIDATED_AT_METADATA_KEY, RefreshRetryAdmission, StoredCredential,
+    LAST_VALIDATED_AT_METADATA_KEY, RefreshRetryAdmission, StoredCredential,
 };
 
 use super::error::CredentialServiceError;
@@ -49,6 +49,38 @@ impl CredentialService {
         id: &str,
     ) -> Result<TestResult, CredentialServiceError> {
         let stored = self.load_owned(scope, id).await?;
+        let status = self
+            .ensure_operation_open(&scope.selector(stored.credential_id()))
+            .await?;
+        if stored.reauth_required()
+            || matches!(
+                status,
+                nebula_storage_port::store::CredentialOperationStatus::Open {
+                    reauth_required: true,
+                    ..
+                }
+            )
+        {
+            return Err(CredentialServiceError::ReauthRequired {
+                credential_id: id.to_owned(),
+                reason: crate::ReauthReason::ProviderRejected,
+            });
+        }
+        if let nebula_storage_port::store::CredentialOperationStatus::Open {
+            version,
+            material_epoch,
+            ..
+        } = status
+            && material_epoch != stored.material_epoch()
+        {
+            return Err(Self::map_store_err_for(
+                id,
+                CredentialPersistenceError::VersionConflict {
+                    expected: stored.version(),
+                    actual: version,
+                },
+            ));
+        }
         if !self.registry.is_testable(stored.credential_key()) {
             return Err(CredentialServiceError::CapabilityUnsupported {
                 capability: "test".to_owned(),
@@ -544,6 +576,9 @@ impl CredentialService {
             Err(RefreshError::CriticalOutcomePending) => {
                 Err(CredentialServiceError::OutcomeUnknown)
             },
+            Err(RefreshError::OperationBlocked { operation }) => {
+                Err(CredentialServiceError::OperationBlocked { operation })
+            },
             Err(RefreshError::ReconciliationRequired) => {
                 Err(CredentialServiceError::RefreshReconciliationRequired)
             },
@@ -654,6 +689,7 @@ impl CredentialService {
         }
         let credential_id = stored.credential_id();
         let observed_version = stored.version();
+        let observed_material_epoch = stored.material_epoch();
         let selector = scope.selector(credential_id);
         let store_for_recheck = self.store.clone();
         let selector_for_recheck = selector.clone();
@@ -663,7 +699,7 @@ impl CredentialService {
             async move {
                 match store.get(&selector).await {
                     Ok(StoredCredential::Live(current)) => {
-                        Ok(if current.version() == observed_version {
+                        Ok(if current.material_epoch() == observed_material_epoch {
                             RefreshRecheck::Needed
                         } else {
                             RefreshRecheck::Satisfied
@@ -687,79 +723,107 @@ impl CredentialService {
         let result = self
             .resolver
             .refresh_coordinator()
-            .refresh_coalesced(&selector, still_same_live_row, move || async move {
-                match ops
-                    .revoke(
-                        stored.credential_key(),
-                        stored.data(),
-                        stored.state_kind(),
-                        stored.state_version(),
-                        &ctx,
-                    )
-                    .await
-                {
-                    Ok(()) => {},
-                    Err(CredentialServiceError::OutcomeUnknown) => {
-                        return RefreshDisposition::outcome_unknown(Err(
-                            CredentialServiceError::OutcomeUnknown,
-                        ));
-                    },
-                    Err(CredentialServiceError::RevokePostProviderPersistence) => {
-                        return RefreshDisposition::retry_unsafe(Err(
+            .coordinate_operation(
+                &selector,
+                nebula_storage_port::store::CredentialOperationIntent::Revoke {
+                    material_epoch: observed_material_epoch,
+                },
+                still_same_live_row,
+                move || async move {
+                    match ops
+                        .revoke(
+                            stored.credential_key(),
+                            stored.data(),
+                            stored.state_kind(),
+                            stored.state_version(),
+                            &ctx,
+                        )
+                        .await
+                    {
+                        Ok(()) => {},
+                        Err(CredentialServiceError::OutcomeUnknown) => {
+                            return RefreshDisposition::outcome_unknown(Err(
+                                CredentialServiceError::OutcomeUnknown,
+                            ));
+                        },
+                        Err(CredentialServiceError::RevokePostProviderPersistence) => {
+                            return RefreshDisposition::retry_unsafe(Err(
+                                CredentialServiceError::RevokePostProviderPersistence,
+                            ));
+                        },
+                        // Deserialization/type/capability failures occur
+                        // before the erased provider implementation.
+                        Err(error) => return RefreshDisposition::no_state_change(Err(error)),
+                    }
+
+                    // Best effort inside the owned section: caller Drop cannot
+                    // interrupt the path between provider revoke and tombstone.
+                    let released = lease.revoke_for_credential(credential_id).await;
+                    if released > 0 {
+                        tracing::info!(
+                            credential.id = %id_owned,
+                            released,
+                            "released dynamic leases for revoked credential"
+                        );
+                    }
+
+                    // Finalize under the persisted revoke/material fence.
+                    // Display edits may advance row versions, so reading a
+                    // version and CASing it here would introduce a needless
+                    // post-provider race. The adapter checks the pinned epoch
+                    // and tombstones the current row in one transaction.
+                    match store
+                        .tombstone_revoked_material(&selector_for_task, observed_material_epoch)
+                        .await
+                    {
+                        Ok(_) => {
+                            observer.on_revoke(&credential_id);
+                            tracing::info!(credential.id = %id_owned, "credential revoked");
+                            RefreshDisposition::state_advanced(Ok(()))
+                        },
+                        Err(CredentialPersistenceError::OutcomeUnknown) => {
+                            RefreshDisposition::outcome_unknown(Err(
+                                CredentialServiceError::OutcomeUnknown,
+                            ))
+                        },
+                        Err(_) => RefreshDisposition::retry_unsafe(Err(
                             CredentialServiceError::RevokePostProviderPersistence,
-                        ));
-                    },
-                    // Deserialization/type/capability failures occur
-                    // before the erased provider implementation.
-                    Err(error) => return RefreshDisposition::no_state_change(Err(error)),
-                }
-
-                // Best effort inside the owned section: caller Drop cannot
-                // interrupt the path between provider revoke and tombstone.
-                let released = lease.revoke_for_credential(credential_id).await;
-                if released > 0 {
-                    tracing::info!(
-                        credential.id = %id_owned,
-                        released,
-                        "released dynamic leases for revoked credential"
-                    );
-                }
-
-                match store
-                    .tombstone(
-                        &selector_for_task,
-                        CredentialTombstone::new(stored.version()),
-                    )
-                    .await
-                {
-                    Ok(_) => {
-                        observer.on_revoke(&credential_id);
-                        tracing::info!(credential.id = %id_owned, "credential revoked");
-                        RefreshDisposition::state_advanced(Ok(()))
-                    },
-                    Err(CredentialPersistenceError::OutcomeUnknown) => {
-                        RefreshDisposition::outcome_unknown(Err(
-                            CredentialServiceError::OutcomeUnknown,
-                        ))
-                    },
-                    Err(_) => RefreshDisposition::retry_unsafe(Err(
-                        CredentialServiceError::RevokePostProviderPersistence,
-                    )),
-                }
-            })
+                        )),
+                    }
+                },
+            )
             .await;
 
         match result {
             Ok(outcome) => outcome,
-            Err(RefreshError::CoalescedByOtherReplica) => {
+            Err(RefreshError::OperationBlocked { operation }) => {
+                Err(CredentialServiceError::OperationBlocked { operation })
+            },
+            Err(
+                RefreshError::CoalescedByOtherReplica
+                | RefreshError::Repo(
+                    nebula_storage_port::store::RefreshClaimError::MaterialEpochConflict { .. },
+                ),
+            ) => {
                 // A completed winner makes revoke idempotent for concurrent
-                // callers. If the row is still live, however, the winner had
-                // an unsafe/unknown post-provider outcome; do not replay.
-                match self.store.get(&selector).await {
-                    Ok(StoredCredential::Tombstoned(_))
-                    | Err(CredentialPersistenceError::NotFound) => Ok(()),
-                    Ok(StoredCredential::Live(_))
-                    | Err(CredentialPersistenceError::OutcomeUnknown) => {
+                // callers. A live row with different material authority means
+                // a refresh won before revoke dispatch, so report its current
+                // version as a truthful pre-provider conflict. A live row at
+                // the captured epoch means the winner had an unsafe/unknown
+                // post-provider outcome; do not replay.
+                // Physical material reads may be cached on this replica. The
+                // operational head bypasses that cache and observes the SQL
+                // winner even when it committed on another replica.
+                match self.store.get_operational_head(&selector).await {
+                    Err(CredentialPersistenceError::NotFound) => Ok(()),
+                    Ok(current) if current.head().material_epoch() != observed_material_epoch => {
+                        Err(CredentialServiceError::VersionConflict {
+                            id: id.to_owned(),
+                            expected: observed_version.get() as u64,
+                            actual: current.head().version().get() as u64,
+                        })
+                    },
+                    Ok(_) | Err(CredentialPersistenceError::OutcomeUnknown) => {
                         Err(CredentialServiceError::OutcomeUnknown)
                     },
                     Err(error) => Err(Self::map_store_err_for(id, error)),

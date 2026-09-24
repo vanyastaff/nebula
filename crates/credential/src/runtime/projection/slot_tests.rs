@@ -27,6 +27,52 @@ struct SlotStore {
 
 #[async_trait]
 impl crate::CredentialPersistence for SlotStore {
+    async fn get_operational_head(
+        &self,
+        selector: &CredentialSelector,
+    ) -> Result<nebula_storage_port::StoredCredentialOperationalHead, CredentialPersistenceError>
+    {
+        let head = self.get_head(selector).await?;
+        let status = nebula_storage_port::store::CredentialOperationStatus::Open {
+            version: head.version(),
+            material_epoch: head.material_epoch(),
+            reauth_required: head.reauth_required(),
+        };
+        Ok(nebula_storage_port::StoredCredentialOperationalHead::new(
+            head, status,
+        ))
+    }
+
+    async fn list_operational_heads(
+        &self,
+        _owner: &CredentialOwner,
+        _state_kind: Option<&str>,
+    ) -> Result<Vec<nebula_storage_port::StoredCredentialOperationalHead>, CredentialPersistenceError>
+    {
+        Err(CredentialPersistenceError::Unavailable)
+    }
+
+    async fn operation_status(
+        &self,
+        selector: &CredentialSelector,
+    ) -> Result<nebula_storage_port::store::CredentialOperationStatus, CredentialPersistenceError>
+    {
+        if selector.owner() != &self.owner || selector.credential_id() != self.row.credential_id() {
+            return Err(CredentialPersistenceError::NotFound);
+        }
+        let row = self.row_after_head.as_ref().unwrap_or(&self.row);
+        let StoredCredential::Live(live) = row else {
+            return Err(CredentialPersistenceError::NotFound);
+        };
+        Ok(
+            nebula_storage_port::store::CredentialOperationStatus::Open {
+                version: live.version(),
+                material_epoch: live.material_epoch(),
+                reauth_required: live.reauth_required(),
+            },
+        )
+    }
+
     async fn get(
         &self,
         selector: &CredentialSelector,
@@ -79,6 +125,14 @@ impl crate::CredentialPersistence for SlotStore {
         &self,
         _selector: &CredentialSelector,
         _tombstone: CredentialTombstone,
+    ) -> Result<CredentialCommit, CredentialPersistenceError> {
+        Err(CredentialPersistenceError::Unavailable)
+    }
+
+    async fn tombstone_revoked_material(
+        &self,
+        _selector: &CredentialSelector,
+        _expected_material_epoch: CredentialMaterialEpoch,
     ) -> Result<CredentialCommit, CredentialPersistenceError> {
         Err(CredentialPersistenceError::Unavailable)
     }

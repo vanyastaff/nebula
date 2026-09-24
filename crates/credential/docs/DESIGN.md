@@ -25,6 +25,22 @@ SQL backends and persistence decorators are not a fourth context here. The objec
 
 ## Command authority
 
+Durable provider operations retain their own operation kind. Refresh and revoke still compete
+for the same aggregate-scoped claim, so they cannot run side effects concurrently. Revoke pins
+the observed material epoch and uses an operation-specific reconciliation decision: confirmed
+revocation commits a tombstone, evidence, and claim removal together. Clearing a claim alone
+is not a successful revoke recovery. New material use consults the same persisted operation
+state independently of refresh capability or local material expiry.
+
+The public availability projection contains an operation category and in-flight/reconciliation
+state; claim authority stays in the runtime/storage seam. The SQL operational-head read joins
+aggregate and claim state in one snapshot. Historical untyped incidents remain explicitly
+unclassified, and cannot be interpreted as refresh by a default value.
+
+This boundary advances credential aggregate durability in canon §12.2 and §13.2. It does not
+implement acquisition command receipts, provider idempotency, cross-replica resource-pool
+invalidation, or the supported embedded composition root.
+
 ```mermaid
 sequenceDiagram
     participant H as API handler
@@ -68,21 +84,22 @@ Access Kernel guard remains responsible for the separate token-grant check.
 
 ### Reconciliation seam
 
-`CredentialCommand::Reconcile` resolves one *poisoned* refresh claim (an expired `sentinel=1` row
+`CredentialCommand::Reconcile` resolves one *poisoned* provider-operation claim (an expired `sentinel=1` row
 that `try_claim` answers as outcome-unknown) with the provider outcome an operator has established
-off-platform. It carries the credential, the `RefreshOutcomeDecision`, and an operator note, and
+off-platform. It carries the credential, a typed `CredentialOperationDecision`, and an operator note, and
 never an incident identity: the poisoned claim admits at most one incident, so the caller has no
 incident to name and the digest of the note is the anchor instead.
 
 The controller holds the seam as a constructor dependency, `Arc<dyn RefreshClaimAdjudicator>`
 (`nebula-storage-port`), beside its optional `Arc<dyn AuditSink>`. Neither is a service method:
-reconciliation writes a claim-store incident row, not credential material, so it must not widen
-`CredentialPersistence` or `CredentialService`.
+reconciliation owns the incident transaction. For `ProviderRevoked`, that transaction also
+tombstones the aggregate after checking the material epoch captured by the revoke. The caller
+cannot clear the claim separately from that terminal transition.
 
 Authority is layered, and the layers have different standing:
 
 - the **adjudicator's incident row** is the authoritative, transactional record — clearing the
-  poison and writing the resolution are one operation;
+  poison, writing the resolution, and any confirmed-revoke tombstone commit together;
 - the **`AuditOperation::Reconcile` event** is a non-authoritative observation emitted after that
   commit: its failure is logged and never converts a recorded decision into an error the caller
   could retry against different evidence. The `nebula.credential.reconcile_total` counter
@@ -110,9 +127,9 @@ unknown outcome, it does not overrule a recorded one.
 `CredentialSelector` is `(CredentialOwner, CredentialId)` with private fields and accessors.
 `CredentialOwner` is mandatory. All persistence methods are object-safe and owner-bound:
 
-- physical `get`, live-only `get_head`/`exists`, and explicit `create`/`replace`/`tombstone` take
+- physical `get`, live-only `get_head`/`get_operational_head`/`operation_status`/`exists`, and explicit `create`/`replace`/`tombstone` take
   a selector;
-- `list`/`list_heads` take an owner and expose live rows only;
+- `list`/`list_heads`/`list_operational_heads` take an owner and expose live rows only;
 - replace and tombstone compare owner, typed credential ID, live state, and expected
   `CredentialVersion`;
 - create cannot smuggle identity/owner/version/timestamps, replacement cannot change immutable
@@ -127,7 +144,7 @@ compatibility/audit data only; the selector plus physical owner column are the s
 authority.
 
 SQLite/PostgreSQL ready-store constructors hold backend-specific startup serialization across
-read-only schema admission, the full ordered migration catalog (currently through paired `0041`),
+read-only schema admission, the full ordered migration catalog (currently through paired `0057`),
 and postflight. PostgreSQL lock acquisition/release and SQLite file-lock waiting are bounded;
 migration duration follows the caller lifecycle and the operator's database timeout. Raw pools
 cannot construct a ready credential store. Confirmed mutations return a secret-free

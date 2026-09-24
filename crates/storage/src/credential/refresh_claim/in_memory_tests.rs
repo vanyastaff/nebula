@@ -11,6 +11,7 @@ async fn acquired_claim(
             selector,
             &ReplicaId::new("original-holder"),
             Duration::from_secs(30),
+            CredentialOperationIntent::Refresh,
         )
         .await
         .expect("initial claim")
@@ -74,6 +75,7 @@ async fn expired_in_flight_claim_is_preserved_until_reclaim() {
             &selector,
             &ReplicaId::new("challenger"),
             Duration::from_secs(30),
+            CredentialOperationIntent::Refresh,
         )
         .await
         .expect("poisoned acquisition");
@@ -86,6 +88,7 @@ async fn expired_in_flight_claim_is_preserved_until_reclaim() {
             &selector,
             &ReplicaId::new("second-challenger"),
             Duration::from_secs(30),
+            CredentialOperationIntent::Refresh,
         )
         .await
         .expect("repeated poisoned acquisition");
@@ -107,6 +110,7 @@ async fn expired_normal_claim_can_be_taken_over_in_place() {
             &selector,
             &ReplicaId::new("challenger"),
             Duration::from_secs(30),
+            CredentialOperationIntent::Refresh,
         )
         .await
         .expect("expired normal takeover");
@@ -138,6 +142,7 @@ async fn exact_confirmed_release_clears_expired_in_flight_claim() {
             &selector,
             &ReplicaId::new("next-holder"),
             Duration::from_secs(30),
+            CredentialOperationIntent::Refresh,
         )
         .await
         .expect("claim after exact finalization");
@@ -155,15 +160,25 @@ async fn owner_partitions_are_independent_for_the_same_credential_id() {
     let owner_b = CredentialSelector::new(CredentialOwner::from_canonical("owner-b"), id);
 
     assert!(matches!(
-        repo.try_claim(&owner_a, &ReplicaId::new("a"), Duration::from_secs(30))
-            .await
-            .expect("owner A claim"),
+        repo.try_claim(
+            &owner_a,
+            &ReplicaId::new("a"),
+            Duration::from_secs(30),
+            CredentialOperationIntent::Refresh
+        )
+        .await
+        .expect("owner A claim"),
         ClaimAttempt::Acquired(_)
     ));
     assert!(matches!(
-        repo.try_claim(&owner_b, &ReplicaId::new("b"), Duration::from_secs(30))
-            .await
-            .expect("owner B claim"),
+        repo.try_claim(
+            &owner_b,
+            &ReplicaId::new("b"),
+            Duration::from_secs(30),
+            CredentialOperationIntent::Refresh
+        )
+        .await
+        .expect("owner B claim"),
         ClaimAttempt::Acquired(_)
     ));
 }
@@ -213,7 +228,7 @@ async fn adjudication_is_idempotent_and_conflicting_evidence_is_refused() {
     let first = repo
         .adjudicate(
             &selector,
-            RefreshOutcomeDecision::ProviderNotApplied,
+            CredentialOperationDecision::Refresh(RefreshOutcomeDecision::ProviderNotApplied),
             "provider confirmed no mutation",
         )
         .await
@@ -223,7 +238,7 @@ async fn adjudication_is_idempotent_and_conflicting_evidence_is_refused() {
     let repeat = repo
         .adjudicate(
             &selector,
-            RefreshOutcomeDecision::ProviderNotApplied,
+            CredentialOperationDecision::Refresh(RefreshOutcomeDecision::ProviderNotApplied),
             "provider confirmed no mutation",
         )
         .await
@@ -233,7 +248,7 @@ async fn adjudication_is_idempotent_and_conflicting_evidence_is_refused() {
     let conflict = repo
         .adjudicate(
             &selector,
-            RefreshOutcomeDecision::ProviderApplied,
+            CredentialOperationDecision::Refresh(RefreshOutcomeDecision::ProviderApplied),
             "different evidence",
         )
         .await
@@ -258,14 +273,23 @@ async fn adjudication_evidence_bounds_preserve_poison() {
     expire_claim(&repo, &selector);
 
     assert!(matches!(
-        repo.adjudicate(&selector, RefreshOutcomeDecision::ProviderNotApplied, "",)
-            .await,
+        repo.adjudicate(
+            &selector,
+            CredentialOperationDecision::Refresh(RefreshOutcomeDecision::ProviderNotApplied),
+            "",
+        )
+        .await,
         Err(RepoAdjudicationError::InvalidEvidence)
     ));
     assert!(matches!(
-        repo.try_claim(&selector, &ReplicaId::new("next"), Duration::from_secs(30))
-            .await
-            .expect("poison check"),
+        repo.try_claim(
+            &selector,
+            &ReplicaId::new("next"),
+            Duration::from_secs(30),
+            CredentialOperationIntent::Refresh
+        )
+        .await
+        .expect("poison check"),
         ClaimAttempt::OutcomeUnknown { .. }
     ));
 }

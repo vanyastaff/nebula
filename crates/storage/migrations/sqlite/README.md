@@ -39,6 +39,11 @@ and sentinel incidents with the credential aggregate's canonical owner. A
 missing aggregate row violates the target `NOT NULL` constraint and rolls the
 migration back rather than inventing tenant authority.
 
+Migration `0057_typed_credential_operation_incidents.sql` rebuilds both
+relations with an immutable operation kind and a revoke-only observed material
+epoch. Historical rows become `legacy_unclassified`; the new required column
+has no default, so an old writer fails closed during a rolling upgrade.
+
 ## Storage-port adapter schema (0027)
 
 `crates/storage/src/sqlite/schema.sql` is the **cumulative** `port_*` schema,

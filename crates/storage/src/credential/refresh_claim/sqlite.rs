@@ -27,9 +27,10 @@ use sqlx::SqlitePool;
 use uuid::Uuid;
 
 use super::{
-    ClaimAttempt, ClaimToken, ExpiredClaim, HeartbeatError, ReauthEscalation, RefreshAdjudication,
+    ClaimAttempt, ClaimToken, CredentialOperationDecision, CredentialOperationIntent,
+    CredentialOperationKind, ExpiredClaim, HeartbeatError, ReauthEscalation, RefreshAdjudication,
     RefreshClaim, RefreshClaimAdjudicationError as RepoAdjudicationError, RefreshClaimAdjudicator,
-    RefreshClaimReclaimer, RefreshClaimRepo, RefreshOutcomeDecision, ReplicaId, RepoError,
+    RefreshClaimReclaimer, RefreshClaimRepo, ReplicaId, RepoError, RevokeOutcomeDecision,
     SentinelEscalationPolicy, SqlxClaimResultExt, adjudicate_against_recorded_resolution,
     adjudication_evidence_digest, validate_adjudication_evidence,
 };
@@ -40,7 +41,7 @@ const SQLITE_NOW_MS_SQL: &str = "SELECT unixepoch('now') * 1000 \
 const COUNT_SENTINEL_EVENTS_SQL: &str = "SELECT COUNT(*) \
      FROM credential_sentinel_events \
      WHERE owner_id = ?1 AND credential_id = ?2 \
-       AND detected_at > ?3";
+       AND detected_at > ?3 AND operation_kind = ?4";
 
 /// The poisoned-claim predicate, character for character the one `try_claim`
 /// answers `OutcomeUnknown` with: an expired `sentinel = 1` row. The incident
@@ -55,7 +56,7 @@ const COUNT_SENTINEL_EVENTS_SQL: &str = "SELECT COUNT(*) \
 /// `(claim_id, crashed_holder, generation)`, and a `claim_id`/holder swap is
 /// invisible to both the compiler and the driver, so only the oracle cases
 /// catch it. Change the list and the decode together.
-const POISONED_CLAIM_SQL: &str = "SELECT claim_id, holder_replica_id, generation \
+const POISONED_CLAIM_SQL: &str = "SELECT claim_id, holder_replica_id, generation, operation_kind, observed_material_epoch \
      FROM credential_refresh_claims \
      WHERE owner_id = ?1 AND credential_id = ?2 AND expires_at < ?3 AND sentinel = 1";
 
@@ -71,13 +72,15 @@ const CLEAR_POISONED_CLAIM_SQL: &str = "DELETE FROM credential_refresh_claims \
 /// adjudication.
 const RECORD_RESOLUTION_SQL: &str = "INSERT INTO credential_sentinel_events \
      (owner_id, credential_id, claim_id, detected_at, crashed_holder, generation, \
-      adjudicated_at, adjudication_decision, adjudication_evidence, adjudication_evidence_digest) \
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?4, ?7, ?8, ?9) \
+      adjudicated_at, adjudication_decision, adjudication_evidence, \
+      adjudication_evidence_digest, operation_kind, observed_material_epoch) \
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?4, ?7, ?8, ?9, ?10, ?11) \
      ON CONFLICT(claim_id) WHERE claim_id IS NOT NULL DO UPDATE SET \
          adjudicated_at = excluded.adjudicated_at, \
          adjudication_decision = excluded.adjudication_decision, \
          adjudication_evidence = excluded.adjudication_evidence, \
-         adjudication_evidence_digest = excluded.adjudication_evidence_digest \
+         adjudication_evidence_digest = excluded.adjudication_evidence_digest, \
+         operation_kind = excluded.operation_kind \
      WHERE credential_sentinel_events.adjudicated_at IS NULL \
      RETURNING claim_id";
 
@@ -88,7 +91,7 @@ const RECORD_RESOLUTION_SQL: &str = "INSERT INTO credential_sentinel_events \
 /// the honest "what is on record now" answer a conflicted caller needs. It is
 /// read inside the adjudication transaction, so the pair is the one the
 /// refusal actually refused against.
-const NEWEST_RESOLVED_PAIR_SQL: &str = "SELECT adjudication_evidence_digest, adjudication_decision \
+const NEWEST_RESOLVED_PAIR_SQL: &str = "SELECT adjudication_evidence_digest, adjudication_decision, operation_kind \
      FROM credential_sentinel_events \
      WHERE owner_id = ?1 AND credential_id = ?2 AND adjudicated_at IS NOT NULL \
      ORDER BY adjudicated_at DESC, id DESC \
@@ -115,7 +118,7 @@ const RESOLVED_INCIDENT_MATCH_SQL: &str = "SELECT EXISTS ( \
          WHERE owner_id = ?1 AND credential_id = ?2 \
            AND adjudicated_at IS NOT NULL \
            AND adjudication_evidence_digest = ?3 \
-           AND adjudication_decision = ?4 \
+           AND adjudication_decision = ?4 AND operation_kind = ?5 \
      )";
 
 /// The resolution recorded on the incident a claim row owns.
@@ -123,7 +126,7 @@ const RESOLVED_INCIDENT_MATCH_SQL: &str = "SELECT EXISTS ( \
 /// Keyed on the claim UUID rather than the credential: the poisoned branch has
 /// already located this claim's incident, so the comparison stays on this
 /// lifecycle instead of reaching for whichever resolved incident is newest.
-const CLAIM_INCIDENT_RESOLUTION_SQL: &str = "SELECT adjudication_evidence_digest, adjudication_decision \
+const CLAIM_INCIDENT_RESOLUTION_SQL: &str = "SELECT adjudication_evidence_digest, adjudication_decision, operation_kind \
      FROM credential_sentinel_events \
      WHERE claim_id = ?1";
 
@@ -141,7 +144,7 @@ pub struct SqliteRefreshClaimRepo {
 
 impl SqliteRefreshClaimRepo {
     /// Wrap an existing pool. Caller is responsible for running migrations
-    /// through 0054.
+    /// through 0057.
     #[must_use]
     pub fn new(pool: SqlitePool) -> Self {
         Self { pool }
@@ -171,6 +174,7 @@ impl RefreshClaimRepo for SqliteRefreshClaimRepo {
         selector: &CredentialSelector,
         holder: &ReplicaId,
         ttl: Duration,
+        intent: CredentialOperationIntent,
     ) -> Result<ClaimAttempt, RepoError> {
         let now = Utc::now();
         let new_claim_id = Uuid::new_v4();
@@ -182,6 +186,32 @@ impl RefreshClaimRepo for SqliteRefreshClaimRepo {
         let now_ms = now.timestamp_millis();
         let exp_ms = new_expires.timestamp_millis();
         let claim_id_str = new_claim_id.to_string();
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await.store_err()?;
+        if let CredentialOperationIntent::Revoke { material_epoch } = intent {
+            let aggregate: Option<(i64, String)> = sqlx::query_as(
+                "SELECT material_epoch, record_state FROM credentials \
+                 WHERE owner_id = ?1 AND id = ?2",
+            )
+            .bind(owner)
+            .bind(&cid_str)
+            .fetch_optional(&mut *transaction)
+            .await
+            .store_err()?;
+            let Some((actual, state)) = aggregate else {
+                return Err(RepoError::AggregateUnavailable);
+            };
+            if state != "live" {
+                return Err(RepoError::AggregateUnavailable);
+            }
+            let actual =
+                CredentialMaterialEpoch::try_from(actual).map_err(|_| RepoError::InvalidState)?;
+            if actual != material_epoch {
+                return Err(RepoError::MaterialEpochConflict {
+                    expected: material_epoch,
+                    actual,
+                });
+            }
+        }
 
         // Atomic CAS via UPSERT with conditional UPDATE clause. Mirrors the
         // Postgres `INSERT ... ON CONFLICT DO UPDATE WHERE expires_at < ...
@@ -196,15 +226,16 @@ impl RefreshClaimRepo for SqliteRefreshClaimRepo {
         let row: Option<(String, i64, i64, i64)> = sqlx::query_as(
             "INSERT INTO credential_refresh_claims \
              (owner_id, credential_id, claim_id, generation, holder_replica_id, \
-              acquired_at, expires_at, sentinel) \
-             VALUES (?1, ?2, ?3, 0, ?4, ?5, ?6, 0) \
+              acquired_at, expires_at, sentinel, operation_kind, observed_material_epoch) \
+             VALUES (?1, ?2, ?3, 0, ?4, ?5, ?6, 0, ?7, ?8) \
              ON CONFLICT(owner_id, credential_id) DO UPDATE SET \
                  claim_id = excluded.claim_id, \
                  generation = credential_refresh_claims.generation + 1, \
                  holder_replica_id = excluded.holder_replica_id, \
                  acquired_at = excluded.acquired_at, \
                  expires_at = excluded.expires_at, \
-                 sentinel = 0 \
+                 sentinel = 0, operation_kind = excluded.operation_kind, \
+                 observed_material_epoch = excluded.observed_material_epoch \
              WHERE credential_refresh_claims.expires_at < ?5 \
                AND credential_refresh_claims.sentinel = 0 \
              RETURNING claim_id, generation, acquired_at, expires_at",
@@ -215,7 +246,9 @@ impl RefreshClaimRepo for SqliteRefreshClaimRepo {
         .bind(holder_str)
         .bind(now_ms)
         .bind(exp_ms)
-        .fetch_optional(&self.pool)
+        .bind(intent.kind().as_str())
+        .bind(intent.material_epoch().map(CredentialMaterialEpoch::get))
+        .fetch_optional(&mut *transaction)
         .await
         .store_err()?;
 
@@ -226,7 +259,7 @@ impl RefreshClaimRepo for SqliteRefreshClaimRepo {
                 .parse::<Uuid>()
                 .map_err(|_| RepoError::InvalidState)?;
             let generation = u64::try_from(generation).map_err(|_| RepoError::InvalidState)?;
-            return Ok(ClaimAttempt::Acquired(RefreshClaim {
+            let acquired = ClaimAttempt::Acquired(RefreshClaim {
                 selector: selector.clone(),
                 token: ClaimToken {
                     selector: selector.clone(),
@@ -235,7 +268,9 @@ impl RefreshClaimRepo for SqliteRefreshClaimRepo {
                 },
                 acquired_at,
                 expires_at,
-            }));
+            });
+            transaction.commit().await.store_err()?;
+            return Ok(acquired);
         }
 
         // CAS lost — fetch existing row's expires_at for the backoff hint.
@@ -244,29 +279,33 @@ impl RefreshClaimRepo for SqliteRefreshClaimRepo {
         // `Contended { existing_expires_at: now }`: the caller backs off the
         // standard jitter delay and retries. Returning `InvalidState` here
         // would surface a transient race as a hard error.
-        let existing: Option<(i64, i64)> = sqlx::query_as(
-            "SELECT expires_at, sentinel \
+        let existing: Option<(i64, i64, String)> = sqlx::query_as(
+            "SELECT expires_at, sentinel, operation_kind \
              FROM credential_refresh_claims \
              WHERE owner_id = ?1 AND credential_id = ?2",
         )
         .bind(owner)
         .bind(&cid_str)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *transaction)
         .await
         .store_err()?;
 
-        match existing {
-            Some((exp_ms, 1)) if exp_ms < now_ms => Ok(ClaimAttempt::OutcomeUnknown {
+        let attempt = match existing {
+            Some((exp_ms, 1, kind)) if exp_ms < now_ms => Ok(ClaimAttempt::OutcomeUnknown {
                 expired_at: millis_to_utc(exp_ms)?,
+                operation: CredentialOperationKind::from_wire(&kind)
+                    .ok_or(RepoError::InvalidState)?,
             }),
-            Some((exp_ms, 0 | 1)) => Ok(ClaimAttempt::Contended {
+            Some((exp_ms, 0 | 1, _)) => Ok(ClaimAttempt::Contended {
                 existing_expires_at: millis_to_utc(exp_ms)?,
             }),
-            Some((_, _)) => Err(RepoError::InvalidState),
+            Some((_, _, _)) => Err(RepoError::InvalidState),
             None => Ok(ClaimAttempt::Contended {
                 existing_expires_at: now,
             }),
-        }
+        };
+        transaction.commit().await.store_err()?;
+        attempt
     }
 
     async fn heartbeat(&self, token: &ClaimToken, ttl: Duration) -> Result<(), HeartbeatError> {
@@ -387,8 +426,8 @@ impl RefreshClaimReclaimer for SqliteRefreshClaimRepo {
             .fetch_one(&mut *transaction)
             .await
             .store_err()?;
-        let rows: Vec<(String, String, String, String, i64, i64)> = sqlx::query_as(
-            "SELECT owner_id, credential_id, claim_id, holder_replica_id, generation, sentinel \
+        let rows: Vec<(String, String, String, String, i64, i64, String, Option<i64>)> = sqlx::query_as(
+            "SELECT owner_id, credential_id, claim_id, holder_replica_id, generation, sentinel, operation_kind, observed_material_epoch \
              FROM credential_refresh_claims AS claim \
              WHERE expires_at < ?1 \
                AND ( \
@@ -412,7 +451,19 @@ impl RefreshClaimReclaimer for SqliteRefreshClaimRepo {
         let mut out = Vec::with_capacity(rows.len());
         let window_ms =
             i64::try_from(policy.window().as_millis()).map_err(|_| RepoError::InvalidState)?;
-        for (owner, cid, claim_id, holder, generation, sentinel_raw) in rows {
+        for (
+            owner,
+            cid,
+            claim_id,
+            holder,
+            generation,
+            sentinel_raw,
+            operation_raw,
+            observed_epoch,
+        ) in rows
+        {
+            let operation = CredentialOperationKind::from_wire(&operation_raw)
+                .ok_or(RepoError::InvalidState)?;
             let credential_id = parse_credential_id(&cid)?;
             let selector = CredentialSelector::new(
                 CredentialOwner::from_canonical(owner.clone()),
@@ -447,8 +498,8 @@ impl RefreshClaimReclaimer for SqliteRefreshClaimRepo {
                 1 => {
                     sqlx::query(
                         "INSERT INTO credential_sentinel_events \
-                         (owner_id, credential_id, claim_id, detected_at, crashed_holder, generation) \
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                         (owner_id, credential_id, claim_id, detected_at, crashed_holder, generation, operation_kind, observed_material_epoch) \
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                     )
                     .bind(&owner)
                     .bind(&cid)
@@ -456,6 +507,8 @@ impl RefreshClaimReclaimer for SqliteRefreshClaimRepo {
                     .bind(now_ms)
                     .bind(&holder)
                     .bind(generation)
+                    .bind(operation.as_str())
+                    .bind(observed_epoch)
                     .execute(&mut *transaction)
                     .await
                     .store_err()?;
@@ -463,11 +516,14 @@ impl RefreshClaimReclaimer for SqliteRefreshClaimRepo {
                         .bind(&owner)
                         .bind(&cid)
                         .bind(now_ms.saturating_sub(window_ms))
+                        .bind(operation.as_str())
                         .fetch_one(&mut *transaction)
                         .await
                         .store_err()?;
                     let event_count = u32::try_from(count).unwrap_or(u32::MAX);
-                    let escalation = if event_count >= policy.threshold() {
+                    let escalation = if operation == CredentialOperationKind::Refresh
+                        && event_count >= policy.threshold()
+                    {
                         let aggregate: Option<(i64, i64, i64, String)> = sqlx::query_as(
                             "SELECT version, material_epoch, reauth_required, record_state \
                              FROM credentials WHERE owner_id = ?1 AND id = ?2",
@@ -537,6 +593,7 @@ impl RefreshClaimReclaimer for SqliteRefreshClaimRepo {
                         selector,
                         previous_holder: ReplicaId::new(holder),
                         previous_generation,
+                        operation,
                         event_count,
                         escalation,
                     });
@@ -569,7 +626,7 @@ impl RefreshClaimAdjudicator for SqliteRefreshClaimRepo {
     async fn adjudicate(
         &self,
         selector: &CredentialSelector,
-        decision: RefreshOutcomeDecision,
+        decision: CredentialOperationDecision,
         evidence: &str,
     ) -> Result<RefreshAdjudication, RepoAdjudicationError> {
         validate_adjudication_evidence(evidence)?;
@@ -588,15 +645,82 @@ impl RefreshClaimAdjudicator for SqliteRefreshClaimRepo {
             .await
             .map_err(|_| RepoAdjudicationError::Storage)?;
 
-        let poisoned: Option<(String, String, i64)> = sqlx::query_as(POISONED_CLAIM_SQL)
-            .bind(owner)
-            .bind(&cid_str)
-            .bind(now_ms)
-            .fetch_optional(&mut *transaction)
-            .await
-            .map_err(|_| RepoAdjudicationError::Storage)?;
+        let poisoned: Option<(String, String, i64, String, Option<i64>)> =
+            sqlx::query_as(POISONED_CLAIM_SQL)
+                .bind(owner)
+                .bind(&cid_str)
+                .bind(now_ms)
+                .fetch_optional(&mut *transaction)
+                .await
+                .map_err(|_| RepoAdjudicationError::Storage)?;
 
-        let adjudication = if let Some((claim_id, crashed_holder, generation)) = poisoned {
+        let adjudication = if let Some((
+            claim_id,
+            crashed_holder,
+            generation,
+            operation_raw,
+            observed_epoch,
+        )) = poisoned
+        {
+            let operation = CredentialOperationKind::from_wire(&operation_raw)
+                .ok_or(RepoAdjudicationError::Storage)?;
+            if operation != decision.kind() {
+                return Err(RepoAdjudicationError::OperationMismatch {
+                    recorded_operation: operation,
+                });
+            }
+            if decision
+                == CredentialOperationDecision::Revoke(RevokeOutcomeDecision::ProviderRevoked)
+            {
+                let expected_epoch = observed_epoch.ok_or(RepoAdjudicationError::Storage)?;
+                let aggregate: Option<(i64, i64, String)> = sqlx::query_as(
+                    "SELECT version, material_epoch, record_state FROM credentials \
+                     WHERE owner_id = ?1 AND id = ?2",
+                )
+                .bind(owner)
+                .bind(&cid_str)
+                .fetch_optional(&mut *transaction)
+                .await
+                .map_err(|_| RepoAdjudicationError::Storage)?;
+                let Some((version, actual_epoch, state)) = aggregate else {
+                    return Err(RepoAdjudicationError::Storage);
+                };
+                if actual_epoch != expected_epoch {
+                    return Err(RepoAdjudicationError::MaterialEpochConflict);
+                }
+                match state.as_str() {
+                    "live" => {
+                        let version = CredentialVersion::try_from(version)
+                            .map_err(|_| RepoAdjudicationError::Storage)?;
+                        let next = version
+                            .next_tombstone()
+                            .map_err(|_| RepoAdjudicationError::Storage)?;
+                        let rows = sqlx::query(
+                            "UPDATE credentials SET name = NULL, data = zeroblob(0), \
+                             version = ?3, updated_at = ?4, expires_at = NULL, \
+                             reauth_required = 0, metadata = '{}', record_state = 'tombstoned', \
+                             tombstoned_at = ?4, refresh_retry_mode = NULL, \
+                             refresh_retry_not_before = NULL, refresh_retry_phase = NULL, \
+                             refresh_retry_kind = NULL, refresh_retry_diagnostic_code = NULL \
+                             WHERE owner_id = ?1 AND id = ?2 AND record_state = 'live' AND version = ?5",
+                        )
+                        .bind(owner)
+                        .bind(&cid_str)
+                        .bind(next.get())
+                        .bind(now_ms)
+                        .bind(version.get())
+                        .execute(&mut *transaction)
+                        .await
+                        .map_err(|_| RepoAdjudicationError::Storage)?
+                        .rows_affected();
+                        if rows != 1 {
+                            return Err(RepoAdjudicationError::Storage);
+                        }
+                    },
+                    "tombstoned" => {},
+                    _ => return Err(RepoAdjudicationError::Storage),
+                }
+            }
             let cleared = sqlx::query(CLEAR_POISONED_CLAIM_SQL)
                 .bind(owner)
                 .bind(&cid_str)
@@ -620,6 +744,8 @@ impl RefreshClaimAdjudicator for SqliteRefreshClaimRepo {
                 .bind(decision.as_str())
                 .bind(evidence)
                 .bind(digest.as_slice())
+                .bind(operation.as_str())
+                .bind(observed_epoch)
                 .fetch_optional(&mut *transaction)
                 .await
                 .map_err(|_| RepoAdjudicationError::Storage)?;
@@ -645,7 +771,7 @@ impl RefreshClaimAdjudicator for SqliteRefreshClaimRepo {
                 // both `try_claim` and `reclaim_stuck` mint fresh claim ids, so
                 // no row can be re-created for this claim. The agreement is
                 // closed for the day it becomes reachable.
-                let Some((recorded_digest, recorded_decision)) = self
+                let Some((recorded_digest, recorded_decision, recorded_operation)) = self
                     .claim_incident_resolution(&mut transaction, &claim_id)
                     .await?
                 else {
@@ -654,6 +780,8 @@ impl RefreshClaimAdjudicator for SqliteRefreshClaimRepo {
                 adjudicate_against_recorded_resolution(
                     &recorded_digest,
                     recorded_decision.as_deref(),
+                    CredentialOperationKind::from_wire(&recorded_operation)
+                        .ok_or(RepoAdjudicationError::Storage)?,
                     &digest,
                     decision,
                 )?
@@ -670,7 +798,7 @@ impl RefreshClaimAdjudicator for SqliteRefreshClaimRepo {
             // name the pair on record: a set has no single incident to point
             // at, and "the newest resolution" is the honest answer to what a
             // conflicted caller's evidence disagreed with.
-            let Some((newest_digest, newest_decision)) = self
+            let Some((newest_digest, newest_decision, newest_operation)) = self
                 .newest_resolved_pair(&mut transaction, selector)
                 .await?
             else {
@@ -679,6 +807,8 @@ impl RefreshClaimAdjudicator for SqliteRefreshClaimRepo {
             match adjudicate_against_recorded_resolution(
                 &newest_digest,
                 newest_decision.as_deref(),
+                CredentialOperationKind::from_wire(&newest_operation)
+                    .ok_or(RepoAdjudicationError::Storage)?,
                 &digest,
                 decision,
             ) {
@@ -720,7 +850,7 @@ impl SqliteRefreshClaimRepo {
         &self,
         transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
         selector: &CredentialSelector,
-    ) -> Result<Option<(Vec<u8>, Option<String>)>, RepoAdjudicationError> {
+    ) -> Result<Option<(Vec<u8>, Option<String>, String)>, RepoAdjudicationError> {
         sqlx::query_as(NEWEST_RESOLVED_PAIR_SQL)
             .bind(selector.owner().as_str())
             .bind(selector.credential_id().to_string())
@@ -736,13 +866,14 @@ impl SqliteRefreshClaimRepo {
         transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
         selector: &CredentialSelector,
         digest: &[u8; 32],
-        decision: RefreshOutcomeDecision,
+        decision: CredentialOperationDecision,
     ) -> Result<bool, RepoAdjudicationError> {
         let (exists,): (i64,) = sqlx::query_as(RESOLVED_INCIDENT_MATCH_SQL)
             .bind(selector.owner().as_str())
             .bind(selector.credential_id().to_string())
             .bind(digest.as_slice())
             .bind(decision.as_str())
+            .bind(decision.kind().as_str())
             .fetch_one(&mut **transaction)
             .await
             .map_err(|_| RepoAdjudicationError::Storage)?;
@@ -754,7 +885,7 @@ impl SqliteRefreshClaimRepo {
         &self,
         transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
         claim_id: &str,
-    ) -> Result<Option<(Vec<u8>, Option<String>)>, RepoAdjudicationError> {
+    ) -> Result<Option<(Vec<u8>, Option<String>, String)>, RepoAdjudicationError> {
         sqlx::query_as(CLAIM_INCIDENT_RESOLUTION_SQL)
             .bind(claim_id)
             .fetch_optional(&mut **transaction)
@@ -765,10 +896,100 @@ impl SqliteRefreshClaimRepo {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
+    use nebula_storage_port::{
+        CredentialCreate, CredentialMaterialEpoch, CredentialOperationDecision,
+        CredentialOperationIntent, CredentialOwner, CredentialPersistence, CredentialSelector,
+        RefreshClaimAdjudicator, RefreshClaimStore, RevokeOutcomeDecision, SecretBytes,
+        StoredCredential,
+    };
+
+    use crate::credential::SqliteCredentialPersistence;
+
     use super::{
         CLAIM_INCIDENT_RESOLUTION_SQL, COUNT_SENTINEL_EVENTS_SQL, NEWEST_RESOLVED_PAIR_SQL,
         POISONED_CLAIM_SQL, RESOLVED_INCIDENT_MATCH_SQL, SQLITE_NOW_MS_SQL,
     };
+
+    #[tokio::test]
+    async fn revoke_applied_tombstones_and_resolves_in_one_transaction() {
+        let store = SqliteCredentialPersistence::connect_memory()
+            .await
+            .expect("ready credential store");
+        let selector = CredentialSelector::new(
+            CredentialOwner::from_canonical("revoke-adjudication-owner"),
+            nebula_core::CredentialId::new(),
+        );
+        store
+            .create(
+                &selector,
+                CredentialCreate::new(
+                    "oauth".to_owned(),
+                    SecretBytes::new(vec![7]),
+                    "oauth".to_owned(),
+                    1,
+                    None,
+                    None,
+                    false,
+                    Default::default(),
+                ),
+            )
+            .await
+            .expect("create credential");
+        let repo = store.refresh_claim_repo();
+        let claim = match repo
+            .try_claim(
+                &selector,
+                &super::ReplicaId::new("revoke-holder"),
+                Duration::from_secs(30),
+                CredentialOperationIntent::Revoke {
+                    material_epoch: CredentialMaterialEpoch::MIN,
+                },
+            )
+            .await
+            .expect("acquire revoke")
+        {
+            super::ClaimAttempt::Acquired(claim) => claim,
+            other => panic!("unexpected claim attempt: {other:?}"),
+        };
+        repo.mark_sentinel(&claim.token)
+            .await
+            .expect("cross provider boundary");
+        sqlx::query(
+            "UPDATE credential_refresh_claims SET expires_at = 0 \
+             WHERE owner_id = ?1 AND credential_id = ?2",
+        )
+        .bind(selector.owner().as_str())
+        .bind(selector.credential_id().to_string())
+        .execute(&repo.pool)
+        .await
+        .expect("expire claim");
+
+        let result = repo
+            .adjudicate(
+                &selector,
+                CredentialOperationDecision::Revoke(RevokeOutcomeDecision::ProviderRevoked),
+                "provider audit confirms revocation",
+            )
+            .await
+            .expect("adjudicate revoke");
+        assert!(result.changed);
+        assert!(matches!(
+            store.get(&selector).await.expect("physical tombstone"),
+            StoredCredential::Tombstoned(_)
+        ));
+        let provenance: (String, Option<i64>) = sqlx::query_as(
+            "SELECT operation_kind, observed_material_epoch \
+             FROM credential_sentinel_events WHERE owner_id = ?1 AND credential_id = ?2",
+        )
+        .bind(selector.owner().as_str())
+        .bind(selector.credential_id().to_string())
+        .fetch_one(&repo.pool)
+        .await
+        .expect("incident provenance");
+        assert_eq!(provenance, ("revoke".to_owned(), Some(1)));
+    }
 
     #[test]
     fn sentinel_window_uses_the_sqlite_clock() {

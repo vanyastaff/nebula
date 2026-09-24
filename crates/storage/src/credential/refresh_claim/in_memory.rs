@@ -11,12 +11,14 @@ use nebula_storage_port::CredentialSelector;
 use parking_lot::Mutex;
 use uuid::Uuid;
 
+#[cfg(test)]
+use super::RefreshOutcomeDecision;
 use super::{
-    ClaimAttempt, ClaimToken, HeartbeatError, RefreshAdjudication, RefreshClaim,
+    ClaimAttempt, ClaimToken, CredentialOperationDecision, CredentialOperationIntent,
+    CredentialOperationKind, HeartbeatError, RefreshAdjudication, RefreshClaim,
     RefreshClaimAdjudicationError as RepoAdjudicationError, RefreshClaimAdjudicator,
-    RefreshClaimRepo, RefreshOutcomeDecision, ReplicaId, RepoError, SentinelState,
-    adjudicate_against_recorded_resolution, adjudication_evidence_digest,
-    validate_adjudication_evidence,
+    RefreshClaimRepo, ReplicaId, RepoError, SentinelState, adjudicate_against_recorded_resolution,
+    adjudication_evidence_digest, validate_adjudication_evidence,
 };
 
 #[derive(Clone, Debug)]
@@ -28,6 +30,7 @@ struct ClaimRow {
     acquired_at: DateTime<Utc>,
     expires_at: DateTime<Utc>,
     sentinel: SentinelState,
+    operation: CredentialOperationKind,
 }
 
 /// What an operator decided about an incident's unknown provider outcome.
@@ -37,7 +40,7 @@ struct ClaimRow {
 /// without a second field that could disagree.
 #[derive(Clone, Debug)]
 struct SentinelAdjudication {
-    decision: RefreshOutcomeDecision,
+    decision: CredentialOperationDecision,
     #[expect(dead_code, reason = "retained as incident observability evidence")]
     evidence: String,
     evidence_digest: [u8; 32],
@@ -54,6 +57,7 @@ struct SentinelEventRow {
     crashed_holder: ReplicaId,
     #[expect(dead_code, reason = "retained as incident observability evidence")]
     generation: u64,
+    operation: CredentialOperationKind,
     /// `None` until an adjudication records the provider outcome. This is the
     /// in-memory analogue of `credential_sentinel_events.adjudicated_at`: an
     /// incident without it is unresolved poison.
@@ -122,7 +126,12 @@ impl RefreshClaimRepo for InMemoryRefreshClaimRepo {
         selector: &CredentialSelector,
         holder: &ReplicaId,
         ttl: Duration,
+        intent: CredentialOperationIntent,
     ) -> Result<ClaimAttempt, RepoError> {
+        if matches!(intent, CredentialOperationIntent::Revoke { .. }) {
+            return Err(RepoError::AggregateUnavailable);
+        }
+        let operation = intent.kind();
         let mut guard = self.inner.lock();
         let now = self.clock.now();
 
@@ -138,6 +147,7 @@ impl RefreshClaimRepo for InMemoryRefreshClaimRepo {
             if existing.sentinel == SentinelState::RefreshInFlight {
                 return Ok(ClaimAttempt::OutcomeUnknown {
                     expired_at: existing.expires_at,
+                    operation: existing.operation,
                 });
             }
         }
@@ -159,6 +169,7 @@ impl RefreshClaimRepo for InMemoryRefreshClaimRepo {
             // The overwrite predicate above admits only Normal rows, so
             // this reset cannot erase unaccounted in-flight evidence.
             sentinel: SentinelState::Normal,
+            operation,
         };
         guard.insert(selector.clone(), row);
 
@@ -250,7 +261,7 @@ impl RefreshClaimAdjudicator for InMemoryRefreshClaimRepo {
     async fn adjudicate(
         &self,
         selector: &CredentialSelector,
-        decision: RefreshOutcomeDecision,
+        decision: CredentialOperationDecision,
         evidence: &str,
     ) -> Result<RefreshAdjudication, RepoAdjudicationError> {
         validate_adjudication_evidence(evidence)?;
@@ -271,9 +282,16 @@ impl RefreshClaimAdjudicator for InMemoryRefreshClaimRepo {
         let poisoned = claims
             .get(selector)
             .filter(|row| row.expires_at < now && row.sentinel == SentinelState::RefreshInFlight)
-            .map(|row| (row.claim_id, row.holder.clone(), row.generation));
+            .map(|row| {
+                (
+                    row.claim_id,
+                    row.holder.clone(),
+                    row.generation,
+                    row.operation,
+                )
+            });
 
-        let Some((claim_id, crashed_holder, generation)) = poisoned else {
+        let Some((claim_id, crashed_holder, generation, operation)) = poisoned else {
             // Nothing is poisoned. The credential's resolved set is the only
             // identity available — there is no claim row, and the request
             // carries none — so the rule is an exact match over what the
@@ -283,12 +301,20 @@ impl RefreshClaimAdjudicator for InMemoryRefreshClaimRepo {
             // is append-only in chronological order, so the newest resolution
             // on record is the last resolved event: that is the pair a
             // refusal names, since a set has no single incident to point at.
+            let latest_operation = events
+                .iter()
+                .rev()
+                .find(|event| event.selector == *selector)
+                .map(|event| event.operation);
             let resolved: Vec<&SentinelAdjudication> = events
                 .iter()
-                .filter(|event| event.selector == *selector)
+                .filter(|event| event.selector == *selector && event.operation == decision.kind())
                 .filter_map(|event| event.adjudication.as_ref())
                 .collect();
             let Some(newest) = resolved.last() else {
+                if let Some(recorded_operation) = latest_operation {
+                    return Err(RepoAdjudicationError::OperationMismatch { recorded_operation });
+                }
                 return Err(RepoAdjudicationError::NotPoisoned);
             };
             let recommitted_pair = resolved.iter().any(|recorded| {
@@ -302,6 +328,11 @@ impl RefreshClaimAdjudicator for InMemoryRefreshClaimRepo {
             }
             return Ok(RefreshAdjudication::new(decision, false, digest));
         };
+        if operation != decision.kind() {
+            return Err(RepoAdjudicationError::OperationMismatch {
+                recorded_operation: operation,
+            });
+        }
 
         // An incident that already carries a resolution decides this recommit,
         // and that decision can refuse. Resolve it before clearing the poison:
@@ -320,6 +351,7 @@ impl RefreshClaimAdjudicator for InMemoryRefreshClaimRepo {
             let recorded_adjudication = adjudicate_against_recorded_resolution(
                 &recorded.evidence_digest,
                 Some(recorded.decision.as_str()),
+                operation,
                 &digest,
                 decision,
             )?;
@@ -352,6 +384,7 @@ impl RefreshClaimAdjudicator for InMemoryRefreshClaimRepo {
                     detected_at: now,
                     crashed_holder,
                     generation,
+                    operation,
                     adjudication: Some(resolution),
                 });
             },

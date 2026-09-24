@@ -5,10 +5,11 @@ use chrono::{DateTime, Utc};
 use nebula_core::CredentialId;
 use nebula_storage_port::{
     CredentialAlreadyExistsKey, CredentialCommit, CredentialCreate, CredentialMaterialEpoch,
-    CredentialMaterialTransition, CredentialOwner, CredentialPersistence,
-    CredentialPersistenceError, CredentialRecordState, CredentialReplacement, CredentialSelector,
-    CredentialTombstone, CredentialVersion, RefreshRetryAdmission, RefreshRetrySnapshot,
-    SecretBytes, StoredCredential, StoredCredentialHead,
+    CredentialMaterialTransition, CredentialOperationKind, CredentialOperationStatus,
+    CredentialOwner, CredentialPersistence, CredentialPersistenceError, CredentialRecordState,
+    CredentialReplacement, CredentialSelector, CredentialTombstone, CredentialVersion,
+    RefreshRetryAdmission, RefreshRetrySnapshot, SecretBytes, StoredCredential,
+    StoredCredentialHead, StoredCredentialOperationalHead,
 };
 use serde_json::{Map, Value};
 
@@ -201,6 +202,7 @@ fn closed_error_code(error: &CredentialPersistenceError) -> &'static str {
         CredentialPersistenceError::CorruptRecord => "corrupt_record",
         CredentialPersistenceError::Unavailable => "unavailable",
         CredentialPersistenceError::OutcomeUnknown => "outcome_unknown",
+        CredentialPersistenceError::OperationBlocked { .. } => "operation_blocked",
     }
 }
 
@@ -260,6 +262,9 @@ fn persistence_errors_are_closed_typed_and_secret_free() {
         CredentialPersistenceError::CorruptRecord,
         CredentialPersistenceError::Unavailable,
         CredentialPersistenceError::OutcomeUnknown,
+        CredentialPersistenceError::OperationBlocked {
+            operation: CredentialOperationKind::Revoke,
+        },
     ];
 
     assert_eq!(
@@ -276,6 +281,7 @@ fn persistence_errors_are_closed_typed_and_secret_free() {
             "corrupt_record",
             "unavailable",
             "outcome_unknown",
+            "operation_blocked",
         ]
     );
 
@@ -294,6 +300,28 @@ struct ContractPersistence;
 
 #[async_trait]
 impl CredentialPersistence for ContractPersistence {
+    async fn operation_status(
+        &self,
+        _selector: &CredentialSelector,
+    ) -> Result<CredentialOperationStatus, CredentialPersistenceError> {
+        Err(CredentialPersistenceError::NotFound)
+    }
+
+    async fn get_operational_head(
+        &self,
+        _selector: &CredentialSelector,
+    ) -> Result<StoredCredentialOperationalHead, CredentialPersistenceError> {
+        Err(CredentialPersistenceError::NotFound)
+    }
+
+    async fn list_operational_heads(
+        &self,
+        _owner: &CredentialOwner,
+        _state_kind: Option<&str>,
+    ) -> Result<Vec<StoredCredentialOperationalHead>, CredentialPersistenceError> {
+        Err(CredentialPersistenceError::Unavailable)
+    }
+
     async fn get(
         &self,
         _selector: &CredentialSelector,
@@ -335,6 +363,14 @@ impl CredentialPersistence for ContractPersistence {
         &self,
         _selector: &CredentialSelector,
         _tombstone: CredentialTombstone,
+    ) -> Result<CredentialCommit, CredentialPersistenceError> {
+        Err(CredentialPersistenceError::Unavailable)
+    }
+
+    async fn tombstone_revoked_material(
+        &self,
+        _selector: &CredentialSelector,
+        _expected_material_epoch: CredentialMaterialEpoch,
     ) -> Result<CredentialCommit, CredentialPersistenceError> {
         Err(CredentialPersistenceError::Unavailable)
     }

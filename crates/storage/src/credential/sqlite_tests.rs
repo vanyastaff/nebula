@@ -1,9 +1,11 @@
 use std::{str::FromStr, sync::Arc, time::Duration};
 
 use nebula_storage_port::{
-    CredentialOwner, CredentialPersistence, CredentialPersistenceError, CredentialSelector,
-    CredentialVersion, StoredCredential,
-    store::{ClaimAttempt, RefreshClaimStore, ReplicaId},
+    CredentialMaterialEpoch, CredentialMaterialTransition, CredentialOperationKind,
+    CredentialOperationStatus, CredentialOwner, CredentialPersistence, CredentialPersistenceError,
+    CredentialReplacement, CredentialSelector, CredentialVersion, RefreshRetryTransition,
+    StoredCredential,
+    store::{ClaimAttempt, CredentialOperationIntent, RefreshClaimStore, ReplicaId},
 };
 
 use crate::credential::test_support::{make_credential, make_replacement};
@@ -15,6 +17,137 @@ use crate::credential::{CredentialSchemaAdmissionReason, CredentialStoreStartupE
 
 fn version(value: i64) -> CredentialVersion {
     CredentialVersion::try_from(value).expect("test version must be valid")
+}
+
+#[tokio::test]
+async fn revoke_claim_blocks_authority_replacement_and_is_visible_to_operational_reads() {
+    let store = SqliteCredentialPersistence::connect_memory()
+        .await
+        .expect("ready store");
+    let selector = CredentialSelector::new(
+        CredentialOwner::from_canonical("revoke-fence-owner"),
+        nebula_core::CredentialId::new(),
+    );
+    store
+        .create(&selector, make_credential(b"material"))
+        .await
+        .expect("create");
+    let repo = store.refresh_claim_repo();
+    assert!(matches!(
+        repo.try_claim(
+            &selector,
+            &ReplicaId::new("revoke-holder"),
+            Duration::from_secs(30),
+            CredentialOperationIntent::Revoke {
+                material_epoch: CredentialMaterialEpoch::MIN,
+            },
+        )
+        .await
+        .expect("claim"),
+        ClaimAttempt::Acquired(_)
+    ));
+    assert_eq!(
+        store.operation_status(&selector).await.expect("status"),
+        CredentialOperationStatus::InFlight {
+            operation: CredentialOperationKind::Revoke,
+        }
+    );
+    assert_eq!(
+        store
+            .get_operational_head(&selector)
+            .await
+            .expect("operational head")
+            .status(),
+        CredentialOperationStatus::InFlight {
+            operation: CredentialOperationKind::Revoke,
+        }
+    );
+    assert!(matches!(
+        store
+            .replace(
+                &selector,
+                make_replacement(version(1), b"new-material", RefreshRetryTransition::Clear),
+            )
+            .await,
+        Err(CredentialPersistenceError::OperationBlocked {
+            operation: CredentialOperationKind::Revoke,
+        })
+    ));
+}
+
+#[tokio::test]
+async fn revoke_finalizer_accepts_display_version_churn_and_refuses_wrong_epoch() {
+    let store = SqliteCredentialPersistence::connect_memory()
+        .await
+        .expect("ready store");
+    let selector = CredentialSelector::new(
+        CredentialOwner::from_canonical("revoke-finalizer-owner"),
+        nebula_core::CredentialId::new(),
+    );
+    store
+        .create(&selector, make_credential(b"material"))
+        .await
+        .expect("create");
+    let repo = store.refresh_claim_repo();
+    let claim = match repo
+        .try_claim(
+            &selector,
+            &ReplicaId::new("revoke-holder"),
+            Duration::from_secs(30),
+            CredentialOperationIntent::Revoke {
+                material_epoch: CredentialMaterialEpoch::MIN,
+            },
+        )
+        .await
+        .expect("claim")
+    {
+        ClaimAttempt::Acquired(claim) => claim,
+        other => panic!("revoke claim must be acquired: {other:?}"),
+    };
+    repo.mark_sentinel(&claim.token).await.expect("sentinel");
+
+    let current = match store.get(&selector).await.expect("live") {
+        StoredCredential::Live(current) => current,
+        StoredCredential::Tombstoned(_) => panic!("fixture must be live"),
+    };
+    let mut metadata = current.metadata().clone();
+    metadata.insert("display_revision".to_owned(), serde_json::json!(2));
+    store
+        .replace(
+            &selector,
+            CredentialReplacement::new(
+                current.version(),
+                current.data().clone(),
+                current.state_kind().to_owned(),
+                current.state_version(),
+                current.name().map(str::to_owned),
+                current.expires_at(),
+                current.reauth_required(),
+                metadata,
+                CredentialMaterialTransition::preserve(RefreshRetryTransition::Preserve),
+            ),
+        )
+        .await
+        .expect("display-only replacement");
+
+    let wrong_epoch = CredentialMaterialEpoch::MIN.next().expect("epoch two");
+    assert!(matches!(
+        store
+            .tombstone_revoked_material(&selector, wrong_epoch)
+            .await,
+        Err(CredentialPersistenceError::OperationBlocked {
+            operation: CredentialOperationKind::Revoke,
+        })
+    ));
+    let commit = store
+        .tombstone_revoked_material(&selector, CredentialMaterialEpoch::MIN)
+        .await
+        .expect("pinned revoke finalization");
+    assert_eq!(commit.version().get(), 3);
+    assert!(matches!(
+        store.get(&selector).await.expect("terminal row"),
+        StoredCredential::Tombstoned(_)
+    ));
 }
 
 async fn assert_cancelled_terminal_setup_keeps_lock(
@@ -130,7 +263,12 @@ async fn curated_refresh_claim_repositories_share_the_admitted_private_pool() {
         CredentialSelector::new(CredentialOwner::from_canonical("owner-a"), credential_id);
 
     let acquired = first
-        .try_claim(&selector, &ReplicaId::new("first"), Duration::from_secs(30))
+        .try_claim(
+            &selector,
+            &ReplicaId::new("first"),
+            Duration::from_secs(30),
+            CredentialOperationIntent::Refresh,
+        )
         .await
         .expect("first claim attempt");
     assert!(matches!(acquired, ClaimAttempt::Acquired(_)));
@@ -140,6 +278,7 @@ async fn curated_refresh_claim_repositories_share_the_admitted_private_pool() {
             &selector,
             &ReplicaId::new("second"),
             Duration::from_secs(30),
+            CredentialOperationIntent::Refresh,
         )
         .await
         .expect("second claim attempt");
@@ -163,11 +302,7 @@ async fn post_commit_fault_is_outcome_unknown_without_automatic_retry()
     let result = store
         .replace(
             &selector,
-            make_replacement(
-                version(1),
-                b"version-two",
-                nebula_storage_port::RefreshRetryTransition::Clear,
-            ),
+            make_replacement(version(1), b"version-two", RefreshRetryTransition::Clear),
         )
         .await;
     assert_eq!(result, Err(CredentialPersistenceError::OutcomeUnknown));
@@ -212,11 +347,7 @@ async fn confirmed_precommit_rollback_is_unavailable_and_preserves_prior_row()
         store
             .replace(
                 &selector,
-                make_replacement(
-                    version(1),
-                    b"rolled-back",
-                    nebula_storage_port::RefreshRetryTransition::Clear,
-                ),
+                make_replacement(version(1), b"rolled-back", RefreshRetryTransition::Clear,),
             )
             .await,
         Err(CredentialPersistenceError::Unavailable)

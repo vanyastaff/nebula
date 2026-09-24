@@ -31,8 +31,8 @@ use std::{str::FromStr, sync::Mutex, time::Duration};
 
 use chrono::{Duration as ChronoDuration, Utc};
 use nebula_storage::credential::refresh_claim::{
-    RefreshAdjudication, RefreshClaimAdjudicationError, RefreshClaimAdjudicator,
-    RefreshOutcomeDecision,
+    CredentialOperationDecision, CredentialOperationIntent, RefreshAdjudication,
+    RefreshClaimAdjudicationError, RefreshClaimAdjudicator,
 };
 use nebula_storage::credential::{
     ClaimAttempt, ClaimToken, ExpiredClaim, HeartbeatError, ReauthEscalation,
@@ -120,6 +120,7 @@ impl RefreshClaimRepo for SqliteRefreshClaimFixture {
         selector: &CredentialSelector,
         holder: &ReplicaId,
         ttl: Duration,
+        intent: CredentialOperationIntent,
     ) -> Result<ClaimAttempt, RepoError> {
         sqlx::query(
             "INSERT OR IGNORE INTO credentials (id, owner_id, credential_key, state_kind, \
@@ -133,7 +134,7 @@ impl RefreshClaimRepo for SqliteRefreshClaimFixture {
         .execute(&self.pool)
         .await
         .map_err(|_| RepoError::Storage)?;
-        self.repo.try_claim(selector, holder, ttl).await
+        self.repo.try_claim(selector, holder, ttl, intent).await
     }
 
     async fn heartbeat(&self, token: &ClaimToken, ttl: Duration) -> Result<(), HeartbeatError> {
@@ -164,7 +165,7 @@ impl RefreshClaimAdjudicator for SqliteRefreshClaimFixture {
     async fn adjudicate(
         &self,
         selector: &CredentialSelector,
-        decision: RefreshOutcomeDecision,
+        decision: CredentialOperationDecision,
         evidence: &str,
     ) -> Result<RefreshAdjudication, RefreshClaimAdjudicationError> {
         self.repo.adjudicate(selector, decision, evidence).await
@@ -354,7 +355,7 @@ async fn threshold_incident_atomically_advances_reauth_authority_once() {
     let selector =
         fixture.credential("threshold_incident_atomically_advances_reauth_authority_once");
     let claim = match fixture
-        .try_claim(&selector, &fixture.replica(1), fixture.claim_ttl())
+        .try_refresh_claim(&selector, &fixture.replica(1), fixture.claim_ttl())
         .await
         .expect("claim")
     {

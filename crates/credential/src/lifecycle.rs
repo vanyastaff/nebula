@@ -39,10 +39,10 @@ pub use nebula_core::auth::{RefreshStrategy, RefreshStrategyKind, SchemeId};
 
 /// Secret-free durable availability of a persisted credential.
 ///
-/// This projection deliberately describes only state that survives process
-/// restart. An in-flight refresh is coordinated by internal claims and leases,
-/// so it is not a public lifecycle state. Likewise, tombstones remain a
-/// persistence invariant: management reads treat them as absent.
+/// Claims remain internal authority, but their durable operation gate is part
+/// of public availability. Claim ids, generations, holders, and fences never
+/// enter this projection. Tombstones remain a persistence invariant:
+/// management reads treat them as absent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum CredentialLifecycleState {
@@ -58,6 +58,28 @@ pub enum CredentialLifecycleState {
     RefreshBlocked,
     /// The credential cannot be used until interactive authorization succeeds.
     ReauthRequired,
+    /// One typed provider operation is currently in flight.
+    OperationInFlight {
+        /// Public operation category; no claim authority is exposed.
+        operation: CredentialLifecycleOperation,
+    },
+    /// An expired provider operation requires explicit reconciliation.
+    ReconciliationRequired {
+        /// Typed operation when the incident was created by an operation-aware
+        /// runtime. `None` denotes a legacy unclassified incident, which cannot
+        /// be adjudicated and must be replaced explicitly.
+        operation: Option<CredentialLifecycleOperation>,
+    },
+}
+
+/// Public, secret-free provider operation category used by lifecycle status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CredentialLifecycleOperation {
+    /// Renewable material refresh.
+    Refresh,
+    /// Provider-side credential revocation.
+    Revoke,
 }
 
 /// How a credential can be revoked. The field has **no uniform revoke

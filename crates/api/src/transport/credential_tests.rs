@@ -10,7 +10,7 @@ use nebula_storage::inmem::{
     InMemoryControlQueue, InMemoryExecutionStore, InMemoryJournalReader, InMemoryNodeResultStore,
     InMemoryWorkflowStore, InMemoryWorkflowVersionStore,
 };
-use nebula_storage_port::store::RefreshOutcomeDecision;
+use nebula_storage_port::store::{CredentialOperationDecision, RefreshOutcomeDecision};
 
 /// 32 `0x42` bytes, base64 — a valid AES-256 key fixture (mirrors the
 /// factory's dev key). Not a secret: a fixed test constant.
@@ -191,6 +191,7 @@ async fn all_credential_fns_are_503_without_service() {
             &scope,
             "cred_x",
             &ReconcileCredentialRequest {
+                operation: CredentialReconcileOperationV1::Refresh,
                 decision: CredentialReconcileDecisionV1::ProviderNotApplied,
                 evidence: "e".into(),
             }
@@ -455,6 +456,17 @@ fn gateway_error_mapping_statuses() {
     ));
     assert!(matches!(
         map_gateway_err(
+            CredentialGatewayError::OperationBlocked {
+                operation: nebula_storage_port::CredentialOperationKind::Revoke,
+            },
+            "cred_x"
+        ),
+        ApiError::CredentialOperationBlocked {
+            operation: "revoke"
+        }
+    ));
+    assert!(matches!(
+        map_gateway_err(
             CredentialGatewayError::CapabilityUnsupported {
                 capability: "refresh".into(),
                 key: "api_key".into(),
@@ -532,7 +544,9 @@ fn gateway_error_mapping_statuses() {
     } = map_gateway_err(
         CredentialGatewayError::ReconciliationConflict {
             recorded_digest: [0xabu8; 32],
-            recorded_decision: RefreshOutcomeDecision::ProviderApplied,
+            recorded_decision: CredentialOperationDecision::Refresh(
+                RefreshOutcomeDecision::ProviderApplied,
+            ),
         },
         "cred_x",
     )
@@ -591,7 +605,9 @@ fn gateway_error_contract_cannot_carry_dynamic_reason_payloads() {
         CredentialGatewayError::ReconciliationNotRequired,
         CredentialGatewayError::ReconciliationConflict {
             recorded_digest: [0xabu8; 32],
-            recorded_decision: RefreshOutcomeDecision::ProviderApplied,
+            recorded_decision: CredentialOperationDecision::Refresh(
+                RefreshOutcomeDecision::ProviderApplied,
+            ),
         },
         CredentialGatewayError::ReconciliationEvidenceInvalid,
         CredentialGatewayError::Internal,

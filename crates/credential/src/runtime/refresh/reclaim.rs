@@ -181,6 +181,7 @@ pub(super) async fn run_one_sweep(
             previous_generation,
             event_count,
             escalation,
+            operation,
         } = reclaimed
         else {
             continue;
@@ -192,6 +193,7 @@ pub(super) async fn run_one_sweep(
             crashed_holder = %previous_holder,
             generation = previous_generation,
             event_count,
+            operation = ?operation,
         );
         let _entered = span.enter();
         metrics.sentinel_recorded.inc();

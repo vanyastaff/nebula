@@ -48,6 +48,7 @@ impl RefreshClaimStore for StubClaimRepo {
         selector: &CredentialSelector,
         _holder: &ReplicaId,
         ttl: Duration,
+        _intent: nebula_storage_port::store::CredentialOperationIntent,
     ) -> Result<ClaimAttempt, RefreshClaimError> {
         let acquired_at = Utc::now();
         let ttl = chrono::Duration::from_std(ttl).expect("test refresh-claim TTL is representable");
@@ -111,6 +112,7 @@ impl RefreshClaimStore for StatefulClaimRepo {
         selector: &CredentialSelector,
         _holder: &ReplicaId,
         ttl: Duration,
+        _intent: nebula_storage_port::store::CredentialOperationIntent,
     ) -> Result<ClaimAttempt, RefreshClaimError> {
         self.try_claim_count.fetch_add(1, Ordering::SeqCst);
         self.try_claim_seen.notify_one();
@@ -677,6 +679,64 @@ impl ScriptedStore {
 
 #[async_trait::async_trait]
 impl CredentialPersistence for ScriptedStore {
+    async fn get_operational_head(
+        &self,
+        selector: &CredentialSelector,
+    ) -> Result<nebula_storage_port::StoredCredentialOperationalHead, CredentialPersistenceError>
+    {
+        let head = self.get_head(selector).await?;
+        let status = nebula_storage_port::store::CredentialOperationStatus::Open {
+            version: head.version(),
+            material_epoch: head.material_epoch(),
+            reauth_required: head.reauth_required(),
+        };
+        Ok(nebula_storage_port::StoredCredentialOperationalHead::new(
+            head, status,
+        ))
+    }
+
+    async fn list_operational_heads(
+        &self,
+        owner: &CredentialOwner,
+        state_kind: Option<&str>,
+    ) -> Result<Vec<nebula_storage_port::StoredCredentialOperationalHead>, CredentialPersistenceError>
+    {
+        Ok(self
+            .list_heads(owner, state_kind)
+            .await?
+            .into_iter()
+            .map(|head| {
+                let status = nebula_storage_port::store::CredentialOperationStatus::Open {
+                    version: head.version(),
+                    material_epoch: head.material_epoch(),
+                    reauth_required: head.reauth_required(),
+                };
+                nebula_storage_port::StoredCredentialOperationalHead::new(head, status)
+            })
+            .collect())
+    }
+
+    async fn operation_status(
+        &self,
+        selector: &CredentialSelector,
+    ) -> Result<nebula_storage_port::store::CredentialOperationStatus, CredentialPersistenceError>
+    {
+        let row = self.row.lock();
+        if selector.owner() != &self.owner || row.credential_id() != selector.credential_id() {
+            return Err(CredentialPersistenceError::NotFound);
+        }
+        let StoredCredential::Live(live) = &*row else {
+            return Err(CredentialPersistenceError::NotFound);
+        };
+        Ok(
+            nebula_storage_port::store::CredentialOperationStatus::Open {
+                version: live.version(),
+                material_epoch: live.material_epoch(),
+                reauth_required: live.reauth_required(),
+            },
+        )
+    }
+
     // No `.await` in any method body, so the (`!Send`) `parking_lot` guard
     // never crosses an await point — the returned futures stay `Send`.
     async fn get(
@@ -798,6 +858,15 @@ impl CredentialPersistence for ScriptedStore {
         tombstone: CredentialTombstone,
     ) -> Result<CredentialCommit, CredentialPersistenceError> {
         self.tombstone_sync(selector, tombstone)
+    }
+
+    async fn tombstone_revoked_material(
+        &self,
+        _selector: &CredentialSelector,
+        _expected_material_epoch: CredentialMaterialEpoch,
+    ) -> Result<CredentialCommit, CredentialPersistenceError> {
+        // This refresh-race fixture owns no durable revoke claim authority.
+        Err(CredentialPersistenceError::Unavailable)
     }
 
     async fn list(

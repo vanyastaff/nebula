@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use nebula_storage_port::{
     Scope,
-    store::{RefreshClaimAdjudicationError, RefreshOutcomeDecision},
+    store::{CredentialOperationDecision, CredentialOperationKind, RefreshClaimAdjudicationError},
 };
 use thiserror::Error;
 
@@ -84,7 +84,7 @@ pub enum CredentialGatewayCommand {
         /// Credential whose poisoned refresh claim is being adjudicated.
         credential_id: String,
         /// The provider outcome the caller asserts it observed.
-        decision: RefreshOutcomeDecision,
+        decision: CredentialOperationDecision,
         /// Operator prose describing what was observed. The adjudicator bounds
         /// its length and digests it, and records both: the note is stored
         /// verbatim alongside the digest, so the digest anchors the exact
@@ -185,6 +185,16 @@ pub enum CredentialGatewayLifecycleState {
     RefreshBlocked,
     /// Interactive authorization must complete before the credential is usable.
     ReauthRequired,
+    /// A provider operation currently owns the durable operation gate.
+    OperationInFlight {
+        /// Secret-free operation category.
+        operation: CredentialOperationKind,
+    },
+    /// An expired provider operation requires explicit reconciliation.
+    ReconciliationRequired {
+        /// Typed category or the legacy-unclassified upgrade state.
+        operation: CredentialOperationKind,
+    },
 }
 
 /// Secret-free provider-test classification crossing the API port.
@@ -280,7 +290,7 @@ pub enum CredentialGatewayResult {
     /// A poisoned refresh claim was adjudicated.
     Reconciled {
         /// The provider outcome now durably on record for the claim.
-        decision: RefreshOutcomeDecision,
+        decision: CredentialOperationDecision,
         /// Whether this call changed the record. `false` means the identical
         /// `(evidence digest, decision)` pair was already on record — a
         /// superseded replay, which is a success, not a conflict.
@@ -530,7 +540,7 @@ pub enum CredentialGatewayError {
         /// SHA-256 of the recorded evidence this request conflicted with.
         recorded_digest: [u8; 32],
         /// The recorded decision this request conflicted with.
-        recorded_decision: RefreshOutcomeDecision,
+        recorded_decision: CredentialOperationDecision,
     },
     /// The supplied evidence was rejected — empty, or beyond the adjudicator's
     /// byte bound.
@@ -543,6 +553,12 @@ pub enum CredentialGatewayError {
     /// envelope details cross the gateway boundary.
     #[error("stored credential state is not compatible with this runtime")]
     StateEnvelopeRefused,
+    /// Another provider operation holds a durable in-flight or reconciliation gate.
+    #[error("credential operation is blocked")]
+    OperationBlocked {
+        /// Secret-free operation category holding the gate.
+        operation: CredentialOperationKind,
+    },
 }
 
 /// Classification of an adjudication failure into this port's taxonomy.
@@ -586,6 +602,11 @@ impl From<RefreshClaimAdjudicationError> for CredentialGatewayError {
                 recorded_digest,
                 recorded_decision,
             },
+            RefreshClaimAdjudicationError::OperationMismatch { recorded_operation } => {
+                Self::OperationBlocked {
+                    operation: recorded_operation,
+                }
+            },
             _ => Self::Internal,
         }
     }
@@ -615,6 +636,7 @@ pub use testkit::{
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nebula_storage_port::store::RefreshOutcomeDecision;
 
     #[test]
     fn command_debug_redacts_request_payload() {
@@ -636,7 +658,7 @@ mod tests {
         const CANARY: &str = "api-gateway-evidence-never-debug";
         let command = CredentialGatewayCommand::Reconcile {
             credential_id: "cred_safe".to_owned(),
-            decision: RefreshOutcomeDecision::ProviderApplied,
+            decision: CredentialOperationDecision::Refresh(RefreshOutcomeDecision::ProviderApplied),
             evidence: CANARY.to_owned(),
         };
         let debug = format!("{command:?}");
@@ -654,7 +676,9 @@ mod tests {
         const EVIDENCE: &str = "provider support ticket 4417: the call never reached the API";
         let command = CredentialGatewayCommand::Reconcile {
             credential_id: "cred_safe".to_owned(),
-            decision: RefreshOutcomeDecision::ProviderNotApplied,
+            decision: CredentialOperationDecision::Refresh(
+                RefreshOutcomeDecision::ProviderNotApplied,
+            ),
             evidence: EVIDENCE.to_owned(),
         };
         assert_eq!(command.operation(), "reconcile");
@@ -667,7 +691,10 @@ mod tests {
             panic!("constructed as Reconcile above");
         };
         assert_eq!(credential_id, "cred_safe");
-        assert_eq!(decision, RefreshOutcomeDecision::ProviderNotApplied);
+        assert_eq!(
+            decision,
+            CredentialOperationDecision::Refresh(RefreshOutcomeDecision::ProviderNotApplied)
+        );
         assert_eq!(evidence, EVIDENCE);
     }
 
@@ -725,11 +752,15 @@ mod tests {
             (
                 RefreshClaimAdjudicationError::EvidenceConflict {
                     recorded_digest: [7u8; 32],
-                    recorded_decision: RefreshOutcomeDecision::ProviderApplied,
+                    recorded_decision: CredentialOperationDecision::Refresh(
+                        RefreshOutcomeDecision::ProviderApplied,
+                    ),
                 },
                 CredentialGatewayError::ReconciliationConflict {
                     recorded_digest: [7u8; 32],
-                    recorded_decision: RefreshOutcomeDecision::ProviderApplied,
+                    recorded_decision: CredentialOperationDecision::Refresh(
+                        RefreshOutcomeDecision::ProviderApplied,
+                    ),
                 },
             ),
             (
@@ -743,6 +774,14 @@ mod tests {
             (
                 RefreshClaimAdjudicationError::AcknowledgementUnknown,
                 CredentialGatewayError::OutcomeUnknown,
+            ),
+            (
+                RefreshClaimAdjudicationError::OperationMismatch {
+                    recorded_operation: CredentialOperationKind::Revoke,
+                },
+                CredentialGatewayError::OperationBlocked {
+                    operation: CredentialOperationKind::Revoke,
+                },
             ),
         ] {
             let rendered = format!("{error:?}");

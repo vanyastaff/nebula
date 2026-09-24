@@ -80,6 +80,8 @@ impl CredentialService {
     ) -> Result<Acquisition, CredentialServiceError> {
         self.ensure_local_source()?;
         let existing = self.load_owned_head(scope, credential_id).await?;
+        self.ensure_operation_open(&scope.selector(credential_id))
+            .await?;
         let key = existing.credential_key();
         let intent = AcquisitionIntent::ReauthorizeExisting {
             credential_id: credential_id.to_string(),
@@ -240,6 +242,8 @@ impl CredentialService {
                     }
                 })?;
                 let existing = self.load_owned_head(scope, credential_id).await?;
+                self.ensure_operation_open(&scope.selector(credential_id))
+                    .await?;
                 validate_reauthorization_fence(key, intent, &existing)?;
                 Ok(Some(existing))
             },

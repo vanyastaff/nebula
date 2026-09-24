@@ -267,6 +267,43 @@ wired to a hardened injected transport.
 - Compile-fail suites under `tests/compile_fail_*` lock down capability, sensitivity, guard, slot,
   and service-management visibility invariants.
 
+## Durable operation incidents
+
+Refresh and revoke share one credential-scoped exclusion claim, but retain different durable
+operation kinds. A revoke claim pins the material epoch it will invalidate before provider
+dispatch. New projections, health tests, and material replacement refuse an outstanding
+operation; an already acquired guard keeps its original material. This projection gate does
+not by itself invalidate clients already cached inside a resource pool.
+
+Reconciliation is operation-specific. A refresh decision cannot clear a revoke incident.
+`ProviderRevoked` atomically tombstones the epoch-qualified credential, records the decision
+and evidence digest, and clears the claim. `ProviderNotRevoked` records the decision and
+reopens the unchanged credential. A display-only edit does not change the material epoch;
+both normal revoke completion and recovery atomically tombstone the current row under the
+pinned epoch. A rename cannot turn confirmed provider success into a version-CAS failure.
+An authority-changing replacement cannot pass an
+outstanding revoke claim. Repeating the same recorded decision and evidence is safe after a
+lost acknowledgement, including after tombstoning.
+
+Local coalescing groups refresh and revoke separately; the shared durable claim still
+serializes their provider calls. If refresh replaces material while revoke is waiting,
+the stale revoke returns a version conflict before provider dispatch.
+
+Management lifecycle reports `operation_in_flight` or `reconciliation_required` with a public
+operation category. It exposes no claim id, generation, holder, or fencing token. Operational
+heads are read from one backend snapshot, including list results. Secret projection uses a
+fresh aggregate/operation snapshot even when the stored credential is static or unexpired.
+
+Pre-upgrade claims did not record whether the provider call was refresh or revoke. Migration
+preserves those records as unclassified; it never guesses their operation or permits a refresh
+decision to reopen them. Stop old writers before the operation-aware schema upgrade. A legacy
+unclassified incident requires explicit credential deletion and fresh acquisition; deletion
+keeps the original credential id terminal and does not claim to undo a provider effect.
+
+This protocol identifies refresh/revoke incidents. It is not the general command receipt
+ledger: reserving acquisition identity before provider dispatch and recovering lost create or
+material-update acknowledgements remain separate work.
+
 ## Known limits
 
 - First-party OAuth acquisition uses the universal authenticated resolve/continue flow;

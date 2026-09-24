@@ -317,7 +317,7 @@ pub enum ApiError {
     #[error("Not implemented: {0}")]
     NotImplemented(String),
 
-    /// The credential holds no poisoned refresh claim to adjudicate (409).
+    /// The credential holds no poisoned provider-operation claim to adjudicate (409).
     ///
     /// Distinct from the generic [`Self::Conflict`]: the caller is authorized
     /// and the credential is not in the state the command names, and a client
@@ -327,10 +327,10 @@ pub enum ApiError {
         code = "API:CREDENTIAL_RECONCILIATION_NOT_REQUIRED",
         retryable = false
     )]
-    #[error("Credential has no refresh claim requiring reconciliation")]
+    #[error("Credential has no provider-operation claim requiring reconciliation")]
     CredentialReconciliationNotRequired,
 
-    /// The refresh claim already records a different `(evidence, decision)`
+    /// The provider-operation claim already records a different `(evidence, decision)`
     /// pair than the one submitted (409).
     ///
     /// A caller that repeats its own request does not get this: an identical
@@ -343,7 +343,9 @@ pub enum ApiError {
         code = "API:CREDENTIAL_RECONCILIATION_CONFLICT",
         retryable = false
     )]
-    #[error("Credential refresh claim already records a different reconciliation decision")]
+    #[error(
+        "Credential provider-operation claim already records a different reconciliation decision"
+    )]
     CredentialReconciliationConflict {
         /// SHA-256 of the recorded evidence, lowercase hex.
         recorded_digest: String,
@@ -361,6 +363,18 @@ pub enum ApiError {
     )]
     #[error("Stored credential state is not compatible with this runtime")]
     CredentialStateRefused,
+
+    /// A durable provider operation gate blocks the requested command (409).
+    #[classify(
+        category = "conflict",
+        code = "API:CREDENTIAL_OPERATION_BLOCKED",
+        retryable = false
+    )]
+    #[error("Credential operation is blocked by {operation}")]
+    CredentialOperationBlocked {
+        /// Stable, secret-free operation spelling.
+        operation: &'static str,
+    },
 }
 
 /// Project a [`nebula_tenancy::TenancyError`] (raised when a request's
@@ -449,6 +463,9 @@ impl ApiError {
                 credential_problem(CredentialProblem::AcquisitionReconciliationRequired)
             },
             Self::CredentialStateRefused => credential_problem(CredentialProblem::StateRefused),
+            Self::CredentialOperationBlocked { operation } => {
+                credential_problem(CredentialProblem::OperationBlocked { operation })
+            },
             Self::CredentialRevokeReconciliationRequired => {
                 credential_problem(CredentialProblem::RevokeReconciliationRequired)
             },
@@ -635,6 +652,9 @@ enum CredentialProblem {
         recorded_digest: String,
         recorded_decision: String,
     },
+    OperationBlocked {
+        operation: &'static str,
+    },
 }
 
 fn credential_problem(error: CredentialProblem) -> (StatusCode, ProblemDetails) {
@@ -677,29 +697,37 @@ fn credential_problem(error: CredentialProblem) -> (StatusCode, ProblemDetails) 
         CredentialProblem::ReconciliationNotRequired => (
             "credential-reconciliation-not-required",
             "Credential Reconciliation Not Required",
-            "The credential has no poisoned refresh claim to adjudicate. A repeated reconciliation of a decision already on record is reported as success instead.",
+            "The credential has no poisoned provider-operation claim to adjudicate. A repeated reconciliation of a decision already on record is reported as success instead.",
         ),
         CredentialProblem::ReconciliationConflict { .. } => (
             "credential-reconciliation-conflict",
             "Credential Reconciliation Conflict",
-            "The refresh claim already records a different evidence and decision pair. Repeating an identical request is a no-op success; the evidence_digest and recorded_decision extensions name the recorded pair this request disagreed with.",
+            "The provider-operation claim already records a different evidence and decision pair. Repeating an identical request is a no-op success; the evidence_digest and recorded_decision extensions name the recorded pair this request disagreed with.",
+        ),
+        CredentialProblem::OperationBlocked { .. } => (
+            "credential-operation-blocked",
+            "Credential Operation Blocked",
+            "A provider operation is in flight or requires reconciliation before this command can proceed.",
         ),
     };
     let (status, problem) = conflict_problem(problem_type, title, detail);
-    let CredentialProblem::ReconciliationConflict {
-        recorded_digest,
-        recorded_decision,
-    } = error
-    else {
-        return (status, problem);
-    };
-    (
-        status,
-        problem.with_extensions(serde_json::json!({
-            "evidence_digest": recorded_digest,
-            "recorded_decision": recorded_decision,
-        })),
-    )
+    match error {
+        CredentialProblem::ReconciliationConflict {
+            recorded_digest,
+            recorded_decision,
+        } => (
+            status,
+            problem.with_extensions(serde_json::json!({
+                "evidence_digest": recorded_digest,
+                "recorded_decision": recorded_decision,
+            })),
+        ),
+        CredentialProblem::OperationBlocked { operation } => (
+            status,
+            problem.with_extensions(serde_json::json!({ "operation": operation })),
+        ),
+        _ => (status, problem),
+    }
 }
 
 fn internal_problem(message: &str) -> (StatusCode, ProblemDetails) {

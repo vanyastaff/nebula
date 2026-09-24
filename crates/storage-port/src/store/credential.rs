@@ -7,9 +7,11 @@ use nebula_core::CredentialId;
 
 use crate::dto::RefreshRetrySnapshot;
 use crate::dto::credential::{
-    CredentialCommit, CredentialCreate, CredentialOwner, CredentialReplacement, CredentialSelector,
-    CredentialTombstone, CredentialVersion, StoredCredential, StoredCredentialHead,
+    CredentialCommit, CredentialCreate, CredentialMaterialEpoch, CredentialOwner,
+    CredentialReplacement, CredentialSelector, CredentialTombstone, CredentialVersion,
+    StoredCredential, StoredCredentialHead,
 };
+use crate::store::CredentialOperationStatus;
 
 /// Unique credential field that rejected a create.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -66,6 +68,40 @@ pub enum CredentialPersistenceError {
     /// Commit was dispatched but authoritative acknowledgement was lost.
     #[error("credential persistence outcome is unknown; do not retry blindly")]
     OutcomeUnknown,
+    /// A durable provider operation currently owns mutation authority.
+    #[error("credential operation blocks this mutation")]
+    OperationBlocked {
+        /// Operation holding or poisoning authority.
+        operation: crate::store::CredentialOperationKind,
+    },
+}
+
+/// Secret-free credential head paired with operation availability observed by
+/// one backend snapshot.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StoredCredentialOperationalHead {
+    head: StoredCredentialHead,
+    status: CredentialOperationStatus,
+}
+
+impl StoredCredentialOperationalHead {
+    /// Construct one coherent operational projection.
+    #[must_use]
+    pub const fn new(head: StoredCredentialHead, status: CredentialOperationStatus) -> Self {
+        Self { head, status }
+    }
+
+    /// Aggregate projection.
+    #[must_use]
+    pub const fn head(&self) -> &StoredCredentialHead {
+        &self.head
+    }
+
+    /// Operation availability observed with the head.
+    #[must_use]
+    pub const fn status(&self) -> CredentialOperationStatus {
+        self.status
+    }
 }
 
 /// Owner-scoped credential persistence.
@@ -88,6 +124,27 @@ pub trait CredentialPersistence: Send + Sync + fmt::Debug {
         &self,
         selector: &CredentialSelector,
     ) -> Result<StoredCredentialHead, CredentialPersistenceError>;
+
+    /// Atomically read live aggregate authority and any durable operation that
+    /// blocks credential use. This check is independent of provider refresh
+    /// capability and contains no material bytes or claim identity.
+    async fn operation_status(
+        &self,
+        selector: &CredentialSelector,
+    ) -> Result<CredentialOperationStatus, CredentialPersistenceError>;
+
+    /// Load a head and operation status from one backend snapshot.
+    async fn get_operational_head(
+        &self,
+        selector: &CredentialSelector,
+    ) -> Result<StoredCredentialOperationalHead, CredentialPersistenceError>;
+
+    /// List heads and operation statuses from one owner-scoped snapshot.
+    async fn list_operational_heads(
+        &self,
+        owner: &CredentialOwner,
+        state_kind: Option<&str>,
+    ) -> Result<Vec<StoredCredentialOperationalHead>, CredentialPersistenceError>;
 
     /// Atomically observe live version, material epoch, reauthentication, and
     /// retry admission.
@@ -121,6 +178,20 @@ pub trait CredentialPersistence: Send + Sync + fmt::Debug {
         &self,
         selector: &CredentialSelector,
         tombstone: CredentialTombstone,
+    ) -> Result<CredentialCommit, CredentialPersistenceError>;
+
+    /// Finalize a provider-confirmed revoke against immutable material authority.
+    ///
+    /// Every implementation must require a retained `Revoke` sentinel pinned
+    /// to `expected_material_epoch`; an adapter without that atomic authority
+    /// returns [`CredentialPersistenceError::Unavailable`]. Display-only row
+    /// versions may advance concurrently, so the current live version is
+    /// tombstoned atomically. Missing or mismatched revoke authority fails
+    /// closed as [`CredentialPersistenceError::OperationBlocked`].
+    async fn tombstone_revoked_material(
+        &self,
+        selector: &CredentialSelector,
+        expected_material_epoch: CredentialMaterialEpoch,
     ) -> Result<CredentialCommit, CredentialPersistenceError>;
 
     /// List typed ids of live credentials in exactly one owner partition.
@@ -163,6 +234,28 @@ where
         (**self).get_head(selector).await
     }
 
+    async fn operation_status(
+        &self,
+        selector: &CredentialSelector,
+    ) -> Result<CredentialOperationStatus, CredentialPersistenceError> {
+        (**self).operation_status(selector).await
+    }
+
+    async fn get_operational_head(
+        &self,
+        selector: &CredentialSelector,
+    ) -> Result<StoredCredentialOperationalHead, CredentialPersistenceError> {
+        (**self).get_operational_head(selector).await
+    }
+
+    async fn list_operational_heads(
+        &self,
+        owner: &CredentialOwner,
+        state_kind: Option<&str>,
+    ) -> Result<Vec<StoredCredentialOperationalHead>, CredentialPersistenceError> {
+        (**self).list_operational_heads(owner, state_kind).await
+    }
+
     async fn refresh_retry_snapshot(
         &self,
         selector: &CredentialSelector,
@@ -192,6 +285,16 @@ where
         tombstone: CredentialTombstone,
     ) -> Result<CredentialCommit, CredentialPersistenceError> {
         (**self).tombstone(selector, tombstone).await
+    }
+
+    async fn tombstone_revoked_material(
+        &self,
+        selector: &CredentialSelector,
+        expected_material_epoch: CredentialMaterialEpoch,
+    ) -> Result<CredentialCommit, CredentialPersistenceError> {
+        (**self)
+            .tombstone_revoked_material(selector, expected_material_epoch)
+            .await
     }
 
     async fn list(

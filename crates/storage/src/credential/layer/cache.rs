@@ -19,9 +19,10 @@ use async_trait::async_trait;
 use moka::future::Cache;
 use nebula_core::CredentialId;
 use nebula_storage_port::{
-    CredentialCommit, CredentialCreate, CredentialOwner, CredentialPersistence,
-    CredentialPersistenceError, CredentialRecordState, CredentialReplacement, CredentialSelector,
-    CredentialTombstone, RefreshRetrySnapshot, StoredCredential, StoredCredentialHead,
+    CredentialCommit, CredentialCreate, CredentialOperationStatus, CredentialOwner,
+    CredentialPersistence, CredentialPersistenceError, CredentialRecordState,
+    CredentialReplacement, CredentialSelector, CredentialTombstone, RefreshRetrySnapshot,
+    StoredCredential, StoredCredentialHead, StoredCredentialOperationalHead,
 };
 use tokio::sync::Mutex;
 
@@ -224,6 +225,28 @@ impl<S: CredentialPersistence> CredentialPersistence for CacheLayer<S> {
         self.inner.get_head(selector).await
     }
 
+    async fn operation_status(
+        &self,
+        selector: &CredentialSelector,
+    ) -> Result<CredentialOperationStatus, CredentialPersistenceError> {
+        self.inner.operation_status(selector).await
+    }
+
+    async fn get_operational_head(
+        &self,
+        selector: &CredentialSelector,
+    ) -> Result<StoredCredentialOperationalHead, CredentialPersistenceError> {
+        self.inner.get_operational_head(selector).await
+    }
+
+    async fn list_operational_heads(
+        &self,
+        owner: &CredentialOwner,
+        state_kind: Option<&str>,
+    ) -> Result<Vec<StoredCredentialOperationalHead>, CredentialPersistenceError> {
+        self.inner.list_operational_heads(owner, state_kind).await
+    }
+
     async fn refresh_retry_snapshot(
         &self,
         selector: &CredentialSelector,
@@ -266,6 +289,18 @@ impl<S: CredentialPersistence> CredentialPersistence for CacheLayer<S> {
         self.inner.tombstone(selector, tombstone).await
     }
 
+    async fn tombstone_revoked_material(
+        &self,
+        selector: &CredentialSelector,
+        expected_material_epoch: nebula_storage_port::CredentialMaterialEpoch,
+    ) -> Result<CredentialCommit, CredentialPersistenceError> {
+        let _guard = self.lock(selector).lock().await;
+        self.cache.invalidate(selector).await;
+        self.inner
+            .tombstone_revoked_material(selector, expected_material_epoch)
+            .await
+    }
+
     async fn list(
         &self,
         owner: &CredentialOwner,
@@ -302,11 +337,12 @@ mod tests {
     use async_trait::async_trait;
     use nebula_core::CredentialId;
     use nebula_storage_port::{
-        CredentialCommit, CredentialCreate, CredentialOwner, CredentialPersistence,
-        CredentialPersistenceError, CredentialReplacement, CredentialSelector, CredentialTombstone,
-        CredentialVersion, RefreshRetryAdmission, RefreshRetryBlock, RefreshRetryEvidence,
-        RefreshRetryKind, RefreshRetryPhase, RefreshRetryTransition, StoredCredential,
-        StoredCredentialHead, StoredLiveCredential,
+        CredentialCommit, CredentialCreate, CredentialOperationStatus, CredentialOwner,
+        CredentialPersistence, CredentialPersistenceError, CredentialReplacement,
+        CredentialSelector, CredentialTombstone, CredentialVersion, RefreshRetryAdmission,
+        RefreshRetryBlock, RefreshRetryEvidence, RefreshRetryKind, RefreshRetryPhase,
+        RefreshRetryTransition, StoredCredential, StoredCredentialHead,
+        StoredCredentialOperationalHead, StoredLiveCredential,
     };
     use tokio::sync::Notify;
 
@@ -371,6 +407,28 @@ mod tests {
             self.inner.get_head(selector).await
         }
 
+        async fn operation_status(
+            &self,
+            selector: &CredentialSelector,
+        ) -> Result<CredentialOperationStatus, CredentialPersistenceError> {
+            self.inner.operation_status(selector).await
+        }
+
+        async fn get_operational_head(
+            &self,
+            selector: &CredentialSelector,
+        ) -> Result<StoredCredentialOperationalHead, CredentialPersistenceError> {
+            self.inner.get_operational_head(selector).await
+        }
+
+        async fn list_operational_heads(
+            &self,
+            owner: &CredentialOwner,
+            state_kind: Option<&str>,
+        ) -> Result<Vec<StoredCredentialOperationalHead>, CredentialPersistenceError> {
+            self.inner.list_operational_heads(owner, state_kind).await
+        }
+
         async fn refresh_retry_snapshot(
             &self,
             selector: &CredentialSelector,
@@ -400,6 +458,16 @@ mod tests {
             tombstone: CredentialTombstone,
         ) -> Result<CredentialCommit, CredentialPersistenceError> {
             self.inner.tombstone(selector, tombstone).await
+        }
+
+        async fn tombstone_revoked_material(
+            &self,
+            selector: &CredentialSelector,
+            expected_material_epoch: nebula_storage_port::CredentialMaterialEpoch,
+        ) -> Result<CredentialCommit, CredentialPersistenceError> {
+            self.inner
+                .tombstone_revoked_material(selector, expected_material_epoch)
+                .await
         }
 
         async fn list(

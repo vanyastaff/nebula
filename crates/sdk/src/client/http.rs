@@ -20,8 +20,8 @@ use super::credential::v1::{
     CreateCredentialResponse, Credential, CredentialProblem, CredentialProblemKind,
     DeleteCredentialResponse, GetCredentialResponse, ListCredentialsRequest,
     ListCredentialsResponse, ProblemDetails, ReauthorizeCredentialRequest,
-    ReauthorizeCredentialResponse, ResolveCredentialRequest, ResolveCredentialResponse, RetryAfter,
-    UpdateCredentialRequest,
+    ReauthorizeCredentialResponse, ReconcileCredentialRequest, ReconcileCredentialResponse,
+    ResolveCredentialRequest, ResolveCredentialResponse, RetryAfter, UpdateCredentialRequest,
 };
 
 /// Bearer authority used only in the Authorization header. Debug is redacted.
@@ -345,6 +345,23 @@ impl CredentialClient {
             true,
         )
         .await
+    }
+
+    /// Record one operator-established provider outcome exactly once.
+    ///
+    /// The server makes an identical request idempotent, but this client never
+    /// retries automatically. After an unknown acknowledgement, callers may
+    /// resend the same operation, decision, and evidence.
+    pub async fn reconcile(
+        &self,
+        credential_id: &str,
+        request: &ReconcileCredentialRequest,
+    ) -> Result<ReconcileCredentialResponse, HttpError> {
+        let mut url = self.item_url(credential_id)?;
+        url.path_segments_mut()
+            .map_err(|()| HttpError::new(HttpErrorKind::InvalidConfiguration))?
+            .push("reconcile");
+        self.write(Method::POST, url, request).await
     }
 
     fn item_url(&self, id: &str) -> Result<Url, HttpError> {

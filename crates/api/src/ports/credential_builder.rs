@@ -23,9 +23,7 @@ use nebula_credential::{
     Capabilities, CredentialObserver, CredentialRegistry, CredentialService,
     CredentialServiceError, DispatchOps, ErasedPendingStore, StateSource,
 };
-use nebula_storage::credential::{
-    AuditLayer, AuditSink, EncryptionLayer, InMemoryRefreshClaimRepo, KeyProvider,
-};
+use nebula_storage::credential::{AuditLayer, AuditSink, EncryptionLayer, KeyProvider};
 use nebula_storage_port::{
     CredentialPersistence,
     store::{RefreshClaimStore, ReplicaId},
@@ -38,6 +36,7 @@ use tokio_util::sync::CancellationToken;
 /// [`build`]: Self::build
 pub(crate) struct CredentialServiceBuilder<B: CredentialPersistence + 'static> {
     raw_store: B,
+    claim_repo: Arc<dyn RefreshClaimStore>,
     key_provider: Arc<dyn KeyProvider>,
     audit_sink: Arc<dyn AuditSink>,
     pending_store: ErasedPendingStore,
@@ -54,12 +53,13 @@ pub(crate) struct CredentialServiceBuilder<B: CredentialPersistence + 'static> {
 impl<B: CredentialPersistence + 'static> CredentialServiceBuilder<B> {
     /// Provide every mandatory collaborator. Omitting any is a compile
     /// error (the secure-construction guarantee, no runtime check).
-    // guard-justified: the ten mandatory collaborators are the secure-construction
+    // guard-justified: the mandatory collaborators are the secure-construction
     // contract; bundling them into a params struct just moves the arity to that
     // struct's single literal at the call site.
     #[expect(clippy::too_many_arguments)]
     pub(crate) fn new(
         raw_store: B,
+        claim_repo: Arc<dyn RefreshClaimStore>,
         key_provider: Arc<dyn KeyProvider>,
         audit_sink: Arc<dyn AuditSink>,
         pending_store: ErasedPendingStore,
@@ -73,6 +73,7 @@ impl<B: CredentialPersistence + 'static> CredentialServiceBuilder<B> {
     ) -> Self {
         Self {
             raw_store,
+            claim_repo,
             key_provider,
             audit_sink,
             pending_store,
@@ -151,14 +152,11 @@ impl<B: CredentialPersistence + 'static> CredentialServiceBuilder<B> {
         let persistence: Arc<dyn CredentialPersistence> = Arc::new(encrypted);
         let layered = AuditLayer::new(Arc::clone(&persistence), self.audit_sink);
         let store: Arc<dyn CredentialPersistence> = Arc::new(layered);
-        // Sole-management-writer discipline: the builder composes its own
-        // coordinator over an `InMemoryRefreshClaimRepo`, and no crate outside
-        // `nebula-credential` holds a direct claim-store writer surface — the
-        // engine exposes no claim-store constructor.
-        let claim_repo: Arc<dyn RefreshClaimStore> = Arc::new(InMemoryRefreshClaimRepo::new());
+        // The fixture supplies claims from the same admitted backend as the
+        // aggregate so revoke exclusion and material fencing are real.
         let refresh_coordinator = Arc::new(
             RefreshCoordinator::new_with(
-                claim_repo,
+                self.claim_repo,
                 ReplicaId::new("nebula-api-credential-builder"),
                 RefreshCoordConfig::default(),
             )

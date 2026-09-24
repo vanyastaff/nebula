@@ -247,6 +247,111 @@ pub mod v1 {
         RefreshBlocked,
         /// Interactive authorization must complete before use.
         ReauthRequired,
+        /// A provider operation is in flight under server-owned authority.
+        OperationInFlight {
+            /// The operation whose provider boundary is in flight.
+            operation: CredentialReconcileOperationV1,
+        },
+        /// An ambiguous provider outcome requires an explicit operator decision.
+        ReconciliationRequired {
+            /// The operation whose outcome must be reconciled. `None` denotes
+            /// a legacy incident that predates durable operation typing; it
+            /// cannot be adjudicated and must be replaced explicitly.
+            operation: Option<CredentialReconcileOperationV1>,
+        },
+    }
+
+    /// Provider operation whose ambiguous outcome can be reconciled.
+    #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    #[non_exhaustive]
+    #[serde(rename_all = "snake_case")]
+    pub enum CredentialReconcileOperationV1 {
+        /// Provider refresh and local refreshed-material finalization.
+        #[default]
+        Refresh,
+        /// Provider revoke and local tombstone finalization.
+        Revoke,
+    }
+
+    /// Provider outcome established by operator evidence.
+    ///
+    /// Refresh and revoke use disjoint spellings so a decision cannot silently
+    /// change meaning when transported independently from its operation.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    #[non_exhaustive]
+    #[serde(rename_all = "snake_case")]
+    pub enum CredentialReconcileDecisionV1 {
+        /// The provider applied the refresh.
+        ProviderApplied,
+        /// The provider did not apply the refresh.
+        ProviderNotApplied,
+        /// The provider revoked the credential.
+        ProviderRevoked,
+        /// The provider did not revoke the credential.
+        ProviderNotRevoked,
+    }
+
+    impl CredentialReconcileDecisionV1 {
+        /// Operation this decision can adjudicate.
+        #[must_use]
+        pub const fn operation(self) -> CredentialReconcileOperationV1 {
+            match self {
+                Self::ProviderApplied | Self::ProviderNotApplied => {
+                    CredentialReconcileOperationV1::Refresh
+                },
+                Self::ProviderRevoked | Self::ProviderNotRevoked => {
+                    CredentialReconcileOperationV1::Revoke
+                },
+            }
+        }
+    }
+
+    /// Input for reconciling one ambiguous provider operation.
+    #[derive(Clone, Serialize)]
+    pub struct ReconcileCredentialRequest {
+        /// Operation whose outcome was established.
+        pub operation: CredentialReconcileOperationV1,
+        /// Operation-specific provider outcome.
+        pub decision: CredentialReconcileDecisionV1,
+        /// Secret-free operator evidence. Debug always redacts this value.
+        pub evidence: String,
+    }
+
+    impl ReconcileCredentialRequest {
+        /// Build a request whose operation is derived from its typed decision.
+        #[must_use]
+        pub fn new(decision: CredentialReconcileDecisionV1, evidence: impl Into<String>) -> Self {
+            Self {
+                operation: decision.operation(),
+                decision,
+                evidence: evidence.into(),
+            }
+        }
+    }
+
+    impl fmt::Debug for ReconcileCredentialRequest {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.debug_struct("ReconcileCredentialRequest")
+                .field("operation", &self.operation)
+                .field("decision", &self.decision)
+                .field("evidence", &REDACTED)
+                .finish()
+        }
+    }
+
+    /// Recorded result of one reconciliation command.
+    #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+    pub struct ReconcileCredentialResponse {
+        /// Operation whose outcome is on record.
+        pub operation: CredentialReconcileOperationV1,
+        /// Provider outcome on record.
+        pub decision: CredentialReconcileDecisionV1,
+        /// Whether this request recorded the result rather than replaying it.
+        pub changed: bool,
+        /// Lowercase SHA-256 digest of the evidence on record.
+        pub evidence_digest: String,
+        /// Stable server-authored human-readable summary.
+        pub message: String,
     }
 
     /// Input for starting universal credential acquisition.
@@ -500,6 +605,8 @@ pub mod v1 {
         AcquisitionReconciliationRequired,
         /// Persisted credential state is incompatible with the serving runtime.
         StateRefused,
+        /// Another provider operation holds the durable credential gate.
+        OperationBlocked,
     }
 
     impl CredentialProblemKind {
@@ -516,6 +623,9 @@ pub mod v1 {
                     Self::AcquisitionReconciliationRequired
                 },
                 "https://nebula.dev/problems/credential-state-refused" => Self::StateRefused,
+                "https://nebula.dev/problems/credential-operation-blocked" => {
+                    Self::OperationBlocked
+                },
                 "https://nebula.dev/problems/credential-revoke-reconciliation-required" => {
                     Self::RevokeReconciliationRequired
                 },
@@ -538,6 +648,7 @@ pub mod v1 {
                     Some("API:CREDENTIAL_ACQUISITION_RECONCILIATION_REQUIRED")
                 },
                 Self::StateRefused => Some("API:CREDENTIAL_STATE_REFUSED"),
+                Self::OperationBlocked => Some("API:CREDENTIAL_OPERATION_BLOCKED"),
                 Self::RevokeReconciliationRequired => {
                     Some("API:CREDENTIAL_REVOKE_RECONCILIATION_REQUIRED")
                 },
@@ -599,17 +710,46 @@ pub mod v1 {
                 kind
             }
         }
+
+        /// Operation holding the durable credential gate, when the server
+        /// returned the typed operation-blocked problem.
+        #[must_use]
+        pub fn blocked_operation(&self) -> Option<CredentialReconcileOperationV1> {
+            if self.credential_kind() != CredentialProblemKind::OperationBlocked {
+                return None;
+            }
+            match self.problem.extensions.get("operation")?.as_str()? {
+                "refresh" => Some(CredentialReconcileOperationV1::Refresh),
+                "revoke" => Some(CredentialReconcileOperationV1::Revoke),
+                // Legacy-unclassified and future operations are deliberately
+                // not promoted into a submit-capable SDK enum.
+                _ => None,
+            }
+        }
     }
 }
 
 // Preserve the pre-v1 public type identity until a declared breaking release.
 // New remote-client code should use `v1::CredentialLifecycleState`.
-pub use nebula_credential::CredentialLifecycleState;
+pub use nebula_credential::{CredentialLifecycleOperation, CredentialLifecycleState};
 
 #[cfg(test)]
 mod tests {
     use super::v1::*;
     use serde_json::json;
+
+    #[test]
+    fn reconciliation_vocabulary_is_typed_and_evidence_debug_is_redacted() {
+        let request = ReconcileCredentialRequest::new(
+            CredentialReconcileDecisionV1::ProviderRevoked,
+            "provider-secret-canary",
+        );
+        let wire = serde_json::to_value(&request).expect("request serializes");
+
+        assert_eq!(wire["operation"], "revoke");
+        assert_eq!(wire["decision"], "provider_revoked");
+        assert!(!format!("{request:?}").contains("secret-canary"));
+    }
 
     #[test]
     fn reauthorization_request_has_only_properties_and_redacts_debug() {

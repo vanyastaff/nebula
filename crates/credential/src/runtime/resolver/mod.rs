@@ -295,6 +295,7 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
         self.ensure_source_wired()?;
         let credential_id = selector.credential_id();
         let stored = self.load_and_verify::<C>(selector).await?;
+        self.ensure_material_available(selector, &stored).await?;
         let state: C::State = self.deserialize::<C>(credential_id, &stored)?;
         let scheme = C::project(&state);
         Ok(self.materialize_handle::<C>(selector, scheme))
@@ -337,6 +338,7 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
         let StoredCredential::Live(stored) = physical else {
             return Err(ResolveError::Store(CredentialPersistenceError::NotFound));
         };
+        self.ensure_material_available(selector, &stored).await?;
         reject_persisted_reauth(&stored)?;
 
         let expected_kind = <C::State as CredentialState>::KIND;
@@ -382,6 +384,10 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
                 let credential_id = selector.credential_id();
                 let credential_id_text = credential_id.to_string();
                 let stored = self.load_and_verify::<C>(selector).await?;
+                if stored.reauth_required() {
+                    self.ensure_material_available(selector, &stored).await?;
+                    reject_persisted_reauth(&stored)?;
+                }
                 let state: C::State = self.deserialize::<C>(credential_id, &stored)?;
 
                 // Route on the credential's own state-derived policy, not an ad-hoc
@@ -425,6 +431,7 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
                 );
 
                 if decision == Decision::Usable {
+                    self.ensure_material_available(selector, &stored).await?;
                     let scheme = C::project(&state);
                     return Ok(self.materialize_handle::<C>(selector, scheme));
                 }
@@ -451,6 +458,7 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
                         credential_id = %credential_id,
                         "circuit breaker open: too many refresh failures, serving stale-but-valid credential within early-refresh window"
                     );
+                    self.ensure_material_available(selector, &stored).await?;
                     let scheme = C::project(&state);
                     return Ok(self.materialize_handle::<C>(selector, scheme));
                 }
@@ -596,6 +604,9 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
                             return RefreshDisposition::no_state_change(Err(error));
                         },
                     };
+                    if let Err(error) = reject_persisted_reauth(&latest) {
+                        return RefreshDisposition::no_state_change(Err(error));
+                    }
                     if latest.material_epoch() != observed_material_epoch {
                         return RefreshDisposition::state_advanced(Ok(
                             CoordinatedResolve::Reevaluate,
@@ -641,6 +652,9 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
                 Err(ResolveError::RefreshOutcomePending {
                     credential_id: credential_id_text,
                 })
+            },
+            Err(RefreshError::OperationBlocked { operation }) => {
+                Err(ResolveError::OperationBlocked { operation })
             },
             Err(RefreshError::ReconciliationRequired) => {
                 self.refresh_coordinator.record_failure(&credential_id_text);
@@ -706,6 +720,45 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
         Ok(())
     }
 
+    /// Linearize new material use against the operation and aggregate in one
+    /// authoritative snapshot. Existing handles retain their acquired material.
+    async fn ensure_material_available(
+        &self,
+        selector: &CredentialSelector,
+        stored: &StoredLiveCredential,
+    ) -> Result<(), ResolveError> {
+        use nebula_storage_port::store::CredentialOperationStatus;
+
+        match self.store.operation_status(selector).await? {
+            CredentialOperationStatus::InFlight { operation }
+            | CredentialOperationStatus::ReconciliationRequired { operation } => {
+                tracing::warn!(
+                    ?operation,
+                    "credential projection blocked by durable operation"
+                );
+                Err(ResolveError::OperationBlocked { operation })
+            },
+            CredentialOperationStatus::Open {
+                reauth_required: true,
+                ..
+            } => Err(ResolveError::ReauthRequired {
+                credential_id: selector.credential_id().to_string(),
+                reason: ReauthReason::ProviderRejected,
+            }),
+            CredentialOperationStatus::Open {
+                version,
+                material_epoch,
+                ..
+            } if material_epoch != stored.material_epoch() => Err(ResolveError::Store(
+                CredentialPersistenceError::VersionConflict {
+                    expected: stored.version(),
+                    actual: version,
+                },
+            )),
+            CredentialOperationStatus::Open { .. } => Ok(()),
+        }
+    }
+
     async fn active_refresh_retry_gate(
         &self,
         selector: &CredentialSelector,
@@ -760,8 +813,6 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
         let StoredCredential::Live(stored) = physical else {
             return Err(ResolveError::Store(CredentialPersistenceError::NotFound));
         };
-        reject_persisted_reauth(&stored)?;
-
         let expected_kind = <C::State as CredentialState>::KIND;
         if stored.state_kind() != expected_kind {
             return Err(ResolveError::KindMismatch {

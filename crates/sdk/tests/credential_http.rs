@@ -296,6 +296,66 @@ async fn state_refusal_is_a_typed_non_retryable_problem() {
     );
 }
 
+#[tokio::test]
+async fn reconcile_sends_typed_revoke_without_internal_authority() {
+    let body = json!({
+        "operation": "revoke",
+        "decision": "provider_revoked",
+        "changed": true,
+        "evidence_digest": "00".repeat(32),
+        "message": "provider outcome recorded"
+    })
+    .to_string();
+    let server = Server::start(vec![response(200, "application/json", "", &body)]).await;
+    let request = ReconcileCredentialRequest {
+        operation: CredentialReconcileOperationV1::Revoke,
+        decision: CredentialReconcileDecisionV1::ProviderRevoked,
+        evidence: "provider-ticket-secret-canary".to_owned(),
+    };
+
+    let result = server.client().reconcile("cred_1", &request).await.unwrap();
+
+    assert_eq!(result.operation, CredentialReconcileOperationV1::Revoke);
+    assert_eq!(
+        result.decision,
+        CredentialReconcileDecisionV1::ProviderRevoked
+    );
+    let sent = server.seen().pop().unwrap();
+    assert!(sent.starts_with("POST /api/v1/orgs/org/workspaces/ws/credentials/cred_1/reconcile "));
+    assert!(sent.contains(r#""operation":"revoke""#));
+    assert!(sent.contains(r#""decision":"provider_revoked""#));
+    assert!(!format!("{request:?}").contains("secret-canary"));
+    for internal in ["claim_id", "generation", "fencing", "tenant_proof"] {
+        assert!(
+            !sent.contains(internal),
+            "request exposed internal field {internal}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn operation_blocked_problem_exposes_only_typed_operation() {
+    let body = json!({
+        "type": "https://nebula.dev/problems/credential-operation-blocked",
+        "title": "Credential Operation Blocked",
+        "status": 409,
+        "operation": "revoke"
+    })
+    .to_string();
+    let server = Server::start(vec![response(409, "application/problem+json", "", &body)]).await;
+
+    let error = server.client().get("cred_1").await.unwrap_err();
+    let problem = error.problem().unwrap();
+    assert_eq!(
+        problem.credential_kind(),
+        CredentialProblemKind::OperationBlocked
+    );
+    assert_eq!(
+        problem.blocked_operation(),
+        Some(CredentialReconcileOperationV1::Revoke)
+    );
+}
+
 #[test]
 fn credential_client_ignores_implicit_system_proxy_configuration() {
     let output = std::process::Command::new(std::env::current_exe().unwrap())

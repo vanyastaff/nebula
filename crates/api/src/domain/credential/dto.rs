@@ -10,7 +10,10 @@
 
 use std::{collections::HashMap, fmt};
 
-use nebula_storage_port::store::RefreshOutcomeDecision;
+use nebula_storage_port::store::{
+    CredentialOperationDecision, CredentialOperationKind, RefreshOutcomeDecision,
+    RevokeOutcomeDecision,
+};
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
@@ -223,6 +226,17 @@ pub enum CredentialLifecycleState {
     RefreshBlocked,
     /// Interactive authorization must complete before the credential is usable.
     ReauthRequired,
+    /// A provider operation is in flight under server-owned authority.
+    OperationInFlight {
+        /// The operation currently crossing the provider boundary.
+        operation: CredentialReconcileOperationV1,
+    },
+    /// An ambiguous provider outcome requires an operator decision.
+    ReconciliationRequired {
+        /// The affected operation. `None` identifies a legacy incident that
+        /// predates durable operation typing and cannot be adjudicated.
+        operation: Option<CredentialReconcileOperationV1>,
+    },
 }
 
 /// Paginated list of credential summaries.
@@ -539,17 +553,28 @@ pub struct RevokeCredentialResponse {
 
 // --- Reconciliation ---
 
-/// Version 1 wire vocabulary for the provider outcome an operator has
-/// established for a refresh whose claim expired in flight.
+/// Version 1 wire vocabulary for the provider operation being reconciled.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CredentialReconcileOperationV1 {
+    /// Refresh provider material and finalize the refreshed state locally.
+    #[default]
+    Refresh,
+    /// Revoke provider material and finalize a local tombstone.
+    Revoke,
+}
+
+/// Version 1 wire vocabulary for the provider outcome an operator established
+/// for a typed credential operation whose claim expired in flight.
 ///
 /// The API owns this vocabulary instead of serializing the port's
-/// [`RefreshOutcomeDecision`], which carries no serde derive. The two spellings
+/// [`CredentialOperationDecision`], which carries no serde derive. The wire spellings
 /// are the same bytes on purpose: the durable `adjudication_decision` column
 /// stores the port spelling, so a drift here would record a decision this route
 /// accepted as a row storage can no longer decode. The unit test
 /// `reconcile_decision_wire_spelling_matches_the_durable_port_spelling` pins
-/// that equality, and it is the only thing that does. Frozen for the same
-/// reason: a third outcome is a new version, never a rename of these two.
+/// that equality. Refresh and revoke use disjoint outcomes; existing spellings
+/// retain their meaning when a new operation is added.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum CredentialReconcileDecisionV1 {
@@ -559,41 +584,86 @@ pub enum CredentialReconcileDecisionV1 {
     /// The provider never applied the refresh; the previously stored material
     /// stands and the credential may be refreshed again.
     ProviderNotApplied,
+    /// The provider revoked the credential.
+    ProviderRevoked,
+    /// The provider did not revoke the credential.
+    ProviderNotRevoked,
 }
 
 impl CredentialReconcileDecisionV1 {
-    /// The port decision this wire value names.
+    /// The typed port decision named by this wire pair.
     #[must_use]
-    pub const fn to_port(self) -> RefreshOutcomeDecision {
-        match self {
-            Self::ProviderApplied => RefreshOutcomeDecision::ProviderApplied,
-            Self::ProviderNotApplied => RefreshOutcomeDecision::ProviderNotApplied,
+    pub const fn to_port(
+        self,
+        operation: CredentialReconcileOperationV1,
+    ) -> Option<CredentialOperationDecision> {
+        match (operation, self) {
+            (CredentialReconcileOperationV1::Refresh, Self::ProviderApplied) => Some(
+                CredentialOperationDecision::Refresh(RefreshOutcomeDecision::ProviderApplied),
+            ),
+            (CredentialReconcileOperationV1::Refresh, Self::ProviderNotApplied) => Some(
+                CredentialOperationDecision::Refresh(RefreshOutcomeDecision::ProviderNotApplied),
+            ),
+            (CredentialReconcileOperationV1::Revoke, Self::ProviderRevoked) => Some(
+                CredentialOperationDecision::Revoke(RevokeOutcomeDecision::ProviderRevoked),
+            ),
+            (CredentialReconcileOperationV1::Revoke, Self::ProviderNotRevoked) => Some(
+                CredentialOperationDecision::Revoke(RevokeOutcomeDecision::ProviderNotRevoked),
+            ),
+            _ => None,
         }
     }
 
     /// The wire value naming `decision`.
     ///
-    /// Two total arms and no wildcard, which is the point: the port enum is not
-    /// `#[non_exhaustive]`, so a third provider outcome breaks this build
-    /// instead of silently classifying as one of the two on a command that
+    /// Total arms and no wildcard, which is the point: the port enum is not
+    /// `#[non_exhaustive]`, so a new provider outcome breaks this build
+    /// instead of silently classifying as an existing decision on a command that
     /// decides whether a credential may be used again.
     #[must_use]
-    pub const fn from_port(decision: RefreshOutcomeDecision) -> Self {
+    pub const fn from_port(decision: CredentialOperationDecision) -> Self {
         match decision {
-            RefreshOutcomeDecision::ProviderApplied => Self::ProviderApplied,
-            RefreshOutcomeDecision::ProviderNotApplied => Self::ProviderNotApplied,
+            CredentialOperationDecision::Refresh(RefreshOutcomeDecision::ProviderApplied) => {
+                Self::ProviderApplied
+            },
+            CredentialOperationDecision::Refresh(RefreshOutcomeDecision::ProviderNotApplied) => {
+                Self::ProviderNotApplied
+            },
+            CredentialOperationDecision::Revoke(RevokeOutcomeDecision::ProviderRevoked) => {
+                Self::ProviderRevoked
+            },
+            CredentialOperationDecision::Revoke(RevokeOutcomeDecision::ProviderNotRevoked) => {
+                Self::ProviderNotRevoked
+            },
         }
     }
 }
 
-/// Request body for reconciling a credential's retained refresh claim.
+impl CredentialReconcileOperationV1 {
+    /// Project a typed port operation into the public wire vocabulary.
+    #[must_use]
+    pub const fn from_port(operation: CredentialOperationKind) -> Option<Self> {
+        match operation {
+            CredentialOperationKind::Refresh => Some(Self::Refresh),
+            CredentialOperationKind::Revoke => Some(Self::Revoke),
+            CredentialOperationKind::LegacyUnclassified => None,
+        }
+    }
+}
+
+/// Request body for reconciling a credential's retained provider-operation claim.
 ///
-/// Reconciliation is an operator evidence command, not a credential mutation:
-/// it records what the provider did for a refresh whose local outcome is
-/// unknown, which is the only thing that clears the retained poison a refused
-/// `release` leaves behind.
+/// Reconciliation is an operator evidence command. Refresh reconciliation
+/// resolves the retained poison; a confirmed revoke is finalized as an atomic
+/// tombstone by the authoritative persistence adapter.
 #[derive(Clone, Deserialize, ToSchema)]
 pub struct ReconcileCredentialRequest {
+    /// Provider operation whose outcome is being reconciled.
+    ///
+    /// Omitted legacy requests retain their historical refresh meaning. New
+    /// clients should always send this field explicitly.
+    #[serde(default)]
+    pub operation: CredentialReconcileOperationV1,
     /// The provider outcome the operator has established.
     pub decision: CredentialReconcileDecisionV1,
     /// Operator note justifying the decision. Audited durable text, never
@@ -605,19 +675,22 @@ impl fmt::Debug for ReconcileCredentialRequest {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("ReconcileCredentialRequest")
+            .field("operation", &self.operation)
             .field("decision", &self.decision)
             .field("evidence", &REDACTED)
             .finish()
     }
 }
 
-/// Response from reconciling a credential's retained refresh claim.
+/// Response from reconciling a credential's retained provider-operation claim.
 ///
 /// A 200 means the decision is on record, so there is deliberately no
 /// `reconciled: bool` — a flag that is always `true` would only blur the one
 /// distinction a client needs, which is `changed`.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct ReconcileCredentialResponse {
+    /// Provider operation whose outcome is on record.
+    pub operation: CredentialReconcileOperationV1,
     /// The provider outcome now on record for the credential.
     pub decision: CredentialReconcileDecisionV1,
     /// Whether this call recorded the decision. `false` is the idempotent
@@ -815,6 +888,7 @@ mod tests {
     #[test]
     fn reconcile_request_debug_redacts_evidence() {
         let request = ReconcileCredentialRequest {
+            operation: CredentialReconcileOperationV1::Refresh,
             decision: CredentialReconcileDecisionV1::ProviderApplied,
             evidence: SECRET_CANARY.to_owned(),
         };
@@ -879,8 +953,10 @@ mod tests {
         // an independent choice, it is the durable spelling. What catches a
         // *third* variant is the exhaustiveness of `from_port`, not this array.
         let port_variants = [
-            RefreshOutcomeDecision::ProviderApplied,
-            RefreshOutcomeDecision::ProviderNotApplied,
+            CredentialOperationDecision::Refresh(RefreshOutcomeDecision::ProviderApplied),
+            CredentialOperationDecision::Refresh(RefreshOutcomeDecision::ProviderNotApplied),
+            CredentialOperationDecision::Revoke(RevokeOutcomeDecision::ProviderRevoked),
+            CredentialOperationDecision::Revoke(RevokeOutcomeDecision::ProviderNotRevoked),
         ];
 
         for port in port_variants {
@@ -901,5 +977,23 @@ mod tests {
                 "the wire vocabulary must round-trip, so a client can send back what it was told"
             );
         }
+    }
+
+    #[test]
+    fn reconcile_request_without_operation_keeps_legacy_refresh_meaning() {
+        let request: ReconcileCredentialRequest = serde_json::from_value(serde_json::json!({
+            "decision": "provider_applied",
+            "evidence": "provider ticket"
+        }))
+        .expect("legacy refresh reconciliation request must remain accepted");
+
+        assert_eq!(request.operation, CredentialReconcileOperationV1::Refresh);
+        assert_eq!(
+            request
+                .decision
+                .to_port(request.operation)
+                .expect("legacy decision matches refresh"),
+            CredentialOperationDecision::Refresh(RefreshOutcomeDecision::ProviderApplied)
+        );
     }
 }

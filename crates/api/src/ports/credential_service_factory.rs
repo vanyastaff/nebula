@@ -27,7 +27,7 @@ use super::credential_builder::CredentialServiceBuilder;
 use nebula_storage::credential::{
     AuditEvent, AuditSink, InMemoryPendingStore, KeyProvider, SqliteCredentialPersistence,
 };
-use nebula_storage_port::{CredentialPersistence, CredentialPersistenceError};
+use nebula_storage_port::{CredentialPersistence, CredentialPersistenceError, RefreshClaimStore};
 
 /// Audit sink that records every credential operation to the tracing log
 /// (metadata only — [`AuditEvent`] carries no secret material by design).
@@ -133,8 +133,8 @@ pub async fn with_memory_store(
     with_store(store, key_provider)
 }
 
-/// Compose a [`CredentialService`] over an arbitrary `raw_store` backend with a
-/// caller-supplied [`KeyProvider`].
+/// Compose a [`CredentialService`] over an admitted SQLite test backend with a
+/// caller-supplied [`KeyProvider`] and claims from that same database.
 ///
 /// The ordinary test path (`with_memory_store`) passes an ephemeral in-memory
 /// SQLite adapter. This API-only fixture deliberately keeps pending state in
@@ -148,8 +148,8 @@ pub async fn with_memory_store(
 ///
 /// Returns [`CredentialServiceFactoryError`] if registry registration,
 /// dispatch-ops registration, or the final service build fails.
-pub fn with_store<S: CredentialPersistence + 'static>(
-    raw_store: S,
+pub fn with_store(
+    raw_store: SqliteCredentialPersistence,
     key_provider: Arc<dyn KeyProvider>,
 ) -> Result<Arc<CredentialService>, CredentialServiceFactoryError> {
     let registry = super::credential_schema_registry::default_registry()?;
@@ -169,7 +169,8 @@ pub fn with_store<S: CredentialPersistence + 'static>(
     // INTERACTIVE/REFRESHABLE/REVOCABLE/TESTABLE caps in the registry.
     register_runtime_ops::<SigningKeyCredential, ErasedPendingStore>(&mut ops)?;
 
-    compose_credential_service(raw_store, key_provider, registry, ops, None)
+    let claims = Arc::new(raw_store.refresh_claim_repo());
+    compose_credential_service(raw_store, claims, key_provider, registry, ops, None)
 }
 
 /// Compose a [`CredentialService`] over `raw_store` with a **caller-supplied
@@ -187,6 +188,7 @@ pub fn with_store<S: CredentialPersistence + 'static>(
 /// composed parts (capability/ops mismatch).
 fn compose_credential_service<S: CredentialPersistence + 'static>(
     raw_store: S,
+    claims: Arc<dyn RefreshClaimStore>,
     key_provider: Arc<dyn KeyProvider>,
     registry: CredentialRegistry,
     ops: DispatchOps<ErasedPendingStore>,
@@ -210,6 +212,7 @@ fn compose_credential_service<S: CredentialPersistence + 'static>(
     let transport = Arc::new(NoNetworkRefreshTransport);
     let mut builder = CredentialServiceBuilder::new(
         raw_store,
+        claims,
         key_provider,
         audit_sink,
         pending,
@@ -257,7 +260,8 @@ pub async fn with_memory_store_parts(
     let store = SqliteCredentialPersistence::connect_memory()
         .await
         .map_err(|e| CredentialServiceFactoryError::Store(e.to_string()))?;
-    compose_credential_service(store, key_provider, registry, ops, None)
+    let claims = Arc::new(store.refresh_claim_repo());
+    compose_credential_service(store, claims, key_provider, registry, ops, None)
 }
 
 /// Build a [`CredentialService`] over an in-memory store but with an **external
@@ -282,5 +286,6 @@ pub async fn with_memory_store_external(
     let store = SqliteCredentialPersistence::connect_memory()
         .await
         .map_err(|e| CredentialServiceFactoryError::Store(e.to_string()))?;
-    compose_credential_service(store, key_provider, registry, ops, Some(provider))
+    let claims = Arc::new(store.refresh_claim_repo());
+    compose_credential_service(store, claims, key_provider, registry, ops, Some(provider))
 }

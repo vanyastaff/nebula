@@ -11,6 +11,22 @@ changes are expected between minor releases — call them out here.
 
 ### Breaking
 
+- **Typed credential operation recovery advances development packages to 0.19.0
+  in lockstep.** Claims persist refresh or revoke intent before provider dispatch;
+  revoke pins the material epoch and has its own reconciliation decisions.
+  Credential persistence adds authoritative aggregate/operation snapshots, and
+  technical claim/adjudication ports require the operation-specific inputs.
+  Update exact-version pins and implementations together. HTTP reconciliation
+  requests without `operation` retain their refresh meaning; revoke decisions
+  require `operation: "revoke"`. SDK lifecycle responses expose in-flight and
+  reconciliation-required states without internal claim authority.
+
+  Stop old credential writers before applying migration 0057 and restart with
+  the new runtime. Historical claims cannot be reliably classified as refresh
+  or revoke: unresolved legacy incidents remain blocked and reject typed
+  adjudication. Explicitly delete the affected credential and acquire a new
+  credential id after verifying the provider state. This change does not yet
+  provide durable acquisition reservations or command receipts.
 - **Durable credential reauthentication advances development packages to 0.18.0
   in lockstep.** Refresh claims and sentinel incidents are owner-qualified, and
   threshold escalation now records the incident and advances the credential to
