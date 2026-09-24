@@ -338,6 +338,7 @@ async fn wired_registrar_performs_typed_registration() {
                 recovery_gate: None,
                 topology: None,
                 rate_limit: None,
+                row_id: None,
             },
         )
         .await

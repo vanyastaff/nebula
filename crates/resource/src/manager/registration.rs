@@ -543,6 +543,7 @@ impl Manager {
         topology: R::Topology,
         recovery_gate: Option<Arc<RecoveryGate>>,
         rate_limit: Option<Arc<crate::rate_limit::RateLimiter>>,
+        row_id: Option<&str>,
         expected_slot_identity: &crate::dedup::SlotIdentity,
     ) -> Result<crate::dedup::SlotIdentity, Error>
     where
@@ -666,7 +667,8 @@ impl Manager {
         //    the structural barrier against cross-tenant runtime bleed
         //    (credential isolation, slot model). It carries no secret bytes
         //    — only a stable identity over the resolved binding *names*.
-        let slot_identity = crate::dedup::SlotIdentity::from_bindings(
+        let slot_identity = crate::dedup::SlotIdentity::from_row_bindings(
+            row_id,
             slot_bindings
                 .iter()
                 .map(|(slot, cred)| (slot.as_str(), cred.as_str())),

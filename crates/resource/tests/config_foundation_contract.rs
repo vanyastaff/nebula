@@ -343,6 +343,7 @@ async fn register_config<C: ResourceConfig + serde::de::DeserializeOwned>(
                 recovery_gate: None,
                 topology: None,
                 rate_limit: None,
+                row_id: None,
             },
             &expected_slot_identity,
         )
@@ -551,6 +552,7 @@ async fn equal_schema_factory_rechecks_its_typed_config_contract() {
                 recovery_gate: None,
                 topology: None,
                 rate_limit: None,
+                row_id: None,
             },
             &expected_slot_identity,
         )
@@ -610,6 +612,7 @@ async fn different_schema_factory_rechecks_its_own_schema() {
                 recovery_gate: None,
                 topology: None,
                 rate_limit: None,
+                row_id: None,
             },
             &expected_slot_identity,
         )

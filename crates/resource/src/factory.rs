@@ -218,6 +218,13 @@ pub struct RegisterRequest<'a> {
     /// ([`RateLimitSettings`](crate::rate_limit::RateLimitSettings) JSON);
     /// `None` means unlimited.
     pub rate_limit: Option<serde_json::Value>,
+    /// Id of the stored resource row this registration materializes.
+    ///
+    /// Folded into the registry row identity
+    /// ([`SlotIdentity::from_row_bindings`]) so two stored rows of one kind
+    /// in one scope stay distinct rows instead of replacing each other.
+    /// `None` for programmatic registrations that do not come from storage.
+    pub row_id: Option<String>,
 }
 
 impl std::fmt::Debug for RegisterRequest<'_> {
@@ -234,6 +241,7 @@ impl std::fmt::Debug for RegisterRequest<'_> {
             .field("recovery_gate", &self.recovery_gate.is_some())
             .field("topology", &self.topology.is_some())
             .field("rate_limit", &self.rate_limit.is_some())
+            .field("row_id", &self.row_id)
             .finish()
     }
 }
@@ -770,6 +778,7 @@ where
                     topology,
                     request.recovery_gate,
                     rate_limit,
+                    request.row_id.as_deref(),
                     expected_slot_identity,
                 )
                 .await
@@ -1066,7 +1075,8 @@ impl ResourceActivatorRegistry {
 }
 
 fn slot_identity_from_request(request: &RegisterRequest<'_>) -> SlotIdentity {
-    SlotIdentity::from_bindings(
+    SlotIdentity::from_row_bindings(
+        request.row_id.as_deref(),
         request
             .slot_bindings
             .iter()

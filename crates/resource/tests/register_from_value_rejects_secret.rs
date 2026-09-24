@@ -158,6 +158,7 @@ async fn register_from_value(
                 recovery_gate: None,
                 topology: None,
                 rate_limit: None,
+                row_id: None,
             },
             &expected_slot_identity,
         )

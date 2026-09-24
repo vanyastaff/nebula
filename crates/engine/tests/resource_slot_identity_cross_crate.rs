@@ -219,6 +219,7 @@ fn request<'a>(expr: &'a ExpressionEngine, bindings: &[(&str, &str)]) -> Registe
         recovery_gate: None,
         topology: None,
         rate_limit: None,
+        row_id: None,
     }
 }
 

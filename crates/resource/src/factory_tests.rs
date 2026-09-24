@@ -257,6 +257,7 @@ fn request(expr_engine: &ExpressionEngine) -> RegisterRequest<'_> {
         recovery_gate: None,
         topology: None,
         rate_limit: None,
+        row_id: None,
     }
 }
 
@@ -375,6 +376,48 @@ async fn known_kind_registers_against_manager() {
     );
 }
 
+/// Two stored rows of one kind in one scope must stay two registry rows.
+/// Keyed by bindings alone both would be `Unbound` and the second activation
+/// would silently replace the first row's runtime.
+#[tokio::test]
+async fn stored_rows_of_one_kind_in_one_scope_stay_distinct() {
+    let manager = Manager::new();
+    let expr_engine = ExpressionEngine::with_cache_size(16);
+    let mut registry = ResourceActivatorRegistry::new();
+    registry
+        .insert("test-kind", test_factory(Arc::new(AtomicU64::new(0))))
+        .expect("test resource metadata admits");
+
+    let mut identities = Vec::new();
+    for row_id in ["res_first", "res_second"] {
+        let outcome = registry
+            .register(
+                "test-kind",
+                &manager,
+                RegisterRequest {
+                    row_id: Some(row_id.to_owned()),
+                    ..request(&expr_engine)
+                },
+            )
+            .await
+            .expect("stored row registers");
+        identities.push(outcome.slot_identity);
+    }
+
+    assert_ne!(identities[0], identities[1]);
+    for identity in &identities {
+        assert!(
+            manager.has_registered_for_identity(&TestRes::key(), &ScopeLevel::Global, identity),
+            "each stored row keeps its own registry row"
+        );
+    }
+    assert_eq!(
+        identities[0],
+        SlotIdentity::from_row_bindings(Some("res_first"), std::iter::empty()),
+        "the recorded identity is the canonical row-bound derivation"
+    );
+}
+
 #[cfg(feature = "rotation")]
 #[tokio::test]
 async fn identity_mismatch_is_typed_and_rolls_back_manager_and_fanout_state() {
@@ -413,6 +456,7 @@ async fn identity_mismatch_is_typed_and_rolls_back_manager_and_fanout_state() {
                 recovery_gate: None,
                 topology: None,
                 rate_limit: None,
+                row_id: None,
             },
             Some(&fanout_index),
         )
@@ -481,6 +525,7 @@ async fn conflicting_duplicate_slot_bindings_fail_before_manager_publication() {
                 recovery_gate: None,
                 topology: None,
                 rate_limit: None,
+                row_id: None,
             },
             Some(&fanout_index),
         )
