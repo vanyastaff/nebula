@@ -145,6 +145,10 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
                 &[#(#slot_key_literals),*]
             }
 
+            fn supports_credential_slot_projection(&self, slot: &str) -> bool {
+                Self::credential_slot_names().contains(&slot)
+            }
+
             fn install_credential_slot(
                 &self,
                 slot: &str,

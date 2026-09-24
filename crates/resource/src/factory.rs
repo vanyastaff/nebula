@@ -738,14 +738,23 @@ where
                     )
                     .with_resource_key(R::key()));
                 };
-                let Some((_, Some(installed))) =
-                    resource.credential_slot_projection(&binding.slot_name)
+                if !resource.supports_credential_slot_projection(&binding.slot_name) {
+                    return Err(crate::Error::permanent(
+                        "rotation binding requires conditional credential projection support",
+                    )
+                    .with_resource_key(R::key()));
+                }
+                let Some((_, installed)) = resource.credential_slot_projection(&binding.slot_name)
                 else {
-                    continue;
+                    return Err(crate::Error::permanent(
+                        "rotation binding projection snapshot is unavailable",
+                    )
+                    .with_resource_key(R::key()));
                 };
-                if installed.credential_id() != credential_id
-                    || installed.credential_key() != &binding.credential_key
-                    || installed.scope() != Some(&credential_scope.durable_owner_scope())
+                if let Some(installed) = installed
+                    && (installed.credential_id() != credential_id
+                        || installed.credential_key() != &binding.credential_key
+                        || installed.scope() != Some(&credential_scope.durable_owner_scope()))
                 {
                     return Err(crate::Error::permanent(
                         "rotation-bound credential install metadata mismatch",

@@ -46,8 +46,14 @@ pub(crate) async fn resolve_slot_with(
                 Ok(head) => head,
                 Err(CredentialPersistenceError::NotFound) => {
                     return match store.get(&selector).await {
-                        Ok(StoredCredential::Tombstoned(_)) => {
-                            Err(CredentialSlotResolveError::Revoked)
+                        Ok(StoredCredential::Tombstoned(tombstone)) => {
+                            let actual_key = CredentialKey::new(tombstone.credential_key())
+                                .map_err(|_| CredentialSlotResolveError::InvalidState)?;
+                            if actual_key == request.expected_key {
+                                Err(CredentialSlotResolveError::Revoked)
+                            } else {
+                                Err(CredentialSlotResolveError::WrongCredentialKey)
+                            }
                         },
                         Ok(StoredCredential::Live(_)) => {
                             Err(CredentialSlotResolveError::InvalidState)

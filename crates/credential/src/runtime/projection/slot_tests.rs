@@ -286,6 +286,39 @@ async fn owner_qualified_tombstone_is_distinct_from_absence() {
 }
 
 #[tokio::test]
+async fn tombstone_with_wrong_contract_does_not_revoke_the_requested_slot() {
+    let (mut store, registry, ops, scope, id, _) = fixture();
+    let now = Utc::now();
+    store.row = StoredTombstonedCredential::new(
+        id,
+        BearerTokenCredential::KEY.to_owned(),
+        SecretToken::KIND.to_owned(),
+        SecretToken::VERSION,
+        CredentialVersion::MIN,
+        now,
+        now,
+        now,
+    )
+    .into();
+    let wrong = CredentialKey::new("shared_key").expect("test key is valid");
+
+    let error = resolve_fixture(
+        &store,
+        &registry,
+        &ops,
+        &scope,
+        id,
+        wrong,
+        Capabilities::empty(),
+        CancellationToken::new(),
+    )
+    .await
+    .expect_err("wrong tombstone contract must not become a revoke signal");
+
+    assert_eq!(error, CredentialSlotResolveError::WrongCredentialKey);
+}
+
+#[tokio::test]
 async fn tombstone_committed_between_head_and_material_read_is_revoked() {
     let (mut store, registry, ops, scope, id, key) = fixture();
     let now = Utc::now();

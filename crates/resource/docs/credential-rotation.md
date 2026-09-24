@@ -49,10 +49,12 @@ alongside the slot's accepted material epoch. Owner metadata excludes interactiv
 authentication bindings. Derived credential slots preserve
 this metadata. A published rotation binding remains the participation authority.
 Hand-written `HasCredentialSlots` implementations must provide
-`credential_slot_projection` (an atomic generation/metadata snapshot) and
+`supports_credential_slot_projection` for each participating slot,
+`credential_slot_projection` (an atomic generation/metadata snapshot), and
 `install_credential_slot_at_generation` plus
 `fence_credential_slot_at_generation`, forwarding to the matching `SlotCell`
-ports, to participate in reconciliation. Metadata without an owner cannot authorize a
+ports, to participate in reconciliation. Registration rejects a rotation binding when
+that complete projection contract is absent. Metadata without an owner cannot authorize a
 reread and is reported as a failed reconciliation row; metadata without a published
 binding is skipped as an opt-out.
 

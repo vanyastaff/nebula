@@ -129,7 +129,27 @@ fn test_factory(create_counter: Arc<AtomicU64>) -> Arc<dyn ResourceFactory> {
 
 #[cfg(feature = "rotation")]
 #[derive(Clone)]
-struct BoundTestRes;
+struct BoundTestRes {
+    slot: Arc<crate::SlotCell<nebula_credential::CredentialGuard<u64>>>,
+    projection_supported: bool,
+}
+
+#[cfg(feature = "rotation")]
+impl BoundTestRes {
+    fn new() -> Self {
+        Self {
+            slot: Arc::new(crate::SlotCell::empty()),
+            projection_supported: true,
+        }
+    }
+
+    fn without_projection() -> Self {
+        Self {
+            slot: Arc::new(crate::SlotCell::empty()),
+            projection_supported: false,
+        }
+    }
+}
 
 #[cfg(feature = "rotation")]
 #[async_trait::async_trait]
@@ -158,7 +178,7 @@ impl Provider for BoundTestRes {
 #[cfg(feature = "rotation")]
 impl crate::HasCredentialSlots for BoundTestRes {
     fn credential_slot_epoch(&self) -> u64 {
-        0
+        self.slot.generation()
     }
 
     fn declares_credential_slots() -> bool {
@@ -167,6 +187,72 @@ impl crate::HasCredentialSlots for BoundTestRes {
 
     fn credential_slot_names() -> &'static [&'static str] {
         &["auth"]
+    }
+
+    fn supports_credential_slot_projection(&self, slot: &str) -> bool {
+        self.projection_supported && slot == "auth"
+    }
+
+    fn credential_slot_projection(
+        &self,
+        slot: &str,
+    ) -> Option<(u64, Option<nebula_credential::CredentialGuardMetadata>)> {
+        (self.projection_supported && slot == "auth").then(|| self.slot.projection_snapshot())
+    }
+
+    fn install_credential_slot_at_generation(
+        &self,
+        slot: &str,
+        guard: nebula_credential::ErasedCredentialGuard,
+        expected_generation: u64,
+    ) -> Result<crate::SlotUpdate, crate::SlotInstallError> {
+        if !self.projection_supported || slot != "auth" {
+            return Err(crate::SlotInstallError::UnknownSlot);
+        }
+        let metadata = guard.metadata().clone();
+        let guard = guard
+            .into_typed::<u64>()
+            .map_err(|_| crate::SlotInstallError::CredentialTypeMismatch)?;
+        self.slot
+            .install_projected_at_generation(expected_generation, metadata, Arc::new(guard))
+    }
+
+    fn fence_credential_slot_at_generation(
+        &self,
+        slot: &str,
+        expected_generation: u64,
+        fence: &mut dyn FnMut(),
+    ) -> Result<(), crate::SlotInstallError> {
+        if !self.projection_supported || slot != "auth" {
+            return Err(crate::SlotInstallError::UnknownSlot);
+        }
+        self.slot
+            .fence_projection_at_generation(expected_generation, fence)
+    }
+
+    fn install_credential_slot(
+        &self,
+        slot: &str,
+        guard: nebula_credential::ErasedCredentialGuard,
+    ) -> Result<crate::SlotUpdate, crate::SlotInstallError> {
+        if !self.projection_supported || slot != "auth" {
+            return Err(crate::SlotInstallError::UnknownSlot);
+        }
+        let metadata = guard.metadata().clone();
+        let guard = guard
+            .into_typed::<u64>()
+            .map_err(|_| crate::SlotInstallError::CredentialTypeMismatch)?;
+        self.slot.install_projected(metadata, Arc::new(guard))
+    }
+
+    fn revoke_credential_slot(
+        &self,
+        slot: &str,
+    ) -> Result<crate::SlotUpdate, crate::SlotInstallError> {
+        if !self.projection_supported || slot != "auth" {
+            return Err(crate::SlotInstallError::UnknownSlot);
+        }
+        Ok(self.slot.revoke())
     }
 }
 
@@ -392,7 +478,7 @@ async fn identity_mismatch_is_typed_and_rolls_back_manager_and_fanout_state() {
     let credential_id = nebula_credential::CredentialId::new();
     let fanout_index = Arc::new(crate::ResourceFanoutIndex::new());
     let inner: Arc<dyn ResourceFactory> = Arc::new(KindActivator::<BoundTestRes, _, _>::new(
-        || BoundTestRes,
+        BoundTestRes::new,
         || Resident::<BoundTestRes>::new(resident::config::Config::default()),
     ));
     let mut registry = ResourceActivatorRegistry::new();
@@ -455,7 +541,7 @@ async fn conflicting_duplicate_slot_bindings_fail_before_manager_publication() {
         .insert(
             "test-conflicting-bindings",
             Arc::new(KindActivator::<BoundTestRes, _, _>::new(
-                || BoundTestRes,
+                BoundTestRes::new,
                 || Resident::<BoundTestRes>::new(resident::config::Config::default()),
             )),
         )
@@ -515,7 +601,7 @@ async fn rotation_binding_without_owner_scope_fails_before_publication() {
         .insert(
             "test-missing-owner-scope",
             Arc::new(KindActivator::<BoundTestRes, _, _>::new(
-                || BoundTestRes,
+                BoundTestRes::new,
                 || Resident::<BoundTestRes>::new(resident::config::Config::default()),
             )),
         )
@@ -550,6 +636,51 @@ async fn rotation_binding_without_owner_scope_fails_before_publication() {
 
 #[cfg(feature = "rotation")]
 #[tokio::test]
+async fn rotation_binding_without_projection_ports_fails_before_publication() {
+    let manager = Manager::new();
+    let expression_engine = ExpressionEngine::with_cache_size(16);
+    let credential_id = nebula_credential::CredentialId::new();
+    let fanout_index = Arc::new(crate::ResourceFanoutIndex::new());
+    let mut registry = ResourceActivatorRegistry::new();
+    registry
+        .insert(
+            "test-missing-projection-ports",
+            Arc::new(KindActivator::<BoundTestRes, _, _>::new(
+                BoundTestRes::without_projection,
+                || Resident::<BoundTestRes>::new(resident::config::Config::default()),
+            )),
+        )
+        .expect("typed fixture metadata admits");
+
+    let error = registry
+        .register_and_bind(
+            "test-missing-projection-ports",
+            &manager,
+            RegisterRequest {
+                config: ResourceConfigInput::data(serde_json::json!({ "name": "resource" })),
+                expr_engine: &expression_engine,
+                slot_bindings: vec![SlotBinding {
+                    slot_name: "auth".to_owned(),
+                    credential_key: nebula_core::credential_key!("test.factory-credential"),
+                    credential_id: Some(credential_id),
+                    credential_scope: Some(nebula_credential::TenantScope::new("org", "workspace")),
+                }],
+                slot_installs: Vec::new(),
+                scope: ScopeLevel::Global,
+                recovery_gate: None,
+            },
+            Some(&fanout_index),
+        )
+        .await
+        .expect_err("rotation participation requires complete projection ports");
+
+    std::assert_matches!(error, RegistrarError::Register { .. });
+    assert!(!manager.contains(&BoundTestRes::key()));
+    assert!(fanout_index.affected(&credential_id).is_empty());
+}
+
+#[cfg(feature = "rotation")]
+#[tokio::test]
 async fn exact_replacement_publishes_only_successor_staged_binding() {
     let manager = Manager::new();
     let expression_engine = ExpressionEngine::with_cache_size(16);
@@ -562,7 +693,7 @@ async fn exact_replacement_publishes_only_successor_staged_binding() {
         .insert(
             "test-replacement-bindings",
             Arc::new(KindActivator::<BoundTestRes, _, _>::new(
-                || BoundTestRes,
+                BoundTestRes::new,
                 || Resident::<BoundTestRes>::new(resident::config::Config::default()),
             )),
         )

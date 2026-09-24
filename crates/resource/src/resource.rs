@@ -892,6 +892,13 @@ pub trait HasCredentialSlots {
         &[]
     }
 
+    /// Whether `slot` implements the complete conditional projection,
+    /// generation fence, and revoke contract required by durable rotation.
+    /// Hand-written resources fail closed until they explicitly opt in.
+    fn supports_credential_slot_projection(&self, _slot: &str) -> bool {
+        false
+    }
+
     /// Owner-qualified metadata retained by a live projected slot for reconciliation.
     fn credential_slot_metadata(
         &self,
