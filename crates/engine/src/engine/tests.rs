@@ -7806,6 +7806,8 @@ async fn bound_stored_resources_resolve_per_node_and_fail_closed() {
 #[derive(Debug, Default)]
 struct RecordingStatusStore {
     calls: std::sync::Mutex<Vec<String>>,
+    /// How long each publish takes.
+    publish_delay: Duration,
 }
 
 impl RecordingStatusStore {
@@ -7834,6 +7836,7 @@ impl nebula_storage_port::store::ResourceStatusStore for RecordingStatusStore {
         _worker: &nebula_storage_port::dto::StatusWorkerId,
         snapshot: &nebula_storage_port::dto::ResourceStatusSnapshot,
     ) -> Result<(), StorageError> {
+        tokio::time::sleep(self.publish_delay).await;
         self.calls.lock().expect("calls lock").push(format!(
             "publish {} {} v{}",
             snapshot.resource_id,
@@ -8023,5 +8026,113 @@ async fn status_publisher_reports_a_failed_activation() {
     assert_eq!(
         recorder.take(),
         vec!["heartbeat".to_owned(), format!("publish {row} failed v0")]
+    );
+}
+
+/// A publication longer than the heartbeat interval renews the heartbeat as
+/// it goes, so the worker's lease never lapses mid-publish.
+#[tokio::test(start_paused = true)]
+async fn status_publisher_renews_the_heartbeat_during_a_long_publish() {
+    let store = Arc::new(nebula_storage::inmem::InMemoryResourceStore::new());
+    let (engine, _) = make_engine(Arc::new(ActionRegistry::new()));
+    let engine = engine
+        .with_resource_manager(Arc::new(nebula_resource::Manager::new()))
+        .with_resource_registrars(crate::resource::activation::tests::registrars())
+        .with_stored_resources(crate::resource::StoredResourceActivator::new(
+            Arc::clone(&store) as Arc<dyn nebula_storage_port::store::ResourceStore>,
+        ));
+    let scope = Scope::new(
+        nebula_core::WorkspaceId::new().to_string(),
+        nebula_core::OrgId::new().to_string(),
+    );
+    let mut bindings = Vec::new();
+    for node in ["a", "b", "c"] {
+        let row = store_plain_row(&store, &scope, "activation.plain").await;
+        bindings.push(resource_binding(
+            &NodeKey::new(node).unwrap(),
+            "db",
+            row,
+            "activation.plain",
+        ));
+    }
+    let manifest = nebula_execution::ExecutionBindingManifestV2::new(bindings).unwrap();
+    engine
+        .activate_bound_resources(
+            ExecutionId::new(),
+            &scope,
+            &manifest,
+            &CancellationToken::new(),
+        )
+        .await;
+
+    let interval = Duration::from_secs(1);
+    let recorder = Arc::new(RecordingStatusStore {
+        publish_delay: interval,
+        ..RecordingStatusStore::default()
+    });
+    let publisher = crate::ResourceStatusPublisher::new(
+        Arc::clone(&recorder) as Arc<dyn nebula_storage_port::store::ResourceStatusStore>,
+        nebula_storage_port::dto::StatusWorkerId::new("worker:test").unwrap(),
+    )
+    .with_interval(interval);
+    let mut published = HashMap::new();
+    publisher.tick(&engine, &mut published).await;
+    let calls: Vec<_> = recorder
+        .take()
+        .into_iter()
+        .map(|call| {
+            if call == "heartbeat" {
+                "heartbeat"
+            } else {
+                "publish"
+            }
+        })
+        .collect();
+    assert_eq!(
+        calls,
+        [
+            "heartbeat",
+            "publish",
+            "heartbeat",
+            "publish",
+            "heartbeat",
+            "publish"
+        ]
+    );
+}
+
+/// With a manager but no stored-resource activator, a node naming a stored
+/// row is pinned unavailable, never left to resolve some other row of the
+/// same kind.
+#[tokio::test]
+async fn unwired_activation_pins_stored_bindings_unavailable() {
+    let (engine, _) = make_engine(Arc::new(ActionRegistry::new()));
+    let engine = engine.with_resource_manager(Arc::new(nebula_resource::Manager::new()));
+    let scope = Scope::new(
+        nebula_core::WorkspaceId::new().to_string(),
+        nebula_core::OrgId::new().to_string(),
+    );
+    let reader = node_key!("reader");
+    let manifest = nebula_execution::ExecutionBindingManifestV2::new([resource_binding(
+        &reader,
+        "db",
+        nebula_core::ResourceId::new(),
+        "activation.plain",
+    )])
+    .unwrap();
+    let execution_id = ExecutionId::new();
+    engine
+        .activate_bound_resources(execution_id, &scope, &manifest, &CancellationToken::new())
+        .await;
+
+    let rows = engine
+        .resource_rows_by_execution
+        .get(&execution_id)
+        .map(|rows| Arc::clone(rows.value()))
+        .expect("rows recorded even without an activator");
+    let plain = ResourceKey::new("activation.plain").unwrap();
+    assert_eq!(
+        rows.get(&reader).and_then(|keys| keys.get(&plain)),
+        Some(&unavailable_row_identity())
     );
 }

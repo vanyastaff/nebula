@@ -522,7 +522,11 @@ async fn concurrent_callers_never_exceed_the_burst() {
         let barrier = Arc::clone(&barrier);
         handles.push(tokio::spawn(async move {
             barrier.wait().await;
-            limiter.ready(Some(std::time::Instant::now())).await.is_ok()
+            // A second of deadline: the slot after the burst is an hour
+            // away, and a deadline already passed would refuse even the
+            // burst.
+            let deadline = std::time::Instant::now() + Duration::from_secs(1);
+            limiter.ready(Some(deadline)).await.is_ok()
         }));
     }
     let mut admitted = 0;
@@ -702,5 +706,91 @@ async fn refusal_runs_are_exact_per_key() {
         runs.len(),
         values.len() - 1,
         "a pass ends only that key's run"
+    );
+}
+
+/// A deadline that has already passed refuses the call even when a slot is
+/// free right away.
+#[tokio::test(start_paused = true)]
+async fn an_expired_deadline_refuses_an_immediate_slot() {
+    let limits = limiter(per_second(10, 10));
+    let expired = std::time::Instant::now()
+        .checked_sub(Duration::from_millis(1))
+        .expect("an instant a millisecond ago");
+    let error = limits
+        .ready(Some(expired))
+        .await
+        .expect_err("past the deadline");
+    assert!(
+        matches!(error.kind(), ErrorKind::Exhausted { .. }),
+        "{error}"
+    );
+}
+
+/// Books like the in-memory store but cannot record a penalty.
+struct PenaltyFails(MemoryLimitStore);
+
+impl nebula_resilience::rate_limiter::gcra::LimitStore for PenaltyFails {
+    async fn reserve(
+        &self,
+        key: &LimitKey,
+        rate: &Rate,
+        request: ReserveRequest,
+    ) -> Result<Result<Grant, Denied>, LimitStoreError> {
+        nebula_resilience::rate_limiter::gcra::LimitStore::reserve(&self.0, key, rate, request)
+            .await
+    }
+
+    async fn penalize(
+        &self,
+        _key: &LimitKey,
+        _rate: &Rate,
+        _retry_after: Duration,
+        _max_penalty: Duration,
+    ) -> Result<(), LimitStoreError> {
+        Err(LimitStoreError::Unavailable("store down".into()))
+    }
+
+    async fn cancel(
+        &self,
+        key: &LimitKey,
+        rate: &Rate,
+        grant: &Grant,
+    ) -> Result<bool, LimitStoreError> {
+        nebula_resilience::rate_limiter::gcra::LimitStore::cancel(&self.0, key, rate, grant).await
+    }
+}
+
+/// The local pause is recorded before the store is asked, so a caller of
+/// this process already sleeping honours it even when the store fails.
+#[tokio::test(start_paused = true)]
+async fn a_pause_holds_locally_when_the_store_cannot_record_it() {
+    let limits = Arc::new(ResourceLimiter::new(
+        Some(Quota::new(
+            Arc::new(PenaltyFails(MemoryLimitStore::new())),
+            LimitKey::new("test:row").unwrap(),
+            per_second(1, 1),
+        )),
+        None,
+        Duration::from_mins(1),
+        ResourceKey::new("test.resource").unwrap(),
+        Arc::new(EventBus::new(16)),
+    ));
+    limits.ready(None).await.expect("the burst passes");
+    let started = Instant::now();
+    let sleeper = tokio::spawn({
+        let limits = Arc::clone(&limits);
+        async move { limits.ready(None).await }
+    });
+    tokio::task::yield_now().await;
+    limits
+        .penalize(Duration::from_secs(20))
+        .await
+        .expect_err("the store is down");
+    sleeper.await.unwrap().expect("admitted after the pause");
+    assert!(
+        started.elapsed() >= Duration::from_secs(20),
+        "woke at {:?}",
+        started.elapsed()
     );
 }

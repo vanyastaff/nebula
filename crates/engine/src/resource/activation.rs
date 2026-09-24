@@ -95,6 +95,13 @@ pub enum StoredResourceActivationError {
         /// The undeclared slot.
         slot: String,
     },
+    /// The resource's resilience policy names an account credential slot it
+    /// does not declare (see `ResiliencePolicy::account_credential`).
+    #[error("resilience policy names undeclared account credential slot `{slot}`")]
+    UndeclaredAccountSlot {
+        /// The undeclared slot.
+        slot: String,
+    },
     /// A required credential slot has no binding on the row.
     #[error("required credential slot `{slot}` is not bound")]
     MissingRequiredSlot {
@@ -232,6 +239,9 @@ pub struct StoredResourceActivator {
     limit_key_secret: Arc<[u8; 32]>,
     /// Where the next [`retire_deleted`](Self::retire_deleted) sweep starts.
     sweep_cursor: std::sync::atomic::AtomicUsize,
+    /// Registry rows this activator stopped tracking but the manager has not
+    /// removed yet (its retirement queue pushed back); every sweep retries.
+    pending_retirements: std::sync::Mutex<Vec<ActivatedResource>>,
 }
 
 type HmacSha256 = hmac::Hmac<sha2::Sha256>;
@@ -312,6 +322,7 @@ impl StoredResourceActivator {
             rows: DashMap::new(),
             limit_key_secret: Arc::new(DEFAULT_LIMIT_KEY_SECRET),
             sweep_cursor: std::sync::atomic::AtomicUsize::new(0),
+            pending_retirements: std::sync::Mutex::new(Vec::new()),
         }
     }
 
@@ -444,6 +455,7 @@ impl StoredResourceActivator {
     pub async fn retire_deleted(&self, context: &ActivationContext<'_>) {
         use std::sync::atomic::Ordering;
 
+        self.retry_retirements(context);
         let keys: Vec<(Scope, ResourceId)> =
             self.rows.iter().map(|entry| entry.key().clone()).collect();
         if keys.is_empty() {
@@ -492,7 +504,7 @@ impl StoredResourceActivator {
         }
         tracked.failed_version = None;
         if let Some(stale) = tracked.active.take() {
-            retire(context, &stale.activated);
+            self.retire(context, stale.activated);
             tracing::debug!(
                 target: "nebula_engine::resource_activation",
                 %resource_id,
@@ -508,6 +520,57 @@ impl StoredResourceActivator {
         self.rows.remove_if(key, |_, slot| {
             Arc::strong_count(slot) == 1 && slot.try_lock().is_ok_and(|tracked| tracked.is_empty())
         });
+    }
+
+    /// Retires `activated` from the manager, keeping it for a later sweep
+    /// when the manager cannot take it yet.
+    fn retire(&self, context: &ActivationContext<'_>, activated: ActivatedResource) {
+        if !retire(context, &activated) {
+            self.pending_retirements
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(activated);
+        }
+    }
+
+    /// Retries the retirements the manager pushed back. One whose identity a
+    /// tracked row serves again (re-registered since) is dropped instead:
+    /// removing it would remove that live row.
+    fn retry_retirements(&self, context: &ActivationContext<'_>) {
+        let pending = std::mem::take(
+            &mut *self
+                .pending_retirements
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        if pending.is_empty() {
+            return;
+        }
+        let mut serving = Vec::new();
+        let mut busy = false;
+        for entry in &self.rows {
+            match entry.value().try_lock() {
+                Ok(tracked) => {
+                    serving.extend(tracked.active.as_ref().map(|row| row.activated.clone()));
+                },
+                Err(_) => busy = true,
+            }
+        }
+        let mut still_pending = Vec::new();
+        for activated in pending {
+            if serving.contains(&activated) {
+                continue;
+            }
+            // A busy row may be re-registering this identity right now:
+            // wait for a sweep that can see it.
+            if busy || !retire(context, &activated) {
+                still_pending.push(activated);
+            }
+        }
+        self.pending_retirements
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .extend(still_pending);
     }
 
     async fn refresh(
@@ -527,7 +590,7 @@ impl StoredResourceActivator {
         let Some(row) = row.filter(|row| row.deleted_at.is_none()) else {
             tracked.failed_version = None;
             if let Some(stale) = tracked.active.take() {
-                retire(context, &stale.activated);
+                self.retire(context, stale.activated);
             }
             return Err(StoredResourceActivationError::NotFound { resource_id });
         };
@@ -570,7 +633,7 @@ impl StoredResourceActivator {
             if previous.activated == activated {
                 release_bindings(context, &previous);
             } else {
-                retire(context, &previous.activated);
+                self.retire(context, previous.activated);
             }
         }
         tracing::debug!(
@@ -613,6 +676,18 @@ async fn register_row(
         .find(|slot| !declared.iter().any(|(name, ..)| name == slot))
     {
         return Err(StoredResourceActivationError::UndeclaredSlot { slot: slot.clone() });
+    }
+    // A misspelt account slot would otherwise select no credential and
+    // quietly limit the row on its own instead of per account.
+    let policy = factory.resilience_policy();
+    if let Some(slot) = policy
+        .account_slots()
+        .iter()
+        .find(|slot| !declared.iter().any(|(name, ..)| name == *slot))
+    {
+        return Err(StoredResourceActivationError::UndeclaredAccountSlot {
+            slot: (*slot).to_owned(),
+        });
     }
 
     let tenant = TenantScope::from_scope(scope);
@@ -662,7 +737,6 @@ async fn register_row(
     }
 
     let scope_level = ScopeLevel::Workspace(workspace);
-    let policy = factory.resilience_policy();
     let limit_key = account_limit_key(
         limit_key_secret,
         scope,
@@ -733,7 +807,35 @@ fn release_bindings(context: &ActivationContext<'_>, row: &ActiveRow) {
     let _ = (context, row);
 }
 
-fn retire(context: &ActivationContext<'_>, activated: &ActivatedResource) {
+/// Removes `activated` from the manager and, once it is gone, from the
+/// rotation index; `false` when the manager pushed back (its retirement
+/// queue is full) and the row still serves, rotation binding included.
+fn retire(context: &ActivationContext<'_>, activated: &ActivatedResource) -> bool {
+    let removed = context.manager.remove_for(
+        &activated.resource_key,
+        &activated.scope,
+        &activated.slot_identity,
+    );
+    match removed {
+        Ok(()) => {},
+        Err(error) if matches!(error.kind(), nebula_resource::ErrorKind::Backpressure) => {
+            tracing::warn!(
+                target: "nebula_engine::resource_activation",
+                resource_key = %activated.resource_key,
+                error = %error,
+                "stale stored-resource registry row not retired yet; retried on the next sweep"
+            );
+            return false;
+        },
+        // Already gone (not found), or the manager is shutting down and
+        // retires every row itself.
+        Err(error) => tracing::debug!(
+            target: "nebula_engine::resource_activation",
+            resource_key = %activated.resource_key,
+            error = %error,
+            "stale stored-resource registry row needs no retirement"
+        ),
+    }
     #[cfg(feature = "rotation")]
     if let Some(fanout) = context.fanout {
         fanout.unbind_resource_identity(
@@ -742,19 +844,7 @@ fn retire(context: &ActivationContext<'_>, activated: &ActivatedResource) {
             &activated.slot_identity,
         );
     }
-    let manager = context.manager;
-    if let Err(error) = manager.remove_for(
-        &activated.resource_key,
-        &activated.scope,
-        &activated.slot_identity,
-    ) {
-        tracing::warn!(
-            target: "nebula_engine::resource_activation",
-            resource_key = %activated.resource_key,
-            error = %error,
-            "stale stored-resource registry row could not be retired"
-        );
-    }
+    true
 }
 
 #[cfg(test)]

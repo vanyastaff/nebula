@@ -290,22 +290,9 @@ impl ResourceStatusPublisher {
         engine: &crate::WorkflowEngine,
         published: &mut HashMap<PublishedKey, ResourceStatusSnapshot>,
     ) {
-        if let Err(error) = self
-            .store
-            .heartbeat(&self.worker, self.interval.saturating_mul(3))
-            .await
-        {
-            tracing::warn!(
-                target: "nebula_engine::resource_status",
-                %error,
-                "resource status heartbeat failed"
-            );
-            // The worker's lease may lapse before the next heartbeat lands,
-            // expiring what it published; the next tick republishes all of
-            // it instead of trusting a cache of rows that may be gone.
-            published.clear();
+        let Some(mut renewed) = self.renew(published).await else {
             return;
-        }
+        };
         // Deleted rows go first, so this tick already withdraws their status.
         engine.retire_deleted_resources().await;
         let view = engine.resource_status_snapshot();
@@ -317,6 +304,14 @@ impl ResourceStatusPublisher {
             seen.insert(key.clone());
             if published.get(&key) == Some(&snapshot) {
                 continue;
+            }
+            // Many rows or a slow store can outlast the lease: it is renewed
+            // every interval of publishing, not once per tick.
+            if renewed.elapsed() >= self.interval {
+                let Some(now) = self.renew(published).await else {
+                    return;
+                };
+                renewed = now;
             }
             match self.store.publish(&key.0, &self.worker, &snapshot).await {
                 Ok(()) => {
@@ -338,6 +333,12 @@ impl ResourceStatusPublisher {
             .cloned()
             .collect();
         for key in retired {
+            if renewed.elapsed() >= self.interval {
+                let Some(now) = self.renew(published).await else {
+                    return;
+                };
+                renewed = now;
+            }
             match self.store.withdraw(&key.0, &self.worker, &key.1).await {
                 Ok(()) => {
                     published.remove(&key);
@@ -348,6 +349,35 @@ impl ResourceStatusPublisher {
                     "resource status withdraw failed; retrying next tick"
                 ),
             }
+        }
+    }
+
+    /// Renews the worker's heartbeat; returns when it was renewed, or `None`
+    /// when it failed.
+    ///
+    /// On a failure the worker's lease may lapse before the next heartbeat
+    /// lands, expiring what it published, so the published cache is
+    /// cleared: the next tick republishes everything instead of trusting
+    /// rows that may be gone.
+    async fn renew(
+        &self,
+        published: &mut HashMap<PublishedKey, ResourceStatusSnapshot>,
+    ) -> Option<tokio::time::Instant> {
+        match self
+            .store
+            .heartbeat(&self.worker, self.interval.saturating_mul(3))
+            .await
+        {
+            Ok(()) => Some(tokio::time::Instant::now()),
+            Err(error) => {
+                tracing::warn!(
+                    target: "nebula_engine::resource_status",
+                    %error,
+                    "resource status heartbeat failed"
+                );
+                published.clear();
+                None
+            },
         }
     }
 }

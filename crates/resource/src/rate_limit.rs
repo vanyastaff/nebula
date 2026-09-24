@@ -1003,7 +1003,22 @@ impl ResourceLimiter {
             let key_pause = key.map_or(Duration::ZERO, |key| self.key_pause_remaining(key));
             self.pause_remaining().max(key_pause)
         };
+        // The deadline may already have passed, before the store answered or
+        // before a late wake-up: the call then does not run.
+        let overran = || {
+            deadline
+                .is_some_and(|deadline| std::time::Instant::now() > deadline)
+                .then(|| {
+                    self.tagged(Error::exhausted(
+                        "rate limit wait overran the deadline",
+                        None,
+                    ))
+                })
+        };
         if wait.is_zero() && pause_now().is_zero() {
+            if let Some(error) = overran() {
+                return Err(error);
+            }
             if self.waiters.load(Ordering::Acquire) == 0 {
                 self.clear();
             }
@@ -1012,13 +1027,8 @@ impl ResourceLimiter {
         let _waiting = Waiting::start(self);
         tokio::time::sleep(wait).await;
         loop {
-            // A late wake-up can land past the deadline even though the
-            // booked wait fit it; the call then does not run.
-            if deadline.is_some_and(|deadline| std::time::Instant::now() > deadline) {
-                return Err(self.tagged(Error::exhausted(
-                    "rate limit wait overran the deadline",
-                    None,
-                )));
+            if let Some(error) = overran() {
+                return Err(error);
             }
             let pause = pause_now();
             if pause.is_zero() {
@@ -1114,15 +1124,10 @@ impl ResourceLimiter {
     /// limit store cannot be reached.
     pub async fn penalize(&self, retry_after: Duration) -> Result<(), Error> {
         let block = retry_after.min(self.max_penalty);
-        if let Some(quota) = &self.quota {
-            quota
-                .store
-                .penalize_boxed(&quota.key, &quota.rate, retry_after, self.max_penalty)
-                .await
-                .map_err(|error| self.store_unavailable(&error))?;
-        }
-        // Recorded locally as well, so callers of this process already
-        // sleeping on an earlier booking wake no sooner than the pause ends.
+        // Recorded locally first, before the store round trip, so callers of
+        // this process already sleeping on an earlier booking wake no sooner
+        // than the pause ends, even if the store is slow, fails, or this
+        // call is cancelled.
         {
             let until = pause_deadline(tokio::time::Instant::now(), block);
             let mut paused_until = self
@@ -1131,11 +1136,18 @@ impl ResourceLimiter {
                 .unwrap_or_else(PoisonError::into_inner);
             *paused_until = Some(paused_until.map_or(until, |current| current.max(until)));
         }
+        self.engaged.store(true, Ordering::Relaxed);
+        if let Some(quota) = &self.quota {
+            quota
+                .store
+                .penalize_boxed(&quota.key, &quota.rate, retry_after, self.max_penalty)
+                .await
+                .map_err(|error| self.store_unavailable(&error))?;
+        }
         self.emit(|key| ResourceEvent::RateLimitPenalized {
             key,
             retry_after: block,
         });
-        self.engaged.store(true, Ordering::Relaxed);
         Ok(())
     }
 
@@ -1159,12 +1171,13 @@ impl ResourceLimiter {
         let (key, rate) = keyed
             .limit_for(dimension, &value.to_string())
             .map_err(|error| self.tagged(error))?;
+        // Local first, as in `penalize`.
+        self.pause_key(&key, retry_after.min(self.max_penalty));
         keyed
             .store
             .penalize_boxed(&key, &rate, retry_after, self.max_penalty)
             .await
             .map_err(|error| self.store_unavailable(&error))?;
-        self.pause_key(&key, retry_after.min(self.max_penalty));
         self.emit(|key| ResourceEvent::RateLimitPenalized {
             key,
             retry_after: retry_after.min(self.max_penalty),

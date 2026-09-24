@@ -92,6 +92,55 @@ impl resident::ResidentProvider for Plain {
     }
 }
 
+/// Declares an account credential slot it does not have.
+#[derive(Clone)]
+struct Misnamed;
+
+#[async_trait::async_trait]
+impl Provider for Misnamed {
+    type Config = LabelConfig;
+    type Instance = Arc<AtomicU64>;
+    type Topology = Resident<Self>;
+
+    fn key() -> ResourceKey {
+        resource_key!("activation.misnamed")
+    }
+
+    async fn create(
+        &self,
+        _config: &LabelConfig,
+        _ctx: &ResourceContext,
+    ) -> Result<Arc<AtomicU64>, ResourceError> {
+        Ok(Arc::new(AtomicU64::new(1)))
+    }
+
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("activation.misnamed"),
+            String::new(),
+        )
+    }
+
+    fn resilience() -> nebula_resource::rate_limit::ResiliencePolicy {
+        nebula_resource::rate_limit::ResiliencePolicy::new().account_credential("acount")
+    }
+}
+
+nebula_resource::no_credential_slots!(Misnamed);
+
+impl DeclaresDependencies for Misnamed {
+    fn dependencies() -> Dependencies {
+        Dependencies::new()
+    }
+}
+
+impl resident::ResidentProvider for Misnamed {
+    fn is_alive_sync(&self, _runtime: &Arc<AtomicU64>) -> bool {
+        true
+    }
+}
+
 const AUTH_SLOT: &str = "auth";
 
 #[derive(Clone)]
@@ -217,6 +266,17 @@ pub(crate) fn registrars() -> ResourceActivatorRegistry {
             )),
         )
         .expect("slotted resource admits");
+    registrars
+        .insert(
+            "activation.misnamed",
+            Arc::new(KindActivator::<Misnamed, _, _>::new(
+                || Misnamed,
+                nebula_resource::topology::fixed(|| {
+                    Resident::<Misnamed>::new(resident::config::Config::default())
+                }),
+            )),
+        )
+        .expect("misnamed resource admits");
     registrars
 }
 
@@ -581,6 +641,66 @@ async fn a_failed_activation_is_tracked_until_its_row_goes() {
         .retire_deleted(&fixture.context(false))
         .await;
     assert!(fixture.activator.rows.is_empty());
+}
+
+/// A policy naming an account slot the resource does not declare fails
+/// activation instead of limiting the row on its own.
+#[tokio::test]
+async fn an_undeclared_account_slot_fails_activation() {
+    let fixture = Fixture::new();
+    let (resource_id, key) = fixture.store_row("activation.misnamed", "a", &[]).await;
+    let error = fixture.activate(resource_id, &key).await.unwrap_err();
+    std::assert_matches!(
+        error,
+        StoredResourceActivationError::UndeclaredAccountSlot { ref slot } if slot == "acount"
+    );
+}
+
+/// A retirement the manager pushed back is retried by the next sweep,
+/// unless a tracked row serves that identity again.
+#[tokio::test]
+async fn a_pushed_back_retirement_is_retried_by_the_sweep() {
+    let fixture = Fixture::new();
+    let mut events = fixture.manager.subscribe_events();
+    let (stale_id, key) = fixture.store_row("activation.plain", "a", &[]).await;
+    let stale = fixture.activate(stale_id, &key).await.unwrap();
+    let (live_id, _) = fixture.store_row("activation.plain", "b", &[]).await;
+    let live = fixture.activate(live_id, &key).await.unwrap();
+    assert_eq!(drain(&mut events), (2, 0));
+
+    // As if the manager had refused both removals: the stale row is no
+    // longer tracked, the live one still is.
+    fixture
+        .activator
+        .rows
+        .remove(&(fixture.scope.clone(), stale_id));
+    fixture
+        .activator
+        .pending_retirements
+        .lock()
+        .unwrap()
+        .extend([stale.clone(), live.clone()]);
+
+    fixture
+        .activator
+        .retire_deleted(&fixture.context(false))
+        .await;
+    assert_eq!(drain(&mut events), (0, 1), "only the stale row is removed");
+    assert!(
+        fixture
+            .activator
+            .pending_retirements
+            .lock()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        fixture
+            .manager
+            .get_row(&live.resource_key, &live.scope, &live.slot_identity)
+            .is_some(),
+        "a row served again is not removed"
+    );
 }
 
 #[tokio::test]

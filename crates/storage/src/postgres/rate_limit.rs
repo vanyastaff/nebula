@@ -171,6 +171,7 @@ impl LimitStore for PgLimitStore {
             tx.rollback().await.map_err(unavailable)?;
             return Ok(Ok(original));
         }
+        let before = state;
         let (rate, state) = step::enforce(state, now, stored.as_ref(), rate);
         let (decision, next) = step::reserve_from(
             state,
@@ -180,8 +181,16 @@ impl LimitStore for PgLimitStore {
             request.max_wait,
             request.not_before,
         );
-        if let Some(next) = next {
-            Self::write(&mut tx, key, next, &rate).await?;
+        // A refusal books nothing, but the rate the key now enforces and its
+        // rebased schedule are kept, as the in-memory store keeps them:
+        // otherwise a later caller at the looser rate would run against the
+        // schedule the stricter one already stretched.
+        match next {
+            Some(next) => Self::write(&mut tx, key, next, &rate).await?,
+            None if state != before || stored != Some(rate) => {
+                Self::write(&mut tx, key, state, &rate).await?;
+            },
+            None => {},
         }
         if let (Ok(grant), Some(id)) = (&decision, request.id)
             && grant.allow_at > now

@@ -1175,6 +1175,18 @@ impl WorkflowEngine {
                 bound_resources = bound.len(),
                 "execution binds stored resources but no activator/manager is configured"
             );
+            // Pinned unavailable rather than left out: left out, a node's
+            // acquire would fall through to the scope snapshot and could
+            // reach another row of the same kind than its manifest names.
+            let unavailable = unavailable_row_identity();
+            let mut rows = NodeResourceRows::new();
+            for (node, _, key) in bound {
+                rows.entry(node)
+                    .or_default()
+                    .insert(key, unavailable.clone());
+            }
+            self.resource_rows_by_execution
+                .insert(execution_id, Arc::new(rows));
             return;
         };
         let context = crate::resource::ActivationContext {

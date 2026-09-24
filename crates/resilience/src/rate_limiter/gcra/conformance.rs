@@ -210,6 +210,13 @@ pub async fn tightening_a_busy_key_rebases_its_schedule<S: LimitStore>(store: &S
         24 * HOUR,
         "the hour booked counts as a day's interval under the stricter rate",
     );
+    // That refusal booked nothing, but the key keeps enforcing the stricter
+    // rate on its stretched schedule for a caller at the looser one.
+    assert_about(
+        refused_for(store, &key, &hourly(1)).await,
+        24 * HOUR,
+        "a denied stricter request still leaves the key on its schedule",
+    );
 }
 
 /// A reservation made `not_before` another key's slot books no earlier
