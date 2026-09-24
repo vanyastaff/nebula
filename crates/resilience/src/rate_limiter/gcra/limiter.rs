@@ -84,9 +84,16 @@ impl Gcra {
     /// Waits until `permits` may be used, never past `deadline`
     /// (`None` = no deadline).
     ///
+    /// A deadline that has already passed refuses even a free slot, and a
+    /// wake-up that lands past the deadline (a busy executor) refuses too:
+    /// the caller never proceeds after it.
+    ///
     /// # Errors
     ///
-    /// The [`Denied`] from [`reserve`](Self::reserve); nothing is consumed.
+    /// The [`Denied`] from [`reserve`](Self::reserve), nothing consumed; or
+    /// [`Denied::Later`] for a deadline passed before booking (nothing
+    /// consumed, `retry_after` until the slot) or while waiting (the slot
+    /// booked has arrived and lapses unused, which errs on sending less).
     ///
     /// # Cancel safety
     ///
@@ -97,12 +104,30 @@ impl Gcra {
         permits: u32,
         deadline: Option<Instant>,
     ) -> Result<Grant, Denied> {
+        let passed = |deadline: Option<Instant>| deadline.is_some_and(|at| Instant::now() > at);
+        if passed(deadline) {
+            let state = *self.state.lock();
+            // Peeked, not booked: the state is not written back.
+            let (decision, _) =
+                step::reserve(state, self.now(), &self.rate, permits, Duration::MAX);
+            return Err(match decision {
+                Ok(slot) => Denied::Later {
+                    retry_after: slot.wait,
+                },
+                Err(denied) => denied,
+            });
+        }
         let max_wait = deadline.map_or(Duration::MAX, |deadline| {
             deadline.saturating_duration_since(Instant::now())
         });
         let grant = self.reserve(permits, max_wait)?;
         if !grant.wait.is_zero() {
             tokio::time::sleep(grant.wait).await;
+            if passed(deadline) {
+                return Err(Denied::Later {
+                    retry_after: Duration::ZERO,
+                });
+            }
         }
         Ok(grant)
     }

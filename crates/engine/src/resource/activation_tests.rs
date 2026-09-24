@@ -202,6 +202,18 @@ impl nebula_resource::HasCredentialSlots for Slotted {
     fn credential_slot_names() -> &'static [&'static str] {
         &[AUTH_SLOT]
     }
+
+    fn install_credential_slot(
+        &self,
+        slot: &str,
+        _guard: nebula_credential::ErasedCredentialGuard,
+    ) -> Result<nebula_resource::SlotUpdate, nebula_resource::SlotInstallError> {
+        if slot == AUTH_SLOT {
+            Ok(nebula_resource::SlotUpdate::Installed)
+        } else {
+            Err(nebula_resource::SlotInstallError::UnknownSlot)
+        }
+    }
 }
 
 impl resident::ResidentProvider for Slotted {
@@ -210,18 +222,35 @@ impl resident::ResidentProvider for Slotted {
     }
 }
 
-/// Refuses every credential and counts the attempts.
-#[derive(Default)]
-struct RefusingResolver {
+/// Answers every credential with the scripted outcome (by default a
+/// refusal), a `(material_epoch, revision)` for a guard, and counts the
+/// attempts.
+struct ScriptedResolver {
     calls: AtomicUsize,
+    outcome: std::sync::Mutex<Result<(u64, u64), CredentialSlotResolveError>>,
 }
 
-impl CredentialSlotResolver for RefusingResolver {
+impl Default for ScriptedResolver {
+    fn default() -> Self {
+        Self {
+            calls: AtomicUsize::new(0),
+            outcome: std::sync::Mutex::new(Err(CredentialSlotResolveError::NotFound)),
+        }
+    }
+}
+
+impl ScriptedResolver {
+    fn answer(&self, outcome: Result<(u64, u64), CredentialSlotResolveError>) {
+        *self.outcome.lock().unwrap() = outcome;
+    }
+}
+
+impl CredentialSlotResolver for ScriptedResolver {
     fn resolve_slot<'a>(
         &'a self,
         _scope: &'a TenantScope,
-        _credential_id: CredentialId,
-        _expected_key: CredentialKey,
+        credential_id: CredentialId,
+        expected_key: CredentialKey,
         _required_capabilities: Capabilities,
         _cancel: CancellationToken,
     ) -> Pin<
@@ -236,7 +265,18 @@ impl CredentialSlotResolver for RefusingResolver {
         >,
     > {
         self.calls.fetch_add(1, Ordering::SeqCst);
-        Box::pin(async { Err(CredentialSlotResolveError::NotFound) })
+        let outcome = (*self.outcome.lock().unwrap()).map(|(material_epoch, revision)| {
+            nebula_credential::ErasedCredentialGuard::from_typed(
+                nebula_credential::CredentialGuard::new(String::from("secret")),
+                nebula_credential::CredentialGuardMetadata::new(
+                    credential_id,
+                    expected_key,
+                    material_epoch,
+                    revision,
+                ),
+            )
+        });
+        Box::pin(async move { outcome })
     }
 }
 
@@ -286,7 +326,7 @@ struct Fixture {
     registrars: ResourceActivatorRegistry,
     manager: Manager,
     expr_engine: ExpressionEngine,
-    resolver: RefusingResolver,
+    resolver: ScriptedResolver,
     scope: Scope,
     cancel: CancellationToken,
     #[cfg(feature = "rotation")]
@@ -302,7 +342,7 @@ impl Fixture {
             registrars: registrars(),
             manager: Manager::new(),
             expr_engine: ExpressionEngine::with_cache_size(16),
-            resolver: RefusingResolver::default(),
+            resolver: ScriptedResolver::default(),
             scope: Scope::new(
                 WorkspaceId::new().to_string(),
                 nebula_core::OrgId::new().to_string(),
@@ -514,7 +554,7 @@ async fn a_same_identity_reregistration_releases_replaced_credentials() {
     let previous = ActiveRow {
         version: 1,
         activated: activated.clone(),
-        bindings: vec![(replaced, "token".to_owned()), (kept, "other".to_owned())],
+        bindings: vec![bound(replaced, "token"), bound(kept, "other")],
     };
 
     release_bindings(&fixture.context(false), &previous);
@@ -532,7 +572,7 @@ async fn a_same_identity_reregistration_releases_replaced_credentials() {
     release_bindings(
         &fixture.context(false),
         &ActiveRow {
-            bindings: vec![(kept, "other".to_owned())],
+            bindings: vec![bound(kept, "other")],
             ..previous
         },
     );
@@ -700,6 +740,98 @@ async fn a_pushed_back_retirement_is_retried_by_the_sweep() {
             .get_row(&live.resource_key, &live.scope, &live.slot_identity)
             .is_some(),
         "a row served again is not removed"
+    );
+}
+
+#[cfg(feature = "rotation")]
+fn bound(credential_id: CredentialId, slot: &str) -> BoundCredential {
+    BoundCredential {
+        credential_id,
+        slot: slot.to_owned(),
+        credential_key: CredentialKey::new("auth").expect("valid credential key"),
+        material: (1, 1),
+    }
+}
+
+/// Every activation re-checks a credential-bound row's credentials against
+/// the credential store: unchanged, the registration is reused; refreshed,
+/// the row registers again; unreachable for now, it keeps serving; gone, it
+/// is retired and fails.
+#[tokio::test]
+async fn activation_follows_credential_changes_without_a_definition_change() {
+    let fixture = Fixture::new();
+    let mut events = fixture.manager.subscribe_events();
+    let credential = CredentialId::new().to_string();
+    let (resource_id, key) = fixture
+        .store_row(
+            "activation.slotted",
+            "a",
+            &[(AUTH_SLOT, credential.as_str())],
+        )
+        .await;
+    fixture.resolver.answer(Ok((1, 1)));
+    let activated = fixture.activate(resource_id, &key).await.unwrap();
+    assert_eq!(drain(&mut events).0, 1);
+
+    fixture.activate(resource_id, &key).await.unwrap();
+    assert_eq!(
+        drain(&mut events),
+        (0, 0),
+        "unchanged credentials reuse the row"
+    );
+    assert_eq!(fixture.resolver.calls.load(Ordering::SeqCst), 2);
+
+    fixture.resolver.answer(Ok((2, 1)));
+    assert_eq!(
+        fixture.activate(resource_id, &key).await.unwrap(),
+        activated
+    );
+    assert_eq!(
+        drain(&mut events).0,
+        1,
+        "a refreshed credential registers again"
+    );
+
+    fixture
+        .resolver
+        .answer(Err(CredentialSlotResolveError::Unavailable));
+    assert_eq!(
+        fixture.activate(resource_id, &key).await.unwrap(),
+        activated
+    );
+    assert_eq!(
+        drain(&mut events),
+        (0, 0),
+        "a transient failure keeps the row"
+    );
+
+    fixture
+        .resolver
+        .answer(Err(CredentialSlotResolveError::NotFound));
+    std::assert_matches!(
+        fixture.activate(resource_id, &key).await,
+        Err(StoredResourceActivationError::Credential {
+            source: CredentialSlotResolveError::NotFound,
+            ..
+        })
+    );
+    assert!(
+        fixture
+            .manager
+            .get_row(
+                &activated.resource_key,
+                &activated.scope,
+                &activated.slot_identity
+            )
+            .is_none(),
+        "a revoked credential's row stops serving"
+    );
+    assert!(
+        fixture
+            .activator
+            .row_states()
+            .iter()
+            .any(|state| matches!(state, RowState::Failed { .. }))
     );
 }
 

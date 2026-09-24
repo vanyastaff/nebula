@@ -509,3 +509,36 @@ fn rate_config_rejects_unknown_fields() {
         .is_err()
     );
 }
+
+#[tokio::test(start_paused = true)]
+async fn an_expired_deadline_refuses_a_free_slot_and_consumes_nothing() {
+    let limiter = Gcra::new(Rate::per_second(nz(2)));
+    let deadline = tokio::time::Instant::now();
+    tokio::time::advance(Duration::from_millis(1)).await;
+    let available = limiter.available();
+    let denied = limiter.until_ready(1, Some(deadline)).await.unwrap_err();
+    assert_eq!(
+        denied,
+        Denied::Later {
+            retry_after: Duration::ZERO
+        }
+    );
+    assert_eq!(limiter.available(), available, "nothing was booked");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_wake_up_past_the_deadline_is_refused() {
+    let limiter = std::sync::Arc::new(Gcra::new(Rate::per_second(nz(50))));
+    limiter.until_ready(1, None).await.unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(40);
+    let waiter = tokio::spawn({
+        let limiter = std::sync::Arc::clone(&limiter);
+        async move { limiter.until_ready(1, Some(deadline)).await }
+    });
+    // The waiter books its slot, 20 ms out, and sleeps; the only executor
+    // thread is then held past the deadline.
+    tokio::task::yield_now().await;
+    std::thread::sleep(Duration::from_millis(80));
+    let denied = waiter.await.unwrap().unwrap_err();
+    assert!(matches!(denied, Denied::Later { .. }), "{denied:?}");
+}

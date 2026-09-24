@@ -204,13 +204,20 @@ pub enum RowState {
 struct ActiveRow {
     version: u64,
     activated: ActivatedResource,
-    /// `(credential, slot)` pairs this registration bound into the rotation
-    /// index, released when a re-registration keeps the same identity.
-    #[cfg_attr(
-        not(feature = "rotation"),
-        expect(dead_code, reason = "only the rotation index reads the bindings")
-    )]
-    bindings: Vec<(CredentialId, String)>,
+    /// The credentials this registration was built with: checked against
+    /// the credential store on every activation, and bound into the
+    /// rotation index (released when a re-registration keeps the identity).
+    bindings: Vec<BoundCredential>,
+}
+
+/// One credential a registration resolved, and the material it got.
+#[derive(Debug, Clone)]
+struct BoundCredential {
+    credential_id: CredentialId,
+    slot: String,
+    credential_key: nebula_core::CredentialKey,
+    /// `(material_epoch, revision)` of the guard installed.
+    material: (u64, u64),
 }
 
 /// What an activator tracks for one stored row.
@@ -606,7 +613,19 @@ impl StoredResourceActivator {
             .as_ref()
             .filter(|current| current.version == row.version)
         {
-            return Ok(current.activated.clone());
+            match credentials_current(context, scope, &current.bindings, cancel).await {
+                Ok(true) => return Ok(current.activated.clone()),
+                // Refreshed or rotated since: registered again below, with
+                // the credentials as they are now.
+                Ok(false) => {},
+                Err(error) => {
+                    tracked.failed_version = Some(row.version);
+                    if let Some(stale) = tracked.active.take() {
+                        self.retire(context, stale.activated);
+                    }
+                    return Err(error);
+                },
+            }
         }
 
         // A failure is recorded against the version read, so status reports
@@ -653,7 +672,7 @@ async fn register_row(
     row: &ResourceRow,
     limit_key_secret: &[u8; 32],
     cancel: &CancellationToken,
-) -> Result<(ActivatedResource, Vec<(CredentialId, String)>), StoredResourceActivationError> {
+) -> Result<(ActivatedResource, Vec<BoundCredential>), StoredResourceActivationError> {
     let workspace = WorkspaceId::parse(&scope.workspace_id)
         .map_err(|_| StoredResourceActivationError::InvalidTenantScope)?;
     let factory = context.registrars.factory(&row.kind).ok_or_else(|| {
@@ -693,6 +712,7 @@ async fn register_row(
     let tenant = TenantScope::from_scope(scope);
     let mut slot_bindings = Vec::new();
     let mut slot_installs = Vec::new();
+    let mut bindings = Vec::new();
     for (slot, credential_key, required) in declared {
         let Some(selector) = row.credential_bindings.get(slot) else {
             if required {
@@ -725,6 +745,13 @@ async fn register_row(
                 slot: slot.to_owned(),
                 source,
             })?;
+        let metadata = guard.metadata();
+        bindings.push(BoundCredential {
+            credential_id,
+            slot: slot.to_owned(),
+            credential_key: credential_key.clone(),
+            material: (metadata.material_epoch(), metadata.revision()),
+        });
         slot_bindings.push(SlotBinding {
             slot_name: slot.to_owned(),
             credential_key,
@@ -743,14 +770,6 @@ async fn register_row(
         &slot_bindings,
         policy.account_slots(),
     );
-    let bindings = slot_bindings
-        .iter()
-        .filter_map(|binding| {
-            binding
-                .credential_id
-                .map(|id| (id, binding.slot_name.clone()))
-        })
-        .collect();
     let request = RegisterRequest {
         config: ResourceConfigInput::data(row.config.clone()),
         expr_engine: context.expr_engine,
@@ -787,20 +806,84 @@ async fn register_row(
     Ok((activated, bindings))
 }
 
+/// Whether the credentials a registration was built with are still the
+/// current ones.
+///
+/// Each is resolved again, as a node's action resolves its credentials on
+/// every turn; the credential store's own `(material_epoch, revision)`
+/// says whether it was refreshed or rotated since. This holds without the
+/// rotation fan-out and across processes: a refresh, rotation or revoke
+/// made anywhere reaches this row on its next activation, not only when
+/// its definition changes.
+///
+/// `Ok(false)` when one changed (the row is registered again). A credential
+/// that can no longer be resolved (revoked, deleted, needing
+/// re-authentication, refused) is an error: the row must stop serving it. A
+/// transient failure (the store or source unavailable, cancellation) keeps
+/// the registration, which is checked again next time.
+async fn credentials_current(
+    context: &ActivationContext<'_>,
+    scope: &Scope,
+    bindings: &[BoundCredential],
+    cancel: &CancellationToken,
+) -> Result<bool, StoredResourceActivationError> {
+    let Some(resolver) = context.credentials.filter(|_| !bindings.is_empty()) else {
+        return Ok(true);
+    };
+    let tenant = TenantScope::from_scope(scope);
+    for bound in bindings {
+        let resolved = resolver
+            .resolve_slot(
+                &tenant,
+                bound.credential_id,
+                bound.credential_key.clone(),
+                Capabilities::empty(),
+                cancel.clone(),
+            )
+            .await;
+        match resolved {
+            Ok(guard) => {
+                let metadata = guard.metadata();
+                if (metadata.material_epoch(), metadata.revision()) != bound.material {
+                    return Ok(false);
+                }
+            },
+            Err(
+                CredentialSlotResolveError::Unavailable
+                | CredentialSlotResolveError::SourceUnavailable
+                | CredentialSlotResolveError::Cancelled,
+            ) => {
+                tracing::debug!(
+                    target: "nebula_engine::resource_activation",
+                    slot = %bound.slot,
+                    "credential could not be re-checked now; the registration keeps serving"
+                );
+            },
+            Err(source) => {
+                return Err(StoredResourceActivationError::Credential {
+                    slot: bound.slot.clone(),
+                    source,
+                });
+            },
+        }
+    }
+    Ok(true)
+}
+
 /// Releases the rotation-index references `row`'s registration took, one
 /// per bound credential; a credential the new registration bound again
 /// keeps the reference that registration took.
 fn release_bindings(context: &ActivationContext<'_>, row: &ActiveRow) {
     #[cfg(feature = "rotation")]
     if let Some(fanout) = context.fanout {
-        for (credential_id, slot_name) in &row.bindings {
+        for bound in &row.bindings {
             let bind = nebula_resource::Bind {
                 resource_key: row.activated.resource_key.clone(),
                 scope: row.activated.scope.clone(),
-                slot_name: slot_name.clone(),
+                slot_name: bound.slot.clone(),
                 slot_identity: row.activated.slot_identity.clone(),
             };
-            fanout.unbind_staged_entry(credential_id, &bind);
+            fanout.unbind_staged_entry(&bound.credential_id, &bind);
         }
     }
     #[cfg(not(feature = "rotation"))]
