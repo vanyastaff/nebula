@@ -428,6 +428,7 @@ impl ResourceFanoutIndex {
                             };
                         },
                     };
+                    let managed = tainted.managed_handle();
                     // Phase 2 — the cancellation-safe drain + revoke hook.
                     // `drain_and_revoke` is the SINGLE owner of the
                     // per-resource budget: it bounds the drain (best-effort
@@ -440,7 +441,18 @@ impl ResourceFanoutIndex {
                     // documented "hook still runs after a timed-out drain"
                     // guarantee. The row is already tainted (phase 1); every
                     // tail outcome leaves it tainted.
-                    match mgr.drain_and_revoke(tainted, per_resource_timeout).await {
+                    let (tail, admitted) = mgr
+                        .drain_and_revoke_with_admission(tainted, per_resource_timeout)
+                        .await;
+                    if admitted {
+                        // Tombstone reconciliation may have recorded a retry
+                        // after an earlier queue rejection. A delayed durable
+                        // revoke event that wins admission owns the hook now;
+                        // consume that retry before reconciliation can submit
+                        // the same non-idempotent teardown again.
+                        self.forget_pending_revoke_for(cid, &b.slot_name, &managed);
+                    }
+                    match tail {
                         crate::RevokeTail::Done { drain } => RowOutcome::Success {
                             drain_timed_out: matches!(
                                 drain,

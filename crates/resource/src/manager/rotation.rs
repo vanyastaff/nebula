@@ -192,6 +192,13 @@ impl std::fmt::Debug for TaintedSlot {
     }
 }
 
+impl TaintedSlot {
+    #[cfg(feature = "rotation")]
+    pub(crate) fn managed_handle(&self) -> Arc<dyn crate::registry::ManagedHandle> {
+        Arc::clone(&self.managed)
+    }
+}
+
 /// Outcome of the cancellation-safe revoke tail
 /// ([`Manager::drain_and_revoke`]).
 ///

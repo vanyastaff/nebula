@@ -406,13 +406,22 @@ impl ResourceFanoutIndex {
     }
 
     pub(super) fn forget_pending_revoke(&self, entry: &PendingRevokeAdmission) {
+        self.forget_pending_revoke_for(entry.credential_id, &entry.slot, &entry.managed);
+    }
+
+    pub(super) fn forget_pending_revoke_for(
+        &self,
+        credential_id: CredentialId,
+        slot: &str,
+        managed: &std::sync::Arc<dyn crate::registry::ManagedHandle>,
+    ) {
         self.pending_revoke_admissions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .retain(|pending| {
-                pending.credential_id != entry.credential_id
-                    || pending.slot != entry.slot
-                    || !std::sync::Arc::ptr_eq(&pending.managed, &entry.managed)
+                pending.credential_id != credential_id
+                    || pending.slot != slot
+                    || !std::sync::Arc::ptr_eq(&pending.managed, managed)
             });
     }
 
@@ -476,17 +485,28 @@ impl ResourceFanoutIndex {
         slot_identity: &SlotIdentity,
         displaced: &std::sync::Arc<dyn crate::registry::ManagedHandle>,
     ) {
-        self.by_credential.retain(|_, rows| {
-            for row in rows.iter_mut().filter(|row| {
-                row.bind.resource_key == *resource_key
-                    && row.bind.scope == *scope
-                    && row.bind.slot_identity == *slot_identity
-            }) {
-                row.refs = row.refs.saturating_sub(1);
-            }
-            rows.retain(|row| row.refs != 0);
-            !rows.is_empty()
-        });
+        // `register_and_bind` stages the successor's bindings before the
+        // registry publishes it.  Therefore identity alone cannot distinguish
+        // the displaced row from a successor that resolved the same
+        // `(key, scope, slot_identity)` through a different credential.  The
+        // displaced handle is the authority for the references it owned:
+        // release exactly one reference for each of its live projections and
+        // leave every newly staged credential bucket untouched.
+        for (slot, _, metadata) in displaced.credential_projections() {
+            self.by_credential
+                .remove_if_mut(&metadata.credential_id(), |_, rows| {
+                    if let Some(row) = rows.iter_mut().find(|row| {
+                        row.bind.resource_key == *resource_key
+                            && row.bind.scope == *scope
+                            && row.bind.slot_identity == *slot_identity
+                            && row.bind.slot_name == slot
+                    }) {
+                        row.refs = row.refs.saturating_sub(1);
+                    }
+                    rows.retain(|row| row.refs != 0);
+                    rows.is_empty()
+                });
+        }
         self.pending_revoke_admissions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
