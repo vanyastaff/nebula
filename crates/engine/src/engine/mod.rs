@@ -78,6 +78,9 @@ use crate::{
 /// buffered per subscriber before the bus starts dropping.
 type EventBus = nebula_eventbus::EventBus<ExecutionEvent>;
 
+/// Stored-resource registry rows a durable execution binds, per node.
+type NodeResourceRows = HashMap<NodeKey, HashMap<ResourceKey, nebula_resource::SlotIdentity>>;
+
 /// Activation-time slot identities: registration scope → resource key → identity.
 type SlotIdentitiesByScope =
     HashMap<ScopeLevel, HashMap<ResourceKey, nebula_resource::SlotIdentity>>;
@@ -339,6 +342,14 @@ pub struct WorkflowEngine {
     /// Frozen slot-identity map per execution (snapshot at run start).
     resource_slot_identities_by_execution:
         DashMap<ExecutionId, Arc<HashMap<ResourceKey, nebula_resource::SlotIdentity>>>,
+    /// Lazily activates the stored resource rows a durable execution's
+    /// binding manifest names. `None` leaves stored rows inert.
+    stored_resources: Option<Arc<crate::resource::StoredResourceActivator>>,
+    /// Expression engine stored-row configs are resolved with.
+    resource_expr_engine: Arc<ExpressionEngine>,
+    /// Per-execution, per-node registry rows of the stored resources the
+    /// manifest binds, overlaid on the scope snapshot for that node.
+    resource_rows_by_execution: DashMap<ExecutionId, Arc<NodeResourceRows>>,
     /// Exact credential binding closure installed only while a durable execution is driven.
     credential_bindings_by_execution:
         DashMap<ExecutionId, Arc<nebula_execution::ExecutionBindingManifestV2>>,
@@ -628,7 +639,10 @@ impl WorkflowEngine {
             resource_fanout_index: Arc::new(nebula_resource::ResourceFanoutIndex::new()),
             #[cfg(feature = "rotation")]
             resource_fanout_spawned: std::sync::atomic::AtomicBool::new(false),
-            resolver: ParamResolver::new(expression_engine),
+            resolver: ParamResolver::new(Arc::clone(&expression_engine)),
+            resource_expr_engine: expression_engine,
+            stored_resources: None,
+            resource_rows_by_execution: DashMap::new(),
             resource_manager: None,
             resource_acquire_scope: None,
             execution_acquire_scopes: DashMap::new(),
@@ -1073,6 +1087,132 @@ impl WorkflowEngine {
         self.resource_slot_identities_by_execution
             .remove(&execution_id);
         self.execution_acquire_scopes.remove(&execution_id);
+        self.resource_rows_by_execution.remove(&execution_id);
+    }
+
+    /// Activate every stored resource `manifest` binds and remember, per
+    /// node, which registry row each of its resource keys resolves to.
+    ///
+    /// A row that fails to activate is logged and left out: the node's
+    /// acquire of that key then fails as not-found, while other rows and
+    /// other nodes proceed. A node that binds two different rows of one kind
+    /// cannot be served by a key-addressed acquire, so that key is left out
+    /// for the node rather than silently picking one row.
+    async fn activate_bound_resources(
+        &self,
+        execution_id: ExecutionId,
+        scope: &Scope,
+        manifest: &nebula_execution::ExecutionBindingManifestV2,
+        cancel: &CancellationToken,
+    ) {
+        let bound: Vec<_> = manifest
+            .entries()
+            .iter()
+            .filter_map(|entry| match (entry.site(), entry.target()) {
+                (
+                    nebula_execution::ExecutionBindingSiteV2::Node(node),
+                    nebula_execution::ExecutionBindingTargetV2::Resource {
+                        resource_id,
+                        contract,
+                    },
+                ) => Some((node.clone(), *resource_id, contract.key().clone())),
+                _ => None,
+            })
+            .collect();
+        if bound.is_empty() {
+            return;
+        }
+        let (Some(activator), Some(manager)) = (&self.stored_resources, &self.resource_manager)
+        else {
+            tracing::warn!(
+                target: "nebula_engine::resource_activation",
+                %execution_id,
+                bound_resources = bound.len(),
+                "execution binds stored resources but no activator/manager is configured"
+            );
+            return;
+        };
+        let context = crate::resource::ActivationContext {
+            registrars: &self.resource_registrars,
+            manager,
+            credentials: self.credential_resolver.as_deref(),
+            expr_engine: &self.resource_expr_engine,
+        };
+        let mut distinct: Vec<(nebula_core::ResourceId, ResourceKey)> = bound
+            .iter()
+            .map(|(_, resource_id, key)| (*resource_id, key.clone()))
+            .collect();
+        distinct.sort_unstable_by_key(|(resource_id, _)| *resource_id);
+        distinct.dedup_by(|left, right| left.0 == right.0);
+        let activations =
+            futures::future::join_all(distinct.iter().map(|(resource_id, key)| async {
+                let outcome = activator
+                    .activate(&context, scope, *resource_id, key, cancel)
+                    .await;
+                (*resource_id, outcome)
+            }))
+            .await;
+        let mut activated = HashMap::new();
+        for (resource_id, outcome) in activations {
+            match outcome {
+                Ok(row) => {
+                    activated.insert(resource_id, row);
+                },
+                Err(error) => tracing::warn!(
+                    target: "nebula_engine::resource_activation",
+                    error_code = "ENGINE:RESOURCE_ACTIVATION_FAILED",
+                    %execution_id,
+                    %resource_id,
+                    error = %error,
+                    "stored resource could not be activated; nodes binding it cannot acquire it"
+                ),
+            }
+        }
+
+        let mut rows = NodeResourceRows::new();
+        let mut ambiguous = HashSet::new();
+        for (node, resource_id, key) in bound {
+            let Some(row) = activated.get(&resource_id) else {
+                continue;
+            };
+            let node_rows = rows.entry(node.clone()).or_default();
+            match node_rows.get(&key) {
+                Some(existing) if existing != &row.slot_identity => {
+                    ambiguous.insert((node, key));
+                },
+                _ => {
+                    node_rows.insert(key, row.slot_identity.clone());
+                },
+            }
+        }
+        for (node, key) in ambiguous {
+            tracing::warn!(
+                target: "nebula_engine::resource_activation",
+                %execution_id,
+                node = %node,
+                resource_key = %key,
+                "node binds several stored resources of one kind; key-addressed acquire refused"
+            );
+            if let Some(node_rows) = rows.get_mut(&node) {
+                node_rows.remove(&key);
+            }
+        }
+        self.resource_rows_by_execution
+            .insert(execution_id, Arc::new(rows));
+    }
+
+    /// Activate stored resources from a store for durable executions.
+    ///
+    /// Requires a resource manager ([`with_resource_manager`](Self::with_resource_manager))
+    /// and, for rows that bind credentials, a credential resolver
+    /// ([`with_credential_resolver`](Self::with_credential_resolver)).
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_stored_resources(
+        mut self,
+        activator: crate::resource::StoredResourceActivator,
+    ) -> Self {
+        self.stored_resources = Some(Arc::new(activator));
+        self
     }
 
     /// Record a resolved **collision-free structural** slot identity for a

@@ -208,6 +208,15 @@ slot/tenant authority; semantic decoupling требует будущей version
 - **Удалить shim-слой (P1).** `credential/mod.rs` уже удалён. Остаётся: при возвращении
   `rotation.rs` — прямая миграция импортов на канонические пути и удаление shim'а. Память
   feedback_no_shims прямо требует «replace the wrong thing directly».
+- **Активация сохранённых ресурсов (2026-09-23).** `StoredResourceActivator`
+  (`src/resource/activation.rs`, подключается `with_stored_resources`) лениво, по одной строке,
+  регистрирует в `Manager` строки `ResourceStore`, которые называет манифест привязок durable-хода:
+  проверка вида и объявленных credential-слотов → `CredentialSlotResolver` → `register_resource`
+  с `row_id` в идентичности строки реестра. Одна активация на версию строки (single-flight),
+  удалённая строка снимается из `Manager`, ошибка строки логируется и не валит ход. Узел получает
+  идентичность своей строки поверх scope-снимка; два ряда одного вида на одном узле — отказ.
+  Не покрыто: topology/rate-limit строки (этап 3), реакция на изменения через outbox и ротация
+  установленных guard'ов (этап 4).
 - **Bind-population producer (M12.4) — остался resource-half.** Credential→slot резолвер в
   production есть: `CredentialSlotResolver` с impl `CredentialProjectionRuntime`
   (`nebula_credential::CredentialProjectionRuntime`), подключён `with_credential_resolver`, вызывается из

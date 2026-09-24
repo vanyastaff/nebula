@@ -129,6 +129,10 @@ Sized`, `destroy(…, cx: TeardownCx)`, дефолты у `check`/`destroy`);
 
 ## 8. Forward design / открытые вопросы
 
+- **Сохранённые строки ресурсов активируются (2026-09-23).** Движок регистрирует строки, которые
+  называет манифест выполнения, через `ResourceActivatorRegistry::register` с `RegisterRequest::row_id`;
+  `SlotIdentity::from_row_bindings` включает id строки в ключ реестра, так что две строки одного вида
+  в одном scope не заменяют друг друга. Путь без `rotation`: reverse index по-прежнему не наполняется.
 - **Production bind-population (§M12.4) — главный незакрытый хвост.** `register_and_bind` имеет quiesce-контракт, но живого вызывающего пути нет. Credential→slot резолвер существует и работает на execution-пути с 2026-09-13 (`CredentialSlotResolver`, impl `CredentialProjectionRuntime`), но `slot_bindings` он не наполняет: reverse index наполняет отдельный producer, которого нет, и единственный вызов `WorkflowEngine::register_resource_and_bind` сам никем не вызывается. Пока producer'а нет, статус крейта остаётся `frontier`. Это следующий resource-follow-up.
 - **Несинхронизированные breaking-коммиты.** На ветке `dreamy-kare-8698d4` лежат ещё 4 breaking-коммита redesign API, не влитые в этот worktree; их надо re-derive против пост-0093 состояния перед мержем (риск дрейфа `RegistrationSpec`/topology API).
 - ~~**Долг по докам — это риск онбординга, а не косметика.**~~ **Closed by Batch D (2026-07-02)** — see §6 above.

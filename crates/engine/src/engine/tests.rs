@@ -7664,3 +7664,121 @@ fn unparseable_tenant_ids_leave_the_acquire_scope_unset() {
     assert_eq!(scope.org_id, Some(org));
     assert_eq!(scope.workspace_id, Some(workspace));
 }
+
+async fn store_plain_row(
+    store: &nebula_storage::inmem::InMemoryResourceStore,
+    scope: &Scope,
+    kind: &str,
+) -> nebula_core::ResourceId {
+    use nebula_storage_port::store::ResourceStore as _;
+    let resource_id = nebula_core::ResourceId::new();
+    store
+        .create(
+            scope,
+            nebula_storage_port::dto::ResourceRow {
+                id: resource_id.to_string(),
+                workspace_id: scope.workspace_id.clone(),
+                slug: format!("row-{resource_id}"),
+                display_name: "row".to_owned(),
+                kind: kind.to_owned(),
+                config: serde_json::json!({ "label": "a" }),
+                credential_bindings: std::collections::BTreeMap::new(),
+                created_at: "2026-09-23T00:00:00Z".to_owned(),
+                created_by: "test".to_owned(),
+                version: 0,
+                deleted_at: None,
+            },
+        )
+        .await
+        .expect("row stored");
+    resource_id
+}
+
+fn resource_binding(
+    node: &NodeKey,
+    slot: &str,
+    resource_id: nebula_core::ResourceId,
+    kind: &str,
+) -> nebula_execution::ExecutionBindingEntryV2 {
+    nebula_execution::ExecutionBindingEntryV2::new(
+        nebula_execution::ExecutionBindingSiteV2::Node(node.clone()),
+        slot,
+        nebula_execution::ExecutionBindingTargetV2::Resource {
+            resource_id,
+            contract: nebula_execution::ResourceBindingContractV2::new(
+                ResourceKey::new(kind).unwrap(),
+                nebula_execution::BindingContractVersion::parse("1.0.0").unwrap(),
+            ),
+        },
+    )
+    .unwrap()
+}
+
+/// The manifest names exact stored rows per node. Each bound row is
+/// activated and resolves, for its node only, to that row's registry
+/// identity; a row that fails to activate and a node that binds two rows of
+/// one kind are left unresolved instead of failing the turn or guessing.
+#[tokio::test]
+async fn bound_stored_resources_resolve_per_node_and_fail_closed() {
+    let store = Arc::new(nebula_storage::inmem::InMemoryResourceStore::new());
+    let (engine, _) = make_engine(Arc::new(ActionRegistry::new()));
+    let engine = engine
+        .with_resource_manager(Arc::new(nebula_resource::Manager::new()))
+        .with_resource_registrars(crate::resource::activation::tests::registrars())
+        .with_stored_resources(crate::resource::StoredResourceActivator::new(
+            Arc::clone(&store) as Arc<dyn nebula_storage_port::store::ResourceStore>,
+        ));
+    let scope = Scope::new(
+        nebula_core::WorkspaceId::new().to_string(),
+        nebula_core::OrgId::new().to_string(),
+    );
+    let first = store_plain_row(&store, &scope, "activation.plain").await;
+    let second = store_plain_row(&store, &scope, "activation.plain").await;
+    let broken = store_plain_row(&store, &scope, "activation.unknown").await;
+
+    let reader = node_key!("reader");
+    let copier = node_key!("copier");
+    let orphan = node_key!("orphan");
+    let manifest = nebula_execution::ExecutionBindingManifestV2::new([
+        resource_binding(&reader, "db", first, "activation.plain"),
+        resource_binding(&copier, "source", first, "activation.plain"),
+        resource_binding(&copier, "target", second, "activation.plain"),
+        resource_binding(&orphan, "db", broken, "activation.unknown"),
+    ])
+    .unwrap();
+    let execution_id = ExecutionId::new();
+    engine
+        .activate_bound_resources(execution_id, &scope, &manifest, &CancellationToken::new())
+        .await;
+
+    let rows = engine
+        .resource_rows_by_execution
+        .get(&execution_id)
+        .map(|rows| Arc::clone(rows.value()))
+        .expect("rows recorded for the execution");
+    let plain = ResourceKey::new("activation.plain").unwrap();
+    assert_eq!(
+        rows.get(&reader).and_then(|keys| keys.get(&plain)),
+        Some(&nebula_resource::SlotIdentity::from_row_bindings(
+            Some(&first.to_string()),
+            std::iter::empty(),
+        )),
+    );
+    assert!(
+        rows.get(&copier)
+            .is_none_or(|keys| !keys.contains_key(&plain)),
+        "two rows of one kind on one node must not resolve by key"
+    );
+    assert!(
+        rows.get(&orphan).is_none_or(HashMap::is_empty),
+        "a row that failed to activate resolves nothing"
+    );
+
+    engine.remove_execution_resource_context(execution_id);
+    assert!(
+        engine
+            .resource_rows_by_execution
+            .get(&execution_id)
+            .is_none()
+    );
+}

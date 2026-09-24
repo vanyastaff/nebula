@@ -11,6 +11,11 @@
 
 use std::sync::Arc;
 
+pub mod activation;
+
+pub use activation::{
+    ActivatedResource, ActivationContext, StoredResourceActivationError, StoredResourceActivator,
+};
 pub use nebula_resource::{
     KindActivator, RegisterRequest, RegistrarError, ResourceActivatorRegistry, ResourceConfigInput,
     ResourceFactory, ResourceRegistrationOutcome, SlotBinding,

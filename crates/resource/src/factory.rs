@@ -846,6 +846,13 @@ impl ResourceActivatorRegistry {
         self.factories.contains_key(kind)
     }
 
+    /// The factory admitted for `kind`, for introspection such as reading its
+    /// declared credential slots before building a [`RegisterRequest`].
+    #[must_use]
+    pub fn factory(&self, kind: &str) -> Option<&Arc<dyn ResourceFactory>> {
+        self.factories.get(kind)
+    }
+
     /// Number of registered kinds.
     #[must_use]
     pub fn len(&self) -> usize {

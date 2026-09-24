@@ -853,6 +853,10 @@ impl WorkflowEngine {
             LeasePreparation::Completed(result) => return Ok(result),
         };
 
+        if let Some(binding_manifest) = &binding_manifest {
+            self.activate_bound_resources(execution_id, scope, binding_manifest, &cancel_token)
+                .await;
+        }
         if let Some(binding_manifest) = binding_manifest {
             self.credential_bindings_by_execution
                 .insert(execution_id, binding_manifest);
