@@ -404,11 +404,29 @@ async fn a_full_memory_store_shares_one_stricter_limit_for_new_keys() {
     );
     assert_eq!(store.len(), 2, "the store never grows past its bound");
     assert_eq!(store.overflowed(), 2);
+    // Two overflowed keys reusing one reservation id are two reservations,
+    // not a replay of each other.
+    let id = ReservationId(7);
+    let request = ReserveRequest::new(1, Duration::MAX).with_id(id);
+    let first = store
+        .reserve(&LimitKey::new("g").unwrap(), &one_per_hour, request)
+        .await
+        .unwrap()
+        .unwrap();
+    let second = store
+        .reserve(&LimitKey::new("h").unwrap(), &one_per_hour, request)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        second.allow_at > first.allow_at,
+        "the second books its own slot"
+    );
     // Once keys go idle, new keys get their own entries again.
     tokio::time::advance(Duration::from_hours(2)).await;
     assert!(reserve("e").await.is_ok());
     assert!(reserve("f").await.is_ok());
-    assert_eq!(store.overflowed(), 2);
+    assert_eq!(store.overflowed(), 4, "only c, d, g and h overflowed");
 }
 
 #[test]

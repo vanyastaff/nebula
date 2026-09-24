@@ -12,7 +12,7 @@
 //! execution binding it, so its runtime lives in that worker's `Manager`,
 //! not in the API process asking for its status. Workers therefore publish
 //! a per-row snapshot through a
-//! [`ResourceStatusStore`](nebula_storage_port::store::ResourceStatusStore)
+//! [`ResourceStatusStore`]
 //! ([`ResourceStatusPublisher`]) and the API reads it back
 //! ([`StoredResourceStatus`]). A snapshot counts only while its worker's
 //! heartbeat is live, so a crashed worker's rows fall out of the status on
@@ -78,11 +78,17 @@ pub enum ResourceStatusError {
 /// definition but is not currently active — distinct from an unanswerable
 /// read (`Err`).
 pub trait EngineResourceStatus: Send + Sync {
-    /// Aggregated runtime status of stored row `resource_id` in `scope`.
+    /// Aggregated runtime status of version `row_version` of stored row
+    /// `resource_id` in `scope`.
+    ///
+    /// Only workers running that version count: a worker still serving an
+    /// earlier version heartbeats its old snapshot until it next activates
+    /// the row, and must not make an updated definition look ready.
     fn runtime_status<'a>(
         &'a self,
         scope: &'a Scope,
         resource_id: &'a str,
+        row_version: u64,
     ) -> BoxFut<'a, Result<Option<ResourceRuntimeStatus>, ResourceStatusError>>;
 }
 
@@ -112,13 +118,15 @@ impl EngineResourceStatus for StoredResourceStatus {
         &'a self,
         scope: &'a Scope,
         resource_id: &'a str,
+        row_version: u64,
     ) -> BoxFut<'a, Result<Option<ResourceRuntimeStatus>, ResourceStatusError>> {
         Box::pin(async move {
-            let live = self
+            let mut live = self
                 .store
                 .live_for(scope, resource_id)
                 .await
                 .map_err(ResourceStatusError::Unavailable)?;
+            live.retain(|status| status.snapshot.row_version == row_version);
             Ok(aggregate(&live))
         })
     }

@@ -229,6 +229,8 @@ struct Fixture {
     resolver: RefusingResolver,
     scope: Scope,
     cancel: CancellationToken,
+    #[cfg(feature = "rotation")]
+    fanout: nebula_resource::ResourceFanoutIndex,
 }
 
 impl Fixture {
@@ -246,6 +248,8 @@ impl Fixture {
                 nebula_core::OrgId::new().to_string(),
             ),
             cancel: CancellationToken::new(),
+            #[cfg(feature = "rotation")]
+            fanout: nebula_resource::ResourceFanoutIndex::new(),
         }
     }
 
@@ -255,6 +259,8 @@ impl Fixture {
             manager: &self.manager,
             credentials: with_credentials.then_some(&self.resolver as &dyn CredentialSlotResolver),
             expr_engine: &self.expr_engine,
+            #[cfg(feature = "rotation")]
+            fanout: Some(&self.fanout),
         }
     }
 
@@ -379,6 +385,39 @@ async fn a_row_activates_once_per_version_even_under_concurrency() {
         drain(&mut events),
         (1, 0),
         "a version bump re-registers once"
+    );
+}
+
+/// A retired row leaves the credential-rotation index too, so a later
+/// refresh of its credentials is not dispatched to a row that is gone.
+#[cfg(feature = "rotation")]
+#[tokio::test]
+async fn a_retired_row_leaves_the_rotation_index() {
+    let fixture = Fixture::new();
+    let (resource_id, key) = fixture.store_row("activation.plain", "a", &[]).await;
+    let activated = fixture.activate(resource_id, &key).await.unwrap();
+    let credential = CredentialId::new();
+    fixture.fanout.bind(
+        credential,
+        activated.resource_key.clone(),
+        activated.scope.clone(),
+        "token",
+        activated.slot_identity.clone(),
+    );
+    assert_eq!(fixture.fanout.affected(&credential).len(), 1);
+
+    fixture
+        .store
+        .soft_delete(&fixture.scope, &resource_id.to_string())
+        .await
+        .unwrap();
+    std::assert_matches!(
+        fixture.activate(resource_id, &key).await,
+        Err(StoredResourceActivationError::NotFound { .. })
+    );
+    assert!(
+        fixture.fanout.affected(&credential).is_empty(),
+        "retiring the row unbinds it from rotation fan-out"
     );
 }
 

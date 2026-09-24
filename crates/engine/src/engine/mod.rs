@@ -81,6 +81,16 @@ type EventBus = nebula_eventbus::EventBus<ExecutionEvent>;
 /// Stored-resource registry rows a durable execution binds, per node.
 type NodeResourceRows = HashMap<NodeKey, HashMap<ResourceKey, nebula_resource::SlotIdentity>>;
 
+/// An identity no registry row carries: stored-row identities are derived
+/// from `res_<ULID>` ids, and this one is not. A node pinned to it fails its
+/// acquire as not-found instead of reaching another row of the same kind.
+fn unavailable_row_identity() -> nebula_resource::SlotIdentity {
+    nebula_resource::SlotIdentity::from_row_bindings(
+        Some("unavailable-stored-resource"),
+        std::iter::empty::<(&str, &str)>(),
+    )
+}
+
 /// Activation-time slot identities: registration scope → resource key → identity.
 type SlotIdentitiesByScope =
     HashMap<ScopeLevel, HashMap<ResourceKey, nebula_resource::SlotIdentity>>;
@@ -1169,6 +1179,8 @@ impl WorkflowEngine {
             manager,
             credentials: self.credential_resolver.as_deref(),
             expr_engine: &self.resource_expr_engine,
+            #[cfg(feature = "rotation")]
+            fanout: Some(&self.resource_fanout_index),
         };
         let mut distinct: Vec<(nebula_core::ResourceId, ResourceKey)> = bound
             .iter()
@@ -1201,32 +1213,40 @@ impl WorkflowEngine {
             }
         }
 
+        // A key the node cannot be served exactly is pinned to an identity no
+        // registry row carries, never left out: left out, the node's acquire
+        // would fall through to the scope snapshot and could reach a
+        // different row of the same kind than its manifest names.
+        let unavailable = unavailable_row_identity();
         let mut rows = NodeResourceRows::new();
-        let mut ambiguous = HashSet::new();
+        let mut refused = HashSet::new();
         for (node, resource_id, key) in bound {
+            let node_rows = rows.entry(node.clone()).or_default();
             let Some(row) = activated.get(&resource_id) else {
+                node_rows.insert(key.clone(), unavailable.clone());
+                refused.insert((node, key));
                 continue;
             };
-            let node_rows = rows.entry(node.clone()).or_default();
             match node_rows.get(&key) {
                 Some(existing) if existing != &row.slot_identity => {
-                    ambiguous.insert((node, key));
+                    tracing::warn!(
+                        target: "nebula_engine::resource_activation",
+                        %execution_id,
+                        node = %node,
+                        resource_key = %key,
+                        "node binds several stored resources of one kind; key-addressed acquire refused"
+                    );
+                    refused.insert((node, key));
                 },
+                _ if refused.contains(&(node.clone(), key.clone())) => {},
                 _ => {
                     node_rows.insert(key, row.slot_identity.clone());
                 },
             }
         }
-        for (node, key) in ambiguous {
-            tracing::warn!(
-                target: "nebula_engine::resource_activation",
-                %execution_id,
-                node = %node,
-                resource_key = %key,
-                "node binds several stored resources of one kind; key-addressed acquire refused"
-            );
+        for (node, key) in refused {
             if let Some(node_rows) = rows.get_mut(&node) {
-                node_rows.remove(&key);
+                node_rows.insert(key, unavailable.clone());
             }
         }
         self.resource_rows_by_execution

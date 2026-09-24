@@ -612,11 +612,19 @@ impl WorkerRuntimeBuilder {
             worker_flavor_revision,
         );
 
+        // The status identity carries a per-process incarnation: a restarted
+        // process that reuses a configured processor id must not renew its
+        // predecessor's heartbeat and bring that process's stale snapshots
+        // back to life; they expire with the old heartbeat instead.
         let resource_status = self
             .resource_status
             .map(|store| {
-                StatusWorkerId::new(format!("worker:{}", hex_id(&self.processor_id)))
-                    .map(|worker| ResourceStatusPublisher::new(store, worker))
+                StatusWorkerId::new(format!(
+                    "worker:{}:{}",
+                    hex_id(&self.processor_id),
+                    process_incarnation()
+                ))
+                .map(|worker| ResourceStatusPublisher::new(store, worker))
             })
             .transpose()
             .map_err(WorkerBuildError::InvalidStatusWorker)?;
@@ -634,6 +642,15 @@ impl WorkerRuntimeBuilder {
             available_plugins_count,
         })
     }
+}
+
+/// Identifies this process among processes sharing one processor id: the OS
+/// process id and the start time, which a restart never repeats together.
+fn process_incarnation() -> String {
+    let started = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_nanos());
+    format!("{:x}-{started:x}", std::process::id())
 }
 
 /// Hex-encode `processor_id` bytes for structured log fields.

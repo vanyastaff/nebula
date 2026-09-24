@@ -3,7 +3,7 @@
 //! [`LimitStore`] is the seam a limit is enforced through: this crate ships
 //! the in-process [`MemoryLimitStore`]; shared stores (a database, Redis)
 //! live in storage crates and implement the same contract by running the
-//! [`step`](super::step) functions atomically on their own clock. The
+//! [`step`] functions atomically on their own clock. The
 //! contract is here, not in a storage port, because this crate sits below
 //! every storage crate and consumers of limits must not depend on storage.
 
@@ -113,7 +113,7 @@ pub enum LimitStoreError {
 /// Every method is one atomic transition of one key on the store's own
 /// clock. Implementations must never read a caller's clock, and must apply
 /// [`step::effective_rate`] so callers that disagree on a key's rate get the
-/// stricter one. [`conformance`](super::conformance) holds the behaviour
+/// stricter one. `gcra::conformance` (feature `conformance`) holds the behaviour
 /// every implementation is checked against.
 pub trait LimitStore: Send + Sync {
     /// Books permits under `key` (see [`step::reserve`]).
@@ -328,8 +328,14 @@ impl MemoryLimitStore {
         if is_new && keys.entries.len() >= self.max_keys {
             keys.overflowed = keys.overflowed.saturating_add(1);
             let entry = &mut keys.overflow;
-            entry.pending.retain(|_, grant| grant.allow_at > now);
-            return apply(entry, now);
+            // Reservation ids are scoped to one key, and the overflow limit
+            // serves many: a repeated id there books again instead of being
+            // mistaken for another key's reservation. Booking twice errs on
+            // sending less; sharing one slot would send more.
+            entry.pending.clear();
+            let result = apply(entry, now);
+            entry.pending.clear();
+            return result;
         }
         let entry = keys.entries.entry(key.clone()).or_default();
         entry.pending.retain(|_, grant| grant.allow_at > now);

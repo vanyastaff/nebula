@@ -830,9 +830,10 @@ pub async fn get_resource_status(
     // or its workers are gone): a well-defined `inactive` status in a 200
     // body — NOT a 404 (the config row exists; absence of a *live runtime*
     // is a status, not a missing resource). An unreadable status backend
-    // is a 503, never a fabricated status.
+    // is a 503, never a fabricated status. Only workers running the row's
+    // current version count.
     let status = status_port
-        .runtime_status(&scope, &row.id)
+        .runtime_status(&scope, &row.id, row.version)
         .await
         .map_err(|error| {
             tracing::warn!(

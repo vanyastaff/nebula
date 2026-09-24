@@ -8,8 +8,12 @@ use serde_json::{Value, json};
 
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 const PREVIOUS_SUPPORTED: i64 = 45;
+/// Catalog heads differ: PostgreSQL carries migrations SQLite reserves
+/// (0059 rate limits), so each backend reports its own.
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
-const CURRENT_HEAD: i64 = 56;
+fn current_head(backend: &str) -> i64 {
+    if backend == "postgresql" { 59 } else { 58 }
+}
 
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 fn hex(bytes: &[u8]) -> String {
@@ -37,7 +41,7 @@ fn retain(variable: &str, backend: &str, database_version: String, scenarios: Ve
             "backend": backend,
             "database_version": database_version,
             "previous_supported_version": PREVIOUS_SUPPORTED,
-            "current_head": CURRENT_HEAD,
+            "current_head": current_head(backend),
             "scenarios": scenarios,
         }))
         .unwrap();

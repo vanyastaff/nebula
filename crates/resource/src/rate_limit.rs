@@ -52,7 +52,7 @@ use std::{
     fmt::{self, Write as _},
     sync::{
         Arc, Mutex, PoisonError,
-        atomic::{AtomicBool, AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -618,12 +618,37 @@ pub struct ResourceLimiter {
     keyed: Option<KeyedLimits>,
     max_penalty: Duration,
     reporter: Option<Reporter>,
-    /// Pause of a limiter without a quota (a quota keeps its pause in the
-    /// store).
+    /// The latest account pause this process recorded. The only pause of a
+    /// limiter without a quota; with a quota the store holds the pause for
+    /// new bookings, and this lets callers already sleeping on an earlier
+    /// booking honour it when they wake.
     paused_until: Mutex<Option<tokio::time::Instant>>,
     engaged: AtomicBool,
+    /// Callers currently waiting for a slot; the limit clears when the last
+    /// one's wait ends.
+    waiters: AtomicUsize,
     store_down: AtomicBool,
     refusals: AtomicU32,
+}
+
+/// Counts one waiting caller for as long as it lives, including when the
+/// wait is cancelled.
+struct Waiting<'a>(&'a ResourceLimiter);
+
+impl<'a> Waiting<'a> {
+    fn start(limiter: &'a ResourceLimiter) -> Self {
+        limiter.waiters.fetch_add(1, Ordering::AcqRel);
+        limiter.engage();
+        Self(limiter)
+    }
+}
+
+impl Drop for Waiting<'_> {
+    fn drop(&mut self) {
+        if self.0.waiters.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.0.clear();
+        }
+    }
 }
 
 impl fmt::Debug for ResourceLimiter {
@@ -680,6 +705,7 @@ impl ResourceLimiter {
             reporter,
             paused_until: Mutex::new(None),
             engaged: AtomicBool::new(false),
+            waiters: AtomicUsize::new(0),
             store_down: AtomicBool::new(false),
             refusals: AtomicU32::new(0),
         }
@@ -715,14 +741,18 @@ impl ResourceLimiter {
     /// - [`ErrorKind::Backpressure`](crate::ErrorKind::Backpressure) when the
     ///   limit store cannot be reached (fail closed).
     ///
+    /// The deadline is absolute: time spent reaching a shared store counts
+    /// against it, and a slot that no longer fits once the store has
+    /// answered is returned rather than waited for. A pause recorded while
+    /// the caller waits still holds when it wakes.
+    ///
     /// # Cancel safety
     ///
     /// Cancelling during the wait forfeits the booked slot: the limiter errs
     /// on sending less, never more.
     pub async fn ready(&self, deadline: Option<std::time::Instant>) -> Result<(), Error> {
-        let wait = self.account_slot(max_wait_until(deadline)).await?;
-        self.wait_out(wait).await;
-        Ok(())
+        let wait = self.account_slot(deadline).await?;
+        self.wait_out(wait, deadline).await
     }
 
     /// Waits for one permit of the per-key limit `dimension` for `value` —
@@ -743,17 +773,13 @@ impl ResourceLimiter {
         value: impl fmt::Display,
         deadline: Option<std::time::Instant>,
     ) -> Result<(), Error> {
-        let max_wait = max_wait_until(deadline);
         let keyed = self.keyed_limits()?;
         let (key, rate) = keyed
             .limit_for(dimension, &value.to_string())
             .map_err(|error| self.tagged(error))?;
-        let key_slot = self.book(&keyed.store, &key, &rate, max_wait).await?;
-        match self.account_slot(max_wait).await {
-            Ok(wait) => {
-                self.wait_out(wait.max(key_slot.wait)).await;
-                Ok(())
-            },
+        let key_slot = self.book(&keyed.store, &key, &rate, deadline).await?;
+        match self.account_slot(deadline).await {
+            Ok(wait) => self.wait_out(wait.max(key_slot.wait), deadline).await,
             Err(error) => {
                 // The key's slot goes back while it is still the last one
                 // booked; otherwise it lapses unused, which errs on sending
@@ -774,47 +800,82 @@ impl ResourceLimiter {
 
     /// The wait for one account permit: a slot of the quota, or the end of
     /// a local pause.
-    async fn account_slot(&self, max_wait: Duration) -> Result<Duration, Error> {
+    async fn account_slot(&self, deadline: Option<std::time::Instant>) -> Result<Duration, Error> {
         if let Some(quota) = &self.quota {
             return self
-                .book(&quota.store, &quota.key, &quota.rate, max_wait)
+                .book(&quota.store, &quota.key, &quota.rate, deadline)
                 .await
                 .map(|grant| grant.wait);
         }
         let wait = self.pause_remaining();
-        if wait > max_wait {
+        if wait > max_wait_until(deadline) {
             self.engage();
-            return Err(self.tagged(Error::exhausted(
-                "resource paused past the deadline",
-                Some(wait),
-            )));
+            return Err(self.paused_past_deadline(wait));
         }
         Ok(wait)
     }
 
-    async fn wait_out(&self, wait: Duration) {
-        if wait.is_zero() {
-            self.clear();
-        } else {
-            self.engage();
-            tokio::time::sleep(wait).await;
+    /// Waits out `wait`, then any pause recorded meanwhile: a caller that
+    /// booked before a provider's "slow down" must not wake into it.
+    async fn wait_out(
+        &self,
+        wait: Duration,
+        deadline: Option<std::time::Instant>,
+    ) -> Result<(), Error> {
+        if wait.is_zero() && self.pause_remaining().is_zero() {
+            if self.waiters.load(Ordering::Acquire) == 0 {
+                self.clear();
+            }
+            return Ok(());
+        }
+        let _waiting = Waiting::start(self);
+        tokio::time::sleep(wait).await;
+        loop {
+            let pause = self.pause_remaining();
+            if pause.is_zero() {
+                return Ok(());
+            }
+            // The booked slot lapses unused, which errs on sending less.
+            if pause > max_wait_until(deadline) {
+                return Err(self.paused_past_deadline(pause));
+            }
+            tokio::time::sleep(pause).await;
         }
     }
 
-    /// Books one slot of `key`.
+    fn paused_past_deadline(&self, pause: Duration) -> Error {
+        self.tagged(Error::exhausted(
+            "resource paused past the deadline",
+            Some(pause),
+        ))
+    }
+
+    /// Books one slot of `key` that `deadline` still covers once the store
+    /// has answered.
     async fn book(
         &self,
         store: &Arc<dyn ErasedLimitStore>,
         key: &LimitKey,
         rate: &Rate,
-        max_wait: Duration,
+        deadline: Option<std::time::Instant>,
     ) -> Result<Grant, Error> {
         let decision = store
-            .reserve_boxed(key, rate, ReserveRequest::new(1, max_wait))
+            .reserve_boxed(key, rate, ReserveRequest::new(1, max_wait_until(deadline)))
             .await;
         match decision {
             Ok(Ok(grant)) => {
                 self.store_recovered();
+                // The store call itself took time: a slot booked within the
+                // budget measured before it can lie past the deadline now.
+                // Return it rather than wait past the deadline.
+                if grant.wait > max_wait_until(deadline) {
+                    let _ = store.cancel_boxed(key, rate, &grant).await;
+                    self.engage();
+                    return Err(self.tagged(Error::exhausted(
+                        "rate limit exhausted before the deadline",
+                        Some(grant.wait),
+                    )));
+                }
                 Ok(grant)
             },
             Ok(Err(Denied::Later { retry_after })) => {
@@ -869,7 +930,10 @@ impl ResourceLimiter {
                 .penalize_boxed(&quota.key, &quota.rate, retry_after, self.max_penalty)
                 .await
                 .map_err(|error| self.store_unavailable(&error))?;
-        } else {
+        }
+        // Recorded locally as well, so callers of this process already
+        // sleeping on an earlier booking wake no sooner than the pause ends.
+        {
             let until = tokio::time::Instant::now() + block;
             let mut paused_until = self
                 .paused_until

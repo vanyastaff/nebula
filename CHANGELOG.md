@@ -11,6 +11,17 @@ changes are expected between minor releases — call them out here.
 
 ### Breaking
 
+- **Resource rate limiting and stored-resource activation advance development
+  packages to 0.19.0 in lockstep.** `ResourceRow` gains `topology` and
+  `resilience_override` (migrations 0057–0059: operator settings, cross-process
+  resource status, PostgreSQL rate limits). Providers declare a
+  `ResiliencePolicy`; `RegistrationSpec` gains `rate_limit` and
+  `RegisterRequest` gains `topology`, `resilience_override`, `limit_key` and
+  `row_id`; `ResourceGuard::rate_limiter` becomes `limits()`; `ResourceFactory`
+  gains `validate_topology`, `resilience_policy` and
+  `validate_resilience_override`. The resource status seam is async and reads
+  worker-published status from storage. Exact-version SDK consumers and
+  external implementations of `ResourceStore` must update together.
 - **Durable credential reauthentication advances development packages to 0.18.0
   in lockstep.** Refresh claims and sentinel incidents are owner-qualified, and
   threshold escalation now records the incident and advances the credential to

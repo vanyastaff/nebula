@@ -1602,6 +1602,7 @@ impl EngineResourceStatus for FakeResourceStatus {
         &'a self,
         scope: &'a Scope,
         resource_id: &'a str,
+        _row_version: u64,
     ) -> Pin<
         Box<
             dyn Future<Output = Result<Option<ResourceRuntimeStatus>, ResourceStatusError>>

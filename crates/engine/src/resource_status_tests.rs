@@ -91,7 +91,7 @@ async fn stored_status_reads_what_live_workers_published_and_forgets_withdrawn_o
     let scope = Scope::new("ws_status", "org_status");
     let reader = StoredResourceStatus::new(Arc::clone(&store));
     assert_eq!(
-        reader.runtime_status(&scope, "res_a").await.unwrap(),
+        reader.runtime_status(&scope, "res_a", 3).await.unwrap(),
         None,
         "nothing published: inactive"
     );
@@ -122,7 +122,7 @@ async fn stored_status_reads_what_live_workers_published_and_forgets_withdrawn_o
     }
 
     let status = reader
-        .runtime_status(&scope, "res_a")
+        .runtime_status(&scope, "res_a", 3)
         .await
         .unwrap()
         .expect("two live workers serve the row");
@@ -131,9 +131,18 @@ async fn stored_status_reads_what_live_workers_published_and_forgets_withdrawn_o
     assert!(!status.healthy);
     assert!(status.accepting);
 
+    assert_eq!(
+        reader.runtime_status(&scope, "res_a", 4).await.unwrap(),
+        None,
+        "workers still running version 3 do not make version 4 look served"
+    );
+
     let other_scope = Scope::new("ws_other", "org_status");
     assert_eq!(
-        reader.runtime_status(&other_scope, "res_a").await.unwrap(),
+        reader
+            .runtime_status(&other_scope, "res_a", 3)
+            .await
+            .unwrap(),
         None,
         "another workspace never sees this row's status"
     );
@@ -143,7 +152,7 @@ async fn stored_status_reads_what_live_workers_published_and_forgets_withdrawn_o
         .await
         .unwrap();
     let status = reader
-        .runtime_status(&scope, "res_a")
+        .runtime_status(&scope, "res_a", 3)
         .await
         .unwrap()
         .expect("one worker still serves the row");

@@ -15,10 +15,11 @@
 //! ([`RegisterRequest::row_id`]), so two rows of one kind in one workspace
 //! never replace each other.
 //!
-//! Not yet covered, by design of the staged rollout: operator topology and
-//! rate-limit settings are not persisted on rows (registrations use the
-//! kind's defaults), and credential guards installed here are refreshed only
-//! when the row is re-activated, not on credential rotation.
+//! The row's operator settings (`topology`, `resilience_override`) are passed
+//! to the registration, which re-validates them. With the `rotation` feature
+//! a row bound to credentials is recorded in the credential-rotation reverse
+//! index as it registers and removed as it retires, so a refresh or revoke
+//! of those credentials reaches the live resource.
 
 use std::{sync::Arc, time::Duration};
 
@@ -140,6 +141,11 @@ pub struct ActivationContext<'a> {
     pub credentials: Option<&'a dyn CredentialSlotResolver>,
     /// Expression engine for explicitly authored config expressions.
     pub expr_engine: &'a ExpressionEngine,
+    /// Credential-rotation reverse index. A row bound to credentials is
+    /// recorded here as it registers and removed as it retires, so a refresh
+    /// or revoke of those credentials reaches the live resource.
+    #[cfg(feature = "rotation")]
+    pub fanout: Option<&'a nebula_resource::ResourceFanoutIndex>,
 }
 
 /// A stored row currently registered by a [`StoredResourceActivator`].
@@ -173,13 +179,19 @@ pub struct StoredResourceActivator {
 
 type HmacSha256 = hmac::Hmac<sha2::Sha256>;
 
+/// Default key for account quota keys: fixed, so every worker and every
+/// restart derives the same key for one account and a shared limit store
+/// holds one quota for it.
+const DEFAULT_LIMIT_KEY_SECRET: [u8; 32] = *b"nebula.resource.limit-key.v1\0\0\0\0";
+
 /// The quota key rows bound to the same credentials share: a provider limits
 /// the account behind a credential, not one resource row.
 ///
-/// Keyed with an instance secret so the key cannot be recomputed from, or
-/// compared across, tenants' credential ids; the tenant owner is part of the
-/// input so two tenants never share a quota. `None` for a row bound to no
-/// credential, which is then limited on its own.
+/// Derived with a key every worker shares (see
+/// [`StoredResourceActivator::with_limit_key_secret`]), so all workers name
+/// one account's quota alike; the tenant owner is part of the input so two
+/// tenants never share a quota. `None` for a row bound to no credential,
+/// which is then limited on its own.
 fn account_limit_key(
     secret: &[u8; 32],
     scope: &Scope,
@@ -228,24 +240,23 @@ impl StoredResourceActivator {
     /// Activates rows read from `store`.
     #[must_use]
     pub fn new(store: Arc<dyn ResourceStore>) -> Self {
-        use rand::Rng as _;
-
-        let mut secret = [0_u8; 32];
-        rand::rng().fill_bytes(&mut secret);
         Self {
             store,
             timeout: DEFAULT_ACTIVATION_TIMEOUT,
             rows: DashMap::new(),
-            limit_key_secret: Arc::new(secret),
+            limit_key_secret: Arc::new(DEFAULT_LIMIT_KEY_SECRET),
         }
     }
 
     /// Sets the secret account quota keys are derived with.
     ///
-    /// The default is random per process, which is enough while limits live
-    /// in this process. Every worker enforcing a cluster-wide limit must use
-    /// the same secret, or each derives different keys and gets its own
-    /// quota.
+    /// Every worker sharing a limit store must use the same secret, or each
+    /// derives different keys and gets its own quota. The default is a fixed
+    /// domain key, identical in every process and across restarts: the
+    /// inputs (tenant owner, credential ids) are identifiers the resource
+    /// rows already store, so a secret only hides which rows share an
+    /// account from someone reading the limit table. A deployment that wants
+    /// that sets one secret for all its workers here.
     #[must_use]
     pub fn with_limit_key_secret(mut self, secret: [u8; 32]) -> Self {
         self.limit_key_secret = Arc::new(secret);
@@ -343,7 +354,7 @@ impl StoredResourceActivator {
             .map_err(StoredResourceActivationError::Storage)?;
         let Some(row) = row.filter(|row| row.deleted_at.is_none()) else {
             if let Some(stale) = active.take() {
-                retire(context.manager, &stale.activated);
+                retire(context, &stale.activated);
             }
             return Err(StoredResourceActivationError::NotFound { resource_id });
         };
@@ -369,7 +380,7 @@ impl StoredResourceActivator {
         // Same identity re-registers in place; a changed binding set leaves
         // the old registry row behind unless it is retired here.
         if let Some(previous) = previous.filter(|previous| previous.activated != activated) {
-            retire(context.manager, &previous.activated);
+            retire(context, &previous.activated);
         }
         tracing::debug!(
             target: "nebula_engine::resource_activation",
@@ -461,29 +472,34 @@ async fn register_row(
 
     let scope_level = ScopeLevel::Workspace(workspace);
     let limit_key = account_limit_key(limit_key_secret, scope, &slot_bindings);
+    let request = RegisterRequest {
+        config: ResourceConfigInput::data(row.config.clone()),
+        expr_engine: context.expr_engine,
+        slot_bindings,
+        slot_installs,
+        scope: scope_level.clone(),
+        recovery_gate: None,
+        // Validated against the kind when stored; re-validated by the
+        // registration itself, so a row stored before its kind tightened
+        // fails activation closed.
+        topology: row.topology.clone(),
+        resilience_override: row.resilience_override.clone(),
+        row_id: Some(row.id.clone()),
+        limit_key,
+    };
+    // With rotation, the row's credentials are bound into the reverse index
+    // before the row becomes discoverable, so a refresh or revoke reaches it.
+    #[cfg(feature = "rotation")]
     let outcome = context
         .registrars
-        .register(
-            &row.kind,
-            context.manager,
-            RegisterRequest {
-                config: ResourceConfigInput::data(row.config.clone()),
-                expr_engine: context.expr_engine,
-                slot_bindings,
-                slot_installs,
-                scope: scope_level.clone(),
-                recovery_gate: None,
-                // Validated against the kind when stored; re-validated by
-                // the registration itself, so a row stored before its kind
-                // tightened fails activation closed.
-                topology: row.topology.clone(),
-                resilience_override: row.resilience_override.clone(),
-                row_id: Some(row.id.clone()),
-                limit_key,
-            },
-        )
-        .await
-        .map_err(StoredResourceActivationError::Register)?;
+        .register_and_bind(&row.kind, context.manager, request, context.fanout)
+        .await;
+    #[cfg(not(feature = "rotation"))]
+    let outcome = context
+        .registrars
+        .register(&row.kind, context.manager, request)
+        .await;
+    let outcome = outcome.map_err(StoredResourceActivationError::Register)?;
     Ok(ActivatedResource {
         resource_key: outcome.resource_key,
         scope: scope_level,
@@ -491,7 +507,16 @@ async fn register_row(
     })
 }
 
-fn retire(manager: &Manager, activated: &ActivatedResource) {
+fn retire(context: &ActivationContext<'_>, activated: &ActivatedResource) {
+    #[cfg(feature = "rotation")]
+    if let Some(fanout) = context.fanout {
+        fanout.unbind_resource_identity(
+            &activated.resource_key,
+            &activated.scope,
+            &activated.slot_identity,
+        );
+    }
+    let manager = context.manager;
     if let Err(error) = manager.remove_for(
         &activated.resource_key,
         &activated.scope,

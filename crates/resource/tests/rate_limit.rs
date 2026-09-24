@@ -408,9 +408,30 @@ async fn limit_events_mark_transitions_and_penalties_only() {
         .await
         .unwrap();
     let limits = guard.limits();
-    for _ in 0..3 {
-        limits.ready(None).await.unwrap();
-    }
+    let mut drain = || {
+        let mut seen = Vec::new();
+        while let Some(event) = events.try_recv() {
+            match event {
+                ResourceEvent::RateLimitEngaged { .. } => seen.push("engaged"),
+                ResourceEvent::RateLimitCleared { .. } => seen.push("cleared"),
+                ResourceEvent::RateLimitPenalized { .. } => seen.push("penalized"),
+                _ => {},
+            }
+        }
+        seen
+    };
+
+    // Three callers wait at once: the limit engages once and clears once,
+    // when the last of them is admitted, not when a later call arrives.
+    let (first, second, third) =
+        tokio::join!(limits.ready(None), limits.ready(None), limits.ready(None));
+    first.and(second).and(third).unwrap();
+    assert_eq!(
+        drain(),
+        ["engaged", "cleared"],
+        "concurrent waits publish one transition each way, not one per call"
+    );
+
     limits.penalize(Duration::from_secs(2)).await.unwrap();
     let started = Instant::now();
     limits.ready(None).await.unwrap();
@@ -418,21 +439,44 @@ async fn limit_events_mark_transitions_and_penalties_only() {
         started.elapsed() >= Duration::from_secs(2),
         "a penalty blocks the next call until the provider's Retry-After"
     );
+    assert_eq!(drain(), ["penalized", "cleared"]);
+
     tokio::time::sleep(Duration::from_secs(1)).await;
     limits.ready(None).await.unwrap();
+    assert!(
+        drain().is_empty(),
+        "a free call on a clear limit says nothing"
+    );
+}
 
-    let mut limit_events = Vec::new();
-    while let Some(event) = events.try_recv() {
-        match event {
-            ResourceEvent::RateLimitEngaged { .. } => limit_events.push("engaged"),
-            ResourceEvent::RateLimitCleared { .. } => limit_events.push("cleared"),
-            ResourceEvent::RateLimitPenalized { .. } => limit_events.push("penalized"),
-            _ => {},
-        }
-    }
-    assert_eq!(
-        limit_events,
-        ["engaged", "penalized", "cleared"],
-        "three waits publish one transition, not three events"
+/// A caller already sleeping on its booked slot when a provider's
+/// "slow down" arrives wakes no sooner than the pause ends.
+#[tokio::test(start_paused = true)]
+async fn a_pause_holds_callers_already_waiting_for_their_slot() {
+    let manager = Manager::new();
+    register(
+        &manager,
+        ScopeLevel::Global,
+        RowLimit::rate(per_second(1, 1)),
+        None,
+    );
+    let guard = manager
+        .acquire::<ResidentTestResource>(&test_ctx(), &AcquireOptions::default())
+        .await
+        .unwrap();
+    let limits = Arc::clone(guard.limits());
+    let started = Instant::now();
+    let waiter = {
+        let limits = Arc::clone(&limits);
+        tokio::spawn(async move { limits.ready(None).await })
+    };
+    // The waiter has booked the next slot, one second out.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    limits.penalize(Duration::from_secs(5)).await.unwrap();
+    waiter.await.unwrap().expect("admitted after the pause");
+    assert!(
+        started.elapsed() >= Duration::from_millis(5_100),
+        "woke {:?} after start, inside the pause",
+        started.elapsed()
     );
 }

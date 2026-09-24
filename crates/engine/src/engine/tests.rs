@@ -7766,14 +7766,31 @@ async fn bound_stored_resources_resolve_per_node_and_fail_closed() {
             std::iter::empty(),
         )),
     );
-    assert!(
-        rows.get(&copier)
-            .is_none_or(|keys| !keys.contains_key(&plain)),
+    // Refused keys are pinned to an identity no row carries, never left out:
+    // left out, the node would fall back to any unbound row of the kind.
+    let unavailable = unavailable_row_identity();
+    assert_eq!(
+        rows.get(&copier).and_then(|keys| keys.get(&plain)),
+        Some(&unavailable),
         "two rows of one kind on one node must not resolve by key"
     );
+    let unknown = ResourceKey::new("activation.unknown").unwrap();
+    assert_eq!(
+        rows.get(&orphan).and_then(|keys| keys.get(&unknown)),
+        Some(&unavailable),
+        "a row that failed to activate resolves no row of its kind"
+    );
     assert!(
-        rows.get(&orphan).is_none_or(HashMap::is_empty),
-        "a row that failed to activate resolves nothing"
+        !engine
+            .resource_manager
+            .as_ref()
+            .expect("manager configured")
+            .has_registered_for_scope_identity(
+                &plain,
+                &nebula_core::scope::Scope::default(),
+                &unavailable
+            ),
+        "no registry row carries the unavailable identity"
     );
 
     engine.remove_execution_resource_context(execution_id);

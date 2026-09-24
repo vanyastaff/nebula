@@ -365,7 +365,7 @@ pub struct RegistrationSpec<R: Provider> {
     /// Optional recovery gate for thundering-herd prevention.
     pub recovery_gate: Option<Arc<RecoveryGate>>,
     /// Operator input for this row's rate limit: an override of the rate
-    /// [`Provider::resilience`](crate::Provider::resilience) declares (checked
+    /// [`Provider::resilience`] declares (checked
     /// against its [`Override`](crate::rate_limit::Override) rule) and the key
     /// of the quota it draws on. `None` enforces the declared policy on a
     /// quota of this row alone. The limit is consumed on every acquire and
