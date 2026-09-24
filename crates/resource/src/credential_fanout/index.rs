@@ -263,18 +263,10 @@ const MAX_RETAINED_MATERIAL_REPLACEMENTS: usize = 4_096;
 
 #[derive(Debug, Default)]
 struct MaterialReplacementFence {
-    contexts: std::collections::HashMap<CredentialId, MaterialReplacementContext>,
+    contexts: std::collections::HashMap<CredentialId, (TenantScope, CredentialKey, u64)>,
     /// Once exact retention capacity is exhausted, new rotation-bound rows
     /// remain unavailable until this runtime shuts down.
     saturated: bool,
-}
-
-#[derive(Debug)]
-struct MaterialReplacementContext {
-    scope: TenantScope,
-    credential_key: CredentialKey,
-    sequence: u64,
-    pending: bool,
 }
 
 #[derive(Debug, Default)]
@@ -424,9 +416,8 @@ impl ResourceFanoutIndex {
             Some(credential_key),
             true,
         );
-        if self.reactivate_material_context(cid, fence_scope, fence_key) {
-            self.material_retry_notify.notify_one();
-        }
+        self.remember_material_context(cid, fence_scope, fence_key);
+        self.material_retry_notify.notify_one();
     }
 
     fn add_bind_ref(
@@ -535,23 +526,12 @@ impl ResourceFanoutIndex {
             .material_replacement_fence
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(context) = fence.contexts.get_mut(&cid) {
-            *context = MaterialReplacementContext {
-                scope,
-                credential_key,
-                sequence,
-                pending: true,
-            };
-        } else if fence.contexts.len() < MAX_RETAINED_MATERIAL_REPLACEMENTS {
-            fence.contexts.insert(
-                cid,
-                MaterialReplacementContext {
-                    scope,
-                    credential_key,
-                    sequence,
-                    pending: true,
-                },
-            );
+        if fence.contexts.contains_key(&cid)
+            || fence.contexts.len() < MAX_RETAINED_MATERIAL_REPLACEMENTS
+        {
+            fence
+                .contexts
+                .insert(cid, (scope, credential_key, sequence));
         } else if !fence.saturated {
             fence.saturated = true;
             tracing::error!(
@@ -570,16 +550,9 @@ impl ResourceFanoutIndex {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .contexts
             .iter()
-            .filter(|(credential_id, context)| {
-                context.pending && self.by_credential.contains_key(*credential_id)
-            })
-            .map(|(credential_id, context)| {
-                (
-                    *credential_id,
-                    context.scope.clone(),
-                    context.credential_key.clone(),
-                    context.sequence,
-                )
+            .filter(|entry| self.by_credential.contains_key(entry.0))
+            .map(|(credential_id, (scope, key, sequence))| {
+                (*credential_id, scope.clone(), key.clone(), *sequence)
             })
             .collect()
     }
@@ -589,10 +562,12 @@ impl ResourceFanoutIndex {
             .material_replacement_fence
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(context) = fence.contexts.get_mut(cid)
-            && context.sequence == sequence
+        if fence
+            .contexts
+            .get(cid)
+            .is_some_and(|context| context.2 == sequence)
         {
-            context.pending = false;
+            fence.contexts.remove(cid);
             true
         } else {
             false
@@ -605,8 +580,7 @@ impl ResourceFanoutIndex {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .contexts
-            .get(cid)
-            .is_some_and(|context| context.pending)
+            .contains_key(cid)
     }
 
     pub(crate) fn material_publication_requires_reconciliation(&self, cid: &CredentialId) -> bool {
@@ -614,11 +588,7 @@ impl ResourceFanoutIndex {
             .material_replacement_fence
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        fence.saturated
-            || fence
-                .contexts
-                .get(cid)
-                .is_some_and(|context| context.pending)
+        fence.saturated || fence.contexts.contains_key(cid)
     }
 
     pub(super) fn complete_material_context(
@@ -643,43 +613,16 @@ impl ResourceFanoutIndex {
         if fence.saturated {
             return true;
         }
-        fence.contexts.iter().any(|(credential_id, context)| {
-            context.pending
-                && self.by_credential.get(credential_id).is_some_and(|rows| {
-                    rows.iter().any(|row| {
-                        row.published != 0
-                            && row.bind.resource_key == binding.resource_key
-                            && row.bind.scope == binding.scope
-                            && row.bind.slot_identity == binding.slot_identity
-                    })
+        fence.contexts.keys().any(|credential_id| {
+            self.by_credential.get(credential_id).is_some_and(|rows| {
+                rows.iter().any(|row| {
+                    row.published != 0
+                        && row.bind.resource_key == binding.resource_key
+                        && row.bind.scope == binding.scope
+                        && row.bind.slot_identity == binding.slot_identity
                 })
+            })
         })
-    }
-
-    fn reactivate_material_context(
-        &self,
-        cid: CredentialId,
-        scope: TenantScope,
-        credential_key: CredentialKey,
-    ) -> bool {
-        let sequence = self
-            .material_context_sequence
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let mut fence = self
-            .material_replacement_fence
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let saturated = fence.saturated;
-        let Some(context) = fence.contexts.get_mut(&cid) else {
-            return saturated;
-        };
-        *context = MaterialReplacementContext {
-            scope,
-            credential_key,
-            sequence,
-            pending: true,
-        };
-        true
     }
 
     pub(crate) async fn material_retry_notified(&self) {

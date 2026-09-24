@@ -747,18 +747,17 @@ async fn rotation_binding_rejects_unqualified_prepopulated_slot() {
 
 #[cfg(feature = "rotation")]
 #[tokio::test]
-async fn replacement_observed_before_staging_keeps_row_unavailable() {
+async fn contextual_binding_stays_unavailable_until_authoritative_reread() {
     let manager = Manager::new();
     let expression_engine = ExpressionEngine::with_cache_size(16);
     let credential_id = nebula_credential::CredentialId::new();
     let owner = nebula_credential::TenantScope::new("org", "workspace");
     let credential_key = nebula_core::credential_key!("test.factory-credential");
     let fanout_index = Arc::new(crate::ResourceFanoutIndex::new());
-    fanout_index.remember_material_context(credential_id, owner.clone(), credential_key.clone());
     let mut registry = ResourceActivatorRegistry::new();
     registry
         .insert(
-            "test-prestage-replacement",
+            "test-authoritative-reread",
             Arc::new(KindActivator::<BoundTestRes, _, _>::new(
                 BoundTestRes::new,
                 || Resident::<BoundTestRes>::new(resident::config::Config::default()),
@@ -768,7 +767,7 @@ async fn replacement_observed_before_staging_keeps_row_unavailable() {
 
     let outcome = registry
         .register_and_bind(
-            "test-prestage-replacement",
+            "test-authoritative-reread",
             &manager,
             RegisterRequest {
                 config: ResourceConfigInput::data(serde_json::json!({ "name": "resource" })),
