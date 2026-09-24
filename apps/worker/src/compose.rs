@@ -95,12 +95,13 @@ const RESOURCE_FANOUT_BATCH_SIZE: u16 = 1;
 const RESOURCE_FANOUT_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const RESOURCE_FANOUT_MAX_CONSECUTIVE_FAILURES: u32 = 5;
 
-/// Same-backend inputs for durable resource fanout, stored resource rows and
-/// workflow starts.
+/// Same-backend inputs for durable resource fanout, stored resource rows,
+/// their published runtime status and workflow starts.
 #[derive(Clone)]
 pub struct ResourceFanoutInputs {
     workflows: WorkflowStores,
     rows: Arc<dyn nebula_storage_port::store::ResourceStore>,
+    status: Arc<dyn nebula_storage_port::store::ResourceStatusStore>,
     recovery: Arc<dyn ResourceRuntimeRecovery>,
     subscriptions: Arc<dyn ResourceSubscriptionStore>,
     fanout: Arc<dyn ResourceEventFanoutStore>,
@@ -117,13 +118,15 @@ impl std::fmt::Debug for ResourceFanoutInputs {
 
 impl ResourceFanoutInputs {
     /// Project one concrete resource runtime into every durable coordinator
-    /// role. `rows` holds the stored resource rows executions bind; it must
-    /// live on the same backend the API writes them to.
+    /// role. `rows` holds the stored resource rows executions bind and
+    /// `status` receives this worker's runtime status of them; both must
+    /// live on the same backend the API reads and writes.
     #[must_use]
     pub fn from_runtime<T>(
         workflows: WorkflowStores,
         runtime: Arc<T>,
         rows: Arc<dyn nebula_storage_port::store::ResourceStore>,
+        status: Arc<dyn nebula_storage_port::store::ResourceStatusStore>,
     ) -> Self
     where
         T: ResourceRuntimeRecovery
@@ -134,6 +137,7 @@ impl ResourceFanoutInputs {
         Self {
             workflows,
             rows,
+            status,
             recovery: runtime.clone(),
             subscriptions: runtime.clone(),
             fanout: runtime.clone(),
@@ -341,6 +345,7 @@ fn build_core_flavor_runtime_impl(
         ResourceLeaseTtl::new(RESOURCE_FANOUT_CLAIM_TTL)?,
         ResourcePageSize::new(RESOURCE_FANOUT_BATCH_SIZE)?,
     );
+    let resource_status = resource_fanout.status;
     let resource_fanout = Arc::new(ResourceFanoutCoordinator::new(
         resource_fanout.recovery,
         resource_fanout.subscriptions,
@@ -380,7 +385,8 @@ fn build_core_flavor_runtime_impl(
     )
     .with_turn_handoff(turn_handoff)
     .with_turn_recovery(turn_recovery)
-    .with_resource_fanout(resource_fanout);
+    .with_resource_fanout(resource_fanout)
+    .with_resource_status_store(resource_status);
 
     tracing::info!(
         plugin = %plugin_key,

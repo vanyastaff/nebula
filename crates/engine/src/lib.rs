@@ -138,7 +138,8 @@ pub use resource_fanout::{
     WorkflowTriggerTarget,
 };
 pub use resource_status::{
-    EngineManagerResourceStatus, EngineResourceStatus, ResourceRuntimeStatus,
+    DEFAULT_STATUS_PUBLISH_INTERVAL, EngineResourceStatus, ResourceRuntimeStatus,
+    ResourceStatusError, ResourceStatusPublisher, StoredResourceStatus,
 };
 pub use result::ExecutionResult;
 pub use revision_catalog::{

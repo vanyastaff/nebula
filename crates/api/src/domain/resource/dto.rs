@@ -210,6 +210,11 @@ pub struct ResourceStatusDto {
     /// `true` iff the resource can currently accept new acquire requests
     /// (`ready` / `reloading`). Surfaced read-only — it does not acquire.
     pub accepting: bool,
+    /// Number of live worker processes currently serving the resource.
+    /// With several, `phase` is the least healthy one reported, `healthy`
+    /// requires all of them healthy and `accepting` any of them accepting.
+    /// `0` for an inactive resource.
+    pub instances: u32,
 }
 
 #[cfg(test)]

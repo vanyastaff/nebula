@@ -169,6 +169,7 @@ impl TestStores {
             self.workflow_stores(),
             Arc::clone(&self.resource_runtime),
             Arc::new(nebula_storage::inmem::InMemoryResourceStore::new()),
+            Arc::new(nebula_storage::inmem::InMemoryResourceStatusStore::new()),
         )
     }
 

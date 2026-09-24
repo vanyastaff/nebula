@@ -737,6 +737,25 @@ impl Manager {
         }
     }
 
+    /// Read-only view of the single row `(key, scope, slot_identity)`.
+    ///
+    /// Unlike [`get_any`](Self::get_any) this is pinned to one resolved row,
+    /// so it never returns `None` for ambiguity — only when no such row is
+    /// registered. Use it to report the status of a row whose identity the
+    /// caller already knows, such as an activated stored resource.
+    #[must_use]
+    pub fn get_row(
+        &self,
+        key: &ResourceKey,
+        scope: &ScopeLevel,
+        slot_identity: &crate::dedup::SlotIdentity,
+    ) -> Option<crate::registry::ManagedResourceView> {
+        match self.registry.get_for(key, scope, slot_identity) {
+            crate::registry::PinnedLookup::Found(view) => Some(view),
+            crate::registry::PinnedLookup::NotFound => None,
+        }
+    }
+
     /// Diagnostic admission snapshot for a registered resource at
     /// `(key, scope)` — its advisory [`AdmissionPhase`](crate::topology::AdmissionPhase)
     /// and optional [`Load`](crate::topology::Load), bundled into an

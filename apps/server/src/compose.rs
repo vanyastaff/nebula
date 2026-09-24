@@ -236,6 +236,8 @@ pub(crate) struct ExecutionStoreBundle {
     pub(super) workflow_version_store: Arc<dyn nebula_storage_port::store::WorkflowVersionStore>,
     /// Resource catalog selected with the deployment's execution backend.
     pub(super) resource_store: Arc<dyn nebula_storage_port::store::ResourceStore>,
+    /// Runtime status the workers publish for activated resource rows.
+    pub(super) resource_status_store: Arc<dyn nebula_storage_port::store::ResourceStatusStore>,
     pub(super) execution_store: Arc<dyn nebula_storage_port::store::ExecutionStore>,
     pub(super) node_result_store: Arc<dyn nebula_storage_port::store::NodeResultStore>,
     pub(super) journal_reader: Arc<dyn nebula_storage_port::store::ExecutionJournalReader>,
@@ -726,6 +728,7 @@ pub(crate) fn default_state(
         workflow_store,
         workflow_version_store,
         resource_store,
+        resource_status_store,
         execution_store,
         node_result_store,
         journal_reader,
@@ -776,6 +779,11 @@ pub(crate) fn default_state(
     .with_workflow_activation(activation)
     .with_workflow_start(start)
     .with_resource_store(Arc::clone(&resource_store))
+    // Resources run in worker processes; their status is read back from
+    // what those workers publish on the same backend.
+    .with_resource_status(Arc::new(nebula_engine::StoredResourceStatus::new(
+        resource_status_store,
+    )))
     .with_resource_registrars(resource_registrars)
     .with_api_keys(api_config.api_keys.clone())
     .with_metrics_registry(metrics_registry)

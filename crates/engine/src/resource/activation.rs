@@ -142,6 +142,19 @@ pub struct ActivationContext<'a> {
     pub expr_engine: &'a ExpressionEngine,
 }
 
+/// A stored row currently registered by a [`StoredResourceActivator`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActiveResourceRow {
+    /// Tenant the row belongs to.
+    pub scope: Scope,
+    /// The stored row.
+    pub resource_id: ResourceId,
+    /// Stored version it was activated at.
+    pub version: u64,
+    /// Registry row serving it.
+    pub activated: ActivatedResource,
+}
+
 #[derive(Debug, Clone)]
 struct ActiveRow {
     version: u64,
@@ -184,6 +197,29 @@ impl StoredResourceActivator {
     pub fn with_activation_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
         self
+    }
+
+    /// Rows this activator currently holds registered, with the stored
+    /// version each was activated at.
+    ///
+    /// A row whose activation is in progress is skipped rather than waited
+    /// for: this is a status snapshot, and the next one picks it up.
+    #[must_use]
+    pub fn active_rows(&self) -> Vec<ActiveResourceRow> {
+        self.rows
+            .iter()
+            .filter_map(|entry| {
+                let (scope, resource_id) = entry.key();
+                let guard = entry.value().try_lock().ok()?;
+                let active = guard.as_ref()?;
+                Some(ActiveResourceRow {
+                    scope: scope.clone(),
+                    resource_id: *resource_id,
+                    version: active.version,
+                    activated: active.activated.clone(),
+                })
+            })
+            .collect()
     }
 
     /// Ensures row `resource_id` of `scope` is registered at its current

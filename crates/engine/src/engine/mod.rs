@@ -1232,6 +1232,43 @@ impl WorkflowEngine {
             .insert(execution_id, Arc::new(rows));
     }
 
+    /// Current status of every stored resource row this engine has
+    /// activated, for [`ResourceStatusPublisher`](crate::ResourceStatusPublisher).
+    ///
+    /// Reads only in-memory state (activator rows and the exact manager row
+    /// each resolved to); a row whose registry row is gone is left out.
+    #[must_use]
+    pub fn resource_status_snapshot(
+        &self,
+    ) -> Vec<(Scope, nebula_storage_port::dto::ResourceStatusSnapshot)> {
+        let (Some(activator), Some(manager)) = (&self.stored_resources, &self.resource_manager)
+        else {
+            return Vec::new();
+        };
+        activator
+            .active_rows()
+            .into_iter()
+            .filter_map(|row| {
+                let view = manager.get_row(
+                    &row.activated.resource_key,
+                    &row.activated.scope,
+                    &row.activated.slot_identity,
+                )?;
+                let (phase, healthy, accepting) = crate::resource_status::project(view.phase());
+                Some((
+                    row.scope,
+                    nebula_storage_port::dto::ResourceStatusSnapshot {
+                        resource_id: row.resource_id.to_string(),
+                        phase,
+                        healthy,
+                        accepting,
+                        row_version: row.version,
+                    },
+                ))
+            })
+            .collect()
+    }
+
     /// Activate stored resources from a store for durable executions.
     ///
     /// Requires a resource manager ([`with_resource_manager`](Self::with_resource_manager))

@@ -16,7 +16,11 @@
 
 mod common;
 
-use std::sync::{Arc, Mutex};
+use std::{
+    future::Future,
+    pin::Pin,
+    sync::{Arc, Mutex},
+};
 
 use axum::{
     body::Body,
@@ -24,8 +28,8 @@ use axum::{
 };
 use common::*;
 use nebula_api::{ApiConfig, AppState, app};
-use nebula_core::{ResourceId, ResourceKey};
-use nebula_engine::{EngineResourceStatus, ResourceRuntimeStatus};
+use nebula_core::ResourceId;
+use nebula_engine::{EngineResourceStatus, ResourceRuntimeStatus, ResourceStatusError};
 use nebula_storage_port::{Scope, StorageError, dto::ResourceRow, store::ResourceStore};
 use tower::ServiceExt;
 
@@ -1541,22 +1545,21 @@ async fn delete_then_get_same_id_is_404() {
 
 /// Fake [`EngineResourceStatus`] for the handler tests.
 ///
-/// The API crate cannot construct a real `nebula_resource::Manager` (no
-/// `nebula-resource` dependency), so the read-only status seam is faked
-/// at the api-safe boundary: `runtime_status` returns a fixed
-/// [`ResourceRuntimeStatus`] for `present_key` and `None` for everything
-/// else (the "configured but never activated" path). The looked-up key
-/// is captured so a test can prove the handler queried the seam with the
-/// confirmed-owned resource's kind, never an attacker-influenced value.
+/// The read-only status seam is faked at the api-safe boundary:
+/// `runtime_status` returns a fixed [`ResourceRuntimeStatus`] for
+/// `present_key` and `None` for everything else (the "configured but never
+/// activated" path). The looked-up `(workspace, resource id)` is captured so
+/// a test can prove the handler queried the seam with the confirmed-owned
+/// row, never an attacker-influenced value.
 struct FakeResourceStatus {
     present_key: Option<String>,
     status: ResourceRuntimeStatus,
-    last_query: Mutex<Option<String>>,
+    last_query: Mutex<Option<(String, String)>>,
 }
 
 impl FakeResourceStatus {
-    /// Seam that resolves `key` (a resource `kind`) to `status`, and
-    /// `None` for any other key.
+    /// Seam that resolves resource id `key` to `status`, and `None` for any
+    /// other id.
     fn resolving(key: &str, status: ResourceRuntimeStatus) -> Self {
         Self {
             present_key: Some(key.to_owned()),
@@ -1574,12 +1577,19 @@ impl FakeResourceStatus {
                 phase: "ready",
                 healthy: true,
                 accepting: true,
+                instances: 1,
             },
             last_query: Mutex::new(None),
         }
     }
 
+    /// The resource id the seam was queried with, if any.
     fn queried(&self) -> Option<String> {
+        self.queried_scoped().map(|(_, resource_id)| resource_id)
+    }
+
+    /// The `(workspace, resource id)` the seam was queried with, if any.
+    fn queried_scoped(&self) -> Option<(String, String)> {
         self.last_query
             .lock()
             .expect("status query capture mutex not poisoned")
@@ -1588,15 +1598,27 @@ impl FakeResourceStatus {
 }
 
 impl EngineResourceStatus for FakeResourceStatus {
-    fn runtime_status(&self, key: &ResourceKey) -> Option<ResourceRuntimeStatus> {
+    fn runtime_status<'a>(
+        &'a self,
+        scope: &'a Scope,
+        resource_id: &'a str,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<Option<ResourceRuntimeStatus>, ResourceStatusError>>
+                + Send
+                + 'a,
+        >,
+    > {
         *self
             .last_query
             .lock()
-            .expect("status query capture mutex not poisoned") = Some(key.as_str().to_owned());
-        match &self.present_key {
-            Some(present) if present == key.as_str() => Some(self.status.clone()),
+            .expect("status query capture mutex not poisoned") =
+            Some((scope.workspace_id.clone(), resource_id.to_owned()));
+        let status = match &self.present_key {
+            Some(present) if present == resource_id => Some(self.status.clone()),
             _ => None,
-        }
+        };
+        Box::pin(async move { Ok(status) })
     }
 }
 
@@ -1628,11 +1650,12 @@ async fn get_resource_status_owned_active_is_200_with_dto() {
     let row = get_entry(id, TEST_WS.to_owned(), "HTTP Pool", "http_pool", 3, false);
     let store: Arc<dyn ResourceStore> = Arc::new(FakeResourceStore::with_get(Some(row)));
     let status = Arc::new(FakeResourceStatus::resolving(
-        "http_pool",
+        &id.to_string(),
         ResourceRuntimeStatus {
             phase: "ready",
             healthy: true,
             accepting: true,
+            instances: 2,
         },
     ));
     let state = state_with_store(&api_config, store).with_resource_status(Arc::clone(&status) as _);
@@ -1665,6 +1688,10 @@ async fn get_resource_status_owned_active_is_200_with_dto() {
     assert_eq!(json["healthy"], true, "healthy must be projected");
     assert_eq!(json["accepting"], true, "accepting must be projected");
     assert_eq!(
+        json["instances"], 2,
+        "serving worker count must be projected"
+    );
+    assert_eq!(
         json["id"].as_str().expect("id is a string"),
         id.to_string(),
         "id must round-trip to the same res_<ULID>"
@@ -1672,7 +1699,7 @@ async fn get_resource_status_owned_active_is_200_with_dto() {
 
     // The DTO must expose ONLY phase/health/id — never config/secret keys.
     let obj = json.as_object().expect("status body is a JSON object");
-    let allowed = ["id", "phase", "healthy", "accepting"];
+    let allowed = ["id", "phase", "healthy", "accepting", "instances"];
     for k in obj.keys() {
         assert!(
             allowed.contains(&k.as_str()),
@@ -1681,11 +1708,11 @@ async fn get_resource_status_owned_active_is_200_with_dto() {
         );
     }
 
-    // The handler keyed the seam with the CONFIRMED row's kind.
+    // The handler keyed the seam with the CONFIRMED row and its tenant.
     assert_eq!(
-        status.queried().as_deref(),
-        Some("http_pool"),
-        "the engine status seam must be queried with the owned row's kind"
+        status.queried_scoped(),
+        Some((TEST_WS.to_owned(), id.to_string())),
+        "the status seam must be queried with the owned row's workspace and id"
     );
 }
 
@@ -1708,11 +1735,12 @@ async fn get_resource_status_cross_workspace_is_404_no_status_oracle() {
     // The seam would resolve `http_pool` — but isolation must stop the
     // request before it is ever consulted.
     let status = Arc::new(FakeResourceStatus::resolving(
-        "http_pool",
+        &id.to_string(),
         ResourceRuntimeStatus {
             phase: "ready",
             healthy: true,
             accepting: true,
+            instances: 2,
         },
     ));
     let state = state_with_store(&api_config, store).with_resource_status(Arc::clone(&status) as _);
@@ -1764,11 +1792,12 @@ async fn get_resource_status_soft_deleted_is_404_no_status_oracle() {
     // The seam would resolve `http_pool` — isolation/tombstone filter
     // must stop the request before it is ever consulted.
     let status = Arc::new(FakeResourceStatus::resolving(
-        "http_pool",
+        &id.to_string(),
         ResourceRuntimeStatus {
             phase: "ready",
             healthy: true,
             accepting: true,
+            instances: 2,
         },
     ));
     let state = state_with_store(&api_config, store).with_resource_status(Arc::clone(&status) as _);
@@ -1885,8 +1914,12 @@ async fn get_resource_status_owned_but_not_active_is_200_inactive() {
         "an inactive resource is not accepting work"
     );
     assert_eq!(
-        status.queried().as_deref(),
-        Some("http_pool"),
+        json["instances"], 0,
+        "no worker serves an inactive resource"
+    );
+    assert_eq!(
+        status.queried(),
+        Some(id.to_string()),
         "the seam is still consulted for the owned resource (it just \
          has no live runtime)"
     );
@@ -1955,11 +1988,12 @@ async fn post_resource_acquire_route_does_not_exist() {
     let row = get_entry(id, TEST_WS.to_owned(), "HTTP Pool", "http_pool", 3, false);
     let store: Arc<dyn ResourceStore> = Arc::new(FakeResourceStore::with_get(Some(row)));
     let status = Arc::new(FakeResourceStatus::resolving(
-        "http_pool",
+        &id.to_string(),
         ResourceRuntimeStatus {
             phase: "ready",
             healthy: true,
             accepting: true,
+            instances: 2,
         },
     ));
     let state = state_with_store(&api_config, store).with_resource_status(status as _);

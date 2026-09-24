@@ -7784,3 +7784,158 @@ async fn bound_stored_resources_resolve_per_node_and_fail_closed() {
             .is_none()
     );
 }
+
+/// Records every status-store call; `live_for` is unused by the publisher.
+#[derive(Debug, Default)]
+struct RecordingStatusStore {
+    calls: std::sync::Mutex<Vec<String>>,
+}
+
+impl RecordingStatusStore {
+    fn take(&self) -> Vec<String> {
+        std::mem::take(&mut *self.calls.lock().expect("calls lock"))
+    }
+}
+
+#[async_trait::async_trait]
+impl nebula_storage_port::store::ResourceStatusStore for RecordingStatusStore {
+    async fn heartbeat(
+        &self,
+        _worker: &nebula_storage_port::dto::StatusWorkerId,
+        _ttl: Duration,
+    ) -> Result<(), StorageError> {
+        self.calls
+            .lock()
+            .expect("calls lock")
+            .push("heartbeat".to_owned());
+        Ok(())
+    }
+
+    async fn publish(
+        &self,
+        _scope: &Scope,
+        _worker: &nebula_storage_port::dto::StatusWorkerId,
+        snapshot: &nebula_storage_port::dto::ResourceStatusSnapshot,
+    ) -> Result<(), StorageError> {
+        self.calls.lock().expect("calls lock").push(format!(
+            "publish {} {} v{}",
+            snapshot.resource_id,
+            snapshot.phase.as_str(),
+            snapshot.row_version
+        ));
+        Ok(())
+    }
+
+    async fn withdraw(
+        &self,
+        _scope: &Scope,
+        _worker: &nebula_storage_port::dto::StatusWorkerId,
+        resource_id: &str,
+    ) -> Result<(), StorageError> {
+        self.calls
+            .lock()
+            .expect("calls lock")
+            .push(format!("withdraw {resource_id}"));
+        Ok(())
+    }
+
+    async fn withdraw_worker(
+        &self,
+        _worker: &nebula_storage_port::dto::StatusWorkerId,
+    ) -> Result<(), StorageError> {
+        self.calls
+            .lock()
+            .expect("calls lock")
+            .push("withdraw_worker".to_owned());
+        Ok(())
+    }
+
+    async fn live_for(
+        &self,
+        _scope: &Scope,
+        _resource_id: &str,
+    ) -> Result<Vec<nebula_storage_port::dto::LiveResourceStatus>, StorageError> {
+        Ok(Vec::new())
+    }
+}
+
+/// The publisher heartbeats every tick but writes a row only when its
+/// status changed, and withdraws a row this worker no longer serves.
+#[tokio::test]
+async fn status_publisher_writes_changes_only_and_withdraws_retired_rows() {
+    let store = Arc::new(nebula_storage::inmem::InMemoryResourceStore::new());
+    let (engine, _) = make_engine(Arc::new(ActionRegistry::new()));
+    let engine = engine
+        .with_resource_manager(Arc::new(nebula_resource::Manager::new()))
+        .with_resource_registrars(crate::resource::activation::tests::registrars())
+        .with_stored_resources(crate::resource::StoredResourceActivator::new(
+            Arc::clone(&store) as Arc<dyn nebula_storage_port::store::ResourceStore>,
+        ));
+    let scope = Scope::new(
+        nebula_core::WorkspaceId::new().to_string(),
+        nebula_core::OrgId::new().to_string(),
+    );
+    let row = store_plain_row(&store, &scope, "activation.plain").await;
+    let node = node_key!("reader");
+    let manifest = nebula_execution::ExecutionBindingManifestV2::new([resource_binding(
+        &node,
+        "db",
+        row,
+        "activation.plain",
+    )])
+    .unwrap();
+    engine
+        .activate_bound_resources(
+            ExecutionId::new(),
+            &scope,
+            &manifest,
+            &CancellationToken::new(),
+        )
+        .await;
+
+    let recorder = Arc::new(RecordingStatusStore::default());
+    let publisher = crate::ResourceStatusPublisher::new(
+        Arc::clone(&recorder) as Arc<dyn nebula_storage_port::store::ResourceStatusStore>,
+        nebula_storage_port::dto::StatusWorkerId::new("worker:test").unwrap(),
+    );
+    let mut published = HashMap::new();
+
+    publisher.tick(&engine, &mut published).await;
+    let first = recorder.take();
+    assert_eq!(first.len(), 2, "heartbeat + one publish: {first:?}");
+    assert_eq!(first[0], "heartbeat");
+    assert!(
+        first[1].starts_with(&format!("publish {row} ")),
+        "{first:?}"
+    );
+    assert!(
+        first[1].ends_with(" v0"),
+        "activated row version is published"
+    );
+
+    publisher.tick(&engine, &mut published).await;
+    assert_eq!(
+        recorder.take(),
+        vec!["heartbeat".to_owned()],
+        "an unchanged status is not rewritten"
+    );
+
+    // A row this worker no longer serves is withdrawn.
+    let stale = (scope.clone(), nebula_core::ResourceId::new().to_string());
+    published.insert(
+        stale.clone(),
+        nebula_storage_port::dto::ResourceStatusSnapshot {
+            resource_id: stale.1.clone(),
+            phase: nebula_storage_port::dto::ResourceStatusPhase::Ready,
+            healthy: true,
+            accepting: true,
+            row_version: 0,
+        },
+    );
+    publisher.tick(&engine, &mut published).await;
+    assert_eq!(
+        recorder.take(),
+        vec!["heartbeat".to_owned(), format!("withdraw {}", stale.1)]
+    );
+    assert!(!published.contains_key(&stale));
+}

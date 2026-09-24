@@ -1,244 +1,329 @@
 //! Engine-side read-only resource runtime-status seam.
 //!
-//! [`EngineResourceStatus`] is the **read-only** projection of a live
-//! resource's lifecycle phase, exposed in api-safe types so a consumer
+//! [`EngineResourceStatus`] is the **read-only** projection of a stored
+//! resource row's live runtime, exposed in api-safe types so a consumer
 //! that must not depend on `nebula-resource` (the public API tier —
 //! `deny.toml` `[[wrappers]]` forbids `nebula-api → nebula-resource`) can
-//! still report runtime status. It is the status counterpart of
-//! [`EngineResourceAccessor`](crate::EngineResourceAccessor): the accessor
-//! is the action-capability seam (acquire), this is the diagnostics seam
-//! (observe).
+//! still report runtime status.
 //!
-//! # No lifecycle mutation (.1)
+//! # Across processes
 //!
-//! The trait deliberately exposes **only** a phase read. There is no
-//! acquire / release / drain / reload entry point: resource lifecycle is
-//! owned by the engine and is not reachable through this seam. A status
-//! query can never mutate a resource — observing is not operating.
+//! A stored row is activated lazily inside the worker that drives an
+//! execution binding it, so its runtime lives in that worker's `Manager`,
+//! not in the API process asking for its status. Workers therefore publish
+//! a per-row snapshot through a
+//! [`ResourceStatusStore`](nebula_storage_port::store::ResourceStatusStore)
+//! ([`ResourceStatusPublisher`]) and the API reads it back
+//! ([`StoredResourceStatus`]). A snapshot counts only while its worker's
+//! heartbeat is live, so a crashed worker's rows fall out of the status on
+//! their own.
 //!
-//! # Projection
+//! # No lifecycle mutation
 //!
-//! The held [`nebula_resource::Manager`] is keyed by `(ResourceKey,
-//! ScopeLevel)`, not by workspace; resources register at
-//! [`ScopeLevel::Global`] (the same lookup scope
-//! [`EngineResourceAccessor`](crate::EngineResourceAccessor) uses), and
-//! tenant isolation is enforced by the *caller* (the config-row owner
-//! check) before this seam is ever consulted. `get_any` is fail-closed on
-//! ambiguity (several resolved-credential rows at one `(key, scope)`)
-//! returning `None` — a diagnostic peek must never alias one tenant's
-//! runtime to another. The erased phase is mapped to a stable, non-secret
-//! string at the engine boundary so the api-safe struct carries no
-//! `nebula-resource` type and no configuration/credential material
+//! The seam exposes **only** a status read. There is no acquire / release /
+//! drain / reload entry point: resource lifecycle is owned by the engine
+//! and is not reachable through this seam.
 //!
+//! # Tenant isolation
+//!
+//! Reads are keyed by the row's own `(workspace, org)` scope and id, and the
+//! API consults this seam only after its owned-row check. A snapshot carries
+//! lifecycle state only — never configuration or credential material.
 
-use std::{fmt, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt,
+    future::Future,
+    pin::Pin,
+    sync::Arc,
+    time::Duration,
+};
 
-use nebula_core::{ResourceKey, ScopeLevel};
+use nebula_storage_port::{
+    Scope, StorageError,
+    dto::{LiveResourceStatus, ResourceStatusPhase, ResourceStatusSnapshot, StatusWorkerId},
+    store::ResourceStatusStore,
+};
+use tokio_util::sync::CancellationToken;
 
-/// Stable, non-secret runtime-status projection of one live resource.
-///
-/// Carries lifecycle phase only — never configuration, credential, or any
-/// other resource-supplied material . The `phase` string is a
-/// closed, stable vocabulary; consumers match on it rather than
-/// re-deriving from internals.
+type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+/// Stable, non-secret runtime status of one stored resource row, aggregated
+/// over every live worker that currently serves it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResourceRuntimeStatus {
-    /// Lifecycle phase as a stable lowercase token. The recognised values
-    /// are exactly `nebula_resource::state::ResourcePhase`'s canonical
-    /// `Display` rendering (single source of truth — not re-enumerated
-    /// here), plus `"unknown"` for an unrecognised future variant this
-    /// build does not yet name. `project` is drift-pinned to that
-    /// `Display` for every known variant.
+    /// Lifecycle phase as a stable lowercase token: the least healthy phase
+    /// any serving worker reports (`failed` outranks `ready`).
     pub phase: &'static str,
-    /// `true` iff the resource is in a healthy, request-serving phase
-    /// (`ready`). Reloading still accepts traffic but is not "healthy"
-    /// for an at-a-glance status, so it reports `false` here while
-    /// `accepting` stays `true`.
+    /// `true` iff every serving worker reports the row healthy (`ready`).
     pub healthy: bool,
-    /// `true` iff the resource can currently accept new acquire requests
-    /// (`ready` or `reloading`). This is the phase's own
-    /// accept-new-work predicate, surfaced read-only — it does **not**
-    /// acquire anything.
+    /// `true` iff at least one serving worker can accept new acquires.
     pub accepting: bool,
+    /// Number of live workers serving the row.
+    pub instances: u32,
+}
+
+/// Why a status read could not be answered.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum ResourceStatusError {
+    /// The status store could not be read.
+    #[error("resource status store unavailable")]
+    Unavailable(#[source] StorageError),
 }
 
 /// Read-only resource runtime-status port.
 ///
-/// The single seam through which a non-`nebula-resource` crate observes a
-/// live resource's lifecycle phase. Returns `None` when the resource has
-/// no live runtime registered for the lookup scope (e.g. a persisted
-/// definition that was never activated, or a fail-closed ambiguous
-/// `(key, scope)`): "configured but not currently active" is a `None`
-/// here, distinct from a transport-level "no status backend".
+/// `Ok(None)` means no live worker serves the row — it exists as a
+/// definition but is not currently active — distinct from an unanswerable
+/// read (`Err`).
 pub trait EngineResourceStatus: Send + Sync {
-    /// Project the current runtime status of the resource identified by
-    /// `key`, or `None` if no live runtime is registered for it.
-    ///
-    /// Read-only: this never registers, acquires, releases, or otherwise
-    /// mutates a resource.
-    fn runtime_status(&self, key: &ResourceKey) -> Option<ResourceRuntimeStatus>;
+    /// Aggregated runtime status of stored row `resource_id` in `scope`.
+    fn runtime_status<'a>(
+        &'a self,
+        scope: &'a Scope,
+        resource_id: &'a str,
+    ) -> BoxFut<'a, Result<Option<ResourceRuntimeStatus>, ResourceStatusError>>;
 }
 
-/// [`EngineResourceStatus`] backed by the engine's
-/// [`nebula_resource::Manager`].
-///
-/// Holds the same `Arc<Manager>` the engine is wired with and projects
-/// `ManagedHandle::phase()` through the manager's fail-closed
-/// `get_any` peek. Resources are looked up at [`ScopeLevel::Global`] —
-/// identical to [`EngineResourceAccessor`](crate::EngineResourceAccessor)
-/// — because tenant isolation is the caller's config-row check, not a
-/// manager-scope concern.
-pub struct EngineManagerResourceStatus {
-    manager: Arc<nebula_resource::Manager>,
+/// [`EngineResourceStatus`] reading worker-published snapshots.
+pub struct StoredResourceStatus {
+    store: Arc<dyn ResourceStatusStore>,
 }
 
-impl EngineManagerResourceStatus {
-    /// Create a status port backed by the given resource manager.
+impl StoredResourceStatus {
+    /// Reads status published into `store`.
     #[must_use]
-    pub fn new(manager: Arc<nebula_resource::Manager>) -> Self {
-        Self { manager }
+    pub fn new(store: Arc<dyn ResourceStatusStore>) -> Self {
+        Self { store }
     }
 }
 
-impl fmt::Debug for EngineManagerResourceStatus {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("EngineManagerResourceStatus")
-            .field("manager", &"<Manager>")
-            .finish()
+impl fmt::Debug for StoredResourceStatus {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("StoredResourceStatus")
+            .finish_non_exhaustive()
     }
 }
 
-/// Map a `nebula_resource` lifecycle phase to the stable, non-secret
-/// api-safe projection. Centralised so the `phase` vocabulary and the
-/// `healthy` / `accepting` predicates have exactly one definition.
+impl EngineResourceStatus for StoredResourceStatus {
+    fn runtime_status<'a>(
+        &'a self,
+        scope: &'a Scope,
+        resource_id: &'a str,
+    ) -> BoxFut<'a, Result<Option<ResourceRuntimeStatus>, ResourceStatusError>> {
+        Box::pin(async move {
+            let live = self
+                .store
+                .live_for(scope, resource_id)
+                .await
+                .map_err(ResourceStatusError::Unavailable)?;
+            Ok(aggregate(&live))
+        })
+    }
+}
+
+/// Severity order for aggregation, least healthy first.
+const SEVERITY: [ResourceStatusPhase; 7] = [
+    ResourceStatusPhase::Failed,
+    ResourceStatusPhase::ShuttingDown,
+    ResourceStatusPhase::Draining,
+    ResourceStatusPhase::Unknown,
+    ResourceStatusPhase::Initializing,
+    ResourceStatusPhase::Reloading,
+    ResourceStatusPhase::Ready,
+];
+
+fn severity(phase: ResourceStatusPhase) -> usize {
+    SEVERITY
+        .iter()
+        .position(|known| *known == phase)
+        .unwrap_or(0)
+}
+
+/// Folds per-worker snapshots into one status; `None` when no worker serves
+/// the row.
+fn aggregate(live: &[LiveResourceStatus]) -> Option<ResourceRuntimeStatus> {
+    let worst = live
+        .iter()
+        .map(|status| status.snapshot.phase)
+        .min_by_key(|phase| severity(*phase))?;
+    Some(ResourceRuntimeStatus {
+        phase: worst.as_str(),
+        healthy: live.iter().all(|status| status.snapshot.healthy),
+        accepting: live.iter().any(|status| status.snapshot.accepting),
+        instances: u32::try_from(live.len()).unwrap_or(u32::MAX),
+    })
+}
+
+/// Maps a `nebula_resource` lifecycle phase to the persisted vocabulary and
+/// its `healthy` / `accepting` predicates, in one place.
 ///
-/// `ResourcePhase` is `#[non_exhaustive]`: a future variant this build
-/// does not yet name maps to the stable `"unknown"` token (honest — the
-/// projection genuinely does not recognise it — never a panic or a
-/// fabricated phase). `healthy` / `accepting` are derived from the
-/// phase's own predicates, so a yet-unknown phase is conservatively
-/// reported as not-healthy.
-fn project(phase: nebula_resource::state::ResourcePhase) -> ResourceRuntimeStatus {
+/// `ResourcePhase` is `#[non_exhaustive]`: a variant this build does not
+/// name maps to `unknown` and is conservatively reported not healthy.
+pub(crate) fn project(
+    phase: nebula_resource::state::ResourcePhase,
+) -> (ResourceStatusPhase, bool, bool) {
     use nebula_resource::state::ResourcePhase;
-    let phase_str = match phase {
-        ResourcePhase::Initializing => "initializing",
-        ResourcePhase::Ready => "ready",
-        ResourcePhase::Reloading => "reloading",
-        ResourcePhase::Draining => "draining",
-        ResourcePhase::ShuttingDown => "shutting_down",
-        ResourcePhase::Failed => "failed",
-        // `#[non_exhaustive]` fail-safe: an unrecognised future phase is
-        // honestly "unknown", not a panic or a guessed label.
-        _ => "unknown",
+    let persisted = match phase {
+        ResourcePhase::Initializing => ResourceStatusPhase::Initializing,
+        ResourcePhase::Ready => ResourceStatusPhase::Ready,
+        ResourcePhase::Reloading => ResourceStatusPhase::Reloading,
+        ResourcePhase::Draining => ResourceStatusPhase::Draining,
+        ResourcePhase::ShuttingDown => ResourceStatusPhase::ShuttingDown,
+        ResourcePhase::Failed => ResourceStatusPhase::Failed,
+        _ => ResourceStatusPhase::Unknown,
     };
-    ResourceRuntimeStatus {
-        phase: phase_str,
-        healthy: matches!(phase, ResourcePhase::Ready),
-        accepting: phase.is_accepting(),
+    (
+        persisted,
+        matches!(phase, ResourcePhase::Ready),
+        phase.is_accepting(),
+    )
+}
+
+/// Default interval between heartbeats and status diffs.
+pub const DEFAULT_STATUS_PUBLISH_INTERVAL: Duration = Duration::from_secs(10);
+
+/// How long a withdrawal may take on graceful stop before it is abandoned
+/// (the heartbeat then expires on its own).
+const WITHDRAW_BUDGET: Duration = Duration::from_secs(5);
+
+/// Publishes this worker's stored-resource status for [`StoredResourceStatus`]
+/// readers in other processes.
+///
+/// Each tick renews the worker heartbeat (TTL = three intervals, so one
+/// missed tick does not blank the status) and writes only rows whose status
+/// changed since the last successful write. A graceful stop withdraws
+/// everything this worker published.
+pub struct ResourceStatusPublisher {
+    store: Arc<dyn ResourceStatusStore>,
+    worker: StatusWorkerId,
+    interval: Duration,
+}
+
+impl fmt::Debug for ResourceStatusPublisher {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ResourceStatusPublisher")
+            .field("worker", &self.worker)
+            .field("interval", &self.interval)
+            .finish_non_exhaustive()
     }
 }
 
-impl EngineResourceStatus for EngineManagerResourceStatus {
-    fn runtime_status(&self, key: &ResourceKey) -> Option<ResourceRuntimeStatus> {
-        // `get_any` is the manager's fail-closed diagnostic peek: `None`
-        // both when nothing is registered and when several resolved
-        // credential rows share `(key, scope)` (ambiguous). A status
-        // probe must not alias one tenant's runtime to another.
-        self.manager
-            .get_any(key, &ScopeLevel::Global)
-            .map(|managed| project(managed.phase()))
+pub(crate) type PublishedKey = (Scope, String);
+
+impl ResourceStatusPublisher {
+    /// Publishes as `worker` into `store` every
+    /// [`DEFAULT_STATUS_PUBLISH_INTERVAL`].
+    #[must_use]
+    pub fn new(store: Arc<dyn ResourceStatusStore>, worker: StatusWorkerId) -> Self {
+        Self {
+            store,
+            worker,
+            interval: DEFAULT_STATUS_PUBLISH_INTERVAL,
+        }
+    }
+
+    /// Overrides the publish interval (clamped to at least 100 ms).
+    #[must_use]
+    pub fn with_interval(mut self, interval: Duration) -> Self {
+        self.interval = interval.max(Duration::from_millis(100));
+        self
+    }
+
+    /// Runs until `shutdown`, then withdraws this worker's status.
+    ///
+    /// Store failures are logged and retried on the next tick; they never
+    /// end the loop, because status is diagnostic and must not take a
+    /// worker down.
+    pub async fn run(self, engine: Arc<crate::WorkflowEngine>, shutdown: CancellationToken) {
+        let mut published: HashMap<PublishedKey, ResourceStatusSnapshot> = HashMap::new();
+        let mut ticker = tokio::time::interval(self.interval);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tokio::select! {
+                biased;
+                () = shutdown.cancelled() => break,
+                _ = ticker.tick() => {},
+            }
+            self.tick(&engine, &mut published).await;
+        }
+        let withdraw = self.store.withdraw_worker(&self.worker);
+        match tokio::time::timeout(WITHDRAW_BUDGET, withdraw).await {
+            Ok(Ok(())) => {},
+            Ok(Err(error)) => tracing::warn!(
+                target: "nebula_engine::resource_status",
+                %error,
+                "resource status withdrawal failed; it expires with the heartbeat"
+            ),
+            Err(_) => tracing::warn!(
+                target: "nebula_engine::resource_status",
+                "resource status withdrawal timed out; it expires with the heartbeat"
+            ),
+        }
+    }
+
+    pub(crate) async fn tick(
+        &self,
+        engine: &crate::WorkflowEngine,
+        published: &mut HashMap<PublishedKey, ResourceStatusSnapshot>,
+    ) {
+        if let Err(error) = self
+            .store
+            .heartbeat(&self.worker, self.interval.saturating_mul(3))
+            .await
+        {
+            tracing::warn!(
+                target: "nebula_engine::resource_status",
+                %error,
+                "resource status heartbeat failed"
+            );
+            return;
+        }
+        let current = engine.resource_status_snapshot();
+        let mut seen = HashSet::with_capacity(current.len());
+        for (scope, snapshot) in current {
+            let key = (scope, snapshot.resource_id.clone());
+            seen.insert(key.clone());
+            if published.get(&key) == Some(&snapshot) {
+                continue;
+            }
+            match self.store.publish(&key.0, &self.worker, &snapshot).await {
+                Ok(()) => {
+                    published.insert(key, snapshot);
+                },
+                Err(error) => {
+                    published.remove(&key);
+                    tracing::warn!(
+                        target: "nebula_engine::resource_status",
+                        %error,
+                        "resource status publish failed; retrying next tick"
+                    );
+                },
+            }
+        }
+        let retired: Vec<PublishedKey> = published
+            .keys()
+            .filter(|key| !seen.contains(*key))
+            .cloned()
+            .collect();
+        for key in retired {
+            match self.store.withdraw(&key.0, &self.worker, &key.1).await {
+                Ok(()) => {
+                    published.remove(&key);
+                },
+                Err(error) => tracing::warn!(
+                    target: "nebula_engine::resource_status",
+                    %error,
+                    "resource status withdraw failed; retrying next tick"
+                ),
+            }
+        }
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use std::sync::Arc;
-
-    use nebula_resource::Manager;
-
-    use super::*;
-
-    fn rk(key: &str) -> ResourceKey {
-        ResourceKey::new(key).expect("valid resource key in test")
-    }
-
-    #[tokio::test]
-    async fn unregistered_resource_has_no_runtime_status() {
-        // `Manager::new()` spawns a release-queue worker that needs a
-        // Tokio runtime — keep this under `#[tokio::test]`.
-        let status = EngineManagerResourceStatus::new(Arc::new(Manager::new()));
-        assert!(
-            status.runtime_status(&rk("postgres")).is_none(),
-            "a resource with no live runtime must project no status"
-        );
-    }
-
-    #[tokio::test]
-    async fn debug_redacts_manager() {
-        let status = EngineManagerResourceStatus::new(Arc::new(Manager::new()));
-        let dbg = format!("{status:?}");
-        assert!(dbg.contains("<Manager>"));
-    }
-
-    #[test]
-    fn phase_projection_is_stable_and_non_secret() {
-        use nebula_resource::state::ResourcePhase;
-
-        let ready = project(ResourcePhase::Ready);
-        assert_eq!(ready.phase, "ready");
-        assert!(ready.healthy);
-        assert!(ready.accepting);
-
-        let reloading = project(ResourcePhase::Reloading);
-        assert_eq!(reloading.phase, "reloading");
-        assert!(!reloading.healthy, "reloading is not at-a-glance healthy");
-        assert!(reloading.accepting, "reloading still accepts new work");
-
-        let failed = project(ResourcePhase::Failed);
-        assert_eq!(failed.phase, "failed");
-        assert!(!failed.healthy);
-        assert!(!failed.accepting);
-
-        for p in [
-            ResourcePhase::Initializing,
-            ResourcePhase::Draining,
-            ResourcePhase::ShuttingDown,
-        ] {
-            let s = project(p);
-            assert!(!s.healthy, "{p:?} must not be healthy");
-            // `accepting` mirrors `ResourcePhase::is_accepting()` (only
-            // `Ready`/`Reloading`), so every phase in this loop must
-            // report not-accepting; `Ready`/`Reloading` are asserted
-            // accepting above.
-            assert!(!s.accepting, "{p:?} must not accept new work");
-        }
-    }
-
-    #[test]
-    fn projection_token_matches_canonical_display_for_every_known_phase() {
-        use nebula_resource::state::ResourcePhase;
-
-        // The projection in `project()` hand-maintains a `ResourcePhase →
-        // &'static str` table (kept as `&'static str`, not delegated to
-        // `to_string()`, by design). This pin makes that table's every
-        // KNOWN variant equal `nebula-resource`'s canonical `Display`, so
-        // a renamed token or a newly added `ResourcePhase` variant fails
-        // here instead of silently projecting as `"unknown"`.
-        for p in [
-            ResourcePhase::Initializing,
-            ResourcePhase::Ready,
-            ResourcePhase::Reloading,
-            ResourcePhase::Draining,
-            ResourcePhase::ShuttingDown,
-            ResourcePhase::Failed,
-        ] {
-            assert_eq!(
-                project(p).phase,
-                p.to_string(),
-                "projection token must equal nebula-resource's canonical \
-                 Display for {p:?}; a renamed token or a new ResourcePhase \
-                 variant must fail here, not silently become \"unknown\""
-            );
-        }
-    }
-}
+#[path = "resource_status_tests.rs"]
+mod tests;

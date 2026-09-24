@@ -53,7 +53,7 @@ plugin-registry — и рискует разойтись с canon §12.2 control
 | `daemon::{Daemon, DaemonRegistry, DaemonRuntime, EventSource, EventSourceRuntime/Adapter, RestartPolicy, DaemonError}` | `daemon/mod.rs:37-52`, `registry.rs:38-273`, `runtime.rs:37`, `event_source.rs:32-164` |
 | `store_seam::{ExecutionStores, WorkflowStores, node_output_record…}` (мост к spec-16 storage-port; реальный per-message `Scope` протягивается в `resume_execution`, плейсхолдер удалён) | `store_seam.rs:44-126` |
 | `ExecutionResult` · `EngineError` · `ExecutionEvent` (eventbus broadcast) · `NodeOutput` | `result.rs:10` · `error.rs:10` · `event.rs:19` · `node_output.rs:9` |
-| `resource_status::{ResourceRuntimeStatus, EngineResourceStatus, EngineManagerResourceStatus}` | `resource_status.rs:45-91` |
+| `resource_status::{ResourceRuntimeStatus, EngineResourceStatus, StoredResourceStatus, ResourceStatusPublisher}` | `resource_status.rs` — статус строк публикуется воркером в `ResourceStatusStore`, API читает его оттуда |
 | Re-export plugin-типов: `Plugin, PluginKey, PluginManifest, PluginRegistry, ResolvedPlugin` | `lib.rs:102` |
 
 ## 3. Зависимости и зависимые

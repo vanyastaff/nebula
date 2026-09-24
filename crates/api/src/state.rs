@@ -521,8 +521,8 @@ pub struct AppState {
     /// `GET .../resources/{res}/status` endpoint reports `503 Service
     /// Unavailable` (the catalog None-convention — never a fabricated
     /// status). Set via [`AppState::with_resource_status`]; compose in
-    /// production from the same `nebula_resource::Manager` the engine is
-    /// built with.
+    /// production as `nebula_engine::StoredResourceStatus` over the status
+    /// store the workers publish into.
     pub resource_status: Option<Arc<dyn nebula_engine::EngineResourceStatus>>,
 
     /// Resume-token store for the W-S3d webhook→Resume producer
@@ -1363,10 +1363,11 @@ impl AppState {
     /// Projects a live resource's lifecycle phase in api-safe types — it
     /// observes a phase and cannot mutate a resource (no
     /// acquire/release/drain; resource lifecycle is engine-owned,
-    /// INTEGRATION_MODEL integration seam.1). Compose this in production from the same
-    /// `nebula_resource::Manager` the engine is built with (via
-    /// `nebula_engine::EngineManagerResourceStatus`). When left `None`
-    /// the status endpoint reports `503` rather than fabricate a status.
+    /// INTEGRATION_MODEL integration seam.1). Compose this in production as
+    /// `nebula_engine::StoredResourceStatus` over the status store the
+    /// workers publish into: resources run in worker processes, not here.
+    /// When left `None` the status endpoint reports `503` rather than
+    /// fabricate a status.
     #[must_use = "builder methods must be chained or built"]
     pub fn with_resource_status(
         mut self,

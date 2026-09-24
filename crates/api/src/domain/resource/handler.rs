@@ -30,7 +30,7 @@ use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
 };
-use nebula_core::{Principal, ResourceId, ResourceKey, TenantContext};
+use nebula_core::{Principal, ResourceId, TenantContext};
 use nebula_engine::RegistrarError;
 use nebula_storage_port::{Scope, dto::ResourceRow, store::ResourceStore};
 
@@ -683,10 +683,13 @@ pub async fn delete_resource(
 /// integration seam.1). The response body carries phase/health only, never `config`
 /// or credential material (no secret echo).
 ///
-/// Tenant isolation composes with the read path. The runtime
-/// `nebula_resource::Manager` is keyed by `(ResourceKey, ScopeLevel)`,
-/// **not** by workspace — workspace ownership lives in the config row. So
-/// the handler first establishes ownership through the *same* audited
+/// The runtime lives in the worker processes that activated the resource;
+/// they publish per-row status snapshots, and this handler reads them back
+/// keyed by the confirmed row's own `(workspace, org)` and id, aggregated
+/// over every live worker (`instances`).
+///
+/// Tenant isolation composes with the read path: the handler first
+/// establishes ownership through the *same* audited
 /// `fetch_owned_resource` boundary as the read/update/delete paths
 /// (an unknown / unparsable id, a resource owned by a *different*
 /// workspace, and a soft-deleted row ALL collapse to an indistinguishable
@@ -704,12 +707,8 @@ pub async fn delete_resource(
 /// - no status backend is configured on this instance ⇒ **503** (the
 ///   catalog None-convention — an honest "unavailable", never a
 ///   fabricated status), checked *after* ownership so a 503 cannot leak
-///   the existence of a foreign resource.
-///
-/// A stored `kind` that is not a valid resource key is a storage
-/// invariant violation (the resource genuinely exists and is owned), so
-/// it is an opaque **500** — never a 404 (which would falsely deny an
-/// owned resource) and never a fabricated status.
+///   the existence of a foreign resource; an unreadable status backend is
+///   likewise a **503**.
 #[utoipa::path(
     get,
     path = "/orgs/{org}/workspaces/{ws}/resources/{res}/status",
@@ -725,8 +724,8 @@ pub async fn delete_resource(
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
         (status = 404, description = "Resource does not exist (also returned for a resource in another workspace, a soft-deleted resource, or an unparsable id — no cross-tenant leak).", body = ProblemDetails),
-        (status = 500, description = "Resource store error, or a stored resource `kind` that is not a valid resource key.", body = ProblemDetails),
-        (status = 503, description = "Resource catalog backend or the runtime-status backend is not configured on this instance.", body = ProblemDetails),
+        (status = 500, description = "Resource store error.", body = ProblemDetails),
+        (status = 503, description = "Resource catalog backend or the runtime-status backend is not configured or unavailable.", body = ProblemDetails),
     ),
 )]
 pub async fn get_resource_status(
@@ -754,40 +753,42 @@ pub async fn get_resource_status(
         ApiError::ServiceUnavailable("Resource runtime-status backend not configured".into())
     })?;
 
-    // The confirmed row's own `kind` keys the engine status seam — never
-    // an attacker-influenced value. A stored kind that is not a valid
-    // resource key is a storage-invariant violation on an
-    // already-confirmed-owned resource: an opaque 500, never a 404 (the
-    // resource exists and is owned) and never a fabricated status.
-    let key = ResourceKey::new(&row.kind).map_err(|_| {
-        tracing::error!(
-            target: "nebula_api::resource",
-            "stored resource kind is not a valid resource key"
-        );
-        ApiError::Internal("resource has an invalid stored kind".to_string())
-    })?;
-
     // Canonical `res_<ULID>` echo of the (already isolation-verified)
     // path id — single shared definition; see `canonical_res_id`.
     let id = canonical_res_id(&res)?;
 
-    // Project the read-only engine seam. `None` = the resource exists as
-    // a definition but has no live runtime (never activated, or a
-    // fail-closed ambiguous `(key, scope)`): a well-defined `inactive`
-    // status in a 200 body — NOT a 404 (the config row exists; absence
-    // of a *live runtime* is a status, not a missing resource).
-    let dto = match status_port.runtime_status(&key) {
+    // The confirmed row's own id and scope key the status read — never an
+    // attacker-influenced value. `None` = the resource exists as a
+    // definition but no live worker serves it (never activated, retired,
+    // or its workers are gone): a well-defined `inactive` status in a 200
+    // body — NOT a 404 (the config row exists; absence of a *live runtime*
+    // is a status, not a missing resource). An unreadable status backend
+    // is a 503, never a fabricated status.
+    let status = status_port
+        .runtime_status(&scope, &row.id)
+        .await
+        .map_err(|error| {
+            tracing::warn!(
+                target: "nebula_api::resource",
+                %error,
+                "resource runtime status could not be read"
+            );
+            ApiError::ServiceUnavailable("Resource runtime status is unavailable".into())
+        })?;
+    let dto = match status {
         Some(s) => ResourceStatusDto {
             id,
             phase: phase_from_seam(s.phase),
             healthy: s.healthy,
             accepting: s.accepting,
+            instances: s.instances,
         },
         None => ResourceStatusDto {
             id,
             phase: ResourcePhase::Inactive,
             healthy: false,
             accepting: false,
+            instances: 0,
         },
     };
 

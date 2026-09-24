@@ -202,6 +202,9 @@ async fn build_stores(
         Arc::new(nebula_storage::sqlite::SqliteResourceStore::new(
             pool.clone(),
         )),
+        Arc::new(nebula_storage::sqlite::SqliteResourceStatusStore::new(
+            pool.clone(),
+        )),
     );
     let execution_stores = ExecutionStores {
         execution: execution_store,
@@ -302,6 +305,9 @@ async fn build_pg_stores(
         },
         resource_runtime,
         Arc::new(nebula_storage::postgres::PgResourceStore::new(pool.clone())),
+        Arc::new(nebula_storage::postgres::PgResourceStatusStore::new(
+            pool.clone(),
+        )),
     );
 
     let execution_stores = ExecutionStores {
