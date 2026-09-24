@@ -287,14 +287,15 @@ fn sdk_only_consumer_cannot_name_authority_or_raw_persistence() {
         render_output(&arity)
     );
 
-    for binary in ["positive", "resource_topology", "resource_rate_limit"] {
-        let output = cargo_probe(temp.path(), "clippy", binary);
-        assert!(
-            output.status.success(),
-            "positive SDK probe `{binary}` must pass strict clippy:\n{}",
-            render_output(&output)
-        );
-    }
+    // One strict clippy pass over every positive probe: separate passes
+    // re-resolve the whole dependency graph each time for no extra coverage.
+    let positives = ["positive", "resource_topology", "resource_rate_limit"];
+    let output = cargo_clippy_bins(temp.path(), &positives);
+    assert!(
+        output.status.success(),
+        "positive SDK probes {positives:?} must pass strict clippy:\n{}",
+        render_output(&output)
+    );
 
     let positive = cargo_probe(temp.path(), "run", "positive");
     assert!(
@@ -530,6 +531,27 @@ fn cargo_probe(fixture_root: &Path, command: &str, binary: &str) -> Output {
         .env("CARGO_TARGET_DIR", fixture_root.join("target"))
         .output()
         .expect("run cargo probe for external SDK perimeter consumer")
+}
+
+/// Strict clippy over several fixture binaries in one cargo invocation.
+fn cargo_clippy_bins(fixture_root: &Path, binaries: &[&str]) -> Output {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
+    let mut invocation = Command::new(cargo);
+    invocation.current_dir(fixture_root).args([
+        "clippy",
+        "--offline",
+        "--quiet",
+        "--message-format=json",
+    ]);
+    for binary in binaries {
+        invocation.args(["--bin", binary]);
+    }
+    invocation
+        .args(["--", "-D", "warnings"])
+        .env("CARGO_TERM_COLOR", "never")
+        .env("CARGO_TARGET_DIR", fixture_root.join("target"))
+        .output()
+        .expect("run cargo clippy for external SDK perimeter consumer")
 }
 
 fn toml_basic_string(path: &Path) -> String {

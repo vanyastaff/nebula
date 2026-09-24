@@ -75,6 +75,16 @@ default-filter = 'not binary(=runtime_repair_red_scenarios)'
 [profile.ci.junit]
 path = "junit.xml"
 
+# The SDK external-contract tests copy a consumer crate into a fresh
+# temporary directory and build it (clippy + run) against the SDK from a
+# cold target dir, so each one spends most of its time compiling: about
+# 100 s for the derive/test-result consumers and 160 s for the public
+# perimeter consumer on a hosted runner, which leaves the 180 s ceiling
+# above no room for a slower runner. They are CPU-bound builds, not hangs.
+[[profile.ci.overrides]]
+filter = 'package(=nebula-sdk) & binary(/(derive_external_contract|public_perimeter_external_contract|test_result_external_contract)/)'
+slow-timeout = { period = "120s", terminate-after = 3 }
+
 [profile.agent]
 # Optimized for LLM-driven invocation: tight, fail-fast, no spinner/emoji.
 status-level = "fail"
