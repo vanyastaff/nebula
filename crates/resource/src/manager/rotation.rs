@@ -1156,7 +1156,7 @@ impl Manager {
     #[tracing::instrument(
         level = "debug",
         name = "nebula.resource.slot_drain_revoke",
-        skip(self, tainted),
+        skip(self, tainted, on_admitted),
         fields(
             key = %tainted.key,
             slot = %tainted.slot,
@@ -1165,11 +1165,15 @@ impl Manager {
             op = "revoke",
         )
     )]
-    pub(crate) async fn drain_and_revoke_with_admission(
+    pub(crate) async fn drain_and_revoke_with_admission<F>(
         &self,
         tainted: TaintedSlot,
         drain_timeout: Duration,
-    ) -> (RevokeTail, Option<bool>) {
+        on_admitted: F,
+    ) -> (RevokeTail, Option<bool>)
+    where
+        F: FnOnce(),
+    {
         let TaintedSlot {
             key,
             slot,
@@ -1232,7 +1236,10 @@ impl Manager {
                 self.slot_hook_settlement(key.clone(), slot.clone(), SlotHookDirection::Revoke);
             match Arc::clone(&managed).submit_on_revoke(&slot, drain_timeout, settlement, admission)
             {
-                Ok(accepted) => accepted,
+                Ok(accepted) => {
+                    on_admitted();
+                    accepted
+                },
                 Err(error) => {
                     if let Some(metrics) = &self.metrics {
                         metrics.record_slot_revoke_outcome(SlotDispatchMetricOutcome::Failed);
@@ -1291,19 +1298,23 @@ impl Manager {
         tainted: TaintedSlot,
         drain_timeout: Duration,
     ) -> RevokeTail {
-        self.drain_and_revoke_with_admission(tainted, drain_timeout)
+        self.drain_and_revoke_with_admission(tainted, drain_timeout, || {})
             .await
             .0
     }
 
     #[cfg(feature = "rotation")]
-    pub(crate) async fn retry_tainted_revoke_admission(
+    pub(crate) async fn retry_tainted_revoke_admission<F>(
         &self,
         key: &ResourceKey,
         slot: &str,
         managed: Arc<dyn crate::registry::ManagedHandle>,
         timeout: Duration,
-    ) -> (RevokeTail, Option<bool>) {
+        on_admitted: F,
+    ) -> (RevokeTail, Option<bool>)
+    where
+        F: FnOnce(),
+    {
         let tainted = {
             let _admission = self
                 .admission
@@ -1328,7 +1339,8 @@ impl Manager {
                 tainted_at: Instant::now(),
             }
         };
-        self.drain_and_revoke_with_admission(tainted, timeout).await
+        self.drain_and_revoke_with_admission(tainted, timeout, on_admitted)
+            .await
     }
 
     /// Notifies a registered resource that one of its `#[credential]` slots

@@ -28,7 +28,9 @@ impl ResourceFanoutIndex {
         resolver: &dyn CredentialSlotResolver,
         mgr: &crate::Manager,
     ) -> RotationOutcome {
-        let dispatches = self.affected(&cid).into_iter().map(|binding| async move {
+        let affected = self.affected(&cid);
+        let has_staged_binding = self.has_staged_binding(&cid);
+        let dispatches = affected.into_iter().map(|binding| async move {
             let Ok(projection_permit) = self.projection_admission.acquire().await else {
                 return RowOutcome::Failed {
                     drain_timed_out: false,
@@ -63,12 +65,21 @@ impl ResourceFanoutIndex {
                     };
                 };
                 drop(projection_permit);
+                let retry_key = claim.entry.key.clone();
+                let retry_slot = claim.entry.slot.clone();
+                let retry_managed = std::sync::Arc::clone(&claim.entry.managed);
+                let mut claim = Some(claim);
                 let (tail, admission) = mgr
                     .retry_tainted_revoke_admission(
-                        &claim.entry.key,
-                        &claim.entry.slot,
-                        std::sync::Arc::clone(&claim.entry.managed),
+                        &retry_key,
+                        &retry_slot,
+                        retry_managed,
                         Duration::from_secs(30),
+                        || {
+                            if let Some(claim) = claim.take() {
+                                claim.accepted();
+                            }
+                        },
                     )
                     .await;
                 settle_revoke_claim(claim, admission);
@@ -108,7 +119,13 @@ impl ResourceFanoutIndex {
             .await
         });
         let outcomes = futures::future::join_all(dispatches).await;
-        summarize_row_outcomes(outcomes)
+        let mut summary = summarize_row_outcomes(outcomes);
+        // A registration that has staged its reverse-index ownership is not
+        // routable until the manager publishes it. Keep the authoritative
+        // material context for reconciliation even when every already-live
+        // row succeeded during this dispatch.
+        summary.failed += usize::from(has_staged_binding);
+        summary
     }
 
     /// Reconcile live projections against credential-owned durable state.
@@ -191,12 +208,21 @@ impl ResourceFanoutIndex {
             let Some(claim) = self.claim_pending_revoke(&pending) else {
                 continue;
             };
+            let retry_key = claim.entry.key.clone();
+            let retry_slot = claim.entry.slot.clone();
+            let retry_managed = std::sync::Arc::clone(&claim.entry.managed);
+            let mut claim = Some(claim);
             let (tail, admission) = mgr
                 .retry_tainted_revoke_admission(
-                    &claim.entry.key,
-                    &claim.entry.slot,
-                    std::sync::Arc::clone(&claim.entry.managed),
+                    &retry_key,
+                    &retry_slot,
+                    retry_managed,
                     Duration::from_secs(30),
+                    || {
+                        if let Some(claim) = claim.take() {
+                            claim.accepted();
+                        }
+                    },
                 )
                 .await;
             settle_revoke_claim(claim, admission);
@@ -446,8 +472,13 @@ impl ResourceFanoutIndex {
                     // documented "hook still runs after a timed-out drain"
                     // guarantee. The row is already tainted (phase 1); every
                     // tail outcome leaves it tainted.
+                    let mut claim = Some(claim);
                     let (tail, admission) = mgr
-                        .drain_and_revoke_with_admission(tainted, per_resource_timeout)
+                        .drain_and_revoke_with_admission(tainted, per_resource_timeout, || {
+                            if let Some(claim) = claim.take() {
+                                claim.accepted();
+                            }
+                        })
                         .await;
                     settle_revoke_claim(claim, admission);
                     match tail {
@@ -620,8 +651,13 @@ async fn project_and_refresh(
                 };
             };
             drop(projection_permit);
+            let mut claim = Some(claim);
             let (tail, admission) = mgr
-                .drain_and_revoke_with_admission(tainted, Duration::from_secs(30))
+                .drain_and_revoke_with_admission(tainted, Duration::from_secs(30), || {
+                    if let Some(claim) = claim.take() {
+                        claim.accepted();
+                    }
+                })
                 .await;
             settle_revoke_claim(claim, admission);
             return revoke_tail_outcome(tail);
@@ -678,11 +714,13 @@ async fn project_and_refresh(
     }
 }
 
-fn settle_revoke_claim(claim: RevokeAdmissionClaim<'_>, admission: Option<bool>) {
-    match admission {
-        Some(true) => claim.accepted(),
-        Some(false) => claim.retry(),
-        None => claim.discard(),
+fn settle_revoke_claim(claim: Option<RevokeAdmissionClaim<'_>>, admission: Option<bool>) {
+    match (claim, admission) {
+        (None, Some(true)) => {},
+        (Some(claim), Some(true)) => claim.accepted(),
+        (Some(claim), Some(false)) => claim.retry(),
+        (Some(claim), None) => claim.discard(),
+        (None, Some(false) | None) => {},
     }
 }
 

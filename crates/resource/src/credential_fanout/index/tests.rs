@@ -399,6 +399,7 @@ async fn dispatch_refresh_empty_is_noop() {
 // ────────────────────────────────────────────────────────────────────
 mod fanout_dispatch {
     use std::collections::HashMap;
+    use std::future::Future;
     use std::sync::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
@@ -444,9 +445,11 @@ mod fanout_dispatch {
         /// Hook never completes (models a wedged resource) — the
         /// per-resource timeout must fire and NOT abort siblings.
         Hang,
+        /// Hook waits until the test releases it.
+        Block,
     }
 
-    #[derive(Clone, Default)]
+    #[derive(Clone)]
     struct Ledger {
         /// resolved structural slot_identity -> behaviour.
         behaviour: Arc<Mutex<HashMap<SlotIdentity, Behaviour>>>,
@@ -454,6 +457,18 @@ mod fanout_dispatch {
         refresh_entered: Arc<AtomicUsize>,
         /// Total revoke-hook entries.
         revoke_entered: Arc<AtomicUsize>,
+        revoke_release: Arc<tokio::sync::Semaphore>,
+    }
+
+    impl Default for Ledger {
+        fn default() -> Self {
+            Self {
+                behaviour: Arc::default(),
+                refresh_entered: Arc::default(),
+                revoke_entered: Arc::default(),
+                revoke_release: Arc::new(tokio::sync::Semaphore::new(0)),
+            }
+        }
     }
 
     impl Ledger {
@@ -534,6 +549,15 @@ mod fanout_dispatch {
                     // resolves, so this line is statically unreachable.
                     unreachable!("pending future never resolves")
                 },
+                Behaviour::Block => {
+                    self.ledger
+                        .revoke_release
+                        .acquire()
+                        .await
+                        .expect("test semaphore remains open")
+                        .forget();
+                    Ok(())
+                },
             }
         }
 
@@ -551,6 +575,15 @@ mod fanout_dispatch {
                     // guard-justified: `std::future::pending()` never
                     // resolves, so this line is statically unreachable.
                     unreachable!("pending future never resolves")
+                },
+                Behaviour::Block => {
+                    self.ledger
+                        .revoke_release
+                        .acquire()
+                        .await
+                        .expect("test semaphore remains open")
+                        .forget();
+                    Ok(())
                 },
             }
         }
@@ -661,6 +694,68 @@ mod fanout_dispatch {
         (idx, mgr, cid, scope, org, ledger)
     }
 
+    struct UnusedResolver;
+
+    impl nebula_credential::CredentialSlotResolver for UnusedResolver {
+        fn resolve_slot<'a>(
+            &'a self,
+            _scope: &'a TenantScope,
+            _credential_id: CredentialId,
+            _expected_key: nebula_core::CredentialKey,
+            _required_capabilities: nebula_credential::Capabilities,
+            _cancel: CancellationToken,
+        ) -> std::pin::Pin<
+            Box<
+                dyn Future<
+                        Output = Result<
+                            nebula_credential::ErasedCredentialGuard,
+                            nebula_credential::CredentialSlotResolveError,
+                        >,
+                    > + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(std::future::pending())
+        }
+    }
+
+    #[tokio::test]
+    async fn staged_only_material_dispatch_remains_incomplete() {
+        let index = ResourceFanoutIndex::new();
+        let credential_id = CredentialId::new();
+        let key = CtlResource::key();
+        let scope = ScopeLevel::Global;
+        let identity = SlotIdentity::from_bindings([("db", "staged-only")]);
+        index.stage_bind(
+            credential_id,
+            Bind {
+                resource_key: key,
+                scope,
+                slot_name: "db".to_owned(),
+                slot_identity: identity,
+            },
+        );
+        let owner = TenantScope::new("org", "workspace");
+        let credential_key = nebula_core::credential_key!("oauth");
+        let sequence =
+            index.remember_material_context(credential_id, owner.clone(), credential_key.clone());
+
+        let outcome = index
+            .dispatch_material_replacement(
+                credential_id,
+                &owner,
+                &credential_key,
+                &UnusedResolver,
+                &Manager::new(),
+            )
+            .await;
+        assert_eq!(outcome.failed(), 1);
+        assert_eq!(
+            index.pending_material_contexts(),
+            vec![(credential_id, owner, credential_key, sequence)]
+        );
+    }
+
     #[tokio::test]
     async fn pending_tombstone_revoke_admission_is_retried_by_reconciliation() {
         let identity = SlotIdentity::from_bindings([("db", "retry-revoke")]);
@@ -760,6 +855,42 @@ mod fanout_dispatch {
         let retried = retry.await.expect("retry task");
         assert_eq!(retried.success(), 1);
         assert_eq!(ledger.revoke_entered.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn cancelling_after_revoke_admission_does_not_restore_pending_retry() {
+        let identity = SlotIdentity::from_bindings([("db", "admitted-cancel")]);
+        let (index, manager, credential_id, scope, _org, ledger) =
+            setup(std::slice::from_ref(&identity)).await;
+        let index = Arc::new(index);
+        ledger.set(identity.clone(), Behaviour::Block);
+        let managed = manager
+            .lookup_any_for_slot_identity_structural(&CtlResource::key(), &scope, &identity)
+            .expect("registered row");
+        let tainted = manager
+            .taint_slot_for_identity(&CtlResource::key(), scope, "db", &identity)
+            .expect("taint");
+        drop(tainted);
+        index.remember_pending_revoke(credential_id, CtlResource::key(), "db", managed);
+
+        let retry = tokio::spawn({
+            let index = Arc::clone(&index);
+            let manager = Arc::clone(&manager);
+            async move { index.retry_pending_revoke_admissions(&manager).await }
+        });
+        while ledger.revoke_entered.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+        retry.abort();
+        let _cancelled = retry.await;
+        assert!(index.pending_revokes().is_empty());
+
+        let duplicate = index
+            .dispatch_revoke(credential_id, &manager, Duration::from_secs(1))
+            .await;
+        assert_eq!(duplicate.success(), 1);
+        assert_eq!(ledger.revoke_entered.load(Ordering::SeqCst), 1);
+        ledger.revoke_release.add_permits(1);
     }
 
     #[tokio::test]
