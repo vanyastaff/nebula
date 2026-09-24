@@ -288,7 +288,9 @@ impl ResourceFanoutDriver {
     ///
     /// This is an engine composition seam. `on_stopped` runs exactly once for
     /// natural task completion, task panic, [`abort`](Self::abort), or handle
-    /// drop, after authoritative reconciliation availability is withdrawn.
+    /// drop. In-flight reconciliation owns a scoped authority lease until its
+    /// future is actually cancelled, so the callback may admit a replacement
+    /// driver without exposing rows after the last resolver has stopped.
     #[doc(hidden)]
     pub fn spawn_with_resolver_and_lifecycle(
         index: Arc<ResourceFanoutIndex>,
@@ -469,9 +471,12 @@ impl ResourceFanoutDriver {
                             let index = Arc::clone(&index);
                             let manager = Arc::clone(&manager);
                             let resolver = Arc::clone(resolver);
+                            let reconciliation_lease =
+                                index.acquire_authoritative_reconciliation_for(&manager);
                             // JoinSet aborts the scan when the driver is dropped.
                             // Scans cannot delay reception of revoke observations.
                             scans.spawn(async move {
+                                let _reconciliation_lease = reconciliation_lease;
                                 index
                                     .reconcile_material(&manager, resolver.as_ref(), credential_id)
                                     .await
@@ -489,10 +494,13 @@ impl ResourceFanoutDriver {
                                 let index = Arc::clone(&index);
                                 let manager = Arc::clone(&manager);
                                 let resolver = Arc::clone(resolver);
+                                let reconciliation_lease =
+                                    index.acquire_authoritative_reconciliation_for(&manager);
                                 // One background material fan-out at a time keeps the
                                 // per-row projection limit global to this driver while
                                 // the receive loop remains free to admit revokes.
                                 material_dispatches.spawn(async move {
+                                    let _reconciliation_lease = reconciliation_lease;
                                     let outcome = index
                                         .dispatch_material_replacement(
                                             credential_id,
@@ -735,11 +743,11 @@ impl ResourceFanoutDriver {
 
     /// Abort the running driver task. Safe to call multiple times.
     pub fn abort(&self) {
+        self.handle.abort();
         self.reconciliation_lease
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();
-        self.handle.abort();
         self.lifecycle.stop();
     }
 
@@ -755,11 +763,11 @@ impl Drop for ResourceFanoutDriver {
     fn drop(&mut self) {
         // Cancel the spawned task so the driver never outlives the
         // engine that started it.
+        self.handle.abort();
         self.reconciliation_lease
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();
-        self.handle.abort();
         self.lifecycle.stop();
     }
 }
@@ -798,9 +806,10 @@ mod tests {
     #[tokio::test]
     async fn abort_releases_authoritative_reconciliation_availability() {
         let index = Arc::new(ResourceFanoutIndex::new());
+        let manager = Arc::new(Manager::new());
         let driver = ResourceFanoutDriver::spawn_with_resolver(
             Arc::clone(&index),
-            Arc::new(Manager::new()),
+            Arc::clone(&manager),
             Some(Arc::new(NeverResolver)),
             Arc::new(EventBus::new(8)),
             None,
@@ -810,6 +819,34 @@ mod tests {
         driver.abort();
 
         assert!(!index.authoritative_reconciliation_available());
+    }
+
+    #[tokio::test]
+    async fn abort_keeps_authority_until_in_flight_reconciliation_is_cancelled() {
+        let index = Arc::new(ResourceFanoutIndex::new());
+        let manager = Arc::new(Manager::new());
+        let driver = ResourceFanoutDriver::spawn_with_resolver(
+            Arc::clone(&index),
+            Arc::clone(&manager),
+            Some(Arc::new(NeverResolver)),
+            Arc::new(EventBus::new(8)),
+            None,
+        );
+        // Reconciliation tasks take their own scoped lease before entering
+        // resolver I/O. Model a task paused at that boundary deterministically.
+        let in_flight_reconciliation = index.acquire_authoritative_reconciliation_for(&manager);
+
+        driver.abort();
+
+        assert!(
+            index.authoritative_reconciliation_available(),
+            "driver cancellation must not demote rows while a scan can still publish completion"
+        );
+        drop(in_flight_reconciliation);
+        assert!(
+            !index.authoritative_reconciliation_available(),
+            "the last cancelled scan releases authority and triggers fail-closed demotion"
+        );
     }
 
     /// The lease-bus + credential-bus double-emission of one logical
