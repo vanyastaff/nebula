@@ -362,7 +362,7 @@ impl ResourceFanoutIndex {
         self.add_bind_ref(
             cid,
             binding,
-            Some(credential_scope),
+            Some(credential_scope.durable_owner_scope()),
             Some(credential_key),
             false,
         );
@@ -689,6 +689,15 @@ impl ResourceFanoutIndex {
                     .iter()
                     .any(|handle| std::sync::Arc::ptr_eq(&entry.managed, handle))
             });
+    }
+
+    pub(crate) fn clear_for_manager_shutdown(&self) {
+        self.by_credential.clear();
+        self.material_contexts.clear();
+        self.pending_revoke_admissions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
     }
 
     /// Drops bindings for the single resolved registry row

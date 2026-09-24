@@ -112,6 +112,19 @@ impl HasCredentialSlots for ProjectionResource {
             .install_projected_at_generation(expected_generation, metadata, Arc::new(guard))
     }
 
+    fn fence_credential_slot_at_generation(
+        &self,
+        slot: &str,
+        expected_generation: u64,
+        fence: &mut dyn FnMut(),
+    ) -> Result<(), SlotInstallError> {
+        if slot != "db" {
+            return Err(SlotInstallError::UnknownSlot);
+        }
+        self.slot
+            .fence_projection_at_generation(expected_generation, fence)
+    }
+
     fn revoke_credential_slot(&self, slot: &str) -> Result<SlotUpdate, SlotInstallError> {
         if slot != "db" {
             return Err(SlotInstallError::UnknownSlot);
@@ -298,6 +311,85 @@ async fn rejected_projection_hook_retries_once_but_accepted_failure_does_not() {
         ));
         assert_eq!(resource.calls.load(Ordering::SeqCst), 1);
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unqualified_slot_write_fences_refresh_hook_admission() {
+    let manager = Arc::new(Manager::new());
+    let gate = Arc::new(SnapshotGate {
+        entered: tokio::sync::Semaphore::new(0),
+        revoke_entered: tokio::sync::Semaphore::new(0),
+        released: std::sync::Mutex::new(false),
+        resume: std::sync::Condvar::new(),
+    });
+    let resource = ProjectionResource {
+        slot: Arc::new(SlotCell::empty()),
+        calls: Arc::new(AtomicUsize::new(0)),
+        fail: false,
+        snapshot_gate: Some(Arc::clone(&gate)),
+    };
+    let identity = SlotIdentity::from_bindings([("db", "oauth")]);
+    manager
+        .register(RegistrationSpec {
+            resource: resource.clone(),
+            config: Config,
+            scope: ScopeLevel::Global,
+            slot_identity: identity.clone(),
+            topology: Resident::new(ResidentConfig::default()),
+            recovery_gate: None,
+        })
+        .expect("register");
+    let context = ResourceContext::minimal(Scope::default(), CancellationToken::new());
+    drop(
+        manager
+            .acquire_resident_for_identity::<ProjectionResource>(
+                &context,
+                &AcquireOptions::default(),
+                &identity,
+            )
+            .await
+            .expect("warm"),
+    );
+    let projection = tokio::spawn({
+        let manager = Arc::clone(&manager);
+        async move {
+            manager
+                .install_and_refresh_slot_for_identity(
+                    &ProjectionResource::key(),
+                    ScopeLevel::Global,
+                    "db",
+                    &identity,
+                    ErasedCredentialGuard::from_typed(
+                        CredentialGuard::new(99_u64),
+                        CredentialGuardMetadata::new(
+                            CredentialId::new(),
+                            "oauth".parse().expect("key"),
+                            1,
+                            1,
+                        ),
+                    ),
+                )
+                .await
+        }
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(2), gate.entered.acquire())
+        .await
+        .expect("snapshot reached")
+        .expect("permit")
+        .forget();
+
+    resource.slot.store(Arc::new(CredentialGuard::new(123_u64)));
+    *gate.released.lock().expect("gate lock") = true;
+    gate.resume.notify_all();
+
+    let error = projection
+        .await
+        .expect("projection task")
+        .expect_err("superseded projection must not submit its hook");
+    assert_eq!(error.kind(), &crate::ErrorKind::Permanent);
+    assert_eq!(resource.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(resource.slot.load().map(|guard| **guard), Some(123));
+    assert!(resource.slot.projection_metadata().is_none());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

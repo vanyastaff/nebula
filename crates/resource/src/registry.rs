@@ -140,6 +140,17 @@ pub(crate) trait ManagedHandle: Send + Sync + 'static {
         Err(crate::SlotInstallError::ProjectionChanged)
     }
 
+    /// Runs a synchronous callback while the credential-slot generation is
+    /// still current and the concrete slot writer is excluded.
+    fn fence_credential_slot_at_generation(
+        &self,
+        _slot: &str,
+        _expected_generation: u64,
+        _fence: &mut dyn FnMut(),
+    ) -> Result<(), crate::SlotInstallError> {
+        Err(crate::SlotInstallError::ProjectionChanged)
+    }
+
     /// Atomically generation-checks a slot and applies the row revoke fence.
     #[cfg(feature = "rotation")]
     fn taint_at_credential_slot_generation(
@@ -342,6 +353,16 @@ where
     ) -> Result<crate::SlotUpdate, crate::SlotInstallError> {
         self.resource
             .install_credential_slot_at_generation(slot, guard, expected_generation)
+    }
+
+    fn fence_credential_slot_at_generation(
+        &self,
+        slot: &str,
+        expected_generation: u64,
+        fence: &mut dyn FnMut(),
+    ) -> Result<(), crate::SlotInstallError> {
+        self.resource
+            .fence_credential_slot_at_generation(slot, expected_generation, fence)
     }
 
     #[cfg(feature = "rotation")]

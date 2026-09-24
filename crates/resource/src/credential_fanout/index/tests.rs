@@ -370,6 +370,30 @@ fn failed_stage_does_not_promote_reconciliation_context() {
 }
 
 #[test]
+fn contextual_bind_discards_interactive_authentication_proof() {
+    let idx = ResourceFanoutIndex::new();
+    let cid = cred();
+    let key = rk("pg");
+    let scope = wf_scope();
+    let bind = bound(
+        &key,
+        &scope,
+        "db",
+        SlotIdentity::from_bindings([("db", "shared-key")]),
+    );
+    let owner = TenantScope::new("org", "workspace").with_authentication_binding(
+        nebula_credential::CredentialAuthenticationBinding::parse("A".repeat(43))
+            .expect("valid authentication binding"),
+    );
+
+    idx.bind_with_context(cid, bind, owner, "oauth".parse().expect("credential key"));
+
+    let published = idx.published_bindings(Some(cid));
+    let stored_scope = &published[0].2.as_ref().expect("durable context").0;
+    assert_eq!(stored_scope.authentication_binding(), None);
+}
+
+#[test]
 fn removal_preserves_a_concurrent_staged_binding_until_publish() {
     let idx = ResourceFanoutIndex::new();
     let key = rk("pg");

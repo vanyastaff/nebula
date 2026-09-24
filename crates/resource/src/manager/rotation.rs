@@ -376,15 +376,35 @@ impl Manager {
                     .with_resource_key(key.clone()));
                 },
             }
-            // No await between publication and queue admission. Rejection keeps
-            // the pending epoch; acceptance consumes it even if observation is
-            // later cancelled or the admitted hook fails.
-            let accepted = self.admit_refresh_resolved(
-                key,
-                slot,
-                Arc::clone(&managed),
-                crate::hook_guard::MAX_ROTATION_DISPATCH_CEILING,
-            )?;
+            // Keep the concrete slot writer excluded through synchronous queue
+            // admission. A public `SlotCell::store`/`take` can otherwise clear
+            // the projection after installation but before the hook is owned.
+            let (_, generation) = pending.get(slot).copied().ok_or_else(|| {
+                Error::permanent("credential projection missing before hook admission")
+                    .with_source(crate::SlotInstallError::ProjectionChanged)
+                    .with_resource_key(key.clone())
+            })?;
+            let submission_managed = Arc::clone(&managed);
+            let mut accepted = None;
+            managed
+                .fence_credential_slot_at_generation(slot, generation, &mut || {
+                    accepted = Some(self.admit_refresh_resolved(
+                        key,
+                        slot,
+                        Arc::clone(&submission_managed),
+                        crate::hook_guard::MAX_ROTATION_DISPATCH_CEILING,
+                    ));
+                })
+                .map_err(|source| {
+                    Error::permanent("credential projection superseded before hook admission")
+                        .with_source(source)
+                        .with_resource_key(key.clone())
+                })?;
+            let accepted = accepted.ok_or_else(|| {
+                Error::permanent("credential projection fence skipped hook admission")
+                    .with_source(crate::SlotInstallError::ProjectionChanged)
+                    .with_resource_key(key.clone())
+            })??;
             pending.remove(slot);
             projection_complete();
             accepted
