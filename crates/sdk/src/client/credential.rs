@@ -380,7 +380,7 @@ pub mod v1 {
     }
 
     /// One field-level RFC 9457 validation diagnostic.
-    #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+    #[derive(Clone, PartialEq, Eq, Deserialize)]
     pub struct ValidationProblem {
         /// Stable machine-readable rejection code.
         pub code: String,
@@ -398,8 +398,16 @@ pub mod v1 {
         pub remediation: Option<String>,
     }
 
+    impl fmt::Debug for ValidationProblem {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.debug_struct("ValidationProblem")
+                .field("content", &REDACTED)
+                .finish()
+        }
+    }
+
     /// RFC 9457 problem document returned by the public API.
-    #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+    #[derive(Clone, PartialEq, Eq, Deserialize)]
     pub struct ProblemDetails {
         /// URI identifying the problem type.
         #[serde(rename = "type")]
@@ -417,6 +425,16 @@ pub mod v1 {
         /// Problem-specific RFC 9457 extension members.
         #[serde(flatten)]
         pub extensions: BTreeMap<String, serde_json::Value>,
+    }
+
+    impl fmt::Debug for ProblemDetails {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.debug_struct("ProblemDetails")
+                .field("status", &self.status)
+                .field("credential_kind", &self.credential_kind())
+                .field("content", &REDACTED)
+                .finish()
+        }
     }
 
     impl ProblemDetails {
@@ -506,12 +524,23 @@ pub mod v1 {
     }
 
     /// Typed failure response assembled by the optional HTTP transport.
-    #[derive(Debug, Clone, PartialEq, Eq)]
+    #[derive(Clone, PartialEq, Eq)]
     pub struct CredentialProblem {
         /// RFC 9457 response body.
         pub problem: ProblemDetails,
         /// Valid non-zero `Retry-After` header, when supplied.
         pub retry_after: Option<RetryAfter>,
+    }
+
+    impl fmt::Debug for CredentialProblem {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.debug_struct("CredentialProblem")
+                .field("status", &self.problem.status)
+                .field("credential_kind", &self.credential_kind())
+                .field("retry_after", &self.retry_after)
+                .field("content", &REDACTED)
+                .finish()
+        }
     }
 
     impl CredentialProblem {
