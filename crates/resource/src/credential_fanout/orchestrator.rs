@@ -14,7 +14,7 @@ use nebula_core::CredentialKey;
 use nebula_credential::{Capabilities, CredentialId, CredentialSlotResolver, TenantScope};
 use tokio_util::sync::CancellationToken;
 
-use super::index::{ResourceFanoutIndex, RotationOutcome};
+use super::index::{MAX_CONCURRENT_PROJECTIONS, ResourceFanoutIndex, RotationOutcome};
 
 impl ResourceFanoutIndex {
     /// Projects the owner-qualified durable replacement, installs the new
@@ -28,7 +28,14 @@ impl ResourceFanoutIndex {
         resolver: &dyn CredentialSlotResolver,
         mgr: &crate::Manager,
     ) -> RotationOutcome {
+        use futures::StreamExt;
+
         let dispatches = self.affected(&cid).into_iter().map(|binding| async move {
+            let Ok(_projection_permit) = self.projection_admission.acquire().await else {
+                return RowOutcome::Failed {
+                    drain_timed_out: false,
+                };
+            };
             // Pin the registration before credential I/O. A replacement row
             // with identical routing keys must never receive this result.
             let managed = match mgr.lookup_any_for_slot_identity_structural(
@@ -43,12 +50,28 @@ impl ResourceFanoutIndex {
                     };
                 },
             };
-            let Some((generation, _)) = managed.credential_slot_projection(&binding.slot_name)
+            if managed.is_tainted() {
+                return RowOutcome::Failed {
+                    drain_timed_out: false,
+                };
+            }
+            let Some((generation, metadata)) =
+                managed.credential_slot_projection(&binding.slot_name)
             else {
                 return RowOutcome::Failed {
                     drain_timed_out: false,
                 };
             };
+            let projection_is_current = metadata.as_ref().is_some_and(|metadata| {
+                metadata.credential_id() == cid
+                    && metadata.credential_key() == credential_key
+                    && metadata.scope().map(TenantScope::owner_id) == Some(scope.owner_id())
+            });
+            if !(projection_is_current || generation == 0 && metadata.is_none()) {
+                return RowOutcome::Failed {
+                    drain_timed_out: false,
+                };
+            }
             project_and_refresh(
                 mgr,
                 managed,
@@ -60,7 +83,11 @@ impl ResourceFanoutIndex {
             )
             .await
         });
-        summarize_row_outcomes(futures::future::join_all(dispatches).await)
+        let outcomes = futures::stream::iter(dispatches)
+            .buffer_unordered(MAX_CONCURRENT_PROJECTIONS)
+            .collect::<Vec<_>>()
+            .await;
+        summarize_row_outcomes(outcomes)
     }
 
     /// Reconcile live projections against credential-owned durable state.
@@ -86,6 +113,12 @@ impl ResourceFanoutIndex {
                 let managed = std::sync::Arc::clone(&managed);
                 projections.push(
                     async move {
+                        let Ok(_projection_permit) = self.projection_admission.acquire().await
+                        else {
+                            return RowOutcome::Failed {
+                                drain_timed_out: false,
+                            };
+                        };
                         let Some(scope) = metadata.scope() else {
                             return RowOutcome::Failed {
                                 drain_timed_out: false,
@@ -107,7 +140,7 @@ impl ResourceFanoutIndex {
             }
         }
         let outcomes = futures::stream::iter(projections)
-            .buffer_unordered(32)
+            .buffer_unordered(MAX_CONCURRENT_PROJECTIONS)
             .collect::<Vec<_>>()
             .await;
         summarize_row_outcomes(outcomes)

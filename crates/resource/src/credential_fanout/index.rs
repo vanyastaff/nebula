@@ -185,6 +185,9 @@ struct BindRef {
 /// families spill to the heap transparently.
 type BindRows = SmallVec<[BindRef; 2]>;
 
+/// Maximum credential projections admitted across concurrent fan-out calls.
+pub(super) const MAX_CONCURRENT_PROJECTIONS: usize = 32;
+
 /// Reverse index from a rotated `CredentialId` to the resource registry
 /// rows that resolved it.
 ///
@@ -195,7 +198,7 @@ type BindRows = SmallVec<[BindRef; 2]>;
 ///
 /// This is a pure in-process routing table — see the module docs for why it
 /// is never persisted or sent across a trust boundary.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct ResourceFanoutIndex {
     /// `CredentialId` -> refcounted rows whose resolved slot bound that
     /// credential. See [`BindRows`] for the inline-buffer rationale.
@@ -209,6 +212,18 @@ pub struct ResourceFanoutIndex {
     /// on a single shard lock). Rotation fan-out — the hot read — is already
     /// a single-key lookup.
     by_credential: DashMap<CredentialId, BindRows>,
+    /// Shared admission keeps direct dispatch and reconciliation under one
+    /// provider/persistence concurrency budget.
+    pub(super) projection_admission: tokio::sync::Semaphore,
+}
+
+impl Default for ResourceFanoutIndex {
+    fn default() -> Self {
+        Self {
+            by_credential: DashMap::new(),
+            projection_admission: tokio::sync::Semaphore::new(MAX_CONCURRENT_PROJECTIONS),
+        }
+    }
 }
 
 impl ResourceFanoutIndex {

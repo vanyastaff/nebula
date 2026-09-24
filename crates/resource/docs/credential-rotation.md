@@ -14,11 +14,13 @@ credential state and its owning runtime remain authoritative.
 
 ## Material replacement recovery
 
-With `spawn_with_resolver`, `MaterialReplaced` and `Refreshed` are wake hints for an
-owner-qualified durable projection. The driver also reconciles live slot metadata
-on startup and every 30 seconds, with at most 32 concurrent projections. This
-recovers replacement observations lost before subscription, during subscriber lag,
-or across driver restart. Ordinary refresh hints request the same background scan;
+With `spawn_with_resolver`, `MaterialReplaced` queues an owner-qualified durable
+projection outside the event receive loop, while `Refreshed` requests a coalesced
+durable scan. The driver also reconciles live slot metadata on startup and every 30
+seconds. Direct material dispatch and reconciliation share one limit of 32 concurrent
+projections. Together, these paths recover replacement observations lost before
+subscription, during subscriber lag, or across driver restart. Ordinary refresh hints
+request the same background scan;
 at most one scan runs and one further wake remains pending. Slow projections do
 not block credential or lease revoke reception.
 

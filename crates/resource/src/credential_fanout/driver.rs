@@ -57,11 +57,14 @@
 //! fan-out internals already guarantee no credential/secret material reaches
 //! any span; this driver adds only key-free counts.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use nebula_credential::{CredentialEvent, CredentialId, CredentialSlotResolver, LeaseEvent};
+use nebula_core::CredentialKey;
+use nebula_credential::{
+    CredentialEvent, CredentialId, CredentialSlotResolver, LeaseEvent, TenantScope,
+};
 use nebula_eventbus::EventBus;
 
 use crate::Manager;
@@ -196,6 +199,11 @@ impl RevokeDedupe {
 /// the fan-out), not a global one.
 const PER_RESOURCE_ROTATION_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Maximum distinct credential replacements retained while one material
+/// projection fan-out is running. Repeated observations for one credential
+/// replace its pending hint, and overflow falls back to durable reconciliation.
+const MAX_PENDING_MATERIAL_REPLACEMENTS: usize = 256;
+
 /// Handle for the background fan-out driver task.
 ///
 /// Holding the handle keeps the task alive; dropping it (or calling
@@ -256,6 +264,8 @@ impl ResourceFanoutDriver {
             let mut reconciliation = tokio::time::interval(Duration::from_secs(30));
             reconciliation.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             let mut scans = tokio::task::JoinSet::new();
+            let mut material_dispatches = tokio::task::JoinSet::new();
+            let mut pending_material = HashMap::<CredentialId, (TenantScope, CredentialKey)>::new();
             let mut scan_requested = false;
             loop {
                 // `tokio::select!` over both subscribers so a refresh and
@@ -271,6 +281,23 @@ impl ResourceFanoutDriver {
                     ev = credential_sub.recv() => match ev {
                         Some(CredentialEvent::Refreshed { .. }) if resolver.is_some() => {
                             scan_requested = true;
+                        },
+                        Some(CredentialEvent::MaterialReplaced {
+                            credential_id,
+                            scope,
+                            credential_key,
+                        }) if resolver.is_some() => {
+                            if pending_material.contains_key(&credential_id)
+                                || pending_material.len() < MAX_PENDING_MATERIAL_REPLACEMENTS
+                            {
+                                pending_material.insert(credential_id, (scope, credential_key));
+                            } else {
+                                scan_requested = true;
+                                tracing::warn!(
+                                    credential_id = %credential_id,
+                                    "material replacement queue full; durable reconciliation requested"
+                                );
+                            }
                         },
                         Some(ev) => Self::on_credential_event(
                             &index, &manager, resolver.as_deref(), &mut revoke_dedupe, ev,
@@ -302,6 +329,33 @@ impl ResourceFanoutDriver {
                             scans.spawn(async move { index.reconcile_material(&manager, resolver.as_ref(), None).await });
                         }
                     },
+                    () = std::future::ready(()), if !pending_material.is_empty() && material_dispatches.is_empty() => {
+                        if let Some(credential_id) = pending_material.keys().next().copied() {
+                            let Some((scope, credential_key)) = pending_material.remove(&credential_id) else {
+                                continue;
+                            };
+                            if let Some(resolver) = resolver.as_ref() {
+                                let index = Arc::clone(&index);
+                                let manager = Arc::clone(&manager);
+                                let resolver = Arc::clone(resolver);
+                                // One background material fan-out at a time keeps the
+                                // per-row projection limit global to this driver while
+                                // the receive loop remains free to admit revokes.
+                                material_dispatches.spawn(async move {
+                                    let outcome = index
+                                        .dispatch_material_replacement(
+                                            credential_id,
+                                            &scope,
+                                            &credential_key,
+                                            resolver.as_ref(),
+                                            &manager,
+                                        )
+                                        .await;
+                                    (credential_id, outcome)
+                                });
+                            }
+                        }
+                    },
                     result = scans.join_next(), if !scans.is_empty() => {
                         match result {
                             Some(Ok(outcome)) if outcome.failed + outcome.timed_out + outcome.abandoned == 0 => {
@@ -309,6 +363,15 @@ impl ResourceFanoutDriver {
                             },
                             Some(Ok(outcome)) => tracing::warn!(?outcome, "credential projection reconciliation incomplete"),
                             Some(Err(_)) => tracing::warn!("credential projection reconciliation task failed"),
+                            None => {},
+                        }
+                    },
+                    result = material_dispatches.join_next(), if !material_dispatches.is_empty() => {
+                        match result {
+                            Some(Ok((credential_id, outcome))) => {
+                                Self::record(credential_id, "material_replacement", outcome);
+                            },
+                            Some(Err(_)) => tracing::warn!("material replacement fan-out task failed"),
                             None => {},
                         }
                     },
