@@ -161,6 +161,22 @@ pub struct ActiveResourceRow {
     pub activated: ActivatedResource,
 }
 
+/// What a [`StoredResourceActivator`] knows about one tracked row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum RowState {
+    /// Registered and idle.
+    Active(ActiveResourceRow),
+    /// An activation holds the row right now: its state is unknown until
+    /// that finishes, and a registration it already had may still serve.
+    Busy {
+        /// Tenant the row belongs to.
+        scope: Scope,
+        /// The stored row.
+        resource_id: ResourceId,
+    },
+}
+
 #[derive(Debug, Clone)]
 struct ActiveRow {
     version: u64,
@@ -278,18 +294,36 @@ impl StoredResourceActivator {
     /// for: this is a status snapshot, and the next one picks it up.
     #[must_use]
     pub fn active_rows(&self) -> Vec<ActiveResourceRow> {
+        self.row_states()
+            .into_iter()
+            .filter_map(|state| match state {
+                RowState::Active(row) => Some(row),
+                RowState::Busy { .. } => None,
+            })
+            .collect()
+    }
+
+    /// Every tracked row: active, or busy (an activation holds it right now,
+    /// so its previous registration, if any, may still be serving).
+    #[must_use]
+    pub fn row_states(&self) -> Vec<RowState> {
         self.rows
             .iter()
             .filter_map(|entry| {
                 let (scope, resource_id) = entry.key();
-                let guard = entry.value().try_lock().ok()?;
+                let Ok(guard) = entry.value().try_lock() else {
+                    return Some(RowState::Busy {
+                        scope: scope.clone(),
+                        resource_id: *resource_id,
+                    });
+                };
                 let active = guard.as_ref()?;
-                Some(ActiveResourceRow {
+                Some(RowState::Active(ActiveResourceRow {
                     scope: scope.clone(),
                     resource_id: *resource_id,
                     version: active.version,
                     activated: active.activated.clone(),
-                })
+                }))
             })
             .collect()
     }
@@ -335,6 +369,54 @@ impl StoredResourceActivator {
             () = cancel.cancelled() => Err(StoredResourceActivationError::Cancelled),
             outcome = tokio::time::timeout(self.timeout, work) => outcome
                 .unwrap_or(Err(StoredResourceActivationError::TimedOut(self.timeout))),
+        }
+    }
+
+    /// Retires every active row whose stored definition was deleted.
+    ///
+    /// Rows an activation holds right now are skipped (that activation sees
+    /// the deletion itself); a storage read that fails leaves the row as it
+    /// is until the next sweep.
+    pub async fn retire_deleted(&self, context: &ActivationContext<'_>) {
+        let keys: Vec<(Scope, ResourceId)> =
+            self.rows.iter().map(|entry| entry.key().clone()).collect();
+        for (scope, resource_id) in keys {
+            let Some(slot) = self
+                .rows
+                .get(&(scope.clone(), resource_id))
+                .map(|entry| Arc::clone(entry.value()))
+            else {
+                continue;
+            };
+            let Ok(mut active) = slot.try_lock() else {
+                continue;
+            };
+            if active.is_none() {
+                continue;
+            }
+            let row = match self.store.get(&scope, &resource_id.to_string()).await {
+                Ok(row) => row,
+                Err(error) => {
+                    tracing::debug!(
+                        target: "nebula_engine::resource_activation",
+                        %resource_id,
+                        %error,
+                        "stored resource could not be re-read; kept until the next sweep"
+                    );
+                    continue;
+                },
+            };
+            if row.is_some_and(|row| row.deleted_at.is_none()) {
+                continue;
+            }
+            if let Some(stale) = active.take() {
+                retire(context, &stale.activated);
+                tracing::debug!(
+                    target: "nebula_engine::resource_activation",
+                    %resource_id,
+                    "deleted stored resource retired"
+                );
+            }
         }
     }
 

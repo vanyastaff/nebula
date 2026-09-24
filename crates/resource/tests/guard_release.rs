@@ -975,6 +975,7 @@ async fn warmup_isolates_a_panicking_author_create() {
         max_size: 4,
         idle_timeout: None,
         max_lifetime: None,
+        warmup: nebula_resource::topology::pooled::config::WarmupStrategy::Sequential,
         ..Default::default()
     };
     let pool_rt = Pooled::<PanickingCreatePoolResource>::new(pool_config, 1);
@@ -989,6 +990,57 @@ async fn warmup_isolates_a_panicking_author_create() {
         err.to_string().contains("panicked"),
         "warmup_pool must surface the isolated-panic message, got: {err}"
     );
+}
+
+/// Warmup follows the pool's configured strategy: nothing for `None`,
+/// `min_size` creates for the others, and `Staggered` spaces them by its
+/// interval.
+#[tokio::test(start_paused = true)]
+async fn warmup_follows_the_configured_strategy() {
+    use nebula_resource::topology::pooled::config::{Config, WarmupStrategy};
+
+    let second = std::time::Duration::from_secs(1);
+    for (strategy, created, least_elapsed) in [
+        (WarmupStrategy::None, 0, std::time::Duration::ZERO),
+        (WarmupStrategy::Sequential, 3, std::time::Duration::ZERO),
+        (WarmupStrategy::Parallel, 3, std::time::Duration::ZERO),
+        (
+            WarmupStrategy::Staggered { interval: second },
+            3,
+            second * 2,
+        ),
+    ] {
+        let manager = Manager::new();
+        let resource = PoolTestResource::new();
+        let pool = Pooled::<PoolTestResource>::new(
+            Config {
+                min_size: 3,
+                max_size: 4,
+                idle_timeout: None,
+                max_lifetime: None,
+                warmup: strategy,
+                ..Default::default()
+            },
+            1,
+        );
+        register_pool(&manager, resource.clone(), test_config(), pool);
+        let started = tokio::time::Instant::now();
+        let warmed = manager
+            .warmup_pool::<PoolTestResource>(&test_ctx())
+            .await
+            .expect("warmup succeeds");
+        assert_eq!(warmed, created, "{strategy:?}");
+        assert_eq!(
+            resource.create_counter.load(Ordering::SeqCst),
+            created as u64,
+            "{strategy:?}"
+        );
+        assert!(
+            started.elapsed() >= least_elapsed,
+            "{strategy:?} took {:?}",
+            started.elapsed()
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -9,9 +9,19 @@
 //! entrusted to the adapter, not global registry or tenant authority, and Rust
 //! cannot prevent a trusted adapter from hiding aliases of a retained lease.
 //!
+//! Rate limits are declared by overriding [`Provider::resilience`] with a
+//! [`ResiliencePolicy`]; the client built in `create` is wrapped once with
+//! [`ResourceContext::limits`] and [`ResourceLimiter::wrap`], and a
+//! [`Throttle`] tells the provider's "slow down" apart from other outcomes.
+//!
 //! Runtime registration, dispatch, and cleanup queues remain engine-owned.
 
 pub use nebula_core::{ResourceKey, resource_key};
+pub use nebula_resource::rate_limit::{
+    DEFAULT_MAX_PENALTY, LimitScope, Limited, LimitedError, NoThrottle, OnError, Override, Rate,
+    RateLimitSettings, ResiliencePolicy, ResourceLimiter, Throttle, Verdict, on_error,
+    retry_after_from_header,
+};
 pub use nebula_resource::topology::{
     AdmissionPhase, BrokenCheck, CreatedEntry, HookFault, IdleRead, InstanceMetrics, Load,
     MaintenanceSchedule, NoTopology, PoolStrategy, RecycleDecision, ReplaceStatus, RetainStatus,

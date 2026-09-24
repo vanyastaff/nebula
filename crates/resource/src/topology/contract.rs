@@ -651,6 +651,16 @@ pub trait Topology<R: Provider>: Send + Sync + 'static {
         0
     }
 
+    /// How the framework creates the [`warmup_target`](Topology::warmup_target)
+    /// entries: not at all, one at a time, concurrently, or one at a time with
+    /// a delay between creates. Default
+    /// [`Sequential`](crate::topology::pooled::config::WarmupStrategy::Sequential).
+    /// It governs the eager warmup only; the maintenance refill that keeps
+    /// the idle floor is the floor itself and runs regardless.
+    fn warmup_strategy(&self) -> crate::topology::pooled::config::WarmupStrategy {
+        crate::topology::pooled::config::WarmupStrategy::Sequential
+    }
+
     /// Predicate for the framework maintenance reaper: should this idle entry be
     /// evicted now (Pooled: stale-fingerprint / max-lifetime / idle-timeout)?
     ///

@@ -3581,6 +3581,7 @@ dependencies = [
  "async-trait",
  "codspeed-criterion-compat",
  "dashmap",
+ "fastrand",
  "futures",
  "httpdate",
  "indexmap",

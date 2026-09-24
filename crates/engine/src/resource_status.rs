@@ -222,6 +222,18 @@ impl fmt::Debug for ResourceStatusPublisher {
 
 pub(crate) type PublishedKey = (Scope, String);
 
+/// This worker's stored-resource status at one instant, for
+/// [`ResourceStatusPublisher`].
+#[derive(Debug, Default)]
+#[non_exhaustive]
+pub struct ResourceStatusView {
+    /// Rows registered here, with their current status.
+    pub live: Vec<(Scope, ResourceStatusSnapshot)>,
+    /// Rows an activation holds right now. Their last published status
+    /// stays: the registration they had may still be serving.
+    pub busy: Vec<PublishedKey>,
+}
+
 impl ResourceStatusPublisher {
     /// Publishes as `worker` into `store` every
     /// [`DEFAULT_STATUS_PUBLISH_INTERVAL`].
@@ -290,9 +302,13 @@ impl ResourceStatusPublisher {
             );
             return;
         }
-        let current = engine.resource_status_snapshot();
-        let mut seen = HashSet::with_capacity(current.len());
-        for (scope, snapshot) in current {
+        // Deleted rows go first, so this tick already withdraws their status.
+        engine.retire_deleted_resources().await;
+        let view = engine.resource_status_snapshot();
+        let mut seen: HashSet<PublishedKey> =
+            HashSet::with_capacity(view.live.len() + view.busy.len());
+        seen.extend(view.busy);
+        for (scope, snapshot) in view.live {
             let key = (scope, snapshot.resource_id.clone());
             seen.insert(key.clone());
             if published.get(&key) == Some(&snapshot) {

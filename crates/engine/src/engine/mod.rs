@@ -1259,35 +1259,63 @@ impl WorkflowEngine {
     /// Reads only in-memory state (activator rows and the exact manager row
     /// each resolved to); a row whose registry row is gone is left out.
     #[must_use]
-    pub fn resource_status_snapshot(
-        &self,
-    ) -> Vec<(Scope, nebula_storage_port::dto::ResourceStatusSnapshot)> {
+    pub fn resource_status_snapshot(&self) -> crate::resource_status::ResourceStatusView {
+        let mut view = crate::resource_status::ResourceStatusView::default();
         let (Some(activator), Some(manager)) = (&self.stored_resources, &self.resource_manager)
         else {
-            return Vec::new();
+            return view;
         };
-        activator
-            .active_rows()
-            .into_iter()
-            .filter_map(|row| {
-                let view = manager.get_row(
-                    &row.activated.resource_key,
-                    &row.activated.scope,
-                    &row.activated.slot_identity,
-                )?;
-                let (phase, healthy, accepting) = crate::resource_status::project(view.phase());
-                Some((
-                    row.scope,
-                    nebula_storage_port::dto::ResourceStatusSnapshot {
-                        resource_id: row.resource_id.to_string(),
-                        phase,
-                        healthy,
-                        accepting,
-                        row_version: row.version,
-                    },
-                ))
-            })
-            .collect()
+        for state in activator.row_states() {
+            let row = match state {
+                crate::resource::RowState::Active(row) => row,
+                crate::resource::RowState::Busy { scope, resource_id } => {
+                    view.busy.push((scope, resource_id.to_string()));
+                    continue;
+                },
+            };
+            let Some(registry_row) = manager.get_row(
+                &row.activated.resource_key,
+                &row.activated.scope,
+                &row.activated.slot_identity,
+            ) else {
+                continue;
+            };
+            let (phase, healthy, accepting) = crate::resource_status::project(registry_row.phase());
+            view.live.push((
+                row.scope,
+                nebula_storage_port::dto::ResourceStatusSnapshot {
+                    resource_id: row.resource_id.to_string(),
+                    phase,
+                    healthy,
+                    accepting,
+                    row_version: row.version,
+                },
+            ));
+        }
+        view
+    }
+
+    /// Retires activated stored rows whose definition was deleted since.
+    ///
+    /// Activation retires a deleted row only when an execution names it
+    /// again, which after a deletion usually never happens; without this
+    /// sweep the row's runtime, connections and credential bindings would
+    /// live until the process ends. The worker runs it on its status tick.
+    /// A row an activation holds right now is left to that activation.
+    pub async fn retire_deleted_resources(&self) {
+        let (Some(activator), Some(manager)) = (&self.stored_resources, &self.resource_manager)
+        else {
+            return;
+        };
+        let context = crate::resource::ActivationContext {
+            registrars: &self.resource_registrars,
+            manager,
+            credentials: self.credential_resolver.as_deref(),
+            expr_engine: &self.resource_expr_engine,
+            #[cfg(feature = "rotation")]
+            fanout: Some(&self.resource_fanout_index),
+        };
+        activator.retire_deleted(&context).await;
     }
 
     /// Activate stored resources from a store for durable executions.

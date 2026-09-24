@@ -23,6 +23,7 @@ const FIXTURE_FILES: &[&str] = &[
     "Cargo.toml",
     "src/bin/positive.rs",
     "src/bin/resource_topology.rs",
+    "src/bin/resource_rate_limit.rs",
     "src/bin/removed_resource_from_key.rs",
     "src/bin/removed_checkpoint_policy_action.rs",
     "src/bin/removed_checkpoint_policy_prelude.rs",
@@ -286,7 +287,7 @@ fn sdk_only_consumer_cannot_name_authority_or_raw_persistence() {
         render_output(&arity)
     );
 
-    for binary in ["positive", "resource_topology"] {
+    for binary in ["positive", "resource_topology", "resource_rate_limit"] {
         let output = cargo_probe(temp.path(), "clippy", binary);
         assert!(
             output.status.success(),
@@ -306,6 +307,12 @@ fn sdk_only_consumer_cannot_name_authority_or_raw_persistence() {
         topology.status.success(),
         "custom topology authoring witness must compile and execute:\n{}",
         render_output(&topology)
+    );
+    let rate_limit = cargo_probe(temp.path(), "run", "resource_rate_limit");
+    assert!(
+        rate_limit.status.success(),
+        "rate-limit authoring through the SDK alone must compile and execute:\n{}",
+        render_output(&rate_limit)
     );
 }
 

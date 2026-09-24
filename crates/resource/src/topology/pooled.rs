@@ -155,13 +155,16 @@ pub mod config {
     pub use crate::topology::store::PoolStrategy;
 
     /// Strategy for pre-warming the pool at startup.
+    ///
+    /// Governs the eager warmup only; the maintenance refill that keeps the
+    /// `min_size` idle floor runs regardless.
     #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
     #[non_exhaustive]
     pub enum WarmupStrategy {
         /// No warmup — instances created on demand.
-        #[default]
         None,
-        /// Create `min_size` instances one at a time.
+        /// Create `min_size` instances one at a time (the default).
+        #[default]
         Sequential,
         /// Create `min_size` instances concurrently.
         Parallel,

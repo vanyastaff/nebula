@@ -546,6 +546,10 @@ where
         self.config.min_size as usize
     }
 
+    fn warmup_strategy(&self) -> crate::topology::pooled::config::WarmupStrategy {
+        self.config.warmup
+    }
+
     fn idle_evictable(&self, entry: &PoolEntry<R>) -> bool {
         self.should_evict_nonrevoke(entry)
     }

@@ -337,7 +337,20 @@ impl MemoryLimitStore {
             entry.pending.clear();
             return result;
         }
-        let entry = keys.entries.entry(key.clone()).or_default();
+        // A key may have been served by the overflow limit while the store
+        // was full; given its own entry while that limit is still busy, it
+        // starts from the overflow schedule rather than a fresh one, so the
+        // move never hands it a slot it already spent. A key that never
+        // overflowed inherits the same, which only errs on the strict side.
+        let inherited = (is_new && !keys.overflow.is_idle(now)).then(|| Entry {
+            state: keys.overflow.state,
+            rate: keys.overflow.rate,
+            pending: HashMap::new(),
+        });
+        let entry = keys
+            .entries
+            .entry(key.clone())
+            .or_insert_with(|| inherited.unwrap_or_default());
         entry.pending.retain(|_, grant| grant.allow_at > now);
         let result = apply(entry, now);
         if entry.is_idle(now) {

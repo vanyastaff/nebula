@@ -558,18 +558,64 @@ where
     }
 
     /// Pre-warms the store by creating + depositing `warmup_target` entries
-    /// (fenced) at registration. Returns the number admitted.
+    /// (fenced) at registration, as the topology's
+    /// [`warmup_strategy`](Topology::warmup_strategy) says: not at all, one
+    /// at a time, concurrently, or one at a time with a delay between
+    /// creates. Returns the number admitted.
     ///
     /// # Cancel safety
     ///
-    /// See [`create_and_deposit_entries`](Self::create_and_deposit_entries).
+    /// See [`create_and_deposit_entries`](Self::create_and_deposit_entries);
+    /// every concurrent create is its own cancel-safe create→deposit step.
     pub(crate) async fn warmup(self: &Arc<Self>, ctx: &ResourceContext) -> usize {
+        use crate::topology::pooled::config::WarmupStrategy;
+
         let config = self.config();
         let target = self.topology.warmup_target(&config);
         if target == 0 {
             return 0;
         }
-        let created = self.create_and_deposit_entries(ctx, target).await;
+        let created = match self.topology.warmup_strategy() {
+            WarmupStrategy::None => return 0,
+            WarmupStrategy::Sequential => self.create_and_deposit_entries(ctx, target).await,
+            WarmupStrategy::Parallel => {
+                let creates = (0..target).map(|_| self.create_and_deposit_one(ctx, &config));
+                let outcomes = futures::future::join_all(creates).await;
+                for error in outcomes.iter().filter_map(|outcome| outcome.as_ref().err()) {
+                    tracing::warn!(
+                        key = %R::key(),
+                        error.kind = ?error.kind(),
+                        "parallel warmup: create_entry failed"
+                    );
+                }
+                outcomes
+                    .iter()
+                    .filter(|outcome| matches!(outcome, Ok(true)))
+                    .count()
+            },
+            WarmupStrategy::Staggered { interval } => {
+                let mut created = 0usize;
+                for attempt in 0..target {
+                    if attempt > 0 {
+                        tokio::time::sleep(interval).await;
+                    }
+                    match self.create_and_deposit_one(ctx, &config).await {
+                        Ok(true) => created += 1,
+                        Ok(false) => {},
+                        Err(error) => {
+                            tracing::warn!(
+                                key = %R::key(),
+                                error.kind = ?error.kind(),
+                                created,
+                                "staggered warmup: create_entry failed, stopping early"
+                            );
+                            break;
+                        },
+                    }
+                }
+                created
+            },
+        };
         if created > 0 {
             tracing::info!(key = %R::key(), created, target, "resource warmup complete");
         }

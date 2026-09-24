@@ -422,11 +422,39 @@ async fn a_full_memory_store_shares_one_stricter_limit_for_new_keys() {
         second.allow_at > first.allow_at,
         "the second books its own slot"
     );
-    // Once keys go idle, new keys get their own entries again.
-    tokio::time::advance(Duration::from_hours(2)).await;
+    // Once the keys and the overflow limit (c, g and h: three hourly slots)
+    // go idle, new keys get their own fresh entries again.
+    tokio::time::advance(Duration::from_hours(4)).await;
     assert!(reserve("e").await.is_ok());
     assert!(reserve("f").await.is_ok());
     assert_eq!(store.overflowed(), 4, "only c, d, g and h overflowed");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_key_leaving_the_overflow_keeps_its_schedule() {
+    let store = MemoryLimitStore::with_max_keys(1);
+    let fast = rate(1_000_000, 1); // 1 ms
+    let slow = rate(1_000_000_000, 1); // 1 s
+    let reserve = |name: &str, rate: Rate| {
+        let key = LimitKey::new(name).unwrap();
+        let store = &store;
+        async move {
+            store
+                .reserve(&key, &rate, ReserveRequest::new(1, Duration::ZERO))
+                .await
+                .unwrap()
+        }
+    };
+    assert!(reserve("resident", fast).await.is_ok());
+    // The store is full: "late" is served by the overflow limit.
+    assert!(reserve("late", slow).await.is_ok());
+    // The resident key goes idle; "late" now gets its own entry, and must
+    // not be granted again before its one-second slot.
+    tokio::time::advance(Duration::from_millis(10)).await;
+    assert!(
+        reserve("late", slow).await.is_err(),
+        "leaving the overflow must not reset the schedule"
+    );
 }
 
 #[test]

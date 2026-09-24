@@ -54,6 +54,8 @@ tracing = { workspace = true }
 scopeguard = { workspace = true, optional = true }
 # `Retry-After` given as an HTTP date.
 httpdate = { workspace = true }
+# Jitter for the implicit provider backoff.
+fastrand = "2.4"
 # Per-key rate limits hash the key's value (a chat id, an e-mail address)
 # before it reaches a limit store.
 sha2 = { workspace = true }

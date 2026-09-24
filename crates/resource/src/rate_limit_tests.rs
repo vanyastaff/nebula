@@ -232,19 +232,50 @@ async fn a_throttled_call_pauses_the_quota_for_its_retry_after() {
 async fn unsignalled_throttling_backs_off_exponentially_and_resets() {
     let client = Arc::new(limiter(per_second(100, 1))).wrap((), provider_throttle());
     let throttled = async |(): &()| Err::<(), _>(ProviderError::Throttled);
-    for expected in [1, 2, 4] {
+    // Each step is jittered over its upper half: 0.5–1 s, 1–2 s, 2–4 s.
+    // Waits include one 10 ms emission interval of the 100/s rate.
+    let within = |wait: Duration, step: u64| {
+        let step = Duration::from_secs(step);
+        wait >= step / 2 && wait <= step + Duration::from_millis(10)
+    };
+    for step in [1, 2, 4] {
         let _ = client.run(throttled).await;
-        assert_eq!(
-            wait_for_slot(client.limits()).await,
-            Duration::from_secs(expected)
-        );
+        let wait = wait_for_slot(client.limits()).await;
+        assert!(within(wait, step), "step {step} s waited {wait:?}");
     }
     // Any other outcome, success or not, resets the backoff.
     let _ = client
         .run(async |()| Err::<(), _>(ProviderError::Other))
         .await;
     let _ = client.run(throttled).await;
-    assert_eq!(wait_for_slot(client.limits()).await, Duration::from_secs(1));
+    let wait = wait_for_slot(client.limits()).await;
+    assert!(within(wait, 1), "after a reset waited {wait:?}");
+}
+
+#[tokio::test(start_paused = true)]
+async fn one_keys_refusals_do_not_escalate_another_keys_backoff() {
+    let (limits, _) = chat_limiter(per_second(100, 100));
+    let client = limits.wrap((), |outcome: &Result<(), ProviderError>| match outcome {
+        Err(ProviderError::Throttled) => Verdict::KeyThrottled { retry_after: None },
+        _ => Verdict::Pass,
+    });
+    let refused = async |(): &()| Err::<(), _>(ProviderError::Throttled);
+    // Chat 1 is refused three times; its pauses escalate.
+    for _ in 0..3 {
+        let _ = client.run_for("chat_id", 1, refused).await;
+    }
+    // Chat 2's first refusal starts from the first step, 0.5–1 s.
+    let _ = client.run_for("chat_id", 2, refused).await;
+    let started = Instant::now();
+    client
+        .run_for("chat_id", 2, async |()| Ok::<_, ProviderError>(()))
+        .await
+        .expect("admitted after its own pause");
+    assert!(
+        started.elapsed() <= Duration::from_secs(1) + Duration::from_millis(10),
+        "chat 2 waited {:?}, escalated by chat 1",
+        started.elapsed()
+    );
 }
 
 #[tokio::test(start_paused = true)]

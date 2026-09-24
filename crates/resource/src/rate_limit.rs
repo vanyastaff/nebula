@@ -628,8 +628,21 @@ pub struct ResourceLimiter {
     /// one's wait ends.
     waiters: AtomicUsize,
     store_down: AtomicBool,
+    /// Consecutive refusals of the account quota.
     refusals: AtomicU32,
+    /// Consecutive refusals per key, by key hash.
+    key_refusals: [AtomicU32; KEY_REFUSAL_COUNTERS],
+    /// Per-key pauses this process recorded, for callers already sleeping
+    /// on a key when its pause arrives.
+    key_pauses: Mutex<std::collections::HashMap<LimitKey, tokio::time::Instant>>,
 }
+
+/// Counters the per-key refusal counts spread over.
+const KEY_REFUSAL_COUNTERS: usize = 64;
+
+/// Bound on per-key pauses remembered locally; a pause past it still holds
+/// for new bookings through the store.
+const MAX_LOCAL_KEY_PAUSES: usize = 4_096;
 
 /// Counts one waiting caller for as long as it lives, including when the
 /// wait is cancelled.
@@ -708,6 +721,8 @@ impl ResourceLimiter {
             waiters: AtomicUsize::new(0),
             store_down: AtomicBool::new(false),
             refusals: AtomicU32::new(0),
+            key_refusals: std::array::from_fn(|_| AtomicU32::new(0)),
+            key_pauses: Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -752,7 +767,7 @@ impl ResourceLimiter {
     /// on sending less, never more.
     pub async fn ready(&self, deadline: Option<std::time::Instant>) -> Result<(), Error> {
         let wait = self.account_slot(deadline).await?;
-        self.wait_out(wait, deadline).await
+        self.wait_out(wait, None, deadline).await
     }
 
     /// Waits for one permit of the per-key limit `dimension` for `value` —
@@ -779,7 +794,10 @@ impl ResourceLimiter {
             .map_err(|error| self.tagged(error))?;
         let key_slot = self.book(&keyed.store, &key, &rate, deadline).await?;
         match self.account_slot(deadline).await {
-            Ok(wait) => self.wait_out(wait.max(key_slot.wait), deadline).await,
+            Ok(wait) => {
+                self.wait_out(wait.max(key_slot.wait), Some(&key), deadline)
+                    .await
+            },
             Err(error) => {
                 // The key's slot goes back while it is still the last one
                 // booked; otherwise it lapses unused, which errs on sending
@@ -815,14 +833,23 @@ impl ResourceLimiter {
         Ok(wait)
     }
 
-    /// Waits out `wait`, then any pause recorded meanwhile: a caller that
-    /// booked before a provider's "slow down" must not wake into it.
+    /// Waits out `wait`, then any pause recorded meanwhile for the account
+    /// or for `key`: a caller that booked before a provider's "slow down"
+    /// must not wake into it.
+    ///
+    /// Pauses are seen here as this process recorded them; a pause recorded
+    /// by another worker holds for new bookings through the shared store.
     async fn wait_out(
         &self,
         wait: Duration,
+        key: Option<&LimitKey>,
         deadline: Option<std::time::Instant>,
     ) -> Result<(), Error> {
-        if wait.is_zero() && self.pause_remaining().is_zero() {
+        let pause_now = || {
+            let key_pause = key.map_or(Duration::ZERO, |key| self.key_pause_remaining(key));
+            self.pause_remaining().max(key_pause)
+        };
+        if wait.is_zero() && pause_now().is_zero() {
             if self.waiters.load(Ordering::Acquire) == 0 {
                 self.clear();
             }
@@ -831,7 +858,7 @@ impl ResourceLimiter {
         let _waiting = Waiting::start(self);
         tokio::time::sleep(wait).await;
         loop {
-            let pause = self.pause_remaining();
+            let pause = pause_now();
             if pause.is_zero() {
                 return Ok(());
             }
@@ -974,6 +1001,7 @@ impl ResourceLimiter {
             .penalize_boxed(&key, &rate, retry_after, self.max_penalty)
             .await
             .map_err(|error| self.store_unavailable(&error))?;
+        self.pause_key(&key, retry_after.min(self.max_penalty));
         self.emit(|key| ResourceEvent::RateLimitPenalized {
             key,
             retry_after: retry_after.min(self.max_penalty),
@@ -989,17 +1017,28 @@ impl ResourceLimiter {
     /// consecutive refusals, from one second up to the cap. A failure to
     /// record the pause is logged; it never masks the call's own outcome.
     async fn report(&self, verdict: Verdict, key: Option<(&str, &str)>) {
+        // Consecutive refusals are counted per quota: the account's, and each
+        // key's apart, so one chat's refusals never lengthen another's pause.
+        let key_counter = key.map(|(dimension, value)| self.key_refusals(dimension, value));
         let (retry_after, on_key) = match verdict {
             Verdict::Pass => {
                 self.refusals.store(0, Ordering::Relaxed);
+                if let Some(counter) = key_counter {
+                    counter.store(0, Ordering::Relaxed);
+                }
                 return;
             },
             Verdict::Throttled { retry_after } => (retry_after, false),
             Verdict::KeyThrottled { retry_after } => (retry_after, true),
         };
-        let refusals = self.refusals.fetch_add(1, Ordering::Relaxed);
+        let penalized_key = key.filter(|_| on_key);
+        let counter = match (penalized_key, key_counter) {
+            (Some(_), Some(counter)) => counter,
+            _ => &self.refusals,
+        };
+        let refusals = counter.fetch_add(1, Ordering::Relaxed);
         let block = retry_after.unwrap_or_else(|| backoff(refusals));
-        let recorded = match key.filter(|_| on_key) {
+        let recorded = match penalized_key {
             Some((dimension, value)) => self.penalize_for(dimension, value, block).await,
             None => self.penalize(block).await,
         };
@@ -1010,6 +1049,45 @@ impl ResourceLimiter {
                 "could not record a provider refusal"
             );
         }
+    }
+
+    /// The refusal counter of one key: a fixed set of counters indexed by the
+    /// key's hash, so tracking keys costs no memory growth. Two keys sharing
+    /// a counter only share backoff escalation, never a pause.
+    fn key_refusals(&self, dimension: &str, value: &str) -> &AtomicU32 {
+        use std::hash::{Hash as _, Hasher as _};
+
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        dimension.hash(&mut hasher);
+        value.hash(&mut hasher);
+        let slot = usize::try_from(hasher.finish() % KEY_REFUSAL_COUNTERS as u64).unwrap_or(0);
+        &self.key_refusals[slot]
+    }
+
+    /// Records a key's pause locally, so callers of this limiter already
+    /// sleeping on that key wake no sooner than it ends.
+    fn pause_key(&self, key: &LimitKey, block: Duration) {
+        let now = tokio::time::Instant::now();
+        let until = now + block;
+        let mut pauses = self
+            .key_pauses
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        pauses.retain(|_, until| *until > now);
+        if pauses.len() < MAX_LOCAL_KEY_PAUSES || pauses.contains_key(key) {
+            let entry = pauses.entry(key.clone()).or_insert(until);
+            *entry = (*entry).max(until);
+        }
+    }
+
+    fn key_pause_remaining(&self, key: &LimitKey) -> Duration {
+        let pauses = self
+            .key_pauses
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        pauses.get(key).map_or(Duration::ZERO, |until| {
+            until.saturating_duration_since(tokio::time::Instant::now())
+        })
     }
 
     fn tagged(&self, error: Error) -> Error {
@@ -1306,8 +1384,14 @@ fn max_wait_until(deadline: Option<std::time::Instant>) -> Duration {
 
 /// Block after the `refusals`-th consecutive provider refusal that carried no
 /// `retry_after`: 1 s, 2 s, 4 s, … (the policy cap applies on top).
+///
+/// Jittered over the upper half of each step ("equal jitter"), so workers
+/// and quotas refused at the same moment do not all resume on the same
+/// power-of-two boundary and hit the provider together.
 fn backoff(refusals: u32) -> Duration {
-    Duration::from_secs(1u64 << refusals.min(20))
+    let step = Duration::from_secs(1u64 << refusals.min(20));
+    let half = step / 2;
+    half + half.mul_f64(fastrand::f64())
 }
 
 /// Parses an HTTP `Retry-After` header value: delay seconds or an HTTP date
