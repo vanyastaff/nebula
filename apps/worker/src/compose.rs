@@ -63,6 +63,10 @@ pub enum ComposeError {
     #[error("engine / runtime construction failed: {0}")]
     Engine(#[from] EngineError),
 
+    /// The linked plugins' resource factories cannot form a closed allowlist.
+    #[error("resource wiring failed: {0}")]
+    ResourceWiring(#[from] nebula_engine::ResourceWiringError),
+
     /// The workflow-start owner rejected the deployment execution budget.
     #[error("workflow-start service construction failed: {0}")]
     WorkflowStart(#[from] WorkflowStartBuildError),
@@ -327,7 +331,13 @@ fn build_core_flavor_runtime_impl(
         RESOURCE_FANOUT_POLL_INTERVAL,
         RESOURCE_FANOUT_MAX_CONSECUTIVE_FAILURES,
     )?);
-    let engine = Arc::new(engine.with_plan_flavor_runtime(
+    // The closed kind allowlist stored resource rows are activated through;
+    // the API validates configs through an allowlist built from the same
+    // plugin set, so a kind it accepts is one this engine can register.
+    let resource_registrars = nebula_engine::resource_registrars_from(
+        frozen.all_resources().map(|(_plugin, factory)| factory),
+    )?;
+    let engine = Arc::new(engine.with_resource_registrars(resource_registrars).with_plan_flavor_runtime(
         Arc::new(nebula_engine::PlanFlavorRevisionLoader::new(
             revisions.catalog,
         )),

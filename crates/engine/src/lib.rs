@@ -128,7 +128,8 @@ pub use node_output::NodeOutput;
 pub use recorded_contract::CheckedExecutionContract;
 pub use resource::{
     KindActivator, RegisterRequest, RegistrarError, ResourceActivatorRegistry, ResourceConfigInput,
-    ResourceFactory, ResourceRegistrationOutcome, SlotBinding,
+    ResourceFactory, ResourceRegistrationOutcome, ResourceWiringError, SlotBinding,
+    resource_registrars_from,
 };
 pub use resource_accessor::EngineResourceAccessor;
 pub use resource_fanout::{

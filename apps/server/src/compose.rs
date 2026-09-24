@@ -81,6 +81,9 @@ pub(crate) enum TransportInitError {
     /// Runtime start admission rejected its deployment budget.
     #[error("workflow start admission configuration is invalid")]
     WorkflowStart(#[from] nebula_engine::WorkflowStartBuildError),
+    /// The plugin set's resource factories cannot form a closed allowlist.
+    #[error("resource wiring failed")]
+    ResourceWiring(#[from] nebula_engine::ResourceWiringError),
     /// Webhook transport was not attached to `AppState`.
     #[error(
         "webhook transport is not configured; attach it with AppState::with_webhook_transport before running nebula-webhook"
@@ -670,6 +673,13 @@ pub(crate) fn default_state(
     registry: Arc<nebula_plugin::FrozenPluginRegistry>,
     binding_resolver: Option<Arc<dyn nebula_engine::ExecutionBindingResolver>>,
 ) -> Result<AppState, TransportInitError> {
+    // The same closed kind allowlist the engine activates rows through, so a
+    // config the API accepts is always one the engine can register. Without
+    // it resource create/update fails closed with 422.
+    let resource_registrars = Arc::new(nebula_engine::resource_registrars_from(
+        registry.all_resources().map(|(_plugin, factory)| factory),
+    )?);
+
     // Plane-A identity backend is wired asynchronously by
     // [`build_auth_backend`] inside [`ServerRuntime::run_transport`]
     // so the PG-backed arm can `await` the sqlx pool. The selector
@@ -766,6 +776,7 @@ pub(crate) fn default_state(
     .with_workflow_activation(activation)
     .with_workflow_start(start)
     .with_resource_store(Arc::clone(&resource_store))
+    .with_resource_registrars(resource_registrars)
     .with_api_keys(api_config.api_keys.clone())
     .with_metrics_registry(metrics_registry)
     // Public URL is required for Plane-A OAuth `redirect_uri`
@@ -1090,6 +1101,40 @@ mod tests {
     use std::net::SocketAddr;
 
     use super::{ServerRunError, parse_bind_address, resolve_bind_address};
+
+    /// The production `AppState` must carry the resource allowlist built from
+    /// the plugin set; without it resource create/update answered 422
+    /// "validation is unavailable" on every deployment.
+    #[tokio::test]
+    async fn default_state_wires_the_resource_allowlist_from_the_plugin_set() {
+        let mut api_config = nebula_api::ApiConfig::for_test();
+        api_config.execution = nebula_api::config::ExecutionStoreConfig {
+            backend: nebula_api::config::ExecutionBackendKind::Memory,
+            db_path: String::new(),
+        };
+        let metrics = std::sync::Arc::new(nebula_metrics::MetricsRegistry::new());
+        let stores = super::build_execution_stores(&api_config, None, &metrics)
+            .await
+            .expect("in-memory execution stores");
+        let registry =
+            crate::transport::worker_registry(Ok("71".repeat(32))).expect("linked plugin registry");
+        let expected: Vec<String> = registry
+            .all_resources()
+            .map(|(_plugin, factory)| factory.key().as_str().to_owned())
+            .collect();
+
+        let state = super::default_state(&api_config, metrics, stores, registry, None)
+            .expect("default state composes");
+
+        let registrars = state
+            .resource_registrars
+            .as_ref()
+            .expect("resource config validation is wired");
+        assert_eq!(registrars.len(), expected.len());
+        for kind in &expected {
+            assert!(registrars.contains(kind), "`{kind}` must be registrable");
+        }
+    }
 
     /// Red→green proof that a SIGTERM handler that cannot be registered does
     /// not read as "shutdown requested".
