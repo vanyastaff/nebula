@@ -99,8 +99,11 @@ pub(crate) async fn resolve_slot_with(
                 },
                 _ => CredentialSlotResolveError::InvalidState,
             })?;
-            let StoredCredential::Live(stored) = stored else {
-                return Err(CredentialSlotResolveError::InvalidState);
+            let stored = match stored {
+                StoredCredential::Live(stored) => stored,
+                StoredCredential::Tombstoned(_) => {
+                    return Err(CredentialSlotResolveError::Revoked);
+                },
             };
             if stored.credential_id() != head.credential_id()
                 || stored.credential_key() != head.credential_key()

@@ -1158,11 +1158,11 @@ impl Manager {
             op = "revoke",
         )
     )]
-    pub async fn drain_and_revoke(
+    pub(crate) async fn drain_and_revoke_with_admission(
         &self,
         tainted: TaintedSlot,
         drain_timeout: Duration,
-    ) -> RevokeTail {
+    ) -> (RevokeTail, bool) {
         let TaintedSlot {
             key,
             slot,
@@ -1222,14 +1222,14 @@ impl Manager {
                     kind: error.kind().clone(),
                     message: SecretFreeMessage::new("credential revoke hook admission failed"),
                 });
-                return RevokeTail::HookFailed { error, drain };
+                return (RevokeTail::HookFailed { error, drain }, false);
             },
         };
         let deadline = slot_hook_observation_deadline(drain_timeout);
         let hook_outcome = accepted.wait_until(deadline).await;
         tracing::Span::current().record("duration_ms", tainted_at.elapsed().as_millis() as u64);
 
-        match hook_outcome {
+        let tail = match hook_outcome {
             SlotHookWaitOutcome::Completed => {
                 tracing::debug!("slot revoke hook completed");
                 RevokeTail::Done { drain }
@@ -1259,7 +1259,55 @@ impl Manager {
                 );
                 RevokeTail::HookTimedOut { drain }
             },
-        }
+        };
+        (tail, true)
+    }
+
+    /// Runs the cancellation-safe revoke tail and returns its observable outcome.
+    pub async fn drain_and_revoke(
+        &self,
+        tainted: TaintedSlot,
+        drain_timeout: Duration,
+    ) -> RevokeTail {
+        self.drain_and_revoke_with_admission(tainted, drain_timeout)
+            .await
+            .0
+    }
+
+    #[cfg(feature = "rotation")]
+    pub(crate) async fn retry_tainted_revoke_admission(
+        &self,
+        key: &ResourceKey,
+        slot: &str,
+        managed: Arc<dyn crate::registry::ManagedHandle>,
+        timeout: Duration,
+    ) -> (RevokeTail, Option<bool>) {
+        let tainted = {
+            let _admission = self
+                .admission
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !self.registry.contains_managed(key, &managed)
+                || !managed.is_tainted()
+                || !managed.accepts_credential_slot_name(slot)
+            {
+                return (
+                    RevokeTail::HookFailed {
+                        error: Error::not_found(key),
+                        drain: SlotDrainOutcome::NotRequired,
+                    },
+                    None,
+                );
+            }
+            TaintedSlot {
+                key: key.clone(),
+                slot: slot.to_owned(),
+                managed,
+                tainted_at: Instant::now(),
+            }
+        };
+        let (tail, admitted) = self.drain_and_revoke_with_admission(tainted, timeout).await;
+        (tail, Some(admitted))
     }
 
     /// Notifies a registered resource that one of its `#[credential]` slots

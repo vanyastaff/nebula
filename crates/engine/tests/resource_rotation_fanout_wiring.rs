@@ -1589,6 +1589,7 @@ struct Wired {
     cred_bus: Arc<EventBus<CredentialEvent>>,
     lease_bus: Arc<EventBus<LeaseEvent>>,
     mgr: Arc<Manager>,
+    index: Arc<ResourceFanoutIndex>,
     cid: CredentialId,
     org: OrgId,
     slot_identity: SlotIdentity,
@@ -1667,6 +1668,7 @@ async fn wire(behaviour: Behaviour) -> Wired {
         cred_bus,
         lease_bus,
         mgr,
+        index,
         cid,
         org,
         slot_identity,
@@ -1900,13 +1902,13 @@ async fn rotation_after_resource_removed_fans_to_zero_rows() {
 
     // Remove the resource from the manager.
     w.mgr.remove(&Recording::key()).expect("resource removed");
+    assert!(
+        w.index.affected(&w.cid).is_empty(),
+        "manager removal must synchronously prune the attached reverse index"
+    );
 
-    // Second refresh after removal. The reverse index still holds the
-    // bind (unbind on remove is the registrar/activation path's job,
-    // covered separately), so the fan-out DOES dispatch — but
-    // `refresh_slot_for` now resolves no live row and records `failed`,
-    // NOT a delivered hook. The decisive assertion: the resource hook
-    // is not delivered a second time and the driver does not panic.
+    // Second refresh after removal. The attached reverse index no longer
+    // contains the retired row, so the fan-out is an empty no-op.
     w.cred_bus.emit(CredentialEvent::Refreshed {
         credential_id: w.cid,
     });
@@ -1919,9 +1921,7 @@ async fn rotation_after_resource_removed_fans_to_zero_rows() {
     assert_eq!(
         w.rec.refresh.load(Ordering::SeqCst),
         1,
-        "after the resource was removed, a rotation must NOT deliver its \
-         hook again (fans to a now-dead row, recorded failed — not a \
-         second hook call)"
+        "after the resource was removed, a rotation must not deliver its hook again"
     );
 }
 

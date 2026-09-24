@@ -261,6 +261,8 @@ impl Manager {
         // replacement, the registry invokes this admission callback before
         // mutation so backpressure leaves the old owner installed and unfenced.
         let type_id = std::any::TypeId::of::<ManagedResource<R>>();
+        #[cfg(feature = "rotation")]
+        let rotation_identity = (scope.clone(), slot_identity.clone());
         let registration = self.registry.register_admitted(
             key.clone(),
             type_id,
@@ -274,6 +276,21 @@ impl Manager {
             admission: permit,
         } = registration
         {
+            #[cfg(feature = "rotation")]
+            if let Some(index) = self
+                .rotation_index
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_ref()
+                .and_then(std::sync::Weak::upgrade)
+            {
+                index.unbind_replaced_resource_identity(
+                    &key,
+                    &rotation_identity.0,
+                    &rotation_identity.1,
+                    &displaced,
+                );
+            }
             self.retire_resource(displaced, permit, RetirementOrigin::Replacement);
         }
 
@@ -855,6 +872,16 @@ impl Manager {
                 self.prepare_retirement(managed, RetirementOrigin::Removal)
             })
             .collect();
+        #[cfg(feature = "rotation")]
+        if let Some(index) = self
+            .rotation_index
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .and_then(std::sync::Weak::upgrade)
+        {
+            index.unbind_resource_key(key);
+        }
         retirement_permit.commit_batch(retirements);
 
         if let Some(m) = &self.metrics {
@@ -908,6 +935,16 @@ impl Manager {
             drop(retirement_permit);
             return Err(Error::not_found(key));
         };
+        #[cfg(feature = "rotation")]
+        if let Some(index) = self
+            .rotation_index
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .and_then(std::sync::Weak::upgrade)
+        {
+            index.unbind_resource_identity(key, scope, slot_identity);
+        }
         self.retire_resource(removed, retirement_permit, RetirementOrigin::Removal);
 
         if let Some(m) = &self.metrics {

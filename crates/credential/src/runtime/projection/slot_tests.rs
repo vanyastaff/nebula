@@ -21,6 +21,7 @@ const SECRET_CANARY: &str = "slot-resolver-secret-NEVER-DEBUG-994";
 struct SlotStore {
     owner: CredentialOwner,
     row: StoredCredential,
+    row_after_head: Option<StoredCredential>,
     material_loads: AtomicUsize,
 }
 
@@ -32,7 +33,7 @@ impl crate::CredentialPersistence for SlotStore {
     ) -> Result<StoredCredential, CredentialPersistenceError> {
         self.material_loads.fetch_add(1, Ordering::Relaxed);
         if selector.owner() == &self.owner && selector.credential_id() == self.row.credential_id() {
-            Ok(self.row.clone())
+            Ok(self.row_after_head.as_ref().unwrap_or(&self.row).clone())
         } else {
             Err(CredentialPersistenceError::NotFound)
         }
@@ -161,6 +162,7 @@ fn fixture_with_payload(
     let store = SlotStore {
         owner: scope.owner().clone(),
         row: row.into(),
+        row_after_head: None,
         material_loads: AtomicUsize::new(0),
     };
     let mut registry = crate::CredentialRegistry::new();
@@ -280,6 +282,38 @@ async fn owner_qualified_tombstone_is_distinct_from_absence() {
     )
     .await
     .expect_err("tombstone cannot project");
+    assert_eq!(error, CredentialSlotResolveError::Revoked);
+}
+
+#[tokio::test]
+async fn tombstone_committed_between_head_and_material_read_is_revoked() {
+    let (mut store, registry, ops, scope, id, key) = fixture();
+    let now = Utc::now();
+    store.row_after_head = Some(
+        StoredTombstonedCredential::new(
+            id,
+            BearerTokenCredential::KEY.to_owned(),
+            SecretToken::KIND.to_owned(),
+            SecretToken::VERSION,
+            CredentialVersion::MIN,
+            now,
+            now,
+            now,
+        )
+        .into(),
+    );
+    let error = resolve_fixture(
+        &store,
+        &registry,
+        &ops,
+        &scope,
+        id,
+        key,
+        Capabilities::empty(),
+        CancellationToken::new(),
+    )
+    .await
+    .expect_err("concurrent tombstone cannot project");
     assert_eq!(error, CredentialSlotResolveError::Revoked);
 }
 

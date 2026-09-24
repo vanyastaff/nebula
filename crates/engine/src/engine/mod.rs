@@ -944,6 +944,8 @@ impl WorkflowEngine {
     /// Attach a resource manager for providing resources to actions.
     #[must_use = "builder methods must be chained or built"]
     pub fn with_resource_manager(mut self, manager: Arc<nebula_resource::Manager>) -> Self {
+        #[cfg(feature = "rotation")]
+        manager.attach_rotation_index(&self.resource_fanout_index);
         self.resource_manager = Some(manager);
         self
     }

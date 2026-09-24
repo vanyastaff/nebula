@@ -253,6 +253,7 @@ impl ResourceFanoutDriver {
         credential_bus: Arc<EventBus<CredentialEvent>>,
         lease_bus: Option<Arc<EventBus<LeaseEvent>>>,
     ) -> Self {
+        manager.attach_rotation_index(&index);
         let mut credential_sub = credential_bus.subscribe();
         let mut lease_sub = lease_bus.map(|bus| bus.subscribe());
         let handle = tokio::spawn(async move {

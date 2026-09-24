@@ -629,6 +629,28 @@ mod fanout_dispatch {
         (idx, mgr, cid, scope, org, ledger)
     }
 
+    #[tokio::test]
+    async fn pending_tombstone_revoke_admission_is_retried_by_reconciliation() {
+        let identity = SlotIdentity::from_bindings([("db", "retry-revoke")]);
+        let (index, manager, credential_id, scope, _org, ledger) =
+            setup(std::slice::from_ref(&identity)).await;
+        ledger.set(identity.clone(), Behaviour::FastOk);
+
+        let managed = manager
+            .lookup_any_for_slot_identity_structural(&CtlResource::key(), &scope, &identity)
+            .expect("registered row");
+        let tainted = manager
+            .taint_slot_for_identity(&CtlResource::key(), scope, "db", &identity)
+            .expect("taint");
+        drop(tainted);
+        index.remember_pending_revoke(credential_id, CtlResource::key(), "db", managed);
+
+        let outcome = index.retry_pending_revoke_admissions(&manager).await;
+        assert_eq!(outcome.success(), 1);
+        assert!(index.pending_revokes().is_empty());
+        assert_eq!(ledger.revoke_entered.load(Ordering::SeqCst), 1);
+    }
+
     #[derive(Clone, Copy)]
     enum TerminalDirection {
         Refresh,

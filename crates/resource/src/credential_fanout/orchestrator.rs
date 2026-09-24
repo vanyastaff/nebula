@@ -48,8 +48,32 @@ impl ResourceFanoutIndex {
                     };
                 },
             };
+            if self.has_pending_revoke(cid, &binding.slot_name, &managed) {
+                let pending = self.pending_revokes().into_iter().find(|entry| {
+                    entry.credential_id == cid
+                        && entry.slot == binding.slot_name
+                        && std::sync::Arc::ptr_eq(&entry.managed, &managed)
+                });
+                let Some(pending) = pending else {
+                    return RowOutcome::Failed {
+                        drain_timed_out: false,
+                    };
+                };
+                let (tail, admitted) = mgr
+                    .retry_tainted_revoke_admission(
+                        &pending.key,
+                        &pending.slot,
+                        std::sync::Arc::clone(&pending.managed),
+                        Duration::from_secs(30),
+                    )
+                    .await;
+                if admitted != Some(false) {
+                    self.forget_pending_revoke(&pending);
+                }
+                return revoke_tail_outcome(tail);
+            }
             if managed.is_tainted() {
-                return RowOutcome::Failed {
+                return RowOutcome::Success {
                     drain_timed_out: false,
                 };
             }
@@ -71,6 +95,7 @@ impl ResourceFanoutIndex {
                 };
             }
             project_and_refresh(
+                self,
                 mgr,
                 managed,
                 ProjectionTarget {
@@ -100,6 +125,7 @@ impl ResourceFanoutIndex {
     ) -> RotationOutcome {
         use futures::FutureExt;
 
+        let mut summary = self.retry_pending_revoke_admissions(mgr).await;
         let mut projections = Vec::new();
         for managed in mgr.registry.all_managed() {
             if managed.is_tainted() {
@@ -124,6 +150,7 @@ impl ResourceFanoutIndex {
                             };
                         };
                         project_and_refresh(
+                            self,
                             mgr,
                             managed,
                             ProjectionTarget {
@@ -143,7 +170,7 @@ impl ResourceFanoutIndex {
             }
         }
         let outcomes = futures::future::join_all(projections).await;
-        let mut summary = summarize_row_outcomes(outcomes);
+        summary.add(summarize_row_outcomes(outcomes));
         if credential_id.is_none() {
             for (cid, scope, credential_key, context_sequence) in self.pending_material_contexts() {
                 let outcome = self
@@ -154,6 +181,28 @@ impl ResourceFanoutIndex {
                     self.forget_material_context(&cid, context_sequence);
                 }
             }
+        }
+        summary
+    }
+
+    pub(crate) async fn retry_pending_revoke_admissions(
+        &self,
+        mgr: &crate::Manager,
+    ) -> RotationOutcome {
+        let mut summary = RotationOutcome::default();
+        for pending in self.pending_revokes() {
+            let (tail, admitted) = mgr
+                .retry_tainted_revoke_admission(
+                    &pending.key,
+                    &pending.slot,
+                    std::sync::Arc::clone(&pending.managed),
+                    Duration::from_secs(30),
+                )
+                .await;
+            if admitted != Some(false) {
+                self.forget_pending_revoke(&pending);
+            }
+            summary.add(summarize_row_outcomes([revoke_tail_outcome(tail)]));
         }
         summary
     }
@@ -507,6 +556,7 @@ struct ProjectionTarget<'a> {
 }
 
 async fn project_and_refresh(
+    index: &ResourceFanoutIndex,
     mgr: &crate::Manager,
     managed: std::sync::Arc<dyn crate::registry::ManagedHandle>,
     target: ProjectionTarget<'_>,
@@ -537,6 +587,8 @@ async fn project_and_refresh(
                 slot,
                 "durable credential tombstone discovered during material reconciliation; revoking resource slot"
             );
+            let pending_managed = std::sync::Arc::clone(&managed);
+            let pending_key = key.clone();
             let tainted = match mgr.taint_resolved_at_generation(&key, slot, managed, generation) {
                 Ok(tainted) => tainted,
                 Err(error) => {
@@ -553,9 +605,13 @@ async fn project_and_refresh(
                 },
             };
             drop(projection_permit);
-            return revoke_tail_outcome(
-                mgr.drain_and_revoke(tainted, Duration::from_secs(30)).await,
-            );
+            let (tail, admitted) = mgr
+                .drain_and_revoke_with_admission(tainted, Duration::from_secs(30))
+                .await;
+            if !admitted {
+                index.remember_pending_revoke(cid, pending_key, slot, pending_managed);
+            }
+            return revoke_tail_outcome(tail);
         },
         Ok(Err(error)) => {
             tracing::warn!(credential_id = %cid, error = %error,

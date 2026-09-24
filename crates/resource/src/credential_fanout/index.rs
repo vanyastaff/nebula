@@ -195,6 +195,24 @@ struct BindRef {
 /// families spill to the heap transparently.
 type BindRows = SmallVec<[BindRef; 2]>;
 
+#[derive(Clone)]
+pub(super) struct PendingRevokeAdmission {
+    pub(super) credential_id: CredentialId,
+    pub(super) key: ResourceKey,
+    pub(super) slot: String,
+    pub(super) managed: std::sync::Arc<dyn crate::registry::ManagedHandle>,
+}
+
+impl std::fmt::Debug for PendingRevokeAdmission {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PendingRevokeAdmission")
+            .field("credential_id", &self.credential_id)
+            .field("key", &self.key)
+            .field("slot", &self.slot)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Maximum credential projections admitted across concurrent fan-out calls.
 pub(super) const MAX_CONCURRENT_PROJECTIONS: usize = 32;
 
@@ -226,6 +244,7 @@ pub struct ResourceFanoutIndex {
     /// project them. Its key space is bounded by live reverse-index entries.
     material_contexts: DashMap<CredentialId, (TenantScope, nebula_core::CredentialKey, u64)>,
     material_context_sequence: std::sync::atomic::AtomicU64,
+    pending_revoke_admissions: std::sync::Mutex<Vec<PendingRevokeAdmission>>,
     /// Shared admission keeps direct dispatch and reconciliation under one
     /// provider/persistence concurrency budget.
     pub(super) projection_admission: tokio::sync::Semaphore,
@@ -237,6 +256,7 @@ impl Default for ResourceFanoutIndex {
             by_credential: DashMap::new(),
             material_contexts: DashMap::new(),
             material_context_sequence: std::sync::atomic::AtomicU64::new(1),
+            pending_revoke_admissions: std::sync::Mutex::new(Vec::new()),
             projection_admission: tokio::sync::Semaphore::new(MAX_CONCURRENT_PROJECTIONS),
         }
     }
@@ -335,6 +355,67 @@ impl ResourceFanoutIndex {
             .remove_if(cid, |_, context| context.2 == sequence);
     }
 
+    pub(super) fn remember_pending_revoke(
+        &self,
+        credential_id: CredentialId,
+        key: ResourceKey,
+        slot: &str,
+        managed: std::sync::Arc<dyn crate::registry::ManagedHandle>,
+    ) {
+        let mut pending = self
+            .pending_revoke_admissions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if pending.iter().any(|entry| {
+            entry.credential_id == credential_id
+                && entry.slot == slot
+                && std::sync::Arc::ptr_eq(&entry.managed, &managed)
+        }) {
+            return;
+        }
+        pending.push(PendingRevokeAdmission {
+            credential_id,
+            key,
+            slot: slot.to_owned(),
+            managed,
+        });
+    }
+
+    pub(super) fn pending_revokes(&self) -> Vec<PendingRevokeAdmission> {
+        self.pending_revoke_admissions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    pub(super) fn has_pending_revoke(
+        &self,
+        credential_id: CredentialId,
+        slot: &str,
+        managed: &std::sync::Arc<dyn crate::registry::ManagedHandle>,
+    ) -> bool {
+        self.pending_revoke_admissions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .any(|entry| {
+                entry.credential_id == credential_id
+                    && entry.slot == slot
+                    && std::sync::Arc::ptr_eq(&entry.managed, managed)
+            })
+    }
+
+    pub(super) fn forget_pending_revoke(&self, entry: &PendingRevokeAdmission) {
+        self.pending_revoke_admissions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|pending| {
+                pending.credential_id != entry.credential_id
+                    || pending.slot != entry.slot
+                    || !std::sync::Arc::ptr_eq(&pending.managed, &entry.managed)
+            });
+    }
+
     /// Removes every binding under `(resource_key, scope)` across all
     /// `slot_identity` values and all credentials.
     ///
@@ -347,6 +428,16 @@ impl ResourceFanoutIndex {
             rows.retain(|r| r.bind.resource_key != *resource_key || r.bind.scope != *scope);
             !rows.is_empty()
         });
+        self.prune_orphan_contexts();
+    }
+
+    /// Removes every binding for a whole-key administrative removal.
+    pub(crate) fn unbind_resource_key(&self, resource_key: &ResourceKey) {
+        self.by_credential.retain(|_, rows| {
+            rows.retain(|r| r.bind.resource_key != *resource_key);
+            !rows.is_empty()
+        });
+        self.prune_orphan_contexts();
     }
 
     /// Drops bindings for the single resolved registry row
@@ -375,6 +466,32 @@ impl ResourceFanoutIndex {
             });
             !rows.is_empty()
         });
+        self.prune_orphan_contexts();
+    }
+
+    pub(crate) fn unbind_replaced_resource_identity(
+        &self,
+        resource_key: &ResourceKey,
+        scope: &ScopeLevel,
+        slot_identity: &SlotIdentity,
+        displaced: &std::sync::Arc<dyn crate::registry::ManagedHandle>,
+    ) {
+        self.by_credential.retain(|_, rows| {
+            for row in rows.iter_mut().filter(|row| {
+                row.bind.resource_key == *resource_key
+                    && row.bind.scope == *scope
+                    && row.bind.slot_identity == *slot_identity
+            }) {
+                row.refs = row.refs.saturating_sub(1);
+            }
+            rows.retain(|row| row.refs != 0);
+            !rows.is_empty()
+        });
+        self.pending_revoke_admissions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|entry| !std::sync::Arc::ptr_eq(&entry.managed, displaced));
+        self.prune_orphan_contexts();
     }
 
     /// Removes exactly one `(cid, bind)` tuple — the precise per-entry
@@ -418,6 +535,16 @@ impl ResourceFanoutIndex {
             }
             rows.is_empty()
         });
+        self.prune_orphan_contexts();
+    }
+
+    fn prune_orphan_contexts(&self) {
+        self.material_contexts
+            .retain(|cid, _| self.by_credential.contains_key(cid));
+        self.pending_revoke_admissions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|entry| self.by_credential.contains_key(&entry.credential_id));
     }
 }
 

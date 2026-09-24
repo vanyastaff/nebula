@@ -412,6 +412,9 @@ pub struct ResourceHealthSnapshot {
 /// whenever the resolved slot identity is known.
 pub struct Manager {
     pub(super) registry: Registry,
+    #[cfg(feature = "rotation")]
+    rotation_index:
+        std::sync::Mutex<Option<std::sync::Weak<crate::credential_fanout::ResourceFanoutIndex>>>,
     /// Serializes registry commits, credential admission/revoke and terminal snapshots.
     /// Never held across await.
     pub(super) admission: std::sync::Mutex<()>,
@@ -495,6 +498,8 @@ impl Manager {
         ));
         Self {
             registry: Registry::new(),
+            #[cfg(feature = "rotation")]
+            rotation_index: std::sync::Mutex::new(None),
             admission: std::sync::Mutex::new(()),
             cancel,
             metrics,
@@ -509,6 +514,22 @@ impl Manager {
             lifecycle: None,
             acquire_slow_threshold,
         }
+    }
+
+    /// Wires the production credential reverse index into resource retirement.
+    ///
+    /// Removal uses this weak reference to delete the exact routing rows while
+    /// it still holds lifecycle admission. The manager does not own the index
+    /// and therefore cannot extend the rotation driver's lifetime.
+    #[cfg(feature = "rotation")]
+    pub fn attach_rotation_index(
+        &self,
+        index: &Arc<crate::credential_fanout::ResourceFanoutIndex>,
+    ) {
+        *self
+            .rotation_index
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::downgrade(index));
     }
 
     /// One-time, process-wide honesty check for `panic = "abort"` builds.
