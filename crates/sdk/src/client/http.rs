@@ -16,9 +16,11 @@ use reqwest::{
 use serde::{Serialize, de::DeserializeOwned};
 
 use super::credential::v1::{
-    CreateCredentialRequest, CreateCredentialResponse, Credential, CredentialProblem,
-    DeleteCredentialResponse, GetCredentialResponse, ListCredentialsRequest,
-    ListCredentialsResponse, ProblemDetails, RetryAfter, UpdateCredentialRequest,
+    ContinueResolveCredentialRequest, ContinueResolveCredentialResponse, CreateCredentialRequest,
+    CreateCredentialResponse, Credential, CredentialProblem, DeleteCredentialResponse,
+    GetCredentialResponse, ListCredentialsRequest, ListCredentialsResponse, ProblemDetails,
+    ReauthorizeCredentialRequest, ReauthorizeCredentialResponse, ResolveCredentialRequest,
+    ResolveCredentialResponse, RetryAfter, UpdateCredentialRequest,
 };
 
 /// Bearer authority used only in the Authorization header. Debug is redacted.
@@ -244,6 +246,44 @@ impl fmt::Debug for CredentialClient {
 }
 
 impl CredentialClient {
+    /// Start credential acquisition once. Pending responses must be continued with a
+    /// client carrying the exact same bearer token; this client never follows the
+    /// interaction URL, polls, refreshes authentication, or replays the request.
+    pub async fn resolve(
+        &self,
+        request: &ResolveCredentialRequest,
+    ) -> Result<ResolveCredentialResponse, HttpError> {
+        self.write(Method::POST, self.collection_url(&["resolve"])?, request)
+            .await
+    }
+
+    /// Continue one pending acquisition once using this client's unchanged bearer.
+    pub async fn continue_resolve(
+        &self,
+        request: &ContinueResolveCredentialRequest,
+    ) -> Result<ContinueResolveCredentialResponse, HttpError> {
+        self.write(
+            Method::POST,
+            self.collection_url(&["resolve", "continue"])?,
+            request,
+        )
+        .await
+    }
+
+    /// Start reauthorization for an existing credential once. The request contains
+    /// only provider data; identity and aggregate fences remain server-owned.
+    pub async fn reauthorize(
+        &self,
+        credential_id: &str,
+        request: &ReauthorizeCredentialRequest,
+    ) -> Result<ReauthorizeCredentialResponse, HttpError> {
+        let mut url = self.item_url(credential_id)?;
+        url.path_segments_mut()
+            .map_err(|()| HttpError::new(HttpErrorKind::InvalidConfiguration))?
+            .push("reauthorize");
+        self.write(Method::POST, url, request).await
+    }
+
     /// Read one page of credential metadata.
     pub async fn list(
         &self,
@@ -312,6 +352,14 @@ impl CredentialClient {
         url.path_segments_mut()
             .map_err(|()| HttpError::new(HttpErrorKind::InvalidConfiguration))?
             .push(id);
+        Ok(url)
+    }
+
+    fn collection_url(&self, segments: &[&str]) -> Result<Url, HttpError> {
+        let mut url = self.collection.clone();
+        url.path_segments_mut()
+            .map_err(|()| HttpError::new(HttpErrorKind::InvalidConfiguration))?
+            .extend(segments.iter().copied());
         Ok(url)
     }
 

@@ -76,8 +76,10 @@ The `client::credential::v1` façade defines versioned transport requests, respo
 state, and typed RFC 9457 failures. Existing-id reauthorization uses
 `ReauthorizeCredentialRequest { data }` and the universal acquisition response; the server owns
 the type, target binding, and replacement fence. Continuation retains its credential-key routing
-hint and opaque pending token. Optional `client::http` executes credential CRUD with explicit
-tenant selectors and bearer authority, bounded timeouts/responses, and no redirects or retries.
+hint and opaque pending token. Optional `client::http` executes credential metadata and
+acquisition operations with explicit tenant selectors and bearer authority, bounded
+timeouts/responses, and no redirects or retries. Continuation deliberately retains the exact
+bearer supplied at client construction; it does not refresh authentication, poll, or replay.
 Missing or invalid mutation acknowledgements have an explicit unknown outcome. The future
 `embedded` façade submits typed runtime commands through curated builders.
 
@@ -115,7 +117,7 @@ This fixture does not prove procedural-derive authoring. The independent
 
 ## Known gaps
 
-- The credential client v1 wire contract and optional CRUD HTTP executor are shipped; other operations and client
+- The credential client v1 wire contract and optional metadata/acquisition HTTP executor are shipped; other operations and client
   domains remain gaps. The dedicated `embedded` persona façade is not shipped yet.
 - Derive expansion is covered for representative Action, Credential, Plugin, Resource,
   Schema, and Validator inputs. New generated paths still need SDK-only and renamed

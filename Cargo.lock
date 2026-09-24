@@ -3327,6 +3327,7 @@ dependencies = [
  "nebula-action",
  "nebula-api",
  "nebula-core",
+ "nebula-credential",
  "nebula-engine",
  "nebula-eventbus",
  "nebula-execution",
@@ -3345,6 +3346,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+ "zeroize",
 ]
 
 [[package]]
