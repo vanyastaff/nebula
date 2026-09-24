@@ -684,6 +684,41 @@ struct ProjectionTarget<'a> {
     install_live: bool,
 }
 
+pub(super) struct DeferredHookWake {
+    state: std::sync::atomic::AtomicU8,
+    notify: std::sync::Arc<tokio::sync::Notify>,
+}
+
+impl DeferredHookWake {
+    const COMPLETED: u8 = 1;
+    const DEFERRED: u8 = 2;
+
+    pub(super) fn new(notify: std::sync::Arc<tokio::sync::Notify>) -> Self {
+        Self {
+            state: std::sync::atomic::AtomicU8::new(0),
+            notify,
+        }
+    }
+
+    pub(super) fn completed(&self) {
+        let previous = self
+            .state
+            .fetch_or(Self::COMPLETED, std::sync::atomic::Ordering::AcqRel);
+        if previous & Self::DEFERRED != 0 {
+            self.notify.notify_one();
+        }
+    }
+
+    pub(super) fn arm_deferred(&self) {
+        let previous = self
+            .state
+            .fetch_or(Self::DEFERRED, std::sync::atomic::Ordering::AcqRel);
+        if previous & Self::COMPLETED != 0 {
+            self.notify.notify_one();
+        }
+    }
+}
+
 async fn project_and_refresh(
     index: &ResourceFanoutIndex,
     mgr: &crate::Manager,
@@ -776,7 +811,11 @@ async fn project_and_refresh(
     }
     let key = managed.resource_key();
     let publication_binding = binding.clone();
-    match mgr
+    let hook_completion_wake =
+        std::sync::Arc::new(DeferredHookWake::new(index.material_hook_completion_wake()));
+    let terminal_wake = std::sync::Arc::clone(&hook_completion_wake);
+    let mut arm_deferred = false;
+    let outcome = match mgr
         .install_and_refresh_resolved(
             &key,
             slot,
@@ -795,7 +834,7 @@ async fn project_and_refresh(
                 move || {
                     drop(projection_permit);
                 },
-                || {},
+                move || terminal_wake.completed(),
             ),
         )
         .await
@@ -807,12 +846,15 @@ async fn project_and_refresh(
             crate::SlotDispatchOutcome::TimedOut { .. } => RowOutcome::TimedOut {
                 drain_timed_out: false,
             },
-            crate::SlotDispatchOutcome::Deferred { reason, .. } => RowOutcome::Deferred {
-                drain_timed_out: false,
-                observation_timed_out: matches!(
-                    reason,
-                    crate::SlotDeferralReason::ObservationTimedOut
-                ),
+            crate::SlotDispatchOutcome::Deferred { reason, .. } => {
+                arm_deferred = true;
+                RowOutcome::Deferred {
+                    drain_timed_out: false,
+                    observation_timed_out: matches!(
+                        reason,
+                        crate::SlotDeferralReason::ObservationTimedOut
+                    ),
+                }
             },
             crate::SlotDispatchOutcome::Abandoned { .. } => RowOutcome::Abandoned {
                 drain_timed_out: false,
@@ -832,7 +874,11 @@ async fn project_and_refresh(
                 drain_timed_out: false,
             }
         },
+    };
+    if arm_deferred {
+        hook_completion_wake.arm_deferred();
     }
+    outcome
 }
 
 fn settle_revoke_claim(claim: Option<RevokeAdmissionClaim<'_>>, admission: Option<bool>) {

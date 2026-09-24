@@ -322,7 +322,7 @@ pub struct ResourceFanoutIndex {
     /// not be pruned merely because the reverse index is still empty.
     material_replacement_fence: std::sync::Mutex<MaterialReplacementFence>,
     material_context_sequence: std::sync::atomic::AtomicU64,
-    material_retry_notify: tokio::sync::Notify,
+    material_retry_notify: std::sync::Arc<tokio::sync::Notify>,
     pending_revoke_admissions: std::sync::Mutex<Vec<PendingRevokeAdmission>>,
     /// Bounded terminal observations retained so a registration that stages
     /// after event delivery cannot publish revoked material.
@@ -340,7 +340,7 @@ impl Default for ResourceFanoutIndex {
             by_credential: DashMap::new(),
             material_replacement_fence: std::sync::Mutex::new(MaterialReplacementFence::default()),
             material_context_sequence: std::sync::atomic::AtomicU64::new(1),
-            material_retry_notify: tokio::sync::Notify::new(),
+            material_retry_notify: std::sync::Arc::new(tokio::sync::Notify::new()),
             pending_revoke_admissions: std::sync::Mutex::new(Vec::new()),
             terminal_revocation_fence: std::sync::Mutex::new(TerminalRevocationFence::default()),
             authoritative_reconciliation: std::sync::Mutex::new(
@@ -781,6 +781,10 @@ impl ResourceFanoutIndex {
 
     pub(crate) async fn material_retry_notified(&self) {
         self.material_retry_notify.notified().await;
+    }
+
+    pub(super) fn material_hook_completion_wake(&self) -> std::sync::Arc<tokio::sync::Notify> {
+        std::sync::Arc::clone(&self.material_retry_notify)
     }
 
     pub(crate) fn remember_pending_revoke(

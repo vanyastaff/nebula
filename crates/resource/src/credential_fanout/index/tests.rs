@@ -120,6 +120,27 @@ fn completed_material_dispatch_cannot_forget_a_newer_context() {
     assert!(idx.pending_material_contexts().is_empty());
 }
 
+#[tokio::test]
+async fn material_hook_completion_wake_is_lossless() {
+    let index = ResourceFanoutIndex::new();
+    let completion_before_deferral =
+        super::super::orchestrator::DeferredHookWake::new(index.material_hook_completion_wake());
+    completion_before_deferral.completed();
+    completion_before_deferral.arm_deferred();
+    tokio::time::timeout(Duration::from_secs(1), index.material_retry_notified())
+        .await
+        .expect("completion immediately before deferral remains observable");
+
+    let deferral_before_completion =
+        super::super::orchestrator::DeferredHookWake::new(index.material_hook_completion_wake());
+    deferral_before_completion.arm_deferred();
+    deferral_before_completion.completed();
+
+    tokio::time::timeout(Duration::from_secs(1), index.material_retry_notified())
+        .await
+        .expect("completion after deferral wakes reconciliation");
+}
+
 #[test]
 fn contextual_staging_creates_authoritative_reread_context() {
     let idx = ResourceFanoutIndex::new();

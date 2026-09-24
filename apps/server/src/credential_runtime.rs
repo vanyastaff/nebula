@@ -537,6 +537,9 @@ fn map_service_error(error: CredentialServiceError) -> CredentialGatewayError {
         | CredentialServiceError::ExternalSourceNotWired { .. }
         | CredentialServiceError::PersistenceUnavailable => CredentialGatewayError::Unavailable,
         CredentialServiceError::OutcomeUnknown => CredentialGatewayError::OutcomeUnknown,
+        CredentialServiceError::AcquisitionFinalizationRequired => {
+            CredentialGatewayError::AcquisitionReconciliationRequired
+        },
         CredentialServiceError::RefreshPostProviderPersistence
         | CredentialServiceError::RefreshRetryGateFinalization
         | CredentialServiceError::ReauthDecisionFinalization
@@ -623,6 +626,16 @@ mod tests {
         assert_eq!(
             map_service_error(CredentialServiceError::VersionExhausted),
             CredentialGatewayError::VersionExhausted
+        );
+    }
+
+    #[test]
+    fn production_controller_preserves_acquisition_finalization_requirement() {
+        assert_eq!(
+            map_controller_error(CredentialControllerError::Service(
+                CredentialServiceError::AcquisitionFinalizationRequired,
+            )),
+            CredentialGatewayError::AcquisitionReconciliationRequired,
         );
     }
 
