@@ -887,6 +887,13 @@ impl ResourceFanoutIndex {
             .is_some_and(|rows| rows.iter().any(|row| row.published != 0))
     }
 
+    pub(crate) fn contains_published_binding(&self, cid: &CredentialId, bind: &Bind) -> bool {
+        self.by_credential.get(cid).is_some_and(|rows| {
+            rows.iter()
+                .any(|row| row.published != 0 && &row.bind == bind)
+        })
+    }
+
     pub(crate) fn has_staged_binding(&self, cid: &CredentialId) -> bool {
         self.by_credential
             .get(cid)

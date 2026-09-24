@@ -32,12 +32,7 @@ impl ResourceFanoutIndex {
         let has_staged_binding = self.has_staged_binding(&cid);
         let mut summary = RotationOutcome::default();
         for binding in self.affected(&cid) {
-            match mgr.taint_slot_for_identity(
-                &binding.resource_key,
-                binding.scope,
-                &binding.slot_name,
-                &binding.slot_identity,
-            ) {
+            match mgr.taint_published_credential_binding(self, &cid, &binding) {
                 Ok(tainted) => self.remember_pending_revoke(
                     cid,
                     binding.resource_key,
@@ -90,11 +85,7 @@ impl ResourceFanoutIndex {
             };
             // Pin the registration before credential I/O. A replacement row
             // with identical routing keys must never receive this result.
-            let managed = match mgr.lookup_any_for_slot_identity_structural(
-                &binding.resource_key,
-                &binding.scope,
-                &binding.slot_identity,
-            ) {
+            let managed = match mgr.lookup_published_credential_binding(self, &cid, &binding) {
                 Ok(managed) => managed,
                 Err(_) => {
                     return RowOutcome::Failed {
@@ -198,11 +189,9 @@ impl ResourceFanoutIndex {
             let Some((credential_scope, credential_key)) = context else {
                 continue;
             };
-            let Ok(managed) = mgr.lookup_any_for_slot_identity_structural(
-                &binding.resource_key,
-                &binding.scope,
-                &binding.slot_identity,
-            ) else {
+            let Ok(managed) =
+                mgr.lookup_published_credential_binding(self, &bound_credential_id, &binding)
+            else {
                 projections.push(
                     async {
                         RowOutcome::Failed {

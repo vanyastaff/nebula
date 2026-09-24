@@ -272,6 +272,55 @@ pub enum RevokeTail {
 }
 
 impl Manager {
+    /// Pins the currently published row for one credential reverse-index
+    /// binding under lifecycle admission.
+    #[cfg(feature = "rotation")]
+    pub(crate) fn lookup_published_credential_binding(
+        &self,
+        index: &crate::ResourceFanoutIndex,
+        credential_id: &nebula_credential::CredentialId,
+        binding: &crate::Bind,
+    ) -> Result<Arc<dyn crate::registry::ManagedHandle>, Error> {
+        let _admission = self
+            .admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.shutdown_guard()?;
+        if !index.contains_published_binding(credential_id, binding) {
+            return Err(Error::not_found(&binding.resource_key));
+        }
+        self.lookup_any_for_slot_identity_structural(
+            &binding.resource_key,
+            &binding.scope,
+            &binding.slot_identity,
+        )
+    }
+
+    /// Revalidates reverse-index ownership and taints the same exact row in
+    /// one lifecycle-admission critical section.
+    #[cfg(feature = "rotation")]
+    pub(crate) fn taint_published_credential_binding(
+        &self,
+        index: &crate::ResourceFanoutIndex,
+        credential_id: &nebula_credential::CredentialId,
+        binding: &crate::Bind,
+    ) -> Result<TaintedSlot, Error> {
+        let _admission = self
+            .admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.shutdown_guard()?;
+        if !index.contains_published_binding(credential_id, binding) {
+            return Err(Error::not_found(&binding.resource_key));
+        }
+        let managed = self.lookup_any_for_slot_identity_structural(
+            &binding.resource_key,
+            &binding.scope,
+            &binding.slot_identity,
+        )?;
+        self.taint_under_admission(&binding.resource_key, &binding.slot_name, managed)
+    }
+
     /// Installs a projected guard into one identity-pinned row, then dispatches
     /// the refresh hook. The install completes synchronously before the first
     /// await, so author code cannot observe the old guard after dispatch.

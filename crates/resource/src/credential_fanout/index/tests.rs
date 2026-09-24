@@ -1014,6 +1014,61 @@ mod fanout_dispatch {
     }
 
     #[tokio::test]
+    async fn stale_binding_snapshot_cannot_taint_a_replacement_owner() {
+        let identity = SlotIdentity::from_bindings([("db", "shared-key")]);
+        let (index, manager, old_credential, scope, _org, ledger) =
+            setup(std::slice::from_ref(&identity)).await;
+        let stale_binding = index
+            .affected(&old_credential)
+            .into_iter()
+            .next()
+            .expect("old published binding");
+
+        index.unbind_resource_identity(&CtlResource::key(), &scope, &identity);
+        let successor_credential = CredentialId::new();
+        index.bind(
+            successor_credential,
+            CtlResource::key(),
+            scope.clone(),
+            "db",
+            identity.clone(),
+        );
+        manager
+            .register(crate::RegistrationSpec {
+                resource: CtlResource {
+                    identity: identity.clone(),
+                    ledger,
+                },
+                config: Cfg,
+                scope: scope.clone(),
+                slot_identity: identity.clone(),
+                topology: Resident::<CtlResource>::new(ResidentConfig::default()),
+                recovery_gate: None,
+            })
+            .expect("replace structural row with successor owner");
+
+        assert!(
+            manager
+                .taint_published_credential_binding(&index, &old_credential, &stale_binding)
+                .is_err(),
+            "a cloned binding whose published ownership was removed must fail closed"
+        );
+        let successor = manager
+            .lookup_published_credential_binding(
+                &index,
+                &successor_credential,
+                &Bind {
+                    resource_key: CtlResource::key(),
+                    scope,
+                    slot_name: "db".to_owned(),
+                    slot_identity: identity,
+                },
+            )
+            .expect("successor remains published");
+        assert!(!successor.is_tainted());
+    }
+
+    #[tokio::test]
     async fn blocked_revoke_tail_does_not_delay_the_next_bus_revoke() {
         let first_identity = SlotIdentity::from_bindings([("db", "blocked-revoke")]);
         let second_identity = SlotIdentity::from_bindings([("db", "following-revoke")]);
