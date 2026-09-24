@@ -78,6 +78,23 @@ fn zero_budgets_are_rejected_before_any_pool_exists() {
     }
 }
 
+/// A maintenance interval the reaper's timer could not be armed with is
+/// refused as a setting, not clamped in silence.
+#[test]
+fn a_maintenance_interval_past_the_ceiling_is_rejected() {
+    let ceiling = u64::try_from(MAX_MAINTENANCE_INTERVAL.as_millis()).expect("fits in u64");
+    let config = pool(json!({ "maintenance_interval_ms": ceiling })).expect("the ceiling itself");
+    assert_eq!(config.maintenance_interval, MAX_MAINTENANCE_INTERVAL);
+    for ms in [ceiling + 1, u64::MAX] {
+        let error = pool(json!({ "maintenance_interval_ms": ms })).expect_err("past the ceiling");
+        assert_eq!(error.kind(), &ErrorKind::Permanent, "{ms}");
+        assert!(
+            error.to_string().contains("maintenance_interval_ms"),
+            "{error}"
+        );
+    }
+}
+
 #[test]
 fn resident_settings_default_and_validate() {
     let defaults = ResidentSettings::default().into_config().expect("defaults");

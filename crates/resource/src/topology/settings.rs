@@ -25,7 +25,8 @@ use crate::{
     error::Error,
     resource::Provider,
     topology::{
-        Bounded, BoundedProvider, PoolProvider, Pooled, Resident, ResidentProvider, Topology,
+        Bounded, BoundedProvider, MAX_MAINTENANCE_INTERVAL, PoolProvider, Pooled, Resident,
+        ResidentProvider, Topology,
         pooled::config::{Config as PoolConfig, WarmupStrategy},
         resident::config::Config as ResidentConfig,
         store::PoolStrategy,
@@ -187,8 +188,12 @@ pub struct PoolSettings {
     /// Run `Provider::check` on every checkout.
     #[field(label = "Test on checkout")]
     pub test_on_checkout: Option<bool>,
-    /// Background maintenance interval in milliseconds; must be positive.
-    #[field(label = "Maintenance interval (ms)", description = "Must be positive")]
+    /// Background maintenance interval in milliseconds; positive and at most
+    /// one day ([`MAX_MAINTENANCE_INTERVAL`]).
+    #[field(
+        label = "Maintenance interval (ms)",
+        description = "Positive, at most one day"
+    )]
     pub maintenance_interval_ms: Option<u64>,
     /// Cap on concurrent `Provider::create` calls; must be at least 1.
     #[field(label = "Concurrent creates", description = "At least 1")]
@@ -201,8 +206,9 @@ impl PoolSettings {
     /// # Errors
     ///
     /// Returns a permanent [`Error`] for a zero `create_timeout_ms`,
-    /// `maintenance_interval_ms` or `max_concurrent_creates`, and for a
-    /// `warmup_interval_ms` that does not match the warmup mode. Size
+    /// `maintenance_interval_ms` or `max_concurrent_creates`, for a
+    /// `maintenance_interval_ms` above [`MAX_MAINTENANCE_INTERVAL`], and for
+    /// a `warmup_interval_ms` that does not match the warmup mode. Size
     /// invariants are checked by [`Pooled::try_new`].
     pub fn into_config(self) -> Result<PoolConfig, Error> {
         let mut config = PoolConfig::default();
@@ -252,7 +258,8 @@ impl PoolSettings {
             config.test_on_checkout = test_on_checkout;
         }
         if let Some(ms) = self.maintenance_interval_ms {
-            config.maintenance_interval = positive_millis("maintenance_interval_ms", ms)?;
+            config.maintenance_interval =
+                bounded_millis("maintenance_interval_ms", ms, MAX_MAINTENANCE_INTERVAL)?;
         }
         if let Some(creates) = self.max_concurrent_creates {
             if creates == 0 {
@@ -419,6 +426,18 @@ fn positive_millis(field: &str, ms: u64) -> Result<Duration, Error> {
         )));
     }
     Ok(Duration::from_millis(ms))
+}
+
+/// A positive duration no longer than `max`: one a timer has to be armed with.
+fn bounded_millis(field: &str, ms: u64, max: Duration) -> Result<Duration, Error> {
+    let duration = positive_millis(field, ms)?;
+    if duration > max {
+        return Err(Error::permanent(format!(
+            "topology settings: {field} must be at most {} ms",
+            max.as_millis()
+        )));
+    }
+    Ok(duration)
 }
 
 #[cfg(test)]

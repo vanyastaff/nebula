@@ -25,6 +25,8 @@
 //! solely from the authenticated tenant context. Missing, cross-tenant,
 //! soft-deleted, and malformed by-id reads remain indistinguishable 404s.
 
+use std::collections::BTreeMap;
+
 use axum::{
     Extension, Json,
     extract::{Path, Query, State},
@@ -298,9 +300,14 @@ fn validate_resource_config(
     })
 }
 
-/// Validate the operator settings — `topology` and `resilience_override` —
-/// against `kind` before persistence, with the same fail-closed rules as
-/// [`validate_resource_config`].
+/// Validate the operator settings — `topology`, `resilience_override` and
+/// `credential_bindings` — against `kind` before persistence, with the same
+/// fail-closed rules as [`validate_resource_config`].
+///
+/// A binding that names a slot the kind does not declare, leaves a required
+/// slot unbound or is not a credential id would fail every activation of
+/// the row, so it is refused here rather than stored; whether the credential
+/// exists and the workspace may use it is still decided at activation.
 ///
 /// Unlike a config report, these messages are authored by the resource
 /// runtime to name the field and the rule without restating submitted
@@ -312,6 +319,7 @@ fn validate_operator_settings(
     kind: &str,
     topology: Option<&serde_json::Value>,
     resilience_override: Option<&serde_json::Value>,
+    credential_bindings: &BTreeMap<String, String>,
 ) -> Result<(), ApiError> {
     let registrars = state.resource_registrars.as_ref().ok_or_else(|| {
         ApiError::Unprocessable(
@@ -321,6 +329,7 @@ fn validate_operator_settings(
     registrars
         .validate_topology(kind, topology)
         .and_then(|()| registrars.validate_resilience_override(kind, resilience_override))
+        .and_then(|()| registrars.validate_credential_bindings(kind, credential_bindings))
         .map_err(|err| match err {
             RegistrarError::UnknownKind(kind) => {
                 ApiError::Conflict(format!("unknown resource kind `{kind}`"))
@@ -517,7 +526,7 @@ fn replacement_resource_row(
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
         (status = 409, description = "Unknown resource `kind` (not in the closed registrar allowlist), or the workspace `slug` collides with an existing resource.", body = ProblemDetails),
-        (status = 422, description = "Resource config failed schema/closed-set validation, or the validation backend is not configured.", body = ProblemDetails),
+        (status = 422, description = "Resource config failed schema/closed-set validation, an operator setting or credential binding was refused for the kind, or the validation backend is not configured.", body = ProblemDetails),
         (status = 500, description = "Resource store error.", body = ProblemDetails),
         (status = 503, description = "Resource catalog backend is not configured on this instance.", body = ProblemDetails),
     ),
@@ -543,6 +552,7 @@ pub async fn create_resource(
         &body.kind,
         body.topology.as_ref(),
         body.resilience_override.as_ref(),
+        &body.credential_bindings,
     )?;
 
     let resource_id = ResourceId::new();
@@ -610,7 +620,7 @@ pub async fn create_resource(
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
         (status = 404, description = "Resource does not exist (also returned for a resource in another workspace, a soft-deleted resource, or an unparsable id — no cross-tenant leak).", body = ProblemDetails),
         (status = 409, description = "Unknown resource `kind`, or the supplied `expected_version` is stale (optimistic-concurrency conflict).", body = ProblemDetails),
-        (status = 422, description = "Resource config failed schema/closed-set validation, or the validation backend is not configured.", body = ProblemDetails),
+        (status = 422, description = "Resource config failed schema/closed-set validation, an operator setting or credential binding was refused for the kind, or the validation backend is not configured.", body = ProblemDetails),
         (status = 500, description = "Resource repository error.", body = ProblemDetails),
         (status = 503, description = "Resource catalog backend is not configured on this instance.", body = ProblemDetails),
     ),
@@ -642,6 +652,7 @@ pub async fn update_resource(
         &body.kind,
         body.topology.as_ref(),
         body.resilience_override.as_ref(),
+        &body.credential_bindings,
     )?;
 
     // The CAS contract increments the stored counter on a successful

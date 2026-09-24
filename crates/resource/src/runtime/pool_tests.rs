@@ -706,6 +706,21 @@ fn try_new_rejects_a_zero_create_timeout() {
 }
 
 #[test]
+fn try_new_rejects_a_maintenance_interval_past_the_ceiling() {
+    let result = Pooled::<MockPool>::try_new(
+        Config {
+            maintenance_interval: MAX_MAINTENANCE_INTERVAL + Duration::from_millis(1),
+            ..Config::default()
+        },
+        0,
+    );
+    assert!(
+        result.is_err(),
+        "a period the maintenance timer cannot be armed with is refused up front"
+    );
+}
+
+#[test]
 fn operator_settings_build_a_pool_or_fail_without_panicking() {
     use crate::topology::ConfigurableTopology;
 

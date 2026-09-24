@@ -464,13 +464,16 @@ impl Manager {
         if schedule.idle_timeout.is_none() && schedule.max_lifetime.is_none() && !keeps_a_floor {
             return;
         }
-        // `tokio::time::interval` panics on a zero period, and a sub-second
-        // maintenance cadence would burn CPU for no benefit (eviction is
-        // coarse-grained). Floor a zero/too-small operator-supplied
-        // `maintenance_interval` at 1s rather than panicking or spinning.
-        let period = schedule
-            .maintenance_interval
-            .max(std::time::Duration::from_secs(1));
+        // `tokio::time::interval` panics on a zero period and, on a missed
+        // tick, adds the period to an `Instant`, which panics past the
+        // representable horizon; a sub-second cadence would also burn CPU for
+        // no benefit (eviction is coarse-grained). The built-in topologies
+        // reject a period past the ceiling at validation; the clamp here keeps
+        // a custom topology's schedule off both panicking paths too.
+        let period = schedule.maintenance_interval.clamp(
+            std::time::Duration::from_secs(1),
+            crate::topology::MAX_MAINTENANCE_INTERVAL,
+        );
         let weak = Arc::downgrade(managed);
         let cancel = managed.maintenance.cancellation_token();
         let bus = Arc::clone(&self.event_bus);

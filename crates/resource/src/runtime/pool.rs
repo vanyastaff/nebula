@@ -30,7 +30,8 @@ use crate::{
     error::Error,
     resource::Provider,
     topology::{
-        AdmissionPhase, Load, MaintenanceSchedule, Ticket, Topology, Unavailable,
+        AdmissionPhase, Load, MAX_MAINTENANCE_INTERVAL, MaintenanceSchedule, Ticket, Topology,
+        Unavailable,
         pooled::{InstanceMetrics, PoolProvider, RecycleDecision, config::Config},
         store::{InstanceStore, StoreView},
     },
@@ -46,6 +47,11 @@ const ERR_MAX_SIZE_ZERO: &str = "Pooled: config.max_size must be > 0 (got 0 — 
 /// Pool cannot operate with a zero create budget.
 const ERR_CREATE_TIMEOUT_ZERO: &str = "Pooled: config.create_timeout must be positive (got 0 — \
      every create would time out immediately)";
+
+/// The reaper's timer cannot be armed with a longer period.
+const ERR_MAINTENANCE_INTERVAL_TOO_LONG: &str = "Pooled: config.maintenance_interval must be at \
+     most MAX_MAINTENANCE_INTERVAL (one day — a longer period cannot be armed on the \
+     maintenance timer)";
 
 /// The create-semaphore was closed (pool is shutting down).
 const ERR_CREATE_SEMAPHORE_CLOSED: &str = "pool: create semaphore closed";
@@ -204,6 +210,9 @@ impl<R: Provider> Pooled<R> {
     /// - [`Error::permanent`] when `max_size == 0` (would otherwise
     ///   deadlock the checkout semaphore on first acquire).
     /// - [`Error::permanent`] when `min_size > max_size`.
+    /// - [`Error::permanent`] when `create_timeout` is zero.
+    /// - [`Error::permanent`] when `maintenance_interval` exceeds
+    ///   [`MAX_MAINTENANCE_INTERVAL`].
     pub fn try_new(config: Config, fingerprint: u64) -> Result<Self, Error> {
         // #390: reject an unworkable pool topology at construction rather
         // than deadlock on first acquire. On the registration path the
@@ -223,6 +232,11 @@ impl<R: Provider> Pooled<R> {
         if config.create_timeout.is_zero() {
             // A zero budget times out every create before it can start.
             return Err(Error::permanent(ERR_CREATE_TIMEOUT_ZERO));
+        }
+        if config.maintenance_interval > MAX_MAINTENANCE_INTERVAL {
+            // The reaper's timer adds the period to an `Instant` on a missed
+            // tick, which panics past the representable horizon.
+            return Err(Error::permanent(ERR_MAINTENANCE_INTERVAL_TOO_LONG));
         }
 
         Ok(Self::build(config, fingerprint))

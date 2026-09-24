@@ -176,7 +176,7 @@ impl nebula_core::DeclaresDependencies for BoundTestRes {
         Dependencies::new().slot_field(nebula_core::SlotField {
             slot_key: "auth",
             default_id: "auth",
-            kind: nebula_core::dependencies::SlotKind::Credential {
+            kind: SlotKind::Credential {
                 type_id: TypeId::of::<()>(),
                 type_name: std::any::type_name::<()>(),
                 key: nebula_core::credential_key!("test.factory-credential"),
@@ -277,7 +277,7 @@ fn registration_debug_redacts_opaque_config_and_binding_payloads() {
         slot_name: "slot_name_sentinel".to_owned(),
         credential_key: nebula_core::CredentialKey::new("credential_key_sentinel")
             .expect("valid test key"),
-        credential_id: Some(nebula_credential::CredentialId::new()),
+        credential_id: Some(CredentialId::new()),
     });
     for debug in [format!("{request:?}"), format!("{request:#?}")] {
         for sensitive in [
@@ -428,7 +428,7 @@ async fn stored_rows_of_one_kind_in_one_scope_stay_distinct() {
 async fn identity_mismatch_is_typed_and_rolls_back_manager_and_fanout_state() {
     let manager = Manager::new();
     let expression_engine = ExpressionEngine::with_cache_size(16);
-    let credential_id = nebula_credential::CredentialId::new();
+    let credential_id = CredentialId::new();
     let fanout_index = crate::ResourceFanoutIndex::new();
     let inner: Arc<dyn ResourceFactory> = Arc::new(KindActivator::<BoundTestRes, _, _>::new(
         || BoundTestRes,
@@ -491,8 +491,8 @@ async fn identity_mismatch_is_typed_and_rolls_back_manager_and_fanout_state() {
 async fn conflicting_duplicate_slot_bindings_fail_before_manager_publication() {
     let manager = Manager::new();
     let expression_engine = ExpressionEngine::with_cache_size(16);
-    let first_credential_id = nebula_credential::CredentialId::new();
-    let second_credential_id = nebula_credential::CredentialId::new();
+    let first_credential_id = CredentialId::new();
+    let second_credential_id = CredentialId::new();
     let fanout_index = crate::ResourceFanoutIndex::new();
     let mut registry = ResourceActivatorRegistry::new();
     registry

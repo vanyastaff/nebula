@@ -1123,6 +1123,84 @@ async fn a_cold_acquire_and_its_first_call_share_one_permit() {
     assert_eq!(started.elapsed(), Duration::from_secs(1));
 }
 
+/// Two workers sharing one account quota, as two processes share a cluster
+/// store.
+fn shared_account_workers() -> (Arc<ResourceLimiter>, Arc<ResourceLimiter>) {
+    let store: Arc<dyn ErasedLimitStore> = Arc::new(MemoryLimitStore::new());
+    let worker = || {
+        Arc::new(ResourceLimiter::new(
+            Some(Quota::new(
+                Arc::clone(&store),
+                LimitKey::new("acct:shared").unwrap(),
+                per_second(1, 1),
+            )),
+            None,
+            Duration::from_mins(5),
+            ResourceKey::new("test.resource").unwrap(),
+            Arc::new(EventBus::new(16)),
+        ))
+    };
+    (worker(), worker())
+}
+
+/// The credit a cold acquire leaves for its first call is spent only after
+/// the store's penalties are read: the client is built between the two, and
+/// a `Retry-After` another worker saw meanwhile holds this call back as it
+/// holds every other caller of the account.
+#[tokio::test(start_paused = true)]
+async fn a_prepaid_permit_honours_a_penalty_another_worker_recorded() {
+    let (a, b) = shared_account_workers();
+    b.ready_to_acquire(None)
+        .await
+        .expect("the cold acquire books");
+    // While B builds its client, A is told to slow down.
+    a.penalize(Duration::from_mins(1))
+        .await
+        .expect("recorded in the shared store");
+    let client = b.wrap((), NoThrottle);
+    let started = Instant::now();
+    client
+        .run(async |()| Ok::<_, ProviderError>(()))
+        .await
+        .expect("admitted once the penalty ends");
+    assert!(
+        started.elapsed() >= Duration::from_mins(1),
+        "ran at {:?}",
+        started.elapsed()
+    );
+}
+
+/// The credit never carries a call past its deadline: a penalty that
+/// outlasts the deadline fails fast, and the call does not run.
+#[tokio::test(start_paused = true)]
+async fn a_prepaid_permit_fails_fast_when_a_penalty_outlasts_its_deadline() {
+    let (a, b) = shared_account_workers();
+    b.ready_to_acquire(None)
+        .await
+        .expect("the cold acquire books");
+    a.penalize(Duration::from_mins(1))
+        .await
+        .expect("recorded in the shared store");
+    let client = b.wrap((), NoThrottle);
+    let ran = Arc::new(AtomicBool::new(false));
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let error = client
+        .run_until(Some(deadline), async |()| {
+            ran.store(true, Ordering::Relaxed);
+            Ok::<_, ProviderError>(())
+        })
+        .await
+        .expect_err("the penalty outlasts the deadline");
+    assert!(
+        matches!(
+            &error,
+            LimitedError::Limit(error) if matches!(error.kind(), ErrorKind::Exhausted { .. })
+        ),
+        "{error:?}"
+    );
+    assert!(!ran.load(Ordering::Relaxed), "the call must not run");
+}
+
 /// A keyed first call books the account itself and drops the cold
 /// acquire's credit, so a following unkeyed call cannot reuse it and run in
 /// the same account slot.

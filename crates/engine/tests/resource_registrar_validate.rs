@@ -24,13 +24,16 @@
 //! `register_resolved` suite plus this seam test together prove the
 //! two paths cannot drift.
 
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
-use nebula_core::{ResourceKey, resource_key};
+use nebula_core::{
+    CredentialId, Dependencies, ResourceKey, SlotField, credential_key, dependencies::SlotKind,
+    resource_key,
+};
 use nebula_engine::{KindActivator, RegistrarError, ResourceActivatorRegistry};
 use nebula_resource::Resident;
 use nebula_resource::{
-    Manager, ScopeLevel,
+    HasCredentialSlots, Manager, ScopeLevel,
     error::Error as ResourceError,
     rate_limit::{Rate, ResiliencePolicy},
     resource::{Provider, ResourceConfig, ResourceMetadataDraft},
@@ -149,6 +152,100 @@ fn registry_with_http_pool() -> ResourceActivatorRegistry {
         )
         .expect("test resource metadata admits");
     registry
+}
+
+// ── A kind with one required credential slot, so the binding rules beyond
+//    "declares no slot" are exercised ─────────────────────────────────────────
+
+#[derive(Clone)]
+struct TokenPool;
+
+#[async_trait::async_trait]
+impl Provider for TokenPool {
+    type Config = HttpPoolConfig;
+    type Instance = ();
+    type Topology = Resident<Self>;
+
+    fn key() -> ResourceKey {
+        resource_key!("token_pool")
+    }
+
+    async fn create(
+        &self,
+        _config: &HttpPoolConfig,
+        _ctx: &nebula_resource::ResourceContext,
+    ) -> Result<(), nebula_resource::Error> {
+        Ok(())
+    }
+
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::new(
+            <Self as Provider>::key(),
+            nebula_resource::metadata_name!("token_pool"),
+            String::new(),
+        )
+    }
+}
+
+impl nebula_core::DeclaresDependencies for TokenPool {
+    fn dependencies() -> Dependencies {
+        Dependencies::new().slot_field(SlotField {
+            slot_key: "api_token",
+            default_id: "api_token",
+            kind: SlotKind::Credential {
+                type_id: std::any::TypeId::of::<()>(),
+                type_name: std::any::type_name::<()>(),
+                key: credential_key!("token_pool.api_token"),
+            },
+            required: true,
+            lazy: false,
+            purpose: None,
+        })
+    }
+}
+
+impl HasCredentialSlots for TokenPool {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
+    }
+
+    fn declares_credential_slots() -> bool {
+        true
+    }
+
+    fn credential_slot_names() -> &'static [&'static str] {
+        &["api_token"]
+    }
+}
+
+#[async_trait::async_trait]
+impl ResidentProvider for TokenPool {
+    fn is_alive_sync(&self, _runtime: &()) -> bool {
+        true
+    }
+}
+
+fn registry_with_token_pool() -> ResourceActivatorRegistry {
+    let mut registry = ResourceActivatorRegistry::new();
+    registry
+        .insert(
+            "token_pool",
+            Arc::new(KindActivator::<TokenPool, _, _>::new(
+                || TokenPool,
+                nebula_resource::topology::fixed(|| {
+                    Resident::<TokenPool>::new(resident::config::Config::default())
+                }),
+            )),
+        )
+        .expect("test resource metadata admits");
+    registry
+}
+
+fn bindings(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+    pairs
+        .iter()
+        .map(|(slot, selector)| ((*slot).to_owned(), (*selector).to_owned()))
+        .collect()
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
@@ -311,6 +408,66 @@ fn resilience_override_is_bounded_by_the_kind_policy() {
         assert!(message.contains(field), "{message}");
         assert!(!message.contains("4242"), "values never echo: {message}");
     }
+}
+
+/// A row's credential bindings are checked against the kind's declared slots
+/// before the row is stored, so a binding every activation would refuse never
+/// reaches the catalog. The refusal names the slot and the rule, never the
+/// selector.
+#[test]
+fn credential_bindings_are_checked_against_the_declared_slots() {
+    let credential = CredentialId::new().to_string();
+    let registry = registry_with_token_pool();
+    registry
+        .validate_credential_bindings("token_pool", &bindings(&[("api_token", &credential)]))
+        .expect("the declared slot is bound to a credential id");
+
+    for (row, rule) in [
+        (bindings(&[]), "required slot `api_token` is not bound"),
+        (
+            bindings(&[("api_token", "not-a-credential-id")]),
+            "slot `api_token` must name a credential id",
+        ),
+        (
+            bindings(&[("api_token", &credential), ("audit", &credential)]),
+            "slot `audit` is not declared",
+        ),
+    ] {
+        let RegistrarError::Register { kind, source } = registry
+            .validate_credential_bindings("token_pool", &row)
+            .expect_err(rule)
+        else {
+            panic!("expected a Register error: {rule}");
+        };
+        assert_eq!(kind, "token_pool");
+        let message = source.to_string();
+        assert!(message.contains(rule), "{message}");
+        assert!(
+            !message.contains(&credential) && !message.contains("not-a-credential-id"),
+            "selectors never echo: {message}"
+        );
+    }
+}
+
+/// A kind without credential slots takes no bindings at all, and an unknown
+/// kind is refused before its bindings are looked at.
+#[test]
+fn credential_bindings_need_a_known_kind_that_declares_the_slot() {
+    let registry = registry_with_http_pool();
+    registry
+        .validate_credential_bindings("http_pool", &BTreeMap::new())
+        .expect("no slots, no bindings");
+    let error = registry
+        .validate_credential_bindings("http_pool", &bindings(&[("api_token", "cred_x")]))
+        .expect_err("http_pool declares no slot");
+    assert!(
+        matches!(error, RegistrarError::Register { .. }),
+        "{error:?}"
+    );
+    assert!(matches!(
+        registry.validate_credential_bindings("ghost_kind", &BTreeMap::new()),
+        Err(RegistrarError::UnknownKind(kind)) if kind == "ghost_kind"
+    ));
 }
 
 /// A kind with a fixed topology takes no operator topology settings.

@@ -17,7 +17,8 @@ changes are expected between minor releases — call them out here.
   resource status, PostgreSQL rate limits). `RegistrationSpec` gains
   `rate_limit`; `RegisterRequest` gains `topology`, `resilience_override`,
   `limit_key` and `row_id`; `ResourceFactory` gains `validate_topology`,
-  `resilience_policy` and `validate_resilience_override`. The resource status
+  `resilience_policy`, `validate_resilience_override` and
+  `validate_credential_bindings`. The resource status
   seam is async and reads worker-published status from storage. The pool
   `WarmupStrategy` default is now `Sequential` and every strategy is honoured,
   including by a background warmup when a stored row activates. Exact-version
@@ -562,7 +563,12 @@ let admitted = recorded.readmit_against(fresh)?;
   cluster-scoped limits shared by every worker. The SDK re-exports these.
   Stored resources activate per execution with their operator settings,
   follow credential changes, retire when deleted, and publish their runtime
-  status per worker.
+  status per worker. The API refuses a resource row whose credential
+  bindings name an undeclared slot, leave a required slot unbound or are not
+  credential ids (`ResourceActivatorRegistry::validate_credential_bindings`),
+  and pool settings refuse a `maintenance_interval_ms` above
+  `MAX_MAINTENANCE_INTERVAL` (one day), the longest period the maintenance
+  timer can be armed with.
 - **Bounded shutdown drains, and rate limiters that actually share.**
   `nebula-api` gains `ShutdownGate`, which wraps a router in
   `nebula_resilience::Gate`: new requests get 503 once closing, `/health` and

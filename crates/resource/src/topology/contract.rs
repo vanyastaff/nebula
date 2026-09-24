@@ -355,6 +355,17 @@ impl Ticket {
 
 // ─── MaintenanceSchedule ──────────────────────────────────────────────────────
 
+/// Ceiling on [`MaintenanceSchedule::maintenance_interval`].
+///
+/// The framework clamps a sweep cadence to `1s..=MAX_MAINTENANCE_INTERVAL`
+/// before it arms the reaper's timer: a period too large to add to an
+/// `Instant` would otherwise panic inside the ticker the first time a tick
+/// is missed, and a sweep rarer than once a day makes every TTL meaningless.
+/// Operator settings ([`PoolSettings`](crate::topology::PoolSettings)) and
+/// [`Pooled::try_new`](crate::Pooled::try_new) reject a longer interval up
+/// front, so for a built-in topology the clamp is never silent.
+pub const MAX_MAINTENANCE_INTERVAL: Duration = Duration::from_hours(24);
+
 /// Background-maintenance cadence + TTLs for a topology that runs a reaper.
 ///
 /// Returned by [`Topology::maintenance_schedule`]: the framework spawns a
@@ -370,7 +381,8 @@ pub struct MaintenanceSchedule {
     pub idle_timeout: Option<Duration>,
     /// Max-lifetime TTL, if configured.
     pub max_lifetime: Option<Duration>,
-    /// Interval between maintenance sweeps.
+    /// Interval between maintenance sweeps; the framework clamps it between
+    /// one second and [`MAX_MAINTENANCE_INTERVAL`].
     pub maintenance_interval: Duration,
 }
 

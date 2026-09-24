@@ -902,7 +902,8 @@ impl ResourceLimiter {
         self.ready(deadline).await?;
         // The resource may wrap its client while creating for this very
         // acquire: its first call then uses the permit booked here rather
-        // than booking a second one. One such credit at most, so a late
+        // than booking a second one (after reading the penalties recorded
+        // meanwhile, see `wait_prepaid`). One such credit at most, so a late
         // first wrap can never release a burst of unbooked calls.
         self.prepaid.store(true, Ordering::Release);
         Ok(())
@@ -910,10 +911,10 @@ impl ResourceLimiter {
 
     /// What a call through a [`Limited`] client waits for: a permit, unless
     /// the acquire that preceded the first wrap already booked it, in which
-    /// case only a pause.
+    /// case only the pauses recorded since.
     async fn ready_to_call(&self, deadline: Option<std::time::Instant>) -> Result<(), Error> {
         if self.prepaid.swap(false, Ordering::AcqRel) {
-            return self.wait_pause_only(deadline).await;
+            return self.wait_prepaid(deadline).await;
         }
         self.ready(deadline).await
     }
@@ -921,19 +922,7 @@ impl ResourceLimiter {
     /// Waits out a local pause only, never past `deadline`, and refuses a
     /// deadline that has passed (before or after the wait).
     async fn wait_pause_only(&self, deadline: Option<std::time::Instant>) -> Result<(), Error> {
-        let overran = || {
-            deadline
-                .is_some_and(|deadline| std::time::Instant::now() > deadline)
-                .then(|| {
-                    self.tagged(Error::exhausted(
-                        "rate limit wait overran the deadline",
-                        None,
-                    ))
-                })
-        };
-        if let Some(error) = overran() {
-            return Err(error);
-        }
+        self.past_deadline(deadline)?;
         let pause = self.pause_remaining();
         if pause.is_zero() {
             return Ok(());
@@ -943,7 +932,47 @@ impl ResourceLimiter {
         }
         let _waiting = Waiting::start(self);
         tokio::time::sleep(pause).await;
-        overran().map_or(Ok(()), Err)
+        self.past_deadline(deadline)
+    }
+
+    /// Waits out every pause on the permit a cold acquire booked, never past
+    /// `deadline`: this process's, and the store's.
+    ///
+    /// The permit was booked before the client existed, and building it in
+    /// `Provider::create` can take a while. A penalty another worker recorded
+    /// meanwhile is not in that booking, so the store is read here as it is
+    /// for every caller that slept on a slot; a penalty recorded while this
+    /// one waits holds it back again.
+    async fn wait_prepaid(&self, deadline: Option<std::time::Instant>) -> Result<(), Error> {
+        loop {
+            self.past_deadline(deadline)?;
+            let Some(shared) = within(deadline, self.shared_penalty(None)).await else {
+                return Err(self.tagged(Error::exhausted(
+                    "rate limit store did not answer before the deadline",
+                    None,
+                )));
+            };
+            let pause = self.pause_remaining().max(shared?);
+            if pause.is_zero() {
+                return Ok(());
+            }
+            if pause > max_wait_until(deadline) {
+                return Err(self.paused_past_deadline(pause));
+            }
+            let _waiting = Waiting::start(self);
+            tokio::time::sleep(pause).await;
+        }
+    }
+
+    /// Refuses a deadline that has passed: the call then does not run.
+    fn past_deadline(&self, deadline: Option<std::time::Instant>) -> Result<(), Error> {
+        if deadline.is_some_and(|deadline| std::time::Instant::now() > deadline) {
+            return Err(self.tagged(Error::exhausted(
+                "rate limit wait overran the deadline",
+                None,
+            )));
+        }
+        Ok(())
     }
 
     /// Waits for one permit, never past `deadline`.
@@ -1180,20 +1209,8 @@ impl ResourceLimiter {
         };
         // The deadline may already have passed, before the store answered or
         // before a late wake-up: the call then does not run.
-        let overran = || {
-            deadline
-                .is_some_and(|deadline| std::time::Instant::now() > deadline)
-                .then(|| {
-                    self.tagged(Error::exhausted(
-                        "rate limit wait overran the deadline",
-                        None,
-                    ))
-                })
-        };
         if wait.is_zero() && pause_now().is_zero() {
-            if let Some(error) = overran() {
-                return Err(error);
-            }
+            self.past_deadline(deadline)?;
             if self.waiters.load(Ordering::Acquire) == 0 {
                 self.clear();
             }
@@ -1201,9 +1218,7 @@ impl ResourceLimiter {
         }
         let _waiting = Waiting::start(self);
         tokio::time::sleep(wait).await;
-        if let Some(error) = overran() {
-            return Err(error);
-        }
+        self.past_deadline(deadline)?;
         // A penalty recorded after this caller booked, by this process or
         // any other sharing the store, holds it back as well.
         let Some(shared) = within(deadline, self.shared_penalty(key)).await else {

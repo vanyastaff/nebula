@@ -58,7 +58,7 @@
 
 use std::{
     any::TypeId,
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     future::Future,
     pin::Pin,
     sync::{Arc, OnceLock},
@@ -67,7 +67,7 @@ use std::{
 use crate::resource::{ResourceMetadata, ResourceMetadataDraft};
 use crate::topology::{ConfigurableTopology, Topology};
 use crate::{Manager, ScopeLevel, SlotIdentity, recovery::RecoveryGate, resource::Provider};
-use nebula_core::Dependencies;
+use nebula_core::{CredentialId, Dependencies, SlotKind};
 
 mod private {
     pub trait Sealed {}
@@ -83,7 +83,7 @@ pub type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 ///
 /// The slot name, its resolved [`CredentialKey`](nebula_core::CredentialKey),
 /// and (when the credential participates in rotation) its resolved
-/// [`CredentialId`](nebula_credential::CredentialId) travel together as one
+/// [`CredentialId`] travel together as one
 /// unit, rather than as two parallel `HashMap<String, _>` keyed by slot name.
 ///
 /// Co-locating them makes a key↔id divergence for the same slot structurally
@@ -104,7 +104,7 @@ pub struct SlotBinding {
     /// The resolved `CredentialId` for the rotation fan-out reverse index, or
     /// `None` when this credential does not participate in rotation (no
     /// reverse-index row is staged for it).
-    pub credential_id: Option<nebula_credential::CredentialId>,
+    pub credential_id: Option<CredentialId>,
 }
 
 /// One resolved projected guard to install before resource publication.
@@ -469,6 +469,60 @@ pub trait ResourceFactory: private::Sealed + Send + Sync + 'static {
             .and_then(|_| document.apply_keyed(&policy))
             .map(drop)
             .map_err(|error| error.with_resource_key(self.key()))
+    }
+
+    /// Validate a stored row's credential bindings for this kind **without
+    /// registering anything**: every bound slot is one this kind declares,
+    /// every required slot is bound, and every selector parses as a
+    /// [`CredentialId`]. Whether the credential exists and the row's tenant
+    /// may use it is decided at activation, where it is resolved.
+    ///
+    /// # Errors
+    ///
+    /// Returns a permanent [`crate::Error`] naming the slot and the rule; the
+    /// message never restates a selector.
+    fn validate_credential_bindings(
+        &self,
+        bindings: &BTreeMap<String, String>,
+    ) -> Result<(), crate::Error> {
+        let declared: Vec<(&str, bool)> = self
+            .dependencies()
+            .slot_fields()
+            .iter()
+            .filter_map(|field| match field.kind {
+                SlotKind::Credential { .. } => Some((field.slot_key, field.required)),
+                SlotKind::Resource { .. } => None,
+            })
+            .collect();
+        let refuse = |message: String| -> Result<(), crate::Error> {
+            Err(crate::Error::permanent(message).with_resource_key(self.key()))
+        };
+        if let Some(slot) = bindings
+            .keys()
+            .find(|slot| !declared.iter().any(|(name, _)| name == slot))
+        {
+            return refuse(format!(
+                "credential_bindings: slot `{slot}` is not declared by this kind"
+            ));
+        }
+        for (slot, required) in declared {
+            match bindings.get(slot) {
+                Some(selector) => {
+                    if CredentialId::parse(selector).is_err() {
+                        return refuse(format!(
+                            "credential_bindings: slot `{slot}` must name a credential id"
+                        ));
+                    }
+                },
+                None if required => {
+                    return refuse(format!(
+                        "credential_bindings: required slot `{slot}` is not bound"
+                    ));
+                },
+                None => {},
+            }
+        }
+        Ok(())
     }
 
     /// Schema of the operator topology settings this kind accepts, for
@@ -995,7 +1049,7 @@ impl ResourceActivatorRegistry {
         // different credentials (confused-deputy close), and a slot without a
         // rotation `CredentialId` is simply skipped — no silent drop of a
         // mismatched parallel-map entry.
-        let mut staged: Vec<(nebula_credential::CredentialId, _)> = Vec::new();
+        let mut staged: Vec<(CredentialId, _)> = Vec::new();
         if let Some(idx) = fanout_index {
             for binding in &request.slot_bindings {
                 let Some(cred_id) = binding.credential_id else {
@@ -1146,6 +1200,33 @@ impl ResourceActivatorRegistry {
             .ok_or_else(|| RegistrarError::UnknownKind(kind.to_owned()))?;
         factory
             .validate_topology(settings)
+            .map_err(|source| RegistrarError::Register {
+                kind: kind.to_owned(),
+                source,
+            })
+    }
+
+    /// Validates a stored row's credential bindings for `kind` without
+    /// registering: bound slots are declared, required slots are bound, and
+    /// selectors are credential ids. A row that fails here would fail every
+    /// activation, so a writer refuses it before it is persisted.
+    ///
+    /// # Errors
+    ///
+    /// - [`RegistrarError::UnknownKind`] — not in allowlist.
+    /// - [`RegistrarError::Register`] — a binding breaks one of the rules; the
+    ///   message names the slot and the rule, never a selector.
+    pub fn validate_credential_bindings(
+        &self,
+        kind: &str,
+        bindings: &BTreeMap<String, String>,
+    ) -> Result<(), RegistrarError> {
+        let factory = self
+            .factories
+            .get(kind)
+            .ok_or_else(|| RegistrarError::UnknownKind(kind.to_owned()))?;
+        factory
+            .validate_credential_bindings(bindings)
             .map_err(|source| RegistrarError::Register {
                 kind: kind.to_owned(),
                 source,
