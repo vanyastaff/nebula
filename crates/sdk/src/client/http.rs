@@ -186,6 +186,7 @@ impl HttpClient {
         headers.insert(AUTHORIZATION, bearer.0);
         let transport = reqwest::Client::builder()
             .default_headers(headers)
+            .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
             .retry(reqwest::retry::never())
             .connect_timeout(options.connect_timeout)

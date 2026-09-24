@@ -223,6 +223,23 @@ async fn problem_and_retry_after_are_typed_but_error_formatting_is_redacted() {
         CredentialProblemKind::RefreshNotAppliedAfter
     );
     assert!(!format!("{error:?} {error}").contains("secret-canary"));
+    assert!(!format!("{:?}", error.problem().unwrap()).contains("secret-canary"));
+    assert!(!format!("{:?}", error.problem().unwrap().problem).contains("secret-canary"));
+    assert!(
+        !format!(
+            "{:?}",
+            ValidationProblem {
+                code: "server-secret-canary".into(),
+                detail: "server-secret-canary".into(),
+                pointer: Some("server-secret-canary".into()),
+                path: Some("server-secret-canary".into()),
+                expected: Some("server-secret-canary".into()),
+                actual: Some("server-secret-canary".into()),
+                remediation: Some("server-secret-canary".into()),
+            }
+        )
+        .contains("secret-canary")
+    );
     assert!(std::error::Error::source(&error).is_none());
     assert_eq!(server.seen().len(), 1);
 
@@ -236,6 +253,37 @@ async fn problem_and_retry_after_are_typed_but_error_formatting_is_redacted() {
     .await;
     let error = server.client().get("cred_1").await.unwrap_err();
     assert!((1..=60).contains(&error.retry_after().unwrap().seconds()));
+}
+
+#[test]
+fn credential_client_ignores_implicit_system_proxy_configuration() {
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--ignored",
+            "--exact",
+            "implicit_proxy_subprocess_probe",
+            "--nocapture",
+        ])
+        .env("HTTP_PROXY", "http://127.0.0.1:9")
+        .env("HTTPS_PROXY", "http://127.0.0.1:9")
+        .env("ALL_PROXY", "http://127.0.0.1:9")
+        .env("NO_PROXY", "")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "proxy subprocess failed:\n{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[tokio::test]
+#[ignore = "runs in an isolated subprocess with forced proxy variables"]
+async fn implicit_proxy_subprocess_probe() {
+    let server = Server::start(vec![response(200, "application/json", "", &credential())]).await;
+    assert_eq!(server.client().get("cred_1").await.unwrap().id, "cred_1");
+    assert_eq!(server.seen().len(), 1);
 }
 
 #[tokio::test]
