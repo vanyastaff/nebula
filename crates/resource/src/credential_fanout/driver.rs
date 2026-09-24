@@ -318,7 +318,9 @@ impl ResourceFanoutDriver {
                     _ = reconciliation.tick(), if resolver.is_some() => {
                         scan_requested = true;
                     },
-                    () = std::future::ready(()), if scan_requested && scans.is_empty() => {
+                    () = std::future::ready(()), if scan_requested
+                        && scans.is_empty()
+                        && material_dispatches.is_empty() => {
                         scan_requested = false;
                         if let Some(resolver) = resolver.as_ref() {
                             let index = Arc::clone(&index);
@@ -329,7 +331,9 @@ impl ResourceFanoutDriver {
                             scans.spawn(async move { index.reconcile_material(&manager, resolver.as_ref(), None).await });
                         }
                     },
-                    () = std::future::ready(()), if !pending_material.is_empty() && material_dispatches.is_empty() => {
+                    () = std::future::ready(()), if !pending_material.is_empty()
+                        && material_dispatches.is_empty()
+                        && scans.is_empty() => {
                         if let Some(credential_id) = pending_material.keys().next().copied() {
                             let Some((scope, credential_key)) = pending_material.remove(&credential_id) else {
                                 continue;
