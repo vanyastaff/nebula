@@ -149,7 +149,19 @@ impl TlsFixture {
                     if matches!(behavior, ServerBehavior::AbortAfterRequest) {
                         return;
                     }
-                    let _ = write_response(&mut stream, behavior, addr.port()).await;
+                    // `write_all` returns once rustls has accepted the plaintext,
+                    // not once the records reached the socket. Dropping the
+                    // stream right after a large write loses whatever was still
+                    // buffered (a 256 KiB body truncated at the TCP send
+                    // buffer on Windows) and skips `close_notify`, so the
+                    // client sees an unexpected EOF instead of the response.
+                    // `shutdown` flushes and closes the TLS session cleanly.
+                    if write_response(&mut stream, behavior, addr.port())
+                        .await
+                        .is_ok()
+                    {
+                        let _ = stream.shutdown().await;
+                    }
                 });
             }
         });
