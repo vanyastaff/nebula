@@ -9,8 +9,9 @@ use serde_json::{Value, json};
 
 use super::*;
 use crate::{
-    CredentialError, CredentialMetadataDraft, Interactive, NoPendingState, PendingState,
-    PendingStoreError, ResolveResult, SecretString, SecretToken, StaticResolveResult, UserInput,
+    CredentialError, CredentialMetadataDraft, DisplayData, InteractionRequest, Interactive,
+    NoPendingState, PendingState, PendingStoreError, ResolveResult, SecretString, SecretToken,
+    StaticResolveResult, UserInput,
 };
 
 struct UnusedPendingStore;
@@ -106,6 +107,53 @@ impl Credential for NormalizedCredential {
     }
 }
 
+struct HangingCredential;
+
+impl Credential for HangingCredential {
+    type Properties = NormalizedProperties;
+    type State = SecretToken;
+    type Scheme = SecretToken;
+    const KEY: &'static str = "hanging_provider_test";
+
+    fn metadata() -> CredentialMetadataDraft {
+        CredentialMetadataDraft::new(
+            nebula_core::credential_key!("hanging_provider_test"),
+            crate::metadata_name!("Hanging provider"),
+            "Provider timeout classification fixture",
+        )
+    }
+
+    fn project(state: &Self::State) -> Self::Scheme {
+        state.clone()
+    }
+
+    async fn resolve(
+        _: &Self::Properties,
+        _: &CredentialContext,
+    ) -> Result<StaticResolveResult<Self::State>, CredentialError> {
+        std::future::pending().await
+    }
+}
+
+impl Interactive for HangingCredential {
+    type Pending = NoPendingState;
+
+    async fn begin(
+        _: &Self::Properties,
+        _: &CredentialContext,
+    ) -> Result<ResolveResult<Self::State, Self::Pending>, CredentialError> {
+        std::future::pending().await
+    }
+
+    async fn continue_resolve(
+        _: &Self::Pending,
+        _: &UserInput,
+        _: &CredentialContext,
+    ) -> Result<ResolveResult<Self::State, Self::Pending>, CredentialError> {
+        std::future::pending().await
+    }
+}
+
 fn dispatch() -> DispatchOps<UnusedPendingStore> {
     let mut ops = DispatchOps::new();
     register_runtime_ops::<NormalizedCredential, _>(&mut ops).unwrap();
@@ -160,6 +208,49 @@ async fn initial_acquisition_carries_conservative_provider_boundary_evidence() {
     ));
 }
 
+#[tokio::test(start_paused = true)]
+async fn provider_capable_initial_timeouts_are_outcome_unknown_for_all_entry_paths() {
+    let mut ops = DispatchOps::new();
+    register_runtime_ops::<HangingCredential, UnusedPendingStore>(&mut ops)
+        .expect("base fixture registration succeeds");
+    register_interactive_ops::<HangingCredential, UnusedPendingStore>(&mut ops)
+        .expect("interactive fixture registration succeeds");
+    let ctx = CredentialContext::for_owner("owner").with_session_id("session");
+    let props = || json!({"token": "value"});
+
+    let create_or_update = ops
+        .resolve(HangingCredential::KEY, props(), &ctx)
+        .await
+        .err()
+        .expect("provider-capable resolve times out ambiguously");
+    assert_matches!(create_or_update, CredentialServiceError::OutcomeUnknown);
+
+    let initial_acquire = ops
+        .acquire(HangingCredential::KEY, props(), &ctx, &UnusedPendingStore)
+        .await
+        .err()
+        .expect("provider-capable begin times out ambiguously");
+    assert_matches!(initial_acquire, CredentialServiceError::OutcomeUnknown);
+
+    let reauthorization = ops
+        .acquire_with_intent(
+            HangingCredential::KEY,
+            props(),
+            &ctx,
+            &UnusedPendingStore,
+            AcquisitionIntent::ReauthorizeExisting {
+                credential_id: "cred-1".to_owned(),
+                observed_version: 1,
+                observed_material_epoch: 1,
+                credential_key: HangingCredential::KEY.to_owned(),
+            },
+        )
+        .await
+        .err()
+        .expect("provider-capable reauthorization begin times out ambiguously");
+    assert_matches!(reauthorization, CredentialServiceError::OutcomeUnknown);
+}
+
 struct InteractiveEvidenceCredential;
 
 impl Credential for InteractiveEvidenceCredential {
@@ -194,12 +285,18 @@ impl Interactive for InteractiveEvidenceCredential {
     type Pending = NoPendingState;
 
     async fn begin(
-        properties: &Self::Properties,
+        _: &Self::Properties,
         _: &CredentialContext,
     ) -> Result<ResolveResult<Self::State, Self::Pending>, CredentialError> {
-        Ok(ResolveResult::Complete(SecretToken::new(
-            properties.token.clone(),
-        )))
+        Ok(ResolveResult::Pending {
+            state: NoPendingState,
+            interaction: InteractionRequest::DisplayInfo {
+                title: "Continue".to_owned(),
+                message: "Continue acquisition".to_owned(),
+                data: DisplayData::Text("continue".to_owned()),
+                expires_in: Some(60),
+            },
+        })
     }
 
     async fn continue_resolve(
@@ -216,6 +313,15 @@ impl Interactive for InteractiveEvidenceCredential {
 struct ConsumedPendingStore {
     pending: Vec<u8>,
     consume_calls: AtomicUsize,
+    consume_failure: ConsumeFailure,
+    put_fails: bool,
+}
+
+#[derive(Clone, Copy)]
+enum ConsumeFailure {
+    None,
+    NotFound,
+    Backend,
 }
 
 impl PendingStateStore for ConsumedPendingStore {
@@ -226,6 +332,11 @@ impl PendingStateStore for ConsumedPendingStore {
         _: &str,
         _: P,
     ) -> Result<PendingToken, PendingStoreError> {
+        if self.put_fails {
+            return Err(PendingStoreError::Backend(Box::new(std::io::Error::other(
+                "test pending backend failure",
+            ))));
+        }
         panic!("completed continuation must not write pending state")
     }
 
@@ -252,6 +363,15 @@ impl PendingStateStore for ConsumedPendingStore {
         _: &str,
     ) -> Result<P, PendingStoreError> {
         self.consume_calls.fetch_add(1, Ordering::Relaxed);
+        match self.consume_failure {
+            ConsumeFailure::None => {},
+            ConsumeFailure::NotFound => return Err(PendingStoreError::NotFound),
+            ConsumeFailure::Backend => {
+                return Err(PendingStoreError::Backend(Box::new(std::io::Error::other(
+                    "test pending backend failure",
+                ))));
+            },
+        }
         serde_json::from_slice(&self.pending)
             .map_err(|error| PendingStoreError::Backend(Box::new(error)))
     }
@@ -276,6 +396,8 @@ async fn reauthorization_continuation_marks_completion_after_consuming_authority
     let store = ConsumedPendingStore {
         pending,
         consume_calls: AtomicUsize::new(0),
+        consume_failure: ConsumeFailure::None,
+        put_fails: false,
     };
     let mut ops = DispatchOps::new();
     register_runtime_ops::<InteractiveEvidenceCredential, _>(&mut ops)
@@ -304,6 +426,81 @@ async fn reauthorization_continuation_marks_completion_after_consuming_authority
             ..
         })
     ));
+}
+
+#[tokio::test]
+async fn post_provider_poll_finalization_preserves_exact_vs_unknown_store_failure() {
+    let intent = AcquisitionIntent::create_for_key(InteractiveEvidenceCredential::KEY);
+    let expectation = intent.expectation();
+    let pending = AcquisitionPending::new(intent, NoPendingState);
+    let pending = crate::serde_secret::expose_for_serialization(|| serde_json::to_vec(&pending))
+        .expect("serialize pending fixture");
+    let mut ops = DispatchOps::new();
+    register_runtime_ops::<InteractiveEvidenceCredential, _>(&mut ops)
+        .expect("base fixture registration succeeds");
+    register_interactive_ops::<InteractiveEvidenceCredential, _>(&mut ops)
+        .expect("interactive fixture registration succeeds");
+    let ctx = CredentialContext::for_owner("owner").with_session_id("session");
+
+    for (consume_failure, expected_unknown) in [
+        (ConsumeFailure::Backend, true),
+        (ConsumeFailure::NotFound, false),
+    ] {
+        let store = ConsumedPendingStore {
+            pending: pending.clone(),
+            consume_calls: AtomicUsize::new(0),
+            consume_failure,
+            put_fails: false,
+        };
+        let error = ops
+            .continue_with_intent(
+                &PendingToken::generate(),
+                &UserInput::Poll,
+                &ctx,
+                &store,
+                expectation.clone(),
+            )
+            .await
+            .err()
+            .expect("post-provider pending finalization must fail closed");
+        if expected_unknown {
+            assert_matches!(error, CredentialServiceError::OutcomeUnknown);
+        } else {
+            assert_matches!(
+                error,
+                CredentialServiceError::AcquisitionFinalizationRequired
+            );
+        }
+        assert_eq!(store.consume_calls.load(Ordering::Relaxed), 1);
+    }
+}
+
+#[tokio::test]
+async fn post_provider_begin_pending_write_failure_is_outcome_unknown() {
+    let store = ConsumedPendingStore {
+        pending: Vec::new(),
+        consume_calls: AtomicUsize::new(0),
+        consume_failure: ConsumeFailure::None,
+        put_fails: true,
+    };
+    let mut ops = DispatchOps::new();
+    register_runtime_ops::<InteractiveEvidenceCredential, _>(&mut ops)
+        .expect("base fixture registration succeeds");
+    register_interactive_ops::<InteractiveEvidenceCredential, _>(&mut ops)
+        .expect("interactive fixture registration succeeds");
+
+    let error = ops
+        .acquire(
+            InteractiveEvidenceCredential::KEY,
+            json!({"token": "value"}),
+            &CredentialContext::for_owner("owner").with_session_id("session"),
+            &store,
+        )
+        .await
+        .err()
+        .expect("post-provider pending write must fail closed");
+
+    assert_matches!(error, CredentialServiceError::OutcomeUnknown);
 }
 
 #[test]
@@ -366,6 +563,23 @@ fn acquisition_preserves_unknown_provider_outcome() {
         credential_error_to_service_error(CredentialError::OutcomeUnknown),
         CredentialServiceError::OutcomeUnknown
     );
+}
+
+#[test]
+fn post_provider_protocol_finalization_failures_require_reconciliation() {
+    for error in [
+        crate::runtime::ExecutorError::InvalidContinuationOutcome,
+        crate::runtime::ExecutorError::PostProviderPendingFinalization(
+            PendingStoreError::ValidationFailed {
+                reason: "closed test reason".to_owned(),
+            },
+        ),
+    ] {
+        assert_matches!(
+            executor_error_to_service_error(error),
+            CredentialServiceError::AcquisitionFinalizationRequired
+        );
+    }
 }
 
 #[derive(zeroize::ZeroizeOnDrop, crate::StateWireFingerprint)]
@@ -489,6 +703,9 @@ async fn stored_state_serialization_errors_never_publish_provider_material() {
         .expect("failing state serializer rejects acquisition"),
     ] {
         assert!(!format!("{error:?} {error}").contains("STATE_SECRET_CANARY"));
-        assert_matches!(error, CredentialServiceError::Internal(_));
+        assert_matches!(
+            error,
+            CredentialServiceError::AcquisitionFinalizationRequired
+        );
     }
 }

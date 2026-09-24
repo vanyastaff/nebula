@@ -837,7 +837,12 @@ fn serialize_state<S: CredentialState + StateWireFingerprint>(
     let data = crate::serde_secret::expose_for_serialization(|| encode_state_payload(state))
         .map_err(|_| {
             tracing::warn!("credential state serialization failed");
-            CredentialServiceError::Internal("credential state serialization failed".to_owned())
+            match completion_evidence {
+                AcquisitionCompletionEvidence::ProviderBoundaryUnproven
+                | AcquisitionCompletionEvidence::InteractiveContinuationComplete => {
+                    CredentialServiceError::AcquisitionFinalizationRequired
+                },
+            }
         })?;
     Ok(ResolvedState {
         data,
@@ -907,10 +912,14 @@ where
 /// preserving the fault class instead of flattening everything to
 /// `ValidationFailed` (which the API renders as a client 400).
 ///
-/// A resolve timeout is transient (503), a pending-store backend outage is
-/// internal (500), an absent / expired / already-consumed pending token means
-/// "restart the interactive flow" (401), and only a genuine input problem stays
-/// `validation` (400).
+/// Only a polling timeout is replay-safe and transient. A timeout after
+/// entering erased initial/provider work is `OutcomeUnknown`. Pending-store
+/// failures before provider dispatch retain their ordinary classification;
+/// after an exact provider result, an ambiguous backend acknowledgement is
+/// `OutcomeUnknown` while a definite local refusal requires acquisition
+/// reconciliation. An absent / expired / already-consumed token before
+/// dispatch means "restart the interactive flow" (401), and only a genuine
+/// input problem stays `validation` (400).
 fn executor_error_to_service_error(e: crate::runtime::ExecutorError) -> CredentialServiceError {
     use crate::pending_store::PendingStoreError;
     use crate::runtime::ExecutorError;
@@ -918,6 +927,7 @@ fn executor_error_to_service_error(e: crate::runtime::ExecutorError) -> Credenti
         ExecutorError::Timeout { timeout } => CredentialServiceError::TransientProvider(format!(
             "credential resolution timed out after {timeout:?}"
         )),
+        ExecutorError::ProviderOutcomeUnknown => CredentialServiceError::OutcomeUnknown,
         ExecutorError::PendingStore(PendingStoreError::Backend(_)) => CredentialServiceError::Store,
         ExecutorError::PendingStore(PendingStoreError::ValidationFailed { .. }) => {
             CredentialServiceError::validation("", "credential.pending_invalid")
@@ -930,9 +940,15 @@ fn executor_error_to_service_error(e: crate::runtime::ExecutorError) -> Credenti
         ExecutorError::MissingSessionId => CredentialServiceError::SessionRequired {
             capability: "resolve",
         },
-        ExecutorError::InvalidContinuationOutcome => CredentialServiceError::Internal(
-            "one-shot credential continuation returned a polling outcome".to_owned(),
-        ),
+        ExecutorError::InvalidContinuationOutcome => {
+            CredentialServiceError::AcquisitionFinalizationRequired
+        },
+        ExecutorError::PostProviderPendingFinalization(PendingStoreError::Backend(_)) => {
+            CredentialServiceError::OutcomeUnknown
+        },
+        ExecutorError::PostProviderPendingFinalization(_) => {
+            CredentialServiceError::AcquisitionFinalizationRequired
+        },
         ExecutorError::Credential(ce) => credential_error_to_service_error(ce),
     }
 }
