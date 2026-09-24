@@ -10,11 +10,84 @@
 
 use std::time::Duration;
 
-use nebula_credential::CredentialId;
+use nebula_core::CredentialKey;
+use nebula_credential::{Capabilities, CredentialId, CredentialSlotResolver, TenantScope};
+use tokio_util::sync::CancellationToken;
 
 use super::index::{ResourceFanoutIndex, RotationOutcome};
 
 impl ResourceFanoutIndex {
+    /// Projects the owner-qualified durable replacement, installs the new
+    /// guard, and only then dispatches the resource refresh hook for every
+    /// affected row.
+    pub async fn dispatch_material_replacement(
+        &self,
+        cid: CredentialId,
+        scope: &TenantScope,
+        credential_key: &CredentialKey,
+        resolver: &dyn CredentialSlotResolver,
+        mgr: &crate::Manager,
+    ) -> RotationOutcome {
+        let rows = self.affected(&cid);
+        let dispatches = rows.into_iter().map(|binding| async move {
+            let guard = match resolver
+                .resolve_slot(
+                    scope,
+                    cid,
+                    credential_key.clone(),
+                    Capabilities::empty(),
+                    CancellationToken::new(),
+                )
+                .await
+            {
+                Ok(guard) => guard,
+                Err(error) => {
+                    tracing::warn!(
+                        credential_id = %cid,
+                        resource_key = %binding.resource_key,
+                        slot = %binding.slot_name,
+                        error = %error,
+                        "material replacement fan-out projection failed"
+                    );
+                    return RowOutcome::Failed {
+                        drain_timed_out: false,
+                    };
+                },
+            };
+
+            match mgr
+                .install_and_refresh_slot_for_identity(
+                    &binding.resource_key,
+                    binding.scope,
+                    &binding.slot_name,
+                    &binding.slot_identity,
+                    guard,
+                )
+                .await
+            {
+                Ok(crate::manager::EpochRefreshOutcome::Applied(_)) => RowOutcome::Success {
+                    drain_timed_out: false,
+                },
+                Ok(crate::manager::EpochRefreshOutcome::Stale { .. }) => RowOutcome::Success {
+                    drain_timed_out: false,
+                },
+                Err(error) => {
+                    tracing::warn!(
+                        credential_id = %cid,
+                        resource_key = %binding.resource_key,
+                        slot = %binding.slot_name,
+                        error = %error,
+                        "material replacement fan-out install or refresh failed"
+                    );
+                    RowOutcome::Failed {
+                        drain_timed_out: false,
+                    }
+                },
+            }
+        });
+        summarize_row_outcomes(futures::future::join_all(dispatches).await)
+    }
+
     /// Fans a completed credential refresh out to every resource registry
     /// row that resolved `cid`, calling
     /// [`Manager::refresh_slot_for_identity`](crate::Manager::refresh_slot_for_identity)

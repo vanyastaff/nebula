@@ -20,6 +20,7 @@
 //!  ::dispatch_{refresh,revoke} → Manager::{refresh_slot_for,
 //!  taint_slot_for + drain_and_revoke} → resource on_credential_* hook`.
 
+use std::future::Future;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -43,6 +44,7 @@ use nebula_resource::{
 };
 use nebula_resource::{ResourceFanoutDriver, ResourceFanoutIndex};
 use tokio_util::sync::CancellationToken;
+use zeroize::Zeroize;
 
 // ── Test resource recording every rotation/revoke hook delivery ──────
 
@@ -51,6 +53,188 @@ struct HookError(&'static str);
 impl std::fmt::Display for HookError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.0)
+    }
+}
+
+#[tokio::test]
+async fn material_replacement_installs_projected_guard_before_refresh_hook() {
+    let cid = CredentialId::new();
+    let credential_key = "oauth".parse().expect("valid credential key");
+    let scope = ScopeLevel::Global;
+    let identity = SlotIdentity::from_bindings([("db", cid.to_string().as_str())]);
+    let observed = Arc::new(AtomicUsize::new(0));
+    let slot = Arc::new(nebula_resource::SlotCell::empty());
+    let manager = Arc::new(Manager::new());
+    manager
+        .register(RegistrationSpec {
+            resource: ReplacementResource {
+                slot: Arc::clone(&slot),
+                observed: Arc::clone(&observed),
+            },
+            config: NoCfg,
+            scope: scope.clone(),
+            slot_identity: identity.clone(),
+            topology: Resident::<ReplacementResource>::new(ResidentConfig::default()),
+            recovery_gate: None,
+        })
+        .expect("replacement resource registers");
+    let context = ResourceContext::minimal(Scope::default(), CancellationToken::new());
+    let warm = manager
+        .acquire_resident_for_identity::<ReplacementResource>(
+            &context,
+            &AcquireOptions::default(),
+            &identity,
+        )
+        .await
+        .expect("replacement resource warms");
+    drop(warm);
+
+    let index = Arc::new(ResourceFanoutIndex::new());
+    index.bind(cid, ReplacementResource::key(), scope, "db", identity);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let resolver: Arc<dyn nebula_credential::CredentialSlotResolver> =
+        Arc::new(ReplacementResolver {
+            calls: Arc::clone(&calls),
+        });
+    let bus = Arc::new(EventBus::new(8));
+    let _driver = ResourceFanoutDriver::spawn_with_resolver(
+        index,
+        manager,
+        Some(resolver),
+        Arc::clone(&bus),
+        None,
+    );
+
+    bus.emit(CredentialEvent::MaterialReplaced {
+        credential_id: cid,
+        scope: nebula_credential::TenantScope::new("org", "workspace"),
+        credential_key,
+    });
+
+    for _ in 0..2_000 {
+        if observed.load(Ordering::SeqCst) == 22 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        observed.load(Ordering::SeqCst),
+        22,
+        "refresh hook must observe the newly projected material"
+    );
+    assert_eq!(slot.material_epoch(), Some(2));
+}
+
+#[derive(Zeroize)]
+struct ReplacementMaterial(u64);
+
+#[derive(Clone)]
+struct ReplacementResource {
+    slot: Arc<nebula_resource::SlotCell<nebula_credential::CredentialGuard<ReplacementMaterial>>>,
+    observed: Arc<AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl Provider for ReplacementResource {
+    type Config = NoCfg;
+    type Instance = ();
+    type Topology = Resident<Self>;
+
+    fn key() -> ResourceKey {
+        resource_key!("fanout-replacement-order")
+    }
+
+    async fn create(&self, _c: &NoCfg, _x: &ResourceContext) -> Result<(), ResourceError> {
+        Ok(())
+    }
+
+    async fn on_credential_refresh(&self, _slot: &str, _runtime: &()) -> Result<(), ResourceError> {
+        let value = self
+            .slot
+            .load()
+            .expect("replacement guard installed before hook");
+        self.observed.store(value.0 as usize, Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("fanout-replacement-order"),
+            "",
+        )
+    }
+}
+
+impl HasCredentialSlots for ReplacementResource {
+    fn credential_slot_epoch(&self) -> u64 {
+        self.slot.generation()
+    }
+
+    fn declares_credential_slots() -> bool {
+        true
+    }
+
+    fn credential_slot_names() -> &'static [&'static str] {
+        &["db"]
+    }
+
+    fn install_credential_slot(
+        &self,
+        slot: &str,
+        guard: nebula_credential::ErasedCredentialGuard,
+    ) -> Result<nebula_resource::SlotUpdate, nebula_resource::SlotInstallError> {
+        if slot != "db" {
+            return Err(nebula_resource::SlotInstallError::UnknownSlot);
+        }
+        let epoch = guard.metadata().material_epoch();
+        let guard = guard
+            .into_typed::<ReplacementMaterial>()
+            .map_err(|_| nebula_resource::SlotInstallError::CredentialTypeMismatch)?;
+        self.slot.install_at_material_epoch(epoch, Arc::new(guard))
+    }
+}
+
+#[async_trait::async_trait]
+impl ResidentProvider for ReplacementResource {
+    fn is_alive_sync(&self, _runtime: &()) -> bool {
+        true
+    }
+}
+
+struct ReplacementResolver {
+    calls: Arc<AtomicUsize>,
+}
+
+impl nebula_credential::CredentialSlotResolver for ReplacementResolver {
+    fn resolve_slot<'a>(
+        &'a self,
+        _scope: &'a nebula_credential::TenantScope,
+        credential_id: CredentialId,
+        expected_key: nebula_core::CredentialKey,
+        _required_capabilities: nebula_credential::Capabilities,
+        _cancel: CancellationToken,
+    ) -> std::pin::Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        nebula_credential::ErasedCredentialGuard,
+                        nebula_credential::CredentialSlotResolveError,
+                    >,
+                > + Send
+                + 'a,
+        >,
+    > {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let metadata =
+            nebula_credential::CredentialGuardMetadata::new(credential_id, expected_key, 2, 2);
+        Box::pin(async move {
+            Ok(nebula_credential::ErasedCredentialGuard::from_typed(
+                nebula_credential::CredentialGuard::new(ReplacementMaterial(22)),
+                metadata,
+            ))
+        })
     }
 }
 impl std::error::Error for HookError {}

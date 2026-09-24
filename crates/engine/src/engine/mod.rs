@@ -932,9 +932,10 @@ impl WorkflowEngine {
             return None;
         }
 
-        Some(nebula_resource::ResourceFanoutDriver::spawn(
+        Some(nebula_resource::ResourceFanoutDriver::spawn_with_resolver(
             Arc::clone(&self.resource_fanout_index),
             manager,
+            self.credential_resolver.clone(),
             credential_bus,
             lease_bus,
         ))

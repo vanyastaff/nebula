@@ -281,7 +281,11 @@ impl CredentialService {
             .replace(&scope.selector(id), replacement)
             .await
             .map_err(|error| Self::map_store_err_for(&id.to_string(), error))?;
-        self.observer.on_refresh(&id);
+        let credential_key = key.parse().map_err(|_| {
+            CredentialServiceError::validation("/credential_key", "credential.key_invalid")
+        })?;
+        self.observer
+            .on_material_replaced(scope, &id, &credential_key);
         tracing::info!(credential.id = %id, "credential reauthorized");
         Ok(CredentialHead {
             id: id.to_string(),

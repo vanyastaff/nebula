@@ -28,6 +28,19 @@ pub trait CredentialObserver: Send + Sync {
     fn on_resolve(&self, credential_id: &CredentialId);
     /// Called after a successful refresh.
     fn on_refresh(&self, credential_id: &CredentialId);
+    /// Called after interactive credential material was replaced.
+    fn on_material_replaced(
+        &self,
+        scope: &crate::TenantScope,
+        credential_id: &CredentialId,
+        credential_key: &nebula_core::CredentialKey,
+    ) {
+        let _ = self.event_bus().emit(CredentialEvent::MaterialReplaced {
+            credential_id: *credential_id,
+            scope: scope.durable_owner_scope(),
+            credential_key: credential_key.clone(),
+        });
+    }
     /// Called after a successful revoke.
     fn on_revoke(&self, credential_id: &CredentialId);
 }
@@ -74,6 +87,13 @@ impl CredentialObserver for NoopObserver {
     }
     fn on_resolve(&self, _credential_id: &CredentialId) {}
     fn on_refresh(&self, _credential_id: &CredentialId) {}
+    fn on_material_replaced(
+        &self,
+        _scope: &crate::TenantScope,
+        _credential_id: &CredentialId,
+        _credential_key: &nebula_core::CredentialKey,
+    ) {
+    }
     fn on_revoke(&self, _credential_id: &CredentialId) {}
 }
 
@@ -138,10 +158,24 @@ impl CredentialObserver for EventMetricObserver {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     use super::{CredentialObserver, EventMetricObserver, NoopObserver};
-    use crate::CredentialId;
+    use crate::{CredentialId, CredentialMetrics, TenantScope};
+    use nebula_core::accessor::MetricsEmitter;
+
+    #[derive(Default)]
+    struct RecordingMetrics(Mutex<Vec<String>>);
+
+    impl MetricsEmitter for RecordingMetrics {
+        fn counter(&self, name: &str, _value: u64, _labels: &[(&str, &str)]) {
+            self.0.lock().expect("metrics lock").push(name.to_owned());
+        }
+
+        fn gauge(&self, _name: &str, _value: f64, _labels: &[(&str, &str)]) {}
+
+        fn histogram(&self, _name: &str, _value: f64, _labels: &[(&str, &str)]) {}
+    }
 
     #[test]
     fn noop_observer_is_object_safe_and_silent() {
@@ -160,5 +194,31 @@ mod tests {
         obs.on_refresh(&CredentialId::new());
         let ev = sub.try_recv().expect("event emitted");
         assert!(matches!(ev, crate::CredentialEvent::Refreshed { .. }));
+    }
+
+    #[tokio::test]
+    async fn material_replacement_emits_without_counting_a_refresh() {
+        let metrics = Arc::new(RecordingMetrics::default());
+        let observer = EventMetricObserver::new(8).with_metrics(metrics.clone());
+        let mut subscriber = observer.event_bus().subscribe();
+        let id = CredentialId::new();
+        let key = "oauth".parse().expect("valid credential key");
+
+        observer.on_material_replaced(&TenantScope::new("org", "workspace"), &id, &key);
+
+        assert!(matches!(
+            subscriber.try_recv().expect("replacement event emitted"),
+            crate::CredentialEvent::MaterialReplaced { credential_id, .. }
+                if credential_id == id
+        ));
+        assert!(
+            !metrics
+                .0
+                .lock()
+                .expect("metrics lock")
+                .iter()
+                .any(|name| name == CredentialMetrics::REFRESH_TOTAL),
+            "reauthorization must not inflate refresh metrics"
+        );
     }
 }
