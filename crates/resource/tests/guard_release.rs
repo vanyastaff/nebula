@@ -1043,6 +1043,39 @@ async fn warmup_follows_the_configured_strategy() {
     }
 }
 
+/// A pool with a minimum keeps it even with eviction disabled: the
+/// maintenance loop runs to refill the floor, so `min_size` holds without
+/// any eager warmup.
+#[tokio::test(start_paused = true)]
+async fn a_pool_without_eviction_still_refills_its_minimum() {
+    use nebula_resource::topology::pooled::config::{Config, WarmupStrategy};
+
+    let manager = Manager::new();
+    let resource = PoolTestResource::new();
+    let pool = Pooled::<PoolTestResource>::new(
+        Config {
+            min_size: 2,
+            max_size: 4,
+            idle_timeout: None,
+            max_lifetime: None,
+            warmup: WarmupStrategy::None,
+            maintenance_interval: std::time::Duration::from_secs(1),
+            ..Default::default()
+        },
+        1,
+    );
+    register_pool(&manager, resource.clone(), test_config(), pool);
+    for _ in 0..5 {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(
+        resource.create_counter.load(Ordering::SeqCst),
+        2,
+        "the refill brought the pool to its minimum"
+    );
+}
+
 /// The author-hook ceiling bounds each warmup create, not the stagger
 /// schedule: a staggered warmup longer than the ceiling still reaches
 /// `min_size`.

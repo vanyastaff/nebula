@@ -359,8 +359,11 @@ impl MemoryLimitStore {
     }
 
     fn with_entry<T>(&self, key: &LimitKey, apply: impl FnOnce(&mut Entry, u64) -> T) -> T {
-        let now = self.now();
         let mut guard = self.keys.lock();
+        // Read under the lock: a time read before waiting for it could be
+        // stale by the time the transition runs, and a schedule computed
+        // from it could already lie in the past when the lock is released.
+        let now = self.now();
         let keys = &mut *guard;
         keys.ops = keys.ops.wrapping_add(1);
         let is_new = !keys.entries.contains_key(key);
@@ -467,8 +470,8 @@ impl LimitStore for MemoryLimitStore {
     }
 
     async fn penalty(&self, key: &LimitKey) -> Result<Duration, LimitStoreError> {
-        let now = self.now();
         let keys = self.keys.lock();
+        let now = self.now();
         // A key without its own entry may have run on the shared overflow
         // limit, even if the store has room again by now, so it answers to
         // that limit's penalty; for a key that never overflowed this only

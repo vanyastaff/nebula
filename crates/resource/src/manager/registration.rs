@@ -456,7 +456,12 @@ impl Manager {
         let Some(schedule) = schedule else {
             return;
         };
-        if schedule.idle_timeout.is_none() && schedule.max_lifetime.is_none() {
+        // With no eviction there is nothing to sweep, but a pool with a
+        // minimum still needs its floor refilled after an instance is
+        // dropped (a failed check, a recycle that discards), so the loop
+        // runs for either reason.
+        let keeps_a_floor = managed.topology.warmup_target(&managed.config()) > 0;
+        if schedule.idle_timeout.is_none() && schedule.max_lifetime.is_none() && !keeps_a_floor {
             return;
         }
         // `tokio::time::interval` panics on a zero period, and a sub-second

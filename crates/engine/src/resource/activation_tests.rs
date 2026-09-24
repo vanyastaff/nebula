@@ -889,13 +889,12 @@ async fn a_timed_out_activation_is_recorded_as_failed() {
     );
 }
 
-/// With the rotation fan-out attached, a refreshed credential does not
-/// register the row again (the fan-out installs it into the live row), but
-/// the durable check still runs, so a revoke whose fan-out event was lost
-/// still stops the row.
+/// With the rotation fan-out attached the durable check behaves the same:
+/// its events can be lost, so a refreshed credential registers the row
+/// again and a revoked one stops it.
 #[cfg(feature = "rotation")]
 #[tokio::test]
-async fn with_the_fanout_refreshes_are_left_to_it_but_revokes_still_stop_the_row() {
+async fn with_the_fanout_the_durable_check_still_follows_credentials() {
     let fixture = Fixture::new();
     let mut events = fixture.manager.subscribe_events();
     let credential = CredentialId::new().to_string();
@@ -911,11 +910,10 @@ async fn with_the_fanout_refreshes_are_left_to_it_but_revokes_still_stop_the_row
     fixture.resolver.answer(Ok((2, 1)));
     fixture.activate(resource_id, &key).await.unwrap();
     fixture.activate(resource_id, &key).await.unwrap();
-    assert_eq!(drain(&mut events), (1, 0), "registered once");
     assert_eq!(
-        fixture.resolver.calls.load(Ordering::SeqCst),
-        3,
-        "the durable check ran on every activation"
+        drain(&mut events).0,
+        2,
+        "the refreshed credential registered the row again, once"
     );
 
     fixture
