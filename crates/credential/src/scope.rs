@@ -149,6 +149,14 @@ impl TenantScope {
     pub(crate) fn owner(&self) -> &CredentialOwner {
         &self.owner
     }
+
+    /// Clone only the durable owner partition, excluding interactive proof.
+    pub(crate) fn durable_owner_scope(&self) -> Self {
+        Self {
+            owner: self.owner.clone(),
+            authentication_binding: None,
+        }
+    }
 }
 
 impl fmt::Debug for TenantScope {

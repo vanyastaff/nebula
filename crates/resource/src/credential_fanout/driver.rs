@@ -59,7 +59,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use nebula_credential::{CredentialEvent, CredentialId, LeaseEvent};
+use nebula_credential::{CredentialEvent, CredentialId, CredentialSlotResolver, LeaseEvent};
 use nebula_eventbus::EventBus;
 
 use crate::Manager;
@@ -232,6 +232,17 @@ impl ResourceFanoutDriver {
         credential_bus: Arc<EventBus<CredentialEvent>>,
         lease_bus: Option<Arc<EventBus<LeaseEvent>>>,
     ) -> Self {
+        Self::spawn_with_resolver(index, manager, None, credential_bus, lease_bus)
+    }
+
+    /// Spawn the driver with owner-qualified material reprojection enabled.
+    pub fn spawn_with_resolver(
+        index: Arc<ResourceFanoutIndex>,
+        manager: Arc<Manager>,
+        resolver: Option<Arc<dyn CredentialSlotResolver>>,
+        credential_bus: Arc<EventBus<CredentialEvent>>,
+        lease_bus: Option<Arc<EventBus<LeaseEvent>>>,
+    ) -> Self {
         let mut credential_sub = credential_bus.subscribe();
         let mut lease_sub = lease_bus.map(|bus| bus.subscribe());
         let handle = tokio::spawn(async move {
@@ -257,7 +268,7 @@ impl ResourceFanoutDriver {
                             ev = credential_sub.recv() => match ev {
                                 Some(ev) => {
                                     Self::on_credential_event(
-                                        &index, &manager, &mut revoke_dedupe, ev,
+                                        &index, &manager, resolver.as_deref(), &mut revoke_dedupe, ev,
                                     ).await;
                                 },
                                 None => break,
@@ -286,8 +297,14 @@ impl ResourceFanoutDriver {
                     },
                     None => match credential_sub.recv().await {
                         Some(ev) => {
-                            Self::on_credential_event(&index, &manager, &mut revoke_dedupe, ev)
-                                .await;
+                            Self::on_credential_event(
+                                &index,
+                                &manager,
+                                resolver.as_deref(),
+                                &mut revoke_dedupe,
+                                ev,
+                            )
+                            .await;
                         },
                         None => break,
                     },
@@ -308,6 +325,7 @@ impl ResourceFanoutDriver {
     async fn on_credential_event(
         index: &ResourceFanoutIndex,
         manager: &Manager,
+        resolver: Option<&dyn CredentialSlotResolver>,
         revoke_dedupe: &mut RevokeDedupe,
         ev: CredentialEvent,
     ) {
@@ -319,6 +337,30 @@ impl ResourceFanoutDriver {
                     .dispatch_refresh(credential_id, manager, PER_RESOURCE_ROTATION_TIMEOUT)
                     .await;
                 Self::record(credential_id, "refresh", outcome);
+            },
+            CredentialEvent::MaterialReplaced {
+                credential_id,
+                scope,
+                credential_key,
+            } => {
+                let outcome = if let Some(resolver) = resolver {
+                    index
+                        .dispatch_material_replacement(
+                            credential_id,
+                            &scope,
+                            &credential_key,
+                            resolver,
+                            manager,
+                        )
+                        .await
+                } else {
+                    tracing::warn!(
+                        credential_id = %credential_id,
+                        "material replacement fan-out has no credential resolver"
+                    );
+                    RotationOutcome::default()
+                };
+                Self::record(credential_id, "material_replacement", outcome);
             },
             CredentialEvent::Revoked { credential_id } => {
                 Self::dispatch_revoke_deduped(
