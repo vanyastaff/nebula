@@ -24,6 +24,12 @@ request the same background scan;
 at most one scan runs and one further wake remains pending. Slow projections do
 not block credential or lease revoke reception.
 
+If an owner-qualified reread finds a durable credential tombstone, reconciliation
+uses the same terminal path as a revoke observation: it synchronously taints the
+exact registered resource row before awaiting its drain and revoke hook. A lost
+`Revoked` event therefore cannot leave the old credential-backed resource acquirable.
+Physical absence and cross-owner lookups remain indistinguishable to public callers.
+
 The production projection stores its credential ID, contract key and owner scope
 alongside the slot's accepted material epoch. Owner metadata excludes interactive
 authentication bindings. Derived credential slots preserve
