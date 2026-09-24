@@ -41,6 +41,12 @@ macro_rules! impl_fake_handle {
             fn accepts_credential_slot_name(&self, _slot: &str) -> bool {
                 true
             }
+            fn pending_projection_hooks(
+                &self,
+            ) -> &std::sync::Mutex<std::collections::HashMap<String, u64>> {
+                unreachable!("this fixture does not install projections")
+            }
+
             fn install_credential_slot(
                 &self,
                 _slot: &str,

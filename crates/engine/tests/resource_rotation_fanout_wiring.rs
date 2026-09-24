@@ -315,6 +315,9 @@ async fn refreshed_events_and_scans_install_once_per_epoch_in_either_order() {
             }
         }
         bus.emit(CredentialEvent::Refreshed { credential_id: cid });
+        for _ in 0..100 {
+            tokio::task::yield_now().await;
+        }
         bus.emit(CredentialEvent::Refreshed { credential_id: cid });
         for _ in 0..100 {
             tokio::task::yield_now().await;
@@ -331,6 +334,80 @@ async fn refreshed_events_and_scans_install_once_per_epoch_in_either_order() {
         assert!(calls.load(Ordering::SeqCst) >= 4);
         assert_eq!(resource.hooks.load(Ordering::SeqCst), 1);
         assert_eq!(resource.slot.generation(), 2);
+        driver.abort();
+    }
+}
+
+#[tokio::test]
+async fn stalled_refresh_scan_does_not_delay_credential_or_lease_revoke() {
+    for via_lease in [false, true] {
+        let manager = Arc::new(Manager::new());
+        let cid = CredentialId::new();
+        let _resource = register_replacement(&manager, cid);
+        let identity = SlotIdentity::from_bindings([("db", "oauth")]);
+        let index = Arc::new(ResourceFanoutIndex::new());
+        index.bind(
+            cid,
+            ReplacementResource::key(),
+            ScopeLevel::Global,
+            "db",
+            identity.clone(),
+        );
+        let entered = Arc::new(tokio::sync::Semaphore::new(0));
+        let resolver = GatedProjection {
+            entered: Arc::clone(&entered),
+            release: Arc::new(tokio::sync::Semaphore::new(0)),
+            cancelled: Arc::new(std::sync::Mutex::new(None)),
+        };
+        let bus = Arc::new(EventBus::new(8));
+        let leases = Arc::new(EventBus::new(8));
+        let mut observations = manager.subscribe_events();
+        let driver = ResourceFanoutDriver::spawn_with_resolver(
+            index,
+            Arc::clone(&manager),
+            Some(Arc::new(resolver)),
+            Arc::clone(&bus),
+            Some(Arc::clone(&leases)),
+        );
+        tokio::time::timeout(Duration::from_secs(1), entered.acquire())
+            .await
+            .expect("scan started")
+            .expect("permit")
+            .forget();
+        bus.emit(CredentialEvent::Refreshed { credential_id: cid });
+        if via_lease {
+            leases.emit(LeaseEvent::LeaseRevoked {
+                credential_id: Some(cid),
+                lease_id: "fixture".into(),
+                provider: "vault".into(),
+            });
+        } else {
+            bus.emit(CredentialEvent::Revoked { credential_id: cid });
+        }
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if matches!(
+                    observations.recv().await,
+                    Some(nebula_resource::ResourceEvent::SlotRevoked { .. })
+                ) {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("revoke must complete before the 30-second projection deadline");
+        let context = ResourceContext::minimal(Scope::default(), CancellationToken::new());
+        assert!(
+            manager
+                .acquire_resident_for_identity::<ReplacementResource>(
+                    &context,
+                    &AcquireOptions::default(),
+                    &identity
+                )
+                .await
+                .is_err(),
+            "revoked row must reject acquisition"
+        );
         driver.abort();
     }
 }

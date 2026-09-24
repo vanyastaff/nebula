@@ -116,7 +116,7 @@ pub(crate) async fn resolve_slot_with(
                 credential_key: actual_key,
                 material_epoch: stored.material_epoch().get() as u64,
                 revision: stored.version().get() as u64,
-                scope: Some(request.scope.clone()),
+                scope: Some(request.scope.durable_owner_scope()),
             };
 
             tracing::debug!(
@@ -163,7 +163,7 @@ impl CredentialGuardMetadata {
     /// This is routing context, not an authorization grant.
     #[must_use]
     pub fn with_scope(mut self, scope: TenantScope) -> Self {
-        self.scope = Some(scope);
+        self.scope = Some(scope.durable_owner_scope());
         self
     }
 

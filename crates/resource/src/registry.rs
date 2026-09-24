@@ -127,6 +127,10 @@ pub(crate) trait ManagedHandle: Send + Sync + 'static {
         Vec::new()
     }
 
+    /// Serializes projected installation with synchronous hook admission.
+    fn pending_projection_hooks(&self)
+    -> &std::sync::Mutex<std::collections::HashMap<String, u64>>;
+
     /// Installs a newer projected credential guard through the concrete
     /// resource's derive-generated slot dispatcher.
     fn install_credential_slot(
@@ -307,6 +311,12 @@ where
                     .map(|metadata| (*slot, metadata))
             })
             .collect()
+    }
+
+    fn pending_projection_hooks(
+        &self,
+    ) -> &std::sync::Mutex<std::collections::HashMap<String, u64>> {
+        &self.pending_projection_hooks
     }
 
     fn install_credential_slot(

@@ -109,7 +109,7 @@ pub enum SlotDispatchOutcome {
 #[must_use = "refresh installation and hook outcomes must be observed"]
 #[non_exhaustive]
 pub enum EpochRefreshOutcome {
-    /// A newer guard was installed before the hook was dispatched.
+    /// An installed guard had its hook admitted, including retry after queue rejection.
     Applied(SlotDispatchOutcome),
     /// The refresh was stale; neither the slot nor the hook was changed.
     Stale {
@@ -269,7 +269,8 @@ impl Manager {
     /// the refresh hook. The install completes synchronously before the first
     /// await, so author code cannot observe the old guard after dispatch.
     ///
-    /// A stale epoch is a successful no-op and does not invoke the hook.
+    /// A stale epoch is a successful no-op unless its installed guard still needs
+    /// hook admission after a queue rejection. Accepted hooks are never retried.
     /// Type mismatch or unknown slot leaves the previous guard untouched.
     ///
     /// # Errors
@@ -296,34 +297,59 @@ impl Manager {
         managed: Arc<dyn crate::registry::ManagedHandle>,
         guard: nebula_credential::ErasedCredentialGuard,
     ) -> Result<EpochRefreshOutcome, Error> {
-        let update = managed
-            .install_credential_slot(slot, guard)
-            .map_err(|source| {
-                Error::permanent("credential slot installation failed")
-                    .with_source(source)
-                    .with_resource_key(key.clone())
-            })?;
-        match update {
-            crate::SlotUpdate::Installed => self
-                .refresh_resolved(
-                    key,
-                    slot,
-                    managed,
-                    crate::hook_guard::MAX_ROTATION_DISPATCH_CEILING,
-                    crate::hook_guard::MAX_ROTATION_DISPATCH_CEILING,
-                )
-                .await
-                .map(EpochRefreshOutcome::Applied),
-            crate::SlotUpdate::Stale {
-                current_material_epoch,
-            } => Ok(EpochRefreshOutcome::Stale {
-                current_material_epoch,
-            }),
-            crate::SlotUpdate::Revoked | crate::SlotUpdate::AlreadyRevoked => Err(
-                Error::permanent("credential slot install returned an invalid revoke outcome")
-                    .with_resource_key(key.clone()),
-            ),
-        }
+        let started = Instant::now();
+        let accepted = {
+            let mut pending = managed
+                .pending_projection_hooks()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let epoch = guard.metadata().material_epoch();
+            let update = managed
+                .install_credential_slot(slot, guard)
+                .map_err(|source| {
+                    Error::permanent("credential slot installation failed")
+                        .with_source(source)
+                        .with_resource_key(key.clone())
+                })?;
+            match update {
+                crate::SlotUpdate::Installed => {
+                    pending.insert(slot.to_owned(), epoch);
+                },
+                crate::SlotUpdate::Stale {
+                    current_material_epoch,
+                } => {
+                    if pending.get(slot) != Some(&current_material_epoch) {
+                        return Ok(EpochRefreshOutcome::Stale {
+                            current_material_epoch,
+                        });
+                    }
+                },
+                crate::SlotUpdate::Revoked | crate::SlotUpdate::AlreadyRevoked => {
+                    return Err(Error::permanent(
+                        "credential slot install returned an invalid revoke outcome",
+                    )
+                    .with_resource_key(key.clone()));
+                },
+            }
+            // No await between publication and queue admission. Rejection keeps
+            // the pending epoch; acceptance consumes it even if observation is
+            // later cancelled or the admitted hook fails.
+            let accepted = self.admit_refresh_resolved(
+                key,
+                slot,
+                Arc::clone(&managed),
+                crate::hook_guard::MAX_ROTATION_DISPATCH_CEILING,
+            )?;
+            pending.remove(slot);
+            accepted
+        };
+        self.observe_refresh(
+            accepted,
+            crate::hook_guard::MAX_ROTATION_DISPATCH_CEILING,
+            started,
+        )
+        .await
+        .map(EpochRefreshOutcome::Applied)
     }
 
     /// Terminally clears an identity-pinned slot, then synchronously taints
@@ -653,6 +679,18 @@ impl Manager {
         observation_timeout: Duration,
     ) -> Result<SlotDispatchOutcome, Error> {
         let started = Instant::now();
+        let accepted = self.admit_refresh_resolved(key, slot, managed, hook_timeout)?;
+        self.observe_refresh(accepted, observation_timeout, started)
+            .await
+    }
+
+    fn admit_refresh_resolved(
+        &self,
+        key: &ResourceKey,
+        slot: &str,
+        managed: Arc<dyn crate::registry::ManagedHandle>,
+        hook_timeout: Duration,
+    ) -> Result<crate::runtime::acquire_loop::AcceptedSlotHook, Error> {
         tracing::Span::current().record("topology", managed.topology_tag().as_str());
 
         // Unknown-slot validation: reject a slot name the resource type does
@@ -708,6 +746,15 @@ impl Manager {
                     return Err(error);
                 },
             };
+        Ok(accepted)
+    }
+
+    async fn observe_refresh(
+        &self,
+        accepted: crate::runtime::acquire_loop::AcceptedSlotHook,
+        observation_timeout: Duration,
+        started: Instant,
+    ) -> Result<SlotDispatchOutcome, Error> {
         // Start the observer budget only after synchronous admission. The
         // provider execution budget starts when the queue dequeues the hook;
         // stamping this deadline before admission would make an equal hook

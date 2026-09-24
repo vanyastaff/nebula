@@ -88,6 +88,10 @@ impl ManagedHandle for DeferredRetirementHandle {
         true
     }
 
+    fn pending_projection_hooks(&self) -> &Mutex<std::collections::HashMap<String, u64>> {
+        unreachable!("this fixture does not install projections")
+    }
+
     fn install_credential_slot(
         &self,
         _slot: &str,

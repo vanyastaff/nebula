@@ -574,3 +574,26 @@ async fn legacy_payload_with_future_row_version_refuses_as_stored_state_refused(
         "the slot surface must keep the refusal distinct from InvalidState"
     );
 }
+
+#[tokio::test]
+async fn projection_metadata_uses_durable_owner_without_interactive_binding() {
+    let (store, registry, ops, scope, id, key) = fixture();
+    let bound = scope.clone().with_authentication_binding(
+        crate::CredentialAuthenticationBinding::parse("A".repeat(43)).expect("binding"),
+    );
+    let guard = resolve_fixture(
+        &store,
+        &registry,
+        &ops,
+        &bound,
+        id,
+        key.clone(),
+        Capabilities::empty(),
+        CancellationToken::new(),
+    )
+    .await
+    .expect("bound owner resolves");
+    assert_eq!(guard.metadata().scope(), Some(&scope));
+    let adapter = CredentialGuardMetadata::new(id, key, 1, 1).with_scope(bound);
+    assert_eq!(adapter.scope(), Some(&scope));
+}

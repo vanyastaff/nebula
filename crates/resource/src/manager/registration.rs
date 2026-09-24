@@ -228,6 +228,7 @@ impl Manager {
         }
 
         let managed = Arc::new(ManagedResource {
+            pending_projection_hooks: Default::default(),
             resource,
             config: arc_swap::ArcSwap::from_pointee(config),
             topology,

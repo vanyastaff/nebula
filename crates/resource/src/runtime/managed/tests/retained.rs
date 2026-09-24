@@ -204,6 +204,7 @@ fn managed_with_workers(
     let topology = RetainedTopology::new(behavior);
     let (release_queue, workers) = ReleaseQueue::new(worker_count);
     let managed = Arc::new(ManagedResource {
+        pending_projection_hooks: Default::default(),
         resource,
         config: ArcSwap::from_pointee(RetainedConfig),
         topology,

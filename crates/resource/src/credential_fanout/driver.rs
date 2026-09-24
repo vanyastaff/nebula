@@ -256,6 +256,7 @@ impl ResourceFanoutDriver {
             let mut reconciliation = tokio::time::interval(Duration::from_secs(30));
             reconciliation.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             let mut scans = tokio::task::JoinSet::new();
+            let mut scan_requested = false;
             loop {
                 // `tokio::select!` over both subscribers so a refresh and
                 // a lease-revoke are both observed promptly. The two
@@ -268,6 +269,9 @@ impl ResourceFanoutDriver {
                 // the driver.
                 tokio::select! {
                     ev = credential_sub.recv() => match ev {
+                        Some(CredentialEvent::Refreshed { .. }) if resolver.is_some() => {
+                            scan_requested = true;
+                        },
                         Some(ev) => Self::on_credential_event(
                             &index, &manager, resolver.as_deref(), &mut revoke_dedupe, ev,
                         ).await,
@@ -284,7 +288,11 @@ impl ResourceFanoutDriver {
                         ).await,
                         None => lease_sub = None,
                     },
-                    _ = reconciliation.tick(), if resolver.is_some() && scans.is_empty() => {
+                    _ = reconciliation.tick(), if resolver.is_some() => {
+                        scan_requested = true;
+                    },
+                    () = std::future::ready(()), if scan_requested && scans.is_empty() => {
+                        scan_requested = false;
                         if let Some(resolver) = resolver.as_ref() {
                             let index = Arc::clone(&index);
                             let manager = Arc::clone(&manager);
@@ -327,17 +335,11 @@ impl ResourceFanoutDriver {
     ) {
         match ev {
             CredentialEvent::Refreshed { credential_id } => {
-                let outcome = if let Some(resolver) = resolver {
-                    // The event and periodic scan share the material-epoch
-                    // gate, so either order installs before exactly one hook.
-                    index
-                        .reconcile_material(manager, resolver, Some(credential_id))
-                        .await
-                } else {
-                    index
-                        .dispatch_refresh(credential_id, manager, PER_RESOURCE_ROTATION_TIMEOUT)
-                        .await
-                };
+                // Resolver-backed refresh hints are coalesced into the background
+                // scan by the receive loop. Only the legacy driver reaches here.
+                let outcome = index
+                    .dispatch_refresh(credential_id, manager, PER_RESOURCE_ROTATION_TIMEOUT)
+                    .await;
                 Self::record(credential_id, "refresh", outcome);
             },
             CredentialEvent::MaterialReplaced {

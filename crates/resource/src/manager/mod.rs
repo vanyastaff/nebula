@@ -929,3 +929,6 @@ impl Drop for InFlightCounter {
 
 #[cfg(test)]
 mod shutdown_post_count_race_tests;
+
+#[cfg(test)]
+mod projection_admission_tests;

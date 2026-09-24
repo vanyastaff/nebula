@@ -153,6 +153,8 @@ pub struct ManagedResource<R: Provider> {
     /// hand the resource handle to the topology's hooks (the topology drives the
     /// hooks; the resource value is owned here).
     pub(crate) resource: R,
+    /// Installed material epochs whose refresh hook has not been admitted.
+    pub(crate) pending_projection_hooks: std::sync::Mutex<std::collections::HashMap<String, u64>>,
     /// Hot-swappable operational configuration.
     pub(crate) config: ArcSwap<R::Config>,
     /// The resource's lease topology, reached monomorphically.
