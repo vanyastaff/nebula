@@ -291,6 +291,35 @@ fn compose_runtime<P>(
 where
     P: CredentialPersistence + 'static,
 {
+    let oauth_transport = Arc::new(
+        ReqwestOAuthTransport::new()
+            .map_err(|error| CredentialCompositionError::RefreshTransport(error.to_string()))?,
+    );
+    compose_runtime_with_transport(
+        raw_store,
+        refresh_ports,
+        pending,
+        key_provider,
+        legacy_keys,
+        metrics_registry,
+        oauth_transport,
+    )
+}
+
+// The concrete transport retains first-party egress policy. Tests supply its
+// existing TLS/DNS fixture constructor; production always enters above.
+fn compose_runtime_with_transport<P>(
+    raw_store: P,
+    refresh_ports: CredentialRefreshRuntimePorts,
+    pending: ErasedPendingStore,
+    key_provider: Arc<dyn KeyProvider>,
+    legacy_keys: Vec<(String, Arc<EncryptionKey>)>,
+    metrics_registry: Arc<MetricsRegistry>,
+    oauth_transport: Arc<ReqwestOAuthTransport>,
+) -> Result<CredentialRuntime, CredentialCompositionError>
+where
+    P: CredentialPersistence + 'static,
+{
     let CredentialRefreshRuntimePorts {
         schedule: refresh_schedule,
         claims: claim_repo,
@@ -340,10 +369,6 @@ where
         reclaimer,
         escalation_policy,
         Some(Arc::clone(&credential_events)),
-    );
-    let oauth_transport = Arc::new(
-        ReqwestOAuthTransport::new()
-            .map_err(|error| CredentialCompositionError::RefreshTransport(error.to_string()))?,
     );
     let resolver = CredentialResolver::with_dependencies(
         Arc::clone(&store),
@@ -840,3 +865,7 @@ mod tests {
         assert!(!diagnostic.contains("tenant-private"));
     }
 }
+
+#[cfg(test)]
+#[path = "credential_acquisition_restart_tests.rs"]
+mod acquisition_restart_tests;

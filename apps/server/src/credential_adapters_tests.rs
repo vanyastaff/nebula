@@ -104,7 +104,7 @@ enum ServerBehavior {
     ExactBodyLimit,
 }
 
-struct TlsFixture {
+pub(crate) struct TlsFixture {
     addr: SocketAddr,
     trust_anchor: reqwest::Certificate,
     connections: Arc<AtomicUsize>,
@@ -114,6 +114,14 @@ struct TlsFixture {
 }
 
 impl TlsFixture {
+    pub(crate) async fn success() -> Self {
+        Self::spawn(ServerBehavior::Success).await
+    }
+
+    pub(crate) fn request_count(&self) -> usize {
+        self.requests.load(Ordering::SeqCst)
+    }
+
     async fn spawn(behavior: ServerBehavior) -> Self {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
             .await
@@ -169,11 +177,11 @@ impl TlsFixture {
         }
     }
 
-    fn endpoint(&self) -> String {
+    pub(crate) fn endpoint(&self) -> String {
         format!("https://{TEST_HOST}:{}/token", self.addr.port())
     }
 
-    fn transport(&self, dns_answers: Vec<IpAddr>) -> ReqwestOAuthTransport {
+    pub(crate) fn transport(&self, dns_answers: Vec<IpAddr>) -> ReqwestOAuthTransport {
         ReqwestOAuthTransport::for_test(
             self.trust_anchor.clone(),
             IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -182,7 +190,7 @@ impl TlsFixture {
         .expect("fixed test client")
     }
 
-    fn last_request(&self) -> Vec<u8> {
+    pub(crate) fn last_request(&self) -> Vec<u8> {
         self.request_bytes
             .lock()
             .expect("request capture lock")
