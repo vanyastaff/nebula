@@ -73,7 +73,10 @@ Data ingress never turns expression-looking JSON into a program.
 The façade imports lower product layers and projects only author-facing contracts. Product crates
 never depend upward on the SDK. Durable runtime commands do not travel through the SDK; the future
 The `client::credential::v1` façade defines versioned transport requests, responses, lifecycle
-state, and typed RFC 9457 failures. It intentionally has no HTTP executor yet. The future
+state, and typed RFC 9457 failures. Existing-id reauthorization uses
+`ReauthorizeCredentialRequest { data }` and the universal acquisition response;
+the server owns the type, target binding, and replacement fence. Continuation retains
+its credential-key routing hint and opaque pending token. It intentionally has no HTTP executor yet. The future
 `embedded` façade submits typed runtime commands through curated builders.
 
 ## Contract proofs

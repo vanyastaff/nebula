@@ -3,7 +3,8 @@ use nebula_sdk::{
         CredentialLifecycleState,
         v1::{
             ContinueResolveCredentialRequest, CredentialProblemKind, DeleteCredentialResponse,
-            ResolveCredentialResponse, RetryAfter, UpdateCredentialRequest,
+            ReauthorizeCredentialRequest, ReauthorizeCredentialResponse, ResolveCredentialResponse,
+            RetryAfter, UpdateCredentialRequest,
         },
     },
     integration::action::{
@@ -48,6 +49,18 @@ fn assert_credential_lifecycle_contract() {
 }
 
 fn assert_credential_wire_v1_contract() {
+    let reauthorize = ReauthorizeCredentialRequest {
+        data: nebula_sdk::json!({"secret": "new-material"}),
+    };
+    assert!(!format!("{reauthorize:?}").contains("new-material"));
+    assert_eq!(
+        nebula_sdk::serde_json::to_value(reauthorize).expect("reauthorize serializes"),
+        nebula_sdk::json!({"data":{"secret":"new-material"}})
+    );
+    let _: ReauthorizeCredentialResponse = nebula_sdk::serde_json::from_value(
+        nebula_sdk::json!({"status":"complete","credential_id":"cred_existing"}),
+    )
+    .expect("reauthorize response decodes");
     let update = UpdateCredentialRequest {
         name: None,
         description: Some("updated".to_owned()),
@@ -71,7 +84,9 @@ fn assert_credential_wire_v1_contract() {
     )
     .expect("response deserializes");
     match response {
-        ResolveCredentialResponse::Complete { credential_id } => assert_eq!(credential_id, "cred_01"),
+        ResolveCredentialResponse::Complete { credential_id } => {
+            assert_eq!(credential_id, "cred_01")
+        },
         _ => panic!("unexpected acquisition response"),
     }
 
@@ -83,7 +98,10 @@ fn assert_credential_wire_v1_contract() {
         CredentialProblemKind::ReauthRequired.code(),
         Some("API:CREDENTIAL_REAUTH_REQUIRED")
     );
-    assert_eq!(RetryAfter::from_seconds(5).map(RetryAfter::seconds), Some(5));
+    assert_eq!(
+        RetryAfter::from_seconds(5).map(RetryAfter::seconds),
+        Some(5)
+    );
 }
 
 #[derive(Debug, Deserialize, Schema)]

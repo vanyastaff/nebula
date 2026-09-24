@@ -46,7 +46,8 @@
 ## Invariants
 
 - `transport/oauth` is exclusively Plane-A identity OAuth. Plane-B credential acquisition exposes
-  only the universal `resolve` / `resolve/continue` public HTTP contract; raw provider ceremony
+  the universal `resolve` / `resolve/continue` protocol and resource-scoped `reauthorize`
+  entry point for existing credentials; raw provider ceremony
   routes, state, and DTOs remain absent.
 - Plane-A 1.0 admits only the fixed Google and GitHub.com profiles. Operator configuration is
   credentials-only: `API_AUTH_OAUTH_{GOOGLE,GITHUB}_{CLIENT_ID,CLIENT_SECRET}`. Microsoft,

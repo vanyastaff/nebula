@@ -19,7 +19,7 @@ use thiserror::Error;
 use crate::{
     domain::credential::dto::{
         AcquisitionInteraction, ContinueResolveRequest, CreateCredentialRequest,
-        ResolveCredentialRequest, UpdateCredentialRequest,
+        ReauthorizeCredentialRequest, ResolveCredentialRequest, UpdateCredentialRequest,
     },
     middleware::auth::AuthenticatedPrincipal,
     ports::credential_schema::{CredentialValidationCode, CredentialValidationLocation},
@@ -66,6 +66,13 @@ pub enum CredentialGatewayCommand {
     },
     /// Begin credential acquisition.
     Resolve(ResolveCredentialRequest),
+    /// Begin new authorization while retaining the credential's identity.
+    Reauthorize {
+        /// Existing credential identifier.
+        credential_id: String,
+        /// New authorization properties; no caller-supplied type or revision.
+        request: ReauthorizeCredentialRequest,
+    },
     /// Continue credential acquisition.
     ContinueResolve(ContinueResolveRequest),
     /// Resolve an ambiguous provider outcome on a poisoned refresh claim.
@@ -101,6 +108,7 @@ impl CredentialGatewayCommand {
             Self::Refresh { .. } => "refresh",
             Self::Revoke { .. } => "revoke",
             Self::Resolve(_) => "resolve",
+            Self::Reauthorize { .. } => "reauthorize",
             Self::ContinueResolve(_) => "continue_resolve",
             Self::Reconcile { .. } => "reconcile",
         }

@@ -3,7 +3,7 @@
 //! Version 1 readers accept the legacy raw protocol payload as a Create
 //! continuation. Create also continues to serialize as that raw payload, so
 //! old and new readers remain bidirectionally compatible during a rolling
-//! deploy. Only the future, currently unexposed ReauthorizeExisting path emits
+//! deploy. Only the ReauthorizeExisting path emits
 //! the versioned service envelope and therefore requires upgraded readers.
 
 use std::time::Duration;
@@ -99,6 +99,16 @@ pub(crate) enum AcquisitionExpectation {
     },
 }
 
+impl AcquisitionExpectation {
+    pub(crate) fn credential_key(&self) -> &str {
+        match self {
+            Self::Create { credential_key } | Self::ReauthorizeExisting { credential_key, .. } => {
+                credential_key
+            },
+        }
+    }
+}
+
 pub(crate) struct AcquisitionPending<P: Zeroize> {
     intent: Option<AcquisitionIntent>,
     protocol: P,
@@ -117,6 +127,12 @@ impl<P: Zeroize> AcquisitionPending<P> {
             Some(intent) => &intent.expectation() == expected,
             None => matches!(expected, AcquisitionExpectation::Create { .. }),
         }
+    }
+
+    pub(crate) fn service_intent(&self, credential_key: &str) -> AcquisitionIntent {
+        self.intent
+            .clone()
+            .unwrap_or_else(|| AcquisitionIntent::create_for_key(credential_key))
     }
 
     pub(crate) fn protocol(&self) -> &P {
@@ -262,6 +278,25 @@ mod tests {
         fn expires_in(&self) -> std::time::Duration {
             std::time::Duration::from_mins(1)
         }
+    }
+
+    #[test]
+    fn inspection_preserves_durable_reauthorization_and_only_promotes_legacy_to_create() {
+        let intent = AcquisitionIntent::ReauthorizeExisting {
+            credential_id: "stored-id".to_owned(),
+            observed_version: 7,
+            observed_material_epoch: 3,
+            credential_key: "stored-key".to_owned(),
+        };
+        let pending =
+            AcquisitionPending::new(intent.clone(), ProtocolPending("protocol".to_owned()));
+        assert_eq!(pending.service_intent("untrusted-key"), intent);
+        let legacy: AcquisitionPending<ProtocolPending> =
+            serde_json::from_str(r#""legacy""#).expect("legacy");
+        assert_eq!(
+            legacy.service_intent("routing-key"),
+            AcquisitionIntent::create_for_key("routing-key")
+        );
     }
 
     #[test]

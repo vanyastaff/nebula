@@ -215,6 +215,14 @@ impl TestGateway {
                 properties: request.data,
                 authentication_binding,
             },
+            CredentialGatewayCommand::Reauthorize {
+                credential_id,
+                request,
+            } => CredentialCommand::Reauthorize {
+                credential_id: Self::credential_id(&credential_id)?,
+                properties: request.data,
+                authentication_binding,
+            },
             CredentialGatewayCommand::ContinueResolve(request) => {
                 let user_input: UserInput =
                     serde_json::from_value(request.user_input).map_err(|_| {
