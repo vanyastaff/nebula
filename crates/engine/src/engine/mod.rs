@@ -20,14 +20,13 @@ use std::{
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use nebula_action::{ActionError, ActionResult};
+use nebula_core::scope::ScopeLevel;
 use nebula_core::{
     NodeKey, PortKey, ResourceKey,
     accessor::{Clock, CredentialAccessor, ResourceAccessor, SystemClock},
     id::{ExecutionId, InstanceId, WorkflowId},
     node_key,
 };
-// ScopeLevel removed from ActionContext
-// use nebula_core::scope::ScopeLevel;
 use nebula_execution::{
     ErrorEnvelope, ExecutionStatus,
     context::ExecutionBudget,
@@ -78,6 +77,58 @@ use crate::{
 /// the capacity below keeps roughly one in-flight workflow's worth of events
 /// buffered per subscriber before the bus starts dropping.
 type EventBus = nebula_eventbus::EventBus<ExecutionEvent>;
+
+/// Activation-time slot identities: registration scope → resource key → identity.
+type SlotIdentitiesByScope =
+    HashMap<ScopeLevel, HashMap<ResourceKey, nebula_resource::SlotIdentity>>;
+
+/// Projects a storage tenant scope onto the resource acquire scope.
+///
+/// Storage carries org / workspace ids as opaque strings; an id that does
+/// not parse leaves that field unset, so the acquire walk simply cannot
+/// reach rows registered at that level. Resource isolation fails closed.
+fn resource_acquire_scope_for(scope: &Scope) -> nebula_core::scope::Scope {
+    let org_id = nebula_core::OrgId::parse(&scope.org_id).ok();
+    let workspace_id = nebula_core::WorkspaceId::parse(&scope.workspace_id).ok();
+    if org_id.is_none() || workspace_id.is_none() {
+        tracing::warn!(
+            target: "nebula_engine",
+            org_id_valid = org_id.is_some(),
+            workspace_id_valid = workspace_id.is_some(),
+            "execution tenant scope is not a typed id; tenant-scoped resources are unreachable"
+        );
+    }
+    nebula_core::scope::Scope {
+        org_id,
+        workspace_id,
+        ..Default::default()
+    }
+}
+
+/// Resolves which recorded slot identity each resource key maps to for an
+/// acquire issued from `scope`.
+///
+/// Walks the same levels as the registry acquire lookup, most specific
+/// first, so a key registered at both a workspace and globally resolves to
+/// the workspace row's identity. Cost is proportional to the rows at the
+/// levels this scope reaches, not to every tenant's registrations.
+fn slot_identities_visible_from(
+    ids: &SlotIdentitiesByScope,
+    scope: &nebula_core::scope::Scope,
+) -> HashMap<ResourceKey, nebula_resource::SlotIdentity> {
+    let mut visible = HashMap::new();
+    for level in nebula_resource::scope_levels_for_acquire(scope) {
+        let Some(rows) = ids.get(&level) else {
+            continue;
+        };
+        for (key, identity) in rows {
+            visible
+                .entry(key.clone())
+                .or_insert_with(|| identity.clone());
+        }
+    }
+    visible
+}
 
 /// Default capacity for the engine's event bus. Tuned so a typical
 /// interactive workflow (hundreds of nodes) never blocks, while a runaway
@@ -278,9 +329,13 @@ pub struct WorkflowEngine {
     resource_acquire_scope: Option<nebula_core::scope::Scope>,
     /// Per-execution acquire scope (`org_id` / `workspace_id` for this run).
     execution_acquire_scopes: DashMap<ExecutionId, nebula_core::scope::Scope>,
-    /// Per-resource resolved **collision-free structural** slot identities
-    /// recorded at activation (pre-run).
-    resource_slot_identities: RwLock<HashMap<ResourceKey, nebula_resource::SlotIdentity>>,
+    /// Resolved **collision-free structural** slot identities recorded at
+    /// activation, keyed by the registration scope first. Two tenants may
+    /// register the same kind with differently shaped bindings; keying by
+    /// resource key alone let the later registration overwrite the earlier
+    /// one's identity, and the earlier tenant's acquires then missed its own
+    /// row.
+    resource_slot_identities: RwLock<SlotIdentitiesByScope>,
     /// Frozen slot-identity map per execution (snapshot at run start).
     resource_slot_identities_by_execution:
         DashMap<ExecutionId, Arc<HashMap<ResourceKey, nebula_resource::SlotIdentity>>>,
@@ -981,12 +1036,23 @@ impl WorkflowEngine {
     fn install_execution_resource_context(
         &self,
         execution_id: ExecutionId,
+        workflow_id: WorkflowId,
         run_acquire_scope: Option<nebula_core::scope::Scope>,
     ) {
+        let acquire_scope =
+            Self::merged_acquire_scope(&self.resource_acquire_scope, run_acquire_scope.as_ref());
+        // The snapshot is taken against the same scope bag the node acquire
+        // context carries, so each key maps to the identity of the row the
+        // registry walk reaches first.
+        let lookup_scope = nebula_core::scope::Scope {
+            execution_id: Some(execution_id),
+            workflow_id: Some(workflow_id),
+            ..acquire_scope.clone()
+        };
         let slot_snap = self
             .resource_slot_identities
             .read()
-            .map(|ids| Arc::new(ids.clone()))
+            .map(|ids| Arc::new(slot_identities_visible_from(&ids, &lookup_scope)))
             .unwrap_or_else(|err| {
                 tracing::error!(
                     target: "nebula_engine",
@@ -997,11 +1063,16 @@ impl WorkflowEngine {
             });
         self.resource_slot_identities_by_execution
             .insert(execution_id, slot_snap);
-
-        let acquire_scope =
-            Self::merged_acquire_scope(&self.resource_acquire_scope, run_acquire_scope.as_ref());
         self.execution_acquire_scopes
             .insert(execution_id, acquire_scope);
+    }
+
+    /// Drops the per-execution resource context installed by
+    /// [`install_execution_resource_context`](Self::install_execution_resource_context).
+    fn remove_execution_resource_context(&self, execution_id: ExecutionId) {
+        self.resource_slot_identities_by_execution
+            .remove(&execution_id);
+        self.execution_acquire_scopes.remove(&execution_id);
     }
 
     /// Record a resolved **collision-free structural** slot identity for a
@@ -1011,20 +1082,24 @@ impl WorkflowEngine {
     /// exact structural key `Manager::register_resolved` derived for the same
     /// resolved `(slot, credential)` bindings, so the action-time acquire
     /// path addresses the *same* registry row (no digest aliasing across
-    /// tenants).
+    /// tenants). `scope` is the level the row was registered at; an execution
+    /// sees the identity recorded at the most specific level its acquire
+    /// scope reaches.
     pub fn record_resource_slot_identity(
         &self,
+        scope: ScopeLevel,
         key: ResourceKey,
         slot_identity: nebula_resource::SlotIdentity,
     ) {
         match self.resource_slot_identities.write() {
             Ok(mut ids) => {
-                ids.insert(key, slot_identity);
+                ids.entry(scope).or_default().insert(key, slot_identity);
             },
             Err(err) => {
                 tracing::error!(
                     target: "nebula_engine",
                     ?err,
+                    ?scope,
                     %key,
                     ?slot_identity,
                     "resource_slot_identities lock poisoned; slot identity not recorded"
@@ -1049,11 +1124,12 @@ impl WorkflowEngine {
         manager: &nebula_resource::Manager,
         request: crate::RegisterRequest<'_>,
     ) -> Result<(), crate::RegistrarError> {
+        let scope = request.scope.clone();
         let outcome = self
             .resource_registrars
             .register(kind, manager, request)
             .await?;
-        self.record_resource_slot_identity(outcome.resource_key, outcome.slot_identity);
+        self.record_resource_slot_identity(scope, outcome.resource_key, outcome.slot_identity);
         Ok(())
     }
 
@@ -1070,11 +1146,12 @@ impl WorkflowEngine {
         request: crate::RegisterRequest<'_>,
         fanout_index: Option<&nebula_resource::ResourceFanoutIndex>,
     ) -> Result<(), crate::RegistrarError> {
+        let scope = request.scope.clone();
         let outcome = self
             .resource_registrars
             .register_and_bind(kind, manager, request, fanout_index)
             .await?;
-        self.record_resource_slot_identity(outcome.resource_key, outcome.slot_identity);
+        self.record_resource_slot_identity(scope, outcome.resource_key, outcome.slot_identity);
         Ok(())
     }
 
@@ -2192,12 +2269,9 @@ impl WorkflowEngine {
         let execution_id = ExecutionId::new();
         let started = Instant::now();
 
-        self.install_execution_resource_context(execution_id, run_acquire_scope);
-        let slot_by_exec = &self.resource_slot_identities_by_execution;
-        let acquire_by_exec = &self.execution_acquire_scopes;
-        let _execution_resource_guard = scopeguard::guard(execution_id, move |id| {
-            slot_by_exec.remove(&id);
-            acquire_by_exec.remove(&id);
+        self.install_execution_resource_context(execution_id, workflow.id, run_acquire_scope);
+        let _execution_resource_guard = scopeguard::guard(execution_id, |id| {
+            self.remove_execution_resource_context(id);
         });
 
         // 1. Validate workflow (reuse ExecutionPlan for validation)

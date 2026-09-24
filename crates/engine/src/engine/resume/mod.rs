@@ -867,6 +867,16 @@ impl WorkflowEngine {
             binding_manifests.remove(&id);
             credential_scopes.remove(&id);
         });
+        // A durable turn acquires resources under the execution's own tenant,
+        // exactly like a fresh in-process run does.
+        self.install_execution_resource_context(
+            execution_id,
+            workflow_id,
+            Some(resource_acquire_scope_for(scope)),
+        );
+        let _execution_resource_guard = scopeguard::guard(execution_id, |id| {
+            self.remove_execution_resource_context(id);
+        });
 
         self.execute_exact_execution_body(ExactExecutionBody {
             scope,

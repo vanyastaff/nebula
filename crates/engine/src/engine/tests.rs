@@ -7617,3 +7617,50 @@ fn engine_retry_backoff_matches_resilience_backoff() {
         );
     }
 }
+
+#[test]
+fn slot_identity_snapshot_prefers_the_most_specific_scope_and_stays_in_tenant() {
+    let key = nebula_core::resource_key!("test.snapshot.probe");
+    let workspace = nebula_core::WorkspaceId::new();
+    let other_workspace = nebula_core::WorkspaceId::new();
+    let workspace_identity = nebula_resource::SlotIdentity::from_bindings([("auth", "cred.ws")]);
+    let other_identity = nebula_resource::SlotIdentity::from_bindings([("auth", "cred.other")]);
+
+    let mut ids = SlotIdentitiesByScope::new();
+    ids.entry(ScopeLevel::Global)
+        .or_default()
+        .insert(key.clone(), nebula_resource::SlotIdentity::Unbound);
+    ids.entry(ScopeLevel::Workspace(workspace))
+        .or_default()
+        .insert(key.clone(), workspace_identity.clone());
+    ids.entry(ScopeLevel::Workspace(other_workspace))
+        .or_default()
+        .insert(key.clone(), other_identity);
+
+    let in_workspace = nebula_core::scope::Scope {
+        workspace_id: Some(workspace),
+        ..Default::default()
+    };
+    assert_eq!(
+        slot_identities_visible_from(&ids, &in_workspace).get(&key),
+        Some(&workspace_identity)
+    );
+    assert_eq!(
+        slot_identities_visible_from(&ids, &nebula_core::scope::Scope::default()).get(&key),
+        Some(&nebula_resource::SlotIdentity::Unbound),
+        "a scope with no tenant sees only the global row"
+    );
+}
+
+#[test]
+fn unparseable_tenant_ids_leave_the_acquire_scope_unset() {
+    let scope = resource_acquire_scope_for(&Scope::new("not-a-workspace", "not-an-org"));
+    assert_eq!(scope.org_id, None);
+    assert_eq!(scope.workspace_id, None);
+
+    let org = nebula_core::OrgId::new();
+    let workspace = nebula_core::WorkspaceId::new();
+    let scope = resource_acquire_scope_for(&Scope::new(workspace.to_string(), org.to_string()));
+    assert_eq!(scope.org_id, Some(org));
+    assert_eq!(scope.workspace_id, Some(workspace));
+}
