@@ -882,7 +882,7 @@ impl ResourceActivatorRegistry {
         kind: &str,
         manager: &Manager,
         request: RegisterRequest<'_>,
-        fanout_index: Option<&crate::ResourceFanoutIndex>,
+        fanout_index: Option<&Arc<crate::ResourceFanoutIndex>>,
     ) -> Result<ResourceRegistrationOutcome, RegistrarError> {
         let factory = self
             .factories
@@ -891,6 +891,10 @@ impl ResourceActivatorRegistry {
         let resource_key = factory.key();
         let staged_slot_identity = slot_identity_from_request(&request);
         let scope = request.scope.clone();
+
+        if let Some(index) = fanout_index {
+            manager.attach_rotation_index(index);
+        }
 
         // Stage reverse-index binds BEFORE the typed register makes the
         // Manager row discoverable. Each `CredentialId` rides on the SAME
@@ -930,7 +934,7 @@ impl ResourceActivatorRegistry {
                 manager,
                 request,
                 &staged_slot_identity,
-                RegistrationBindings::staged(fanout_index, &rollback.1),
+                RegistrationBindings::staged(fanout_index.map(Arc::as_ref), &rollback.1),
             )
             .await
             .map_err(|source| RegistrarError::Register {
@@ -944,7 +948,7 @@ impl ResourceActivatorRegistry {
             &scope,
             &staged_slot_identity,
             &slot_identity,
-            fanout_index,
+            fanout_index.map(Arc::as_ref),
         )?;
         scopeguard::ScopeGuard::into_inner(rollback);
         Ok(ResourceRegistrationOutcome {

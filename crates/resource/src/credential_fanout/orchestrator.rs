@@ -139,7 +139,7 @@ impl ResourceFanoutIndex {
     ) -> RotationOutcome {
         use futures::FutureExt;
 
-        let mut summary = self.retry_pending_revoke_admissions(mgr).await;
+        let mut summary = RotationOutcome::default();
         let mut projections = Vec::new();
         for managed in mgr.registry.all_managed() {
             if managed.is_tainted() {
@@ -147,6 +147,21 @@ impl ResourceFanoutIndex {
             }
             for (slot, generation, metadata) in managed.credential_projections() {
                 if credential_id.is_some_and(|cid| cid != metadata.credential_id()) {
+                    continue;
+                }
+                let participates_in_rotation = self
+                    .affected(&metadata.credential_id())
+                    .into_iter()
+                    .filter(|binding| binding.slot_name == slot)
+                    .any(|binding| {
+                        mgr.lookup_any_for_slot_identity_structural(
+                            &binding.resource_key,
+                            &binding.scope,
+                            &binding.slot_identity,
+                        )
+                        .is_ok_and(|bound| std::sync::Arc::ptr_eq(&bound, &managed))
+                    });
+                if !participates_in_rotation {
                     continue;
                 }
                 let managed = std::sync::Arc::clone(&managed);

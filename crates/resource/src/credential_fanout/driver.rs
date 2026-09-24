@@ -267,10 +267,12 @@ impl ResourceFanoutDriver {
             reconciliation.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             let mut scans = tokio::task::JoinSet::new();
             let mut material_dispatches = tokio::task::JoinSet::new();
+            let mut revoke_retries = tokio::task::JoinSet::new();
             let mut pending_material =
                 HashMap::<CredentialId, (TenantScope, CredentialKey, u64)>::new();
             let mut pending_refresh_scans = HashSet::<CredentialId>::new();
             let mut full_scan_requested = false;
+            let mut revoke_retry_requested = false;
             loop {
                 // `tokio::select!` over both subscribers so a refresh and
                 // a lease-revoke are both observed promptly. The two
@@ -334,9 +336,21 @@ impl ResourceFanoutDriver {
                         ).await,
                         None => lease_sub = None,
                     },
-                    _ = reconciliation.tick(), if resolver.is_some() => {
-                        pending_refresh_scans.clear();
-                        full_scan_requested = true;
+                    _ = reconciliation.tick() => {
+                        revoke_retry_requested = true;
+                        if resolver.is_some() {
+                            pending_refresh_scans.clear();
+                            full_scan_requested = true;
+                        }
+                    },
+                    () = std::future::ready(()), if revoke_retry_requested
+                        && revoke_retries.is_empty() => {
+                        revoke_retry_requested = false;
+                        let index = Arc::clone(&index);
+                        let manager = Arc::clone(&manager);
+                        revoke_retries.spawn(async move {
+                            index.retry_pending_revoke_admissions(&manager).await
+                        });
                     },
                     () = std::future::ready(()), if (full_scan_requested || !pending_refresh_scans.is_empty())
                         && scans.is_empty()
@@ -401,6 +415,16 @@ impl ResourceFanoutDriver {
                             },
                             Some(Ok(outcome)) => tracing::warn!(?outcome, "credential projection reconciliation incomplete"),
                             Some(Err(_)) => tracing::warn!("credential projection reconciliation task failed"),
+                            None => {},
+                        }
+                    },
+                    result = revoke_retries.join_next(), if !revoke_retries.is_empty() => {
+                        match result {
+                            Some(Ok(outcome)) if outcome.failed + outcome.timed_out + outcome.abandoned == 0 => {
+                                tracing::debug!(?outcome, "credential revoke admission reconciliation complete");
+                            },
+                            Some(Ok(outcome)) => tracing::warn!(?outcome, "credential revoke admission reconciliation incomplete"),
+                            Some(Err(_)) => tracing::warn!("credential revoke admission reconciliation task failed"),
                             None => {},
                         }
                     },

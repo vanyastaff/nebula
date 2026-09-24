@@ -1071,7 +1071,7 @@ impl WorkflowEngine {
         kind: &str,
         manager: &nebula_resource::Manager,
         request: crate::RegisterRequest<'_>,
-        fanout_index: Option<&nebula_resource::ResourceFanoutIndex>,
+        fanout_index: Option<&Arc<nebula_resource::ResourceFanoutIndex>>,
     ) -> Result<(), crate::RegistrarError> {
         let outcome = self
             .resource_registrars

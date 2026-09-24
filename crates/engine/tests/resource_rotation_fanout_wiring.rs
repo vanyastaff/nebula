@@ -183,9 +183,18 @@ async fn lost_material_event_is_recovered_on_startup_and_periodic_scan() {
     );
     let calls = Arc::new(AtomicUsize::new(0));
     let bus = Arc::new(EventBus::new(8));
-    // No event and no reverse-index binding: live guard metadata is sufficient.
+    let index = Arc::new(ResourceFanoutIndex::new());
+    index.bind(
+        cid,
+        ReplacementResource::key(),
+        ScopeLevel::Global,
+        "db",
+        identity,
+    );
+    // No event: the published rotation binding makes the live guard eligible
+    // for startup and periodic durable reconciliation.
     let driver = ResourceFanoutDriver::spawn_with_resolver(
-        Arc::new(ResourceFanoutIndex::new()),
+        index,
         Arc::clone(&manager),
         Some(Arc::new(ReplacementResolver {
             calls: Arc::clone(&calls),
@@ -213,6 +222,34 @@ async fn lost_material_event_is_recovered_on_startup_and_periodic_scan() {
         2,
         "same durable epoch must not reinstall"
     );
+    driver.abort();
+}
+
+#[tokio::test(start_paused = true)]
+async fn rotation_opt_out_is_not_reconciled_from_projection_metadata() {
+    let manager = Arc::new(Manager::new());
+    let credential_id = CredentialId::new();
+    let resource = register_replacement(&manager, credential_id);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let bus = Arc::new(EventBus::new(8));
+    let driver = ResourceFanoutDriver::spawn_with_resolver(
+        Arc::new(ResourceFanoutIndex::new()),
+        manager,
+        Some(Arc::new(ReplacementResolver {
+            calls: Arc::clone(&calls),
+            epoch: None,
+        })),
+        Arc::clone(&bus),
+        None,
+    );
+
+    tokio::time::advance(Duration::from_secs(31)).await;
+    for _ in 0..100 {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert_eq!(resource.slot.material_epoch(), Some(1));
+    assert_eq!(resource.hooks.load(Ordering::SeqCst), 0);
     driver.abort();
 }
 
@@ -294,8 +331,16 @@ async fn refreshed_events_and_scans_install_once_per_epoch_in_either_order() {
         let epoch = Arc::new(AtomicUsize::new(1));
         let calls = Arc::new(AtomicUsize::new(0));
         let bus = Arc::new(EventBus::new(8));
+        let index = Arc::new(ResourceFanoutIndex::new());
+        index.bind(
+            cid,
+            ReplacementResource::key(),
+            ScopeLevel::Global,
+            "db",
+            identity.clone(),
+        );
         let driver = ResourceFanoutDriver::spawn_with_resolver(
-            Arc::new(ResourceFanoutIndex::new()),
+            index,
             manager,
             Some(Arc::new(ReplacementResolver {
                 calls: Arc::clone(&calls),
@@ -536,8 +581,16 @@ async fn durable_tombstone_reconciliation_terminally_revokes_resource() {
     );
     let calls = Arc::new(AtomicUsize::new(0));
     let bus = Arc::new(EventBus::new(8));
+    let index = Arc::new(ResourceFanoutIndex::new());
+    index.bind(
+        cid,
+        ReplacementResource::key(),
+        ScopeLevel::Global,
+        "db",
+        identity.clone(),
+    );
     let driver = ResourceFanoutDriver::spawn_with_resolver(
-        Arc::new(ResourceFanoutIndex::new()),
+        index,
         Arc::clone(&manager),
         Some(Arc::new(RevokedProjection {
             calls: Arc::clone(&calls),
@@ -586,8 +639,16 @@ async fn superseded_projection_fences_delayed_tombstone_reconciliation() {
         let entered = Arc::new(tokio::sync::Semaphore::new(0));
         let release = Arc::new(tokio::sync::Semaphore::new(0));
         let bus = Arc::new(EventBus::new(8));
+        let index = Arc::new(ResourceFanoutIndex::new());
+        index.bind(
+            cid,
+            ReplacementResource::key(),
+            ScopeLevel::Global,
+            "db",
+            identity.clone(),
+        );
         let driver = ResourceFanoutDriver::spawn_with_resolver(
-            Arc::new(ResourceFanoutIndex::new()),
+            index,
             Arc::clone(&manager),
             Some(Arc::new(GatedRevokedProjection {
                 entered: Arc::clone(&entered),

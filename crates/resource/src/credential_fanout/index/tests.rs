@@ -790,6 +790,29 @@ mod fanout_dispatch {
     }
 
     #[tokio::test]
+    async fn material_reconciliation_does_not_wait_for_pending_revoke_retries() {
+        let identity = SlotIdentity::from_bindings([("db", "independent-retry")]);
+        let (index, manager, credential_id, scope, _org, ledger) =
+            setup(std::slice::from_ref(&identity)).await;
+        ledger.set(identity.clone(), Behaviour::Block);
+        let managed = manager
+            .lookup_any_for_slot_identity_structural(&CtlResource::key(), &scope, &identity)
+            .expect("registered row");
+        let tainted = manager
+            .taint_slot_for_identity(&CtlResource::key(), scope, "db", &identity)
+            .expect("taint");
+        drop(tainted);
+        index.remember_pending_revoke(credential_id, CtlResource::key(), "db", managed);
+
+        let outcome = index
+            .reconcile_material(&manager, &UnusedResolver, None)
+            .await;
+        assert_eq!(outcome.dispatched(), 0);
+        assert_eq!(ledger.revoke_entered.load(Ordering::SeqCst), 0);
+        assert_eq!(index.pending_revokes().len(), 1);
+    }
+
+    #[tokio::test]
     async fn admitted_revoke_event_consumes_pending_tombstone_retry() {
         let identity = SlotIdentity::from_bindings([("db", "event-wins-revoke")]);
         let (index, manager, credential_id, scope, _org, ledger) =

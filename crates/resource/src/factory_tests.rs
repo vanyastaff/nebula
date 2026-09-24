@@ -389,7 +389,7 @@ async fn identity_mismatch_is_typed_and_rolls_back_manager_and_fanout_state() {
     let manager = Manager::new();
     let expression_engine = ExpressionEngine::with_cache_size(16);
     let credential_id = nebula_credential::CredentialId::new();
-    let fanout_index = crate::ResourceFanoutIndex::new();
+    let fanout_index = Arc::new(crate::ResourceFanoutIndex::new());
     let inner: Arc<dyn ResourceFactory> = Arc::new(KindActivator::<BoundTestRes, _, _>::new(
         || BoundTestRes,
         || Resident::<BoundTestRes>::new(resident::config::Config::default()),
@@ -447,7 +447,7 @@ async fn conflicting_duplicate_slot_bindings_fail_before_manager_publication() {
     let expression_engine = ExpressionEngine::with_cache_size(16);
     let first_credential_id = nebula_credential::CredentialId::new();
     let second_credential_id = nebula_credential::CredentialId::new();
-    let fanout_index = crate::ResourceFanoutIndex::new();
+    let fanout_index = Arc::new(crate::ResourceFanoutIndex::new());
     let mut registry = ResourceActivatorRegistry::new();
     registry
         .insert(
@@ -500,7 +500,7 @@ async fn exact_replacement_publishes_only_successor_staged_binding() {
     let expression_engine = ExpressionEngine::with_cache_size(16);
     let old_credential_id = nebula_credential::CredentialId::new();
     let new_credential_id = nebula_credential::CredentialId::new();
-    let fanout_index = crate::ResourceFanoutIndex::new();
+    let fanout_index = Arc::new(crate::ResourceFanoutIndex::new());
     let mut registry = ResourceActivatorRegistry::new();
     registry
         .insert(
@@ -539,6 +539,13 @@ async fn exact_replacement_publishes_only_successor_staged_binding() {
 
     assert!(fanout_index.affected(&old_credential_id).is_empty());
     assert_eq!(fanout_index.affected(&new_credential_id).len(), 1);
+    manager
+        .remove(&BoundTestRes::key())
+        .expect("registration attached its supplied fan-out index");
+    assert!(
+        fanout_index.affected(&new_credential_id).is_empty(),
+        "removal before driver startup must prune the published binding"
+    );
 }
 
 #[tokio::test]
