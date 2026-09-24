@@ -7,6 +7,7 @@ use std::{any::Any, future::Future, sync::Arc, time::Instant};
 use nebula_core::{Context, ResourceKey, ScopeLevel};
 
 use super::{InFlightCounter, Manager, gate::admit_through_gate, gate::settle_gate_admission};
+use crate::registry::ManagedHandle as _;
 use crate::{
     context::ResourceContext,
     error::Error,
@@ -406,19 +407,33 @@ impl Manager {
         // held continuously until the guard drops. The `AcqRel` increment here
         // is strictly before the post-taint re-check below. Two-phase-revoke
         // invariant: see the `manager` module documentation.
-        let in_flight =
-            InFlightCounter::new(self.drain_tracker.clone(), managed.in_flight_tracker());
-        // Post-count re-check — now that this acquire is reflected in the
-        // per-resource counter `revoke_slot` drains *and* the manager-wide
-        // `drain_tracker` `graceful_shutdown` drains, re-observe both revoke
-        // taint (closes the revoke-vs-acquire TOCTOU) and `shutting_down`
-        // (closes the symmetric shutdown-vs-acquire use-after-drain: an
-        // acquire that passed `lookup`'s Defense A before shutdown, whose
-        // increment landed after the drain saw `0` + the registry cleared,
-        // is rejected here instead of handing out a guard for a drained
-        // resource). Same `Revoked`/`Cancelled` classifications as the
-        // pre-checks. Rationale: see the `manager` module documentation.
-        self.reject_if_tainted_or_shutting_down_post_count::<R>(&managed)?;
+        let in_flight = {
+            // Serialize readiness admission with credential demotion and
+            // promotion. Once this counter is installed under the same gate,
+            // a later replacement may demote the row but cannot retroactively
+            // invalidate an acquire admitted against the preceding material.
+            let _admission = self
+                .admission
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let in_flight =
+                InFlightCounter::new(self.drain_tracker.clone(), managed.in_flight_tracker());
+            // Post-count re-check — now that this acquire is reflected in the
+            // per-resource counter `revoke_slot` drains *and* the manager-wide
+            // `drain_tracker` `graceful_shutdown` drains, re-observe both revoke
+            // taint (closes the revoke-vs-acquire TOCTOU) and `shutting_down`
+            // (closes the symmetric shutdown-vs-acquire use-after-drain).
+            self.reject_if_tainted_or_shutting_down_post_count::<R>(&managed)?;
+            if !managed.phase().is_accepting() {
+                return Err(Error::backpressure(format!(
+                    "{}: resource is {} and cannot accept acquires",
+                    R::key(),
+                    managed.phase()
+                ))
+                .with_resource_key(R::key()));
+            }
+            in_flight
+        };
         let gate_admission = admit_through_gate(&managed.recovery_gate)?;
 
         // Publish a `RetryAttempt` event when this acquire is the recovery

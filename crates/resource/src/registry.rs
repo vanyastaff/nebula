@@ -23,6 +23,22 @@ use crate::{
     topology_tag::TopologyTag,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProjectionHookState {
+    Pending { epoch: u64, generation: u64 },
+    Admitted { epoch: u64, generation: u64 },
+}
+
+impl ProjectionHookState {
+    pub(crate) fn coordinates(self) -> (u64, u64) {
+        match self {
+            Self::Pending { epoch, generation } | Self::Admitted { epoch, generation } => {
+                (epoch, generation)
+            },
+        }
+    }
+}
+
 /// Type-erased trait for managed resources stored in the [`Registry`].
 ///
 /// Every `ManagedResource<R>` implements this trait, allowing the registry
@@ -155,7 +171,7 @@ pub(crate) trait ManagedHandle: Send + Sync + 'static {
     /// Serializes projected installation with synchronous hook admission.
     fn pending_projection_hooks(
         &self,
-    ) -> &std::sync::Mutex<std::collections::HashMap<String, (u64, u64)>>;
+    ) -> &std::sync::Mutex<std::collections::HashMap<String, ProjectionHookState>>;
 
     /// Installs a newer projected credential guard through the concrete
     /// resource's derive-generated slot dispatcher.
@@ -358,7 +374,7 @@ where
 
     fn pending_projection_hooks(
         &self,
-    ) -> &std::sync::Mutex<std::collections::HashMap<String, (u64, u64)>> {
+    ) -> &std::sync::Mutex<std::collections::HashMap<String, ProjectionHookState>> {
         &self.pending_projection_hooks
     }
 

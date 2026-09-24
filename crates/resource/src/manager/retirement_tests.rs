@@ -91,7 +91,9 @@ impl ManagedHandle for DeferredRetirementHandle {
         true
     }
 
-    fn pending_projection_hooks(&self) -> &Mutex<std::collections::HashMap<String, (u64, u64)>> {
+    fn pending_projection_hooks(
+        &self,
+    ) -> &Mutex<std::collections::HashMap<String, crate::registry::ProjectionHookState>> {
         unreachable!("this fixture does not install projections")
     }
 

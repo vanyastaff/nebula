@@ -119,6 +119,10 @@ impl RotationOutcome {
         self.observation_timed_out += other.observation_timed_out;
     }
 
+    pub(super) fn all_hooks_settled_successfully(&self) -> bool {
+        self.failed + self.timed_out + self.deferred + self.abandoned == 0
+    }
+
     /// Rows whose resource hook completed successfully.
     #[must_use]
     pub fn success(&self) -> usize {
@@ -311,7 +315,7 @@ pub struct ResourceFanoutIndex {
     /// Bounded terminal observations retained so a registration that stages
     /// after event delivery cannot publish revoked material.
     terminal_revocation_fence: std::sync::Mutex<TerminalRevocationFence>,
-    authoritative_reconciliation: std::sync::atomic::AtomicBool,
+    authoritative_reconciliation: std::sync::atomic::AtomicUsize,
     revoke_retry_notify: tokio::sync::Notify,
     /// Shared admission keeps direct dispatch and reconciliation under one
     /// provider/persistence concurrency budget.
@@ -327,7 +331,7 @@ impl Default for ResourceFanoutIndex {
             material_retry_notify: tokio::sync::Notify::new(),
             pending_revoke_admissions: std::sync::Mutex::new(Vec::new()),
             terminal_revocation_fence: std::sync::Mutex::new(TerminalRevocationFence::default()),
-            authoritative_reconciliation: std::sync::atomic::AtomicBool::new(false),
+            authoritative_reconciliation: std::sync::atomic::AtomicUsize::new(0),
             revoke_retry_notify: tokio::sync::Notify::new(),
             projection_admission: tokio::sync::Semaphore::new(MAX_CONCURRENT_PROJECTIONS),
         }
@@ -471,14 +475,26 @@ impl ResourceFanoutIndex {
         true
     }
 
+    #[cfg(test)]
     pub(crate) fn set_authoritative_reconciliation(&self, available: bool) {
         self.authoritative_reconciliation
-            .store(available, std::sync::atomic::Ordering::Release);
+            .store(usize::from(available), std::sync::atomic::Ordering::Release);
     }
 
     pub(crate) fn authoritative_reconciliation_available(&self) -> bool {
         self.authoritative_reconciliation
             .load(std::sync::atomic::Ordering::Acquire)
+            != 0
+    }
+
+    pub(crate) fn acquire_authoritative_reconciliation(
+        self: &std::sync::Arc<Self>,
+    ) -> AuthoritativeReconciliationLease {
+        self.authoritative_reconciliation
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        AuthoritativeReconciliationLease {
+            index: std::sync::Arc::clone(self),
+        }
     }
 
     /// Returns every resource row that resolved `cid`, in registration order.
@@ -627,6 +643,14 @@ impl ResourceFanoutIndex {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         fence.saturated || fence.credentials.contains(cid)
+    }
+
+    pub(crate) fn terminal_revocation_remembered(&self, cid: &CredentialId) -> bool {
+        self.terminal_revocation_fence
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .credentials
+            .contains(cid)
     }
 
     pub(super) fn complete_material_context(
@@ -1059,6 +1083,18 @@ impl ResourceFanoutIndex {
         self.by_credential
             .get(cid)
             .is_some_and(|rows| rows.iter().any(|row| row.staged != 0))
+    }
+}
+
+pub(crate) struct AuthoritativeReconciliationLease {
+    index: std::sync::Arc<ResourceFanoutIndex>,
+}
+
+impl Drop for AuthoritativeReconciliationLease {
+    fn drop(&mut self) {
+        self.index
+            .authoritative_reconciliation
+            .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
     }
 }
 

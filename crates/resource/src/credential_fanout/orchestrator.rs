@@ -309,7 +309,7 @@ impl ResourceFanoutIndex {
                     let outcome = self
                         .dispatch_material_replacement(cid, &scope, &credential_key, resolver, mgr)
                         .await;
-                    if outcome.failed + outcome.timed_out + outcome.abandoned == 0 {
+                    if outcome.all_hooks_settled_successfully() {
                         self.complete_material_context(&cid, context_sequence, mgr);
                     }
                     outcome
@@ -795,6 +795,7 @@ async fn project_and_refresh(
                 move || {
                     drop(projection_permit);
                 },
+                || {},
             ),
         )
         .await
@@ -819,6 +820,10 @@ async fn project_and_refresh(
         },
         Ok(crate::manager::EpochRefreshOutcome::Stale { .. }) => RowOutcome::Success {
             drain_timed_out: false,
+        },
+        Ok(crate::manager::EpochRefreshOutcome::Pending { .. }) => RowOutcome::Deferred {
+            drain_timed_out: false,
+            observation_timed_out: false,
         },
         Err(error) => {
             tracing::warn!(credential_id = %cid, error = %error,

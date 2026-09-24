@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use nebula_core::WorkflowId;
 
@@ -582,6 +582,19 @@ fn terminal_revocation_fence_is_bounded_and_fails_closed_when_saturated() {
 }
 
 #[test]
+fn authoritative_reconciliation_lease_tracks_liveness() {
+    let index = Arc::new(ResourceFanoutIndex::new());
+    assert!(!index.authoritative_reconciliation_available());
+    let first = index.acquire_authoritative_reconciliation();
+    let second = index.acquire_authoritative_reconciliation();
+    assert!(index.authoritative_reconciliation_available());
+    drop(first);
+    assert!(index.authoritative_reconciliation_available());
+    drop(second);
+    assert!(!index.authoritative_reconciliation_available());
+}
+
+#[test]
 fn failed_stage_does_not_promote_reconciliation_context() {
     let idx = ResourceFanoutIndex::new();
     let cid = cred();
@@ -699,6 +712,16 @@ fn rotation_outcome_dispatched_is_sum() {
     assert_eq!(o.dispatched(), 8);
     assert_eq!(o.drain_timed_out(), 2);
     assert_eq!(RotationOutcome::default().dispatched(), 0);
+}
+
+#[test]
+fn deferred_hook_is_not_a_settled_material_success() {
+    let outcome = RotationOutcome {
+        deferred: 1,
+        ..RotationOutcome::default()
+    };
+    assert!(!outcome.all_hooks_settled_successfully());
+    assert!(RotationOutcome::default().all_hooks_settled_successfully());
 }
 
 #[tokio::test]
@@ -1336,7 +1359,7 @@ mod fanout_dispatch {
     #[tokio::test]
     async fn durable_fences_and_readiness_transition_share_manager_admission() {
         let identity = SlotIdentity::from_bindings([("db", "admission-fence")]);
-        let (index, manager, credential_id, scope, _org, _ledger) =
+        let (index, manager, credential_id, scope, org, _ledger) =
             setup(std::slice::from_ref(&identity)).await;
         let managed = manager
             .lookup_any_for_slot_identity_structural(&CtlResource::key(), &scope, &identity)
@@ -1347,14 +1370,59 @@ mod fanout_dispatch {
         let sequence =
             manager.remember_material_replacement(&index, credential_id, owner, credential_key);
         assert_eq!(managed.phase(), crate::state::ResourcePhase::Initializing);
+        let ctx = ResourceContext::minimal(
+            Scope {
+                org_id: Some(org),
+                ..Default::default()
+            },
+            CancellationToken::new(),
+        );
+        let error = manager
+            .acquire_resident_for_identity::<CtlResource>(
+                &ctx,
+                &AcquireOptions::default(),
+                &identity,
+            )
+            .await
+            .expect_err("initializing credential projection must reject acquire");
+        assert_eq!(error.kind(), &crate::ErrorKind::Backpressure);
         index.complete_material_context(&credential_id, sequence, &manager);
         assert_eq!(managed.phase(), crate::state::ResourcePhase::Ready);
+        let _guard = manager
+            .acquire_resident_for_identity::<CtlResource>(
+                &ctx,
+                &AcquireOptions::default(),
+                &identity,
+            )
+            .await
+            .expect("reconciled row accepts acquire");
 
         assert!(index.remember_revocation(credential_id));
         managed.set_phase(crate::state::ResourcePhase::Initializing);
         let binding = index.affected(&credential_id).remove(0);
         manager.promote_reconciled_credential_binding(&index, &credential_id, &binding);
         assert_eq!(managed.phase(), crate::state::ResourcePhase::Initializing);
+    }
+
+    #[tokio::test]
+    async fn saturated_terminal_fence_still_applies_unretained_revokes() {
+        let identity = SlotIdentity::from_bindings([("db", "saturated-revoke")]);
+        let (index, manager, credential_id, scope, _org, _ledger) =
+            setup(std::slice::from_ref(&identity)).await;
+        for _ in 0..MAX_RETAINED_TERMINAL_REVOCATIONS {
+            assert!(index.remember_revocation(CredentialId::new()));
+        }
+        assert!(index.remember_revocation(CredentialId::new()));
+        assert!(index.terminal_publication_rejected(&credential_id));
+        assert!(!index.terminal_revocation_remembered(&credential_id));
+
+        let outcome = index.prepare_revoke(credential_id, &manager, true);
+
+        assert_eq!(outcome.failed(), 0);
+        let managed = manager
+            .lookup_any_for_slot_identity_structural(&CtlResource::key(), &scope, &identity)
+            .expect("registered row");
+        assert!(managed.is_tainted());
     }
 
     #[tokio::test]

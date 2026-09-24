@@ -217,6 +217,9 @@ const MAX_PENDING_REFRESH_SCANS: usize = 256;
 /// is the only path to shutdown.
 pub struct ResourceFanoutDriver {
     handle: tokio::task::JoinHandle<()>,
+    reconciliation_lease: Arc<
+        std::sync::Mutex<Option<crate::credential_fanout::index::AuthoritativeReconciliationLease>>,
+    >,
 }
 
 impl std::fmt::Debug for ResourceFanoutDriver {
@@ -258,12 +261,21 @@ impl ResourceFanoutDriver {
         lease_bus: Option<Arc<EventBus<LeaseEvent>>>,
     ) -> Self {
         manager.attach_rotation_index(&index);
-        if resolver.is_some() {
-            index.set_authoritative_reconciliation(true);
-        }
+        let reconciliation_lease = resolver
+            .as_ref()
+            .map(|_| index.acquire_authoritative_reconciliation());
+        let reconciliation_lease = Arc::new(std::sync::Mutex::new(reconciliation_lease));
+        let task_reconciliation_lease = Arc::clone(&reconciliation_lease);
         let mut credential_sub = credential_bus.subscribe();
         let mut lease_sub = lease_bus.map(|bus| bus.subscribe());
         let handle = tokio::spawn(async move {
+            let _reconciliation_lease_on_exit =
+                scopeguard::guard(task_reconciliation_lease, |lease| {
+                    lease
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .take();
+                });
             // Per-driver revoke dedupe: one logical credential revoke
             // double-emits (lease bus `LeaseRevoked`(s) + facade
             // `CredentialEvent::Revoked`); this collapses them within
@@ -477,7 +489,7 @@ impl ResourceFanoutDriver {
                     result = material_dispatches.join_next(), if !material_dispatches.is_empty() => {
                         match result {
                             Some(Ok((credential_id, context_sequence, outcome))) => {
-                                if outcome.failed + outcome.timed_out + outcome.abandoned == 0 {
+                                if outcome.all_hooks_settled_successfully() {
                                     index.complete_material_context(
                                         &credential_id,
                                         context_sequence,
@@ -497,7 +509,10 @@ impl ResourceFanoutDriver {
                 "resource rotation fan-out driver stopped: credential signal bus closed"
             );
         });
-        Self { handle }
+        Self {
+            handle,
+            reconciliation_lease,
+        }
     }
 
     /// Route a `CredentialEvent`: `Refreshed` → refresh fan-out,
@@ -673,6 +688,10 @@ impl ResourceFanoutDriver {
 
     /// Abort the running driver task. Safe to call multiple times.
     pub fn abort(&self) {
+        self.reconciliation_lease
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
         self.handle.abort();
     }
 
@@ -688,13 +707,61 @@ impl Drop for ResourceFanoutDriver {
     fn drop(&mut self) {
         // Cancel the spawned task so the driver never outlives the
         // engine that started it.
+        self.reconciliation_lease
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
         self.handle.abort();
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::future::Future;
+
     use super::*;
+
+    struct NeverResolver;
+
+    impl CredentialSlotResolver for NeverResolver {
+        fn resolve_slot<'a>(
+            &'a self,
+            _scope: &'a TenantScope,
+            _credential_id: CredentialId,
+            _expected_key: CredentialKey,
+            _required_capabilities: nebula_credential::Capabilities,
+            _cancel: tokio_util::sync::CancellationToken,
+        ) -> std::pin::Pin<
+            Box<
+                dyn Future<
+                        Output = Result<
+                            nebula_credential::ErasedCredentialGuard,
+                            nebula_credential::CredentialSlotResolveError,
+                        >,
+                    > + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(std::future::pending())
+        }
+    }
+
+    #[tokio::test]
+    async fn abort_releases_authoritative_reconciliation_availability() {
+        let index = Arc::new(ResourceFanoutIndex::new());
+        let driver = ResourceFanoutDriver::spawn_with_resolver(
+            Arc::clone(&index),
+            Arc::new(Manager::new()),
+            Some(Arc::new(NeverResolver)),
+            Arc::new(EventBus::new(8)),
+            None,
+        );
+        assert!(index.authoritative_reconciliation_available());
+
+        driver.abort();
+
+        assert!(!index.authoritative_reconciliation_available());
+    }
 
     /// The lease-bus + credential-bus double-emission of one logical
     /// revoke (`LeaseRevoked` then `CredentialEvent::Revoked` for the same

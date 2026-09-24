@@ -295,20 +295,29 @@ async fn rejected_projection_hook_retries_once_but_accepted_failure_does_not() {
         if !fail {
             assert!(matches!(first, Ok(EpochRefreshOutcome::Applied(_))));
         }
-        assert!(matches!(duplicate, Ok(EpochRefreshOutcome::Stale { .. })));
+        if fail {
+            assert!(matches!(duplicate, Ok(EpochRefreshOutcome::Pending { .. })));
+        } else {
+            assert!(matches!(
+                duplicate,
+                Ok(EpochRefreshOutcome::Pending { .. } | EpochRefreshOutcome::Stale { .. })
+            ));
+        }
         assert_eq!(resource.calls.load(Ordering::SeqCst), 1);
-        assert!(matches!(
-            manager
-                .install_and_refresh_slot_for_identity(
-                    &key,
-                    ScopeLevel::Global,
-                    "db",
-                    &identity,
-                    guard()
-                )
-                .await,
-            Ok(EpochRefreshOutcome::Stale { .. })
-        ));
+        let later = manager
+            .install_and_refresh_slot_for_identity(
+                &key,
+                ScopeLevel::Global,
+                "db",
+                &identity,
+                guard(),
+            )
+            .await;
+        if fail {
+            assert!(matches!(later, Ok(EpochRefreshOutcome::Pending { .. })));
+        } else {
+            assert!(matches!(later, Ok(EpochRefreshOutcome::Stale { .. })));
+        }
         assert_eq!(resource.calls.load(Ordering::SeqCst), 1);
     }
 }

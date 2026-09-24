@@ -155,7 +155,7 @@ pub struct ManagedResource<R: Provider> {
     pub(crate) resource: R,
     /// Pending hook admissions keyed by slot: (material epoch, installed slot generation).
     pub(crate) pending_projection_hooks:
-        std::sync::Mutex<std::collections::HashMap<String, (u64, u64)>>,
+        std::sync::Mutex<std::collections::HashMap<String, crate::registry::ProjectionHookState>>,
     /// Hot-swappable operational configuration.
     pub(crate) config: ArcSwap<R::Config>,
     /// The resource's lease topology, reached monomorphically.

@@ -46,7 +46,9 @@ macro_rules! impl_fake_handle {
             }
             fn pending_projection_hooks(
                 &self,
-            ) -> &std::sync::Mutex<std::collections::HashMap<String, (u64, u64)>> {
+            ) -> &std::sync::Mutex<
+                std::collections::HashMap<String, crate::registry::ProjectionHookState>,
+            > {
                 unreachable!("this fixture does not install projections")
             }
 
