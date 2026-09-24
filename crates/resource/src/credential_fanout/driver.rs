@@ -370,6 +370,9 @@ impl ResourceFanoutDriver {
                     () = index.revoke_retry_notified() => {
                         revoke_retry_requested = true;
                     },
+                    () = index.material_retry_notified(), if resolver.is_some() => {
+                        full_scan_requested = true;
+                    },
                     _ = reconciliation.tick() => {
                         revoke_retry_requested = true;
                         if resolver.is_some() {

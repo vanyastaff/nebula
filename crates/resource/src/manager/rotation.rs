@@ -321,6 +321,44 @@ impl Manager {
         self.taint_under_admission(&binding.resource_key, &binding.slot_name, managed)
     }
 
+    /// Revalidates reverse-index ownership and admits a refresh for the same
+    /// exact row in one lifecycle-admission critical section.
+    #[cfg(feature = "rotation")]
+    pub(crate) async fn refresh_published_credential_binding(
+        &self,
+        index: &crate::ResourceFanoutIndex,
+        credential_id: &nebula_credential::CredentialId,
+        binding: &crate::Bind,
+        hook_timeout: Duration,
+        observation_timeout: Duration,
+    ) -> Result<SlotDispatchOutcome, Error> {
+        let started = Instant::now();
+        let accepted = {
+            let _admission = self
+                .admission
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            self.shutdown_guard()?;
+            if !index.contains_published_binding(credential_id, binding) {
+                return Err(Error::not_found(&binding.resource_key));
+            }
+            let managed = self.lookup_any_for_slot_identity_structural(
+                &binding.resource_key,
+                &binding.scope,
+                &binding.slot_identity,
+            )?;
+            self.validate_refresh_admission(&binding.resource_key, &binding.slot_name, &managed)?;
+            self.admit_refresh_resolved(
+                &binding.resource_key,
+                &binding.slot_name,
+                managed,
+                hook_timeout,
+            )?
+        };
+        self.observe_refresh(accepted, observation_timeout, started)
+            .await
+    }
+
     /// Installs a projected guard into one identity-pinned row, then dispatches
     /// the refresh hook. The install completes synchronously before the first
     /// await, so author code cannot observe the old guard after dispatch.
@@ -1090,13 +1128,14 @@ impl Manager {
         self.taint_under_admission(key, slot, managed)
     }
 
-    /// Applies an authoritative durable tombstone to an exact pinned row.
+    /// Applies an authoritative durable tombstone to an exact pinned row,
+    /// clearing its live guard before the row is tainted.
     ///
     /// Unlike a speculative projection update, a verified tombstone must win
     /// over an intervening public slot store/take. Lifecycle admission still
     /// revalidates that the pinned handle is the currently registered row.
     #[cfg(feature = "rotation")]
-    pub(crate) fn taint_resolved_terminal(
+    pub(crate) fn revoke_resolved_terminal(
         &self,
         key: &ResourceKey,
         slot: &str,
@@ -1109,6 +1148,19 @@ impl Manager {
         self.shutdown_guard()?;
         if !self.registry.contains_managed(key, &managed) {
             return Err(Error::not_found(key));
+        }
+        match managed.revoke_credential_slot(slot).map_err(|source| {
+            Error::permanent("credential slot revoke failed")
+                .with_source(source)
+                .with_resource_key(key.clone())
+        })? {
+            crate::SlotUpdate::Revoked | crate::SlotUpdate::AlreadyRevoked => {},
+            crate::SlotUpdate::Installed | crate::SlotUpdate::Stale { .. } => {
+                return Err(Error::permanent(
+                    "credential slot revoke returned an invalid install outcome",
+                )
+                .with_resource_key(key.clone()));
+            },
         }
         self.taint_under_admission(key, slot, managed)
     }

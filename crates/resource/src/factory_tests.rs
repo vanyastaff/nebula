@@ -696,6 +696,154 @@ async fn rotation_binding_without_projection_ports_fails_before_publication() {
 
 #[cfg(feature = "rotation")]
 #[tokio::test]
+async fn rotation_binding_rejects_unqualified_prepopulated_slot() {
+    let manager = Manager::new();
+    let expression_engine = ExpressionEngine::with_cache_size(16);
+    let credential_id = nebula_credential::CredentialId::new();
+    let fanout_index = Arc::new(crate::ResourceFanoutIndex::new());
+    let mut registry = ResourceActivatorRegistry::new();
+    registry
+        .insert(
+            "test-prepopulated-slot",
+            Arc::new(KindActivator::<BoundTestRes, _, _>::new(
+                || {
+                    let resource = BoundTestRes::new();
+                    resource
+                        .slot
+                        .store(Arc::new(nebula_credential::CredentialGuard::new(7_u64)));
+                    resource
+                },
+                || Resident::<BoundTestRes>::new(resident::config::Config::default()),
+            )),
+        )
+        .expect("typed fixture metadata admits");
+
+    let error = registry
+        .register_and_bind(
+            "test-prepopulated-slot",
+            &manager,
+            RegisterRequest {
+                config: ResourceConfigInput::data(serde_json::json!({ "name": "resource" })),
+                expr_engine: &expression_engine,
+                slot_bindings: vec![SlotBinding {
+                    slot_name: "auth".to_owned(),
+                    credential_key: nebula_core::credential_key!("test.factory-credential"),
+                    credential_id: Some(credential_id),
+                    credential_scope: Some(nebula_credential::TenantScope::new("org", "workspace")),
+                }],
+                slot_installs: Vec::new(),
+                scope: ScopeLevel::Global,
+                recovery_gate: None,
+            },
+            Some(&fanout_index),
+        )
+        .await
+        .expect_err("a metadata-free slot transition cannot claim rotation ownership");
+
+    std::assert_matches!(error, RegistrarError::Register { .. });
+    assert!(!manager.contains(&BoundTestRes::key()));
+    assert!(fanout_index.affected(&credential_id).is_empty());
+}
+
+#[cfg(feature = "rotation")]
+#[tokio::test]
+async fn replacement_observed_before_staging_keeps_row_unavailable() {
+    let manager = Manager::new();
+    let expression_engine = ExpressionEngine::with_cache_size(16);
+    let credential_id = nebula_credential::CredentialId::new();
+    let owner = nebula_credential::TenantScope::new("org", "workspace");
+    let credential_key = nebula_core::credential_key!("test.factory-credential");
+    let fanout_index = Arc::new(crate::ResourceFanoutIndex::new());
+    fanout_index.remember_material_context(credential_id, owner.clone(), credential_key.clone());
+    let mut registry = ResourceActivatorRegistry::new();
+    registry
+        .insert(
+            "test-prestage-replacement",
+            Arc::new(KindActivator::<BoundTestRes, _, _>::new(
+                BoundTestRes::new,
+                || Resident::<BoundTestRes>::new(resident::config::Config::default()),
+            )),
+        )
+        .expect("typed fixture metadata admits");
+
+    let outcome = registry
+        .register_and_bind(
+            "test-prestage-replacement",
+            &manager,
+            RegisterRequest {
+                config: ResourceConfigInput::data(serde_json::json!({ "name": "resource" })),
+                expr_engine: &expression_engine,
+                slot_bindings: vec![SlotBinding {
+                    slot_name: "auth".to_owned(),
+                    credential_key,
+                    credential_id: Some(credential_id),
+                    credential_scope: Some(owner),
+                }],
+                slot_installs: Vec::new(),
+                scope: ScopeLevel::Global,
+                recovery_gate: None,
+            },
+            Some(&fanout_index),
+        )
+        .await
+        .expect("row publishes for authoritative reconciliation");
+    let managed = manager
+        .lookup_any_for_slot_identity_structural(
+            &outcome.resource_key,
+            &ScopeLevel::Global,
+            &outcome.slot_identity,
+        )
+        .expect("published row");
+
+    assert_eq!(
+        managed.phase(),
+        crate::state::ResourcePhase::Initializing,
+        "a possibly stale guard must not become acquirable before authoritative reread"
+    );
+    assert!(fanout_index.has_material_context(&credential_id));
+}
+
+#[cfg(feature = "rotation")]
+#[tokio::test]
+async fn durable_tombstone_clears_the_live_slot_before_taint() {
+    let manager = Manager::new();
+    let resource = BoundTestRes::new();
+    let slot = Arc::clone(&resource.slot);
+    slot.store(Arc::new(nebula_credential::CredentialGuard::new(7_u64)));
+    let identity = SlotIdentity::from_bindings([("auth", "credential")]);
+    manager
+        .register(crate::RegistrationSpec {
+            resource,
+            config: TestConfig {
+                name: "resource".to_owned(),
+            },
+            scope: ScopeLevel::Global,
+            slot_identity: identity.clone(),
+            topology: Resident::<BoundTestRes>::new(resident::config::Config::default()),
+            recovery_gate: None,
+        })
+        .expect("register row with a live unqualified guard");
+    let managed = manager
+        .lookup_any_for_slot_identity_structural(
+            &BoundTestRes::key(),
+            &ScopeLevel::Global,
+            &identity,
+        )
+        .expect("registered row");
+
+    let _tainted = manager
+        .revoke_resolved_terminal(&BoundTestRes::key(), "auth", managed)
+        .expect("authoritative tombstone applies");
+
+    assert!(
+        !slot.is_some(),
+        "terminal revoke must release the live guard"
+    );
+    assert!(slot.projection_metadata().is_none());
+}
+
+#[cfg(feature = "rotation")]
+#[tokio::test]
 async fn revoke_observed_before_staging_taints_the_row_at_publication() {
     let manager = Manager::new();
     let expression_engine = ExpressionEngine::with_cache_size(16);

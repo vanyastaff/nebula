@@ -52,7 +52,7 @@ fn index_bind_lookup_unbind_with_identity() {
 }
 
 #[test]
-fn replacement_contexts_survive_queue_scale_and_follow_live_bindings() {
+fn replacement_contexts_survive_queue_scale_and_an_unbound_gap() {
     let idx = ResourceFanoutIndex::new();
     let key = rk("pg");
     let scope = wf_scope();
@@ -75,7 +75,11 @@ fn replacement_contexts_survive_queue_scale_and_follow_live_bindings() {
     assert_eq!(idx.pending_material_contexts().len(), 300);
 
     idx.unbind_resource(&key, &scope);
-    assert!(idx.pending_material_contexts().is_empty());
+    assert_eq!(
+        idx.pending_material_contexts().len(),
+        300,
+        "replacement evidence must survive a gap before a later registration stages"
+    );
     assert!(
         credentials
             .into_iter()
@@ -109,6 +113,31 @@ fn completed_material_dispatch_cannot_forget_a_newer_context() {
 
     idx.forget_material_context(&cid, new);
     assert!(idx.pending_material_contexts().is_empty());
+}
+
+#[test]
+fn replacement_context_observed_before_staging_is_retained() {
+    let idx = ResourceFanoutIndex::new();
+    let cid = CredentialId::new();
+    let owner = TenantScope::new("org", "workspace");
+    let credential_key: CredentialKey = "oauth".parse().expect("credential key");
+    let sequence = idx.remember_material_context(cid, owner.clone(), credential_key.clone());
+
+    assert_eq!(
+        idx.pending_material_contexts(),
+        vec![(cid, owner.clone(), credential_key.clone(), sequence)]
+    );
+
+    let bind = bound(
+        &rk("pg"),
+        &ScopeLevel::Global,
+        "db",
+        SlotIdentity::from_bindings([("db", "credential")]),
+    );
+    idx.stage_bind_with_context(cid, bind.clone(), owner, credential_key);
+    assert!(idx.has_staged_binding(&cid));
+    assert!(!idx.publish_staged_entry(&cid, &bind));
+    assert!(idx.has_material_context(&cid));
 }
 
 #[test]
@@ -1066,6 +1095,56 @@ mod fanout_dispatch {
             )
             .expect("successor remains published");
         assert!(!successor.is_tainted());
+    }
+
+    #[tokio::test]
+    async fn stale_binding_snapshot_cannot_refresh_a_replacement_owner() {
+        let identity = SlotIdentity::from_bindings([("db", "shared-key")]);
+        let (index, manager, old_credential, scope, _org, ledger) =
+            setup(std::slice::from_ref(&identity)).await;
+        let stale_binding = index
+            .affected(&old_credential)
+            .into_iter()
+            .next()
+            .expect("old published binding");
+
+        index.unbind_resource_identity(&CtlResource::key(), &scope, &identity);
+        let successor_credential = CredentialId::new();
+        index.bind(
+            successor_credential,
+            CtlResource::key(),
+            scope.clone(),
+            "db",
+            identity.clone(),
+        );
+        manager
+            .register(crate::RegistrationSpec {
+                resource: CtlResource {
+                    identity: identity.clone(),
+                    ledger: ledger.clone(),
+                },
+                config: Cfg,
+                scope,
+                slot_identity: identity,
+                topology: Resident::<CtlResource>::new(ResidentConfig::default()),
+                recovery_gate: None,
+            })
+            .expect("replace structural row with successor owner");
+
+        assert!(
+            manager
+                .refresh_published_credential_binding(
+                    &index,
+                    &old_credential,
+                    &stale_binding,
+                    Duration::from_secs(1),
+                    Duration::from_secs(1),
+                )
+                .await
+                .is_err(),
+            "a cloned binding whose published ownership was removed must fail closed"
+        );
+        assert_eq!(ledger.refresh_entered.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]

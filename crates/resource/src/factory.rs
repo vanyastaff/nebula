@@ -744,13 +744,20 @@ where
                     )
                     .with_resource_key(R::key()));
                 }
-                let Some((_, installed)) = resource.credential_slot_projection(&binding.slot_name)
+                let Some((generation, installed)) =
+                    resource.credential_slot_projection(&binding.slot_name)
                 else {
                     return Err(crate::Error::permanent(
                         "rotation binding projection snapshot is unavailable",
                     )
                     .with_resource_key(R::key()));
                 };
+                if installed.is_none() && generation != 0 {
+                    return Err(crate::Error::permanent(
+                        "rotation-bound credential slot changed without projection metadata",
+                    )
+                    .with_resource_key(R::key()));
+                }
                 if let Some(installed) = installed
                     && (installed.credential_id() != credential_id
                         || installed.credential_key() != &binding.credential_key

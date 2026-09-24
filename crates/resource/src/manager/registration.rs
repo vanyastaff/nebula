@@ -305,6 +305,8 @@ impl Manager {
             self.retire_resource(displaced, permit, RetirementOrigin::Replacement);
         }
         #[cfg(feature = "rotation")]
+        let mut material_reconciliation_pending = false;
+        #[cfg(feature = "rotation")]
         if let Some(index) = registration_bindings.rotation_index() {
             for (credential_id, bind) in registration_bindings.staged_entries() {
                 if index.publish_staged_entry(credential_id, bind) {
@@ -325,13 +327,19 @@ impl Manager {
                         ),
                     }
                 }
+                material_reconciliation_pending |= index.has_material_context(credential_id);
             }
         }
 
-        // #387: everything below this point is a single funnel — the
-        // resource is installed, so advance its phase from `Initializing`
-        // to `Ready`. Failures are surfaced by `config.validate()` above,
-        // which aborts before we reach this line.
+        // #387: everything below this point is a single funnel. A row whose
+        // material changed before its first staged bind stays unavailable in
+        // `Initializing`; authoritative reconciliation advances it to Ready
+        // only after installing (or proving it already has) current material.
+        #[cfg(feature = "rotation")]
+        if !material_reconciliation_pending {
+            managed.set_phase(crate::state::ResourcePhase::Ready);
+        }
+        #[cfg(not(feature = "rotation"))]
         managed.set_phase(crate::state::ResourcePhase::Ready);
 
         // Start the background idle/lifetime reaper for pools that expire

@@ -293,9 +293,11 @@ pub struct ResourceFanoutIndex {
     /// a single-key lookup.
     by_credential: DashMap<CredentialId, BindRows>,
     /// Owner-qualified replacement hints retained until every bound row can
-    /// project them. Its key space is bounded by live reverse-index entries.
+    /// project them. A hint may precede the first staged binding, so it must
+    /// not be pruned merely because the reverse index is still empty.
     material_contexts: DashMap<CredentialId, (TenantScope, CredentialKey, u64)>,
     material_context_sequence: std::sync::atomic::AtomicU64,
+    material_retry_notify: tokio::sync::Notify,
     pending_revoke_admissions: std::sync::Mutex<Vec<PendingRevokeAdmission>>,
     /// Bounded terminal observations retained so a registration that stages
     /// after event delivery cannot publish revoked material.
@@ -312,6 +314,7 @@ impl Default for ResourceFanoutIndex {
             by_credential: DashMap::new(),
             material_contexts: DashMap::new(),
             material_context_sequence: std::sync::atomic::AtomicU64::new(1),
+            material_retry_notify: tokio::sync::Notify::new(),
             pending_revoke_admissions: std::sync::Mutex::new(Vec::new()),
             terminal_revocation_fence: std::sync::Mutex::new(TerminalRevocationFence::default()),
             revoke_retry_notify: tokio::sync::Notify::new(),
@@ -402,6 +405,9 @@ impl ResourceFanoutIndex {
             Some(credential_key),
             true,
         );
+        if self.material_contexts.contains_key(&cid) {
+            self.material_retry_notify.notify_one();
+        }
     }
 
     fn add_bind_ref(
@@ -497,7 +503,7 @@ impl ResourceFanoutIndex {
             .collect()
     }
 
-    pub(super) fn remember_material_context(
+    pub(crate) fn remember_material_context(
         &self,
         cid: CredentialId,
         scope: TenantScope,
@@ -506,18 +512,14 @@ impl ResourceFanoutIndex {
         let sequence = self
             .material_context_sequence
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        if self.by_credential.contains_key(&cid) {
-            self.material_contexts
-                .insert(cid, (scope, credential_key, sequence));
-        }
+        self.material_contexts
+            .insert(cid, (scope, credential_key, sequence));
         sequence
     }
 
     pub(super) fn pending_material_contexts(
         &self,
     ) -> Vec<(CredentialId, TenantScope, CredentialKey, u64)> {
-        self.material_contexts
-            .retain(|cid, _| self.by_credential.contains_key(cid));
         self.material_contexts
             .iter()
             .map(|entry| {
@@ -530,6 +532,14 @@ impl ResourceFanoutIndex {
     pub(super) fn forget_material_context(&self, cid: &CredentialId, sequence: u64) {
         self.material_contexts
             .remove_if(cid, |_, context| context.2 == sequence);
+    }
+
+    pub(crate) fn has_material_context(&self, cid: &CredentialId) -> bool {
+        self.material_contexts.contains_key(cid)
+    }
+
+    pub(crate) async fn material_retry_notified(&self) {
+        self.material_retry_notify.notified().await;
     }
 
     pub(crate) fn remember_pending_revoke(
@@ -564,6 +574,7 @@ impl ResourceFanoutIndex {
         // A revoke is terminal for this credential id. Retain the observation
         // even when no binding is visible yet: register_and_bind may already
         // have resolved revoked material but not inserted its staged row.
+        self.material_contexts.remove(&credential_id);
         let mut fence = self
             .terminal_revocation_fence
             .lock()
@@ -865,6 +876,9 @@ impl ResourceFanoutIndex {
                 row.staged_context = None;
             }
         }
+        if self.material_contexts.contains_key(cid) {
+            self.material_retry_notify.notify_one();
+        }
         let fence = self
             .terminal_revocation_fence
             .lock()
@@ -873,8 +887,6 @@ impl ResourceFanoutIndex {
     }
 
     fn prune_orphan_contexts(&self) {
-        self.material_contexts
-            .retain(|cid, _| self.by_credential.contains_key(cid));
         self.pending_revoke_admissions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)

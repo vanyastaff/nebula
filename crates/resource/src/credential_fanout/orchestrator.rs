@@ -76,6 +76,7 @@ impl ResourceFanoutIndex {
         mgr: &crate::Manager,
     ) -> RotationOutcome {
         let affected = self.affected(&cid);
+        let has_published_binding = !affected.is_empty();
         let has_staged_binding = self.has_staged_binding(&cid);
         let dispatches = affected.into_iter().map(|binding| async move {
             let Ok(projection_permit) = self.projection_admission.acquire().await else {
@@ -168,7 +169,7 @@ impl ResourceFanoutIndex {
         // routable until the manager publishes it. Keep the authoritative
         // material context for reconciliation even when every already-live
         // row succeeded during this dispatch.
-        summary.failed += usize::from(has_staged_binding);
+        summary.failed += usize::from(has_staged_binding || !has_published_binding);
         summary
     }
 
@@ -336,8 +337,8 @@ impl ResourceFanoutIndex {
 
     /// Fans a completed credential refresh out to every resource registry
     /// row that resolved `cid`, calling
-    /// [`Manager::refresh_slot_for_identity`](crate::Manager::refresh_slot_for_identity)
-    /// per row.
+    /// an ownership-qualified [`Manager`](crate::Manager) refresh port per
+    /// row.
     ///
     /// The engine (exec layer) owns rotation orchestration: it has already
     /// resolved and stored the fresh credential material before this is
@@ -355,9 +356,9 @@ impl ResourceFanoutIndex {
     /// Identity routing: a multi-tenant `(key, scope)` has more than one
     /// resolved row, so `Manager::refresh_slot` (identity-agnostic) would
     /// fail closed with `Ambiguous`. This drives the slot-identity-pinned
-    /// `refresh_slot_for_identity` with the `slot_identity` recorded at
-    /// [`bind`](ResourceFanoutIndex::bind) time so the rotation reaches exactly the
-    /// resolved row.
+    /// an exact published binding with the `slot_identity` recorded at
+    /// [`bind`](ResourceFanoutIndex::bind) time so the rotation reaches exactly
+    /// the resolved row and cannot cross into a replacement owner.
     ///
     /// Redaction: only the aggregate counts and per-row key / slot / scope /
     /// `slot_identity` / duration reach spans — never credential or secret
@@ -391,14 +392,12 @@ impl ResourceFanoutIndex {
 
     /// Fans a credential revoke (e.g. a lease revoke) out to every resource
     /// registry row that resolved `cid`, calling
-    /// [`Manager::revoke_slot_for_identity`](crate::Manager::revoke_slot_for_identity)
-    /// per row.
+    /// an ownership-qualified [`Manager`](crate::Manager) revoke port per row.
     ///
     /// Same per-resource timeout isolation, identity routing, redaction, and
     /// "aggregate is not an audit record" contract as
     /// [`dispatch_refresh`](Self::dispatch_refresh) — only the per-row port
-    /// differs (`revoke_slot_for_identity` taints → drains → runs the revoke
-    /// hook).
+    /// differs (exact-binding taint → drain → revoke hook).
     ///
     /// # Cancel safety
     ///
@@ -479,11 +478,10 @@ impl ResourceFanoutIndex {
                     // Deferred only while the hook remains queued; once it
                     // starts, its bounded terminal result wins. Neither path
                     // drops queue ownership or invents a retryable error.
-                    let refresh = mgr.refresh_slot_for_identity_with_timeout(
-                        &b.resource_key,
-                        b.scope.clone(),
-                        &b.slot_name,
-                        &b.slot_identity,
+                    let refresh = mgr.refresh_published_credential_binding(
+                        self,
+                        &cid,
+                        &b,
                         per_resource_timeout,
                         per_resource_timeout,
                     );
@@ -537,12 +535,7 @@ impl ResourceFanoutIndex {
                     // never skip it. A taint failure
                     // (resolution miss / manager shutting down) is this
                     // row's terminal outcome — the drain tail is not entered.
-                    let tainted = match mgr.taint_slot_for_identity(
-                        &b.resource_key,
-                        b.scope.clone(),
-                        &b.slot_name,
-                        &b.slot_identity,
-                    ) {
+                    let tainted = match mgr.taint_published_credential_binding(self, &cid, &b) {
                         Ok(t) => t,
                         Err(err) => {
                             tracing::warn!(
@@ -742,7 +735,7 @@ async fn project_and_refresh(
                 "durable credential tombstone discovered during material reconciliation; revoking resource slot"
             );
             let pending_managed = std::sync::Arc::clone(&managed);
-            let tainted = match mgr.taint_resolved_terminal(&key, slot, managed) {
+            let tainted = match mgr.revoke_resolved_terminal(&key, slot, managed) {
                 Ok(tainted) => tainted,
                 Err(error) => {
                     tracing::warn!(
@@ -796,8 +789,13 @@ async fn project_and_refresh(
         };
     }
     let key = managed.resource_key();
+    let publication_managed = std::sync::Arc::clone(&managed);
+    let stale_publication_managed = std::sync::Arc::clone(&managed);
     match mgr
         .install_and_refresh_resolved(&key, slot, managed, guard, Some(generation), move || {
+            if publication_managed.phase() == crate::state::ResourcePhase::Initializing {
+                publication_managed.set_phase(crate::state::ResourcePhase::Ready);
+            }
             drop(projection_permit);
         })
         .await
@@ -820,8 +818,13 @@ async fn project_and_refresh(
                 drain_timed_out: false,
             },
         },
-        Ok(crate::manager::EpochRefreshOutcome::Stale { .. }) => RowOutcome::Success {
-            drain_timed_out: false,
+        Ok(crate::manager::EpochRefreshOutcome::Stale { .. }) => {
+            if stale_publication_managed.phase() == crate::state::ResourcePhase::Initializing {
+                stale_publication_managed.set_phase(crate::state::ResourcePhase::Ready);
+            }
+            RowOutcome::Success {
+                drain_timed_out: false,
+            }
         },
         Err(error) => {
             tracing::warn!(credential_id = %cid, error = %error,

@@ -600,7 +600,7 @@ impl nebula_credential::CredentialSlotResolver for GatedRevokedProjection {
 async fn durable_tombstone_reconciliation_terminally_revokes_resource() {
     let manager = Arc::new(Manager::new());
     let cid = CredentialId::new();
-    register_replacement(&manager, cid);
+    let resource = register_replacement(&manager, cid);
     let identity = SlotIdentity::from_bindings([("db", "oauth")]);
     let context = ResourceContext::minimal(Scope::default(), CancellationToken::new());
     drop(
@@ -638,6 +638,10 @@ async fn durable_tombstone_reconciliation_terminally_revokes_resource() {
         tokio::task::yield_now().await;
     }
     assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert!(
+        resource.slot.load().is_none(),
+        "durable tombstone must release the installed credential guard"
+    );
     assert!(
         manager
             .acquire_resident_for_identity::<ReplacementResource>(
@@ -776,6 +780,10 @@ async fn authoritative_tombstone_wins_a_concurrent_unqualified_slot_write() {
         for _ in 0..100 {
             tokio::task::yield_now().await;
         }
+        assert!(
+            resource.slot.load().is_none(),
+            "authoritative tombstone must clear an intervening slot write"
+        );
         manager
             .acquire_resident_for_identity::<ReplacementResource>(
                 &context,
@@ -1471,6 +1479,16 @@ impl HasCredentialSlots for ReplacementResource {
             .into_typed::<ReplacementMaterial>()
             .map_err(|_| nebula_resource::SlotInstallError::CredentialTypeMismatch)?;
         self.slot.install_projected(metadata, Arc::new(guard))
+    }
+
+    fn revoke_credential_slot(
+        &self,
+        slot: &str,
+    ) -> Result<nebula_resource::SlotUpdate, nebula_resource::SlotInstallError> {
+        if slot != "db" {
+            return Err(nebula_resource::SlotInstallError::UnknownSlot);
+        }
+        Ok(self.slot.revoke())
     }
 }
 
