@@ -84,6 +84,34 @@ fn replacement_contexts_survive_queue_scale_and_follow_live_bindings() {
 }
 
 #[test]
+fn completed_material_dispatch_cannot_forget_a_newer_context() {
+    let idx = ResourceFanoutIndex::default();
+    let cid = CredentialId::new();
+    let resource_key = ResourceKey::new("db").expect("resource key");
+    let scope = ScopeLevel::Global;
+    let owner = TenantScope::new("org", "workspace");
+    let credential_key: nebula_core::CredentialKey = "oauth".parse().expect("credential key");
+    idx.bind(
+        cid,
+        resource_key,
+        scope,
+        "db",
+        SlotIdentity::from_bindings([("db", "credential")]),
+    );
+
+    let old = idx.remember_material_context(cid, owner.clone(), credential_key.clone());
+    let new = idx.remember_material_context(cid, owner.clone(), credential_key.clone());
+    idx.forget_material_context(&cid, old);
+    assert_eq!(
+        idx.pending_material_contexts(),
+        vec![(cid, owner, credential_key, new)]
+    );
+
+    idx.forget_material_context(&cid, new);
+    assert!(idx.pending_material_contexts().is_empty());
+}
+
+#[test]
 fn distinct_slot_identity_same_resource_are_distinct_binds() {
     // Same ResourceKey + scope, different resolved slot_identity (e.g.
     // two tenants resolving the same resource type to different

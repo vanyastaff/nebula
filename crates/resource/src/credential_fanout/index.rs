@@ -224,7 +224,8 @@ pub struct ResourceFanoutIndex {
     by_credential: DashMap<CredentialId, BindRows>,
     /// Owner-qualified replacement hints retained until every bound row can
     /// project them. Its key space is bounded by live reverse-index entries.
-    material_contexts: DashMap<CredentialId, (TenantScope, nebula_core::CredentialKey)>,
+    material_contexts: DashMap<CredentialId, (TenantScope, nebula_core::CredentialKey, u64)>,
+    material_context_sequence: std::sync::atomic::AtomicU64,
     /// Shared admission keeps direct dispatch and reconciliation under one
     /// provider/persistence concurrency budget.
     pub(super) projection_admission: tokio::sync::Semaphore,
@@ -235,6 +236,7 @@ impl Default for ResourceFanoutIndex {
         Self {
             by_credential: DashMap::new(),
             material_contexts: DashMap::new(),
+            material_context_sequence: std::sync::atomic::AtomicU64::new(1),
             projection_admission: tokio::sync::Semaphore::new(MAX_CONCURRENT_PROJECTIONS),
         }
     }
@@ -303,28 +305,34 @@ impl ResourceFanoutIndex {
         cid: CredentialId,
         scope: TenantScope,
         credential_key: nebula_core::CredentialKey,
-    ) {
+    ) -> u64 {
+        let sequence = self
+            .material_context_sequence
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if self.by_credential.contains_key(&cid) {
-            self.material_contexts.insert(cid, (scope, credential_key));
+            self.material_contexts
+                .insert(cid, (scope, credential_key, sequence));
         }
+        sequence
     }
 
     pub(super) fn pending_material_contexts(
         &self,
-    ) -> Vec<(CredentialId, TenantScope, nebula_core::CredentialKey)> {
+    ) -> Vec<(CredentialId, TenantScope, nebula_core::CredentialKey, u64)> {
         self.material_contexts
             .retain(|cid, _| self.by_credential.contains_key(cid));
         self.material_contexts
             .iter()
             .map(|entry| {
-                let (scope, key) = entry.value();
-                (*entry.key(), scope.clone(), key.clone())
+                let (scope, key, sequence) = entry.value();
+                (*entry.key(), scope.clone(), key.clone(), *sequence)
             })
             .collect()
     }
 
-    pub(super) fn forget_material_context(&self, cid: &CredentialId) {
-        self.material_contexts.remove(cid);
+    pub(super) fn forget_material_context(&self, cid: &CredentialId, sequence: u64) {
+        self.material_contexts
+            .remove_if(cid, |_, context| context.2 == sequence);
     }
 
     /// Removes every binding under `(resource_key, scope)` across all

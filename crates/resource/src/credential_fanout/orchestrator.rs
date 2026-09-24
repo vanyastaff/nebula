@@ -145,13 +145,13 @@ impl ResourceFanoutIndex {
         let outcomes = futures::future::join_all(projections).await;
         let mut summary = summarize_row_outcomes(outcomes);
         if credential_id.is_none() {
-            for (cid, scope, credential_key) in self.pending_material_contexts() {
+            for (cid, scope, credential_key, context_sequence) in self.pending_material_contexts() {
                 let outcome = self
                     .dispatch_material_replacement(cid, &scope, &credential_key, resolver, mgr)
                     .await;
                 summary.add(outcome);
                 if outcome.failed + outcome.timed_out + outcome.abandoned == 0 {
-                    self.forget_material_context(&cid);
+                    self.forget_material_context(&cid, context_sequence);
                 }
             }
         }

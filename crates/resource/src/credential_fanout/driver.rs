@@ -266,7 +266,8 @@ impl ResourceFanoutDriver {
             reconciliation.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             let mut scans = tokio::task::JoinSet::new();
             let mut material_dispatches = tokio::task::JoinSet::new();
-            let mut pending_material = HashMap::<CredentialId, (TenantScope, CredentialKey)>::new();
+            let mut pending_material =
+                HashMap::<CredentialId, (TenantScope, CredentialKey, u64)>::new();
             let mut pending_refresh_scans = HashSet::<CredentialId>::new();
             let mut full_scan_requested = false;
             loop {
@@ -296,7 +297,7 @@ impl ResourceFanoutDriver {
                             scope,
                             credential_key,
                         }) if resolver.is_some() => {
-                            index.remember_material_context(
+                            let context_sequence = index.remember_material_context(
                                 credential_id,
                                 scope.clone(),
                                 credential_key.clone(),
@@ -304,7 +305,10 @@ impl ResourceFanoutDriver {
                             if pending_material.contains_key(&credential_id)
                                 || pending_material.len() < MAX_PENDING_MATERIAL_REPLACEMENTS
                             {
-                                pending_material.insert(credential_id, (scope, credential_key));
+                                pending_material.insert(
+                                    credential_id,
+                                    (scope, credential_key, context_sequence),
+                                );
                             } else {
                                 full_scan_requested = true;
                                 tracing::warn!(
@@ -364,7 +368,7 @@ impl ResourceFanoutDriver {
                         && material_dispatches.is_empty()
                         && scans.is_empty() => {
                         if let Some(credential_id) = pending_material.keys().next().copied() {
-                            let Some((scope, credential_key)) = pending_material.remove(&credential_id) else {
+                            let Some((scope, credential_key, context_sequence)) = pending_material.remove(&credential_id) else {
                                 continue;
                             };
                             if let Some(resolver) = resolver.as_ref() {
@@ -384,7 +388,7 @@ impl ResourceFanoutDriver {
                                             &manager,
                                         )
                                         .await;
-                                    (credential_id, outcome)
+                                    (credential_id, context_sequence, outcome)
                                 });
                             }
                         }
@@ -401,9 +405,12 @@ impl ResourceFanoutDriver {
                     },
                     result = material_dispatches.join_next(), if !material_dispatches.is_empty() => {
                         match result {
-                            Some(Ok((credential_id, outcome))) => {
+                            Some(Ok((credential_id, context_sequence, outcome))) => {
                                 if outcome.failed + outcome.timed_out + outcome.abandoned == 0 {
-                                    index.forget_material_context(&credential_id);
+                                    index.forget_material_context(
+                                        &credential_id,
+                                        context_sequence,
+                                    );
                                 }
                                 Self::record(credential_id, "material_replacement", outcome);
                             },
