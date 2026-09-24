@@ -168,7 +168,7 @@ fn sdk_only_consumer_cannot_name_authority_or_raw_persistence() {
     assert_eq!(
         nebula_dependencies,
         [format!(
-            "nebula-sdk = {{ version = \"={}\", default-features = false }}",
+            "nebula-sdk = {{ version = \"={}\", default-features = false, features = [\"http\"] }}",
             env!("CARGO_PKG_VERSION")
         )
         .as_str()],

@@ -46,7 +46,49 @@ Integration authors consume credential contracts through curated SDK personas:
 |--------|----------------|
 | **Curated integration contract** | `nebula_sdk::integration::credential::{TestFailureCode, TestResult}` for provider credential-test outcomes. This is the supported SDK path for this contract. |
 | **Prelude** | `nebula_sdk::prelude::*` re-exports the common credential and OAuth2 types used in actions (`Credential`, `OAuth2Credential`, `OAuth2Token`, `CredentialContext`, `CredentialSnapshot`, …) — see `prelude.rs`. |
-| **Remote credential client contract** | `nebula_sdk::client::credential::v1` provides transport-neutral request/response models for create/list/get/delete, universal resolve/continue, revoke, lifecycle state, RFC 9457 credential problems, and `Retry-After`. The legacy `client::credential::CredentialLifecycleState` path remains a re-export of the SDK-owned v1 type. In-flight claims, leases, generations, fencing tokens, tenant proofs, and persistence tombstones are not client state. An HTTP executor is not shipped yet. |
+| **Remote credential client contract** | `nebula_sdk::client::credential::v1` provides transport-neutral request/response models for credential operations, lifecycle state, RFC 9457 problems, and `Retry-After`. Optional feature `http` provides the CRUD executor in `client::http`. Claims, leases, generations, fencing tokens, tenant proofs, and persistence tombstones are not client state. |
+
+### Remote credential CRUD
+
+Enable `nebula-sdk = { version = "0.18", features = ["http"] }`. Use a Tokio runtime
+to execute requests. The transport implementation is private; its types do not appear
+in client signatures.
+
+```rust,no_run
+# #[cfg(feature = "http")]
+# async fn example() -> Result<(), nebula_sdk::client::http::HttpError> {
+use nebula_sdk::client::{
+    credential::v1::ListCredentialsRequest,
+    http::{BearerToken, HttpClient, HttpOptions},
+};
+
+let http = HttpClient::new(
+    "https://nebula.example", // origin plus optional deployment mount prefix
+    BearerToken::new("your-access-token")?,
+    HttpOptions::default(),
+)?;
+let credentials = http.credentials("my-org", "my-workspace")?;
+let page = credentials.list(&ListCredentialsRequest::default()).await?;
+# let _ = page;
+# Ok(())
+# }
+```
+
+The client appends `/api/v1` and encodes each selector separately. CRUD methods are
+`list`, `create`, `get`, `update` (PUT), and `delete`. Defaults bound connection time
+to five seconds, total request time to thirty seconds, and response size to one MiB.
+HTTP is available for local deployments; use HTTPS across networks.
+
+Redirects and transport retries are disabled. Each method makes one transport attempt;
+no `Idempotency-Key` is sent. `HttpErrorKind::OutcomeUnknown` means a mutation may have
+been applied despite a lost, oversized, or invalid acknowledgement. Inspect server state
+before another attempt; the client offers no automatic reconciliation or retry guarantee.
+Errors retain HTTP status even for empty 401 responses. RFC 9457 problems and valid
+`Retry-After` delta-seconds/HTTP dates are exposed as typed metadata, never acted upon.
+Error and client formatting redact response content, URLs, and bearer authority. Values
+returned by `HttpError::problem()` are untrusted server content and should not be logged.
+
+Resolve/continue, refresh, test, revoke and reconciliation still have no executor methods.
 
 **Not in the SDK:** HTTP token exchange/refresh against a provider, storage encryption, and engine `CredentialResolver` — those are product/runtime concerns. If a contract needed by integration authors is absent from a curated SDK persona, treat that as an SDK API gap rather than depending directly on an implementation crate.
 

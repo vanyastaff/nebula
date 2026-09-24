@@ -486,7 +486,7 @@ pub mod v1 {
         }
     }
 
-    /// Typed failure response assembled by a future HTTP transport.
+    /// Typed failure response assembled by the optional HTTP transport.
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct CredentialProblem {
         /// RFC 9457 response body.
