@@ -1324,6 +1324,12 @@ mod tests {
     }
 
     ///
+    /// Head 0056 creates only the empty worker-heartbeat and resource-status
+    /// relations, their constraints, and a worker index. They reference no
+    /// aggregate and nothing is inspected, inferred, or backfilled; published
+    /// status is liveness-bounded runtime state that workers rewrite on their
+    /// own. It is aggregate-neutral and the floor remains at 0040.
+    ///
     /// Head 0055 adds nullable operator topology and rate-limit documents to
     /// resource definitions. NULL is the kind-default / unlimited behaviour
     /// every existing row already had, so nothing is inferred or rewritten;
@@ -1370,9 +1376,9 @@ mod tests {
     fn new_catalog_head_requires_explicit_admission_policy_review() {
         assert_eq!(GENERAL_CATALOG_SUPPORTED_FLOOR, 40);
         #[cfg(feature = "sqlite")]
-        assert_eq!(catalog::catalog_head(&super::SQLITE_MIGRATOR), 55);
+        assert_eq!(catalog::catalog_head(&super::SQLITE_MIGRATOR), 56);
         #[cfg(feature = "postgres")]
-        assert_eq!(catalog::catalog_head(&super::POSTGRES_MIGRATOR), 55);
+        assert_eq!(catalog::catalog_head(&super::POSTGRES_MIGRATOR), 56);
     }
 
     /// The setup guard must never hold a descriptor on the database file.

@@ -111,6 +111,10 @@ pub mod postgres;
 /// so it is referenced with plain backticks (not an intra-doc link) to
 /// keep default-feature rustdoc clean.
 pub mod repos;
+/// Backend-independent resource-status decisions (TTL clipping, prune horizon,
+/// persisted-value conversions), shared by every status adapter so liveness
+/// cannot drift between backends.
+mod resource_status;
 /// Backend-independent exact plan/flavor catalog decisions, shared by every
 /// catalog adapter so record identity, recorded-form validity, and lifecycle
 /// vocabulary cannot drift between backends.
@@ -134,13 +138,13 @@ pub use inmem::{
     InMemoryCheckpointStore, InMemoryControlQueue, InMemoryExecutionStore,
     InMemoryIdempotencyGuard, InMemoryIdempotencyStore, InMemoryJournalReader,
     InMemoryNodeResultStore, InMemoryPlanFlavorCatalog, InMemoryResourceRuntime,
-    InMemoryResumeProducer, InMemoryResumeTokenStore, InMemoryWebhookActivationStore,
-    InMemoryWorkflowStore, InMemoryWorkflowVersionStore,
+    InMemoryResourceStatusStore, InMemoryResumeProducer, InMemoryResumeTokenStore,
+    InMemoryWebhookActivationStore, InMemoryWorkflowStore, InMemoryWorkflowVersionStore,
 };
 #[cfg(feature = "postgres")]
-pub use postgres::PgResourceRuntime;
+pub use postgres::{PgResourceRuntime, PgResourceStatusStore};
 #[cfg(feature = "sqlite")]
-pub use sqlite::SqliteResourceRuntime;
+pub use sqlite::{SqliteResourceRuntime, SqliteResourceStatusStore};
 // Mirrors the gating on `migration::adopt`: with no backend feature there is no
 // migration catalog to adopt a database into, and `sqlx` — which adoption is
 // written entirely against — is not even a dependency. `mod migration` also

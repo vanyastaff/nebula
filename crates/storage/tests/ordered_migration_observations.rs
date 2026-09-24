@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 const PREVIOUS_SUPPORTED: i64 = 45;
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
-const CURRENT_HEAD: i64 = 55;
+const CURRENT_HEAD: i64 = 56;
 
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 fn hex(bytes: &[u8]) -> String {
