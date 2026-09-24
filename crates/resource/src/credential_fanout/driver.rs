@@ -573,19 +573,26 @@ impl ResourceFanoutDriver {
             // Lease and credential buses may describe the same logical
             // teardown. The lease arrival may win dedupe, but the later
             // credential event still carries stronger terminal authority
-            // needed to fence future registration publication.
+            // needed to fence future registration publication and to catch
+            // rows published after the lease event's snapshot.
             if retain_terminal_credential_revoke {
-                index.remember_revocation(credential_id);
+                tracing::debug!(
+                    target: "nebula_resource::credential_fanout",
+                    %credential_id,
+                    source,
+                    "credential-level revoke followed a deduped lease revoke; \
+                     rescanning published rows with terminal authority"
+                );
+            } else {
+                tracing::debug!(
+                    target: "nebula_resource::credential_fanout",
+                    %credential_id,
+                    source,
+                    "resource rotation fan-out: duplicate lease revoke within dedupe window; \
+                     skipped — first dispatch already tainted the bound rows"
+                );
+                return;
             }
-            tracing::debug!(
-                target: "nebula_resource::credential_fanout",
-                %credential_id,
-                source,
-                "resource rotation fan-out: duplicate revoke within dedupe window \
-                 (lease-bus + credential-bus double-emission of one logical revoke); \
-                 skipped — first dispatch already tainted/drained the bound rows"
-            );
-            return;
         }
         let mut outcome =
             index.prepare_revoke(credential_id, manager, retain_terminal_credential_revoke);

@@ -152,16 +152,6 @@ pub(crate) trait ManagedHandle: Send + Sync + 'static {
         Err(crate::SlotInstallError::ProjectionChanged)
     }
 
-    /// Atomically generation-checks a slot and applies the row revoke fence.
-    #[cfg(feature = "rotation")]
-    fn taint_at_credential_slot_generation(
-        &self,
-        _slot: &str,
-        _expected_generation: u64,
-    ) -> Result<(), crate::SlotInstallError> {
-        Err(crate::SlotInstallError::ProjectionChanged)
-    }
-
     /// Serializes projected installation with synchronous hook admission.
     fn pending_projection_hooks(
         &self,
@@ -364,20 +354,6 @@ where
     ) -> Result<(), crate::SlotInstallError> {
         self.resource
             .fence_credential_slot_at_generation(slot, expected_generation, fence)
-    }
-
-    #[cfg(feature = "rotation")]
-    fn taint_at_credential_slot_generation(
-        &self,
-        slot: &str,
-        expected_generation: u64,
-    ) -> Result<(), crate::SlotInstallError> {
-        let mut fence = || {
-            ManagedResource::taint(self);
-            ManagedResource::bump_revoke_epoch(self);
-        };
-        self.resource
-            .fence_credential_slot_at_generation(slot, expected_generation, &mut fence)
     }
 
     fn pending_projection_hooks(

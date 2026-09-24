@@ -724,7 +724,7 @@ async fn empty_bound_slot_reconciles_a_lost_durable_tombstone() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn superseded_projection_fences_delayed_tombstone_reconciliation() {
+async fn authoritative_tombstone_wins_a_concurrent_unqualified_slot_write() {
     for replace_with_value in [true, false] {
         let manager = Arc::new(Manager::new());
         let cid = CredentialId::new();
@@ -776,16 +776,14 @@ async fn superseded_projection_fences_delayed_tombstone_reconciliation() {
         for _ in 0..100 {
             tokio::task::yield_now().await;
         }
-        drop(
-            manager
-                .acquire_resident_for_identity::<ReplacementResource>(
-                    &context,
-                    &AcquireOptions::default(),
-                    &identity,
-                )
-                .await
-                .expect("superseded credential projection must not taint the row"),
-        );
+        manager
+            .acquire_resident_for_identity::<ReplacementResource>(
+                &context,
+                &AcquireOptions::default(),
+                &identity,
+            )
+            .await
+            .expect_err("authoritative tombstone must taint despite a concurrent slot write");
         driver.abort();
     }
 }

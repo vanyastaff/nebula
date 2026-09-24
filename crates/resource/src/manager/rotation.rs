@@ -1041,18 +1041,17 @@ impl Manager {
         self.taint_under_admission(key, slot, managed)
     }
 
-    /// Taints the exact registration already pinned by credential projection,
-    /// only while its observed slot generation is still current.
+    /// Applies an authoritative durable tombstone to an exact pinned row.
     ///
-    /// The lifecycle admission gate revalidates that the handle is still the
-    /// registered row, so a concurrent remove/rebind cannot taint its successor.
+    /// Unlike a speculative projection update, a verified tombstone must win
+    /// over an intervening public slot store/take. Lifecycle admission still
+    /// revalidates that the pinned handle is the currently registered row.
     #[cfg(feature = "rotation")]
-    pub(crate) fn taint_resolved_at_generation(
+    pub(crate) fn taint_resolved_terminal(
         &self,
         key: &ResourceKey,
         slot: &str,
         managed: Arc<dyn crate::registry::ManagedHandle>,
-        expected_generation: u64,
     ) -> Result<TaintedSlot, Error> {
         let _admission = self
             .admission
@@ -1062,22 +1061,7 @@ impl Manager {
         if !self.registry.contains_managed(key, &managed) {
             return Err(Error::not_found(key));
         }
-        if !managed.accepts_credential_slot_name(slot) {
-            return Err(Error::unknown_credential_slot(key.clone(), slot));
-        }
-        managed
-            .taint_at_credential_slot_generation(slot, expected_generation)
-            .map_err(|source| {
-                Error::permanent("credential projection changed before revoke fence")
-                    .with_source(source)
-                    .with_resource_key(key.clone())
-            })?;
-        Ok(TaintedSlot {
-            key: key.clone(),
-            slot: slot.to_owned(),
-            managed,
-            tainted_at: Instant::now(),
-        })
+        self.taint_under_admission(key, slot, managed)
     }
 
     /// Caller holds the same lifecycle gate as refresh installation/admission.

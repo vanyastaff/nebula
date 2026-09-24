@@ -305,13 +305,18 @@ impl ResourceFanoutIndex {
         mgr: &crate::Manager,
         credential_id: Option<CredentialId>,
     ) -> RotationOutcome {
-        let mut summary = RotationOutcome::default();
-        for pending in self.pending_revokes().into_iter().filter(|pending| {
-            credential_id.is_none_or(|credential_id| pending.credential_id == credential_id)
-        }) {
-            let Some(claim) = self.claim_pending_revoke(&pending) else {
-                continue;
-            };
+        // Claim the whole eligible batch before awaiting any drain. Claims
+        // exclude event delivery and other reconciliation passes, while
+        // join_all gives every independently bounded row immediate progress.
+        let claims = self
+            .pending_revokes()
+            .into_iter()
+            .filter(|pending| {
+                credential_id.is_none_or(|credential_id| pending.credential_id == credential_id)
+            })
+            .filter_map(|pending| self.claim_pending_revoke(&pending))
+            .collect::<Vec<_>>();
+        let tails = futures::future::join_all(claims.into_iter().map(|claim| async move {
             let retry_key = claim.entry.key.clone();
             let retry_slot = claim.entry.slot.clone();
             let retry_managed = std::sync::Arc::clone(&claim.entry.managed);
@@ -330,7 +335,12 @@ impl ResourceFanoutIndex {
                 )
                 .await;
             settle_revoke_claim(claim, admission);
-            summary.add(summarize_row_outcomes([revoke_tail_outcome(tail)]));
+            revoke_tail_outcome(tail)
+        }))
+        .await;
+        let mut summary = RotationOutcome::default();
+        for tail in tails {
+            summary.add(summarize_row_outcomes([tail]));
         }
         summary
     }
@@ -743,7 +753,7 @@ async fn project_and_refresh(
                 "durable credential tombstone discovered during material reconciliation; revoking resource slot"
             );
             let pending_managed = std::sync::Arc::clone(&managed);
-            let tainted = match mgr.taint_resolved_at_generation(&key, slot, managed, generation) {
+            let tainted = match mgr.taint_resolved_terminal(&key, slot, managed) {
                 Ok(tainted) => tainted,
                 Err(error) => {
                     tracing::warn!(

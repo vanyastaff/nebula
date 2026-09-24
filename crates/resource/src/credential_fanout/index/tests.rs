@@ -358,17 +358,19 @@ fn revoke_observation_survives_staged_binding_publication() {
 
     assert!(idx.publish_staged_entry(&cid, &bind));
     assert!(
-        idx.observed_revocations
+        idx.terminal_revocation_fence
             .lock()
             .expect("revocation lock")
+            .credentials
             .contains(&cid),
         "a sibling staged registration still needs the revoke observation"
     );
     assert!(idx.publish_staged_entry(&cid, &bind));
     assert!(
-        idx.observed_revocations
+        idx.terminal_revocation_fence
             .lock()
             .expect("revocation lock")
+            .credentials
             .contains(&cid),
         "the terminal observation must protect later registrations too"
     );
@@ -409,6 +411,36 @@ async fn lease_revoke_does_not_tombstone_a_later_registration() {
     assert!(
         !idx.publish_staged_entry(&cid, &bind),
         "an independently revoked lease must not tombstone the credential id"
+    );
+}
+
+#[test]
+fn terminal_revocation_fence_is_bounded_and_fails_closed_when_saturated() {
+    let idx = ResourceFanoutIndex::new();
+    for _ in 0..MAX_RETAINED_TERMINAL_REVOCATIONS {
+        idx.remember_revocation(cred());
+    }
+    let overflow = cred();
+    idx.remember_revocation(overflow);
+
+    let fence = idx
+        .terminal_revocation_fence
+        .lock()
+        .expect("revocation fence lock");
+    assert_eq!(fence.credentials.len(), MAX_RETAINED_TERMINAL_REVOCATIONS);
+    assert!(fence.saturated);
+    drop(fence);
+
+    let bind = bound(
+        &rk("pg"),
+        &wf_scope(),
+        "db",
+        SlotIdentity::from_bindings([("db", "overflow")]),
+    );
+    idx.stage_bind(overflow, bind.clone());
+    assert!(
+        idx.publish_staged_entry(&overflow, &bind),
+        "capacity exhaustion must reject publication rather than forget a terminal revoke"
     );
 }
 
@@ -940,6 +972,45 @@ mod fanout_dispatch {
         assert_eq!(outcome.dispatched(), 0);
         assert_eq!(ledger.revoke_entered.load(Ordering::SeqCst), 0);
         assert_eq!(index.pending_revokes().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn pending_revoke_siblings_enter_their_tails_concurrently() {
+        let blocked = SlotIdentity::from_bindings([("db", "blocked-sibling")]);
+        let fast = SlotIdentity::from_bindings([("db", "fast-sibling")]);
+        let (index, manager, credential_id, scope, _org, ledger) =
+            setup(&[blocked.clone(), fast.clone()]).await;
+        let index = Arc::new(index);
+        ledger.set(blocked.clone(), Behaviour::Block);
+        ledger.set(fast.clone(), Behaviour::FastOk);
+
+        for identity in [&blocked, &fast] {
+            let managed = manager
+                .lookup_any_for_slot_identity_structural(&CtlResource::key(), &scope, identity)
+                .expect("registered sibling");
+            let tainted = manager
+                .taint_slot_for_identity(&CtlResource::key(), scope.clone(), "db", identity)
+                .expect("taint sibling");
+            drop(tainted);
+            index.remember_pending_revoke(credential_id, CtlResource::key(), "db", managed);
+        }
+
+        let retry = tokio::spawn({
+            let index = Arc::clone(&index);
+            let manager = Arc::clone(&manager);
+            async move { index.retry_pending_revoke_admissions(&manager).await }
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while ledger.revoke_entered.load(Ordering::SeqCst) < 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("a blocked sibling must not delay admission of the next revoke tail");
+
+        ledger.revoke_release.add_permits(1);
+        let outcome = retry.await.expect("retry task");
+        assert_eq!(outcome.success(), 2);
     }
 
     #[tokio::test]

@@ -258,6 +258,15 @@ impl std::fmt::Debug for PendingRevokeAdmission {
 
 /// Maximum credential projections admitted across concurrent fan-out calls.
 pub(super) const MAX_CONCURRENT_PROJECTIONS: usize = 32;
+const MAX_RETAINED_TERMINAL_REVOCATIONS: usize = 4_096;
+
+#[derive(Debug, Default)]
+struct TerminalRevocationFence {
+    credentials: std::collections::HashSet<CredentialId>,
+    /// Once exact retention capacity is exhausted, publication fails closed
+    /// for every credential until this runtime shuts down.
+    saturated: bool,
+}
 
 /// Reverse index from a rotated `CredentialId` to the resource registry
 /// rows that resolved it.
@@ -288,9 +297,9 @@ pub struct ResourceFanoutIndex {
     material_contexts: DashMap<CredentialId, (TenantScope, CredentialKey, u64)>,
     material_context_sequence: std::sync::atomic::AtomicU64,
     pending_revoke_admissions: std::sync::Mutex<Vec<PendingRevokeAdmission>>,
-    /// Terminal observations retained for the index lifetime so a registration
-    /// that stages after event delivery cannot publish revoked material.
-    observed_revocations: std::sync::Mutex<std::collections::HashSet<CredentialId>>,
+    /// Bounded terminal observations retained so a registration that stages
+    /// after event delivery cannot publish revoked material.
+    terminal_revocation_fence: std::sync::Mutex<TerminalRevocationFence>,
     revoke_retry_notify: tokio::sync::Notify,
     /// Shared admission keeps direct dispatch and reconciliation under one
     /// provider/persistence concurrency budget.
@@ -304,7 +313,7 @@ impl Default for ResourceFanoutIndex {
             material_contexts: DashMap::new(),
             material_context_sequence: std::sync::atomic::AtomicU64::new(1),
             pending_revoke_admissions: std::sync::Mutex::new(Vec::new()),
-            observed_revocations: std::sync::Mutex::new(std::collections::HashSet::new()),
+            terminal_revocation_fence: std::sync::Mutex::new(TerminalRevocationFence::default()),
             revoke_retry_notify: tokio::sync::Notify::new(),
             projection_admission: tokio::sync::Semaphore::new(MAX_CONCURRENT_PROJECTIONS),
         }
@@ -555,10 +564,22 @@ impl ResourceFanoutIndex {
         // A revoke is terminal for this credential id. Retain the observation
         // even when no binding is visible yet: register_and_bind may already
         // have resolved revoked material but not inserted its staged row.
-        self.observed_revocations
+        let mut fence = self
+            .terminal_revocation_fence
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(credential_id);
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if fence.saturated || fence.credentials.contains(&credential_id) {
+            return;
+        }
+        if fence.credentials.len() >= MAX_RETAINED_TERMINAL_REVOCATIONS {
+            fence.saturated = true;
+            tracing::error!(
+                retained = fence.credentials.len(),
+                "terminal credential revoke fence saturated; future resource publication fails closed"
+            );
+            return;
+        }
+        fence.credentials.insert(credential_id);
     }
 
     pub(crate) async fn revoke_retry_notified(&self) {
@@ -718,10 +739,11 @@ impl ResourceFanoutIndex {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clear();
-        self.observed_revocations
+        *self
+            .terminal_revocation_fence
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clear();
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            TerminalRevocationFence::default();
     }
 
     /// Drops bindings for the single resolved registry row
@@ -843,10 +865,11 @@ impl ResourceFanoutIndex {
                 row.staged_context = None;
             }
         }
-        self.observed_revocations
+        let fence = self
+            .terminal_revocation_fence
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .contains(cid)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        fence.saturated || fence.credentials.contains(cid)
     }
 
     fn prune_orphan_contexts(&self) {
