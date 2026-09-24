@@ -4,7 +4,10 @@ use std::{
     collections::HashMap,
     net::{IpAddr, Ipv4Addr},
     num::NonZeroU16,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
@@ -16,14 +19,21 @@ use nebula_credential::{
     UserInput,
     runtime::{CredentialRefreshSchedulerConfig, RefreshCoordConfig},
 };
-use nebula_metrics::MetricsRegistry;
+use nebula_metrics::{
+    MetricsRegistry, NEBULA_CREDENTIAL_REFRESH_SCHEDULER_CANDIDATES_TOTAL,
+    refresh_scheduler_candidate_outcome,
+};
 use nebula_storage::credential::{EnvKeyProvider, KeyProvider, SqliteCredentialPersistence};
 use nebula_storage_port::{
     CredentialOwner, CredentialPersistence, CredentialRefreshHorizon, CredentialRefreshPageSize,
     CredentialSelector, Scope,
-    store::{ClaimAttempt, RefreshClaimStore, RefreshOutcomeDecision, ReplicaId},
+    store::{
+        ClaimAttempt, ExpiredClaim, RefreshClaimError, RefreshClaimReclaimer, RefreshClaimStore,
+        RefreshOutcomeDecision, ReplicaId, SentinelEscalationPolicy,
+    },
 };
 use serde_json::json;
+use tokio::sync::Notify;
 
 use super::{
     CredentialLifecyclePolicy, CredentialRuntime, compose_runtime_with_test_policy,
@@ -33,6 +43,52 @@ use crate::credential_adapters::transport_security_tests::TlsFixture;
 
 const CALLBACK_CODE: &str = "restart-recovery-code";
 const REDIRECT_URI: &str = "https://app.example.test/oauth/callback";
+
+#[derive(Debug)]
+struct ReclaimGate {
+    inner: nebula_storage::credential::SqliteRefreshClaimRepo,
+    released: AtomicBool,
+    released_notify: Notify,
+}
+
+impl ReclaimGate {
+    fn new(
+        inner: nebula_storage::credential::SqliteRefreshClaimRepo,
+        initially_released: bool,
+    ) -> Self {
+        Self {
+            inner,
+            released: AtomicBool::new(initially_released),
+            released_notify: Notify::new(),
+        }
+    }
+
+    fn release(&self) {
+        self.released.store(true, Ordering::Release);
+        self.released_notify.notify_waiters();
+    }
+
+    async fn wait_until_released(&self) {
+        while !self.released.load(Ordering::Acquire) {
+            let notified = self.released_notify.notified();
+            if self.released.load(Ordering::Acquire) {
+                break;
+            }
+            notified.await;
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl RefreshClaimReclaimer for ReclaimGate {
+    async fn reclaim_stuck(
+        &self,
+        policy: SentinelEscalationPolicy,
+    ) -> Result<Vec<ExpiredClaim>, RefreshClaimError> {
+        self.wait_until_released().await;
+        self.inner.reclaim_stuck(policy).await
+    }
+}
 
 #[derive(Debug)]
 struct FixtureAuthority {
@@ -137,16 +193,21 @@ async fn open_runtime(
     database: &str,
     provider: &TlsFixture,
     refresh_config: RefreshCoordConfig,
+    hold_reclaim: bool,
 ) -> (
     CredentialRuntime,
     SqliteCredentialPersistence,
     nebula_storage::credential::SqliteRefreshClaimRepo,
+    Arc<MetricsRegistry>,
+    Arc<ReclaimGate>,
 ) {
     let store = SqliteCredentialPersistence::connect(database)
         .await
         .expect("admitted file SQLite credential store");
     let claims = store.refresh_claim_repo();
-    let ports = refresh_runtime_ports(store.refresh_schedule(), claims.clone());
+    let mut ports = refresh_runtime_ports(store.refresh_schedule(), claims.clone());
+    let reclaim_gate = Arc::new(ReclaimGate::new(claims.clone(), !hold_reclaim));
+    ports.reclaimer = Arc::clone(&reclaim_gate) as Arc<dyn RefreshClaimReclaimer>;
     let key: Arc<dyn KeyProvider> = Arc::new(
         EnvKeyProvider::from_base64(super::DEVELOPMENT_KEY_BASE64).expect("fixed fixture key"),
     );
@@ -159,12 +220,13 @@ async fn open_runtime(
         max_pages_per_tick: NonZeroU16::MIN,
         concurrency: NonZeroU16::MIN,
     };
+    let metrics = Arc::new(MetricsRegistry::new());
     let runtime = compose_runtime_with_test_policy(
         store.clone(),
         ports,
         pending,
         key,
-        Arc::new(MetricsRegistry::new()),
+        Arc::clone(&metrics),
         transport,
         CredentialLifecyclePolicy {
             refresh: refresh_config,
@@ -172,7 +234,17 @@ async fn open_runtime(
         },
     )
     .expect("first-party runtime composes");
-    (runtime, store, claims)
+    (runtime, store, claims, metrics, reclaim_gate)
+}
+
+fn scheduler_outcome_count(registry: &MetricsRegistry, outcome: &str) -> u64 {
+    registry
+        .counter_labeled(
+            NEBULA_CREDENTIAL_REFRESH_SCHEDULER_CANDIDATES_TOTAL,
+            &registry.interner().single("outcome", outcome),
+        )
+        .expect("scheduler candidate metric is registered")
+        .get()
 }
 
 fn restart_policy() -> RefreshCoordConfig {
@@ -199,8 +271,8 @@ async fn crashed_refresh_is_reclaimed_without_replay_then_reauthorized_once() {
     let scope = Scope::new("refresh-restart-workspace", "refresh-restart-organization");
     let owner = CredentialOwner::from_scope(&scope);
 
-    let (mut first, first_store, first_claims) =
-        open_runtime(database, &provider, restart_policy()).await;
+    let (mut first, first_store, first_claims, _first_metrics, _first_reclaim_gate) =
+        open_runtime(database, &provider, restart_policy(), false).await;
     let first_controller = controller(&first, &actor, &scope);
     let created = complete_interaction(
         &first_controller,
@@ -277,9 +349,27 @@ async fn crashed_refresh_is_reclaimed_without_replay_then_reauthorized_once() {
     drop(first_store);
     drop(first_claims);
 
-    let (mut second, second_store, second_claims) =
-        open_runtime(database, &provider, restart_policy()).await;
+    let (mut second, second_store, second_claims, second_metrics, second_reclaim_gate) =
+        open_runtime(database, &provider, restart_policy(), true).await;
     let second_controller = controller(&second, &actor, &scope);
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while scheduler_outcome_count(
+            &second_metrics,
+            refresh_scheduler_candidate_outcome::OUTCOME_UNKNOWN,
+        ) == 0
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("startup scheduler observes the durable outcome-unknown claim");
+    assert_eq!(
+        provider.request_count(),
+        1,
+        "scheduler must refuse replay when it encounters durable poison"
+    );
+    second_reclaim_gate.release();
 
     let reauth_head = tokio::time::timeout(Duration::from_secs(2), async {
         loop {
