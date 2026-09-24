@@ -14,6 +14,7 @@
 //! - `sentinel_events_total{action=recorded|reauth_triggered}`
 //! - `reclaim_sweeps_total{outcome=reclaimed|outcome_unknown_accounted|no_work|failed}`
 //! - `reclaimed_claims_total` (counter, no labels)
+//! - `results_total{outcome=success|reauth_required|not_applied|outcome_unknown|failure}`
 //! - `hold_duration_seconds` (histogram, no labels)
 //!
 //! Production composition threads the engine-shared registry via
@@ -30,16 +31,17 @@ use nebula_metrics::{
     NEBULA_CREDENTIAL_REFRESH_COORD_HOLD_DURATION_SECONDS,
     NEBULA_CREDENTIAL_REFRESH_COORD_RECLAIM_SWEEPS_TOTAL,
     NEBULA_CREDENTIAL_REFRESH_COORD_RECLAIMED_CLAIMS_TOTAL,
+    NEBULA_CREDENTIAL_REFRESH_COORD_RESULTS_TOTAL,
     NEBULA_CREDENTIAL_REFRESH_COORD_SENTINEL_EVENTS_TOTAL,
     NEBULA_CREDENTIAL_REFRESH_SCHEDULER_CANDIDATES_TOTAL,
     NEBULA_CREDENTIAL_REFRESH_SCHEDULER_CYCLES_TOTAL, refresh_coord_claim_outcome,
-    refresh_coord_coalesced_tier, refresh_coord_reclaim_outcome, refresh_coord_sentinel_action,
-    refresh_scheduler_candidate_outcome, refresh_scheduler_cycle_outcome,
+    refresh_coord_coalesced_tier, refresh_coord_reclaim_outcome, refresh_coord_result_outcome,
+    refresh_coord_sentinel_action, refresh_scheduler_candidate_outcome,
+    refresh_scheduler_cycle_outcome,
 };
 
-/// Pre-bound handles for the five refresh-coordinator metrics declared
-/// in sub-spec . Cheaply cloneable (each handle is `Arc<...>` under
-/// the hood).
+/// Pre-bound handles for refresh-coordinator metrics. Cheaply cloneable
+/// (each handle is `Arc<...>` under the hood).
 #[derive(Clone, Debug)]
 pub struct RefreshCoordMetrics {
     pub(crate) scheduler: RefreshSchedulerMetrics,
@@ -60,8 +62,23 @@ pub struct RefreshCoordMetrics {
     pub(crate) reclaim_no_work: Counter,
     pub(crate) reclaim_failed: Counter,
     pub(crate) reclaimed_claims: Counter,
+    // results_total
+    pub(crate) result_success: Counter,
+    pub(crate) result_reauth_required: Counter,
+    pub(crate) result_not_applied: Counter,
+    pub(crate) result_outcome_unknown: Counter,
+    pub(crate) result_failure: Counter,
     // hold_duration_seconds
     pub(crate) hold_duration: Histogram,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CoordinatedRefreshResult {
+    Success,
+    ReauthRequired,
+    NotApplied,
+    OutcomeUnknown,
+    Failure,
 }
 
 impl RefreshCoordMetrics {
@@ -73,6 +90,7 @@ impl RefreshCoordMetrics {
         let coalesced_label = |val: &str| interner.single("tier", val);
         let sentinel_label = |val: &str| interner.single("action", val);
         let reclaim_label = |val: &str| interner.single("outcome", val);
+        let result_label = |val: &str| interner.single("outcome", val);
 
         Ok(Self {
             scheduler: RefreshSchedulerMetrics::with_registry(registry)?,
@@ -126,9 +144,39 @@ impl RefreshCoordMetrics {
             )?,
             reclaimed_claims: registry
                 .counter(NEBULA_CREDENTIAL_REFRESH_COORD_RECLAIMED_CLAIMS_TOTAL)?,
+            result_success: registry.counter_labeled(
+                NEBULA_CREDENTIAL_REFRESH_COORD_RESULTS_TOTAL,
+                &result_label(refresh_coord_result_outcome::SUCCESS),
+            )?,
+            result_reauth_required: registry.counter_labeled(
+                NEBULA_CREDENTIAL_REFRESH_COORD_RESULTS_TOTAL,
+                &result_label(refresh_coord_result_outcome::REAUTH_REQUIRED),
+            )?,
+            result_not_applied: registry.counter_labeled(
+                NEBULA_CREDENTIAL_REFRESH_COORD_RESULTS_TOTAL,
+                &result_label(refresh_coord_result_outcome::NOT_APPLIED),
+            )?,
+            result_outcome_unknown: registry.counter_labeled(
+                NEBULA_CREDENTIAL_REFRESH_COORD_RESULTS_TOTAL,
+                &result_label(refresh_coord_result_outcome::OUTCOME_UNKNOWN),
+            )?,
+            result_failure: registry.counter_labeled(
+                NEBULA_CREDENTIAL_REFRESH_COORD_RESULTS_TOTAL,
+                &result_label(refresh_coord_result_outcome::FAILURE),
+            )?,
             hold_duration: registry
                 .histogram(NEBULA_CREDENTIAL_REFRESH_COORD_HOLD_DURATION_SECONDS)?,
         })
+    }
+
+    pub(crate) fn record_result(&self, result: CoordinatedRefreshResult) {
+        match result {
+            CoordinatedRefreshResult::Success => self.result_success.inc(),
+            CoordinatedRefreshResult::ReauthRequired => self.result_reauth_required.inc(),
+            CoordinatedRefreshResult::NotApplied => self.result_not_applied.inc(),
+            CoordinatedRefreshResult::OutcomeUnknown => self.result_outcome_unknown.inc(),
+            CoordinatedRefreshResult::Failure => self.result_failure.inc(),
+        }
     }
 
     /// Construct handles backed by a fresh private registry for unit tests.

@@ -29,6 +29,7 @@ pub use coordinator::{
     ConfigError, RefreshCoordConfig, RefreshCoordinator, RefreshDisposition, RefreshError,
     RefreshRecheck, RefreshRecheckError,
 };
+pub(crate) use metrics::CoordinatedRefreshResult;
 pub use metrics::RefreshCoordMetrics;
 pub use nebula_storage_port::store::{SentinelEscalationPolicy, SentinelEscalationPolicyError};
 pub use reclaim::ReclaimSweepHandle;

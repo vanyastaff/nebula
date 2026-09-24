@@ -28,6 +28,7 @@ use crate::naming::{
     NEBULA_CREDENTIAL_REFRESH_COORD_COALESCED_TOTAL,
     NEBULA_CREDENTIAL_REFRESH_COORD_HOLD_DURATION_SECONDS,
     NEBULA_CREDENTIAL_REFRESH_COORD_RECLAIM_SWEEPS_TOTAL,
+    NEBULA_CREDENTIAL_REFRESH_COORD_RESULTS_TOTAL,
     NEBULA_CREDENTIAL_REFRESH_COORD_SENTINEL_EVENTS_TOTAL,
     NEBULA_CREDENTIAL_RESOLVER_REAUTH_PERSIST_CAS_EXHAUSTED_TOTAL,
     NEBULA_CREDENTIAL_ROTATION_DURATION_SECONDS, NEBULA_CREDENTIAL_ROTATION_FAILURES_TOTAL,
@@ -129,6 +130,9 @@ fn counter_help(name: &str) -> &'static str {
         },
         NEBULA_CREDENTIAL_REFRESH_COORD_RECLAIM_SWEEPS_TOTAL => {
             "Total refresh-coordinator reclaim sweeps (labeled by outcome)."
+        },
+        NEBULA_CREDENTIAL_REFRESH_COORD_RESULTS_TOTAL => {
+            "Total terminal coordinated credential refresh results (labeled by outcome)."
         },
         NEBULA_CREDENTIAL_RESOLVER_REAUTH_PERSIST_CAS_EXHAUSTED_TOTAL => {
             "Total resolver reauth-required persist attempts that exhausted CAS retries."
@@ -526,9 +530,32 @@ impl PrometheusExporter {
 mod tests {
     use std::sync::Arc;
 
+    use crate::naming::{
+        NEBULA_CREDENTIAL_REFRESH_COORD_RESULTS_TOTAL, refresh_coord_result_outcome,
+    };
     use crate::registry::MetricsRegistry;
 
     use super::{PrometheusExporter, snapshot};
+
+    #[test]
+    fn snapshot_describes_coordinated_refresh_results_without_dynamic_labels() {
+        let registry = MetricsRegistry::new();
+        let labels = registry
+            .interner()
+            .single("outcome", refresh_coord_result_outcome::REAUTH_REQUIRED);
+        registry
+            .counter_labeled(NEBULA_CREDENTIAL_REFRESH_COORD_RESULTS_TOTAL, &labels)
+            .expect("refresh result counter registers")
+            .inc();
+
+        let output = snapshot(&registry);
+        assert!(output.contains(
+            "# HELP nebula_credential_refresh_coord_results_total Total terminal coordinated credential refresh results (labeled by outcome)."
+        ));
+        assert!(output.contains(
+            "nebula_credential_refresh_coord_results_total{outcome=\"reauth_required\"} 1"
+        ));
+    }
 
     #[test]
     fn snapshot_includes_counters_and_histograms() {
