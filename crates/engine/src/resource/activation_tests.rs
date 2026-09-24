@@ -92,7 +92,7 @@ impl resident::ResidentProvider for Plain {
     }
 }
 
-/// Declares an account credential slot it does not have.
+/// Names an account credential slot (`billing`) it does not declare.
 #[derive(Clone)]
 struct Misnamed;
 
@@ -123,7 +123,7 @@ impl Provider for Misnamed {
     }
 
     fn resilience() -> nebula_resource::rate_limit::ResiliencePolicy {
-        nebula_resource::rate_limit::ResiliencePolicy::new().account_credential("acount")
+        nebula_resource::rate_limit::ResiliencePolicy::new().account_credential("billing")
     }
 }
 
@@ -652,7 +652,7 @@ async fn an_undeclared_account_slot_fails_activation() {
     let error = fixture.activate(resource_id, &key).await.unwrap_err();
     std::assert_matches!(
         error,
-        StoredResourceActivationError::UndeclaredAccountSlot { ref slot } if slot == "acount"
+        StoredResourceActivationError::UndeclaredAccountSlot { ref slot } if slot == "billing"
     );
 }
 
