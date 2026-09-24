@@ -39,6 +39,30 @@ fn shutdown_task_failure_diagnostic_does_not_misattribute_the_component() {
     );
 }
 
+#[cfg(feature = "rotation")]
+#[tokio::test]
+async fn graceful_shutdown_clears_attached_rotation_bindings() {
+    let manager = Manager::new();
+    let index = Arc::new(crate::ResourceFanoutIndex::new());
+    manager.attach_rotation_index(&index);
+    let credential_id = nebula_credential::CredentialId::new();
+    index.bind(
+        credential_id,
+        crate::resource_key!("shutdown-binding"),
+        ScopeLevel::Global,
+        "db",
+        SlotIdentity::from_bindings([("db", "credential")]),
+    );
+    assert_eq!(index.affected(&credential_id).len(), 1);
+
+    manager
+        .graceful_shutdown(ShutdownConfig::default())
+        .await
+        .expect("shutdown");
+
+    assert!(index.affected(&credential_id).is_empty());
+}
+
 #[derive(Clone, nebula_schema::Schema)]
 struct Config;
 impl ResourceConfig for Config {

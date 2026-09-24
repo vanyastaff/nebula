@@ -319,7 +319,7 @@ pub struct WorkflowEngine {
     /// [`resource_registrars`]: Self::resource_registrars
     #[cfg(feature = "rotation")]
     resource_fanout_index: Arc<nebula_resource::ResourceFanoutIndex>,
-    /// Single-shot guard for
+    /// Live-driver guard for
     /// [`spawn_resource_rotation_fanout`](Self::spawn_resource_rotation_fanout).
     ///
     /// The driver subscribes the credential/lease buses; spawning it
@@ -329,12 +329,14 @@ pub struct WorkflowEngine {
     /// owns the single spawn, but a defensive structural guard (not a
     /// "remember to call it once" convention) makes a second call a
     /// no-op `None` rather than a silent double-subscribe. An
-    /// `AtomicBool` (flipped via `compare_exchange`) so the `&self`
-    /// method is single-shot even under a concurrent double-call.
+    /// The generation-qualified claim makes the `&self` method idempotent
+    /// under a concurrent double-call while allowing a stopped driver to be
+    /// replaced. Qualification prevents a late drop of an old handle from
+    /// releasing a newer driver's claim.
     ///
     /// Feature-gated with the index itself (`rotation`).
     #[cfg(feature = "rotation")]
-    resource_fanout_spawned: std::sync::atomic::AtomicBool,
+    resource_fanout_generation: Arc<AtomicU64>,
     /// Resolves node parameters (expressions, templates, references) to JSON.
     resolver: ParamResolver,
     /// Optional resource manager for providing resources to actions.
@@ -483,6 +485,9 @@ type RunningRegistrationId = u64;
 
 /// Process-wide monotonic counter for registration nonces.
 static NEXT_REGISTRATION_ID: AtomicU64 = AtomicU64::new(1);
+
+#[cfg(feature = "rotation")]
+static NEXT_RESOURCE_FANOUT_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 /// A request to a live frontier loop to self-arm its parked signal waits for
 /// completion (ADR-0099 W-S2b, P1#1).
@@ -651,7 +656,7 @@ impl WorkflowEngine {
             #[cfg(feature = "rotation")]
             resource_fanout_index: Arc::new(nebula_resource::ResourceFanoutIndex::new()),
             #[cfg(feature = "rotation")]
-            resource_fanout_spawned: std::sync::atomic::AtomicBool::new(false),
+            resource_fanout_generation: Arc::new(AtomicU64::new(0)),
             resolver: ParamResolver::new(Arc::clone(&expression_engine)),
             resource_expr_engine: expression_engine,
             stored_resources: None,
@@ -945,6 +950,20 @@ impl WorkflowEngine {
         &self.resource_fanout_index
     }
 
+    /// The fan-out index while a driver spawned by
+    /// [`spawn_resource_rotation_fanout`](Self::spawn_resource_rotation_fanout)
+    /// with a credential resolver reconciles its rows, `None` otherwise.
+    ///
+    /// Stored rows register rotation-bound only through this: a
+    /// rotation-bound row serves once the fan-out has reread its
+    /// credentials, which only a live, resolver-backed driver does.
+    #[cfg(feature = "rotation")]
+    fn live_resource_fanout(&self) -> Option<&Arc<nebula_resource::ResourceFanoutIndex>> {
+        let live = self.resource_fanout_generation.load(Ordering::Acquire) != 0
+            && self.credential_resolver.is_some();
+        live.then_some(&self.resource_fanout_index)
+    }
+
     /// Spawn the production rotation fan-out driver wiring the engine's
     /// [`resource_fanout_index`](Self::resource_fanout_index) +
     /// [`resource_manager`](Self::with_resource_manager) to the
@@ -968,14 +987,16 @@ impl WorkflowEngine {
     /// - no resource manager was wired via
     ///   [`with_resource_manager`](Self::with_resource_manager) (there is
     ///   nothing to fan rotations *to*); or
-    /// - the driver was **already spawned** by a prior call. This method
-    ///   is **single-shot / idempotent**: each spawn subscribes the
+    /// - a driver handle from a prior call is still live. This method is
+    ///   **live-handle idempotent**: each spawn subscribes the
     ///   credential + lease buses, so spawning twice would subscribe
     ///   twice and double-dispatch every refresh/revoke to the resource
     ///   fan-out. The first call that has a manager spawns and returns
-    ///   `Some(driver)`; every later call is a no-op `None` and does
-    ///   **not** subscribe again (the guard is claimed atomically, so a
-    ///   concurrent double-call still yields exactly one driver). A
+    ///   `Some(driver)`; calls while that handle remains live are a no-op
+    ///   `None` and do **not** subscribe again (the generation is claimed
+    ///   atomically, so a concurrent double-call still yields exactly one
+    ///   driver). Once that handle is aborted or dropped, a later call may
+    ///   start a replacement. A
     ///   no-manager call spawns nothing and does **not** consume the
     ///   single-shot — a later call once a manager is wired can still
     ///   spawn.
@@ -990,20 +1011,24 @@ impl WorkflowEngine {
         credential_bus: Arc<nebula_eventbus::EventBus<nebula_credential::CredentialEvent>>,
         lease_bus: Option<Arc<nebula_eventbus::EventBus<nebula_credential::LeaseEvent>>>,
     ) -> Option<nebula_resource::ResourceFanoutDriver> {
-        use std::sync::atomic::Ordering;
-
         // Only a deployment with a resource manager has anything to fan
         // rotations to. Resolve it *before* claiming the single-shot so a
         // no-manager call does not burn the guard.
         let manager = Arc::clone(self.resource_manager.as_ref()?);
 
-        // Single-shot: claim the guard atomically. If it was already set,
-        // the driver is already running on its own subscriber pair —
+        // Claim the live-driver slot. If it was already set, the driver is
+        // already running on its own subscriber pair —
         // spawning again would double-subscribe and double-dispatch every
         // event, so return `None` and subscribe nothing.
+        let generation = loop {
+            let generation = NEXT_RESOURCE_FANOUT_GENERATION.fetch_add(1, Ordering::Relaxed);
+            if generation != 0 {
+                break generation;
+            }
+        };
         if self
-            .resource_fanout_spawned
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .resource_fanout_generation
+            .compare_exchange(0, generation, Ordering::AcqRel, Ordering::Acquire)
             .is_err()
         {
             tracing::debug!(
@@ -1014,13 +1039,37 @@ impl WorkflowEngine {
             return None;
         }
 
-        Some(nebula_resource::ResourceFanoutDriver::spawn_with_resolver(
-            Arc::clone(&self.resource_fanout_index),
-            manager,
-            self.credential_resolver.clone(),
-            credential_bus,
-            lease_bus,
-        ))
+        let generation_state = Arc::clone(&self.resource_fanout_generation);
+        let release_generation: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+            let _ = generation_state.compare_exchange(
+                generation,
+                0,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+        });
+        let rollback = scopeguard::guard(Arc::clone(&release_generation), |release| release());
+        let driver =
+            match nebula_resource::ResourceFanoutDriver::try_spawn_with_resolver_and_lifecycle(
+                Arc::clone(&self.resource_fanout_index),
+                manager,
+                self.credential_resolver.clone(),
+                credential_bus,
+                lease_bus,
+                release_generation,
+            ) {
+                Ok(driver) => driver,
+                Err(error) => {
+                    tracing::error!(
+                        target: "nebula_engine",
+                        %error,
+                        "resource rotation fan-out rejected manager affinity conflict"
+                    );
+                    return None;
+                },
+            };
+        let _ = scopeguard::ScopeGuard::into_inner(rollback);
+        Some(driver)
     }
 
     /// Gracefully stop the attached resource manager within `budget`.
@@ -1057,6 +1106,8 @@ impl WorkflowEngine {
     /// Attach a resource manager for providing resources to actions.
     #[must_use = "builder methods must be chained or built"]
     pub fn with_resource_manager(mut self, manager: Arc<nebula_resource::Manager>) -> Self {
+        #[cfg(feature = "rotation")]
+        manager.attach_rotation_index(&self.resource_fanout_index);
         self.resource_manager = Some(manager);
         self
     }
@@ -1195,7 +1246,7 @@ impl WorkflowEngine {
             credentials: self.credential_resolver.as_deref(),
             expr_engine: &self.resource_expr_engine,
             #[cfg(feature = "rotation")]
-            fanout: Some(&self.resource_fanout_index),
+            fanout: self.live_resource_fanout(),
         };
         let mut distinct: Vec<(nebula_core::ResourceId, ResourceKey)> = bound
             .iter()
@@ -1359,7 +1410,7 @@ impl WorkflowEngine {
             credentials: self.credential_resolver.as_deref(),
             expr_engine: &self.resource_expr_engine,
             #[cfg(feature = "rotation")]
-            fanout: Some(&self.resource_fanout_index),
+            fanout: self.live_resource_fanout(),
         };
         activator.retire_deleted(&context).await;
     }
@@ -1447,7 +1498,7 @@ impl WorkflowEngine {
         kind: &str,
         manager: &nebula_resource::Manager,
         request: crate::RegisterRequest<'_>,
-        fanout_index: Option<&nebula_resource::ResourceFanoutIndex>,
+        fanout_index: Option<&Arc<nebula_resource::ResourceFanoutIndex>>,
     ) -> Result<(), crate::RegistrarError> {
         let scope = request.scope.clone();
         let outcome = self

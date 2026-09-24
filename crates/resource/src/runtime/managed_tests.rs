@@ -136,6 +136,8 @@ fn managed(resource: Mock, config: PoolConfig) -> Arc<ManagedResource<Mock>> {
     let (rq, _handle) = ReleaseQueue::new(1);
     let topology = Pooled::<Mock>::new(config, 0);
     Arc::new(ManagedResource {
+        pending_projection_hooks: Default::default(),
+        phase_changed: Default::default(),
         resource,
         config: ArcSwap::from_pointee(PoolCfg),
         topology,
@@ -143,7 +145,7 @@ fn managed(resource: Mock, config: PoolConfig) -> Arc<ManagedResource<Mock>> {
         retained: crate::RetainedStore::new(rq.abandonment_tracker()),
         release_queue: Arc::new(rq),
         generation: AtomicU64::new(0),
-        status: ArcSwap::from_pointee(ResourceStatus::new()),
+        status: ArcSwap::from_pointee(ResourceStatus::ready()),
         recovery_gate: None,
         tainted: AtomicBool::new(false),
         in_flight: Arc::new((AtomicU64::new(0), Notify::new())),

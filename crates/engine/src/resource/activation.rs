@@ -17,9 +17,11 @@
 //!
 //! The row's operator settings (`topology`, `resilience_override`) are passed
 //! to the registration, which re-validates them. With the `rotation` feature
-//! a row bound to credentials is recorded in the credential-rotation reverse
-//! index as it registers and removed as it retires, so a refresh or revoke
-//! of those credentials reaches the live resource.
+//! and a live fan-out driver, a row bound to credentials is recorded in the
+//! credential-rotation reverse index as it registers (the manager drops it
+//! as the row retires), so a refresh or revoke of those credentials reaches
+//! the live resource; activation returns once the fan-out has reread them
+//! and the row serves.
 
 use std::{sync::Arc, time::Duration};
 
@@ -153,11 +155,17 @@ pub struct ActivationContext<'a> {
     pub credentials: Option<&'a dyn CredentialSlotResolver>,
     /// Expression engine for explicitly authored config expressions.
     pub expr_engine: &'a ExpressionEngine,
-    /// Credential-rotation reverse index. A row bound to credentials is
-    /// recorded here as it registers and removed as it retires, so a refresh
-    /// or revoke of those credentials reaches the live resource.
+    /// Credential-rotation reverse index, present only while a fan-out
+    /// driver reconciles this manager's rotation-bound rows.
+    ///
+    /// With it, a row bound to credentials registers rotation-bound: its
+    /// credentials are bound into the index before the row is discoverable,
+    /// and the row serves once the fan-out has reread them. Without it
+    /// nothing would ever reconcile such a row, so the row registers opted
+    /// out of rotation and activation's own credential re-check keeps it
+    /// current.
     #[cfg(feature = "rotation")]
-    pub fanout: Option<&'a nebula_resource::ResourceFanoutIndex>,
+    pub fanout: Option<&'a Arc<nebula_resource::ResourceFanoutIndex>>,
 }
 
 /// A stored row currently registered by a [`StoredResourceActivator`].
@@ -285,17 +293,15 @@ const DEFAULT_LIMIT_KEY_SECRET: [u8; 32] = *b"nebula.resource.limit-key.v1\0\0\0
 fn account_limit_key(
     secret: &[u8; 32],
     scope: &Scope,
-    bindings: &[SlotBinding],
+    bindings: &[BoundCredential],
     account_slots: &[&str],
 ) -> Option<nebula_resource::rate_limit::LimitKey> {
     use hmac::{KeyInit as _, Mac as _};
 
     let mut credentials: Vec<String> = bindings
         .iter()
-        .filter(|binding| {
-            account_slots.is_empty() || account_slots.contains(&binding.slot_name.as_str())
-        })
-        .filter_map(|binding| binding.credential_id.map(|id| id.to_string()))
+        .filter(|bound| account_slots.is_empty() || account_slots.contains(&bound.slot.as_str()))
+        .map(|bound| bound.credential_id.to_string())
         .collect();
     if credentials.is_empty() {
         return None;
@@ -592,9 +598,8 @@ impl StoredResourceActivator {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if retire(context, &stale.activated) {
-            // Retiring an identity released every reference to it, the ones
-            // an earlier pushed-back registration of it held included: that
-            // entry has nothing left to release.
+            // Retiring an identity removed its registry row: an earlier
+            // pushed-back registration of it has nothing left to retire.
             pending.retain(|entry| entry.stale.activated != stale.activated);
         } else {
             pending.push(PendingRetirement {
@@ -609,8 +614,8 @@ impl StoredResourceActivator {
     /// Registry identities include the stored row id, so only the row a
     /// pending entry came from can register that identity again. An entry
     /// whose row serves the identity again is dropped rather than removed
-    /// (removing it would remove the live row), releasing the rotation
-    /// references the stale registration held. An entry whose row an
+    /// (removing it would remove the live row); the registration that
+    /// replaced it released its rotation bindings. An entry whose row an
     /// activation holds right now waits for a sweep that can see it; every
     /// other entry is retried.
     ///
@@ -645,12 +650,12 @@ impl StoredResourceActivator {
                 .active
                 .as_ref()
                 .is_some_and(|active| active.activated == entry.stale.activated);
-            if serving {
-                release_bindings(context, &entry.stale);
-            } else if retire(context, &entry.stale.activated) {
-                retired.push(entry.stale.activated.clone());
-            } else {
-                still_pending.push(entry);
+            if !serving {
+                if retire(context, &entry.stale.activated) {
+                    retired.push(entry.stale.activated.clone());
+                } else {
+                    still_pending.push(entry);
+                }
             }
             drop(tracked);
             drop(slot);
@@ -698,17 +703,12 @@ impl StoredResourceActivator {
             .as_ref()
             .filter(|current| current.version == row.version)
         {
-            match credentials_current(context, scope, &current.bindings, cancel).await {
-                // Serving at this version: a failure recorded for it earlier
-                // (a check that timed out) no longer holds.
-                Ok(true) => {
-                    let activated = current.activated.clone();
-                    tracked.failed_version = None;
-                    return Ok(activated);
-                },
+            let serving = match credentials_current(context, scope, &current.bindings, cancel).await
+            {
+                Ok(true) => serves(context, &current.activated).await,
                 // Refreshed or rotated since: registered again below, with
                 // the credentials as they are now.
-                Ok(false) => {},
+                Ok(false) => false,
                 Err(error) => {
                     tracked.failed_version = Some(row.version);
                     if let Some(stale) = tracked.active.take() {
@@ -716,6 +716,14 @@ impl StoredResourceActivator {
                     }
                     return Err(error);
                 },
+            };
+            // Serving at this version: a failure recorded for it earlier (a
+            // check that timed out) no longer holds. A row that stopped
+            // serving is registered again below.
+            if serving {
+                let activated = current.activated.clone();
+                tracked.failed_version = None;
+                return Ok(activated);
             }
         }
 
@@ -747,16 +755,12 @@ impl StoredResourceActivator {
             activated: activated.clone(),
             bindings,
         });
-        // Same identity re-registers in place, but its credentials may have
-        // changed: the previous registration's rotation bindings are
-        // released. A changed identity leaves the old registry row behind
-        // unless it is retired here.
-        if let Some(previous) = previous {
-            if previous.activated == activated {
-                release_bindings(context, &previous);
-            } else {
-                self.retire(context, &(scope.clone(), resource_id), previous);
-            }
+        // Same identity re-registers in place, and the manager released the
+        // replaced registration's rotation bindings as it replaced it. A
+        // changed identity leaves the old registry row behind unless it is
+        // retired here.
+        if let Some(previous) = previous.filter(|previous| previous.activated != activated) {
+            self.retire(context, &(scope.clone(), resource_id), previous);
         }
         tracing::debug!(
             target: "nebula_engine::resource_activation",
@@ -813,6 +817,12 @@ async fn register_row(
     }
 
     let tenant = TenantScope::from_scope(scope);
+    // Rotation-bound only while a fan-out reconciles the row: nothing else
+    // would ever reread a rotation-bound row's credentials and let it serve.
+    #[cfg(feature = "rotation")]
+    let rotation_bound = context.fanout.is_some();
+    #[cfg(not(feature = "rotation"))]
+    let rotation_bound = false;
     let mut slot_bindings = Vec::new();
     let mut slot_installs = Vec::new();
     let mut bindings = Vec::new();
@@ -858,7 +868,9 @@ async fn register_row(
         slot_bindings.push(SlotBinding {
             slot_name: slot.to_owned(),
             credential_key,
-            credential_id: Some(credential_id),
+            // Both absent opts the binding out of rotation.
+            credential_id: rotation_bound.then_some(credential_id),
+            credential_scope: rotation_bound.then(|| tenant.clone()),
         });
         slot_installs.push(CredentialSlotInstall {
             slot_name: slot.to_owned(),
@@ -867,13 +879,8 @@ async fn register_row(
     }
 
     let scope_level = ScopeLevel::Workspace(workspace);
-    let limit_key = account_limit_key(
-        limit_key_secret,
-        scope,
-        &slot_bindings,
-        policy.account_slots(),
-    )
-    .or_else(|| row_limit_key(limit_key_secret, scope, &row.id));
+    let limit_key = account_limit_key(limit_key_secret, scope, &bindings, policy.account_slots())
+        .or_else(|| row_limit_key(limit_key_secret, scope, &row.id));
     let request = RegisterRequest {
         config: ResourceConfigInput::data(row.config.clone()),
         expr_engine: context.expr_engine,
@@ -889,13 +896,23 @@ async fn register_row(
         row_id: Some(row.id.clone()),
         limit_key,
     };
-    // With rotation, the row's credentials are bound into the reverse index
+    // Rotation-bound, the row's credentials are bound into the reverse index
     // before the row becomes discoverable, so a refresh or revoke reaches it.
     #[cfg(feature = "rotation")]
-    let outcome = context
-        .registrars
-        .register_and_bind(&row.kind, context.manager, request, context.fanout)
-        .await;
+    let outcome = match context.fanout {
+        Some(index) => {
+            context
+                .registrars
+                .register_and_bind(&row.kind, context.manager, request, Some(index))
+                .await
+        },
+        None => {
+            context
+                .registrars
+                .register(&row.kind, context.manager, request)
+                .await
+        },
+    };
     #[cfg(not(feature = "rotation"))]
     let outcome = context
         .registrars
@@ -907,7 +924,61 @@ async fn register_row(
         scope: scope_level,
         slot_identity: outcome.slot_identity,
     };
+    // A rotation-bound row serves once the fan-out has reread its
+    // credentials; the turn this activation is for must not see it earlier.
+    // Bounded by the activation's own timeout and cancellation.
+    if rotation_bound && !bindings.is_empty() {
+        context
+            .manager
+            .until_accepting(
+                &activated.resource_key,
+                &activated.scope,
+                &activated.slot_identity,
+                None,
+            )
+            .await
+            .map_err(|source| {
+                StoredResourceActivationError::Register(RegistrarError::Register {
+                    kind: row.kind.clone(),
+                    source,
+                })
+            })?;
+    }
     Ok((activated, bindings))
+}
+
+/// Whether the registered `activated` row serves acquires now.
+///
+/// A rotation-bound row the live fan-out is rereading (after a material
+/// replacement, say) is waited for, bounded by the activation. Without a
+/// live fan-out nothing would ever let such a row serve again, so it does
+/// not, and the caller registers the row again, opted out of rotation; a row
+/// draining or failed is registered again too.
+async fn serves(context: &ActivationContext<'_>, activated: &ActivatedResource) -> bool {
+    let Some(row) = context.manager.get_row(
+        &activated.resource_key,
+        &activated.scope,
+        &activated.slot_identity,
+    ) else {
+        return false;
+    };
+    if row.phase().is_accepting() {
+        return true;
+    }
+    #[cfg(feature = "rotation")]
+    if context.fanout.is_some() && row.phase() == nebula_resource::ResourcePhase::Initializing {
+        return context
+            .manager
+            .until_accepting(
+                &activated.resource_key,
+                &activated.scope,
+                &activated.slot_identity,
+                None,
+            )
+            .await
+            .is_ok();
+    }
+    false
 }
 
 /// Whether the credentials a registration was built with are still the
@@ -988,29 +1059,10 @@ const fn is_transient(error: &CredentialSlotResolveError) -> bool {
     )
 }
 
-/// Releases the rotation-index references `row`'s registration took, one
-/// per bound credential; a credential the new registration bound again
-/// keeps the reference that registration took.
-fn release_bindings(context: &ActivationContext<'_>, row: &ActiveRow) {
-    #[cfg(feature = "rotation")]
-    if let Some(fanout) = context.fanout {
-        for bound in &row.bindings {
-            let bind = nebula_resource::Bind {
-                resource_key: row.activated.resource_key.clone(),
-                scope: row.activated.scope.clone(),
-                slot_name: bound.slot.clone(),
-                slot_identity: row.activated.slot_identity.clone(),
-            };
-            fanout.unbind_staged_entry(&bound.credential_id, &bind);
-        }
-    }
-    #[cfg(not(feature = "rotation"))]
-    let _ = (context, row);
-}
-
-/// Removes `activated` from the manager and, once it is gone, from the
-/// rotation index; `false` when the manager pushed back (its retirement
-/// queue is full) and the row still serves, rotation binding included.
+/// Removes `activated` from the manager, which drops its rotation bindings
+/// from every attached index as it removes it; `false` when the manager
+/// pushed back (its retirement queue is full) and the row still serves,
+/// rotation bindings included.
 fn retire(context: &ActivationContext<'_>, activated: &ActivatedResource) -> bool {
     let removed = context.manager.remove_for(
         &activated.resource_key,
@@ -1036,14 +1088,6 @@ fn retire(context: &ActivationContext<'_>, activated: &ActivatedResource) -> boo
             error = %error,
             "stale stored-resource registry row needs no retirement"
         ),
-    }
-    #[cfg(feature = "rotation")]
-    if let Some(fanout) = context.fanout {
-        fanout.unbind_resource_identity(
-            &activated.resource_key,
-            &activated.scope,
-            &activated.slot_identity,
-        );
     }
     true
 }

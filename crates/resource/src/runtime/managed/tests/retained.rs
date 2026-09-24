@@ -207,6 +207,8 @@ fn managed_with_workers(
     let topology = RetainedTopology::new(behavior);
     let (release_queue, workers) = ReleaseQueue::new(worker_count);
     let managed = Arc::new(ManagedResource {
+        pending_projection_hooks: Default::default(),
+        phase_changed: Default::default(),
         resource,
         config: ArcSwap::from_pointee(RetainedConfig),
         topology,
@@ -214,7 +216,7 @@ fn managed_with_workers(
         retained: RetainedStore::new(release_queue.abandonment_tracker()),
         release_queue: Arc::new(release_queue),
         generation: AtomicU64::new(0),
-        status: ArcSwap::from_pointee(ResourceStatus::new()),
+        status: ArcSwap::from_pointee(ResourceStatus::ready()),
         recovery_gate: None,
         tainted: AtomicBool::new(false),
         in_flight: Arc::new((AtomicU64::new(0), Notify::new())),

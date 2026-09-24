@@ -143,8 +143,20 @@ impl resident::ResidentProvider for Misnamed {
 
 const AUTH_SLOT: &str = "auth";
 
+/// One credential slot, with the complete projection contract rotation
+/// needs (a derived resource gets the same from `#[derive(Resource)]`).
 #[derive(Clone)]
-struct Slotted;
+struct Slotted {
+    auth: Arc<nebula_resource::SlotCell<nebula_credential::CredentialGuard<String>>>,
+}
+
+impl Slotted {
+    fn new() -> Self {
+        Self {
+            auth: Arc::new(nebula_resource::SlotCell::empty()),
+        }
+    }
+}
 
 #[async_trait::async_trait]
 impl Provider for Slotted {
@@ -192,7 +204,7 @@ impl DeclaresDependencies for Slotted {
 
 impl nebula_resource::HasCredentialSlots for Slotted {
     fn credential_slot_epoch(&self) -> u64 {
-        0
+        self.auth.generation()
     }
 
     fn declares_credential_slots() -> bool {
@@ -203,17 +215,89 @@ impl nebula_resource::HasCredentialSlots for Slotted {
         &[AUTH_SLOT]
     }
 
+    fn supports_credential_slot_projection(&self, slot: &str) -> bool {
+        slot == AUTH_SLOT
+    }
+
+    fn credential_slot_metadata(
+        &self,
+        slot: &str,
+    ) -> Option<nebula_credential::CredentialGuardMetadata> {
+        (slot == AUTH_SLOT)
+            .then(|| self.auth.projection_metadata())
+            .flatten()
+    }
+
+    fn credential_slot_projection(
+        &self,
+        slot: &str,
+    ) -> Option<(u64, Option<nebula_credential::CredentialGuardMetadata>)> {
+        (slot == AUTH_SLOT).then(|| self.auth.projection_snapshot())
+    }
+
+    fn install_credential_slot_at_generation(
+        &self,
+        slot: &str,
+        guard: nebula_credential::ErasedCredentialGuard,
+        expected_generation: u64,
+    ) -> Result<nebula_resource::SlotUpdate, nebula_resource::SlotInstallError> {
+        let (metadata, guard) = typed(slot, guard)?;
+        self.auth
+            .install_projected_at_generation(expected_generation, metadata, guard)
+    }
+
+    fn fence_credential_slot_at_generation(
+        &self,
+        slot: &str,
+        expected_generation: u64,
+        fence: &mut dyn FnMut(),
+    ) -> Result<(), nebula_resource::SlotInstallError> {
+        if slot != AUTH_SLOT {
+            return Err(nebula_resource::SlotInstallError::UnknownSlot);
+        }
+        self.auth
+            .fence_projection_at_generation(expected_generation, fence)
+    }
+
     fn install_credential_slot(
         &self,
         slot: &str,
-        _guard: nebula_credential::ErasedCredentialGuard,
+        guard: nebula_credential::ErasedCredentialGuard,
     ) -> Result<nebula_resource::SlotUpdate, nebula_resource::SlotInstallError> {
-        if slot == AUTH_SLOT {
-            Ok(nebula_resource::SlotUpdate::Installed)
-        } else {
-            Err(nebula_resource::SlotInstallError::UnknownSlot)
-        }
+        let (metadata, guard) = typed(slot, guard)?;
+        self.auth.install_projected(metadata, guard)
     }
+
+    fn revoke_credential_slot(
+        &self,
+        slot: &str,
+    ) -> Result<nebula_resource::SlotUpdate, nebula_resource::SlotInstallError> {
+        if slot != AUTH_SLOT {
+            return Err(nebula_resource::SlotInstallError::UnknownSlot);
+        }
+        Ok(self.auth.revoke())
+    }
+}
+
+/// The `auth` slot's guard, typed, with the metadata it was projected with.
+fn typed(
+    slot: &str,
+    guard: nebula_credential::ErasedCredentialGuard,
+) -> Result<
+    (
+        nebula_credential::CredentialGuardMetadata,
+        Arc<nebula_credential::CredentialGuard<String>>,
+    ),
+    nebula_resource::SlotInstallError,
+> {
+    if slot != AUTH_SLOT {
+        return Err(nebula_resource::SlotInstallError::UnknownSlot);
+    }
+    let metadata = guard.metadata().clone();
+    let guard = guard
+        .into_typed::<String>()
+        .map_err(|_| nebula_resource::SlotInstallError::CredentialTypeMismatch)?;
+    Ok((metadata, Arc::new(guard)))
 }
 
 impl resident::ResidentProvider for Slotted {
@@ -251,7 +335,7 @@ impl ScriptedResolver {
 impl CredentialSlotResolver for ScriptedResolver {
     fn resolve_slot<'a>(
         &'a self,
-        _scope: &'a TenantScope,
+        scope: &'a TenantScope,
         credential_id: CredentialId,
         expected_key: CredentialKey,
         _required_capabilities: Capabilities,
@@ -271,12 +355,14 @@ impl CredentialSlotResolver for ScriptedResolver {
         let outcome = (*self.outcome.lock().unwrap()).map(|(material_epoch, revision)| {
             nebula_credential::ErasedCredentialGuard::from_typed(
                 nebula_credential::CredentialGuard::new(String::from("secret")),
+                // Owner-qualified, as a production resolver stamps it.
                 nebula_credential::CredentialGuardMetadata::new(
                     credential_id,
                     expected_key,
                     material_epoch,
                     revision,
-                ),
+                )
+                .with_scope(scope.durable_owner_scope()),
             )
         });
         let stall = self.stall.load(Ordering::SeqCst);
@@ -308,7 +394,7 @@ pub(crate) fn registrars() -> ResourceActivatorRegistry {
         .insert(
             "activation.slotted",
             Arc::new(KindActivator::<Slotted, _, _>::new(
-                || Slotted,
+                Slotted::new,
                 nebula_resource::topology::fixed(|| {
                     Resident::<Slotted>::new(resident::config::Config::default())
                 }),
@@ -333,47 +419,76 @@ struct Fixture {
     store: Arc<InMemoryResourceStore>,
     activator: StoredResourceActivator,
     registrars: ResourceActivatorRegistry,
-    manager: Manager,
+    manager: Arc<Manager>,
     expr_engine: ExpressionEngine,
-    resolver: ScriptedResolver,
+    resolver: Arc<ScriptedResolver>,
     scope: Scope,
     cancel: CancellationToken,
+    /// Attached to `manager`, as the engine attaches its index.
     #[cfg(feature = "rotation")]
-    fanout: nebula_resource::ResourceFanoutIndex,
-    /// Activate as a worker built without the rotation fan-out does, even
-    /// when the feature is compiled in.
-    without_fanout: bool,
+    fanout: Arc<nebula_resource::ResourceFanoutIndex>,
+    /// Activate as the engine does while a fan-out driver reconciles
+    /// `fanout`; the test spawns that driver itself.
+    #[cfg(feature = "rotation")]
+    live_fanout: bool,
+    /// The driver's credential bus: it runs while the bus lives.
+    #[cfg(feature = "rotation")]
+    credential_events: Arc<nebula_eventbus::EventBus<nebula_credential::CredentialEvent>>,
 }
 
 impl Fixture {
     fn new() -> Self {
         let store = Arc::new(InMemoryResourceStore::new());
+        let manager = Arc::new(Manager::new());
+        #[cfg(feature = "rotation")]
+        let fanout = Arc::new(nebula_resource::ResourceFanoutIndex::new());
+        #[cfg(feature = "rotation")]
+        manager.attach_rotation_index(&fanout);
         Self {
             activator: StoredResourceActivator::new(Arc::clone(&store) as Arc<dyn ResourceStore>),
             store,
             registrars: registrars(),
-            manager: Manager::new(),
+            manager,
             expr_engine: ExpressionEngine::with_cache_size(16),
-            resolver: ScriptedResolver::default(),
+            resolver: Arc::new(ScriptedResolver::default()),
             scope: Scope::new(
                 WorkspaceId::new().to_string(),
                 nebula_core::OrgId::new().to_string(),
             ),
             cancel: CancellationToken::new(),
             #[cfg(feature = "rotation")]
-            fanout: nebula_resource::ResourceFanoutIndex::new(),
-            without_fanout: false,
+            fanout,
+            #[cfg(feature = "rotation")]
+            live_fanout: false,
+            #[cfg(feature = "rotation")]
+            credential_events: Arc::new(nebula_eventbus::EventBus::new(8)),
         }
+    }
+
+    /// Spawns a fan-out driver rereading credentials through the fixture's
+    /// resolver and activates as the engine does while one runs. Dropping
+    /// the handle stops the driver.
+    #[cfg(feature = "rotation")]
+    fn start_fanout(&mut self) -> nebula_resource::ResourceFanoutDriver {
+        self.live_fanout = true;
+        nebula_resource::ResourceFanoutDriver::spawn_with_resolver(
+            Arc::clone(&self.fanout),
+            Arc::clone(&self.manager),
+            Some(Arc::clone(&self.resolver) as Arc<dyn CredentialSlotResolver>),
+            Arc::clone(&self.credential_events),
+            None,
+        )
     }
 
     fn context(&self, with_credentials: bool) -> ActivationContext<'_> {
         ActivationContext {
             registrars: &self.registrars,
             manager: &self.manager,
-            credentials: with_credentials.then_some(&self.resolver as &dyn CredentialSlotResolver),
+            credentials: with_credentials
+                .then_some(self.resolver.as_ref() as &dyn CredentialSlotResolver),
             expr_engine: &self.expr_engine,
             #[cfg(feature = "rotation")]
-            fanout: (!self.without_fanout).then_some(&self.fanout),
+            fanout: self.live_fanout.then_some(&self.fanout),
         }
     }
 
@@ -501,8 +616,9 @@ async fn a_row_activates_once_per_version_even_under_concurrency() {
     );
 }
 
-/// A retired row leaves the credential-rotation index too, so a later
-/// refresh of its credentials is not dispatched to a row that is gone.
+/// A retired row leaves the credential-rotation index too — the manager
+/// prunes the index attached to it — so a later refresh of its credentials
+/// is not dispatched to a row that is gone.
 #[cfg(feature = "rotation")]
 #[tokio::test]
 async fn a_retired_row_leaves_the_rotation_index() {
@@ -534,62 +650,117 @@ async fn a_retired_row_leaves_the_rotation_index() {
     );
 }
 
-/// Re-registering a row under the same identity with a different
-/// credential releases the previous registration's rotation references: the
-/// replaced credential no longer reaches the row, and a credential both
-/// registrations bound keeps the new one's reference.
+/// With a live fan-out driver a credential-bound row registers
+/// rotation-bound: activation returns once the fan-out has reread its
+/// credentials and the row serves; rebinding the row to another credential
+/// moves its rotation binding there; a credential that is gone stops the row
+/// and unbinds it.
 #[cfg(feature = "rotation")]
 #[tokio::test]
-async fn a_same_identity_reregistration_releases_replaced_credentials() {
-    let fixture = Fixture::new();
-    let (resource_id, key) = fixture.store_row("activation.plain", "a", &[]).await;
+async fn with_a_live_fanout_a_row_serves_once_its_credentials_are_reread() {
+    let mut fixture = Fixture::new();
+    let _driver = fixture.start_fanout();
+    let first = CredentialId::new();
+    let (resource_id, key) = fixture
+        .store_row(
+            "activation.slotted",
+            "a",
+            &[(AUTH_SLOT, first.to_string().as_str())],
+        )
+        .await;
+    fixture.resolver.answer(Ok((1, 1)));
     let activated = fixture.activate(resource_id, &key).await.unwrap();
-    let (replaced, added, kept) = (
-        CredentialId::new(),
-        CredentialId::new(),
-        CredentialId::new(),
+    let row = fixture
+        .manager
+        .get_row(
+            &activated.resource_key,
+            &activated.scope,
+            &activated.slot_identity,
+        )
+        .expect("registered");
+    assert_eq!(
+        row.phase(),
+        nebula_resource::ResourcePhase::Ready,
+        "activation hands out a row that serves"
     );
-    let bind = |credential, slot: &str| {
-        fixture.fanout.bind(
-            credential,
-            activated.resource_key.clone(),
-            activated.scope.clone(),
-            slot,
-            activated.slot_identity.clone(),
-        );
-    };
-    // The previous registration bound `replaced` and `kept`; the new one
-    // bound `added` and `kept` again.
-    bind(replaced, "token");
-    bind(kept, "other");
-    bind(added, "token");
-    bind(kept, "other");
-    let previous = ActiveRow {
-        version: 1,
-        activated: activated.clone(),
-        bindings: vec![bound(replaced, "token"), bound(kept, "other")],
-    };
+    assert_eq!(fixture.fanout.affected(&first).len(), 1);
 
-    release_bindings(&fixture.context(false), &previous);
-
+    let second = CredentialId::new();
+    let mut stored = fixture
+        .store
+        .get(&fixture.scope, &resource_id.to_string())
+        .await
+        .unwrap()
+        .unwrap();
+    stored.credential_bindings = BTreeMap::from([(AUTH_SLOT.to_owned(), second.to_string())]);
+    stored.version = 1;
+    fixture
+        .store
+        .update(&fixture.scope, stored, 0)
+        .await
+        .unwrap();
+    assert_eq!(
+        fixture.activate(resource_id, &key).await.unwrap(),
+        activated,
+        "the same identity re-registers in place"
+    );
     assert!(
-        fixture.fanout.affected(&replaced).is_empty(),
+        fixture.fanout.affected(&first).is_empty(),
         "the replaced credential no longer reaches the row"
     );
-    assert_eq!(fixture.fanout.affected(&added).len(), 1);
+    assert_eq!(fixture.fanout.affected(&second).len(), 1);
+
+    fixture
+        .resolver
+        .answer(Err(CredentialSlotResolveError::NotFound));
+    std::assert_matches!(
+        fixture.activate(resource_id, &key).await,
+        Err(StoredResourceActivationError::Credential { .. })
+    );
+    assert!(
+        fixture
+            .manager
+            .get_row(
+                &activated.resource_key,
+                &activated.scope,
+                &activated.slot_identity
+            )
+            .is_none(),
+        "a credential that is gone stops the row"
+    );
+    assert!(fixture.fanout.affected(&second).is_empty());
+}
+
+/// Without a live fan-out driver nothing would ever reread a rotation-bound
+/// row's credentials, so a credential-bound row registers opted out of
+/// rotation and serves at once; activation's own re-check keeps it current.
+#[cfg(feature = "rotation")]
+#[tokio::test]
+async fn without_a_live_fanout_a_row_opts_out_of_rotation() {
+    let fixture = Fixture::new();
+    let credential = CredentialId::new();
+    let (resource_id, key) = fixture
+        .store_row(
+            "activation.slotted",
+            "a",
+            &[(AUTH_SLOT, credential.to_string().as_str())],
+        )
+        .await;
+    fixture.resolver.answer(Ok((1, 1)));
+    let activated = fixture.activate(resource_id, &key).await.unwrap();
     assert_eq!(
-        fixture.fanout.affected(&kept).len(),
-        1,
-        "a credential bound again keeps the new registration's reference"
+        fixture
+            .manager
+            .get_row(
+                &activated.resource_key,
+                &activated.scope,
+                &activated.slot_identity
+            )
+            .expect("registered")
+            .phase(),
+        nebula_resource::ResourcePhase::Ready
     );
-    release_bindings(
-        &fixture.context(false),
-        &ActiveRow {
-            bindings: vec![bound(kept, "other")],
-            ..previous
-        },
-    );
-    assert!(fixture.fanout.affected(&kept).is_empty());
+    assert!(fixture.fanout.affected(&credential).is_empty());
 }
 
 #[tokio::test]
@@ -764,24 +935,13 @@ async fn a_pushed_back_retirement_is_retried_by_the_sweep() {
     );
 }
 
-#[cfg(feature = "rotation")]
-fn bound(credential_id: CredentialId, slot: &str) -> BoundCredential {
-    BoundCredential {
-        credential_id,
-        slot: slot.to_owned(),
-        credential_key: CredentialKey::new("auth").expect("valid credential key"),
-        material: (1, 1),
-    }
-}
-
 /// Every activation re-checks a credential-bound row's credentials against
 /// the credential store: unchanged, the registration is reused; refreshed,
 /// the row registers again; unreachable for now, it keeps serving; gone, it
 /// is retired and fails.
 #[tokio::test]
 async fn activation_follows_credential_changes_without_a_definition_change() {
-    let mut fixture = Fixture::new();
-    fixture.without_fanout = true;
+    let fixture = Fixture::new();
     let mut events = fixture.manager.subscribe_events();
     let credential = CredentialId::new().to_string();
     let (resource_id, key) = fixture
@@ -889,13 +1049,14 @@ async fn a_timed_out_activation_is_recorded_as_failed() {
     );
 }
 
-/// With the rotation fan-out attached the durable check behaves the same:
-/// its events can be lost, so a refreshed credential registers the row
-/// again and a revoked one stops it.
+/// With a live rotation fan-out the durable check behaves the same: a
+/// refreshed credential registers the row again and a revoked one stops it,
+/// whether or not the fan-out saw the change.
 #[cfg(feature = "rotation")]
 #[tokio::test]
-async fn with_the_fanout_the_durable_check_still_follows_credentials() {
-    let fixture = Fixture::new();
+async fn with_a_live_fanout_the_durable_check_still_follows_credentials() {
+    let mut fixture = Fixture::new();
+    let _driver = fixture.start_fanout();
     let mut events = fixture.manager.subscribe_events();
     let credential = CredentialId::new().to_string();
     let (resource_id, key) = fixture
@@ -941,7 +1102,6 @@ async fn with_the_fanout_the_durable_check_still_follows_credentials() {
 #[tokio::test(start_paused = true)]
 async fn a_timed_out_recheck_clears_on_the_next_activation() {
     let mut fixture = Fixture::new();
-    fixture.without_fanout = true;
     fixture.activator =
         StoredResourceActivator::new(Arc::clone(&fixture.store) as Arc<dyn ResourceStore>)
             .with_activation_timeout(Duration::from_secs(1));
@@ -1122,11 +1282,12 @@ async fn a_cancelled_turn_stops_activation() {
     );
 }
 
-fn binding(slot: &str, credential: CredentialId) -> SlotBinding {
-    SlotBinding {
-        slot_name: slot.to_owned(),
+fn binding(slot: &str, credential: CredentialId) -> BoundCredential {
+    BoundCredential {
+        credential_id: credential,
+        slot: slot.to_owned(),
         credential_key: CredentialKey::new("auth").expect("valid credential key"),
-        credential_id: Some(credential),
+        material: (1, 1),
     }
 }
 

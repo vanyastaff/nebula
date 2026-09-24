@@ -1170,6 +1170,48 @@ async fn a_prepaid_permit_honours_a_penalty_another_worker_recorded() {
     );
 }
 
+/// A pause forfeits the prepaid slot: after it the call books again, so it
+/// does not run in the same slot as a caller that booked the first slot
+/// after the pause.
+#[tokio::test(start_paused = true)]
+async fn a_prepaid_permit_rebooks_after_a_shared_penalty() {
+    let (a, b) = shared_account_workers();
+    b.ready_to_acquire(None)
+        .await
+        .expect("the cold acquire books");
+    a.penalize(Duration::from_mins(1))
+        .await
+        .expect("recorded in the shared store");
+    let started = Instant::now();
+    // Another worker books the first slot after the penalty.
+    let other = tokio::spawn({
+        let a = Arc::clone(&a);
+        async move {
+            a.ready(None).await.expect("admitted after the penalty");
+            Instant::now()
+        }
+    });
+    tokio::task::yield_now().await;
+    let client = b.wrap((), NoThrottle);
+    client
+        .run(async |()| Ok::<_, ProviderError>(()))
+        .await
+        .expect("admitted after the penalty");
+    let prepaid_at = Instant::now();
+    let other_at = other.await.unwrap();
+    assert!(
+        prepaid_at.duration_since(started) >= Duration::from_mins(1),
+        "ran at {:?}",
+        prepaid_at.duration_since(started)
+    );
+    assert!(
+        prepaid_at.max(other_at) - prepaid_at.min(other_at) >= Duration::from_secs(1),
+        "the two calls share one account slot: {:?} and {:?}",
+        prepaid_at.duration_since(started),
+        other_at.duration_since(started)
+    );
+}
+
 /// The credit never carries a call past its deadline: a penalty that
 /// outlasts the deadline fails fast, and the call does not run.
 #[tokio::test(start_paused = true)]

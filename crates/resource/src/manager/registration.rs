@@ -12,7 +12,7 @@ use super::{Manager, RegistrationSpec};
 use crate::{
     error::Error,
     events::{ResourceEvent, RetirementOrigin},
-    factory::{ResourceConfigInput, ResourceConfigSource},
+    factory::{RegistrationBindings, ResourceConfigInput, ResourceConfigSource},
     recovery::gate::RecoveryGate,
     reload::ReloadOutcome,
     resource::Provider,
@@ -237,16 +237,24 @@ impl Manager {
         R: Provider,
         R::Topology: Topology<R>,
     {
-        self.install(spec).map(drop)
+        self.install(spec, RegistrationBindings::empty()).map(drop)
     }
 
-    /// [`register`](Self::register), returning the installed row.
-    fn install<R>(&self, spec: RegistrationSpec<R>) -> Result<Arc<ManagedResource<R>>, Error>
+    /// [`register`](Self::register) with the staged rotation bindings of a
+    /// resolved registration, returning the installed row.
+    fn install<R>(
+        &self,
+        spec: RegistrationSpec<R>,
+        registration_bindings: RegistrationBindings<'_>,
+    ) -> Result<Arc<ManagedResource<R>>, Error>
     where
         R: Provider,
         R::Topology: Topology<R>,
     {
         use crate::resource::ResourceConfig as _;
+
+        #[cfg(not(feature = "rotation"))]
+        let _ = registration_bindings;
 
         self.shutdown_guard()?;
 
@@ -326,6 +334,7 @@ impl Manager {
         }
 
         let managed = Arc::new(ManagedResource {
+            pending_projection_hooks: Default::default(),
             resource,
             config: arc_swap::ArcSwap::from_pointee(config),
             topology,
@@ -340,6 +349,7 @@ impl Manager {
             retained: crate::RetainedStore::new(self.release_queue.abandonment_tracker()),
             generation: AtomicU64::new(0),
             status: arc_swap::ArcSwap::from_pointee(crate::state::ResourceStatus::new()),
+            phase_changed: Notify::new(),
             recovery_gate,
             rate_limiter,
             tainted: std::sync::atomic::AtomicBool::new(false),
@@ -355,11 +365,27 @@ impl Manager {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.shutdown_guard()?;
+        #[cfg(feature = "rotation")]
+        if let Some(index) = registration_bindings.rotation_index()
+            && !registration_bindings.staged_entries().is_empty()
+            && !registration_bindings
+                .authoritative_proof()
+                .is_some_and(|proof| index.validates_authoritative_registration(self, proof))
+        {
+            return Err(Error::permanent(
+                "rotation binding lost authoritative credential reconciliation before publication",
+            )
+            .with_resource_key(key));
+        }
         // New rows require no retirement capacity. For an exact-identity
         // replacement, the registry invokes this admission callback before
         // mutation so backpressure leaves the old owner installed and unfenced.
         let type_id = std::any::TypeId::of::<ManagedResource<R>>();
         let maintenance_scope = crate::context::minimal_scope_for_level(&scope);
+        #[cfg(feature = "rotation")]
+        let rotation_identity = (scope.clone(), slot_identity.clone());
+        #[cfg(feature = "rotation")]
+        let rotation_indexes = self.attached_rotation_indexes();
         let registration = self.registry.register_admitted(
             key.clone(),
             type_id,
@@ -382,13 +408,54 @@ impl Manager {
             {
                 managed.rate_limiter.inherit_pauses(&previous.rate_limiter);
             }
+            #[cfg(feature = "rotation")]
+            for index in &rotation_indexes {
+                index.unbind_replaced_resource_identity(
+                    &key,
+                    &rotation_identity.0,
+                    &rotation_identity.1,
+                    &displaced,
+                );
+            }
             self.retire_resource(displaced, permit, RetirementOrigin::Replacement);
         }
+        #[cfg(feature = "rotation")]
+        let mut material_reconciliation_pending = false;
+        #[cfg(feature = "rotation")]
+        if let Some(index) = registration_bindings.rotation_index() {
+            for (credential_id, bind) in registration_bindings.staged_entries() {
+                if index.publish_staged_entry(credential_id, bind) {
+                    let managed_handle: Arc<dyn crate::registry::ManagedHandle> = managed.clone();
+                    match self.taint_under_admission(&key, &bind.slot_name, managed_handle) {
+                        Ok(tainted) => index.remember_pending_revoke(
+                            *credential_id,
+                            key.clone(),
+                            &bind.slot_name,
+                            tainted.managed_handle(),
+                        ),
+                        Err(error) => tracing::warn!(
+                            credential_id = %credential_id,
+                            resource.key = %key,
+                            slot = %bind.slot_name,
+                            error.kind = ?error.kind(),
+                            "staged credential revoke could not taint the published resource"
+                        ),
+                    }
+                }
+                material_reconciliation_pending |=
+                    index.material_publication_requires_reconciliation(credential_id);
+            }
+        }
 
-        // #387: everything below this point is a single funnel — the
-        // resource is installed, so advance its phase from `Initializing`
-        // to `Ready`. Failures are surfaced by `config.validate()` above,
-        // which aborts before we reach this line.
+        // #387: everything below this point is a single funnel. A row whose
+        // material changed before its first staged bind stays unavailable in
+        // `Initializing`; authoritative reconciliation advances it to Ready
+        // only after installing (or proving it already has) current material.
+        #[cfg(feature = "rotation")]
+        if !material_reconciliation_pending {
+            managed.set_phase(crate::state::ResourcePhase::Ready);
+        }
+        #[cfg(not(feature = "rotation"))]
         managed.set_phase(crate::state::ResourcePhase::Ready);
 
         // Start the background idle/lifetime reaper for pools that expire
@@ -662,6 +729,7 @@ impl Manager {
         rate_limit: Option<crate::rate_limit::RowLimit>,
         row_id: Option<&str>,
         expected_slot_identity: &crate::dedup::SlotIdentity,
+        registration_bindings: RegistrationBindings<'_>,
     ) -> Result<crate::dedup::SlotIdentity, Error>
     where
         R: Provider + nebula_core::DeclaresDependencies,
@@ -814,15 +882,18 @@ impl Manager {
             "all pre-register checks passed; dispatching into typed register"
         );
         let warmup_scope = crate::context::minimal_scope_for_level(&scope);
-        let managed = self.install(RegistrationSpec {
-            resource,
-            config,
-            scope,
-            slot_identity: slot_identity.clone(),
-            topology,
-            recovery_gate,
-            rate_limit,
-        })?;
+        let managed = self.install(
+            RegistrationSpec {
+                resource,
+                config,
+                scope,
+                slot_identity: slot_identity.clone(),
+                topology,
+                recovery_gate,
+                rate_limit,
+            },
+            registration_bindings,
+        )?;
         // 6. A row activated from its stored definition warms as its
         //    topology's warmup strategy says, in the background: the
         //    activation that registered it does not wait on `create`s.
@@ -840,6 +911,11 @@ impl Manager {
     /// bounded and isolated as in [`warmup_pool`](Self::warmup_pool), and
     /// every create respects the pool's live-instance headroom.
     ///
+    /// A row that does not accept acquires yet — a rotation-bound row still
+    /// `Initializing` until its credentials are reread — is not warmed with
+    /// material that may be stale; the maintenance refill fills its floor
+    /// once it is ready.
+    ///
     /// The creates see the row's registration scope (`scope`, the bag for
     /// its [`ScopeLevel`]) and the row's limits, as the maintenance refill
     /// does; there is no execution behind a warmup, so execution-bound
@@ -856,8 +932,11 @@ impl Manager {
         use crate::topology::pooled::config::WarmupStrategy;
 
         let config = managed.config();
+        // A row whose credentials are still being reread builds nothing yet:
+        // the maintenance refill fills its floor once it is ready.
         if managed.topology.warmup_target(&config) == 0
             || matches!(managed.topology.warmup_strategy(), WarmupStrategy::None)
+            || !managed.accepts_new_instances()
         {
             return;
         }
@@ -1031,6 +1110,10 @@ impl Manager {
             !removed.is_empty(),
             "admission-locked key disappeared before removal"
         );
+        #[cfg(feature = "rotation")]
+        for index in self.attached_rotation_indexes() {
+            index.unbind_removed_resource_key(key, &removed);
+        }
         let retirements = removed
             .into_iter()
             .map(|managed| {
@@ -1091,6 +1174,10 @@ impl Manager {
             drop(retirement_permit);
             return Err(Error::not_found(key));
         };
+        #[cfg(feature = "rotation")]
+        for index in self.attached_rotation_indexes() {
+            index.unbind_removed_resource_identity(key, scope, slot_identity, &removed);
+        }
         self.retire_resource(removed, retirement_permit, RetirementOrigin::Removal);
 
         if let Some(m) = &self.metrics {

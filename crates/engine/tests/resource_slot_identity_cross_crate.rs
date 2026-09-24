@@ -208,6 +208,7 @@ fn request<'a>(expr: &'a ExpressionEngine, bindings: &[(&str, &str)]) -> Registe
             slot_name: (*slot).to_owned(),
             credential_key: CredentialKey::new(*cred).expect("valid credential key"),
             credential_id: None,
+            credential_scope: None,
         })
         .collect();
     RegisterRequest {

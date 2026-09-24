@@ -523,6 +523,9 @@ fn map_service_error(error: CredentialServiceError) -> CredentialGatewayError {
                 ),
             }
         },
+        CredentialServiceError::StateEnvelopeRefused(_) => {
+            CredentialGatewayError::StateEnvelopeRefused
+        },
         CredentialServiceError::TypeUnknown { key } => CredentialGatewayError::TypeUnknown { key },
         CredentialServiceError::CapabilityUnsupported { capability, key } => {
             CredentialGatewayError::CapabilityUnsupported { capability, key }
@@ -537,6 +540,9 @@ fn map_service_error(error: CredentialServiceError) -> CredentialGatewayError {
         | CredentialServiceError::ExternalSourceNotWired { .. }
         | CredentialServiceError::PersistenceUnavailable => CredentialGatewayError::Unavailable,
         CredentialServiceError::OutcomeUnknown => CredentialGatewayError::OutcomeUnknown,
+        CredentialServiceError::AcquisitionFinalizationRequired => {
+            CredentialGatewayError::AcquisitionReconciliationRequired
+        },
         CredentialServiceError::RefreshPostProviderPersistence
         | CredentialServiceError::RefreshRetryGateFinalization
         | CredentialServiceError::ReauthDecisionFinalization
@@ -623,6 +629,31 @@ mod tests {
         assert_eq!(
             map_service_error(CredentialServiceError::VersionExhausted),
             CredentialGatewayError::VersionExhausted
+        );
+    }
+
+    #[test]
+    fn production_controller_preserves_acquisition_finalization_requirement() {
+        assert_eq!(
+            map_controller_error(CredentialControllerError::Service(
+                CredentialServiceError::AcquisitionFinalizationRequired,
+            )),
+            CredentialGatewayError::AcquisitionReconciliationRequired,
+        );
+    }
+
+    #[test]
+    fn production_controller_preserves_state_envelope_refusal() {
+        assert_eq!(
+            map_controller_error(CredentialControllerError::Service(
+                CredentialServiceError::StateEnvelopeRefused(
+                    nebula_credential::StateEnvelopeError::UnknownSchemaVersion {
+                        stored_version: 2,
+                        supported_version: 1,
+                    },
+                ),
+            )),
+            CredentialGatewayError::StateEnvelopeRefused,
         );
     }
 

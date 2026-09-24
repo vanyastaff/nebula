@@ -157,6 +157,9 @@ pub struct ManagedResource<R: Provider> {
     /// hand the resource handle to the topology's hooks (the topology drives the
     /// hooks; the resource value is owned here).
     pub(crate) resource: R,
+    /// Pending hook admissions keyed by slot: (material epoch, installed slot generation).
+    pub(crate) pending_projection_hooks:
+        std::sync::Mutex<std::collections::HashMap<String, crate::registry::ProjectionHookState>>,
     /// Hot-swappable operational configuration.
     pub(crate) config: ArcSwap<R::Config>,
     /// The resource's lease topology, reached monomorphically.
@@ -179,6 +182,11 @@ pub struct ManagedResource<R: Provider> {
     pub(crate) generation: AtomicU64,
     /// Current lifecycle status (phase + last error).
     pub(crate) status: ArcSwap<ResourceStatus>,
+    /// Woken whenever the phase or the taint flag changes, so a caller
+    /// waiting for the row to accept acquires
+    /// ([`Manager::until_accepting`](crate::Manager::until_accepting)) is
+    /// told rather than polling.
+    pub(crate) phase_changed: Notify,
     /// Optional recovery gate for thundering-herd prevention.
     ///
     /// When set, acquire calls check the gate before proceeding and
@@ -357,6 +365,7 @@ impl<R: Provider> ManagedResource<R> {
             last_error: prev.last_error.clone(),
         };
         self.status.store(Arc::new(next));
+        self.phase_changed.notify_waiters();
     }
 
     /// Replace the lifecycle status with `Failed` and record a reason.
@@ -377,6 +386,7 @@ impl<R: Provider> ManagedResource<R> {
             }),
         };
         self.status.store(Arc::new(next));
+        self.phase_changed.notify_waiters();
     }
 
     /// Marks the resource tainted so the manager rejects new acquires.
@@ -388,11 +398,19 @@ impl<R: Provider> ManagedResource<R> {
     /// module docs for the canonical invariant.
     pub(crate) fn taint(&self) {
         self.tainted.store(true, Ordering::Release);
+        self.phase_changed.notify_waiters();
     }
 
     /// Returns `true` if [`taint`](Self::taint) has been called.
     pub(crate) fn is_tainted(&self) -> bool {
         self.tainted.load(Ordering::Acquire)
+    }
+
+    /// Whether the row may build instances now: it is not tainted and its
+    /// phase accepts acquires. A row still waiting for its credentials to be
+    /// reread, or draining, builds nothing that no acquire could take.
+    pub(crate) fn accepts_new_instances(&self) -> bool {
+        !self.is_tainted() && self.status().phase.is_accepting()
     }
 
     /// Returns a clone of this resource's per-resource in-flight tracker so

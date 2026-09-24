@@ -221,8 +221,10 @@ impl CredentialService {
             )
             .await
             .map_err(|error| match error {
-                CredentialSlotResolveError::NotFound => CredentialServiceError::NotFound {
-                    id: credential_id.to_string(),
+                CredentialSlotResolveError::NotFound | CredentialSlotResolveError::Revoked => {
+                    CredentialServiceError::NotFound {
+                        id: credential_id.to_string(),
+                    }
                 },
                 CredentialSlotResolveError::Cancelled => CredentialServiceError::Cancelled,
                 CredentialSlotResolveError::Unavailable => {

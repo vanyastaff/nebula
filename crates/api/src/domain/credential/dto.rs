@@ -119,7 +119,7 @@ impl fmt::Debug for UpdateCredentialRequest {
 }
 
 /// Full credential metadata response — **never includes secrets**.
-#[derive(Debug, Clone, Serialize, ToSchema)]
+#[derive(Clone, Serialize, ToSchema)]
 pub struct CredentialResponse {
     /// Unique credential identifier.
     pub id: String,
@@ -150,8 +150,28 @@ pub struct CredentialResponse {
     pub tags: HashMap<String, String>,
 }
 
+impl fmt::Debug for CredentialResponse {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CredentialResponse")
+            .field("id", &self.id)
+            .field("credential_key", &self.credential_key)
+            .field("name", &REDACTED)
+            .field("description_present", &self.description.is_some())
+            .field("auth_pattern", &self.auth_pattern)
+            .field("capabilities", &self.capabilities)
+            .field("created_at", &self.created_at)
+            .field("updated_at", &self.updated_at)
+            .field("expires_at", &self.expires_at)
+            .field("version", &self.version)
+            .field("lifecycle", &self.lifecycle)
+            .field("tag_count", &self.tags.len())
+            .finish()
+    }
+}
+
 /// Lightweight credential summary for list responses.
-#[derive(Debug, Clone, Serialize, ToSchema)]
+#[derive(Clone, Serialize, ToSchema)]
 pub struct CredentialSummary {
     /// Unique credential identifier.
     pub id: String,
@@ -168,6 +188,21 @@ pub struct CredentialSummary {
     pub version: u64,
     /// Durable credential availability state.
     pub lifecycle: CredentialLifecycleState,
+}
+
+impl fmt::Debug for CredentialSummary {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CredentialSummary")
+            .field("id", &self.id)
+            .field("credential_key", &self.credential_key)
+            .field("name", &REDACTED)
+            .field("auth_pattern", &self.auth_pattern)
+            .field("expires_at", &self.expires_at)
+            .field("version", &self.version)
+            .field("lifecycle", &self.lifecycle)
+            .finish()
+    }
 }
 
 /// Public credential availability state.
@@ -703,6 +738,49 @@ mod tests {
             debug.contains("42"),
             "safe CAS version should remain visible"
         );
+    }
+
+    #[test]
+    fn credential_projection_debug_redacts_user_metadata() {
+        let response = CredentialResponse {
+            id: "cred-123".to_owned(),
+            credential_key: "api_key".to_owned(),
+            name: SECRET_CANARY.to_owned(),
+            description: Some(SECRET_CANARY.to_owned()),
+            auth_pattern: "SecretToken".to_owned(),
+            capabilities: CredentialCapabilities {
+                interactive: false,
+                refreshable: false,
+                testable: true,
+                revocable: true,
+            },
+            created_at: "2026-07-21T12:34:56Z".to_owned(),
+            updated_at: "2026-07-21T12:34:56Z".to_owned(),
+            expires_at: None,
+            version: 42,
+            lifecycle: CredentialLifecycleState::Ready,
+            tags: HashMap::from([(SECRET_CANARY.to_owned(), SECRET_CANARY.to_owned())]),
+        };
+        let summary = CredentialSummary {
+            id: "cred-123".to_owned(),
+            credential_key: "api_key".to_owned(),
+            name: SECRET_CANARY.to_owned(),
+            auth_pattern: "SecretToken".to_owned(),
+            expires_at: None,
+            version: 42,
+            lifecycle: CredentialLifecycleState::Ready,
+        };
+
+        for debug in [format!("{response:?}"), format!("{summary:?}")] {
+            assert!(
+                !debug.contains(SECRET_CANARY),
+                "credential projection Debug must not expose user metadata: {debug}"
+            );
+            assert!(
+                debug.contains("cred-123") && debug.contains("42"),
+                "safe identity and concurrency fields should remain visible: {debug}"
+            );
+        }
     }
 
     #[test]

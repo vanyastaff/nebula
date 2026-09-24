@@ -591,8 +591,14 @@ where
                 }
                 // A revoke taints the row: its credential is going, so no
                 // instance is created with it, and the revoke's drain does
-                // not wait on this warmup.
-                if failed.load(Ordering::Acquire) || self.is_tainted() || self.store.is_closed() {
+                // not wait on this warmup. A row that does not accept
+                // acquires yet (its credentials are still being reread) or
+                // any more (it is draining) builds nothing either; the
+                // maintenance refill fills its floor once it is ready.
+                if failed.load(Ordering::Acquire)
+                    || !self.accepts_new_instances()
+                    || self.store.is_closed()
+                {
                     return Ok(None);
                 }
                 // The create holds a checkout permit, as an acquire's does,
@@ -753,8 +759,10 @@ where
     /// any in-flight entry via the [`ReleaseQueue`] instead of leaking it;
     /// entries already deposited stay in the store.
     pub(crate) async fn refill_min_idle(self: &Arc<Self>, ctx: &ResourceContext) -> usize {
-        // A revoked (tainted) row creates nothing more with its credential.
-        if self.is_tainted() {
+        // A revoked (tainted) row creates nothing more with its credential,
+        // and a row that does not accept acquires builds nothing they could
+        // take.
+        if !self.accepts_new_instances() {
             return 0;
         }
         if let Some(gate) = &self.recovery_gate
@@ -786,7 +794,7 @@ where
                 // only limit that applies.
                 None => usize::MAX,
             };
-            if headroom == 0 || self.is_tainted() {
+            if headroom == 0 || !self.accepts_new_instances() {
                 break;
             }
             match self.create_and_deposit_one(ctx, &config).await {

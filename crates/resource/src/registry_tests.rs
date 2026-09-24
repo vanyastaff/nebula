@@ -37,10 +37,25 @@ macro_rules! impl_fake_handle {
                 TopologyTag::Resident
             }
             fn taint(&self) {}
+            fn is_tainted(&self) -> bool {
+                false
+            }
+            fn phase_changed(&self) -> &tokio::sync::Notify {
+                static NEVER: tokio::sync::Notify = tokio::sync::Notify::const_new();
+                &NEVER
+            }
             fn bump_revoke_epoch(&self) {}
             fn accepts_credential_slot_name(&self, _slot: &str) -> bool {
                 true
             }
+            fn pending_projection_hooks(
+                &self,
+            ) -> &std::sync::Mutex<
+                std::collections::HashMap<String, crate::registry::ProjectionHookState>,
+            > {
+                unreachable!("this fixture does not install projections")
+            }
+
             fn install_credential_slot(
                 &self,
                 _slot: &str,

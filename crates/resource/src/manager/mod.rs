@@ -414,7 +414,11 @@ pub struct ResourceHealthSnapshot {
 /// whenever the resolved slot identity is known.
 pub struct Manager {
     pub(super) registry: Registry,
-    /// Serializes registry commits and terminal snapshots; never held across await.
+    #[cfg(feature = "rotation")]
+    rotation_indexes:
+        std::sync::Mutex<Vec<std::sync::Weak<crate::credential_fanout::ResourceFanoutIndex>>>,
+    /// Serializes registry commits, credential admission/revoke and terminal snapshots.
+    /// Never held across await.
     pub(super) admission: std::sync::Mutex<()>,
     pub(super) cancel: CancellationToken,
     pub(super) metrics: Option<ResourceOpsMetrics>,
@@ -503,6 +507,8 @@ impl Manager {
         ));
         Self {
             registry: Registry::new(),
+            #[cfg(feature = "rotation")]
+            rotation_indexes: std::sync::Mutex::new(Vec::new()),
             admission: std::sync::Mutex::new(()),
             cancel,
             metrics,
@@ -519,6 +525,48 @@ impl Manager {
             local_limits: Arc::new(crate::rate_limit::MemoryLimitStore::new()),
             shared_limits: config.shared_limit_store,
         }
+    }
+
+    /// Wires a production credential reverse index into resource retirement.
+    ///
+    /// Removal visits every distinct live weak reference to delete exact
+    /// routing rows while it still holds lifecycle admission. The manager
+    /// does not own an index and therefore cannot extend a rotation driver's
+    /// lifetime.
+    #[cfg(feature = "rotation")]
+    pub fn attach_rotation_index(
+        &self,
+        index: &Arc<crate::credential_fanout::ResourceFanoutIndex>,
+    ) {
+        let mut indexes = self
+            .rotation_indexes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        indexes.retain(|attached| attached.strong_count() != 0);
+        if indexes
+            .iter()
+            .filter_map(std::sync::Weak::upgrade)
+            .any(|attached| Arc::ptr_eq(&attached, index))
+        {
+            return;
+        }
+        indexes.push(Arc::downgrade(index));
+    }
+
+    #[cfg(feature = "rotation")]
+    pub(super) fn attached_rotation_indexes(
+        &self,
+    ) -> Vec<Arc<crate::credential_fanout::ResourceFanoutIndex>> {
+        let mut indexes = self
+            .rotation_indexes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let live: Vec<_> = indexes
+            .iter()
+            .filter_map(std::sync::Weak::upgrade)
+            .collect();
+        indexes.retain(|attached| attached.strong_count() != 0);
+        live
     }
 
     /// One-time, process-wide honesty check for `panic = "abort"` builds.
@@ -763,6 +811,83 @@ impl Manager {
         }
     }
 
+    /// Waits until the row `(key, scope, slot_identity)` accepts acquires,
+    /// never past `deadline`.
+    ///
+    /// A row registered with rotation-bound credential bindings stays
+    /// [`Initializing`](crate::ResourcePhase::Initializing) until the
+    /// rotation fan-out has reread its credentials, and an acquire before
+    /// then is refused with [`Backpressure`](crate::ErrorKind::Backpressure).
+    /// A host that hands a freshly registered row to work — the engine
+    /// activating a stored row for an execution — waits here instead of
+    /// letting that work's first acquire bounce. The wait is woken by every
+    /// phase or taint change of the row; it never polls.
+    ///
+    /// # Errors
+    ///
+    /// - [`NotFound`](crate::ErrorKind::NotFound) — no such row.
+    /// - [`Revoked`](crate::ErrorKind::Revoked) — a credential revoke tainted
+    ///   the row.
+    /// - [`Backpressure`](crate::ErrorKind::Backpressure) — the row left
+    ///   `Initializing` for a phase that refuses acquires (draining, shutting
+    ///   down, failed), or `deadline` passed first.
+    /// - [`Cancelled`](crate::ErrorKind::Cancelled) — the manager is shutting
+    ///   down.
+    ///
+    /// # Cancel safety
+    ///
+    /// Cancel safe: the wait holds nothing.
+    pub async fn until_accepting(
+        &self,
+        key: &ResourceKey,
+        scope: &ScopeLevel,
+        slot_identity: &crate::dedup::SlotIdentity,
+        deadline: Option<Instant>,
+    ) -> Result<(), Error> {
+        let managed = self.lookup_any_for_slot_identity_structural(key, scope, slot_identity)?;
+        loop {
+            // Armed before the state is read, so a change between the read
+            // and the wait still wakes it.
+            let changed = managed.phase_changed().notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            self.shutdown_guard()?;
+            if managed.is_tainted() {
+                return Err(Error::revoked(format!(
+                    "{key}: resource was revoked before it could serve"
+                ))
+                .with_resource_key(key.clone()));
+            }
+            let phase = managed.phase();
+            if phase.is_accepting() {
+                return Ok(());
+            }
+            if phase != crate::state::ResourcePhase::Initializing {
+                return Err(Error::backpressure(format!(
+                    "{key}: resource is {phase} and cannot accept acquires"
+                ))
+                .with_resource_key(key.clone()));
+            }
+            let woken = match deadline {
+                None => {
+                    changed.await;
+                    true
+                },
+                Some(deadline) => {
+                    tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), changed)
+                        .await
+                        .is_ok()
+                },
+            };
+            if !woken {
+                return Err(Error::backpressure(format!(
+                    "{key}: resource was still initializing at the deadline"
+                ))
+                .with_resource_key(key.clone()));
+            }
+        }
+    }
+
     /// Diagnostic admission snapshot for a registered resource at
     /// `(key, scope)` — its advisory [`AdmissionPhase`](crate::topology::AdmissionPhase)
     /// and optional [`Load`](crate::topology::Load), bundled into an
@@ -969,3 +1094,6 @@ impl Drop for InFlightCounter {
 
 #[cfg(test)]
 mod shutdown_post_count_race_tests;
+
+#[cfg(test)]
+mod projection_admission_tests;

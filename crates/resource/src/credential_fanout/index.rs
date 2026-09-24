@@ -35,8 +35,8 @@
 //! in-memory routing table only — never persisted and never sent across a trust boundary.
 
 use dashmap::DashMap;
-use nebula_core::{ResourceKey, ScopeLevel};
-use nebula_credential::CredentialId;
+use nebula_core::{CredentialKey, ResourceKey, ScopeLevel};
+use nebula_credential::{CredentialId, TenantScope};
 use smallvec::SmallVec;
 
 use crate::SlotIdentity;
@@ -109,6 +109,20 @@ pub struct RotationOutcome {
 }
 
 impl RotationOutcome {
+    pub(super) fn add(&mut self, other: Self) {
+        self.success += other.success;
+        self.failed += other.failed;
+        self.timed_out += other.timed_out;
+        self.deferred += other.deferred;
+        self.abandoned += other.abandoned;
+        self.drain_timed_out += other.drain_timed_out;
+        self.observation_timed_out += other.observation_timed_out;
+    }
+
+    pub(super) fn all_hooks_settled_successfully(&self) -> bool {
+        self.failed + self.timed_out + self.deferred + self.abandoned == 0
+    }
+
     /// Rows whose resource hook completed successfully.
     #[must_use]
     pub fn success(&self) -> usize {
@@ -166,17 +180,17 @@ impl RotationOutcome {
 /// resolved it.
 ///
 /// Identical resolved rows dedupe to a single fan-out target (one
-/// [`Bind`]); `refs` counts how many `register_and_bind` stagings
-/// currently depend on it. A failed registration releases exactly one
-/// reference; the row is removed only when the last referent is gone, so
-/// a failing staging can never delete a row a concurrent successful
-/// registration still holds. `refs` is `>= 1` for any present entry (the
-/// entry is removed at zero), so a plain `usize` with that invariant is
-/// sufficient — no `NonZero` ceremony.
+/// [`Bind`]). Published references are visible to fan-out; staged references
+/// are held while `register_and_bind` waits for the manager lifecycle gate.
+/// Removal and replacement release only published ownership, so they cannot
+/// erase a concurrent registration that has staged but not yet published.
 #[derive(Debug, Clone)]
 struct BindRef {
     bind: Bind,
-    refs: usize,
+    published_context: Option<(TenantScope, CredentialKey)>,
+    staged_context: Option<(TenantScope, CredentialKey)>,
+    published: usize,
+    staged: usize,
 }
 
 /// Per-credential row list. Most credentials resolve into one or two
@@ -184,6 +198,112 @@ struct BindRef {
 /// allocation, better locality on the rotation fan-out read); larger
 /// families spill to the heap transparently.
 type BindRows = SmallVec<[BindRef; 2]>;
+type PublishedBinding = (CredentialId, Bind, Option<(TenantScope, CredentialKey)>);
+
+#[derive(Clone)]
+pub(super) struct PendingRevokeAdmission {
+    pub(super) credential_id: CredentialId,
+    pub(super) key: ResourceKey,
+    pub(super) slot: String,
+    pub(super) managed: std::sync::Arc<dyn crate::registry::ManagedHandle>,
+    state: RevokeAdmissionState,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RevokeAdmissionState {
+    Pending,
+    Claimed,
+    Admitted,
+}
+
+pub(super) struct RevokeAdmissionClaim<'a> {
+    index: &'a ResourceFanoutIndex,
+    pub(super) entry: PendingRevokeAdmission,
+    settled: bool,
+}
+
+impl RevokeAdmissionClaim<'_> {
+    pub(super) fn accepted(mut self) {
+        self.index
+            .settle_revoke_claim(&self.entry, Some(RevokeAdmissionState::Admitted));
+        self.settled = true;
+    }
+
+    pub(super) fn retry(mut self) {
+        self.index
+            .settle_revoke_claim(&self.entry, Some(RevokeAdmissionState::Pending));
+        self.settled = true;
+    }
+
+    pub(super) fn discard(mut self) {
+        self.index.settle_revoke_claim(&self.entry, None);
+        self.settled = true;
+    }
+}
+
+impl Drop for RevokeAdmissionClaim<'_> {
+    fn drop(&mut self) {
+        if !self.settled {
+            self.index
+                .settle_revoke_claim(&self.entry, Some(RevokeAdmissionState::Pending));
+        }
+    }
+}
+
+impl std::fmt::Debug for PendingRevokeAdmission {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PendingRevokeAdmission")
+            .field("credential_id", &self.credential_id)
+            .field("key", &self.key)
+            .field("slot", &self.slot)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Maximum credential projections admitted across concurrent fan-out calls.
+pub(super) const MAX_CONCURRENT_PROJECTIONS: usize = 32;
+const MAX_RETAINED_TERMINAL_REVOCATIONS: usize = 4_096;
+const MAX_RETAINED_MATERIAL_REPLACEMENTS: usize = 4_096;
+
+#[derive(Debug, Default)]
+struct MaterialReplacementFence {
+    contexts: std::collections::HashMap<CredentialId, (TenantScope, CredentialKey, u64)>,
+    /// Once exact retention capacity is exhausted, new rotation-bound rows
+    /// remain unavailable until this runtime shuts down.
+    saturated: bool,
+}
+
+#[derive(Debug, Default)]
+struct TerminalRevocationFence {
+    credentials: std::collections::HashSet<CredentialId>,
+    /// Once exact retention capacity is exhausted, publication fails closed
+    /// for every credential until this runtime shuts down.
+    saturated: bool,
+}
+
+#[derive(Debug, Default)]
+struct AuthoritativeReconciliationState {
+    next_epoch: u64,
+    manager_affinity: Option<std::sync::Weak<crate::Manager>>,
+    live_by_manager: std::collections::HashMap<usize, std::collections::HashSet<u64>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ManagerAffinityError;
+
+impl std::fmt::Display for ManagerAffinityError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("resource fan-out index is already bound to another manager")
+    }
+}
+
+impl std::error::Error for ManagerAffinityError {}
+
+#[derive(Debug)]
+pub(crate) struct AuthoritativeRegistrationProof {
+    manager_identity: usize,
+    live_epochs: Vec<u64>,
+}
 
 /// Reverse index from a rotated `CredentialId` to the resource registry
 /// rows that resolved it.
@@ -195,7 +315,7 @@ type BindRows = SmallVec<[BindRef; 2]>;
 ///
 /// This is a pure in-process routing table — see the module docs for why it
 /// is never persisted or sent across a trust boundary.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct ResourceFanoutIndex {
     /// `CredentialId` -> refcounted rows whose resolved slot bound that
     /// credential. See [`BindRows`] for the inline-buffer rationale.
@@ -209,6 +329,39 @@ pub struct ResourceFanoutIndex {
     /// on a single shard lock). Rotation fan-out — the hot read — is already
     /// a single-key lookup.
     by_credential: DashMap<CredentialId, BindRows>,
+    /// Owner-qualified replacement hints retained until every bound row can
+    /// project them. A hint may precede the first staged binding, so it must
+    /// not be pruned merely because the reverse index is still empty.
+    material_replacement_fence: std::sync::Mutex<MaterialReplacementFence>,
+    material_context_sequence: std::sync::atomic::AtomicU64,
+    material_retry_notify: std::sync::Arc<tokio::sync::Notify>,
+    pending_revoke_admissions: std::sync::Mutex<Vec<PendingRevokeAdmission>>,
+    /// Bounded terminal observations retained so a registration that stages
+    /// after event delivery cannot publish revoked material.
+    terminal_revocation_fence: std::sync::Mutex<TerminalRevocationFence>,
+    authoritative_reconciliation: std::sync::Mutex<AuthoritativeReconciliationState>,
+    revoke_retry_notify: tokio::sync::Notify,
+    /// Shared admission keeps direct dispatch and reconciliation under one
+    /// provider/persistence concurrency budget.
+    pub(super) projection_admission: tokio::sync::Semaphore,
+}
+
+impl Default for ResourceFanoutIndex {
+    fn default() -> Self {
+        Self {
+            by_credential: DashMap::new(),
+            material_replacement_fence: std::sync::Mutex::new(MaterialReplacementFence::default()),
+            material_context_sequence: std::sync::atomic::AtomicU64::new(1),
+            material_retry_notify: std::sync::Arc::new(tokio::sync::Notify::new()),
+            pending_revoke_admissions: std::sync::Mutex::new(Vec::new()),
+            terminal_revocation_fence: std::sync::Mutex::new(TerminalRevocationFence::default()),
+            authoritative_reconciliation: std::sync::Mutex::new(
+                AuthoritativeReconciliationState::default(),
+            ),
+            revoke_retry_notify: tokio::sync::Notify::new(),
+            projection_admission: tokio::sync::Semaphore::new(MAX_CONCURRENT_PROJECTIONS),
+        }
+    }
 }
 
 impl ResourceFanoutIndex {
@@ -218,9 +371,14 @@ impl ResourceFanoutIndex {
         Self::default()
     }
 
-    /// Records that the resource row
+    /// Records an event-only binding showing that the resource row
     /// `(resource_key, scope, slot_name, slot_identity)` resolved `cid` for
     /// one of its credential slots.
+    ///
+    /// This compatibility path omits the durable owner/key context required
+    /// by startup reconciliation. Production registration stages that
+    /// context beside the [`Bind`] and publishes both atomically with the
+    /// manager row.
     ///
     /// Re-binding an identical row under the same credential is idempotent
     /// *at the fan-out level* — [`affected`](Self::affected) still returns
@@ -247,14 +405,225 @@ impl ResourceFanoutIndex {
             slot_name: slot_name.into(),
             slot_identity,
         };
+        self.add_bind_ref(cid, entry, None, None, false);
+    }
+
+    /// Publishes a rotation binding with the owner-qualified context needed
+    /// for durable startup and periodic reconciliation.
+    #[doc(hidden)]
+    pub fn bind_with_context(
+        &self,
+        cid: CredentialId,
+        binding: Bind,
+        credential_scope: TenantScope,
+        credential_key: CredentialKey,
+    ) {
+        self.add_bind_ref(
+            cid,
+            binding,
+            Some(credential_scope.durable_owner_scope()),
+            Some(credential_key),
+            false,
+        );
+    }
+
+    #[cfg(test)]
+    pub(crate) fn stage_bind(&self, cid: CredentialId, bind: Bind) {
+        self.add_bind_ref(cid, bind, None, None, true);
+    }
+
+    pub(crate) fn stage_bind_with_context(
+        &self,
+        cid: CredentialId,
+        bind: Bind,
+        credential_scope: TenantScope,
+        credential_key: CredentialKey,
+    ) -> bool {
+        let fence_scope = credential_scope.clone();
+        let fence_key = credential_key.clone();
+        if !self.add_bind_ref(
+            cid,
+            bind,
+            Some(credential_scope),
+            Some(credential_key),
+            true,
+        ) {
+            return false;
+        }
+        self.remember_material_context(cid, fence_scope, fence_key);
+        self.material_retry_notify.notify_one();
+        true
+    }
+
+    fn add_bind_ref(
+        &self,
+        cid: CredentialId,
+        bind: Bind,
+        credential_scope: Option<TenantScope>,
+        credential_key: Option<CredentialKey>,
+        staged: bool,
+    ) -> bool {
         let mut rows = self.by_credential.entry(cid).or_default();
-        match rows.iter_mut().find(|r| r.bind == entry) {
-            Some(existing) => existing.refs += 1,
+        let context = credential_scope.zip(credential_key);
+        match rows.iter_mut().find(|row| row.bind == bind) {
+            Some(existing) => {
+                if staged {
+                    if existing
+                        .staged_context
+                        .as_ref()
+                        .is_some_and(|existing| Some(existing) != context.as_ref())
+                        || existing
+                            .published_context
+                            .as_ref()
+                            .is_some_and(|existing| Some(existing) != context.as_ref())
+                    {
+                        return false;
+                    }
+                    if existing.staged_context.is_none() {
+                        existing.staged_context = context;
+                    }
+                    existing.staged += 1;
+                } else {
+                    if existing.published_context.is_none() {
+                        existing.published_context = context;
+                    }
+                    existing.published += 1;
+                }
+            },
             None => rows.push(BindRef {
-                bind: entry,
-                refs: 1,
+                bind,
+                published_context: if staged { None } else { context.clone() },
+                staged_context: if staged { context } else { None },
+                published: usize::from(!staged),
+                staged: usize::from(staged),
             }),
         }
+        true
+    }
+
+    pub(crate) fn authoritative_registration_proof(
+        &self,
+        manager: &crate::Manager,
+    ) -> Option<AuthoritativeRegistrationProof> {
+        let manager_identity = std::ptr::from_ref(manager).addr();
+        let state = self
+            .authoritative_reconciliation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let live_epochs = state
+            .live_by_manager
+            .get(&manager_identity)?
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+        (!live_epochs.is_empty()).then_some(AuthoritativeRegistrationProof {
+            manager_identity,
+            live_epochs,
+        })
+    }
+
+    pub(crate) fn validates_authoritative_registration(
+        &self,
+        manager: &crate::Manager,
+        proof: &AuthoritativeRegistrationProof,
+    ) -> bool {
+        if proof.manager_identity != std::ptr::from_ref(manager).addr() {
+            return false;
+        }
+        let state = self
+            .authoritative_reconciliation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state
+            .live_by_manager
+            .get(&proof.manager_identity)
+            .is_some_and(|live| proof.live_epochs.iter().any(|epoch| live.contains(epoch)))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn authoritative_reconciliation_available(&self) -> bool {
+        self.authoritative_reconciliation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .live_by_manager
+            .values()
+            .any(|live| !live.is_empty())
+    }
+
+    pub(crate) fn acquire_authoritative_reconciliation_for(
+        self: &std::sync::Arc<Self>,
+        manager: &std::sync::Arc<crate::Manager>,
+    ) -> Result<AuthoritativeReconciliationLease, ManagerAffinityError> {
+        let manager_identity = std::sync::Arc::as_ptr(manager).addr();
+        let epoch = {
+            let mut state = self
+                .authoritative_reconciliation
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let manager_affinity = std::sync::Arc::downgrade(manager);
+            match state.manager_affinity.as_ref() {
+                Some(existing) if !std::sync::Weak::ptr_eq(existing, &manager_affinity) => {
+                    return Err(ManagerAffinityError);
+                },
+                Some(_) => {},
+                None => state.manager_affinity = Some(manager_affinity),
+            }
+            state.next_epoch = state.next_epoch.wrapping_add(1).max(1);
+            let epoch = state.next_epoch;
+            state
+                .live_by_manager
+                .entry(manager_identity)
+                .or_default()
+                .insert(epoch);
+            epoch
+        };
+        Ok(AuthoritativeReconciliationLease {
+            index: std::sync::Arc::clone(self),
+            manager: std::sync::Arc::downgrade(manager),
+            manager_identity,
+            epoch,
+        })
+    }
+
+    pub(crate) fn claim_manager_affinity(
+        &self,
+        manager: &std::sync::Arc<crate::Manager>,
+    ) -> Result<(), ManagerAffinityError> {
+        let manager_affinity = std::sync::Arc::downgrade(manager);
+        let mut state = self
+            .authoritative_reconciliation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match state.manager_affinity.as_ref() {
+            Some(existing) if !std::sync::Weak::ptr_eq(existing, &manager_affinity) => {
+                Err(ManagerAffinityError)
+            },
+            Some(_) => Ok(()),
+            None => {
+                state.manager_affinity = Some(manager_affinity);
+                Ok(())
+            },
+        }
+    }
+
+    pub(crate) fn release_authoritative_reconciliation(
+        &self,
+        manager_identity: usize,
+        epoch: u64,
+    ) -> bool {
+        let mut state = self
+            .authoritative_reconciliation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(live) = state.live_by_manager.get_mut(&manager_identity) else {
+            return false;
+        };
+        live.remove(&epoch);
+        if !live.is_empty() {
+            return false;
+        }
+        state.live_by_manager.remove(&manager_identity);
+        true
     }
 
     /// Returns every resource row that resolved `cid`, in registration order.
@@ -265,8 +634,352 @@ impl ResourceFanoutIndex {
     pub fn affected(&self, cid: &CredentialId) -> Vec<Bind> {
         self.by_credential
             .get(cid)
-            .map(|rows| rows.iter().map(|r| r.bind.clone()).collect())
+            .map(|rows| {
+                rows.iter()
+                    .filter(|row| row.published != 0)
+                    .map(|row| row.bind.clone())
+                    .collect()
+            })
             .unwrap_or_default()
+    }
+
+    pub(crate) fn published_bindings(
+        &self,
+        credential_id: Option<CredentialId>,
+    ) -> Vec<PublishedBinding> {
+        if let Some(credential_id) = credential_id {
+            return self
+                .by_credential
+                .get(&credential_id)
+                .map(|rows| {
+                    rows.iter()
+                        .filter(|row| row.published != 0)
+                        .map(|row| {
+                            (
+                                credential_id,
+                                row.bind.clone(),
+                                row.published_context.clone(),
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+        }
+        self.by_credential
+            .iter()
+            .flat_map(|entry| {
+                let credential_id = *entry.key();
+                entry
+                    .value()
+                    .iter()
+                    .filter(|row| row.published != 0)
+                    .map(move |row| {
+                        (
+                            credential_id,
+                            row.bind.clone(),
+                            row.published_context.clone(),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    pub(crate) fn remember_material_context(
+        &self,
+        cid: CredentialId,
+        scope: TenantScope,
+        credential_key: CredentialKey,
+    ) -> u64 {
+        let sequence = self
+            .material_context_sequence
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut fence = self
+            .material_replacement_fence
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !self.by_credential.contains_key(&cid) {
+            return sequence;
+        }
+        if fence.contexts.contains_key(&cid)
+            || fence.contexts.len() < MAX_RETAINED_MATERIAL_REPLACEMENTS
+        {
+            fence
+                .contexts
+                .insert(cid, (scope, credential_key, sequence));
+        } else if !fence.saturated {
+            fence.saturated = true;
+            tracing::error!(
+                retained = fence.contexts.len(),
+                "material replacement fence saturated; future rotation-bound publication fails closed"
+            );
+        }
+        sequence
+    }
+
+    pub(super) fn pending_material_contexts(
+        &self,
+    ) -> Vec<(CredentialId, TenantScope, CredentialKey, u64)> {
+        self.material_replacement_fence
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contexts
+            .iter()
+            .filter(|entry| self.by_credential.contains_key(entry.0))
+            .map(|(credential_id, (scope, key, sequence))| {
+                (*credential_id, scope.clone(), key.clone(), *sequence)
+            })
+            .collect()
+    }
+
+    pub(super) fn forget_material_context(&self, cid: &CredentialId, sequence: u64) -> bool {
+        let mut fence = self
+            .material_replacement_fence
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if fence
+            .contexts
+            .get(cid)
+            .is_some_and(|context| context.2 == sequence)
+        {
+            fence.contexts.remove(cid);
+            true
+        } else {
+            false
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_material_context(&self, cid: &CredentialId) -> bool {
+        self.material_replacement_fence
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contexts
+            .contains_key(cid)
+    }
+
+    pub(crate) fn material_publication_requires_reconciliation(&self, cid: &CredentialId) -> bool {
+        let fence = self
+            .material_replacement_fence
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        fence.saturated || fence.contexts.contains_key(cid)
+    }
+
+    pub(crate) fn terminal_publication_rejected(&self, cid: &CredentialId) -> bool {
+        let fence = self
+            .terminal_revocation_fence
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        fence.saturated || fence.credentials.contains(cid)
+    }
+
+    pub(crate) fn terminal_revocation_remembered(&self, cid: &CredentialId) -> bool {
+        self.terminal_revocation_fence
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .credentials
+            .contains(cid)
+    }
+
+    pub(super) fn complete_material_context(
+        &self,
+        cid: &CredentialId,
+        sequence: u64,
+        mgr: &crate::Manager,
+    ) {
+        if !self.forget_material_context(cid, sequence) {
+            return;
+        }
+        for binding in self.affected(cid) {
+            mgr.promote_reconciled_credential_binding(self, cid, &binding);
+        }
+    }
+
+    pub(crate) fn binding_is_fenced(&self, cid: &CredentialId, binding: &Bind) -> bool {
+        let material = self
+            .material_replacement_fence
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let terminal = self
+            .terminal_revocation_fence
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if material.saturated || terminal.saturated || terminal.credentials.contains(cid) {
+            return true;
+        }
+        material.contexts.keys().any(|credential_id| {
+            self.by_credential.get(credential_id).is_some_and(|rows| {
+                rows.iter().any(|row| {
+                    row.published != 0
+                        && row.bind.resource_key == binding.resource_key
+                        && row.bind.scope == binding.scope
+                        && row.bind.slot_identity == binding.slot_identity
+                })
+            })
+        })
+    }
+
+    pub(crate) async fn material_retry_notified(&self) {
+        self.material_retry_notify.notified().await;
+    }
+
+    pub(super) fn material_hook_completion_wake(&self) -> std::sync::Arc<tokio::sync::Notify> {
+        std::sync::Arc::clone(&self.material_retry_notify)
+    }
+
+    pub(crate) fn remember_pending_revoke(
+        &self,
+        credential_id: CredentialId,
+        key: ResourceKey,
+        slot: &str,
+        managed: std::sync::Arc<dyn crate::registry::ManagedHandle>,
+    ) {
+        let mut pending = self
+            .pending_revoke_admissions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if pending.iter().any(|entry| {
+            entry.credential_id == credential_id
+                && entry.slot == slot
+                && std::sync::Arc::ptr_eq(&entry.managed, &managed)
+        }) {
+            return;
+        }
+        pending.push(PendingRevokeAdmission {
+            credential_id,
+            key,
+            slot: slot.to_owned(),
+            managed,
+            state: RevokeAdmissionState::Pending,
+        });
+        self.revoke_retry_notify.notify_one();
+    }
+
+    pub(crate) fn remember_revocation(&self, credential_id: CredentialId) -> bool {
+        // A revoke is terminal for this credential id. Retain the observation
+        // even when no binding is visible yet: register_and_bind may already
+        // have resolved revoked material but not inserted its staged row.
+        self.material_replacement_fence
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contexts
+            .remove(&credential_id);
+        let mut fence = self
+            .terminal_revocation_fence
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if fence.saturated || fence.credentials.contains(&credential_id) {
+            return false;
+        }
+        if fence.credentials.len() >= MAX_RETAINED_TERMINAL_REVOCATIONS {
+            fence.saturated = true;
+            tracing::error!(
+                retained = fence.credentials.len(),
+                "terminal credential revoke fence saturated; future resource publication fails closed"
+            );
+            return true;
+        }
+        fence.credentials.insert(credential_id);
+        true
+    }
+
+    pub(crate) async fn revoke_retry_notified(&self) {
+        self.revoke_retry_notify.notified().await;
+    }
+
+    pub(super) fn pending_revokes(&self) -> Vec<PendingRevokeAdmission> {
+        self.pending_revoke_admissions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .filter(|entry| entry.state == RevokeAdmissionState::Pending)
+            .cloned()
+            .collect()
+    }
+
+    pub(super) fn claim_revoke_admission(
+        &self,
+        credential_id: CredentialId,
+        slot: &str,
+        managed: &std::sync::Arc<dyn crate::registry::ManagedHandle>,
+    ) -> Option<RevokeAdmissionClaim<'_>> {
+        self.claim_revoke_admission_inner(credential_id, slot, managed, false)
+    }
+
+    pub(super) fn claim_pending_revoke(
+        &self,
+        entry: &PendingRevokeAdmission,
+    ) -> Option<RevokeAdmissionClaim<'_>> {
+        self.claim_revoke_admission_inner(entry.credential_id, &entry.slot, &entry.managed, true)
+    }
+
+    fn claim_revoke_admission_inner(
+        &self,
+        credential_id: CredentialId,
+        slot: &str,
+        managed: &std::sync::Arc<dyn crate::registry::ManagedHandle>,
+        pending_only: bool,
+    ) -> Option<RevokeAdmissionClaim<'_>> {
+        let mut admissions = self
+            .pending_revoke_admissions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let entry = if let Some(entry) = admissions.iter_mut().find(|entry| {
+            entry.credential_id == credential_id
+                && entry.slot == slot
+                && std::sync::Arc::ptr_eq(&entry.managed, managed)
+        }) {
+            if entry.state != RevokeAdmissionState::Pending {
+                return None;
+            }
+            entry.state = RevokeAdmissionState::Claimed;
+            entry.clone()
+        } else {
+            if pending_only {
+                return None;
+            }
+            let entry = PendingRevokeAdmission {
+                credential_id,
+                key: managed.resource_key(),
+                slot: slot.to_owned(),
+                managed: std::sync::Arc::clone(managed),
+                state: RevokeAdmissionState::Claimed,
+            };
+            admissions.push(entry.clone());
+            entry
+        };
+        Some(RevokeAdmissionClaim {
+            index: self,
+            entry,
+            settled: false,
+        })
+    }
+
+    fn settle_revoke_claim(
+        &self,
+        claim: &PendingRevokeAdmission,
+        state: Option<RevokeAdmissionState>,
+    ) {
+        let mut admissions = self
+            .pending_revoke_admissions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(pos) = admissions.iter().position(|entry| {
+            entry.credential_id == claim.credential_id
+                && entry.slot == claim.slot
+                && std::sync::Arc::ptr_eq(&entry.managed, &claim.managed)
+        }) else {
+            return;
+        };
+        if admissions[pos].state != RevokeAdmissionState::Claimed {
+            return;
+        }
+        if let Some(state) = state {
+            admissions[pos].state = state;
+        } else {
+            admissions.remove(pos);
+        }
     }
 
     /// Removes every binding under `(resource_key, scope)` across all
@@ -278,9 +991,65 @@ impl ResourceFanoutIndex {
     /// `unbind_resource_identity`.
     pub fn unbind_resource(&self, resource_key: &ResourceKey, scope: &ScopeLevel) {
         self.by_credential.retain(|_, rows| {
-            rows.retain(|r| r.bind.resource_key != *resource_key || r.bind.scope != *scope);
+            for row in rows
+                .iter_mut()
+                .filter(|row| row.bind.resource_key == *resource_key && row.bind.scope == *scope)
+            {
+                row.published = 0;
+            }
+            rows.retain(|row| row.published != 0 || row.staged != 0);
             !rows.is_empty()
         });
+        self.prune_orphan_contexts();
+    }
+
+    /// Removes every binding for a whole-key administrative removal.
+    pub(crate) fn unbind_resource_key(&self, resource_key: &ResourceKey) {
+        self.by_credential.retain(|_, rows| {
+            for row in rows
+                .iter_mut()
+                .filter(|row| row.bind.resource_key == *resource_key)
+            {
+                row.published = 0;
+            }
+            rows.retain(|row| row.published != 0 || row.staged != 0);
+            !rows.is_empty()
+        });
+        self.prune_orphan_contexts();
+    }
+
+    pub(crate) fn unbind_removed_resource_key(
+        &self,
+        resource_key: &ResourceKey,
+        removed: &[std::sync::Arc<dyn crate::registry::ManagedHandle>],
+    ) {
+        self.unbind_resource_key(resource_key);
+        self.pending_revoke_admissions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|entry| {
+                !removed
+                    .iter()
+                    .any(|handle| std::sync::Arc::ptr_eq(&entry.managed, handle))
+            });
+    }
+
+    pub(crate) fn clear_for_manager_shutdown(&self) {
+        self.by_credential.clear();
+        *self
+            .material_replacement_fence
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            MaterialReplacementFence::default();
+        self.pending_revoke_admissions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+        *self
+            .terminal_revocation_fence
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            TerminalRevocationFence::default();
     }
 
     /// Drops bindings for the single resolved registry row
@@ -302,13 +1071,46 @@ impl ResourceFanoutIndex {
         slot_identity: &SlotIdentity,
     ) {
         self.by_credential.retain(|_, rows| {
-            rows.retain(|r| {
-                r.bind.resource_key != *resource_key
-                    || r.bind.scope != *scope
-                    || r.bind.slot_identity != *slot_identity
-            });
+            for row in rows.iter_mut().filter(|row| {
+                row.bind.resource_key == *resource_key
+                    && row.bind.scope == *scope
+                    && row.bind.slot_identity == *slot_identity
+            }) {
+                row.published = 0;
+            }
+            rows.retain(|row| row.published != 0 || row.staged != 0);
             !rows.is_empty()
         });
+        self.prune_orphan_contexts();
+    }
+
+    pub(crate) fn unbind_removed_resource_identity(
+        &self,
+        resource_key: &ResourceKey,
+        scope: &ScopeLevel,
+        slot_identity: &SlotIdentity,
+        removed: &std::sync::Arc<dyn crate::registry::ManagedHandle>,
+    ) {
+        self.unbind_resource_identity(resource_key, scope, slot_identity);
+        self.pending_revoke_admissions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|entry| !std::sync::Arc::ptr_eq(&entry.managed, removed));
+    }
+
+    pub(crate) fn unbind_replaced_resource_identity(
+        &self,
+        resource_key: &ResourceKey,
+        scope: &ScopeLevel,
+        slot_identity: &SlotIdentity,
+        displaced: &std::sync::Arc<dyn crate::registry::ManagedHandle>,
+    ) {
+        self.unbind_resource_identity(resource_key, scope, slot_identity);
+        self.pending_revoke_admissions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|entry| !std::sync::Arc::ptr_eq(&entry.managed, displaced));
+        self.prune_orphan_contexts();
     }
 
     /// Removes exactly one `(cid, bind)` tuple — the precise per-entry
@@ -343,15 +1145,104 @@ impl ResourceFanoutIndex {
         // de-dups into one refcounted entry, so at most one structurally-
         // equal entry exists; an absent `(cid, bind)` is a no-op.
         self.by_credential.remove_if_mut(cid, |_, rows| {
-            if let Some(pos) = rows.iter().position(|r| &r.bind == bind) {
-                if rows[pos].refs > 1 {
-                    rows[pos].refs -= 1;
-                } else {
-                    rows.remove(pos);
+            if let Some(row) = rows.iter_mut().find(|row| &row.bind == bind) {
+                row.staged = row.staged.saturating_sub(1);
+                if row.staged == 0 {
+                    row.staged_context = None;
                 }
             }
+            rows.retain(|row| row.published != 0 || row.staged != 0);
             rows.is_empty()
         });
+        self.prune_orphan_material_context(cid);
+        self.prune_orphan_contexts();
+    }
+
+    pub(crate) fn publish_staged_entry(&self, cid: &CredentialId, bind: &Bind) -> bool {
+        if let Some(mut rows) = self.by_credential.get_mut(cid)
+            && let Some(row) = rows.iter_mut().find(|row| &row.bind == bind)
+            && row.staged != 0
+        {
+            row.staged -= 1;
+            row.published += 1;
+            if row.published_context.is_none() {
+                row.published_context = row.staged_context.clone();
+            }
+            if row.staged == 0 {
+                row.staged_context = None;
+            }
+        }
+        if self.material_publication_requires_reconciliation(cid) {
+            self.material_retry_notify.notify_one();
+        }
+        let fence = self
+            .terminal_revocation_fence
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        fence.saturated || fence.credentials.contains(cid)
+    }
+
+    fn prune_orphan_contexts(&self) {
+        self.pending_revoke_admissions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|entry| self.has_published_binding(&entry.credential_id));
+        self.material_replacement_fence
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contexts
+            .retain(|credential_id, _| self.by_credential.contains_key(credential_id));
+    }
+
+    fn prune_orphan_material_context(&self, cid: &CredentialId) {
+        let mut fence = self
+            .material_replacement_fence
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !self.by_credential.contains_key(cid) {
+            fence.contexts.remove(cid);
+        }
+    }
+
+    fn has_published_binding(&self, cid: &CredentialId) -> bool {
+        self.by_credential
+            .get(cid)
+            .is_some_and(|rows| rows.iter().any(|row| row.published != 0))
+    }
+
+    pub(crate) fn contains_published_binding(&self, cid: &CredentialId, bind: &Bind) -> bool {
+        self.by_credential.get(cid).is_some_and(|rows| {
+            rows.iter()
+                .any(|row| row.published != 0 && &row.bind == bind)
+        })
+    }
+
+    pub(crate) fn has_staged_binding(&self, cid: &CredentialId) -> bool {
+        self.by_credential
+            .get(cid)
+            .is_some_and(|rows| rows.iter().any(|row| row.staged != 0))
+    }
+}
+
+pub(crate) struct AuthoritativeReconciliationLease {
+    index: std::sync::Arc<ResourceFanoutIndex>,
+    manager: std::sync::Weak<crate::Manager>,
+    manager_identity: usize,
+    epoch: u64,
+}
+
+impl Drop for AuthoritativeReconciliationLease {
+    fn drop(&mut self) {
+        if let Some(manager) = self.manager.upgrade() {
+            manager.release_authoritative_reconciliation(
+                &self.index,
+                self.manager_identity,
+                self.epoch,
+            );
+        } else {
+            self.index
+                .release_authoritative_reconciliation(self.manager_identity, self.epoch);
+        }
     }
 }
 

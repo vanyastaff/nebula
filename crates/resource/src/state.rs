@@ -82,6 +82,16 @@ impl ResourceStatus {
             last_error: None,
         }
     }
+
+    /// The status of a registered row that accepts acquires, for fixtures
+    /// that build a row without going through registration.
+    #[cfg(test)]
+    pub(crate) fn ready() -> Self {
+        Self {
+            phase: ResourcePhase::Ready,
+            ..Self::new()
+        }
+    }
 }
 
 impl Default for ResourceStatus {

@@ -563,7 +563,13 @@ let admitted = recorded.readmit_against(fresh)?;
   cluster-scoped limits shared by every worker. The SDK re-exports these.
   Stored resources activate per execution with their operator settings,
   follow credential changes, retire when deleted, and publish their runtime
-  status per worker. The API refuses a resource row whose credential
+  status per worker. With the `rotation` feature and a live fan-out driver,
+  a credential-bound row registers rotation-bound and its activation returns
+  once the fan-out has reread the credentials and the row accepts acquires
+  (`Manager::until_accepting`); without a live driver the row opts out of
+  rotation and activation's own credential re-check keeps it current. A row
+  that does not accept acquires yet builds no instances: warmup waits for
+  the maintenance refill. The API refuses a resource row whose credential
   bindings name an undeclared slot, leave a required slot unbound or are not
   credential ids (`ResourceActivatorRegistry::validate_credential_bindings`),
   and pool settings refuse a `maintenance_interval_ms` above

@@ -385,6 +385,43 @@ async fn client_credentials_resolve_completes_through_acquisition_transport() {
 }
 
 #[tokio::test]
+async fn client_credentials_ignores_provider_refresh_token_and_repeats_its_grant() {
+    let properties = OAuth2Properties::ClientCredentials(client_credentials_properties());
+    let acquired = OAuth2Credential::resolve(
+        &properties,
+        &acquisition_context(
+            200,
+            br#"{"access_token":"first-access","token_type":"Bearer","refresh_token":"provider-extension-token","expires_in":1,"scope":"read write"}"#,
+        ),
+    )
+    .await
+    .expect("initial client credentials exchange succeeds");
+    let StaticResolveResult::Complete(mut state) = acquired else {
+        panic!("client credentials resolve must complete");
+    };
+    assert!(has_client_credentials_marker(&state));
+
+    let saw_saved_material = Arc::new(AtomicBool::new(false));
+    let transport = Arc::new(InspectingClientCredentialsRefresh {
+        saw_saved_material: Arc::clone(&saw_saved_material),
+    });
+    let ctx = CredentialContext::for_owner("test-user").for_refresh_critical_section(transport);
+    let report = OAuth2Credential::refresh(
+        &mut state,
+        RefreshAttempt::new(&ctx, crate::RefreshExecutionMode::Provider),
+    )
+    .await
+    .into_kind();
+
+    assert!(matches!(
+        report,
+        crate::contract::RefreshReportKind::ProviderRefreshed
+    ));
+    assert!(saw_saved_material.load(Ordering::SeqCst));
+    assert!(has_client_credentials_marker(&state));
+}
+
+#[tokio::test]
 async fn expired_client_credentials_without_refresh_token_repeat_exchange() {
     let properties = OAuth2Properties::ClientCredentials(client_credentials_properties());
     let acquired = OAuth2Credential::resolve(

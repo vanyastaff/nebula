@@ -32,7 +32,11 @@
 //! - [`CredentialEvent::Refreshed`] — the credential-runtime facade has
 //!   already CAS-persisted the fresh material into the store before emitting
 //!   this. That is exactly the "engine has stored the fresh material" point,
-//!   so the driver calls [`ResourceFanoutIndex::dispatch_refresh`].
+//!   so a resolver-enabled driver reconciles the stored material epoch for
+//!   published rotation bindings before dispatching a hook. A slot omitted
+//!   from the reverse index remains opted out even when it carries projection
+//!   metadata. Without a resolver the driver uses the legacy
+//!   [`ResourceFanoutIndex::dispatch_refresh`] hook-only path.
 //! - [`CredentialEvent::Revoked`] and [`LeaseEvent::LeaseRevoked`] — the
 //!   credential / dynamic-secret lease was revoked. Either triggers
 //!   [`ResourceFanoutIndex::dispatch_revoke`]. The fan-out itself is already
@@ -40,6 +44,8 @@
 //!   `taint_slot_for` before the awaited tail, then queue-owned hook
 //!   settlement after admission. This driver does **not**
 //!   re-implement that — it only invokes `dispatch_revoke`.
+//!   Queue-rejected admissions are retried by an independent periodic task,
+//!   so their drain and hook-observation budgets cannot block material scans.
 //!
 //! A `LeaseRevoked` whose `credential_id` is `None` (an orphan lease
 //! tracked without a nebula credential record) cannot address a
@@ -55,11 +61,14 @@
 //! fan-out internals already guarantee no credential/secret material reaches
 //! any span; this driver adds only key-free counts.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use nebula_credential::{CredentialEvent, CredentialId, CredentialSlotResolver, LeaseEvent};
+use nebula_core::CredentialKey;
+use nebula_credential::{
+    CredentialEvent, CredentialId, CredentialSlotResolver, LeaseEvent, TenantScope,
+};
 use nebula_eventbus::EventBus;
 
 use crate::Manager;
@@ -86,9 +95,8 @@ use crate::credential_fanout::index::{ResourceFanoutIndex, RotationOutcome};
 /// genuinely *new* revoke of the same credential after re-registration is
 /// not suppressed. Taint is idempotent and a re-revoke after the window
 /// is harmless, so erring slightly long is safe; erring short would
-/// re-introduce the double-fire. Refresh is **not** deduped — a refresh
-/// arrives on one bus only (`CredentialEvent::Refreshed`) and a real
-/// re-refresh must always fan out.
+/// re-introduce the double-fire. Refresh does not use this time window:
+/// resolver-enabled drivers gate refresh hooks by the durable material epoch.
 const REVOKE_DEDUPE_WINDOW: Duration = Duration::from_secs(5);
 
 /// Bounded last-seen set of recently-dispatched credential revokes, used
@@ -195,6 +203,12 @@ impl RevokeDedupe {
 /// the fan-out), not a global one.
 const PER_RESOURCE_ROTATION_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Maximum distinct credential replacements retained while one material
+/// projection fan-out is running. Repeated observations for one credential
+/// replace its pending hint, and overflow falls back to durable reconciliation.
+const MAX_PENDING_MATERIAL_REPLACEMENTS: usize = 256;
+const MAX_PENDING_REFRESH_SCANS: usize = 256;
+
 /// Handle for the background fan-out driver task.
 ///
 /// Holding the handle keeps the task alive; dropping it (or calling
@@ -204,6 +218,82 @@ const PER_RESOURCE_ROTATION_TIMEOUT: Duration = Duration::from_secs(30);
 pub struct ResourceFanoutDriver {
     handle: tokio::task::JoinHandle<()>,
 }
+
+struct DriverLifecycle {
+    parent_stopped: std::sync::atomic::AtomicBool,
+    active_children: std::sync::atomic::AtomicUsize,
+    callback_fired: std::sync::atomic::AtomicBool,
+    on_stopped: Arc<dyn Fn() + Send + Sync>,
+}
+
+impl DriverLifecycle {
+    fn child(self: &Arc<Self>) -> DriverChildActivity {
+        self.active_children
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        DriverChildActivity {
+            lifecycle: Arc::clone(self),
+        }
+    }
+
+    fn parent_stopped(&self) {
+        self.parent_stopped
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.try_finish();
+    }
+
+    fn child_stopped(&self) {
+        let previous = self
+            .active_children
+            .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+        debug_assert!(previous > 0, "driver child activity count underflow");
+        self.try_finish();
+    }
+
+    fn try_finish(&self) {
+        if self
+            .parent_stopped
+            .load(std::sync::atomic::Ordering::Acquire)
+            && self
+                .active_children
+                .load(std::sync::atomic::Ordering::Acquire)
+                == 0
+            && self
+                .callback_fired
+                .compare_exchange(
+                    false,
+                    true,
+                    std::sync::atomic::Ordering::AcqRel,
+                    std::sync::atomic::Ordering::Acquire,
+                )
+                .is_ok()
+        {
+            (self.on_stopped)();
+        }
+    }
+}
+
+struct DriverChildActivity {
+    lifecycle: Arc<DriverLifecycle>,
+}
+
+impl Drop for DriverChildActivity {
+    fn drop(&mut self) {
+        self.lifecycle.child_stopped();
+    }
+}
+
+/// The fan-out index is already owned by a different resource manager.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResourceFanoutSpawnError;
+
+impl std::fmt::Display for ResourceFanoutSpawnError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("resource fan-out index is already bound to another manager")
+    }
+}
+
+impl std::error::Error for ResourceFanoutSpawnError {}
 
 impl std::fmt::Debug for ResourceFanoutDriver {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -243,15 +333,113 @@ impl ResourceFanoutDriver {
         credential_bus: Arc<EventBus<CredentialEvent>>,
         lease_bus: Option<Arc<EventBus<LeaseEvent>>>,
     ) -> Self {
+        Self::spawn_with_resolver_and_lifecycle(
+            index,
+            manager,
+            resolver,
+            credential_bus,
+            lease_bus,
+            Arc::new(|| {}),
+        )
+    }
+
+    /// Spawns a resolver-backed driver and reports its terminal lifecycle once.
+    ///
+    /// This is an engine composition seam. `on_stopped` runs exactly once for
+    /// natural task completion, task panic, [`abort`](Self::abort), or handle
+    /// drop. In-flight reconciliation owns a scoped authority lease until its
+    /// future is actually cancelled, so the callback may admit a replacement
+    /// driver without exposing rows after the last resolver has stopped.
+    #[doc(hidden)]
+    pub fn spawn_with_resolver_and_lifecycle(
+        index: Arc<ResourceFanoutIndex>,
+        manager: Arc<Manager>,
+        resolver: Option<Arc<dyn CredentialSlotResolver>>,
+        credential_bus: Arc<EventBus<CredentialEvent>>,
+        lease_bus: Option<Arc<EventBus<LeaseEvent>>>,
+        on_stopped: Arc<dyn Fn() + Send + Sync>,
+    ) -> Self {
+        match Self::try_spawn_with_resolver_and_lifecycle(
+            index,
+            manager,
+            resolver,
+            credential_bus,
+            lease_bus,
+            Arc::clone(&on_stopped),
+        ) {
+            Ok(driver) => driver,
+            Err(error) => {
+                tracing::error!(
+                    target: "nebula_resource::credential_fanout",
+                    %error,
+                    "resource fan-out driver rejected manager affinity conflict"
+                );
+                on_stopped();
+                Self {
+                    handle: tokio::spawn(async {}),
+                }
+            },
+        }
+    }
+
+    /// Tries to spawn an engine-owned resolver-backed driver.
+    ///
+    /// Unlike the stable infallible wrappers, this composition seam exposes a
+    /// manager-affinity conflict so an engine never reports a live driver when
+    /// its index belongs to another manager.
+    #[doc(hidden)]
+    pub fn try_spawn_with_resolver_and_lifecycle(
+        index: Arc<ResourceFanoutIndex>,
+        manager: Arc<Manager>,
+        resolver: Option<Arc<dyn CredentialSlotResolver>>,
+        credential_bus: Arc<EventBus<CredentialEvent>>,
+        lease_bus: Option<Arc<EventBus<LeaseEvent>>>,
+        on_stopped: Arc<dyn Fn() + Send + Sync>,
+    ) -> Result<Self, ResourceFanoutSpawnError> {
+        index
+            .claim_manager_affinity(&manager)
+            .map_err(|_| ResourceFanoutSpawnError)?;
+        manager.attach_rotation_index(&index);
+        let reconciliation_lease = resolver
+            .as_ref()
+            .map(|_| index.acquire_authoritative_reconciliation_for(&manager))
+            .transpose()
+            .map_err(|_| ResourceFanoutSpawnError)?;
+        let lifecycle = Arc::new(DriverLifecycle {
+            parent_stopped: std::sync::atomic::AtomicBool::new(false),
+            active_children: std::sync::atomic::AtomicUsize::new(0),
+            callback_fired: std::sync::atomic::AtomicBool::new(false),
+            on_stopped,
+        });
+        let task_lifecycle = Arc::clone(&lifecycle);
         let mut credential_sub = credential_bus.subscribe();
         let mut lease_sub = lease_bus.map(|bus| bus.subscribe());
+        let driver_lifecycle_on_exit = scopeguard::guard(
+            (reconciliation_lease, task_lifecycle),
+            |(lease, lifecycle)| {
+                drop(lease);
+                lifecycle.parent_stopped();
+            },
+        );
         let handle = tokio::spawn(async move {
+            let _driver_lifecycle_on_exit = driver_lifecycle_on_exit;
             // Per-driver revoke dedupe: one logical credential revoke
             // double-emits (lease bus `LeaseRevoked`(s) + facade
             // `CredentialEvent::Revoked`); this collapses them within
             // `REVOKE_DEDUPE_WINDOW`. Owned by the loop task so it needs
             // no lock.
             let mut revoke_dedupe = RevokeDedupe::new();
+            let mut reconciliation = tokio::time::interval(Duration::from_secs(30));
+            reconciliation.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            let mut scans = tokio::task::JoinSet::new();
+            let mut material_dispatches = tokio::task::JoinSet::new();
+            let mut revoke_retries = tokio::task::JoinSet::new();
+            let mut revoke_dispatches = tokio::task::JoinSet::new();
+            let mut pending_material =
+                HashMap::<CredentialId, (TenantScope, CredentialKey, u64)>::new();
+            let mut pending_refresh_scans = HashSet::<CredentialId>::new();
+            let mut full_scan_requested = false;
+            let mut revoke_retry_requested = false;
             loop {
                 // `tokio::select!` over both subscribers so a refresh and
                 // a lease-revoke are both observed promptly. The two
@@ -262,51 +450,228 @@ impl ResourceFanoutDriver {
                 // the credential bus closing (the composition root went
                 // away — no further rotation signals possible) retires
                 // the driver.
-                match &mut lease_sub {
-                    Some(lsub) => {
-                        tokio::select! {
-                            ev = credential_sub.recv() => match ev {
-                                Some(ev) => {
-                                    Self::on_credential_event(
-                                        &index, &manager, resolver.as_deref(), &mut revoke_dedupe, ev,
-                                    ).await;
-                                },
-                                None => break,
-                            },
-                            ev = lsub.recv() => if let Some(ev) = ev {
-                                Self::on_lease_event(
-                                    &index, &manager, &mut revoke_dedupe, ev,
-                                ).await;
+                tokio::select! {
+                    ev = credential_sub.recv() => match ev {
+                        Some(CredentialEvent::Refreshed { credential_id }) if resolver.is_some() => {
+                            if pending_refresh_scans.contains(&credential_id)
+                                || pending_refresh_scans.len() < MAX_PENDING_REFRESH_SCANS
+                            {
+                                pending_refresh_scans.insert(credential_id);
                             } else {
-                                // Lease bus closed but the credential bus
-                                // is a separate live `Arc` — degrade to
-                                // credential-only instead of retiring (a
-                                // credential-level `CredentialEvent::Revoked`
-                                // still drives revoke fan-out, exactly the
-                                // no-lease-bus deployment path).
-                                lease_sub = None;
-                                tracing::debug!(
-                                    target: "nebula_resource::credential_fanout",
-                                    "resource rotation fan-out driver: lease signal \
-                                     bus closed; degrading to credential-only \
-                                     (CredentialEvent::Revoked still fans out revoke)"
+                                pending_refresh_scans.clear();
+                                full_scan_requested = true;
+                            }
+                        },
+                        Some(CredentialEvent::MaterialReplaced {
+                            credential_id,
+                            scope,
+                            credential_key,
+                        }) if resolver.is_some() => {
+                            let context_sequence = manager.remember_material_replacement(
+                                &index,
+                                credential_id,
+                                scope.clone(),
+                                credential_key.clone(),
+                            );
+                            if pending_material.contains_key(&credential_id)
+                                || pending_material.len() < MAX_PENDING_MATERIAL_REPLACEMENTS
+                            {
+                                pending_material.insert(
+                                    credential_id,
+                                    (scope, credential_key, context_sequence),
                                 );
-                                continue;
-                            },
-                        }
-                    },
-                    None => match credential_sub.recv().await {
-                        Some(ev) => {
-                            Self::on_credential_event(
+                            } else {
+                                full_scan_requested = true;
+                                tracing::warn!(
+                                    credential_id = %credential_id,
+                                    "material replacement queue full; durable reconciliation requested"
+                                );
+                            }
+                        },
+                        Some(CredentialEvent::Revoked { credential_id }) => {
+                            Self::spawn_revoke_deduped(
                                 &index,
                                 &manager,
-                                resolver.as_deref(),
                                 &mut revoke_dedupe,
-                                ev,
-                            )
-                            .await;
+                                &mut revoke_dispatches,
+                                credential_id,
+                                true,
+                                "credential bus",
+                            );
                         },
+                        Some(ev) => Self::on_credential_event(
+                            &index, &manager, resolver.as_deref(), ev,
+                        ).await,
                         None => break,
+                    },
+                    ev = async {
+                        match lease_sub.as_mut() {
+                            Some(sub) => sub.recv().await,
+                            None => std::future::pending().await,
+                        }
+                    } => match ev {
+                        Some(LeaseEvent::LeaseRevoked { credential_id: Some(credential_id), .. }) => {
+                            Self::spawn_revoke_deduped(
+                                &index,
+                                &manager,
+                                &mut revoke_dedupe,
+                                &mut revoke_dispatches,
+                                credential_id,
+                                false,
+                                "lease bus",
+                            );
+                        },
+                        Some(LeaseEvent::LeaseRevoked { credential_id: None, .. }) => {
+                            tracing::debug!(
+                                target: "nebula_resource::credential_fanout",
+                                "lease revoked for an orphan lease (no credential id); resource rotation fan-out skipped"
+                            );
+                        },
+                        Some(_) => {},
+                        None => lease_sub = None,
+                    },
+                    () = index.revoke_retry_notified() => {
+                        revoke_retry_requested = true;
+                    },
+                    () = index.material_retry_notified(), if resolver.is_some() => {
+                        full_scan_requested = true;
+                    },
+                    _ = reconciliation.tick() => {
+                        revoke_retry_requested = true;
+                        if resolver.is_some() {
+                            pending_refresh_scans.clear();
+                            full_scan_requested = true;
+                        }
+                    },
+                    () = std::future::ready(()), if revoke_retry_requested
+                        && revoke_retries.is_empty() => {
+                        revoke_retry_requested = false;
+                        let index = Arc::clone(&index);
+                        let manager = Arc::clone(&manager);
+                        revoke_retries.spawn(async move {
+                            index.retry_pending_revoke_admissions(&manager).await
+                        });
+                    },
+                    () = std::future::ready(()), if (full_scan_requested || !pending_refresh_scans.is_empty())
+                        && scans.is_empty()
+                        && material_dispatches.is_empty() => {
+                        let credential_id = if full_scan_requested {
+                            full_scan_requested = false;
+                            pending_refresh_scans.clear();
+                            None
+                        } else {
+                            let credential_id = pending_refresh_scans.iter().next().copied();
+                            if let Some(credential_id) = credential_id {
+                                pending_refresh_scans.remove(&credential_id);
+                            }
+                            credential_id
+                        };
+                        if let Some(resolver) = resolver.as_ref() {
+                            let index = Arc::clone(&index);
+                            let manager = Arc::clone(&manager);
+                            let resolver = Arc::clone(resolver);
+                            let Ok(reconciliation_lease) =
+                                index.acquire_authoritative_reconciliation_for(&manager)
+                            else {
+                                tracing::error!(
+                                    target: "nebula_resource::credential_fanout",
+                                    "resource fan-out scan lost its established manager affinity"
+                                );
+                                continue;
+                            };
+                            let child_activity = lifecycle.child();
+                            // JoinSet aborts the scan when the driver is dropped.
+                            // Scans cannot delay reception of revoke observations.
+                            scans.spawn(async move {
+                                let _child_activity = child_activity;
+                                let _reconciliation_lease = reconciliation_lease;
+                                index
+                                    .reconcile_material(&manager, resolver.as_ref(), credential_id)
+                                    .await
+                            });
+                        }
+                    },
+                    () = std::future::ready(()), if !pending_material.is_empty()
+                        && material_dispatches.is_empty()
+                        && scans.is_empty() => {
+                        if let Some(credential_id) = pending_material.keys().next().copied() {
+                            let Some((scope, credential_key, context_sequence)) = pending_material.remove(&credential_id) else {
+                                continue;
+                            };
+                            if let Some(resolver) = resolver.as_ref() {
+                                let index = Arc::clone(&index);
+                                let manager = Arc::clone(&manager);
+                                let resolver = Arc::clone(resolver);
+                                let Ok(reconciliation_lease) =
+                                    index.acquire_authoritative_reconciliation_for(&manager)
+                                else {
+                                    tracing::error!(
+                                        target: "nebula_resource::credential_fanout",
+                                        "material fan-out lost its established manager affinity"
+                                    );
+                                    continue;
+                                };
+                                let child_activity = lifecycle.child();
+                                // One background material fan-out at a time keeps the
+                                // per-row projection limit global to this driver while
+                                // the receive loop remains free to admit revokes.
+                                material_dispatches.spawn(async move {
+                                    let _child_activity = child_activity;
+                                    let _reconciliation_lease = reconciliation_lease;
+                                    let outcome = index
+                                        .dispatch_material_replacement(
+                                            credential_id,
+                                            &scope,
+                                            &credential_key,
+                                            resolver.as_ref(),
+                                            &manager,
+                                        )
+                                        .await;
+                                    (credential_id, context_sequence, outcome)
+                                });
+                            }
+                        }
+                    },
+                    result = scans.join_next(), if !scans.is_empty() => {
+                        match result {
+                            Some(Ok(outcome)) if outcome.failed + outcome.timed_out + outcome.abandoned == 0 => {
+                                tracing::debug!(?outcome, "credential projection reconciliation complete");
+                            },
+                            Some(Ok(outcome)) => tracing::warn!(?outcome, "credential projection reconciliation incomplete"),
+                            Some(Err(_)) => tracing::warn!("credential projection reconciliation task failed"),
+                            None => {},
+                        }
+                    },
+                    result = revoke_retries.join_next(), if !revoke_retries.is_empty() => {
+                        match result {
+                            Some(Ok(outcome)) if outcome.failed + outcome.timed_out + outcome.abandoned == 0 => {
+                                tracing::debug!(?outcome, "credential revoke admission reconciliation complete");
+                            },
+                            Some(Ok(outcome)) => tracing::warn!(?outcome, "credential revoke admission reconciliation incomplete"),
+                            Some(Err(_)) => tracing::warn!("credential revoke admission reconciliation task failed"),
+                            None => {},
+                        }
+                    },
+                    result = revoke_dispatches.join_next(), if !revoke_dispatches.is_empty() => {
+                        if matches!(result, Some(Err(_))) {
+                            tracing::warn!("credential revoke fan-out task failed");
+                        }
+                    },
+                    result = material_dispatches.join_next(), if !material_dispatches.is_empty() => {
+                        match result {
+                            Some(Ok((credential_id, context_sequence, outcome))) => {
+                                if outcome.all_hooks_settled_successfully() {
+                                    index.complete_material_context(
+                                        &credential_id,
+                                        context_sequence,
+                                        &manager,
+                                    );
+                                }
+                                Self::record(credential_id, "material_replacement", outcome);
+                            },
+                            Some(Err(_)) => tracing::warn!("material replacement fan-out task failed"),
+                            None => {},
+                        }
                     },
                 }
             }
@@ -315,7 +680,7 @@ impl ResourceFanoutDriver {
                 "resource rotation fan-out driver stopped: credential signal bus closed"
             );
         });
-        Self { handle }
+        Ok(Self { handle })
     }
 
     /// Route a `CredentialEvent`: `Refreshed` → refresh fan-out,
@@ -326,13 +691,12 @@ impl ResourceFanoutDriver {
         index: &ResourceFanoutIndex,
         manager: &Manager,
         resolver: Option<&dyn CredentialSlotResolver>,
-        revoke_dedupe: &mut RevokeDedupe,
         ev: CredentialEvent,
     ) {
         match ev {
             CredentialEvent::Refreshed { credential_id } => {
-                // Refresh is intentionally NOT deduped: it arrives on one
-                // bus only and a real re-refresh must always fan out.
+                // Resolver-backed refresh hints are coalesced into the background
+                // scan by the receive loop. Only the legacy driver reaches here.
                 let outcome = index
                     .dispatch_refresh(credential_id, manager, PER_RESOURCE_ROTATION_TIMEOUT)
                     .await;
@@ -362,16 +726,10 @@ impl ResourceFanoutDriver {
                 };
                 Self::record(credential_id, "material_replacement", outcome);
             },
-            CredentialEvent::Revoked { credential_id } => {
-                Self::dispatch_revoke_deduped(
-                    index,
-                    manager,
-                    revoke_dedupe,
-                    credential_id,
-                    "credential bus",
-                )
-                .await;
-            },
+            // The receive loop handles revokes before this fallback so it can
+            // taint synchronously and move the potentially long drain/hook tail
+            // into a tracked background task.
+            CredentialEvent::Revoked { .. } => {},
             // Not a rotation of stored material. This driver is only a
             // resource-material fan-out observer; it has no credential
             // aggregate write authority.
@@ -380,37 +738,6 @@ impl ResourceFanoutDriver {
             // resolved material" until a unit deliberately wires it.
             CredentialEvent::ReauthRequired { .. } => {},
             _ => {},
-        }
-    }
-
-    /// Route a `LeaseEvent`: only `LeaseRevoked` with an attributed
-    /// `credential_id` drives a (deduped) revoke fan-out. Renew/expiry/
-    /// failure variants do not revoke stored credential material, and an
-    /// orphan lease (`credential_id == None`) cannot address a
-    /// reverse-index row.
-    async fn on_lease_event(
-        index: &ResourceFanoutIndex,
-        manager: &Manager,
-        revoke_dedupe: &mut RevokeDedupe,
-        ev: LeaseEvent,
-    ) {
-        if let LeaseEvent::LeaseRevoked { credential_id, .. } = ev {
-            match credential_id {
-                Some(cid) => {
-                    Self::dispatch_revoke_deduped(index, manager, revoke_dedupe, cid, "lease bus")
-                        .await;
-                },
-                None => {
-                    // Orphan lease with no nebula credential record — no
-                    // reverse-index row can be keyed by it. A no-op
-                    // fan-out, not an error.
-                    tracing::debug!(
-                        target: "nebula_resource::credential_fanout",
-                        "lease revoked for an orphan lease (no credential id); \
-                         resource rotation fan-out skipped"
-                    );
-                },
-            }
         }
     }
 
@@ -424,28 +751,48 @@ impl ResourceFanoutDriver {
     /// taint they would re-apply is already applied and idempotent). This
     /// keeps non-idempotent `on_credential_revoke` hooks single-fire and
     /// the [`RotationOutcome`] metrics un-inflated per logical revoke.
-    async fn dispatch_revoke_deduped(
-        index: &ResourceFanoutIndex,
-        manager: &Manager,
+    fn spawn_revoke_deduped(
+        index: &Arc<ResourceFanoutIndex>,
+        manager: &Arc<Manager>,
         revoke_dedupe: &mut RevokeDedupe,
+        revoke_dispatches: &mut tokio::task::JoinSet<()>,
         credential_id: CredentialId,
+        retain_terminal_credential_revoke: bool,
         source: &'static str,
     ) {
         if !revoke_dedupe.admit(credential_id, Instant::now()) {
-            tracing::debug!(
-                target: "nebula_resource::credential_fanout",
-                %credential_id,
-                source,
-                "resource rotation fan-out: duplicate revoke within dedupe window \
-                 (lease-bus + credential-bus double-emission of one logical revoke); \
-                 skipped — first dispatch already tainted/drained the bound rows"
-            );
-            return;
+            // Lease and credential buses may describe the same logical
+            // teardown. The lease arrival may win dedupe, but the later
+            // credential event still carries stronger terminal authority
+            // needed to fence future registration publication and to catch
+            // rows published after the lease event's snapshot.
+            if retain_terminal_credential_revoke {
+                tracing::debug!(
+                    target: "nebula_resource::credential_fanout",
+                    %credential_id,
+                    source,
+                    "credential-level revoke followed a deduped lease revoke; \
+                     rescanning published rows with terminal authority"
+                );
+            } else {
+                tracing::debug!(
+                    target: "nebula_resource::credential_fanout",
+                    %credential_id,
+                    source,
+                    "resource rotation fan-out: duplicate lease revoke within dedupe window; \
+                     skipped — first dispatch already tainted the bound rows"
+                );
+                return;
+            }
         }
-        let outcome = index
-            .dispatch_revoke(credential_id, manager, PER_RESOURCE_ROTATION_TIMEOUT)
-            .await;
-        Self::record(credential_id, "revoke", outcome);
+        let mut outcome =
+            index.prepare_revoke(credential_id, manager, retain_terminal_credential_revoke);
+        let index = Arc::clone(index);
+        let manager = Arc::clone(manager);
+        revoke_dispatches.spawn(async move {
+            outcome.add(index.finish_prepared_revoke(credential_id, &manager).await);
+            Self::record(credential_id, "revoke", outcome);
+        });
     }
 
     /// Consume the [`RotationOutcome`] — **never silently dropped**. Only
@@ -530,13 +877,188 @@ impl Drop for ResourceFanoutDriver {
 
 #[cfg(test)]
 mod tests {
+    use std::future::Future;
+
     use super::*;
+
+    struct NeverResolver;
+
+    impl CredentialSlotResolver for NeverResolver {
+        fn resolve_slot<'a>(
+            &'a self,
+            _scope: &'a TenantScope,
+            _credential_id: CredentialId,
+            _expected_key: CredentialKey,
+            _required_capabilities: nebula_credential::Capabilities,
+            _cancel: tokio_util::sync::CancellationToken,
+        ) -> std::pin::Pin<
+            Box<
+                dyn Future<
+                        Output = Result<
+                            nebula_credential::ErasedCredentialGuard,
+                            nebula_credential::CredentialSlotResolveError,
+                        >,
+                    > + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(std::future::pending())
+        }
+    }
+
+    #[tokio::test]
+    async fn abort_releases_authoritative_reconciliation_availability() {
+        let index = Arc::new(ResourceFanoutIndex::new());
+        let manager = Arc::new(Manager::new());
+        let driver = ResourceFanoutDriver::spawn_with_resolver(
+            Arc::clone(&index),
+            Arc::clone(&manager),
+            Some(Arc::new(NeverResolver)),
+            Arc::new(EventBus::new(8)),
+            None,
+        );
+        assert!(index.authoritative_reconciliation_available());
+
+        driver.abort();
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while index.authoritative_reconciliation_available() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("aborted task destroys its authority lease");
+    }
+
+    #[tokio::test]
+    async fn abort_keeps_authority_until_in_flight_reconciliation_is_cancelled() {
+        let index = Arc::new(ResourceFanoutIndex::new());
+        let manager = Arc::new(Manager::new());
+        let driver = ResourceFanoutDriver::spawn_with_resolver(
+            Arc::clone(&index),
+            Arc::clone(&manager),
+            Some(Arc::new(NeverResolver)),
+            Arc::new(EventBus::new(8)),
+            None,
+        );
+        // Reconciliation tasks take their own scoped lease before entering
+        // resolver I/O. Model a task paused at that boundary deterministically.
+        let in_flight_reconciliation = index
+            .acquire_authoritative_reconciliation_for(&manager)
+            .expect("manager affinity");
+
+        driver.abort();
+
+        assert!(
+            index.authoritative_reconciliation_available(),
+            "driver cancellation must not demote rows while a scan can still publish completion"
+        );
+        drop(in_flight_reconciliation);
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while index.authoritative_reconciliation_available() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the last cancelled scan releases authority and triggers fail-closed demotion");
+    }
+
+    #[tokio::test]
+    async fn stopped_callback_waits_for_child_authority_to_be_destroyed() {
+        let index = Arc::new(ResourceFanoutIndex::new());
+        let manager = Arc::new(Manager::new());
+        let callback_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let callback_saw_unavailable = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let callback_index = Arc::clone(&index);
+        let callback_count_ref = Arc::clone(&callback_count);
+        let callback_saw_unavailable_ref = Arc::clone(&callback_saw_unavailable);
+        let lifecycle = Arc::new(DriverLifecycle {
+            parent_stopped: std::sync::atomic::AtomicBool::new(false),
+            active_children: std::sync::atomic::AtomicUsize::new(0),
+            callback_fired: std::sync::atomic::AtomicBool::new(false),
+            on_stopped: Arc::new(move || {
+                callback_count_ref.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                callback_saw_unavailable_ref.store(
+                    !callback_index.authoritative_reconciliation_available(),
+                    std::sync::atomic::Ordering::SeqCst,
+                );
+            }),
+        });
+        let child_activity = lifecycle.child();
+        let child_authority = index
+            .acquire_authoritative_reconciliation_for(&manager)
+            .expect("manager affinity");
+
+        lifecycle.parent_stopped();
+        assert_eq!(
+            callback_count.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "parent shutdown cannot publish quiescence while a child future is alive"
+        );
+
+        drop(child_authority);
+        drop(child_activity);
+        assert_eq!(callback_count.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(callback_saw_unavailable.load(std::sync::atomic::Ordering::SeqCst));
+        lifecycle.parent_stopped();
+        assert_eq!(
+            callback_count.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "terminal callback is exactly once"
+        );
+    }
+
+    #[tokio::test]
+    async fn manager_affinity_conflict_never_starts_a_live_driver() {
+        let index = Arc::new(ResourceFanoutIndex::new());
+        let first_manager = Arc::new(Manager::new());
+        let other_manager = Arc::new(Manager::new());
+        let credential_bus = Arc::new(EventBus::new(8));
+        let first = ResourceFanoutDriver::try_spawn_with_resolver_and_lifecycle(
+            Arc::clone(&index),
+            first_manager,
+            None,
+            Arc::clone(&credential_bus),
+            None,
+            Arc::new(|| {}),
+        )
+        .expect("first manager claims index affinity");
+        let conflict = ResourceFanoutDriver::try_spawn_with_resolver_and_lifecycle(
+            Arc::clone(&index),
+            Arc::clone(&other_manager),
+            None,
+            Arc::clone(&credential_bus),
+            None,
+            Arc::new(|| {}),
+        );
+        assert!(matches!(conflict, Err(ResourceFanoutSpawnError)));
+
+        let stopped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stopped_ref = Arc::clone(&stopped);
+        let rejected = ResourceFanoutDriver::spawn_with_resolver_and_lifecycle(
+            index,
+            other_manager,
+            None,
+            credential_bus,
+            None,
+            Arc::new(move || stopped_ref.store(true, std::sync::atomic::Ordering::SeqCst)),
+        );
+        assert!(stopped.load(std::sync::atomic::Ordering::SeqCst));
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !rejected.is_finished() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("rejected stable wrapper returns a finished handle");
+        drop(first);
+    }
 
     /// The lease-bus + credential-bus double-emission of one logical
     /// revoke (`LeaseRevoked` then `CredentialEvent::Revoked` for the same
     /// `CredentialId`, back-to-back) must collapse to a single dispatch
     /// inside the window. This is the pure-logic core of the
-    /// `dispatch_revoke_deduped` guard the driver applies.
+    /// `spawn_revoke_deduped` guard the driver applies.
     #[test]
     fn second_revoke_same_credential_within_window_is_skipped() {
         let mut d = RevokeDedupe::new();
@@ -574,6 +1096,44 @@ mod tests {
             "a different credential's revoke must dispatch even within \
              another credential's window"
         );
+    }
+
+    #[tokio::test]
+    async fn credential_event_retains_terminal_authority_after_lease_dedupe() {
+        let index = Arc::new(ResourceFanoutIndex::new());
+        let manager = Arc::new(Manager::new());
+        let mut dedupe = RevokeDedupe::new();
+        let mut dispatches = tokio::task::JoinSet::new();
+        let credential_id = CredentialId::new();
+
+        ResourceFanoutDriver::spawn_revoke_deduped(
+            &index,
+            &manager,
+            &mut dedupe,
+            &mut dispatches,
+            credential_id,
+            false,
+            "lease bus",
+        );
+        ResourceFanoutDriver::spawn_revoke_deduped(
+            &index,
+            &manager,
+            &mut dedupe,
+            &mut dispatches,
+            credential_id,
+            true,
+            "credential bus",
+        );
+
+        let bind = crate::Bind {
+            resource_key: nebula_core::ResourceKey::new("future").expect("valid resource key"),
+            scope: nebula_core::ScopeLevel::Global,
+            slot_name: "auth".to_owned(),
+            slot_identity: crate::SlotIdentity::from_bindings([("auth", "credential")]),
+        };
+        index.stage_bind(credential_id, bind.clone());
+        assert!(index.publish_staged_entry(&credential_id, &bind));
+        dispatches.abort_all();
     }
 
     /// A genuinely new revoke of the same credential *after* the window

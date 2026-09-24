@@ -10,7 +10,7 @@ use serde_json::Value;
 
 use super::acquisition_intent::AcquisitionIntent;
 use super::head::CredentialHead;
-use super::ops::ResolvedState;
+use super::ops::{AcquisitionCompletionEvidence, ResolvedState};
 use crate::resolve::UserInput;
 use crate::{
     CredentialDisplay, CredentialId, CredentialMaterialTransition, CredentialReplacement,
@@ -40,7 +40,10 @@ impl CredentialService {
     /// - [`CredentialServiceError::SessionRequired`] — the resolution
     ///   went `Pending` (interactive kickoff) but `scope` carries no
     ///   session, so the issued token could never be redeemed.
-    /// - [`CredentialServiceError::Store`] — persistence failure on the `Complete` path.
+    /// - [`CredentialServiceError::AcquisitionFinalizationRequired`] — resolution completed but
+    ///   the following durable create definitely failed. The erased type does
+    ///   not prove an initial completion was local, so replay is conservatively refused.
+    /// - [`CredentialServiceError::OutcomeUnknown`] — the durable create acknowledgement was lost.
     pub(crate) async fn resolve(
         &self,
         scope: &TenantScope,
@@ -103,7 +106,9 @@ impl CredentialService {
     ///   structurally impossible without one.
     /// - [`CredentialServiceError::CapabilityUnsupported`] — type is not `Interactive`.
     /// - [`CredentialServiceError::ValidationFailed`] — continuation failed.
-    /// - [`CredentialServiceError::Store`] — persistence failure on the `Complete` path.
+    /// - [`CredentialServiceError::AcquisitionFinalizationRequired`] — provider continuation
+    ///   completed but the following durable create/replacement definitely failed.
+    /// - [`CredentialServiceError::OutcomeUnknown`] — durable finalization acknowledgement was lost.
     pub(crate) async fn continue_resolve(
         &self,
         scope: &TenantScope,
@@ -165,10 +170,12 @@ impl CredentialService {
     ) -> Result<Acquisition, CredentialServiceError> {
         match outcome {
             super::ops::AcquireOutcome::Complete(resolved) => {
+                let evidence = resolved.completion_evidence;
                 if matches!(intent, AcquisitionIntent::ReauthorizeExisting { .. }) {
                     let head = self
                         .replace_reauthorized(scope, credential_key, intent, resolved)
-                        .await?;
+                        .await
+                        .map_err(|error| map_acquisition_finalization_error(evidence, error))?;
                     return Ok(Acquisition::Complete { head });
                 }
                 let id = CredentialId::new();
@@ -183,7 +190,13 @@ impl CredentialService {
                         resolved,
                         CredentialDisplay::default(),
                     )
-                    .await?;
+                    .await
+                    .map_err(|error| {
+                        map_acquisition_finalization_error(
+                            evidence,
+                            Self::map_store_err_for(&id.to_string(), error),
+                        )
+                    })?;
                 self.observer.on_resolve(&id);
                 tracing::info!(
                     credential.key = credential_key,
@@ -318,6 +331,20 @@ impl CredentialService {
     }
 }
 
+pub(super) fn map_acquisition_finalization_error(
+    evidence: AcquisitionCompletionEvidence,
+    error: CredentialServiceError,
+) -> CredentialServiceError {
+    if matches!(error, CredentialServiceError::OutcomeUnknown) {
+        return CredentialServiceError::OutcomeUnknown;
+    }
+    tracing::warn!(
+        acquisition.completion_evidence = evidence.as_str(),
+        "credential acquisition completed but durable finalization failed"
+    );
+    CredentialServiceError::AcquisitionFinalizationRequired
+}
+
 fn validate_reauthorization_fence(
     key: &str,
     intent: &AcquisitionIntent,
@@ -410,5 +437,49 @@ mod tests {
             ),
             Err(CredentialServiceError::ValidationFailed { .. })
         ));
+    }
+
+    #[test]
+    fn consumed_interactive_reauthorization_failure_requires_reconciliation() {
+        let mapped = map_acquisition_finalization_error(
+            AcquisitionCompletionEvidence::InteractiveContinuationComplete,
+            CredentialServiceError::VersionConflict {
+                id: "cred-1".to_owned(),
+                expected: 1,
+                actual: 2,
+            },
+        );
+        assert!(matches!(
+            mapped,
+            CredentialServiceError::AcquisitionFinalizationRequired
+        ));
+    }
+
+    #[test]
+    fn initial_acquisition_without_local_proof_is_retry_unsafe() {
+        let mapped = map_acquisition_finalization_error(
+            AcquisitionCompletionEvidence::ProviderBoundaryUnproven,
+            CredentialServiceError::PersistenceUnavailable,
+        );
+        assert!(matches!(
+            mapped,
+            CredentialServiceError::AcquisitionFinalizationRequired
+        ));
+    }
+
+    #[test]
+    fn acquisition_lost_acknowledgement_remains_outcome_unknown() {
+        for evidence in [
+            AcquisitionCompletionEvidence::ProviderBoundaryUnproven,
+            AcquisitionCompletionEvidence::InteractiveContinuationComplete,
+        ] {
+            assert!(matches!(
+                map_acquisition_finalization_error(
+                    evidence,
+                    CredentialServiceError::OutcomeUnknown
+                ),
+                CredentialServiceError::OutcomeUnknown
+            ));
+        }
     }
 }

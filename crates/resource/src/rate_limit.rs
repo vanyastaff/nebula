@@ -941,27 +941,30 @@ impl ResourceLimiter {
     /// The permit was booked before the client existed, and building it in
     /// `Provider::create` can take a while. A penalty another worker recorded
     /// meanwhile is not in that booking, so the store is read here as it is
-    /// for every caller that slept on a slot; a penalty recorded while this
-    /// one waits holds it back again.
+    /// for every caller that slept on a slot. A pause forfeits the prepaid
+    /// slot: once it ends the call books again, as every caller that booked
+    /// before a pause does, so it cannot run beside callers that booked the
+    /// first slots after the pause.
     async fn wait_prepaid(&self, deadline: Option<std::time::Instant>) -> Result<(), Error> {
-        loop {
-            self.past_deadline(deadline)?;
-            let Some(shared) = within(deadline, self.shared_penalty(None)).await else {
-                return Err(self.tagged(Error::exhausted(
-                    "rate limit store did not answer before the deadline",
-                    None,
-                )));
-            };
-            let pause = self.pause_remaining().max(shared?);
-            if pause.is_zero() {
-                return Ok(());
-            }
-            if pause > max_wait_until(deadline) {
-                return Err(self.paused_past_deadline(pause));
-            }
+        self.past_deadline(deadline)?;
+        let Some(shared) = within(deadline, self.shared_penalty(None)).await else {
+            return Err(self.tagged(Error::exhausted(
+                "rate limit store did not answer before the deadline",
+                None,
+            )));
+        };
+        let pause = self.pause_remaining().max(shared?);
+        if pause.is_zero() {
+            return Ok(());
+        }
+        if pause > max_wait_until(deadline) {
+            return Err(self.paused_past_deadline(pause));
+        }
+        {
             let _waiting = Waiting::start(self);
             tokio::time::sleep(pause).await;
         }
+        self.ready(deadline).await
     }
 
     /// Refuses a deadline that has passed: the call then does not run.

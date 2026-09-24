@@ -904,6 +904,62 @@ pub trait HasCredentialSlots {
         &[]
     }
 
+    /// Whether `slot` implements the complete conditional projection,
+    /// generation fence, and revoke contract required by durable rotation.
+    /// Hand-written resources fail closed until they explicitly opt in.
+    fn supports_credential_slot_projection(&self, _slot: &str) -> bool {
+        false
+    }
+
+    /// Owner-qualified metadata retained by a live projected slot for reconciliation.
+    fn credential_slot_metadata(
+        &self,
+        _slot: &str,
+    ) -> Option<nebula_credential::CredentialGuardMetadata> {
+        None
+    }
+
+    /// Atomic generation and metadata snapshot for conditional reconciliation.
+    /// Hand-written adapters must forward to `SlotCell::projection_snapshot`.
+    fn credential_slot_projection(
+        &self,
+        _slot: &str,
+    ) -> Option<(u64, Option<nebula_credential::CredentialGuardMetadata>)> {
+        None
+    }
+
+    /// Installs a projection only at the observed slot generation.
+    /// The check and write must be atomic; adapters without this port fail closed.
+    ///
+    /// # Errors
+    /// Returns a slot installation error, including `ProjectionChanged` when
+    /// an intervening transition superseded the observed generation.
+    fn install_credential_slot_at_generation(
+        &self,
+        _slot: &str,
+        _guard: nebula_credential::ErasedCredentialGuard,
+        _expected_generation: u64,
+    ) -> Result<crate::SlotUpdate, crate::SlotInstallError> {
+        Err(crate::SlotInstallError::ProjectionChanged)
+    }
+
+    /// Runs a synchronous resource fence only if the observed slot generation
+    /// is still current. Implementations must keep the generation check and
+    /// callback under the same slot writer lock, invoke the callback exactly
+    /// once before returning `Ok`, and never invoke it before returning `Err`.
+    ///
+    /// # Errors
+    /// Returns `ProjectionChanged` after an intervening transition, or
+    /// `UnknownSlot` when the resource does not declare the requested slot.
+    fn fence_credential_slot_at_generation(
+        &self,
+        _slot: &str,
+        _expected_generation: u64,
+        _fence: &mut dyn FnMut(),
+    ) -> Result<(), crate::SlotInstallError> {
+        Err(crate::SlotInstallError::ProjectionChanged)
+    }
+
     /// Installs a projected credential guard into one declared slot.
     ///
     /// Implementations must check the erased value against the slot's

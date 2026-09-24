@@ -16,9 +16,11 @@ use crate::{
     OWNER_ID_METADATA_KEY as OWNER_ID_KEY,
 };
 
+use super::acquire::map_acquisition_finalization_error;
 use super::error::CredentialServiceError;
 use super::facade::CredentialService;
 use super::head::CredentialHead;
+use super::ops::AcquisitionCompletionEvidence;
 use crate::TenantScope;
 
 impl CredentialService {
@@ -35,7 +37,9 @@ impl CredentialService {
     /// - [`CredentialServiceError::TypeUnknown`] — no type registered under `credential_key`.
     /// - [`CredentialServiceError::ValidationFailed`] — schema or typed-deserialize rejection
     ///   (including `$expr` injection), or a resolve failure.
-    /// - [`CredentialServiceError::Store`] — a definite persistence failure.
+    /// - [`CredentialServiceError::AcquisitionFinalizationRequired`] — resolution completed but
+    ///   the following durable create definitely failed. The erased type does
+    ///   not prove that completion was local, so replay is conservatively refused.
     /// - [`CredentialServiceError::OutcomeUnknown`] — commit acknowledgement
     ///   was lost; reconcile before replaying the command.
     pub(crate) async fn create(
@@ -61,10 +65,17 @@ impl CredentialService {
         let ctx = self.owner_context(scope);
 
         let resolved = self.ops.resolve(credential_key, props, &ctx).await?;
+        let completion_evidence = resolved.completion_evidence;
 
         let head = self
             .persist_resolved(scope, credential_key, id, resolved, display)
-            .await?;
+            .await
+            .map_err(|error| {
+                map_acquisition_finalization_error(
+                    completion_evidence,
+                    Self::map_store_err_for(&id.to_string(), error),
+                )
+            })?;
 
         self.observer.on_resolve(&id);
         tracing::info!(
@@ -89,7 +100,7 @@ impl CredentialService {
         id: CredentialId,
         resolved: super::ops::ResolvedState,
         display: CredentialDisplay,
-    ) -> Result<CredentialHead, CredentialServiceError> {
+    ) -> Result<CredentialHead, CredentialPersistenceError> {
         let mut metadata = serde_json::Map::new();
         metadata.insert(
             OWNER_ID_KEY.to_owned(),
@@ -116,11 +127,7 @@ impl CredentialService {
             metadata,
         );
 
-        let commit = self
-            .store
-            .create(&scope.selector(id), create)
-            .await
-            .map_err(|error| Self::map_store_err_for(&id.to_string(), error))?;
+        let commit = self.store.create(&scope.selector(id), create).await?;
 
         Ok(CredentialHead {
             id: commit.credential_id().to_string(),
@@ -213,8 +220,11 @@ impl CredentialService {
     ///
     /// - [`CredentialServiceError::NotFound`] — absent or cross-tenant id.
     /// - [`CredentialServiceError::ValidationFailed`] — schema / typed-deserialize / resolve.
-    /// - [`CredentialServiceError::VersionConflict`] — stale `expected_version`.
-    /// - [`CredentialServiceError::Store`] — persistence failure.
+    /// - [`CredentialServiceError::VersionConflict`] — stale `expected_version`, detected before
+    ///   replacement resolution, or a display-only update lost its CAS race.
+    /// - [`CredentialServiceError::AcquisitionFinalizationRequired`] — replacement material was
+    ///   resolved but the following durable replace definitely failed.
+    /// - [`CredentialServiceError::Store`] — display-only persistence failure.
     pub(crate) async fn update(
         &self,
         scope: &TenantScope,
@@ -259,6 +269,9 @@ impl CredentialService {
             },
             None => None,
         };
+        let completion_evidence = resolved
+            .as_ref()
+            .map(|resolved| resolved.completion_evidence);
 
         let material_replaced = resolved.is_some();
         let mut metadata = existing.metadata().clone();
@@ -329,7 +342,12 @@ impl CredentialService {
             .store
             .replace(&scope.selector(existing.credential_id()), replacement)
             .await
-            .map_err(|error| Self::map_store_err_for(id, error))?;
+            .map_err(|error| {
+                map_update_finalization_error(
+                    completion_evidence,
+                    Self::map_store_err_for(id, error),
+                )
+            })?;
 
         tracing::info!(credential.id = %id, "credential updated");
         let lifecycle = if reauth_required {
@@ -395,5 +413,58 @@ impl CredentialService {
             .map_err(|error| Self::map_store_err_for(id, error))?;
         tracing::info!(credential.id = %id, "credential tombstoned");
         Ok(())
+    }
+}
+
+fn map_update_finalization_error(
+    completion_evidence: Option<AcquisitionCompletionEvidence>,
+    error: CredentialServiceError,
+) -> CredentialServiceError {
+    match completion_evidence {
+        Some(evidence) => map_acquisition_finalization_error(evidence, error),
+        None => error,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn version_conflict() -> CredentialServiceError {
+        CredentialServiceError::VersionConflict {
+            id: "cred-1".to_owned(),
+            expected: 1,
+            actual: 2,
+        }
+    }
+
+    #[test]
+    fn material_update_finalization_failure_is_retry_unsafe() {
+        let mapped = map_update_finalization_error(
+            Some(AcquisitionCompletionEvidence::ProviderBoundaryUnproven),
+            version_conflict(),
+        );
+        assert!(matches!(
+            mapped,
+            CredentialServiceError::AcquisitionFinalizationRequired
+        ));
+    }
+
+    #[test]
+    fn display_only_update_preserves_pre_provider_store_classification() {
+        let mapped = map_update_finalization_error(None, version_conflict());
+        assert!(matches!(
+            mapped,
+            CredentialServiceError::VersionConflict { .. }
+        ));
+    }
+
+    #[test]
+    fn material_update_lost_acknowledgement_remains_outcome_unknown() {
+        let mapped = map_update_finalization_error(
+            Some(AcquisitionCompletionEvidence::ProviderBoundaryUnproven),
+            CredentialServiceError::OutcomeUnknown,
+        );
+        assert!(matches!(mapped, CredentialServiceError::OutcomeUnknown));
     }
 }
