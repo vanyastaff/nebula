@@ -46,9 +46,62 @@ Integration authors consume credential contracts through curated SDK personas:
 |--------|----------------|
 | **Curated integration contract** | `nebula_sdk::integration::credential::{TestFailureCode, TestResult}` for provider credential-test outcomes. This is the supported SDK path for this contract. |
 | **Prelude** | `nebula_sdk::prelude::*` re-exports the common credential and OAuth2 types used in actions (`Credential`, `OAuth2Credential`, `OAuth2Token`, `CredentialContext`, `CredentialSnapshot`, …) — see `prelude.rs`. |
-| **Client state** | `nebula_sdk::client::credential::CredentialLifecycleState` is the secret-free durable availability projection. In-flight claims, leases, generations, fencing tokens, tenant proofs, and persistence tombstones are not client state. |
+| **Remote credential client contract** | `nebula_sdk::client::credential::v1` provides transport-neutral request/response models for credential operations, lifecycle state, RFC 9457 problems, and `Retry-After`. Optional feature `http` provides credential metadata and acquisition methods in `client::http`. Claims, leases, generations, fencing tokens, tenant proofs, and persistence tombstones are not client state. |
+
+### Remote credential client
+
+Enable `nebula-sdk = { version = "0.18", features = ["http"] }`. Use a Tokio runtime
+to execute requests. The transport implementation is private; its types do not appear
+in client signatures.
+
+```rust,no_run
+# #[cfg(feature = "http")]
+# async fn example() -> Result<(), nebula_sdk::client::http::HttpError> {
+use nebula_sdk::client::{
+    credential::v1::ListCredentialsRequest,
+    http::{BearerToken, HttpClient, HttpOptions},
+};
+
+let http = HttpClient::new(
+    "https://nebula.example", // origin plus optional deployment mount prefix
+    BearerToken::new("your-access-token")?,
+    HttpOptions::default(),
+)?;
+let credentials = http.credentials("my-org", "my-workspace")?;
+let page = credentials.list(&ListCredentialsRequest::default()).await?;
+# let _ = page;
+# Ok(())
+# }
+```
+
+The client appends `/api/v1` and encodes each selector separately. Metadata methods are
+`list`, `create`, `get`, `update` (PUT), and `delete`. Acquisition methods are `resolve`,
+`continue_resolve`, and `reauthorize`. Defaults bound connection time
+to five seconds, total request time to thirty seconds, and response size to one MiB.
+HTTP is available for local deployments; use HTTPS across networks.
+
+Redirects and transport retries are disabled. Provider interaction URLs are returned to the
+caller and are never followed. Each method makes one transport attempt;
+no `Idempotency-Key` is sent. `HttpErrorKind::OutcomeUnknown` means a mutation may have
+been applied despite a lost, oversized, or invalid acknowledgement. Inspect server state
+before another attempt; the client offers no automatic reconciliation or retry guarantee.
+Errors retain HTTP status even for empty 401 responses. RFC 9457 problems and valid
+`Retry-After` delta-seconds/HTTP dates are exposed as typed metadata, never acted upon.
+Error and client formatting redact response content, URLs, and bearer authority. Values
+returned by `HttpError::problem()` are untrusted server content and should not be logged.
+
+Keep the same `CredentialClient` and exact bearer token from a pending response through
+`continue_resolve`: pending authority is bound to those token bytes. The client never refreshes
+authentication, polls a `Retry` response, or replays acquisition automatically. Refresh, test,
+revoke and reconciliation still have no executor methods.
 
 **Not in the SDK:** HTTP token exchange/refresh against a provider, storage encryption, and engine `CredentialResolver` — those are product/runtime concerns. If a contract needed by integration authors is absent from a curated SDK persona, treat that as an SDK API gap rather than depending directly on an implementation crate.
+
+`client::credential::v1::ReauthorizeCredentialRequest { data }` describes authorization
+replacement for an existing credential at `POST /credentials/{id}/reauthorize` in the
+selected workspace. The response uses the universal acquisition shape. Pending results
+continue through the existing continuation contract; the server-bound intent preserves
+the original ID and determines whether completion creates or replaces material.
 
 **Migration:** Provider tests import `TestFailureCode` and `TestResult` only from the curated integration path above and construct `TestResult::Failed { code }`; the removed `reason` field is not accepted. Old `nebula_sdk::nebula_*` paths are intentionally gone. If a needed contract has no curated path, open an SDK gap instead of adding a direct implementation-crate dependency.
 

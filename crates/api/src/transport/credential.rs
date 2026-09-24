@@ -44,9 +44,10 @@ use crate::{
         CredentialCapabilities, CredentialReconcileDecisionV1, CredentialResponse,
         CredentialSummary, CredentialTestFailureCodeV1, CredentialTypeInfo,
         ListCredentialTypesResponse, ListCredentialsQuery, ListCredentialsResponse,
-        ReconcileCredentialRequest, ReconcileCredentialResponse, RefreshCredentialResponse,
-        ResolveCredentialRequest, ResolveCredentialResponse, RevokeCredentialResponse,
-        TestCredentialResponse, UpdateCredentialRequest,
+        ReauthorizeCredentialRequest, ReauthorizeCredentialResponse, ReconcileCredentialRequest,
+        ReconcileCredentialResponse, RefreshCredentialResponse, ResolveCredentialRequest,
+        ResolveCredentialResponse, RevokeCredentialResponse, TestCredentialResponse,
+        UpdateCredentialRequest,
     },
     error::{ApiError, ApiResult},
     middleware::auth::AuthenticatedPrincipal,
@@ -744,6 +745,34 @@ pub async fn resolve_credential(
     let CredentialGatewayResult::Acquisition(acquisition) = result else {
         return Err(ApiError::Internal(
             "credential gateway returned an invalid resolve result".to_owned(),
+        ));
+    };
+    Ok(map_acquisition(acquisition))
+}
+
+/// Begin a replacement authorization bound to an existing credential.
+#[tracing::instrument(skip_all)]
+pub async fn reauthorize_credential(
+    state: &AppState,
+    principal: &AuthenticatedPrincipal,
+    scope: &Scope,
+    credential_id: &str,
+    request: ReauthorizeCredentialRequest,
+) -> ApiResult<ReauthorizeCredentialResponse> {
+    let result = gateway(state)?
+        .execute(
+            principal,
+            scope,
+            CredentialGatewayCommand::Reauthorize {
+                credential_id: credential_id.to_owned(),
+                request,
+            },
+        )
+        .await
+        .map_err(|error| map_gateway_err(error, credential_id))?;
+    let CredentialGatewayResult::Acquisition(acquisition) = result else {
+        return Err(ApiError::Internal(
+            "credential gateway returned an invalid reauthorization result".to_owned(),
         ));
     };
     Ok(map_acquisition(acquisition))

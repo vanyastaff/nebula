@@ -228,6 +228,10 @@ deny = [
     "nebula-plugin",
     "nebula-resource",
     "nebula-sdk",
+    # Dev-only: the examples member hosts the live SDK→API credential contract
+    # harness. It registers an interactive test credential so acquisition and
+    # exact-bearer continuation are exercised through the real public router.
+    "nebula-examples",
     # First-party composition root owns the API-principal → credential
     # authority/controller trust bridge. Product handlers still depend only on
     # the API-owned command port.
@@ -236,7 +240,7 @@ deny = [
     # The core-flavor worker binary wires credential runtime alongside the
     # engine/resource composition root so slot guards can be resolved at run time.
     "nebula-worker-bin",
-  ], reason = "Credential contracts and credential-owned resolver/refresh/lease runtime are shared infra; the listed Business/Exec/API consumers, first-party backends, and server composition root may depend on them (no upward deps from core/*)" },
+  ], reason = "Credential contracts and credential-owned resolver/refresh/lease runtime are shared infra; the listed Business/Exec/API consumers, first-party backends, test/composition harnesses, and server composition root may depend on them (no upward deps from core/*)" },
 
   # nebula-expression is a Core-tier expression evaluator. The wrapper
   # allowlist locks the current consumer set so future PRs cannot quietly

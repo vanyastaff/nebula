@@ -380,11 +380,38 @@ logged.
 Plane-B credential persistence and refresh coordination share the same admitted
 private pool for either supported backend. The server creates a unique
 `nebula-server:<uuid>` replica identity on each process start and retains one
-periodic reclaim-sweep guard until `serve` exits. Expired pre-provider claims
-may be reclaimed; expired `RefreshInFlight` claims remain durable
+credential lifecycle runtime until `serve` exits. It immediately reclaims stale
+claims at startup and scans backend-clock expiry pages for refresh work using
+bounded pagination and concurrency. Every due candidate is rechecked against
+current state and passes through the existing durable cross-replica claim before
+provider egress. Expired pre-provider claims may be reclaimed; expired
+`RefreshInFlight` claims remain durable
 `OutcomeUnknown` poison, are accounted exactly once, and never become
 replayable merely because TTL elapsed. There is no in-memory claim fallback in
-the production composition.
+the production composition. The lifecycle runtime binds scheduler and recovery
+counters to the server's shared metrics registry. Their labels are closed
+outcome classes only: no tenant, credential, provider, or replica identifiers
+enter the metrics cardinality boundary.
+
+Interactive credential pending state uses that same admitted credential pool
+and the same current/decrypt-only keyring as credential material. SQLite flows
+therefore survive a server restart, while PostgreSQL flows can continue on any
+replica connected to the credential database. Pending bearer tokens are stored
+only as digests; the state envelope is encrypted and bound to credential kind,
+owner, session, and expiry. A binding failure leaves the row available for the
+matching callback, while a successful callback consumes it atomically.
+
+The server composition regression
+`oauth_acquisition_continues_once_after_restart_and_projects_after_reopen`
+starts authorization-code acquisition through the controller, drops and
+reopens the file-SQLite runtime, rejects a wrong authentication binding,
+completes exactly one TLS token exchange, rejects callback replay, and projects
+the encrypted credential after another reopening. It verifies composition
+recovery; it does not simulate a process crash or PostgreSQL failover.
+
+```bash
+cargo nextest run -p nebula-server -E 'test(oauth_acquisition_continues_once)'
+```
 
 ## Email delivery (SMTP)
 

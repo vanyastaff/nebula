@@ -10,8 +10,8 @@ use std::sync::Arc;
 use nebula_credential::{
     ApiKeyCredential, BasicAuthCredential, CredentialProjectionRuntime,
     CredentialProjectionRuntimeBuildError, CredentialRegistry, CredentialSlotResolver,
-    DispatchError, DispatchOps, ErasedPendingStore, SigningKeyCredential, StateSource,
-    register_runtime_ops,
+    DispatchError, DispatchOps, ErasedPendingStore, OAuth2Credential, SigningKeyCredential,
+    StateSource, register_interactive_ops, register_refreshable_ops, register_runtime_ops,
 };
 #[cfg(feature = "postgres")]
 use nebula_storage::credential::PgCredentialPersistence;
@@ -233,6 +233,7 @@ fn first_party_registry() -> Result<CredentialRegistry, nebula_credential::Regis
     let mut registry = CredentialRegistry::new();
     registry.register(ApiKeyCredential, "nebula-credential")?;
     registry.register(BasicAuthCredential, "nebula-credential")?;
+    registry.register(OAuth2Credential, "nebula-credential")?;
     registry.register(SigningKeyCredential, "nebula-credential")?;
     Ok(registry)
 }
@@ -241,6 +242,9 @@ fn first_party_ops() -> Result<DispatchOps<ErasedPendingStore>, DispatchError> {
     let mut ops = DispatchOps::new();
     register_runtime_ops::<ApiKeyCredential, ErasedPendingStore>(&mut ops)?;
     register_runtime_ops::<BasicAuthCredential, ErasedPendingStore>(&mut ops)?;
+    register_runtime_ops::<OAuth2Credential, ErasedPendingStore>(&mut ops)?;
+    register_interactive_ops::<OAuth2Credential, ErasedPendingStore>(&mut ops)?;
+    register_refreshable_ops::<OAuth2Credential, ErasedPendingStore>(&mut ops)?;
     register_runtime_ops::<SigningKeyCredential, ErasedPendingStore>(&mut ops)?;
     Ok(ops)
 }
@@ -270,6 +274,7 @@ mod tests {
         Capabilities, CredentialSlotResolveError, SecretString, TenantScope, scheme::SecretToken,
         serde_secret,
     };
+    use nebula_env::testing::EnvGuard;
     use nebula_storage::credential::{
         EncryptionLayer, EnvKeyProvider, KeyProvider, SqliteCredentialPersistence,
     };
@@ -284,7 +289,7 @@ mod tests {
     use super::{
         CredentialDatabaseBackend, CredentialProjectionCompositionError,
         build_first_party_projection, build_first_party_projection_with_keyring,
-        classify_credential_database,
+        classify_credential_database, compose_first_party_projection,
     };
     use nebula_storage::credential::CredentialKeyring;
 
@@ -315,6 +320,21 @@ mod tests {
         )
     }
 
+    #[test]
+    fn first_party_projection_registers_oauth2_with_its_advertised_operations() {
+        let registry = super::first_party_registry().expect("first-party registry is valid");
+        let ops = super::first_party_ops().expect("first-party operation table is valid");
+        let key = credential_key!("oauth2");
+
+        let advertised = registry
+            .capabilities_of(key.as_str())
+            .expect("OAuth2 is present in the worker registry");
+        let dispatched = ops.capabilities_of(key.as_str());
+        assert!(advertised.contains(Capabilities::INTERACTIVE));
+        assert!(advertised.contains(Capabilities::REFRESHABLE));
+        assert_eq!(advertised.difference(dispatched), Capabilities::empty());
+    }
+
     #[tokio::test]
     async fn rolling_keyring_projects_legacy_server_rows_and_current_only_fails_closed() {
         let raw_store = Arc::new(
@@ -333,6 +353,14 @@ mod tests {
             .create(&selector, api_key_create("rolling-secret"))
             .await
             .expect("old-key server write succeeds");
+        let version_before_projection = match raw_store
+            .get(&selector)
+            .await
+            .expect("legacy row exists before projection")
+        {
+            StoredCredential::Live(row) => row.version(),
+            StoredCredential::Tombstoned(_) => panic!("rotation fixture must remain live"),
+        };
 
         // A bridge worker must project the old row through its explicit
         // decrypt-only key while continuing to use the new key as current.
@@ -359,6 +387,18 @@ mod tests {
             .into_typed::<SecretToken>()
             .expect("API key projects as a secret token");
         assert_eq!(token.token().expose_secret(), "rolling-secret");
+        let version_after_projection = match raw_store
+            .get(&selector)
+            .await
+            .expect("legacy row remains after projection")
+        {
+            StoredCredential::Live(row) => row.version(),
+            StoredCredential::Tombstoned(_) => panic!("rotation fixture must remain live"),
+        };
+        assert_eq!(
+            version_after_projection, version_before_projection,
+            "projection must not rewrite or advance a legacy-key row"
+        );
 
         let current_only =
             build_first_party_projection(Arc::clone(&raw_store), key_provider(TEST_KEY_BASE64))
@@ -441,6 +481,55 @@ mod tests {
             panic!("rotation fixture must remain live");
         };
         assert_eq!(after_projection.version(), commit.version());
+    }
+
+    #[tokio::test]
+    async fn production_composition_carries_env_legacy_key_to_projection() {
+        let temp = tempfile::tempdir().expect("temporary credential directory");
+        let database_path = temp.path().join("worker-credentials.db");
+        let database_url = format!("sqlite://{}?mode=rwc", database_path.display());
+        let raw_store = Arc::new(
+            SqliteCredentialPersistence::connect(&database_url)
+                .await
+                .expect("ready file-backed credential store"),
+        );
+        let scope = TenantScope::new("org-env-rotation", "workspace-env-rotation");
+        let credential_id = CredentialId::new();
+        let owner =
+            CredentialOwner::from_scope(&Scope::new("workspace-env-rotation", "org-env-rotation"));
+        let selector = CredentialSelector::new(owner, credential_id);
+        let old_writer = EncryptionLayer::new(Arc::clone(&raw_store), key_provider(OLD_KEY_BASE64));
+        old_writer
+            .create(&selector, api_key_create("env-rolling-secret"))
+            .await
+            .expect("old-key server write succeeds");
+        drop(old_writer);
+        drop(raw_store);
+
+        let mut env = EnvGuard::acquire();
+        env.set("NEBULA_CRED_DB", &database_url);
+        env.set("NEBULA_CRED_MASTER_KEY", TEST_KEY_BASE64);
+        env.set("NEBULA_CRED_LEGACY_MASTER_KEYS", OLD_KEY_BASE64);
+        env.remove("NEBULA_CRED_LEGACY_EMPTY_ID_MASTER_KEY");
+        env.remove("NEBULA_CRED_DEV_KEY");
+
+        let projection = compose_first_party_projection()
+            .await
+            .expect("production composition accepts the configured legacy key");
+        let guard = projection
+            .resolve_slot(
+                &scope,
+                credential_id,
+                credential_key!("api_key"),
+                Capabilities::empty(),
+                CancellationToken::new(),
+            )
+            .await
+            .expect("production projection decrypts the legacy server row");
+        let token = guard
+            .into_typed::<SecretToken>()
+            .expect("API key projects as a secret token");
+        assert_eq!(token.token().expose_secret(), "env-rolling-secret");
     }
 
     #[tokio::test(flavor = "current_thread")]

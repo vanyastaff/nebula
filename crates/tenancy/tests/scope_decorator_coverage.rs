@@ -150,6 +150,11 @@ const INTENTIONALLY_UNSCOPED_PORTS: &[&str] = &[
     "AuditStore",
     "BlobStore",
     "CredentialPersistence",
+    // Due-refresh discovery is a deployment-wide scheduler read. It returns
+    // owner-qualified selectors from persisted rows and never accepts a
+    // caller-supplied scope, so tenant substitution is neither possible nor
+    // appropriate at this port.
+    "CredentialRefreshSchedule",
     "JobDispatchQueue",
     "MembershipStore",
     "OrgStore",

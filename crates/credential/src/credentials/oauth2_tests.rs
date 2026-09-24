@@ -1,4 +1,12 @@
-use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
+use std::{
+    collections::HashMap,
+    future::Future,
+    pin::Pin,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 use nebula_storage_port::SecretBytes;
 
@@ -30,6 +38,110 @@ impl crate::runtime::AcquisitionTransport for FixedAcquisitionTransport {
         Box::pin(async move {
             TokenPostResponse::try_new(self.status, SecretBytes::new(self.body.to_vec()))
                 .map_err(|_| crate::runtime::AcquisitionTransportError::ReadBody)
+        })
+    }
+}
+
+struct InspectingClientCredentialsRefresh {
+    saw_saved_material: Arc<AtomicBool>,
+}
+
+struct FixedRefreshTransport {
+    status: u16,
+    body: &'static [u8],
+}
+
+struct CompletionTimestampTransport {
+    completed_at: Arc<Mutex<Option<DateTime<Utc>>>>,
+}
+
+impl crate::runtime::RefreshTransport for CompletionTimestampTransport {
+    fn post_token<'a>(
+        &'a self,
+        _request: TokenPostRequest,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<TokenPostResponse, crate::runtime::RefreshTransportError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        let completed_at = Arc::clone(&self.completed_at);
+        Box::pin(async move {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+            let response_completed_at = Utc::now();
+            *completed_at.lock().expect("completion timestamp lock") = Some(response_completed_at);
+            TokenPostResponse::try_new(
+                200,
+                SecretBytes::new(
+                    br#"{"access_token":"renewed-access","token_type":"Bearer","expires_in":0}"#
+                        .to_vec(),
+                ),
+            )
+            .map_err(|_| crate::runtime::RefreshTransportError::ReadBody)
+        })
+    }
+}
+
+impl crate::runtime::RefreshTransport for FixedRefreshTransport {
+    fn post_token<'a>(
+        &'a self,
+        _request: TokenPostRequest,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<TokenPostResponse, crate::runtime::RefreshTransportError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            TokenPostResponse::try_new(self.status, SecretBytes::new(self.body.to_vec()))
+                .map_err(|_| crate::runtime::RefreshTransportError::ReadBody)
+        })
+    }
+}
+
+impl crate::runtime::RefreshTransport for InspectingClientCredentialsRefresh {
+    fn post_token<'a>(
+        &'a self,
+        request: TokenPostRequest,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<TokenPostResponse, crate::runtime::RefreshTransportError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        let saw_saved_material = Arc::clone(&self.saw_saved_material);
+        Box::pin(async move {
+            let form_matches = request.form().iter().any(|(key, value)| {
+                key == "grant_type" && value.expose_secret() == "client_credentials"
+            }) && request
+                .form()
+                .iter()
+                .any(|(key, value)| key == "scope" && value.expose_secret() == "read write")
+                && request.form().iter().all(|(key, value)| {
+                    key != "refresh_token"
+                        && value.expose_secret() != CLIENT_CREDENTIALS_REFRESH_MARKER
+                });
+            let basic_matches = request.basic_auth().is_some_and(|(client_id, secret)| {
+                client_id.expose_secret() == "test_client_id"
+                    && secret.expose_secret() == "test_client_secret"
+            });
+            let endpoint_matches =
+                request.endpoint().expose_url().as_str() == "https://idp.example.com/token";
+            saw_saved_material.store(
+                form_matches && basic_matches && endpoint_matches,
+                Ordering::SeqCst,
+            );
+            TokenPostResponse::try_new(
+                200,
+                SecretBytes::new(
+                    br#"{"access_token":"renewed-access","token_type":"Bearer","expires_in":3600,"scope":"read write"}"#
+                        .to_vec(),
+                ),
+            )
+            .map_err(|_| crate::runtime::RefreshTransportError::ReadBody)
         })
     }
 }
@@ -270,6 +382,137 @@ async fn client_credentials_resolve_completes_through_acquisition_transport() {
     assert_eq!(state.access_token.expose_secret(), "access-canary");
     assert_eq!(state.scopes, ["read", "write"]);
     assert!(!format!("{state:?}").contains("access-canary"));
+}
+
+#[tokio::test]
+async fn expired_client_credentials_without_refresh_token_repeat_exchange() {
+    let properties = OAuth2Properties::ClientCredentials(client_credentials_properties());
+    let acquired = OAuth2Credential::resolve(
+        &properties,
+        &acquisition_context(
+            200,
+            br#"{"access_token":"first-access","token_type":"Bearer","expires_in":1,"scope":"read write"}"#,
+        ),
+    )
+    .await
+    .expect("initial client credentials exchange succeeds");
+    let StaticResolveResult::Complete(mut state) = acquired else {
+        panic!("client credentials resolve must complete");
+    };
+    assert!(has_client_credentials_marker(&state));
+    let projected = OAuth2Credential::project(&state);
+    assert!(!format!("{projected:?}").contains("client_credentials.v1"));
+    assert!(!format!("{state:?}").contains("client_credentials.v1"));
+    assert_eq!(
+        OAuth2Credential::policy(&state).refresh,
+        RefreshStrategy::RefreshToken
+    );
+
+    let saw_saved_material = Arc::new(AtomicBool::new(false));
+    let transport = Arc::new(InspectingClientCredentialsRefresh {
+        saw_saved_material: Arc::clone(&saw_saved_material),
+    });
+    let ctx = CredentialContext::for_owner("test-user").for_refresh_critical_section(transport);
+    let report = OAuth2Credential::refresh(
+        &mut state,
+        RefreshAttempt::new(&ctx, crate::RefreshExecutionMode::Provider),
+    )
+    .await
+    .into_kind();
+
+    assert!(matches!(
+        report,
+        crate::contract::RefreshReportKind::ProviderRefreshed
+    ));
+    assert_eq!(state.access_token.expose_secret(), "renewed-access");
+    assert!(has_client_credentials_marker(&state));
+    assert!(saw_saved_material.load(Ordering::SeqCst));
+    assert!(!format!("{state:?}").contains("renewed-access"));
+    assert!(!format!("{state:?}").contains("test_client_secret"));
+}
+
+#[tokio::test]
+async fn client_credentials_transient_or_malformed_400_does_not_require_reauth() {
+    for body in [
+        br#"{"error":"temporarily_unavailable"}"#.as_slice(),
+        b"gateway generated a malformed response".as_slice(),
+    ] {
+        let mut state = make_state();
+        state.refresh_token = Some(SecretString::new(CLIENT_CREDENTIALS_REFRESH_MARKER));
+        let transport = Arc::new(FixedRefreshTransport { status: 400, body });
+        let ctx = CredentialContext::for_owner("test-user").for_refresh_critical_section(transport);
+
+        let report = OAuth2Credential::refresh(
+            &mut state,
+            RefreshAttempt::new(&ctx, crate::RefreshExecutionMode::Provider),
+        )
+        .await
+        .into_kind();
+
+        assert!(matches!(
+            report,
+            crate::contract::RefreshReportKind::OutcomeUnknown
+        ));
+        assert!(has_client_credentials_marker(&state));
+    }
+}
+
+#[tokio::test]
+async fn client_credentials_invalid_client_is_definitive_reauth() {
+    let mut state = make_state();
+    state.refresh_token = Some(SecretString::new(CLIENT_CREDENTIALS_REFRESH_MARKER));
+    let transport = Arc::new(FixedRefreshTransport {
+        status: 400,
+        body: br#"{"error":"invalid_client"}"#,
+    });
+    let ctx = CredentialContext::for_owner("test-user").for_refresh_critical_section(transport);
+
+    let report = OAuth2Credential::refresh(
+        &mut state,
+        RefreshAttempt::new(&ctx, crate::RefreshExecutionMode::Provider),
+    )
+    .await
+    .into_kind();
+
+    assert!(matches!(
+        report,
+        crate::contract::RefreshReportKind::ReauthRequired {
+            reason: crate::resolve::ReauthReason::ProviderRejected,
+            phase: crate::contract::RefreshReauthPhase::ProviderConfirmed,
+        }
+    ));
+    assert!(has_client_credentials_marker(&state));
+}
+
+#[tokio::test]
+async fn client_credentials_expiry_starts_after_completed_response() {
+    let mut state = make_state();
+    state.refresh_token = Some(SecretString::new(CLIENT_CREDENTIALS_REFRESH_MARKER));
+    let completed_at = Arc::new(Mutex::new(None));
+    let transport = Arc::new(CompletionTimestampTransport {
+        completed_at: Arc::clone(&completed_at),
+    });
+    let ctx = CredentialContext::for_owner("test-user").for_refresh_critical_section(transport);
+
+    let report = OAuth2Credential::refresh(
+        &mut state,
+        RefreshAttempt::new(&ctx, crate::RefreshExecutionMode::Provider),
+    )
+    .await
+    .into_kind();
+
+    assert!(matches!(
+        report,
+        crate::contract::RefreshReportKind::ProviderRefreshed
+    ));
+    let response_completed_at = completed_at
+        .lock()
+        .expect("completion timestamp lock")
+        .expect("transport records completed response time");
+    assert!(
+        state.expires_at.expect("provider returned expires_in") >= response_completed_at,
+        "token lifetime must start after the completed response"
+    );
 }
 
 #[tokio::test]

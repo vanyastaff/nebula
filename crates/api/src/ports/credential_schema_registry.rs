@@ -12,7 +12,9 @@ use crate::ports::credential_schema::{
     CredentialCapabilityFlags, CredentialSchemaPort, CredentialTypeDescriptor,
 };
 #[cfg(any(test, feature = "test-util"))]
-use nebula_credential::{ApiKeyCredential, BasicAuthCredential, SigningKeyCredential};
+use nebula_credential::{
+    ApiKeyCredential, BasicAuthCredential, OAuth2Credential, SigningKeyCredential,
+};
 use nebula_credential::{Capabilities, CredentialMetadata, CredentialRegistry};
 use nebula_schema::JsonSchemaExportError;
 
@@ -107,6 +109,7 @@ pub(crate) fn default_registry() -> Result<CredentialRegistry, nebula_credential
     let mut registry = CredentialRegistry::new();
     registry.register(ApiKeyCredential, "nebula-credential")?;
     registry.register(BasicAuthCredential, "nebula-credential")?;
+    registry.register(OAuth2Credential, "nebula-credential")?;
     // signing_key: static non-interactive credential used for webhook HMAC
     // secrets (Standard Webhooks `whsec_` format).
     registry.register(SigningKeyCredential, "nebula-credential")?;
@@ -150,21 +153,20 @@ mod tests {
         );
         assert!(p.get_type("nope").is_none());
 
-        // The composition default registers the curated first-party static
-        // set; parked implementations are deliberately absent.
+        // The composition default mirrors the curated first-party set.
         let default = try_default_registry_port().expect("first-party set registers (unique KEYs)");
         let listed = default.list_types();
-        for k in ["api_key", "basic_auth", "signing_key"] {
+        for k in ["api_key", "basic_auth", "oauth2", "signing_key"] {
             assert!(
                 listed.iter().any(|t| t.key == k),
                 "default port must register {k}; got {:?}",
                 listed.iter().map(|t| &t.key).collect::<Vec<_>>()
             );
         }
-        assert!(
-            listed.iter().all(|t| t.key != "oauth2"),
-            "oauth2 requires explicit provider configuration and a production acquisition transport"
-        );
+        let oauth2 = default.get_type("oauth2").expect("oauth2 is first-party");
+        assert!(oauth2.capabilities.interactive);
+        assert!(oauth2.capabilities.refreshable);
+        assert!(!oauth2.capabilities.revocable);
     }
 
     #[test]

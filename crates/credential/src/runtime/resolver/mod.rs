@@ -13,9 +13,9 @@ use std::{
 use crate::error::CredentialError;
 use crate::runtime::refresh::transport::RefreshTransport;
 use crate::runtime::refresh::{
-    ReauthWrite, RefreshCoordinator, RefreshDisposition, RefreshError, RefreshRecheck,
-    RefreshRecheckError, RetryGateWrite, context_from_block, persist_reauth_required,
-    persist_retry_gate,
+    CoordinatedRefreshResult, ReauthWrite, RefreshCoordinator, RefreshDisposition, RefreshError,
+    RefreshRecheck, RefreshRecheckError, RetryGateWrite, context_from_block,
+    persist_reauth_required, persist_retry_gate,
 };
 use crate::runtime::resolve_error::{
     ResolveError, envelope_error_to_resolve_error, reject_tombstoned,
@@ -592,6 +592,26 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
                 })
                 .await;
 
+        let metric_result = match &outcome {
+            Ok(Ok(_)) | Err(RefreshError::CoalescedByOtherReplica) => {
+                CoordinatedRefreshResult::Success
+            },
+            Ok(Err(ResolveError::ReauthRequired { .. })) => {
+                CoordinatedRefreshResult::ReauthRequired
+            },
+            Ok(Err(ResolveError::RefreshNotApplied { .. }))
+            | Err(RefreshError::RetrySuppressed(_)) => CoordinatedRefreshResult::NotApplied,
+            Ok(Err(
+                ResolveError::ProviderOutcomeUnknown { .. }
+                | ResolveError::Store(CredentialPersistenceError::OutcomeUnknown),
+            ))
+            | Err(RefreshError::CriticalOutcomePending) => CoordinatedRefreshResult::OutcomeUnknown,
+            _ => CoordinatedRefreshResult::Failure,
+        };
+        self.refresh_coordinator
+            .metrics()
+            .record_result(metric_result);
+
         match outcome {
             Ok(Ok(result)) => {
                 self.refresh_coordinator.record_success(&credential_id_text);
@@ -807,7 +827,15 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
 
         match outcome {
             RefreshReportKind::NotApplied(context) => {
-                match persist_retry_gate(self.store.as_ref(), selector, stored, context).await {
+                match persist_retry_gate(
+                    self.store.as_ref(),
+                    selector,
+                    stored,
+                    context,
+                    C::REFRESH_POLICY.min_retry_backoff,
+                )
+                .await
+                {
                     RetryGateWrite::Applied(context) => {
                         RefreshDisposition::state_advanced(Err(ResolveError::RefreshNotApplied {
                             credential_id: credential_id_text,

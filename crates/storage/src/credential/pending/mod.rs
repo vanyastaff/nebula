@@ -1,4 +1,4 @@
-//! In-memory pending state store — **canonical storage-side home**.
+//! Pending-state storage — reference memory and durable encrypted adapters.
 //!
 //! Data is lost when the store is dropped. Use this in tests and for local
 //! development rather than mocking [`PendingStateStore`] directly.
@@ -10,7 +10,9 @@
 //! lives in the blanket, not here: this store persists
 //! `Zeroizing<Vec<u8>>` plus the binding tuple and absolute expiry.
 //!
-//! This is the single canonical in-memory `PendingStateStore`. A Business-tier
+//! [`InMemoryPendingStore`] is the canonical reference adapter. Durable SQLite
+//! and PostgreSQL adapters encrypt serialized state and persist only a digest
+//! of the bearer token. A Business-tier
 //! consumer that cannot dev-dep `nebula-storage` (the Exec adapter) keeps a
 //! colocated `#[cfg(test)]` double instead of depending on this type.
 //!
@@ -20,8 +22,7 @@
 //!
 //! | # | Invariant                          | Enforcement in this impl                           |
 //! |---|------------------------------------|-----------------------------------------------------|
-//! | 1 | Encryption at rest                 | **Moot** — process memory, no disk persistence.     |
-//! |   |                                    | Durable impls must wrap via a future encrypted layer. |
+//! | 1 | Encryption at rest                 | Moot for the in-memory reference adapter.           |
 //! | 2 | TTL ≤ 10 min                       | Determined per-type by `PendingState::expires_in`;  |
 //! |   |                                    | expired rows are evicted on `get`/`consume` and     |
 //! |   |                                    | surface as `Expired`.                               |
@@ -46,6 +47,25 @@ use chrono::Utc;
 use nebula_credential::{DynPendingStateStore, PendingStoreError, PendingToken};
 use tokio::sync::RwLock;
 use zeroize::Zeroizing;
+
+const MAX_PENDING_TTL: Duration = Duration::from_mins(10);
+
+fn validate_pending_ttl(expires_in: Duration) -> Result<(), PendingStoreError> {
+    if expires_in > MAX_PENDING_TTL {
+        return Err(PendingStoreError::ValidationFailed {
+            reason: "pending state TTL exceeds the supported limit".to_owned(),
+        });
+    }
+    Ok(())
+}
+
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+mod durable;
+
+#[cfg(feature = "postgres")]
+pub use durable::PgPendingStateStore;
+#[cfg(feature = "sqlite")]
+pub use durable::SqlitePendingStateStore;
 
 /// In-memory pending store backed by a `HashMap`.
 ///
@@ -143,6 +163,7 @@ impl DynPendingStateStore for InMemoryPendingStore {
         expires_in: Duration,
     ) -> Pin<Box<dyn Future<Output = Result<PendingToken, PendingStoreError>> + Send + 'a>> {
         Box::pin(async move {
+            validate_pending_ttl(expires_in)?;
             let expires_at = Utc::now() + expires_in;
             let token = PendingToken::generate();
 
@@ -174,7 +195,7 @@ impl DynPendingStateStore for InMemoryPendingStore {
                 .get(token.as_str())
                 .ok_or(PendingStoreError::NotFound)?;
 
-            if Utc::now() > entry.expires_at {
+            if Utc::now() >= entry.expires_at {
                 // Expiry is deterministic; evict here too so repeated `get`
                 // probes cannot retain stale rows forever.
                 entries.remove(token.as_str());
@@ -198,7 +219,7 @@ impl DynPendingStateStore for InMemoryPendingStore {
                 .get(token.as_str())
                 .ok_or(PendingStoreError::NotFound)?;
 
-            if Utc::now() > entry.expires_at {
+            if Utc::now() >= entry.expires_at {
                 entries.remove(token.as_str());
                 return Err(PendingStoreError::Expired);
             }
@@ -237,7 +258,7 @@ impl DynPendingStateStore for InMemoryPendingStore {
                 .get(token.as_str())
                 .ok_or(PendingStoreError::NotFound)?;
 
-            if Utc::now() > entry.expires_at {
+            if Utc::now() >= entry.expires_at {
                 // Expiry is deterministic; it's safe to evict the stale row now.
                 entries.remove(token.as_str());
                 return Err(PendingStoreError::Expired);
@@ -281,5 +302,5 @@ impl DynPendingStateStore for InMemoryPendingStore {
 }
 
 #[cfg(test)]
-#[path = "pending_tests.rs"]
+#[path = "../pending_tests.rs"]
 mod tests;

@@ -77,6 +77,13 @@ pub struct TenantScope {
 }
 
 impl TenantScope {
+    pub(crate) fn from_owner(owner: CredentialOwner) -> Self {
+        Self {
+            owner,
+            authentication_binding: None,
+        }
+    }
+
     /// Construct from organization + workspace identifiers. The authentication
     /// binding is `None`; attach one with
     /// [`with_authentication_binding`](Self::with_authentication_binding)
@@ -141,6 +148,14 @@ impl TenantScope {
     /// Borrow the mandatory owner partition for list operations.
     pub(crate) fn owner(&self) -> &CredentialOwner {
         &self.owner
+    }
+
+    /// Clone only the durable owner partition, excluding interactive proof.
+    pub(crate) fn durable_owner_scope(&self) -> Self {
+        Self {
+            owner: self.owner.clone(),
+            authentication_binding: None,
+        }
     }
 }
 

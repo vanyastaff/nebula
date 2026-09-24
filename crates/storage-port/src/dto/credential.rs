@@ -270,6 +270,58 @@ pub enum CredentialMaterialTransition {
     Advance,
 }
 
+/// Additional aggregate fence for authority-changing credential replacement.
+///
+/// Row version remains the ordinary optimistic-concurrency fence. Interactive
+/// reauthorization also captures the material epoch and immutable credential
+/// key before provider egress; this fence makes a stale or type-substituted
+/// completion fail closed under the same backend lock as replacement. A fence
+/// mismatch uses the existing closed
+/// [`CredentialPersistenceError::VersionConflict`] classification; its
+/// expected and actual row versions may therefore be equal when the row CAS
+/// passed but the additional aggregate fence did not.
+#[derive(Clone, PartialEq, Eq)]
+pub struct CredentialReplacementFence {
+    expected_material_epoch: CredentialMaterialEpoch,
+    expected_credential_key: String,
+}
+
+impl CredentialReplacementFence {
+    /// Construct a strict replacement fence from an observed live record.
+    #[must_use]
+    pub fn new(
+        expected_material_epoch: CredentialMaterialEpoch,
+        expected_credential_key: String,
+    ) -> Self {
+        Self {
+            expected_material_epoch,
+            expected_credential_key,
+        }
+    }
+
+    /// Return the observed material epoch.
+    #[must_use]
+    pub const fn expected_material_epoch(&self) -> CredentialMaterialEpoch {
+        self.expected_material_epoch
+    }
+
+    /// Borrow the observed immutable credential key.
+    #[must_use]
+    pub fn expected_credential_key(&self) -> &str {
+        &self.expected_credential_key
+    }
+}
+
+impl fmt::Debug for CredentialReplacementFence {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CredentialReplacementFence")
+            .field("expected_material_epoch", &self.expected_material_epoch)
+            .field("expected_credential_key", &"[redacted]")
+            .finish()
+    }
+}
+
 impl CredentialMaterialTransition {
     /// Preserve the current epoch with an explicit gate transition.
     #[must_use]
@@ -481,6 +533,7 @@ pub struct CredentialReplacement {
     reauth_required: bool,
     metadata: Map<String, Value>,
     material_transition: CredentialMaterialTransition,
+    fence: Option<CredentialReplacementFence>,
 }
 
 impl CredentialReplacement {
@@ -511,7 +564,16 @@ impl CredentialReplacement {
             reauth_required,
             metadata,
             material_transition,
+            fence: None,
         }
+    }
+
+    /// Require material epoch and credential key to match under the backend's
+    /// replacement lock in addition to the ordinary row-version CAS.
+    #[must_use]
+    pub fn with_fence(mut self, fence: CredentialReplacementFence) -> Self {
+        self.fence = Some(fence);
+        self
     }
 
     /// Return the version this replacement observed.
@@ -566,6 +628,13 @@ impl CredentialReplacement {
     #[must_use]
     pub const fn material_transition(&self) -> &CredentialMaterialTransition {
         &self.material_transition
+    }
+
+    /// Borrow the strict aggregate fence, when this is an authority-changing
+    /// replacement such as interactive reauthorization.
+    #[must_use]
+    pub const fn fence(&self) -> Option<&CredentialReplacementFence> {
+        self.fence.as_ref()
     }
 }
 

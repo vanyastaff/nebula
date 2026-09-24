@@ -3,7 +3,7 @@
 | Field | Value |
 |---|---|
 | Status | Current K2 port contract; pre-1.0 |
-| Reviewed | 2026-07-22 |
+| Reviewed | 2026-09-23 |
 | Layer | Core contract; no backend code |
 | Related | ADR-0072, ADR-0041, ADR-0088, ADR-0092, product canon §11–§12 |
 
@@ -189,9 +189,11 @@ above the port.
 - **K3 — semantic writer closure.** Make the authority-bound controller plus semantic
   idempotency/operation ledger the sole credential management writer and add durable convergence
   contracts without moving authority into this port.
-- **K4 — supported composition.** Provide the apps-owned durable membership bridge/operator
-  configuration, and expose only curated client and embedded SDK façades. Production credential
-  adapters already live in `apps/server`; API-side construction helpers are test-only.
+- **K4 — supported composition.** The apps-owned membership/workspace-directory bridge and
+  explicit operator bootstrap are implemented for the first-party server. SQLite and PostgreSQL
+  retain that authority durably; memory is process-local development/test state. Expose only the
+  remaining curated client and embedded SDK façades. Production credential adapters live in
+  `apps/server`; API-side construction helpers are test-only.
 - Independently, typed IDs in several older store signatures and the refresh-claim ownership/error
   shape remain pre-1.0 design debt; changes require a coordinated breaking wave across consumers and
   adapters.

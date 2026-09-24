@@ -7,7 +7,7 @@
 
 ## Commands
 
-- Features: `default = ["derive", "testing"]`; `testing` gates `src/testing.rs` + `pub use tokio`.
+- Features: `default = ["derive", "testing"]`; `testing` gates `src/testing.rs` + `pub use tokio`; optional `http` enables the credential CRUD executor. Check minimal, default, and minimal + http configurations.
 - `cargo nextest run -p nebula-sdk --test derive_external_contract --test public_perimeter_external_contract --test test_result_external_contract` — external consumer proofs; rerun for re-export or companion-macro changes, not just SDK source edits.
 - `cargo check -p nebula-sdk --no-default-features` — minimal façade compilation; this does not replace the external consumer proofs.
 

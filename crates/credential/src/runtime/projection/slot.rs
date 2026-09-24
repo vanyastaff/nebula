@@ -140,6 +140,22 @@ pub struct CredentialGuardMetadata {
 }
 
 impl CredentialGuardMetadata {
+    /// Construct ordering metadata for a trusted projection adapter.
+    #[must_use]
+    pub fn new(
+        credential_id: CredentialId,
+        credential_key: CredentialKey,
+        material_epoch: u64,
+        revision: u64,
+    ) -> Self {
+        Self {
+            credential_id,
+            credential_key,
+            material_epoch,
+            revision,
+        }
+    }
+
     /// Credential instance that produced the guard.
     #[must_use]
     pub fn credential_id(&self) -> CredentialId {
@@ -190,6 +206,14 @@ pub struct ErasedCredentialGuard {
 impl ErasedCredentialGuard {
     fn new(inner: Box<dyn Any + Send + Sync>, metadata: CredentialGuardMetadata) -> Self {
         Self { inner, metadata }
+    }
+
+    /// Erase a guard produced by a trusted projection adapter.
+    pub fn from_typed<S>(guard: CredentialGuard<S>, metadata: CredentialGuardMetadata) -> Self
+    where
+        S: Zeroize + Send + Sync + 'static,
+    {
+        Self::new(Box::new(guard), metadata)
     }
 
     /// Borrow the secret-free ordering metadata.

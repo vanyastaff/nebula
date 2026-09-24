@@ -1,5 +1,12 @@
 use nebula_sdk::{
-    client::credential::CredentialLifecycleState,
+    client::credential::{
+        CredentialLifecycleState,
+        v1::{
+            ContinueResolveCredentialRequest, CredentialProblemKind, DeleteCredentialResponse,
+            ReauthorizeCredentialRequest, ReauthorizeCredentialResponse, ResolveCredentialResponse,
+            RetryAfter, UpdateCredentialRequest,
+        },
+    },
     integration::action::{
         CancellationToken, EffectInvocationContext, EffectPreparationContext, EffectQueryContext,
         ExecutionId, NodeKey, OperationCallId, OperationId, OrgId, WorkflowId, WorkspaceId,
@@ -39,6 +46,62 @@ fn assert_credential_lifecycle_contract() {
             .expect("credential lifecycle state must serialize through the SDK");
         assert_eq!(actual, expected);
     }
+}
+
+fn assert_credential_wire_v1_contract() {
+    let reauthorize = ReauthorizeCredentialRequest {
+        data: nebula_sdk::json!({"secret": "new-material"}),
+    };
+    assert!(!format!("{reauthorize:?}").contains("new-material"));
+    assert_eq!(
+        nebula_sdk::serde_json::to_value(reauthorize).expect("reauthorize serializes"),
+        nebula_sdk::json!({"data":{"secret":"new-material"}})
+    );
+    let _: ReauthorizeCredentialResponse = nebula_sdk::serde_json::from_value(
+        nebula_sdk::json!({"status":"complete","credential_id":"cred_existing"}),
+    )
+    .expect("reauthorize response decodes");
+    let update = UpdateCredentialRequest {
+        name: None,
+        description: Some("updated".to_owned()),
+        data: None,
+        tags: None,
+        version: Some(1),
+    };
+    let _: nebula_sdk::serde_json::Value =
+        nebula_sdk::serde_json::to_value(update).expect("update request serializes");
+
+    let request = ContinueResolveCredentialRequest {
+        credential_key: "oauth2".to_owned(),
+        pending_token: "opaque".to_owned(),
+        user_input: nebula_sdk::json!("Poll"),
+    };
+    let _: nebula_sdk::serde_json::Value =
+        nebula_sdk::serde_json::to_value(request).expect("request serializes");
+
+    let response: ResolveCredentialResponse = nebula_sdk::serde_json::from_value(
+        nebula_sdk::json!({"status": "complete", "credential_id": "cred_01"}),
+    )
+    .expect("response deserializes");
+    match response {
+        ResolveCredentialResponse::Complete { credential_id } => {
+            assert_eq!(credential_id, "cred_01")
+        },
+        _ => panic!("unexpected acquisition response"),
+    }
+
+    let ack: DeleteCredentialResponse =
+        nebula_sdk::serde_json::from_value(nebula_sdk::json!({"ok": true}))
+            .expect("delete response deserializes");
+    assert!(ack.ok);
+    assert_eq!(
+        CredentialProblemKind::ReauthRequired.code(),
+        Some("API:CREDENTIAL_REAUTH_REQUIRED")
+    );
+    assert_eq!(
+        RetryAfter::from_seconds(5).map(RetryAfter::seconds),
+        Some(5)
+    );
 }
 
 #[derive(Debug, Deserialize, Schema)]
@@ -149,8 +212,29 @@ where
 {
 }
 
+fn assert_http_client_contract() {
+    use nebula_sdk::client::{
+        credential::v1::{CreateCredentialRequest, ListCredentialsRequest, UpdateCredentialRequest},
+        http::{BearerToken, HttpClient, HttpOptions},
+    };
+    let client = HttpClient::new("https://example.invalid", BearerToken::new("external-secret-canary").expect("token"), HttpOptions::default())
+        .expect("client").credentials("org", "ws").expect("scope");
+    let create = CreateCredentialRequest { credential_key: "token".into(), name: "Example".into(), description: None, data: nebula_sdk::serde_json::json!({}), tags: None };
+    let update = UpdateCredentialRequest { name: None, description: None, data: None, tags: None, version: Some(1) };
+    // Futures are deliberately not polled: this consumer proves the curated
+    // signatures without a runtime or transport dependency in its manifest.
+    drop(client.list(&ListCredentialsRequest::default()));
+    drop(client.create(&create));
+    drop(client.get("cred_1"));
+    drop(client.update("cred_1", &update));
+    drop(client.delete("cred_1"));
+    assert!(!format!("{client:?}").contains("external-secret-canary"));
+}
+
 fn main() {
+    assert_http_client_contract();
     assert_credential_lifecycle_contract();
+    assert_credential_wire_v1_contract();
     catalog_constructor_parity();
     assert_typed_action_contract::<EchoAction>();
     let metadata: ActionMetadataDraft = EchoAction::metadata();

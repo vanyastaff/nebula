@@ -2,6 +2,9 @@
 
 use std::time::Duration;
 
+use crate::service::acquisition_intent::{
+    AcquisitionExpectation, AcquisitionIntent, AcquisitionPending,
+};
 use crate::{
     Credential, CredentialContext, Interactive, PendingToken,
     error::CredentialError,
@@ -100,11 +103,30 @@ where
 /// Returns [`ExecutorError::MissingSessionId`] before provider code runs when
 /// the context cannot bind pending state to an authenticated session. Other
 /// failures preserve their typed credential or pending-store category.
-#[tracing::instrument(name = "credential.execute.begin", skip_all, fields(credential_key = C::KEY))]
 pub async fn execute_begin<C, S>(
     properties: &C::Properties,
     ctx: &CredentialContext,
     pending_store: &S,
+) -> Result<ResolveResponse<C::State>, ExecutorError>
+where
+    C: Interactive,
+    S: PendingStateStore,
+{
+    execute_begin_with_intent::<C, S>(
+        properties,
+        ctx,
+        pending_store,
+        AcquisitionIntent::create_for_key(C::KEY),
+    )
+    .await
+}
+
+#[tracing::instrument(name = "credential.execute.begin", skip_all, fields(credential_key = C::KEY))]
+pub(crate) async fn execute_begin_with_intent<C, S>(
+    properties: &C::Properties,
+    ctx: &CredentialContext,
+    pending_store: &S,
+    intent: AcquisitionIntent,
 ) -> Result<ResolveResponse<C::State>, ExecutorError>
 where
     C: Interactive,
@@ -122,7 +144,12 @@ where
         ResolveResult::Complete(state) => Ok(ResolveResponse::Complete(state)),
         ResolveResult::Pending { state, interaction } => {
             let token = pending_store
-                .put(C::KEY, ctx.owner_id(), session_id, state)
+                .put(
+                    C::KEY,
+                    ctx.owner_id(),
+                    session_id,
+                    AcquisitionPending::new(intent, state),
+                )
                 .await
                 .map_err(ExecutorError::PendingStore)?;
             Ok(ResolveResponse::Pending { token, interaction })
@@ -145,7 +172,6 @@ where
 /// `session_id`; a missing session id returns
 /// [`ExecutorError::MissingSessionId`] rather than collapsing into a
 /// silent shared bucket.
-#[tracing::instrument(name = "credential.execute.continue", skip_all, fields(credential_key = C::KEY))]
 pub async fn execute_continue<C, S>(
     token: &PendingToken,
     input: &UserInput,
@@ -156,22 +182,55 @@ where
     C: Interactive,
     S: PendingStateStore,
 {
+    execute_continue_with_expectation::<C, S>(
+        token,
+        input,
+        ctx,
+        pending_store,
+        AcquisitionExpectation::Create {
+            credential_key: C::KEY.to_owned(),
+        },
+    )
+    .await
+}
+
+#[tracing::instrument(name = "credential.execute.continue", skip_all, fields(credential_key = C::KEY))]
+pub(crate) async fn execute_continue_with_expectation<C, S>(
+    token: &PendingToken,
+    input: &UserInput,
+    ctx: &CredentialContext,
+    pending_store: &S,
+    expected_intent: AcquisitionExpectation,
+) -> Result<ResolveResponse<C::State>, ExecutorError>
+where
+    C: Interactive,
+    S: PendingStateStore,
+{
     let session_id = ctx.session_id().ok_or(ExecutorError::MissingSessionId)?;
     let polling = matches!(input, UserInput::Poll);
-    let pending: <C as Interactive>::Pending = if polling {
+    let pending: AcquisitionPending<<C as Interactive>::Pending> = if polling {
         pending_store
             .get_bound(C::KEY, token, ctx.owner_id(), session_id)
             .await
     } else {
-        pending_store
+        let observed: AcquisitionPending<<C as Interactive>::Pending> = pending_store
+            .get_bound(C::KEY, token, ctx.owner_id(), session_id)
+            .await
+            .map_err(ExecutorError::PendingStore)?;
+        validate_pending_intent(&observed, &expected_intent)?;
+        let consumed: AcquisitionPending<<C as Interactive>::Pending> = pending_store
             .consume(C::KEY, token, ctx.owner_id(), session_id)
             .await
+            .map_err(ExecutorError::PendingStore)?;
+        validate_pending_intent(&consumed, &expected_intent)?;
+        Ok(consumed)
     }
     .map_err(ExecutorError::PendingStore)?;
+    validate_pending_intent(&pending, &expected_intent)?;
 
     let result = tokio::time::timeout(
         CREDENTIAL_TIMEOUT,
-        <C as Interactive>::continue_resolve(&pending, input, ctx),
+        <C as Interactive>::continue_resolve(pending.protocol(), input, ctx),
     )
     .await
     .map_err(|_| {
@@ -188,7 +247,7 @@ where
     match result {
         ResolveResult::Complete(state) => {
             if polling {
-                let _consumed: <C as Interactive>::Pending = pending_store
+                let _consumed: AcquisitionPending<<C as Interactive>::Pending> = pending_store
                     .consume(C::KEY, token, ctx.owner_id(), session_id)
                     .await
                     .map_err(ExecutorError::PendingStore)?;
@@ -196,14 +255,24 @@ where
             Ok(ResolveResponse::Complete(state))
         },
         ResolveResult::Pending { state, interaction } => {
+            let intent = pending.intent_for_next(&expected_intent).ok_or_else(|| {
+                ExecutorError::PendingStore(PendingStoreError::ValidationFailed {
+                    reason: "legacy pending state cannot represent reauthorization".to_owned(),
+                })
+            })?;
             let next_token = pending_store
-                .put(C::KEY, ctx.owner_id(), session_id, state)
+                .put(
+                    C::KEY,
+                    ctx.owner_id(),
+                    session_id,
+                    AcquisitionPending::new(intent, state),
+                )
                 .await
                 .map_err(ExecutorError::PendingStore)?;
 
             if polling
                 && let Err(err) = pending_store
-                    .consume::<<C as Interactive>::Pending>(
+                    .consume::<AcquisitionPending<<C as Interactive>::Pending>>(
                         C::KEY,
                         token,
                         ctx.owner_id(),
@@ -235,23 +304,44 @@ where
     }
 }
 
+fn validate_pending_intent<P: zeroize::Zeroize>(
+    pending: &AcquisitionPending<P>,
+    expected: &AcquisitionExpectation,
+) -> Result<(), ExecutorError> {
+    if pending.intent_matches(expected) {
+        return Ok(());
+    }
+    Err(ExecutorError::PendingStore(
+        PendingStoreError::ValidationFailed {
+            reason: "credential acquisition intent does not match".to_owned(),
+        },
+    ))
+}
+
 #[cfg(test)]
 mod tests {
-    use std::assert_matches;
-
-    use crate::{
-        CredentialContext, OAuth2Credential, OAuth2Pending, PendingState, PendingStateStore,
-        PendingStoreError, PendingToken, SecretString, credentials::OAuth2Config,
-        resolve::UserInput, scheme::AuthStyle,
+    use std::{
+        assert_matches,
+        sync::atomic::{AtomicUsize, Ordering},
     };
 
-    use super::{ExecutorError, execute_continue};
+    use crate::service::acquisition_intent::{
+        AcquisitionExpectation, AcquisitionIntent, AcquisitionPending,
+    };
+    use crate::{
+        Credential, CredentialContext, OAuth2Credential, OAuth2Pending, PendingState,
+        PendingStateStore, PendingStoreError, PendingToken, SecretString,
+        credentials::OAuth2Config, resolve::UserInput, scheme::AuthStyle,
+    };
 
-    struct ConsumeOnlyStore {
+    use super::{ExecutorError, execute_continue, execute_continue_with_expectation};
+
+    struct PeekConsumeStore {
         pending: Vec<u8>,
+        consume_calls: AtomicUsize,
     }
 
-    impl PendingStateStore for ConsumeOnlyStore {
+    impl PendingStateStore for PeekConsumeStore {
         async fn put<P: PendingState>(
             &self,
             _: &str,
@@ -273,9 +363,8 @@ mod tests {
             _: &str,
             _: &str,
         ) -> Result<P, PendingStoreError> {
-            Err(PendingStoreError::ValidationFailed {
-                reason: "callback used a non-consuming read".to_owned(),
-            })
+            serde_json::from_slice(&self.pending)
+                .map_err(|error| PendingStoreError::Backend(Box::new(error)))
         }
 
         async fn consume<P: PendingState>(
@@ -285,6 +374,7 @@ mod tests {
             _: &str,
             _: &str,
         ) -> Result<P, PendingStoreError> {
+            self.consume_calls.fetch_add(1, Ordering::Relaxed);
             serde_json::from_slice(&self.pending)
                 .map_err(|error| PendingStoreError::Backend(Box::new(error)))
         }
@@ -308,10 +398,17 @@ mod tests {
             state: "expected-state".to_owned(),
             redirect_uri: "https://client.example/callback".to_owned(),
         };
+        let pending = AcquisitionPending::new(
+            AcquisitionIntent::create_for_key(OAuth2Credential::KEY),
+            pending,
+        );
         let pending =
             crate::serde_secret::expose_for_serialization(|| serde_json::to_vec(&pending))
                 .expect("serialize pending fixture");
-        let store = ConsumeOnlyStore { pending };
+        let store = PeekConsumeStore {
+            pending,
+            consume_calls: AtomicUsize::new(0),
+        };
         let token = PendingToken::generate();
         let ctx = CredentialContext::for_owner("owner").with_session_id("session");
         let input = UserInput::Callback {
@@ -326,5 +423,48 @@ mod tests {
                 crate::CredentialError::InvalidInput
             ))
         );
+        assert_eq!(store.consume_calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn callback_rejects_substituted_intent_before_consuming() {
+        let pending = AcquisitionPending::new(
+            AcquisitionIntent::create_for_key(OAuth2Credential::KEY),
+            OAuth2Pending {
+                config: OAuth2Config::authorization_code("https://client.example/callback")
+                    .auth_url("https://provider.example/authorize")
+                    .token_url("https://provider.example/token")
+                    .build(),
+                client_id: "client".to_owned(),
+                client_secret: SecretString::new("secret"),
+                auth_style: AuthStyle::Header,
+                pkce_verifier: SecretString::new("verifier"),
+                state: "expected-state".to_owned(),
+                redirect_uri: "https://client.example/callback".to_owned(),
+            },
+        );
+        let pending =
+            crate::serde_secret::expose_for_serialization(|| serde_json::to_vec(&pending))
+                .expect("serialize pending fixture");
+        let store = PeekConsumeStore {
+            pending,
+            consume_calls: AtomicUsize::new(0),
+        };
+        let result = execute_continue_with_expectation::<OAuth2Credential, _>(
+            &PendingToken::generate(),
+            &UserInput::Callback { params: [].into() },
+            &CredentialContext::for_owner("owner").with_session_id("session"),
+            &store,
+            AcquisitionExpectation::ReauthorizeExisting {
+                credential_id: "substituted".to_owned(),
+                observed_version: 1,
+                observed_material_epoch: 1,
+                credential_key: OAuth2Credential::KEY.to_owned(),
+            },
+        )
+        .await;
+
+        assert_matches!(result, Err(ExecutorError::PendingStore(_)));
+        assert_eq!(store.consume_calls.load(Ordering::Relaxed), 0);
     }
 }

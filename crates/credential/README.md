@@ -2,7 +2,7 @@
 name: nebula-credential
 role: Typed credential contract, runtime, and authority-bound management
 status: partial
-last-reviewed: 2026-09-22
+last-reviewed: 2026-09-23
 canon-invariants: [L2-12.5, L2-13.2]
 related: [nebula-core, nebula-schema, nebula-storage-port, nebula-storage, nebula-resource]
 ---
@@ -69,7 +69,7 @@ describe ownership, not separate supported APIs:
 | `scope.rs` | Shared tenant identity and interactive authentication binding; neither grants authority |
 | `runtime/projection/` | Read-only slot contract, guarded projection, and worker runtime construction |
 | `runtime/resolver/`, `runtime/refresh/`, `runtime/lease/` | Typed resolution and credential-owned lifecycle orchestration |
-| `runtime/lifecycle.rs` | Process-lifetime owner for the service, lease scheduler shutdown, and reclaim maintenance |
+| `runtime/lifecycle.rs` | Process-lifetime owner for the service, backend-clock refresh scheduling, lease shutdown, and reclaim maintenance |
 | `runtime/state_source.rs` | Material-source selection shared by service and projection |
 | `service/` | Management commands, authorization, semantic mutations, catalog dispatch, and service adapters |
 | `provider/`, `secrets/`, `state_envelope.rs` | External-provider contracts, secret handling, and persisted-state encoding |
@@ -147,6 +147,15 @@ credential IDs in different owner partitions cannot share a handle.
 
 The service does not expose a store handle or an unscoped resolver. Runtime construction remains a
 composition concern rather than an integration-author API.
+
+`CredentialCommand::Reauthorize` starts interactive authorization for an existing
+owner-qualified credential. The service derives its immutable type and records the
+observed version and material epoch inside encrypted pending state. Universal
+continuation reads this durable intent: create flows still create a new credential,
+while reauthorization replaces only the original fenced aggregate and preserves its
+identity and display metadata. Stale intent is rejected before provider work where
+observable and checked again atomically at replacement. Callers never supply aggregate
+fences; the continuation's credential key is only a bound dispatch hint.
 
 ### Breaking technical API migration
 
@@ -242,6 +251,9 @@ wired to a hardened injected transport.
   completion becomes `OutcomeUnknown`.
 - Credential properties never resolve workflow expressions.
 - Durable business state never relies on `nebula-eventbus`; events are observations/wake hints.
+- Due-refresh cycles, candidate dispositions, reclaim failures, and released normal claims emit
+  pre-bound metrics with closed outcome labels; credential and tenant identities never become
+  metric labels.
 - Provider-controlled strings never become public validation or HTTP error text.
 - No raw writer, admin repository, runtime constructor, or unscoped resolver is exposed through the
   supported API/SDK. `CredentialPersistence` and construction seams remain unsupported technical
@@ -257,8 +269,8 @@ wired to a hardened injected transport.
 
 ## Known limits
 
-- Universal first-party interactive OAuth acquisition remains parked pending the universal
-  acquisition and authority flow.
+- First-party OAuth acquisition uses the universal authenticated resolve/continue flow;
+  reauthorization preserves the existing credential identity through a durable fenced intent.
 - Proactive pre-expiry refresh and some rotation behavior remain evolving.
 - Production management composition (key policy, catalog, refresh transport, lease lifecycle, and
   authority) lives in `apps/server`; workers may compose only the read/project runtime over the
@@ -282,8 +294,11 @@ wired to a hardened injected transport.
 - Service management methods are crate-private, closing direct external calls at that boundary.
   K3 still requires semantic idempotency/operation-ledger enforcement and a global sole management
   writer; technical runtime and persistence seams remain available to trusted composition.
-- K4 must provide supported workspace-directory and membership/deployment composition. The default
-  server leaves both policy ports unwired, so tenant routes return 503.
+- The first-party server supplies the apps-owned workspace-directory and membership composition
+  over its selected memory, SQLite, or PostgreSQL tenant-directory backend. It creates no implicit
+  tenant or owner. SQLite and PostgreSQL require operator bootstrap of durable authority before
+  credential commands can be authorized; memory remains a process-local development/test profile.
+  K4 still owes the supported SDK client and embedded deployment facades.
 
 ## Related
 

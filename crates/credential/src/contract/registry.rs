@@ -44,8 +44,6 @@ use super::{
 
 /// Errors raised by [`CredentialRegistry::register`].
 ///
-/// Currently single-variant — duplicate KEY is the only registration-time
-/// failure that §15.6 promotes from "stealthy overwrite" to "hard error".
 /// Marked `#[non_exhaustive]` so future registration-time validations
 /// (e.g., metadata schema mismatch, plugin signature failures from the
 /// post-MVP `arch-signing-infra` work) extend the enum without breaking
@@ -59,6 +57,25 @@ pub enum RegisterError {
     /// The metadata key disagrees with the credential's static identity.
     #[error("credential metadata identity mismatch")]
     MetadataKeyMismatch,
+    /// A hand-written refreshable capability report omitted the credential's
+    /// actual timing policy. Admission fails instead of substituting defaults
+    /// that may shorten the implementation's retry floor.
+    #[error("credential '{key}' is refreshable but did not report its refresh policy")]
+    MissingRefreshPolicyReport {
+        /// The credential whose refresh policy report was absent.
+        key: &'static str,
+    },
+    /// A refreshable credential's retry floor cannot be represented by the
+    /// durable retry gate. The credential is rejected at startup rather than
+    /// silently shortening its declared minimum.
+    #[error("credential '{key}' declares an invalid minimum refresh retry backoff")]
+    InvalidRefreshRetryBackoff {
+        /// The credential whose refresh policy was rejected.
+        key: &'static str,
+        /// The structural reason the durable delay rejected the policy.
+        #[source]
+        source: crate::RetryDelayError,
+    },
     /// Two registrations submitted credentials sharing the same
     /// `Credential::KEY`. The first registration remains authoritative;
     /// the second is rejected. Operator resolves via plugin uninstall,
@@ -126,6 +143,7 @@ struct RegistryEntry {
     instance: Box<dyn AnyCredential>,
     metadata: crate::CredentialMetadata,
     capabilities: Capabilities,
+    refresh_policy: Option<crate::RefreshPolicy>,
     registering_crate: &'static str,
 }
 
@@ -151,8 +169,8 @@ impl CredentialRegistry {
     /// # Errors
     ///
     /// Returns [`RegisterError::DuplicateKey`] if `C::KEY` is already
-    /// present in the registry. Operators resolve via plugin uninstall,
-    /// version pin, or namespace fix.
+    /// present in the registry, or [`RegisterError::InvalidRefreshRetryBackoff`]
+    /// when a refresh policy cannot be represented by the durable retry gate.
     #[tracing::instrument(name = "credential.catalog.register", skip_all, err)]
     pub fn register<C>(
         &mut self,
@@ -183,6 +201,33 @@ impl CredentialRegistry {
         }
 
         let capabilities = compute_capabilities::<C>();
+        let refresh_policy = if capabilities.contains(Capabilities::REFRESHABLE) {
+            let Some(policy) = <C as plugin_capability_report::IsRefreshable>::POLICY else {
+                tracing::error!(
+                    credential.key = key,
+                    registering_crate,
+                    "refreshable credential rejected: capability report omitted its policy"
+                );
+                return Err(RegisterError::MissingRefreshPolicyReport { key });
+            };
+            Some(policy)
+        } else {
+            None
+        };
+
+        if let Some(policy) = refresh_policy
+            && !policy.min_retry_backoff.is_zero()
+            && let Err(source) = crate::RetryDelay::new(policy.min_retry_backoff)
+        {
+            tracing::error!(
+                credential.key = key,
+                registering_crate,
+                min_retry_backoff_seconds = policy.min_retry_backoff.as_secs_f64(),
+                ?source,
+                "credential refresh policy rejected: minimum retry backoff is not durable"
+            );
+            return Err(RegisterError::InvalidRefreshRetryBackoff { key, source });
+        }
 
         // F3 containment law (fail-closed at boot, not at first refresh): a
         // `Refreshable` credential's `fn refresh` renews non-interactively or
@@ -223,6 +268,7 @@ impl CredentialRegistry {
                 instance: Box::new(instance),
                 metadata,
                 capabilities,
+                refresh_policy,
                 registering_crate,
             },
         );
@@ -277,6 +323,23 @@ impl CredentialRegistry {
     pub fn is_refreshable(&self, key: &str) -> bool {
         self.capabilities_of(key)
             .is_some_and(|c| c.contains(Capabilities::REFRESHABLE))
+    }
+
+    /// Return the registered timing policy for a refreshable credential type.
+    #[must_use]
+    pub(crate) fn refresh_policy(&self, key: &str) -> Option<crate::RefreshPolicy> {
+        self.entries.get(key).and_then(|entry| entry.refresh_policy)
+    }
+
+    /// Largest look-ahead required by any registered refreshable type.
+    #[must_use]
+    pub(crate) fn maximum_refresh_horizon(&self) -> std::time::Duration {
+        self.entries
+            .values()
+            .filter_map(|entry| entry.refresh_policy)
+            .filter_map(|policy| policy.early_refresh.checked_add(policy.jitter))
+            .max()
+            .unwrap_or_default()
     }
 
     /// Whether the credential at `key` implements

@@ -38,6 +38,10 @@ thiserror = { workspace = true }
 uuid = { workspace = true, optional = true }
 chrono = { workspace = true }
 semver = { workspace = true }
+reqwest = { workspace = true, optional = true, features = ["rustls"] }
+httpdate = { version = "1", optional = true }
+tracing = { workspace = true, optional = true }
+zeroize = { version = "1", optional = true }
 
 [dev-dependencies]
 # doctests only: `impl Provider` in the prelude resource example.
@@ -52,6 +56,7 @@ tempfile = { workspace = true }
 default = ["derive", "testing"]
 derive = []
 testing = ["dep:uuid"]
+http = ["dep:reqwest", "dep:httpdate", "dep:tracing", "dep:zeroize"]
 
 [package.metadata.docs.rs]
 all-features = true

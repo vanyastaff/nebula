@@ -105,3 +105,12 @@ path = "examples/workflow_batch_etl.rs"
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+axum = { workspace = true }
+jsonwebtoken = { workspace = true }
+nebula-api = { path = "../crates/api", features = ["test-util"] }
+nebula-credential = { path = "../crates/credential" }
+nebula-sdk = { path = "../crates/sdk", features = ["http"] }
+nebula-storage = { path = "../crates/storage", features = ["sqlite"] }
+zeroize = { workspace = true, features = ["derive"] }

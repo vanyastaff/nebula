@@ -21,6 +21,7 @@ mod l1;
 mod metrics;
 mod reclaim;
 mod retry_gate;
+mod scheduler;
 pub mod token_refresh;
 pub mod transport;
 
@@ -28,11 +29,16 @@ pub use coordinator::{
     ConfigError, RefreshCoordConfig, RefreshCoordinator, RefreshDisposition, RefreshError,
     RefreshRecheck, RefreshRecheckError,
 };
+pub(crate) use metrics::CoordinatedRefreshResult;
 pub use metrics::RefreshCoordMetrics;
 pub use nebula_storage_port::store::{SentinelEscalationPolicy, SentinelEscalationPolicyError};
 pub use reclaim::ReclaimSweepHandle;
 pub(crate) use retry_gate::{
     ReauthWrite, RetryGateWrite, context_from_block, persist_reauth_required, persist_retry_gate,
+};
+pub use scheduler::{CredentialRefreshSchedulerConfig, CredentialRefreshSchedulerConfigError};
+pub(crate) use scheduler::{
+    CredentialRefreshSchedulerTask, ScheduledRefreshDisposition, ScheduledRefreshExecutor,
 };
 pub use token_refresh::OAUTH_TOKEN_HTTP_MAX_RESPONSE_BYTES;
 pub use transport::{

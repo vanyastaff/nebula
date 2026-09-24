@@ -35,22 +35,22 @@ use nebula_core::CredentialId;
 use nebula_credential::CredentialDisplay;
 use nebula_storage_port::{
     CredentialAlreadyExistsKey, CredentialCommit, CredentialCreate, CredentialMaterialEpoch,
-    CredentialOwner, CredentialPersistence, CredentialPersistenceError, CredentialReplacement,
-    CredentialSelector, CredentialTombstone, CredentialVersion, RefreshRetrySnapshot, SecretBytes,
-    StoredCredential, StoredCredentialHead, StoredLiveCredential, StoredTombstonedCredential,
+    CredentialOwner, CredentialPersistence, CredentialPersistenceError, CredentialRefreshCursor,
+    CredentialRefreshHorizon, CredentialRefreshPageSize, CredentialRefreshSchedule,
+    CredentialRefreshScheduleError, CredentialReplacement, CredentialSelector, CredentialTombstone,
+    CredentialVersion, DueCredentialRefresh, RefreshRetrySnapshot, SecretBytes, StoredCredential,
+    StoredCredentialHead, StoredLiveCredential, StoredTombstonedCredential,
 };
 use serde_json::Value;
 use sqlx::{Connection, Sqlite, SqlitePool, Transaction};
 
+use std::sync::Arc;
 #[cfg(test)]
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, AtomicUsize, Ordering},
-};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use super::{
-    CredentialStoreStartupError, refresh_claim::SqliteRefreshClaimRepo, retry_gate,
-    schema::sqlite as schema,
+    CredentialStoreStartupError, pending::SqlitePendingStateStore,
+    refresh_claim::SqliteRefreshClaimRepo, retry_gate, schema::sqlite as schema,
 };
 #[cfg(test)]
 use crate::migration::SQLITE_MIGRATOR;
@@ -161,6 +161,12 @@ pub struct SqliteCredentialPersistence {
     commit_dispatcher: SqliteCommitDispatcher,
     #[cfg(test)]
     precommit_fault: Arc<AtomicBool>,
+}
+
+/// Read-only due-refresh schedule over an admitted SQLite credential pool.
+#[derive(Clone, Debug)]
+pub struct SqliteCredentialRefreshSchedule {
+    pool: SqlitePool,
 }
 
 impl SqliteCredentialPersistence {
@@ -280,6 +286,24 @@ impl SqliteCredentialPersistence {
     #[must_use]
     pub fn refresh_claim_repo(&self) -> SqliteRefreshClaimRepo {
         SqliteRefreshClaimRepo::new(self.pool.clone())
+    }
+
+    /// Create an encrypted durable pending-state store on this admitted pool.
+    #[must_use]
+    pub fn pending_state_store(
+        &self,
+        key_provider: Arc<dyn super::KeyProvider>,
+        legacy_keys: Vec<(String, Arc<nebula_crypto::EncryptionKey>)>,
+    ) -> SqlitePendingStateStore {
+        SqlitePendingStateStore::new(self.pool.clone(), key_provider, legacy_keys)
+    }
+
+    /// Create the due-refresh schedule adapter on this store's admitted pool.
+    #[must_use]
+    pub fn refresh_schedule(&self) -> SqliteCredentialRefreshSchedule {
+        SqliteCredentialRefreshSchedule {
+            pool: self.pool.clone(),
+        }
     }
 
     async fn connect_memory_options(
@@ -740,6 +764,7 @@ impl CredentialCommitRow {
 struct CredentialLifecycleRow {
     version: i64,
     material_epoch: i64,
+    credential_key: String,
     record_state: String,
 }
 
@@ -797,6 +822,109 @@ impl RefreshRetrySnapshotRow {
 }
 
 // ── CredentialPersistence impl ──────────────────────────────────────────────────────
+
+#[async_trait]
+impl CredentialRefreshSchedule for SqliteCredentialRefreshSchedule {
+    #[tracing::instrument(skip_all, fields(credential.operation = "scan_due_refresh"))]
+    async fn scan_due(
+        &self,
+        after: Option<&CredentialRefreshCursor>,
+        horizon: CredentialRefreshHorizon,
+        limit: CredentialRefreshPageSize,
+    ) -> Result<Vec<DueCredentialRefresh>, CredentialRefreshScheduleError> {
+        let horizon_ms = i64::try_from(horizon.get().as_millis())
+            .map_err(|_| CredentialRefreshScheduleError::CorruptRecord)?;
+        let (after_expiry, after_id) = after
+            .map(|cursor| {
+                (
+                    Some(cursor.expires_at().timestamp_millis()),
+                    Some(cursor.credential_id().to_string()),
+                )
+            })
+            .unwrap_or((None, None));
+        let rows: Vec<(
+            String,
+            String,
+            String,
+            i64,
+            Option<String>,
+            Option<i64>,
+            i64,
+        )> = sqlx::query_as(
+            "WITH backend_clock AS (
+                 SELECT (CAST(strftime('%s', 'now') AS INTEGER) * 1000
+                         + CAST(substr(strftime('%f', 'now'), 4, 3) AS INTEGER)) AS now_ms
+             )
+             SELECT c.id, c.owner_id, c.credential_key, c.expires_at,
+                    c.refresh_retry_mode, c.refresh_retry_not_before, clock.now_ms
+             FROM credentials AS c CROSS JOIN backend_clock AS clock
+             WHERE c.record_state = 'live'
+               AND c.expires_at IS NOT NULL
+               AND c.reauth_required = 0
+               AND c.expires_at <= clock.now_ms + ?1
+               AND (
+                    c.refresh_retry_mode IS NULL
+                    OR (c.refresh_retry_mode <> ?3
+                        AND (c.refresh_retry_mode <> ?2
+                             OR c.refresh_retry_not_before IS NULL
+                             OR c.refresh_retry_not_before <= clock.now_ms))
+               )
+               AND (?4 IS NULL OR c.expires_at > ?4
+                    OR (c.expires_at = ?4 AND c.id > ?5))
+             ORDER BY c.expires_at, c.id
+             LIMIT ?6",
+        )
+        .bind(horizon_ms)
+        .bind(retry_gate::MODE_NOT_BEFORE)
+        .bind(retry_gate::MODE_NEVER)
+        .bind(after_expiry)
+        .bind(after_id)
+        .bind(i64::from(limit.get()))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|_| CredentialRefreshScheduleError::Unavailable)?;
+
+        rows.into_iter()
+            .map(
+                |(id, owner, credential_key, expires_at, mode, not_before, observed_at)| {
+                    match (mode.as_deref(), not_before) {
+                        (None, None) | (Some(retry_gate::MODE_NOT_BEFORE), Some(_)) => {},
+                        _ => return Err(CredentialRefreshScheduleError::CorruptRecord),
+                    }
+                    let credential_id = stored_credential_id(&id)
+                        .map_err(|_| CredentialRefreshScheduleError::CorruptRecord)?;
+                    let expires_at = millis_to_utc(expires_at)
+                        .map_err(|_| CredentialRefreshScheduleError::CorruptRecord)?;
+                    let observed_at = millis_to_utc(observed_at)
+                        .map_err(|_| CredentialRefreshScheduleError::CorruptRecord)?;
+                    Ok(DueCredentialRefresh::new(
+                        CredentialSelector::new(
+                            CredentialOwner::from_canonical(owner),
+                            credential_id,
+                        ),
+                        credential_key,
+                        expires_at,
+                        observed_at,
+                    ))
+                },
+            )
+            .collect()
+    }
+}
+
+#[async_trait]
+impl CredentialRefreshSchedule for SqliteCredentialPersistence {
+    async fn scan_due(
+        &self,
+        after: Option<&CredentialRefreshCursor>,
+        horizon: CredentialRefreshHorizon,
+        limit: CredentialRefreshPageSize,
+    ) -> Result<Vec<DueCredentialRefresh>, CredentialRefreshScheduleError> {
+        self.refresh_schedule()
+            .scan_due(after, horizon, limit)
+            .await
+    }
+}
 
 #[async_trait]
 impl CredentialPersistence for SqliteCredentialPersistence {
@@ -1093,7 +1221,7 @@ impl SqliteCredentialPersistence {
     ) -> Result<CredentialCommit, CredentialPersistenceError> {
         let credential_id = selector.credential_id().to_string();
         let lifecycle: Option<CredentialLifecycleRow> = sqlx::query_as(
-            "SELECT version, material_epoch, record_state FROM credentials \
+            "SELECT version, material_epoch, credential_key, record_state FROM credentials \
              WHERE id = ?1 AND owner_id = ?2",
         )
         .bind(&credential_id)
@@ -1118,8 +1246,22 @@ impl SqliteCredentialPersistence {
                 actual: actual_version,
             });
         }
-        let next_version = actual_version.next_live()?;
         let actual_material_epoch = stored_material_epoch(lifecycle.material_epoch)?;
+        if let Some(fence) = replacement.fence() {
+            if actual_material_epoch != fence.expected_material_epoch() {
+                return Err(CredentialPersistenceError::VersionConflict {
+                    expected: replacement.expected_version(),
+                    actual: actual_version,
+                });
+            }
+            if lifecycle.credential_key != fence.expected_credential_key() {
+                return Err(CredentialPersistenceError::VersionConflict {
+                    expected: replacement.expected_version(),
+                    actual: actual_version,
+                });
+            }
+        }
+        let next_version = actual_version.next_live()?;
         let next_material_epoch = if replacement.material_transition().advances_epoch() {
             actual_material_epoch.next()?
         } else {
@@ -1229,7 +1371,7 @@ impl SqliteCredentialPersistence {
     ) -> Result<CredentialCommit, CredentialPersistenceError> {
         let credential_id = selector.credential_id().to_string();
         let lifecycle: Option<CredentialLifecycleRow> = sqlx::query_as(
-            "SELECT version, material_epoch, record_state FROM credentials \
+            "SELECT version, material_epoch, credential_key, record_state FROM credentials \
              WHERE id = ?1 AND owner_id = ?2",
         )
         .bind(&credential_id)

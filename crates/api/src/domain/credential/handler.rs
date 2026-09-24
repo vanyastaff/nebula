@@ -13,9 +13,10 @@ use nebula_core::TenantContext;
 use super::dto::{
     ContinueResolveRequest, ContinueResolveResponse, CreateCredentialRequest, CredentialResponse,
     CredentialTypeInfo, ListCredentialTypesResponse, ListCredentialsQuery, ListCredentialsResponse,
-    ReconcileCredentialRequest, ReconcileCredentialResponse, RefreshCredentialResponse,
-    ResolveCredentialRequest, ResolveCredentialResponse, RevokeCredentialResponse,
-    TestCredentialResponse, UpdateCredentialRequest,
+    ReauthorizeCredentialRequest, ReauthorizeCredentialResponse, ReconcileCredentialRequest,
+    ReconcileCredentialResponse, RefreshCredentialResponse, ResolveCredentialRequest,
+    ResolveCredentialResponse, RevokeCredentialResponse, TestCredentialResponse,
+    UpdateCredentialRequest,
 };
 use crate::{
     domain::shared::AckResponse,
@@ -447,8 +448,8 @@ pub async fn reconcile_credential(
 /// the appropriate `Credential::resolve()` implementation. Returns either:
 /// - `Complete { credential_id }` for default static credentials (`api_key`, `basic_auth`,
 ///   `signing_key`)
-/// - `Pending { pending_token, interaction }` for an explicitly composed interactive type (the
-///   default registry currently contains none)
+/// - `Pending { pending_token, interaction }` for an interactive type such as the first-party
+///   OAuth2 authorization-code flow
 #[utoipa::path(
     post,
     path = "/orgs/{org}/workspaces/{ws}/credentials/resolve",
@@ -483,6 +484,46 @@ pub async fn resolve_credential(
     let response =
         crate::transport::credential::resolve_credential(&state, &principal, &scope, request)
             .await?;
+    Ok(Json(response))
+}
+
+/// Begin reauthorization of an existing credential without changing its identity.
+/// Pending results continue through the universal resolve/continue endpoint.
+#[utoipa::path(
+    post,
+    path = "/orgs/{org}/workspaces/{ws}/credentials/{cred}/reauthorize",
+    tag = "workspaces.credentials",
+    security(("bearer" = [])),
+    params(
+        ("org" = String, Path, description = "Organisation slug or `org_<ULID>`."),
+        ("ws" = String, Path, description = "Workspace slug or `ws_<ULID>`."),
+        ("cred" = String, Path, description = "Existing credential identifier."),
+    ),
+    request_body = ReauthorizeCredentialRequest,
+    responses(
+        (status = 200, description = "Authorization completed for the existing id, or requires continuation.", body = ResolveCredentialResponse),
+        (status = 400, description = "Invalid identifier or authorization properties.", body = ProblemDetails),
+        (status = 401, description = "Authentication required.", body = ProblemDetails),
+        (status = 403, description = "Credential write permission required.", body = ProblemDetails),
+        (status = 404, description = "Credential not found in this workspace.", body = ProblemDetails),
+        (status = 409, description = "Credential changed during authorization or persistence outcome is unknown.", body = ProblemDetails),
+        (status = 503, description = "Credential authority, provider, or persistence unavailable.", body = ProblemDetails),
+    ),
+)]
+pub async fn reauthorize_credential(
+    State(state): State<AppState>,
+    Extension(principal): Extension<AuthenticatedPrincipal>,
+    Extension(tenant): Extension<TenantContext>,
+    Path((_org, _ws, cred)): Path<(String, String, String)>,
+    Json(request): Json<ReauthorizeCredentialRequest>,
+) -> ApiResult<Json<ReauthorizeCredentialResponse>> {
+    validate_credential_id(&cred)?;
+    validate_data_is_object(&request.data)?;
+    let scope = crate::middleware::tenancy::request_scope(&tenant)?;
+    let response = crate::transport::credential::reauthorize_credential(
+        &state, &principal, &scope, &cred, request,
+    )
+    .await?;
     Ok(Json(response))
 }
 

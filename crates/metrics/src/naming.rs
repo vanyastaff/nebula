@@ -845,6 +845,39 @@ pub mod refresh_coord_reclaim_outcome {
     pub const OUTCOME_UNKNOWN_ACCOUNTED: &str = "outcome_unknown_accounted";
     /// Sweep ran with no expired rows to reclaim.
     pub const NO_WORK: &str = "no_work";
+    /// Storage rejected the sweep before it could return an authoritative result.
+    pub const FAILED: &str = "failed";
+}
+
+/// Counter: expired normal claims released by credential recovery.
+///
+/// This is deliberately unlabeled. Poisoned in-flight claims are already
+/// counted by `sentinel_events_total{action="recorded"}` and remain durable;
+/// this counter measures rows actually removed and made available for retry.
+pub const NEBULA_CREDENTIAL_REFRESH_COORD_RECLAIMED_CLAIMS_TOTAL: &str =
+    "nebula_credential_refresh_coord_reclaimed_claims_total";
+
+/// Counter: terminal results returned by coordinated credential refresh.
+///
+/// Labeled only by `outcome` (see [`refresh_coord_result_outcome`]). Each
+/// caller that reaches the coordinator records exactly one result after L1/L2
+/// coordination completes. The labels describe the caller-visible result,
+/// never credential, tenant, provider, HTTP, or provider-controlled detail.
+pub const NEBULA_CREDENTIAL_REFRESH_COORD_RESULTS_TOTAL: &str =
+    "nebula_credential_refresh_coord_results_total";
+
+/// Outcome labels for [`NEBULA_CREDENTIAL_REFRESH_COORD_RESULTS_TOTAL`].
+pub mod refresh_coord_result_outcome {
+    /// Coordinated refresh completed successfully for the caller.
+    pub const SUCCESS: &str = "success";
+    /// The durable credential state requires interactive reauthentication.
+    pub const REAUTH_REQUIRED: &str = "reauth_required";
+    /// Refresh was proven not to apply and retry policy was preserved.
+    pub const NOT_APPLIED: &str = "not_applied";
+    /// Provider or persistence completion cannot be established safely.
+    pub const OUTCOME_UNKNOWN: &str = "outcome_unknown";
+    /// Any remaining exact refresh failure.
+    pub const FAILURE: &str = "failure";
 }
 
 /// Histogram: how long a holder owned the L2 claim row.
@@ -857,6 +890,62 @@ pub mod refresh_coord_reclaim_outcome {
 /// lease invariant was violated.
 pub const NEBULA_CREDENTIAL_REFRESH_COORD_HOLD_DURATION_SECONDS: &str =
     "nebula_credential_refresh_coord_hold_duration_seconds";
+
+/// Counter: complete due-refresh scheduler cycle outcomes.
+///
+/// Labeled by `outcome` from [`refresh_scheduler_cycle_outcome`]. The closed
+/// set exposes healthy completion, storage failure, and exhausted page budget
+/// without adding replica or tenant cardinality.
+pub const NEBULA_CREDENTIAL_REFRESH_SCHEDULER_CYCLES_TOTAL: &str =
+    "nebula_credential_refresh_scheduler_cycles_total";
+
+/// Outcome labels for [`NEBULA_CREDENTIAL_REFRESH_SCHEDULER_CYCLES_TOTAL`].
+pub mod refresh_scheduler_cycle_outcome {
+    /// The scan reached an empty or partial final page.
+    pub const COMPLETED: &str = "completed";
+    /// A storage scan failed before the cycle completed.
+    pub const SCAN_FAILED: &str = "scan_failed";
+    /// The cycle consumed its configured page budget while pages remained full.
+    pub const PAGE_BOUND: &str = "page_bound";
+}
+
+/// Counter: terminal disposition of each due-refresh candidate dispatched.
+///
+/// Labeled by `outcome` from [`refresh_scheduler_candidate_outcome`]. Each
+/// admitted candidate increments exactly one series. Values are lifecycle
+/// classes rather than credential, tenant, provider, or replica identifiers.
+pub const NEBULA_CREDENTIAL_REFRESH_SCHEDULER_CANDIDATES_TOTAL: &str =
+    "nebula_credential_refresh_scheduler_candidates_total";
+
+/// Outcome labels for [`NEBULA_CREDENTIAL_REFRESH_SCHEDULER_CANDIDATES_TOTAL`].
+pub mod refresh_scheduler_candidate_outcome {
+    /// Provider refresh and durable persistence completed.
+    pub const REFRESHED: &str = "refreshed";
+    /// A fresh state read showed the candidate was stale or absent.
+    pub const NO_LONGER_DUE: &str = "no_longer_due";
+    /// The credential type does not support refresh.
+    pub const UNSUPPORTED: &str = "unsupported";
+    /// Durable retry policy deferred the attempt.
+    pub const DEFERRED: &str = "deferred";
+    /// Durable retry policy permanently blocked automatic refresh.
+    pub const BLOCKED: &str = "blocked";
+    /// The credential requires interactive reauthentication.
+    pub const REAUTH_REQUIRED: &str = "reauth_required";
+    /// A retryable service or provider failure prevented refresh.
+    pub const TRANSIENT_FAILURE: &str = "transient_failure";
+    /// Provider egress may have happened but its durable outcome is unknown.
+    pub const OUTCOME_UNKNOWN: &str = "outcome_unknown";
+    /// Durable evidence requires reconciliation before another provider call.
+    pub const RECONCILIATION_REQUIRED: &str = "reconciliation_required";
+    /// The retry gate could not be durably finalized.
+    pub const RETRY_GATE_FINALIZATION: &str = "retry_gate_finalization";
+    /// The reauthentication decision could not be durably finalized.
+    pub const REAUTH_DECISION_FINALIZATION: &str = "reauth_decision_finalization";
+    /// Provider egress completed but the resulting state was not durably persisted.
+    pub const POST_PROVIDER_PERSISTENCE: &str = "post_provider_persistence";
+    /// The spawned candidate task failed before returning a disposition.
+    pub const TASK_FAILED: &str = "task_failed";
+}
 
 /// Counter: `reauth_required = true` persistence attempts that exhausted
 /// their CAS budget without committing.

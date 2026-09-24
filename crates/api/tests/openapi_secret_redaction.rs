@@ -20,7 +20,8 @@ use nebula_api::domain::{
     },
     credential::dto::{
         AcquisitionInteraction, ContinueResolveRequest, CreateCredentialRequest, FormPostField,
-        ResolveCredentialRequest, ResolveCredentialResponse, UpdateCredentialRequest,
+        ReauthorizeCredentialRequest, ResolveCredentialRequest, ResolveCredentialResponse,
+        UpdateCredentialRequest,
     },
     me::dto::CreateTokenResponse,
     org::dto::CreateServiceAccountResponse,
@@ -257,6 +258,7 @@ fn openapi_plane_b_authority_has_explicit_direction() {
         CreateCredentialRequest,
         UpdateCredentialRequest,
         ResolveCredentialRequest,
+        ReauthorizeCredentialRequest,
         ContinueResolveRequest,
         FormPostField,
         AcquisitionInteraction,
@@ -269,6 +271,7 @@ fn openapi_plane_b_authority_has_explicit_direction() {
         ("CreateCredentialRequest", "data"),
         ("UpdateCredentialRequest", "data"),
         ("ResolveCredentialRequest", "data"),
+        ("ReauthorizeCredentialRequest", "data"),
         ("ContinueResolveRequest", "pending_token"),
         ("ContinueResolveRequest", "user_input"),
     ] {

@@ -88,11 +88,13 @@ pub(crate) async fn persist_retry_gate<S>(
     store: &S,
     selector: &CredentialSelector,
     observed: StoredLiveCredential,
-    context: Box<RefreshNotAppliedContext>,
+    mut context: Box<RefreshNotAppliedContext>,
+    minimum_backoff: std::time::Duration,
 ) -> RetryGateWrite
 where
     S: CredentialPersistence + ?Sized,
 {
+    context.apply_min_retry_backoff(minimum_backoff);
     let transition = transition_from_context(&context);
     let baseline_epoch = observed.material_epoch();
     let mut current = observed;

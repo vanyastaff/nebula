@@ -7,7 +7,9 @@
 
 use std::fmt;
 
-use crate::{CredentialId, resolve::ReauthReason};
+use nebula_core::CredentialKey;
+
+use crate::{CredentialId, TenantScope, resolve::ReauthReason};
 
 /// Cross-crate credential lifecycle event.
 ///
@@ -33,6 +35,19 @@ pub enum CredentialEvent {
     Refreshed {
         /// The credential instance ID.
         credential_id: CredentialId,
+    },
+
+    /// Interactive authorization replaced the stored credential material.
+    ///
+    /// Resource consumers must project the new durable state and install its
+    /// guard before invoking their credential-refresh hook.
+    MaterialReplaced {
+        /// The credential instance ID.
+        credential_id: CredentialId,
+        /// Owner-qualified scope required for fail-closed reprojection.
+        scope: TenantScope,
+        /// Credential contract expected by the replacement projection.
+        credential_key: CredentialKey,
     },
 
     /// Credential was explicitly revoked.
@@ -75,6 +90,7 @@ impl CredentialEvent {
     pub fn credential_id(&self) -> CredentialId {
         match self {
             Self::Refreshed { credential_id }
+            | Self::MaterialReplaced { credential_id, .. }
             | Self::Revoked { credential_id }
             | Self::ReauthRequired { credential_id, .. } => *credential_id,
         }
@@ -86,6 +102,9 @@ impl fmt::Display for CredentialEvent {
         match self {
             Self::Refreshed { credential_id } => {
                 write!(f, "credential refreshed: {credential_id}")
+            },
+            Self::MaterialReplaced { credential_id, .. } => {
+                write!(f, "credential material replaced: {credential_id}")
             },
             Self::Revoked { credential_id } => {
                 write!(f, "credential revoked: {credential_id}")

@@ -10,10 +10,13 @@ use nebula_api::ports::credential_schema::CredentialSchemaPort;
 use nebula_credential::{
     ApiKeyCredential, BasicAuthCredential, Capabilities, CredentialObserver, CredentialRegistry,
     CredentialService, CredentialServiceError, DispatchError, DispatchOps, ErasedPendingStore,
-    EventMetricObserver, SigningKeyCredential, StateSource, register_runtime_ops,
+    EventMetricObserver, OAuth2Credential, SigningKeyCredential, StateSource,
+    register_interactive_ops, register_refreshable_ops, register_runtime_ops,
     runtime::{
-        CredentialLifecycleRuntime, CredentialResolver, LeaseLifecycleConfig, ReclaimSweepHandle,
-        RefreshCoordConfig, RefreshCoordMetrics, RefreshCoordinator, SentinelEscalationPolicy,
+        CredentialLifecycleRuntime, CredentialRefreshSchedulerConfig,
+        CredentialRefreshSchedulerConfigError, CredentialResolver, LeaseLifecycleConfig,
+        ReclaimSweepHandle, RefreshCoordConfig, RefreshCoordMetrics, RefreshCoordinator,
+        SentinelEscalationPolicy,
     },
 };
 use nebula_crypto::EncryptionKey;
@@ -22,11 +25,11 @@ use nebula_metrics::MetricsRegistry;
 use nebula_storage::credential::PgCredentialPersistence;
 use nebula_storage::credential::{
     AuditEvent, AuditLayer, AuditSink, CredentialKeyring, CredentialKeyringError,
-    CredentialStoreStartupError, EncryptionLayer, EnvKeyProvider, InMemoryPendingStore,
-    KeyProvider, SqliteCredentialPersistence,
+    CredentialStoreStartupError, EncryptionLayer, EnvKeyProvider, KeyProvider,
+    SqliteCredentialPersistence,
 };
 use nebula_storage_port::{
-    CredentialPersistence, CredentialPersistenceError,
+    CredentialPersistence, CredentialPersistenceError, CredentialRefreshSchedule,
     store::{RefreshClaimAdjudicator, RefreshClaimReclaimer, RefreshClaimStore, ReplicaId},
 };
 use thiserror::Error;
@@ -110,6 +113,8 @@ pub(crate) enum CredentialCompositionError {
     RefreshTransport(String),
     #[error("credential refresh coordinator initialization failed: {0}")]
     RefreshCoordinator(String),
+    #[error("credential refresh scheduler configuration is invalid")]
+    RefreshScheduler(#[from] CredentialRefreshSchedulerConfigError),
 }
 
 /// Resolve the process-wide credential/identity encryption keyring.
@@ -166,12 +171,12 @@ pub(crate) async fn compose_memory_service(
     let store = SqliteCredentialPersistence::connect_memory()
         .await
         .map_err(CredentialCompositionError::Store)?;
-    let (claim_repo, reclaimer, adjudicator) = shared_claim_repo(store.refresh_claim_repo());
+    let refresh_ports = refresh_runtime_ports(store.refresh_schedule(), store.refresh_claim_repo());
+    let pending = sqlite_pending_store(&store, Arc::clone(&key_provider), Vec::new());
     let runtime = compose_runtime(
         store,
-        claim_repo,
-        reclaimer,
-        adjudicator,
+        refresh_ports,
+        pending,
         key_provider,
         Vec::new(),
         Arc::new(MetricsRegistry::new()),
@@ -196,8 +201,10 @@ async fn compose_first_party_runtime_for_database(
             let store = SqliteCredentialPersistence::connect(database_url)
                 .await
                 .map_err(CredentialCompositionError::Store)?;
-            let (claim_repo, reclaimer, adjudicator) =
-                shared_claim_repo(store.refresh_claim_repo());
+            let refresh_ports =
+                refresh_runtime_ports(store.refresh_schedule(), store.refresh_claim_repo());
+            let pending =
+                sqlite_pending_store(&store, Arc::clone(&key_provider), legacy_keys.clone());
             // Database URLs can carry credentials or tenant-specific
             // filesystem paths. Record only the closed backend class.
             tracing::info!(
@@ -206,9 +213,8 @@ async fn compose_first_party_runtime_for_database(
             );
             compose_runtime(
                 store,
-                claim_repo,
-                reclaimer,
-                adjudicator,
+                refresh_ports,
+                pending,
                 key_provider,
                 legacy_keys,
                 metrics_registry,
@@ -220,17 +226,18 @@ async fn compose_first_party_runtime_for_database(
                 let store = PgCredentialPersistence::connect(database_url)
                     .await
                     .map_err(CredentialCompositionError::Store)?;
-                let (claim_repo, reclaimer, adjudicator) =
-                    shared_claim_repo(store.refresh_claim_repo());
+                let refresh_ports =
+                    refresh_runtime_ports(store.refresh_schedule(), store.refresh_claim_repo());
+                let pending =
+                    postgres_pending_store(&store, Arc::clone(&key_provider), legacy_keys.clone());
                 tracing::info!(
                     backend = backend.as_str(),
                     "credential durable store opened"
                 );
                 compose_runtime(
                     store,
-                    claim_repo,
-                    reclaimer,
-                    adjudicator,
+                    refresh_ports,
+                    pending,
                     key_provider,
                     legacy_keys,
                     metrics_registry,
@@ -275,9 +282,8 @@ fn classify_credential_database(
 
 fn compose_runtime<P>(
     raw_store: P,
-    claim_repo: Arc<dyn RefreshClaimStore>,
-    reclaimer: Arc<dyn RefreshClaimReclaimer>,
-    adjudicator: Arc<dyn RefreshClaimAdjudicator>,
+    refresh_ports: CredentialRefreshRuntimePorts,
+    pending: ErasedPendingStore,
     key_provider: Arc<dyn KeyProvider>,
     legacy_keys: Vec<(String, Arc<EncryptionKey>)>,
     metrics_registry: Arc<MetricsRegistry>,
@@ -285,6 +291,113 @@ fn compose_runtime<P>(
 where
     P: CredentialPersistence + 'static,
 {
+    let oauth_transport = Arc::new(
+        ReqwestOAuthTransport::new()
+            .map_err(|error| CredentialCompositionError::RefreshTransport(error.to_string()))?,
+    );
+    compose_runtime_with_transport(
+        raw_store,
+        refresh_ports,
+        pending,
+        key_provider,
+        legacy_keys,
+        metrics_registry,
+        oauth_transport,
+    )
+}
+
+// The concrete transport retains first-party egress policy. Tests supply its
+// existing TLS/DNS fixture constructor; production always enters above.
+fn compose_runtime_with_transport<P>(
+    raw_store: P,
+    refresh_ports: CredentialRefreshRuntimePorts,
+    pending: ErasedPendingStore,
+    key_provider: Arc<dyn KeyProvider>,
+    legacy_keys: Vec<(String, Arc<EncryptionKey>)>,
+    metrics_registry: Arc<MetricsRegistry>,
+    oauth_transport: Arc<ReqwestOAuthTransport>,
+) -> Result<CredentialRuntime, CredentialCompositionError>
+where
+    P: CredentialPersistence + 'static,
+{
+    compose_runtime_with_policy_and_transport(
+        raw_store,
+        refresh_ports,
+        pending,
+        CredentialEncryptionConfig {
+            key_provider,
+            legacy_keys,
+        },
+        metrics_registry,
+        oauth_transport,
+        CredentialLifecyclePolicy::default(),
+    )
+}
+
+struct CredentialEncryptionConfig {
+    key_provider: Arc<dyn KeyProvider>,
+    legacy_keys: Vec<(String, Arc<EncryptionKey>)>,
+}
+
+#[derive(Default)]
+struct CredentialLifecyclePolicy {
+    refresh: RefreshCoordConfig,
+    scheduler: CredentialRefreshSchedulerConfig,
+}
+
+#[cfg(test)]
+fn compose_runtime_with_test_policy<P>(
+    raw_store: P,
+    refresh_ports: CredentialRefreshRuntimePorts,
+    pending: ErasedPendingStore,
+    key_provider: Arc<dyn KeyProvider>,
+    metrics_registry: Arc<MetricsRegistry>,
+    oauth_transport: Arc<ReqwestOAuthTransport>,
+    policy: CredentialLifecyclePolicy,
+) -> Result<CredentialRuntime, CredentialCompositionError>
+where
+    P: CredentialPersistence + 'static,
+{
+    compose_runtime_with_policy_and_transport(
+        raw_store,
+        refresh_ports,
+        pending,
+        CredentialEncryptionConfig {
+            key_provider,
+            legacy_keys: Vec::new(),
+        },
+        metrics_registry,
+        oauth_transport,
+        policy,
+    )
+}
+
+fn compose_runtime_with_policy_and_transport<P>(
+    raw_store: P,
+    refresh_ports: CredentialRefreshRuntimePorts,
+    pending: ErasedPendingStore,
+    encryption: CredentialEncryptionConfig,
+    metrics_registry: Arc<MetricsRegistry>,
+    oauth_transport: Arc<ReqwestOAuthTransport>,
+    policy: CredentialLifecyclePolicy,
+) -> Result<CredentialRuntime, CredentialCompositionError>
+where
+    P: CredentialPersistence + 'static,
+{
+    let CredentialEncryptionConfig {
+        key_provider,
+        legacy_keys,
+    } = encryption;
+    let CredentialLifecyclePolicy {
+        refresh: refresh_config,
+        scheduler: scheduler_config,
+    } = policy;
+    let CredentialRefreshRuntimePorts {
+        schedule: refresh_schedule,
+        claims: claim_repo,
+        reclaimer,
+        adjudicator,
+    } = refresh_ports;
     let registry = Arc::new(first_party_registry()?);
     let catalog: Arc<dyn CredentialSchemaPort> =
         Arc::new(RegistryCredentialSchema::new(Arc::clone(&registry))?);
@@ -302,7 +415,6 @@ where
     let audit_sink: Arc<dyn AuditSink> = Arc::new(TracingAuditSink);
     let store: Arc<dyn CredentialPersistence> =
         Arc::new(AuditLayer::new(encrypted, Arc::clone(&audit_sink)));
-    let refresh_config = RefreshCoordConfig::default();
     let refresh_metrics = RefreshCoordMetrics::with_registry(&metrics_registry)
         .map_err(|error| CredentialCompositionError::RefreshCoordinator(error.to_string()))?;
     let refresh_coordinator = Arc::new(
@@ -329,23 +441,20 @@ where
         escalation_policy,
         Some(Arc::clone(&credential_events)),
     );
-    let oauth_transport = Arc::new(
-        ReqwestOAuthTransport::new()
-            .map_err(|error| CredentialCompositionError::RefreshTransport(error.to_string()))?,
-    );
     let resolver = CredentialResolver::with_dependencies(
         Arc::clone(&store),
         refresh_coordinator,
         oauth_transport.clone(),
     )
     .with_event_bus(credential_events);
-    let lifecycle = CredentialLifecycleRuntime::compose(
+    let lifecycle = CredentialLifecycleRuntime::compose_with_refresh_schedule(
+        refresh_schedule,
+        scheduler_config,
         reclaim_sweep,
         LeaseLifecycleConfig::default(),
         observer.lease_bus(),
         observer.metrics(),
         |lease| {
-            let pending = ErasedPendingStore::new(Arc::new(InMemoryPendingStore::new()));
             Arc::new(CredentialService::from_secure_parts(
                 store,
                 resolver,
@@ -358,7 +467,7 @@ where
                 StateSource::LocalEncrypted,
             ))
         },
-    );
+    )?;
 
     Ok(CredentialRuntime {
         lifecycle,
@@ -368,8 +477,29 @@ where
     })
 }
 
-/// Build the request, reclaim, and adjudication capabilities over **one**
-/// adapter instance.
+fn sqlite_pending_store(
+    store: &SqliteCredentialPersistence,
+    key_provider: Arc<dyn KeyProvider>,
+    legacy_keys: Vec<(String, Arc<EncryptionKey>)>,
+) -> ErasedPendingStore {
+    ErasedPendingStore::new(Arc::new(
+        store.pending_state_store(key_provider, legacy_keys),
+    ))
+}
+
+#[cfg(feature = "postgres")]
+fn postgres_pending_store(
+    store: &PgCredentialPersistence,
+    key_provider: Arc<dyn KeyProvider>,
+    legacy_keys: Vec<(String, Arc<EncryptionKey>)>,
+) -> ErasedPendingStore {
+    ErasedPendingStore::new(Arc::new(
+        store.pending_state_store(key_provider, legacy_keys),
+    ))
+}
+
+/// Group due-scan, request, reclaim, and adjudication capabilities for one
+/// durable credential backend.
 ///
 /// `refresh_claim_repo()` clones a pool handle, so two calls are two handles
 /// onto one store rather than two stores. All three trait objects below are
@@ -380,22 +510,25 @@ where
 /// `SqliteCredentialPersistence::connect_memory`, a SQLite **in-memory
 /// database** whose repo is `SqliteRefreshClaimRepo`. `InMemoryRefreshClaimRepo`
 /// exists, but this path does not build it.
-fn shared_claim_repo<R>(
-    repo: R,
-) -> (
-    Arc<dyn RefreshClaimStore>,
-    Arc<dyn RefreshClaimReclaimer>,
-    Arc<dyn RefreshClaimAdjudicator>,
-)
+struct CredentialRefreshRuntimePorts {
+    schedule: Arc<dyn CredentialRefreshSchedule>,
+    claims: Arc<dyn RefreshClaimStore>,
+    reclaimer: Arc<dyn RefreshClaimReclaimer>,
+    adjudicator: Arc<dyn RefreshClaimAdjudicator>,
+}
+
+fn refresh_runtime_ports<S, R>(schedule: S, repo: R) -> CredentialRefreshRuntimePorts
 where
+    S: CredentialRefreshSchedule,
     R: RefreshClaimStore + RefreshClaimReclaimer + RefreshClaimAdjudicator + 'static,
 {
     let repo = Arc::new(repo);
-    (
-        Arc::clone(&repo) as Arc<dyn RefreshClaimStore>,
-        Arc::clone(&repo) as Arc<dyn RefreshClaimReclaimer>,
-        repo as Arc<dyn RefreshClaimAdjudicator>,
-    )
+    CredentialRefreshRuntimePorts {
+        schedule: Arc::new(schedule),
+        claims: Arc::clone(&repo) as Arc<dyn RefreshClaimStore>,
+        reclaimer: Arc::clone(&repo) as Arc<dyn RefreshClaimReclaimer>,
+        adjudicator: repo as Arc<dyn RefreshClaimAdjudicator>,
+    }
 }
 
 fn server_replica_id() -> ReplicaId {
@@ -406,6 +539,7 @@ fn first_party_registry() -> Result<CredentialRegistry, nebula_credential::Regis
     let mut registry = CredentialRegistry::new();
     registry.register(ApiKeyCredential, "nebula-credential")?;
     registry.register(BasicAuthCredential, "nebula-credential")?;
+    registry.register(OAuth2Credential, "nebula-credential")?;
     registry.register(SigningKeyCredential, "nebula-credential")?;
     Ok(registry)
 }
@@ -414,6 +548,9 @@ fn first_party_ops() -> Result<DispatchOps<ErasedPendingStore>, DispatchError> {
     let mut ops = DispatchOps::new();
     register_runtime_ops::<ApiKeyCredential, ErasedPendingStore>(&mut ops)?;
     register_runtime_ops::<BasicAuthCredential, ErasedPendingStore>(&mut ops)?;
+    register_runtime_ops::<OAuth2Credential, ErasedPendingStore>(&mut ops)?;
+    register_interactive_ops::<OAuth2Credential, ErasedPendingStore>(&mut ops)?;
+    register_refreshable_ops::<OAuth2Credential, ErasedPendingStore>(&mut ops)?;
     register_runtime_ops::<SigningKeyCredential, ErasedPendingStore>(&mut ops)?;
     Ok(ops)
 }
@@ -475,6 +612,10 @@ impl AuditSink for TracingAuditSink {
 mod tests {
     use super::*;
     use base64::Engine as _;
+    use nebula_credential::{
+        AuthStyle, OAuth2Pending, PendingState, PendingStateStore, PendingStoreError, SecretString,
+        credentials::OAuth2Config,
+    };
 
     const TEST_KEY_BASE64: &str = "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI=";
 
@@ -564,19 +705,37 @@ mod tests {
         assert!(second.as_str().starts_with("nebula-server:"));
     }
 
+    #[test]
+    fn first_party_composition_admits_universal_oauth2_capabilities() {
+        let registry = first_party_registry().expect("first-party registry composes");
+        let ops = first_party_ops().expect("first-party dispatch composes");
+
+        assert_eq!(
+            registry.capabilities_of("oauth2"),
+            Some(Capabilities::INTERACTIVE | Capabilities::REFRESHABLE)
+        );
+        assert_eq!(
+            ops.capabilities_of("oauth2"),
+            Capabilities::INTERACTIVE | Capabilities::REFRESHABLE
+        );
+        validate_capability_dispatch(&registry, &ops)
+            .expect("every advertised OAuth2 capability has runtime dispatch");
+    }
+
     #[tokio::test]
     async fn composed_runtime_retains_reclaim_sweep_until_shutdown() {
         let store = SqliteCredentialPersistence::connect_memory()
             .await
             .expect("ready in-memory credential store");
-        let (claim_repo, reclaimer, adjudicator) = shared_claim_repo(store.refresh_claim_repo());
+        let refresh_ports =
+            refresh_runtime_ports(store.refresh_schedule(), store.refresh_claim_repo());
         let key_provider: Arc<dyn KeyProvider> =
             Arc::new(EnvKeyProvider::from_base64(TEST_KEY_BASE64).expect("valid fixed test key"));
+        let pending = sqlite_pending_store(&store, Arc::clone(&key_provider), Vec::new());
         let mut runtime = compose_runtime(
             store,
-            claim_repo,
-            reclaimer,
-            adjudicator,
+            refresh_ports,
+            pending,
             key_provider,
             Vec::new(),
             Arc::new(MetricsRegistry::new()),
@@ -598,6 +757,101 @@ mod tests {
             runtime.reclaim_sweep_is_finished(),
             "shutdown must abort the retained reclaim task"
         );
+    }
+
+    fn oauth_pending(state: &str) -> OAuth2Pending {
+        OAuth2Pending {
+            config: OAuth2Config::authorization_code("https://app.example.test/oauth/callback")
+                .auth_url("https://provider.example.test/authorize")
+                .token_url("https://provider.example.test/token")
+                .build(),
+            client_id: "client-id".to_owned(),
+            client_secret: SecretString::new("client-secret"),
+            auth_style: AuthStyle::Header,
+            pkce_verifier: SecretString::new("pkce-verifier"),
+            state: state.to_owned(),
+            redirect_uri: "https://app.example.test/oauth/callback".to_owned(),
+        }
+    }
+
+    #[tokio::test]
+    async fn sqlite_composition_preserves_oauth_pending_state_across_restart() {
+        const OWNER: &str = "owner-restart";
+        const SESSION: &str = "session-restart";
+        let directory = tempfile::tempdir().expect("temporary credential database directory");
+        let database_path = directory.path().join("credentials.db");
+        let database_url = database_path
+            .to_str()
+            .expect("temporary path is valid UTF-8");
+
+        let first_store = SqliteCredentialPersistence::connect(database_url)
+            .await
+            .expect("first admitted credential store");
+        let first_key = test_provider(19);
+        let first_pending = sqlite_pending_store(&first_store, Arc::clone(&first_key), Vec::new());
+        let first_refresh_ports = refresh_runtime_ports(
+            first_store.refresh_schedule(),
+            first_store.refresh_claim_repo(),
+        );
+        let mut first_runtime = compose_runtime(
+            first_store,
+            first_refresh_ports,
+            first_pending.clone(),
+            first_key,
+            Vec::new(),
+            Arc::new(MetricsRegistry::new()),
+        )
+        .expect("first credential runtime composes");
+        let token = first_pending
+            .put(
+                OAuth2Pending::KIND,
+                OWNER,
+                SESSION,
+                oauth_pending("restart-state"),
+            )
+            .await
+            .expect("OAuth pending state is stored");
+
+        first_runtime.shutdown().await;
+        drop(first_runtime);
+        drop(first_pending);
+
+        let second_store = SqliteCredentialPersistence::connect(database_url)
+            .await
+            .expect("credential store reopens after restart");
+        let second_key = test_provider(19);
+        let second_pending =
+            sqlite_pending_store(&second_store, Arc::clone(&second_key), Vec::new());
+        let second_refresh_ports = refresh_runtime_ports(
+            second_store.refresh_schedule(),
+            second_store.refresh_claim_repo(),
+        );
+        let mut second_runtime = compose_runtime(
+            second_store,
+            second_refresh_ports,
+            second_pending.clone(),
+            second_key,
+            Vec::new(),
+            Arc::new(MetricsRegistry::new()),
+        )
+        .expect("second credential runtime composes");
+
+        let wrong_binding = second_pending
+            .consume::<OAuth2Pending>(OAuth2Pending::KIND, &token, OWNER, "wrong-session")
+            .await
+            .expect_err("wrong session binding must fail closed");
+        assert!(matches!(
+            wrong_binding,
+            PendingStoreError::ValidationFailed { .. }
+        ));
+
+        let consumed = second_pending
+            .consume::<OAuth2Pending>(OAuth2Pending::KIND, &token, OWNER, SESSION)
+            .await
+            .expect("matching OAuth pending state survives restart");
+        assert_eq!(consumed.state, "restart-state");
+
+        second_runtime.shutdown().await;
     }
 
     #[test]
@@ -682,3 +936,11 @@ mod tests {
         assert!(!diagnostic.contains("tenant-private"));
     }
 }
+
+#[cfg(test)]
+#[path = "credential_acquisition_restart_tests.rs"]
+mod acquisition_restart_tests;
+
+#[cfg(test)]
+#[path = "credential_refresh_restart_tests.rs"]
+mod refresh_restart_tests;

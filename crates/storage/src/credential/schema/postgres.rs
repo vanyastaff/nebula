@@ -168,6 +168,16 @@ const OWNER_QUALIFIED_SENTINEL_EVENT_COLUMNS: [ExpectedColumn; 11] = [
     column("owner_id", "text", false, None),
 ];
 
+const PENDING_STATE_COLUMNS: [ExpectedColumn; 7] = [
+    column("token_digest", "bytea", false, None),
+    column("credential_kind", "text", false, None),
+    column("owner_id", "text", false, None),
+    column("session_id", "text", false, None),
+    column("state_encrypted", "bytea", false, None),
+    column("created_at", "timestamptz", false, None),
+    column("expires_at", "timestamptz", false, None),
+];
+
 #[derive(sqlx::FromRow)]
 struct ColumnShape {
     name: String,
@@ -258,6 +268,16 @@ async fn observe(
             return unsupported(AdmissionReason::InvalidSentinelEventsRelation);
         }
         validate_sentinel_events_relation(
+            connection,
+            latest.ok_or(CredentialStoreStartupError::Unavailable)?,
+        )
+        .await?;
+    }
+    if latest_is_supported && latest.is_some_and(|version| version >= 55) {
+        if !relation_exists(connection, "credential_pending_states").await? {
+            return unsupported(AdmissionReason::InvalidCredentialsRelation);
+        }
+        validate_pending_states_relation(
             connection,
             latest.ok_or(CredentialStoreStartupError::Unavailable)?,
         )
@@ -357,6 +377,71 @@ fn constraints_match(actual: &[ConstraintShape], expected: &[(&str, &str, &str)]
             .all(|(actual, (name, kind, definition))| {
                 actual.name == *name && actual.kind == *kind && actual.definition == *definition
             })
+}
+
+async fn validate_pending_states_relation(
+    connection: &mut PgConnection,
+    latest: i64,
+) -> Result<(), CredentialStoreStartupError> {
+    if !columns_match(
+        connection,
+        "credential_pending_states",
+        &PENDING_STATE_COLUMNS,
+    )
+    .await?
+    {
+        return unsupported(AdmissionReason::InvalidCredentialsRelation);
+    }
+    let constraints = constraint_shapes(connection, "credential_pending_states").await?;
+    let expiry_constraint = if latest >= 56 {
+        "CHECK (expires_at >= created_at)"
+    } else {
+        "CHECK (expires_at > created_at)"
+    };
+    if !constraints_match(
+        &constraints,
+        &[
+            ("credential_pending_states_check", "c", expiry_constraint),
+            (
+                "credential_pending_states_pkey",
+                "p",
+                "PRIMARY KEY (token_digest)",
+            ),
+            (
+                "credential_pending_states_token_digest_check",
+                "c",
+                "CHECK (octet_length(token_digest) = 32)",
+            ),
+        ],
+    ) {
+        return unsupported(AdmissionReason::InvalidCredentialsRelation);
+    }
+
+    let indexes = index_shapes(connection, "credential_pending_states").await?;
+    let expected = [
+        index(
+            "credential_pending_states_pkey",
+            true,
+            None,
+            &["token_digest"],
+            &[""],
+            &["bytea_ops"],
+            "0",
+        ),
+        index(
+            "idx_credential_pending_states_expiry",
+            false,
+            None,
+            &["expires_at"],
+            &[""],
+            &["timestamptz_ops"],
+            "0",
+        ),
+    ];
+    if !indexes_match(&indexes, &expected) {
+        return unsupported(AdmissionReason::InvalidCredentialsRelation);
+    }
+    Ok(())
 }
 
 async fn validate_credentials_relation(

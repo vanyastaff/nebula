@@ -168,7 +168,7 @@ fn sdk_only_consumer_cannot_name_authority_or_raw_persistence() {
     assert_eq!(
         nebula_dependencies,
         [format!(
-            "nebula-sdk = {{ version = \"={}\", default-features = false }}",
+            "nebula-sdk = {{ version = \"={}\", default-features = false, features = [\"http\"] }}",
             env!("CARGO_PKG_VERSION")
         )
         .as_str()],
@@ -337,8 +337,8 @@ fn macro_private_surface_matches_the_explicit_allowlist() {
                 pub use nebula_credential::{
                     AuthScheme, Credential, CredentialGuard, CredentialLifecycle,
                     CredentialMetadataDraft, CredentialPolicy, CredentialState, Dynamic,
-                    ErasedCredentialGuard, Interactive, RefreshStrategy, Refreshable, Revocable,
-                    RevokeStrategy, Testable,
+                    ErasedCredentialGuard, Interactive, RefreshPolicy, RefreshStrategy,
+                    Refreshable, Revocable, RevokeStrategy, Testable,
                     credential_key, metadata_name, schema_of,
                 };
                 pub mod contract {

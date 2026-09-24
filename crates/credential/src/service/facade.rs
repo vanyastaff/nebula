@@ -182,6 +182,9 @@ pub struct CredentialService {
 }
 
 impl CredentialService {
+    pub(crate) fn maximum_refresh_horizon(&self) -> Duration {
+        self.registry.maximum_refresh_horizon()
+    }
     /// Trusted composition constructor. The layered store MUST already be the
     /// secure `Audit(Encryption(raw))` stack; production assembly belongs to
     /// the deployment application, while API-local callers are test factories.

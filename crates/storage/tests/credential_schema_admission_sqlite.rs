@@ -1202,3 +1202,110 @@ async fn extra_index_is_rejected_by_exact_inventory() {
 
     assert_invalid_current_shape(&path).await;
 }
+
+#[tokio::test]
+async fn pending_state_column_and_constraint_drift_are_rejected() {
+    for (file_name, needle, replacement) in [
+        (
+            "pending-wrong-column.sqlite",
+            "credential_kind TEXT NOT NULL",
+            "credential_kind BLOB NOT NULL",
+        ),
+        (
+            "pending-wrong-constraint.sqlite",
+            "CHECK (expires_at >= created_at)",
+            "CHECK (expires_at > created_at)",
+        ),
+    ] {
+        let directory = tempfile::tempdir().expect("temporary directory must be created");
+        let path = directory.path().join(file_name);
+        let pool = raw_pool(&path).await;
+        MIGRATOR
+            .run(&pool)
+            .await
+            .expect("canonical current schema must install");
+        rewrite_schema_sql(
+            &pool,
+            "table",
+            "credential_pending_states",
+            needle,
+            replacement,
+        )
+        .await;
+        pool.close().await;
+
+        assert_invalid_current_shape(&path).await;
+    }
+}
+
+#[tokio::test]
+async fn pending_state_expiry_index_drift_is_rejected() {
+    let directory = tempfile::tempdir().expect("temporary directory must be created");
+    let path = directory.path().join("pending-wrong-expiry-index.sqlite");
+    let pool = raw_pool(&path).await;
+    MIGRATOR
+        .run(&pool)
+        .await
+        .expect("canonical current schema must install");
+    sqlx::query("DROP INDEX idx_credential_pending_states_expiry")
+        .execute(&pool)
+        .await
+        .expect("fixture canonical expiry index must be removed");
+    sqlx::query(
+        "CREATE INDEX idx_credential_pending_states_expiry
+         ON credential_pending_states(created_at)",
+    )
+    .execute(&pool)
+    .await
+    .expect("fixture drifted expiry index must install");
+    pool.close().await;
+
+    assert_invalid_current_shape(&path).await;
+}
+
+#[tokio::test]
+async fn canonical_0055_pending_rows_upgrade_without_rewriting_released_history() {
+    let directory = tempfile::tempdir().expect("temporary directory must be created");
+    let path = directory.path().join("pending-0055-upgrade.sqlite");
+    let pool = raw_pool(&path).await;
+    MIGRATOR
+        .run_to(55, &pool)
+        .await
+        .expect("released 0055 schema must install");
+    sqlx::query(
+        "INSERT INTO credential_pending_states (
+             token_digest, credential_kind, owner_id, session_id,
+             state_encrypted, created_at, expires_at
+         ) VALUES (zeroblob(32), 'oauth2', 'owner-a', 'session-a', x'01', 1000, 1001)",
+    )
+    .execute(&pool)
+    .await
+    .expect("0055-valid pending row must seed");
+    MIGRATOR
+        .run(&pool)
+        .await
+        .expect("0055 schema must upgrade through 0056");
+
+    let row: (String, i64, i64) =
+        sqlx::query_as("SELECT owner_id, created_at, expires_at FROM credential_pending_states")
+            .fetch_one(&pool)
+            .await
+            .expect("pending row must survive the relation rebuild");
+    assert_eq!(row, ("owner-a".to_owned(), 1000, 1001));
+    sqlx::query(
+        "INSERT INTO credential_pending_states (
+             token_digest, credential_kind, owner_id, session_id,
+             state_encrypted, created_at, expires_at
+         ) VALUES (randomblob(32), 'oauth2', 'owner-b', 'session-b', x'02', 2000, 2000)",
+    )
+    .execute(&pool)
+    .await
+    .expect("0056 must admit an immediately expired row");
+    pool.close().await;
+
+    drop(
+        SqliteCredentialPersistence::connect(&file_url(&path))
+            .await
+            .expect("upgraded pending-state relation must pass readiness"),
+    );
+}

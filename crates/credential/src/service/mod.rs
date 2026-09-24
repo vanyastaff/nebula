@@ -10,6 +10,7 @@
 //! read/project collaborators and cannot construct lifecycle or authority.
 /// Initial acquisition and interactive continuation.
 mod acquire;
+pub(crate) mod acquisition_intent;
 pub(crate) mod binding;
 /// Managed testing, refresh, and revocation.
 mod capabilities;
@@ -24,6 +25,7 @@ pub(crate) mod facade;
 pub(crate) mod head;
 pub(crate) mod observer;
 pub(crate) mod ops;
+mod scheduled_refresh;
 /// Binding validation and service adapters to the shared projection runtime.
 mod slot;
 

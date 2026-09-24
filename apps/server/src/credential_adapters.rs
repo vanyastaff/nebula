@@ -216,4 +216,4 @@ impl CredentialSchemaPort for RegistryCredentialSchema {
 
 #[cfg(test)]
 #[path = "credential_adapters_tests.rs"]
-mod transport_security_tests;
+pub(crate) mod transport_security_tests;

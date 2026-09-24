@@ -28,22 +28,21 @@ use chrono::{DateTime, Utc};
 use nebula_core::CredentialId;
 use nebula_storage_port::{
     CredentialAlreadyExistsKey, CredentialCommit, CredentialCreate, CredentialMaterialEpoch,
-    CredentialOwner, CredentialPersistence, CredentialPersistenceError, CredentialReplacement,
-    CredentialSelector, CredentialTombstone, CredentialVersion, RefreshRetrySnapshot, SecretBytes,
-    StoredCredential, StoredCredentialHead, StoredLiveCredential, StoredTombstonedCredential,
+    CredentialOwner, CredentialPersistence, CredentialPersistenceError, CredentialRefreshCursor,
+    CredentialRefreshHorizon, CredentialRefreshPageSize, CredentialRefreshSchedule,
+    CredentialRefreshScheduleError, CredentialReplacement, CredentialSelector, CredentialTombstone,
+    CredentialVersion, DueCredentialRefresh, RefreshRetrySnapshot, SecretBytes, StoredCredential,
+    StoredCredentialHead, StoredLiveCredential, StoredTombstonedCredential,
 };
 use serde_json::{Map, Value};
 use sqlx::{PgPool, Postgres, Transaction};
-use std::fmt;
 #[cfg(test)]
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::{fmt, sync::Arc};
 
 use super::{
-    CredentialStoreStartupError, refresh_claim::PgRefreshClaimRepo, retry_gate,
-    schema::postgres as schema,
+    CredentialStoreStartupError, pending::PgPendingStateStore, refresh_claim::PgRefreshClaimRepo,
+    retry_gate, schema::postgres as schema,
 };
 use crate::migration::setup_postgres_pool_with;
 
@@ -56,6 +55,18 @@ pub struct PgCredentialPersistence {
     pool: PgPool,
     #[cfg(test)]
     lose_next_commit_acknowledgement: Arc<AtomicBool>,
+}
+
+/// Read-only due-refresh schedule over an admitted PostgreSQL credential pool.
+#[derive(Clone)]
+pub struct PgCredentialRefreshSchedule {
+    pool: PgPool,
+}
+
+impl fmt::Debug for PgCredentialRefreshSchedule {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("PgCredentialRefreshSchedule")
+    }
 }
 
 impl fmt::Debug for PgCredentialPersistence {
@@ -119,6 +130,24 @@ impl PgCredentialPersistence {
     #[must_use]
     pub fn refresh_claim_repo(&self) -> PgRefreshClaimRepo {
         PgRefreshClaimRepo::new(self.pool.clone())
+    }
+
+    /// Create an encrypted durable pending-state store on this admitted pool.
+    #[must_use]
+    pub fn pending_state_store(
+        &self,
+        key_provider: Arc<dyn super::KeyProvider>,
+        legacy_keys: Vec<(String, Arc<nebula_crypto::EncryptionKey>)>,
+    ) -> PgPendingStateStore {
+        PgPendingStateStore::new(self.pool.clone(), key_provider, legacy_keys)
+    }
+
+    /// Create the due-refresh schedule adapter on this store's admitted pool.
+    #[must_use]
+    pub fn refresh_schedule(&self) -> PgCredentialRefreshSchedule {
+        PgCredentialRefreshSchedule {
+            pool: self.pool.clone(),
+        }
     }
 
     async fn begin_mutation(
@@ -382,7 +411,7 @@ async fn lock_owner_credential(
     owner: &CredentialOwner,
 ) -> Result<Option<LockedCredentialRow>, sqlx::Error> {
     sqlx::query_as(
-        "SELECT record_state, version, material_epoch
+        "SELECT record_state, version, material_epoch, credential_key
          FROM credentials
          WHERE id = $1 AND owner_id = $2
          FOR UPDATE",
@@ -404,6 +433,7 @@ struct LockedCredentialRow {
     record_state: String,
     version: i64,
     material_epoch: i64,
+    credential_key: String,
 }
 
 #[derive(sqlx::FromRow)]
@@ -705,6 +735,102 @@ impl super::CredentialPersistenceConformance for PgCredentialPersistence {
 }
 
 #[async_trait]
+impl CredentialRefreshSchedule for PgCredentialRefreshSchedule {
+    #[tracing::instrument(skip_all, fields(credential.operation = "scan_due_refresh"))]
+    async fn scan_due(
+        &self,
+        after: Option<&CredentialRefreshCursor>,
+        horizon: CredentialRefreshHorizon,
+        limit: CredentialRefreshPageSize,
+    ) -> Result<Vec<DueCredentialRefresh>, CredentialRefreshScheduleError> {
+        let horizon_secs = i64::try_from(horizon.get().as_secs())
+            .map_err(|_| CredentialRefreshScheduleError::CorruptRecord)?;
+        let (after_expiry, after_id) = after
+            .map(|cursor| {
+                (
+                    Some(cursor.expires_at()),
+                    Some(cursor.credential_id().to_string()),
+                )
+            })
+            .unwrap_or((None, None));
+        let rows: Vec<(
+            String,
+            String,
+            String,
+            DateTime<Utc>,
+            Option<String>,
+            Option<DateTime<Utc>>,
+            DateTime<Utc>,
+        )> = sqlx::query_as(
+            "WITH backend_clock AS MATERIALIZED (SELECT clock_timestamp() AS now_at)
+             SELECT c.id, c.owner_id, c.credential_key, c.expires_at,
+                    c.refresh_retry_mode, c.refresh_retry_not_before, clock.now_at
+             FROM credentials AS c CROSS JOIN backend_clock AS clock
+             WHERE c.record_state = 'live'
+               AND c.expires_at IS NOT NULL
+               AND c.reauth_required = FALSE
+               AND c.expires_at <= clock.now_at + ($1 * INTERVAL '1 second')
+               AND (
+                    c.refresh_retry_mode IS NULL
+                    OR (c.refresh_retry_mode <> $3
+                        AND (c.refresh_retry_mode <> $2
+                             OR c.refresh_retry_not_before IS NULL
+                             OR c.refresh_retry_not_before <= clock.now_at))
+               )
+               AND ($4::timestamptz IS NULL OR c.expires_at > $4
+                    OR (c.expires_at = $4 AND c.id > $5))
+             ORDER BY c.expires_at, c.id
+             LIMIT $6",
+        )
+        .bind(horizon_secs)
+        .bind(retry_gate::MODE_NOT_BEFORE)
+        .bind(retry_gate::MODE_NEVER)
+        .bind(after_expiry)
+        .bind(after_id)
+        .bind(i64::from(limit.get()))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|_| CredentialRefreshScheduleError::Unavailable)?;
+
+        rows.into_iter()
+            .map(
+                |(id, owner, credential_key, expires_at, mode, not_before, observed_at)| {
+                    match (mode.as_deref(), not_before) {
+                        (None, None) | (Some(retry_gate::MODE_NOT_BEFORE), Some(_)) => {},
+                        _ => return Err(CredentialRefreshScheduleError::CorruptRecord),
+                    }
+                    let credential_id = parse_credential_id(&id)
+                        .map_err(|_| CredentialRefreshScheduleError::CorruptRecord)?;
+                    Ok(DueCredentialRefresh::new(
+                        CredentialSelector::new(
+                            CredentialOwner::from_canonical(owner),
+                            credential_id,
+                        ),
+                        credential_key,
+                        expires_at,
+                        observed_at,
+                    ))
+                },
+            )
+            .collect()
+    }
+}
+
+#[async_trait]
+impl CredentialRefreshSchedule for PgCredentialPersistence {
+    async fn scan_due(
+        &self,
+        after: Option<&CredentialRefreshCursor>,
+        horizon: CredentialRefreshHorizon,
+        limit: CredentialRefreshPageSize,
+    ) -> Result<Vec<DueCredentialRefresh>, CredentialRefreshScheduleError> {
+        self.refresh_schedule()
+            .scan_due(after, horizon, limit)
+            .await
+    }
+}
+
+#[async_trait]
 impl CredentialPersistence for PgCredentialPersistence {
     #[tracing::instrument(skip_all)]
     async fn get(
@@ -888,12 +1014,28 @@ impl CredentialPersistence for PgCredentialPersistence {
             Ok(actual) => actual,
             Err(error) => return rollback_as(transaction, error).await,
         };
-        let next_version = match actual.next_live() {
-            Ok(next_version) => next_version,
-            Err(error) => return rollback_as(transaction, error).await,
-        };
         let actual_material_epoch = match parse_material_epoch(locked.material_epoch) {
             Ok(epoch) => epoch,
+            Err(error) => return rollback_as(transaction, error).await,
+        };
+        if let Some(fence) = replacement.fence() {
+            if actual_material_epoch != fence.expected_material_epoch() {
+                return rollback_as(
+                    transaction,
+                    CredentialPersistenceError::VersionConflict { expected, actual },
+                )
+                .await;
+            }
+            if locked.credential_key != fence.expected_credential_key() {
+                return rollback_as(
+                    transaction,
+                    CredentialPersistenceError::VersionConflict { expected, actual },
+                )
+                .await;
+            }
+        }
+        let next_version = match actual.next_live() {
+            Ok(next_version) => next_version,
             Err(error) => return rollback_as(transaction, error).await,
         };
         let next_material_epoch = if replacement.material_transition().advances_epoch() {

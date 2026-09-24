@@ -10,9 +10,11 @@ use nebula_core::CredentialId;
 use nebula_storage_port::{
     CredentialAlreadyExistsKey, CredentialCommit, CredentialCreate, CredentialMaterialEpoch,
     CredentialMaterialTransition, CredentialOwner, CredentialPersistence,
-    CredentialPersistenceError, CredentialReplacement, CredentialSelector, CredentialTombstone,
-    CredentialVersion, RefreshRetryProjection, RefreshRetrySnapshot, StoredCredential,
-    StoredCredentialHead, StoredLiveCredential, StoredTombstonedCredential,
+    CredentialPersistenceError, CredentialRefreshCursor, CredentialRefreshHorizon,
+    CredentialRefreshPageSize, CredentialRefreshSchedule, CredentialRefreshScheduleError,
+    CredentialReplacement, CredentialSelector, CredentialTombstone, CredentialVersion,
+    DueCredentialRefresh, RefreshRetryAdmission, RefreshRetryProjection, RefreshRetrySnapshot,
+    StoredCredential, StoredCredentialHead, StoredLiveCredential, StoredTombstonedCredential,
 };
 use parking_lot::Mutex;
 use serde_json::{Map, Value};
@@ -94,6 +96,59 @@ impl ReferenceCredentialPersistence {
                     .as_live()
                     .is_some_and(|live| live.name() == Some(name))
         })
+    }
+}
+
+#[async_trait]
+impl CredentialRefreshSchedule for ReferenceCredentialPersistence {
+    async fn scan_due(
+        &self,
+        after: Option<&CredentialRefreshCursor>,
+        horizon: CredentialRefreshHorizon,
+        limit: CredentialRefreshPageSize,
+    ) -> Result<Vec<DueCredentialRefresh>, CredentialRefreshScheduleError> {
+        let now = self.backend_now();
+        let horizon = chrono::Duration::from_std(horizon.get())
+            .map_err(|_| CredentialRefreshScheduleError::CorruptRecord)?;
+        let cutoff = now
+            .checked_add_signed(horizon)
+            .ok_or(CredentialRefreshScheduleError::CorruptRecord)?;
+        let records = self.records.lock();
+        let mut candidates = records
+            .values()
+            .filter_map(|owned| {
+                let live = owned.record.as_live()?;
+                let expires_at = live.expires_at()?;
+                if live.reauth_required() || expires_at > cutoff {
+                    return None;
+                }
+                let admission =
+                    super::retry_gate::evaluate_gate(live.refresh_retry_gate(), now).ok()?;
+                if !matches!(admission, RefreshRetryAdmission::Open) {
+                    return None;
+                }
+                let key = (expires_at, live.credential_id());
+                if after.is_some_and(|cursor| key <= (cursor.expires_at(), cursor.credential_id()))
+                {
+                    return None;
+                }
+                Some((
+                    key,
+                    DueCredentialRefresh::new(
+                        CredentialSelector::new(owned.owner.clone(), live.credential_id()),
+                        live.credential_key().to_owned(),
+                        expires_at,
+                        now,
+                    ),
+                ))
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_unstable_by_key(|(key, _)| *key);
+        candidates.truncate(usize::from(limit.get()));
+        Ok(candidates
+            .into_iter()
+            .map(|(_, candidate)| candidate)
+            .collect())
     }
 }
 
@@ -378,6 +433,20 @@ impl CredentialPersistence for ReferenceCredentialPersistence {
                 expected: replacement.expected_version(),
                 actual: current.version(),
             });
+        }
+        if let Some(fence) = replacement.fence() {
+            if current.material_epoch() != fence.expected_material_epoch() {
+                return Err(CredentialPersistenceError::VersionConflict {
+                    expected: replacement.expected_version(),
+                    actual: current.version(),
+                });
+            }
+            if current.credential_key() != fence.expected_credential_key() {
+                return Err(CredentialPersistenceError::VersionConflict {
+                    expected: replacement.expected_version(),
+                    actual: current.version(),
+                });
+            }
         }
         let next_version = current.version().next_live()?;
         if Self::name_is_taken(

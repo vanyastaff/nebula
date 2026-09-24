@@ -10,7 +10,8 @@ use nebula_core::CredentialId;
 use nebula_storage_port::{
     CredentialAlreadyExistsKey, CredentialCreate, CredentialMaterialEpoch,
     CredentialMaterialTransition, CredentialOwner, CredentialPersistenceError,
-    CredentialRecordState, CredentialReplacement, CredentialSelector, CredentialTombstone,
+    CredentialRecordState, CredentialRefreshHorizon, CredentialRefreshPageSize,
+    CredentialReplacement, CredentialReplacementFence, CredentialSelector, CredentialTombstone,
     CredentialVersion, RefreshRetryAdmission, RefreshRetryBlock, RefreshRetryDelay,
     RefreshRetryDiagnosticCode, RefreshRetryEvidence, RefreshRetryKind, RefreshRetryPhase,
     RefreshRetryProjection, RefreshRetryTransition, SecretBytes, StoredCredential,
@@ -45,14 +46,24 @@ fn metadata(name: Option<&str>, marker: &str) -> Map<String, Value> {
 }
 
 fn create(name: Option<&str>, secret: &[u8], marker: &str) -> CredentialCreate {
+    create_expiring(name, secret, marker, None, false)
+}
+
+fn create_expiring(
+    name: Option<&str>,
+    secret: &[u8],
+    marker: &str,
+    expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    reauth_required: bool,
+) -> CredentialCreate {
     CredentialCreate::new(
         "provider.api-token".to_owned(),
         SecretBytes::new(secret.to_vec()),
         "active".to_owned(),
         7,
         name.map(str::to_owned),
-        None,
-        false,
+        expires_at,
+        reauth_required,
         metadata(name, marker),
     )
 }
@@ -83,6 +94,143 @@ where
 {
     let owner_a = owner("oracle-owner-a");
     let owner_b = owner("oracle-owner-b");
+    let schedule_owner = owner("oracle-schedule-owner");
+
+    let common_expiry = chrono::Utc::now() + chrono::Duration::minutes(5);
+    let mut due_ids = [CredentialId::new(), CredentialId::new()];
+    due_ids.sort_unstable();
+    for (index, credential_id) in due_ids.into_iter().enumerate() {
+        store
+            .create(
+                &selector(&schedule_owner, credential_id),
+                create_expiring(
+                    None,
+                    format!("due-{index}").as_bytes(),
+                    "due",
+                    Some(common_expiry),
+                    false,
+                ),
+            )
+            .await?;
+    }
+    let blocked_id = CredentialId::new();
+    let blocked_key = selector(&schedule_owner, blocked_id);
+    let blocked = store
+        .create(
+            &blocked_key,
+            create_expiring(None, b"blocked", "blocked", Some(common_expiry), false),
+        )
+        .await?;
+    let schedule_evidence = RefreshRetryEvidence::new(
+        RefreshRetryPhase::BeforeDispatch,
+        RefreshRetryKind::TransientNetwork,
+        None,
+    );
+    store
+        .replace(
+            &blocked_key,
+            CredentialReplacement::new(
+                blocked.version(),
+                SecretBytes::new(b"blocked-v2".to_vec()),
+                "active".to_owned(),
+                8,
+                None,
+                Some(common_expiry),
+                false,
+                metadata(None, "blocked-v2"),
+                CredentialMaterialTransition::preserve(RefreshRetryTransition::SetNever {
+                    evidence: schedule_evidence.clone(),
+                }),
+            ),
+        )
+        .await?;
+    let deferred_id = CredentialId::new();
+    let deferred_key = selector(&schedule_owner, deferred_id);
+    let deferred = store
+        .create(
+            &deferred_key,
+            create_expiring(None, b"deferred", "deferred", Some(common_expiry), false),
+        )
+        .await?;
+    store
+        .replace(
+            &deferred_key,
+            CredentialReplacement::new(
+                deferred.version(),
+                SecretBytes::new(b"deferred-v2".to_vec()),
+                "active".to_owned(),
+                8,
+                None,
+                Some(common_expiry),
+                false,
+                metadata(None, "deferred-v2"),
+                CredentialMaterialTransition::preserve(RefreshRetryTransition::SetAfter {
+                    delay: RefreshRetryDelay::new(Duration::from_mins(1))?,
+                    evidence: schedule_evidence,
+                }),
+            ),
+        )
+        .await?;
+    let reauth_id = CredentialId::new();
+    store
+        .create(
+            &selector(&schedule_owner, reauth_id),
+            create_expiring(None, b"reauth", "reauth", Some(common_expiry), true),
+        )
+        .await?;
+    let tombstoned_id = CredentialId::new();
+    let tombstoned_key = selector(&schedule_owner, tombstoned_id);
+    let tombstoned = store
+        .create(
+            &tombstoned_key,
+            create_expiring(
+                None,
+                b"tombstoned",
+                "tombstoned",
+                Some(common_expiry),
+                false,
+            ),
+        )
+        .await?;
+    store
+        .tombstone(
+            &tombstoned_key,
+            CredentialTombstone::new(tombstoned.version()),
+        )
+        .await?;
+    let far_id = CredentialId::new();
+    store
+        .create(
+            &selector(&schedule_owner, far_id),
+            create_expiring(
+                None,
+                b"far",
+                "far",
+                Some(common_expiry + chrono::Duration::hours(2)),
+                false,
+            ),
+        )
+        .await?;
+
+    let horizon = CredentialRefreshHorizon::new(Duration::from_mins(10))?;
+    let one = CredentialRefreshPageSize::new(1)?;
+    let first_page = store.scan_due(None, horizon, one).await?;
+    assert_eq!(first_page.len(), 1, "schedule pages must honor their bound");
+    assert_eq!(first_page[0].selector().credential_id(), due_ids[0]);
+    assert!(first_page[0].observed_at() <= common_expiry);
+    let second_page = store
+        .scan_due(Some(&first_page[0].cursor()), horizon, one)
+        .await?;
+    assert_eq!(second_page.len(), 1);
+    assert_eq!(second_page[0].selector().credential_id(), due_ids[1]);
+    assert!(
+        store
+            .scan_due(Some(&second_page[0].cursor()), horizon, one)
+            .await?
+            .is_empty(),
+        "blocked, deferred, reauth, and outside-horizon rows must not leak into the schedule"
+    );
+
     let credential_id = CredentialId::new();
     let key = selector(&owner_a, credential_id);
 
@@ -354,6 +502,73 @@ where
     assert_eq!(live.state_version(), 8);
     assert_eq!(live.material_epoch(), CredentialMaterialEpoch::MIN.next()?);
     assert!(live.reauth_required());
+    let current_epoch = CredentialMaterialEpoch::MIN.next()?;
+    assert_eq!(
+        store
+            .replace(
+                &key,
+                replacement(
+                    version_two,
+                    Some("Epoch stale"),
+                    b"epoch-stale",
+                    "epoch-stale",
+                    CredentialMaterialTransition::advance(),
+                )
+                .with_fence(CredentialReplacementFence::new(
+                    CredentialMaterialEpoch::MIN,
+                    "provider.api-token".to_owned(),
+                )),
+            )
+            .await
+            .expect_err("stale material epoch must fail closed"),
+        CredentialPersistenceError::VersionConflict {
+            expected: version_two,
+            actual: version_two,
+        }
+    );
+    assert_eq!(
+        store
+            .replace(
+                &key,
+                replacement(
+                    version_two,
+                    Some("Key substituted"),
+                    b"key-substituted",
+                    "key-substituted",
+                    CredentialMaterialTransition::advance(),
+                )
+                .with_fence(CredentialReplacementFence::new(
+                    current_epoch,
+                    "provider.substituted".to_owned(),
+                )),
+            )
+            .await
+            .expect_err("credential-key substitution must fail closed"),
+        CredentialPersistenceError::VersionConflict {
+            expected: version_two,
+            actual: version_two,
+        }
+    );
+    assert_eq!(
+        store
+            .replace(
+                &selector(&owner_b, credential_id),
+                replacement(
+                    version_two,
+                    Some("Owner substituted"),
+                    b"owner-substituted",
+                    "owner-substituted",
+                    CredentialMaterialTransition::advance(),
+                )
+                .with_fence(CredentialReplacementFence::new(
+                    current_epoch,
+                    "provider.api-token".to_owned(),
+                )),
+            )
+            .await
+            .expect_err("owner substitution must preserve existence hiding"),
+        CredentialPersistenceError::NotFound
+    );
     assert_eq!(
         store
             .replace(
@@ -612,6 +827,37 @@ where
     store
         .force_live_version_for_conformance(&headroom_key, CredentialVersion::MAX_LIVE)
         .await?;
+    for fence in [
+        CredentialReplacementFence::new(
+            CredentialMaterialEpoch::MIN.next()?,
+            "provider.api-token".to_owned(),
+        ),
+        CredentialReplacementFence::new(
+            CredentialMaterialEpoch::MIN,
+            "provider.substituted".to_owned(),
+        ),
+    ] {
+        assert_eq!(
+            store
+                .replace(
+                    &headroom_key,
+                    replacement(
+                        CredentialVersion::MAX_LIVE,
+                        None,
+                        b"fenced-overflow",
+                        "fenced-overflow",
+                        CredentialMaterialTransition::advance(),
+                    )
+                    .with_fence(fence),
+                )
+                .await
+                .expect_err("strict fence must be checked before version exhaustion"),
+            CredentialPersistenceError::VersionConflict {
+                expected: CredentialVersion::MAX_LIVE,
+                actual: CredentialVersion::MAX_LIVE,
+            }
+        );
+    }
     assert_eq!(
         store
             .replace(

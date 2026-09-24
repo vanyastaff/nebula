@@ -287,6 +287,26 @@ impl RefreshNotAppliedContext {
         self.retry
     }
 
+    pub(crate) fn apply_min_retry_backoff(&mut self, minimum: std::time::Duration) {
+        let RetryAdvice::After(current) = self.retry else {
+            return;
+        };
+        if minimum.is_zero() {
+            return;
+        }
+        match RetryDelay::new(minimum) {
+            Ok(minimum) => self.retry = RetryAdvice::After(current.max(minimum)),
+            Err(error) => {
+                tracing::error!(
+                    minimum_retry_backoff_seconds = minimum.as_secs_f64(),
+                    ?error,
+                    "invalid refresh retry floor reached runtime; disabling automatic retry"
+                );
+                self.retry = RetryAdvice::Never;
+            },
+        }
+    }
+
     /// Optional validated diagnostic code.
     #[must_use]
     pub fn diagnostic_code(&self) -> Option<&RefreshDiagnosticCode> {
@@ -784,6 +804,48 @@ mod tests {
             RetryDelay::new(std::time::Duration::from_secs(RetryDelay::MAX_SECS + 1)),
             Err(RetryDelayError::TooLong)
         );
+    }
+
+    #[test]
+    fn refresh_context_applies_registered_retry_floor() {
+        let provider_delay =
+            RetryDelay::new(std::time::Duration::from_secs(2)).expect("provider delay is valid");
+        let mut context = RefreshNotAppliedContext::from_spec(
+            RefreshNotAppliedPhase::BeforeDispatch,
+            RefreshFailureSpec::new(
+                RefreshErrorKind::ProviderUnavailable,
+                RetryAdvice::After(provider_delay),
+            ),
+        );
+
+        context.apply_min_retry_backoff(std::time::Duration::from_secs(30));
+
+        assert_eq!(
+            context.retry(),
+            RetryAdvice::After(
+                RetryDelay::new(std::time::Duration::from_secs(30)).expect("policy floor is valid")
+            )
+        );
+    }
+
+    #[test]
+    fn refresh_context_fails_closed_for_unregistered_invalid_retry_floor() {
+        let provider_delay =
+            RetryDelay::new(std::time::Duration::from_secs(2)).expect("provider delay is valid");
+        let mut context = RefreshNotAppliedContext::from_spec(
+            RefreshNotAppliedPhase::BeforeDispatch,
+            RefreshFailureSpec::new(
+                RefreshErrorKind::ProviderUnavailable,
+                RetryAdvice::After(provider_delay),
+            ),
+        );
+
+        context.apply_min_retry_backoff(
+            std::time::Duration::from_secs(RetryDelay::MAX_SECS)
+                .saturating_add(std::time::Duration::from_nanos(1)),
+        );
+
+        assert_eq!(context.retry(), RetryAdvice::Never);
     }
 
     #[test]

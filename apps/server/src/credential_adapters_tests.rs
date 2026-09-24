@@ -97,6 +97,7 @@ const CHILD_PROXY_MARKER: &str = "NEBULA_CREDENTIAL_REFRESH_PROXY_CHILD";
 #[derive(Clone, Copy)]
 enum ServerBehavior {
     Success,
+    RefreshableSuccess,
     Redirect(u16),
     AbortAfterRequest,
     OversizedContentLength,
@@ -104,7 +105,7 @@ enum ServerBehavior {
     ExactBodyLimit,
 }
 
-struct TlsFixture {
+pub(crate) struct TlsFixture {
     addr: SocketAddr,
     trust_anchor: reqwest::Certificate,
     connections: Arc<AtomicUsize>,
@@ -114,6 +115,18 @@ struct TlsFixture {
 }
 
 impl TlsFixture {
+    pub(crate) async fn success() -> Self {
+        Self::spawn(ServerBehavior::Success).await
+    }
+
+    pub(crate) async fn refreshable_success() -> Self {
+        Self::spawn(ServerBehavior::RefreshableSuccess).await
+    }
+
+    pub(crate) fn request_count(&self) -> usize {
+        self.requests.load(Ordering::SeqCst)
+    }
+
     async fn spawn(behavior: ServerBehavior) -> Self {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
             .await
@@ -149,13 +162,6 @@ impl TlsFixture {
                     if matches!(behavior, ServerBehavior::AbortAfterRequest) {
                         return;
                     }
-                    // `write_all` returns once rustls has accepted the plaintext,
-                    // not once the records reached the socket. Dropping the
-                    // stream right after a large write loses whatever was still
-                    // buffered (a 256 KiB body truncated at the TCP send
-                    // buffer on Windows) and skips `close_notify`, so the
-                    // client sees an unexpected EOF instead of the response.
-                    // `shutdown` flushes and closes the TLS session cleanly.
                     if write_response(&mut stream, behavior, addr.port())
                         .await
                         .is_ok()
@@ -176,11 +182,11 @@ impl TlsFixture {
         }
     }
 
-    fn endpoint(&self) -> String {
+    pub(crate) fn endpoint(&self) -> String {
         format!("https://{TEST_HOST}:{}/token", self.addr.port())
     }
 
-    fn transport(&self, dns_answers: Vec<IpAddr>) -> ReqwestOAuthTransport {
+    pub(crate) fn transport(&self, dns_answers: Vec<IpAddr>) -> ReqwestOAuthTransport {
         ReqwestOAuthTransport::for_test(
             self.trust_anchor.clone(),
             IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -189,7 +195,7 @@ impl TlsFixture {
         .expect("fixed test client")
     }
 
-    fn last_request(&self) -> Vec<u8> {
+    pub(crate) fn last_request(&self) -> Vec<u8> {
         self.request_bytes
             .lock()
             .expect("request capture lock")
@@ -340,7 +346,9 @@ async fn write_response(
             stream.write_all(response.as_bytes()).await?;
             return stream.write_all(&body).await;
         },
-        ServerBehavior::Success | ServerBehavior::Redirect(_) => {},
+        ServerBehavior::Success
+        | ServerBehavior::RefreshableSuccess
+        | ServerBehavior::Redirect(_) => {},
     }
 
     let (status, extra_header, body) = match behavior {
@@ -348,6 +356,11 @@ async fn write_response(
             "200 OK",
             String::new(),
             br#"{"access_token":"new-access","token_type":"Bearer","scope":"read"}"#.as_slice(),
+        ),
+        ServerBehavior::RefreshableSuccess => (
+            "200 OK",
+            String::new(),
+            br#"{"access_token":"new-access","refresh_token":"rotating-refresh","token_type":"Bearer","scope":"read","expires_in":60}"#.as_slice(),
         ),
         ServerBehavior::Redirect(status) => (
             if status == 307 {
