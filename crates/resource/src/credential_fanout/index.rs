@@ -288,7 +288,9 @@ pub struct ResourceFanoutIndex {
     material_contexts: DashMap<CredentialId, (TenantScope, CredentialKey, u64)>,
     material_context_sequence: std::sync::atomic::AtomicU64,
     pending_revoke_admissions: std::sync::Mutex<Vec<PendingRevokeAdmission>>,
-    staged_revoke_intents: std::sync::Mutex<std::collections::HashSet<CredentialId>>,
+    /// Terminal observations retained for the index lifetime so a registration
+    /// that stages after event delivery cannot publish revoked material.
+    observed_revocations: std::sync::Mutex<std::collections::HashSet<CredentialId>>,
     revoke_retry_notify: tokio::sync::Notify,
     /// Shared admission keeps direct dispatch and reconciliation under one
     /// provider/persistence concurrency budget.
@@ -302,7 +304,7 @@ impl Default for ResourceFanoutIndex {
             material_contexts: DashMap::new(),
             material_context_sequence: std::sync::atomic::AtomicU64::new(1),
             pending_revoke_admissions: std::sync::Mutex::new(Vec::new()),
-            staged_revoke_intents: std::sync::Mutex::new(std::collections::HashSet::new()),
+            observed_revocations: std::sync::Mutex::new(std::collections::HashSet::new()),
             revoke_retry_notify: tokio::sync::Notify::new(),
             projection_admission: tokio::sync::Semaphore::new(MAX_CONCURRENT_PROJECTIONS),
         }
@@ -549,19 +551,14 @@ impl ResourceFanoutIndex {
         self.revoke_retry_notify.notify_one();
     }
 
-    pub(crate) fn remember_staged_revoke_if_present(&self, credential_id: CredentialId) -> bool {
-        // Serialize the staged check with publication cleanup. Stage insertion
-        // itself never takes this mutex; whichever side acquires it afterward
-        // observes either a still-staged row or a completed publication.
-        let mut intents = self
-            .staged_revoke_intents
+    pub(crate) fn remember_revocation(&self, credential_id: CredentialId) {
+        // A revoke is terminal for this credential id. Retain the observation
+        // even when no binding is visible yet: register_and_bind may already
+        // have resolved revoked material but not inserted its staged row.
+        self.observed_revocations
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if !self.has_staged_binding(&credential_id) {
-            return false;
-        }
-        intents.insert(credential_id);
-        true
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(credential_id);
     }
 
     pub(crate) async fn revoke_retry_notified(&self) {
@@ -721,7 +718,7 @@ impl ResourceFanoutIndex {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clear();
-        self.staged_revoke_intents
+        self.observed_revocations
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clear();
@@ -846,15 +843,10 @@ impl ResourceFanoutIndex {
                 row.staged_context = None;
             }
         }
-        let mut staged_revoke_intents = self
-            .staged_revoke_intents
+        self.observed_revocations
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let should_revoke = staged_revoke_intents.contains(cid);
-        if !self.has_staged_binding(cid) {
-            staged_revoke_intents.remove(cid);
-        }
-        should_revoke
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(cid)
     }
 
     fn prune_orphan_contexts(&self) {
@@ -864,10 +856,6 @@ impl ResourceFanoutIndex {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .retain(|entry| self.has_published_binding(&entry.credential_id));
-        self.staged_revoke_intents
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .retain(|credential_id| self.has_staged_binding(credential_id));
     }
 
     fn has_published_binding(&self, cid: &CredentialId) -> bool {

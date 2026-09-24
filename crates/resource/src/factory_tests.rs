@@ -681,7 +681,7 @@ async fn rotation_binding_without_projection_ports_fails_before_publication() {
 
 #[cfg(feature = "rotation")]
 #[tokio::test]
-async fn revoke_observed_during_staging_taints_the_row_at_publication() {
+async fn revoke_observed_before_staging_taints_the_row_at_publication() {
     let manager = Manager::new();
     let expression_engine = ExpressionEngine::with_cache_size(16);
     let credential_id = nebula_credential::CredentialId::new();
@@ -697,16 +697,9 @@ async fn revoke_observed_during_staging_taints_the_row_at_publication() {
         )
         .expect("typed fixture metadata admits");
 
-    // Models the event arriving after register_and_bind staged the reverse
-    // index row but before Manager publishes it under lifecycle admission.
-    let staged = crate::Bind {
-        resource_key: BoundTestRes::key(),
-        scope: ScopeLevel::Global,
-        slot_name: "auth".to_owned(),
-        slot_identity: SlotIdentity::from_bindings([("auth", "test.factory-credential")]),
-    };
-    fanout_index.stage_bind(credential_id, staged.clone());
-    assert!(fanout_index.remember_staged_revoke_if_present(credential_id));
+    // Models the event arriving after credential resolution but before
+    // register_and_bind inserts its staged reverse-index row.
+    fanout_index.remember_revocation(credential_id);
     registry
         .register_and_bind(
             "test-staged-revoke",
@@ -728,8 +721,6 @@ async fn revoke_observed_during_staging_taints_the_row_at_publication() {
         )
         .await
         .expect("registration publishes the staged binding");
-    fanout_index.unbind_staged_entry(&credential_id, &staged);
-
     let binding = fanout_index
         .affected(&credential_id)
         .into_iter()

@@ -340,7 +340,7 @@ fn staged_bind_refcount_protects_a_concurrent_live_row() {
 }
 
 #[test]
-fn revoke_intent_survives_until_the_last_staged_binding_is_published() {
+fn revoke_observation_survives_staged_binding_publication() {
     let idx = ResourceFanoutIndex::new();
     let cid = cred();
     let key = rk("pg");
@@ -354,28 +354,28 @@ fn revoke_intent_survives_until_the_last_staged_binding_is_published() {
 
     idx.stage_bind(cid, bind.clone());
     idx.stage_bind(cid, bind.clone());
-    assert!(idx.remember_staged_revoke_if_present(cid));
+    idx.remember_revocation(cid);
 
     assert!(idx.publish_staged_entry(&cid, &bind));
     assert!(
-        idx.staged_revoke_intents
+        idx.observed_revocations
             .lock()
-            .expect("staged revoke lock")
+            .expect("revocation lock")
             .contains(&cid),
-        "a sibling staged registration still needs the revoke intent"
+        "a sibling staged registration still needs the revoke observation"
     );
     assert!(idx.publish_staged_entry(&cid, &bind));
     assert!(
-        !idx.staged_revoke_intents
+        idx.observed_revocations
             .lock()
-            .expect("staged revoke lock")
+            .expect("revocation lock")
             .contains(&cid),
-        "the intent is retired only after every staged registration publishes"
+        "the terminal observation must protect later registrations too"
     );
 }
 
 #[test]
-fn revoke_intent_is_not_retained_after_publication_wins_the_race() {
+fn revoke_observation_before_staging_is_applied_at_publication() {
     let idx = ResourceFanoutIndex::new();
     let cid = cred();
     let bind = bound(
@@ -384,16 +384,11 @@ fn revoke_intent_is_not_retained_after_publication_wins_the_race() {
         "db",
         SlotIdentity::from_bindings([("db", "already-published")]),
     );
+    idx.remember_revocation(cid);
     idx.stage_bind(cid, bind.clone());
-    assert!(!idx.publish_staged_entry(&cid, &bind));
-
-    assert!(!idx.remember_staged_revoke_if_present(cid));
     assert!(
-        idx.staged_revoke_intents
-            .lock()
-            .expect("staged revoke lock")
-            .is_empty(),
-        "the published-row path handles the revoke without leaving a staged intent"
+        idx.publish_staged_entry(&cid, &bind),
+        "publication must observe a revoke that arrived before stage insertion"
     );
 }
 

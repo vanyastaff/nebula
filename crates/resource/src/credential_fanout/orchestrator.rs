@@ -25,7 +25,8 @@ impl ResourceFanoutIndex {
         cid: CredentialId,
         mgr: &crate::Manager,
     ) -> RotationOutcome {
-        let has_staged_binding = self.remember_staged_revoke_if_present(cid);
+        self.remember_revocation(cid);
+        let has_staged_binding = self.has_staged_binding(&cid);
         let mut summary = RotationOutcome::default();
         for binding in self.affected(&cid) {
             match mgr.taint_slot_for_identity(
@@ -416,7 +417,8 @@ impl ResourceFanoutIndex {
         mgr: &crate::Manager,
         per_resource_timeout: Duration,
     ) -> RotationOutcome {
-        let has_staged_binding = self.remember_staged_revoke_if_present(cid);
+        self.remember_revocation(cid);
+        let has_staged_binding = self.has_staged_binding(&cid);
         let mut outcome = self
             .dispatch(cid, mgr, per_resource_timeout, FanoutOp::Revoke)
             .await;
