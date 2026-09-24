@@ -1324,6 +1324,11 @@ mod tests {
     }
 
     ///
+    /// Head 0055 adds nullable operator topology and rate-limit documents to
+    /// resource definitions. NULL is the kind-default / unlimited behaviour
+    /// every existing row already had, so nothing is inferred or rewritten;
+    /// it is aggregate-neutral and the floor remains at 0040.
+    ///
     /// Head 0054 owner-qualifies refresh claims and sentinel incidents by
     /// backfilling the canonical owner from the credential aggregate. It is an
     /// aggregate transform: an orphan makes the migration fail closed, and
@@ -1365,9 +1370,9 @@ mod tests {
     fn new_catalog_head_requires_explicit_admission_policy_review() {
         assert_eq!(GENERAL_CATALOG_SUPPORTED_FLOOR, 40);
         #[cfg(feature = "sqlite")]
-        assert_eq!(catalog::catalog_head(&super::SQLITE_MIGRATOR), 54);
+        assert_eq!(catalog::catalog_head(&super::SQLITE_MIGRATOR), 55);
         #[cfg(feature = "postgres")]
-        assert_eq!(catalog::catalog_head(&super::POSTGRES_MIGRATOR), 54);
+        assert_eq!(catalog::catalog_head(&super::POSTGRES_MIGRATOR), 55);
     }
 
     /// The setup guard must never hold a descriptor on the database file.

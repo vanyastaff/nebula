@@ -62,6 +62,8 @@ fn entry(
             "api_token".to_owned(),
             "binding-selector-do-not-leak".to_owned(),
         )]),
+        topology: None,
+        rate_limit: None,
         created_at: chrono::Utc::now().to_rfc3339(),
         created_by: "system".to_owned(),
         version,

@@ -279,6 +279,8 @@ impl Fixture {
                         .iter()
                         .map(|(slot, selector)| ((*slot).to_owned(), (*selector).to_owned()))
                         .collect::<BTreeMap<_, _>>(),
+                    topology: None,
+                    rate_limit: None,
                     created_at: "2026-09-23T00:00:00Z".to_owned(),
                     created_by: "test".to_owned(),
                     version: 0,
