@@ -177,9 +177,12 @@ async fn open_runtime(
 
 fn restart_policy() -> RefreshCoordConfig {
     RefreshCoordConfig {
-        claim_ttl: Duration::from_millis(90),
-        heartbeat_interval: Duration::from_millis(20),
-        refresh_timeout: Duration::from_millis(30),
+        // Provider work gets an integration-scale deadline. The synthetic
+        // crashed claim below carries its own short TTL, so restart recovery
+        // remains fast without making the real TLS refresh timing-sensitive.
+        claim_ttl: Duration::from_secs(3),
+        heartbeat_interval: Duration::from_millis(250),
+        refresh_timeout: Duration::from_secs(2),
         reclaim_sweep_interval: Duration::from_millis(40),
         sentinel_threshold: 1,
         sentinel_window: Duration::from_mins(1),
@@ -217,7 +220,24 @@ async fn crashed_refresh_is_reclaimed_without_replay_then_reauthorized_once() {
         .await
         .expect("credential head read")
         .material_epoch();
+    let expires_at = created
+        .expires_at
+        .expect("refreshable OAuth fixture carries an expiry");
+    assert!(
+        expires_at
+            .signed_duration_since(created.updated_at)
+            .num_seconds()
+            <= 300,
+        "the second runtime's immediate scheduler scan must encounter this credential"
+    );
     assert_eq!(provider.request_count(), 1);
+
+    // Stop every task owned by replica A before constructing its crash residue.
+    // Otherwise A's 40 ms sweeper could account the short fixture claim during
+    // a delayed shutdown and make replica B's startup recovery vacuous.
+    drop(first_controller);
+    first.shutdown().await;
+    assert!(first.reclaim_sweep_is_finished());
 
     let claim = first_claims
         .try_claim(
@@ -234,14 +254,29 @@ async fn crashed_refresh_is_reclaimed_without_replay_then_reauthorized_once() {
         .mark_sentinel(&claim.token)
         .await
         .expect("provider boundary is durably marked");
-    drop(first_controller);
-    first.shutdown().await;
-    assert!(first.reclaim_sweep_is_finished());
+
+    tokio::time::sleep(Duration::from_millis(90)).await;
+    assert!(matches!(
+        first_claims
+            .try_claim(
+                &selector,
+                &ReplicaId::new("pre-restart-poison-probe"),
+                Duration::from_millis(60),
+            )
+            .await
+            .expect("expired claim remains readable"),
+        ClaimAttempt::OutcomeUnknown { .. }
+    ));
+    let before_restart = first_store
+        .get_head(&selector)
+        .await
+        .expect("credential head remains readable before restart");
+    assert!(!before_restart.reauth_required());
+    assert_eq!(before_restart.material_epoch(), initial_epoch);
     drop(first);
     drop(first_store);
     drop(first_claims);
 
-    tokio::time::sleep(Duration::from_millis(90)).await;
     let (mut second, second_store, second_claims) =
         open_runtime(database, &provider, restart_policy()).await;
     let second_controller = controller(&second, &actor, &scope);
