@@ -14,7 +14,7 @@ use nebula_core::CredentialKey;
 use nebula_credential::{Capabilities, CredentialId, CredentialSlotResolver, TenantScope};
 use tokio_util::sync::CancellationToken;
 
-use super::index::{ResourceFanoutIndex, RotationOutcome};
+use super::index::{ResourceFanoutIndex, RevokeAdmissionClaim, RotationOutcome};
 
 impl ResourceFanoutIndex {
     /// Projects the owner-qualified durable replacement, installs the new
@@ -48,34 +48,31 @@ impl ResourceFanoutIndex {
                     };
                 },
             };
-            if self.has_pending_revoke(cid, &binding.slot_name, &managed) {
+            if managed.is_tainted() {
                 let pending = self.pending_revokes().into_iter().find(|entry| {
                     entry.credential_id == cid
                         && entry.slot == binding.slot_name
                         && std::sync::Arc::ptr_eq(&entry.managed, &managed)
                 });
-                let Some(pending) = pending else {
-                    return RowOutcome::Failed {
+                let Some(claim) = pending
+                    .as_ref()
+                    .and_then(|entry| self.claim_pending_revoke(entry))
+                else {
+                    return RowOutcome::Success {
                         drain_timed_out: false,
                     };
                 };
-                let (tail, admitted) = mgr
+                drop(projection_permit);
+                let (tail, admission) = mgr
                     .retry_tainted_revoke_admission(
-                        &pending.key,
-                        &pending.slot,
-                        std::sync::Arc::clone(&pending.managed),
+                        &claim.entry.key,
+                        &claim.entry.slot,
+                        std::sync::Arc::clone(&claim.entry.managed),
                         Duration::from_secs(30),
                     )
                     .await;
-                if admitted != Some(false) {
-                    self.forget_pending_revoke(&pending);
-                }
+                settle_revoke_claim(claim, admission);
                 return revoke_tail_outcome(tail);
-            }
-            if managed.is_tainted() {
-                return RowOutcome::Success {
-                    drain_timed_out: false,
-                };
             }
             let Some((generation, metadata)) =
                 managed.credential_slot_projection(&binding.slot_name)
@@ -191,17 +188,18 @@ impl ResourceFanoutIndex {
     ) -> RotationOutcome {
         let mut summary = RotationOutcome::default();
         for pending in self.pending_revokes() {
-            let (tail, admitted) = mgr
+            let Some(claim) = self.claim_pending_revoke(&pending) else {
+                continue;
+            };
+            let (tail, admission) = mgr
                 .retry_tainted_revoke_admission(
-                    &pending.key,
-                    &pending.slot,
-                    std::sync::Arc::clone(&pending.managed),
+                    &claim.entry.key,
+                    &claim.entry.slot,
+                    std::sync::Arc::clone(&claim.entry.managed),
                     Duration::from_secs(30),
                 )
                 .await;
-            if admitted != Some(false) {
-                self.forget_pending_revoke(&pending);
-            }
+            settle_revoke_claim(claim, admission);
             summary.add(summarize_row_outcomes([revoke_tail_outcome(tail)]));
         }
         summary
@@ -429,6 +427,13 @@ impl ResourceFanoutIndex {
                         },
                     };
                     let managed = tainted.managed_handle();
+                    let Some(claim) =
+                        self.claim_revoke_admission(cid, &b.slot_name, &managed)
+                    else {
+                        return RowOutcome::Success {
+                            drain_timed_out: false,
+                        };
+                    };
                     // Phase 2 — the cancellation-safe drain + revoke hook.
                     // `drain_and_revoke` is the SINGLE owner of the
                     // per-resource budget: it bounds the drain (best-effort
@@ -441,17 +446,10 @@ impl ResourceFanoutIndex {
                     // documented "hook still runs after a timed-out drain"
                     // guarantee. The row is already tainted (phase 1); every
                     // tail outcome leaves it tainted.
-                    let (tail, admitted) = mgr
+                    let (tail, admission) = mgr
                         .drain_and_revoke_with_admission(tainted, per_resource_timeout)
                         .await;
-                    if admitted {
-                        // Tombstone reconciliation may have recorded a retry
-                        // after an earlier queue rejection. A delayed durable
-                        // revoke event that wins admission owns the hook now;
-                        // consume that retry before reconciliation can submit
-                        // the same non-idempotent teardown again.
-                        self.forget_pending_revoke_for(cid, &b.slot_name, &managed);
-                    }
+                    settle_revoke_claim(claim, admission);
                     match tail {
                         crate::RevokeTail::Done { drain } => RowOutcome::Success {
                             drain_timed_out: matches!(
@@ -600,7 +598,6 @@ async fn project_and_refresh(
                 "durable credential tombstone discovered during material reconciliation; revoking resource slot"
             );
             let pending_managed = std::sync::Arc::clone(&managed);
-            let pending_key = key.clone();
             let tainted = match mgr.taint_resolved_at_generation(&key, slot, managed, generation) {
                 Ok(tainted) => tainted,
                 Err(error) => {
@@ -616,13 +613,17 @@ async fn project_and_refresh(
                     };
                 },
             };
+            let Some(claim) = index.claim_revoke_admission(cid, slot, &pending_managed) else {
+                drop(projection_permit);
+                return RowOutcome::Success {
+                    drain_timed_out: false,
+                };
+            };
             drop(projection_permit);
-            let (tail, admitted) = mgr
+            let (tail, admission) = mgr
                 .drain_and_revoke_with_admission(tainted, Duration::from_secs(30))
                 .await;
-            if !admitted {
-                index.remember_pending_revoke(cid, pending_key, slot, pending_managed);
-            }
+            settle_revoke_claim(claim, admission);
             return revoke_tail_outcome(tail);
         },
         Ok(Err(error)) => {
@@ -674,6 +675,14 @@ async fn project_and_refresh(
                 drain_timed_out: false,
             }
         },
+    }
+}
+
+fn settle_revoke_claim(claim: RevokeAdmissionClaim<'_>, admission: Option<bool>) {
+    match admission {
+        Some(true) => claim.accepted(),
+        Some(false) => claim.retry(),
+        None => claim.discard(),
     }
 }
 

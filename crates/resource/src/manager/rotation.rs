@@ -1169,7 +1169,7 @@ impl Manager {
         &self,
         tainted: TaintedSlot,
         drain_timeout: Duration,
-    ) -> (RevokeTail, bool) {
+    ) -> (RevokeTail, Option<bool>) {
         let TaintedSlot {
             key,
             slot,
@@ -1203,34 +1203,49 @@ impl Manager {
             Err(outstanding_leases) => SlotDrainOutcome::TimedOut { outstanding_leases },
         };
 
-        // 2. Submit the revoke hook with the same per-resource hook budget.
-        //    Submission itself does not await: success transfers hook and
-        //    settlement ownership to the queue. The absolute observation
-        //    deadline below starts after admission and returns `Deferred` only
-        //    if work is still queued. Once started, the independently bounded
-        //    terminal result wins. Neither state cancels accepted work or turns
-        //    it into a retryable timeout.
-        let (settlement, admission) =
-            self.slot_hook_settlement(key.clone(), slot.clone(), SlotHookDirection::Revoke);
-        let accepted = match Arc::clone(&managed).submit_on_revoke(
-            &slot,
-            drain_timeout,
-            settlement,
-            admission,
-        ) {
-            Ok(accepted) => accepted,
-            Err(error) => {
-                if let Some(metrics) = &self.metrics {
-                    metrics.record_slot_revoke_outcome(SlotDispatchMetricOutcome::Failed);
-                }
-                self.emit(ResourceEvent::SlotRevokeFailed {
-                    key,
-                    slot,
-                    kind: error.kind().clone(),
-                    message: SecretFreeMessage::new("credential revoke hook admission failed"),
-                });
-                return (RevokeTail::HookFailed { error, drain }, false);
-            },
+        // Retirement may have detached this pinned runtime while the drain
+        // awaited outstanding leases. Revalidate under the lifecycle gate
+        // immediately before queue submission so a stale handle cannot race
+        // its replacement/removal teardown.
+        let accepted = {
+            let _admission = self
+                .admission
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !self.registry.contains_managed(&key, &managed)
+                || !managed.is_tainted()
+                || !managed.accepts_credential_slot_name(&slot)
+            {
+                return (
+                    RevokeTail::HookFailed {
+                        error: Error::not_found(&key),
+                        drain,
+                    },
+                    None,
+                );
+            }
+
+            // 2. Submit while the same lifecycle gate still protects the
+            // exact-handle revalidation. Submission is synchronous; no await
+            // or retirement window separates the check from queue ownership.
+            let (settlement, admission) =
+                self.slot_hook_settlement(key.clone(), slot.clone(), SlotHookDirection::Revoke);
+            match Arc::clone(&managed).submit_on_revoke(&slot, drain_timeout, settlement, admission)
+            {
+                Ok(accepted) => accepted,
+                Err(error) => {
+                    if let Some(metrics) = &self.metrics {
+                        metrics.record_slot_revoke_outcome(SlotDispatchMetricOutcome::Failed);
+                    }
+                    self.emit(ResourceEvent::SlotRevokeFailed {
+                        key,
+                        slot,
+                        kind: error.kind().clone(),
+                        message: SecretFreeMessage::new("credential revoke hook admission failed"),
+                    });
+                    return (RevokeTail::HookFailed { error, drain }, Some(false));
+                },
+            }
         };
         let deadline = slot_hook_observation_deadline(drain_timeout);
         let hook_outcome = accepted.wait_until(deadline).await;
@@ -1267,7 +1282,7 @@ impl Manager {
                 RevokeTail::HookTimedOut { drain }
             },
         };
-        (tail, true)
+        (tail, Some(true))
     }
 
     /// Runs the cancellation-safe revoke tail and returns its observable outcome.
@@ -1313,8 +1328,7 @@ impl Manager {
                 tainted_at: Instant::now(),
             }
         };
-        let (tail, admitted) = self.drain_and_revoke_with_admission(tainted, timeout).await;
-        (tail, Some(admitted))
+        self.drain_and_revoke_with_admission(tainted, timeout).await
     }
 
     /// Notifies a registered resource that one of its `#[credential]` slots

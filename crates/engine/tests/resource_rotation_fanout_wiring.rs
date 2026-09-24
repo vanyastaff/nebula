@@ -826,38 +826,6 @@ fn register_replacement_with_hook_behavior(
 }
 
 #[tokio::test]
-async fn replacement_preserves_new_credential_reverse_index_binding() {
-    let manager = Manager::new();
-    let index = Arc::new(ResourceFanoutIndex::new());
-    manager.attach_rotation_index(&index);
-    let old_credential = CredentialId::new();
-    let new_credential = CredentialId::new();
-    let identity = SlotIdentity::from_bindings([("db", "shared-key")]);
-
-    register_replacement_with_identity(&manager, old_credential, "shared-key");
-    index.bind(
-        old_credential,
-        ReplacementResource::key(),
-        ScopeLevel::Global,
-        "db",
-        identity.clone(),
-    );
-
-    // `register_and_bind` stages the successor before Manager publishes it.
-    index.bind(
-        new_credential,
-        ReplacementResource::key(),
-        ScopeLevel::Global,
-        "db",
-        identity,
-    );
-    register_replacement_with_identity(&manager, new_credential, "shared-key");
-
-    assert!(index.affected(&old_credential).is_empty());
-    assert_eq!(index.affected(&new_credential).len(), 1);
-}
-
-#[tokio::test]
 async fn projection_capacity_is_released_before_hook_observation() {
     const ROWS: usize = 40;
     let manager = Arc::new(Manager::new());

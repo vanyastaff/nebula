@@ -176,17 +176,15 @@ impl RotationOutcome {
 /// resolved it.
 ///
 /// Identical resolved rows dedupe to a single fan-out target (one
-/// [`Bind`]); `refs` counts how many `register_and_bind` stagings
-/// currently depend on it. A failed registration releases exactly one
-/// reference; the row is removed only when the last referent is gone, so
-/// a failing staging can never delete a row a concurrent successful
-/// registration still holds. `refs` is `>= 1` for any present entry (the
-/// entry is removed at zero), so a plain `usize` with that invariant is
-/// sufficient — no `NonZero` ceremony.
+/// [`Bind`]). Published references are visible to fan-out; staged references
+/// are held while `register_and_bind` waits for the manager lifecycle gate.
+/// Removal and replacement release only published ownership, so they cannot
+/// erase a concurrent registration that has staged but not yet published.
 #[derive(Debug, Clone)]
 struct BindRef {
     bind: Bind,
-    refs: usize,
+    published: usize,
+    staged: usize,
 }
 
 /// Per-credential row list. Most credentials resolve into one or two
@@ -201,6 +199,48 @@ pub(super) struct PendingRevokeAdmission {
     pub(super) key: ResourceKey,
     pub(super) slot: String,
     pub(super) managed: std::sync::Arc<dyn crate::registry::ManagedHandle>,
+    state: RevokeAdmissionState,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RevokeAdmissionState {
+    Pending,
+    Claimed,
+    Admitted,
+}
+
+pub(super) struct RevokeAdmissionClaim<'a> {
+    index: &'a ResourceFanoutIndex,
+    pub(super) entry: PendingRevokeAdmission,
+    settled: bool,
+}
+
+impl RevokeAdmissionClaim<'_> {
+    pub(super) fn accepted(mut self) {
+        self.index
+            .settle_revoke_claim(&self.entry, Some(RevokeAdmissionState::Admitted));
+        self.settled = true;
+    }
+
+    pub(super) fn retry(mut self) {
+        self.index
+            .settle_revoke_claim(&self.entry, Some(RevokeAdmissionState::Pending));
+        self.settled = true;
+    }
+
+    pub(super) fn discard(mut self) {
+        self.index.settle_revoke_claim(&self.entry, None);
+        self.settled = true;
+    }
+}
+
+impl Drop for RevokeAdmissionClaim<'_> {
+    fn drop(&mut self) {
+        if !self.settled {
+            self.index
+                .settle_revoke_claim(&self.entry, Some(RevokeAdmissionState::Pending));
+        }
+    }
 }
 
 impl std::fmt::Debug for PendingRevokeAdmission {
@@ -298,12 +338,22 @@ impl ResourceFanoutIndex {
             slot_name: slot_name.into(),
             slot_identity,
         };
+        self.add_bind_ref(cid, entry, false);
+    }
+
+    pub(crate) fn stage_bind(&self, cid: CredentialId, bind: Bind) {
+        self.add_bind_ref(cid, bind, true);
+    }
+
+    fn add_bind_ref(&self, cid: CredentialId, bind: Bind, staged: bool) {
         let mut rows = self.by_credential.entry(cid).or_default();
-        match rows.iter_mut().find(|r| r.bind == entry) {
-            Some(existing) => existing.refs += 1,
+        match rows.iter_mut().find(|row| row.bind == bind) {
+            Some(existing) if staged => existing.staged += 1,
+            Some(existing) => existing.published += 1,
             None => rows.push(BindRef {
-                bind: entry,
-                refs: 1,
+                bind,
+                published: usize::from(!staged),
+                staged: usize::from(staged),
             }),
         }
     }
@@ -316,7 +366,12 @@ impl ResourceFanoutIndex {
     pub fn affected(&self, cid: &CredentialId) -> Vec<Bind> {
         self.by_credential
             .get(cid)
-            .map(|rows| rows.iter().map(|r| r.bind.clone()).collect())
+            .map(|rows| {
+                rows.iter()
+                    .filter(|row| row.published != 0)
+                    .map(|row| row.bind.clone())
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
@@ -355,6 +410,7 @@ impl ResourceFanoutIndex {
             .remove_if(cid, |_, context| context.2 == sequence);
     }
 
+    #[cfg(test)]
     pub(super) fn remember_pending_revoke(
         &self,
         credential_id: CredentialId,
@@ -378,6 +434,7 @@ impl ResourceFanoutIndex {
             key,
             slot: slot.to_owned(),
             managed,
+            state: RevokeAdmissionState::Pending,
         });
     }
 
@@ -385,44 +442,94 @@ impl ResourceFanoutIndex {
         self.pending_revoke_admissions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-    }
-
-    pub(super) fn has_pending_revoke(
-        &self,
-        credential_id: CredentialId,
-        slot: &str,
-        managed: &std::sync::Arc<dyn crate::registry::ManagedHandle>,
-    ) -> bool {
-        self.pending_revoke_admissions
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .iter()
-            .any(|entry| {
-                entry.credential_id == credential_id
-                    && entry.slot == slot
-                    && std::sync::Arc::ptr_eq(&entry.managed, managed)
-            })
+            .filter(|entry| entry.state == RevokeAdmissionState::Pending)
+            .cloned()
+            .collect()
     }
 
-    pub(super) fn forget_pending_revoke(&self, entry: &PendingRevokeAdmission) {
-        self.forget_pending_revoke_for(entry.credential_id, &entry.slot, &entry.managed);
-    }
-
-    pub(super) fn forget_pending_revoke_for(
+    pub(super) fn claim_revoke_admission(
         &self,
         credential_id: CredentialId,
         slot: &str,
         managed: &std::sync::Arc<dyn crate::registry::ManagedHandle>,
-    ) {
-        self.pending_revoke_admissions
+    ) -> Option<RevokeAdmissionClaim<'_>> {
+        self.claim_revoke_admission_inner(credential_id, slot, managed, false)
+    }
+
+    pub(super) fn claim_pending_revoke(
+        &self,
+        entry: &PendingRevokeAdmission,
+    ) -> Option<RevokeAdmissionClaim<'_>> {
+        self.claim_revoke_admission_inner(entry.credential_id, &entry.slot, &entry.managed, true)
+    }
+
+    fn claim_revoke_admission_inner(
+        &self,
+        credential_id: CredentialId,
+        slot: &str,
+        managed: &std::sync::Arc<dyn crate::registry::ManagedHandle>,
+        pending_only: bool,
+    ) -> Option<RevokeAdmissionClaim<'_>> {
+        let mut admissions = self
+            .pending_revoke_admissions
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .retain(|pending| {
-                pending.credential_id != credential_id
-                    || pending.slot != slot
-                    || !std::sync::Arc::ptr_eq(&pending.managed, managed)
-            });
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let entry = if let Some(entry) = admissions.iter_mut().find(|entry| {
+            entry.credential_id == credential_id
+                && entry.slot == slot
+                && std::sync::Arc::ptr_eq(&entry.managed, managed)
+        }) {
+            if entry.state != RevokeAdmissionState::Pending {
+                return None;
+            }
+            entry.state = RevokeAdmissionState::Claimed;
+            entry.clone()
+        } else {
+            if pending_only {
+                return None;
+            }
+            let entry = PendingRevokeAdmission {
+                credential_id,
+                key: managed.resource_key(),
+                slot: slot.to_owned(),
+                managed: std::sync::Arc::clone(managed),
+                state: RevokeAdmissionState::Claimed,
+            };
+            admissions.push(entry.clone());
+            entry
+        };
+        Some(RevokeAdmissionClaim {
+            index: self,
+            entry,
+            settled: false,
+        })
+    }
+
+    fn settle_revoke_claim(
+        &self,
+        claim: &PendingRevokeAdmission,
+        state: Option<RevokeAdmissionState>,
+    ) {
+        let mut admissions = self
+            .pending_revoke_admissions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(pos) = admissions.iter().position(|entry| {
+            entry.credential_id == claim.credential_id
+                && entry.slot == claim.slot
+                && std::sync::Arc::ptr_eq(&entry.managed, &claim.managed)
+        }) else {
+            return;
+        };
+        if admissions[pos].state != RevokeAdmissionState::Claimed {
+            return;
+        }
+        if let Some(state) = state {
+            admissions[pos].state = state;
+        } else {
+            admissions.remove(pos);
+        }
     }
 
     /// Removes every binding under `(resource_key, scope)` across all
@@ -434,7 +541,13 @@ impl ResourceFanoutIndex {
     /// `unbind_resource_identity`.
     pub fn unbind_resource(&self, resource_key: &ResourceKey, scope: &ScopeLevel) {
         self.by_credential.retain(|_, rows| {
-            rows.retain(|r| r.bind.resource_key != *resource_key || r.bind.scope != *scope);
+            for row in rows
+                .iter_mut()
+                .filter(|row| row.bind.resource_key == *resource_key && row.bind.scope == *scope)
+            {
+                row.published = 0;
+            }
+            rows.retain(|row| row.published != 0 || row.staged != 0);
             !rows.is_empty()
         });
         self.prune_orphan_contexts();
@@ -443,7 +556,13 @@ impl ResourceFanoutIndex {
     /// Removes every binding for a whole-key administrative removal.
     pub(crate) fn unbind_resource_key(&self, resource_key: &ResourceKey) {
         self.by_credential.retain(|_, rows| {
-            rows.retain(|r| r.bind.resource_key != *resource_key);
+            for row in rows
+                .iter_mut()
+                .filter(|row| row.bind.resource_key == *resource_key)
+            {
+                row.published = 0;
+            }
+            rows.retain(|row| row.published != 0 || row.staged != 0);
             !rows.is_empty()
         });
         self.prune_orphan_contexts();
@@ -468,11 +587,14 @@ impl ResourceFanoutIndex {
         slot_identity: &SlotIdentity,
     ) {
         self.by_credential.retain(|_, rows| {
-            rows.retain(|r| {
-                r.bind.resource_key != *resource_key
-                    || r.bind.scope != *scope
-                    || r.bind.slot_identity != *slot_identity
-            });
+            for row in rows.iter_mut().filter(|row| {
+                row.bind.resource_key == *resource_key
+                    && row.bind.scope == *scope
+                    && row.bind.slot_identity == *slot_identity
+            }) {
+                row.published = 0;
+            }
+            rows.retain(|row| row.published != 0 || row.staged != 0);
             !rows.is_empty()
         });
         self.prune_orphan_contexts();
@@ -485,28 +607,7 @@ impl ResourceFanoutIndex {
         slot_identity: &SlotIdentity,
         displaced: &std::sync::Arc<dyn crate::registry::ManagedHandle>,
     ) {
-        // `register_and_bind` stages the successor's bindings before the
-        // registry publishes it.  Therefore identity alone cannot distinguish
-        // the displaced row from a successor that resolved the same
-        // `(key, scope, slot_identity)` through a different credential.  The
-        // displaced handle is the authority for the references it owned:
-        // release exactly one reference for each of its live projections and
-        // leave every newly staged credential bucket untouched.
-        for (slot, _, metadata) in displaced.credential_projections() {
-            self.by_credential
-                .remove_if_mut(&metadata.credential_id(), |_, rows| {
-                    if let Some(row) = rows.iter_mut().find(|row| {
-                        row.bind.resource_key == *resource_key
-                            && row.bind.scope == *scope
-                            && row.bind.slot_identity == *slot_identity
-                            && row.bind.slot_name == slot
-                    }) {
-                        row.refs = row.refs.saturating_sub(1);
-                    }
-                    rows.retain(|row| row.refs != 0);
-                    rows.is_empty()
-                });
-        }
+        self.unbind_resource_identity(resource_key, scope, slot_identity);
         self.pending_revoke_admissions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -546,25 +647,38 @@ impl ResourceFanoutIndex {
         // de-dups into one refcounted entry, so at most one structurally-
         // equal entry exists; an absent `(cid, bind)` is a no-op.
         self.by_credential.remove_if_mut(cid, |_, rows| {
-            if let Some(pos) = rows.iter().position(|r| &r.bind == bind) {
-                if rows[pos].refs > 1 {
-                    rows[pos].refs -= 1;
-                } else {
-                    rows.remove(pos);
-                }
+            if let Some(row) = rows.iter_mut().find(|row| &row.bind == bind) {
+                row.staged = row.staged.saturating_sub(1);
             }
+            rows.retain(|row| row.published != 0 || row.staged != 0);
             rows.is_empty()
         });
         self.prune_orphan_contexts();
     }
 
+    pub(crate) fn publish_staged_entry(&self, cid: &CredentialId, bind: &Bind) {
+        if let Some(mut rows) = self.by_credential.get_mut(cid)
+            && let Some(row) = rows.iter_mut().find(|row| &row.bind == bind)
+            && row.staged != 0
+        {
+            row.staged -= 1;
+            row.published += 1;
+        }
+    }
+
     fn prune_orphan_contexts(&self) {
         self.material_contexts
-            .retain(|cid, _| self.by_credential.contains_key(cid));
+            .retain(|cid, _| self.has_published_binding(cid));
         self.pending_revoke_admissions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .retain(|entry| self.by_credential.contains_key(&entry.credential_id));
+            .retain(|entry| self.has_published_binding(&entry.credential_id));
+    }
+
+    fn has_published_binding(&self, cid: &CredentialId) -> bool {
+        self.by_credential
+            .get(cid)
+            .is_some_and(|rows| rows.iter().any(|row| row.published != 0))
     }
 }
 

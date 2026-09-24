@@ -12,7 +12,7 @@ use super::{Manager, RegistrationSpec};
 use crate::{
     error::Error,
     events::{ResourceEvent, RetirementOrigin},
-    factory::{ResourceConfigInput, ResourceConfigSource},
+    factory::{RegistrationBindings, ResourceConfigInput, ResourceConfigSource},
     recovery::gate::RecoveryGate,
     reload::ReloadOutcome,
     resource::Provider,
@@ -147,7 +147,22 @@ impl Manager {
         R: Provider,
         R::Topology: Topology<R>,
     {
+        self.register_with_staged_bindings(spec, RegistrationBindings::empty())
+    }
+
+    fn register_with_staged_bindings<R>(
+        &self,
+        spec: RegistrationSpec<R>,
+        registration_bindings: RegistrationBindings<'_>,
+    ) -> Result<(), Error>
+    where
+        R: Provider,
+        R::Topology: Topology<R>,
+    {
         use crate::resource::ResourceConfig as _;
+
+        #[cfg(not(feature = "rotation"))]
+        let _ = registration_bindings;
 
         self.shutdown_guard()?;
 
@@ -263,6 +278,17 @@ impl Manager {
         let type_id = std::any::TypeId::of::<ManagedResource<R>>();
         #[cfg(feature = "rotation")]
         let rotation_identity = (scope.clone(), slot_identity.clone());
+        #[cfg(feature = "rotation")]
+        let attached_rotation_index = self
+            .rotation_index
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .and_then(std::sync::Weak::upgrade);
+        #[cfg(feature = "rotation")]
+        let rotation_index = registration_bindings
+            .rotation_index()
+            .or(attached_rotation_index.as_deref());
         let registration = self.registry.register_admitted(
             key.clone(),
             type_id,
@@ -277,13 +303,7 @@ impl Manager {
         } = registration
         {
             #[cfg(feature = "rotation")]
-            if let Some(index) = self
-                .rotation_index
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .as_ref()
-                .and_then(std::sync::Weak::upgrade)
-            {
+            if let Some(index) = rotation_index {
                 index.unbind_replaced_resource_identity(
                     &key,
                     &rotation_identity.0,
@@ -292,6 +312,12 @@ impl Manager {
                 );
             }
             self.retire_resource(displaced, permit, RetirementOrigin::Replacement);
+        }
+        #[cfg(feature = "rotation")]
+        if let Some(index) = rotation_index {
+            for (credential_id, bind) in registration_bindings.staged_entries() {
+                index.publish_staged_entry(credential_id, bind);
+            }
         }
 
         // #387: everything below this point is a single funnel — the
@@ -561,6 +587,7 @@ impl Manager {
         topology: R::Topology,
         recovery_gate: Option<Arc<RecoveryGate>>,
         expected_slot_identity: &crate::dedup::SlotIdentity,
+        registration_bindings: RegistrationBindings<'_>,
     ) -> Result<crate::dedup::SlotIdentity, Error>
     where
         R: Provider + nebula_core::DeclaresDependencies,
@@ -711,14 +738,17 @@ impl Manager {
             ?slot_identity,
             "all pre-register checks passed; dispatching into typed register"
         );
-        self.register(RegistrationSpec {
-            resource,
-            config,
-            scope,
-            slot_identity: slot_identity.clone(),
-            topology,
-            recovery_gate,
-        })?;
+        self.register_with_staged_bindings(
+            RegistrationSpec {
+                resource,
+                config,
+                scope,
+                slot_identity: slot_identity.clone(),
+                topology,
+                recovery_gate,
+            },
+            registration_bindings,
+        )?;
         Ok(slot_identity)
     }
 

@@ -238,12 +238,16 @@ fn unbind_staged_entry_removes_only_that_tuple() {
     let c1 = cred();
     let c2 = cred();
     let id = SlotIdentity::from_bindings([("k", "cred-0xaaaa")]);
-    idx.bind(c1, key.clone(), scope.clone(), "db", id.clone());
+    idx.stage_bind(c1, bound(&key, &scope, "db", id.clone()));
     idx.bind(c2, key.clone(), scope.clone(), "db", id.clone());
 
     // No-op for an absent credential.
     idx.unbind_staged_entry(&cred(), &bound(&key, &scope, "db", id.clone()));
-    assert_eq!(idx.affected(&c1).len(), 1);
+    assert!(idx.affected(&c1).is_empty(), "staged rows are not routable");
+    assert_eq!(
+        idx.by_credential.get(&c1).expect("staged bucket")[0].staged,
+        1
+    );
     assert_eq!(idx.affected(&c2).len(), 1);
 
     // Removes exactly c1's entry; c2's binding for the same resolved
@@ -300,31 +304,59 @@ fn staged_bind_refcount_protects_a_concurrent_live_row() {
 
     // Call A stages the row, call B stages the identical row: one
     // refcounted entry, two references.
-    idx.bind(cid, key.clone(), scope.clone(), "db", id.clone());
-    idx.bind(cid, key.clone(), scope.clone(), "db", id.clone());
+    idx.stage_bind(cid, bound(&key, &scope, "db", id.clone()));
+    idx.stage_bind(cid, bound(&key, &scope, "db", id.clone()));
+    assert!(
+        idx.affected(&cid).is_empty(),
+        "staged rows are not routable"
+    );
     assert_eq!(
-        idx.affected(&cid),
-        vec![bound(&key, &scope, "db", id.clone())],
-        "identical stagings dedupe to one fan-out target"
+        idx.by_credential.get(&cid).expect("staged bucket")[0].staged,
+        2
     );
 
     // Call A's `register` fails -> its scopeguard releases A's
     // reference. B is still live, so the row MUST survive.
     idx.unbind_staged_entry(&cid, &bound(&key, &scope, "db", id.clone()));
     assert_eq!(
+        idx.by_credential.get(&cid).expect("surviving stage")[0].staged,
+        1
+    );
+
+    // Call B publishes under manager admission. Only now is it routable.
+    idx.publish_staged_entry(&cid, &bound(&key, &scope, "db", id.clone()));
+    assert_eq!(
         idx.affected(&cid),
-        vec![bound(&key, &scope, "db", id.clone())],
-        "a failed concurrent staging must not delete the surviving \
-             registration's live fan-out row"
+        vec![bound(&key, &scope, "db", id.clone())]
     );
 
     // B is later removed too -> last reference gone -> row dropped,
     // empty bucket reclaimed.
-    idx.unbind_staged_entry(&cid, &bound(&key, &scope, "db", id));
+    idx.unbind_resource_identity(&key, &scope, &id);
     assert!(
         idx.affected(&cid).is_empty(),
         "the row is removed only when the last referent is gone"
     );
+}
+
+#[test]
+fn removal_preserves_a_concurrent_staged_binding_until_publish() {
+    let idx = ResourceFanoutIndex::new();
+    let key = rk("pg");
+    let scope = wf_scope();
+    let old = cred();
+    let successor = cred();
+    let identity = SlotIdentity::from_bindings([("db", "shared-key")]);
+    let successor_bind = bound(&key, &scope, "db", identity.clone());
+    idx.bind(old, key.clone(), scope.clone(), "db", identity.clone());
+    idx.stage_bind(successor, successor_bind.clone());
+
+    idx.unbind_resource_identity(&key, &scope, &identity);
+    assert!(idx.affected(&old).is_empty());
+    assert!(idx.affected(&successor).is_empty());
+
+    idx.publish_staged_entry(&successor, &successor_bind);
+    assert_eq!(idx.affected(&successor), vec![successor_bind]);
 }
 
 #[test]
@@ -676,6 +708,107 @@ mod fanout_dispatch {
         let reconciliation = index.retry_pending_revoke_admissions(&manager).await;
         assert_eq!(reconciliation.dispatched(), 0);
         assert_eq!(ledger.revoke_entered.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn pending_retry_claim_excludes_a_delayed_revoke_event() {
+        let identity = SlotIdentity::from_bindings([("db", "claimed-revoke")]);
+        let (index, manager, credential_id, scope, org, ledger) =
+            setup(std::slice::from_ref(&identity)).await;
+        let index = Arc::new(index);
+        ledger.set(identity.clone(), Behaviour::FastOk);
+        let context = ResourceContext::minimal(
+            Scope {
+                org_id: Some(org),
+                ..Default::default()
+            },
+            CancellationToken::new(),
+        );
+        let held = manager
+            .acquire_resident_for_identity::<CtlResource>(
+                &context,
+                &AcquireOptions::default(),
+                &identity,
+            )
+            .await
+            .expect("hold row in flight");
+        let managed = manager
+            .lookup_any_for_slot_identity_structural(&CtlResource::key(), &scope, &identity)
+            .expect("registered row");
+        let tainted = manager
+            .taint_slot_for_identity(&CtlResource::key(), scope, "db", &identity)
+            .expect("taint");
+        drop(tainted);
+        index.remember_pending_revoke(credential_id, CtlResource::key(), "db", managed);
+
+        let retry = tokio::spawn({
+            let index = Arc::clone(&index);
+            let manager = Arc::clone(&manager);
+            async move { index.retry_pending_revoke_admissions(&manager).await }
+        });
+        while !index.pending_revokes().is_empty() {
+            tokio::task::yield_now().await;
+        }
+
+        let event = index
+            .dispatch_revoke(credential_id, &manager, Duration::from_secs(1))
+            .await;
+        assert_eq!(event.success(), 1);
+        assert_eq!(ledger.revoke_entered.load(Ordering::SeqCst), 0);
+
+        drop(held);
+        let retried = retry.await.expect("retry task");
+        assert_eq!(retried.success(), 1);
+        assert_eq!(ledger.revoke_entered.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn pending_retry_revalidates_pinned_row_after_drain() {
+        let identity = SlotIdentity::from_bindings([("db", "removed-during-drain")]);
+        let (index, manager, credential_id, scope, org, ledger) =
+            setup(std::slice::from_ref(&identity)).await;
+        let index = Arc::new(index);
+        let context = ResourceContext::minimal(
+            Scope {
+                org_id: Some(org),
+                ..Default::default()
+            },
+            CancellationToken::new(),
+        );
+        let held = manager
+            .acquire_resident_for_identity::<CtlResource>(
+                &context,
+                &AcquireOptions::default(),
+                &identity,
+            )
+            .await
+            .expect("hold row in flight");
+        let managed = manager
+            .lookup_any_for_slot_identity_structural(&CtlResource::key(), &scope, &identity)
+            .expect("registered row");
+        let tainted = manager
+            .taint_slot_for_identity(&CtlResource::key(), scope.clone(), "db", &identity)
+            .expect("taint");
+        drop(tainted);
+        index.remember_pending_revoke(credential_id, CtlResource::key(), "db", managed);
+
+        let retry = tokio::spawn({
+            let index = Arc::clone(&index);
+            let manager = Arc::clone(&manager);
+            async move { index.retry_pending_revoke_admissions(&manager).await }
+        });
+        while !index.pending_revokes().is_empty() {
+            tokio::task::yield_now().await;
+        }
+        manager
+            .remove_for(&CtlResource::key(), &scope, &identity)
+            .expect("remove pinned row");
+        drop(held);
+
+        let outcome = retry.await.expect("retry task");
+        assert_eq!(outcome.failed(), 1);
+        assert_eq!(ledger.revoke_entered.load(Ordering::SeqCst), 0);
+        assert!(index.pending_revokes().is_empty());
     }
 
     #[derive(Clone, Copy)]

@@ -358,6 +358,53 @@ pub struct ResourceRegistrationOutcome {
     pub slot_identity: SlotIdentity,
 }
 
+/// Internal reverse-index ownership carried through the sealed registration
+/// boundary. Public only because it appears on the sealed factory trait.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy)]
+pub struct RegistrationBindings<'a> {
+    #[cfg(feature = "rotation")]
+    index: Option<&'a crate::ResourceFanoutIndex>,
+    #[cfg(feature = "rotation")]
+    staged: &'a [(nebula_credential::CredentialId, crate::Bind)],
+    marker: std::marker::PhantomData<&'a ()>,
+}
+
+impl RegistrationBindings<'_> {
+    pub(crate) const fn empty() -> Self {
+        Self {
+            #[cfg(feature = "rotation")]
+            index: None,
+            #[cfg(feature = "rotation")]
+            staged: &[],
+            marker: std::marker::PhantomData,
+        }
+    }
+
+    #[cfg(feature = "rotation")]
+    pub(crate) fn staged<'a>(
+        index: Option<&'a crate::ResourceFanoutIndex>,
+        staged: &'a [(nebula_credential::CredentialId, crate::Bind)],
+    ) -> RegistrationBindings<'a> {
+        RegistrationBindings {
+            index,
+            staged,
+            marker: std::marker::PhantomData,
+        }
+    }
+}
+
+#[cfg(feature = "rotation")]
+impl<'a> RegistrationBindings<'a> {
+    pub(crate) fn rotation_index(self) -> Option<&'a crate::ResourceFanoutIndex> {
+        self.index
+    }
+
+    pub(crate) fn staged_entries(self) -> &'a [(nebula_credential::CredentialId, crate::Bind)] {
+        self.staged
+    }
+}
+
 /// Object-safe, type-erased **B+ merged contribution contract** for one
 /// resource type.
 ///
@@ -439,6 +486,17 @@ pub trait ResourceFactory: private::Sealed + Send + Sync + 'static {
         request: RegisterRequest<'a>,
         expected_slot_identity: &'a SlotIdentity,
     ) -> BoxFut<'a, Result<SlotIdentity, crate::Error>>;
+
+    #[doc(hidden)]
+    fn register_with_bindings<'a>(
+        &'a self,
+        manager: &'a Manager,
+        request: RegisterRequest<'a>,
+        expected_slot_identity: &'a SlotIdentity,
+        _registration_bindings: RegistrationBindings<'a>,
+    ) -> BoxFut<'a, Result<SlotIdentity, crate::Error>> {
+        self.register(manager, request, expected_slot_identity)
+    }
 }
 
 /// Per-`R` [`ResourceFactory`] that closes over the pieces the erased
@@ -613,6 +671,21 @@ where
         request: RegisterRequest<'a>,
         expected_slot_identity: &'a SlotIdentity,
     ) -> BoxFut<'a, Result<SlotIdentity, crate::Error>> {
+        self.register_with_bindings(
+            manager,
+            request,
+            expected_slot_identity,
+            RegistrationBindings::empty(),
+        )
+    }
+
+    fn register_with_bindings<'a>(
+        &'a self,
+        manager: &'a Manager,
+        request: RegisterRequest<'a>,
+        expected_slot_identity: &'a SlotIdentity,
+        registration_bindings: RegistrationBindings<'a>,
+    ) -> BoxFut<'a, Result<SlotIdentity, crate::Error>> {
         Box::pin(async move {
             let metadata = self.metadata().map_err(|source| {
                 crate::Error::permanent("resource factory metadata admission failed")
@@ -662,6 +735,7 @@ where
                     topology,
                     request.recovery_gate,
                     expected_slot_identity,
+                    registration_bindings,
                 )
                 .await
         })
@@ -776,6 +850,7 @@ impl ResourceActivatorRegistry {
             &scope,
             &expected_slot_identity,
             &slot_identity,
+            None,
         )?;
         Ok(ResourceRegistrationOutcome {
             resource_key,
@@ -836,13 +911,7 @@ impl ResourceActivatorRegistry {
                     slot_name: binding.slot_name.clone(),
                     slot_identity: staged_slot_identity.clone(),
                 };
-                idx.bind(
-                    cred_id,
-                    resource_key.clone(),
-                    request.scope.clone(),
-                    binding.slot_name.clone(),
-                    staged_slot_identity.clone(),
-                );
+                idx.stage_bind(cred_id, bind.clone());
                 staged.push((cred_id, bind));
             }
         }
@@ -857,7 +926,12 @@ impl ResourceActivatorRegistry {
         });
 
         let slot_identity = factory
-            .register(manager, request, &staged_slot_identity)
+            .register_with_bindings(
+                manager,
+                request,
+                &staged_slot_identity,
+                RegistrationBindings::staged(fanout_index, &rollback.1),
+            )
             .await
             .map_err(|source| RegistrarError::Register {
                 kind: kind.to_owned(),
@@ -870,6 +944,7 @@ impl ResourceActivatorRegistry {
             &scope,
             &staged_slot_identity,
             &slot_identity,
+            fanout_index,
         )?;
         scopeguard::ScopeGuard::into_inner(rollback);
         Ok(ResourceRegistrationOutcome {
@@ -924,6 +999,8 @@ fn ensure_registration_identity(
     scope: &ScopeLevel,
     expected: &SlotIdentity,
     actual: &SlotIdentity,
+    #[cfg(feature = "rotation")] fanout_index: Option<&crate::ResourceFanoutIndex>,
+    #[cfg(not(feature = "rotation"))] _fanout_index: Option<&()>,
 ) -> Result<(), RegistrarError> {
     if actual == expected {
         return Ok(());
@@ -948,6 +1025,11 @@ fn ensure_registration_identity(
             actual: actual.clone(),
             source: Box::new(source),
         });
+    }
+
+    #[cfg(feature = "rotation")]
+    if let Some(index) = fanout_index {
+        index.unbind_resource_identity(resource_key, scope, expected);
     }
 
     Err(RegistrarError::IdentityMismatch {

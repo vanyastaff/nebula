@@ -228,9 +228,29 @@ impl ResourceFactory for DivergentIdentityFactory {
         request: RegisterRequest<'a>,
         expected_slot_identity: &'a SlotIdentity,
     ) -> BoxFut<'a, Result<SlotIdentity, ResourceError>> {
+        self.register_with_bindings(
+            manager,
+            request,
+            expected_slot_identity,
+            RegistrationBindings::empty(),
+        )
+    }
+
+    fn register_with_bindings<'a>(
+        &'a self,
+        manager: &'a Manager,
+        request: RegisterRequest<'a>,
+        expected_slot_identity: &'a SlotIdentity,
+        registration_bindings: RegistrationBindings<'a>,
+    ) -> BoxFut<'a, Result<SlotIdentity, ResourceError>> {
         Box::pin(async move {
             self.inner
-                .register(manager, request, expected_slot_identity)
+                .register_with_bindings(
+                    manager,
+                    request,
+                    expected_slot_identity,
+                    registration_bindings,
+                )
                 .await?;
             Ok(SlotIdentity::Unbound)
         })
@@ -471,6 +491,54 @@ async fn conflicting_duplicate_slot_bindings_fail_before_manager_publication() {
     assert!(!manager.contains(&BoundTestRes::key()));
     assert!(fanout_index.affected(&first_credential_id).is_empty());
     assert!(fanout_index.affected(&second_credential_id).is_empty());
+}
+
+#[cfg(feature = "rotation")]
+#[tokio::test]
+async fn exact_replacement_publishes_only_successor_staged_binding() {
+    let manager = Manager::new();
+    let expression_engine = ExpressionEngine::with_cache_size(16);
+    let old_credential_id = nebula_credential::CredentialId::new();
+    let new_credential_id = nebula_credential::CredentialId::new();
+    let fanout_index = crate::ResourceFanoutIndex::new();
+    let mut registry = ResourceActivatorRegistry::new();
+    registry
+        .insert(
+            "test-replacement-bindings",
+            Arc::new(KindActivator::<BoundTestRes, _, _>::new(
+                || BoundTestRes,
+                || Resident::<BoundTestRes>::new(resident::config::Config::default()),
+            )),
+        )
+        .expect("typed fixture metadata admits");
+
+    for credential_id in [old_credential_id, new_credential_id] {
+        registry
+            .register_and_bind(
+                "test-replacement-bindings",
+                &manager,
+                RegisterRequest {
+                    config: ResourceConfigInput::data(serde_json::json!({
+                        "name": "from-factory"
+                    })),
+                    expr_engine: &expression_engine,
+                    slot_bindings: vec![SlotBinding {
+                        slot_name: "auth".to_owned(),
+                        credential_key: nebula_core::credential_key!("test.shared-key"),
+                        credential_id: Some(credential_id),
+                    }],
+                    slot_installs: Vec::new(),
+                    scope: ScopeLevel::Global,
+                    recovery_gate: None,
+                },
+                Some(&fanout_index),
+            )
+            .await
+            .expect("exact identity registration");
+    }
+
+    assert!(fanout_index.affected(&old_credential_id).is_empty());
+    assert_eq!(fanout_index.affected(&new_credential_id).len(), 1);
 }
 
 #[tokio::test]
