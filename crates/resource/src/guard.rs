@@ -259,16 +259,15 @@ impl<R: Provider> ResourceGuard<R> {
         self.acquired_at.elapsed()
     }
 
-    /// The row's rate limit, if the resource declares one or the row set
-    /// one.
+    /// The row's limit.
     ///
-    /// Every acquire already consumed one permit. Wrap each outbound call in
-    /// [`call`](crate::rate_limit::ResourceLimiter::call) to pace calls made
-    /// within this lease: map the provider's 429 to
-    /// [`Error::exhausted`](crate::Error::exhausted) with its `Retry-After`
-    /// and every caller of the quota backs off until then.
-    pub fn limits(&self) -> Option<&crate::rate_limit::ResourceLimiter> {
-        self.managed.rate_limiter.as_deref()
+    /// Every acquire already consumed one permit. Calls made within the lease
+    /// are paced by the [`Limited`](crate::rate_limit::Limited) client the
+    /// resource built in `create`; use this handle only to
+    /// [`penalize`](crate::rate_limit::ResourceLimiter::penalize) on a signal
+    /// that does not come back from a call.
+    pub fn limits(&self) -> &Arc<crate::rate_limit::ResourceLimiter> {
+        &self.managed.rate_limiter
     }
 
     /// Returns the resource key for this guard.

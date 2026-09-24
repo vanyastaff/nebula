@@ -469,11 +469,9 @@ impl Manager {
         // graceful shutdown. The post-count checks below still reject it if
         // either began while it waited. Local state, so it runs before the
         // recovery gate and a denial never reads as backend ill health.
-        if let Some(limiter) = managed.rate_limiter.as_deref() {
-            tokio::select! {
-                ready = limiter.ready(options.deadline) => ready?,
-                () = self.cancel.cancelled() => return Err(Error::cancelled()),
-            }
+        tokio::select! {
+            ready = managed.rate_limiter.ready(options.deadline) => ready?,
+            () = self.cancel.cancelled() => return Err(Error::cancelled()),
         }
         // Pre-count this acquire on both the manager-wide and per-resource
         // in-flight trackers, from the moment `lookup()` succeeds. RAII

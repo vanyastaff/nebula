@@ -168,6 +168,8 @@ where
         metrics: Option<ResourceOpsMetrics>,
     ) -> Result<ResourceGuard<R>, Error> {
         let _ = options;
+        // Every author hook below sees the row's limit through the context.
+        let ctx = &ctx.with_limits(&self.rate_limiter);
         let config = self.config();
         let generation = self.generation();
 
@@ -487,9 +489,12 @@ where
         }
         let created_epoch = self.store.stamp_epoch();
         let _retirement = RetiredEntriesGuard(Arc::clone(self));
+        // Warmup and refill create through here: the instance gets the
+        // row's limit exactly as one created on acquire does.
+        let ctx = ctx.with_limits(&self.rate_limiter);
         let created = self
             .topology
-            .create_entry(&self.resource, config, ctx, &self.retained)
+            .create_entry(&self.resource, config, &ctx, &self.retained)
             .await?;
         // Cancel-safety: arm the guard before the idle-lock await below — a
         // cancellation landing there must destroy the just-created instance,

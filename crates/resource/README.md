@@ -150,16 +150,28 @@ limit is a GCRA from `nebula-resilience` behind a `LimitStore`: the manager's
 in-memory store, or `ManagerConfig::with_shared_limit_store` for cluster-wide
 limits.
 
-Every acquire consumes one permit before it is counted as in flight (so a
-queued caller never delays revoke or shutdown drains), and
-`ResourceGuard::limits()` paces individual calls inside one lease
-(`ready(deadline)`) and applies a provider's 429 to every caller of the quota
-(`penalize(retry_after)`). A caller waits for its slot but never past its
-deadline: a slot after the deadline fails fast with `Exhausted` +
-`retry_after` and consumes nothing; an unreachable shared store fails closed as
-`Backpressure`. Denials never trip the recovery gate. `ResourceEvent`
-publishes `RateLimitEngaged` / `Cleared` / `Penalized` / `StoreUnavailable` /
-`StoreRecovered` on transitions only, never per call.
+Every row has a limiter; every acquire consumes one permit before it is
+counted as in flight (so a queued caller never delays revoke or shutdown
+drains). Calls inside a lease are paced by the client itself: in
+`Provider::create` the author wraps whatever client the resource holds — an
+HTTP client, `teloxide::Bot`, an SDK — once, with
+`ctx.limits().wrap(client, throttle)`, and actions call it through
+`Limited::run`. The `Throttle` (a closure over the outcome, or
+`rate_limit::on_error` over the error) recognises the provider's "slow down";
+every caller of the quota then pauses for its `retry_after`
+(`retry_after_from_header` reads seconds and HTTP dates), capped at the
+policy's `max_penalty`, or backs off exponentially when none is given. Only
+the wrapped client's own outcomes count, so a limit hit on another resource
+inside the call never pauses this one. `Limited` has no `Deref`: skipping the
+limit takes an explicit `unlimited()`. A resource that declares no rate pays
+nothing: its limiter paces nothing and only honours pauses, kept in-process.
+
+A caller waits for its slot but never past its deadline: a slot after the
+deadline fails fast with `Exhausted` + `retry_after` and consumes nothing; an
+unreachable shared store fails closed as `Backpressure`. Denials never trip the
+recovery gate. `ResourceEvent` publishes `RateLimitEngaged` / `Cleared` /
+`Penalized` / `StoreUnavailable` / `StoreRecovered` on transitions only, never
+per call.
 
 Admitted `ResourceMetadata` has private fields, getters, and `Serialize` only.
 Persisted catalog bytes deserialize as `RecordedResourceMetadata`; callers must

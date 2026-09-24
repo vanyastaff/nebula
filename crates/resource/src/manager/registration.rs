@@ -22,8 +22,9 @@ use crate::{
 };
 
 impl Manager {
-    /// Builds the enforced limit of one row from `R`'s declared policy and
-    /// the row's override; `None` when neither declares a limit.
+    /// Builds the limit of one row from `R`'s declared policy and the row's
+    /// override. A row with no rate still gets a limiter, one that only
+    /// honours pauses.
     ///
     /// A row without an explicit quota key is limited on its own, in this
     /// process: its fallback key identifies the registry row, which is only
@@ -33,10 +34,10 @@ impl Manager {
         input: Option<crate::rate_limit::RowLimit>,
         scope: &ScopeLevel,
         slot_identity: &crate::dedup::SlotIdentity,
-    ) -> Result<Option<Arc<crate::rate_limit::ResourceLimiter>>, Error> {
+    ) -> Result<Arc<crate::rate_limit::ResourceLimiter>, Error> {
         use std::hash::{Hash as _, Hasher as _};
 
-        use crate::rate_limit::{ErasedLimitStore, LimitKey, LimitScope};
+        use crate::rate_limit::{ErasedLimitStore, LimitKey, LimitScope, Quota, ResourceLimiter};
 
         let policy = R::resilience();
         let input = input.unwrap_or_default();
@@ -44,7 +45,12 @@ impl Manager {
             .effective_rate(input.rate)
             .map_err(|error| error.with_resource_key(R::key()))?
         else {
-            return Ok(None);
+            return Ok(Arc::new(ResourceLimiter::new(
+                None,
+                policy.penalty_cap(),
+                R::key(),
+                Arc::clone(&self.event_bus),
+            )));
         };
         let local: Arc<dyn ErasedLimitStore> = self.local_limits.clone();
         let (store, key) = match (input.key, policy.limit_scope(), &self.shared_limits) {
@@ -70,14 +76,12 @@ impl Manager {
                 (local, key)
             },
         };
-        Ok(Some(Arc::new(crate::rate_limit::ResourceLimiter::new(
-            store,
-            key,
-            rate,
+        Ok(Arc::new(ResourceLimiter::new(
+            Some(Quota::new(store, key, rate)),
             policy.penalty_cap(),
             R::key(),
             Arc::clone(&self.event_bus),
-        ))))
+        )))
     }
 
     /// Registers a resource from a fully-specified [`RegistrationSpec`].

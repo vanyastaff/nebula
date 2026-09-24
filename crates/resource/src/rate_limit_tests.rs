@@ -17,13 +17,40 @@ fn per_second(requests: u32, burst: u32) -> Rate {
 
 fn limiter(rate: Rate) -> ResourceLimiter {
     ResourceLimiter::new(
-        Arc::new(MemoryLimitStore::new()),
-        LimitKey::new("test:row").unwrap(),
-        rate,
+        Some(Quota::new(
+            Arc::new(MemoryLimitStore::new()),
+            LimitKey::new("test:row").unwrap(),
+            rate,
+        )),
         Duration::from_mins(1),
         ResourceKey::new("test.resource").unwrap(),
         Arc::new(EventBus::new(16)),
     )
+}
+
+/// A provider error in the shape libraries use (`teloxide::RequestError`).
+#[derive(Debug)]
+enum ProviderError {
+    RetryAfter(Duration),
+    Throttled,
+    Other,
+}
+
+fn provider_throttle() -> OnError<impl Fn(&ProviderError) -> Verdict + Send + Sync> {
+    on_error(|error: &ProviderError| match error {
+        ProviderError::RetryAfter(after) => Verdict::Throttled {
+            retry_after: Some(*after),
+        },
+        ProviderError::Throttled => Verdict::Throttled { retry_after: None },
+        ProviderError::Other => Verdict::Pass,
+    })
+}
+
+/// Time until `limits` admits the next call.
+async fn wait_for_slot(limits: &ResourceLimiter) -> Duration {
+    let started = Instant::now();
+    limits.ready(None).await.expect("admitted");
+    started.elapsed()
 }
 
 #[test]
@@ -135,59 +162,114 @@ async fn penalty_is_capped_by_the_policy() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_provider_refusal_blocks_the_key_for_its_retry_after() {
-    let limiter = limiter(per_second(100, 1));
-    let error = limiter
-        .call(None, || async {
-            Err::<(), _>(Error::exhausted("429", Some(Duration::from_secs(30))))
-        })
+async fn a_throttled_call_pauses_the_quota_for_its_retry_after() {
+    let client = Arc::new(limiter(per_second(100, 1))).wrap("client", provider_throttle());
+    let error = client
+        .run(async |_| Err::<(), _>(ProviderError::RetryAfter(Duration::from_secs(30))))
         .await
-        .expect_err("the call's own error is returned");
-    assert!(matches!(error.kind(), ErrorKind::Exhausted { .. }));
-
-    let started = Instant::now();
-    limiter
-        .call(None, || async { Ok::<_, Error>(()) })
-        .await
-        .expect("admitted after the block");
-    assert_eq!(started.elapsed(), Duration::from_secs(30));
-}
-
-#[tokio::test(start_paused = true)]
-async fn refusals_without_retry_after_back_off_exponentially_and_reset() {
-    let limiter = limiter(per_second(100, 1));
-    let refuse = || async { Err::<(), _>(Error::exhausted("429", None)) };
-    for expected in [1, 2, 4] {
-        let _ = limiter.call(None, refuse).await;
-        let started = Instant::now();
-        limiter.ready(None).await.expect("admitted");
-        assert_eq!(started.elapsed(), Duration::from_secs(expected));
-    }
-    limiter
-        .call(None, || async { Ok::<_, Error>(()) })
-        .await
-        .expect("success");
-    let _ = limiter.call(None, refuse).await;
-    let started = Instant::now();
-    limiter.ready(None).await.expect("admitted");
+        .expect_err("the client's own error comes back");
+    assert!(matches!(
+        error,
+        LimitedError::Call(ProviderError::RetryAfter(_))
+    ));
     assert_eq!(
-        started.elapsed(),
-        Duration::from_secs(1),
-        "a success resets the backoff"
+        wait_for_slot(client.limits()).await,
+        Duration::from_secs(30)
     );
 }
 
+#[tokio::test(start_paused = true)]
+async fn unsignalled_throttling_backs_off_exponentially_and_resets() {
+    let client = Arc::new(limiter(per_second(100, 1))).wrap((), provider_throttle());
+    let throttled = async |(): &()| Err::<(), _>(ProviderError::Throttled);
+    for expected in [1, 2, 4] {
+        let _ = client.run(throttled).await;
+        assert_eq!(
+            wait_for_slot(client.limits()).await,
+            Duration::from_secs(expected)
+        );
+    }
+    // Any other outcome, success or not, resets the backoff.
+    let _ = client
+        .run(async |()| Err::<(), _>(ProviderError::Other))
+        .await;
+    let _ = client.run(throttled).await;
+    assert_eq!(wait_for_slot(client.limits()).await, Duration::from_secs(1));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_limit_hit_elsewhere_inside_the_call_does_not_pause_this_quota() {
+    let client = Arc::new(limiter(per_second(100, 1))).wrap((), NoThrottle);
+    // A nested resource answered "exhausted": only this client's throttle
+    // decides what is a provider refusal, so this quota stays open.
+    let error = client
+        .run(async |()| -> Result<(), Error> {
+            Err(Error::exhausted("nested", Some(Duration::from_hours(1))))
+        })
+        .await;
+    assert!(matches!(error, Err(LimitedError::Call(_))));
+    assert!(wait_for_slot(client.limits()).await < Duration::from_secs(1));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_limiter_without_a_rate_only_honours_pauses() {
+    let limits = ResourceLimiter::detached();
+    assert_eq!(limits.rate(), None);
+    for _ in 0..1_000 {
+        assert_eq!(wait_for_slot(&limits).await, Duration::ZERO);
+    }
+    let client = limits.wrap((), provider_throttle());
+    let _ = client
+        .run(async |()| Err::<(), _>(ProviderError::RetryAfter(Duration::from_secs(20))))
+        .await;
+    let error = limits
+        .ready(Some(std::time::Instant::now()))
+        .await
+        .expect_err("paused past the deadline");
+    assert!(matches!(
+        error.kind(),
+        ErrorKind::Exhausted { retry_after: Some(after) } if *after == Duration::from_secs(20)
+    ));
+    assert_eq!(wait_for_slot(&limits).await, Duration::from_secs(20));
+    assert_eq!(wait_for_slot(&limits).await, Duration::ZERO);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_refused_permit_never_reaches_the_client() {
+    let client = Arc::new(limiter(per_second(10, 1))).wrap((), NoThrottle);
+    client
+        .run(async |()| Ok::<_, ProviderError>(()))
+        .await
+        .unwrap();
+    let reached = AtomicBool::new(false);
+    let error = client
+        .run_until(Some(std::time::Instant::now()), async |()| {
+            reached.store(true, Ordering::Relaxed);
+            Ok::<_, ProviderError>(())
+        })
+        .await
+        .expect_err("next slot is past the deadline");
+    assert!(matches!(error, LimitedError::Limit(_)));
+    assert!(!reached.load(Ordering::Relaxed));
+}
+
 #[test]
-fn retry_after_header_parses_delay_seconds_only() {
+fn retry_after_header_parses_seconds_and_http_dates() {
     assert_eq!(
         retry_after_from_header(" 120 "),
         Some(Duration::from_mins(2))
     );
     assert_eq!(
         retry_after_from_header("Wed, 21 Oct 2015 07:28:00 GMT"),
-        None
+        Some(Duration::ZERO),
+        "a date in the past means now"
     );
+    let in_an_hour =
+        httpdate::fmt_http_date(std::time::SystemTime::now() + Duration::from_hours(1));
+    let parsed = retry_after_from_header(&in_an_hour).expect("an HTTP date");
+    assert!(parsed > Duration::from_mins(59) && parsed <= Duration::from_hours(1));
     assert_eq!(retry_after_from_header("-1"), None);
+    assert_eq!(retry_after_from_header("soon"), None);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

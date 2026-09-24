@@ -1,7 +1,8 @@
 //! Rate limiting through the manager: the limiter is consumed on acquire,
 //! waits within the caller's deadline, fails fast past it, never trips the
 //! recovery gate, is reachable per call through the guard, shares a quota
-//! across rows with one key, and publishes transitions only.
+//! across rows with one key, reaches `Provider::create` so a wrapped client
+//! and the acquire path share one pause, and publishes transitions only.
 
 mod common;
 
@@ -10,8 +11,11 @@ use std::{num::NonZeroU32, sync::Arc, time::Duration};
 use common::{ResidentTestResource, test_config, test_ctx};
 use nebula_resource::{
     AcquireOptions, ErrorKind, GateState, Manager, RecoveryGate, RecoveryGateConfig,
-    RegistrationSpec, Resident, ResidentConfig, ResourceEvent, ScopeLevel, SlotIdentity,
-    rate_limit::{LimitKey, Rate, RowLimit},
+    RegistrationSpec, Resident, ResidentConfig, ResourceContext, ResourceEvent, ScopeLevel,
+    SlotIdentity,
+    rate_limit::{LimitKey, Limited, LimitedError, Rate, RowLimit, Throttle, Verdict},
+    resource::{Provider, ResourceMetadataDraft},
+    topology::resident::ResidentProvider,
 };
 use tokio::time::Instant;
 
@@ -136,7 +140,7 @@ async fn guard_paces_calls_made_within_one_lease() {
         .acquire::<ResidentTestResource>(&test_ctx(), &AcquireOptions::default())
         .await
         .expect("acquire consumes one permit of the burst");
-    let limits = guard.limits().expect("the row has a rate limit");
+    let limits = guard.limits();
     limits
         .ready(None)
         .await
@@ -172,7 +176,7 @@ async fn rows_with_one_key_share_one_quota() {
             .expect("first acquire on the account is free"),
     );
     // …so the organization's row, a different registry row, has none left.
-    let org_ctx = nebula_resource::ResourceContext::minimal(
+    let org_ctx = ResourceContext::minimal(
         nebula_core::scope::Scope {
             org_id: Some(org),
             ..Default::default()
@@ -184,6 +188,131 @@ async fn rows_with_one_key_share_one_quota() {
         .await
         .expect_err("the account's one permit per second is spent");
     assert!(matches!(error.kind(), ErrorKind::Exhausted { .. }));
+}
+
+/// A third-party client in the shape of `teloxide::Bot`: no HTTP layer to
+/// hook, a limit reported as an error variant.
+#[derive(Clone)]
+struct ChatClient;
+
+#[derive(Debug)]
+enum ChatError {
+    RetryAfter(Duration),
+}
+
+impl ChatClient {
+    async fn send(&self, fail: Option<ChatError>) -> Result<(), ChatError> {
+        fail.map_or(Ok(()), Err)
+    }
+}
+
+/// Written once by the resource author, next to the client.
+#[derive(Clone)]
+struct ChatThrottle;
+
+impl<T> Throttle<T, ChatError> for ChatThrottle {
+    fn check(&self, outcome: &Result<T, ChatError>) -> Verdict {
+        match outcome {
+            Err(ChatError::RetryAfter(after)) => Verdict::Throttled {
+                retry_after: Some(*after),
+            },
+            Ok(_) => Verdict::Pass,
+        }
+    }
+}
+
+/// A resource that declares no rate: it only pauses when the provider says.
+#[derive(Clone)]
+struct ChatResource;
+
+#[async_trait::async_trait]
+impl Provider for ChatResource {
+    type Config = common::TestConfig;
+    type Instance = Limited<ChatClient, ChatThrottle>;
+    type Topology = Resident<Self>;
+
+    fn key() -> nebula_core::ResourceKey {
+        nebula_core::resource_key!("test-chat")
+    }
+
+    async fn create(
+        &self,
+        _config: &common::TestConfig,
+        ctx: &ResourceContext,
+    ) -> Result<Self::Instance, nebula_resource::Error> {
+        Ok(ctx.limits().wrap(ChatClient, ChatThrottle))
+    }
+
+    async fn destroy(
+        &self,
+        _instance: Self::Instance,
+        _cx: nebula_resource::TeardownCx,
+    ) -> Result<(), nebula_resource::Error> {
+        Ok(())
+    }
+
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("test-chat"),
+            "",
+        )
+    }
+}
+
+nebula_resource::no_credential_slots!(ChatResource);
+
+impl ResidentProvider for ChatResource {}
+
+#[tokio::test(start_paused = true)]
+async fn a_provider_pause_reported_through_the_client_holds_every_acquire() {
+    let manager = Manager::new();
+    manager
+        .register(RegistrationSpec {
+            resource: ChatResource,
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: Resident::new(ResidentConfig::default()),
+            recovery_gate: None,
+            rate_limit: None,
+        })
+        .expect("registration succeeds");
+
+    let guard = manager
+        .acquire::<ChatResource>(&test_ctx(), &AcquireOptions::default())
+        .await
+        .expect("no rate: acquire is free");
+    assert_eq!(guard.limits().rate(), None);
+    for _ in 0..100 {
+        guard
+            .run(async |chat| chat.send(None).await)
+            .await
+            .expect("nothing paces an unlimited resource");
+    }
+    let error = guard
+        .run(async |chat| {
+            chat.send(Some(ChatError::RetryAfter(Duration::from_secs(30))))
+                .await
+        })
+        .await
+        .expect_err("the provider refused");
+    assert!(matches!(
+        error,
+        LimitedError::Call(ChatError::RetryAfter(_))
+    ));
+    drop(guard);
+
+    // The client built in `create` shares the row's limiter, so the pause
+    // it recorded holds the next acquire too.
+    let error = manager
+        .acquire::<ChatResource>(&test_ctx(), &deadline_in(Duration::from_secs(1)))
+        .await
+        .expect_err("paused for 30 s, past the 1 s deadline");
+    assert!(matches!(
+        error.kind(),
+        ErrorKind::Exhausted { retry_after: Some(after) } if *after == Duration::from_secs(30)
+    ));
 }
 
 #[tokio::test(start_paused = true)]
@@ -200,7 +329,7 @@ async fn limit_events_mark_transitions_and_penalties_only() {
         .acquire::<ResidentTestResource>(&test_ctx(), &AcquireOptions::default())
         .await
         .unwrap();
-    let limits = guard.limits().unwrap();
+    let limits = guard.limits();
     for _ in 0..3 {
         limits.ready(None).await.unwrap();
     }

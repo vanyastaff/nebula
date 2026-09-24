@@ -180,9 +180,9 @@ pub struct ManagedResource<R: Provider> {
     /// When set, acquire calls check the gate before proceeding and
     /// trigger passive recovery on transient failures.
     pub(crate) recovery_gate: Option<Arc<RecoveryGate>>,
-    /// Optional rate limit consumed on every acquire and exposed per call
-    /// through the guard.
-    pub(crate) rate_limiter: Option<Arc<crate::rate_limit::ResourceLimiter>>,
+    /// The row's limit: consumed on every acquire, handed to
+    /// `Provider::create` through the context, exposed on the guard.
+    pub(crate) rate_limiter: Arc<crate::rate_limit::ResourceLimiter>,
     /// Resource-level taint flag set by [`taint`](Self::taint).
     ///
     /// When `true`, the manager's acquire paths reject new acquires for

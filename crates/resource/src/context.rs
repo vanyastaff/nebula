@@ -14,6 +14,8 @@ use nebula_core::{
 };
 use tokio_util::sync::CancellationToken;
 
+use crate::rate_limit::ResourceLimiter;
+
 // ---------------------------------------------------------------------------
 // No-op accessor stubs (used by `minimal` constructor)
 // ---------------------------------------------------------------------------
@@ -101,9 +103,12 @@ impl CredentialAccessor for NoopCredentialAccessor {
 /// Embeds a [`BaseContext`] for identity / scope / cancellation and holds
 /// optional accessor arcs for resource-to-resource and credential resolution.
 pub struct ResourceContext {
-    base: BaseContext,
+    base: Arc<BaseContext>,
     resources: Arc<dyn ResourceAccessor>,
     credentials: Arc<dyn CredentialAccessor>,
+    /// The limit of the row being created; set by the manager around
+    /// `Provider::create` and the topology hooks.
+    limits: Option<Arc<ResourceLimiter>>,
 }
 
 impl ResourceContext {
@@ -114,9 +119,34 @@ impl ResourceContext {
         credentials: Arc<dyn CredentialAccessor>,
     ) -> Self {
         Self {
-            base,
+            base: Arc::new(base),
             resources,
             credentials,
+            limits: None,
+        }
+    }
+
+    /// The rate limit of the resource row being created.
+    ///
+    /// Wrap the client built in [`Provider::create`](crate::Provider::create)
+    /// with [`ResourceLimiter::wrap`] so every call through it is paced and a
+    /// provider's "slow down" pauses the whole quota. Outside a manager-driven
+    /// create (a hand-built context in a test) this is a detached limiter that
+    /// only honours the pauses it records itself.
+    #[must_use]
+    pub fn limits(&self) -> Arc<ResourceLimiter> {
+        self.limits
+            .clone()
+            .unwrap_or_else(ResourceLimiter::detached)
+    }
+
+    /// This context with `limits` attached; shares everything else.
+    pub(crate) fn with_limits(&self, limits: &Arc<ResourceLimiter>) -> Self {
+        Self {
+            base: Arc::clone(&self.base),
+            resources: Arc::clone(&self.resources),
+            credentials: Arc::clone(&self.credentials),
+            limits: Some(Arc::clone(limits)),
         }
     }
 
@@ -132,9 +162,10 @@ impl ResourceContext {
             .clock(SystemClock)
             .build_with(Principal::System);
         Self {
-            base,
+            base: Arc::new(base),
             resources: Arc::new(NoopResourceAccessor),
             credentials: Arc::new(NoopCredentialAccessor),
+            limits: None,
         }
     }
 
@@ -183,9 +214,10 @@ impl ResourceContext {
             builder = builder.span_id(span_id);
         }
         Self {
-            base: builder.build_with(self.principal().clone()),
+            base: Arc::new(builder.build_with(self.principal().clone())),
             resources: Arc::clone(&self.resources),
             credentials: Arc::clone(&self.credentials),
+            limits: self.limits.clone(),
         }
     }
 }
