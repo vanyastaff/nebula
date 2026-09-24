@@ -550,19 +550,17 @@ impl ResourceFanoutIndex {
     }
 
     pub(crate) fn remember_staged_revoke_if_present(&self, credential_id: CredentialId) -> bool {
-        let Some(rows) = self.by_credential.get(&credential_id) else {
-            return false;
-        };
-        if !rows.iter().any(|row| row.staged != 0) {
+        // Serialize the staged check with publication cleanup. Stage insertion
+        // itself never takes this mutex; whichever side acquires it afterward
+        // observes either a still-staged row or a completed publication.
+        let mut intents = self
+            .staged_revoke_intents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !self.has_staged_binding(&credential_id) {
             return false;
         }
-        // Keep the bucket's read guard through insertion. Publication needs
-        // the corresponding write guard, so it either observes this intent
-        // or completes first and makes this method return false.
-        self.staged_revoke_intents
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(credential_id);
+        intents.insert(credential_id);
         true
     }
 
@@ -848,16 +846,13 @@ impl ResourceFanoutIndex {
                 row.staged_context = None;
             }
         }
-        let should_revoke = self
+        let mut staged_revoke_intents = self
             .staged_revoke_intents
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .contains(cid);
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let should_revoke = staged_revoke_intents.contains(cid);
         if !self.has_staged_binding(cid) {
-            self.staged_revoke_intents
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .remove(cid);
+            staged_revoke_intents.remove(cid);
         }
         should_revoke
     }
@@ -869,20 +864,10 @@ impl ResourceFanoutIndex {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .retain(|entry| self.has_published_binding(&entry.credential_id));
-        let staged_credentials = self
-            .by_credential
-            .iter()
-            .filter_map(|entry| {
-                entry
-                    .iter()
-                    .any(|row| row.staged != 0)
-                    .then_some(*entry.key())
-            })
-            .collect::<std::collections::HashSet<_>>();
         self.staged_revoke_intents
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .retain(|credential_id| staged_credentials.contains(credential_id));
+            .retain(|credential_id| self.has_staged_binding(credential_id));
     }
 
     fn has_published_binding(&self, cid: &CredentialId) -> bool {
