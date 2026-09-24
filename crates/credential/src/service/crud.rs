@@ -247,6 +247,9 @@ impl CredentialService {
         // display-only update carries the existing state through.
         let resolved = match props {
             Some(props) => {
+                // Match create/acquisition: an external source must never
+                // fall back to resolving replacement material locally.
+                self.ensure_local_source()?;
                 let ctx = self.owner_context(scope);
                 Some(
                     self.ops
