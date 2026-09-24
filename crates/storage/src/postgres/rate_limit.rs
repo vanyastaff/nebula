@@ -172,7 +172,14 @@ impl LimitStore for PgLimitStore {
             return Ok(Ok(original));
         }
         let (rate, state) = step::enforce(state, now, stored.as_ref(), rate);
-        let (decision, next) = step::reserve(state, now, &rate, request.permits, request.max_wait);
+        let (decision, next) = step::reserve_from(
+            state,
+            now,
+            &rate,
+            request.permits,
+            request.max_wait,
+            request.not_before,
+        );
         if let Some(next) = next {
             Self::write(&mut tx, key, next, &rate).await?;
         }

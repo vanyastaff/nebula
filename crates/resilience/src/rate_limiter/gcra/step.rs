@@ -103,6 +103,35 @@ pub fn reserve(
     (Ok(grant), Some(next))
 }
 
+/// [`reserve`], booking no earlier than `not_before` (store-clock nanos).
+///
+/// The slot is computed as if requested at `max(now, not_before)`, and the
+/// wait is measured from `now`, so it counts the time until `not_before`
+/// too; a slot past `max_wait` is refused and consumes nothing.
+pub fn reserve_from(
+    state: GcraState,
+    now: u64,
+    rate: &Rate,
+    permits: u32,
+    max_wait: Duration,
+    not_before: u64,
+) -> (Result<Grant, Denied>, Option<GcraState>) {
+    if not_before <= now {
+        return reserve(state, now, rate, permits, max_wait);
+    }
+    let (decision, next) = reserve(state, not_before, rate, permits, Duration::MAX);
+    match decision {
+        Ok(grant) => {
+            let wait = Duration::from_nanos(grant.allow_at.saturating_sub(now));
+            if wait > max_wait {
+                return (Err(Denied::Later { retry_after: wait }), None);
+            }
+            (Ok(Grant { wait, ..grant }), next)
+        },
+        Err(denied) => (Err(denied), None),
+    }
+}
+
 /// Blocks the key until `now + min(retry_after, max_penalty)`.
 ///
 /// Monotonic: it only ever moves the schedule later, so it cannot release

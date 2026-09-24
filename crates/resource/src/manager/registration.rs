@@ -789,6 +789,7 @@ impl Manager {
             ?slot_identity,
             "all pre-register checks passed; dispatching into typed register"
         );
+        let warmup_scope = crate::context::minimal_scope_for_level(&scope);
         let managed = self.install(RegistrationSpec {
             resource,
             config,
@@ -801,7 +802,7 @@ impl Manager {
         // 6. A row activated from its stored definition warms as its
         //    topology's warmup strategy says, in the background: the
         //    activation that registered it does not wait on `create`s.
-        self.spawn_warmup(&managed);
+        self.spawn_warmup(&managed, warmup_scope);
         Ok(slot_identity)
     }
 
@@ -812,8 +813,18 @@ impl Manager {
     /// The task is counted in-flight like an acquire, so a revoke or a
     /// graceful shutdown drains it, and it stops when the row's maintenance
     /// token is cancelled (retirement, shutdown). Author `create` hooks are
-    /// bounded and isolated as in [`warmup_pool`](Self::warmup_pool).
-    fn spawn_warmup<R>(&self, managed: &Arc<ManagedResource<R>>)
+    /// bounded and isolated as in [`warmup_pool`](Self::warmup_pool), and
+    /// every create respects the pool's live-instance headroom.
+    ///
+    /// The creates see the row's registration scope (`scope`, the bag for
+    /// its [`ScopeLevel`]) and the row's limits, as the maintenance refill
+    /// does; there is no execution behind a warmup, so execution-bound
+    /// context (its principal, resource and credential accessors) is absent.
+    /// A provider whose `create` needs that context declares
+    /// [`WarmupStrategy::None`] and creates on acquire.
+    ///
+    /// [`WarmupStrategy::None`]: crate::topology::pooled::config::WarmupStrategy::None
+    fn spawn_warmup<R>(&self, managed: &Arc<ManagedResource<R>>, scope: nebula_core::scope::Scope)
     where
         R: Provider,
         R::Topology: Topology<R>,
@@ -838,10 +849,7 @@ impl Manager {
             return;
         }
         let cancel = managed.maintenance.cancellation_token();
-        let ctx = crate::context::ResourceContext::minimal(
-            nebula_core::scope::Scope::default(),
-            cancel.clone(),
-        );
+        let ctx = crate::context::ResourceContext::minimal(scope, cancel.clone());
         let managed = Arc::clone(managed);
         tokio::spawn(async move {
             let _in_flight = in_flight;

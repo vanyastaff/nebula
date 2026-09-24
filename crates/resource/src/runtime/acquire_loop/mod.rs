@@ -450,9 +450,8 @@ where
 
     /// Creates one fresh entry and cancel-safely deposits it into the
     /// framework store — the shared create→guard→deposit-fence step
-    /// [`create_and_deposit_entries`](Self::create_and_deposit_entries) (a
-    /// fixed-count batch) and [`refill_min_idle`](Self::refill_min_idle) (a
-    /// headroom-rechecking loop) both drive per attempt, so the cancel-safety
+    /// [`warmup`](Self::warmup) and [`refill_min_idle`](Self::refill_min_idle)
+    /// (both headroom-rechecking) drive per attempt, so the cancel-safety
     /// and revoke-fence contract is written and tested once.
     ///
     /// The revoke epoch is snapshotted *before* `create_entry` even runs
@@ -522,104 +521,119 @@ where
         }
     }
 
-    /// Creates and cancel-safely deposits up to `requested` fresh entries
-    /// into the framework store via [`create_and_deposit_one`](Self::create_and_deposit_one)
-    /// — the fixed-count batch [`warmup`](Self::warmup) drives at
-    /// registration. `requested` is a hard attempt cap, not a "keep retrying
-    /// until this many succeed" target: a deposit-time eviction (revoke race)
-    /// consumes one attempt without incrementing the return count, and
-    /// `create_entry` failing stops the whole call early (best effort — a
-    /// partially-filled store is better than hammering a backend that just
-    /// started failing). Returns the number of entries actually deposited.
-    async fn create_and_deposit_entries(
-        self: &Arc<Self>,
-        ctx: &ResourceContext,
-        requested: usize,
-    ) -> usize {
-        let config = self.config();
-        let mut created = 0usize;
-        for _ in 0..requested {
-            match self.create_and_deposit_one(ctx, &config).await {
-                Ok(true) => created += 1,
-                Ok(false) => {}, // deposit-time eviction — this attempt is spent
-                Err(e) => {
-                    tracing::warn!(
-                        key = %R::key(),
-                        error.kind = ?e.kind(),
-                        created,
-                        requested,
-                        "create_and_deposit_entries: create_entry failed, stopping early"
-                    );
-                    break;
-                },
-            }
-        }
-        created
-    }
-
     /// Pre-warms the store by creating + depositing `warmup_target` entries
     /// (fenced) at registration, as the topology's
     /// [`warmup_strategy`](Topology::warmup_strategy) says: not at all, one
     /// at a time, concurrently, or one at a time with a delay between
     /// creates. Returns the number admitted.
     ///
+    /// Every create first checks live-instance headroom, as
+    /// [`refill_min_idle`](Self::refill_min_idle) does: idle entries,
+    /// in-flight acquires and leases, and warmup creates still running
+    /// together never exceed the store's capacity, so a warmup racing
+    /// acquires cannot push the pool past its hard cap. The caller holds one
+    /// in-flight count for the warmup itself ([`Manager::warmup_pool`] and
+    /// the background warmup on resolved registration both do), which is
+    /// not counted against the headroom. `Parallel` runs at most
+    /// [`MAX_PARALLEL_WARMUP`] creates at once.
+    ///
+    /// [`Manager::warmup_pool`]: crate::Manager::warmup_pool
+    ///
     /// # Cancel safety
     ///
-    /// See [`create_and_deposit_entries`](Self::create_and_deposit_entries);
+    /// See [`create_and_deposit_one`](Self::create_and_deposit_one);
     /// every concurrent create is its own cancel-safe create→deposit step.
     pub(crate) async fn warmup(self: &Arc<Self>, ctx: &ResourceContext) -> usize {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
         use crate::topology::pooled::config::WarmupStrategy;
 
         let config = self.config();
-        let target = self.topology.warmup_target(&config);
+        let mut target = self.topology.warmup_target(&config);
+        if let Some(capacity) = self.store.capacity() {
+            target = target.min(capacity);
+        }
         if target == 0 {
             return 0;
         }
-        let created = match self.topology.warmup_strategy() {
-            WarmupStrategy::None => return 0,
-            WarmupStrategy::Sequential => self.create_and_deposit_entries(ctx, target).await,
-            WarmupStrategy::Parallel => {
-                let creates = (0..target).map(|_| self.create_and_deposit_one(ctx, &config));
-                let outcomes = futures::future::join_all(creates).await;
-                for error in outcomes.iter().filter_map(|outcome| outcome.as_ref().err()) {
-                    tracing::warn!(
-                        key = %R::key(),
-                        error.kind = ?error.kind(),
-                        "parallel warmup: create_entry failed"
-                    );
+        // Creates started and not yet deposited, so concurrent creates count
+        // against the headroom before their entries reach the store.
+        let running = AtomicUsize::new(0);
+        let attempt = |pause: Option<std::time::Duration>| {
+            let (running, config) = (&running, &config);
+            async move {
+                if let Some(pause) = pause {
+                    tokio::time::sleep(pause).await;
                 }
-                outcomes
-                    .iter()
-                    .filter(|outcome| matches!(outcome, Ok(true)))
-                    .count()
-            },
-            WarmupStrategy::Staggered { interval } => {
-                let mut created = 0usize;
-                for attempt in 0..target {
-                    if attempt > 0 {
-                        tokio::time::sleep(interval).await;
+                if self.warmup_headroom(running.load(Ordering::Acquire)).await == 0 {
+                    return None;
+                }
+                running.fetch_add(1, Ordering::AcqRel);
+                let outcome = self.create_and_deposit_one(ctx, config).await;
+                running.fetch_sub(1, Ordering::AcqRel);
+                Some(outcome)
+            }
+        };
+        let mut created = 0usize;
+        match self.topology.warmup_strategy() {
+            WarmupStrategy::None => return 0,
+            WarmupStrategy::Parallel => {
+                let mut creates = stream::iter(0..target)
+                    .map(|_| attempt(None))
+                    .buffer_unordered(MAX_PARALLEL_WARMUP);
+                while let Some(outcome) = creates.next().await {
+                    match outcome {
+                        Some(Ok(true)) => created += 1,
+                        Some(Err(error)) => tracing::warn!(
+                            key = %R::key(),
+                            error.kind = ?error.kind(),
+                            "parallel warmup: create_entry failed"
+                        ),
+                        Some(Ok(false)) | None => {},
                     }
-                    match self.create_and_deposit_one(ctx, &config).await {
-                        Ok(true) => created += 1,
-                        Ok(false) => {},
-                        Err(error) => {
+                }
+            },
+            strategy @ (WarmupStrategy::Sequential | WarmupStrategy::Staggered { .. }) => {
+                let interval = match strategy {
+                    WarmupStrategy::Staggered { interval } => Some(interval),
+                    _ => None,
+                };
+                for index in 0..target {
+                    let pause = interval.filter(|_| index > 0);
+                    match attempt(pause).await {
+                        Some(Ok(true)) => created += 1,
+                        Some(Ok(false)) => {},
+                        Some(Err(error)) => {
                             tracing::warn!(
                                 key = %R::key(),
                                 error.kind = ?error.kind(),
                                 created,
-                                "staggered warmup: create_entry failed, stopping early"
+                                "warmup: create_entry failed, stopping early"
                             );
                             break;
                         },
+                        // No headroom: acquires hold the rest of the pool.
+                        None => break,
                     }
                 }
-                created
             },
-        };
+        }
         if created > 0 {
             tracing::info!(key = %R::key(), created, target, "resource warmup complete");
         }
         created
+    }
+
+    /// Instances the store can still take: capacity minus idle entries,
+    /// in-flight work other than the caller's own warmup, and `running`
+    /// creates. Unbounded for a topology with no capacity.
+    async fn warmup_headroom(self: &Arc<Self>, running: usize) -> usize {
+        let Some(capacity) = self.store.capacity() else {
+            return usize::MAX;
+        };
+        let idle = self.store.len().await;
+        let in_flight = self.in_flight_count().saturating_sub(1);
+        capacity.saturating_sub(idle + in_flight + running)
     }
 
     /// Reaper-tick min-idle floor refill (HikariCP `minimumIdle`
@@ -863,7 +877,7 @@ where
     /// # Cancel safety
     ///
     /// Every drained entry is armed in an [`EntryCreateGuard`] the instant it
-    /// leaves the idle lock — the same guard [`create_and_deposit_entries`](Self::create_and_deposit_entries)
+    /// leaves the idle lock — the same guard [`create_and_deposit_one`](Self::create_and_deposit_one)
     /// uses for a freshly created entry — and stays armed for the whole
     /// batch of concurrent `check` awaits, defusing only once its outcome is
     /// classified. A reaper task aborted mid-probe (`graceful_shutdown`
@@ -995,6 +1009,12 @@ where
 /// off-hot-path sweep, so trading a little probe latency for both a bounded
 /// backend load and a bounded live-instance overshoot is the right default.
 const PROBE_CONCURRENCY: usize = 8;
+
+/// Most warmup creates [`ManagedResource::warmup`] runs at once for
+/// [`Parallel`](crate::topology::pooled::config::WarmupStrategy::Parallel):
+/// the target comes from operator configuration, and a large one must not
+/// materialize one pending create per requested entry.
+pub(crate) const MAX_PARALLEL_WARMUP: usize = 16;
 
 /// The release teardown future a guard's drop schedules: run the topology's
 /// `on_release` reset, then either return the entry to the framework store

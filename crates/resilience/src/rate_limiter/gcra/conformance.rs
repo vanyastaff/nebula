@@ -212,6 +212,36 @@ pub async fn tightening_a_busy_key_rebases_its_schedule<S: LimitStore>(store: &S
     );
 }
 
+/// A reservation made `not_before` another key's slot books no earlier
+/// than that slot, and its next slot follows from there.
+pub async fn not_before_lines_up_with_another_keys_slot<S: LimitStore>(store: &S) {
+    let (busy, idle) = (fresh_key("aligned-busy"), fresh_key("aligned-idle"));
+    let rate = hourly(1);
+    granted(store, &busy, &rate, ReserveRequest::new(1, Duration::ZERO)).await;
+    let later = granted(store, &busy, &rate, ReserveRequest::new(1, Duration::MAX)).await;
+    assert_about(later.wait, HOUR, "the busy key's next slot");
+
+    let request = ReserveRequest::new(1, Duration::MAX).not_before(later.allow_at);
+    let aligned = granted(store, &idle, &rate, request).await;
+    assert_eq!(
+        aligned.allow_at, later.allow_at,
+        "booked at the other key's slot"
+    );
+    let next = granted(store, &idle, &rate, ReserveRequest::new(1, Duration::MAX)).await;
+    assert_about(
+        next.wait,
+        2 * HOUR,
+        "the idle key's next slot follows the aligned one",
+    );
+
+    let too_soon = ReserveRequest::new(1, Duration::from_mins(5)).not_before(later.allow_at);
+    let refused = reserve(store, &fresh_key("aligned-refused"), &rate, too_soon).await;
+    assert!(
+        matches!(refused, Err(Denied::Later { .. })),
+        "a slot past max_wait is refused, got {refused:?}"
+    );
+}
+
 /// Concurrent callers never get more than the burst between them.
 pub async fn concurrent_callers_never_exceed_the_burst<S: LimitStore + 'static>(store: Arc<S>) {
     let key = fresh_key("concurrent");
@@ -251,5 +281,6 @@ pub async fn run_all<S: LimitStore + 'static>(store: Arc<S>) {
     repeated_reservation_id_returns_the_original_grant(&*store).await;
     a_busy_key_enforces_the_stricter_rate(&*store).await;
     tightening_a_busy_key_rebases_its_schedule(&*store).await;
+    not_before_lines_up_with_another_keys_slot(&*store).await;
     concurrent_callers_never_exceed_the_burst(store).await;
 }

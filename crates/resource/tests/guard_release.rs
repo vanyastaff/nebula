@@ -1043,6 +1043,40 @@ async fn warmup_follows_the_configured_strategy() {
     }
 }
 
+/// Warmup leaves room for instances already leased: with `max_size` in
+/// use by a lease plus idle entries, it stops at the cap instead of
+/// filling `min_size` idle entries on top.
+#[tokio::test]
+async fn warmup_stops_at_the_pool_cap_counting_leases() {
+    use nebula_resource::topology::pooled::config::{Config, WarmupStrategy};
+
+    let manager = Manager::new();
+    let resource = PoolTestResource::new();
+    let pool = Pooled::<PoolTestResource>::new(
+        Config {
+            min_size: 3,
+            max_size: 3,
+            idle_timeout: None,
+            max_lifetime: None,
+            warmup: WarmupStrategy::Sequential,
+            ..Default::default()
+        },
+        1,
+    );
+    register_pool(&manager, resource.clone(), test_config(), pool);
+    let lease = manager
+        .acquire_pooled::<PoolTestResource>(&test_ctx(), &AcquireOptions::default())
+        .await
+        .expect("lease");
+    let warmed = manager
+        .warmup_pool::<PoolTestResource>(&test_ctx())
+        .await
+        .expect("warmup succeeds");
+    assert_eq!(warmed, 2, "one of three instances is leased");
+    assert_eq!(resource.create_counter.load(Ordering::SeqCst), 3);
+    drop(lease);
+}
+
 // ---------------------------------------------------------------------------
 // 2. Pool stale fingerprint evicts idle entry
 // ---------------------------------------------------------------------------

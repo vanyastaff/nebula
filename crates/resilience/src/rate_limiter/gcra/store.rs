@@ -73,6 +73,9 @@ pub struct ReserveRequest {
     pub max_wait: Duration,
     /// Makes a repeated request return the original grant.
     pub id: Option<ReservationId>,
+    /// Earliest slot to book, on the store's clock (a [`Grant::allow_at`]
+    /// from the same store); `0` for none.
+    pub not_before: u64,
 }
 
 impl ReserveRequest {
@@ -83,7 +86,17 @@ impl ReserveRequest {
             permits,
             max_wait,
             id: None,
+            not_before: 0,
         }
+    }
+
+    /// Books no earlier than `allow_at`, a [`Grant::allow_at`] this same
+    /// store returned: the slot lines up with one booked under another key,
+    /// so a call waiting for both runs when each allows it.
+    #[must_use]
+    pub const fn not_before(mut self, allow_at: u64) -> Self {
+        self.not_before = allow_at;
+        self
     }
 
     /// Makes the request idempotent under `id`.
@@ -378,8 +391,14 @@ impl LimitStore for MemoryLimitStore {
                 });
             }
             let rate = entry.enforce(now, rate);
-            let (decision, next) =
-                step::reserve(entry.state, now, &rate, request.permits, request.max_wait);
+            let (decision, next) = step::reserve_from(
+                entry.state,
+                now,
+                &rate,
+                request.permits,
+                request.max_wait,
+                request.not_before,
+            );
             if let Some(next) = next {
                 entry.state = next;
             }

@@ -1191,7 +1191,7 @@ async fn refill_min_idle_skips_when_gate_not_idle() {
 /// instance via the release queue, never leak it and never panic —
 /// mirrors `cancelled_warmup_between_create_and_deposit_destroys_the_entry`,
 /// proving `refill_min_idle` inherited the same cancel-safety contract
-/// through the shared `create_and_deposit_entries` helper.
+/// through the shared `create_and_deposit_one` step.
 #[tokio::test]
 async fn refill_min_idle_shutdown_race_destroys_in_flight_entry() {
     let resource = Mock::new();
@@ -1302,7 +1302,7 @@ async fn refill_min_idle_revoke_mid_create_destroys_not_deposits() {
     let refill_task = tokio::spawn(async move { mr_refill.refill_min_idle(&ctx).await });
 
     // Deterministic: the entry's pre-revoke epoch is already snapshotted
-    // (`create_and_deposit_entries` stamps it before calling
+    // (`create_and_deposit_one` stamps it before calling
     // `create_entry`) and `create` is now parked mid-flight.
     create_entered.notified().await;
 

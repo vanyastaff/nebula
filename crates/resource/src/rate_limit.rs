@@ -792,7 +792,17 @@ impl ResourceLimiter {
         let (key, rate) = keyed
             .limit_for(dimension, &value.to_string())
             .map_err(|error| self.tagged(error))?;
-        let key_slot = self.book(&keyed.store, &key, &rate, deadline).await?;
+        if let Some(quota) = self
+            .quota
+            .as_ref()
+            .filter(|quota| std::ptr::addr_eq(Arc::as_ptr(&quota.store), Arc::as_ptr(&keyed.store)))
+        {
+            let wait = self
+                .aligned_slots(quota, keyed, &key, &rate, deadline)
+                .await?;
+            return self.wait_out(wait, Some(&key), deadline).await;
+        }
+        let key_slot = self.book(&keyed.store, &key, &rate, deadline, 0).await?;
         match self.account_slot(deadline).await {
             Ok(wait) => {
                 self.wait_out(wait.max(key_slot.wait), Some(&key), deadline)
@@ -808,6 +818,75 @@ impl ResourceLimiter {
         }
     }
 
+    /// Books one account slot and one slot of `key` at the same instant and
+    /// returns the wait until it.
+    ///
+    /// Each limit only holds if the call runs at its own slot: running at
+    /// the later of two independently booked slots would let calls whose
+    /// earlier slots were spaced out run bunched together. So the later
+    /// slot is taken as the time for both, and the earlier one is rebooked
+    /// no earlier than it, until both land on one instant. A slot given up
+    /// goes back while it is still the last one booked; otherwise it lapses
+    /// unused, which errs on sending less.
+    async fn aligned_slots(
+        &self,
+        quota: &Quota,
+        keyed: &KeyedLimits,
+        key: &LimitKey,
+        rate: &Rate,
+        deadline: Option<std::time::Instant>,
+    ) -> Result<Duration, Error> {
+        let mut key_slot = self.book(&keyed.store, key, rate, deadline, 0).await?;
+        for _ in 0..MAX_ALIGN_ROUNDS {
+            let account = match self
+                .book(
+                    &quota.store,
+                    &quota.key,
+                    &quota.rate,
+                    deadline,
+                    key_slot.allow_at,
+                )
+                .await
+            {
+                Ok(account) => account,
+                Err(error) => {
+                    let _ = keyed.store.cancel_boxed(key, rate, &key_slot).await;
+                    return Err(error);
+                },
+            };
+            if account.allow_at <= key_slot.allow_at {
+                return Ok(account.wait);
+            }
+            let _ = keyed.store.cancel_boxed(key, rate, &key_slot).await;
+            key_slot = match self
+                .book(&keyed.store, key, rate, deadline, account.allow_at)
+                .await
+            {
+                Ok(key_slot) => key_slot,
+                Err(error) => {
+                    let _ = quota
+                        .store
+                        .cancel_boxed(&quota.key, &quota.rate, &account)
+                        .await;
+                    return Err(error);
+                },
+            };
+            if key_slot.allow_at <= account.allow_at {
+                return Ok(key_slot.wait);
+            }
+            let _ = quota
+                .store
+                .cancel_boxed(&quota.key, &quota.rate, &account)
+                .await;
+        }
+        let _ = keyed.store.cancel_boxed(key, rate, &key_slot).await;
+        self.engage();
+        Err(self.tagged(Error::exhausted(
+            "rate limit: no instant both the account and the key allow",
+            None,
+        )))
+    }
+
     fn keyed_limits(&self) -> Result<&KeyedLimits, Error> {
         self.keyed.as_ref().ok_or_else(|| {
             self.tagged(Error::permanent(
@@ -821,7 +900,7 @@ impl ResourceLimiter {
     async fn account_slot(&self, deadline: Option<std::time::Instant>) -> Result<Duration, Error> {
         if let Some(quota) = &self.quota {
             return self
-                .book(&quota.store, &quota.key, &quota.rate, deadline)
+                .book(&quota.store, &quota.key, &quota.rate, deadline, 0)
                 .await
                 .map(|grant| grant.wait);
         }
@@ -885,18 +964,19 @@ impl ResourceLimiter {
         ))
     }
 
-    /// Books one slot of `key` that `deadline` still covers once the store
-    /// has answered.
+    /// Books one slot of `key`, no earlier than `not_before` (a slot this
+    /// store returned; `0` for none), that `deadline` still covers once the
+    /// store has answered.
     async fn book(
         &self,
         store: &Arc<dyn ErasedLimitStore>,
         key: &LimitKey,
         rate: &Rate,
         deadline: Option<std::time::Instant>,
+        not_before: u64,
     ) -> Result<Grant, Error> {
-        let decision = store
-            .reserve_boxed(key, rate, ReserveRequest::new(1, max_wait_until(deadline)))
-            .await;
+        let request = ReserveRequest::new(1, max_wait_until(deadline)).not_before(not_before);
+        let decision = store.reserve_boxed(key, rate, request).await;
         match decision {
             Ok(Ok(grant)) => {
                 self.store_recovered();
@@ -1393,6 +1473,11 @@ fn pause_deadline(now: tokio::time::Instant, block: Duration) -> tokio::time::In
         crate::deadline::UNBOUNDED_HORIZON,
     ))
 }
+
+/// Rebooking rounds before [`ResourceLimiter::aligned_slots`] gives up. Each
+/// round moves both slots later, so under contention they meet within a
+/// round or two; the bound only keeps a pathological store from spinning.
+const MAX_ALIGN_ROUNDS: usize = 8;
 
 fn max_wait_until(deadline: Option<std::time::Instant>) -> Duration {
     deadline.map_or(Duration::MAX, |deadline| {

@@ -598,3 +598,43 @@ async fn a_late_wake_up_past_the_deadline_is_refused() {
         "{error}"
     );
 }
+
+/// Behind an account backlog, calls for one key still keep that key's
+/// spacing: each runs at an instant both limits allow, not at the later
+/// of two slots booked apart.
+#[tokio::test(start_paused = true)]
+async fn an_account_backlog_does_not_bunch_one_keys_calls() {
+    let account = Rate::new(nz(10), Duration::from_secs(1))
+        .unwrap()
+        .with_burst(nz(1))
+        .unwrap();
+    let (limits, store) = chat_limiter(account);
+    nebula_resilience::rate_limiter::gcra::LimitStore::penalize(
+        &*store,
+        &LimitKey::new("acct:test").unwrap(),
+        &account,
+        Duration::from_secs(10),
+        Duration::from_mins(1),
+    )
+    .await
+    .unwrap();
+
+    let started = Instant::now();
+    let call = || {
+        let limits = Arc::clone(&limits);
+        async move {
+            limits
+                .ready_for("chat_id", 42, None)
+                .await
+                .expect("admitted");
+            started.elapsed()
+        }
+    };
+    let (first, second) = tokio::join!(call(), call());
+    let (first, second) = (first.min(second), first.max(second));
+    assert!(first >= Duration::from_secs(10), "{first:?}");
+    assert!(
+        second.saturating_sub(first) >= Duration::from_secs(1),
+        "the chat's calls stay a second apart: {first:?}, {second:?}"
+    );
+}
