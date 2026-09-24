@@ -14,9 +14,9 @@ use super::ops::ResolvedState;
 use crate::resolve::UserInput;
 use crate::{
     CredentialDisplay, CredentialId, CredentialMaterialTransition, CredentialReplacement,
-    LAST_VALIDATED_AT_METADATA_KEY, PendingToken, StoredLiveCredential,
+    LAST_VALIDATED_AT_METADATA_KEY, PendingToken, StoredCredentialHead,
 };
-use nebula_storage_port::CredentialReplacementFence;
+use nebula_storage_port::{CredentialPersistenceError, CredentialReplacementFence};
 
 use super::error::CredentialServiceError;
 use super::facade::{Acquisition, CredentialService};
@@ -76,7 +76,7 @@ impl CredentialService {
         props: Value,
     ) -> Result<Acquisition, CredentialServiceError> {
         self.ensure_local_source()?;
-        let existing = self.load_owned(scope, &credential_id.to_string()).await?;
+        let existing = self.load_owned_head(scope, credential_id).await?;
         let key = existing.credential_key();
         let intent = AcquisitionIntent::ReauthorizeExisting {
             credential_id: credential_id.to_string(),
@@ -217,11 +217,16 @@ impl CredentialService {
         scope: &TenantScope,
         key: &str,
         intent: &AcquisitionIntent,
-    ) -> Result<Option<StoredLiveCredential>, CredentialServiceError> {
+    ) -> Result<Option<StoredCredentialHead>, CredentialServiceError> {
         match intent {
             AcquisitionIntent::Create { credential_key } if credential_key == key => Ok(None),
             AcquisitionIntent::ReauthorizeExisting { credential_id, .. } => {
-                let existing = self.load_owned(scope, credential_id).await?;
+                let credential_id = CredentialId::parse(credential_id).map_err(|_| {
+                    CredentialServiceError::NotFound {
+                        id: credential_id.clone(),
+                    }
+                })?;
+                let existing = self.load_owned_head(scope, credential_id).await?;
                 validate_reauthorization_fence(key, intent, &existing)?;
                 Ok(Some(existing))
             },
@@ -276,7 +281,7 @@ impl CredentialService {
             .replace(&scope.selector(id), replacement)
             .await
             .map_err(|error| Self::map_store_err_for(&id.to_string(), error))?;
-        self.observer.on_resolve(&id);
+        self.observer.on_refresh(&id);
         tracing::info!(credential.id = %id, "credential reauthorized");
         Ok(CredentialHead {
             id: id.to_string(),
@@ -291,12 +296,28 @@ impl CredentialService {
             display,
         })
     }
+
+    async fn load_owned_head(
+        &self,
+        scope: &TenantScope,
+        credential_id: CredentialId,
+    ) -> Result<StoredCredentialHead, CredentialServiceError> {
+        self.store
+            .get_head(&scope.selector(credential_id))
+            .await
+            .map_err(|error| match error {
+                CredentialPersistenceError::NotFound => CredentialServiceError::NotFound {
+                    id: credential_id.to_string(),
+                },
+                error => Self::map_store_err_for(&credential_id.to_string(), error),
+            })
+    }
 }
 
 fn validate_reauthorization_fence(
     key: &str,
     intent: &AcquisitionIntent,
-    existing: &StoredLiveCredential,
+    existing: &StoredCredentialHead,
 ) -> Result<(), CredentialServiceError> {
     let AcquisitionIntent::ReauthorizeExisting {
         credential_id,
@@ -331,13 +352,12 @@ mod tests {
     use super::*;
     use nebula_storage_port::{CredentialMaterialEpoch, CredentialVersion};
 
-    fn row(id: CredentialId, key: &str, version: u64, epoch: u64) -> StoredLiveCredential {
+    fn row(id: CredentialId, key: &str, version: u64, epoch: u64) -> StoredCredentialHead {
         let now = chrono::Utc::now();
-        StoredLiveCredential::new(
+        StoredCredentialHead::new(
             id,
             Some("Original display".to_owned()),
             key.to_owned(),
-            vec![1].into(),
             "token".to_owned(),
             1,
             CredentialVersion::try_from(version).expect("version"),
@@ -347,9 +367,8 @@ mod tests {
             None,
             true,
             serde_json::Map::new(),
-            None,
         )
-        .expect("live fixture")
+        .expect("head fixture")
     }
 
     #[test]
