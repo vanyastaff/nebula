@@ -212,7 +212,27 @@ where
 {
 }
 
+fn assert_http_client_contract() {
+    use nebula_sdk::client::{
+        credential::v1::{CreateCredentialRequest, ListCredentialsRequest, UpdateCredentialRequest},
+        http::{BearerToken, HttpClient, HttpOptions},
+    };
+    let client = HttpClient::new("https://example.invalid", BearerToken::new("external-secret-canary").expect("token"), HttpOptions::default())
+        .expect("client").credentials("org", "ws").expect("scope");
+    let create = CreateCredentialRequest { credential_key: "token".into(), name: "Example".into(), description: None, data: nebula_sdk::serde_json::json!({}), tags: None };
+    let update = UpdateCredentialRequest { name: None, description: None, data: None, tags: None, version: Some(1) };
+    // Futures are deliberately not polled: this consumer proves the curated
+    // signatures without a runtime or transport dependency in its manifest.
+    drop(client.list(&ListCredentialsRequest::default()));
+    drop(client.create(&create));
+    drop(client.get("cred_1"));
+    drop(client.update("cred_1", &update));
+    drop(client.delete("cred_1"));
+    assert!(!format!("{client:?}").contains("external-secret-canary"));
+}
+
 fn main() {
+    assert_http_client_contract();
     assert_credential_lifecycle_contract();
     assert_credential_wire_v1_contract();
     catalog_constructor_parity();

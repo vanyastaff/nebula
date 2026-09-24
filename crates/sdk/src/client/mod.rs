@@ -4,3 +4,6 @@
 //! authority, persistence handles, or orchestration internals.
 
 pub mod credential;
+
+#[cfg(feature = "http")]
+pub mod http;

@@ -3320,9 +3320,12 @@ version = "0.18.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "axum",
  "chrono",
  "futures",
+ "jsonwebtoken",
  "nebula-action",
+ "nebula-api",
  "nebula-core",
  "nebula-engine",
  "nebula-eventbus",
@@ -3332,6 +3335,8 @@ dependencies = [
  "nebula-plugin-core",
  "nebula-resource",
  "nebula-schema",
+ "nebula-sdk",
+ "nebula-storage",
  "nebula-workflow",
  "parking_lot",
  "serde",
@@ -3657,6 +3662,7 @@ version = "0.18.0"
 dependencies = [
  "async-trait",
  "chrono",
+ "httpdate",
  "insta",
  "nebula-action",
  "nebula-core",
@@ -3668,6 +3674,7 @@ dependencies = [
  "nebula-validator",
  "nebula-workflow",
  "pretty_assertions",
+ "reqwest",
  "rstest",
  "semver",
  "serde",
@@ -3676,7 +3683,9 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-util",
+ "tracing",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]
