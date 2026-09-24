@@ -490,14 +490,14 @@ pub mod v1 {
         RefreshNotAppliedAfter,
         /// Refresh completed but durable finalization requires reconciliation.
         RefreshReconciliationRequired,
-        /// Acquisition completed but durable finalization requires reconciliation.
-        AcquisitionReconciliationRequired,
         /// Revoke completed but durable finalization requires reconciliation.
         RevokeReconciliationRequired,
         /// A mutation acknowledgement was lost.
         OutcomeUnknown,
         /// A different or newer problem type.
         Other,
+        /// Acquisition completed but durable finalization requires reconciliation.
+        AcquisitionReconciliationRequired,
     }
 
     impl CredentialProblemKind {
