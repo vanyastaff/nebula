@@ -669,10 +669,6 @@ pub struct ResourceLimiter {
     /// quota, so an acquire only honours pauses (see
     /// [`ready_to_acquire`](Self::ready_to_acquire)).
     per_call: AtomicBool,
-    /// An acquire booked a permit before the first client was wrapped; the
-    /// next call through a wrapped client uses it (see
-    /// [`ready_to_call`](Self::ready_to_call)).
-    prepaid: AtomicBool,
 }
 
 /// What a caller does once its wait is over.
@@ -851,7 +847,6 @@ impl ResourceLimiter {
             paused_until: Mutex::new(None),
             engaged: AtomicBool::new(false),
             per_call: AtomicBool::new(false),
-            prepaid: AtomicBool::new(false),
             waiters: AtomicUsize::new(0),
             store_down: AtomicBool::new(false),
             refusals: AtomicU32::new(0),
@@ -889,6 +884,13 @@ impl ResourceLimiter {
     /// pause. The wrapped client's calls book the quota one per provider
     /// call; booking at acquire as well would count every call twice.
     ///
+    /// The acquire that creates the client (it wraps while this acquire is
+    /// still in `Provider::create`) has already booked a permit; the first
+    /// call through the client books its own rather than reuse it. That
+    /// permit's slot was taken before the client existed and cannot tell
+    /// whether the call still runs in it, so reusing it could let the next
+    /// booked call run too close; the unused permit errs on sending less.
+    ///
     /// # Errors
     ///
     /// As [`ready`](Self::ready).
@@ -898,23 +900,6 @@ impl ResourceLimiter {
     ) -> Result<(), Error> {
         if self.per_call.load(Ordering::Acquire) {
             return self.wait_pause_only(deadline).await;
-        }
-        self.ready(deadline).await?;
-        // The resource may wrap its client while creating for this very
-        // acquire: its first call then uses the permit booked here rather
-        // than booking a second one (after reading the penalties recorded
-        // meanwhile, see `wait_prepaid`). One such credit at most, so a late
-        // first wrap can never release a burst of unbooked calls.
-        self.prepaid.store(true, Ordering::Release);
-        Ok(())
-    }
-
-    /// What a call through a [`Limited`] client waits for: a permit, unless
-    /// the acquire that preceded the first wrap already booked it, in which
-    /// case only the pauses recorded since.
-    async fn ready_to_call(&self, deadline: Option<std::time::Instant>) -> Result<(), Error> {
-        if self.prepaid.swap(false, Ordering::AcqRel) {
-            return self.wait_prepaid(deadline).await;
         }
         self.ready(deadline).await
     }
@@ -933,38 +918,6 @@ impl ResourceLimiter {
         let _waiting = Waiting::start(self);
         tokio::time::sleep(pause).await;
         self.past_deadline(deadline)
-    }
-
-    /// Waits out every pause on the permit a cold acquire booked, never past
-    /// `deadline`: this process's, and the store's.
-    ///
-    /// The permit was booked before the client existed, and building it in
-    /// `Provider::create` can take a while. A penalty another worker recorded
-    /// meanwhile is not in that booking, so the store is read here as it is
-    /// for every caller that slept on a slot. A pause forfeits the prepaid
-    /// slot: once it ends the call books again, as every caller that booked
-    /// before a pause does, so it cannot run beside callers that booked the
-    /// first slots after the pause.
-    async fn wait_prepaid(&self, deadline: Option<std::time::Instant>) -> Result<(), Error> {
-        self.past_deadline(deadline)?;
-        let Some(shared) = within(deadline, self.shared_penalty(None)).await else {
-            return Err(self.tagged(Error::exhausted(
-                "rate limit store did not answer before the deadline",
-                None,
-            )));
-        };
-        let pause = self.pause_remaining().max(shared?);
-        if pause.is_zero() {
-            return Ok(());
-        }
-        if pause > max_wait_until(deadline) {
-            return Err(self.paused_past_deadline(pause));
-        }
-        {
-            let _waiting = Waiting::start(self);
-            tokio::time::sleep(pause).await;
-        }
-        self.ready(deadline).await
     }
 
     /// Refuses a deadline that has passed: the call then does not run.
@@ -1028,11 +981,6 @@ impl ResourceLimiter {
         let (key, rate) = keyed
             .limit_for(dimension, &value.to_string())
             .map_err(|error| self.tagged(error))?;
-        // A keyed call books the account itself (aligned with the key), so a
-        // cold acquire's credit is dropped rather than left for a later
-        // call: using it there too would count one account permit twice.
-        // Dropping it errs on sending less.
-        self.prepaid.store(false, Ordering::Release);
         // Registered before booking, so a pause recorded after this caller's
         // slot was booked still reaches it when it wakes.
         let _interest = KeyInterest::start(self, &key);
@@ -1826,7 +1774,7 @@ impl<C, T> Limited<C, T> {
         T: Throttle<R, E>,
     {
         self.limits
-            .ready_to_call(deadline)
+            .ready(deadline)
             .await
             .map_err(LimitedError::Limit)?;
         let outcome = call(&self.client).await;

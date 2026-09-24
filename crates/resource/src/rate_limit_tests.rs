@@ -1095,11 +1095,39 @@ async fn a_wrapped_limit_is_booked_per_call_not_per_acquire() {
     );
 }
 
-/// The first acquire of a resource that wraps its client while creating
-/// books the permit its first call then uses: one provider call, one
-/// permit, even on a cold start.
+/// The permit a cold acquire books before its client exists is never
+/// reused: the first call through the client books its own, however late it
+/// comes, so a call right after it keeps its spacing.
 #[tokio::test(start_paused = true)]
-async fn a_cold_acquire_and_its_first_call_share_one_permit() {
+async fn a_late_first_call_after_a_cold_acquire_books_its_own_slot() {
+    let limits = Arc::new(limiter(per_second(1, 1)));
+    limits
+        .ready_to_acquire(None)
+        .await
+        .expect("the cold acquire books");
+    let client = limits.wrap((), NoThrottle);
+    // The action gets to the client well after the acquire's slot.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    client
+        .run(async |()| Ok::<_, ProviderError>(()))
+        .await
+        .expect("books its own slot");
+    let first_at = Instant::now();
+    client
+        .run(async |()| Ok::<_, ProviderError>(()))
+        .await
+        .expect("books the next slot");
+    assert_eq!(
+        first_at.elapsed(),
+        Duration::from_secs(1),
+        "two calls never run in one slot"
+    );
+}
+
+/// On a cold start the acquire's permit is spent and the first call waits
+/// for its own: the limit errs on sending less.
+#[tokio::test(start_paused = true)]
+async fn a_cold_acquires_permit_is_not_reused_by_the_first_call() {
     let limits = Arc::new(limiter(per_second(1, 1)));
     limits
         .ready_to_acquire(None)
@@ -1110,165 +1138,8 @@ async fn a_cold_acquire_and_its_first_call_share_one_permit() {
     client
         .run(async |()| Ok::<_, ProviderError>(()))
         .await
-        .expect("uses the acquire's permit");
-    assert_eq!(
-        started.elapsed(),
-        Duration::ZERO,
-        "no second permit waited for"
-    );
-    client
-        .run(async |()| Ok::<_, ProviderError>(()))
-        .await
-        .expect("the next call books its own");
+        .expect("books its own slot");
     assert_eq!(started.elapsed(), Duration::from_secs(1));
-}
-
-/// Two workers sharing one account quota, as two processes share a cluster
-/// store.
-fn shared_account_workers() -> (Arc<ResourceLimiter>, Arc<ResourceLimiter>) {
-    let store: Arc<dyn ErasedLimitStore> = Arc::new(MemoryLimitStore::new());
-    let worker = || {
-        Arc::new(ResourceLimiter::new(
-            Some(Quota::new(
-                Arc::clone(&store),
-                LimitKey::new("acct:shared").unwrap(),
-                per_second(1, 1),
-            )),
-            None,
-            Duration::from_mins(5),
-            ResourceKey::new("test.resource").unwrap(),
-            Arc::new(EventBus::new(16)),
-        ))
-    };
-    (worker(), worker())
-}
-
-/// The credit a cold acquire leaves for its first call is spent only after
-/// the store's penalties are read: the client is built between the two, and
-/// a `Retry-After` another worker saw meanwhile holds this call back as it
-/// holds every other caller of the account.
-#[tokio::test(start_paused = true)]
-async fn a_prepaid_permit_honours_a_penalty_another_worker_recorded() {
-    let (a, b) = shared_account_workers();
-    b.ready_to_acquire(None)
-        .await
-        .expect("the cold acquire books");
-    // While B builds its client, A is told to slow down.
-    a.penalize(Duration::from_mins(1))
-        .await
-        .expect("recorded in the shared store");
-    let client = b.wrap((), NoThrottle);
-    let started = Instant::now();
-    client
-        .run(async |()| Ok::<_, ProviderError>(()))
-        .await
-        .expect("admitted once the penalty ends");
-    assert!(
-        started.elapsed() >= Duration::from_mins(1),
-        "ran at {:?}",
-        started.elapsed()
-    );
-}
-
-/// A pause forfeits the prepaid slot: after it the call books again, so it
-/// does not run in the same slot as a caller that booked the first slot
-/// after the pause.
-#[tokio::test(start_paused = true)]
-async fn a_prepaid_permit_rebooks_after_a_shared_penalty() {
-    let (a, b) = shared_account_workers();
-    b.ready_to_acquire(None)
-        .await
-        .expect("the cold acquire books");
-    a.penalize(Duration::from_mins(1))
-        .await
-        .expect("recorded in the shared store");
-    let started = Instant::now();
-    // Another worker books the first slot after the penalty.
-    let other = tokio::spawn({
-        let a = Arc::clone(&a);
-        async move {
-            a.ready(None).await.expect("admitted after the penalty");
-            Instant::now()
-        }
-    });
-    tokio::task::yield_now().await;
-    let client = b.wrap((), NoThrottle);
-    client
-        .run(async |()| Ok::<_, ProviderError>(()))
-        .await
-        .expect("admitted after the penalty");
-    let prepaid_at = Instant::now();
-    let other_at = other.await.unwrap();
-    assert!(
-        prepaid_at.duration_since(started) >= Duration::from_mins(1),
-        "ran at {:?}",
-        prepaid_at.duration_since(started)
-    );
-    assert!(
-        prepaid_at.max(other_at) - prepaid_at.min(other_at) >= Duration::from_secs(1),
-        "the two calls share one account slot: {:?} and {:?}",
-        prepaid_at.duration_since(started),
-        other_at.duration_since(started)
-    );
-}
-
-/// The credit never carries a call past its deadline: a penalty that
-/// outlasts the deadline fails fast, and the call does not run.
-#[tokio::test(start_paused = true)]
-async fn a_prepaid_permit_fails_fast_when_a_penalty_outlasts_its_deadline() {
-    let (a, b) = shared_account_workers();
-    b.ready_to_acquire(None)
-        .await
-        .expect("the cold acquire books");
-    a.penalize(Duration::from_mins(1))
-        .await
-        .expect("recorded in the shared store");
-    let client = b.wrap((), NoThrottle);
-    let ran = Arc::new(AtomicBool::new(false));
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    let error = client
-        .run_until(Some(deadline), async |()| {
-            ran.store(true, Ordering::Relaxed);
-            Ok::<_, ProviderError>(())
-        })
-        .await
-        .expect_err("the penalty outlasts the deadline");
-    assert!(
-        matches!(
-            &error,
-            LimitedError::Limit(error) if matches!(error.kind(), ErrorKind::Exhausted { .. })
-        ),
-        "{error:?}"
-    );
-    assert!(!ran.load(Ordering::Relaxed), "the call must not run");
-}
-
-/// A keyed first call books the account itself and drops the cold
-/// acquire's credit, so a following unkeyed call cannot reuse it and run in
-/// the same account slot.
-#[tokio::test(start_paused = true)]
-async fn a_keyed_first_call_drops_the_cold_acquire_credit() {
-    let (limits, _) = chat_limiter(per_second(1, 1));
-    limits
-        .ready_to_acquire(None)
-        .await
-        .expect("the cold acquire books");
-    let client = limits.wrap((), NoThrottle);
-    let started = Instant::now();
-    client
-        .run_for("chat_id", 1, async |()| Ok::<_, ProviderError>(()))
-        .await
-        .expect("keyed call");
-    let keyed_at = started.elapsed();
-    client
-        .run(async |()| Ok::<_, ProviderError>(()))
-        .await
-        .expect("unkeyed call");
-    assert!(
-        started.elapsed().saturating_sub(keyed_at) >= Duration::from_secs(1),
-        "the unkeyed call takes its own account slot: {keyed_at:?} then {:?}",
-        started.elapsed()
-    );
 }
 
 /// Once a client is wrapped, an acquire still never passes its deadline.

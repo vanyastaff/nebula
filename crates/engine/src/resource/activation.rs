@@ -926,8 +926,16 @@ async fn register_row(
     };
     // A rotation-bound row serves once the fan-out has reread its
     // credentials; the turn this activation is for must not see it earlier.
-    // Bounded by the activation's own timeout and cancellation.
+    // Bounded by the activation's own timeout and cancellation. Until the
+    // row serves, no activation records it: one abandoned here (timed out,
+    // cancelled) or failing retires the registration it made rather than
+    // leave a row nothing tracks.
     if rotation_bound && !bindings.is_empty() {
+        let unclaimed = Unclaimed {
+            context,
+            activated: &activated,
+            claimed: false,
+        };
         context
             .manager
             .until_accepting(
@@ -943,8 +951,32 @@ async fn register_row(
                     source,
                 })
             })?;
+        unclaimed.claim();
     }
     Ok((activated, bindings))
+}
+
+/// A registration no activation has recorded yet; retired when dropped
+/// before it is [`claim`](Self::claim)ed.
+struct Unclaimed<'c, 'a> {
+    context: &'c ActivationContext<'a>,
+    activated: &'c ActivatedResource,
+    claimed: bool,
+}
+
+impl Unclaimed<'_, '_> {
+    /// The caller records the registration from here on.
+    fn claim(mut self) {
+        self.claimed = true;
+    }
+}
+
+impl Drop for Unclaimed<'_, '_> {
+    fn drop(&mut self) {
+        if !self.claimed {
+            retire(self.context, self.activated);
+        }
+    }
 }
 
 /// Whether the registered `activated` row serves acquires now.

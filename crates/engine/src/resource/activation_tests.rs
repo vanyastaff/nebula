@@ -314,6 +314,8 @@ struct ScriptedResolver {
     outcome: std::sync::Mutex<Result<(u64, u64), CredentialSlotResolveError>>,
     /// Never answer, as a stalled credential backend.
     stall: std::sync::atomic::AtomicBool,
+    /// Answer the calls before this one, then stall.
+    stall_from: AtomicUsize,
 }
 
 impl Default for ScriptedResolver {
@@ -322,6 +324,7 @@ impl Default for ScriptedResolver {
             calls: AtomicUsize::new(0),
             outcome: std::sync::Mutex::new(Err(CredentialSlotResolveError::NotFound)),
             stall: std::sync::atomic::AtomicBool::new(false),
+            stall_from: AtomicUsize::new(usize::MAX),
         }
     }
 }
@@ -351,7 +354,7 @@ impl CredentialSlotResolver for ScriptedResolver {
                 + 'a,
         >,
     > {
-        self.calls.fetch_add(1, Ordering::SeqCst);
+        let call = self.calls.fetch_add(1, Ordering::SeqCst);
         let outcome = (*self.outcome.lock().unwrap()).map(|(material_epoch, revision)| {
             nebula_credential::ErasedCredentialGuard::from_typed(
                 nebula_credential::CredentialGuard::new(String::from("secret")),
@@ -365,7 +368,8 @@ impl CredentialSlotResolver for ScriptedResolver {
                 .with_scope(scope.durable_owner_scope()),
             )
         });
-        let stall = self.stall.load(Ordering::SeqCst);
+        let stall =
+            self.stall.load(Ordering::SeqCst) || call >= self.stall_from.load(Ordering::SeqCst);
         Box::pin(async move {
             if stall {
                 std::future::pending::<()>().await;
@@ -729,6 +733,44 @@ async fn with_a_live_fanout_a_row_serves_once_its_credentials_are_reread() {
         "a credential that is gone stops the row"
     );
     assert!(fixture.fanout.affected(&second).is_empty());
+}
+
+/// An activation abandoned while its rotation-bound row waits for the
+/// fan-out retires the registration it made: no row outlives an activation
+/// that never recorded it.
+#[cfg(feature = "rotation")]
+#[tokio::test]
+async fn an_activation_abandoned_in_the_fanout_wait_retires_its_registration() {
+    let mut fixture = Fixture::new();
+    fixture.activator =
+        StoredResourceActivator::new(Arc::clone(&fixture.store) as Arc<dyn ResourceStore>)
+            .with_activation_timeout(Duration::from_millis(300));
+    let _driver = fixture.start_fanout();
+    let credential = CredentialId::new();
+    let (resource_id, key) = fixture
+        .store_row(
+            "activation.slotted",
+            "a",
+            &[(AUTH_SLOT, credential.to_string().as_str())],
+        )
+        .await;
+    fixture.resolver.answer(Ok((1, 1)));
+    // The activation's own resolve answers; the fan-out's reread never does.
+    let answered = fixture.resolver.calls.load(Ordering::SeqCst);
+    fixture
+        .resolver
+        .stall_from
+        .store(answered + 1, Ordering::SeqCst);
+    std::assert_matches!(
+        fixture.activate(resource_id, &key).await,
+        Err(StoredResourceActivationError::TimedOut(_))
+    );
+    let scope = ScopeLevel::Workspace(WorkspaceId::parse(&fixture.scope.workspace_id).unwrap());
+    assert!(
+        fixture.manager.get_any(&key, &scope).is_none(),
+        "the abandoned registration is retired"
+    );
+    assert!(fixture.fanout.affected(&credential).is_empty());
 }
 
 /// Without a live fan-out driver nothing would ever reread a rotation-bound

@@ -338,7 +338,10 @@ fn validate_operator_settings(
                 tracing::debug!(
                     target: "nebula_api::resource",
                     kind = %kind,
-                    error = ?source,
+                    // The fixed message and classification only: the source
+                    // chain (a parser's report) can restate submitted values.
+                    error = %source,
+                    error.kind = %source.kind(),
                     "resource operator settings rejected"
                 );
                 ApiError::Unprocessable(source.to_string())

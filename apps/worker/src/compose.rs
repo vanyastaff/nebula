@@ -323,7 +323,10 @@ fn build_core_flavor_runtime_impl(
     };
     // Stored resource rows are activated lazily, per row, when an execution
     // that binds them is driven; nothing is read or connected at boot.
-    let mut manager_config = nebula_engine::resource::ManagerConfig::default();
+    // The manager reports acquire, release, wait and hold metrics into the
+    // same registry as the engine.
+    let mut manager_config = nebula_engine::resource::ManagerConfig::default()
+        .with_metrics_registry(Arc::new(metrics.clone()));
     if let Some(store) = resource_fanout.shared_limits.clone() {
         manager_config = manager_config.with_shared_limit_store(store);
     }
