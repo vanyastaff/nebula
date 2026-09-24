@@ -320,6 +320,78 @@ fn compose_runtime_with_transport<P>(
 where
     P: CredentialPersistence + 'static,
 {
+    compose_runtime_with_policy_and_transport(
+        raw_store,
+        refresh_ports,
+        pending,
+        CredentialEncryptionConfig {
+            key_provider,
+            legacy_keys,
+        },
+        metrics_registry,
+        oauth_transport,
+        CredentialLifecyclePolicy::default(),
+    )
+}
+
+struct CredentialEncryptionConfig {
+    key_provider: Arc<dyn KeyProvider>,
+    legacy_keys: Vec<(String, Arc<EncryptionKey>)>,
+}
+
+#[derive(Default)]
+struct CredentialLifecyclePolicy {
+    refresh: RefreshCoordConfig,
+    scheduler: CredentialRefreshSchedulerConfig,
+}
+
+#[cfg(test)]
+fn compose_runtime_with_test_policy<P>(
+    raw_store: P,
+    refresh_ports: CredentialRefreshRuntimePorts,
+    pending: ErasedPendingStore,
+    key_provider: Arc<dyn KeyProvider>,
+    metrics_registry: Arc<MetricsRegistry>,
+    oauth_transport: Arc<ReqwestOAuthTransport>,
+    policy: CredentialLifecyclePolicy,
+) -> Result<CredentialRuntime, CredentialCompositionError>
+where
+    P: CredentialPersistence + 'static,
+{
+    compose_runtime_with_policy_and_transport(
+        raw_store,
+        refresh_ports,
+        pending,
+        CredentialEncryptionConfig {
+            key_provider,
+            legacy_keys: Vec::new(),
+        },
+        metrics_registry,
+        oauth_transport,
+        policy,
+    )
+}
+
+fn compose_runtime_with_policy_and_transport<P>(
+    raw_store: P,
+    refresh_ports: CredentialRefreshRuntimePorts,
+    pending: ErasedPendingStore,
+    encryption: CredentialEncryptionConfig,
+    metrics_registry: Arc<MetricsRegistry>,
+    oauth_transport: Arc<ReqwestOAuthTransport>,
+    policy: CredentialLifecyclePolicy,
+) -> Result<CredentialRuntime, CredentialCompositionError>
+where
+    P: CredentialPersistence + 'static,
+{
+    let CredentialEncryptionConfig {
+        key_provider,
+        legacy_keys,
+    } = encryption;
+    let CredentialLifecyclePolicy {
+        refresh: refresh_config,
+        scheduler: scheduler_config,
+    } = policy;
     let CredentialRefreshRuntimePorts {
         schedule: refresh_schedule,
         claims: claim_repo,
@@ -343,7 +415,6 @@ where
     let audit_sink: Arc<dyn AuditSink> = Arc::new(TracingAuditSink);
     let store: Arc<dyn CredentialPersistence> =
         Arc::new(AuditLayer::new(encrypted, Arc::clone(&audit_sink)));
-    let refresh_config = RefreshCoordConfig::default();
     let refresh_metrics = RefreshCoordMetrics::with_registry(&metrics_registry)
         .map_err(|error| CredentialCompositionError::RefreshCoordinator(error.to_string()))?;
     let refresh_coordinator = Arc::new(
@@ -378,7 +449,7 @@ where
     .with_event_bus(credential_events);
     let lifecycle = CredentialLifecycleRuntime::compose_with_refresh_schedule(
         refresh_schedule,
-        CredentialRefreshSchedulerConfig::default(),
+        scheduler_config,
         reclaim_sweep,
         LeaseLifecycleConfig::default(),
         observer.lease_bus(),
@@ -869,3 +940,7 @@ mod tests {
 #[cfg(test)]
 #[path = "credential_acquisition_restart_tests.rs"]
 mod acquisition_restart_tests;
+
+#[cfg(test)]
+#[path = "credential_refresh_restart_tests.rs"]
+mod refresh_restart_tests;

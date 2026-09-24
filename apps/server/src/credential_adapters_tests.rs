@@ -97,6 +97,7 @@ const CHILD_PROXY_MARKER: &str = "NEBULA_CREDENTIAL_REFRESH_PROXY_CHILD";
 #[derive(Clone, Copy)]
 enum ServerBehavior {
     Success,
+    RefreshableSuccess,
     Redirect(u16),
     AbortAfterRequest,
     OversizedContentLength,
@@ -116,6 +117,10 @@ pub(crate) struct TlsFixture {
 impl TlsFixture {
     pub(crate) async fn success() -> Self {
         Self::spawn(ServerBehavior::Success).await
+    }
+
+    pub(crate) async fn refreshable_success() -> Self {
+        Self::spawn(ServerBehavior::RefreshableSuccess).await
     }
 
     pub(crate) fn request_count(&self) -> usize {
@@ -341,7 +346,9 @@ async fn write_response(
             stream.write_all(response.as_bytes()).await?;
             return stream.write_all(&body).await;
         },
-        ServerBehavior::Success | ServerBehavior::Redirect(_) => {},
+        ServerBehavior::Success
+        | ServerBehavior::RefreshableSuccess
+        | ServerBehavior::Redirect(_) => {},
     }
 
     let (status, extra_header, body) = match behavior {
@@ -349,6 +356,11 @@ async fn write_response(
             "200 OK",
             String::new(),
             br#"{"access_token":"new-access","token_type":"Bearer","scope":"read"}"#.as_slice(),
+        ),
+        ServerBehavior::RefreshableSuccess => (
+            "200 OK",
+            String::new(),
+            br#"{"access_token":"new-access","refresh_token":"rotating-refresh","token_type":"Bearer","scope":"read","expires_in":3600}"#.as_slice(),
         ),
         ServerBehavior::Redirect(status) => (
             if status == 307 {
