@@ -857,6 +857,29 @@ pub mod refresh_coord_reclaim_outcome {
 pub const NEBULA_CREDENTIAL_REFRESH_COORD_RECLAIMED_CLAIMS_TOTAL: &str =
     "nebula_credential_refresh_coord_reclaimed_claims_total";
 
+/// Counter: terminal results returned by coordinated credential refresh.
+///
+/// Labeled only by `outcome` (see [`refresh_coord_result_outcome`]). Each
+/// caller that reaches the coordinator records exactly one result after L1/L2
+/// coordination completes. The labels describe the caller-visible result,
+/// never credential, tenant, provider, HTTP, or provider-controlled detail.
+pub const NEBULA_CREDENTIAL_REFRESH_COORD_RESULTS_TOTAL: &str =
+    "nebula_credential_refresh_coord_results_total";
+
+/// Outcome labels for [`NEBULA_CREDENTIAL_REFRESH_COORD_RESULTS_TOTAL`].
+pub mod refresh_coord_result_outcome {
+    /// Coordinated refresh completed successfully for the caller.
+    pub const SUCCESS: &str = "success";
+    /// The durable credential state requires interactive reauthentication.
+    pub const REAUTH_REQUIRED: &str = "reauth_required";
+    /// Refresh was proven not to apply and retry policy was preserved.
+    pub const NOT_APPLIED: &str = "not_applied";
+    /// Provider or persistence completion cannot be established safely.
+    pub const OUTCOME_UNKNOWN: &str = "outcome_unknown";
+    /// Any remaining exact refresh failure.
+    pub const FAILURE: &str = "failure";
+}
+
 /// Histogram: how long a holder owned the L2 claim row.
 ///
 /// Observed in seconds when the coordinator finalizes or drops its lease.

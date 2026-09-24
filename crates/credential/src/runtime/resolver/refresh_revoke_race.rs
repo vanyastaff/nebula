@@ -1748,6 +1748,19 @@ fn resolver_with_runtime(
     CredentialResolver::with_dependencies(store, Arc::new(coord), transport)
 }
 
+fn refresh_result_counts<S: CredentialPersistence + ?Sized>(
+    resolver: &CredentialResolver<S>,
+) -> [u64; 5] {
+    let metrics = resolver.refresh_coordinator().metrics();
+    [
+        metrics.result_success.get(),
+        metrics.result_reauth_required.get(),
+        metrics.result_not_applied.get(),
+        metrics.result_outcome_unknown.get(),
+        metrics.result_failure.get(),
+    ]
+}
+
 fn oauth_service_with_runtime(
     store: Arc<ScriptedStore>,
     claims: Arc<dyn RefreshClaimStore>,
@@ -2108,6 +2121,7 @@ async fn refresh_racing_revoke_does_not_resurrect() {
         ),
         "the stale provider result must stop at its original CAS boundary, got {err:?}"
     );
+    assert_eq!(refresh_result_counts(&resolver), [0, 0, 0, 0, 1]);
 
     let final_row = store.snapshot();
     assert!(
@@ -2151,6 +2165,8 @@ async fn refresh_without_race_succeeds_and_stamps_validation() {
         .resolve_with_refresh::<TestCred>(&test_selector(), &ctx)
         .await
         .expect("an uncontended refresh must succeed");
+
+    assert_eq!(refresh_result_counts(&resolver), [1, 0, 0, 0, 0]);
 
     let final_row = store.snapshot();
     let StoredCredential::Live(final_row) = final_row else {
@@ -2833,6 +2849,7 @@ async fn oauth_invalid_grant_persists_reauth_and_releases_confirmed_claim() {
             ..
         }
     ));
+    assert_eq!(refresh_result_counts(&resolver), [0, 1, 0, 0, 0]);
     assert_eq!(transport.call_count(), 1);
     assert_eq!(
         store.replacement_count(),
@@ -2918,6 +2935,7 @@ async fn oauth_pre_dispatch_rejection_persists_never_gate_before_releasing_l2() 
         .expect_err("invalid local endpoint must fail before dispatch");
 
     assert!(matches!(&error, ResolveError::RefreshNotApplied { .. }));
+    assert_eq!(refresh_result_counts(&resolver), [0, 0, 1, 0, 0]);
     assert_eq!(transport.call_count(), 0);
     assert_eq!(
         store.replacement_count(),
@@ -2993,6 +3011,7 @@ async fn oauth_transient_or_unknown_endpoint_response_retains_l2() {
             &error,
             ResolveError::ProviderOutcomeUnknown { .. }
         ));
+        assert_eq!(refresh_result_counts(&resolver), [0, 0, 0, 1, 0]);
         assert_eq!(transport.call_count(), 1);
         assert_eq!(store.replacement_count(), 0);
         assert!(claims.active.load(Ordering::SeqCst));
