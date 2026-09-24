@@ -663,7 +663,16 @@ pub struct ResourceLimiter {
     /// kept locally for callers that booked before it, and new bookings see
     /// it through the store. Bounded by the callers in flight.
     key_waits: Mutex<std::collections::HashMap<LimitKey, KeyWait>>,
+    /// Refunds running in the background (see [`release`](Self::release)).
+    refunds: Arc<AtomicUsize>,
 }
+
+/// Bound on refunds one limiter runs in the background at once; past it a
+/// slot given up lapses unused, which errs on sending less.
+const MAX_PENDING_REFUNDS: usize = 32;
+
+/// How long one background refund may take before it is abandoned.
+const REFUND_BUDGET: Duration = Duration::from_secs(5);
 
 /// Callers of one key in flight, and the pause recorded for it meanwhile.
 #[derive(Debug, Default)]
@@ -710,6 +719,24 @@ impl<'a> KeyInterest<'a> {
         Self {
             limiter,
             key: key.clone(),
+        }
+    }
+}
+
+/// Keeps a key's pause in this process when dropped unconfirmed: the
+/// store write may have failed or been cancelled, and then only this
+/// process knows the pause.
+struct KeepUnlessConfirmed<'a> {
+    limiter: &'a ResourceLimiter,
+    key: &'a LimitKey,
+    block: Duration,
+    confirmed: bool,
+}
+
+impl Drop for KeepUnlessConfirmed<'_> {
+    fn drop(&mut self) {
+        if !self.confirmed {
+            self.limiter.keep_key_pause(self.key, self.block);
         }
     }
 }
@@ -809,6 +836,7 @@ impl ResourceLimiter {
             refusals: AtomicU32::new(0),
             key_refusals: Mutex::new(std::collections::HashMap::new()),
             key_waits: Mutex::new(std::collections::HashMap::new()),
+            refunds: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -901,7 +929,7 @@ impl ResourceLimiter {
                 // The key's slot goes back while it is still the last one
                 // booked; otherwise it lapses unused, which errs on sending
                 // less.
-                release(&keyed.store, &key, &rate, key_slot);
+                self.release(&keyed.store, &key, &rate, key_slot);
                 Err(error)
             },
         }
@@ -939,30 +967,30 @@ impl ResourceLimiter {
             {
                 Ok(account) => account,
                 Err(error) => {
-                    release(&keyed.store, key, rate, key_slot);
+                    self.release(&keyed.store, key, rate, key_slot);
                     return Err(error);
                 },
             };
             if account.allow_at <= key_slot.allow_at {
                 return Ok(account.wait);
             }
-            release(&keyed.store, key, rate, key_slot);
+            self.release(&keyed.store, key, rate, key_slot);
             key_slot = match self
                 .book(&keyed.store, key, rate, deadline, account.allow_at)
                 .await
             {
                 Ok(key_slot) => key_slot,
                 Err(error) => {
-                    release(&quota.store, &quota.key, &quota.rate, account);
+                    self.release(&quota.store, &quota.key, &quota.rate, account);
                     return Err(error);
                 },
             };
             if key_slot.allow_at <= account.allow_at {
                 return Ok(key_slot.wait);
             }
-            release(&quota.store, &quota.key, &quota.rate, account);
+            self.release(&quota.store, &quota.key, &quota.rate, account);
         }
-        release(&keyed.store, key, rate, key_slot);
+        self.release(&keyed.store, key, rate, key_slot);
         self.engage();
         Err(self.tagged(Error::exhausted(
             "rate limit: no instant both the account and the key allow",
@@ -1119,7 +1147,7 @@ impl ResourceLimiter {
                 // budget measured before it can lie past the deadline now.
                 // Return it rather than wait past the deadline.
                 if grant.wait > max_wait_until(deadline) {
-                    release(store, key, rate, grant);
+                    self.release(store, key, rate, grant);
                     self.engage();
                     return Err(self.tagged(Error::exhausted(
                         "rate limit exhausted before the deadline",
@@ -1227,15 +1255,23 @@ impl ResourceLimiter {
         let block = retry_after.min(self.max_penalty);
         let _recording = KeyInterest::start(self, &key);
         self.pause_key(&key, block);
+        // Unless the store confirms it, the pause is kept here until it ends:
+        // on a store error, and equally when this call is cancelled while the
+        // write is pending (the write may then be rolled back).
+        let mut unconfirmed = KeepUnlessConfirmed {
+            limiter: self,
+            key: &key,
+            block,
+            confirmed: false,
+        };
         if let Err(error) = keyed
             .store
             .penalize_boxed(&key, &rate, retry_after, self.max_penalty)
             .await
         {
-            // The store never got it: keep it here until it ends.
-            self.keep_key_pause(&key, block);
             return Err(self.store_unavailable(&error));
         }
+        unconfirmed.confirmed = true;
         self.emit(|key| ResourceEvent::RateLimitPenalized {
             key,
             retry_after: retry_after.min(self.max_penalty),
@@ -1288,6 +1324,41 @@ impl ResourceLimiter {
                 "could not record a provider refusal"
             );
         }
+    }
+
+    /// Gives `grant`'s slot back in the background, best effort: it returns
+    /// while it is still the last one booked and otherwise lapses unused,
+    /// and the caller never waits on the store for it.
+    ///
+    /// Bounded, so a stalled store cannot pile refunds up behind it: at most
+    /// [`MAX_PENDING_REFUNDS`] run at once, each for at most
+    /// [`REFUND_BUDGET`]; past either, the slot lapses instead.
+    fn release(
+        &self,
+        store: &Arc<dyn ErasedLimitStore>,
+        key: &LimitKey,
+        rate: &Rate,
+        grant: Grant,
+    ) {
+        let reserved = self
+            .refunds
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |running| {
+                (running < MAX_PENDING_REFUNDS).then_some(running + 1)
+            });
+        if reserved.is_err() {
+            return;
+        }
+        let (store, key, rate, refunds) = (
+            Arc::clone(store),
+            key.clone(),
+            *rate,
+            Arc::clone(&self.refunds),
+        );
+        tokio::spawn(async move {
+            let _ =
+                tokio::time::timeout(REFUND_BUDGET, store.cancel_boxed(&key, &rate, &grant)).await;
+            refunds.fetch_sub(1, Ordering::AcqRel);
+        });
     }
 
     /// Counts one more refusal of `key` and returns the count before it.
@@ -1690,16 +1761,6 @@ async fn within<T>(
             .await
             .ok(),
     }
-}
-
-/// Gives `grant`'s slot back in the background, best effort: it returns
-/// while it is still the last one booked and otherwise lapses unused, and
-/// the caller never waits on the store for it.
-fn release(store: &Arc<dyn ErasedLimitStore>, key: &LimitKey, rate: &Rate, grant: Grant) {
-    let (store, key, rate) = (Arc::clone(store), key.clone(), *rate);
-    tokio::spawn(async move {
-        let _ = store.cancel_boxed(&key, &rate, &grant).await;
-    });
 }
 
 fn max_wait_until(deadline: Option<std::time::Instant>) -> Duration {

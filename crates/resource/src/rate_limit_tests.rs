@@ -957,3 +957,116 @@ async fn a_slow_store_does_not_hold_the_caller_past_its_deadline() {
         started.elapsed()
     );
 }
+
+/// Books like the in-memory store, but never answers a penalty or a refund.
+struct Hangs(MemoryLimitStore);
+
+impl nebula_resilience::rate_limiter::gcra::LimitStore for Hangs {
+    async fn reserve(
+        &self,
+        key: &LimitKey,
+        rate: &Rate,
+        request: ReserveRequest,
+    ) -> Result<Result<Grant, Denied>, LimitStoreError> {
+        nebula_resilience::rate_limiter::gcra::LimitStore::reserve(&self.0, key, rate, request)
+            .await
+    }
+
+    async fn penalize(
+        &self,
+        _key: &LimitKey,
+        _rate: &Rate,
+        _retry_after: Duration,
+        _max_penalty: Duration,
+    ) -> Result<(), LimitStoreError> {
+        std::future::pending().await
+    }
+
+    async fn cancel(
+        &self,
+        _key: &LimitKey,
+        _rate: &Rate,
+        _grant: &Grant,
+    ) -> Result<bool, LimitStoreError> {
+        std::future::pending().await
+    }
+
+    async fn penalty(&self, key: &LimitKey) -> Result<Duration, LimitStoreError> {
+        nebula_resilience::rate_limiter::gcra::LimitStore::penalty(&self.0, key).await
+    }
+}
+
+fn hanging_chat_limiter() -> (ResourceLimiter, Arc<dyn ErasedLimitStore>) {
+    let store: Arc<dyn ErasedLimitStore> = Arc::new(Hangs(MemoryLimitStore::new()));
+    let base = LimitKey::new("acct:test").unwrap();
+    let limits = ResourceLimiter::new(
+        Some(Quota::new(
+            Arc::clone(&store),
+            base.clone(),
+            per_second(100, 100),
+        )),
+        Some(KeyedLimits::new(
+            Arc::clone(&store),
+            base,
+            vec![("chat_id", per_second(100, 100))],
+        )),
+        Duration::from_mins(5),
+        ResourceKey::new("test.resource").unwrap(),
+        Arc::new(EventBus::new(16)),
+    );
+    (limits, store)
+}
+
+/// A key's pause is kept when the call recording it is cancelled while the
+/// store write is pending: that write may never land.
+#[tokio::test(start_paused = true)]
+async fn a_key_pause_survives_a_cancelled_recording() {
+    let (limits, _) = hanging_chat_limiter();
+    let recording = tokio::time::timeout(
+        Duration::from_millis(10),
+        limits.penalize_for("chat_id", 7, Duration::from_secs(30)),
+    )
+    .await;
+    assert!(recording.is_err(), "the store never answers");
+    let started = Instant::now();
+    limits
+        .ready_for("chat_id", 7, None)
+        .await
+        .expect("admitted after the pause");
+    assert!(
+        started.elapsed() >= Duration::from_secs(29),
+        "woke at {:?}",
+        started.elapsed()
+    );
+}
+
+/// Background refunds are bounded in number and in time, so a stalled
+/// store cannot pile them up.
+#[tokio::test(start_paused = true)]
+async fn background_refunds_are_bounded() {
+    let (limits, store) = hanging_chat_limiter();
+    let key = LimitKey::new("acct:test").unwrap();
+    let rate = per_second(100, 100);
+    let grant = Grant {
+        wait: Duration::ZERO,
+        permits: 1,
+        allow_at: 0,
+        end_tat: 0,
+        seq: 0,
+    };
+    for _ in 0..100 {
+        limits.release(&store, &key, &rate, grant);
+    }
+    tokio::task::yield_now().await;
+    assert_eq!(
+        limits.refunds.load(Ordering::SeqCst),
+        MAX_PENDING_REFUNDS,
+        "at most the bound run at once; the rest lapse"
+    );
+    tokio::time::sleep(REFUND_BUDGET + Duration::from_millis(10)).await;
+    assert_eq!(
+        limits.refunds.load(Ordering::SeqCst),
+        0,
+        "each is abandoned after its budget"
+    );
+}

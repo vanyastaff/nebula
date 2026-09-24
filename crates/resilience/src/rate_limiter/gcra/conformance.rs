@@ -197,6 +197,30 @@ pub async fn repeated_reservation_id_returns_the_original_grant<S: LimitStore>(s
     assert_about(next.wait, 2 * HOUR, "the repeat booked no second slot");
 }
 
+/// A repeated reservation still applies the stricter rate it declares: it
+/// books nothing, but the key's schedule is held to that rate from then on.
+pub async fn a_repeated_reservation_still_enforces_its_rate<S: LimitStore>(store: &S) {
+    let key = fresh_key("repeat-tightens");
+    let hourly = hourly(1);
+    granted(store, &key, &hourly, ReserveRequest::new(1, Duration::ZERO)).await;
+    let id = ReservationId(u128::from(fastrand::u64(..)));
+    let request = ReserveRequest::new(1, Duration::MAX).with_id(id);
+    let original = granted(store, &key, &hourly, request).await;
+    let daily = Rate::new(NonZeroU32::MIN, 24 * HOUR)
+        .unwrap_or_else(|error| panic!("test rate is valid: {error}"));
+    let repeat = granted(store, &key, &daily, request).await;
+    assert_eq!(
+        (repeat.allow_at, repeat.seq),
+        (original.allow_at, original.seq),
+        "the repeat returns the original grant"
+    );
+    assert_about(
+        refused_for(store, &key, &hourly).await,
+        48 * HOUR,
+        "the two hours booked count at the daily interval after the repeat",
+    );
+}
+
 /// Callers that disagree on a busy key's rate get the stricter one.
 pub async fn a_busy_key_enforces_the_stricter_rate<S: LimitStore>(store: &S) {
     let key = fresh_key("stricter");
@@ -318,6 +342,7 @@ pub async fn run_all<S: LimitStore + 'static>(store: Arc<S>) {
     penalty_is_readable_until_it_ends(&*store).await;
     cancel_refunds_only_the_tail_once(&*store).await;
     repeated_reservation_id_returns_the_original_grant(&*store).await;
+    a_repeated_reservation_still_enforces_its_rate(&*store).await;
     a_busy_key_enforces_the_stricter_rate(&*store).await;
     tightening_a_busy_key_rebases_its_schedule(&*store).await;
     not_before_lines_up_with_another_keys_slot(&*store).await;

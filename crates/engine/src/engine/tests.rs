@@ -8136,3 +8136,55 @@ async fn unwired_activation_pins_stored_bindings_unavailable() {
         Some(&unavailable_row_identity())
     );
 }
+
+/// Shutdown does not wait on a hung status store: a tick stuck in store
+/// I/O is abandoned.
+#[tokio::test(start_paused = true)]
+async fn status_publisher_shuts_down_during_a_hung_tick() {
+    let store = Arc::new(nebula_storage::inmem::InMemoryResourceStore::new());
+    let (engine, _) = make_engine(Arc::new(ActionRegistry::new()));
+    let engine = engine
+        .with_resource_manager(Arc::new(nebula_resource::Manager::new()))
+        .with_resource_registrars(crate::resource::activation::tests::registrars())
+        .with_stored_resources(crate::resource::StoredResourceActivator::new(
+            Arc::clone(&store) as Arc<dyn nebula_storage_port::store::ResourceStore>,
+        ));
+    let scope = Scope::new(
+        nebula_core::WorkspaceId::new().to_string(),
+        nebula_core::OrgId::new().to_string(),
+    );
+    let row = store_plain_row(&store, &scope, "activation.plain").await;
+    let manifest = nebula_execution::ExecutionBindingManifestV2::new([resource_binding(
+        &node_key!("reader"),
+        "db",
+        row,
+        "activation.plain",
+    )])
+    .unwrap();
+    engine
+        .activate_bound_resources(
+            ExecutionId::new(),
+            &scope,
+            &manifest,
+            &CancellationToken::new(),
+        )
+        .await;
+
+    let recorder = Arc::new(RecordingStatusStore {
+        publish_delay: Duration::from_hours(1),
+        ..RecordingStatusStore::default()
+    });
+    let publisher = crate::ResourceStatusPublisher::new(
+        Arc::clone(&recorder) as Arc<dyn nebula_storage_port::store::ResourceStatusStore>,
+        nebula_storage_port::dto::StatusWorkerId::new("worker:test").unwrap(),
+    );
+    let shutdown = CancellationToken::new();
+    let running = tokio::spawn(publisher.run(Arc::new(engine), shutdown.clone()));
+    // Let the first tick reach the hung publish.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    shutdown.cancel();
+    tokio::time::timeout(Duration::from_secs(10), running)
+        .await
+        .expect("the publisher stops without waiting on the hung store")
+        .unwrap();
+}

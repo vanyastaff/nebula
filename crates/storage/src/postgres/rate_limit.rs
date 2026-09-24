@@ -165,14 +165,20 @@ impl LimitStore for PgLimitStore {
     ) -> Result<Result<Grant, Denied>, LimitStoreError> {
         let mut tx = self.pool.begin().await.map_err(unavailable)?;
         let (state, stored, now) = Self::lock(&mut tx, key, rate).await?;
+        let before = state;
+        let (rate, state) = step::enforce(state, now, stored.as_ref(), rate);
+        let enforced = state != before || stored != Some(rate);
+        // A repeat books nothing, but a stricter rate it declares still
+        // applies to the key, as it does in the in-memory store.
         if let Some(id) = request.id
             && let Some(original) = Self::pending(&mut tx, key, id, now).await?
         {
-            tx.rollback().await.map_err(unavailable)?;
+            if enforced {
+                Self::write(&mut tx, key, state, &rate).await?;
+            }
+            tx.commit().await.map_err(unavailable)?;
             return Ok(Ok(original));
         }
-        let before = state;
-        let (rate, state) = step::enforce(state, now, stored.as_ref(), rate);
         let (decision, next) = step::reserve_from(
             state,
             now,
@@ -187,7 +193,7 @@ impl LimitStore for PgLimitStore {
         // schedule the stricter one already stretched.
         match next {
             Some(next) => Self::write(&mut tx, key, next, &rate).await?,
-            None if state != before || stored != Some(rate) => {
+            None if enforced => {
                 Self::write(&mut tx, key, state, &rate).await?;
             },
             None => {},

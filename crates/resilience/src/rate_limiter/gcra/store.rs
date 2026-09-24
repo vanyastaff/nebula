@@ -413,13 +413,15 @@ impl LimitStore for MemoryLimitStore {
         request: ReserveRequest,
     ) -> Result<Result<Grant, Denied>, LimitStoreError> {
         Ok(self.with_entry(key, |entry, now| {
+            // Enforced first, a repeat included: the repeat books nothing,
+            // but a stricter rate it declares still applies to the key.
+            let rate = entry.enforce(now, rate);
             if let Some(original) = request.id.and_then(|id| entry.pending.get(&id)) {
                 return Ok(Grant {
                     wait: Duration::from_nanos(original.allow_at.saturating_sub(now)),
                     ..*original
                 });
             }
-            let rate = entry.enforce(now, rate);
             let (decision, next) = step::reserve_from(
                 entry.state,
                 now,

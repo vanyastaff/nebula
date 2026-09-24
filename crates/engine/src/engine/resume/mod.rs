@@ -67,6 +67,10 @@ struct ExactExecutionBody<'a> {
     activated_edges: HashMap<NodeKey, HashSet<NodeKey>>,
     resolved_edges: HashMap<NodeKey, usize>,
     lease: Option<LeaseGuard>,
+    /// This turn's live registration: its cancel token and resume channel
+    /// are published as soon as the lease is held.
+    registration: RunningRegistration,
+    resume_rx: mpsc::Receiver<ResumeRequest>,
 }
 
 impl WorkflowEngine {
@@ -567,6 +571,8 @@ impl WorkflowEngine {
             activated_edges,
             resolved_edges,
             lease,
+            registration: _cancel_registration,
+            mut resume_rx,
         } = body;
         let node_map: HashMap<NodeKey, &nebula_workflow::NodeDefinition> = workflow
             .nodes()
@@ -580,23 +586,6 @@ impl WorkflowEngine {
             let _ = state.transition_status(ExecutionStatus::Running);
         }
         let fencing = lease.as_ref().and_then(LeaseGuard::fencing_token);
-
-        // Publish the cancel token only after this runtime owns the lease.
-        let registration_id = NEXT_REGISTRATION_ID.fetch_add(1, Ordering::Relaxed);
-        let (resume_tx, mut resume_rx) = mpsc::channel::<ResumeRequest>(RESUME_CHANNEL_CAPACITY);
-        self.running.insert(
-            execution_id,
-            RunningEntry {
-                registration_id,
-                token: cancel_token.clone(),
-                resume_tx,
-            },
-        );
-        let _cancel_registration = RunningRegistration {
-            running: Arc::clone(&self.running),
-            execution_id,
-            registration_id,
-        };
 
         self.workflow_executions_started.inc();
         let error_strategy = workflow.config().error_strategy;
@@ -853,6 +842,26 @@ impl WorkflowEngine {
             LeasePreparation::Completed(result) => return Ok(result),
         };
 
+        // Publish the cancel token as soon as this runtime owns the lease,
+        // before stored resources activate: a Cancel consumed meanwhile must
+        // find the live token, or it would be acknowledged while this turn
+        // goes on into dispatch.
+        let registration_id = NEXT_REGISTRATION_ID.fetch_add(1, Ordering::Relaxed);
+        let (resume_tx, resume_rx) = mpsc::channel::<ResumeRequest>(RESUME_CHANNEL_CAPACITY);
+        self.running.insert(
+            execution_id,
+            RunningEntry {
+                registration_id,
+                token: cancel_token.clone(),
+                resume_tx,
+            },
+        );
+        let registration = RunningRegistration {
+            running: Arc::clone(&self.running),
+            execution_id,
+            registration_id,
+        };
+
         if let Some(binding_manifest) = &binding_manifest {
             self.activate_bound_resources(execution_id, scope, binding_manifest, &cancel_token)
                 .await;
@@ -882,7 +891,9 @@ impl WorkflowEngine {
             self.remove_execution_resource_context(id);
         });
 
-        self.execute_exact_execution_body(ExactExecutionBody {
+        // Boxed: the body is the bulk of a turn's state, and every caller
+        // awaiting this turn would otherwise carry it inline.
+        Box::pin(self.execute_exact_execution_body(ExactExecutionBody {
             scope,
             execution_id,
             started,
@@ -902,7 +913,9 @@ impl WorkflowEngine {
             activated_edges,
             resolved_edges,
             lease,
-        })
+            registration,
+            resume_rx,
+        }))
         .await
         .map_err(ExactTurnFailure::AfterLease)
     }

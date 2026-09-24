@@ -268,7 +268,14 @@ impl ResourceStatusPublisher {
                 () = shutdown.cancelled() => break,
                 _ = ticker.tick() => {},
             }
-            self.tick(&engine, &mut published).await;
+            // A tick is store I/O; shutdown must not wait on a hung query.
+            // Dropping a tick midway leaves nothing torn: every step is
+            // re-derived from the engine on the next tick, and there is none.
+            tokio::select! {
+                biased;
+                () = shutdown.cancelled() => break,
+                () = self.tick(&engine, &mut published) => {},
+            }
         }
         let withdraw = self.store.withdraw_worker(&self.worker);
         match tokio::time::timeout(WITHDRAW_BUDGET, withdraw).await {
