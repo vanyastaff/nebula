@@ -279,16 +279,7 @@ impl Manager {
         #[cfg(feature = "rotation")]
         let rotation_identity = (scope.clone(), slot_identity.clone());
         #[cfg(feature = "rotation")]
-        let attached_rotation_index = self
-            .rotation_index
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-            .and_then(std::sync::Weak::upgrade);
-        #[cfg(feature = "rotation")]
-        let rotation_index = registration_bindings
-            .rotation_index()
-            .or(attached_rotation_index.as_deref());
+        let rotation_indexes = self.attached_rotation_indexes();
         let registration = self.registry.register_admitted(
             key.clone(),
             type_id,
@@ -303,7 +294,7 @@ impl Manager {
         } = registration
         {
             #[cfg(feature = "rotation")]
-            if let Some(index) = rotation_index {
+            for index in &rotation_indexes {
                 index.unbind_replaced_resource_identity(
                     &key,
                     &rotation_identity.0,
@@ -314,7 +305,7 @@ impl Manager {
             self.retire_resource(displaced, permit, RetirementOrigin::Replacement);
         }
         #[cfg(feature = "rotation")]
-        if let Some(index) = rotation_index {
+        if let Some(index) = registration_bindings.rotation_index() {
             for (credential_id, bind) in registration_bindings.staged_entries() {
                 index.publish_staged_entry(credential_id, bind);
             }
@@ -895,6 +886,10 @@ impl Manager {
             !removed.is_empty(),
             "admission-locked key disappeared before removal"
         );
+        #[cfg(feature = "rotation")]
+        for index in self.attached_rotation_indexes() {
+            index.unbind_removed_resource_key(key, &removed);
+        }
         let retirements = removed
             .into_iter()
             .map(|managed| {
@@ -902,16 +897,6 @@ impl Manager {
                 self.prepare_retirement(managed, RetirementOrigin::Removal)
             })
             .collect();
-        #[cfg(feature = "rotation")]
-        if let Some(index) = self
-            .rotation_index
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-            .and_then(std::sync::Weak::upgrade)
-        {
-            index.unbind_resource_key(key);
-        }
         retirement_permit.commit_batch(retirements);
 
         if let Some(m) = &self.metrics {
@@ -966,14 +951,8 @@ impl Manager {
             return Err(Error::not_found(key));
         };
         #[cfg(feature = "rotation")]
-        if let Some(index) = self
-            .rotation_index
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-            .and_then(std::sync::Weak::upgrade)
-        {
-            index.unbind_resource_identity(key, scope, slot_identity);
+        for index in self.attached_rotation_indexes() {
+            index.unbind_removed_resource_identity(key, scope, slot_identity, &removed);
         }
         self.retire_resource(removed, retirement_permit, RetirementOrigin::Removal);
 

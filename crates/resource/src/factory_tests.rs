@@ -280,6 +280,7 @@ fn registration_debug_redacts_opaque_config_and_binding_payloads() {
         credential_key: nebula_core::CredentialKey::new("credential_key_sentinel")
             .expect("valid test key"),
         credential_id: Some(nebula_credential::CredentialId::new()),
+        credential_scope: Some(nebula_credential::TenantScope::new("org", "workspace")),
     });
     for debug in [format!("{request:?}"), format!("{request:#?}")] {
         for sensitive in [
@@ -413,6 +414,7 @@ async fn identity_mismatch_is_typed_and_rolls_back_manager_and_fanout_state() {
                     slot_name: "auth".to_owned(),
                     credential_key: nebula_core::credential_key!("test.factory-credential"),
                     credential_id: Some(credential_id),
+                    credential_scope: Some(nebula_credential::TenantScope::new("org", "workspace")),
                 }],
                 slot_installs: Vec::new(),
                 scope: ScopeLevel::Global,
@@ -471,11 +473,19 @@ async fn conflicting_duplicate_slot_bindings_fail_before_manager_publication() {
                         slot_name: "auth".to_owned(),
                         credential_key: nebula_core::credential_key!("test.credential-a"),
                         credential_id: Some(first_credential_id),
+                        credential_scope: Some(nebula_credential::TenantScope::new(
+                            "org",
+                            "workspace",
+                        )),
                     },
                     SlotBinding {
                         slot_name: "auth".to_owned(),
                         credential_key: nebula_core::credential_key!("test.credential-b"),
                         credential_id: Some(second_credential_id),
+                        credential_scope: Some(nebula_credential::TenantScope::new(
+                            "org",
+                            "workspace",
+                        )),
                     },
                 ],
                 slot_installs: Vec::new(),
@@ -495,12 +505,58 @@ async fn conflicting_duplicate_slot_bindings_fail_before_manager_publication() {
 
 #[cfg(feature = "rotation")]
 #[tokio::test]
+async fn rotation_binding_without_owner_scope_fails_before_publication() {
+    let manager = Manager::new();
+    let expression_engine = ExpressionEngine::with_cache_size(16);
+    let credential_id = nebula_credential::CredentialId::new();
+    let fanout_index = Arc::new(crate::ResourceFanoutIndex::new());
+    let mut registry = ResourceActivatorRegistry::new();
+    registry
+        .insert(
+            "test-missing-owner-scope",
+            Arc::new(KindActivator::<BoundTestRes, _, _>::new(
+                || BoundTestRes,
+                || Resident::<BoundTestRes>::new(resident::config::Config::default()),
+            )),
+        )
+        .expect("typed fixture metadata admits");
+
+    let error = registry
+        .register_and_bind(
+            "test-missing-owner-scope",
+            &manager,
+            RegisterRequest {
+                config: ResourceConfigInput::data(serde_json::json!({ "name": "resource" })),
+                expr_engine: &expression_engine,
+                slot_bindings: vec![SlotBinding {
+                    slot_name: "auth".to_owned(),
+                    credential_key: nebula_core::credential_key!("test.factory-credential"),
+                    credential_id: Some(credential_id),
+                    credential_scope: None,
+                }],
+                slot_installs: Vec::new(),
+                scope: ScopeLevel::Global,
+                recovery_gate: None,
+            },
+            Some(&fanout_index),
+        )
+        .await
+        .expect_err("rotation participation requires durable owner scope");
+
+    std::assert_matches!(error, RegistrarError::Register { .. });
+    assert!(!manager.contains(&BoundTestRes::key()));
+    assert!(fanout_index.affected(&credential_id).is_empty());
+}
+
+#[cfg(feature = "rotation")]
+#[tokio::test]
 async fn exact_replacement_publishes_only_successor_staged_binding() {
     let manager = Manager::new();
     let expression_engine = ExpressionEngine::with_cache_size(16);
     let old_credential_id = nebula_credential::CredentialId::new();
     let new_credential_id = nebula_credential::CredentialId::new();
-    let fanout_index = Arc::new(crate::ResourceFanoutIndex::new());
+    let old_fanout_index = Arc::new(crate::ResourceFanoutIndex::new());
+    let new_fanout_index = Arc::new(crate::ResourceFanoutIndex::new());
     let mut registry = ResourceActivatorRegistry::new();
     registry
         .insert(
@@ -512,7 +568,10 @@ async fn exact_replacement_publishes_only_successor_staged_binding() {
         )
         .expect("typed fixture metadata admits");
 
-    for credential_id in [old_credential_id, new_credential_id] {
+    for (credential_id, fanout_index) in [
+        (old_credential_id, &old_fanout_index),
+        (new_credential_id, &new_fanout_index),
+    ] {
         registry
             .register_and_bind(
                 "test-replacement-bindings",
@@ -526,24 +585,28 @@ async fn exact_replacement_publishes_only_successor_staged_binding() {
                         slot_name: "auth".to_owned(),
                         credential_key: nebula_core::credential_key!("test.shared-key"),
                         credential_id: Some(credential_id),
+                        credential_scope: Some(nebula_credential::TenantScope::new(
+                            "org",
+                            "workspace",
+                        )),
                     }],
                     slot_installs: Vec::new(),
                     scope: ScopeLevel::Global,
                     recovery_gate: None,
                 },
-                Some(&fanout_index),
+                Some(fanout_index),
             )
             .await
             .expect("exact identity registration");
     }
 
-    assert!(fanout_index.affected(&old_credential_id).is_empty());
-    assert_eq!(fanout_index.affected(&new_credential_id).len(), 1);
+    assert!(old_fanout_index.affected(&old_credential_id).is_empty());
+    assert_eq!(new_fanout_index.affected(&new_credential_id).len(), 1);
     manager
         .remove(&BoundTestRes::key())
         .expect("registration attached its supplied fan-out index");
     assert!(
-        fanout_index.affected(&new_credential_id).is_empty(),
+        new_fanout_index.affected(&new_credential_id).is_empty(),
         "removal before driver startup must prune the published binding"
     );
 }

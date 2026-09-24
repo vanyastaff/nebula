@@ -22,6 +22,8 @@ fn bound(key: &ResourceKey, scope: &ScopeLevel, slot: &str, identity: SlotIdenti
         scope: scope.clone(),
         slot_name: slot.to_string(),
         slot_identity: identity,
+        credential_scope: None,
+        credential_key: None,
     }
 }
 
@@ -57,7 +59,7 @@ fn replacement_contexts_survive_queue_scale_and_follow_live_bindings() {
     let key = rk("pg");
     let scope = wf_scope();
     let owner = TenantScope::new("org", "workspace");
-    let credential_key = nebula_core::CredentialKey::new("oauth").expect("credential key");
+    let credential_key = CredentialKey::new("oauth").expect("credential key");
     let mut credentials = Vec::new();
     for row in 0..300 {
         let cid = cred();
@@ -90,7 +92,7 @@ fn completed_material_dispatch_cannot_forget_a_newer_context() {
     let resource_key = ResourceKey::new("db").expect("resource key");
     let scope = ScopeLevel::Global;
     let owner = TenantScope::new("org", "workspace");
-    let credential_key: nebula_core::CredentialKey = "oauth".parse().expect("credential key");
+    let credential_key: CredentialKey = "oauth".parse().expect("credential key");
     idx.bind(
         cid,
         resource_key,
@@ -701,7 +703,7 @@ mod fanout_dispatch {
             &'a self,
             _scope: &'a TenantScope,
             _credential_id: CredentialId,
-            _expected_key: nebula_core::CredentialKey,
+            _expected_key: CredentialKey,
             _required_capabilities: nebula_credential::Capabilities,
             _cancel: CancellationToken,
         ) -> std::pin::Pin<
@@ -733,6 +735,8 @@ mod fanout_dispatch {
                 scope,
                 slot_name: "db".to_owned(),
                 slot_identity: identity,
+                credential_scope: Some(TenantScope::new("org", "workspace")),
+                credential_key: Some("oauth".parse().expect("credential key")),
             },
         );
         let owner = TenantScope::new("org", "workspace");
@@ -810,6 +814,38 @@ mod fanout_dispatch {
         assert_eq!(outcome.dispatched(), 0);
         assert_eq!(ledger.revoke_entered.load(Ordering::SeqCst), 0);
         assert_eq!(index.pending_revokes().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn removing_one_shared_credential_row_drops_only_its_revoke_ledger_handle() {
+        let first = SlotIdentity::from_bindings([("db", "first")]);
+        let second = SlotIdentity::from_bindings([("db", "second")]);
+        let (index, manager, credential_id, scope, _org, _ledger) =
+            setup(&[first.clone(), second.clone()]).await;
+        let first_managed = manager
+            .lookup_any_for_slot_identity_structural(&CtlResource::key(), &scope, &first)
+            .expect("first row");
+        let second_managed = manager
+            .lookup_any_for_slot_identity_structural(&CtlResource::key(), &scope, &second)
+            .expect("second row");
+        index.remember_pending_revoke(
+            credential_id,
+            CtlResource::key(),
+            "db",
+            Arc::clone(&first_managed),
+        );
+        index.remember_pending_revoke(
+            credential_id,
+            CtlResource::key(),
+            "db",
+            Arc::clone(&second_managed),
+        );
+
+        index.unbind_removed_resource_identity(&CtlResource::key(), &scope, &first, &first_managed);
+
+        let pending = index.pending_revokes();
+        assert_eq!(pending.len(), 1);
+        assert!(Arc::ptr_eq(&pending[0].managed, &second_managed));
     }
 
     #[tokio::test]

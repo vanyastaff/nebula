@@ -413,8 +413,8 @@ pub struct ResourceHealthSnapshot {
 pub struct Manager {
     pub(super) registry: Registry,
     #[cfg(feature = "rotation")]
-    rotation_index:
-        std::sync::Mutex<Option<std::sync::Weak<crate::credential_fanout::ResourceFanoutIndex>>>,
+    rotation_indexes:
+        std::sync::Mutex<Vec<std::sync::Weak<crate::credential_fanout::ResourceFanoutIndex>>>,
     /// Serializes registry commits, credential admission/revoke and terminal snapshots.
     /// Never held across await.
     pub(super) admission: std::sync::Mutex<()>,
@@ -499,7 +499,7 @@ impl Manager {
         Self {
             registry: Registry::new(),
             #[cfg(feature = "rotation")]
-            rotation_index: std::sync::Mutex::new(None),
+            rotation_indexes: std::sync::Mutex::new(Vec::new()),
             admission: std::sync::Mutex::new(()),
             cancel,
             metrics,
@@ -516,20 +516,46 @@ impl Manager {
         }
     }
 
-    /// Wires the production credential reverse index into resource retirement.
+    /// Wires a production credential reverse index into resource retirement.
     ///
-    /// Removal uses this weak reference to delete the exact routing rows while
-    /// it still holds lifecycle admission. The manager does not own the index
-    /// and therefore cannot extend the rotation driver's lifetime.
+    /// Removal visits every distinct live weak reference to delete exact
+    /// routing rows while it still holds lifecycle admission. The manager
+    /// does not own an index and therefore cannot extend a rotation driver's
+    /// lifetime.
     #[cfg(feature = "rotation")]
     pub fn attach_rotation_index(
         &self,
         index: &Arc<crate::credential_fanout::ResourceFanoutIndex>,
     ) {
-        *self
-            .rotation_index
+        let mut indexes = self
+            .rotation_indexes
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::downgrade(index));
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        indexes.retain(|attached| attached.strong_count() != 0);
+        if indexes
+            .iter()
+            .filter_map(std::sync::Weak::upgrade)
+            .any(|attached| Arc::ptr_eq(&attached, index))
+        {
+            return;
+        }
+        indexes.push(Arc::downgrade(index));
+    }
+
+    #[cfg(feature = "rotation")]
+    pub(super) fn attached_rotation_indexes(
+        &self,
+    ) -> Vec<Arc<crate::credential_fanout::ResourceFanoutIndex>> {
+        let mut indexes = self
+            .rotation_indexes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let live: Vec<_> = indexes
+            .iter()
+            .filter_map(std::sync::Weak::upgrade)
+            .collect();
+        indexes.retain(|attached| attached.strong_count() != 0);
+        live
     }
 
     /// One-time, process-wide honesty check for `panic = "abort"` builds.

@@ -44,6 +44,40 @@ use nebula_resource::{
 };
 use nebula_resource::{ResourceFanoutDriver, ResourceFanoutIndex};
 use tokio_util::sync::CancellationToken;
+
+trait TestRotationBind {
+    fn bind_test(
+        &self,
+        credential_id: CredentialId,
+        resource_key: ResourceKey,
+        scope: ScopeLevel,
+        slot: &str,
+        identity: SlotIdentity,
+    );
+}
+
+impl TestRotationBind for ResourceFanoutIndex {
+    fn bind_test(
+        &self,
+        credential_id: CredentialId,
+        resource_key: ResourceKey,
+        scope: ScopeLevel,
+        slot: &str,
+        identity: SlotIdentity,
+    ) {
+        self.bind_with_context(
+            credential_id,
+            nebula_resource::Bind {
+                resource_key,
+                scope,
+                slot_name: slot.to_owned(),
+                slot_identity: identity,
+                credential_scope: Some(nebula_credential::TenantScope::new("org", "workspace")),
+                credential_key: Some(nebula_core::credential_key!("oauth")),
+            },
+        );
+    }
+}
 use zeroize::Zeroize;
 
 // ── Test resource recording every rotation/revoke hook delivery ──────
@@ -92,7 +126,7 @@ async fn material_replacement_installs_projected_guard_before_refresh_hook() {
     drop(warm);
 
     let index = Arc::new(ResourceFanoutIndex::new());
-    index.bind(cid, ReplacementResource::key(), scope, "db", identity);
+    index.bind_test(cid, ReplacementResource::key(), scope, "db", identity);
     let calls = Arc::new(AtomicUsize::new(0));
     let resolver: Arc<dyn nebula_credential::CredentialSlotResolver> =
         Arc::new(ReplacementResolver {
@@ -184,7 +218,7 @@ async fn lost_material_event_is_recovered_on_startup_and_periodic_scan() {
     let calls = Arc::new(AtomicUsize::new(0));
     let bus = Arc::new(EventBus::new(8));
     let index = Arc::new(ResourceFanoutIndex::new());
-    index.bind(
+    index.bind_test(
         cid,
         ReplacementResource::key(),
         ScopeLevel::Global,
@@ -285,7 +319,7 @@ async fn material_replacement_hook_timeout_is_not_counted_as_success() {
             .expect("warm"),
     );
     let index = ResourceFanoutIndex::new();
-    index.bind(
+    index.bind_test(
         cid,
         ReplacementResource::key(),
         ScopeLevel::Global,
@@ -332,7 +366,7 @@ async fn refreshed_events_and_scans_install_once_per_epoch_in_either_order() {
         let calls = Arc::new(AtomicUsize::new(0));
         let bus = Arc::new(EventBus::new(8));
         let index = Arc::new(ResourceFanoutIndex::new());
-        index.bind(
+        index.bind_test(
             cid,
             ReplacementResource::key(),
             ScopeLevel::Global,
@@ -394,7 +428,7 @@ async fn stalled_refresh_scan_does_not_delay_credential_or_lease_revoke() {
             let _resource = register_replacement(&manager, cid);
             let identity = SlotIdentity::from_bindings([("db", "oauth")]);
             let index = Arc::new(ResourceFanoutIndex::new());
-            index.bind(
+            index.bind_test(
                 cid,
                 ReplacementResource::key(),
                 ScopeLevel::Global,
@@ -582,7 +616,7 @@ async fn durable_tombstone_reconciliation_terminally_revokes_resource() {
     let calls = Arc::new(AtomicUsize::new(0));
     let bus = Arc::new(EventBus::new(8));
     let index = Arc::new(ResourceFanoutIndex::new());
-    index.bind(
+    index.bind_test(
         cid,
         ReplacementResource::key(),
         ScopeLevel::Global,
@@ -619,6 +653,77 @@ async fn durable_tombstone_reconciliation_terminally_revokes_resource() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn empty_bound_slot_reconciles_a_lost_durable_tombstone() {
+    let manager = Arc::new(Manager::new());
+    let credential_id = CredentialId::new();
+    let identity = SlotIdentity::from_bindings([("db", "oauth")]);
+    let resource = ReplacementResource {
+        slot: Arc::new(nebula_resource::SlotCell::empty()),
+        observed: Arc::new(AtomicUsize::new(0)),
+        hooks: Arc::new(AtomicUsize::new(0)),
+        stall_hook: false,
+    };
+    manager
+        .register(RegistrationSpec {
+            resource: resource.clone(),
+            config: NoCfg,
+            scope: ScopeLevel::Global,
+            slot_identity: identity.clone(),
+            topology: Resident::<ReplacementResource>::new(ResidentConfig::default()),
+            recovery_gate: None,
+        })
+        .expect("register empty bound slot");
+    let context = ResourceContext::minimal(Scope::default(), CancellationToken::new());
+    drop(
+        manager
+            .acquire_resident_for_identity::<ReplacementResource>(
+                &context,
+                &AcquireOptions::default(),
+                &identity,
+            )
+            .await
+            .expect("empty resource warms"),
+    );
+    let index = Arc::new(ResourceFanoutIndex::new());
+    index.bind_test(
+        credential_id,
+        ReplacementResource::key(),
+        ScopeLevel::Global,
+        "db",
+        identity.clone(),
+    );
+    let calls = Arc::new(AtomicUsize::new(0));
+    let bus = Arc::new(EventBus::new(8));
+    let driver = ResourceFanoutDriver::spawn_with_resolver(
+        index,
+        Arc::clone(&manager),
+        Some(Arc::new(RevokedProjection {
+            calls: Arc::clone(&calls),
+        })),
+        Arc::clone(&bus),
+        None,
+    );
+
+    tokio::time::advance(Duration::from_millis(1)).await;
+    for _ in 0..100 {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert!(
+        manager
+            .acquire_resident_for_identity::<ReplacementResource>(
+                &context,
+                &AcquireOptions::default(),
+                &identity,
+            )
+            .await
+            .is_err(),
+        "lost tombstone must taint an initially empty bound slot"
+    );
+    driver.abort();
+}
+
+#[tokio::test(start_paused = true)]
 async fn superseded_projection_fences_delayed_tombstone_reconciliation() {
     for replace_with_value in [true, false] {
         let manager = Arc::new(Manager::new());
@@ -640,7 +745,7 @@ async fn superseded_projection_fences_delayed_tombstone_reconciliation() {
         let release = Arc::new(tokio::sync::Semaphore::new(0));
         let bus = Arc::new(EventBus::new(8));
         let index = Arc::new(ResourceFanoutIndex::new());
-        index.bind(
+        index.bind_test(
             cid,
             ReplacementResource::key(),
             ScopeLevel::Global,
@@ -747,7 +852,7 @@ async fn material_replacement_bounds_projection_concurrency() {
             for row in 0..ROWS {
                 let identity_value = format!("oauth-{credential}-{row}");
                 register_replacement_with_identity(&manager, cid, &identity_value);
-                index.bind(
+                index.bind_test(
                     cid,
                     ReplacementResource::key(),
                     ScopeLevel::Global,
@@ -895,7 +1000,7 @@ async fn projection_capacity_is_released_before_hook_observation() {
     for row in 0..ROWS {
         let identity_value = format!("oauth-stalled-{row}");
         register_replacement_with_hook_behavior(&manager, cid, &identity_value, true);
-        index.bind(
+        index.bind_test(
             cid,
             ReplacementResource::key(),
             ScopeLevel::Global,
@@ -937,7 +1042,7 @@ async fn material_projection_timeout_cancels_resolver_and_is_not_success() {
     let cid = CredentialId::new();
     let resource = register_replacement(&manager, cid);
     let index = ResourceFanoutIndex::new();
-    index.bind(
+    index.bind_test(
         cid,
         ReplacementResource::key(),
         ScopeLevel::Global,
@@ -990,7 +1095,7 @@ async fn delayed_projection_cannot_install_into_rebound_registration() {
                 .expect("warm original"),
         );
         let index = Arc::new(ResourceFanoutIndex::new());
-        index.bind(
+        index.bind_test(
             cid,
             ReplacementResource::key(),
             ScopeLevel::Global,
@@ -1107,7 +1212,7 @@ async fn unqualified_writes_fence_in_flight_scans_and_material_events() {
             let cid = CredentialId::new();
             let resource = register_replacement(&manager, cid);
             let index = Arc::new(ResourceFanoutIndex::new());
-            index.bind(
+            index.bind_test(
                 cid,
                 ReplacementResource::key(),
                 ScopeLevel::Global,
@@ -1205,7 +1310,7 @@ async fn material_event_does_not_restore_a_superseded_projection() {
         let cid = CredentialId::new();
         let resource = register_replacement(&manager, cid);
         let index = ResourceFanoutIndex::new();
-        index.bind(
+        index.bind_test(
             cid,
             ReplacementResource::key(),
             ScopeLevel::Global,
@@ -1473,14 +1578,14 @@ async fn refreshed_event_scans_only_the_observed_credential() {
     let first_resource = register_replacement_with_identity(&manager, first, "oauth-first");
     let second_resource = register_replacement_with_identity(&manager, second, "oauth-second");
     let index = Arc::new(ResourceFanoutIndex::new());
-    index.bind(
+    index.bind_test(
         first,
         ReplacementResource::key(),
         ScopeLevel::Global,
         "db",
         SlotIdentity::from_bindings([("db", "oauth-first")]),
     );
-    index.bind(
+    index.bind_test(
         second,
         ReplacementResource::key(),
         ScopeLevel::Global,
@@ -1708,7 +1813,7 @@ async fn wire(behaviour: Behaviour) -> Wired {
     // directly here (the production registrar bind path is covered by
     // the registrar unit tests) so this test isolates the *driver*
     // wiring: bus event → driver → fan-out → hook.
-    index.bind(
+    index.bind_test(
         cid,
         Recording::key(),
         scope.clone(),

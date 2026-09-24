@@ -39,6 +39,7 @@ async fn register_from_value(
             slot_name,
             credential_key,
             credential_id: None,
+            credential_scope: None,
         })
         .collect();
     let expected_slot_identity = nebula_resource::SlotIdentity::from_bindings(

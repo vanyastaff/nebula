@@ -112,6 +112,7 @@ impl ResourceFanoutIndex {
                     scope,
                     credential_id: cid,
                     credential_key: credential_key.clone(),
+                    install_live: true,
                 },
                 resolver,
                 projection_permit,
@@ -141,62 +142,91 @@ impl ResourceFanoutIndex {
 
         let mut summary = RotationOutcome::default();
         let mut projections = Vec::new();
-        for managed in mgr.registry.all_managed() {
-            if managed.is_tainted() {
+        for (bound_credential_id, binding) in self.published_bindings(credential_id) {
+            let (Some(credential_scope), Some(credential_key)) = (
+                binding.credential_scope.clone(),
+                binding.credential_key.clone(),
+            ) else {
                 continue;
-            }
-            for (slot, generation, metadata) in managed.credential_projections() {
-                if credential_id.is_some_and(|cid| cid != metadata.credential_id()) {
-                    continue;
-                }
-                let participates_in_rotation = self
-                    .affected(&metadata.credential_id())
-                    .into_iter()
-                    .filter(|binding| binding.slot_name == slot)
-                    .any(|binding| {
-                        mgr.lookup_any_for_slot_identity_structural(
-                            &binding.resource_key,
-                            &binding.scope,
-                            &binding.slot_identity,
-                        )
-                        .is_ok_and(|bound| std::sync::Arc::ptr_eq(&bound, &managed))
-                    });
-                if !participates_in_rotation {
-                    continue;
-                }
-                let managed = std::sync::Arc::clone(&managed);
+            };
+            let Ok(managed) = mgr.lookup_any_for_slot_identity_structural(
+                &binding.resource_key,
+                &binding.scope,
+                &binding.slot_identity,
+            ) else {
                 projections.push(
-                    async move {
-                        let Ok(projection_permit) = self.projection_admission.acquire().await
-                        else {
-                            return RowOutcome::Failed {
-                                drain_timed_out: false,
-                            };
-                        };
-                        let Some(scope) = metadata.scope() else {
-                            return RowOutcome::Failed {
-                                drain_timed_out: false,
-                            };
-                        };
-                        project_and_refresh(
-                            self,
-                            mgr,
-                            managed,
-                            ProjectionTarget {
-                                slot,
-                                generation,
-                                scope,
-                                credential_id: metadata.credential_id(),
-                                credential_key: metadata.credential_key().clone(),
-                            },
-                            resolver,
-                            projection_permit,
-                        )
-                        .await
+                    async {
+                        RowOutcome::Failed {
+                            drain_timed_out: false,
+                        }
                     }
                     .boxed(),
                 );
+                continue;
+            };
+            if managed.is_tainted() {
+                continue;
             }
+            let Some((generation, metadata)) =
+                managed.credential_slot_projection(&binding.slot_name)
+            else {
+                projections.push(
+                    async {
+                        RowOutcome::Failed {
+                            drain_timed_out: false,
+                        }
+                    }
+                    .boxed(),
+                );
+                continue;
+            };
+            let install_live = match metadata {
+                Some(metadata)
+                    if metadata.credential_id() == bound_credential_id
+                        && metadata.credential_key() == &credential_key
+                        && metadata.scope() == Some(&credential_scope) =>
+                {
+                    true
+                },
+                Some(_) => {
+                    projections.push(
+                        async {
+                            RowOutcome::Failed {
+                                drain_timed_out: false,
+                            }
+                        }
+                        .boxed(),
+                    );
+                    continue;
+                },
+                None => generation == 0,
+            };
+            projections.push(
+                async move {
+                    let Ok(projection_permit) = self.projection_admission.acquire().await else {
+                        return RowOutcome::Failed {
+                            drain_timed_out: false,
+                        };
+                    };
+                    project_and_refresh(
+                        self,
+                        mgr,
+                        managed,
+                        ProjectionTarget {
+                            slot: &binding.slot_name,
+                            generation,
+                            scope: &credential_scope,
+                            credential_id: bound_credential_id,
+                            credential_key,
+                            install_live,
+                        },
+                        resolver,
+                        projection_permit,
+                    )
+                    .await
+                }
+                .boxed(),
+            );
         }
         let outcomes = futures::future::join_all(projections).await;
         summary.add(summarize_row_outcomes(outcomes));
@@ -609,6 +639,7 @@ struct ProjectionTarget<'a> {
     scope: &'a TenantScope,
     credential_id: CredentialId,
     credential_key: CredentialKey,
+    install_live: bool,
 }
 
 async fn project_and_refresh(
@@ -625,6 +656,7 @@ async fn project_and_refresh(
         scope,
         credential_id: cid,
         credential_key,
+        install_live,
     } = target;
     let cancel = CancellationToken::new();
     let _cancel_on_drop = cancel.clone().drop_guard();
@@ -691,6 +723,12 @@ async fn project_and_refresh(
             };
         },
     };
+    if !install_live {
+        drop(projection_permit);
+        return RowOutcome::Success {
+            drain_timed_out: false,
+        };
+    }
     let key = managed.resource_key();
     match mgr
         .install_and_refresh_resolved(&key, slot, managed, guard, Some(generation), move || {

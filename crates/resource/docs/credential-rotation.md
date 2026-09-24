@@ -30,9 +30,13 @@ Queue-rejected revoke admissions run in a separate periodic task, so a batch of 
 hook-observation budgets cannot delay unrelated material projection. Slow projections do
 not block credential or lease revoke reception.
 
+Every published rotation binding retains its durable owner and credential key.
 Material replacement context is retained in the reverse index until projection
 succeeds. Its key space is bounded by live credential bindings, so queue overflow
 cannot lose the owner and key needed to recover a bound but still-empty slot.
+Startup and periodic scans enumerate those bindings directly, including generation-zero
+empty slots and metadata-cleared slots. A live reread installs only into an initially
+empty or matching projection; a tombstone can still taint a metadata-cleared bound row.
 
 If an owner-qualified reread finds a durable credential tombstone, reconciliation
 uses the same terminal path as a revoke observation: it synchronously taints the

@@ -35,7 +35,7 @@
 //! in-memory routing table only — never persisted and never sent across a trust boundary.
 
 use dashmap::DashMap;
-use nebula_core::{ResourceKey, ScopeLevel};
+use nebula_core::{CredentialKey, ResourceKey, ScopeLevel};
 use nebula_credential::{CredentialId, TenantScope};
 use smallvec::SmallVec;
 
@@ -70,6 +70,10 @@ pub struct Bind {
     /// Resolved **collision-free structural** slot identity disambiguating
     /// multi-tenant rows (exact string equality, not a collidable digest).
     pub slot_identity: SlotIdentity,
+    /// Owner-qualified scope used for authoritative durable rereads.
+    pub credential_scope: Option<TenantScope>,
+    /// Credential contract expected by the bound slot.
+    pub credential_key: Option<CredentialKey>,
 }
 
 /// Aggregate of a per-slot rotation fan-out across every affected resource
@@ -282,7 +286,7 @@ pub struct ResourceFanoutIndex {
     by_credential: DashMap<CredentialId, BindRows>,
     /// Owner-qualified replacement hints retained until every bound row can
     /// project them. Its key space is bounded by live reverse-index entries.
-    material_contexts: DashMap<CredentialId, (TenantScope, nebula_core::CredentialKey, u64)>,
+    material_contexts: DashMap<CredentialId, (TenantScope, CredentialKey, u64)>,
     material_context_sequence: std::sync::atomic::AtomicU64,
     pending_revoke_admissions: std::sync::Mutex<Vec<PendingRevokeAdmission>>,
     /// Shared admission keeps direct dispatch and reconciliation under one
@@ -309,9 +313,13 @@ impl ResourceFanoutIndex {
         Self::default()
     }
 
-    /// Records that the resource row
+    /// Records an event-only binding showing that the resource row
     /// `(resource_key, scope, slot_name, slot_identity)` resolved `cid` for
     /// one of its credential slots.
+    ///
+    /// This compatibility path omits the durable owner/key context required
+    /// by startup reconciliation. Production registration stages a complete
+    /// [`Bind`] and publishes it atomically with the manager row.
     ///
     /// Re-binding an identical row under the same credential is idempotent
     /// *at the fan-out level* — [`affected`](Self::affected) still returns
@@ -337,8 +345,16 @@ impl ResourceFanoutIndex {
             scope,
             slot_name: slot_name.into(),
             slot_identity,
+            credential_scope: None,
+            credential_key: None,
         };
         self.add_bind_ref(cid, entry, false);
+    }
+
+    /// Publishes a rotation binding with the owner-qualified context needed
+    /// for durable startup and periodic reconciliation.
+    pub fn bind_with_context(&self, cid: CredentialId, binding: Bind) {
+        self.add_bind_ref(cid, binding, false);
     }
 
     pub(crate) fn stage_bind(&self, cid: CredentialId, bind: Bind) {
@@ -375,11 +391,41 @@ impl ResourceFanoutIndex {
             .unwrap_or_default()
     }
 
+    pub(super) fn published_bindings(
+        &self,
+        credential_id: Option<CredentialId>,
+    ) -> Vec<(CredentialId, Bind)> {
+        if let Some(credential_id) = credential_id {
+            return self
+                .by_credential
+                .get(&credential_id)
+                .map(|rows| {
+                    rows.iter()
+                        .filter(|row| row.published != 0)
+                        .map(|row| (credential_id, row.bind.clone()))
+                        .collect()
+                })
+                .unwrap_or_default();
+        }
+        self.by_credential
+            .iter()
+            .flat_map(|entry| {
+                let credential_id = *entry.key();
+                entry
+                    .value()
+                    .iter()
+                    .filter(|row| row.published != 0)
+                    .map(move |row| (credential_id, row.bind.clone()))
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
     pub(super) fn remember_material_context(
         &self,
         cid: CredentialId,
         scope: TenantScope,
-        credential_key: nebula_core::CredentialKey,
+        credential_key: CredentialKey,
     ) -> u64 {
         let sequence = self
             .material_context_sequence
@@ -393,7 +439,7 @@ impl ResourceFanoutIndex {
 
     pub(super) fn pending_material_contexts(
         &self,
-    ) -> Vec<(CredentialId, TenantScope, nebula_core::CredentialKey, u64)> {
+    ) -> Vec<(CredentialId, TenantScope, CredentialKey, u64)> {
         self.material_contexts
             .retain(|cid, _| self.by_credential.contains_key(cid));
         self.material_contexts
@@ -568,6 +614,22 @@ impl ResourceFanoutIndex {
         self.prune_orphan_contexts();
     }
 
+    pub(crate) fn unbind_removed_resource_key(
+        &self,
+        resource_key: &ResourceKey,
+        removed: &[std::sync::Arc<dyn crate::registry::ManagedHandle>],
+    ) {
+        self.unbind_resource_key(resource_key);
+        self.pending_revoke_admissions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|entry| {
+                !removed
+                    .iter()
+                    .any(|handle| std::sync::Arc::ptr_eq(&entry.managed, handle))
+            });
+    }
+
     /// Drops bindings for the single resolved registry row
     /// `(resource_key, scope, slot_identity)`, leaving multi-tenant siblings
     /// that share `(resource_key, scope)` but differ in `slot_identity`
@@ -598,6 +660,20 @@ impl ResourceFanoutIndex {
             !rows.is_empty()
         });
         self.prune_orphan_contexts();
+    }
+
+    pub(crate) fn unbind_removed_resource_identity(
+        &self,
+        resource_key: &ResourceKey,
+        scope: &ScopeLevel,
+        slot_identity: &SlotIdentity,
+        removed: &std::sync::Arc<dyn crate::registry::ManagedHandle>,
+    ) {
+        self.unbind_resource_identity(resource_key, scope, slot_identity);
+        self.pending_revoke_admissions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|entry| !std::sync::Arc::ptr_eq(&entry.managed, removed));
     }
 
     pub(crate) fn unbind_replaced_resource_identity(

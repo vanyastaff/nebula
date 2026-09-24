@@ -105,6 +105,10 @@ pub struct SlotBinding {
     /// `None` when this credential does not participate in rotation (no
     /// reverse-index row is staged for it).
     pub credential_id: Option<nebula_credential::CredentialId>,
+    /// Owner-qualified durable lookup scope. Required when
+    /// `credential_id` participates in rotation and absent for opt-out
+    /// bindings.
+    pub credential_scope: Option<nebula_credential::TenantScope>,
 }
 
 /// One resolved projected guard to install before resource publication.
@@ -724,6 +728,31 @@ where
                     },
                 }
             }
+            for binding in &request.slot_bindings {
+                let Some(credential_id) = binding.credential_id else {
+                    continue;
+                };
+                let Some(credential_scope) = binding.credential_scope.as_ref() else {
+                    return Err(crate::Error::permanent(
+                        "rotation binding requires owner-qualified credential scope",
+                    )
+                    .with_resource_key(R::key()));
+                };
+                let Some((_, Some(installed))) =
+                    resource.credential_slot_projection(&binding.slot_name)
+                else {
+                    continue;
+                };
+                if installed.credential_id() != credential_id
+                    || installed.credential_key() != &binding.credential_key
+                    || installed.scope() != Some(&credential_scope.durable_owner_scope())
+                {
+                    return Err(crate::Error::permanent(
+                        "rotation-bound credential install metadata mismatch",
+                    )
+                    .with_resource_key(R::key()));
+                }
+            }
             manager
                 .register_resolved::<R>(
                     metadata.base().schema(),
@@ -909,11 +938,42 @@ impl ResourceActivatorRegistry {
                 let Some(cred_id) = binding.credential_id else {
                     continue;
                 };
+                let Some(credential_scope) = binding.credential_scope.clone() else {
+                    return Err(RegistrarError::Register {
+                        kind: kind.to_owned(),
+                        source: crate::Error::permanent(
+                            "rotation binding requires owner-qualified credential scope",
+                        )
+                        .with_resource_key(resource_key.clone()),
+                    });
+                };
+                let credential_scope = credential_scope.durable_owner_scope();
+                if let Some(install) = request
+                    .slot_installs
+                    .iter()
+                    .find(|install| install.slot_name == binding.slot_name)
+                {
+                    let metadata = install.guard.metadata();
+                    if metadata.credential_id() != cred_id
+                        || metadata.credential_key() != &binding.credential_key
+                        || metadata.scope() != Some(&credential_scope)
+                    {
+                        return Err(RegistrarError::Register {
+                            kind: kind.to_owned(),
+                            source: crate::Error::permanent(
+                                "rotation-bound credential install metadata mismatch",
+                            )
+                            .with_resource_key(resource_key.clone()),
+                        });
+                    }
+                }
                 let bind = crate::Bind {
                     resource_key: resource_key.clone(),
                     scope: request.scope.clone(),
                     slot_name: binding.slot_name.clone(),
                     slot_identity: staged_slot_identity.clone(),
+                    credential_scope: Some(credential_scope),
+                    credential_key: Some(binding.credential_key.clone()),
                 };
                 idx.stage_bind(cred_id, bind.clone());
                 staged.push((cred_id, bind));
