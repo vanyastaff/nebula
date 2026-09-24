@@ -17,6 +17,57 @@ use tokio_util::sync::CancellationToken;
 use super::index::{ResourceFanoutIndex, RevokeAdmissionClaim, RotationOutcome};
 
 impl ResourceFanoutIndex {
+    /// Applies the synchronous phase of a revoke before the driver returns to
+    /// polling either event bus. Slow drain and hook work is left in the
+    /// pending-admission ledger for a background task.
+    pub(crate) fn prepare_revoke(
+        &self,
+        cid: CredentialId,
+        mgr: &crate::Manager,
+    ) -> RotationOutcome {
+        let has_staged_binding = self.has_staged_binding(&cid);
+        if has_staged_binding {
+            self.remember_staged_revoke(cid);
+        }
+        let mut summary = RotationOutcome::default();
+        for binding in self.affected(&cid) {
+            match mgr.taint_slot_for_identity(
+                &binding.resource_key,
+                binding.scope,
+                &binding.slot_name,
+                &binding.slot_identity,
+            ) {
+                Ok(tainted) => self.remember_pending_revoke(
+                    cid,
+                    binding.resource_key,
+                    &binding.slot_name,
+                    tainted.managed_handle(),
+                ),
+                Err(error) => {
+                    tracing::warn!(
+                        credential_id = %cid,
+                        resource_key = %binding.resource_key,
+                        slot = %binding.slot_name,
+                        error = %error,
+                        "rotation fan-out: synchronous revoke taint failed"
+                    );
+                    summary.failed += 1;
+                },
+            }
+        }
+        summary.failed += usize::from(has_staged_binding);
+        summary
+    }
+
+    pub(crate) async fn finish_prepared_revoke(
+        &self,
+        cid: CredentialId,
+        mgr: &crate::Manager,
+    ) -> RotationOutcome {
+        self.retry_pending_revoke_admissions_for(mgr, Some(cid))
+            .await
+    }
+
     /// Projects the owner-qualified durable replacement, installs the new
     /// guard, and only then dispatches the resource refresh hook for every
     /// affected row.
@@ -245,8 +296,18 @@ impl ResourceFanoutIndex {
         &self,
         mgr: &crate::Manager,
     ) -> RotationOutcome {
+        self.retry_pending_revoke_admissions_for(mgr, None).await
+    }
+
+    async fn retry_pending_revoke_admissions_for(
+        &self,
+        mgr: &crate::Manager,
+        credential_id: Option<CredentialId>,
+    ) -> RotationOutcome {
         let mut summary = RotationOutcome::default();
-        for pending in self.pending_revokes() {
+        for pending in self.pending_revokes().into_iter().filter(|pending| {
+            credential_id.is_none_or(|credential_id| pending.credential_id == credential_id)
+        }) {
             let Some(claim) = self.claim_pending_revoke(&pending) else {
                 continue;
             };
@@ -358,8 +419,15 @@ impl ResourceFanoutIndex {
         mgr: &crate::Manager,
         per_resource_timeout: Duration,
     ) -> RotationOutcome {
-        self.dispatch(cid, mgr, per_resource_timeout, FanoutOp::Revoke)
-            .await
+        let has_staged_binding = self.has_staged_binding(&cid);
+        if has_staged_binding {
+            self.remember_staged_revoke(cid);
+        }
+        let mut outcome = self
+            .dispatch(cid, mgr, per_resource_timeout, FanoutOp::Revoke)
+            .await;
+        outcome.failed += usize::from(has_staged_binding);
+        outcome
     }
 
     /// Shared fan-out skeleton for [`dispatch_refresh`](Self::dispatch_refresh)

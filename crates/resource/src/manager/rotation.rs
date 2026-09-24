@@ -1081,7 +1081,7 @@ impl Manager {
     }
 
     /// Caller holds the same lifecycle gate as refresh installation/admission.
-    fn taint_under_admission(
+    pub(crate) fn taint_under_admission(
         &self,
         key: &ResourceKey,
         slot: &str,

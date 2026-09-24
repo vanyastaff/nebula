@@ -307,7 +307,24 @@ impl Manager {
         #[cfg(feature = "rotation")]
         if let Some(index) = registration_bindings.rotation_index() {
             for (credential_id, bind) in registration_bindings.staged_entries() {
-                index.publish_staged_entry(credential_id, bind);
+                if index.publish_staged_entry(credential_id, bind) {
+                    let managed_handle: Arc<dyn crate::registry::ManagedHandle> = managed.clone();
+                    match self.taint_under_admission(&key, &bind.slot_name, managed_handle) {
+                        Ok(tainted) => index.remember_pending_revoke(
+                            *credential_id,
+                            key.clone(),
+                            &bind.slot_name,
+                            tainted.managed_handle(),
+                        ),
+                        Err(error) => tracing::warn!(
+                            credential_id = %credential_id,
+                            resource.key = %key,
+                            slot = %bind.slot_name,
+                            error.kind = ?error.kind(),
+                            "staged credential revoke could not taint the published resource"
+                        ),
+                    }
+                }
             }
         }
 

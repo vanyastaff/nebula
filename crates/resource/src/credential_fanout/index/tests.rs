@@ -340,6 +340,41 @@ fn staged_bind_refcount_protects_a_concurrent_live_row() {
 }
 
 #[test]
+fn revoke_intent_survives_until_the_last_staged_binding_is_published() {
+    let idx = ResourceFanoutIndex::new();
+    let cid = cred();
+    let key = rk("pg");
+    let scope = wf_scope();
+    let bind = bound(
+        &key,
+        &scope,
+        "db",
+        SlotIdentity::from_bindings([("db", "revoked-while-staged")]),
+    );
+
+    idx.stage_bind(cid, bind.clone());
+    idx.stage_bind(cid, bind.clone());
+    idx.remember_staged_revoke(cid);
+
+    assert!(idx.publish_staged_entry(&cid, &bind));
+    assert!(
+        idx.staged_revoke_intents
+            .lock()
+            .expect("staged revoke lock")
+            .contains(&cid),
+        "a sibling staged registration still needs the revoke intent"
+    );
+    assert!(idx.publish_staged_entry(&cid, &bind));
+    assert!(
+        !idx.staged_revoke_intents
+            .lock()
+            .expect("staged revoke lock")
+            .contains(&cid),
+        "the intent is retired only after every staged registration publishes"
+    );
+}
+
+#[test]
 fn failed_stage_does_not_promote_reconciliation_context() {
     let idx = ResourceFanoutIndex::new();
     let cid = cred();
@@ -470,7 +505,8 @@ mod fanout_dispatch {
     };
     use futures::FutureExt;
     use nebula_core::{OrgId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
-    use nebula_credential::CredentialId;
+    use nebula_credential::{CredentialEvent, CredentialId};
+    use nebula_eventbus::EventBus;
     use tokio_util::sync::CancellationToken;
 
     use super::super::*;
@@ -866,6 +902,78 @@ mod fanout_dispatch {
         assert_eq!(outcome.dispatched(), 0);
         assert_eq!(ledger.revoke_entered.load(Ordering::SeqCst), 0);
         assert_eq!(index.pending_revokes().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn blocked_revoke_tail_does_not_delay_the_next_bus_revoke() {
+        let first_identity = SlotIdentity::from_bindings([("db", "blocked-revoke")]);
+        let second_identity = SlotIdentity::from_bindings([("db", "following-revoke")]);
+        let (index, manager, initial_credential, scope, _org, ledger) =
+            setup(&[first_identity.clone(), second_identity.clone()]).await;
+        index.unbind_resource_identity(&CtlResource::key(), &scope, &first_identity);
+        index.unbind_resource_identity(&CtlResource::key(), &scope, &second_identity);
+
+        let first_credential = initial_credential;
+        let second_credential = CredentialId::new();
+        index.bind(
+            first_credential,
+            CtlResource::key(),
+            scope.clone(),
+            "db",
+            first_identity.clone(),
+        );
+        index.bind(
+            second_credential,
+            CtlResource::key(),
+            scope.clone(),
+            "db",
+            second_identity.clone(),
+        );
+        ledger.set(first_identity.clone(), Behaviour::Block);
+        ledger.set(second_identity.clone(), Behaviour::FastOk);
+
+        let index = Arc::new(index);
+        let bus = Arc::new(EventBus::new(16));
+        let driver = crate::ResourceFanoutDriver::spawn(
+            Arc::clone(&index),
+            Arc::clone(&manager),
+            Arc::clone(&bus),
+            None,
+        );
+        bus.emit(CredentialEvent::Revoked {
+            credential_id: first_credential,
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while ledger.revoke_entered.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("first revoke hook starts and blocks");
+
+        bus.emit(CredentialEvent::Revoked {
+            credential_id: second_credential,
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let second = manager
+                    .lookup_any_for_slot_identity_structural(
+                        &CtlResource::key(),
+                        &scope,
+                        &second_identity,
+                    )
+                    .expect("second row remains registered");
+                if second.is_tainted() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the second revoke is admitted while the first tail remains blocked");
+
+        ledger.revoke_release.add_permits(1);
+        driver.abort();
     }
 
     #[tokio::test]

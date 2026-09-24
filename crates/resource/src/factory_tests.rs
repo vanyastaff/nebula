@@ -681,6 +681,67 @@ async fn rotation_binding_without_projection_ports_fails_before_publication() {
 
 #[cfg(feature = "rotation")]
 #[tokio::test]
+async fn revoke_observed_during_staging_taints_the_row_at_publication() {
+    let manager = Manager::new();
+    let expression_engine = ExpressionEngine::with_cache_size(16);
+    let credential_id = nebula_credential::CredentialId::new();
+    let fanout_index = Arc::new(crate::ResourceFanoutIndex::new());
+    let mut registry = ResourceActivatorRegistry::new();
+    registry
+        .insert(
+            "test-staged-revoke",
+            Arc::new(KindActivator::<BoundTestRes, _, _>::new(
+                BoundTestRes::new,
+                || Resident::<BoundTestRes>::new(resident::config::Config::default()),
+            )),
+        )
+        .expect("typed fixture metadata admits");
+
+    // Models the event arriving after register_and_bind staged the reverse
+    // index row but before Manager publishes it under lifecycle admission.
+    fanout_index.remember_staged_revoke(credential_id);
+    registry
+        .register_and_bind(
+            "test-staged-revoke",
+            &manager,
+            RegisterRequest {
+                config: ResourceConfigInput::data(serde_json::json!({ "name": "resource" })),
+                expr_engine: &expression_engine,
+                slot_bindings: vec![SlotBinding {
+                    slot_name: "auth".to_owned(),
+                    credential_key: nebula_core::credential_key!("test.factory-credential"),
+                    credential_id: Some(credential_id),
+                    credential_scope: Some(nebula_credential::TenantScope::new("org", "workspace")),
+                }],
+                slot_installs: Vec::new(),
+                scope: ScopeLevel::Global,
+                recovery_gate: None,
+            },
+            Some(&fanout_index),
+        )
+        .await
+        .expect("registration publishes the staged binding");
+
+    let binding = fanout_index
+        .affected(&credential_id)
+        .into_iter()
+        .next()
+        .expect("published binding remains indexed");
+    let managed = manager
+        .lookup_any_for_slot_identity_structural(
+            &binding.resource_key,
+            &binding.scope,
+            &binding.slot_identity,
+        )
+        .expect("published row is registered");
+    assert!(
+        managed.is_tainted(),
+        "publication must not make a credential-revoked row acquirable"
+    );
+}
+
+#[cfg(feature = "rotation")]
+#[tokio::test]
 async fn exact_replacement_publishes_only_successor_staged_binding() {
     let manager = Manager::new();
     let expression_engine = ExpressionEngine::with_cache_size(16);

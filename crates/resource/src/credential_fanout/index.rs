@@ -288,6 +288,8 @@ pub struct ResourceFanoutIndex {
     material_contexts: DashMap<CredentialId, (TenantScope, CredentialKey, u64)>,
     material_context_sequence: std::sync::atomic::AtomicU64,
     pending_revoke_admissions: std::sync::Mutex<Vec<PendingRevokeAdmission>>,
+    staged_revoke_intents: std::sync::Mutex<std::collections::HashSet<CredentialId>>,
+    revoke_retry_notify: tokio::sync::Notify,
     /// Shared admission keeps direct dispatch and reconciliation under one
     /// provider/persistence concurrency budget.
     pub(super) projection_admission: tokio::sync::Semaphore,
@@ -300,6 +302,8 @@ impl Default for ResourceFanoutIndex {
             material_contexts: DashMap::new(),
             material_context_sequence: std::sync::atomic::AtomicU64::new(1),
             pending_revoke_admissions: std::sync::Mutex::new(Vec::new()),
+            staged_revoke_intents: std::sync::Mutex::new(std::collections::HashSet::new()),
+            revoke_retry_notify: tokio::sync::Notify::new(),
             projection_admission: tokio::sync::Semaphore::new(MAX_CONCURRENT_PROJECTIONS),
         }
     }
@@ -517,8 +521,7 @@ impl ResourceFanoutIndex {
             .remove_if(cid, |_, context| context.2 == sequence);
     }
 
-    #[cfg(test)]
-    pub(super) fn remember_pending_revoke(
+    pub(crate) fn remember_pending_revoke(
         &self,
         credential_id: CredentialId,
         key: ResourceKey,
@@ -543,6 +546,18 @@ impl ResourceFanoutIndex {
             managed,
             state: RevokeAdmissionState::Pending,
         });
+        self.revoke_retry_notify.notify_one();
+    }
+
+    pub(crate) fn remember_staged_revoke(&self, credential_id: CredentialId) {
+        self.staged_revoke_intents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(credential_id);
+    }
+
+    pub(crate) async fn revoke_retry_notified(&self) {
+        self.revoke_retry_notify.notified().await;
     }
 
     pub(super) fn pending_revokes(&self) -> Vec<PendingRevokeAdmission> {
@@ -698,6 +713,10 @@ impl ResourceFanoutIndex {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clear();
+        self.staged_revoke_intents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
     }
 
     /// Drops bindings for the single resolved registry row
@@ -805,7 +824,7 @@ impl ResourceFanoutIndex {
         self.prune_orphan_contexts();
     }
 
-    pub(crate) fn publish_staged_entry(&self, cid: &CredentialId, bind: &Bind) {
+    pub(crate) fn publish_staged_entry(&self, cid: &CredentialId, bind: &Bind) -> bool {
         if let Some(mut rows) = self.by_credential.get_mut(cid)
             && let Some(row) = rows.iter_mut().find(|row| &row.bind == bind)
             && row.staged != 0
@@ -819,6 +838,18 @@ impl ResourceFanoutIndex {
                 row.staged_context = None;
             }
         }
+        let should_revoke = self
+            .staged_revoke_intents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(cid);
+        if !self.has_staged_binding(cid) {
+            self.staged_revoke_intents
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(cid);
+        }
+        should_revoke
     }
 
     fn prune_orphan_contexts(&self) {
@@ -828,6 +859,10 @@ impl ResourceFanoutIndex {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .retain(|entry| self.has_published_binding(&entry.credential_id));
+        self.staged_revoke_intents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|credential_id| self.has_staged_binding(credential_id));
     }
 
     fn has_published_binding(&self, cid: &CredentialId) -> bool {

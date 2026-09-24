@@ -272,6 +272,7 @@ impl ResourceFanoutDriver {
             let mut scans = tokio::task::JoinSet::new();
             let mut material_dispatches = tokio::task::JoinSet::new();
             let mut revoke_retries = tokio::task::JoinSet::new();
+            let mut revoke_dispatches = tokio::task::JoinSet::new();
             let mut pending_material =
                 HashMap::<CredentialId, (TenantScope, CredentialKey, u64)>::new();
             let mut pending_refresh_scans = HashSet::<CredentialId>::new();
@@ -324,8 +325,18 @@ impl ResourceFanoutDriver {
                                 );
                             }
                         },
+                        Some(CredentialEvent::Revoked { credential_id }) => {
+                            Self::spawn_revoke_deduped(
+                                &index,
+                                &manager,
+                                &mut revoke_dedupe,
+                                &mut revoke_dispatches,
+                                credential_id,
+                                "credential bus",
+                            );
+                        },
                         Some(ev) => Self::on_credential_event(
-                            &index, &manager, resolver.as_deref(), &mut revoke_dedupe, ev,
+                            &index, &manager, resolver.as_deref(), ev,
                         ).await,
                         None => break,
                     },
@@ -335,10 +346,27 @@ impl ResourceFanoutDriver {
                             None => std::future::pending().await,
                         }
                     } => match ev {
-                        Some(ev) => Self::on_lease_event(
-                            &index, &manager, &mut revoke_dedupe, ev,
-                        ).await,
+                        Some(LeaseEvent::LeaseRevoked { credential_id: Some(credential_id), .. }) => {
+                            Self::spawn_revoke_deduped(
+                                &index,
+                                &manager,
+                                &mut revoke_dedupe,
+                                &mut revoke_dispatches,
+                                credential_id,
+                                "lease bus",
+                            );
+                        },
+                        Some(LeaseEvent::LeaseRevoked { credential_id: None, .. }) => {
+                            tracing::debug!(
+                                target: "nebula_resource::credential_fanout",
+                                "lease revoked for an orphan lease (no credential id); resource rotation fan-out skipped"
+                            );
+                        },
+                        Some(_) => {},
                         None => lease_sub = None,
+                    },
+                    () = index.revoke_retry_notified() => {
+                        revoke_retry_requested = true;
                     },
                     _ = reconciliation.tick() => {
                         revoke_retry_requested = true;
@@ -432,6 +460,11 @@ impl ResourceFanoutDriver {
                             None => {},
                         }
                     },
+                    result = revoke_dispatches.join_next(), if !revoke_dispatches.is_empty() => {
+                        if matches!(result, Some(Err(_))) {
+                            tracing::warn!("credential revoke fan-out task failed");
+                        }
+                    },
                     result = material_dispatches.join_next(), if !material_dispatches.is_empty() => {
                         match result {
                             Some(Ok((credential_id, context_sequence, outcome))) => {
@@ -465,7 +498,6 @@ impl ResourceFanoutDriver {
         index: &ResourceFanoutIndex,
         manager: &Manager,
         resolver: Option<&dyn CredentialSlotResolver>,
-        revoke_dedupe: &mut RevokeDedupe,
         ev: CredentialEvent,
     ) {
         match ev {
@@ -501,16 +533,10 @@ impl ResourceFanoutDriver {
                 };
                 Self::record(credential_id, "material_replacement", outcome);
             },
-            CredentialEvent::Revoked { credential_id } => {
-                Self::dispatch_revoke_deduped(
-                    index,
-                    manager,
-                    revoke_dedupe,
-                    credential_id,
-                    "credential bus",
-                )
-                .await;
-            },
+            // The receive loop handles revokes before this fallback so it can
+            // taint synchronously and move the potentially long drain/hook tail
+            // into a tracked background task.
+            CredentialEvent::Revoked { .. } => {},
             // Not a rotation of stored material. This driver is only a
             // resource-material fan-out observer; it has no credential
             // aggregate write authority.
@@ -519,37 +545,6 @@ impl ResourceFanoutDriver {
             // resolved material" until a unit deliberately wires it.
             CredentialEvent::ReauthRequired { .. } => {},
             _ => {},
-        }
-    }
-
-    /// Route a `LeaseEvent`: only `LeaseRevoked` with an attributed
-    /// `credential_id` drives a (deduped) revoke fan-out. Renew/expiry/
-    /// failure variants do not revoke stored credential material, and an
-    /// orphan lease (`credential_id == None`) cannot address a
-    /// reverse-index row.
-    async fn on_lease_event(
-        index: &ResourceFanoutIndex,
-        manager: &Manager,
-        revoke_dedupe: &mut RevokeDedupe,
-        ev: LeaseEvent,
-    ) {
-        if let LeaseEvent::LeaseRevoked { credential_id, .. } = ev {
-            match credential_id {
-                Some(cid) => {
-                    Self::dispatch_revoke_deduped(index, manager, revoke_dedupe, cid, "lease bus")
-                        .await;
-                },
-                None => {
-                    // Orphan lease with no nebula credential record — no
-                    // reverse-index row can be keyed by it. A no-op
-                    // fan-out, not an error.
-                    tracing::debug!(
-                        target: "nebula_resource::credential_fanout",
-                        "lease revoked for an orphan lease (no credential id); \
-                         resource rotation fan-out skipped"
-                    );
-                },
-            }
         }
     }
 
@@ -563,10 +558,11 @@ impl ResourceFanoutDriver {
     /// taint they would re-apply is already applied and idempotent). This
     /// keeps non-idempotent `on_credential_revoke` hooks single-fire and
     /// the [`RotationOutcome`] metrics un-inflated per logical revoke.
-    async fn dispatch_revoke_deduped(
-        index: &ResourceFanoutIndex,
-        manager: &Manager,
+    fn spawn_revoke_deduped(
+        index: &Arc<ResourceFanoutIndex>,
+        manager: &Arc<Manager>,
         revoke_dedupe: &mut RevokeDedupe,
+        revoke_dispatches: &mut tokio::task::JoinSet<()>,
         credential_id: CredentialId,
         source: &'static str,
     ) {
@@ -581,10 +577,13 @@ impl ResourceFanoutDriver {
             );
             return;
         }
-        let outcome = index
-            .dispatch_revoke(credential_id, manager, PER_RESOURCE_ROTATION_TIMEOUT)
-            .await;
-        Self::record(credential_id, "revoke", outcome);
+        let mut outcome = index.prepare_revoke(credential_id, manager);
+        let index = Arc::clone(index);
+        let manager = Arc::clone(manager);
+        revoke_dispatches.spawn(async move {
+            outcome.add(index.finish_prepared_revoke(credential_id, &manager).await);
+            Self::record(credential_id, "revoke", outcome);
+        });
     }
 
     /// Consume the [`RotationOutcome`] — **never silently dropped**. Only
@@ -675,7 +674,7 @@ mod tests {
     /// revoke (`LeaseRevoked` then `CredentialEvent::Revoked` for the same
     /// `CredentialId`, back-to-back) must collapse to a single dispatch
     /// inside the window. This is the pure-logic core of the
-    /// `dispatch_revoke_deduped` guard the driver applies.
+    /// `spawn_revoke_deduped` guard the driver applies.
     #[test]
     fn second_revoke_same_credential_within_window_is_skipped() {
         let mut d = RevokeDedupe::new();
