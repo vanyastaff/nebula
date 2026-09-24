@@ -42,17 +42,34 @@ pub(crate) async fn resolve_slot_with(
             // complete selector succeeds, key, capability, and lifecycle
             // state remain deliberately unobservable.
             let selector = request.scope.selector(request.credential_id);
-            let head = store
-                .get_head(&selector)
-                .await
-                .map_err(|error| match error {
-                    CredentialPersistenceError::NotFound => CredentialSlotResolveError::NotFound,
+            let head = match store.get_head(&selector).await {
+                Ok(head) => head,
+                Err(CredentialPersistenceError::NotFound) => {
+                    return match store.get(&selector).await {
+                        Ok(StoredCredential::Tombstoned(_)) => {
+                            Err(CredentialSlotResolveError::Revoked)
+                        },
+                        Ok(StoredCredential::Live(_)) => {
+                            Err(CredentialSlotResolveError::InvalidState)
+                        },
+                        Err(CredentialPersistenceError::NotFound) => {
+                            Err(CredentialSlotResolveError::NotFound)
+                        },
+                        Err(
+                            CredentialPersistenceError::Unavailable
+                            | CredentialPersistenceError::OutcomeUnknown,
+                        ) => Err(CredentialSlotResolveError::Unavailable),
+                        Err(_) => Err(CredentialSlotResolveError::InvalidState),
+                    };
+                },
+                Err(
                     CredentialPersistenceError::Unavailable
-                    | CredentialPersistenceError::OutcomeUnknown => {
-                        CredentialSlotResolveError::Unavailable
-                    },
-                    _ => CredentialSlotResolveError::InvalidState,
-                })?;
+                    | CredentialPersistenceError::OutcomeUnknown,
+                ) => {
+                    return Err(CredentialSlotResolveError::Unavailable);
+                },
+                Err(_) => return Err(CredentialSlotResolveError::InvalidState),
+            };
 
             let actual_key = CredentialKey::new(head.credential_key())
                 .map_err(|_| CredentialSlotResolveError::InvalidState)?;
@@ -279,6 +296,9 @@ pub enum CredentialSlotResolveError {
     /// The id is absent, malformed, or belongs to another tenant.
     #[error("credential not found")]
     NotFound,
+    /// The owner-qualified credential has a durable terminal tombstone.
+    #[error("credential is revoked")]
+    Revoked,
     /// The stored credential contract differs from the slot declaration.
     #[error("credential key does not match slot contract")]
     WrongCredentialKey,

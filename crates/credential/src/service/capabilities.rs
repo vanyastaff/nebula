@@ -127,22 +127,27 @@ impl CredentialService {
         // The report's `refreshed: false` keeps that fallback honest.
         let cached = self.get(scope, id).await?;
 
-        let result = self.refresh_inner(scope, id).await;
+        let mut reached_coordinator = false;
+        let result = self
+            .refresh_inner(scope, id, &mut reached_coordinator)
+            .await;
         // Count one refresh request after coalescing has re-read durable state,
         // before the caller-facing fallback can turn a failure into a usable head.
         // Scheduled refresh uses this same path; revoke does not.
         use crate::runtime::refresh::CoordinatedRefreshResult as MetricResult;
-        let outcome = match &result {
-            Ok(_) => MetricResult::Success,
-            Err(CredentialServiceError::ReauthRequired { .. }) => MetricResult::ReauthRequired,
-            Err(CredentialServiceError::RefreshNotApplied(_)) => MetricResult::NotApplied,
-            Err(CredentialServiceError::OutcomeUnknown) => MetricResult::OutcomeUnknown,
-            Err(_) => MetricResult::Failure,
-        };
-        self.resolver
-            .refresh_coordinator()
-            .metrics()
-            .record_result(outcome);
+        if reached_coordinator {
+            let outcome = match &result {
+                Ok(_) => MetricResult::Success,
+                Err(CredentialServiceError::ReauthRequired { .. }) => MetricResult::ReauthRequired,
+                Err(CredentialServiceError::RefreshNotApplied(_)) => MetricResult::NotApplied,
+                Err(CredentialServiceError::OutcomeUnknown) => MetricResult::OutcomeUnknown,
+                Err(_) => MetricResult::Failure,
+            };
+            self.resolver
+                .refresh_coordinator()
+                .metrics()
+                .record_result(outcome);
+        }
         match result {
             Ok(head) => Ok(ManagementRefreshReport {
                 head,
@@ -171,6 +176,7 @@ impl CredentialService {
         &self,
         scope: &TenantScope,
         id: &str,
+        reached_coordinator: &mut bool,
     ) -> Result<CredentialHead, CredentialServiceError> {
         let stored = self.load_owned(scope, id).await?;
         if !self.registry.is_refreshable(stored.credential_key()) {
@@ -233,6 +239,7 @@ impl CredentialService {
         let id_owned = id.to_owned();
         let selector_for_task = selector.clone();
         let ctx = self.resolver.refresh_context(&self.owner_context(scope));
+        *reached_coordinator = true;
         let result = self
             .resolver
             .refresh_coordinator()

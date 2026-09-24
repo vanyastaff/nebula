@@ -1006,6 +1006,20 @@ impl Manager {
         self.taint_under_admission(key, slot, managed)
     }
 
+    /// Taints the exact registration already pinned by credential projection.
+    ///
+    /// The lifecycle admission gate revalidates that the handle is still the
+    /// registered row, so a concurrent remove/rebind cannot taint its successor.
+    #[cfg(feature = "rotation")]
+    pub(crate) fn taint_resolved(
+        &self,
+        key: &ResourceKey,
+        slot: &str,
+        managed: Arc<dyn crate::registry::ManagedHandle>,
+    ) -> Result<TaintedSlot, Error> {
+        self.taint_now(key, slot, managed)
+    }
+
     /// Caller holds the same lifecycle gate as refresh installation/admission.
     fn taint_under_admission(
         &self,

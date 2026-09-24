@@ -504,6 +504,33 @@ async fn project_and_refresh(
     .await
     {
         Ok(Ok(guard)) => guard,
+        Ok(Err(nebula_credential::CredentialSlotResolveError::Revoked)) => {
+            let key = managed.resource_key();
+            tracing::warn!(
+                credential_id = %cid,
+                resource_key = %key,
+                slot,
+                "durable credential tombstone discovered during material reconciliation; revoking resource slot"
+            );
+            let tainted = match mgr.taint_resolved(&key, slot, managed) {
+                Ok(tainted) => tainted,
+                Err(error) => {
+                    tracing::warn!(
+                        credential_id = %cid,
+                        resource_key = %key,
+                        slot,
+                        error = %error,
+                        "durable credential tombstone could not taint resource slot"
+                    );
+                    return RowOutcome::Failed {
+                        drain_timed_out: false,
+                    };
+                },
+            };
+            return revoke_tail_outcome(
+                mgr.drain_and_revoke(tainted, Duration::from_secs(30)).await,
+            );
+        },
         Ok(Err(error)) => {
             tracing::warn!(credential_id = %cid, error = %error,
                 "material replacement projection failed");
@@ -550,6 +577,27 @@ async fn project_and_refresh(
             RowOutcome::Failed {
                 drain_timed_out: false,
             }
+        },
+    }
+}
+
+fn revoke_tail_outcome(tail: crate::RevokeTail) -> RowOutcome {
+    match tail {
+        crate::RevokeTail::Done { drain } => RowOutcome::Success {
+            drain_timed_out: matches!(drain, crate::SlotDrainOutcome::TimedOut { .. }),
+        },
+        crate::RevokeTail::HookFailed { drain, .. } => RowOutcome::Failed {
+            drain_timed_out: matches!(drain, crate::SlotDrainOutcome::TimedOut { .. }),
+        },
+        crate::RevokeTail::HookTimedOut { drain } => RowOutcome::TimedOut {
+            drain_timed_out: matches!(drain, crate::SlotDrainOutcome::TimedOut { .. }),
+        },
+        crate::RevokeTail::Deferred { drain, reason } => RowOutcome::Deferred {
+            drain_timed_out: matches!(drain, crate::SlotDrainOutcome::TimedOut { .. }),
+            observation_timed_out: matches!(reason, crate::SlotDeferralReason::ObservationTimedOut),
+        },
+        crate::RevokeTail::Abandoned { drain } => RowOutcome::Abandoned {
+            drain_timed_out: matches!(drain, crate::SlotDrainOutcome::TimedOut { .. }),
         },
     }
 }

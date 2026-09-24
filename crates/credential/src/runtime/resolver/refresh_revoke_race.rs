@@ -3351,6 +3351,49 @@ async fn service_forced_oauth_refresh_uses_resolver_transport_and_exact_k2_dispo
 }
 
 #[tokio::test]
+async fn management_retry_gate_rejection_does_not_count_a_coordinated_result() {
+    let scope = crate::TenantScope::new("test-org", "test-workspace");
+    let store = Arc::new(ScriptedStore::with_owner(
+        oauth2_row(Some("refresh-grant")),
+        false,
+        CredentialOwner::from_canonical(scope.owner_id()),
+    ));
+    let transport = Arc::new(ScriptedOAuthTransport::new(
+        OAuthTransportResult::InvalidClient401,
+    ));
+    let (first, first_shutdown) = oauth_service_with_runtime(
+        Arc::clone(&store),
+        Arc::new(StatefulClaimRepo::default()),
+        transport.clone(),
+    );
+    first
+        .refresh(&scope, &test_id().to_string())
+        .await
+        .expect_err("the first exact denial installs a durable retry gate");
+    first_shutdown.cancel();
+
+    let claims = Arc::new(StatefulClaimRepo::default());
+    let (restarted, restarted_shutdown) = oauth_service_with_runtime(
+        store,
+        claims.clone(),
+        Arc::clone(&transport) as Arc<dyn RefreshTransport>,
+    );
+    let error = restarted
+        .refresh(&scope, &test_id().to_string())
+        .await
+        .expect_err("the durable retry gate rejects before coordinator entry");
+    restarted_shutdown.cancel();
+
+    assert!(matches!(
+        error,
+        crate::CredentialServiceError::RefreshNotApplied(_)
+    ));
+    assert_eq!(refresh_result_counts(&restarted.resolver), [0; 5]);
+    assert_eq!(claims.try_claim_count.load(Ordering::SeqCst), 0);
+    assert_eq!(transport.call_count(), 1);
+}
+
+#[tokio::test]
 async fn service_forced_oauth_transient_response_is_unknown_and_retains_l2() {
     let scope = crate::TenantScope::new("test-org", "test-workspace");
     let store = Arc::new(ScriptedStore::with_owner(

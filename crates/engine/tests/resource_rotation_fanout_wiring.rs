@@ -108,9 +108,11 @@ async fn material_replacement_installs_projected_guard_before_refresh_hook() {
         None,
     );
 
-    tokio::time::advance(Duration::from_millis(1)).await;
     for _ in 0..100 {
-        tokio::task::yield_now().await;
+        if calls.load(Ordering::SeqCst) == 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(1)).await;
     }
     bus.emit(CredentialEvent::MaterialReplaced {
         credential_id: cid,
@@ -453,6 +455,82 @@ struct ConcurrencyProbeProjection {
     release: Arc<tokio::sync::Semaphore>,
     active: Arc<AtomicUsize>,
     maximum: Arc<AtomicUsize>,
+}
+
+struct RevokedProjection {
+    calls: Arc<AtomicUsize>,
+}
+
+impl nebula_credential::CredentialSlotResolver for RevokedProjection {
+    fn resolve_slot<'a>(
+        &'a self,
+        _scope: &'a nebula_credential::TenantScope,
+        _cid: CredentialId,
+        _key: nebula_core::CredentialKey,
+        _capabilities: nebula_credential::Capabilities,
+        _cancel: CancellationToken,
+    ) -> std::pin::Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        nebula_credential::ErasedCredentialGuard,
+                        nebula_credential::CredentialSlotResolveError,
+                    >,
+                > + Send
+                + 'a,
+        >,
+    > {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async { Err(nebula_credential::CredentialSlotResolveError::Revoked) })
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn durable_tombstone_reconciliation_terminally_revokes_resource() {
+    let manager = Arc::new(Manager::new());
+    let cid = CredentialId::new();
+    register_replacement(&manager, cid);
+    let identity = SlotIdentity::from_bindings([("db", "oauth")]);
+    let context = ResourceContext::minimal(Scope::default(), CancellationToken::new());
+    drop(
+        manager
+            .acquire_resident_for_identity::<ReplacementResource>(
+                &context,
+                &AcquireOptions::default(),
+                &identity,
+            )
+            .await
+            .expect("projected resource warms before reconciliation"),
+    );
+    let calls = Arc::new(AtomicUsize::new(0));
+    let bus = Arc::new(EventBus::new(8));
+    let driver = ResourceFanoutDriver::spawn_with_resolver(
+        Arc::new(ResourceFanoutIndex::new()),
+        Arc::clone(&manager),
+        Some(Arc::new(RevokedProjection {
+            calls: Arc::clone(&calls),
+        })),
+        Arc::clone(&bus),
+        None,
+    );
+
+    tokio::time::advance(Duration::from_millis(1)).await;
+    for _ in 0..100 {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert!(
+        manager
+            .acquire_resident_for_identity::<ReplacementResource>(
+                &context,
+                &AcquireOptions::default(),
+                &identity,
+            )
+            .await
+            .is_err(),
+        "startup reconciliation must synchronously taint a tombstoned credential row"
+    );
+    driver.abort();
 }
 
 impl nebula_credential::CredentialSlotResolver for ConcurrencyProbeProjection {

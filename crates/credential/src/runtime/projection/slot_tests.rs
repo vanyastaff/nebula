@@ -6,6 +6,7 @@ use nebula_storage_port::{
     CredentialCommit, CredentialCreate, CredentialMaterialEpoch, CredentialOwner,
     CredentialReplacement, CredentialSelector, CredentialTombstone, CredentialVersion,
     RefreshRetrySnapshot, SecretBytes, StoredCredentialHead, StoredLiveCredential,
+    StoredTombstonedCredential,
 };
 
 use super::*;
@@ -250,6 +251,36 @@ async fn resolves_opaque_guard_with_authoritative_ordering_metadata() {
         .into_typed::<SecretToken>()
         .expect("registered scheme type extracts");
     assert_eq!(typed.token().expose_secret(), SECRET_CANARY);
+}
+
+#[tokio::test]
+async fn owner_qualified_tombstone_is_distinct_from_absence() {
+    let (mut store, registry, ops, scope, id, key) = fixture();
+    let now = Utc::now();
+    store.row = StoredTombstonedCredential::new(
+        id,
+        BearerTokenCredential::KEY.to_owned(),
+        SecretToken::KIND.to_owned(),
+        SecretToken::VERSION,
+        CredentialVersion::MIN,
+        now,
+        now,
+        now,
+    )
+    .into();
+    let error = resolve_fixture(
+        &store,
+        &registry,
+        &ops,
+        &scope,
+        id,
+        key,
+        Capabilities::empty(),
+        CancellationToken::new(),
+    )
+    .await
+    .expect_err("tombstone cannot project");
+    assert_eq!(error, CredentialSlotResolveError::Revoked);
 }
 
 #[tokio::test]
