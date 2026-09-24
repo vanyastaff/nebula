@@ -522,6 +522,7 @@ impl ResourceFanoutIndex {
     ) -> Vec<(CredentialId, TenantScope, CredentialKey, u64)> {
         self.material_contexts
             .iter()
+            .filter(|entry| self.by_credential.contains_key(entry.key()))
             .map(|entry| {
                 let (scope, key, sequence) = entry.value();
                 (*entry.key(), scope.clone(), key.clone(), *sequence)

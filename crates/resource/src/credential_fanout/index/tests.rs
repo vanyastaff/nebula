@@ -75,9 +75,14 @@ fn replacement_contexts_survive_queue_scale_and_an_unbound_gap() {
     assert_eq!(idx.pending_material_contexts().len(), 300);
 
     idx.unbind_resource(&key, &scope);
-    assert_eq!(
-        idx.pending_material_contexts().len(),
-        300,
+    assert!(
+        idx.pending_material_contexts().is_empty(),
+        "unbound evidence should not be scanned until a registration stages"
+    );
+    assert!(
+        credentials
+            .iter()
+            .all(|credential_id| idx.has_material_context(credential_id)),
         "replacement evidence must survive a gap before a later registration stages"
     );
     assert!(
@@ -121,12 +126,10 @@ fn replacement_context_observed_before_staging_is_retained() {
     let cid = CredentialId::new();
     let owner = TenantScope::new("org", "workspace");
     let credential_key: CredentialKey = "oauth".parse().expect("credential key");
-    let sequence = idx.remember_material_context(cid, owner.clone(), credential_key.clone());
+    idx.remember_material_context(cid, owner.clone(), credential_key.clone());
 
-    assert_eq!(
-        idx.pending_material_contexts(),
-        vec![(cid, owner.clone(), credential_key.clone(), sequence)]
-    );
+    assert!(idx.pending_material_contexts().is_empty());
+    assert!(idx.has_material_context(&cid));
 
     let bind = bound(
         &rk("pg"),
@@ -136,6 +139,7 @@ fn replacement_context_observed_before_staging_is_retained() {
     );
     idx.stage_bind_with_context(cid, bind.clone(), owner, credential_key);
     assert!(idx.has_staged_binding(&cid));
+    assert_eq!(idx.pending_material_contexts().len(), 1);
     assert!(!idx.publish_staged_entry(&cid, &bind));
     assert!(idx.has_material_context(&cid));
 }
