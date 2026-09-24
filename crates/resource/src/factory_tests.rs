@@ -477,7 +477,9 @@ async fn identity_mismatch_is_typed_and_rolls_back_manager_and_fanout_state() {
     let expression_engine = ExpressionEngine::with_cache_size(16);
     let credential_id = nebula_credential::CredentialId::new();
     let fanout_index = Arc::new(crate::ResourceFanoutIndex::new());
-    let _reconciliation = fanout_index.acquire_authoritative_reconciliation_for(&manager);
+    let _reconciliation = fanout_index
+        .acquire_authoritative_reconciliation_for(&manager)
+        .expect("manager affinity");
     let inner: Arc<dyn ResourceFactory> = Arc::new(KindActivator::<BoundTestRes, _, _>::new(
         BoundTestRes::new,
         || Resident::<BoundTestRes>::new(resident::config::Config::default()),
@@ -799,7 +801,9 @@ async fn rotation_authority_is_manager_scoped_and_driver_loss_demotes_ready_rows
     let owner = nebula_credential::TenantScope::new("org", "workspace");
     let credential_key = nebula_core::credential_key!("test.factory-credential");
     let fanout_index = Arc::new(crate::ResourceFanoutIndex::new());
-    let reconciliation = fanout_index.acquire_authoritative_reconciliation_for(&authorized_manager);
+    let reconciliation = fanout_index
+        .acquire_authoritative_reconciliation_for(&authorized_manager)
+        .expect("manager affinity");
     let mut registry = ResourceActivatorRegistry::new();
     registry
         .insert(
@@ -968,7 +972,9 @@ async fn contextual_binding_stays_unavailable_until_authoritative_reread() {
     std::assert_matches!(error, RegistrarError::Register { .. });
     assert!(!manager.contains(&BoundTestRes::key()));
 
-    let _reconciliation = fanout_index.acquire_authoritative_reconciliation_for(&manager);
+    let _reconciliation = fanout_index
+        .acquire_authoritative_reconciliation_for(&manager)
+        .expect("manager affinity");
 
     let outcome = registry
         .register_and_bind(
@@ -1053,7 +1059,9 @@ async fn revoke_observed_before_staging_taints_the_row_at_publication() {
     let expression_engine = ExpressionEngine::with_cache_size(16);
     let credential_id = nebula_credential::CredentialId::new();
     let fanout_index = Arc::new(crate::ResourceFanoutIndex::new());
-    let _reconciliation = fanout_index.acquire_authoritative_reconciliation_for(&manager);
+    let _reconciliation = fanout_index
+        .acquire_authoritative_reconciliation_for(&manager)
+        .expect("manager affinity");
     let mut registry = ResourceActivatorRegistry::new();
     registry
         .insert(
@@ -1116,8 +1124,12 @@ async fn exact_replacement_publishes_only_successor_staged_binding() {
     let new_credential_id = nebula_credential::CredentialId::new();
     let old_fanout_index = Arc::new(crate::ResourceFanoutIndex::new());
     let new_fanout_index = Arc::new(crate::ResourceFanoutIndex::new());
-    let _old_reconciliation = old_fanout_index.acquire_authoritative_reconciliation_for(&manager);
-    let _new_reconciliation = new_fanout_index.acquire_authoritative_reconciliation_for(&manager);
+    let _old_reconciliation = old_fanout_index
+        .acquire_authoritative_reconciliation_for(&manager)
+        .expect("manager affinity");
+    let _new_reconciliation = new_fanout_index
+        .acquire_authoritative_reconciliation_for(&manager)
+        .expect("manager affinity");
     let mut registry = ResourceActivatorRegistry::new();
     registry
         .insert(

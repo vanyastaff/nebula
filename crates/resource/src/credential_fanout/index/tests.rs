@@ -607,8 +607,12 @@ async fn authoritative_reconciliation_lease_tracks_liveness() {
     let index = Arc::new(ResourceFanoutIndex::new());
     let manager = Arc::new(crate::Manager::new());
     assert!(!index.authoritative_reconciliation_available());
-    let first = index.acquire_authoritative_reconciliation_for(&manager);
-    let second = index.acquire_authoritative_reconciliation_for(&manager);
+    let first = index
+        .acquire_authoritative_reconciliation_for(&manager)
+        .expect("manager affinity");
+    let second = index
+        .acquire_authoritative_reconciliation_for(&manager)
+        .expect("manager affinity");
     assert!(index.authoritative_reconciliation_available());
     drop(first);
     assert!(index.authoritative_reconciliation_available());
@@ -617,11 +621,43 @@ async fn authoritative_reconciliation_lease_tracks_liveness() {
 }
 
 #[tokio::test]
+async fn authoritative_reconciliation_affinity_is_sticky_for_index_lifetime() {
+    let index = Arc::new(ResourceFanoutIndex::new());
+    let first_manager = Arc::new(crate::Manager::new());
+    let other_manager = Arc::new(crate::Manager::new());
+    let lease = index
+        .acquire_authoritative_reconciliation_for(&first_manager)
+        .expect("first manager claims affinity");
+
+    assert!(
+        index
+            .acquire_authoritative_reconciliation_for(&other_manager)
+            .is_err(),
+        "a live driver cannot authorize a different manager"
+    );
+    drop(lease);
+    assert!(
+        index
+            .acquire_authoritative_reconciliation_for(&other_manager)
+            .is_err(),
+        "quiescence must not transfer an index to a different manager"
+    );
+    assert!(
+        index
+            .acquire_authoritative_reconciliation_for(&first_manager)
+            .is_ok(),
+        "the owning manager can restart after quiescence"
+    );
+}
+
+#[tokio::test]
 async fn authoritative_registration_proof_is_manager_scoped_and_rejects_liveness_aba() {
     let index = Arc::new(ResourceFanoutIndex::new());
     let first_manager = Arc::new(crate::Manager::new());
     let other_manager = Arc::new(crate::Manager::new());
-    let lease = index.acquire_authoritative_reconciliation_for(&first_manager);
+    let lease = index
+        .acquire_authoritative_reconciliation_for(&first_manager)
+        .expect("manager affinity");
     let proof = index
         .authoritative_registration_proof(&first_manager)
         .expect("live manager has registration authority");
@@ -630,7 +666,9 @@ async fn authoritative_registration_proof_is_manager_scoped_and_rejects_liveness
     assert!(!index.validates_authoritative_registration(&other_manager, &proof));
 
     drop(lease);
-    let replacement = index.acquire_authoritative_reconciliation_for(&first_manager);
+    let replacement = index
+        .acquire_authoritative_reconciliation_for(&first_manager)
+        .expect("manager affinity");
     assert!(
         !index.validates_authoritative_registration(&first_manager, &proof),
         "a new driver cannot repair a liveness gap in an in-flight registration"

@@ -217,24 +217,83 @@ const MAX_PENDING_REFRESH_SCANS: usize = 256;
 /// is the only path to shutdown.
 pub struct ResourceFanoutDriver {
     handle: tokio::task::JoinHandle<()>,
-    reconciliation_lease: Arc<
-        std::sync::Mutex<Option<crate::credential_fanout::index::AuthoritativeReconciliationLease>>,
-    >,
-    lifecycle: Arc<DriverLifecycle>,
 }
 
 struct DriverLifecycle {
-    stopped: std::sync::atomic::AtomicBool,
+    parent_stopped: std::sync::atomic::AtomicBool,
+    active_children: std::sync::atomic::AtomicUsize,
+    callback_fired: std::sync::atomic::AtomicBool,
     on_stopped: Arc<dyn Fn() + Send + Sync>,
 }
 
 impl DriverLifecycle {
-    fn stop(&self) {
-        if !self.stopped.swap(true, std::sync::atomic::Ordering::AcqRel) {
+    fn child(self: &Arc<Self>) -> DriverChildActivity {
+        self.active_children
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        DriverChildActivity {
+            lifecycle: Arc::clone(self),
+        }
+    }
+
+    fn parent_stopped(&self) {
+        self.parent_stopped
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.try_finish();
+    }
+
+    fn child_stopped(&self) {
+        let previous = self
+            .active_children
+            .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+        debug_assert!(previous > 0, "driver child activity count underflow");
+        self.try_finish();
+    }
+
+    fn try_finish(&self) {
+        if self
+            .parent_stopped
+            .load(std::sync::atomic::Ordering::Acquire)
+            && self
+                .active_children
+                .load(std::sync::atomic::Ordering::Acquire)
+                == 0
+            && self
+                .callback_fired
+                .compare_exchange(
+                    false,
+                    true,
+                    std::sync::atomic::Ordering::AcqRel,
+                    std::sync::atomic::Ordering::Acquire,
+                )
+                .is_ok()
+        {
             (self.on_stopped)();
         }
     }
 }
+
+struct DriverChildActivity {
+    lifecycle: Arc<DriverLifecycle>,
+}
+
+impl Drop for DriverChildActivity {
+    fn drop(&mut self) {
+        self.lifecycle.child_stopped();
+    }
+}
+
+/// The fan-out index is already owned by a different resource manager.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResourceFanoutSpawnError;
+
+impl std::fmt::Display for ResourceFanoutSpawnError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("resource fan-out index is already bound to another manager")
+    }
+}
+
+impl std::error::Error for ResourceFanoutSpawnError {}
 
 impl std::fmt::Debug for ResourceFanoutDriver {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -300,30 +359,70 @@ impl ResourceFanoutDriver {
         lease_bus: Option<Arc<EventBus<LeaseEvent>>>,
         on_stopped: Arc<dyn Fn() + Send + Sync>,
     ) -> Self {
+        match Self::try_spawn_with_resolver_and_lifecycle(
+            index,
+            manager,
+            resolver,
+            credential_bus,
+            lease_bus,
+            Arc::clone(&on_stopped),
+        ) {
+            Ok(driver) => driver,
+            Err(error) => {
+                tracing::error!(
+                    target: "nebula_resource::credential_fanout",
+                    %error,
+                    "resource fan-out driver rejected manager affinity conflict"
+                );
+                on_stopped();
+                Self {
+                    handle: tokio::spawn(async {}),
+                }
+            },
+        }
+    }
+
+    /// Tries to spawn an engine-owned resolver-backed driver.
+    ///
+    /// Unlike the stable infallible wrappers, this composition seam exposes a
+    /// manager-affinity conflict so an engine never reports a live driver when
+    /// its index belongs to another manager.
+    #[doc(hidden)]
+    pub fn try_spawn_with_resolver_and_lifecycle(
+        index: Arc<ResourceFanoutIndex>,
+        manager: Arc<Manager>,
+        resolver: Option<Arc<dyn CredentialSlotResolver>>,
+        credential_bus: Arc<EventBus<CredentialEvent>>,
+        lease_bus: Option<Arc<EventBus<LeaseEvent>>>,
+        on_stopped: Arc<dyn Fn() + Send + Sync>,
+    ) -> Result<Self, ResourceFanoutSpawnError> {
+        index
+            .claim_manager_affinity(&manager)
+            .map_err(|_| ResourceFanoutSpawnError)?;
         manager.attach_rotation_index(&index);
         let reconciliation_lease = resolver
             .as_ref()
-            .map(|_| index.acquire_authoritative_reconciliation_for(&manager));
-        let reconciliation_lease = Arc::new(std::sync::Mutex::new(reconciliation_lease));
-        let task_reconciliation_lease = Arc::clone(&reconciliation_lease);
+            .map(|_| index.acquire_authoritative_reconciliation_for(&manager))
+            .transpose()
+            .map_err(|_| ResourceFanoutSpawnError)?;
         let lifecycle = Arc::new(DriverLifecycle {
-            stopped: std::sync::atomic::AtomicBool::new(false),
+            parent_stopped: std::sync::atomic::AtomicBool::new(false),
+            active_children: std::sync::atomic::AtomicUsize::new(0),
+            callback_fired: std::sync::atomic::AtomicBool::new(false),
             on_stopped,
         });
         let task_lifecycle = Arc::clone(&lifecycle);
         let mut credential_sub = credential_bus.subscribe();
         let mut lease_sub = lease_bus.map(|bus| bus.subscribe());
+        let driver_lifecycle_on_exit = scopeguard::guard(
+            (reconciliation_lease, task_lifecycle),
+            |(lease, lifecycle)| {
+                drop(lease);
+                lifecycle.parent_stopped();
+            },
+        );
         let handle = tokio::spawn(async move {
-            let _driver_lifecycle_on_exit = scopeguard::guard(
-                (task_reconciliation_lease, task_lifecycle),
-                |(lease, lifecycle)| {
-                    lease
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .take();
-                    lifecycle.stop();
-                },
-            );
+            let _driver_lifecycle_on_exit = driver_lifecycle_on_exit;
             // Per-driver revoke dedupe: one logical credential revoke
             // double-emits (lease bus `LeaseRevoked`(s) + facade
             // `CredentialEvent::Revoked`); this collapses them within
@@ -471,11 +570,20 @@ impl ResourceFanoutDriver {
                             let index = Arc::clone(&index);
                             let manager = Arc::clone(&manager);
                             let resolver = Arc::clone(resolver);
-                            let reconciliation_lease =
-                                index.acquire_authoritative_reconciliation_for(&manager);
+                            let Ok(reconciliation_lease) =
+                                index.acquire_authoritative_reconciliation_for(&manager)
+                            else {
+                                tracing::error!(
+                                    target: "nebula_resource::credential_fanout",
+                                    "resource fan-out scan lost its established manager affinity"
+                                );
+                                continue;
+                            };
+                            let child_activity = lifecycle.child();
                             // JoinSet aborts the scan when the driver is dropped.
                             // Scans cannot delay reception of revoke observations.
                             scans.spawn(async move {
+                                let _child_activity = child_activity;
                                 let _reconciliation_lease = reconciliation_lease;
                                 index
                                     .reconcile_material(&manager, resolver.as_ref(), credential_id)
@@ -494,12 +602,21 @@ impl ResourceFanoutDriver {
                                 let index = Arc::clone(&index);
                                 let manager = Arc::clone(&manager);
                                 let resolver = Arc::clone(resolver);
-                                let reconciliation_lease =
-                                    index.acquire_authoritative_reconciliation_for(&manager);
+                                let Ok(reconciliation_lease) =
+                                    index.acquire_authoritative_reconciliation_for(&manager)
+                                else {
+                                    tracing::error!(
+                                        target: "nebula_resource::credential_fanout",
+                                        "material fan-out lost its established manager affinity"
+                                    );
+                                    continue;
+                                };
+                                let child_activity = lifecycle.child();
                                 // One background material fan-out at a time keeps the
                                 // per-row projection limit global to this driver while
                                 // the receive loop remains free to admit revokes.
                                 material_dispatches.spawn(async move {
+                                    let _child_activity = child_activity;
                                     let _reconciliation_lease = reconciliation_lease;
                                     let outcome = index
                                         .dispatch_material_replacement(
@@ -563,11 +680,7 @@ impl ResourceFanoutDriver {
                 "resource rotation fan-out driver stopped: credential signal bus closed"
             );
         });
-        Self {
-            handle,
-            reconciliation_lease,
-            lifecycle,
-        }
+        Ok(Self { handle })
     }
 
     /// Route a `CredentialEvent`: `Refreshed` → refresh fan-out,
@@ -744,11 +857,6 @@ impl ResourceFanoutDriver {
     /// Abort the running driver task. Safe to call multiple times.
     pub fn abort(&self) {
         self.handle.abort();
-        self.reconciliation_lease
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
-        self.lifecycle.stop();
     }
 
     /// Whether the underlying task has finished (e.g. via abort or a
@@ -764,11 +872,6 @@ impl Drop for ResourceFanoutDriver {
         // Cancel the spawned task so the driver never outlives the
         // engine that started it.
         self.handle.abort();
-        self.reconciliation_lease
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
-        self.lifecycle.stop();
     }
 }
 
@@ -818,7 +921,13 @@ mod tests {
 
         driver.abort();
 
-        assert!(!index.authoritative_reconciliation_available());
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while index.authoritative_reconciliation_available() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("aborted task destroys its authority lease");
     }
 
     #[tokio::test]
@@ -834,7 +943,9 @@ mod tests {
         );
         // Reconciliation tasks take their own scoped lease before entering
         // resolver I/O. Model a task paused at that boundary deterministically.
-        let in_flight_reconciliation = index.acquire_authoritative_reconciliation_for(&manager);
+        let in_flight_reconciliation = index
+            .acquire_authoritative_reconciliation_for(&manager)
+            .expect("manager affinity");
 
         driver.abort();
 
@@ -843,10 +954,104 @@ mod tests {
             "driver cancellation must not demote rows while a scan can still publish completion"
         );
         drop(in_flight_reconciliation);
-        assert!(
-            !index.authoritative_reconciliation_available(),
-            "the last cancelled scan releases authority and triggers fail-closed demotion"
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while index.authoritative_reconciliation_available() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the last cancelled scan releases authority and triggers fail-closed demotion");
+    }
+
+    #[tokio::test]
+    async fn stopped_callback_waits_for_child_authority_to_be_destroyed() {
+        let index = Arc::new(ResourceFanoutIndex::new());
+        let manager = Arc::new(Manager::new());
+        let callback_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let callback_saw_unavailable = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let callback_index = Arc::clone(&index);
+        let callback_count_ref = Arc::clone(&callback_count);
+        let callback_saw_unavailable_ref = Arc::clone(&callback_saw_unavailable);
+        let lifecycle = Arc::new(DriverLifecycle {
+            parent_stopped: std::sync::atomic::AtomicBool::new(false),
+            active_children: std::sync::atomic::AtomicUsize::new(0),
+            callback_fired: std::sync::atomic::AtomicBool::new(false),
+            on_stopped: Arc::new(move || {
+                callback_count_ref.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                callback_saw_unavailable_ref.store(
+                    !callback_index.authoritative_reconciliation_available(),
+                    std::sync::atomic::Ordering::SeqCst,
+                );
+            }),
+        });
+        let child_activity = lifecycle.child();
+        let child_authority = index
+            .acquire_authoritative_reconciliation_for(&manager)
+            .expect("manager affinity");
+
+        lifecycle.parent_stopped();
+        assert_eq!(
+            callback_count.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "parent shutdown cannot publish quiescence while a child future is alive"
         );
+
+        drop(child_authority);
+        drop(child_activity);
+        assert_eq!(callback_count.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(callback_saw_unavailable.load(std::sync::atomic::Ordering::SeqCst));
+        lifecycle.parent_stopped();
+        assert_eq!(
+            callback_count.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "terminal callback is exactly once"
+        );
+    }
+
+    #[tokio::test]
+    async fn manager_affinity_conflict_never_starts_a_live_driver() {
+        let index = Arc::new(ResourceFanoutIndex::new());
+        let first_manager = Arc::new(Manager::new());
+        let other_manager = Arc::new(Manager::new());
+        let credential_bus = Arc::new(EventBus::new(8));
+        let first = ResourceFanoutDriver::try_spawn_with_resolver_and_lifecycle(
+            Arc::clone(&index),
+            first_manager,
+            None,
+            Arc::clone(&credential_bus),
+            None,
+            Arc::new(|| {}),
+        )
+        .expect("first manager claims index affinity");
+        let conflict = ResourceFanoutDriver::try_spawn_with_resolver_and_lifecycle(
+            Arc::clone(&index),
+            Arc::clone(&other_manager),
+            None,
+            Arc::clone(&credential_bus),
+            None,
+            Arc::new(|| {}),
+        );
+        assert!(matches!(conflict, Err(ResourceFanoutSpawnError)));
+
+        let stopped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stopped_ref = Arc::clone(&stopped);
+        let rejected = ResourceFanoutDriver::spawn_with_resolver_and_lifecycle(
+            index,
+            other_manager,
+            None,
+            credential_bus,
+            None,
+            Arc::new(move || stopped_ref.store(true, std::sync::atomic::Ordering::SeqCst)),
+        );
+        assert!(stopped.load(std::sync::atomic::Ordering::SeqCst));
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !rejected.is_finished() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("rejected stable wrapper returns a finished handle");
+        drop(first);
     }
 
     /// The lease-bus + credential-bus double-emission of one logical

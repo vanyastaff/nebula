@@ -953,14 +953,25 @@ impl WorkflowEngine {
             );
         });
         let rollback = scopeguard::guard(Arc::clone(&release_generation), |release| release());
-        let driver = nebula_resource::ResourceFanoutDriver::spawn_with_resolver_and_lifecycle(
-            Arc::clone(&self.resource_fanout_index),
-            manager,
-            self.credential_resolver.clone(),
-            credential_bus,
-            lease_bus,
-            release_generation,
-        );
+        let driver =
+            match nebula_resource::ResourceFanoutDriver::try_spawn_with_resolver_and_lifecycle(
+                Arc::clone(&self.resource_fanout_index),
+                manager,
+                self.credential_resolver.clone(),
+                credential_bus,
+                lease_bus,
+                release_generation,
+            ) {
+                Ok(driver) => driver,
+                Err(error) => {
+                    tracing::error!(
+                        target: "nebula_engine",
+                        %error,
+                        "resource rotation fan-out rejected manager affinity conflict"
+                    );
+                    return None;
+                },
+            };
         let _ = scopeguard::ScopeGuard::into_inner(rollback);
         Some(driver)
     }

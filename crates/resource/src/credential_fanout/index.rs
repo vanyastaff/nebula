@@ -284,8 +284,20 @@ struct TerminalRevocationFence {
 #[derive(Debug, Default)]
 struct AuthoritativeReconciliationState {
     next_epoch: u64,
+    manager_affinity: Option<std::sync::Weak<crate::Manager>>,
     live_by_manager: std::collections::HashMap<usize, std::collections::HashSet<u64>>,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ManagerAffinityError;
+
+impl std::fmt::Display for ManagerAffinityError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("resource fan-out index is already bound to another manager")
+    }
+}
+
+impl std::error::Error for ManagerAffinityError {}
 
 #[derive(Debug)]
 pub(crate) struct AuthoritativeRegistrationProof {
@@ -541,13 +553,21 @@ impl ResourceFanoutIndex {
     pub(crate) fn acquire_authoritative_reconciliation_for(
         self: &std::sync::Arc<Self>,
         manager: &std::sync::Arc<crate::Manager>,
-    ) -> AuthoritativeReconciliationLease {
+    ) -> Result<AuthoritativeReconciliationLease, ManagerAffinityError> {
         let manager_identity = std::sync::Arc::as_ptr(manager).addr();
         let epoch = {
             let mut state = self
                 .authoritative_reconciliation
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let manager_affinity = std::sync::Arc::downgrade(manager);
+            match state.manager_affinity.as_ref() {
+                Some(existing) if !std::sync::Weak::ptr_eq(existing, &manager_affinity) => {
+                    return Err(ManagerAffinityError);
+                },
+                Some(_) => {},
+                None => state.manager_affinity = Some(manager_affinity),
+            }
             state.next_epoch = state.next_epoch.wrapping_add(1).max(1);
             let epoch = state.next_epoch;
             state
@@ -557,11 +577,32 @@ impl ResourceFanoutIndex {
                 .insert(epoch);
             epoch
         };
-        AuthoritativeReconciliationLease {
+        Ok(AuthoritativeReconciliationLease {
             index: std::sync::Arc::clone(self),
             manager: std::sync::Arc::downgrade(manager),
             manager_identity,
             epoch,
+        })
+    }
+
+    pub(crate) fn claim_manager_affinity(
+        &self,
+        manager: &std::sync::Arc<crate::Manager>,
+    ) -> Result<(), ManagerAffinityError> {
+        let manager_affinity = std::sync::Arc::downgrade(manager);
+        let mut state = self
+            .authoritative_reconciliation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match state.manager_affinity.as_ref() {
+            Some(existing) if !std::sync::Weak::ptr_eq(existing, &manager_affinity) => {
+                Err(ManagerAffinityError)
+            },
+            Some(_) => Ok(()),
+            None => {
+                state.manager_affinity = Some(manager_affinity);
+                Ok(())
+            },
         }
     }
 

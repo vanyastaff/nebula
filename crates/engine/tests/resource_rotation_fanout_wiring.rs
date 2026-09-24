@@ -2490,9 +2490,18 @@ async fn engine_can_replace_stopped_resource_rotation_fanout() {
         .expect("first spawn must return a driver");
     first.abort();
 
-    let replacement = engine
-        .spawn_resource_rotation_fanout(Arc::clone(&cred_bus), Some(Arc::clone(&lease_bus)))
-        .expect("an aborted driver must release the spawn slot");
+    let replacement = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if let Some(driver) = engine
+                .spawn_resource_rotation_fanout(Arc::clone(&cred_bus), Some(Arc::clone(&lease_bus)))
+            {
+                break driver;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("an aborted driver must release the spawn slot after true quiescence");
 
     // `abort` released the first generation before this drop. Its destructor
     // must not clear the replacement's generation (the ABA regression).
@@ -2505,9 +2514,18 @@ async fn engine_can_replace_stopped_resource_rotation_fanout() {
     );
 
     drop(replacement);
-    let _third = engine
-        .spawn_resource_rotation_fanout(cred_bus, Some(lease_bus))
-        .expect("dropping the replacement must permit another spawn");
+    let _third = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if let Some(driver) = engine
+                .spawn_resource_rotation_fanout(Arc::clone(&cred_bus), Some(Arc::clone(&lease_bus)))
+            {
+                break driver;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("dropping the replacement must permit another spawn after true quiescence");
 }
 
 #[tokio::test]
