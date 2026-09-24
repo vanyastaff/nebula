@@ -69,6 +69,8 @@ fn row_to_summary(row: ResourceRow) -> Result<ResourceSummary, ApiError> {
         name: row.display_name,
         kind: row.kind,
         version,
+        topology: row.topology,
+        resilience_override: row.resilience_override,
         // Workflow attachment is not tracked by the resource store yet;
         // advertised honestly as empty rather than fabricated.
         attached_to_workflows: Vec::new(),
@@ -296,6 +298,53 @@ fn validate_resource_config(
     })
 }
 
+/// Validate the operator settings — `topology` and `resilience_override` —
+/// against `kind` before persistence, with the same fail-closed rules as
+/// [`validate_resource_config`].
+///
+/// Unlike a config report, these messages are authored by the resource
+/// runtime to name the field and the rule without restating submitted
+/// values (the parsers' own reports stay server-side as the error source),
+/// so the 422 carries them: an operator learns *which* setting the kind
+/// refused and why.
+fn validate_operator_settings(
+    state: &AppState,
+    kind: &str,
+    topology: Option<&serde_json::Value>,
+    resilience_override: Option<&serde_json::Value>,
+) -> Result<(), ApiError> {
+    let registrars = state.resource_registrars.as_ref().ok_or_else(|| {
+        ApiError::Unprocessable(
+            "resource settings validation is unavailable on this instance".to_string(),
+        )
+    })?;
+    registrars
+        .validate_topology(kind, topology)
+        .and_then(|()| registrars.validate_resilience_override(kind, resilience_override))
+        .map_err(|err| match err {
+            RegistrarError::UnknownKind(kind) => {
+                ApiError::Conflict(format!("unknown resource kind `{kind}`"))
+            },
+            RegistrarError::Register { kind, source } => {
+                tracing::debug!(
+                    target: "nebula_api::resource",
+                    kind = %kind,
+                    error = ?source,
+                    "resource operator settings rejected"
+                );
+                ApiError::Unprocessable(source.to_string())
+            },
+            other => {
+                tracing::warn!(
+                    target: "nebula_api::resource",
+                    error = %other,
+                    "resource settings validation failed with an unmapped registrar error"
+                );
+                ApiError::Unprocessable("resource settings are invalid".to_string())
+            },
+        })
+}
+
 /// Map a [`nebula_storage_port::StorageError`] from a resource CAS `update`
 /// onto the HTTP contract.
 ///
@@ -392,13 +441,19 @@ fn new_resource_row(
         kind: body.kind,
         config: body.config,
         credential_bindings: body.credential_bindings,
-        topology: None,
-        rate_limit: None,
+        topology: non_null(body.topology),
+        resilience_override: non_null(body.resilience_override),
         created_at: chrono::Utc::now().to_rfc3339(),
         created_by: created_by(principal),
         version: 0,
         deleted_at: None,
     }
+}
+
+/// An explicit JSON `null` setting is stored as absent, so a row has one
+/// representation of "the kind's defaults".
+fn non_null(value: Option<serde_json::Value>) -> Option<serde_json::Value> {
+    value.filter(|value| !value.is_null())
 }
 
 fn replacement_resource_row(
@@ -414,8 +469,8 @@ fn replacement_resource_row(
         kind: body.kind,
         config: body.config,
         credential_bindings: body.credential_bindings,
-        topology: existing.topology,
-        rate_limit: existing.rate_limit,
+        topology: non_null(body.topology),
+        resilience_override: non_null(body.resilience_override),
         created_at: existing.created_at,
         created_by: existing.created_by,
         version: next_version,
@@ -483,6 +538,12 @@ pub async fn create_resource(
     // unvalidated config (which could carry an inlined secret) would
     // violate no secret echo / product credential boundary.
     validate_resource_config(&state, &body.kind, body.config.clone())?;
+    validate_operator_settings(
+        &state,
+        &body.kind,
+        body.topology.as_ref(),
+        body.resilience_override.as_ref(),
+    )?;
 
     let resource_id = ResourceId::new();
     let row = new_resource_row(resource_id, &scope, &tenant.principal, body);
@@ -576,6 +637,12 @@ pub async fn update_resource(
     // Re-validate kind + config BEFORE persistence (same fail-closed
     // rules as create). A PUT must not bypass create-time validation.
     validate_resource_config(&state, &body.kind, body.config.clone())?;
+    validate_operator_settings(
+        &state,
+        &body.kind,
+        body.topology.as_ref(),
+        body.resilience_override.as_ref(),
+    )?;
 
     // The CAS contract increments the stored counter on a successful
     // compare-and-swap against `expected_version`. A *saturating* add
@@ -838,9 +905,10 @@ mod tests {
     }
 
     #[test]
-    fn resource_rows_preserve_create_and_replacement_bindings() {
+    fn resource_rows_preserve_create_and_replacement_bindings_and_settings() {
         let scope = Scope::new("ws_test", "org_test");
         let create_bindings = BTreeMap::from([("token".to_owned(), "cred_create".to_owned())]);
+        let override_doc = serde_json::json!({ "rate": { "requests": 5, "period_ms": 1000 } });
         let row = new_resource_row(
             nebula_core::ResourceId::new(),
             &scope,
@@ -851,9 +919,12 @@ mod tests {
                 kind: "http_pool".to_owned(),
                 config: serde_json::json!({}),
                 credential_bindings: create_bindings.clone(),
+                topology: Some(serde_json::json!({ "max_size": 4 })),
+                resilience_override: Some(override_doc.clone()),
             },
         );
         assert_eq!(row.credential_bindings, create_bindings);
+        assert_eq!(row.resilience_override, Some(override_doc));
 
         let update_bindings = BTreeMap::from([("token".to_owned(), "cred_update".to_owned())]);
         let updated = replacement_resource_row(
@@ -863,10 +934,16 @@ mod tests {
                 kind: "http_pool".to_owned(),
                 config: serde_json::json!({}),
                 credential_bindings: update_bindings.clone(),
+                topology: Some(serde_json::Value::Null),
+                resilience_override: None,
                 expected_version: 0,
             },
             1,
         );
         assert_eq!(updated.credential_bindings, update_bindings);
+        // Full replacement: omitted or `null` settings reset to the kind's
+        // defaults, stored as absent either way.
+        assert_eq!(updated.topology, None);
+        assert_eq!(updated.resilience_override, None);
     }
 }

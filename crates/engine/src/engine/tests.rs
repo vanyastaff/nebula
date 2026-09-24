@@ -7684,7 +7684,7 @@ async fn store_plain_row(
                 config: serde_json::json!({ "label": "a" }),
                 credential_bindings: std::collections::BTreeMap::new(),
                 topology: None,
-                rate_limit: None,
+                resilience_override: None,
                 created_at: "2026-09-23T00:00:00Z".to_owned(),
                 created_by: "test".to_owned(),
                 version: 0,

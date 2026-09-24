@@ -264,6 +264,18 @@ impl Fixture {
         label: &str,
         bindings: &[(&str, &str)],
     ) -> (ResourceId, ResourceKey) {
+        self.store_row_with_settings(kind, label, bindings, None, None)
+            .await
+    }
+
+    async fn store_row_with_settings(
+        &self,
+        kind: &str,
+        label: &str,
+        bindings: &[(&str, &str)],
+        topology: Option<serde_json::Value>,
+        resilience_override: Option<serde_json::Value>,
+    ) -> (ResourceId, ResourceKey) {
         let resource_id = ResourceId::new();
         self.store
             .create(
@@ -279,8 +291,8 @@ impl Fixture {
                         .iter()
                         .map(|(slot, selector)| ((*slot).to_owned(), (*selector).to_owned()))
                         .collect::<BTreeMap<_, _>>(),
-                    topology: None,
-                    rate_limit: None,
+                    topology,
+                    resilience_override,
                     created_at: "2026-09-23T00:00:00Z".to_owned(),
                     created_by: "test".to_owned(),
                     version: 0,
@@ -405,6 +417,56 @@ async fn one_broken_row_does_not_affect_another() {
         Err(StoredResourceActivationError::Register(_))
     );
     assert!(fixture.activate(good, &plain_key).await.is_ok());
+}
+
+/// The row's operator settings reach the registration: a valid override
+/// activates, and settings the kind refuses fail that row closed instead of
+/// being silently dropped.
+#[tokio::test]
+async fn stored_operator_settings_reach_the_registration() {
+    let fixture = Fixture::new();
+    let (slower, key) = fixture
+        .store_row_with_settings(
+            "activation.plain",
+            "a",
+            &[],
+            None,
+            Some(serde_json::json!({ "rate": { "requests": 1, "period_ms": 1000 } })),
+        )
+        .await;
+    fixture
+        .activate(slower, &key)
+        .await
+        .expect("a valid override activates");
+
+    let (malformed, _) = fixture
+        .store_row_with_settings(
+            "activation.plain",
+            "b",
+            &[],
+            None,
+            Some(serde_json::json!({ "rate": "fast" })),
+        )
+        .await;
+    std::assert_matches!(
+        fixture.activate(malformed, &key).await,
+        Err(StoredResourceActivationError::Register(_))
+    );
+
+    // The test kinds use a fixed topology, which takes no settings.
+    let (tuned, _) = fixture
+        .store_row_with_settings(
+            "activation.plain",
+            "c",
+            &[],
+            Some(serde_json::json!({ "max_size": 4 })),
+            None,
+        )
+        .await;
+    std::assert_matches!(
+        fixture.activate(tuned, &key).await,
+        Err(StoredResourceActivationError::Register(_))
+    );
 }
 
 #[tokio::test]

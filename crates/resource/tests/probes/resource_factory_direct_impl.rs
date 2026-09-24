@@ -33,6 +33,10 @@ impl ResourceFactory for ForgedFactory {
         Ok(())
     }
 
+    fn resilience_policy(&self) -> nebula_resource::rate_limit::ResiliencePolicy {
+        nebula_resource::rate_limit::ResiliencePolicy::new()
+    }
+
     fn topology_schema(
         &self,
     ) -> Result<Option<nebula_schema::ValidSchema>, MetadataBuildError> {

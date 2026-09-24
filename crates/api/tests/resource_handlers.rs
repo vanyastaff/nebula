@@ -67,7 +67,7 @@ fn entry(
             "binding-selector-do-not-leak".to_owned(),
         )]),
         topology: None,
-        rate_limit: None,
+        resilience_override: None,
         created_at: chrono::Utc::now().to_rfc3339(),
         created_by: "system".to_owned(),
         version,

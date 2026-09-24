@@ -142,8 +142,11 @@ returns a `rate_limit::ResiliencePolicy` (the provider's `Rate`, where the quota
 is counted — `LimitScope::Cluster` by default — how long one `Retry-After` may
 block it, and what a stored row may `Override`: tighten only by default). A row
 may override the rate within those bounds — `RegistrationSpec::rate_limit`
-(`RowLimit`) or `RegisterRequest::rate_limit` (JSON `{"requests": 30,
-"period_ms": 1000, "burst": 5}`) — and names the quota it draws on with a
+(`RowLimit`) or `RegisterRequest::resilience_override`, the stored row's
+`ResilienceOverride` document (`{"rate": {"requests": 30, "period_ms": 1000,
+"burst": 5}}`, checked up front with
+`ResourceActivatorRegistry::validate_resilience_override`, whose messages name
+the field and the rule, never the values) — and names the quota it draws on with a
 `LimitKey`: rows with one key share one limit (the engine keys stored rows by
 provider account; without a key a row is limited alone, in this process). The
 limit is a GCRA from `nebula-resilience` behind a `LimitStore`: the manager's

@@ -214,11 +214,11 @@ pub struct RegisterRequest<'a> {
     /// kept separate from the resource [`config`](Self::config). `None` uses
     /// the kind's defaults; see [`crate::topology::settings`] for the format.
     pub topology: Option<serde_json::Value>,
-    /// Operator override of the rate the resource declares
-    /// ([`RateLimitSettings`](crate::rate_limit::RateLimitSettings) JSON),
-    /// checked against its [`ResiliencePolicy`](crate::rate_limit::ResiliencePolicy);
+    /// Operator [`ResilienceOverride`](crate::rate_limit::ResilienceOverride)
+    /// document (the resource row's `resilience_override`), checked against
+    /// the resource's [`ResiliencePolicy`](crate::rate_limit::ResiliencePolicy);
     /// `None` enforces the declared policy as is.
-    pub rate_limit: Option<serde_json::Value>,
+    pub resilience_override: Option<serde_json::Value>,
     /// Quota the row draws on: rows with the same key share one limit (the
     /// engine keys stored rows by provider account). `None` limits this row
     /// alone.
@@ -245,7 +245,7 @@ impl std::fmt::Debug for RegisterRequest<'_> {
             .field("scope", &self.scope)
             .field("recovery_gate", &self.recovery_gate.is_some())
             .field("topology", &self.topology.is_some())
-            .field("rate_limit", &self.rate_limit.is_some())
+            .field("resilience_override", &self.resilience_override.is_some())
             .field("limit_key", &self.limit_key.is_some())
             .field("row_id", &self.row_id)
             .finish()
@@ -444,6 +444,29 @@ pub trait ResourceFactory: private::Sealed + Send + Sync + 'static {
     /// Returns a permanent [`crate::Error`] for malformed, unknown or
     /// unworkable settings, or for settings sent to a kind that takes none.
     fn validate_topology(&self, settings: Option<&serde_json::Value>) -> Result<(), crate::Error>;
+
+    /// The resilience policy the resource author declared for this kind
+    /// ([`Provider::resilience`]).
+    fn resilience_policy(&self) -> crate::rate_limit::ResiliencePolicy;
+
+    /// Validate an operator
+    /// [`ResilienceOverride`](crate::rate_limit::ResilienceOverride) document
+    /// for this kind **without registering anything**: its shape, and its
+    /// bounds under the kind's [`resilience_policy`](Self::resilience_policy).
+    ///
+    /// # Errors
+    ///
+    /// Returns a permanent [`crate::Error`] naming the offending field; the
+    /// message never restates submitted values.
+    fn validate_resilience_override(
+        &self,
+        value: Option<&serde_json::Value>,
+    ) -> Result<(), crate::Error> {
+        crate::rate_limit::ResilienceOverride::from_value(value)?
+            .apply(&self.resilience_policy())
+            .map(drop)
+            .map_err(|error| error.with_resource_key(self.key()))
+    }
 
     /// Schema of the operator topology settings this kind accepts, for
     /// catalog and form rendering. `Ok(None)` means the kind publishes no
@@ -716,6 +739,10 @@ where
             .map_err(|error| error.with_resource_key(R::key()))
     }
 
+    fn resilience_policy(&self) -> crate::rate_limit::ResiliencePolicy {
+        R::resilience()
+    }
+
     fn topology_schema(
         &self,
     ) -> Result<Option<nebula_schema::ValidSchema>, crate::MetadataBuildError> {
@@ -737,9 +764,14 @@ where
             })?;
             let topology = (self.topology_factory)(request.topology.as_ref())
                 .map_err(|error| error.with_resource_key(R::key()))?;
-            let rate =
-                crate::rate_limit::RateLimitSettings::rate_from_value(request.rate_limit.as_ref())
-                    .map_err(|error| error.with_resource_key(R::key()))?;
+            // The manager bounds the requested rate by `R`'s policy on
+            // registration, so a document stored before the policy tightened
+            // still fails closed.
+            let rate = crate::rate_limit::ResilienceOverride::from_value(
+                request.resilience_override.as_ref(),
+            )
+            .and_then(|document| document.requested_rate())
+            .map_err(|error| error.with_resource_key(R::key()))?;
             let rate_limit = (rate.is_some() || request.limit_key.is_some()).then(|| {
                 crate::rate_limit::RowLimit {
                     rate,
@@ -1064,6 +1096,32 @@ impl ResourceActivatorRegistry {
                 kind: kind.to_owned(),
                 source: crate::Error::permanent("resource topology settings schema is invalid")
                     .with_source(source),
+            })
+    }
+
+    /// Validates an operator resilience override for `kind` without
+    /// registering: its shape and its bounds under the kind's policy.
+    ///
+    /// # Errors
+    ///
+    /// - [`RegistrarError::UnknownKind`] — not in allowlist.
+    /// - [`RegistrarError::Register`] — the document is malformed or the
+    ///   policy does not allow it. The message names the field and the rule,
+    ///   never the submitted values, so it is safe to return to the caller.
+    pub fn validate_resilience_override(
+        &self,
+        kind: &str,
+        value: Option<&serde_json::Value>,
+    ) -> Result<(), RegistrarError> {
+        let factory = self
+            .factories
+            .get(kind)
+            .ok_or_else(|| RegistrarError::UnknownKind(kind.to_owned()))?;
+        factory
+            .validate_resilience_override(value)
+            .map_err(|source| RegistrarError::Register {
+                kind: kind.to_owned(),
+                source,
             })
     }
 

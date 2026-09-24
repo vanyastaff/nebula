@@ -340,7 +340,7 @@ mod tests {
             config: serde_json::json!({}),
             credential_bindings: BTreeMap::new(),
             topology: None,
-            rate_limit: None,
+            resilience_override: None,
             created_at: "2026-01-01T00:00:00Z".to_owned(),
             created_by: "system".to_owned(),
             version: 0,

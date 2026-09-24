@@ -561,7 +561,7 @@ fn resource_row(id: &str, workspace_id: &str, slug: &str) -> ResourceRow {
         config: serde_json::json!({}),
         credential_bindings,
         topology: Some(serde_json::json!({ "max_size": 4 })),
-        rate_limit: Some(serde_json::json!({ "requests": 10, "period_ms": 1000 })),
+        resilience_override: Some(serde_json::json!({ "requests": 10, "period_ms": 1000 })),
         created_at: "2026-01-01T00:00:00Z".into(),
         created_by: "usr_1".into(),
         version: 0,

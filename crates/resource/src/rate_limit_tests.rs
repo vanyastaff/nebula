@@ -107,20 +107,50 @@ fn settings_parse_strictly_and_publish_a_schema() {
     assert_eq!(parsed, RateLimitSettings::new(30, 1_000).with_burst(5));
     assert_eq!(parsed.to_rate().unwrap(), per_second(30, 5));
     for invalid in [
-        serde_json::json!({ "requests": 30 }),
-        serde_json::json!({ "requests": 30, "period_ms": 1000, "per_second": 1 }),
-        serde_json::json!({ "requests": 0, "period_ms": 1000 }),
+        serde_json::json!({ "rate": { "requests": 30 } }),
+        serde_json::json!({ "rate": { "requests": 30, "period_ms": 1000, "per_second": 1 } }),
+        serde_json::json!({ "rate": { "requests": 0, "period_ms": 1000 } }),
+        serde_json::json!({ "requests": 30, "period_ms": 1000 }),
     ] {
         assert!(
-            RateLimitSettings::rate_from_value(Some(&invalid)).is_err(),
+            ResilienceOverride::from_value(Some(&invalid))
+                .and_then(|document| document.requested_rate())
+                .is_err(),
             "{invalid}"
         );
     }
     assert_eq!(
-        RateLimitSettings::rate_from_value(Some(&serde_json::Value::Null)).unwrap(),
-        None
+        ResilienceOverride::from_value(Some(&serde_json::Value::Null)).unwrap(),
+        ResilienceOverride::default()
     );
-    nebula_schema::schema_of::<RateLimitSettings>().expect("rate limit settings schema");
+    nebula_schema::schema_of::<ResilienceOverride>().expect("resilience override schema");
+}
+
+#[test]
+fn override_refusals_name_the_field_and_rule_never_the_values() {
+    let declared = ResiliencePolicy::new().rate(per_second(30, 30));
+    let faster = ResilienceOverride::rate(RateLimitSettings::new(9_999, 1_000));
+    let error = faster.apply(&declared).expect_err("tighten only");
+    let message = error.to_string();
+    assert!(
+        message.starts_with("resilience_override.rate:"),
+        "{message}"
+    );
+    assert!(!message.contains("9999"), "{message}");
+
+    let fixed = declared.overrides(Override::Fixed);
+    let slower = ResilienceOverride::rate(RateLimitSettings::new(1, 1_000));
+    assert!(slower.apply(&fixed).is_err());
+    assert_eq!(
+        slower.apply(&declared).unwrap(),
+        Some(per_second(1, 1)),
+        "a slower rate is a tightening"
+    );
+    assert_eq!(
+        ResilienceOverride::default().apply(&declared).unwrap(),
+        Some(per_second(30, 30)),
+        "no override enforces the declared rate"
+    );
 }
 
 #[tokio::test(start_paused = true)]

@@ -473,8 +473,11 @@ async fn register_row(
                 slot_installs,
                 scope: scope_level.clone(),
                 recovery_gate: None,
-                topology: None,
-                rate_limit: None,
+                // Validated against the kind when stored; re-validated by
+                // the registration itself, so a row stored before its kind
+                // tightened fails activation closed.
+                topology: row.topology.clone(),
+                resilience_override: row.resilience_override.clone(),
                 row_id: Some(row.id.clone()),
                 limit_key,
             },

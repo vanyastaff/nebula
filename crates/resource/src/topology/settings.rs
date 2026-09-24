@@ -63,8 +63,13 @@ pub trait ConfigurableTopology<R: Provider>: Topology<R> + Sized {
     ) -> Result<Self, Error> {
         let settings = match value {
             None | Some(serde_json::Value::Null) => None,
+            // The parser's report can restate submitted values; keep it as
+            // the source so the message itself is safe to show a caller.
             Some(value) => Some(Self::Settings::deserialize(value).map_err(|error| {
-                Error::permanent(format!("invalid topology settings: {error}"))
+                Error::permanent(
+                    "topology: malformed settings or a field this topology does not take",
+                )
+                .with_source(error)
             })?),
         };
         Self::from_settings(settings, fingerprint)

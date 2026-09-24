@@ -32,6 +32,7 @@ use nebula_resource::Resident;
 use nebula_resource::{
     Manager, ScopeLevel,
     error::Error as ResourceError,
+    rate_limit::{Rate, ResiliencePolicy},
     resource::{Provider, ResourceConfig, ResourceMetadataDraft},
     topology::resident,
     topology::resident::ResidentProvider,
@@ -109,6 +110,16 @@ impl Provider for HttpPool {
             <Self as Provider>::key(),
             nebula_resource::metadata_name!("http_pool"),
             String::new(),
+        )
+    }
+
+    /// The provider allows 30 requests per second, 30 back to back.
+    fn resilience() -> ResiliencePolicy {
+        let thirty = std::num::NonZeroU32::new(30).expect("non-zero");
+        ResiliencePolicy::new().rate(
+            Rate::per_second(thirty)
+                .with_burst(thirty)
+                .expect("valid burst"),
         )
     }
 }
@@ -259,6 +270,61 @@ fn unknown_kind_is_typed_unknownkind_not_silent() {
         RegistrarError::UnknownKind(kind) => assert_eq!(kind, "ghost_kind"),
         other => panic!("expected UnknownKind(\"ghost_kind\"), got {other:?}"),
     }
+}
+
+/// The operator may slow a kind down but not speed it past what its author
+/// declared; the refusal names the field and the rule, never the values, so
+/// the API can return it verbatim.
+#[test]
+fn resilience_override_is_bounded_by_the_kind_policy() {
+    let registry = registry_with_http_pool();
+
+    registry
+        .validate_resilience_override("http_pool", None)
+        .expect("no override enforces the declared policy");
+    registry
+        .validate_resilience_override(
+            "http_pool",
+            Some(&json!({ "rate": { "requests": 5, "period_ms": 1000 } })),
+        )
+        .expect("a slower rate is a tightening");
+
+    for (document, field) in [
+        (
+            json!({ "rate": { "requests": 4242, "period_ms": 1000 } }),
+            "resilience_override.rate:",
+        ),
+        (
+            json!({ "rate": { "requests": 5, "period_ms": 1000, "burst": 4242 } }),
+            "resilience_override.rate:",
+        ),
+        (json!({ "rate": "4242 per second" }), "resilience_override:"),
+        (json!({ "requests": 4242 }), "resilience_override:"),
+    ] {
+        let RegistrarError::Register { source, .. } = registry
+            .validate_resilience_override("http_pool", Some(&document))
+            .expect_err("the policy refuses it")
+        else {
+            panic!("expected a Register error for {document}");
+        };
+        let message = source.to_string();
+        assert!(message.contains(field), "{message}");
+        assert!(!message.contains("4242"), "values never echo: {message}");
+    }
+}
+
+/// A kind with a fixed topology takes no operator topology settings.
+#[test]
+fn fixed_topology_rejects_operator_settings() {
+    let registry = registry_with_http_pool();
+    registry
+        .validate_topology("http_pool", None)
+        .expect("defaults are always fine");
+    assert!(
+        registry
+            .validate_topology("http_pool", Some(&json!({ "max_size": 4 })))
+            .is_err()
+    );
 }
 
 /// An empty registry is fail-closed: every kind is `UnknownKind`.

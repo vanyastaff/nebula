@@ -183,18 +183,24 @@ impl ResiliencePolicy {
         let Some(requested) = requested else {
             return Ok(self.rate);
         };
-        let allowed = match (self.overrides, self.rate) {
-            (Override::Fixed, _) => false,
-            (Override::TightenOnly, None) => true,
-            (Override::TightenOnly, Some(declared)) => requested.is_no_looser_than(&declared),
-            (Override::UpTo(ceiling), _) => requested.is_no_looser_than(&ceiling),
+        // Messages name the field and the rule, never the values: they reach
+        // API clients verbatim.
+        let refusal = match (self.overrides, self.rate) {
+            (Override::Fixed, _) => {
+                Some("resilience_override.rate: this resource does not allow overriding its rate")
+            },
+            (Override::TightenOnly, None) => None,
+            (Override::TightenOnly, Some(declared)) => (!requested.is_no_looser_than(&declared))
+                .then_some(
+                    "resilience_override.rate: may only be slower than the resource's declared \
+                     rate, with no larger burst",
+                ),
+            (Override::UpTo(ceiling), _) => (!requested.is_no_looser_than(&ceiling))
+                .then_some("resilience_override.rate: exceeds the resource's ceiling"),
         };
-        if allowed {
-            Ok(Some(requested))
-        } else {
-            Err(Error::permanent(
-                "rate limit override exceeds what the resource's policy allows",
-            ))
+        match refusal {
+            Some(message) => Err(Error::permanent(message)),
+            None => Ok(Some(requested)),
         }
     }
 }
@@ -255,21 +261,77 @@ impl RateLimitSettings {
         Rate::try_from(config)
             .map_err(|error| Error::permanent(format!("invalid rate limit: {error}")))
     }
+}
 
-    /// Parses operator JSON (`None` or `null` = no override).
+/// What an operator may change about a resource's resilience, stored on the
+/// resource row (`resilience_override`) and bounded by the resource's
+/// [`ResiliencePolicy`].
+///
+/// A document rather than a bare rate so later knobs (per-key limits, window
+/// quotas) extend it without another column.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Schema)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct ResilienceOverride {
+    /// Replaces the resource's declared rate, within its policy.
+    #[serde(default)]
+    pub rate: Option<RateLimitSettings>,
+}
+
+impl ResilienceOverride {
+    /// An override of the rate.
+    #[must_use]
+    pub const fn rate(rate: RateLimitSettings) -> Self {
+        Self { rate: Some(rate) }
+    }
+
+    /// Parses the stored document (`None` or `null` = no override).
     ///
     /// # Errors
     ///
-    /// A permanent [`Error`] for malformed JSON, unknown fields, or an
-    /// invalid rate.
-    pub fn rate_from_value(value: Option<&serde_json::Value>) -> Result<Option<Rate>, Error> {
+    /// A permanent [`Error`] naming the offending field for a malformed
+    /// document or an invalid rate. Messages carry field paths, never the
+    /// submitted values; the parser's own report is kept as the source.
+    pub fn from_value(value: Option<&serde_json::Value>) -> Result<Self, Error> {
         match value {
-            None | Some(serde_json::Value::Null) => Ok(None),
-            Some(value) => Self::deserialize(value)
-                .map_err(|error| Error::permanent(format!("invalid rate limit settings: {error}")))?
-                .to_rate()
-                .map(Some),
+            None | Some(serde_json::Value::Null) => Ok(Self::default()),
+            Some(value) => Self::deserialize(value).map_err(|error| {
+                Error::permanent(
+                    "resilience_override: expected an object with an optional `rate` \
+                     ({requests, period_ms, burst?})",
+                )
+                .with_source(error)
+            }),
         }
+    }
+
+    /// The rate this override asks for, validated.
+    ///
+    /// # Errors
+    ///
+    /// A permanent [`Error`] for a zero or unrepresentable rate.
+    pub fn requested_rate(&self) -> Result<Option<Rate>, Error> {
+        self.rate
+            .map(|settings| {
+                settings.to_rate().map_err(|error| {
+                    Error::permanent(
+                        "resilience_override.rate: requests, period_ms and burst must be \
+                         positive and representable",
+                    )
+                    .with_source(error)
+                })
+            })
+            .transpose()
+    }
+
+    /// The rate to enforce under `policy` once this override is applied.
+    ///
+    /// # Errors
+    ///
+    /// As [`requested_rate`](Self::requested_rate), and a permanent
+    /// [`Error`] when `policy` does not allow the override.
+    pub fn apply(&self, policy: &ResiliencePolicy) -> Result<Option<Rate>, Error> {
+        policy.effective_rate(self.requested_rate()?)
     }
 }
 

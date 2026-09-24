@@ -1143,7 +1143,7 @@ fn resource_from_row(r: &sqlx::sqlite::SqliteRow) -> Result<ResourceRow, Storage
         credential_bindings: serde_json::from_str(&required::<String>(r, "credential_bindings")?)
             .map_err(|error| StorageError::Serialization(error.to_string()))?,
         topology: optional_json(r, "topology")?,
-        rate_limit: optional_json(r, "rate_limit")?,
+        resilience_override: optional_json(r, "resilience_override")?,
         created_at: required(r, "created_at")?,
         created_by: required(r, "created_by")?,
         version: required::<i64>(r, "version")? as u64,
@@ -1170,7 +1170,7 @@ impl ResourceStore for SqliteResourceStore {
         let res = sqlx::query(
             "INSERT INTO port_resources (id, workspace_id, org_id, slug, \
              display_name, kind, config, credential_bindings, topology, \
-             rate_limit, created_at, created_by, version, deleted_at) \
+             resilience_override, created_at, created_by, version, deleted_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&row.id)
@@ -1185,7 +1185,7 @@ impl ResourceStore for SqliteResourceStore {
                 .map_err(|error| StorageError::Serialization(error.to_string()))?,
         )
         .bind(row.topology.as_ref().map(json_to_text))
-        .bind(row.rate_limit.as_ref().map(json_to_text))
+        .bind(row.resilience_override.as_ref().map(json_to_text))
         .bind(&row.created_at)
         .bind(&row.created_by)
         .bind(row.version as i64)
@@ -1241,7 +1241,7 @@ impl ResourceStore for SqliteResourceStore {
     ) -> Result<(), StorageError> {
         let res = sqlx::query(
             "UPDATE port_resources SET slug = ?, display_name = ?, kind = ?, \
-             config = ?, credential_bindings = ?, topology = ?, rate_limit = ?, \
+             config = ?, credential_bindings = ?, topology = ?, resilience_override = ?, \
              version = ? \
              WHERE workspace_id = ? AND org_id = ? AND id = ? \
              AND deleted_at IS NULL AND version = ?",
@@ -1255,7 +1255,7 @@ impl ResourceStore for SqliteResourceStore {
                 .map_err(|error| StorageError::Serialization(error.to_string()))?,
         )
         .bind(row.topology.as_ref().map(json_to_text))
-        .bind(row.rate_limit.as_ref().map(json_to_text))
+        .bind(row.resilience_override.as_ref().map(json_to_text))
         .bind(row.version as i64)
         .bind(&scope.workspace_id)
         .bind(&scope.org_id)
