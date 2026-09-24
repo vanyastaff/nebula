@@ -578,3 +578,50 @@ async fn an_overflowed_keys_penalty_outlives_the_full_store() {
     let left = store.penalty(&overflowed).await.unwrap();
     assert!(left >= Duration::from_secs(57), "{left:?}");
 }
+
+/// A key whose only state is a reservation id whose slot has arrived is
+/// swept like any idle key, so such keys cannot fill the store.
+#[tokio::test(start_paused = true)]
+async fn arrived_reservation_ids_do_not_keep_keys_alive() {
+    let store = MemoryLimitStore::with_max_keys(2);
+    let rate = Rate::per_second(nz(1));
+    let key = LimitKey::new("reserved").unwrap();
+    store
+        .reserve(&key, &rate, ReserveRequest::new(1, Duration::ZERO))
+        .await
+        .unwrap()
+        .unwrap();
+    let request = ReserveRequest::new(1, Duration::MAX).with_id(ReservationId(7));
+    store.reserve(&key, &rate, request).await.unwrap().unwrap();
+    tokio::time::advance(Duration::from_secs(5)).await;
+    // Two new keys into a store of two: the stale one must make room.
+    for name in ["a", "b"] {
+        store
+            .reserve(
+                &LimitKey::new(name).unwrap(),
+                &rate,
+                ReserveRequest::new(1, Duration::ZERO),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+    }
+    assert_eq!(
+        store.overflowed(),
+        0,
+        "the arrived reservation freed its key"
+    );
+
+    // A zero-permit reservation books nothing and keeps no id.
+    let far = ReserveRequest::new(0, Duration::MAX)
+        .not_before(u64::MAX / 2)
+        .with_id(ReservationId(8));
+    store.reserve(&key, &rate, far).await.unwrap().unwrap();
+    tokio::time::advance(Duration::from_secs(5)).await;
+    store
+        .reserve(&key, &rate, ReserveRequest::new(0, Duration::ZERO))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(store.is_empty(), "the zero-permit id kept no key alive");
+}

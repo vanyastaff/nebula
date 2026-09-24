@@ -198,7 +198,10 @@ impl LimitStore for PgLimitStore {
             },
             None => {},
         }
+        // A zero-permit grant books nothing, so there is nothing to return
+        // the original of (and the table only holds real reservations).
         if let (Ok(grant), Some(id)) = (&decision, request.id)
+            && grant.permits > 0
             && grant.allow_at > now
         {
             sqlx::query(

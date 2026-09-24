@@ -594,6 +594,44 @@ async fn parallel_warmup_stops_after_a_failed_create() {
     );
 }
 
+/// A revoke stops a staggered warmup: it neither sleeps out its interval
+/// nor creates with the credential being revoked.
+#[tokio::test(start_paused = true)]
+async fn a_tainted_row_stops_its_warmup() {
+    let resource = Mock::new();
+    let created = Arc::clone(&resource.created);
+    let mr = managed(
+        resource,
+        PoolConfig {
+            min_size: 5,
+            max_size: 5,
+            warmup: crate::topology::pooled::config::WarmupStrategy::Staggered {
+                interval: std::time::Duration::from_secs(10),
+            },
+            ..Default::default()
+        },
+    );
+    let warming = tokio::spawn({
+        let mr = Arc::clone(&mr);
+        async move { mr.warmup(&test_ctx()).await }
+    });
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    mr.taint();
+    let started = tokio::time::Instant::now();
+    let warmed = warming.await.unwrap().expect("no hook fault");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(1),
+        "stopped within a poll step, took {:?}",
+        started.elapsed()
+    );
+    assert_eq!(warmed, 1);
+    assert_eq!(
+        created.load(Ordering::SeqCst),
+        1,
+        "nothing created after the revoke"
+    );
+}
+
 // ----- ADR-0093 per-resource teardown deadline -----
 
 /// A resource that declares a short `teardown_budget` and whose `destroy`

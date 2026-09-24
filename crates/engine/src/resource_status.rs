@@ -59,7 +59,8 @@ pub struct ResourceRuntimeStatus {
     pub healthy: bool,
     /// `true` iff at least one serving worker can accept new acquires.
     pub accepting: bool,
-    /// Number of live workers serving the row.
+    /// Number of live workers serving the row; a worker whose activation of
+    /// it failed reports the failure in `phase` but is not counted.
     pub instances: u32,
 }
 
@@ -161,7 +162,14 @@ fn aggregate(live: &[LiveResourceStatus]) -> Option<ResourceRuntimeStatus> {
         phase: worst.as_str(),
         healthy: live.iter().all(|status| status.snapshot.healthy),
         accepting: live.iter().any(|status| status.snapshot.accepting),
-        instances: u32::try_from(live.len()).unwrap_or(u32::MAX),
+        // A worker reporting a failed activation serves nothing: it shows in
+        // the phase, not in the count of workers serving the row.
+        instances: u32::try_from(
+            live.iter()
+                .filter(|status| status.snapshot.phase != ResourceStatusPhase::Failed)
+                .count(),
+        )
+        .unwrap_or(u32::MAX),
     })
 }
 
@@ -298,6 +306,9 @@ impl ResourceStatusPublisher {
         published: &mut HashMap<PublishedKey, ResourceStatusSnapshot>,
     ) {
         let Some(mut renewed) = self.renew(published).await else {
+            // Status is diagnostic, retiring deleted rows is not: a status
+            // store that is down must not keep deleted runtimes alive.
+            engine.retire_deleted_resources().await;
             return;
         };
         // Deleted rows go first, so this tick already withdraws their status.
@@ -332,7 +343,9 @@ impl ResourceStatusPublisher {
                     published.insert(key, snapshot);
                 },
                 Err(error) => {
-                    published.remove(&key);
+                    // The write may or may not have landed: kept as possibly
+                    // stored, so it is retried, or withdrawn once it leaves.
+                    invalidate(published.entry(key).or_insert(snapshot));
                     tracing::warn!(
                         target: "nebula_engine::resource_status",
                         %error,
@@ -370,9 +383,10 @@ impl ResourceStatusPublisher {
     /// when it failed.
     ///
     /// On a failure the worker's lease may lapse before the next heartbeat
-    /// lands, expiring what it published, so the published cache is
-    /// cleared: the next tick republishes everything instead of trusting
-    /// rows that may be gone.
+    /// lands, expiring what it published, so every cached snapshot is
+    /// invalidated: the next tick republishes everything instead of trusting
+    /// rows that may be gone. The keys stay cached, because those rows may
+    /// also still be stored, and one that leaves meanwhile must be withdrawn.
     async fn renew(
         &self,
         published: &mut HashMap<PublishedKey, ResourceStatusSnapshot>,
@@ -389,11 +403,21 @@ impl ResourceStatusPublisher {
                     %error,
                     "resource status heartbeat failed"
                 );
-                published.clear();
+                // Everything cached is republished; nothing is forgotten,
+                // so a row that leaves meanwhile is still withdrawn.
+                published.values_mut().for_each(invalidate);
                 None
             },
         }
     }
+}
+
+/// Marks a cached snapshot as possibly stale in the store: it compares
+/// unequal to every real snapshot (no stored row reaches version
+/// `u64::MAX`), so the next tick republishes it, while its key stays
+/// cached, so a row that leaves the view is still withdrawn.
+fn invalidate(snapshot: &mut ResourceStatusSnapshot) {
+    snapshot.row_version = u64::MAX;
 }
 
 #[cfg(test)]

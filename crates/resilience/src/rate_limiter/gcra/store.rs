@@ -366,7 +366,12 @@ impl MemoryLimitStore {
         let is_new = !keys.entries.contains_key(key);
         // A new key into a full store sweeps first: idle keys make room.
         if keys.ops.is_multiple_of(SWEEP_EVERY) || (is_new && keys.entries.len() >= self.max_keys) {
-            keys.entries.retain(|_, entry| !entry.is_idle(now));
+            // Reservations whose slot has arrived no longer need their id,
+            // and must not keep an otherwise idle key alive.
+            keys.entries.retain(|_, entry| {
+                entry.pending.retain(|_, grant| grant.allow_at > now);
+                !entry.is_idle(now)
+            });
         }
         if is_new && keys.entries.len() >= self.max_keys {
             keys.overflowed = keys.overflowed.saturating_add(1);
@@ -433,7 +438,10 @@ impl LimitStore for MemoryLimitStore {
             if let Some(next) = next {
                 entry.state = next;
             }
+            // A zero-permit grant books nothing, so there is nothing to
+            // return the original of.
             if let (Ok(grant), Some(id)) = (&decision, request.id)
+                && grant.permits > 0
                 && grant.allow_at > now
             {
                 entry.pending.insert(id, *grant);

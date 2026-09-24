@@ -42,7 +42,10 @@ fn aggregate_reports_the_least_healthy_phase_across_workers() {
         status.accepting,
         "one accepting worker keeps the row accepting"
     );
-    assert_eq!(status.instances, 3);
+    assert_eq!(
+        status.instances, 2,
+        "a worker reporting a failure serves nothing and is not counted"
+    );
 
     let all_ready = aggregate(&[
         live("a", ResourceStatusPhase::Ready, true, true),

@@ -470,7 +470,7 @@ impl Manager {
         // either began while it waited. Local state, so it runs before the
         // recovery gate and a denial never reads as backend ill health.
         tokio::select! {
-            ready = managed.rate_limiter.ready(options.deadline) => ready?,
+            ready = managed.rate_limiter.ready_to_acquire(options.deadline) => ready?,
             () = self.cancel.cancelled() => return Err(Error::cancelled()),
         }
         // Pre-count this acquire on both the manager-wide and per-resource

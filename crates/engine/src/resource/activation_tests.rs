@@ -723,12 +723,20 @@ async fn a_pushed_back_retirement_is_retried_by_the_sweep() {
         .activator
         .rows
         .remove(&(fixture.scope.clone(), stale_id));
+    let pending = |row: ResourceId, activated: &ActivatedResource| PendingRetirement {
+        row: (fixture.scope.clone(), row),
+        stale: ActiveRow {
+            version: 0,
+            activated: activated.clone(),
+            bindings: Vec::new(),
+        },
+    };
     fixture
         .activator
         .pending_retirements
         .lock()
         .unwrap()
-        .extend([stale.clone(), live.clone()]);
+        .extend([pending(stale_id, &stale), pending(live_id, &live)]);
 
     fixture
         .activator
@@ -871,6 +879,43 @@ async fn a_timed_out_activation_is_recorded_as_failed() {
             .row_states()
             .iter()
             .any(|state| matches!(state, RowState::Failed { .. })),
+        "{:?}",
+        fixture.activator.row_states()
+    );
+}
+
+/// A credential re-check that timed out is not a lasting failure: the
+/// next activation that finds the row current reports it active again.
+#[tokio::test(start_paused = true)]
+async fn a_timed_out_recheck_clears_on_the_next_activation() {
+    let mut fixture = Fixture::new();
+    fixture.activator =
+        StoredResourceActivator::new(Arc::clone(&fixture.store) as Arc<dyn ResourceStore>)
+            .with_activation_timeout(Duration::from_secs(1));
+    let credential = CredentialId::new().to_string();
+    let (resource_id, key) = fixture
+        .store_row(
+            "activation.slotted",
+            "a",
+            &[(AUTH_SLOT, credential.as_str())],
+        )
+        .await;
+    fixture.resolver.answer(Ok((1, 1)));
+    fixture.activate(resource_id, &key).await.unwrap();
+
+    fixture.resolver.stall.store(true, Ordering::SeqCst);
+    std::assert_matches!(
+        fixture.activate(resource_id, &key).await,
+        Err(StoredResourceActivationError::TimedOut(_))
+    );
+    fixture.resolver.stall.store(false, Ordering::SeqCst);
+    fixture.activate(resource_id, &key).await.unwrap();
+    assert!(
+        fixture
+            .activator
+            .row_states()
+            .iter()
+            .all(|state| matches!(state, RowState::Active(_))),
         "{:?}",
         fixture.activator.row_states()
     );

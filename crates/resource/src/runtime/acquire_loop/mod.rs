@@ -572,6 +572,9 @@ where
         if target == 0 {
             return Ok(0);
         }
+        // One warmup of this row at a time: the running-create count below
+        // is this warmup's own, so a second one must not count beside it.
+        let _one_warmup = self.maintenance.warmup.lock().await;
         // Creates started and not yet deposited, so concurrent creates count
         // against the headroom before their entries reach the store; the
         // lock makes checking and reserving one step.
@@ -584,9 +587,12 @@ where
             let (running, deciding, failed, config) = (&running, &deciding, &failed, &config);
             async move {
                 if let Some(pause) = pause {
-                    tokio::time::sleep(pause).await;
+                    self.pause_warmup(pause).await;
                 }
-                if failed.load(Ordering::Acquire) {
+                // A revoke taints the row: its credential is going, so no
+                // instance is created with it, and the revoke's drain does
+                // not wait on this warmup.
+                if failed.load(Ordering::Acquire) || self.is_tainted() || self.store.is_closed() {
                     return Ok(None);
                 }
                 // The create holds a checkout permit, as an acquire's does,
@@ -670,6 +676,20 @@ where
             tracing::info!(key = %R::key(), created, target, "resource warmup complete");
         }
         Ok(created)
+    }
+
+    /// Sleeps `pause` between staggered creates, cut short once the row is
+    /// tainted or closed, so a revoke never waits out a stagger interval.
+    async fn pause_warmup(self: &Arc<Self>, pause: std::time::Duration) {
+        const STEP: std::time::Duration = std::time::Duration::from_millis(50);
+        let until = tokio::time::Instant::now() + pause.min(crate::deadline::UNBOUNDED_HORIZON);
+        while !self.is_tainted() && !self.store.is_closed() {
+            let now = tokio::time::Instant::now();
+            if now >= until {
+                return;
+            }
+            tokio::time::sleep((until - now).min(STEP)).await;
+        }
     }
 
     /// Instances the store can still take: capacity minus idle entries,

@@ -72,7 +72,13 @@ impl Manager {
                 }
                 (local, key)
             },
-            (None, _, _) => {
+            (None, scope_kind, shared) => {
+                if scope_kind == LimitScope::Cluster && shared.is_some() {
+                    tracing::warn!(
+                        resource.key = %R::key(),
+                        "cluster-wide rate limit enforced per process: the row names no limit key"
+                    );
+                }
                 let mut hasher = std::collections::hash_map::DefaultHasher::new();
                 scope.hash(&mut hasher);
                 slot_identity.hash(&mut hasher);

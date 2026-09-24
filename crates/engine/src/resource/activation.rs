@@ -251,7 +251,15 @@ pub struct StoredResourceActivator {
     sweep_cursor: std::sync::atomic::AtomicUsize,
     /// Registry rows this activator stopped tracking but the manager has not
     /// removed yet (its retirement queue pushed back); every sweep retries.
-    pending_retirements: std::sync::Mutex<Vec<ActivatedResource>>,
+    pending_retirements: std::sync::Mutex<Vec<PendingRetirement>>,
+}
+
+/// A registration the manager has not removed yet, with the stored row it
+/// served: only that row can register the same identity again.
+#[derive(Debug)]
+struct PendingRetirement {
+    row: (Scope, ResourceId),
+    stale: ActiveRow,
 }
 
 type HmacSha256 = hmac::Hmac<sha2::Sha256>;
@@ -272,8 +280,8 @@ const DEFAULT_LIMIT_KEY_SECRET: [u8; 32] = *b"nebula.resource.limit-key.v1\0\0\0
 /// Derived with a key every worker shares (see
 /// [`StoredResourceActivator::with_limit_key_secret`]), so all workers name
 /// one account's quota alike; the tenant owner is part of the input so two
-/// tenants never share a quota. `None` for a row bound to no credential,
-/// which is then limited on its own.
+/// tenants never share a quota. `None` for a row bound to no credential (see
+/// [`row_limit_key`]).
 fn account_limit_key(
     secret: &[u8; 32],
     scope: &Scope,
@@ -310,6 +318,32 @@ fn account_limit_key(
             hex
         });
     nebula_resource::rate_limit::LimitKey::new(format!("acct:{hex}")).ok()
+}
+
+/// The quota key of a row bound to no credential: the stored row itself,
+/// named alike by every worker, so a cluster-wide limit on it is shared
+/// across workers rather than applied once per process.
+fn row_limit_key(
+    secret: &[u8; 32],
+    scope: &Scope,
+    row_id: &str,
+) -> Option<nebula_resource::rate_limit::LimitKey> {
+    use hmac::{KeyInit as _, Mac as _};
+
+    let mut mac = HmacSha256::new_from_slice(secret).ok()?;
+    mac.update(scope.credential_owner_id().as_bytes());
+    mac.update(&[1]);
+    mac.update(row_id.as_bytes());
+    let digest = mac.finalize().into_bytes();
+    let hex = digest
+        .iter()
+        .take(16)
+        .fold(String::with_capacity(32), |mut hex, byte| {
+            use std::fmt::Write as _;
+            let _ = write!(hex, "{byte:02x}");
+            hex
+        });
+    nebula_resource::rate_limit::LimitKey::new(format!("row:{hex}")).ok()
 }
 
 impl std::fmt::Debug for StoredResourceActivator {
@@ -455,9 +489,13 @@ impl StoredResourceActivator {
                 Ok(outcome) => outcome,
                 Err(_elapsed) => {
                     // The work was dropped midway; the version it read, if
-                    // it got that far, failed to activate in time.
-                    let mut tracked = slot.lock().await;
-                    if let Some(version) = tracked.reading.take() {
+                    // it got that far, failed to activate in time. Recorded
+                    // without waiting: if another activation holds the row
+                    // (this one timed out waiting for it), that one records
+                    // its own outcome.
+                    if let Ok(mut tracked) = slot.try_lock()
+                        && let Some(version) = tracked.reading.take()
+                    {
                         tracked.failed_version = Some(version);
                     }
                     Err(StoredResourceActivationError::TimedOut(self.timeout))
@@ -528,7 +566,7 @@ impl StoredResourceActivator {
         }
         tracked.failed_version = None;
         if let Some(stale) = tracked.active.take() {
-            self.retire(context, stale.activated);
+            self.retire(context, key, stale);
             tracing::debug!(
                 target: "nebula_engine::resource_activation",
                 %resource_id,
@@ -546,20 +584,29 @@ impl StoredResourceActivator {
         });
     }
 
-    /// Retires `activated` from the manager, keeping it for a later sweep
-    /// when the manager cannot take it yet.
-    fn retire(&self, context: &ActivationContext<'_>, activated: ActivatedResource) {
-        if !retire(context, &activated) {
+    /// Retires `stale`, the registration row `row` no longer serves, keeping
+    /// it for a later sweep when the manager cannot take it yet.
+    fn retire(&self, context: &ActivationContext<'_>, row: &(Scope, ResourceId), stale: ActiveRow) {
+        if !retire(context, &stale.activated) {
             self.pending_retirements
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push(activated);
+                .push(PendingRetirement {
+                    row: row.clone(),
+                    stale,
+                });
         }
     }
 
-    /// Retries the retirements the manager pushed back. One whose identity a
-    /// tracked row serves again (re-registered since) is dropped instead:
-    /// removing it would remove that live row.
+    /// Retries the retirements the manager pushed back.
+    ///
+    /// Registry identities include the stored row id, so only the row a
+    /// pending entry came from can register that identity again. An entry
+    /// whose row serves the identity again is dropped rather than removed
+    /// (removing it would remove the live row), releasing the rotation
+    /// references the stale registration held. An entry whose row an
+    /// activation holds right now waits for a sweep that can see it; every
+    /// other entry is retried.
     fn retry_retirements(&self, context: &ActivationContext<'_>) {
         let pending = std::mem::take(
             &mut *self
@@ -570,25 +617,25 @@ impl StoredResourceActivator {
         if pending.is_empty() {
             return;
         }
-        let mut serving = Vec::new();
-        let mut busy = false;
-        for entry in &self.rows {
-            match entry.value().try_lock() {
-                Ok(tracked) => {
-                    serving.extend(tracked.active.as_ref().map(|row| row.activated.clone()));
-                },
-                Err(_) => busy = true,
-            }
-        }
         let mut still_pending = Vec::new();
-        for activated in pending {
-            if serving.contains(&activated) {
-                continue;
-            }
-            // A busy row may be re-registering this identity right now:
-            // wait for a sweep that can see it.
-            if busy || !retire(context, &activated) {
-                still_pending.push(activated);
+        for entry in pending {
+            let serving = match self.rows.get(&entry.row) {
+                None => Some(false),
+                Some(slot) => slot.value().try_lock().ok().map(|tracked| {
+                    tracked
+                        .active
+                        .as_ref()
+                        .is_some_and(|active| active.activated == entry.stale.activated)
+                }),
+            };
+            match serving {
+                Some(true) => release_bindings(context, &entry.stale),
+                None => still_pending.push(entry),
+                Some(false) => {
+                    if !retire(context, &entry.stale.activated) {
+                        still_pending.push(entry);
+                    }
+                },
             }
         }
         self.pending_retirements
@@ -614,7 +661,7 @@ impl StoredResourceActivator {
         let Some(row) = row.filter(|row| row.deleted_at.is_none()) else {
             tracked.failed_version = None;
             if let Some(stale) = tracked.active.take() {
-                self.retire(context, stale.activated);
+                self.retire(context, &(scope.clone(), resource_id), stale);
             }
             return Err(StoredResourceActivationError::NotFound { resource_id });
         };
@@ -632,14 +679,20 @@ impl StoredResourceActivator {
             .filter(|current| current.version == row.version)
         {
             match credentials_current(context, scope, &current.bindings, cancel).await {
-                Ok(true) => return Ok(current.activated.clone()),
+                // Serving at this version: a failure recorded for it earlier
+                // (a check that timed out) no longer holds.
+                Ok(true) => {
+                    let activated = current.activated.clone();
+                    tracked.failed_version = None;
+                    return Ok(activated);
+                },
                 // Refreshed or rotated since: registered again below, with
                 // the credentials as they are now.
                 Ok(false) => {},
                 Err(error) => {
                     tracked.failed_version = Some(row.version);
                     if let Some(stale) = tracked.active.take() {
-                        self.retire(context, stale.activated);
+                        self.retire(context, &(scope.clone(), resource_id), stale);
                     }
                     return Err(error);
                 },
@@ -670,7 +723,7 @@ impl StoredResourceActivator {
             if previous.activated == activated {
                 release_bindings(context, &previous);
             } else {
-                self.retire(context, previous.activated);
+                self.retire(context, &(scope.clone(), resource_id), previous);
             }
         }
         tracing::debug!(
@@ -787,7 +840,8 @@ async fn register_row(
         scope,
         &slot_bindings,
         policy.account_slots(),
-    );
+    )
+    .or_else(|| row_limit_key(limit_key_secret, scope, &row.id));
     let request = RegisterRequest {
         config: ResourceConfigInput::data(row.config.clone()),
         expr_engine: context.expr_engine,

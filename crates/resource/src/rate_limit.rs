@@ -665,6 +665,19 @@ pub struct ResourceLimiter {
     key_waits: Mutex<std::collections::HashMap<LimitKey, KeyWait>>,
     /// Refunds running in the background (see [`release`](Self::release)).
     refunds: Arc<AtomicUsize>,
+    /// Set once a client is [`wrap`](Self::wrap)ped: its calls book the
+    /// quota, so an acquire only honours pauses (see
+    /// [`ready_to_acquire`](Self::ready_to_acquire)).
+    per_call: AtomicBool,
+}
+
+/// What a caller does once its wait is over.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Admission {
+    /// Its slot has come and nothing holds it back.
+    Proceed,
+    /// It waited out a pause past its slot: it books again.
+    Rebook,
 }
 
 /// Bound on refunds one limiter runs in the background at once; past it a
@@ -831,6 +844,7 @@ impl ResourceLimiter {
             reporter,
             paused_until: Mutex::new(None),
             engaged: AtomicBool::new(false),
+            per_call: AtomicBool::new(false),
             waiters: AtomicUsize::new(0),
             store_down: AtomicBool::new(false),
             refusals: AtomicU32::new(0),
@@ -853,11 +867,41 @@ impl ResourceLimiter {
     /// from [`ResourceContext::limits`](crate::ResourceContext::limits).
     #[must_use]
     pub fn wrap<C, T>(self: &Arc<Self>, client: C, throttle: T) -> Limited<C, T> {
+        // Calls through the client now book their own slots; an acquire must
+        // not book a second one for the same provider call.
+        self.per_call.store(true, Ordering::Release);
         Limited {
             client,
             throttle,
             limits: Arc::clone(self),
         }
+    }
+
+    /// What an acquire of the row waits for: a permit, as [`ready`](Self::ready),
+    /// or, once a client has been [`wrap`](Self::wrap)ped, only the end of a
+    /// pause. The wrapped client's calls book the quota one per provider
+    /// call; booking at acquire as well would count every call twice.
+    ///
+    /// # Errors
+    ///
+    /// As [`ready`](Self::ready).
+    pub(crate) async fn ready_to_acquire(
+        &self,
+        deadline: Option<std::time::Instant>,
+    ) -> Result<(), Error> {
+        if !self.per_call.load(Ordering::Acquire) {
+            return self.ready(deadline).await;
+        }
+        let pause = self.pause_remaining();
+        if pause.is_zero() {
+            return Ok(());
+        }
+        if pause > max_wait_until(deadline) {
+            return Err(self.paused_past_deadline(pause));
+        }
+        let _waiting = Waiting::start(self);
+        tokio::time::sleep(pause).await;
+        Ok(())
     }
 
     /// Waits for one permit, never past `deadline`.
@@ -880,8 +924,12 @@ impl ResourceLimiter {
     /// Cancelling during the wait forfeits the booked slot: the limiter errs
     /// on sending less, never more.
     pub async fn ready(&self, deadline: Option<std::time::Instant>) -> Result<(), Error> {
-        let wait = self.account_slot(deadline).await?;
-        self.wait_out(wait, None, deadline).await
+        loop {
+            let wait = self.account_slot(deadline).await?;
+            if self.wait_out(wait, None, deadline).await? == Admission::Proceed {
+                return Ok(());
+            }
+        }
     }
 
     /// Waits for one permit of the per-key limit `dimension` for `value` —
@@ -909,29 +957,28 @@ impl ResourceLimiter {
         // Registered before booking, so a pause recorded after this caller's
         // slot was booked still reaches it when it wakes.
         let _interest = KeyInterest::start(self, &key);
-        if let Some(quota) = self
-            .quota
-            .as_ref()
-            .filter(|quota| std::ptr::addr_eq(Arc::as_ptr(&quota.store), Arc::as_ptr(&keyed.store)))
-        {
-            let wait = self
-                .aligned_slots(quota, keyed, &key, &rate, deadline)
-                .await?;
-            return self.wait_out(wait, Some(&key), deadline).await;
-        }
-        let key_slot = self.book(&keyed.store, &key, &rate, deadline, 0).await?;
-        match self.account_slot(deadline).await {
-            Ok(wait) => {
-                self.wait_out(wait.max(key_slot.wait), Some(&key), deadline)
-                    .await
-            },
-            Err(error) => {
-                // The key's slot goes back while it is still the last one
-                // booked; otherwise it lapses unused, which errs on sending
-                // less.
-                self.release(&keyed.store, &key, &rate, key_slot);
-                Err(error)
-            },
+        loop {
+            let wait = if let Some(quota) = self.quota.as_ref().filter(|quota| {
+                std::ptr::addr_eq(Arc::as_ptr(&quota.store), Arc::as_ptr(&keyed.store))
+            }) {
+                self.aligned_slots(quota, keyed, &key, &rate, deadline)
+                    .await?
+            } else {
+                let key_slot = self.book(&keyed.store, &key, &rate, deadline, 0).await?;
+                match self.account_slot(deadline).await {
+                    Ok(wait) => wait.max(key_slot.wait),
+                    Err(error) => {
+                        // The key's slot goes back while it is still the last
+                        // one booked; otherwise it lapses unused, which errs on
+                        // sending less.
+                        self.release(&keyed.store, &key, &rate, key_slot);
+                        return Err(error);
+                    },
+                }
+            };
+            if self.wait_out(wait, Some(&key), deadline).await? == Admission::Proceed {
+                return Ok(());
+            }
         }
     }
 
@@ -974,7 +1021,10 @@ impl ResourceLimiter {
             if account.allow_at <= key_slot.allow_at {
                 return Ok(account.wait);
             }
-            self.release(&keyed.store, key, rate, key_slot);
+            // Given back before rebooking, while it is still the key's last
+            // slot: the rebook then lands at the account's slot rather than
+            // behind the slot it replaces.
+            let _ = within(deadline, keyed.store.cancel_boxed(key, rate, &key_slot)).await;
             key_slot = match self
                 .book(&keyed.store, key, rate, deadline, account.allow_at)
                 .await
@@ -988,7 +1038,11 @@ impl ResourceLimiter {
             if key_slot.allow_at <= account.allow_at {
                 return Ok(key_slot.wait);
             }
-            self.release(&quota.store, &quota.key, &quota.rate, account);
+            let _ = within(
+                deadline,
+                quota.store.cancel_boxed(&quota.key, &quota.rate, &account),
+            )
+            .await;
         }
         self.release(&keyed.store, key, rate, key_slot);
         self.engage();
@@ -1036,7 +1090,7 @@ impl ResourceLimiter {
         wait: Duration,
         key: Option<&LimitKey>,
         deadline: Option<std::time::Instant>,
-    ) -> Result<(), Error> {
+    ) -> Result<Admission, Error> {
         let pause_now = || {
             let key_pause = key.map_or(Duration::ZERO, |key| self.key_pause_remaining(key));
             self.pause_remaining().max(key_pause)
@@ -1060,32 +1114,33 @@ impl ResourceLimiter {
             if self.waiters.load(Ordering::Acquire) == 0 {
                 self.clear();
             }
-            return Ok(());
+            return Ok(Admission::Proceed);
         }
         let _waiting = Waiting::start(self);
         tokio::time::sleep(wait).await;
-        loop {
-            if let Some(error) = overran() {
-                return Err(error);
-            }
-            // A penalty recorded after this caller booked, by this process
-            // or any other sharing the store, holds it back as well.
-            let Some(shared) = within(deadline, self.shared_penalty(key)).await else {
-                return Err(self.tagged(Error::exhausted(
-                    "rate limit store did not answer before the deadline",
-                    None,
-                )));
-            };
-            let pause = pause_now().max(shared?);
-            if pause.is_zero() {
-                return Ok(());
-            }
-            // The booked slot lapses unused, which errs on sending less.
-            if pause > max_wait_until(deadline) {
-                return Err(self.paused_past_deadline(pause));
-            }
-            tokio::time::sleep(pause).await;
+        if let Some(error) = overran() {
+            return Err(error);
         }
+        // A penalty recorded after this caller booked, by this process or
+        // any other sharing the store, holds it back as well.
+        let Some(shared) = within(deadline, self.shared_penalty(key)).await else {
+            return Err(self.tagged(Error::exhausted(
+                "rate limit store did not answer before the deadline",
+                None,
+            )));
+        };
+        let pause = pause_now().max(shared?);
+        if pause.is_zero() {
+            return Ok(Admission::Proceed);
+        }
+        // The booked slot lapses unused, which errs on sending less.
+        if pause > max_wait_until(deadline) {
+            return Err(self.paused_past_deadline(pause));
+        }
+        // Waited out, then booked again: every caller that booked before the
+        // pause would otherwise run the moment it ends, all together.
+        tokio::time::sleep(pause).await;
+        Ok(Admission::Rebook)
     }
 
     /// Time left of a penalty the limit store holds on the account quota or

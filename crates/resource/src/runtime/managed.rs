@@ -43,6 +43,9 @@ pub(crate) type EntryOf<R> = <<R as Provider>::Topology as Topology<R>>::Entry;
 pub(crate) struct Maintenance {
     cancellation: CancellationToken,
     task: std::sync::Mutex<Option<MaintenanceTask>>,
+    /// Held for a whole warmup, so two warmups of one row (the background
+    /// one and an explicit `warmup_pool`) never count headroom apart.
+    pub(crate) warmup: tokio::sync::Mutex<()>,
 }
 
 struct MaintenanceTask(tokio::task::JoinHandle<()>);
@@ -75,6 +78,7 @@ impl Maintenance {
         Self {
             cancellation,
             task: std::sync::Mutex::new(None),
+            warmup: tokio::sync::Mutex::new(()),
         }
     }
 

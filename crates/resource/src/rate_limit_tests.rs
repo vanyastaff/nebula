@@ -1070,3 +1070,93 @@ async fn background_refunds_are_bounded() {
         "each is abandoned after its budget"
     );
 }
+
+/// Once a client is wrapped, its calls book the quota and an acquire only
+/// honours pauses: one provider call uses one permit, not two.
+#[tokio::test(start_paused = true)]
+async fn a_wrapped_limit_is_booked_per_call_not_per_acquire() {
+    let limits = Arc::new(limiter(per_second(1, 1)));
+    let client = limits.wrap((), NoThrottle);
+    let started = Instant::now();
+    for _ in 0..3 {
+        limits
+            .ready_to_acquire(None)
+            .await
+            .expect("acquire books nothing");
+    }
+    client
+        .run(async |()| Ok::<_, ProviderError>(()))
+        .await
+        .expect("the call books its own slot");
+    assert_eq!(
+        started.elapsed(),
+        Duration::ZERO,
+        "one permit, used by the call"
+    );
+}
+
+/// Callers that booked before a penalty keep their spacing after it: each
+/// books again once the pause is over instead of all running at its end.
+#[tokio::test(start_paused = true)]
+async fn callers_behind_a_penalty_keep_their_spacing() {
+    let limits = Arc::new(limiter(per_second(1, 1)));
+    limits.ready(None).await.expect("the burst passes");
+    let started = Instant::now();
+    let callers: Vec<_> = (0..2)
+        .map(|_| {
+            let limits = Arc::clone(&limits);
+            tokio::spawn(async move {
+                limits.ready(None).await.expect("admitted");
+                started.elapsed()
+            })
+        })
+        .collect();
+    tokio::task::yield_now().await;
+    limits
+        .penalize(Duration::from_secs(5))
+        .await
+        .expect("recorded");
+    let mut done = Vec::new();
+    for caller in callers {
+        done.push(caller.await.unwrap());
+    }
+    done.sort();
+    assert!(done[0] >= Duration::from_secs(5), "{done:?}");
+    assert!(
+        done[1].saturating_sub(done[0]) >= Duration::from_millis(999),
+        "still a second apart after the pause: {done:?}"
+    );
+}
+
+/// Account and key slots align even when both intervals are equal: a
+/// replaced slot still in the future is returned before the rebook, so the
+/// two meet within a round or two instead of chasing each other until the
+/// alignment gives up. (A slot already due cannot be returned, so the
+/// meeting point may be one interval later than ideal: never earlier.)
+#[tokio::test(start_paused = true)]
+async fn equal_account_and_key_intervals_still_align() {
+    let (limits, _) = chat_limiter(per_second(1, 1));
+    limits.ready(None).await.expect("the account's first slot");
+    tokio::time::advance(Duration::from_millis(500)).await;
+    let started = Instant::now();
+    limits
+        .ready_for("chat_id", 42, None)
+        .await
+        .expect("both limits agree on a slot");
+    assert!(
+        started.elapsed() >= Duration::from_millis(500)
+            && started.elapsed() <= Duration::from_secs(1),
+        "admitted at {:?}",
+        started.elapsed()
+    );
+    // And the next call for the chat still keeps both limits' spacing.
+    let first = started.elapsed();
+    limits
+        .ready_for("chat_id", 42, None)
+        .await
+        .expect("the next slot");
+    assert!(
+        started.elapsed().saturating_sub(first) >= Duration::from_secs(1),
+        "a second apart"
+    );
+}
