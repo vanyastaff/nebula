@@ -71,6 +71,7 @@ pub enum CredentialProjectionCompositionError {
     )]
     PostgresStoreUnavailable,
     /// `NEBULA_CRED_DB_MAX_CONNECTIONS` is set but not a positive integer.
+    #[cfg(feature = "postgres")]
     #[error("NEBULA_CRED_DB_MAX_CONNECTIONS must be a positive integer")]
     InvalidStorePoolSize,
     /// The credential-owned projection runtime rejected incomplete parts.

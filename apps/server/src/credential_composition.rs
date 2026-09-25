@@ -110,6 +110,7 @@ pub(crate) enum CredentialCompositionError {
     #[cfg(not(feature = "postgres"))]
     PostgresStoreUnavailable,
     /// `NEBULA_CRED_DB_MAX_CONNECTIONS` is set but not a positive integer.
+    #[cfg(feature = "postgres")]
     #[error("NEBULA_CRED_DB_MAX_CONNECTIONS must be a positive integer")]
     InvalidStorePoolSize,
     #[error("credential refresh transport initialization failed: {0}")]
