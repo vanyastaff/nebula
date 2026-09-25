@@ -22,8 +22,8 @@ use tokio_util::sync::CancellationToken;
 use crate::engine::checkpoint::failure_checkpoint;
 use crate::engine::outcome::{
     FailureOutcome, RetryDecision, apply_failure_recovery, classify_failure,
-    compute_retry_decision, effective_retry_policy, error_is_terminal, next_retry_at,
-    route_failure_edges,
+    compute_retry_decision, effective_retry_policy, error_is_terminal, error_retry_hint,
+    next_retry_at, route_failure_edges,
 };
 use crate::engine::{WorkflowEngine, drain_pending_to_cancelled, mark_node_failed};
 use crate::error::EngineError;
@@ -233,6 +233,7 @@ impl WorkflowEngine {
                 ctx.exec_state,
                 retry_policy_resolved.as_ref(),
                 error_is_terminal(err),
+                error_retry_hint(err),
             )
         } else {
             RetryDecision::Finalize

@@ -258,6 +258,7 @@ impl WorkflowEngine {
                     ctx.exec_state,
                     setup_retry_policy.as_ref(),
                     false,
+                    None,
                 )
             } else {
                 RetryDecision::Finalize

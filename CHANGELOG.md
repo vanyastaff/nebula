@@ -497,6 +497,13 @@ let admitted = recorded.readmit_against(fresh)?;
 
 ### Fixed
 
+- **Node retries honour the attempt's own retry hint.** A retryable
+  `ActionError` carrying a `backoff_hint` (a provider's `Retry-After`, or a
+  resource rate-limit pause surfaced through `ResourceUnavailable::retry_after`)
+  was retried on the policy's backoff alone, burning attempts against a quota
+  that was still closed and failing the node early. The retry delay is now the
+  larger of the policy backoff and the hint, capped at the policy's
+  `max_delay_ms`.
 - **A pool's `max_size` now bounds its row identity, not one registration.**
   A same-identity replacement (credential refresh, new stored version, reload)
   takes over the displaced registration's checkout budget before it is
