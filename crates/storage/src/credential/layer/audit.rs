@@ -131,6 +131,21 @@ impl<S: CredentialPersistence> CredentialPersistence for AuditLayer<S> {
         self.inner.operation_status(selector).await
     }
 
+    async fn get_with_operation_status(
+        &self,
+        selector: &CredentialSelector,
+    ) -> Result<(StoredCredential, Option<CredentialOperationStatus>), CredentialPersistenceError>
+    {
+        let result = self.inner.get_with_operation_status(selector).await;
+        self.observe(&AuditEvent {
+            timestamp: chrono::Utc::now(),
+            credential_id: selector.credential_id().to_string(),
+            operation: AuditOperation::Get,
+            result: audit_result(&result),
+        });
+        result
+    }
+
     async fn get_operational_head(
         &self,
         selector: &CredentialSelector,

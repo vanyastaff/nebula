@@ -311,8 +311,8 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
     {
         self.ensure_source_wired()?;
         let credential_id = selector.credential_id();
-        let stored = self.load_and_verify::<C>(selector).await?;
-        self.ensure_material_available(selector, &stored).await?;
+        let (stored, status) = self.load_and_verify::<C>(selector).await?;
+        Self::admit_status(selector, &stored, status)?;
         let state: C::State = self.deserialize::<C>(credential_id, &stored)?;
         let scheme = C::project(&state);
         Ok(self.materialize_handle::<C>(selector, scheme))
@@ -346,16 +346,19 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
         // The port applies the complete owner-bound selector before returning a
         // physical record, closing the cross-tenant existence oracle before
         // this code can inspect lifecycle state or kind.
-        let physical = self
+        let (physical, status) = self
             .store
-            .get(selector)
+            .get_with_operation_status(selector)
             .await
             .map_err(ResolveError::Store)?;
         reject_tombstoned(&physical)?;
         let StoredCredential::Live(stored) = physical else {
             return Err(ResolveError::Store(CredentialPersistenceError::NotFound));
         };
-        self.ensure_material_available(selector, &stored).await?;
+        let status = status.ok_or(ResolveError::Store(
+            CredentialPersistenceError::CorruptRecord,
+        ))?;
+        Self::admit_status(selector, &stored, status)?;
         reject_persisted_reauth(&stored)?;
 
         let expected_kind = <C::State as CredentialState>::KIND;
@@ -400,9 +403,9 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
             loop {
                 let credential_id = selector.credential_id();
                 let credential_id_text = credential_id.to_string();
-                let stored = self.load_and_verify::<C>(selector).await?;
+                let (stored, status) = self.load_and_verify::<C>(selector).await?;
                 if stored.reauth_required() {
-                    self.ensure_material_available(selector, &stored).await?;
+                    Self::admit_status(selector, &stored, status)?;
                     reject_persisted_reauth(&stored)?;
                 }
                 let state: C::State = self.deserialize::<C>(credential_id, &stored)?;
@@ -448,7 +451,7 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
                 );
 
                 if decision == Decision::Usable {
-                    match self.join_in_flight_refresh(selector, &stored).await? {
+                    match self.join_in_flight_refresh(selector, &stored, status).await? {
                         MaterialAdmission::Available => {
                             let scheme = C::project(&state);
                             return Ok(self.materialize_handle::<C>(selector, scheme));
@@ -491,7 +494,7 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
                         credential_id = %credential_id,
                         "circuit breaker open: too many refresh failures, serving stale-but-valid credential within early-refresh window"
                     );
-                    self.ensure_material_available(selector, &stored).await?;
+                    Self::admit_status(selector, &stored, status)?;
                     let scheme = C::project(&state);
                     return Ok(self.materialize_handle::<C>(selector, scheme));
                 }
@@ -631,7 +634,11 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
                     // unsafe post-provider conflict. Conversely, a material
                     // epoch advance after the atomic recheck supersedes this
                     // attempt before provider contact.
-                    let latest = match resolver.load_and_verify::<C>(&selector_owned).await {
+                    let latest = match resolver
+                        .load_and_verify::<C>(&selector_owned)
+                        .await
+                        .map(|(latest, _)| latest)
+                    {
                         Ok(latest) => latest,
                         Err(error) => {
                             return RefreshDisposition::no_state_change(Err(error));
@@ -760,9 +767,20 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
         selector: &CredentialSelector,
         stored: &StoredLiveCredential,
     ) -> Result<(), ResolveError> {
+        let status = self.store.operation_status(selector).await?;
+        Self::admit_status(selector, stored, status)
+    }
+
+    /// Admit new use of `stored` under `status`, the operation status read
+    /// with it or after it. Existing handles retain their acquired material.
+    fn admit_status(
+        selector: &CredentialSelector,
+        stored: &StoredLiveCredential,
+        status: nebula_storage_port::store::CredentialOperationStatus,
+    ) -> Result<(), ResolveError> {
         use nebula_storage_port::store::CredentialOperationStatus;
 
-        match self.store.operation_status(selector).await? {
+        match status {
             CredentialOperationStatus::InFlight { operation }
             | CredentialOperationStatus::ReconciliationRequired { operation, .. } => {
                 tracing::warn!(
@@ -805,14 +823,17 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
         &self,
         selector: &CredentialSelector,
         stored: &StoredLiveCredential,
+        status: nebula_storage_port::store::CredentialOperationStatus,
     ) -> Result<MaterialAdmission, ResolveError> {
         use nebula_storage_port::store::CredentialOperationKind;
 
         let deadline = tokio::time::Instant::now() + REFRESH_JOIN_WAIT;
         let mut pause = REFRESH_JOIN_FIRST_PAUSE;
         let mut joined = false;
+        // The first check uses the status read with `stored`; later ones re-read it.
+        let mut admission = Self::admit_status(selector, stored, status);
         loop {
-            match self.ensure_material_available(selector, stored).await {
+            match admission {
                 Ok(()) => return Ok(MaterialAdmission::Available),
                 Err(ResolveError::OperationBlocked {
                     operation: CredentialOperationKind::Refresh,
@@ -820,6 +841,7 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
                     joined = true;
                     tokio::time::sleep(pause).await;
                     pause = (pause * 2).min(REFRESH_JOIN_MAX_PAUSE);
+                    admission = self.ensure_material_available(selector, stored).await;
                 },
                 Err(ResolveError::Store(CredentialPersistenceError::VersionConflict {
                     ..
@@ -863,14 +885,22 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
     async fn load_and_verify<C>(
         &self,
         selector: &CredentialSelector,
-    ) -> Result<StoredLiveCredential, ResolveError>
+    ) -> Result<
+        (
+            StoredLiveCredential,
+            nebula_storage_port::store::CredentialOperationStatus,
+        ),
+        ResolveError,
+    >
     where
         C: Credential,
     {
         let credential_id = selector.credential_id();
-        let physical = self
+        // One snapshot: the material and the operation status that admits its
+        // use are read together, so nothing can change between the two.
+        let (physical, status) = self
             .store
-            .get(selector)
+            .get_with_operation_status(selector)
             .await
             .map_err(ResolveError::Store)?;
 
@@ -893,8 +923,11 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
                 actual: stored.state_kind().to_owned(),
             });
         }
+        let status = status.ok_or(ResolveError::Store(
+            CredentialPersistenceError::CorruptRecord,
+        ))?;
 
-        Ok(stored)
+        Ok((stored, status))
     }
 
     /// The single resolver-side decode of persisted state. Every resolution

@@ -377,6 +377,12 @@ memory. Startup diagnostics expose only the backend class and closed error
 taxonomy—database URLs, credentials, and tenant-specific paths are never
 logged.
 
+`NEBULA_CRED_DB_MAX_CONNECTIONS` (default `10`) bounds the PostgreSQL credential
+pool. Every credential admission reads the material and its operation status
+through it in one statement, so it caps how many admissions one process runs
+against PostgreSQL at once; past it admissions queue. A value that is not a
+positive integer aborts startup. It has no effect on SQLite.
+
 Plane-B credential persistence and refresh coordination share the same admitted
 private pool for either supported backend. The server creates a unique
 `nebula-server:<uuid>` replica identity on each process start and retains one

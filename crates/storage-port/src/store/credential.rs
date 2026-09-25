@@ -139,6 +139,29 @@ pub trait CredentialPersistence: Send + Sync + fmt::Debug {
         selector: &CredentialSelector,
     ) -> Result<StoredCredentialOperationalHead, CredentialPersistenceError>;
 
+    /// Load one physical record together with the operation status that
+    /// governs its use, from one backend snapshot.
+    ///
+    /// This is the read a new use of the material is admitted on: the status
+    /// describes exactly the record returned, so no operation or material
+    /// change can slip between the two. The status is `None` for a tombstone.
+    ///
+    /// The default runs [`Self::get`] and then [`Self::operation_status`],
+    /// which is correct but neither atomic nor cheap; backends override it
+    /// with one statement, and pass-through layers forward it.
+    async fn get_with_operation_status(
+        &self,
+        selector: &CredentialSelector,
+    ) -> Result<(StoredCredential, Option<CredentialOperationStatus>), CredentialPersistenceError>
+    {
+        let stored = self.get(selector).await?;
+        let status = match stored {
+            StoredCredential::Live(_) => Some(self.operation_status(selector).await?),
+            StoredCredential::Tombstoned(_) => None,
+        };
+        Ok((stored, status))
+    }
+
     /// List heads and operation statuses from one owner-scoped snapshot.
     async fn list_operational_heads(
         &self,
@@ -246,6 +269,14 @@ where
         selector: &CredentialSelector,
     ) -> Result<StoredCredentialOperationalHead, CredentialPersistenceError> {
         (**self).get_operational_head(selector).await
+    }
+
+    async fn get_with_operation_status(
+        &self,
+        selector: &CredentialSelector,
+    ) -> Result<(StoredCredential, Option<CredentialOperationStatus>), CredentialPersistenceError>
+    {
+        (**self).get_with_operation_status(selector).await
     }
 
     async fn list_operational_heads(

@@ -599,6 +599,66 @@ struct CredentialRow {
     refresh_retry_diagnostic_code: Option<String>,
 }
 
+/// A physical record with the claim that governs its use, read in one
+/// statement for admission (`get_with_operation_status`).
+#[derive(sqlx::FromRow)]
+struct CredentialWithStatusRow {
+    #[sqlx(flatten)]
+    credential: CredentialRow,
+    operation_kind: Option<String>,
+    operation_sentinel: Option<i64>,
+    operation_expires_at: Option<i64>,
+    operation_claim_id: Option<String>,
+    backend_now: i64,
+}
+
+/// Derive a live credential's operation status from its aggregate columns
+/// and its claim row (all `None` when it has none), against `now` read in
+/// the same statement.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the columns of one joined row, decoded in one place for every read that projects them"
+)]
+fn status_from_parts(
+    version: i64,
+    epoch: i64,
+    reauth_raw: i64,
+    kind: Option<String>,
+    sentinel: Option<i64>,
+    expires_at: Option<i64>,
+    claim_id: Option<String>,
+    now: i64,
+) -> Result<CredentialOperationStatus, CredentialPersistenceError> {
+    let reauth_required = match reauth_raw {
+        0 => false,
+        1 => true,
+        _ => return Err(CredentialPersistenceError::CorruptRecord),
+    };
+    let open = || {
+        Ok(CredentialOperationStatus::Open {
+            version: stored_version(version)?,
+            material_epoch: stored_material_epoch(epoch)?,
+            reauth_required,
+        })
+    };
+    let (kind, sentinel, expires_at) = match (kind, sentinel, expires_at) {
+        (None, None, None) => return open(),
+        (Some(kind), Some(sentinel), Some(expires_at)) => (kind, sentinel, expires_at),
+        _ => return Err(CredentialPersistenceError::CorruptRecord),
+    };
+    let operation = CredentialOperationKind::from_wire(&kind)
+        .ok_or(CredentialPersistenceError::CorruptRecord)?;
+    match sentinel {
+        0 if operation == CredentialOperationKind::Refresh || expires_at < now => open(),
+        0 | 1 if expires_at >= now => Ok(CredentialOperationStatus::InFlight { operation }),
+        1 => Ok(CredentialOperationStatus::ReconciliationRequired {
+            operation,
+            incident: stored_incident(claim_id.as_deref())?,
+        }),
+        _ => Err(CredentialPersistenceError::CorruptRecord),
+    }
+}
+
 /// Projection used by management reads. Deliberately has no `data` field, so
 /// sqlx cannot fetch credential material on this path.
 #[derive(sqlx::FromRow)]
@@ -1074,34 +1134,43 @@ impl CredentialPersistence for SqliteCredentialPersistence {
         else {
             return Err(CredentialPersistenceError::NotFound);
         };
-        let reauth_required = match reauth_raw {
-            0 => false,
-            1 => true,
-            _ => return Err(CredentialPersistenceError::CorruptRecord),
+        status_from_parts(
+            version, epoch, reauth_raw, kind, sentinel, expires_at, claim_id, now,
+        )
+    }
+
+    #[tracing::instrument(skip_all, fields(credential.operation = "get_with_operation_status"))]
+    async fn get_with_operation_status(
+        &self,
+        selector: &CredentialSelector,
+    ) -> Result<(StoredCredential, Option<CredentialOperationStatus>), CredentialPersistenceError>
+    {
+        let row: Option<CredentialWithStatusRow> = sqlx::query_as(
+            "SELECT c.id, c.name, c.credential_key, c.data, c.state_kind, c.state_version, \n             c.version, c.material_epoch, c.created_at, c.updated_at, c.expires_at, \n             c.reauth_required, c.metadata, c.record_state, c.tombstoned_at, \n             c.refresh_retry_mode, c.refresh_retry_not_before, c.refresh_retry_phase, \n             c.refresh_retry_kind, c.refresh_retry_diagnostic_code, \n             claim.operation_kind, claim.sentinel AS operation_sentinel, \n             claim.expires_at AS operation_expires_at, claim.claim_id AS operation_claim_id, \n             (CAST(strftime('%s', 'now') AS INTEGER) * 1000 \n              + CAST(substr(strftime('%f', 'now'), 4, 3) AS INTEGER)) AS backend_now \n             FROM credentials AS c \n             LEFT JOIN credential_refresh_claims AS claim \n               ON claim.owner_id = c.owner_id AND claim.credential_id = c.id \n             WHERE c.id = ?1 AND c.owner_id = ?2",
+        )
+        .bind(selector.credential_id().to_string())
+        .bind(selector.owner().as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(read_error)?;
+        let Some(row) = row else {
+            return Err(CredentialPersistenceError::NotFound);
         };
-        let open = || {
-            Ok(CredentialOperationStatus::Open {
-                version: stored_version(version)?,
-                material_epoch: stored_material_epoch(epoch)?,
-                reauth_required,
-            })
+        let status = if row.credential.record_state == "live" {
+            Some(status_from_parts(
+                row.credential.version,
+                row.credential.material_epoch,
+                row.credential.reauth_required,
+                row.operation_kind,
+                row.operation_sentinel,
+                row.operation_expires_at,
+                row.operation_claim_id,
+                row.backend_now,
+            )?)
+        } else {
+            None
         };
-        let (kind, sentinel, expires_at) = match (kind, sentinel, expires_at) {
-            (None, None, None) => return open(),
-            (Some(kind), Some(sentinel), Some(expires_at)) => (kind, sentinel, expires_at),
-            _ => return Err(CredentialPersistenceError::CorruptRecord),
-        };
-        let operation = CredentialOperationKind::from_wire(&kind)
-            .ok_or(CredentialPersistenceError::CorruptRecord)?;
-        match sentinel {
-            0 if operation == CredentialOperationKind::Refresh || expires_at < now => open(),
-            0 | 1 if expires_at >= now => Ok(CredentialOperationStatus::InFlight { operation }),
-            1 => Ok(CredentialOperationStatus::ReconciliationRequired {
-                operation,
-                incident: stored_incident(claim_id.as_deref())?,
-            }),
-            _ => Err(CredentialPersistenceError::CorruptRecord),
-        }
+        Ok((row.credential.into_stored()?, status))
     }
 
     #[tracing::instrument(skip_all, fields(credential.operation = "refresh_snapshot"))]

@@ -481,3 +481,87 @@ async fn rejected_memory_admission_preserves_logical_state() {
     assert_eq!(rows_after, rows_before);
     pool.close().await;
 }
+
+/// The admission read returns the record and the status the separate reads
+/// would, from one statement: open, blocked by an operation, and a tombstone
+/// (which carries no status).
+#[tokio::test]
+async fn admission_read_matches_the_separate_reads() {
+    let store = SqliteCredentialPersistence::connect_memory()
+        .await
+        .expect("ready store");
+    let selector = CredentialSelector::new(
+        CredentialOwner::from_canonical("admission-read-owner"),
+        nebula_core::CredentialId::new(),
+    );
+    store
+        .create(&selector, make_credential(b"material"))
+        .await
+        .expect("create");
+
+    let (stored, status) = store
+        .get_with_operation_status(&selector)
+        .await
+        .expect("admission read");
+    assert_eq!(stored, store.get(&selector).await.expect("get"));
+    assert_eq!(
+        status,
+        Some(store.operation_status(&selector).await.expect("status"))
+    );
+    assert!(matches!(
+        status,
+        Some(CredentialOperationStatus::Open {
+            reauth_required: false,
+            ..
+        })
+    ));
+
+    let repo = store.refresh_claim_repo();
+    let ClaimAttempt::Acquired(claim) = repo
+        .try_claim(
+            &selector,
+            &ReplicaId::new("admission-holder"),
+            Duration::from_secs(30),
+            CredentialOperationIntent::Revoke {
+                material_epoch: CredentialMaterialEpoch::MIN,
+            },
+        )
+        .await
+        .expect("claim")
+    else {
+        panic!("a free credential is claimable");
+    };
+    repo.mark_sentinel(&claim.token)
+        .await
+        .expect("cross the provider boundary");
+    let (_, status) = store
+        .get_with_operation_status(&selector)
+        .await
+        .expect("admission read");
+    assert_eq!(
+        status,
+        Some(CredentialOperationStatus::InFlight {
+            operation: CredentialOperationKind::Revoke,
+        })
+    );
+
+    store
+        .tombstone_revoked_material(&selector, CredentialMaterialEpoch::MIN)
+        .await
+        .expect("revoke finalizes");
+    let (stored, status) = store
+        .get_with_operation_status(&selector)
+        .await
+        .expect("a tombstone is still readable");
+    assert!(matches!(stored, StoredCredential::Tombstoned(_)));
+    assert_eq!(status, None);
+
+    let missing = CredentialSelector::new(
+        CredentialOwner::from_canonical("admission-read-owner"),
+        nebula_core::CredentialId::new(),
+    );
+    assert!(matches!(
+        store.get_with_operation_status(&missing).await,
+        Err(CredentialPersistenceError::NotFound)
+    ));
+}

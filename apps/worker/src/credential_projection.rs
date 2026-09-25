@@ -70,6 +70,9 @@ pub enum CredentialProjectionCompositionError {
         "NEBULA_CRED_DB requests PostgreSQL, but nebula-worker was built without the `postgres` feature"
     )]
     PostgresStoreUnavailable,
+    /// `NEBULA_CRED_DB_MAX_CONNECTIONS` is set but not a positive integer.
+    #[error("NEBULA_CRED_DB_MAX_CONNECTIONS must be a positive integer")]
+    InvalidStorePoolSize,
     /// The credential-owned projection runtime rejected incomplete parts.
     #[error("credential projection runtime construction failed")]
     Projection(#[from] CredentialProjectionRuntimeBuildError),
@@ -191,9 +194,10 @@ async fn compose_first_party_projection_for_database(
         CredentialDatabaseBackend::Postgres => {
             #[cfg(feature = "postgres")]
             {
-                let store = PgCredentialPersistence::connect(database_url)
-                    .await
-                    .map_err(CredentialProjectionCompositionError::Store)?;
+                let store =
+                    PgCredentialPersistence::connect_sized(database_url, credential_pool_size()?)
+                        .await
+                        .map_err(CredentialProjectionCompositionError::Store)?;
                 tracing::info!(
                     backend = backend.as_str(),
                     "credential projection store opened"
@@ -263,6 +267,23 @@ impl AuditSink for TracingAuditSink {
         Ok(())
     }
 }
+
+/// Connections the PostgreSQL credential store may pool, from
+/// `NEBULA_CRED_DB_MAX_CONNECTIONS`; the store default when unset.
+///
+/// Every credential admission reads through this pool, so it bounds how many
+/// run against PostgreSQL at once in this process.
+#[cfg(feature = "postgres")]
+fn credential_pool_size() -> Result<std::num::NonZeroU32, CredentialProjectionCompositionError> {
+    match std::env::var("NEBULA_CRED_DB_MAX_CONNECTIONS") {
+        Err(_) => Ok(nebula_storage::credential::DEFAULT_CREDENTIAL_POOL_SIZE),
+        Ok(raw) => raw
+            .trim()
+            .parse()
+            .map_err(|_| CredentialProjectionCompositionError::InvalidStorePoolSize),
+    }
+}
+
 
 #[cfg(test)]
 mod tests {
