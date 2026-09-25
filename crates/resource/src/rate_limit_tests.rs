@@ -1314,3 +1314,113 @@ async fn key_calls_behind_an_account_pause_keep_their_spacing() {
         "the chat's calls stay a second apart after the pause: {done:?}"
     );
 }
+
+/// A refusal attributed to one quota ends the other quota's run: the call
+/// that quota admitted breaks its streak of consecutive refusals.
+#[tokio::test(start_paused = true)]
+async fn a_refusal_on_one_quota_ends_the_other_quotas_run() {
+    let (limits, _) = chat_limiter(per_second(10_000, 10_000));
+    let chat = Some(("chat_id", "1"));
+    limits
+        .report(Verdict::Throttled { retry_after: None }, chat)
+        .await;
+    limits
+        .report(Verdict::Throttled { retry_after: None }, chat)
+        .await;
+    assert_eq!(limits.refusals.load(Ordering::Relaxed), 2);
+
+    limits
+        .report(Verdict::KeyThrottled { retry_after: None }, chat)
+        .await;
+    assert_eq!(
+        limits.refusals.load(Ordering::Relaxed),
+        0,
+        "a key-level refusal means the account quota admitted the call"
+    );
+    assert_eq!(limits.key_refusals.lock().unwrap().len(), 1);
+
+    limits
+        .report(Verdict::Throttled { retry_after: None }, chat)
+        .await;
+    assert!(
+        limits.key_refusals.lock().unwrap().is_empty(),
+        "an account-level refusal means this key's quota admitted the call"
+    );
+    assert_eq!(limits.refusals.load(Ordering::Relaxed), 1);
+}
+
+/// A limit store whose penalty writes never finish.
+struct StalledPenalties(MemoryLimitStore);
+
+impl ErasedLimitStore for StalledPenalties {
+    fn reserve_boxed<'a>(
+        &'a self,
+        key: &'a LimitKey,
+        rate: &'a Rate,
+        request: ReserveRequest,
+    ) -> std::pin::Pin<
+        Box<dyn Future<Output = Result<Result<Grant, Denied>, LimitStoreError>> + Send + 'a>,
+    > {
+        self.0.reserve_boxed(key, rate, request)
+    }
+
+    fn penalize_boxed<'a>(
+        &'a self,
+        _key: &'a LimitKey,
+        _rate: &'a Rate,
+        _retry_after: Duration,
+        _max_penalty: Duration,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), LimitStoreError>> + Send + 'a>> {
+        Box::pin(std::future::pending())
+    }
+
+    fn cancel_boxed<'a>(
+        &'a self,
+        key: &'a LimitKey,
+        rate: &'a Rate,
+        grant: &'a Grant,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<bool, LimitStoreError>> + Send + 'a>> {
+        self.0.cancel_boxed(key, rate, grant)
+    }
+
+    fn penalty_boxed<'a>(
+        &'a self,
+        key: &'a LimitKey,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<Duration, LimitStoreError>> + Send + 'a>>
+    {
+        self.0.penalty_boxed(key)
+    }
+}
+
+/// Recording a provider refusal cannot hold the call that reported it past
+/// its budget when the shared store stalls; the local pause still holds.
+#[tokio::test(start_paused = true)]
+async fn a_stalled_store_cannot_hold_a_reported_refusal() {
+    let store: Arc<dyn ErasedLimitStore> = Arc::new(StalledPenalties(MemoryLimitStore::new()));
+    let limits = Arc::new(ResourceLimiter::new(
+        Some(Quota::new(
+            store,
+            LimitKey::new("test:row").unwrap(),
+            per_second(100, 100),
+        )),
+        None,
+        Duration::from_mins(1),
+        ResourceKey::new("test.resource").unwrap(),
+        Arc::new(EventBus::new(16)),
+    ));
+    let started = Instant::now();
+    limits
+        .report(
+            Verdict::Throttled {
+                retry_after: Some(Duration::from_secs(30)),
+            },
+            None,
+        )
+        .await;
+    assert_eq!(started.elapsed(), REPORT_BUDGET);
+    let error = limits
+        .ready(Some(std::time::Instant::now()))
+        .await
+        .expect_err("the local pause outlives the abandoned write");
+    assert!(matches!(error.kind(), ErrorKind::Exhausted { .. }));
+}

@@ -687,6 +687,12 @@ const MAX_PENDING_REFUNDS: usize = 32;
 /// How long one background refund may take before it is abandoned.
 const REFUND_BUDGET: Duration = Duration::from_secs(5);
 
+/// How long recording a provider refusal in the shared store may hold the
+/// call that reported it. The local pause is in place before the store is
+/// asked and outlives an abandoned write, so past the budget the call returns
+/// its own outcome and the pause still holds on this process.
+const REPORT_BUDGET: Duration = Duration::from_secs(5);
+
 /// Callers of one key in flight, and the pause recorded for it meanwhile.
 #[derive(Debug, Default)]
 struct KeyWait {
@@ -1388,8 +1394,11 @@ impl ResourceLimiter {
     /// "slow down", a backoff reset otherwise.
     ///
     /// Without a `retry_after` the pause backs off exponentially over
-    /// consecutive refusals, from one second up to the cap. A failure to
-    /// record the pause is logged; it never masks the call's own outcome.
+    /// consecutive refusals, from one second up to the cap; a refusal
+    /// attributed to one quota ends the other's run. A failure to record the
+    /// pause is logged, and recording it in the shared store is bounded by
+    /// [`REPORT_BUDGET`]; neither masks or delays the call's own outcome past
+    /// that bound.
     async fn report(&self, verdict: Verdict, key: Option<(&str, &str)>) {
         // Consecutive refusals are counted per quota: the account's, and each
         // key's apart, so one chat's refusals never lengthen another's pause.
@@ -1412,14 +1421,37 @@ impl ResourceLimiter {
             Verdict::KeyThrottled { retry_after } => (retry_after, true),
         };
         let penalized_key = key.filter(|_| on_key);
-        let refusals = match (penalized_key, &limit_key) {
-            (Some(_), Some(limit_key)) => self.key_refused(limit_key),
-            _ => self.refusals.fetch_add(1, Ordering::Relaxed),
+        // A refusal attributed to one quota means the other one admitted the
+        // call, so that quota's streak of consecutive refusals ends here.
+        let refusals = if let (Some(_), Some(limit_key)) = (penalized_key, &limit_key) {
+            self.refusals.store(0, Ordering::Relaxed);
+            self.key_refused(limit_key)
+        } else {
+            if !on_key && let Some(limit_key) = &limit_key {
+                self.key_refusals
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .remove(limit_key);
+            }
+            self.refusals.fetch_add(1, Ordering::Relaxed)
         };
         let block = retry_after.unwrap_or_else(|| backoff(refusals));
-        let recorded = match penalized_key {
-            Some((dimension, value)) => self.penalize_for(dimension, value, block).await,
-            None => self.penalize(block).await,
+        let recording = async {
+            match penalized_key {
+                Some((dimension, value)) => self.penalize_for(dimension, value, block).await,
+                None => self.penalize(block).await,
+            }
+        };
+        let recorded = match tokio::time::timeout(REPORT_BUDGET, recording).await {
+            Ok(recorded) => recorded,
+            Err(_elapsed) => {
+                tracing::debug!(
+                    target: "nebula_resource::rate_limit",
+                    budget_ms = REPORT_BUDGET.as_millis(),
+                    "recording a provider refusal outlasted its budget; the local pause holds"
+                );
+                return;
+            },
         };
         if let Err(error) = recorded {
             tracing::debug!(

@@ -729,26 +729,37 @@ impl StoredResourceActivator {
 
         // A failure is recorded against the version read, so status reports
         // it as failed rather than never activated.
-        let (activated, bindings) =
-            match register_row(context, scope, &row, &self.limit_key_secret, cancel).await {
-                Ok(registered) => registered,
-                Err(error) => {
-                    tracked.failed_version = Some(row.version);
-                    // A credential that can no longer be resolved (revoked,
-                    // deleted, needing re-authentication) must not keep
-                    // serving through the previous registration, whichever
-                    // slot's change led here.
-                    if matches!(
-                        &error,
-                        StoredResourceActivationError::Credential { source, .. }
-                            if !is_transient(source)
-                    ) && let Some(stale) = tracked.active.take()
-                    {
-                        self.retire(context, &(scope.clone(), resource_id), stale);
-                    }
-                    return Err(error);
-                },
-            };
+        let (activated, bindings) = match register_row(
+            context,
+            scope,
+            &row,
+            &self.limit_key_secret,
+            cancel,
+            RetirementSink {
+                row: (scope.clone(), resource_id),
+                pending: &self.pending_retirements,
+            },
+        )
+        .await
+        {
+            Ok(registered) => registered,
+            Err(error) => {
+                tracked.failed_version = Some(row.version);
+                // A credential that can no longer be resolved (revoked,
+                // deleted, needing re-authentication) must not keep
+                // serving through the previous registration, whichever
+                // slot's change led here.
+                if matches!(
+                    &error,
+                    StoredResourceActivationError::Credential { source, .. }
+                        if !is_transient(source)
+                ) && let Some(stale) = tracked.active.take()
+                {
+                    self.retire(context, &(scope.clone(), resource_id), stale);
+                }
+                return Err(error);
+            },
+        };
         tracked.failed_version = None;
         let previous = tracked.active.replace(ActiveRow {
             version: row.version,
@@ -779,6 +790,7 @@ async fn register_row(
     row: &ResourceRow,
     limit_key_secret: &[u8; 32],
     cancel: &CancellationToken,
+    sink: RetirementSink<'_>,
 ) -> Result<(ActivatedResource, Vec<BoundCredential>), StoredResourceActivationError> {
     let workspace = WorkspaceId::parse(&scope.workspace_id)
         .map_err(|_| StoredResourceActivationError::InvalidTenantScope)?;
@@ -934,6 +946,9 @@ async fn register_row(
         let unclaimed = Unclaimed {
             context,
             activated: &activated,
+            version: row.version,
+            bindings: &bindings,
+            sink,
             claimed: false,
         };
         context
@@ -956,11 +971,25 @@ async fn register_row(
     Ok((activated, bindings))
 }
 
+/// Where a registration that could not be retired yet is kept for the next
+/// sweep, with the stored row it was made for.
+struct RetirementSink<'p> {
+    row: (Scope, ResourceId),
+    pending: &'p std::sync::Mutex<Vec<PendingRetirement>>,
+}
+
 /// A registration no activation has recorded yet; retired when dropped
 /// before it is [`claim`](Self::claim)ed.
+///
+/// When the manager pushes the retirement back, the registration is handed
+/// to the activator's pending retirements instead of being forgotten: this
+/// guard is the only record of it, and every sweep retries those.
 struct Unclaimed<'c, 'a> {
     context: &'c ActivationContext<'a>,
     activated: &'c ActivatedResource,
+    version: u64,
+    bindings: &'c [BoundCredential],
+    sink: RetirementSink<'c>,
     claimed: bool,
 }
 
@@ -973,8 +1002,19 @@ impl Unclaimed<'_, '_> {
 
 impl Drop for Unclaimed<'_, '_> {
     fn drop(&mut self) {
-        if !self.claimed {
-            retire(self.context, self.activated);
+        if !self.claimed && !retire(self.context, self.activated) {
+            self.sink
+                .pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(PendingRetirement {
+                    row: self.sink.row.clone(),
+                    stale: ActiveRow {
+                        version: self.version,
+                        activated: self.activated.clone(),
+                        bindings: self.bindings.to_vec(),
+                    },
+                });
         }
     }
 }
