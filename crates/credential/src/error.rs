@@ -483,6 +483,11 @@ pub enum CredentialError {
     /// the [`CredentialAccessor`](nebula_core::accessor::CredentialAccessor).
     #[error("credential resolution failed")]
     Resolution(Box<nebula_core::CoreError>),
+
+    /// A durable credential operation must finish or be reconciled before
+    /// new material can be issued. Repeating the provider call is unsafe.
+    #[error("credential operation must finish or be reconciled before use")]
+    OperationBlocked,
 }
 
 impl std::fmt::Debug for CredentialError {
@@ -507,6 +512,7 @@ impl std::fmt::Debug for CredentialError {
             Self::SchemeMismatch(_) => "SchemeMismatch",
             Self::InvalidInput => "InvalidInput",
             Self::Resolution(_) => "Resolution",
+            Self::OperationBlocked => "OperationBlocked",
         };
         formatter.write_str(variant)
     }
@@ -546,6 +552,7 @@ impl nebula_error::Classify for CredentialError {
             Self::SchemeMismatch(_) => nebula_error::ErrorCategory::Validation,
             Self::InvalidInput => nebula_error::ErrorCategory::Validation,
             Self::Resolution(s) => nebula_error::Classify::category(s.as_ref()),
+            Self::OperationBlocked => nebula_error::ErrorCategory::Internal,
         }
     }
 
@@ -574,6 +581,7 @@ impl nebula_error::Classify for CredentialError {
             Self::SchemeMismatch(_) => nebula_error::ErrorCode::new("CREDENTIAL:SCHEME_MISMATCH"),
             Self::InvalidInput => nebula_error::ErrorCode::new("CREDENTIAL:INVALID_INPUT"),
             Self::Resolution(_) => nebula_error::ErrorCode::new("CREDENTIAL:RESOLUTION_FAILED"),
+            Self::OperationBlocked => nebula_error::ErrorCode::new("CREDENTIAL:OPERATION_BLOCKED"),
         }
     }
 

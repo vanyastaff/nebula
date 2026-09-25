@@ -19,8 +19,8 @@ use nebula_credential::{
 use nebula_storage_port::{
     CredentialSelector, Scope,
     store::{
-        RefreshAdjudication, RefreshClaimAdjudicationError, RefreshClaimAdjudicator,
-        RefreshOutcomeDecision,
+        CredentialOperationDecision, RefreshAdjudication, RefreshClaimAdjudicationError,
+        RefreshClaimAdjudicator,
     },
 };
 
@@ -103,7 +103,8 @@ impl RefreshClaimAdjudicator for RefusingAdjudicator {
     async fn adjudicate(
         &self,
         _selector: &CredentialSelector,
-        _decision: RefreshOutcomeDecision,
+        _incident: nebula_storage_port::CredentialIncidentRef,
+        _decision: CredentialOperationDecision,
         _evidence: &str,
     ) -> Result<RefreshAdjudication, RefreshClaimAdjudicationError> {
         Err(RefreshClaimAdjudicationError::NotPoisoned)
@@ -242,10 +243,12 @@ impl TestGateway {
             },
             CredentialGatewayCommand::Reconcile {
                 credential_id,
+                incident,
                 decision,
                 evidence,
             } => CredentialCommand::Reconcile {
                 credential_id: Self::credential_id(&credential_id)?,
+                incident,
                 decision,
                 evidence,
             },
@@ -333,6 +336,35 @@ fn map_head(head: nebula_credential::CredentialHead) -> CredentialGatewayRecord 
             },
             nebula_credential::CredentialLifecycleState::ReauthRequired => {
                 CredentialGatewayLifecycleState::ReauthRequired
+            },
+            nebula_credential::CredentialLifecycleState::OperationInFlight { operation } => {
+                CredentialGatewayLifecycleState::OperationInFlight {
+                    operation: match operation {
+                        nebula_credential::CredentialLifecycleOperation::Refresh => {
+                            nebula_storage_port::CredentialOperationKind::Refresh
+                        },
+                        nebula_credential::CredentialLifecycleOperation::Revoke => {
+                            nebula_storage_port::CredentialOperationKind::Revoke
+                        },
+                    },
+                }
+            },
+            nebula_credential::CredentialLifecycleState::ReconciliationRequired {
+                operation,
+                incident,
+            } => CredentialGatewayLifecycleState::ReconciliationRequired {
+                incident,
+                operation: operation.map_or(
+                    nebula_storage_port::CredentialOperationKind::LegacyUnclassified,
+                    |operation| match operation {
+                        nebula_credential::CredentialLifecycleOperation::Refresh => {
+                            nebula_storage_port::CredentialOperationKind::Refresh
+                        },
+                        nebula_credential::CredentialLifecycleOperation::Revoke => {
+                            nebula_storage_port::CredentialOperationKind::Revoke
+                        },
+                    },
+                ),
             },
         },
         display_name: head.display.display_name,
@@ -476,6 +508,9 @@ fn map_service_error(error: CredentialServiceError) -> CredentialGatewayError {
         CredentialServiceError::StateEnvelopeRefused(_) => {
             CredentialGatewayError::StateEnvelopeRefused
         },
+        CredentialServiceError::OperationBlocked { operation } => {
+            CredentialGatewayError::OperationBlocked { operation }
+        },
         CredentialServiceError::TypeUnknown { key } => CredentialGatewayError::TypeUnknown { key },
         CredentialServiceError::CapabilityUnsupported { capability, key } => {
             CredentialGatewayError::CapabilityUnsupported { capability, key }
@@ -515,6 +550,7 @@ fn map_service_error(error: CredentialServiceError) -> CredentialGatewayError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nebula_storage_port::store::CredentialOperationKind;
 
     #[test]
     fn test_gateway_preserves_refresh_retry_advice() {
@@ -574,6 +610,18 @@ mod tests {
                 },
             )),
             CredentialGatewayError::StateEnvelopeRefused,
+        );
+    }
+
+    #[test]
+    fn test_gateway_preserves_blocking_operation() {
+        assert_eq!(
+            map_service_error(CredentialServiceError::OperationBlocked {
+                operation: CredentialOperationKind::Revoke,
+            }),
+            CredentialGatewayError::OperationBlocked {
+                operation: CredentialOperationKind::Revoke,
+            },
         );
     }
 }

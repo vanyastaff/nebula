@@ -24,6 +24,7 @@ mod retry_gate;
 mod scheduler;
 pub mod token_refresh;
 pub mod transport;
+mod write_back;
 
 pub use coordinator::{
     ConfigError, RefreshCoordConfig, RefreshCoordinator, RefreshDisposition, RefreshError,
@@ -45,3 +46,4 @@ pub use transport::{
     RefreshTransport, RefreshTransportError, TokenPostRequest, TokenPostResponse,
     TokenPostResponseError,
 };
+pub(crate) use write_back::write_refreshed;

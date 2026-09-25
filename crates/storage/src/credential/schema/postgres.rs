@@ -168,6 +168,27 @@ const OWNER_QUALIFIED_SENTINEL_EVENT_COLUMNS: [ExpectedColumn; 11] = [
     column("owner_id", "text", false, None),
 ];
 
+const TYPED_SENTINEL_EVENT_COLUMNS: [ExpectedColumn; 13] = [
+    column(
+        "id",
+        "int8",
+        false,
+        Some("nextval('credential_sentinel_events_id_seq'::regclass)"),
+    ),
+    column("credential_id", "text", false, None),
+    column("detected_at", "timestamptz", false, None),
+    column("crashed_holder", "text", false, None),
+    column("generation", "int8", false, None),
+    column("claim_id", "uuid", true, None),
+    column("adjudicated_at", "timestamptz", true, None),
+    column("adjudication_decision", "text", true, None),
+    column("adjudication_evidence", "text", true, None),
+    column("adjudication_evidence_digest", "bytea", true, None),
+    column("owner_id", "text", false, None),
+    column("operation_kind", "text", false, None),
+    column("observed_material_epoch", "int8", true, None),
+];
+
 const PENDING_STATE_COLUMNS: [ExpectedColumn; 7] = [
     column("token_digest", "bytea", false, None),
     column("credential_kind", "text", false, None),
@@ -542,7 +563,9 @@ async fn validate_sentinel_events_relation(
     connection: &mut PgConnection,
     latest: i64,
 ) -> Result<(), CredentialStoreStartupError> {
-    let expected = if latest >= 54 {
+    let expected = if latest >= 57 {
+        &TYPED_SENTINEL_EVENT_COLUMNS[..]
+    } else if latest >= 54 {
         &OWNER_QUALIFIED_SENTINEL_EVENT_COLUMNS[..]
     } else if latest >= 53 {
         &RECONCILED_SENTINEL_EVENT_COLUMNS[..]
@@ -556,10 +579,24 @@ async fn validate_sentinel_events_relation(
     }
 
     let constraints = constraint_shapes(connection, "credential_sentinel_events").await?;
-    if !constraints_match(
-        &constraints,
-        &[("credential_sentinel_events_pkey", "p", "PRIMARY KEY (id)")],
-    ) {
+    let expected_constraints: &[(&str, &str, &str)] = if latest >= 57 {
+        &[
+            (
+                "credential_sentinel_events_operation_epoch_check",
+                "c",
+                "CHECK (operation_kind = 'revoke'::text AND observed_material_epoch IS NOT NULL OR (operation_kind = ANY (ARRAY['refresh'::text, 'legacy_unclassified'::text])) AND observed_material_epoch IS NULL)",
+            ),
+            (
+                "credential_sentinel_events_operation_kind_check",
+                "c",
+                "CHECK (operation_kind = ANY (ARRAY['refresh'::text, 'revoke'::text, 'legacy_unclassified'::text]))",
+            ),
+            ("credential_sentinel_events_pkey", "p", "PRIMARY KEY (id)"),
+        ]
+    } else {
+        &[("credential_sentinel_events_pkey", "p", "PRIMARY KEY (id)")]
+    };
+    if !constraints_match(&constraints, expected_constraints) {
         return unsupported(AdmissionReason::InvalidSentinelEventsRelation);
     }
 

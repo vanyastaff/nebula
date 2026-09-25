@@ -11,6 +11,38 @@ changes are expected between minor releases — call them out here.
 
 ### Breaking
 
+- **Typed credential operation recovery advances development packages to 0.19.0
+  in lockstep.** Claims persist refresh or revoke intent before provider dispatch;
+  revoke pins the material epoch and has its own reconciliation decisions.
+  Credential persistence adds authoritative aggregate/operation snapshots, and
+  technical claim/adjudication ports require the operation-specific inputs.
+  Update exact-version pins and implementations together. HTTP reconciliation
+  requests without `operation` retain their refresh meaning; revoke decisions
+  require `operation: "revoke"`. SDK lifecycle responses expose in-flight and
+  reconciliation-required states without internal claim authority.
+
+  Reconciliation names the incident it resolves. `reconciliation_required`
+  lifecycle states carry an `incident` id, and the reconcile request requires
+  it (`ReconcileCredentialRequest::new(incident, decision, evidence)` in the
+  SDK, now `#[non_exhaustive]`; `RefreshClaimAdjudicator::adjudicate` takes a
+  `CredentialIncidentRef`). A decision resent after a lost acknowledgement is
+  answered from its own incident and can no longer resolve a newer incident on
+  the same credential; one naming another incident is refused with 409
+  `credential-reconciliation-stale-incident`. The resolved-set replay rule is
+  removed.
+
+  A refresh write-back re-bases onto a concurrent display-only edit instead of
+  failing after the provider rotated the token, in both the resolver and the
+  management refresh path. A projection that finds a refresh crossing the
+  provider boundary waits up to five seconds for it and serves the refreshed
+  material, instead of failing immediately with `operation_blocked`.
+
+  Stop old credential writers before applying migration 0057 and restart with
+  the new runtime. Historical claims cannot be reliably classified as refresh
+  or revoke: unresolved legacy incidents remain blocked and reject typed
+  adjudication. Explicitly delete the affected credential and acquire a new
+  credential id after verifying the provider state. This change does not yet
+  provide durable acquisition reservations or command receipts.
 - **Durable credential reauthentication advances development packages to 0.18.0
   in lockstep.** Refresh claims and sentinel incidents are owner-qualified, and
   threshold escalation now records the incident and advances the credential to

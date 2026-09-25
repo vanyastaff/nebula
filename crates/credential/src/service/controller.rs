@@ -13,8 +13,8 @@ use nebula_core::{CredentialId, CredentialKey, Permission, ServiceAccountId, Use
 use nebula_storage_port::{
     CredentialOwner, CredentialSelector, Scope,
     store::{
-        RefreshAdjudication, RefreshClaimAdjudicationError, RefreshClaimAdjudicator,
-        RefreshOutcomeDecision,
+        CredentialIncidentRef, CredentialOperationDecision, RefreshAdjudication,
+        RefreshClaimAdjudicationError, RefreshClaimAdjudicator, RevokeOutcomeDecision,
     },
 };
 use serde_json::Value;
@@ -281,20 +281,22 @@ pub enum CredentialCommand {
         /// Opaque Plane-A authentication binding for pending state.
         authentication_binding: CredentialAuthenticationBinding,
     },
-    /// Resolve a poisoned refresh claim with the provider outcome an operator
-    /// established.
+    /// Resolve a poisoned provider-operation claim with the outcome an
+    /// operator established.
     ///
-    /// The command carries the evidence the operator observed, never an
-    /// incident identity or a reconciliation token: the resolved set of a
-    /// credential is a many-incident set, so no single incident can be named on
-    /// the path that must accept a replay, and identity is therefore the wrong
-    /// anchor. `(decision, evidence digest)` is what the durable adjudication
-    /// compares.
+    /// The command names the incident it resolves, as published in the
+    /// credential's `ReconciliationRequired` lifecycle state. A replay after a
+    /// lost acknowledgement names the same incident and is answered from that
+    /// incident's record; it can never resolve a newer incident on the same
+    /// credential. `(decision, evidence digest)` is what the durable
+    /// adjudication compares within that incident.
     Reconcile {
-        /// Credential whose refresh claim is poisoned.
+        /// Credential whose provider-operation claim is poisoned.
         credential_id: CredentialId,
-        /// What the provider side did for the unobserved refresh.
-        decision: RefreshOutcomeDecision,
+        /// The incident this decision was established for.
+        incident: CredentialIncidentRef,
+        /// Operation-specific provider outcome.
+        decision: CredentialOperationDecision,
         /// Operator-supplied, secret-free note recording why the outcome is now
         /// known. Digested and persisted on the incident row; never rendered by
         /// `Debug`.
@@ -579,17 +581,18 @@ impl CredentialController {
             },
             CredentialCommand::Reconcile {
                 credential_id,
+                incident,
                 decision,
                 evidence,
             } => CredentialCommandResult::Reconciled(
-                self.reconcile(&scope, &credential_id, decision, &evidence)
+                self.reconcile(&scope, &credential_id, incident, decision, &evidence)
                     .await?,
             ),
         };
         Ok(result)
     }
 
-    /// Adjudicate one poisoned refresh claim, with the span, the outcome
+    /// Adjudicate one poisoned provider-operation claim, with the span, the outcome
     /// counter, and the audit observation the privileged path owes its
     /// operators.
     ///
@@ -606,6 +609,7 @@ impl CredentialController {
         skip_all,
         fields(
             credential_id = %credential_id,
+            incident = %incident,
             decision = decision.as_str(),
             outcome = tracing::field::Empty,
         )
@@ -614,21 +618,27 @@ impl CredentialController {
         &self,
         scope: &TenantScope,
         credential_id: &CredentialId,
-        decision: RefreshOutcomeDecision,
+        incident: CredentialIncidentRef,
+        decision: CredentialOperationDecision,
         evidence: &str,
     ) -> Result<RefreshAdjudication, CredentialControllerError> {
-        // Preserve the live-record gate used by sibling management commands,
-        // then carry the same owner through the adjudication predicate. The
-        // port never accepts a bare globally unique id as tenant authority.
-        self.service.get(scope, &credential_id.to_string()).await?;
+        // The owner-qualified selector is the authority boundary. Read the
+        // physical aggregate rather than the live management projection: a
+        // successful revoke adjudication atomically tombstones the row, and an
+        // identical retry after a lost acknowledgement must still reach the
+        // recorded resolution. This read still preserves the established
+        // absent/wrong-owner NotFound and store-unavailable semantics.
         let selector = CredentialSelector::new(
             CredentialOwner::from_canonical(scope.owner_id()),
             *credential_id,
         );
+        self.service.store.get(&selector).await.map_err(|error| {
+            CredentialService::map_store_err_for(&credential_id.to_string(), error)
+        })?;
 
         let adjudication = self
             .adjudicator
-            .adjudicate(&selector, decision, evidence)
+            .adjudicate(&selector, incident, decision, evidence)
             .await;
         let outcome = if adjudication.is_ok() {
             CredentialMetrics::OUTCOME_SUCCESS
@@ -638,6 +648,14 @@ impl CredentialController {
         tracing::Span::current().record("outcome", outcome);
         self.count_reconciliation(outcome);
         let adjudication = adjudication?;
+        if adjudication.changed
+            && matches!(
+                adjudication.decision,
+                CredentialOperationDecision::Revoke(RevokeOutcomeDecision::ProviderRevoked)
+            )
+        {
+            self.service.observer.on_revoke(credential_id);
+        }
         self.record_reconciliation_audit(credential_id);
         Ok(adjudication)
     }

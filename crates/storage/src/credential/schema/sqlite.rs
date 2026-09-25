@@ -160,6 +160,22 @@ const OWNER_QUALIFIED_SENTINEL_EVENT_SHAPE: [ExpectedColumnShape; 11] = [
     column("adjudication_evidence_digest", "BLOB", false, None, 0),
 ];
 
+const TYPED_SENTINEL_EVENT_SHAPE: [ExpectedColumnShape; 13] = [
+    column("id", "INTEGER", false, None, 1),
+    column("owner_id", "TEXT", true, None, 0),
+    column("credential_id", "TEXT", true, None, 0),
+    column("detected_at", "INTEGER", true, None, 0),
+    column("crashed_holder", "TEXT", true, None, 0),
+    column("generation", "INTEGER", true, None, 0),
+    column("claim_id", "TEXT", false, None, 0),
+    column("adjudicated_at", "INTEGER", false, None, 0),
+    column("adjudication_decision", "TEXT", false, None, 0),
+    column("adjudication_evidence", "TEXT", false, None, 0),
+    column("adjudication_evidence_digest", "BLOB", false, None, 0),
+    column("operation_kind", "TEXT", true, None, 0),
+    column("observed_material_epoch", "INTEGER", false, None, 0),
+];
+
 const PENDING_STATE_SHAPE: [ExpectedColumnShape; 7] = [
     column("token_digest", "BLOB", true, None, 1),
     column("credential_kind", "TEXT", true, None, 0),
@@ -453,7 +469,9 @@ async fn validate_sentinel_events_relation(
     latest: i64,
 ) -> Result<(), CredentialStoreStartupError> {
     let columns = table_shape(connection, "credential_sentinel_events").await?;
-    let expected = if latest >= 54 {
+    let expected = if latest >= 57 {
+        TYPED_SENTINEL_EVENT_SHAPE.as_slice()
+    } else if latest >= 54 {
         OWNER_QUALIFIED_SENTINEL_EVENT_SHAPE.as_slice()
     } else if latest >= 53 {
         RECONCILED_SENTINEL_EVENT_SHAPE.as_slice()
@@ -464,6 +482,36 @@ async fn validate_sentinel_events_relation(
     };
     if !matches_shape(&columns, expected) {
         return unsupported(AdmissionReason::InvalidSentinelEventsRelation);
+    }
+
+    if latest >= 57 {
+        let table_sql: Option<String> = sqlx::query_scalar(
+            "SELECT sql FROM sqlite_schema
+             WHERE type = 'table' AND name = 'credential_sentinel_events'",
+        )
+        .fetch_optional(&mut *connection)
+        .await
+        .map_err(|_| CredentialStoreStartupError::Unavailable)?
+        .flatten();
+        let Some(table_sql) = table_sql else {
+            return unsupported(AdmissionReason::InvalidSentinelEventsRelation);
+        };
+        let normalized = normalize_schema_sql(&table_sql);
+        let required = [
+            "CHECK (operation_kind IN ('refresh', 'revoke', 'legacy_unclassified'))",
+            "CHECK (
+                (operation_kind = 'revoke' AND observed_material_epoch IS NOT NULL)
+                OR (operation_kind IN ('refresh', 'legacy_unclassified')
+                    AND observed_material_epoch IS NULL)
+            )",
+        ];
+        if normalized.matches("check(").count() != required.len()
+            || required
+                .iter()
+                .any(|check| normalized.matches(&normalize_schema_sql(check)).count() != 1)
+        {
+            return unsupported(AdmissionReason::InvalidSentinelEventsRelation);
+        }
     }
 
     let indexes = sqlx::query("PRAGMA index_list('credential_sentinel_events')")

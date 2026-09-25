@@ -7,11 +7,12 @@
 //! `RefreshInFlight` row is durable poison, and reclaim accounting is a single
 //! atomic port operation so evidence cannot be overwritten or recorded twice.
 //! Errors are a closed, payload-free taxonomy so driver diagnostics and
-//! persisted identifiers cannot cross the adapter boundary. The one persisted
-//! identifier allowed to cross is the recorded evidence digest, a SHA-256 that
-//! is the durable half of the reconciliation retry identity: secret-free, so
-//! it is exposed through [`RefreshAdjudication::evidence_digest`] and the
-//! recorded pair on
+//! persisted identifiers cannot cross the adapter boundary. Two persisted
+//! identifiers are allowed to cross, and together they are the reconciliation
+//! retry identity. [`CredentialIncidentRef`] names the incident a decision
+//! resolves; it is the UUID of an already-expired claim and never its fencing
+//! generation. The recorded evidence digest is a secret-free SHA-256, exposed
+//! through [`RefreshAdjudication::evidence_digest`] and the recorded pair on
 //! [`RefreshClaimAdjudicationError::EvidenceConflict`] so a client that lost an
 //! acknowledgement can confirm what is on record.
 //!
@@ -59,6 +60,149 @@ use std::time::Duration;
 use crate::{CredentialMaterialEpoch, CredentialSelector, CredentialVersion};
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
+
+/// Provider-side credential operation serialized by the durable claim.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CredentialOperationKind {
+    /// Renewable material refresh.
+    Refresh,
+    /// Provider-side credential revocation.
+    Revoke,
+    /// A pre-operation-kind row retained by a rolling schema upgrade.
+    ///
+    /// This value is read-only and cannot be requested by a new claim or
+    /// resolved by typed adjudication.
+    LegacyUnclassified,
+}
+
+impl CredentialOperationKind {
+    /// Stable database spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Refresh => "refresh",
+            Self::Revoke => "revoke",
+            Self::LegacyUnclassified => "legacy_unclassified",
+        }
+    }
+
+    /// Parse a database spelling.
+    #[must_use]
+    pub fn from_wire(value: &str) -> Option<Self> {
+        match value {
+            "refresh" => Some(Self::Refresh),
+            "revoke" => Some(Self::Revoke),
+            "legacy_unclassified" => Some(Self::LegacyUnclassified),
+            _ => None,
+        }
+    }
+}
+
+/// Immutable intent captured before provider dispatch.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CredentialOperationIntent {
+    /// Refresh uses the existing tokenless write protocol.
+    Refresh,
+    /// Revoke is fenced by the material authority observed before dispatch.
+    Revoke {
+        /// Material epoch that must still be current when the claim is acquired.
+        material_epoch: CredentialMaterialEpoch,
+    },
+}
+
+impl CredentialOperationIntent {
+    /// Operation kind persisted with the claim.
+    #[must_use]
+    pub const fn kind(self) -> CredentialOperationKind {
+        match self {
+            Self::Refresh => CredentialOperationKind::Refresh,
+            Self::Revoke { .. } => CredentialOperationKind::Revoke,
+        }
+    }
+
+    /// Revoke fence, absent for refresh.
+    #[must_use]
+    pub const fn material_epoch(self) -> Option<CredentialMaterialEpoch> {
+        match self {
+            Self::Refresh => None,
+            Self::Revoke { material_epoch } => Some(material_epoch),
+        }
+    }
+}
+
+/// Authoritative aggregate and operation availability projection.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CredentialOperationStatus {
+    /// The aggregate is live and carries no blocking critical provider operation.
+    Open {
+        /// Current aggregate version.
+        version: CredentialVersion,
+        /// Current material authority.
+        material_epoch: CredentialMaterialEpoch,
+        /// Whether interactive reauthorization is required.
+        reauth_required: bool,
+    },
+    /// A provider operation owns the credential claim.
+    InFlight {
+        /// Immutable operation kind recorded at claim acquisition.
+        operation: CredentialOperationKind,
+    },
+    /// An expired provider operation requires explicit adjudication.
+    ReconciliationRequired {
+        /// Immutable operation kind, or legacy-unclassified after upgrade.
+        operation: CredentialOperationKind,
+        /// The incident an adjudication must name to resolve this state.
+        incident: CredentialIncidentRef,
+    },
+}
+
+/// Opaque identity of one ambiguous provider-operation incident.
+///
+/// Reconciliation names the incident it resolves, so a retried decision after
+/// a lost acknowledgement can only reach the incident it was made for: once
+/// that incident is resolved, a later incident on the same credential is a
+/// different identity, and a stale retry is refused rather than applied to it.
+///
+/// The value is the expired claim's UUID. The claim is dead by the time it is
+/// visible here — expired claims cannot heartbeat, mark a sentinel, or write
+/// back — so exposing it grants no claim authority; the claim generation, the
+/// fencing half of [`ClaimToken`], is never exposed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+pub struct CredentialIncidentRef(Uuid);
+
+impl CredentialIncidentRef {
+    /// Wrap a persisted incident identity.
+    #[must_use]
+    pub const fn from_uuid(id: Uuid) -> Self {
+        Self(id)
+    }
+
+    /// The persisted incident identity.
+    #[must_use]
+    pub const fn as_uuid(self) -> Uuid {
+        self.0
+    }
+}
+
+impl std::fmt::Display for CredentialIncidentRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.hyphenated().fmt(f)
+    }
+}
+
+impl CredentialOperationStatus {
+    /// Return the operation blocking ordinary availability, when present.
+    #[must_use]
+    pub const fn blocking_operation(self) -> Option<CredentialOperationKind> {
+        match self {
+            Self::Open { .. } => None,
+            Self::InFlight { operation } | Self::ReconciliationRequired { operation, .. } => {
+                Some(operation)
+            },
+        }
+    }
+}
 
 /// Stable identifier for a Nebula replica process. Bounded length so it
 /// cannot bloat audit-event payloads or span attributes.
@@ -142,6 +286,8 @@ pub enum ClaimAttempt {
     OutcomeUnknown {
         /// When the poisoned claim expired.
         expired_at: DateTime<Utc>,
+        /// Immutable kind of the operation whose result is unknown.
+        operation: CredentialOperationKind,
     },
 }
 
@@ -176,6 +322,17 @@ pub enum RefreshClaimError {
     /// until a [`RefreshClaimAdjudicator`] records its provider outcome.
     #[error("refresh claim release refused — an unresolved sentinel incident exists")]
     ReleaseRefused,
+    /// Revoke acquisition observed a different material authority.
+    #[error("credential operation material epoch conflict: expected {expected}, got {actual}")]
+    MaterialEpochConflict {
+        /// Epoch supplied by the caller.
+        expected: CredentialMaterialEpoch,
+        /// Epoch stored by the aggregate.
+        actual: CredentialMaterialEpoch,
+    },
+    /// The owner-qualified aggregate is absent or terminal.
+    #[error("credential operation aggregate is unavailable")]
+    AggregateUnavailable,
 }
 
 /// Sentinel mark applied to an in-flight refresh row (sub-spec §3.4).
@@ -212,6 +369,8 @@ pub enum ExpiredClaim {
         previous_holder: ReplicaId,
         /// Generation whose provider outcome is unknown.
         previous_generation: u64,
+        /// Immutable provider operation recorded by the claim.
+        operation: CredentialOperationKind,
         /// Number of distinct incidents inside the configured rolling window.
         event_count: u32,
         /// Durable aggregate decision committed with the incident accounting.
@@ -311,6 +470,7 @@ pub trait RefreshClaimStore: Send + Sync + 'static {
         selector: &CredentialSelector,
         holder: &ReplicaId,
         ttl: Duration,
+        intent: CredentialOperationIntent,
     ) -> Result<ClaimAttempt, RefreshClaimError>;
 
     /// Extend the TTL of an existing claim, replacing `expires_at` with
@@ -388,12 +548,73 @@ pub trait RefreshClaimReclaimer: Send + Sync + 'static {
 /// unknown outcome is exactly the state being resolved.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RefreshOutcomeDecision {
-    /// The provider applied the refresh; the credential's refreshed material
-    /// is durable and the credential may be used again.
+    /// The provider applied the refresh.
+    ///
+    /// Recording this clears the poison and installs nothing: whatever
+    /// material is stored stays. When the refresh write-back did not commit,
+    /// that is the pre-refresh material, and for a provider that rotates its
+    /// refresh token the next refresh fails and escalates to reauthorization.
     ProviderApplied,
     /// The provider never applied the refresh; the previously stored material
     /// stands and the credential may be used again.
     ProviderNotApplied,
+}
+
+/// What the provider did for an ambiguous revoke.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RevokeOutcomeDecision {
+    /// The provider revoked the credential.
+    ProviderRevoked,
+    /// The provider did not revoke the credential.
+    ProviderNotRevoked,
+}
+
+/// Operation-specific resolution of an ambiguous provider outcome.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CredentialOperationDecision {
+    /// Refresh outcome.
+    Refresh(RefreshOutcomeDecision),
+    /// Revoke outcome.
+    Revoke(RevokeOutcomeDecision),
+}
+
+impl CredentialOperationDecision {
+    /// Operation kind this decision can resolve.
+    #[must_use]
+    pub const fn kind(self) -> CredentialOperationKind {
+        match self {
+            Self::Refresh(_) => CredentialOperationKind::Refresh,
+            Self::Revoke(_) => CredentialOperationKind::Revoke,
+        }
+    }
+
+    /// Stable database spelling within its operation kind.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Refresh(decision) => decision.as_str(),
+            Self::Revoke(RevokeOutcomeDecision::ProviderRevoked) => "provider_revoked",
+            Self::Revoke(RevokeOutcomeDecision::ProviderNotRevoked) => "provider_not_revoked",
+        }
+    }
+
+    /// Parse a database spelling under the recorded operation kind.
+    #[must_use]
+    pub fn from_wire(operation: CredentialOperationKind, value: &str) -> Option<Self> {
+        match operation {
+            CredentialOperationKind::Refresh => {
+                RefreshOutcomeDecision::from_wire(value).map(Self::Refresh)
+            },
+            CredentialOperationKind::Revoke => match value {
+                "provider_revoked" => Some(Self::Revoke(RevokeOutcomeDecision::ProviderRevoked)),
+                "provider_not_revoked" => {
+                    Some(Self::Revoke(RevokeOutcomeDecision::ProviderNotRevoked))
+                },
+                _ => None,
+            },
+            CredentialOperationKind::LegacyUnclassified => None,
+        }
+    }
 }
 
 impl RefreshOutcomeDecision {
@@ -430,7 +651,7 @@ impl RefreshOutcomeDecision {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RefreshAdjudication {
     /// The decision now on record for the credential.
-    pub decision: RefreshOutcomeDecision,
+    pub decision: CredentialOperationDecision,
     /// Whether this call recorded the decision.
     ///
     /// `false` means the identical `(evidence, decision)` pair was already on
@@ -455,7 +676,7 @@ impl RefreshAdjudication {
     /// the struct is `#[non_exhaustive]`.
     #[must_use]
     pub const fn new(
-        decision: RefreshOutcomeDecision,
+        decision: CredentialOperationDecision,
         changed: bool,
         evidence_digest: [u8; 32],
     ) -> Self {
@@ -498,27 +719,44 @@ pub enum RefreshClaimAdjudicationError {
     /// [`MAX_ADJUDICATION_EVIDENCE_BYTES`].
     #[error("refresh claim adjudication evidence is invalid")]
     InvalidEvidence,
-    /// The credential holds no poisoned claim and no recorded resolution, so
-    /// there is nothing to adjudicate.
+    /// The credential holds no poisoned claim, and the named incident has no
+    /// recorded resolution, so there is nothing to adjudicate.
     #[error("refresh claim is not poisoned")]
     NotPoisoned,
-    /// A resolution is already on record for the incident this claim resolves,
-    /// and the recommitted evidence or decision differs from it.
+    /// The named incident is neither the credential's current poisoned claim
+    /// nor a resolved incident of this credential.
+    ///
+    /// The credential is poisoned by a different incident. The typical cause is
+    /// a retry, after a lost acknowledgement, of a decision whose own incident
+    /// was already resolved before a newer one arose: the decision described
+    /// the old incident and must not be applied to the new one. Read the
+    /// credential's current incident and establish its outcome separately.
+    #[error("refresh claim adjudication names a stale incident")]
+    StaleIncident,
+    /// A resolution is already on record for the named incident, and the
+    /// recommitted evidence or decision differs from it.
     ///
     /// The payload stays out of `Display` — the taxonomy's payload-free
     /// discipline is unchanged — but the pair the comparison refused against
     /// is the one persisted identifier this port exposes: a client that lost
-    /// the recorded identity cannot otherwise name what is on record. In the
-    /// claim-keyed comparison it is the incident's own recorded resolution; in
-    /// the resolved-set comparison it is the newest resolution on record for
-    /// the credential.
+    /// the recorded identity cannot otherwise name what is on record. It is
+    /// the named incident's own recorded resolution.
     #[error("refresh claim adjudication conflicts with the recorded resolution")]
     EvidenceConflict {
         /// SHA-256 of the recorded evidence this request conflicted with.
         recorded_digest: [u8; 32],
         /// The recorded decision this request conflicted with.
-        recorded_decision: RefreshOutcomeDecision,
+        recorded_decision: CredentialOperationDecision,
     },
+    /// The decision does not match the immutable operation kind on the claim.
+    #[error("credential operation adjudication kind mismatch")]
+    OperationMismatch {
+        /// Operation recorded on the poisoned claim.
+        recorded_operation: CredentialOperationKind,
+    },
+    /// The credential's material authority changed after revoke acquisition.
+    #[error("credential operation adjudication material epoch conflict")]
+    MaterialEpochConflict,
 }
 
 /// Privileged reconciliation of a poisoned refresh claim.
@@ -531,8 +769,16 @@ pub enum RefreshClaimAdjudicationError {
 /// sentinel incident it resolves.
 #[async_trait::async_trait]
 pub trait RefreshClaimAdjudicator: Send + Sync + 'static {
-    /// Record `decision` as the resolution of `selector`'s poisoned
-    /// claim, or of the resolution already on record for it.
+    /// Record `decision` as the resolution of `incident`, one of `selector`'s
+    /// ambiguous provider operations.
+    ///
+    /// `incident` is the identity published in
+    /// [`CredentialOperationStatus::ReconciliationRequired`]. The lookup is
+    /// ordered so a retry can never reach a different incident: a resolution
+    /// already on record for `incident` is compared first; otherwise `incident`
+    /// must be the credential's current poisoned claim; any other poisoned
+    /// claim answers [`RefreshClaimAdjudicationError::StaleIncident`] and is
+    /// left untouched.
     ///
     /// `evidence` is an operator-supplied, secret-free note recording *why*
     /// the outcome is now known — a provider support ticket, a reconciliation
@@ -554,7 +800,9 @@ pub trait RefreshClaimAdjudicator: Send + Sync + 'static {
     /// # Errors
     ///
     /// [`RefreshClaimAdjudicationError::NotPoisoned`] when the credential is
-    /// neither poisoned nor already resolved;
+    /// not poisoned and `incident` has no recorded resolution;
+    /// [`RefreshClaimAdjudicationError::StaleIncident`] when the credential is
+    /// poisoned by an incident other than `incident`;
     /// [`RefreshClaimAdjudicationError::InvalidEvidence`] when `evidence` is
     /// empty or over [`MAX_ADJUDICATION_EVIDENCE_BYTES`];
     /// [`RefreshClaimAdjudicationError::EvidenceConflict`] when the recommitted
@@ -565,7 +813,8 @@ pub trait RefreshClaimAdjudicator: Send + Sync + 'static {
     async fn adjudicate(
         &self,
         selector: &CredentialSelector,
-        decision: RefreshOutcomeDecision,
+        incident: CredentialIncidentRef,
+        decision: CredentialOperationDecision,
         evidence: &str,
     ) -> Result<RefreshAdjudication, RefreshClaimAdjudicationError>;
 }
@@ -575,9 +824,11 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        MAX_ADJUDICATION_EVIDENCE_BYTES, RefreshClaimAdjudicationError, RefreshClaimError,
-        RefreshOutcomeDecision, SentinelEscalationPolicy, SentinelEscalationPolicyError,
+        CredentialOperationDecision, CredentialOperationKind, MAX_ADJUDICATION_EVIDENCE_BYTES,
+        RefreshClaimAdjudicationError, RefreshClaimError, RefreshOutcomeDecision,
+        SentinelEscalationPolicy, SentinelEscalationPolicyError,
     };
+    use crate::CredentialMaterialEpoch;
 
     /// Every variant renders its own message.
     ///
@@ -599,11 +850,24 @@ mod tests {
                 RefreshClaimError::ReleaseRefused,
                 "refresh claim release refused — an unresolved sentinel incident exists",
             ),
+            (
+                RefreshClaimError::MaterialEpochConflict {
+                    expected: CredentialMaterialEpoch::MIN,
+                    actual: CredentialMaterialEpoch::MIN,
+                },
+                "credential operation material epoch conflict: expected 1, got 1",
+            ),
+            (
+                RefreshClaimError::AggregateUnavailable,
+                "credential operation aggregate is unavailable",
+            ),
         ] {
             match &error {
                 RefreshClaimError::Storage => {},
                 RefreshClaimError::InvalidState => {},
                 RefreshClaimError::ReleaseRefused => {},
+                RefreshClaimError::MaterialEpochConflict { .. } => {},
+                RefreshClaimError::AggregateUnavailable => {},
             }
             assert_eq!(error.to_string(), expected);
         }
@@ -639,11 +903,27 @@ mod tests {
                 "refresh claim is not poisoned",
             ),
             (
+                RefreshClaimAdjudicationError::StaleIncident,
+                "refresh claim adjudication names a stale incident",
+            ),
+            (
                 RefreshClaimAdjudicationError::EvidenceConflict {
                     recorded_digest: [0u8; 32],
-                    recorded_decision: RefreshOutcomeDecision::ProviderApplied,
+                    recorded_decision: CredentialOperationDecision::Refresh(
+                        RefreshOutcomeDecision::ProviderApplied,
+                    ),
                 },
                 "refresh claim adjudication conflicts with the recorded resolution",
+            ),
+            (
+                RefreshClaimAdjudicationError::OperationMismatch {
+                    recorded_operation: CredentialOperationKind::Revoke,
+                },
+                "credential operation adjudication kind mismatch",
+            ),
+            (
+                RefreshClaimAdjudicationError::MaterialEpochConflict,
+                "credential operation adjudication material epoch conflict",
             ),
         ] {
             match &error {
@@ -651,7 +931,10 @@ mod tests {
                 RefreshClaimAdjudicationError::AcknowledgementUnknown => {},
                 RefreshClaimAdjudicationError::InvalidEvidence => {},
                 RefreshClaimAdjudicationError::NotPoisoned => {},
+                RefreshClaimAdjudicationError::StaleIncident => {},
                 RefreshClaimAdjudicationError::EvidenceConflict { .. } => {},
+                RefreshClaimAdjudicationError::OperationMismatch { .. } => {},
+                RefreshClaimAdjudicationError::MaterialEpochConflict => {},
             }
             assert_eq!(error.to_string(), expected);
         }

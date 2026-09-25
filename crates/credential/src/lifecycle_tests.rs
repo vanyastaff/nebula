@@ -25,6 +25,35 @@ fn public_lifecycle_state_has_a_stable_secret_free_wire_shape() {
             CredentialLifecycleState::ReauthRequired,
             serde_json::json!({ "status": "reauth_required" }),
         ),
+        (
+            CredentialLifecycleState::OperationInFlight {
+                operation: CredentialLifecycleOperation::Revoke,
+            },
+            serde_json::json!({ "status": "operation_in_flight", "operation": "revoke" }),
+        ),
+        (
+            CredentialLifecycleState::ReconciliationRequired {
+                operation: Some(CredentialLifecycleOperation::Revoke),
+                incident: Some(
+                    serde_json::from_value::<CredentialIncidentRef>(serde_json::json!(
+                        "5b2c6a51-7e0d-4a8e-9c1f-2d4b3a6e7f80"
+                    ))
+                    .expect("an incident id deserializes from its UUID spelling"),
+                ),
+            },
+            serde_json::json!({
+                "status": "reconciliation_required",
+                "operation": "revoke",
+                "incident": "5b2c6a51-7e0d-4a8e-9c1f-2d4b3a6e7f80",
+            }),
+        ),
+        (
+            CredentialLifecycleState::ReconciliationRequired {
+                operation: None,
+                incident: None,
+            },
+            serde_json::json!({ "status": "reconciliation_required", "operation": null }),
+        ),
     ];
 
     for (state, expected) in cases {
@@ -33,6 +62,8 @@ fn public_lifecycle_state_has_a_stable_secret_free_wire_shape() {
             CredentialLifecycleState::RefreshDeferred { .. } => "refresh_deferred",
             CredentialLifecycleState::RefreshBlocked => "refresh_blocked",
             CredentialLifecycleState::ReauthRequired => "reauth_required",
+            CredentialLifecycleState::OperationInFlight { .. } => "operation_in_flight",
+            CredentialLifecycleState::ReconciliationRequired { .. } => "reconciliation_required",
         };
         let encoded = serde_json::to_value(state).expect("public lifecycle state serializes");
         assert_eq!(encoded, expected);

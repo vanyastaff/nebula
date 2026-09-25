@@ -53,12 +53,18 @@ pub use error::StorageError;
 pub use ids::{CredentialId, FencingToken, OperationCallId, OperationId};
 pub use scope::Scope;
 pub use store::{
-    CredentialAlreadyExistsKey, CredentialPersistence, CredentialPersistenceError,
+    ClaimAttempt, ClaimToken, CredentialAlreadyExistsKey, CredentialIncidentRef,
+    CredentialOperationDecision, CredentialOperationIntent, CredentialOperationKind,
+    CredentialOperationStatus, CredentialPersistence, CredentialPersistenceError,
     CredentialRefreshCursor, CredentialRefreshHorizon, CredentialRefreshHorizonError,
     CredentialRefreshPageSize, CredentialRefreshPageSizeError, CredentialRefreshSchedule,
     CredentialRefreshScheduleError, DueCredentialRefresh, ExecutionTurnHandoff,
     MAX_CREDENTIAL_REFRESH_HORIZON_SECS, OperationLedger, OperationLedgerAdjudicator,
-    PlanFlavorCatalog, PlanFlavorCatalogAdmin, PlanFlavorCatalogWriter, ResourceEventFanoutStore,
-    ResourceExecutionHandoffStore, ResourceRuntimeRecovery, ResourceSourceLeaseStore,
-    ResourceSubscriptionStore, SharedResourceStore, TurnAcceptance, TurnHandoff, TurnRecovery,
+    PlanFlavorCatalog, PlanFlavorCatalogAdmin, PlanFlavorCatalogWriter, RefreshAdjudication,
+    RefreshClaim, RefreshClaimAdjudicationError, RefreshClaimAdjudicator, RefreshClaimError,
+    RefreshClaimReclaimer, RefreshClaimStore, RefreshOutcomeDecision, ReplicaId,
+    ResourceEventFanoutStore, ResourceExecutionHandoffStore, ResourceRuntimeRecovery,
+    ResourceSourceLeaseStore, ResourceSubscriptionStore, RevokeOutcomeDecision,
+    SentinelEscalationPolicy, SharedResourceStore, StoredCredentialOperationalHead, TurnAcceptance,
+    TurnHandoff, TurnRecovery,
 };

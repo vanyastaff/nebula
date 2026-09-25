@@ -26,8 +26,8 @@ use std::{
 use nebula_core::CredentialId;
 use nebula_storage_port::CredentialSelector;
 use nebula_storage_port::store::{
-    ClaimAttempt, ClaimToken, HeartbeatError, RefreshClaim, RefreshClaimStore as RefreshClaimRepo,
-    ReplicaId,
+    ClaimAttempt, ClaimToken, CredentialOperationIntent, HeartbeatError, RefreshClaim,
+    RefreshClaimStore as RefreshClaimRepo, ReplicaId,
 };
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
@@ -269,13 +269,47 @@ impl RefreshCoordinator {
         P: Fn(&CredentialId) -> PFut + Sync,
         PFut: Future<Output = Result<RefreshRecheck, RefreshRecheckError>> + Send,
     {
+        self.coordinate_operation(
+            selector,
+            CredentialOperationIntent::Refresh,
+            needs_refresh_after_backoff,
+            do_refresh,
+        )
+        .await
+    }
+
+    /// Coordinate one operation under the credential's shared durable claim.
+    /// Its immutable intent is persisted before the provider boundary so
+    /// recovery can never interpret revocation as a refresh.
+    #[tracing::instrument(
+        name = "credential.operation.coordinate",
+        skip(self, needs_refresh_after_backoff, do_refresh),
+        fields(credential_id = %selector.credential_id(), tier = tracing::field::Empty),
+    )]
+    pub(crate) async fn coordinate_operation<F, Fut, T, P, PFut>(
+        &self,
+        selector: &CredentialSelector,
+        intent: CredentialOperationIntent,
+        needs_refresh_after_backoff: P,
+        do_refresh: F,
+    ) -> Result<T, RefreshError>
+    where
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: Future<Output = RefreshDisposition<T>> + Send + 'static,
+        T: Send + 'static,
+        P: Fn(&CredentialId) -> PFut + Sync,
+        PFut: Future<Output = Result<RefreshRecheck, RefreshRecheckError>> + Send,
+    {
         let credential_id = selector.credential_id();
         // L1: in-process coalescing.
         //
-        // The L1 layer is keyed by string, so we hash on the typed id's
-        // canonical form. `try_refresh` returns Winner for the first
-        // caller and Waiter (with a oneshot::Receiver) for every other
-        // concurrent caller in the same process. Waiters await the Winner's
+        // The L1 layer is keyed by string. Refresh preserves the historical
+        // canonical credential-id key; revoke uses a disjoint operation-family
+        // suffix. Different provider operations must meet at the durable L2
+        // claim and authoritative recheck rather than borrow each other's L1
+        // completion policy. `try_refresh` returns Winner for the first caller
+        // and Waiter (with a oneshot::Receiver) for every other concurrent
+        // caller in the same process and operation family. Waiters await the Winner's
         // typed, payload-free completion policy for at most `refresh_timeout`,
         // then always recheck authoritative state. A proven state advance
         // coalesces this epoch; if the predicate is still true after that
@@ -285,8 +319,12 @@ impl RefreshCoordinator {
         // into automatic retries or erase exact reconciliation evidence.
         // Timeout or abnormal sender closure is `CriticalOutcomePending`.
         let cred_str = credential_id.to_string();
+        let l1_key = match intent {
+            CredentialOperationIntent::Refresh => cred_str,
+            CredentialOperationIntent::Revoke { .. } => format!("{cred_str}:revoke"),
+        };
         loop {
-            match self.l1.try_refresh(&cred_str) {
+            match self.l1.try_refresh(&l1_key) {
                 super::l1::RefreshAttempt::Winner => {
                     // NOTE: do NOT record `tier="l2"` here -- the L2 path can
                     // still produce `CoalescedByOtherReplica` via the
@@ -306,7 +344,7 @@ impl RefreshCoordinator {
                         match tokio::time::timeout(self.config.refresh_timeout, rx).await {
                             Ok(Ok(completion)) => completion,
                             Ok(Err(error)) => {
-                                self.l1.prune_closed_waiters(&cred_str);
+                                self.l1.prune_closed_waiters(&l1_key);
                                 tracing::Span::current().record("tier", "l1_outcome_unknown");
                                 tracing::error!(
                                     event = "credential.refresh.l1.wait.outcome_unknown",
@@ -318,7 +356,7 @@ impl RefreshCoordinator {
                                 return Err(RefreshError::CriticalOutcomePending);
                             },
                             Err(error) => {
-                                self.l1.prune_closed_waiters(&cred_str);
+                                self.l1.prune_closed_waiters(&l1_key);
                                 tracing::Span::current().record("tier", "l1_outcome_unknown");
                                 tracing::warn!(
                                     event = "credential.refresh.l1.wait.outcome_unknown",
@@ -435,7 +473,7 @@ impl RefreshCoordinator {
         // At the boundary it moves into `RefreshLease`, so caller
         // timeout/cancellation cannot wake local waiters while the detached
         // provider/persistence section is still running.
-        let mut l1_lease = L1RefreshLease::new(Arc::clone(&self.l1), cred_str);
+        let mut l1_lease = L1RefreshLease::new(Arc::clone(&self.l1), l1_key);
 
         // Global rate-limit gate (audit B6 / wave-2 regression).
         //
@@ -467,7 +505,7 @@ impl RefreshCoordinator {
 
         // L2: durable claim with backoff.
         let claim = self
-            .try_acquire_l2_with_backoff(selector, &needs_refresh_after_backoff)
+            .try_acquire_l2_with_backoff(selector, intent, &needs_refresh_after_backoff)
             .await?;
 
         // Sub-spec -- record the claim acquisition once we know we own
@@ -636,6 +674,7 @@ impl RefreshCoordinator {
     async fn try_acquire_l2_with_backoff<P, PFut>(
         &self,
         selector: &CredentialSelector,
+        intent: CredentialOperationIntent,
         needs_refresh_after_backoff: &P,
     ) -> Result<RefreshClaim, RefreshError>
     where
@@ -668,14 +707,24 @@ impl RefreshCoordinator {
             );
             let outcome = async {
                 self.repo
-                    .try_claim(selector, &self.replica_id, self.config.claim_ttl)
+                    .try_claim(selector, &self.replica_id, self.config.claim_ttl, intent)
                     .await
             }
             .instrument(span)
             .await?;
             match outcome {
                 ClaimAttempt::Acquired(claim) => return Ok(claim),
-                ClaimAttempt::OutcomeUnknown { expired_at } => {
+                ClaimAttempt::OutcomeUnknown {
+                    expired_at,
+                    operation,
+                } => {
+                    if operation != nebula_storage_port::store::CredentialOperationKind::Refresh {
+                        tracing::warn!(
+                            ?operation,
+                            "durable credential operation blocks provider replay"
+                        );
+                        return Err(RefreshError::OperationBlocked { operation });
+                    }
                     tracing::Span::current().record("tier", "l2_outcome_unknown");
                     self.metrics.claims_outcome_unknown.inc();
                     tracing::error!(

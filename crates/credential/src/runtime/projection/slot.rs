@@ -42,7 +42,7 @@ pub(crate) async fn resolve_slot_with(
             // complete selector succeeds, key, capability, and lifecycle
             // state remain deliberately unobservable.
             let selector = request.scope.selector(request.credential_id);
-            let head = match store.get_head(&selector).await {
+            let operational_head = match store.get_operational_head(&selector).await {
                 Ok(head) => head,
                 Err(CredentialPersistenceError::NotFound) => {
                     return match store.get(&selector).await {
@@ -76,6 +76,7 @@ pub(crate) async fn resolve_slot_with(
                 },
                 Err(_) => return Err(CredentialSlotResolveError::InvalidState),
             };
+            let head = operational_head.head();
 
             let actual_key = CredentialKey::new(head.credential_key())
                 .map_err(|_| CredentialSlotResolveError::InvalidState)?;
@@ -88,6 +89,13 @@ pub(crate) async fn resolve_slot_with(
                 .ok_or(CredentialSlotResolveError::InvalidState)?;
             if !capabilities.contains(request.required_capabilities) {
                 return Err(CredentialSlotResolveError::MissingCapabilities);
+            }
+            if let Some(operation) = operational_head.status().blocking_operation() {
+                tracing::warn!(
+                    ?operation,
+                    "credential slot admission blocked by durable operation"
+                );
+                return Err(CredentialSlotResolveError::OperationBlocked { operation });
             }
             if head.reauth_required() {
                 return Err(CredentialSlotResolveError::ReauthRequired);
@@ -128,6 +136,41 @@ pub(crate) async fn resolve_slot_with(
                 || stored.reauth_required() != head.reauth_required()
             {
                 return Err(CredentialSlotResolveError::InvalidState);
+            }
+
+            // This snapshot is the admission point for a new projection. It
+            // joins claim state with the aggregate, so even a valid static
+            // secret cannot escape an unresolved provider-side revocation.
+            use nebula_storage_port::store::CredentialOperationStatus;
+            match store
+                .operation_status(&selector)
+                .await
+                .map_err(|error| match error {
+                    CredentialPersistenceError::NotFound => CredentialSlotResolveError::NotFound,
+                    CredentialPersistenceError::Unavailable
+                    | CredentialPersistenceError::OutcomeUnknown => {
+                        CredentialSlotResolveError::Unavailable
+                    },
+                    _ => CredentialSlotResolveError::InvalidState,
+                })? {
+                CredentialOperationStatus::InFlight { operation }
+                | CredentialOperationStatus::ReconciliationRequired { operation, .. } => {
+                    tracing::warn!(
+                        ?operation,
+                        "credential slot projection blocked by durable operation"
+                    );
+                    return Err(CredentialSlotResolveError::OperationBlocked { operation });
+                },
+                CredentialOperationStatus::Open {
+                    reauth_required: true,
+                    ..
+                } => return Err(CredentialSlotResolveError::ReauthRequired),
+                CredentialOperationStatus::Open { material_epoch, .. }
+                    if material_epoch != stored.material_epoch() =>
+                {
+                    return Err(CredentialSlotResolveError::InvalidState);
+                },
+                CredentialOperationStatus::Open { .. } => {},
             }
 
             let inner = ops
@@ -342,6 +385,12 @@ pub enum CredentialSlotResolveError {
     /// stored rather than as invalid local state.
     #[error("stored credential state was refused: {0}")]
     StoredStateRefused(crate::StateEnvelopeError),
+    /// New material cannot be issued until the durable operation settles.
+    #[error("credential operation must finish or be reconciled before use")]
+    OperationBlocked {
+        /// Secret-free operation retaining authority over this credential.
+        operation: nebula_storage_port::store::CredentialOperationKind,
+    },
 }
 
 /// Object-safe tenant-scoped credential slot projection boundary.

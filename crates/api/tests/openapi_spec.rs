@@ -239,12 +239,9 @@ async fn credential_reconcile_publishes_its_contract() {
         )
         .expect("credential reconcile operation must be published");
 
-    // The decision vocabulary is API-owned and deliberately frozen: these two
-    // spellings are the durable `adjudication_decision` values, and a client
-    // generated from this spec must be able to send them byte-for-byte. A third
-    // outcome is a new wire version, not a new array element
-    // (`domain/credential/dto.rs`, and its drift test against the port's
-    // `as_str()`).
+    // The API-owned vocabulary uses disjoint refresh/revoke spellings. Pin
+    // every outcome so generated clients can send the durable spelling and
+    // cannot confuse a revoked credential with applied refresh material.
     let decision = spec
         .pointer("/components/schemas/CredentialReconcileDecisionV1/enum")
         .and_then(Value::as_array)
@@ -254,6 +251,8 @@ async fn credential_reconcile_publishes_its_contract() {
         &vec![
             Value::String("provider_applied".to_owned()),
             Value::String("provider_not_applied".to_owned()),
+            Value::String("provider_revoked".to_owned()),
+            Value::String("provider_not_revoked".to_owned()),
         ],
         "the published decision spellings are the durable ones: {decision:?}"
     );
@@ -267,14 +266,25 @@ async fn credential_reconcile_publishes_its_contract() {
         "the reconcile request body must be typed: {schema_ref}"
     );
 
-    // The request is the conflict identity: the adjudicator keys its recorded
-    // resolution on the `(evidence, decision)` pair, so dropping the required
-    // `evidence` would let a client name a decision with no identity behind it.
-    let (_, request_required) = component_property_sets(&spec, "ReconcileCredentialRequest");
+    // The request is the conflict identity: `incident` names what is being
+    // resolved and the adjudicator keys its recorded resolution on the
+    // `(evidence, decision)` pair within it, so dropping either required field
+    // would let a client name a decision with no identity behind it.
+    let (request_properties, request_required) =
+        component_property_sets(&spec, "ReconcileCredentialRequest");
+    assert_eq!(
+        request_properties,
+        HashSet::from(["operation", "incident", "decision", "evidence"])
+    );
     assert_eq!(
         request_required,
-        HashSet::from(["decision", "evidence"]),
+        HashSet::from(["incident", "decision", "evidence"]),
         "the reconcile request must require the whole conflict identity: {request_required:?}"
+    );
+    assert_eq!(
+        spec.pointer("/components/schemas/CredentialReconcileOperationV1/enum"),
+        Some(&serde_json::json!(["refresh", "revoke"])),
+        "public operation vocabulary must exclude legacy and internal claim state"
     );
 
     let response = operation
@@ -299,11 +309,19 @@ async fn credential_reconcile_publishes_its_contract() {
     // coming back. `evidence_digest` is the durable half of the reconciliation
     // retry identity (hex SHA-256 of the evidence on record), so a client that
     // lost the first acknowledgement can confirm what is on record.
+    // `incident` names which incident that record belongs to.
     let (response_properties, _) = component_property_sets(&spec, "ReconcileCredentialResponse");
     assert_eq!(
         response_properties,
-        HashSet::from(["decision", "changed", "message", "evidence_digest"]),
-        "the reconcile success must stay exactly decision/changed/message/evidence_digest: {response_properties:?}"
+        HashSet::from([
+            "operation",
+            "incident",
+            "decision",
+            "changed",
+            "message",
+            "evidence_digest"
+        ]),
+        "the reconcile success must include its operation and recorded decision without internal authority: {response_properties:?}"
     );
 
     let description = response
@@ -346,6 +364,7 @@ async fn credential_reconcile_publishes_its_contract() {
     for refusal_code in [
         "API:CREDENTIAL_RECONCILIATION_NOT_REQUIRED",
         "API:CREDENTIAL_RECONCILIATION_CONFLICT",
+        "API:CREDENTIAL_OPERATION_BLOCKED",
         "API:OUTCOME_UNKNOWN",
     ] {
         assert!(
@@ -561,7 +580,7 @@ async fn credential_lifecycle_is_a_frozen_secret_free_v1_union() {
         .get("oneOf")
         .and_then(Value::as_array)
         .unwrap_or_else(|| panic!("credential lifecycle must be a oneOf union: {lifecycle}"));
-    assert_eq!(branches.len(), 4, "v1 lifecycle has exactly four states");
+    assert_eq!(branches.len(), 6, "v1 lifecycle has exactly six states");
 
     let forbidden = [
         "claim",
@@ -597,6 +616,10 @@ async fn credential_lifecycle_is_a_frozen_secret_free_v1_union() {
             properties.contains_key("retry_at"),
             status == "refresh_deferred"
         );
+        assert_eq!(
+            properties.contains_key("operation"),
+            matches!(status, "operation_in_flight" | "reconciliation_required")
+        );
     }
     assert_eq!(
         statuses,
@@ -605,6 +628,8 @@ async fn credential_lifecycle_is_a_frozen_secret_free_v1_union() {
             "refresh_deferred".to_owned(),
             "refresh_blocked".to_owned(),
             "reauth_required".to_owned(),
+            "operation_in_flight".to_owned(),
+            "reconciliation_required".to_owned(),
         ])
     );
 }

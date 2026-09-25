@@ -39,6 +39,43 @@ async fn file_pool(path: &Path) -> sqlx::SqlitePool {
         .expect("temporary SQLite database must open")
 }
 
+#[tokio::test]
+async fn migration_0057_preserves_legacy_incidents_without_guessing_operation_kind() {
+    let directory = tempfile::tempdir().expect("temporary directory must be created");
+    let pool = file_pool(&directory.path().join("typed-operation-migration.sqlite")).await;
+    MIGRATOR
+        .run_to(54, &pool)
+        .await
+        .expect("migrate through 0054");
+    sqlx::query(
+        "INSERT INTO credential_refresh_claims (owner_id, credential_id, claim_id, generation, holder_replica_id, acquired_at, expires_at, sentinel)
+         VALUES ('owner', 'credential', 'claim', 1, 'replica', 10, 20, 1)",
+    ).execute(&pool).await.expect("seed legacy claim");
+    sqlx::query(
+        "INSERT INTO credential_sentinel_events (owner_id, credential_id, detected_at, crashed_holder, generation, claim_id)
+         VALUES ('owner', 'credential', 20, 'replica', 1, 'claim')",
+    ).execute(&pool).await.expect("seed legacy incident");
+
+    MIGRATOR.run(&pool).await.expect("migrate through 0057");
+    let claim: (String, Option<i64>) = sqlx::query_as(
+        "SELECT operation_kind, observed_material_epoch FROM credential_refresh_claims WHERE claim_id = 'claim'",
+    ).fetch_one(&pool).await.expect("read migrated claim");
+    let incident: (String, Option<i64>) = sqlx::query_as(
+        "SELECT operation_kind, observed_material_epoch FROM credential_sentinel_events WHERE claim_id = 'claim'",
+    ).fetch_one(&pool).await.expect("read migrated incident");
+    assert_eq!(claim, ("legacy_unclassified".to_owned(), None));
+    assert_eq!(incident, claim);
+
+    let old_writer = sqlx::query(
+        "INSERT INTO credential_refresh_claims (owner_id, credential_id, claim_id, generation, holder_replica_id, acquired_at, expires_at, sentinel)
+         VALUES ('owner', 'new-credential', 'old-writer', 1, 'replica', 10, 20, 0)",
+    ).execute(&pool).await;
+    assert!(
+        old_writer.is_err(),
+        "0057 must reject an old writer that omits operation kind"
+    );
+}
+
 async fn seed_legacy_rows(pool: &sqlx::SqlitePool) {
     sqlx::query(
         "INSERT INTO users (id, email, display_name, created_at)
@@ -378,8 +415,9 @@ async fn assert_final_schema(pool: &sqlx::SqlitePool) {
     let incident = uuid::Uuid::new_v4().to_string();
     sqlx::query(
         "INSERT INTO credential_sentinel_events (
-             owner_id, credential_id, claim_id, detected_at, crashed_holder, generation
-         ) VALUES (?, ?, ?, ?, ?, ?)",
+             owner_id, credential_id, claim_id, detected_at, crashed_holder, generation,
+             operation_kind
+         ) VALUES (?, ?, ?, ?, ?, ?, 'refresh')",
     )
     .bind("owner-a")
     .bind(NAMED_ID)
@@ -392,8 +430,9 @@ async fn assert_final_schema(pool: &sqlx::SqlitePool) {
     .expect("first incident identity must insert");
     let duplicate = sqlx::query(
         "INSERT INTO credential_sentinel_events (
-             owner_id, credential_id, claim_id, detected_at, crashed_holder, generation
-         ) VALUES (?, ?, ?, ?, ?, ?)",
+             owner_id, credential_id, claim_id, detected_at, crashed_holder, generation,
+             operation_kind
+         ) VALUES (?, ?, ?, ?, ?, ?, 'refresh')",
     )
     .bind("owner-b")
     .bind(UNNAMED_ID)

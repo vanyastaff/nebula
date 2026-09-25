@@ -513,8 +513,9 @@ async fn exercise_migration(pool: &PgPool) -> TestResult<MigrationEvidence> {
     let mut incident_transaction = pool.begin().await?;
     sqlx::query(
         "INSERT INTO credential_sentinel_events (
-             owner_id, credential_id, claim_id, detected_at, crashed_holder, generation
-         ) VALUES ('migration-incident-owner', $1, $2, CURRENT_TIMESTAMP, $3, $4)",
+             owner_id, credential_id, claim_id, detected_at, crashed_holder, generation,
+             operation_kind
+         ) VALUES ('migration-incident-owner', $1, $2, CURRENT_TIMESTAMP, $3, $4, 'refresh')",
     )
     .bind(CredentialId::new().to_string())
     .bind(incident)
@@ -524,8 +525,9 @@ async fn exercise_migration(pool: &PgPool) -> TestResult<MigrationEvidence> {
     .await?;
     let duplicate_incident_rejected = sqlx::query(
         "INSERT INTO credential_sentinel_events (
-             owner_id, credential_id, claim_id, detected_at, crashed_holder, generation
-         ) VALUES ('migration-incident-owner', $1, $2, CURRENT_TIMESTAMP, $3, $4)",
+             owner_id, credential_id, claim_id, detected_at, crashed_holder, generation,
+             operation_kind
+         ) VALUES ('migration-incident-owner', $1, $2, CURRENT_TIMESTAMP, $3, $4, 'refresh')",
     )
     .bind(CredentialId::new().to_string())
     .bind(incident)
@@ -1037,6 +1039,61 @@ async fn failed_0039_rolls_back_completely_and_can_retry_cleanly() -> TestResult
     .fetch_one(&database.pool)
     .await?;
     assert_eq!(repaired_claim_id_columns, 1);
+
+    database.cleanup().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn migration_0057_preserves_legacy_incidents_without_guessing_operation_kind()
+-> TestResult<()> {
+    let Some(database) = IsolatedDatabase::connect().await else {
+        return Ok(());
+    };
+    MIGRATOR.run_to(54, &database.pool).await?;
+    let claim_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO credential_refresh_claims (owner_id, credential_id, claim_id, generation, holder_replica_id, acquired_at, expires_at, sentinel)
+         VALUES ('owner', 'credential', $1, 1, 'replica', now(), now(), 1)",
+    )
+    .bind(claim_id)
+    .execute(&database.pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO credential_sentinel_events (owner_id, credential_id, detected_at, crashed_holder, generation, claim_id)
+         VALUES ('owner', 'credential', now(), 'replica', 1, $1)",
+    )
+    .bind(claim_id)
+    .execute(&database.pool)
+    .await?;
+
+    MIGRATOR.run(&database.pool).await?;
+    let claim: (String, Option<i64>) = sqlx::query_as(
+        "SELECT operation_kind, observed_material_epoch FROM credential_refresh_claims WHERE claim_id = $1",
+    )
+    .bind(claim_id)
+    .fetch_one(&database.pool)
+    .await?;
+    let incident: (String, Option<i64>) = sqlx::query_as(
+        "SELECT operation_kind, observed_material_epoch FROM credential_sentinel_events WHERE claim_id = $1",
+    )
+    .bind(claim_id)
+    .fetch_one(&database.pool)
+    .await?;
+    assert_eq!(claim, ("legacy_unclassified".to_owned(), None));
+    assert_eq!(incident, claim);
+
+    let old_writer = sqlx::query(
+        "INSERT INTO credential_refresh_claims (owner_id, credential_id, claim_id, generation, holder_replica_id, acquired_at, expires_at, sentinel)
+         VALUES ('owner', 'new-credential', $1, 1, 'replica', now(), now(), 0)",
+    )
+    .bind(Uuid::new_v4())
+    .execute(&database.pool)
+    .await;
+    assert!(
+        old_writer.is_err(),
+        "0057 must reject an old writer that omits operation kind"
+    );
 
     database.cleanup().await;
     Ok(())

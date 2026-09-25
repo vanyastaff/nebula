@@ -127,6 +127,7 @@ impl RefreshClaimRepo for ScriptedClaimRepo {
         selector: &CredentialSelector,
         _holder: &ReplicaId,
         ttl: Duration,
+        _intent: CredentialOperationIntent,
     ) -> Result<ClaimAttempt, RepoError> {
         self.try_claim_count.fetch_add(1, Ordering::SeqCst);
         self.try_claim_entered.notify_one();
@@ -190,11 +191,13 @@ impl RefreshClaimRepo for PoisonClaimRepo {
         selector: &CredentialSelector,
         _holder: &ReplicaId,
         _ttl: Duration,
+        _intent: CredentialOperationIntent,
     ) -> Result<ClaimAttempt, RepoError> {
         assert_eq!(selector.credential_id(), self.credential_id);
         self.try_claim_count.fetch_add(1, Ordering::SeqCst);
         Ok(ClaimAttempt::OutcomeUnknown {
             expired_at: Utc::now() - chrono::Duration::seconds(1),
+            operation: nebula_storage_port::store::CredentialOperationKind::Refresh,
         })
     }
 
@@ -223,6 +226,7 @@ impl RefreshClaimReclaimer for PoisonClaimRepo {
         let result = if newly_accounted {
             self.evidence_count.fetch_add(1, Ordering::SeqCst);
             vec![ExpiredClaim::OutcomeUnknownAccounted {
+                operation: nebula_storage_port::store::CredentialOperationKind::Refresh,
                 selector: test_selector(self.credential_id),
                 previous_holder: ReplicaId::new("crashed-provider-holder"),
                 previous_generation: 7,
@@ -1538,6 +1542,91 @@ async fn hung_l2_release_cannot_wedge_l1_or_global_permit() {
     repo.release_continue.notify_one();
     repo.wait_for_release().await;
     assert!(!repo.active.load(Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn revoke_uses_a_distinct_l1_family_and_rechecks_after_refresh_advances_epoch() {
+    let repo = Arc::new(ScriptedClaimRepo::new());
+    let coordinator = coordinator(Arc::clone(&repo), RefreshCoordConfig::default());
+    let credential_id = CredentialId::new();
+    let material_epoch = Arc::new(AtomicUsize::new(1));
+    let refresh_entered = Arc::new(Notify::new());
+    let refresh_continue = Arc::new(Notify::new());
+
+    let refresh = tokio::spawn({
+        let coordinator = Arc::clone(&coordinator);
+        let material_epoch = Arc::clone(&material_epoch);
+        let refresh_entered = Arc::clone(&refresh_entered);
+        let refresh_continue = Arc::clone(&refresh_continue);
+        async move {
+            coordinator
+                .refresh_coalesced(
+                    &test_selector(credential_id),
+                    |_| async { Ok(RefreshRecheck::Needed) },
+                    move || async move {
+                        refresh_entered.notify_one();
+                        refresh_continue.notified().await;
+                        material_epoch.store(2, Ordering::SeqCst);
+                        RefreshDisposition::state_advanced(())
+                    },
+                )
+                .await
+        }
+    });
+    refresh_entered.notified().await;
+
+    let revoke_calls = Arc::new(AtomicUsize::new(0));
+    let revoke = tokio::spawn({
+        let coordinator = Arc::clone(&coordinator);
+        let material_epoch = Arc::clone(&material_epoch);
+        let revoke_calls = Arc::clone(&revoke_calls);
+        async move {
+            coordinator
+                .coordinate_operation(
+                    &test_selector(credential_id),
+                    CredentialOperationIntent::Revoke {
+                        material_epoch: nebula_storage_port::CredentialMaterialEpoch::MIN,
+                    },
+                    move |_| {
+                        let material_epoch = Arc::clone(&material_epoch);
+                        async move {
+                            Ok(if material_epoch.load(Ordering::SeqCst) == 1 {
+                                RefreshRecheck::Needed
+                            } else {
+                                RefreshRecheck::Satisfied
+                            })
+                        }
+                    },
+                    move || async move {
+                        revoke_calls.fetch_add(1, Ordering::SeqCst);
+                        RefreshDisposition::state_advanced(())
+                    },
+                )
+                .await
+        }
+    });
+
+    repo.wait_for_try_claim_count(2).await;
+    assert_eq!(
+        coordinator.l1.in_flight_count(),
+        2,
+        "refresh and revoke must own disjoint L1 operation-family elections"
+    );
+    refresh_continue.notify_one();
+    refresh
+        .await
+        .expect("refresh task joins")
+        .expect("refresh advances material authority");
+
+    assert!(matches!(
+        revoke.await.expect("revoke task joins"),
+        Err(RefreshError::CoalescedByOtherReplica)
+    ));
+    assert_eq!(
+        revoke_calls.load(Ordering::SeqCst),
+        0,
+        "stale revoke must stop at authoritative recheck before provider dispatch"
+    );
 }
 
 #[tokio::test]

@@ -63,6 +63,11 @@ every refresh claim and sentinel incident from the credential aggregate. It
 fails closed on orphaned rows and makes both claim CAS and threshold windows
 owner-qualified.
 
+Migration `0057_typed_credential_operation_incidents.sql` records an immutable
+operation kind and a revoke-only observed material epoch on claims and durable
+incidents. Historical rows become `legacy_unclassified`; the required kind has
+no default so mixed old writers fail closed.
+
 ## Storage-port adapter schema (0027)
 
 `0027_port_adapter_schema.sql` is the historical migration that introduced

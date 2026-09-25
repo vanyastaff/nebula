@@ -284,10 +284,12 @@ impl ServerCredentialGateway {
                 },
                 CredentialGatewayCommand::Reconcile {
                     credential_id,
+                    incident,
                     decision,
                     evidence,
                 } => CredentialCommand::Reconcile {
                     credential_id: Self::credential_id(&credential_id)?,
+                    incident,
                     decision,
                     evidence,
                 },
@@ -376,6 +378,35 @@ fn map_head(head: nebula_credential::CredentialHead) -> CredentialGatewayRecord 
             },
             nebula_credential::CredentialLifecycleState::ReauthRequired => {
                 CredentialGatewayLifecycleState::ReauthRequired
+            },
+            nebula_credential::CredentialLifecycleState::OperationInFlight { operation } => {
+                CredentialGatewayLifecycleState::OperationInFlight {
+                    operation: match operation {
+                        nebula_credential::CredentialLifecycleOperation::Refresh => {
+                            nebula_storage_port::CredentialOperationKind::Refresh
+                        },
+                        nebula_credential::CredentialLifecycleOperation::Revoke => {
+                            nebula_storage_port::CredentialOperationKind::Revoke
+                        },
+                    },
+                }
+            },
+            nebula_credential::CredentialLifecycleState::ReconciliationRequired {
+                operation,
+                incident,
+            } => CredentialGatewayLifecycleState::ReconciliationRequired {
+                incident,
+                operation: operation.map_or(
+                    nebula_storage_port::CredentialOperationKind::LegacyUnclassified,
+                    |operation| match operation {
+                        nebula_credential::CredentialLifecycleOperation::Refresh => {
+                            nebula_storage_port::CredentialOperationKind::Refresh
+                        },
+                        nebula_credential::CredentialLifecycleOperation::Revoke => {
+                            nebula_storage_port::CredentialOperationKind::Revoke
+                        },
+                    },
+                ),
             },
         },
         display_name: head.display.display_name,
@@ -526,6 +557,9 @@ fn map_service_error(error: CredentialServiceError) -> CredentialGatewayError {
         CredentialServiceError::StateEnvelopeRefused(_) => {
             CredentialGatewayError::StateEnvelopeRefused
         },
+        CredentialServiceError::OperationBlocked { operation } => {
+            CredentialGatewayError::OperationBlocked { operation }
+        },
         CredentialServiceError::TypeUnknown { key } => CredentialGatewayError::TypeUnknown { key },
         CredentialServiceError::CapabilityUnsupported { capability, key } => {
             CredentialGatewayError::CapabilityUnsupported { capability, key }
@@ -584,8 +618,8 @@ mod tests {
     use nebula_storage_port::{
         CredentialOwner, CredentialSelector,
         store::{
-            RefreshAdjudication, RefreshClaimAdjudicationError, RefreshClaimAdjudicator,
-            RefreshOutcomeDecision,
+            CredentialOperationDecision, CredentialOperationKind, RefreshAdjudication,
+            RefreshClaimAdjudicationError, RefreshClaimAdjudicator, RefreshOutcomeDecision,
         },
     };
     use sha2::{Digest, Sha256};
@@ -917,7 +951,7 @@ mod tests {
     /// Records what the controller asked it to adjudicate and reports a change.
     #[derive(Debug, Default)]
     struct RecordingAdjudicator {
-        calls: Mutex<Vec<(CredentialSelector, RefreshOutcomeDecision, String)>>,
+        calls: Mutex<Vec<(CredentialSelector, CredentialOperationDecision, String)>>,
     }
 
     #[async_trait]
@@ -925,7 +959,8 @@ mod tests {
         async fn adjudicate(
             &self,
             selector: &CredentialSelector,
-            decision: RefreshOutcomeDecision,
+            _incident: nebula_storage_port::CredentialIncidentRef,
+            decision: CredentialOperationDecision,
             evidence: &str,
         ) -> Result<RefreshAdjudication, RefreshClaimAdjudicationError> {
             self.calls.lock().expect("test adjudication lock").push((
@@ -953,7 +988,8 @@ mod tests {
         async fn adjudicate(
             &self,
             _selector: &CredentialSelector,
-            _decision: RefreshOutcomeDecision,
+            _incident: nebula_storage_port::CredentialIncidentRef,
+            _decision: CredentialOperationDecision,
             _evidence: &str,
         ) -> Result<RefreshAdjudication, RefreshClaimAdjudicationError> {
             Err(RefreshClaimAdjudicationError::NotPoisoned)
@@ -984,7 +1020,8 @@ mod tests {
         async fn adjudicate(
             &self,
             _selector: &CredentialSelector,
-            _decision: RefreshOutcomeDecision,
+            _incident: nebula_storage_port::CredentialIncidentRef,
+            _decision: CredentialOperationDecision,
             _evidence: &str,
         ) -> Result<RefreshAdjudication, RefreshClaimAdjudicationError> {
             Err(self
@@ -1016,12 +1053,8 @@ mod tests {
         let principal = AuthenticatedPrincipal::for_test_user(UserId::new().to_string());
         let scope = Scope::new(WorkspaceId::new().to_string(), OrgId::new().to_string());
 
-        // The credential must exist under the very scope it is reconciled in:
-        // the controller's reconcile arm resolves it through the owner-scoped
-        // read before the adjudicator is reached, so an id that names no live
-        // row is refused as `NotFound` and never gets this far. Creating it
-        // through the same gateway keeps the fixture honest — nothing here
-        // writes a credential the production path could not have written.
+        // Create through the same gateway so the selector presented to the
+        // adjudicator is backed by the production owner partition.
         let created = gateway
             .execute(
                 &principal,
@@ -1048,7 +1081,12 @@ mod tests {
                 &scope,
                 CredentialGatewayCommand::Reconcile {
                     credential_id: credential_id.to_string(),
-                    decision: RefreshOutcomeDecision::ProviderApplied,
+                    incident: nebula_storage_port::CredentialIncidentRef::from_uuid(
+                        uuid::Uuid::nil(),
+                    ),
+                    decision: CredentialOperationDecision::Refresh(
+                        RefreshOutcomeDecision::ProviderApplied,
+                    ),
                     evidence: "provider support ticket 4417".to_owned(),
                 },
             )
@@ -1060,7 +1098,7 @@ mod tests {
             matches!(
                 result,
                 CredentialGatewayResult::Reconciled {
-                    decision: RefreshOutcomeDecision::ProviderApplied,
+                    decision: CredentialOperationDecision::Refresh(RefreshOutcomeDecision::ProviderApplied),
                     changed: true,
                     evidence_digest,
                 } if evidence_digest == expected_digest
@@ -1075,7 +1113,7 @@ mod tests {
                 .as_slice(),
             &[(
                 CredentialSelector::new(CredentialOwner::from_scope(&scope), credential_id),
-                RefreshOutcomeDecision::ProviderApplied,
+                CredentialOperationDecision::Refresh(RefreshOutcomeDecision::ProviderApplied),
                 "provider support ticket 4417".to_owned(),
             )]
         );
@@ -1106,11 +1144,15 @@ mod tests {
             (
                 RefreshClaimAdjudicationError::EvidenceConflict {
                     recorded_digest: [0x5eu8; 32],
-                    recorded_decision: RefreshOutcomeDecision::ProviderApplied,
+                    recorded_decision: CredentialOperationDecision::Refresh(
+                        RefreshOutcomeDecision::ProviderApplied,
+                    ),
                 },
                 CredentialGatewayError::ReconciliationConflict {
                     recorded_digest: [0x5eu8; 32],
-                    recorded_decision: RefreshOutcomeDecision::ProviderApplied,
+                    recorded_decision: CredentialOperationDecision::Refresh(
+                        RefreshOutcomeDecision::ProviderApplied,
+                    ),
                 },
             ),
             (
@@ -1124,6 +1166,14 @@ mod tests {
             (
                 RefreshClaimAdjudicationError::AcknowledgementUnknown,
                 CredentialGatewayError::OutcomeUnknown,
+            ),
+            (
+                RefreshClaimAdjudicationError::OperationMismatch {
+                    recorded_operation: CredentialOperationKind::Revoke,
+                },
+                CredentialGatewayError::OperationBlocked {
+                    operation: CredentialOperationKind::Revoke,
+                },
             ),
         ] {
             let rendered = format!("{port_error:?}");
@@ -1139,9 +1189,9 @@ mod tests {
 
             // The credential must exist under the very scope it is reconciled
             // in: the controller's reconcile arm resolves it through the
-            // owner-scoped read before the adjudicator is reached, so an id that
-            // names no live row is refused as `NotFound` and never gets this
-            // far. Creating it through the same gateway keeps the fixture honest
+            // owner-scoped physical read before the adjudicator is reached, so an
+            // id that names no aggregate is refused as `NotFound` and never gets
+            // this far. Creating it through the same gateway keeps the fixture honest
             // — nothing here writes a credential the production path could not
             // have written.
             let created = gateway
@@ -1170,7 +1220,12 @@ mod tests {
                     &scope,
                     CredentialGatewayCommand::Reconcile {
                         credential_id: credential_id.to_string(),
-                        decision: RefreshOutcomeDecision::ProviderApplied,
+                        incident: nebula_storage_port::CredentialIncidentRef::from_uuid(
+                            uuid::Uuid::nil(),
+                        ),
+                        decision: CredentialOperationDecision::Refresh(
+                            RefreshOutcomeDecision::ProviderApplied,
+                        ),
                         evidence: "provider support ticket 4417".to_owned(),
                     },
                 )
@@ -1411,7 +1466,10 @@ mod tests {
             },
             CredentialCommand::Reconcile {
                 credential_id,
-                decision: RefreshOutcomeDecision::ProviderApplied,
+                incident: nebula_storage_port::CredentialIncidentRef::from_uuid(uuid::Uuid::nil()),
+                decision: CredentialOperationDecision::Refresh(
+                    RefreshOutcomeDecision::ProviderApplied,
+                ),
                 evidence: "provider support ticket 4417".to_owned(),
             },
         ];

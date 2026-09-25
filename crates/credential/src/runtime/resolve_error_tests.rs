@@ -46,6 +46,12 @@ fn permanent_resolve_errors_are_not_retryable() {
     // retrying only hammers the provider or loops forever. Each must
     // classify non-retryable so a retry-driven caller stops.
     let permanent = [
+        ResolveError::OperationBlocked {
+            operation: nebula_storage_port::store::CredentialOperationKind::Revoke,
+        },
+        ResolveError::Store(CredentialPersistenceError::OperationBlocked {
+            operation: nebula_storage_port::store::CredentialOperationKind::Revoke,
+        }),
         ResolveError::ReauthRequired {
             credential_id: "cred_x".to_owned(),
             reason: ReauthReason::ProviderRejected,

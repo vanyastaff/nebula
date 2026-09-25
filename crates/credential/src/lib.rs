@@ -225,8 +225,9 @@ pub use secrets::{
 // Lifecycle policy types (ADR-0088 D2). The routing model is cut; the capability sub-traits still
 // govern, and these types remain the authoring surface.
 pub use lifecycle::{
-    CredentialLifecycle, CredentialLifecycleState, CredentialPolicy, Decision, LeaseRef,
-    RefreshStrategy, RefreshStrategyKind, RevokeStrategy, SchemeId,
+    CredentialIncidentRef, CredentialLifecycle, CredentialLifecycleOperation,
+    CredentialLifecycleState, CredentialPolicy, Decision, LeaseRef, RefreshStrategy,
+    RefreshStrategyKind, RevokeStrategy, SchemeId,
 };
 // Audit contract — trait + value types (decorator AuditLayer stays in nebula_storage::credential)
 pub use audit::{AuditEvent, AuditOperation, AuditResult, AuditSink};

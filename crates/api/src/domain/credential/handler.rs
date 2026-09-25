@@ -381,15 +381,14 @@ pub async fn revoke_credential(
 }
 
 /// POST /orgs/{org}/workspaces/{ws}/credentials/{cred}/reconcile — record the provider outcome of
-/// an ambiguous refresh.
+/// an ambiguous refresh or revoke.
 ///
-/// The operator remedy for a credential whose refresh claim was retained as
-/// poison: the refresh route answers 409 for it and does so indefinitely, and
-/// this command is what retires the incident so a later refresh can acquire a
-/// claim again. Delegates to `CredentialController::reconcile`, which
-/// re-authorizes the caller's tenant against the credential before adjudicating
-/// — the adjudication port takes no scope operand, so that read is the
-/// authority this route depends on rather than duplicates.
+/// The operator remedy for a credential whose provider-operation claim was
+/// retained as poison. A refresh decision either admits a later refresh or
+/// finalizes already-applied material. A confirmed revoke atomically records
+/// the decision and tombstones the credential. The operation/decision pair is
+/// validated before the gateway is called. Omitting `operation` retains the
+/// version 1 refresh meaning for existing clients.
 ///
 /// Requires `credentials:reconcile`, deliberately not `credentials:write`:
 /// recording what a provider did is a different authority from changing what
@@ -415,11 +414,11 @@ pub async fn revoke_credential(
     request_body = ReconcileCredentialRequest,
     responses(
         (status = 200, description = "Reconciliation result: the decision on record, whether this call recorded it (`changed = false` is an idempotent recommit of an identical decision and evidence pair, and is a success), and `evidence_digest`, the lowercase-hex SHA-256 of the evidence on record.", body = ReconcileCredentialResponse),
-        (status = 400, description = "Invalid credential identifier, or the submitted evidence was rejected (empty, or beyond the adjudicator's byte bound).", body = ProblemDetails),
+        (status = 400, description = "Invalid credential identifier, an operation/decision mismatch, or submitted evidence rejected as empty or too long.", body = ProblemDetails),
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
         (status = 404, description = "Credential does not exist in this workspace.", body = ProblemDetails),
-        (status = 409, description = "One of two refusals of the submitted decision, or a lost acknowledgement. `API:CREDENTIAL_RECONCILIATION_NOT_REQUIRED`: the credential has no retained refresh claim to adjudicate and no recorded resolution, so there is nothing to reconcile. `API:CREDENTIAL_RECONCILIATION_CONFLICT`: the claim already records a different decision and evidence pair, so two operator observations disagree; the problem document's `evidence_digest` and `recorded_decision` extensions name the recorded pair, so a client holding its original evidence can confirm what is on record. `API:OUTCOME_UNKNOWN`: the adjudication may have committed but its acknowledgement was lost, and repeating the identical request is safe.", body = ProblemDetails, content_type = "application/problem+json"),
+        (status = 409, description = "The credential has no retained incident (`API:CREDENTIAL_RECONCILIATION_NOT_REQUIRED`), the recorded operation differs (`API:CREDENTIAL_OPERATION_BLOCKED`), the incident already records a different decision/evidence pair (`API:CREDENTIAL_RECONCILIATION_CONFLICT`), or the acknowledgement was lost (`API:OUTCOME_UNKNOWN`). Repeating the identical request is safe after `API:OUTCOME_UNKNOWN`.", body = ProblemDetails, content_type = "application/problem+json"),
         (status = 503, description = "Credential authority or persistence is temporarily unavailable.", body = ProblemDetails),
     ),
 )]

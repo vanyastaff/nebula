@@ -262,6 +262,30 @@ impl CredentialService {
 
     // ── Internal helpers ─────────────────────────────────────────────
 
+    /// Gate provider use and material mutation on the authoritative aggregate
+    /// and operation snapshot. This read bypasses cached secret material.
+    pub(crate) async fn ensure_operation_open(
+        &self,
+        selector: &crate::CredentialSelector,
+    ) -> Result<nebula_storage_port::store::CredentialOperationStatus, CredentialServiceError> {
+        use nebula_storage_port::store::CredentialOperationStatus;
+
+        match self
+            .store
+            .operation_status(selector)
+            .await
+            .map_err(|error| {
+                Self::map_store_err_for(&selector.credential_id().to_string(), error)
+            })? {
+            status @ CredentialOperationStatus::Open { .. } => Ok(status),
+            CredentialOperationStatus::InFlight { operation }
+            | CredentialOperationStatus::ReconciliationRequired { operation, .. } => {
+                tracing::warn!(?operation, "credential operation blocks material use");
+                Err(CredentialServiceError::OperationBlocked { operation })
+            },
+        }
+    }
+
     /// Load a row and assert it belongs to `scope`, mapping both "absent"
     /// and "other tenant" to [`CredentialServiceError::NotFound`].
     pub(crate) async fn load_owned(
@@ -385,6 +409,9 @@ impl CredentialService {
                 CredentialServiceError::VersionExhausted
             },
             CredentialPersistenceError::OutcomeUnknown => CredentialServiceError::OutcomeUnknown,
+            CredentialPersistenceError::OperationBlocked { operation } => {
+                CredentialServiceError::OperationBlocked { operation }
+            },
             CredentialPersistenceError::CorruptRecord => CredentialServiceError::Store,
             CredentialPersistenceError::Unavailable => {
                 CredentialServiceError::PersistenceUnavailable
