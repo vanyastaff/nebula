@@ -11,6 +11,7 @@ async fn acquired_claim(
             selector,
             &ReplicaId::new("original-holder"),
             Duration::from_secs(30),
+            CredentialOperationIntent::Refresh,
         )
         .await
         .expect("initial claim")
@@ -74,6 +75,7 @@ async fn expired_in_flight_claim_is_preserved_until_reclaim() {
             &selector,
             &ReplicaId::new("challenger"),
             Duration::from_secs(30),
+            CredentialOperationIntent::Refresh,
         )
         .await
         .expect("poisoned acquisition");
@@ -86,6 +88,7 @@ async fn expired_in_flight_claim_is_preserved_until_reclaim() {
             &selector,
             &ReplicaId::new("second-challenger"),
             Duration::from_secs(30),
+            CredentialOperationIntent::Refresh,
         )
         .await
         .expect("repeated poisoned acquisition");
@@ -107,6 +110,7 @@ async fn expired_normal_claim_can_be_taken_over_in_place() {
             &selector,
             &ReplicaId::new("challenger"),
             Duration::from_secs(30),
+            CredentialOperationIntent::Refresh,
         )
         .await
         .expect("expired normal takeover");
@@ -138,6 +142,7 @@ async fn exact_confirmed_release_clears_expired_in_flight_claim() {
             &selector,
             &ReplicaId::new("next-holder"),
             Duration::from_secs(30),
+            CredentialOperationIntent::Refresh,
         )
         .await
         .expect("claim after exact finalization");
@@ -155,15 +160,25 @@ async fn owner_partitions_are_independent_for_the_same_credential_id() {
     let owner_b = CredentialSelector::new(CredentialOwner::from_canonical("owner-b"), id);
 
     assert!(matches!(
-        repo.try_claim(&owner_a, &ReplicaId::new("a"), Duration::from_secs(30))
-            .await
-            .expect("owner A claim"),
+        repo.try_claim(
+            &owner_a,
+            &ReplicaId::new("a"),
+            Duration::from_secs(30),
+            CredentialOperationIntent::Refresh
+        )
+        .await
+        .expect("owner A claim"),
         ClaimAttempt::Acquired(_)
     ));
     assert!(matches!(
-        repo.try_claim(&owner_b, &ReplicaId::new("b"), Duration::from_secs(30))
-            .await
-            .expect("owner B claim"),
+        repo.try_claim(
+            &owner_b,
+            &ReplicaId::new("b"),
+            Duration::from_secs(30),
+            CredentialOperationIntent::Refresh
+        )
+        .await
+        .expect("owner B claim"),
         ClaimAttempt::Acquired(_)
     ));
 }
@@ -213,7 +228,8 @@ async fn adjudication_is_idempotent_and_conflicting_evidence_is_refused() {
     let first = repo
         .adjudicate(
             &selector,
-            RefreshOutcomeDecision::ProviderNotApplied,
+            CredentialIncidentRef::from_uuid(claim.token.claim_id),
+            CredentialOperationDecision::Refresh(RefreshOutcomeDecision::ProviderNotApplied),
             "provider confirmed no mutation",
         )
         .await
@@ -223,7 +239,8 @@ async fn adjudication_is_idempotent_and_conflicting_evidence_is_refused() {
     let repeat = repo
         .adjudicate(
             &selector,
-            RefreshOutcomeDecision::ProviderNotApplied,
+            CredentialIncidentRef::from_uuid(claim.token.claim_id),
+            CredentialOperationDecision::Refresh(RefreshOutcomeDecision::ProviderNotApplied),
             "provider confirmed no mutation",
         )
         .await
@@ -233,7 +250,8 @@ async fn adjudication_is_idempotent_and_conflicting_evidence_is_refused() {
     let conflict = repo
         .adjudicate(
             &selector,
-            RefreshOutcomeDecision::ProviderApplied,
+            CredentialIncidentRef::from_uuid(claim.token.claim_id),
+            CredentialOperationDecision::Refresh(RefreshOutcomeDecision::ProviderApplied),
             "different evidence",
         )
         .await
@@ -258,14 +276,99 @@ async fn adjudication_evidence_bounds_preserve_poison() {
     expire_claim(&repo, &selector);
 
     assert!(matches!(
-        repo.adjudicate(&selector, RefreshOutcomeDecision::ProviderNotApplied, "",)
-            .await,
+        repo.adjudicate(
+            &selector,
+            CredentialIncidentRef::from_uuid(claim.token.claim_id),
+            CredentialOperationDecision::Refresh(RefreshOutcomeDecision::ProviderNotApplied),
+            "",
+        )
+        .await,
         Err(RepoAdjudicationError::InvalidEvidence)
     ));
     assert!(matches!(
-        repo.try_claim(&selector, &ReplicaId::new("next"), Duration::from_secs(30))
-            .await
-            .expect("poison check"),
+        repo.try_claim(
+            &selector,
+            &ReplicaId::new("next"),
+            Duration::from_secs(30),
+            CredentialOperationIntent::Refresh
+        )
+        .await
+        .expect("poison check"),
         ClaimAttempt::OutcomeUnknown { .. }
     ));
+}
+
+/// A retry after a lost acknowledgement names its own incident, and a newer
+/// incident on the same credential is not resolved by it.
+///
+/// The documented recovery for a lost acknowledgement is to resend the same
+/// request. Without an incident identity the resend would land on whatever
+/// claim is poisoned now and record the old decision against a new incident.
+#[tokio::test]
+async fn a_retried_decision_never_resolves_a_newer_incident() {
+    let repo = InMemoryRefreshClaimRepo::new();
+    let selector = CredentialSelector::new(
+        CredentialOwner::from_canonical("owner-a"),
+        CredentialId::new(),
+    );
+    let decision = CredentialOperationDecision::Refresh(RefreshOutcomeDecision::ProviderNotApplied);
+    let evidence = "provider confirmed no mutation";
+
+    let first = acquired_claim(&repo, &selector).await;
+    repo.mark_sentinel(&first.token)
+        .await
+        .expect("mark provider egress");
+    expire_claim(&repo, &selector);
+    let first_incident = CredentialIncidentRef::from_uuid(first.token.claim_id);
+    let resolved = repo
+        .adjudicate(&selector, first_incident, decision, evidence)
+        .await
+        .expect("resolve the first incident");
+    assert!(resolved.changed);
+
+    // The acknowledgement was lost; meanwhile a second provider call poisons.
+    let second = acquired_claim(&repo, &selector).await;
+    repo.mark_sentinel(&second.token)
+        .await
+        .expect("mark provider egress");
+    expire_claim(&repo, &selector);
+
+    let replay = repo
+        .adjudicate(&selector, first_incident, decision, evidence)
+        .await
+        .expect("the replay is answered from the first incident's record");
+    assert!(!replay.changed);
+    assert!(matches!(
+        repo.try_claim(
+            &selector,
+            &ReplicaId::new("next"),
+            Duration::from_secs(30),
+            CredentialOperationIntent::Refresh
+        )
+        .await
+        .expect("poison check"),
+        ClaimAttempt::OutcomeUnknown { .. }
+    ));
+
+    let stale = repo
+        .adjudicate(
+            &selector,
+            CredentialIncidentRef::from_uuid(Uuid::new_v4()),
+            decision,
+            evidence,
+        )
+        .await
+        .expect_err("an unknown incident cannot resolve the current one");
+    assert!(matches!(stale, RepoAdjudicationError::StaleIncident));
+
+    let second_resolution = repo
+        .adjudicate(
+            &selector,
+            CredentialIncidentRef::from_uuid(second.token.claim_id),
+            decision,
+            "second incident established separately",
+        )
+        .await
+        .expect("the current incident is resolved by its own identity");
+    assert!(second_resolution.changed);
 }

@@ -15,8 +15,8 @@ use nebula_core::UserId;
 use nebula_credential::{
     Acquisition, AuthorizationDecision, CredentialActor, CredentialAuthenticationBinding,
     CredentialAuthorizationError, CredentialCommand, CredentialCommandResult, CredentialController,
-    CredentialLifecycleState, CredentialOperation, CredentialTenantAuthority, InteractionRequest,
-    UserInput,
+    CredentialLifecycleOperation, CredentialLifecycleState, CredentialOperation,
+    CredentialTenantAuthority, InteractionRequest, UserInput,
     runtime::{CredentialRefreshSchedulerConfig, RefreshCoordConfig},
 };
 use nebula_metrics::{
@@ -28,8 +28,9 @@ use nebula_storage_port::{
     CredentialOwner, CredentialPersistence, CredentialRefreshHorizon, CredentialRefreshPageSize,
     CredentialSelector, Scope,
     store::{
-        ClaimAttempt, ExpiredClaim, RefreshClaimError, RefreshClaimReclaimer, RefreshClaimStore,
-        RefreshOutcomeDecision, ReplicaId, SentinelEscalationPolicy,
+        ClaimAttempt, CredentialOperationDecision, CredentialOperationIntent, ExpiredClaim,
+        RefreshClaimError, RefreshClaimReclaimer, RefreshClaimStore, RefreshOutcomeDecision,
+        ReplicaId, SentinelEscalationPolicy,
     },
 };
 use serde_json::json;
@@ -316,6 +317,7 @@ async fn crashed_refresh_is_reclaimed_without_replay_then_reauthorized_once() {
             &selector,
             &ReplicaId::new("crashed-refresh-owner"),
             Duration::from_millis(60),
+            CredentialOperationIntent::Refresh,
         )
         .await
         .expect("refresh claim acquired");
@@ -334,6 +336,7 @@ async fn crashed_refresh_is_reclaimed_without_replay_then_reauthorized_once() {
                 &selector,
                 &ReplicaId::new("pre-restart-poison-probe"),
                 Duration::from_millis(60),
+                CredentialOperationIntent::Refresh,
             )
             .await
             .expect("expired claim remains readable"),
@@ -380,7 +383,7 @@ async fn crashed_refresh_is_reclaimed_without_replay_then_reauthorized_once() {
             let CredentialCommandResult::Head(head) = result else {
                 panic!("get must return a head");
             };
-            if head.lifecycle == CredentialLifecycleState::ReauthRequired {
+            if head.reauth_required {
                 break head;
             }
             tokio::task::yield_now().await;
@@ -389,6 +392,16 @@ async fn crashed_refresh_is_reclaimed_without_replay_then_reauthorized_once() {
     .await
     .expect("startup reclaim reaches the durable reauth transition");
     assert!(reauth_head.reauth_required);
+    let CredentialLifecycleState::ReconciliationRequired {
+        operation: Some(CredentialLifecycleOperation::Refresh),
+        incident: Some(incident),
+    } = reauth_head.lifecycle
+    else {
+        panic!(
+            "durable poison remains the public availability gate until adjudication: {:?}",
+            reauth_head.lifecycle
+        );
+    };
     let escalated = second_store
         .get_head(&selector)
         .await
@@ -406,7 +419,10 @@ async fn crashed_refresh_is_reclaimed_without_replay_then_reauthorized_once() {
             &scope,
             CredentialCommand::Reconcile {
                 credential_id: id,
-                decision: RefreshOutcomeDecision::ProviderNotApplied,
+                incident,
+                decision: CredentialOperationDecision::Refresh(
+                    RefreshOutcomeDecision::ProviderNotApplied,
+                ),
                 evidence: "provider audit confirms no refresh was applied".to_owned(),
             },
         )
@@ -416,11 +432,25 @@ async fn crashed_refresh_is_reclaimed_without_replay_then_reauthorized_once() {
         panic!("reconcile must return its durable adjudication");
     };
     assert!(adjudication.changed);
+    let after_adjudication = second_controller
+        .execute(&actor, &scope, CredentialCommand::Get { credential_id: id })
+        .await
+        .expect("credential head remains readable after adjudication");
+    let CredentialCommandResult::Head(after_adjudication) = after_adjudication else {
+        panic!("get must return a head");
+    };
+    assert!(after_adjudication.reauth_required);
+    assert_eq!(
+        after_adjudication.lifecycle,
+        CredentialLifecycleState::ReauthRequired,
+        "clearing the incident must expose the still-durable reauthorization requirement"
+    );
     let probe = second_claims
         .try_claim(
             &selector,
             &ReplicaId::new("post-adjudication-probe"),
             Duration::from_millis(60),
+            CredentialOperationIntent::Refresh,
         )
         .await
         .expect("claim store remains available");

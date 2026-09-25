@@ -1323,24 +1323,26 @@ mod tests {
         assert!(!is_transient_sqlite_lock(&sqlx::Error::WorkerCrashed));
     }
 
-    /// PostgreSQL head 0059 creates only the empty rate-limit and
+    /// PostgreSQL head 0060 creates only the empty rate-limit and
     /// rate-limit-reservation relations, their constraints, and two time
     /// indexes. They reference no aggregate and nothing is inspected,
     /// inferred, or backfilled; a missing row behaves exactly like an idle
     /// limit, which is how every key starts. It is aggregate-neutral and the
-    /// floor remains at 0040. SQLite reserves 0059 (one process keeps its
-    /// limits in memory), so its head stays at 0058.
+    /// floor remains at 0040. SQLite reserves 0060 (one process keeps its
+    /// limits in memory), so its head stays at 0059.
     ///
-    /// Head 0058 creates only the empty worker-heartbeat and resource-status
+    /// Head 0059 creates only the empty worker-heartbeat and resource-status
     /// relations, their constraints, and a worker index. They reference no
     /// aggregate and nothing is inspected, inferred, or backfilled; published
     /// status is liveness-bounded runtime state that workers rewrite on their
     /// own. It is aggregate-neutral and the floor remains at 0040.
     ///
-    /// Head 0057 adds nullable operator topology and resilience-override
+    /// Head 0058 adds nullable operator topology and resilience-override
     /// documents to resource definitions. NULL is the kind-default / unlimited
     /// behaviour every existing row already had, so nothing is inferred or
     /// rewritten; it is aggregate-neutral and the floor remains at 0040.
+    ///
+    /// Head 0057 types credential provider-operation claims and incidents.
     ///
     /// Head 0056 widens the pending-state expiry constraint to admit equality.
     /// PostgreSQL replaces only the constraint. SQLite rebuilds the relation
@@ -1393,9 +1395,9 @@ mod tests {
     fn new_catalog_head_requires_explicit_admission_policy_review() {
         assert_eq!(GENERAL_CATALOG_SUPPORTED_FLOOR, 40);
         #[cfg(feature = "sqlite")]
-        assert_eq!(catalog::catalog_head(&super::SQLITE_MIGRATOR), 58);
+        assert_eq!(catalog::catalog_head(&super::SQLITE_MIGRATOR), 59);
         #[cfg(feature = "postgres")]
-        assert_eq!(catalog::catalog_head(&super::POSTGRES_MIGRATOR), 59);
+        assert_eq!(catalog::catalog_head(&super::POSTGRES_MIGRATOR), 60);
     }
 
     /// The setup guard must never hold a descriptor on the database file.

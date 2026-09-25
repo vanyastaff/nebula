@@ -241,7 +241,8 @@ wired to a hardened injected transport.
   framework-owned.
 - Refresh authority is compared through the durable material epoch, never serialized-byte
   equality or the general row version. Display-only writes preserve the epoch and are merged before
-  provider dispatch; explicit material/reconnect, durable reauthentication decisions, and
+  provider dispatch and again into the post-provider write-back, so a rename during the provider
+  call never costs rotated material; explicit material/reconnect, durable reauthentication decisions, and
   successful refresh transitions advance it even when bytes are identical, and clear any retry
   gate.
 - A known refresh outcome whose required retry-gate or reauthentication transition definitely
@@ -266,6 +267,46 @@ wired to a hardened injected transport.
 - `cargo test -p nebula-credential --doc`
 - Compile-fail suites under `tests/compile_fail_*` lock down capability, sensitivity, guard, slot,
   and service-management visibility invariants.
+
+## Durable operation incidents
+
+Refresh and revoke share one credential-scoped exclusion claim, but retain different durable
+operation kinds. A revoke claim pins the material epoch it will invalidate before provider
+dispatch. New projections, health tests, and material replacement refuse an outstanding
+operation; an already acquired guard keeps its original material. This projection gate does
+not by itself invalidate clients already cached inside a resource pool.
+
+Reconciliation is operation-specific. A refresh decision cannot clear a revoke incident.
+`ProviderRevoked` atomically tombstones the epoch-qualified credential, records the decision
+and evidence digest, and clears the claim. `ProviderNotRevoked` records the decision and
+reopens the unchanged credential. A display-only edit does not change the material epoch;
+both normal revoke completion and recovery atomically tombstone the current row under the
+pinned epoch. A rename cannot turn confirmed provider success into a version-CAS failure.
+An authority-changing replacement cannot pass an
+outstanding revoke claim. Every decision names the incident it resolves. Repeating the same
+incident, decision and evidence is safe after a lost acknowledgement, including after tombstoning;
+if a newer incident poisoned the credential meanwhile, the repeat is answered from the old
+incident's record and never resolves the new one.
+
+Local coalescing groups refresh and revoke separately; the shared durable claim still
+serializes their provider calls. If refresh replaces material while revoke is waiting,
+the stale revoke returns a version conflict before provider dispatch.
+
+Management lifecycle reports `operation_in_flight` or `reconciliation_required` with a public
+operation category and, for `reconciliation_required`, the incident a decision must name. It
+exposes no live claim id, generation, holder, or fencing token. Operational
+heads are read from one backend snapshot, including list results. Secret projection uses a
+fresh aggregate/operation snapshot even when the stored credential is static or unexpired.
+
+Pre-upgrade claims did not record whether the provider call was refresh or revoke. Migration
+preserves those records as unclassified; it never guesses their operation or permits a refresh
+decision to reopen them. Stop old writers before the operation-aware schema upgrade. A legacy
+unclassified incident requires explicit credential deletion and fresh acquisition; deletion
+keeps the original credential id terminal and does not claim to undo a provider effect.
+
+This protocol identifies refresh/revoke incidents. It is not the general command receipt
+ledger: reserving acquisition identity before provider dispatch and recovering lost create or
+material-update acknowledgements remain separate work.
 
 ## Known limits
 

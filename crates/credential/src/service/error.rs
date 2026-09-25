@@ -380,6 +380,16 @@ pub enum CredentialServiceError {
     /// internal fault.
     #[error("stored credential state was refused by the state-envelope check: {0}")]
     StateEnvelopeRefused(StateEnvelopeError),
+
+    /// A durable provider operation gate blocks this command.
+    ///
+    /// Only the operation category is public; claim ownership and fencing
+    /// evidence remain internal.
+    #[error("credential operation is blocked by an in-flight or unresolved {operation:?}")]
+    OperationBlocked {
+        /// Provider operation holding the durable gate.
+        operation: nebula_storage_port::CredentialOperationKind,
+    },
 }
 
 impl fmt::Debug for CredentialServiceError {
@@ -405,9 +415,10 @@ impl nebula_error::Classify for CredentialServiceError {
             | Self::ReauthRequired { .. }
             | Self::ScopeViolation { .. }
             | Self::StateEnvelopeRefused(_) => ErrorCategory::Validation,
-            Self::IdAlreadyExists | Self::NameAlreadyExists | Self::VersionExhausted => {
-                ErrorCategory::Conflict
-            },
+            Self::IdAlreadyExists
+            | Self::NameAlreadyExists
+            | Self::VersionExhausted
+            | Self::OperationBlocked { .. } => ErrorCategory::Conflict,
             Self::Provider(_)
             | Self::TransientProvider(_)
             | Self::RefreshNotApplied(_)
@@ -467,6 +478,7 @@ impl nebula_error::Classify for CredentialServiceError {
             Self::ExternalSourceNotWired { .. } => "CREDENTIAL_SERVICE:EXTERNAL_NOT_WIRED",
             Self::InvalidSlotState => "CREDENTIAL_SERVICE:INVALID_SLOT_STATE",
             Self::StateEnvelopeRefused(_) => "CREDENTIAL_SERVICE:STATE_ENVELOPE_REFUSED",
+            Self::OperationBlocked { .. } => "CREDENTIAL_SERVICE:OPERATION_BLOCKED",
             Self::Internal(_) => "CREDENTIAL_SERVICE:INTERNAL",
             Self::Cancelled => "CREDENTIAL_SERVICE:CANCELLED",
             Self::ScopeViolation { .. } => "CREDENTIAL_SERVICE:SCOPE_VIOLATION",

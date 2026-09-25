@@ -16,9 +16,10 @@
 //! already happened, inside the adapter's own transaction. No production code
 //! grows a failure seam; the trigger is created and dropped by the fixture.
 //!
-//! This runner asserts **all 30** shared cases. The in-memory runner declares
-//! the failure-injection one skipped, and postgres asserts all 30 only when it
-//! can reach a database (see that runner's module doc).
+//! This runner asserts **all 33** shared cases. The in-memory runner does not
+//! run the shared suite (its reference checks live beside the adapter), and
+//! postgres asserts all 33 only when it can reach a database (see that runner's
+//! module doc).
 
 #![cfg(feature = "sqlite")]
 
@@ -31,8 +32,8 @@ use std::{str::FromStr, sync::Mutex, time::Duration};
 
 use chrono::{Duration as ChronoDuration, Utc};
 use nebula_storage::credential::refresh_claim::{
+    CredentialIncidentRef, CredentialOperationDecision, CredentialOperationIntent,
     RefreshAdjudication, RefreshClaimAdjudicationError, RefreshClaimAdjudicator,
-    RefreshOutcomeDecision,
 };
 use nebula_storage::credential::{
     ClaimAttempt, ClaimToken, ExpiredClaim, HeartbeatError, ReauthEscalation,
@@ -120,6 +121,7 @@ impl RefreshClaimRepo for SqliteRefreshClaimFixture {
         selector: &CredentialSelector,
         holder: &ReplicaId,
         ttl: Duration,
+        intent: CredentialOperationIntent,
     ) -> Result<ClaimAttempt, RepoError> {
         sqlx::query(
             "INSERT OR IGNORE INTO credentials (id, owner_id, credential_key, state_kind, \
@@ -133,7 +135,7 @@ impl RefreshClaimRepo for SqliteRefreshClaimFixture {
         .execute(&self.pool)
         .await
         .map_err(|_| RepoError::Storage)?;
-        self.repo.try_claim(selector, holder, ttl).await
+        self.repo.try_claim(selector, holder, ttl, intent).await
     }
 
     async fn heartbeat(&self, token: &ClaimToken, ttl: Duration) -> Result<(), HeartbeatError> {
@@ -164,10 +166,13 @@ impl RefreshClaimAdjudicator for SqliteRefreshClaimFixture {
     async fn adjudicate(
         &self,
         selector: &CredentialSelector,
-        decision: RefreshOutcomeDecision,
+        incident: CredentialIncidentRef,
+        decision: CredentialOperationDecision,
         evidence: &str,
     ) -> Result<RefreshAdjudication, RefreshClaimAdjudicationError> {
-        self.repo.adjudicate(selector, decision, evidence).await
+        self.repo
+            .adjudicate(selector, incident, decision, evidence)
+            .await
     }
 }
 
@@ -203,8 +208,12 @@ impl oracle::RefreshClaimFixture for SqliteRefreshClaimFixture {
         .expect("backdating the claim row must not fail");
     }
 
-    async fn seed_unresolved_incidents(&self, credential: &CredentialSelector, count: u32) {
-        oracle::replay_poisoned_lifecycles(self, credential, count).await;
+    async fn seed_unresolved_incidents(
+        &self,
+        credential: &CredentialSelector,
+        count: u32,
+    ) -> CredentialIncidentRef {
+        oracle::replay_poisoned_lifecycles(self, credential, count).await
     }
 
     async fn incident_count(&self, credential: &CredentialSelector) -> u64 {
@@ -354,7 +363,7 @@ async fn threshold_incident_atomically_advances_reauth_authority_once() {
     let selector =
         fixture.credential("threshold_incident_atomically_advances_reauth_authority_once");
     let claim = match fixture
-        .try_claim(&selector, &fixture.replica(1), fixture.claim_ttl())
+        .try_refresh_claim(&selector, &fixture.replica(1), fixture.claim_ttl())
         .await
         .expect("claim")
     {

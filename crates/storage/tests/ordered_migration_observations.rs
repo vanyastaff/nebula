@@ -9,10 +9,10 @@ use serde_json::{Value, json};
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 const PREVIOUS_SUPPORTED: i64 = 45;
 /// Catalog heads differ: PostgreSQL carries migrations SQLite reserves
-/// (0059 rate limits), so each backend reports its own.
+/// (0060 rate limits), so each backend reports its own.
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 fn current_head(backend: &str) -> i64 {
-    if backend == "postgresql" { 59 } else { 58 }
+    if backend == "postgresql" { 60 } else { 59 }
 }
 
 #[cfg(any(feature = "sqlite", feature = "postgres"))]

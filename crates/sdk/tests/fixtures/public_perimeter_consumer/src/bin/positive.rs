@@ -31,6 +31,18 @@ fn assert_credential_lifecycle_contract() {
         }),
         nebula_sdk::serde_json::json!({ "status": "refresh_blocked" }),
         nebula_sdk::serde_json::json!({ "status": "reauth_required" }),
+        nebula_sdk::serde_json::json!({
+            "status": "operation_in_flight",
+            "operation": "refresh"
+        }),
+        nebula_sdk::serde_json::json!({
+            "status": "reconciliation_required",
+            "operation": "revoke"
+        }),
+        nebula_sdk::serde_json::json!({
+            "status": "reconciliation_required",
+            "operation": null
+        }),
     ];
 
     for expected in wire_values {
@@ -40,7 +52,9 @@ fn assert_credential_lifecycle_contract() {
             CredentialLifecycleState::Ready
             | CredentialLifecycleState::RefreshDeferred { .. }
             | CredentialLifecycleState::RefreshBlocked
-            | CredentialLifecycleState::ReauthRequired => {},
+            | CredentialLifecycleState::ReauthRequired
+            | CredentialLifecycleState::OperationInFlight { .. }
+            | CredentialLifecycleState::ReconciliationRequired { .. } => {},
         }
         let actual = nebula_sdk::serde_json::to_value(state)
             .expect("credential lifecycle state must serialize through the SDK");
@@ -214,13 +228,33 @@ where
 
 fn assert_http_client_contract() {
     use nebula_sdk::client::{
-        credential::v1::{CreateCredentialRequest, ListCredentialsRequest, UpdateCredentialRequest},
+        credential::v1::{
+            CreateCredentialRequest, ListCredentialsRequest, UpdateCredentialRequest,
+        },
         http::{BearerToken, HttpClient, HttpOptions},
     };
-    let client = HttpClient::new("https://example.invalid", BearerToken::new("external-secret-canary").expect("token"), HttpOptions::default())
-        .expect("client").credentials("org", "ws").expect("scope");
-    let create = CreateCredentialRequest { credential_key: "token".into(), name: "Example".into(), description: None, data: nebula_sdk::serde_json::json!({}), tags: None };
-    let update = UpdateCredentialRequest { name: None, description: None, data: None, tags: None, version: Some(1) };
+    let client = HttpClient::new(
+        "https://example.invalid",
+        BearerToken::new("external-secret-canary").expect("token"),
+        HttpOptions::default(),
+    )
+    .expect("client")
+    .credentials("org", "ws")
+    .expect("scope");
+    let create = CreateCredentialRequest {
+        credential_key: "token".into(),
+        name: "Example".into(),
+        description: None,
+        data: nebula_sdk::serde_json::json!({}),
+        tags: None,
+    };
+    let update = UpdateCredentialRequest {
+        name: None,
+        description: None,
+        data: None,
+        tags: None,
+        version: Some(1),
+    };
     // Futures are deliberately not polled: this consumer proves the curated
     // signatures without a runtime or transport dependency in its manifest.
     drop(client.list(&ListCredentialsRequest::default()));

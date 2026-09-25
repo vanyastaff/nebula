@@ -455,6 +455,28 @@ fn credential_state_refused_is_a_fixed_non_retryable_409() {
 }
 
 #[test]
+fn credential_operation_blocked_names_only_the_public_operation() {
+    let error = ApiError::CredentialOperationBlocked {
+        operation: "revoke",
+    };
+    let (status, problem) = error.to_problem_details();
+    let json = serde_json::to_value(problem).expect("problem serializes");
+
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(
+        json.get("type").and_then(serde_json::Value::as_str),
+        Some("https://nebula.dev/problems/credential-operation-blocked")
+    );
+    assert_eq!(
+        json.get("operation").and_then(serde_json::Value::as_str),
+        Some("revoke")
+    );
+    for internal in ["claim_id", "generation", "fencing_token", "tenant_proof"] {
+        assert!(json.get(internal).is_none());
+    }
+}
+
+#[test]
 fn reconcile_refusals_are_distinguishable_fixed_non_retryable_409s() {
     use nebula_error::Classify;
 

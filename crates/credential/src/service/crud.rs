@@ -159,14 +159,18 @@ impl CredentialService {
     ) -> Result<CredentialHead, CredentialServiceError> {
         let credential_id = CredentialId::parse(id)
             .map_err(|_| CredentialServiceError::NotFound { id: id.to_owned() })?;
-        let stored = match self.store.get_head(&scope.selector(credential_id)).await {
+        let stored = match self
+            .store
+            .get_operational_head(&scope.selector(credential_id))
+            .await
+        {
             Ok(stored) => stored,
             Err(CredentialPersistenceError::NotFound) => {
                 return Err(CredentialServiceError::NotFound { id: id.to_owned() });
             },
             Err(error) => return Err(Self::map_store_err_for(id, error)),
         };
-        Ok(Self::head_from_projection(&stored))
+        Ok(Self::head_from_projection(stored.head()).with_operation_status(stored.status()))
     }
 
     /// List the secret-free heads of every credential visible to `scope`
@@ -184,12 +188,14 @@ impl CredentialService {
     ) -> Result<Vec<CredentialHead>, CredentialServiceError> {
         let rows = self
             .store
-            .list_heads(scope.owner(), None)
+            .list_operational_heads(scope.owner(), None)
             .await
             .map_err(|error| Self::map_store_err_for("credential", error))?;
         Ok(rows
             .into_iter()
-            .map(|stored| Self::head_from_projection(&stored))
+            .map(|stored| {
+                Self::head_from_projection(stored.head()).with_operation_status(stored.status())
+            })
             .collect())
     }
 
@@ -236,6 +242,16 @@ impl CredentialService {
         // Owner check first: a cross-tenant id is reported as missing,
         // never as a version conflict (no existence leak).
         let existing = self.load_owned(scope, id).await?;
+        let operation_status = self
+            .store
+            .operation_status(&scope.selector(existing.credential_id()))
+            .await
+            .map_err(|error| Self::map_store_err_for(id, error))?;
+        if props.is_some()
+            && let Some(operation) = operation_status.blocking_operation()
+        {
+            return Err(CredentialServiceError::OperationBlocked { operation });
+        }
         let actual = existing.version();
         let requested = expected_version.unwrap_or_else(|| actual.get() as u64);
         let expected = CredentialVersion::try_from(requested).map_err(|_| {
@@ -381,7 +397,8 @@ impl CredentialService {
             lifecycle,
             reauth_required,
             display,
-        })
+        }
+        .with_operation_status(operation_status))
     }
 
     /// Replace a live credential with a secret-free tombstone scoped to

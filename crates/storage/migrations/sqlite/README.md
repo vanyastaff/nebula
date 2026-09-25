@@ -39,6 +39,11 @@ and sentinel incidents with the credential aggregate's canonical owner. A
 missing aggregate row violates the target `NOT NULL` constraint and rolls the
 migration back rather than inventing tenant authority.
 
+Migration `0057_typed_credential_operation_incidents.sql` rebuilds both
+relations with an immutable operation kind and a revoke-only observed material
+epoch. Historical rows become `legacy_unclassified`; the new required column
+has no default, so an old writer fails closed during a rolling upgrade.
+
 ## Storage-port adapter schema (0027)
 
 `crates/storage/src/sqlite/schema.sql` is the **cumulative** `port_*` schema,
@@ -128,7 +133,7 @@ no SQLite counterpart):
 | `0036_plane_a_oauth_state_cleanup_index` | partial index over `NOW()`; SQLite requires constant expressions (see *Dialect notes*) |
 | `0037_mfa_enrollment_candidates` | `mfa_enrollment_candidates` — `pg/mfa_enrollment.rs` only |
 | `0038_identity_secret_authority` | `pg/identity_secret.rs` only |
-| `0059_rate_limits` | cluster-wide rate limits, `postgres/rate_limit.rs` only; one SQLite process keeps its limits in memory |
+| `0060_rate_limits` | cluster-wide rate limits, `postgres/rate_limit.rs` only; one SQLite process keeps its limits in memory |
 
 A fresh SQLite database therefore has two fewer tables than a fresh
 PostgreSQL one (`external_identities`, `mfa_enrollment_candidates`). Adding

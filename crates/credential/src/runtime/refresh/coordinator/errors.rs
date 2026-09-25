@@ -77,6 +77,13 @@ pub enum RefreshError {
     /// for the command owner to retry after the state source recovers.
     #[error(transparent)]
     StateRecheck(#[from] RefreshRecheckError),
+    /// A different operation, or an unclassified legacy incident, retains
+    /// durable authority and cannot be resolved as a refresh.
+    #[error("credential operation requires reconciliation before use")]
+    OperationBlocked {
+        /// Kind read from the retained durable claim.
+        operation: nebula_storage_port::store::CredentialOperationKind,
+    },
 }
 
 /// Closed failure taxonomy for the pre-provider state recheck.

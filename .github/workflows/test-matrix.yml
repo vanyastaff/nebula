@@ -288,6 +288,8 @@ jobs:
           cargo nextest run "${common[@]}" \
             --lib observation_fetch_errors_distinguish_schema_evidence_from_unavailability
           cargo nextest run "${common[@]}" --lib semantic_oracle
+          cargo nextest run "${common[@]}" --lib \
+            -E 'test(revoke_finalizer_accepts_display_version_churn_and_refuses_wrong_epoch) | test(replace_rechecks_revoke_claim_after_aggregate_lock)'
 
           # Preserve the pre-K2 live PostgreSQL authority gate. These tests
           # predate the credential lifecycle suites and remain part of the
@@ -330,6 +332,10 @@ jobs:
           do
             cargo nextest run "${common[@]}" --test "$suite"
           done
+
+          cargo nextest run -p nebula-storage --no-default-features \
+            --features sqlite,postgres,credential-in-memory --test credential_operation_runtime \
+            --profile ci --no-tests=fail
 
           NEBULA_POSTGRES_REQUIREMENT_OBSERVATIONS_PATH="$GITHUB_WORKSPACE"/target/runtime-authority/required-postgresql/disabled.json \
             cargo nextest run -p nebula-storage --no-default-features --test conformance \

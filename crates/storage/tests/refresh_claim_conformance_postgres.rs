@@ -31,7 +31,7 @@
 //! which aborts it, so the claim-row delete rolls back with the resolution
 //! write. No production code grows a failure seam.
 //!
-//! This runner asserts **all 30** shared cases when the backend is reachable.
+//! This runner asserts **all 33** shared cases when the backend is reachable.
 //! Without a database every case fails naming the backend, so the denominator
 //! can never hold green cases that asserted nothing.
 
@@ -44,8 +44,8 @@ mod oracle;
 use std::{sync::Mutex, time::Duration};
 
 use nebula_storage::credential::refresh_claim::{
+    CredentialIncidentRef, CredentialOperationDecision, CredentialOperationIntent,
     RefreshAdjudication, RefreshClaimAdjudicationError, RefreshClaimAdjudicator,
-    RefreshOutcomeDecision,
 };
 use nebula_storage::credential::{
     ClaimAttempt, ClaimToken, ExpiredClaim, HeartbeatError, PgRefreshClaimRepo, ReauthEscalation,
@@ -181,6 +181,7 @@ impl RefreshClaimRepo for PgRefreshClaimFixture {
         selector: &CredentialSelector,
         holder: &ReplicaId,
         ttl: Duration,
+        intent: CredentialOperationIntent,
     ) -> Result<ClaimAttempt, RepoError> {
         sqlx::query(
             "INSERT INTO credentials (id, owner_id, credential_key, state_kind, state_version, \
@@ -194,7 +195,7 @@ impl RefreshClaimRepo for PgRefreshClaimFixture {
         .execute(&self.pool)
         .await
         .map_err(|_| RepoError::Storage)?;
-        self.repo.try_claim(selector, holder, ttl).await
+        self.repo.try_claim(selector, holder, ttl, intent).await
     }
 
     async fn heartbeat(&self, token: &ClaimToken, ttl: Duration) -> Result<(), HeartbeatError> {
@@ -225,10 +226,13 @@ impl RefreshClaimAdjudicator for PgRefreshClaimFixture {
     async fn adjudicate(
         &self,
         selector: &CredentialSelector,
-        decision: RefreshOutcomeDecision,
+        incident: CredentialIncidentRef,
+        decision: CredentialOperationDecision,
         evidence: &str,
     ) -> Result<RefreshAdjudication, RefreshClaimAdjudicationError> {
-        self.repo.adjudicate(selector, decision, evidence).await
+        self.repo
+            .adjudicate(selector, incident, decision, evidence)
+            .await
     }
 }
 
@@ -262,8 +266,12 @@ impl oracle::RefreshClaimFixture for PgRefreshClaimFixture {
         .expect("backdating the claim row must not fail");
     }
 
-    async fn seed_unresolved_incidents(&self, credential: &CredentialSelector, count: u32) {
-        oracle::replay_poisoned_lifecycles(self, credential, count).await;
+    async fn seed_unresolved_incidents(
+        &self,
+        credential: &CredentialSelector,
+        count: u32,
+    ) -> CredentialIncidentRef {
+        oracle::replay_poisoned_lifecycles(self, credential, count).await
     }
 
     async fn incident_count(&self, credential: &CredentialSelector) -> u64 {
@@ -438,7 +446,7 @@ async fn threshold_incident_atomically_advances_reauth_authority_once() {
     let selector =
         fixture.credential("threshold_incident_atomically_advances_reauth_authority_once");
     let claim = match fixture
-        .try_claim(&selector, &fixture.replica(1), fixture.claim_ttl())
+        .try_refresh_claim(&selector, &fixture.replica(1), fixture.claim_ttl())
         .await
         .expect("claim")
     {

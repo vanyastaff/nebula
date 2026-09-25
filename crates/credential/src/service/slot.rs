@@ -31,6 +31,9 @@ fn map_slot_resolve_error(
     error: ResolveError,
 ) -> CredentialServiceError {
     match error {
+        ResolveError::OperationBlocked { operation } => {
+            CredentialServiceError::OperationBlocked { operation }
+        },
         ResolveError::Store(error) => CredentialService::map_store_err_for(requested_id, error),
         ResolveError::ExternalSourceNotWired => CredentialServiceError::ExternalSourceNotWired {
             provider: match source {
@@ -243,6 +246,9 @@ impl CredentialService {
                 },
                 CredentialSlotResolveError::StoredStateRefused(envelope) => {
                     CredentialServiceError::StateEnvelopeRefused(envelope)
+                },
+                CredentialSlotResolveError::OperationBlocked { operation } => {
+                    CredentialServiceError::OperationBlocked { operation }
                 },
                 CredentialSlotResolveError::WrongCredentialKey
                 | CredentialSlotResolveError::MissingCapabilities

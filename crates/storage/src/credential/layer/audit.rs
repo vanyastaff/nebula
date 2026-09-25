@@ -25,9 +25,10 @@ use async_trait::async_trait;
 use nebula_core::CredentialId;
 use nebula_credential::{AuditEvent, AuditOperation, AuditResult, AuditSink};
 use nebula_storage_port::{
-    CredentialCommit, CredentialCreate, CredentialOwner, CredentialPersistence,
-    CredentialPersistenceError, CredentialReplacement, CredentialSelector, CredentialTombstone,
-    RefreshRetrySnapshot, StoredCredential, StoredCredentialHead,
+    CredentialCommit, CredentialCreate, CredentialOperationStatus, CredentialOwner,
+    CredentialPersistence, CredentialPersistenceError, CredentialReplacement, CredentialSelector,
+    CredentialTombstone, RefreshRetrySnapshot, StoredCredential, StoredCredentialHead,
+    StoredCredentialOperationalHead,
 };
 
 /// Audit logging layer wrapping a [`CredentialPersistence`].
@@ -123,6 +124,42 @@ impl<S: CredentialPersistence> CredentialPersistence for AuditLayer<S> {
         result
     }
 
+    async fn operation_status(
+        &self,
+        selector: &CredentialSelector,
+    ) -> Result<CredentialOperationStatus, CredentialPersistenceError> {
+        self.inner.operation_status(selector).await
+    }
+
+    async fn get_operational_head(
+        &self,
+        selector: &CredentialSelector,
+    ) -> Result<StoredCredentialOperationalHead, CredentialPersistenceError> {
+        let result = self.inner.get_operational_head(selector).await;
+        self.observe(&AuditEvent {
+            timestamp: chrono::Utc::now(),
+            credential_id: selector.credential_id().to_string(),
+            operation: AuditOperation::Get,
+            result: audit_result(&result),
+        });
+        result
+    }
+
+    async fn list_operational_heads(
+        &self,
+        owner: &CredentialOwner,
+        state_kind: Option<&str>,
+    ) -> Result<Vec<StoredCredentialOperationalHead>, CredentialPersistenceError> {
+        let result = self.inner.list_operational_heads(owner, state_kind).await;
+        self.observe(&AuditEvent {
+            timestamp: chrono::Utc::now(),
+            credential_id: "*".to_owned(),
+            operation: AuditOperation::List,
+            result: audit_result(&result),
+        });
+        result
+    }
+
     async fn refresh_retry_snapshot(
         &self,
         selector: &CredentialSelector,
@@ -177,6 +214,26 @@ impl<S: CredentialPersistence> CredentialPersistence for AuditLayer<S> {
         tombstone: CredentialTombstone,
     ) -> Result<CredentialCommit, CredentialPersistenceError> {
         let result = self.inner.tombstone(selector, tombstone).await;
+        if result.is_ok() {
+            self.observe(&AuditEvent {
+                timestamp: chrono::Utc::now(),
+                credential_id: selector.credential_id().to_string(),
+                operation: AuditOperation::Tombstone,
+                result: AuditResult::Success,
+            });
+        }
+        result
+    }
+
+    async fn tombstone_revoked_material(
+        &self,
+        selector: &CredentialSelector,
+        expected_material_epoch: nebula_storage_port::CredentialMaterialEpoch,
+    ) -> Result<CredentialCommit, CredentialPersistenceError> {
+        let result = self
+            .inner
+            .tombstone_revoked_material(selector, expected_material_epoch)
+            .await;
         if result.is_ok() {
             self.observe(&AuditEvent {
                 timestamp: chrono::Utc::now(),
@@ -259,6 +316,7 @@ fn audit_result<T>(result: &Result<T, CredentialPersistenceError>) -> AuditResul
         Err(CredentialPersistenceError::OutcomeUnknown) => {
             AuditResult::Error("outcome_unknown".to_owned())
         },
+        Err(CredentialPersistenceError::OperationBlocked { .. }) => AuditResult::Conflict,
     }
 }
 
@@ -343,6 +401,35 @@ mod tests {
             .unwrap();
         assert_eq!(get_event.credential_id, credential_id.to_string());
         assert_eq!(get_event.result, AuditResult::Success);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn operational_reads_preserve_get_and_list_audit_events()
+    -> Result<(), CredentialPersistenceError> {
+        let sink = Arc::new(CollectingSink::new());
+        let store = make_store(&sink).await?;
+        let credential_id = CredentialId::new();
+        let selector = selector(credential_id);
+        store
+            .create(&selector, make_credential(b"test-data"))
+            .await?;
+
+        store.get_operational_head(&selector).await?;
+        store.list_operational_heads(&owner(), None).await?;
+
+        let events = sink.events();
+        let credential_id = credential_id.to_string();
+        assert!(events.iter().any(|event| {
+            event.credential_id == credential_id
+                && event.operation == AuditOperation::Get
+                && event.result == AuditResult::Success
+        }));
+        assert!(events.iter().any(|event| {
+            event.credential_id == "*"
+                && event.operation == AuditOperation::List
+                && event.result == AuditResult::Success
+        }));
         Ok(())
     }
 

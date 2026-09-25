@@ -12,7 +12,10 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use nebula_storage_port::{
     Scope,
-    store::{RefreshClaimAdjudicationError, RefreshOutcomeDecision},
+    store::{
+        CredentialIncidentRef, CredentialOperationDecision, CredentialOperationKind,
+        RefreshClaimAdjudicationError,
+    },
 };
 use thiserror::Error;
 
@@ -77,14 +80,17 @@ pub enum CredentialGatewayCommand {
     ContinueResolve(ContinueResolveRequest),
     /// Resolve an ambiguous provider outcome on a poisoned refresh claim.
     ///
-    /// Carries the evidence the caller observed, never an incident identity:
-    /// the poisoned claim admits at most one incident, so the caller has no
-    /// incident to name and the digest of `evidence` is the anchor instead.
+    /// Names the incident the decision was established for. A retry after a
+    /// lost acknowledgement names the same incident and is answered from its
+    /// record; a newer incident on the same credential is refused as stale
+    /// rather than resolved by a decision that never described it.
     Reconcile {
         /// Credential whose poisoned refresh claim is being adjudicated.
         credential_id: String,
+        /// The incident published in `ReconciliationRequired`.
+        incident: CredentialIncidentRef,
         /// The provider outcome the caller asserts it observed.
-        decision: RefreshOutcomeDecision,
+        decision: CredentialOperationDecision,
         /// Operator prose describing what was observed. The adjudicator bounds
         /// its length and digests it, and records both: the note is stored
         /// verbatim alongside the digest, so the digest anchors the exact
@@ -185,6 +191,19 @@ pub enum CredentialGatewayLifecycleState {
     RefreshBlocked,
     /// Interactive authorization must complete before the credential is usable.
     ReauthRequired,
+    /// A provider operation currently owns the durable operation gate.
+    OperationInFlight {
+        /// Secret-free operation category.
+        operation: CredentialOperationKind,
+    },
+    /// An expired provider operation requires explicit reconciliation.
+    ReconciliationRequired {
+        /// Typed category or the legacy-unclassified upgrade state.
+        operation: CredentialOperationKind,
+        /// The incident a reconciliation must name. `None` only while a legacy
+        /// unclassified operation is still in flight.
+        incident: Option<CredentialIncidentRef>,
+    },
 }
 
 /// Secret-free provider-test classification crossing the API port.
@@ -280,7 +299,7 @@ pub enum CredentialGatewayResult {
     /// A poisoned refresh claim was adjudicated.
     Reconciled {
         /// The provider outcome now durably on record for the claim.
-        decision: RefreshOutcomeDecision,
+        decision: CredentialOperationDecision,
         /// Whether this call changed the record. `false` means the identical
         /// `(evidence digest, decision)` pair was already on record — a
         /// superseded replay, which is a success, not a conflict.
@@ -517,6 +536,11 @@ pub enum CredentialGatewayError {
     /// the no-op success path that [`Self::ReconciliationConflict`] describes.
     #[error("credential has no refresh claim requiring reconciliation")]
     ReconciliationNotRequired,
+    /// The credential is poisoned by a different incident than the one the
+    /// command names, so the decision is refused rather than applied to an
+    /// incident it never described.
+    #[error("credential reconciliation names a stale incident")]
+    ReconciliationStaleIncident,
     /// The poisoning claim already records a different `(evidence, decision)`
     /// pair, so this request contradicts durable state.
     ///
@@ -530,7 +554,7 @@ pub enum CredentialGatewayError {
         /// SHA-256 of the recorded evidence this request conflicted with.
         recorded_digest: [u8; 32],
         /// The recorded decision this request conflicted with.
-        recorded_decision: RefreshOutcomeDecision,
+        recorded_decision: CredentialOperationDecision,
     },
     /// The supplied evidence was rejected — empty, or beyond the adjudicator's
     /// byte bound.
@@ -543,6 +567,12 @@ pub enum CredentialGatewayError {
     /// envelope details cross the gateway boundary.
     #[error("stored credential state is not compatible with this runtime")]
     StateEnvelopeRefused,
+    /// Another provider operation holds a durable in-flight or reconciliation gate.
+    #[error("credential operation is blocked")]
+    OperationBlocked {
+        /// Secret-free operation category holding the gate.
+        operation: CredentialOperationKind,
+    },
 }
 
 /// Classification of an adjudication failure into this port's taxonomy.
@@ -579,12 +609,18 @@ impl From<RefreshClaimAdjudicationError> for CredentialGatewayError {
             RefreshClaimAdjudicationError::Storage => Self::Unavailable,
             RefreshClaimAdjudicationError::InvalidEvidence => Self::ReconciliationEvidenceInvalid,
             RefreshClaimAdjudicationError::NotPoisoned => Self::ReconciliationNotRequired,
+            RefreshClaimAdjudicationError::StaleIncident => Self::ReconciliationStaleIncident,
             RefreshClaimAdjudicationError::EvidenceConflict {
                 recorded_digest,
                 recorded_decision,
             } => Self::ReconciliationConflict {
                 recorded_digest,
                 recorded_decision,
+            },
+            RefreshClaimAdjudicationError::OperationMismatch { recorded_operation } => {
+                Self::OperationBlocked {
+                    operation: recorded_operation,
+                }
             },
             _ => Self::Internal,
         }
@@ -615,6 +651,7 @@ pub use testkit::{
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nebula_storage_port::store::RefreshOutcomeDecision;
 
     #[test]
     fn command_debug_redacts_request_payload() {
@@ -636,7 +673,8 @@ mod tests {
         const CANARY: &str = "api-gateway-evidence-never-debug";
         let command = CredentialGatewayCommand::Reconcile {
             credential_id: "cred_safe".to_owned(),
-            decision: RefreshOutcomeDecision::ProviderApplied,
+            incident: CredentialIncidentRef::from_uuid(uuid::Uuid::nil()),
+            decision: CredentialOperationDecision::Refresh(RefreshOutcomeDecision::ProviderApplied),
             evidence: CANARY.to_owned(),
         };
         let debug = format!("{command:?}");
@@ -645,21 +683,23 @@ mod tests {
     }
 
     #[test]
-    fn reconcile_command_carries_exactly_evidence_and_a_decision() {
-        // The field set is the contract: the poisoned claim admits at most one
-        // incident, so a caller has no incident to name and there is no
-        // incident field to fill. Adding one — an incident id, a
-        // reconciliation token — would be the identity this design rejects,
-        // and it would have to be added here first.
+    fn reconcile_command_carries_an_incident_evidence_and_a_decision() {
+        // The field set is the contract: the incident anchors which ambiguous
+        // operation the decision resolves, and the evidence digest anchors
+        // what was decided within it.
         const EVIDENCE: &str = "provider support ticket 4417: the call never reached the API";
         let command = CredentialGatewayCommand::Reconcile {
             credential_id: "cred_safe".to_owned(),
-            decision: RefreshOutcomeDecision::ProviderNotApplied,
+            incident: CredentialIncidentRef::from_uuid(uuid::Uuid::nil()),
+            decision: CredentialOperationDecision::Refresh(
+                RefreshOutcomeDecision::ProviderNotApplied,
+            ),
             evidence: EVIDENCE.to_owned(),
         };
         assert_eq!(command.operation(), "reconcile");
         let CredentialGatewayCommand::Reconcile {
             credential_id,
+            incident,
             decision,
             evidence,
         } = command
@@ -667,7 +707,14 @@ mod tests {
             panic!("constructed as Reconcile above");
         };
         assert_eq!(credential_id, "cred_safe");
-        assert_eq!(decision, RefreshOutcomeDecision::ProviderNotApplied);
+        assert_eq!(
+            incident,
+            CredentialIncidentRef::from_uuid(uuid::Uuid::nil())
+        );
+        assert_eq!(
+            decision,
+            CredentialOperationDecision::Refresh(RefreshOutcomeDecision::ProviderNotApplied)
+        );
         assert_eq!(evidence, EVIDENCE);
     }
 
@@ -723,13 +770,21 @@ mod tests {
                 CredentialGatewayError::ReconciliationNotRequired,
             ),
             (
+                RefreshClaimAdjudicationError::StaleIncident,
+                CredentialGatewayError::ReconciliationStaleIncident,
+            ),
+            (
                 RefreshClaimAdjudicationError::EvidenceConflict {
                     recorded_digest: [7u8; 32],
-                    recorded_decision: RefreshOutcomeDecision::ProviderApplied,
+                    recorded_decision: CredentialOperationDecision::Refresh(
+                        RefreshOutcomeDecision::ProviderApplied,
+                    ),
                 },
                 CredentialGatewayError::ReconciliationConflict {
                     recorded_digest: [7u8; 32],
-                    recorded_decision: RefreshOutcomeDecision::ProviderApplied,
+                    recorded_decision: CredentialOperationDecision::Refresh(
+                        RefreshOutcomeDecision::ProviderApplied,
+                    ),
                 },
             ),
             (
@@ -743,6 +798,14 @@ mod tests {
             (
                 RefreshClaimAdjudicationError::AcknowledgementUnknown,
                 CredentialGatewayError::OutcomeUnknown,
+            ),
+            (
+                RefreshClaimAdjudicationError::OperationMismatch {
+                    recorded_operation: CredentialOperationKind::Revoke,
+                },
+                CredentialGatewayError::OperationBlocked {
+                    operation: CredentialOperationKind::Revoke,
+                },
             ),
         ] {
             let rendered = format!("{error:?}");

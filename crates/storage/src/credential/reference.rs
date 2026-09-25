@@ -9,12 +9,13 @@ use async_trait::async_trait;
 use nebula_core::CredentialId;
 use nebula_storage_port::{
     CredentialAlreadyExistsKey, CredentialCommit, CredentialCreate, CredentialMaterialEpoch,
-    CredentialMaterialTransition, CredentialOwner, CredentialPersistence,
-    CredentialPersistenceError, CredentialRefreshCursor, CredentialRefreshHorizon,
-    CredentialRefreshPageSize, CredentialRefreshSchedule, CredentialRefreshScheduleError,
-    CredentialReplacement, CredentialSelector, CredentialTombstone, CredentialVersion,
-    DueCredentialRefresh, RefreshRetryAdmission, RefreshRetryProjection, RefreshRetrySnapshot,
-    StoredCredential, StoredCredentialHead, StoredLiveCredential, StoredTombstonedCredential,
+    CredentialMaterialTransition, CredentialOperationStatus, CredentialOwner,
+    CredentialPersistence, CredentialPersistenceError, CredentialRefreshCursor,
+    CredentialRefreshHorizon, CredentialRefreshPageSize, CredentialRefreshSchedule,
+    CredentialRefreshScheduleError, CredentialReplacement, CredentialSelector, CredentialTombstone,
+    CredentialVersion, DueCredentialRefresh, RefreshRetryAdmission, RefreshRetryProjection,
+    RefreshRetrySnapshot, StoredCredential, StoredCredentialHead, StoredCredentialOperationalHead,
+    StoredLiveCredential, StoredTombstonedCredential,
 };
 use parking_lot::Mutex;
 use serde_json::{Map, Value};
@@ -339,6 +340,79 @@ impl CredentialPersistence for ReferenceCredentialPersistence {
         }
     }
 
+    async fn operation_status(
+        &self,
+        selector: &CredentialSelector,
+    ) -> Result<CredentialOperationStatus, CredentialPersistenceError> {
+        let records = self.records.lock();
+        let owned = records
+            .get(&selector.credential_id())
+            .ok_or(CredentialPersistenceError::NotFound)?;
+        if &owned.owner != selector.owner() {
+            return Err(CredentialPersistenceError::NotFound);
+        }
+        let StoredCredential::Live(live) = &owned.record else {
+            return Err(CredentialPersistenceError::NotFound);
+        };
+        Ok(CredentialOperationStatus::Open {
+            version: live.version(),
+            material_epoch: live.material_epoch(),
+            reauth_required: live.reauth_required(),
+        })
+    }
+
+    async fn get_operational_head(
+        &self,
+        selector: &CredentialSelector,
+    ) -> Result<StoredCredentialOperationalHead, CredentialPersistenceError> {
+        let records = self.records.lock();
+        let owned = records
+            .get(&selector.credential_id())
+            .ok_or(CredentialPersistenceError::NotFound)?;
+        if &owned.owner != selector.owner() {
+            return Err(CredentialPersistenceError::NotFound);
+        }
+        let StoredCredential::Live(live) = &owned.record else {
+            return Err(CredentialPersistenceError::NotFound);
+        };
+        let head = project_head(live, self.backend_now())?;
+        let status = CredentialOperationStatus::Open {
+            version: live.version(),
+            material_epoch: live.material_epoch(),
+            reauth_required: live.reauth_required(),
+        };
+        Ok(StoredCredentialOperationalHead::new(head, status))
+    }
+
+    async fn list_operational_heads(
+        &self,
+        owner: &CredentialOwner,
+        state_kind: Option<&str>,
+    ) -> Result<Vec<StoredCredentialOperationalHead>, CredentialPersistenceError> {
+        let records = self.records.lock();
+        records
+            .values()
+            .filter(|owned| &owned.owner == owner)
+            .filter_map(|owned| {
+                let StoredCredential::Live(live) = &owned.record else {
+                    return None;
+                };
+                if state_kind.is_some_and(|kind| live.state_kind() != kind) {
+                    return None;
+                }
+                Some((|| {
+                    let head = project_head(live, self.backend_now())?;
+                    let status = CredentialOperationStatus::Open {
+                        version: live.version(),
+                        material_epoch: live.material_epoch(),
+                        reauth_required: live.reauth_required(),
+                    };
+                    Ok(StoredCredentialOperationalHead::new(head, status))
+                })())
+            })
+            .collect()
+    }
+
     async fn refresh_retry_snapshot(
         &self,
         selector: &CredentialSelector,
@@ -551,6 +625,17 @@ impl CredentialPersistence for ReferenceCredentialPersistence {
             now,
             now,
         ))
+    }
+
+    async fn tombstone_revoked_material(
+        &self,
+        _selector: &CredentialSelector,
+        _expected_material_epoch: CredentialMaterialEpoch,
+    ) -> Result<CredentialCommit, CredentialPersistenceError> {
+        // This reference backend has no atomically shared typed operation
+        // ledger. Claiming revoke authority here would make the semantic
+        // oracle stronger than its persistence boundary.
+        Err(CredentialPersistenceError::Unavailable)
     }
 
     async fn list(

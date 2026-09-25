@@ -11,9 +11,41 @@ changes are expected between minor releases — call them out here.
 
 ### Breaking
 
-- **Resource rate limiting and stored-resource activation advance development
-  packages to 0.19.0 in lockstep.** `ResourceRow` gains `topology` and
-  `resilience_override` (migrations 0057–0059: operator settings, cross-process
+- **Typed credential operation recovery advances development packages to 0.19.0
+  in lockstep.** Claims persist refresh or revoke intent before provider dispatch;
+  revoke pins the material epoch and has its own reconciliation decisions.
+  Credential persistence adds authoritative aggregate/operation snapshots, and
+  technical claim/adjudication ports require the operation-specific inputs.
+  Update exact-version pins and implementations together. HTTP reconciliation
+  requests without `operation` retain their refresh meaning; revoke decisions
+  require `operation: "revoke"`. SDK lifecycle responses expose in-flight and
+  reconciliation-required states without internal claim authority.
+
+  Reconciliation names the incident it resolves. `reconciliation_required`
+  lifecycle states carry an `incident` id, and the reconcile request requires
+  it (`ReconcileCredentialRequest::new(incident, decision, evidence)` in the
+  SDK, now `#[non_exhaustive]`; `RefreshClaimAdjudicator::adjudicate` takes a
+  `CredentialIncidentRef`). A decision resent after a lost acknowledgement is
+  answered from its own incident and can no longer resolve a newer incident on
+  the same credential; one naming another incident is refused with 409
+  `credential-reconciliation-stale-incident`. The resolved-set replay rule is
+  removed.
+
+  A refresh write-back re-bases onto a concurrent display-only edit instead of
+  failing after the provider rotated the token, in both the resolver and the
+  management refresh path. A projection that finds a refresh crossing the
+  provider boundary waits up to five seconds for it and serves the refreshed
+  material, instead of failing immediately with `operation_blocked`.
+
+  Stop old credential writers before applying migration 0057 and restart with
+  the new runtime. Historical claims cannot be reliably classified as refresh
+  or revoke: unresolved legacy incidents remain blocked and reject typed
+  adjudication. Explicitly delete the affected credential and acquire a new
+  credential id after verifying the provider state. This change does not yet
+  provide durable acquisition reservations or command receipts.
+- **Resource rate limiting and stored-resource activation ship in the same
+  lockstep 0.19.0.** `ResourceRow` gains `topology` and
+  `resilience_override` (migrations 0058–0060: operator settings, cross-process
   resource status, PostgreSQL rate limits). `RegistrationSpec` gains
   `rate_limit`; `RegisterRequest` gains `topology`, `resilience_override`,
   `limit_key` and `row_id`; `ResourceFactory` gains `validate_topology`,
@@ -552,7 +584,7 @@ let admitted = recorded.readmit_against(fresh)?;
   `ReserveRequest::not_before`, `penalize`, `cancel`, `penalty`), with the
   in-process `MemoryLimitStore` and a `conformance` test kit;
   `nebula-storage` implements it on PostgreSQL (`PgLimitStore`, migration
-  0059). In `nebula-resource`, providers declare a `ResiliencePolicy` (rate,
+  0060). In `nebula-resource`, providers declare a `ResiliencePolicy` (rate,
   per-key limits with `keyed`, `account_credential` slots, the `LimitScope`,
   what stored rows may `overrides`, `max_penalty`); rows override within it.
   Every row gets a `ResourceLimiter` (`ResourceGuard::limits()`,

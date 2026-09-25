@@ -14,10 +14,12 @@
 
 use chrono::{DateTime, Utc};
 use nebula_credential::{
-    CredentialDisplay, CredentialLifecycleState, LAST_VALIDATED_AT_METADATA_KEY,
-    StoredCredentialHead,
+    CredentialDisplay, CredentialLifecycleOperation, CredentialLifecycleState,
+    LAST_VALIDATED_AT_METADATA_KEY, StoredCredentialHead,
 };
-use nebula_storage_port::RefreshRetryProjection;
+use nebula_storage_port::{
+    CredentialOperationKind, CredentialOperationStatus, RefreshRetryProjection,
+};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -56,6 +58,44 @@ pub struct CredentialHead {
 }
 
 impl CredentialHead {
+    /// Overlay the authoritative durable operation gate on this public head.
+    ///
+    /// Claim fencing data stay inside the storage/runtime seam; the operation
+    /// category, whether reconciliation is required, and the expired incident a
+    /// reconciliation must name are projected.
+    #[must_use]
+    pub(crate) fn with_operation_status(mut self, status: CredentialOperationStatus) -> Self {
+        self.lifecycle = match status {
+            CredentialOperationStatus::Open { .. } => self.lifecycle,
+            CredentialOperationStatus::InFlight { operation } => match operation {
+                CredentialOperationKind::Refresh => CredentialLifecycleState::OperationInFlight {
+                    operation: CredentialLifecycleOperation::Refresh,
+                },
+                CredentialOperationKind::Revoke => CredentialLifecycleState::OperationInFlight {
+                    operation: CredentialLifecycleOperation::Revoke,
+                },
+                CredentialOperationKind::LegacyUnclassified => {
+                    CredentialLifecycleState::ReconciliationRequired {
+                        operation: None,
+                        incident: None,
+                    }
+                },
+            },
+            CredentialOperationStatus::ReconciliationRequired {
+                operation,
+                incident,
+            } => CredentialLifecycleState::ReconciliationRequired {
+                operation: match operation {
+                    CredentialOperationKind::Refresh => Some(CredentialLifecycleOperation::Refresh),
+                    CredentialOperationKind::Revoke => Some(CredentialLifecycleOperation::Revoke),
+                    CredentialOperationKind::LegacyUnclassified => None,
+                },
+                incident: Some(incident),
+            },
+        };
+        self
+    }
+
     /// Project a stored row into its secret-free head. `display` is passed
     /// separately because the `metadata["display"]` persistence convention
     /// is owned by the facade, not the row type.

@@ -34,16 +34,18 @@ pub use postgres::PgRefreshClaimRepo;
 // trait, `RepoError` the port's `RefreshClaimError`. Not a shim: there is
 // exactly one definition (in the port); this is a rename-on-import.
 pub use nebula_storage_port::store::{
-    ClaimAttempt, ClaimToken, ExpiredClaim, HeartbeatError, ReauthEscalation, RefreshClaim,
-    RefreshClaimError as RepoError, RefreshClaimReclaimer, RefreshClaimStore as RefreshClaimRepo,
-    ReplicaId, SentinelEscalationPolicy, SentinelState,
+    ClaimAttempt, ClaimToken, CredentialOperationIntent, CredentialOperationKind, ExpiredClaim,
+    HeartbeatError, ReauthEscalation, RefreshClaim, RefreshClaimError as RepoError,
+    RefreshClaimReclaimer, RefreshClaimStore as RefreshClaimRepo, ReplicaId,
+    SentinelEscalationPolicy, SentinelState,
 };
 
 // The adjudication role is new with the reconciliation mechanism, so it has no
 // historical path to keep: it is re-exported under its canonical port names.
 pub use nebula_storage_port::store::{
-    MAX_ADJUDICATION_EVIDENCE_BYTES, RefreshAdjudication, RefreshClaimAdjudicationError,
-    RefreshClaimAdjudicator, RefreshOutcomeDecision,
+    CredentialIncidentRef, CredentialOperationDecision, MAX_ADJUDICATION_EVIDENCE_BYTES,
+    RefreshAdjudication, RefreshClaimAdjudicationError, RefreshClaimAdjudicator,
+    RefreshOutcomeDecision, RevokeOutcomeDecision,
 };
 
 /// SHA-256 of an adjudication evidence note.
@@ -90,10 +92,15 @@ pub(crate) fn validate_adjudication_evidence(
 pub(crate) fn adjudicate_against_recorded_resolution(
     recorded_digest: &[u8],
     recorded_decision: Option<&str>,
+    recorded_operation: CredentialOperationKind,
     requested_digest: &[u8; 32],
-    requested_decision: RefreshOutcomeDecision,
+    requested_decision: CredentialOperationDecision,
 ) -> Result<RefreshAdjudication, RefreshClaimAdjudicationError> {
-    let Some(recorded_decision) = recorded_decision.and_then(RefreshOutcomeDecision::from_wire)
+    if recorded_operation != requested_decision.kind() {
+        return Err(RefreshClaimAdjudicationError::OperationMismatch { recorded_operation });
+    }
+    let Some(recorded_decision) = recorded_decision
+        .and_then(|value| CredentialOperationDecision::from_wire(recorded_operation, value))
     else {
         return Err(RefreshClaimAdjudicationError::Storage);
     };

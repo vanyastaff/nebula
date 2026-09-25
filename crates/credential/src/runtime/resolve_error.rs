@@ -32,6 +32,10 @@ use crate::{CredentialPersistenceError, StoredCredential};
 /// forever on a failure that will never succeed.
 pub(crate) fn resolve_error_to_credential_error(err: ResolveError) -> CredentialError {
     match err {
+        ResolveError::OperationBlocked { .. }
+        | ResolveError::Store(CredentialPersistenceError::OperationBlocked { .. }) => {
+            CredentialError::OperationBlocked
+        },
         // Preserve the credential's proof-bearing failure class and retry
         // advice end-to-end instead of flattening it into a generic provider
         // server error.
@@ -351,6 +355,13 @@ pub enum ResolveError {
         bytes: usize,
         /// The reader's bound.
         limit: usize,
+    },
+    /// A durable operation prevents issuing any new projection of this
+    /// credential, including still-unexpired or non-refreshable material.
+    #[error("credential operation must finish or be reconciled before use")]
+    OperationBlocked {
+        /// Secret-free kind of the operation retaining authority.
+        operation: nebula_storage_port::store::CredentialOperationKind,
     },
 }
 
