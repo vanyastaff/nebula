@@ -105,14 +105,20 @@ pub(crate) async fn resolve_slot_with(
             // layered store decrypt material. Re-check the head identity and
             // ordering tuple so a concurrent mutation cannot swap the value
             // validated above for a different projection.
-            let stored = store.get(&selector).await.map_err(|error| match error {
-                CredentialPersistenceError::NotFound => CredentialSlotResolveError::NotFound,
-                CredentialPersistenceError::Unavailable
-                | CredentialPersistenceError::OutcomeUnknown => {
-                    CredentialSlotResolveError::Unavailable
-                },
-                _ => CredentialSlotResolveError::InvalidState,
-            })?;
+            let (stored, status) =
+                store
+                    .get_with_operation_status(&selector)
+                    .await
+                    .map_err(|error| match error {
+                        CredentialPersistenceError::NotFound => {
+                            CredentialSlotResolveError::NotFound
+                        },
+                        CredentialPersistenceError::Unavailable
+                        | CredentialPersistenceError::OutcomeUnknown => {
+                            CredentialSlotResolveError::Unavailable
+                        },
+                        _ => CredentialSlotResolveError::InvalidState,
+                    })?;
             let stored = match stored {
                 StoredCredential::Live(stored) => stored,
                 StoredCredential::Tombstoned(tombstone) => {
@@ -138,21 +144,12 @@ pub(crate) async fn resolve_slot_with(
                 return Err(CredentialSlotResolveError::InvalidState);
             }
 
-            // This snapshot is the admission point for a new projection. It
-            // joins claim state with the aggregate, so even a valid static
-            // secret cannot escape an unresolved provider-side revocation.
+            // The status read with the material is the admission point for a new
+            // projection. It joins claim state with the aggregate in the same
+            // snapshot as the bytes, so even a valid static secret cannot escape
+            // an unresolved provider-side revocation.
             use nebula_storage_port::store::CredentialOperationStatus;
-            match store
-                .operation_status(&selector)
-                .await
-                .map_err(|error| match error {
-                    CredentialPersistenceError::NotFound => CredentialSlotResolveError::NotFound,
-                    CredentialPersistenceError::Unavailable
-                    | CredentialPersistenceError::OutcomeUnknown => {
-                        CredentialSlotResolveError::Unavailable
-                    },
-                    _ => CredentialSlotResolveError::InvalidState,
-                })? {
+            match status.ok_or(CredentialSlotResolveError::InvalidState)? {
                 CredentialOperationStatus::InFlight { operation }
                 | CredentialOperationStatus::ReconciliationRequired { operation, .. } => {
                     tracing::warn!(

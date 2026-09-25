@@ -109,6 +109,10 @@ pub(crate) enum CredentialCompositionError {
     )]
     #[cfg(not(feature = "postgres"))]
     PostgresStoreUnavailable,
+    /// `NEBULA_CRED_DB_MAX_CONNECTIONS` is set but not a positive integer.
+    #[cfg(feature = "postgres")]
+    #[error("NEBULA_CRED_DB_MAX_CONNECTIONS must be a positive integer")]
+    InvalidStorePoolSize,
     #[error("credential refresh transport initialization failed: {0}")]
     RefreshTransport(String),
     #[error("credential refresh coordinator initialization failed: {0}")]
@@ -223,9 +227,10 @@ async fn compose_first_party_runtime_for_database(
         CredentialDatabaseBackend::Postgres => {
             #[cfg(feature = "postgres")]
             {
-                let store = PgCredentialPersistence::connect(database_url)
-                    .await
-                    .map_err(CredentialCompositionError::Store)?;
+                let store =
+                    PgCredentialPersistence::connect_sized(database_url, credential_pool_size()?)
+                        .await
+                        .map_err(CredentialCompositionError::Store)?;
                 let refresh_ports =
                     refresh_runtime_ports(store.refresh_schedule(), store.refresh_claim_repo());
                 let pending =
@@ -605,6 +610,22 @@ impl AuditSink for TracingAuditSink {
             "credential audit event"
         );
         Ok(())
+    }
+}
+
+/// Connections the PostgreSQL credential store may pool, from
+/// `NEBULA_CRED_DB_MAX_CONNECTIONS`; the store default when unset.
+///
+/// Every credential admission reads through this pool, so it bounds how many
+/// run against PostgreSQL at once in this process.
+#[cfg(feature = "postgres")]
+fn credential_pool_size() -> Result<std::num::NonZeroU32, CredentialCompositionError> {
+    match std::env::var("NEBULA_CRED_DB_MAX_CONNECTIONS") {
+        Err(_) => Ok(nebula_storage::credential::DEFAULT_CREDENTIAL_POOL_SIZE),
+        Ok(raw) => raw
+            .trim()
+            .parse()
+            .map_err(|_| CredentialCompositionError::InvalidStorePoolSize),
     }
 }
 

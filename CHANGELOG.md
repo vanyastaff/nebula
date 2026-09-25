@@ -497,6 +497,19 @@ let admitted = recorded.readmit_against(fresh)?;
 
 ### Fixed
 
+- **A credential admission reads its material and operation status in one
+  statement.** `CredentialPersistence` gains a defaulted
+  `get_with_operation_status`, which the SQLite and PostgreSQL adapters answer
+  with one joined statement and the encryption, audit and cache layers
+  forward. The resolver admits on it (one statement instead of two) and slot
+  projection drops from three statements to two, keeping the secret-free
+  checks ahead of decryption; the status now describes exactly the material
+  returned. Measured on one host, this halves admission latency and doubles
+  its throughput on both backends.
+- **The PostgreSQL credential pool size is configurable.**
+  `NEBULA_CRED_DB_MAX_CONNECTIONS` (default `10`, the previous fixed value)
+  bounds the pool every admission reads through, in the server and the worker;
+  `PgCredentialPersistence::connect_sized` / `connect_with_sized` take it.
 - **Node retries honour the attempt's own retry hint.** A retryable
   `ActionError` carrying a `backoff_hint` (a provider's `Retry-After`, or a
   resource rate-limit pause surfaced through `ResourceUnavailable::retry_after`)

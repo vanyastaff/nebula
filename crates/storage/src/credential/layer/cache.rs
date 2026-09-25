@@ -232,6 +232,17 @@ impl<S: CredentialPersistence> CredentialPersistence for CacheLayer<S> {
         self.inner.operation_status(selector).await
     }
 
+    /// Always read from the backend: the status must be current, and material
+    /// from the cache would not be the record that status describes.
+    async fn get_with_operation_status(
+        &self,
+        selector: &CredentialSelector,
+    ) -> Result<(StoredCredential, Option<CredentialOperationStatus>), CredentialPersistenceError>
+    {
+        let _guard = self.lock(selector).lock().await;
+        self.inner.get_with_operation_status(selector).await
+    }
+
     async fn get_operational_head(
         &self,
         selector: &CredentialSelector,

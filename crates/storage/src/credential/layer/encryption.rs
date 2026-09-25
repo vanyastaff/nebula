@@ -153,24 +153,13 @@ impl<S> EncryptionLayer<S> {
             .cloned()
             .ok_or(CredentialPersistenceError::CorruptRecord)
     }
-}
 
-impl<S> fmt::Debug for EncryptionLayer<S> {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("EncryptionLayer")
-            .field("legacy_key_count", &self.legacy_keys.len())
-            .finish_non_exhaustive()
-    }
-}
-
-#[async_trait]
-impl<S: CredentialPersistence> CredentialPersistence for EncryptionLayer<S> {
-    async fn get(
+    /// Decrypt a live record's material; a tombstone carries none.
+    fn decrypt_stored(
         &self,
-        selector: &CredentialSelector,
+        stored: StoredCredential,
     ) -> Result<StoredCredential, CredentialPersistenceError> {
-        match self.inner.get(selector).await? {
+        match stored {
             StoredCredential::Live(record) => {
                 let credential_id = record.credential_id();
                 let plaintext = self.decrypt_data(record.data(), credential_id)?;
@@ -195,6 +184,35 @@ impl<S: CredentialPersistence> CredentialPersistence for EncryptionLayer<S> {
             },
             tombstone @ StoredCredential::Tombstoned(_) => Ok(tombstone),
         }
+    }
+}
+
+impl<S> fmt::Debug for EncryptionLayer<S> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("EncryptionLayer")
+            .field("legacy_key_count", &self.legacy_keys.len())
+            .finish_non_exhaustive()
+    }
+}
+
+#[async_trait]
+impl<S: CredentialPersistence> CredentialPersistence for EncryptionLayer<S> {
+    async fn get(
+        &self,
+        selector: &CredentialSelector,
+    ) -> Result<StoredCredential, CredentialPersistenceError> {
+        let stored = self.inner.get(selector).await?;
+        self.decrypt_stored(stored)
+    }
+
+    async fn get_with_operation_status(
+        &self,
+        selector: &CredentialSelector,
+    ) -> Result<(StoredCredential, Option<CredentialOperationStatus>), CredentialPersistenceError>
+    {
+        let (stored, status) = self.inner.get_with_operation_status(selector).await?;
+        Ok((self.decrypt_stored(stored)?, status))
     }
 
     async fn get_head(

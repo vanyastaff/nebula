@@ -64,7 +64,9 @@ pub use pending::PgPendingStateStore;
 #[cfg(feature = "sqlite")]
 pub use pending::SqlitePendingStateStore;
 #[cfg(feature = "postgres")]
-pub use postgres::{PgCredentialPersistence, PgCredentialRefreshSchedule};
+pub use postgres::{
+    DEFAULT_CREDENTIAL_POOL_SIZE, PgCredentialPersistence, PgCredentialRefreshSchedule,
+};
 pub use provider_cache::{ProviderCacheConfig, ProviderCacheLayer, ProviderCacheStats};
 #[cfg(test)]
 pub(crate) use reference::ReferenceCredentialPersistence;

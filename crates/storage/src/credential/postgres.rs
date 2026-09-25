@@ -42,7 +42,7 @@ use sqlx::{PgPool, Postgres, Transaction};
 use std::sync::Mutex as StdMutex;
 #[cfg(test)]
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::{fmt, sync::Arc};
+use std::{fmt, num::NonZeroU32, sync::Arc};
 #[cfg(test)]
 use tokio::sync::Notify;
 
@@ -51,6 +51,10 @@ use super::{
     retry_gate, schema::postgres as schema,
 };
 use crate::migration::setup_postgres_pool_with;
+
+/// Connections a PostgreSQL credential store pools unless told otherwise:
+/// SQLx's own default, kept so existing deployments see no change.
+pub const DEFAULT_CREDENTIAL_POOL_SIZE: NonZeroU32 = NonZeroU32::new(10).expect("non-zero");
 
 /// PostgreSQL-backed [`CredentialPersistence`].
 ///
@@ -136,11 +140,27 @@ impl PgCredentialPersistence {
     /// Returns a closed, secret-free startup error. URLs and driver messages
     /// are never retained by the error.
     pub async fn connect(url: &str) -> Result<Self, CredentialStoreStartupError> {
+        Self::connect_sized(url, DEFAULT_CREDENTIAL_POOL_SIZE).await
+    }
+
+    /// [`Self::connect`] with at most `max_connections` pooled connections.
+    ///
+    /// Every credential admission reads through this pool, so it bounds how
+    /// many admissions one process runs against PostgreSQL at once; past it
+    /// admissions queue for a connection.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::connect`].
+    pub async fn connect_sized(
+        url: &str,
+        max_connections: NonZeroU32,
+    ) -> Result<Self, CredentialStoreStartupError> {
         use std::str::FromStr;
 
         let options = sqlx::postgres::PgConnectOptions::from_str(url)
             .map_err(|_| CredentialStoreStartupError::Unavailable)?;
-        Self::connect_with(options).await
+        Self::connect_with_sized(options, max_connections).await
     }
 
     /// Connect with explicit SQLx options while preserving the same mandatory
@@ -153,8 +173,22 @@ impl PgCredentialPersistence {
     pub async fn connect_with(
         options: sqlx::postgres::PgConnectOptions,
     ) -> Result<Self, CredentialStoreStartupError> {
+        Self::connect_with_sized(options, DEFAULT_CREDENTIAL_POOL_SIZE).await
+    }
+
+    /// [`Self::connect_with`] with at most `max_connections` pooled
+    /// connections; see [`Self::connect_sized`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::connect_with`].
+    pub async fn connect_with_sized(
+        options: sqlx::postgres::PgConnectOptions,
+        max_connections: NonZeroU32,
+    ) -> Result<Self, CredentialStoreStartupError> {
         let pool = sqlx::postgres::PgPoolOptions::new()
             .min_connections(1)
+            .max_connections(max_connections.get())
             .connect_with(options)
             .await
             .map_err(|_| CredentialStoreStartupError::Unavailable)?;
@@ -478,6 +512,63 @@ struct LockedCredentialRow {
     material_epoch: i64,
     credential_key: String,
     reauth_required: bool,
+}
+
+/// A physical record with the claim that governs its use, read in one
+/// statement for admission (`get_with_operation_status`).
+#[derive(sqlx::FromRow)]
+struct CredentialWithStatusRow {
+    #[sqlx(flatten)]
+    credential: CredentialRow,
+    operation_kind: Option<String>,
+    operation_sentinel: Option<i16>,
+    operation_expires_at: Option<DateTime<Utc>>,
+    operation_claim_id: Option<uuid::Uuid>,
+    backend_now: DateTime<Utc>,
+}
+
+/// Derive a live credential's operation status from its aggregate columns
+/// and its claim row (all `None` when it has none), against `now` read in
+/// the same statement.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the columns of one joined row, decoded in one place for every read that projects them"
+)]
+fn status_from_parts(
+    version: i64,
+    epoch: i64,
+    reauth_required: bool,
+    kind: Option<String>,
+    sentinel: Option<i16>,
+    expires_at: Option<DateTime<Utc>>,
+    claim_id: Option<uuid::Uuid>,
+    now: DateTime<Utc>,
+) -> Result<CredentialOperationStatus, CredentialPersistenceError> {
+    let open = || {
+        Ok(CredentialOperationStatus::Open {
+            version: parse_version(version)?,
+            material_epoch: parse_material_epoch(epoch)?,
+            reauth_required,
+        })
+    };
+    let (kind, sentinel, expires_at) = match (kind, sentinel, expires_at) {
+        (None, None, None) => return open(),
+        (Some(kind), Some(sentinel), Some(expires_at)) => (kind, sentinel, expires_at),
+        _ => return Err(CredentialPersistenceError::CorruptRecord),
+    };
+    let operation = CredentialOperationKind::from_wire(&kind)
+        .ok_or(CredentialPersistenceError::CorruptRecord)?;
+    match sentinel {
+        0 if operation == CredentialOperationKind::Refresh || expires_at < now => open(),
+        0 | 1 if expires_at >= now => Ok(CredentialOperationStatus::InFlight { operation }),
+        1 => Ok(CredentialOperationStatus::ReconciliationRequired {
+            operation,
+            incident: CredentialIncidentRef::from_uuid(
+                claim_id.ok_or(CredentialPersistenceError::CorruptRecord)?,
+            ),
+        }),
+        _ => Err(CredentialPersistenceError::CorruptRecord),
+    }
 }
 
 #[derive(sqlx::FromRow)]
@@ -1007,31 +1098,63 @@ impl CredentialPersistence for PgCredentialPersistence {
         else {
             return Err(CredentialPersistenceError::NotFound);
         };
-        let open = || {
-            Ok(CredentialOperationStatus::Open {
-                version: parse_version(version)?,
-                material_epoch: parse_material_epoch(epoch)?,
-                reauth_required,
-            })
+        status_from_parts(
+            version,
+            epoch,
+            reauth_required,
+            kind,
+            sentinel,
+            expires_at,
+            claim_id,
+            now,
+        )
+    }
+
+    #[tracing::instrument(skip_all)]
+    async fn get_with_operation_status(
+        &self,
+        selector: &CredentialSelector,
+    ) -> Result<(StoredCredential, Option<CredentialOperationStatus>), CredentialPersistenceError>
+    {
+        let row: Option<CredentialWithStatusRow> = sqlx::query_as(
+            "SELECT c.id, c.name, c.credential_key, c.data, c.state_kind, c.state_version,
+                    c.version, c.material_epoch, c.created_at, c.updated_at, c.expires_at,
+                    c.reauth_required, c.metadata, c.record_state, c.tombstoned_at,
+                    c.refresh_retry_mode, c.refresh_retry_not_before,
+                    c.refresh_retry_phase, c.refresh_retry_kind,
+                    c.refresh_retry_diagnostic_code,
+                    claim.operation_kind, claim.sentinel AS operation_sentinel,
+                    claim.expires_at AS operation_expires_at,
+                    claim.claim_id AS operation_claim_id,
+                    clock_timestamp() AS backend_now
+             FROM credentials AS c
+             LEFT JOIN credential_refresh_claims AS claim
+               ON claim.owner_id = c.owner_id AND claim.credential_id = c.id
+             WHERE c.id = $1 AND c.owner_id = $2",
+        )
+        .bind(selector.credential_id().to_string())
+        .bind(selector.owner().as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(read_error)?;
+        let Some(row) = row else {
+            return Err(CredentialPersistenceError::NotFound);
         };
-        let (kind, sentinel, expires_at) = match (kind, sentinel, expires_at) {
-            (None, None, None) => return open(),
-            (Some(kind), Some(sentinel), Some(expires_at)) => (kind, sentinel, expires_at),
-            _ => return Err(CredentialPersistenceError::CorruptRecord),
+        let status = if row.credential.record_state == "live" {
+            Some(status_from_parts(
+                row.credential.version,
+                row.credential.material_epoch,
+                row.credential.reauth_required,
+                row.operation_kind,
+                row.operation_sentinel,
+                row.operation_expires_at,
+                row.operation_claim_id,
+                row.backend_now,
+            )?)
+        } else {
+            None
         };
-        let operation = CredentialOperationKind::from_wire(&kind)
-            .ok_or(CredentialPersistenceError::CorruptRecord)?;
-        match sentinel {
-            0 if operation == CredentialOperationKind::Refresh || expires_at < now => open(),
-            0 | 1 if expires_at >= now => Ok(CredentialOperationStatus::InFlight { operation }),
-            1 => Ok(CredentialOperationStatus::ReconciliationRequired {
-                operation,
-                incident: CredentialIncidentRef::from_uuid(
-                    claim_id.ok_or(CredentialPersistenceError::CorruptRecord)?,
-                ),
-            }),
-            _ => Err(CredentialPersistenceError::CorruptRecord),
-        }
+        Ok((row.credential.into_stored()?, status))
     }
 
     #[tracing::instrument(skip_all)]
