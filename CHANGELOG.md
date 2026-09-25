@@ -43,8 +43,8 @@ changes are expected between minor releases — call them out here.
   adjudication. Explicitly delete the affected credential and acquire a new
   credential id after verifying the provider state. This change does not yet
   provide durable acquisition reservations or command receipts.
-- **Resource rate limiting and stored-resource activation ship in the same
-  lockstep 0.19.0.** `ResourceRow` gains `topology` and
+- **Resource rate limiting and stored-resource activation advance development
+  packages to 0.20.0 in lockstep.** `ResourceRow` gains `topology` and
   `resilience_override` (migrations 0058–0060: operator settings, cross-process
   resource status, PostgreSQL rate limits). `RegistrationSpec` gains
   `rate_limit`; `RegisterRequest` gains `topology`, `resilience_override`,
