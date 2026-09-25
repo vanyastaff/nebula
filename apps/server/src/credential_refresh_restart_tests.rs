@@ -392,13 +392,16 @@ async fn crashed_refresh_is_reclaimed_without_replay_then_reauthorized_once() {
     .await
     .expect("startup reclaim reaches the durable reauth transition");
     assert!(reauth_head.reauth_required);
-    assert_eq!(
-        reauth_head.lifecycle,
-        CredentialLifecycleState::ReconciliationRequired {
-            operation: Some(CredentialLifecycleOperation::Refresh),
-        },
-        "durable poison remains the public availability gate until adjudication"
-    );
+    let CredentialLifecycleState::ReconciliationRequired {
+        operation: Some(CredentialLifecycleOperation::Refresh),
+        incident: Some(incident),
+    } = reauth_head.lifecycle
+    else {
+        panic!(
+            "durable poison remains the public availability gate until adjudication: {:?}",
+            reauth_head.lifecycle
+        );
+    };
     let escalated = second_store
         .get_head(&selector)
         .await
@@ -416,6 +419,7 @@ async fn crashed_refresh_is_reclaimed_without_replay_then_reauthorized_once() {
             &scope,
             CredentialCommand::Reconcile {
                 credential_id: id,
+                incident,
                 decision: CredentialOperationDecision::Refresh(
                     RefreshOutcomeDecision::ProviderNotApplied,
                 ),

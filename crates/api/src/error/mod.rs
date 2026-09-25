@@ -330,6 +330,17 @@ pub enum ApiError {
     #[error("Credential has no provider-operation claim requiring reconciliation")]
     CredentialReconciliationNotRequired,
 
+    /// The reconciliation names an incident other than the credential's current
+    /// one (409). Read the credential's lifecycle state for the current
+    /// incident and establish its outcome separately.
+    #[classify(
+        category = "conflict",
+        code = "API:CREDENTIAL_RECONCILIATION_STALE_INCIDENT",
+        retryable = false
+    )]
+    #[error("Credential reconciliation names a stale incident")]
+    CredentialReconciliationStaleIncident,
+
     /// The provider-operation claim already records a different `(evidence, decision)`
     /// pair than the one submitted (409).
     ///
@@ -471,6 +482,9 @@ impl ApiError {
             },
             Self::CredentialReconciliationNotRequired => {
                 credential_problem(CredentialProblem::ReconciliationNotRequired)
+            },
+            Self::CredentialReconciliationStaleIncident => {
+                credential_problem(CredentialProblem::ReconciliationStaleIncident)
             },
             Self::CredentialReconciliationConflict {
                 recorded_digest,
@@ -645,6 +659,7 @@ enum CredentialProblem {
     StateRefused,
     RevokeReconciliationRequired,
     ReconciliationNotRequired,
+    ReconciliationStaleIncident,
     /// The pair the comparison refused against, in wire spelling — named by
     /// the problem document's extensions so a client holding its original
     /// evidence can confirm what is on record.
@@ -698,6 +713,11 @@ fn credential_problem(error: CredentialProblem) -> (StatusCode, ProblemDetails) 
             "credential-reconciliation-not-required",
             "Credential Reconciliation Not Required",
             "The credential has no poisoned provider-operation claim to adjudicate. A repeated reconciliation of a decision already on record is reported as success instead.",
+        ),
+        CredentialProblem::ReconciliationStaleIncident => (
+            "credential-reconciliation-stale-incident",
+            "Credential Reconciliation Stale Incident",
+            "The credential is poisoned by a different incident than the one this request names. The decision was not applied. Read the credential lifecycle state for the current incident and establish its outcome separately.",
         ),
         CredentialProblem::ReconciliationConflict { .. } => (
             "credential-reconciliation-conflict",

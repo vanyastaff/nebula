@@ -279,7 +279,7 @@ impl CredentialService {
             })? {
             status @ CredentialOperationStatus::Open { .. } => Ok(status),
             CredentialOperationStatus::InFlight { operation }
-            | CredentialOperationStatus::ReconciliationRequired { operation } => {
+            | CredentialOperationStatus::ReconciliationRequired { operation, .. } => {
                 tracing::warn!(?operation, "credential operation blocks material use");
                 Err(CredentialServiceError::OperationBlocked { operation })
             },

@@ -12,7 +12,10 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use nebula_storage_port::{
     Scope,
-    store::{CredentialOperationDecision, CredentialOperationKind, RefreshClaimAdjudicationError},
+    store::{
+        CredentialIncidentRef, CredentialOperationDecision, CredentialOperationKind,
+        RefreshClaimAdjudicationError,
+    },
 };
 use thiserror::Error;
 
@@ -77,12 +80,15 @@ pub enum CredentialGatewayCommand {
     ContinueResolve(ContinueResolveRequest),
     /// Resolve an ambiguous provider outcome on a poisoned refresh claim.
     ///
-    /// Carries the evidence the caller observed, never an incident identity:
-    /// the poisoned claim admits at most one incident, so the caller has no
-    /// incident to name and the digest of `evidence` is the anchor instead.
+    /// Names the incident the decision was established for. A retry after a
+    /// lost acknowledgement names the same incident and is answered from its
+    /// record; a newer incident on the same credential is refused as stale
+    /// rather than resolved by a decision that never described it.
     Reconcile {
         /// Credential whose poisoned refresh claim is being adjudicated.
         credential_id: String,
+        /// The incident published in `ReconciliationRequired`.
+        incident: CredentialIncidentRef,
         /// The provider outcome the caller asserts it observed.
         decision: CredentialOperationDecision,
         /// Operator prose describing what was observed. The adjudicator bounds
@@ -194,6 +200,9 @@ pub enum CredentialGatewayLifecycleState {
     ReconciliationRequired {
         /// Typed category or the legacy-unclassified upgrade state.
         operation: CredentialOperationKind,
+        /// The incident a reconciliation must name. `None` only while a legacy
+        /// unclassified operation is still in flight.
+        incident: Option<CredentialIncidentRef>,
     },
 }
 
@@ -527,6 +536,11 @@ pub enum CredentialGatewayError {
     /// the no-op success path that [`Self::ReconciliationConflict`] describes.
     #[error("credential has no refresh claim requiring reconciliation")]
     ReconciliationNotRequired,
+    /// The credential is poisoned by a different incident than the one the
+    /// command names, so the decision is refused rather than applied to an
+    /// incident it never described.
+    #[error("credential reconciliation names a stale incident")]
+    ReconciliationStaleIncident,
     /// The poisoning claim already records a different `(evidence, decision)`
     /// pair, so this request contradicts durable state.
     ///
@@ -595,6 +609,7 @@ impl From<RefreshClaimAdjudicationError> for CredentialGatewayError {
             RefreshClaimAdjudicationError::Storage => Self::Unavailable,
             RefreshClaimAdjudicationError::InvalidEvidence => Self::ReconciliationEvidenceInvalid,
             RefreshClaimAdjudicationError::NotPoisoned => Self::ReconciliationNotRequired,
+            RefreshClaimAdjudicationError::StaleIncident => Self::ReconciliationStaleIncident,
             RefreshClaimAdjudicationError::EvidenceConflict {
                 recorded_digest,
                 recorded_decision,
@@ -658,6 +673,7 @@ mod tests {
         const CANARY: &str = "api-gateway-evidence-never-debug";
         let command = CredentialGatewayCommand::Reconcile {
             credential_id: "cred_safe".to_owned(),
+            incident: CredentialIncidentRef::from_uuid(uuid::Uuid::nil()),
             decision: CredentialOperationDecision::Refresh(RefreshOutcomeDecision::ProviderApplied),
             evidence: CANARY.to_owned(),
         };
@@ -667,15 +683,14 @@ mod tests {
     }
 
     #[test]
-    fn reconcile_command_carries_exactly_evidence_and_a_decision() {
-        // The field set is the contract: the poisoned claim admits at most one
-        // incident, so a caller has no incident to name and there is no
-        // incident field to fill. Adding one — an incident id, a
-        // reconciliation token — would be the identity this design rejects,
-        // and it would have to be added here first.
+    fn reconcile_command_carries_an_incident_evidence_and_a_decision() {
+        // The field set is the contract: the incident anchors which ambiguous
+        // operation the decision resolves, and the evidence digest anchors
+        // what was decided within it.
         const EVIDENCE: &str = "provider support ticket 4417: the call never reached the API";
         let command = CredentialGatewayCommand::Reconcile {
             credential_id: "cred_safe".to_owned(),
+            incident: CredentialIncidentRef::from_uuid(uuid::Uuid::nil()),
             decision: CredentialOperationDecision::Refresh(
                 RefreshOutcomeDecision::ProviderNotApplied,
             ),
@@ -684,6 +699,7 @@ mod tests {
         assert_eq!(command.operation(), "reconcile");
         let CredentialGatewayCommand::Reconcile {
             credential_id,
+            incident,
             decision,
             evidence,
         } = command
@@ -691,6 +707,10 @@ mod tests {
             panic!("constructed as Reconcile above");
         };
         assert_eq!(credential_id, "cred_safe");
+        assert_eq!(
+            incident,
+            CredentialIncidentRef::from_uuid(uuid::Uuid::nil())
+        );
         assert_eq!(
             decision,
             CredentialOperationDecision::Refresh(RefreshOutcomeDecision::ProviderNotApplied)
@@ -748,6 +768,10 @@ mod tests {
             (
                 RefreshClaimAdjudicationError::NotPoisoned,
                 CredentialGatewayError::ReconciliationNotRequired,
+            ),
+            (
+                RefreshClaimAdjudicationError::StaleIncident,
+                CredentialGatewayError::ReconciliationStaleIncident,
             ),
             (
                 RefreshClaimAdjudicationError::EvidenceConflict {

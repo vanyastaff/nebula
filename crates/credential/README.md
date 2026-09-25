@@ -241,7 +241,8 @@ wired to a hardened injected transport.
   framework-owned.
 - Refresh authority is compared through the durable material epoch, never serialized-byte
   equality or the general row version. Display-only writes preserve the epoch and are merged before
-  provider dispatch; explicit material/reconnect, durable reauthentication decisions, and
+  provider dispatch and again into the post-provider write-back, so a rename during the provider
+  call never costs rotated material; explicit material/reconnect, durable reauthentication decisions, and
   successful refresh transitions advance it even when bytes are identical, and clear any retry
   gate.
 - A known refresh outcome whose required retry-gate or reauthentication transition definitely
@@ -282,15 +283,18 @@ reopens the unchanged credential. A display-only edit does not change the materi
 both normal revoke completion and recovery atomically tombstone the current row under the
 pinned epoch. A rename cannot turn confirmed provider success into a version-CAS failure.
 An authority-changing replacement cannot pass an
-outstanding revoke claim. Repeating the same recorded decision and evidence is safe after a
-lost acknowledgement, including after tombstoning.
+outstanding revoke claim. Every decision names the incident it resolves. Repeating the same
+incident, decision and evidence is safe after a lost acknowledgement, including after tombstoning;
+if a newer incident poisoned the credential meanwhile, the repeat is answered from the old
+incident's record and never resolves the new one.
 
 Local coalescing groups refresh and revoke separately; the shared durable claim still
 serializes their provider calls. If refresh replaces material while revoke is waiting,
 the stale revoke returns a version conflict before provider dispatch.
 
 Management lifecycle reports `operation_in_flight` or `reconciliation_required` with a public
-operation category. It exposes no claim id, generation, holder, or fencing token. Operational
+operation category and, for `reconciliation_required`, the incident a decision must name. It
+exposes no live claim id, generation, holder, or fencing token. Operational
 heads are read from one backend snapshot, including list results. Secret projection uses a
 fresh aggregate/operation snapshot even when the stored credential is static or unexpired.
 

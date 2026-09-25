@@ -43,9 +43,9 @@ pub use nebula_storage_port::store::{
 // The adjudication role is new with the reconciliation mechanism, so it has no
 // historical path to keep: it is re-exported under its canonical port names.
 pub use nebula_storage_port::store::{
-    CredentialOperationDecision, MAX_ADJUDICATION_EVIDENCE_BYTES, RefreshAdjudication,
-    RefreshClaimAdjudicationError, RefreshClaimAdjudicator, RefreshOutcomeDecision,
-    RevokeOutcomeDecision,
+    CredentialIncidentRef, CredentialOperationDecision, MAX_ADJUDICATION_EVIDENCE_BYTES,
+    RefreshAdjudication, RefreshClaimAdjudicationError, RefreshClaimAdjudicator,
+    RefreshOutcomeDecision, RevokeOutcomeDecision,
 };
 
 /// SHA-256 of an adjudication evidence note.

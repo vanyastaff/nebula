@@ -481,7 +481,7 @@ impl ProbeFixture {
     /// Every step is the port's own lifecycle: the adapter's expiry predicate
     /// is the clock, and no state is reached by writing behind the service's
     /// back.
-    async fn poison(&self) {
+    async fn poison(&self) -> String {
         let acquired = self
             .claims
             .try_claim(
@@ -513,6 +513,7 @@ impl ProbeFixture {
         // Reconciliation can adjudicate the expired poison directly. Threshold
         // accounting belongs to a backend that also owns the credential
         // aggregate; this reference claim adapter deliberately does not.
+        claim.token.claim_id.to_string()
     }
 
     /// Ask the port for the credential's claim, on the same trait object the
@@ -578,7 +579,7 @@ async fn reconcile_through_the_route_clears_a_retained_poison_and_refresh_works_
     assert_eq!(refreshed["refreshed"], true, "{refreshed}");
 
     // 2. Retain the poison: provider egress began and the lease ran out.
-    fixture.poison().await;
+    let incident = fixture.poison().await;
     assert!(
         matches!(fixture.attempt().await, ClaimAttempt::OutcomeUnknown { .. }),
         "the retained claim must read as outcome-unknown; a poison the port does \
@@ -622,7 +623,7 @@ async fn reconcile_through_the_route_clears_a_retained_poison_and_refresh_works_
     let (status, reconciled) = fixture
         .send(
             &fixture.reconcile_uri(),
-            &json!({ "decision": "provider_not_applied", "evidence": EVIDENCE }),
+            &json!({ "incident": incident, "decision": "provider_not_applied", "evidence": EVIDENCE }),
         )
         .await;
     assert_eq!(
@@ -645,7 +646,7 @@ async fn reconcile_through_the_route_clears_a_retained_poison_and_refresh_works_
     let (status, repeated) = fixture
         .send(
             &fixture.reconcile_uri(),
-            &json!({ "decision": "provider_not_applied", "evidence": EVIDENCE }),
+            &json!({ "incident": incident, "decision": "provider_not_applied", "evidence": EVIDENCE }),
         )
         .await;
     assert_eq!(
@@ -694,11 +695,12 @@ async fn reconcile_through_the_route_clears_a_retained_poison_and_refresh_works_
 #[tokio::test]
 async fn reconcile_refuses_a_credential_that_was_never_poisoned() {
     let fixture = ProbeFixture::new().await;
+    let incident = uuid::Uuid::nil().to_string();
 
     let (status, problem) = fixture
         .send(
             &fixture.reconcile_uri(),
-            &json!({ "decision": "provider_applied", "evidence": EVIDENCE }),
+            &json!({ "incident": incident, "decision": "provider_applied", "evidence": EVIDENCE }),
         )
         .await;
 
@@ -728,9 +730,10 @@ async fn reconcile_refuses_a_credential_that_was_never_poisoned() {
 #[tokio::test]
 async fn reconcile_refuses_a_second_observation_that_disagrees() {
     let fixture = ProbeFixture::new().await;
-    fixture.poison().await;
+    let incident = fixture.poison().await;
 
-    let recorded = json!({ "decision": "provider_applied", "evidence": EVIDENCE });
+    let recorded =
+        json!({ "incident": incident, "decision": "provider_applied", "evidence": EVIDENCE });
     let (status, response) = fixture.send(&fixture.reconcile_uri(), &recorded).await;
     assert_eq!(
         status,
@@ -744,6 +747,7 @@ async fn reconcile_refuses_a_second_observation_that_disagrees() {
     // it. The claim row is gone by now, so this refusal comes from the recorded
     // resolution rather than from the retained poison.
     let disagreeing = json!({
+        "incident": incident,
         "decision": "provider_applied",
         "evidence": "second operator note: the support ticket was reassigned",
     });
@@ -788,9 +792,10 @@ async fn reconcile_refuses_a_second_observation_that_disagrees() {
 #[tokio::test]
 async fn reconcile_success_reports_the_digest_of_the_evidence_on_record() {
     let fixture = ProbeFixture::new().await;
-    fixture.poison().await;
+    let incident = fixture.poison().await;
 
-    let body = json!({ "decision": "provider_not_applied", "evidence": EVIDENCE });
+    let body =
+        json!({ "incident": incident, "decision": "provider_not_applied", "evidence": EVIDENCE });
     let (status, reconciled) = fixture.send(&fixture.reconcile_uri(), &body).await;
     assert_eq!(
         status,
@@ -830,9 +835,10 @@ async fn reconcile_success_reports_the_digest_of_the_evidence_on_record() {
 #[tokio::test]
 async fn conflict_problem_reports_the_recorded_digest_and_decision() {
     let fixture = ProbeFixture::new().await;
-    fixture.poison().await;
+    let incident = fixture.poison().await;
 
-    let recorded = json!({ "decision": "provider_applied", "evidence": EVIDENCE });
+    let recorded =
+        json!({ "incident": incident, "decision": "provider_applied", "evidence": EVIDENCE });
     let (status, response) = fixture.send(&fixture.reconcile_uri(), &recorded).await;
     assert_eq!(
         status,
@@ -842,6 +848,7 @@ async fn conflict_problem_reports_the_recorded_digest_and_decision() {
 
     let disagreeing_evidence = "second operator note: the support ticket was reassigned";
     let disagreeing = json!({
+        "incident": incident,
         "decision": "provider_applied",
         "evidence": disagreeing_evidence,
     });
@@ -887,7 +894,7 @@ async fn conflict_problem_reports_the_recorded_digest_and_decision() {
 #[tokio::test]
 async fn a_pat_holding_only_credentials_write_cannot_reconcile() {
     let fixture = ProbeFixture::new().await;
-    fixture.poison().await;
+    let incident = fixture.poison().await;
 
     // The fixture's harness wires no membership store, and the RBAC
     // middleware's no-store test bypass resolves that to `WorkspaceAdmin`
@@ -925,7 +932,8 @@ async fn a_pat_holding_only_credentials_write_cannot_reconcile() {
         fixture.state.clone().with_auth_backend(backend_dyn),
         &ApiConfig::for_test(),
     );
-    let body = json!({ "decision": "provider_applied", "evidence": EVIDENCE });
+    let body =
+        json!({ "incident": incident, "decision": "provider_applied", "evidence": EVIDENCE });
 
     let refused = app
         .clone()

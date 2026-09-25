@@ -266,18 +266,19 @@ async fn credential_reconcile_publishes_its_contract() {
         "the reconcile request body must be typed: {schema_ref}"
     );
 
-    // The request is the conflict identity: the adjudicator keys its recorded
-    // resolution on the `(evidence, decision)` pair, so dropping the required
-    // `evidence` would let a client name a decision with no identity behind it.
+    // The request is the conflict identity: `incident` names what is being
+    // resolved and the adjudicator keys its recorded resolution on the
+    // `(evidence, decision)` pair within it, so dropping either required field
+    // would let a client name a decision with no identity behind it.
     let (request_properties, request_required) =
         component_property_sets(&spec, "ReconcileCredentialRequest");
     assert_eq!(
         request_properties,
-        HashSet::from(["operation", "decision", "evidence"])
+        HashSet::from(["operation", "incident", "decision", "evidence"])
     );
     assert_eq!(
         request_required,
-        HashSet::from(["decision", "evidence"]),
+        HashSet::from(["incident", "decision", "evidence"]),
         "the reconcile request must require the whole conflict identity: {request_required:?}"
     );
     assert_eq!(
@@ -308,11 +309,13 @@ async fn credential_reconcile_publishes_its_contract() {
     // coming back. `evidence_digest` is the durable half of the reconciliation
     // retry identity (hex SHA-256 of the evidence on record), so a client that
     // lost the first acknowledgement can confirm what is on record.
+    // `incident` names which incident that record belongs to.
     let (response_properties, _) = component_property_sets(&spec, "ReconcileCredentialResponse");
     assert_eq!(
         response_properties,
         HashSet::from([
             "operation",
+            "incident",
             "decision",
             "changed",
             "message",

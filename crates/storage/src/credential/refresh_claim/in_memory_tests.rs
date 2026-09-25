@@ -228,6 +228,7 @@ async fn adjudication_is_idempotent_and_conflicting_evidence_is_refused() {
     let first = repo
         .adjudicate(
             &selector,
+            CredentialIncidentRef::from_uuid(claim.token.claim_id),
             CredentialOperationDecision::Refresh(RefreshOutcomeDecision::ProviderNotApplied),
             "provider confirmed no mutation",
         )
@@ -238,6 +239,7 @@ async fn adjudication_is_idempotent_and_conflicting_evidence_is_refused() {
     let repeat = repo
         .adjudicate(
             &selector,
+            CredentialIncidentRef::from_uuid(claim.token.claim_id),
             CredentialOperationDecision::Refresh(RefreshOutcomeDecision::ProviderNotApplied),
             "provider confirmed no mutation",
         )
@@ -248,6 +250,7 @@ async fn adjudication_is_idempotent_and_conflicting_evidence_is_refused() {
     let conflict = repo
         .adjudicate(
             &selector,
+            CredentialIncidentRef::from_uuid(claim.token.claim_id),
             CredentialOperationDecision::Refresh(RefreshOutcomeDecision::ProviderApplied),
             "different evidence",
         )
@@ -275,6 +278,7 @@ async fn adjudication_evidence_bounds_preserve_poison() {
     assert!(matches!(
         repo.adjudicate(
             &selector,
+            CredentialIncidentRef::from_uuid(claim.token.claim_id),
             CredentialOperationDecision::Refresh(RefreshOutcomeDecision::ProviderNotApplied),
             "",
         )
@@ -292,4 +296,79 @@ async fn adjudication_evidence_bounds_preserve_poison() {
         .expect("poison check"),
         ClaimAttempt::OutcomeUnknown { .. }
     ));
+}
+
+/// A retry after a lost acknowledgement names its own incident, and a newer
+/// incident on the same credential is not resolved by it.
+///
+/// The documented recovery for a lost acknowledgement is to resend the same
+/// request. Without an incident identity the resend would land on whatever
+/// claim is poisoned now and record the old decision against a new incident.
+#[tokio::test]
+async fn a_retried_decision_never_resolves_a_newer_incident() {
+    let repo = InMemoryRefreshClaimRepo::new();
+    let selector = CredentialSelector::new(
+        CredentialOwner::from_canonical("owner-a"),
+        CredentialId::new(),
+    );
+    let decision = CredentialOperationDecision::Refresh(RefreshOutcomeDecision::ProviderNotApplied);
+    let evidence = "provider confirmed no mutation";
+
+    let first = acquired_claim(&repo, &selector).await;
+    repo.mark_sentinel(&first.token)
+        .await
+        .expect("mark provider egress");
+    expire_claim(&repo, &selector);
+    let first_incident = CredentialIncidentRef::from_uuid(first.token.claim_id);
+    let resolved = repo
+        .adjudicate(&selector, first_incident, decision, evidence)
+        .await
+        .expect("resolve the first incident");
+    assert!(resolved.changed);
+
+    // The acknowledgement was lost; meanwhile a second provider call poisons.
+    let second = acquired_claim(&repo, &selector).await;
+    repo.mark_sentinel(&second.token)
+        .await
+        .expect("mark provider egress");
+    expire_claim(&repo, &selector);
+
+    let replay = repo
+        .adjudicate(&selector, first_incident, decision, evidence)
+        .await
+        .expect("the replay is answered from the first incident's record");
+    assert!(!replay.changed);
+    assert!(matches!(
+        repo.try_claim(
+            &selector,
+            &ReplicaId::new("next"),
+            Duration::from_secs(30),
+            CredentialOperationIntent::Refresh
+        )
+        .await
+        .expect("poison check"),
+        ClaimAttempt::OutcomeUnknown { .. }
+    ));
+
+    let stale = repo
+        .adjudicate(
+            &selector,
+            CredentialIncidentRef::from_uuid(Uuid::new_v4()),
+            decision,
+            evidence,
+        )
+        .await
+        .expect_err("an unknown incident cannot resolve the current one");
+    assert!(matches!(stale, RepoAdjudicationError::StaleIncident));
+
+    let second_resolution = repo
+        .adjudicate(
+            &selector,
+            CredentialIncidentRef::from_uuid(second.token.claim_id),
+            decision,
+            "second incident established separately",
+        )
+        .await
+        .expect("the current incident is resolved by its own identity");
+    assert!(second_resolution.changed);
 }

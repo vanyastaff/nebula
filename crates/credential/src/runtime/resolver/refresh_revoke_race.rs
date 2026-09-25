@@ -360,6 +360,10 @@ struct ScriptedStore {
     replace_error: Option<CredentialPersistenceError>,
     replacements: Mutex<u32>,
     gets: Mutex<u32>,
+    /// Operation-status reads still answering an in-flight refresh.
+    refresh_in_flight_checks: Mutex<u32>,
+    /// Whether that refresh commits new material once it stops answering.
+    refresh_commits: bool,
 }
 
 impl ScriptedStore {
@@ -383,6 +387,8 @@ impl ScriptedStore {
             replace_error: None,
             replacements: Mutex::new(0),
             gets: Mutex::new(0),
+            refresh_in_flight_checks: Mutex::new(0),
+            refresh_commits: false,
         }
     }
 
@@ -398,6 +404,8 @@ impl ScriptedStore {
             replace_error: Some(replace_error),
             replacements: Mutex::new(0),
             gets: Mutex::new(0),
+            refresh_in_flight_checks: Mutex::new(0),
+            refresh_commits: false,
         }
     }
 
@@ -413,6 +421,8 @@ impl ScriptedStore {
             replace_error: None,
             replacements: Mutex::new(0),
             gets: Mutex::new(0),
+            refresh_in_flight_checks: Mutex::new(0),
+            refresh_commits: false,
         }
     }
 
@@ -428,6 +438,8 @@ impl ScriptedStore {
             replace_error: None,
             replacements: Mutex::new(0),
             gets: Mutex::new(0),
+            refresh_in_flight_checks: Mutex::new(0),
+            refresh_commits: false,
         }
     }
 
@@ -443,6 +455,19 @@ impl ScriptedStore {
             replace_error: None,
             replacements: Mutex::new(0),
             gets: Mutex::new(0),
+            refresh_in_flight_checks: Mutex::new(0),
+            refresh_commits: false,
+        }
+    }
+
+    /// A refresh crosses the provider boundary for the first `checks`
+    /// operation-status reads, then commits new material when `commits`.
+    fn refresh_in_flight(row: StoredCredential, checks: u32, commits: bool) -> Self {
+        let store = Self::new(row, false);
+        *store.refresh_in_flight_checks.lock() = checks;
+        Self {
+            refresh_commits: commits,
+            ..store
         }
     }
 
@@ -458,6 +483,8 @@ impl ScriptedStore {
             replace_error: None,
             replacements: Mutex::new(0),
             gets: Mutex::new(0),
+            refresh_in_flight_checks: Mutex::new(0),
+            refresh_commits: false,
         }
     }
 
@@ -721,6 +748,40 @@ impl CredentialPersistence for ScriptedStore {
         selector: &CredentialSelector,
     ) -> Result<nebula_storage_port::store::CredentialOperationStatus, CredentialPersistenceError>
     {
+        {
+            let mut remaining = self.refresh_in_flight_checks.lock();
+            if *remaining > 0 {
+                *remaining -= 1;
+                if *remaining > 0 || !self.refresh_commits {
+                    return Ok(
+                        nebula_storage_port::store::CredentialOperationStatus::InFlight {
+                            operation: nebula_storage_port::store::CredentialOperationKind::Refresh,
+                        },
+                    );
+                }
+                let mut row = self.row.lock();
+                let StoredCredential::Live(current) = row.clone() else {
+                    return Err(CredentialPersistenceError::NotFound);
+                };
+                let committed = StoredLiveCredential::new(
+                    current.credential_id(),
+                    current.name().map(str::to_owned),
+                    current.credential_key().to_owned(),
+                    current.data().clone(),
+                    current.state_kind().to_owned(),
+                    current.state_version(),
+                    current.version().next_live()?,
+                    current.material_epoch().next()?,
+                    current.created_at(),
+                    Utc::now(),
+                    current.expires_at(),
+                    current.reauth_required(),
+                    current.metadata().clone(),
+                    None,
+                )?;
+                *row = committed.into();
+            }
+        }
         let row = self.row.lock();
         if selector.owner() != &self.owner || row.credential_id() != selector.credential_id() {
             return Err(CredentialPersistenceError::NotFound);
@@ -1715,9 +1776,28 @@ fn corrupt_oauth2_row() -> StoredCredential {
     .into()
 }
 
+fn usable_oauth2_row() -> StoredCredential {
+    oauth2_row_expiring(
+        Some("refresh-grant"),
+        "https://provider.example/token",
+        Utc::now() + chrono::Duration::hours(1),
+    )
+}
+
 fn oauth2_row_with_token_url(refresh_token: Option<&str>, token_url: &str) -> StoredCredential {
+    oauth2_row_expiring(
+        refresh_token,
+        token_url,
+        Utc::now() - chrono::Duration::minutes(5),
+    )
+}
+
+fn oauth2_row_expiring(
+    refresh_token: Option<&str>,
+    token_url: &str,
+    expires_at: chrono::DateTime<Utc>,
+) -> StoredCredential {
     let now = Utc::now();
-    let expires_at = now - chrono::Duration::minutes(5);
     let state = OAuth2State {
         access_token: crate::SecretString::new("expired-access-token"),
         token_type: "Bearer".to_owned(),
@@ -2294,9 +2374,9 @@ async fn refresh_racing_revoke_does_not_resurrect() {
     );
     assert_eq!(
         store.get_count(),
-        2,
-        "initial load plus the required pre-dispatch authority reload are exact; \
-         the post-provider conflict must not trigger a third reconciliation read"
+        3,
+        "initial load, the pre-dispatch authority reload, and exactly one \
+         post-conflict read that finds the tombstone and stops the write-back"
     );
     assert_eq!(
         CAS_PROVIDER_CALLS.load(Ordering::SeqCst),
@@ -3916,4 +3996,188 @@ async fn legacy_payload_with_future_row_version_refuses_with_distinct_error() {
         "the legacy-path version check must refuse fail-closed, got {err:?}"
     );
     assert_eq!(store.replacement_count(), 0);
+}
+
+/// A rename that lands while the provider rotates the refresh token must not
+/// cost the rotated token.
+///
+/// The provider already consumed the old refresh token when the write-back
+/// runs, so a write-back refused over a display-only version bump would leave
+/// the stored material pointing at a token the provider no longer honours.
+/// The write-back is re-based onto the renamed row and commits once.
+#[tokio::test]
+async fn refresh_write_back_merges_a_display_race_and_keeps_the_rotated_token() {
+    let store = Arc::new(ScriptedStore::racing_display_replace(oauth2_row(Some(
+        "refresh-grant",
+    ))));
+    let claims = Arc::new(StatefulClaimRepo::default());
+    let transport = Arc::new(ScriptedOAuthTransport::new(OAuthTransportResult::Success));
+    let selector = test_selector();
+    let ctx = CredentialContext::for_owner("test-owner");
+
+    resolver_with_runtime(
+        Arc::clone(&store),
+        Arc::clone(&claims) as Arc<dyn RefreshClaimStore>,
+        Arc::clone(&transport) as Arc<dyn RefreshTransport>,
+    )
+    .resolve_with_refresh::<OAuth2Credential>(&selector, &ctx)
+    .await
+    .expect("a display-only race must not fail a provider-confirmed refresh");
+
+    assert_eq!(transport.call_count(), 1, "the provider is called once");
+    assert_eq!(
+        store.replacement_count(),
+        2,
+        "the write-back re-reads and commits once after the display-only race"
+    );
+    let StoredCredential::Live(row) = store.snapshot() else {
+        panic!("a refreshed credential stays live");
+    };
+    assert_eq!(
+        row.name(),
+        Some("renamed-concurrently"),
+        "the concurrent rename is kept"
+    );
+    assert_eq!(
+        row.material_epoch(),
+        CredentialMaterialEpoch::MIN
+            .next()
+            .expect("fixture has epoch headroom"),
+        "the refreshed material advances authority exactly once"
+    );
+    let stored: OAuth2State = decode_persisted_state(&row);
+    assert_eq!(
+        stored
+            .refresh_token
+            .as_ref()
+            .map(crate::SecretString::expose_secret),
+        Some("new-refresh-token"),
+        "the rotated refresh token is what is stored"
+    );
+    tokio::time::timeout(Duration::from_secs(1), claims.wait_for_release_count(1))
+        .await
+        .expect("a committed refresh releases its claim");
+}
+
+/// The shared refresh write-back used by the resolver and the management
+/// refresh path: display-only churn is absorbed within its bound and then
+/// reported as the definite conflict it is, and a revoke still stops it.
+#[tokio::test]
+async fn refresh_write_back_bounds_display_churn_and_stops_at_a_tombstone() {
+    let selector = test_selector();
+    let rebuild = |base: &StoredLiveCredential| {
+        CredentialReplacement::new(
+            base.version(),
+            b"refreshed".to_vec().into(),
+            base.state_kind().to_owned(),
+            base.state_version(),
+            base.name().map(str::to_owned),
+            base.expires_at(),
+            false,
+            base.metadata().clone(),
+            CredentialMaterialTransition::advance(),
+        )
+    };
+
+    let churn = Arc::new(ScriptedStore::continuous_display_churn(live_row()));
+    let StoredCredential::Live(observed) = churn.snapshot() else {
+        panic!("fixture must start live");
+    };
+    let error = write_refreshed(churn.as_ref(), &selector, &observed, rebuild)
+        .await
+        .expect_err("unbounded display churn cannot hold the write-back forever");
+    assert!(matches!(
+        error,
+        CredentialPersistenceError::VersionConflict { .. }
+    ));
+    assert_eq!(
+        churn.replacement_count(),
+        4,
+        "the first attempt plus three bounded re-bases"
+    );
+
+    let revoked = Arc::new(ScriptedStore::new(live_row(), true));
+    let StoredCredential::Live(observed) = revoked.snapshot() else {
+        panic!("fixture must start live");
+    };
+    let error = write_refreshed(revoked.as_ref(), &selector, &observed, rebuild)
+        .await
+        .expect_err("a revoke landing before the write-back wins");
+    assert!(matches!(
+        error,
+        CredentialPersistenceError::VersionConflict { .. }
+    ));
+    assert_eq!(revoked.replacement_count(), 1);
+    assert!(matches!(
+        revoked.snapshot(),
+        StoredCredential::Tombstoned(_)
+    ));
+}
+
+/// A use that finds its material usable while another replica's refresh is
+/// crossing the provider boundary waits for that refresh instead of failing,
+/// and serves the refreshed material once it commits.
+#[tokio::test(start_paused = true)]
+async fn a_usable_resolve_joins_an_in_flight_refresh_and_serves_its_result() {
+    let store = Arc::new(ScriptedStore::refresh_in_flight(
+        usable_oauth2_row(),
+        3,
+        true,
+    ));
+    let resolver = resolver_with(Arc::clone(&store));
+
+    let started = tokio::time::Instant::now();
+    resolver
+        .resolve_with_refresh::<OAuth2Credential>(
+            &test_selector(),
+            &CredentialContext::for_owner("test-owner"),
+        )
+        .await
+        .expect("a joined refresh that commits admits the use");
+
+    assert!(started.elapsed() < REFRESH_JOIN_WAIT);
+    assert_eq!(
+        store.get_count(),
+        2,
+        "the committed refresh supersedes the first load, so the material is re-read"
+    );
+    let StoredCredential::Live(row) = store.snapshot() else {
+        panic!("a refreshed credential stays live");
+    };
+    assert_eq!(
+        row.material_epoch(),
+        CredentialMaterialEpoch::MIN
+            .next()
+            .expect("fixture has epoch headroom")
+    );
+}
+
+/// A refresh still outstanding when the join bound elapses answers the typed
+/// operation-blocked error, as before the join existed.
+#[tokio::test(start_paused = true)]
+async fn a_usable_resolve_stops_joining_at_its_bound() {
+    let store = Arc::new(ScriptedStore::refresh_in_flight(
+        usable_oauth2_row(),
+        u32::MAX,
+        false,
+    ));
+    let resolver = resolver_with(Arc::clone(&store));
+
+    let started = tokio::time::Instant::now();
+    let error = resolver
+        .resolve_with_refresh::<OAuth2Credential>(
+            &test_selector(),
+            &CredentialContext::for_owner("test-owner"),
+        )
+        .await
+        .expect_err("an outstanding refresh blocks new use after the bound");
+
+    assert!(matches!(
+        error,
+        ResolveError::OperationBlocked {
+            operation: nebula_storage_port::store::CredentialOperationKind::Refresh,
+        }
+    ));
+    assert!(started.elapsed() <= REFRESH_JOIN_WAIT);
+    assert_eq!(store.get_count(), 1, "no committed refresh, no re-read");
 }

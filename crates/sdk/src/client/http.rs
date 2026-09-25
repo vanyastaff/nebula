@@ -349,9 +349,14 @@ impl CredentialClient {
 
     /// Record one operator-established provider outcome exactly once.
     ///
-    /// The server makes an identical request idempotent, but this client never
-    /// retries automatically. After an unknown acknowledgement, callers may
-    /// resend the same operation, decision, and evidence.
+    /// The request names the incident it resolves, taken from the credential's
+    /// `ReconciliationRequired` lifecycle state. The server answers an
+    /// identical request for the same incident idempotently, but this client
+    /// never retries automatically. After an unknown acknowledgement, callers
+    /// may resend the same request unchanged: it is answered from that
+    /// incident's record, and if a newer incident has poisoned the credential
+    /// meanwhile the resend is refused as `ReconciliationStaleIncident` rather
+    /// than applied to it.
     pub async fn reconcile(
         &self,
         credential_id: &str,

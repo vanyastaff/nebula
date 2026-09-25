@@ -60,9 +60,9 @@ pub struct CredentialHead {
 impl CredentialHead {
     /// Overlay the authoritative durable operation gate on this public head.
     ///
-    /// Claim identity and fencing data stay inside the storage/runtime seam;
-    /// only the operation category and whether reconciliation is required are
-    /// projected.
+    /// Claim fencing data stay inside the storage/runtime seam; the operation
+    /// category, whether reconciliation is required, and the expired incident a
+    /// reconciliation must name are projected.
     #[must_use]
     pub(crate) fn with_operation_status(mut self, status: CredentialOperationStatus) -> Self {
         self.lifecycle = match status {
@@ -75,21 +75,22 @@ impl CredentialHead {
                     operation: CredentialLifecycleOperation::Revoke,
                 },
                 CredentialOperationKind::LegacyUnclassified => {
-                    CredentialLifecycleState::ReconciliationRequired { operation: None }
+                    CredentialLifecycleState::ReconciliationRequired {
+                        operation: None,
+                        incident: None,
+                    }
                 },
             },
-            CredentialOperationStatus::ReconciliationRequired { operation } => {
-                CredentialLifecycleState::ReconciliationRequired {
-                    operation: match operation {
-                        CredentialOperationKind::Refresh => {
-                            Some(CredentialLifecycleOperation::Refresh)
-                        },
-                        CredentialOperationKind::Revoke => {
-                            Some(CredentialLifecycleOperation::Revoke)
-                        },
-                        CredentialOperationKind::LegacyUnclassified => None,
-                    },
-                }
+            CredentialOperationStatus::ReconciliationRequired {
+                operation,
+                incident,
+            } => CredentialLifecycleState::ReconciliationRequired {
+                operation: match operation {
+                    CredentialOperationKind::Refresh => Some(CredentialLifecycleOperation::Refresh),
+                    CredentialOperationKind::Revoke => Some(CredentialLifecycleOperation::Revoke),
+                    CredentialOperationKind::LegacyUnclassified => None,
+                },
+                incident: Some(incident),
             },
         };
         self

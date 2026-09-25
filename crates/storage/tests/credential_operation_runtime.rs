@@ -40,9 +40,9 @@ use nebula_storage::credential::{
     SqliteCredentialPersistence,
 };
 use nebula_storage_port::store::{
-    ClaimAttempt, ClaimToken, CredentialOperationDecision, CredentialOperationIntent,
-    CredentialOperationKind, CredentialOperationStatus, HeartbeatError, RefreshAdjudication,
-    RefreshClaimAdjudicationError, RefreshClaimAdjudicator, RefreshClaimError,
+    ClaimAttempt, ClaimToken, CredentialIncidentRef, CredentialOperationDecision,
+    CredentialOperationIntent, CredentialOperationKind, CredentialOperationStatus, HeartbeatError,
+    RefreshAdjudication, RefreshClaimAdjudicationError, RefreshClaimAdjudicator, RefreshClaimError,
     RefreshClaimReclaimer, RefreshClaimStore, RefreshOutcomeDecision, ReplicaId,
     RevokeOutcomeDecision, SentinelEscalationPolicy,
 };
@@ -265,10 +265,31 @@ where
     async fn adjudicate(
         &self,
         selector: &CredentialSelector,
+        incident: CredentialIncidentRef,
         decision: CredentialOperationDecision,
         evidence: &str,
     ) -> Result<RefreshAdjudication, RefreshClaimAdjudicationError> {
-        self.inner.adjudicate(selector, decision, evidence).await
+        self.inner
+            .adjudicate(selector, incident, decision, evidence)
+            .await
+    }
+}
+
+/// The incident `selector`'s operation status publishes for reconciliation.
+///
+/// Reconciliation names the incident it resolves, so every `Reconcile` command
+/// here reads it from the status an operator would observe.
+async fn reconciliation_incident(
+    store: &(impl CredentialPersistence + ?Sized),
+    selector: &CredentialSelector,
+) -> CredentialIncidentRef {
+    match store
+        .operation_status(selector)
+        .await
+        .expect("operation status")
+    {
+        CredentialOperationStatus::ReconciliationRequired { incident, .. } => incident,
+        other => panic!("a poisoned credential publishes its incident, got {other:?}"),
     }
 }
 
@@ -652,16 +673,18 @@ async fn revoke_incident_blocks_use_and_only_matching_adjudication_tombstones() 
     ));
 
     fixture.expire_claim(id, 99).await;
-    assert!(matches!(
-        fixture
-            .raw
-            .operation_status(&selector)
-            .await
-            .expect("operation status"),
-        CredentialOperationStatus::ReconciliationRequired {
-            operation: CredentialOperationKind::Revoke
-        }
-    ));
+    let status = fixture
+        .raw
+        .operation_status(&selector)
+        .await
+        .expect("operation status");
+    let CredentialOperationStatus::ReconciliationRequired {
+        operation: CredentialOperationKind::Revoke,
+        incident,
+    } = status
+    else {
+        panic!("an expired revoke claim requires reconciliation, got {status:?}")
+    };
     let listed = fixture
         .command(CredentialCommand::List)
         .await
@@ -676,8 +699,9 @@ async fn revoke_incident_blocks_use_and_only_matching_adjudication_tombstones() 
     assert!(matches!(
         listed.lifecycle,
         nebula_credential::CredentialLifecycleState::ReconciliationRequired {
-            operation: Some(nebula_credential::CredentialLifecycleOperation::Revoke)
-        }
+            operation: Some(nebula_credential::CredentialLifecycleOperation::Revoke),
+            incident: Some(listed_incident),
+        } if listed_incident == incident
     ));
     let base = BaseContext::builder(nebula_core::Scope::default()).build_with(Principal::System);
     assert!(matches!(
@@ -734,6 +758,7 @@ async fn revoke_incident_blocks_use_and_only_matching_adjudication_tombstones() 
     let wrong = fixture
         .command(CredentialCommand::Reconcile {
             credential_id: id,
+            incident,
             decision: CredentialOperationDecision::Refresh(RefreshOutcomeDecision::ProviderApplied),
             evidence: EVIDENCE.to_owned(),
         })
@@ -759,14 +784,16 @@ async fn revoke_incident_blocks_use_and_only_matching_adjudication_tombstones() 
             .await
             .expect("claim retained"),
         CredentialOperationStatus::ReconciliationRequired {
-            operation: CredentialOperationKind::Revoke
-        }
+            operation: CredentialOperationKind::Revoke,
+            incident: retained,
+        } if retained == incident
     ));
 
     let decision = CredentialOperationDecision::Revoke(RevokeOutcomeDecision::ProviderRevoked);
     let first = fixture
         .command(CredentialCommand::Reconcile {
             credential_id: id,
+            incident,
             decision,
             evidence: EVIDENCE.to_owned(),
         })
@@ -788,6 +815,7 @@ async fn revoke_incident_blocks_use_and_only_matching_adjudication_tombstones() 
     let replay = fixture
         .command(CredentialCommand::Reconcile {
             credential_id: id,
+            incident,
             decision,
             evidence: EVIDENCE.to_owned(),
         })
@@ -991,10 +1019,12 @@ async fn revoke_sweep_never_applies_refresh_reauthentication_escalation() {
         ))
     ));
     fixture.expire_claim(id, 1).await;
+    let incident = reconciliation_incident(&fixture.raw, &selector).await;
 
     let reconciled = fixture
         .command(CredentialCommand::Reconcile {
             credential_id: id,
+            incident,
             decision: CredentialOperationDecision::Revoke(
                 RevokeOutcomeDecision::ProviderNotRevoked,
             ),
@@ -1062,6 +1092,7 @@ async fn legacy_unclassified_poison_refuses_inference_but_allows_terminal_recove
         .reclaim_stuck(SentinelEscalationPolicy::new(1, Duration::from_hours(1)).expect("policy"))
         .await
         .expect("account legacy poison");
+    let incident = CredentialIncidentRef::from_uuid(claim.token.claim_id);
     assert!(matches!(
         fixture
             .raw
@@ -1069,8 +1100,9 @@ async fn legacy_unclassified_poison_refuses_inference_but_allows_terminal_recove
             .await
             .expect("legacy operation status"),
         CredentialOperationStatus::ReconciliationRequired {
-            operation: CredentialOperationKind::LegacyUnclassified
-        }
+            operation: CredentialOperationKind::LegacyUnclassified,
+            incident: published,
+        } if published == incident
     ));
 
     for decision in [
@@ -1080,6 +1112,7 @@ async fn legacy_unclassified_poison_refuses_inference_but_allows_terminal_recove
         let result = fixture
             .command(CredentialCommand::Reconcile {
                 credential_id: id,
+                incident,
                 decision,
                 evidence: "legacy operation cannot be inferred".to_owned(),
             })
@@ -1252,6 +1285,7 @@ async fn postgres_revoke_incidents_adjudicate_without_provider_replay() {
         ))
     ));
     expire_and_reclaim(&pool, claims.as_ref(), &revoked_selector).await;
+    let revoked_incident = reconciliation_incident(&raw, &revoked_selector).await;
     assert!(matches!(
         execute(
             &controller,
@@ -1259,6 +1293,7 @@ async fn postgres_revoke_incidents_adjudicate_without_provider_replay() {
             &scope,
             CredentialCommand::Reconcile {
                 credential_id: revoked_id,
+                incident: revoked_incident,
                 decision: CredentialOperationDecision::Refresh(
                     RefreshOutcomeDecision::ProviderApplied
                 ),
@@ -1280,6 +1315,7 @@ async fn postgres_revoke_incidents_adjudicate_without_provider_replay() {
             &scope,
             CredentialCommand::Reconcile {
                 credential_id: revoked_id,
+                incident: revoked_incident,
                 decision: revoked,
                 evidence: EVIDENCE.to_owned(),
             },
@@ -1326,12 +1362,14 @@ async fn postgres_revoke_incidents_adjudicate_without_provider_replay() {
         ))
     ));
     expire_and_reclaim(&pool, claims.as_ref(), &retained_selector).await;
+    let retained_incident = reconciliation_incident(&raw, &retained_selector).await;
     execute(
         &controller,
         &actor,
         &scope,
         CredentialCommand::Reconcile {
             credential_id: retained_id,
+            incident: retained_incident,
             decision: CredentialOperationDecision::Revoke(
                 RevokeOutcomeDecision::ProviderNotRevoked,
             ),

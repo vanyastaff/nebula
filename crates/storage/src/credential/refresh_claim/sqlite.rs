@@ -27,9 +27,10 @@ use sqlx::SqlitePool;
 use uuid::Uuid;
 
 use super::{
-    ClaimAttempt, ClaimToken, CredentialOperationDecision, CredentialOperationIntent,
-    CredentialOperationKind, ExpiredClaim, HeartbeatError, ReauthEscalation, RefreshAdjudication,
-    RefreshClaim, RefreshClaimAdjudicationError as RepoAdjudicationError, RefreshClaimAdjudicator,
+    ClaimAttempt, ClaimToken, CredentialIncidentRef, CredentialOperationDecision,
+    CredentialOperationIntent, CredentialOperationKind, ExpiredClaim, HeartbeatError,
+    ReauthEscalation, RefreshAdjudication, RefreshClaim,
+    RefreshClaimAdjudicationError as RepoAdjudicationError, RefreshClaimAdjudicator,
     RefreshClaimReclaimer, RefreshClaimRepo, ReplicaId, RepoError, RevokeOutcomeDecision,
     SentinelEscalationPolicy, SqlxClaimResultExt, adjudicate_against_recorded_resolution,
     adjudication_evidence_digest, validate_adjudication_evidence,
@@ -84,51 +85,16 @@ const RECORD_RESOLUTION_SQL: &str = "INSERT INTO credential_sentinel_events \
      WHERE credential_sentinel_events.adjudicated_at IS NULL \
      RETURNING claim_id";
 
-/// The newest resolution on record for a credential.
+/// The resolution recorded on the named incident, if it has one.
 ///
-/// The no-poison refusal names this pair as the one on record: the resolved-set
-/// comparison has no single incident to point at, so the newest resolution is
-/// the honest "what is on record now" answer a conflicted caller needs. It is
-/// read inside the adjudication transaction, so the pair is the one the
-/// refusal actually refused against.
-const NEWEST_RESOLVED_PAIR_SQL: &str = "SELECT adjudication_evidence_digest, adjudication_decision, operation_kind \
+/// Owner- and credential-bound, so an incident identity from another tenant or
+/// credential finds nothing. Read before the poisoned claim: a retry of a
+/// decision whose incident is already resolved must be answered from that
+/// incident, never fall through to whatever claim is poisoned now.
+const INCIDENT_RESOLUTION_SQL: &str = "SELECT adjudication_evidence_digest, adjudication_decision, operation_kind \
      FROM credential_sentinel_events \
-     WHERE owner_id = ?1 AND credential_id = ?2 AND adjudicated_at IS NOT NULL \
-     ORDER BY adjudicated_at DESC, id DESC \
-     LIMIT 1";
-
-/// Does this credential's resolved set already carry this exact
-/// `(evidence digest, decision)` pair?
-///
-/// The pair is the only identity the request carries, so an exact match over
-/// the resolved set is how a recommit is attributed to the incident it
-/// describes. Keyed on `credential_id` because a resolved incident outlives its
-/// claim row, which is what keeps a pre-0039 incident with a NULL `claim_id`
-/// adjudicable.
-///
-/// A replay of a *superseded* pair is accepted by design, and is not a gap: the
-/// check is read-only and answers with the request's own values, and "this pair
-/// is on record for this credential" is the honest answer to what a caller
-/// re-committing it is asking. There is no unique incident for the request to
-/// name — a credential may hold several resolved incidents — so evidence, not
-/// incident identity, has to be the anchor; an incident id on the request would
-/// be surface no caller can supply.
-const RESOLVED_INCIDENT_MATCH_SQL: &str = "SELECT EXISTS ( \
-         SELECT 1 FROM credential_sentinel_events \
-         WHERE owner_id = ?1 AND credential_id = ?2 \
-           AND adjudicated_at IS NOT NULL \
-           AND adjudication_evidence_digest = ?3 \
-           AND adjudication_decision = ?4 AND operation_kind = ?5 \
-     )";
-
-/// The resolution recorded on the incident a claim row owns.
-///
-/// Keyed on the claim UUID rather than the credential: the poisoned branch has
-/// already located this claim's incident, so the comparison stays on this
-/// lifecycle instead of reaching for whichever resolved incident is newest.
-const CLAIM_INCIDENT_RESOLUTION_SQL: &str = "SELECT adjudication_evidence_digest, adjudication_decision, operation_kind \
-     FROM credential_sentinel_events \
-     WHERE claim_id = ?1";
+     WHERE owner_id = ?1 AND credential_id = ?2 AND claim_id = ?3 \
+       AND adjudicated_at IS NOT NULL";
 
 /// Does `claim_id` have an incident whose provider outcome is still unknown?
 const UNRESOLVED_INCIDENT_SQL: &str = "SELECT EXISTS ( \
@@ -626,6 +592,7 @@ impl RefreshClaimAdjudicator for SqliteRefreshClaimRepo {
     async fn adjudicate(
         &self,
         selector: &CredentialSelector,
+        incident: CredentialIncidentRef,
         decision: CredentialOperationDecision,
         evidence: &str,
     ) -> Result<RefreshAdjudication, RepoAdjudicationError> {
@@ -633,6 +600,7 @@ impl RefreshClaimAdjudicator for SqliteRefreshClaimRepo {
         let digest = adjudication_evidence_digest(evidence);
         let cid_str = selector.credential_id().to_string();
         let owner = selector.owner().as_str();
+        let incident_str = incident.as_uuid().to_string();
         let now_ms = Utc::now().timestamp_millis();
 
         // One transaction: the poison is cleared and its resolution recorded
@@ -645,6 +613,28 @@ impl RefreshClaimAdjudicator for SqliteRefreshClaimRepo {
             .await
             .map_err(|_| RepoAdjudicationError::Storage)?;
 
+        // The named incident's own resolution answers first. A retry after a
+        // lost acknowledgement lands here, and must not fall through to a
+        // newer poisoned claim that its decision never described.
+        let recorded: Option<(Vec<u8>, Option<String>, String)> =
+            sqlx::query_as(INCIDENT_RESOLUTION_SQL)
+                .bind(owner)
+                .bind(&cid_str)
+                .bind(&incident_str)
+                .fetch_optional(&mut *transaction)
+                .await
+                .map_err(|_| RepoAdjudicationError::Storage)?;
+        if let Some((recorded_digest, recorded_decision, recorded_operation)) = recorded {
+            return adjudicate_against_recorded_resolution(
+                &recorded_digest,
+                recorded_decision.as_deref(),
+                CredentialOperationKind::from_wire(&recorded_operation)
+                    .ok_or(RepoAdjudicationError::Storage)?,
+                &digest,
+                decision,
+            );
+        }
+
         let poisoned: Option<(String, String, i64, String, Option<i64>)> =
             sqlx::query_as(POISONED_CLAIM_SQL)
                 .bind(owner)
@@ -654,14 +644,16 @@ impl RefreshClaimAdjudicator for SqliteRefreshClaimRepo {
                 .await
                 .map_err(|_| RepoAdjudicationError::Storage)?;
 
-        let adjudication = if let Some((
-            claim_id,
-            crashed_holder,
-            generation,
-            operation_raw,
-            observed_epoch,
-        )) = poisoned
-        {
+        let Some((claim_id, crashed_holder, generation, operation_raw, observed_epoch)) = poisoned
+        else {
+            return Err(RepoAdjudicationError::NotPoisoned);
+        };
+        // A different poisoned claim is a different incident: the decision
+        // was established for the named one and says nothing about this one.
+        if claim_id.parse::<Uuid>().ok() != Some(incident.as_uuid()) {
+            return Err(RepoAdjudicationError::StaleIncident);
+        }
+        let adjudication = {
             let operation = CredentialOperationKind::from_wire(&operation_raw)
                 .ok_or(RepoAdjudicationError::Storage)?;
             if operation != decision.kind() {
@@ -750,83 +742,15 @@ impl RefreshClaimAdjudicator for SqliteRefreshClaimRepo {
                 .await
                 .map_err(|_| RepoAdjudicationError::Storage)?;
 
-            if recorded.is_some() {
-                // `RETURNING` yields a row only when this call recorded the
-                // resolution.
-                RefreshAdjudication::new(decision, true, digest)
-            } else {
-                // The incident already carried a resolution, and the
-                // `adjudicated_at IS NULL` guard on the upsert above is what
-                // filtered this call's write out. The comparison is keyed on
-                // `claim_id`, on which the partial unique index admits at most
-                // one incident row (`0039_credentials_owner_and_record_state.sql:14-16`),
-                // so the row read is this claim's own incident rather than
-                // whichever resolved incident is newest.
-                //
-                // The `Storage` arm below is unreachable through the port, and
-                // that is why no case can fail on it: reaching this state means
-                // a live poisoned row for a claim whose incident already
-                // carries a resolution, but the `cleared != 1` check makes the
-                // claim-row DELETE a precondition of the resolution write, and
-                // both `try_claim` and `reclaim_stuck` mint fresh claim ids, so
-                // no row can be re-created for this claim. The agreement is
-                // closed for the day it becomes reachable.
-                let Some((recorded_digest, recorded_decision, recorded_operation)) = self
-                    .claim_incident_resolution(&mut transaction, &claim_id)
-                    .await?
-                else {
-                    return Err(RepoAdjudicationError::Storage);
-                };
-                adjudicate_against_recorded_resolution(
-                    &recorded_digest,
-                    recorded_decision.as_deref(),
-                    CredentialOperationKind::from_wire(&recorded_operation)
-                        .ok_or(RepoAdjudicationError::Storage)?,
-                    &digest,
-                    decision,
-                )?
+            // `RETURNING` yields a row only when this call recorded the
+            // resolution. The named incident had no resolution when this
+            // transaction read it under the write lock, and the claim row
+            // DELETE above is a precondition of the write, so an empty
+            // `RETURNING` is a corrupted incident row, not a caller mistake.
+            if recorded.is_none() {
+                return Err(RepoAdjudicationError::Storage);
             }
-        } else {
-            // Nothing is poisoned. The credential's resolved set is the only
-            // identity available — there is no claim row, and the request
-            // carries none — so the rule is an exact match over what the
-            // credential has already decided: this pair on record is the
-            // idempotent recommit, a set without it contradicts every decision
-            // on record, and an empty set has nothing to adjudicate.
-            //
-            // The newest resolution is read in the same pass so a refusal can
-            // name the pair on record: a set has no single incident to point
-            // at, and "the newest resolution" is the honest answer to what a
-            // conflicted caller's evidence disagreed with.
-            let Some((newest_digest, newest_decision, newest_operation)) = self
-                .newest_resolved_pair(&mut transaction, selector)
-                .await?
-            else {
-                return Err(RepoAdjudicationError::NotPoisoned);
-            };
-            match adjudicate_against_recorded_resolution(
-                &newest_digest,
-                newest_decision.as_deref(),
-                CredentialOperationKind::from_wire(&newest_operation)
-                    .ok_or(RepoAdjudicationError::Storage)?,
-                &digest,
-                decision,
-            ) {
-                Ok(recommit) => recommit,
-                Err(conflict @ RepoAdjudicationError::EvidenceConflict { .. }) => {
-                    // Not the newest: still a no-op when an older resolution
-                    // already recorded this exact pair (a superseded replay).
-                    if self
-                        .has_matching_resolution(&mut transaction, selector, &digest, decision)
-                        .await?
-                    {
-                        RefreshAdjudication::new(decision, false, digest)
-                    } else {
-                        return Err(conflict);
-                    }
-                },
-                Err(other) => return Err(other),
-            }
+            RefreshAdjudication::new(decision, true, digest)
         };
 
         // The decision is written but its acknowledgement is what we are
@@ -836,61 +760,6 @@ impl RefreshClaimAdjudicator for SqliteRefreshClaimRepo {
             .await
             .map_err(|_| RepoAdjudicationError::AcknowledgementUnknown)?;
         Ok(adjudication)
-    }
-}
-
-impl SqliteRefreshClaimRepo {
-    /// The newest resolution on record for this credential, if any.
-    ///
-    /// Decoding is left to the shared comparison
-    /// (`adjudicate_against_recorded_resolution`), so a corrupted decision
-    /// spelling or non-32-byte digest fails closed there as `Storage` rather
-    /// than being re-classified here.
-    async fn newest_resolved_pair(
-        &self,
-        transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-        selector: &CredentialSelector,
-    ) -> Result<Option<(Vec<u8>, Option<String>, String)>, RepoAdjudicationError> {
-        sqlx::query_as(NEWEST_RESOLVED_PAIR_SQL)
-            .bind(selector.owner().as_str())
-            .bind(selector.credential_id().to_string())
-            .fetch_optional(&mut **transaction)
-            .await
-            .map_err(|_| RepoAdjudicationError::Storage)
-    }
-
-    /// Does this credential's resolved set carry this exact
-    /// `(digest, decision)` pair?
-    async fn has_matching_resolution(
-        &self,
-        transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-        selector: &CredentialSelector,
-        digest: &[u8; 32],
-        decision: CredentialOperationDecision,
-    ) -> Result<bool, RepoAdjudicationError> {
-        let (exists,): (i64,) = sqlx::query_as(RESOLVED_INCIDENT_MATCH_SQL)
-            .bind(selector.owner().as_str())
-            .bind(selector.credential_id().to_string())
-            .bind(digest.as_slice())
-            .bind(decision.as_str())
-            .bind(decision.kind().as_str())
-            .fetch_one(&mut **transaction)
-            .await
-            .map_err(|_| RepoAdjudicationError::Storage)?;
-        Ok(exists != 0)
-    }
-
-    /// The resolution recorded on `claim_id`'s incident, if it has one.
-    async fn claim_incident_resolution(
-        &self,
-        transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-        claim_id: &str,
-    ) -> Result<Option<(Vec<u8>, Option<String>, String)>, RepoAdjudicationError> {
-        sqlx::query_as(CLAIM_INCIDENT_RESOLUTION_SQL)
-            .bind(claim_id)
-            .fetch_optional(&mut **transaction)
-            .await
-            .map_err(|_| RepoAdjudicationError::Storage)
     }
 }
 
@@ -908,8 +777,7 @@ mod tests {
     use crate::credential::SqliteCredentialPersistence;
 
     use super::{
-        CLAIM_INCIDENT_RESOLUTION_SQL, COUNT_SENTINEL_EVENTS_SQL, NEWEST_RESOLVED_PAIR_SQL,
-        POISONED_CLAIM_SQL, RESOLVED_INCIDENT_MATCH_SQL, SQLITE_NOW_MS_SQL,
+        COUNT_SENTINEL_EVENTS_SQL, INCIDENT_RESOLUTION_SQL, POISONED_CLAIM_SQL, SQLITE_NOW_MS_SQL,
     };
 
     #[tokio::test]
@@ -969,6 +837,7 @@ mod tests {
         let result = repo
             .adjudicate(
                 &selector,
+                super::CredentialIncidentRef::from_uuid(claim.token.claim_id),
                 CredentialOperationDecision::Revoke(RevokeOutcomeDecision::ProviderRevoked),
                 "provider audit confirms revocation",
             )
@@ -1017,97 +886,29 @@ mod tests {
         );
     }
 
-    /// The no-poison rule is an exact match over the credential's resolved set.
+    /// The named incident's resolution is read owner- and credential-bound,
+    /// resolved rows only, digest before decision.
     ///
-    /// Bind order is the silent half: a swap between `?3` and `?4` compiles and
-    /// turns every genuine recommit into `EvidenceConflict`, and dropping either
-    /// column would accept a pair the credential never recorded. The behavioural
-    /// oracle is the conformance case
-    /// `recommit_of_an_older_resolution_is_a_no_op_not_a_conflict`; this pins
-    /// the shape that case reads.
+    /// A swapped select list compiles and only fails at the driver boundary;
+    /// a dropped owner or credential predicate would let an incident identity
+    /// from another tenant answer for this credential.
     #[test]
-    fn resolved_set_lookup_matches_the_whole_recorded_pair() {
-        let query = RESOLVED_INCIDENT_MATCH_SQL;
-        assert!(
-            query.contains("owner_id = ?1 AND credential_id = ?2"),
-            "the resolved set is the credential's own"
-        );
+    fn incident_resolution_is_bound_to_the_owner_and_credential() {
+        let query = INCIDENT_RESOLUTION_SQL;
+        assert!(query.contains("owner_id = ?1 AND credential_id = ?2 AND claim_id = ?3"));
         assert!(
             query.contains("adjudicated_at IS NOT NULL"),
-            "an incident with no resolution is not a candidate"
+            "an incident with no resolution is not a recorded answer"
         );
-        assert!(
-            !query.contains("ORDER BY"),
-            "an exact match is not a newest-of query"
-        );
-        let digest = RESOLVED_INCIDENT_MATCH_SQL
-            .find("adjudication_evidence_digest = ?3")
-            .expect("the request's digest is compared");
-        let decision = RESOLVED_INCIDENT_MATCH_SQL
-            .find("adjudication_decision = ?4")
-            .expect("the request's decision is compared");
-        assert!(
-            digest < decision,
-            "the bind order is (digest, decision); the statement must agree"
-        );
-    }
-
-    /// `newest_resolved_pair` decodes into `(digest, decision)`, keyed on the
-    /// credential, newest first.
-    ///
-    /// A swapped select list compiles and only fails at the driver boundary,
-    /// exactly as with `claim_incident_resolution`; a dropped `ORDER BY` would
-    /// let whichever row the engine lands on speak as "the pair on record" in
-    /// a refusal.
-    #[test]
-    fn newest_resolved_pair_reads_the_digest_before_the_decision_newest_first() {
-        let digest = NEWEST_RESOLVED_PAIR_SQL
+        let digest = query
             .find("adjudication_evidence_digest")
             .expect("the resolution digest is read");
-        let decision = NEWEST_RESOLVED_PAIR_SQL
+        let decision = query
             .find("adjudication_decision")
             .expect("the resolution decision is read");
         assert!(
             digest < decision,
-            "newest_resolved_pair decodes (digest, decision); the select list must agree"
-        );
-        assert!(
-            NEWEST_RESOLVED_PAIR_SQL.contains("WHERE owner_id = ?1 AND credential_id = ?2"),
-            "the newest resolution is the credential's own"
-        );
-        assert!(
-            NEWEST_RESOLVED_PAIR_SQL.contains("adjudicated_at IS NOT NULL"),
-            "an incident with no resolution is not a candidate"
-        );
-        assert!(
-            NEWEST_RESOLVED_PAIR_SQL.contains("ORDER BY adjudicated_at DESC"),
-            "a refusal must name the newest resolution, not a random one"
-        );
-    }
-
-    /// `claim_incident_resolution` decodes into `(digest, decision)`, keyed on
-    /// the claim's own incident.
-    ///
-    /// A swapped select list compiles and only fails at the driver boundary —
-    /// as `Storage` for a `TEXT`-into-`BLOB` decode, or as a silent
-    /// `EvidenceConflict` when the digest happens to be valid UTF-8. This pins
-    /// the select-list order only; the decode it must agree with is exercised
-    /// by the oracle cases, not here.
-    #[test]
-    fn claim_incident_resolution_reads_the_digest_before_the_decision() {
-        let digest = CLAIM_INCIDENT_RESOLUTION_SQL
-            .find("adjudication_evidence_digest")
-            .expect("the resolution digest is read");
-        let decision = CLAIM_INCIDENT_RESOLUTION_SQL
-            .find("adjudication_decision")
-            .expect("the resolution decision is read");
-        assert!(
-            digest < decision,
-            "claim_incident_resolution decodes (digest, decision); the select list must agree"
-        );
-        assert!(
-            CLAIM_INCIDENT_RESOLUTION_SQL.contains("WHERE claim_id = ?1"),
-            "the comparison is this claim's own incident, not the credential's newest"
+            "the caller decodes (digest, decision); the select list must agree"
         );
     }
 }

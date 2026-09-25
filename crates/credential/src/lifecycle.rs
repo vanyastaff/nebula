@@ -36,6 +36,7 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 /// dependency). Re-exported here so existing `nebula_credential::RefreshStrategy`
 /// paths keep resolving.
 pub use nebula_core::auth::{RefreshStrategy, RefreshStrategyKind, SchemeId};
+pub use nebula_storage_port::CredentialIncidentRef;
 
 /// Secret-free durable availability of a persisted credential.
 ///
@@ -69,6 +70,11 @@ pub enum CredentialLifecycleState {
         /// runtime. `None` denotes a legacy unclassified incident, which cannot
         /// be adjudicated and must be replaced explicitly.
         operation: Option<CredentialLifecycleOperation>,
+        /// The incident a reconciliation must name. `None` only while a legacy
+        /// unclassified operation is still in flight, which has no expired
+        /// incident yet.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        incident: Option<CredentialIncidentRef>,
     },
 }
 

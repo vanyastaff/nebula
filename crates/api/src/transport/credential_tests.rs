@@ -192,6 +192,7 @@ async fn all_credential_fns_are_503_without_service() {
             "cred_x",
             &ReconcileCredentialRequest {
                 operation: CredentialReconcileOperationV1::Refresh,
+                incident: uuid::Uuid::nil(),
                 decision: CredentialReconcileDecisionV1::ProviderNotApplied,
                 evidence: "e".into(),
             }

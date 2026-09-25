@@ -27,12 +27,12 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use nebula_core::CredentialId;
 use nebula_storage_port::{
-    CredentialAlreadyExistsKey, CredentialCommit, CredentialCreate, CredentialMaterialEpoch,
-    CredentialOperationKind, CredentialOperationStatus, CredentialOwner, CredentialPersistence,
-    CredentialPersistenceError, CredentialRefreshCursor, CredentialRefreshHorizon,
-    CredentialRefreshPageSize, CredentialRefreshSchedule, CredentialRefreshScheduleError,
-    CredentialReplacement, CredentialSelector, CredentialTombstone, CredentialVersion,
-    DueCredentialRefresh, RefreshRetrySnapshot, SecretBytes, StoredCredential,
+    CredentialAlreadyExistsKey, CredentialCommit, CredentialCreate, CredentialIncidentRef,
+    CredentialMaterialEpoch, CredentialOperationKind, CredentialOperationStatus, CredentialOwner,
+    CredentialPersistence, CredentialPersistenceError, CredentialRefreshCursor,
+    CredentialRefreshHorizon, CredentialRefreshPageSize, CredentialRefreshSchedule,
+    CredentialRefreshScheduleError, CredentialReplacement, CredentialSelector, CredentialTombstone,
+    CredentialVersion, DueCredentialRefresh, RefreshRetrySnapshot, SecretBytes, StoredCredential,
     StoredCredentialHead, StoredCredentialOperationalHead, StoredLiveCredential,
     StoredTombstonedCredential,
 };
@@ -596,6 +596,7 @@ struct CredentialHeadRow {
     operation_kind: Option<String>,
     operation_sentinel: Option<i16>,
     operation_expires_at: Option<DateTime<Utc>>,
+    operation_claim_id: Option<uuid::Uuid>,
 }
 
 impl CredentialHeadRow {
@@ -625,7 +626,13 @@ impl CredentialHeadRow {
             0 | 1 if expires_at >= self.backend_now => {
                 Ok(CredentialOperationStatus::InFlight { operation })
             },
-            1 => Ok(CredentialOperationStatus::ReconciliationRequired { operation }),
+            1 => Ok(CredentialOperationStatus::ReconciliationRequired {
+                operation,
+                incident: CredentialIncidentRef::from_uuid(
+                    self.operation_claim_id
+                        .ok_or(CredentialPersistenceError::CorruptRecord)?,
+                ),
+            }),
             _ => Err(CredentialPersistenceError::CorruptRecord),
         }
     }
@@ -980,10 +987,11 @@ impl CredentialPersistence for PgCredentialPersistence {
             Option<String>,
             Option<i16>,
             Option<DateTime<Utc>>,
+            Option<uuid::Uuid>,
             DateTime<Utc>,
         )> = sqlx::query_as(
             "SELECT c.version, c.material_epoch, c.reauth_required, claim.operation_kind, \
-                        claim.sentinel, claim.expires_at, clock_timestamp() \
+                        claim.sentinel, claim.expires_at, claim.claim_id, clock_timestamp() \
                  FROM credentials AS c \
                  LEFT JOIN credential_refresh_claims AS claim \
                    ON claim.owner_id = c.owner_id AND claim.credential_id = c.id \
@@ -994,7 +1002,9 @@ impl CredentialPersistence for PgCredentialPersistence {
         .fetch_optional(&self.pool)
         .await
         .map_err(read_error)?;
-        let Some((version, epoch, reauth_required, kind, sentinel, expires_at, now)) = row else {
+        let Some((version, epoch, reauth_required, kind, sentinel, expires_at, claim_id, now)) =
+            row
+        else {
             return Err(CredentialPersistenceError::NotFound);
         };
         let open = || {
@@ -1014,7 +1024,12 @@ impl CredentialPersistence for PgCredentialPersistence {
         match sentinel {
             0 if operation == CredentialOperationKind::Refresh || expires_at < now => open(),
             0 | 1 if expires_at >= now => Ok(CredentialOperationStatus::InFlight { operation }),
-            1 => Ok(CredentialOperationStatus::ReconciliationRequired { operation }),
+            1 => Ok(CredentialOperationStatus::ReconciliationRequired {
+                operation,
+                incident: CredentialIncidentRef::from_uuid(
+                    claim_id.ok_or(CredentialPersistenceError::CorruptRecord)?,
+                ),
+            }),
             _ => Err(CredentialPersistenceError::CorruptRecord),
         }
     }
@@ -1055,7 +1070,7 @@ impl CredentialPersistence for PgCredentialPersistence {
                     reauth_required, refresh_retry_mode, refresh_retry_not_before,
                     clock_timestamp() AS backend_now,
                     metadata, record_state, tombstoned_at, NULL::text AS operation_kind, \
-                    NULL::smallint AS operation_sentinel, NULL::timestamptz AS operation_expires_at
+                    NULL::smallint AS operation_sentinel, NULL::timestamptz AS operation_expires_at, NULL::uuid AS operation_claim_id
              FROM credentials
              WHERE id = $1 AND owner_id = $2 AND record_state = 'live'",
         )
@@ -1080,7 +1095,7 @@ impl CredentialPersistence for PgCredentialPersistence {
                     c.reauth_required, c.refresh_retry_mode, c.refresh_retry_not_before, \
                     clock_timestamp() AS backend_now, c.metadata, c.record_state, c.tombstoned_at, \
                     claim.operation_kind, claim.sentinel AS operation_sentinel, \
-                    claim.expires_at AS operation_expires_at \
+                    claim.expires_at AS operation_expires_at, claim.claim_id AS operation_claim_id \
              FROM credentials AS c LEFT JOIN credential_refresh_claims AS claim \
                ON claim.owner_id = c.owner_id AND claim.credential_id = c.id \
              WHERE c.id = $1 AND c.owner_id = $2 AND c.record_state = 'live'",
@@ -1106,7 +1121,7 @@ impl CredentialPersistence for PgCredentialPersistence {
                     c.reauth_required, c.refresh_retry_mode, c.refresh_retry_not_before, \
                     clock_timestamp() AS backend_now, c.metadata, c.record_state, c.tombstoned_at, \
                     claim.operation_kind, claim.sentinel AS operation_sentinel, \
-                    claim.expires_at AS operation_expires_at \
+                    claim.expires_at AS operation_expires_at, claim.claim_id AS operation_claim_id \
              FROM credentials AS c LEFT JOIN credential_refresh_claims AS claim \
                ON claim.owner_id = c.owner_id AND claim.credential_id = c.id \
              WHERE c.owner_id = $1 AND c.record_state = 'live' \
@@ -1630,7 +1645,7 @@ impl CredentialPersistence for PgCredentialPersistence {
                             reauth_required, refresh_retry_mode, refresh_retry_not_before,
                             clock_timestamp() AS backend_now,
                             metadata, record_state, tombstoned_at, NULL::text AS operation_kind,
-                            NULL::smallint AS operation_sentinel, NULL::timestamptz AS operation_expires_at
+                            NULL::smallint AS operation_sentinel, NULL::timestamptz AS operation_expires_at, NULL::uuid AS operation_claim_id
                      FROM credentials
                      WHERE owner_id = $1
                        AND record_state = 'live'
@@ -1649,7 +1664,7 @@ impl CredentialPersistence for PgCredentialPersistence {
                             reauth_required, refresh_retry_mode, refresh_retry_not_before,
                             clock_timestamp() AS backend_now,
                             metadata, record_state, tombstoned_at, NULL::text AS operation_kind,
-                            NULL::smallint AS operation_sentinel, NULL::timestamptz AS operation_expires_at
+                            NULL::smallint AS operation_sentinel, NULL::timestamptz AS operation_expires_at, NULL::uuid AS operation_claim_id
                      FROM credentials
                      WHERE owner_id = $1 AND record_state = 'live'
                      ORDER BY id",

@@ -13,8 +13,8 @@ use nebula_core::{CredentialId, CredentialKey, Permission, ServiceAccountId, Use
 use nebula_storage_port::{
     CredentialOwner, CredentialSelector, Scope,
     store::{
-        CredentialOperationDecision, RefreshAdjudication, RefreshClaimAdjudicationError,
-        RefreshClaimAdjudicator, RevokeOutcomeDecision,
+        CredentialIncidentRef, CredentialOperationDecision, RefreshAdjudication,
+        RefreshClaimAdjudicationError, RefreshClaimAdjudicator, RevokeOutcomeDecision,
     },
 };
 use serde_json::Value;
@@ -284,15 +284,17 @@ pub enum CredentialCommand {
     /// Resolve a poisoned provider-operation claim with the outcome an
     /// operator established.
     ///
-    /// The command carries the evidence the operator observed, never an
-    /// incident identity or a reconciliation token: the resolved set of a
-    /// credential is a many-incident set, so no single incident can be named on
-    /// the path that must accept a replay, and identity is therefore the wrong
-    /// anchor. `(decision, evidence digest)` is what the durable adjudication
-    /// compares.
+    /// The command names the incident it resolves, as published in the
+    /// credential's `ReconciliationRequired` lifecycle state. A replay after a
+    /// lost acknowledgement names the same incident and is answered from that
+    /// incident's record; it can never resolve a newer incident on the same
+    /// credential. `(decision, evidence digest)` is what the durable
+    /// adjudication compares within that incident.
     Reconcile {
         /// Credential whose provider-operation claim is poisoned.
         credential_id: CredentialId,
+        /// The incident this decision was established for.
+        incident: CredentialIncidentRef,
         /// Operation-specific provider outcome.
         decision: CredentialOperationDecision,
         /// Operator-supplied, secret-free note recording why the outcome is now
@@ -579,10 +581,11 @@ impl CredentialController {
             },
             CredentialCommand::Reconcile {
                 credential_id,
+                incident,
                 decision,
                 evidence,
             } => CredentialCommandResult::Reconciled(
-                self.reconcile(&scope, &credential_id, decision, &evidence)
+                self.reconcile(&scope, &credential_id, incident, decision, &evidence)
                     .await?,
             ),
         };
@@ -606,6 +609,7 @@ impl CredentialController {
         skip_all,
         fields(
             credential_id = %credential_id,
+            incident = %incident,
             decision = decision.as_str(),
             outcome = tracing::field::Empty,
         )
@@ -614,6 +618,7 @@ impl CredentialController {
         &self,
         scope: &TenantScope,
         credential_id: &CredentialId,
+        incident: CredentialIncidentRef,
         decision: CredentialOperationDecision,
         evidence: &str,
     ) -> Result<RefreshAdjudication, CredentialControllerError> {
@@ -633,7 +638,7 @@ impl CredentialController {
 
         let adjudication = self
             .adjudicator
-            .adjudicate(&selector, decision, evidence)
+            .adjudicate(&selector, incident, decision, evidence)
             .await;
         let outcome = if adjudication.is_ok() {
             CredentialMetrics::OUTCOME_SUCCESS

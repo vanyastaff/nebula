@@ -300,6 +300,7 @@ async fn state_refusal_is_a_typed_non_retryable_problem() {
 async fn reconcile_sends_typed_revoke_without_internal_authority() {
     let body = json!({
         "operation": "revoke",
+        "incident": "5b2c6a51-7e0d-4a8e-9c1f-2d4b3a6e7f80",
         "decision": "provider_revoked",
         "changed": true,
         "evidence_digest": "00".repeat(32),
@@ -307,11 +308,11 @@ async fn reconcile_sends_typed_revoke_without_internal_authority() {
     })
     .to_string();
     let server = Server::start(vec![response(200, "application/json", "", &body)]).await;
-    let request = ReconcileCredentialRequest {
-        operation: CredentialReconcileOperationV1::Revoke,
-        decision: CredentialReconcileDecisionV1::ProviderRevoked,
-        evidence: "provider-ticket-secret-canary".to_owned(),
-    };
+    let request = ReconcileCredentialRequest::new(
+        CredentialIncidentId::new("5b2c6a51-7e0d-4a8e-9c1f-2d4b3a6e7f80"),
+        CredentialReconcileDecisionV1::ProviderRevoked,
+        "provider-ticket-secret-canary",
+    );
 
     let result = server.client().reconcile("cred_1", &request).await.unwrap();
 
@@ -323,6 +324,7 @@ async fn reconcile_sends_typed_revoke_without_internal_authority() {
     let sent = server.seen().pop().unwrap();
     assert!(sent.starts_with("POST /api/v1/orgs/org/workspaces/ws/credentials/cred_1/reconcile "));
     assert!(sent.contains(r#""operation":"revoke""#));
+    assert!(sent.contains(r#""incident":"5b2c6a51-7e0d-4a8e-9c1f-2d4b3a6e7f80""#));
     assert!(sent.contains(r#""decision":"provider_revoked""#));
     assert!(!format!("{request:?}").contains("secret-canary"));
     for internal in ["claim_id", "generation", "fencing", "tenant_proof"] {

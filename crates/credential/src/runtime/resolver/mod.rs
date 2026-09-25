@@ -15,7 +15,7 @@ use crate::runtime::refresh::transport::RefreshTransport;
 use crate::runtime::refresh::{
     CoordinatedRefreshResult, ReauthWrite, RefreshCoordinator, RefreshDisposition, RefreshError,
     RefreshRecheck, RefreshRecheckError, RetryGateWrite, context_from_block,
-    persist_reauth_required, persist_retry_gate,
+    persist_reauth_required, persist_retry_gate, write_refreshed,
 };
 use crate::runtime::resolve_error::{
     ResolveError, envelope_error_to_resolve_error, reject_tombstoned,
@@ -44,6 +44,23 @@ const DEFAULT_REVALIDATION_FLOOR: std::time::Duration = std::time::Duration::fro
 /// caller waits behind L1/L2. Continuous management churn must not create an
 /// unbounded async recursion chain or retain stale snapshots indefinitely.
 const MAX_COORDINATED_REEVALUATIONS: usize = 3;
+
+/// How long a use that found its material usable waits for a refresh already
+/// crossing the provider boundary before answering `OperationBlocked`.
+const REFRESH_JOIN_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+/// First re-check of a joined refresh; later re-checks back off to
+/// [`REFRESH_JOIN_MAX_PAUSE`].
+const REFRESH_JOIN_FIRST_PAUSE: std::time::Duration = std::time::Duration::from_millis(25);
+/// Longest pause between re-checks of a joined refresh.
+const REFRESH_JOIN_MAX_PAUSE: std::time::Duration = std::time::Duration::from_millis(400);
+
+/// Whether new use of a loaded credential may proceed.
+enum MaterialAdmission {
+    /// The loaded material is current and admitted.
+    Available,
+    /// A joined refresh committed newer material; the caller must re-read.
+    Superseded,
+}
 
 fn reject_persisted_reauth(stored: &StoredLiveCredential) -> Result<(), ResolveError> {
     if stored.reauth_required() {
@@ -431,9 +448,25 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
                 );
 
                 if decision == Decision::Usable {
-                    self.ensure_material_available(selector, &stored).await?;
-                    let scheme = C::project(&state);
-                    return Ok(self.materialize_handle::<C>(selector, scheme));
+                    match self.join_in_flight_refresh(selector, &stored).await? {
+                        MaterialAdmission::Available => {
+                            let scheme = C::project(&state);
+                            return Ok(self.materialize_handle::<C>(selector, scheme));
+                        },
+                        MaterialAdmission::Superseded
+                            if reevaluation >= MAX_COORDINATED_REEVALUATIONS =>
+                        {
+                            return Err(ResolveError::Refresh {
+                                credential_id: credential_id_text,
+                                reason: "credential state kept changing during a joined refresh"
+                                    .to_owned(),
+                            });
+                        },
+                        MaterialAdmission::Superseded => {
+                            reevaluation += 1;
+                            continue;
+                        },
+                    }
                 }
 
                 self.ensure_refresh_admitted(selector).await?;
@@ -731,7 +764,7 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
 
         match self.store.operation_status(selector).await? {
             CredentialOperationStatus::InFlight { operation }
-            | CredentialOperationStatus::ReconciliationRequired { operation } => {
+            | CredentialOperationStatus::ReconciliationRequired { operation, .. } => {
                 tracing::warn!(
                     ?operation,
                     "credential projection blocked by durable operation"
@@ -756,6 +789,45 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
                 },
             )),
             CredentialOperationStatus::Open { .. } => Ok(()),
+        }
+    }
+
+    /// Admit new use of `stored`, joining a refresh already in flight.
+    ///
+    /// A refresh blocks new projections only while its provider call is
+    /// outstanding. Failing every use for that window would turn each refresh
+    /// into an outage for its credential, so a use that found the material
+    /// usable waits for the refresh within [`REFRESH_JOIN_WAIT`]: a committed
+    /// refresh supersedes `stored` and the caller re-reads it; a refresh still
+    /// outstanding at the bound answers [`ResolveError::OperationBlocked`] as
+    /// before. Revoke, reconciliation and reauthorization are never joined.
+    async fn join_in_flight_refresh(
+        &self,
+        selector: &CredentialSelector,
+        stored: &StoredLiveCredential,
+    ) -> Result<MaterialAdmission, ResolveError> {
+        use nebula_storage_port::store::CredentialOperationKind;
+
+        let deadline = tokio::time::Instant::now() + REFRESH_JOIN_WAIT;
+        let mut pause = REFRESH_JOIN_FIRST_PAUSE;
+        let mut joined = false;
+        loop {
+            match self.ensure_material_available(selector, stored).await {
+                Ok(()) => return Ok(MaterialAdmission::Available),
+                Err(ResolveError::OperationBlocked {
+                    operation: CredentialOperationKind::Refresh,
+                }) if tokio::time::Instant::now() + pause <= deadline => {
+                    joined = true;
+                    tokio::time::sleep(pause).await;
+                    pause = (pause * 2).min(REFRESH_JOIN_MAX_PAUSE);
+                },
+                Err(ResolveError::Store(CredentialPersistenceError::VersionConflict {
+                    ..
+                })) if joined => {
+                    return Ok(MaterialAdmission::Superseded);
+                },
+                Err(error) => return Err(error),
+            }
         }
     }
 
@@ -1022,32 +1094,38 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
         };
 
         let now = chrono::Utc::now();
-        let mut validated_metadata = stored.metadata().clone();
-        validated_metadata.insert(
-            LAST_VALIDATED_AT_METADATA_KEY.to_owned(),
-            serde_json::Value::String(now.to_rfc3339()),
-        );
         let expected_version = stored.version();
-        let replacement = CredentialReplacement::new(
-            expected_version,
-            data.into(),
-            stored.state_kind().to_owned(),
-            // The row's `state_version` axis must advance to the version the
-            // writing build stamped in the envelope (`interface_version` =
-            // `C::State::VERSION`). Stamping the stored axis instead would
-            // leave a legacy row (axis < VERSION) with an envelope whose
-            // interface_version disagrees with the row — the next read
-            // refuses it as VersionAxesDisagree, poisoning exactly the
-            // migration path the envelope exists to serve.
-            <C::State as CredentialState>::VERSION,
-            stored.name().map(str::to_owned),
-            state.expires_at(),
-            false,
-            validated_metadata,
-            CredentialMaterialTransition::advance(),
-        );
+        let data = nebula_storage_port::SecretBytes::from(data);
+        let expires_at = state.expires_at();
+        // Display fields come from the row the write is based on, which is
+        // re-read when a rename landed during the provider call.
+        let build = |base: &StoredLiveCredential| {
+            let mut validated_metadata = base.metadata().clone();
+            validated_metadata.insert(
+                LAST_VALIDATED_AT_METADATA_KEY.to_owned(),
+                serde_json::Value::String(now.to_rfc3339()),
+            );
+            CredentialReplacement::new(
+                base.version(),
+                data.clone(),
+                base.state_kind().to_owned(),
+                // The row's `state_version` axis must advance to the version the
+                // writing build stamped in the envelope (`interface_version` =
+                // `C::State::VERSION`). Stamping the stored axis instead would
+                // leave a legacy row (axis < VERSION) with an envelope whose
+                // interface_version disagrees with the row — the next read
+                // refuses it as VersionAxesDisagree, poisoning exactly the
+                // migration path the envelope exists to serve.
+                <C::State as CredentialState>::VERSION,
+                base.name().map(str::to_owned),
+                expires_at,
+                false,
+                validated_metadata,
+                CredentialMaterialTransition::advance(),
+            )
+        };
 
-        match self.store.replace(selector, replacement).await {
+        match write_refreshed(self.store.as_ref(), selector, &stored, build).await {
             Ok(_) => {
                 self.emit_refreshed(credential_id);
                 let scheme = C::project(&state);

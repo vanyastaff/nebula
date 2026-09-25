@@ -154,7 +154,7 @@ pub(crate) async fn resolve_slot_with(
                     _ => CredentialSlotResolveError::InvalidState,
                 })? {
                 CredentialOperationStatus::InFlight { operation }
-                | CredentialOperationStatus::ReconciliationRequired { operation } => {
+                | CredentialOperationStatus::ReconciliationRequired { operation, .. } => {
                     tracing::warn!(
                         ?operation,
                         "credential slot projection blocked by durable operation"

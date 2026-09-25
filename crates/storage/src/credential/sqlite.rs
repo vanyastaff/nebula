@@ -34,12 +34,12 @@ use chrono::{DateTime, TimeZone, Utc};
 use nebula_core::CredentialId;
 use nebula_credential::CredentialDisplay;
 use nebula_storage_port::{
-    CredentialAlreadyExistsKey, CredentialCommit, CredentialCreate, CredentialMaterialEpoch,
-    CredentialOperationKind, CredentialOperationStatus, CredentialOwner, CredentialPersistence,
-    CredentialPersistenceError, CredentialRefreshCursor, CredentialRefreshHorizon,
-    CredentialRefreshPageSize, CredentialRefreshSchedule, CredentialRefreshScheduleError,
-    CredentialReplacement, CredentialSelector, CredentialTombstone, CredentialVersion,
-    DueCredentialRefresh, RefreshRetrySnapshot, SecretBytes, StoredCredential,
+    CredentialAlreadyExistsKey, CredentialCommit, CredentialCreate, CredentialIncidentRef,
+    CredentialMaterialEpoch, CredentialOperationKind, CredentialOperationStatus, CredentialOwner,
+    CredentialPersistence, CredentialPersistenceError, CredentialRefreshCursor,
+    CredentialRefreshHorizon, CredentialRefreshPageSize, CredentialRefreshSchedule,
+    CredentialRefreshScheduleError, CredentialReplacement, CredentialSelector, CredentialTombstone,
+    CredentialVersion, DueCredentialRefresh, RefreshRetrySnapshot, SecretBytes, StoredCredential,
     StoredCredentialHead, StoredCredentialOperationalHead, StoredLiveCredential,
     StoredTombstonedCredential,
 };
@@ -519,6 +519,16 @@ fn stored_material_epoch(
     CredentialMaterialEpoch::try_from(value).map_err(|_| CredentialPersistenceError::CorruptRecord)
 }
 
+/// Decode the claim UUID that names an expired operation incident.
+fn stored_incident(
+    value: Option<&str>,
+) -> Result<CredentialIncidentRef, CredentialPersistenceError> {
+    value
+        .and_then(|value| value.parse().ok())
+        .map(CredentialIncidentRef::from_uuid)
+        .ok_or(CredentialPersistenceError::CorruptRecord)
+}
+
 fn stored_credential_id(value: &str) -> Result<CredentialId, CredentialPersistenceError> {
     value
         .parse()
@@ -611,6 +621,7 @@ struct CredentialHeadRow {
     operation_kind: Option<String>,
     operation_sentinel: Option<i64>,
     operation_expires_at: Option<i64>,
+    operation_claim_id: Option<String>,
 }
 
 impl CredentialHeadRow {
@@ -644,7 +655,10 @@ impl CredentialHeadRow {
             0 | 1 if expires_at >= self.backend_now => {
                 Ok(CredentialOperationStatus::InFlight { operation })
             },
-            1 => Ok(CredentialOperationStatus::ReconciliationRequired { operation }),
+            1 => Ok(CredentialOperationStatus::ReconciliationRequired {
+                operation,
+                incident: stored_incident(self.operation_claim_id.as_deref())?,
+            }),
             _ => Err(CredentialPersistenceError::CorruptRecord),
         }
     }
@@ -1032,23 +1046,32 @@ impl CredentialPersistence for SqliteCredentialPersistence {
         &self,
         selector: &CredentialSelector,
     ) -> Result<CredentialOperationStatus, CredentialPersistenceError> {
-        let row: Option<(i64, i64, i64, Option<String>, Option<i64>, Option<i64>, i64)> =
-            sqlx::query_as(
-                "SELECT c.version, c.material_epoch, c.reauth_required, claim.operation_kind, \
-                        claim.sentinel, claim.expires_at, \
+        let row: Option<(
+            i64,
+            i64,
+            i64,
+            Option<String>,
+            Option<i64>,
+            Option<i64>,
+            Option<String>,
+            i64,
+        )> = sqlx::query_as(
+            "SELECT c.version, c.material_epoch, c.reauth_required, claim.operation_kind, \
+                        claim.sentinel, claim.expires_at, claim.claim_id, \
                         (CAST(strftime('%s', 'now') AS INTEGER) * 1000 \
                          + CAST(substr(strftime('%f', 'now'), 4, 3) AS INTEGER)) \
                  FROM credentials AS c \
                  LEFT JOIN credential_refresh_claims AS claim \
                    ON claim.owner_id = c.owner_id AND claim.credential_id = c.id \
                  WHERE c.id = ?1 AND c.owner_id = ?2 AND c.record_state = 'live'",
-            )
-            .bind(selector.credential_id().to_string())
-            .bind(selector.owner().as_str())
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(read_error)?;
-        let Some((version, epoch, reauth_raw, kind, sentinel, expires_at, now)) = row else {
+        )
+        .bind(selector.credential_id().to_string())
+        .bind(selector.owner().as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(read_error)?;
+        let Some((version, epoch, reauth_raw, kind, sentinel, expires_at, claim_id, now)) = row
+        else {
             return Err(CredentialPersistenceError::NotFound);
         };
         let reauth_required = match reauth_raw {
@@ -1073,7 +1096,10 @@ impl CredentialPersistence for SqliteCredentialPersistence {
         match sentinel {
             0 if operation == CredentialOperationKind::Refresh || expires_at < now => open(),
             0 | 1 if expires_at >= now => Ok(CredentialOperationStatus::InFlight { operation }),
-            1 => Ok(CredentialOperationStatus::ReconciliationRequired { operation }),
+            1 => Ok(CredentialOperationStatus::ReconciliationRequired {
+                operation,
+                incident: stored_incident(claim_id.as_deref())?,
+            }),
             _ => Err(CredentialPersistenceError::CorruptRecord),
         }
     }
@@ -1112,7 +1138,7 @@ impl CredentialPersistence for SqliteCredentialPersistence {
              refresh_retry_mode, refresh_retry_not_before, \
              (CAST(strftime('%s', 'now') AS INTEGER) * 1000 \
               + CAST(substr(strftime('%f', 'now'), 4, 3) AS INTEGER)) AS backend_now, metadata, NULL AS operation_kind, \
-             NULL AS operation_sentinel, NULL AS operation_expires_at \
+             NULL AS operation_sentinel, NULL AS operation_expires_at, NULL AS operation_claim_id \
              FROM credentials \
              WHERE id = ?1 AND owner_id = ?2 AND record_state = 'live'",
         )
@@ -1140,7 +1166,7 @@ impl CredentialPersistence for SqliteCredentialPersistence {
              (CAST(strftime('%s', 'now') AS INTEGER) * 1000 \
               + CAST(substr(strftime('%f', 'now'), 4, 3) AS INTEGER)) AS backend_now, \
              c.metadata, claim.operation_kind, claim.sentinel AS operation_sentinel, \
-             claim.expires_at AS operation_expires_at \
+             claim.expires_at AS operation_expires_at, claim.claim_id AS operation_claim_id \
              FROM credentials AS c LEFT JOIN credential_refresh_claims AS claim \
                ON claim.owner_id = c.owner_id AND claim.credential_id = c.id \
              WHERE c.id = ?1 AND c.owner_id = ?2 AND c.record_state = 'live'",
@@ -1167,7 +1193,7 @@ impl CredentialPersistence for SqliteCredentialPersistence {
              (CAST(strftime('%s', 'now') AS INTEGER) * 1000 \
               + CAST(substr(strftime('%f', 'now'), 4, 3) AS INTEGER)) AS backend_now, \
              c.metadata, claim.operation_kind, claim.sentinel AS operation_sentinel, \
-             claim.expires_at AS operation_expires_at \
+             claim.expires_at AS operation_expires_at, claim.claim_id AS operation_claim_id \
              FROM credentials AS c LEFT JOIN credential_refresh_claims AS claim \
                ON claim.owner_id = c.owner_id AND claim.credential_id = c.id \
              WHERE c.owner_id = ?1 AND c.record_state = 'live' \
@@ -1378,7 +1404,7 @@ impl CredentialPersistence for SqliteCredentialPersistence {
                  refresh_retry_mode, refresh_retry_not_before, \
                  (CAST(strftime('%s', 'now') AS INTEGER) * 1000 \
                   + CAST(substr(strftime('%f', 'now'), 4, 3) AS INTEGER)) AS backend_now, metadata, NULL AS operation_kind, \
-                 NULL AS operation_sentinel, NULL AS operation_expires_at \
+                 NULL AS operation_sentinel, NULL AS operation_expires_at, NULL AS operation_claim_id \
                  FROM credentials \
                  WHERE owner_id = ?1 AND state_kind = ?2 AND record_state = 'live' \
                  ORDER BY id",
@@ -1394,7 +1420,7 @@ impl CredentialPersistence for SqliteCredentialPersistence {
                  refresh_retry_mode, refresh_retry_not_before, \
                  (CAST(strftime('%s', 'now') AS INTEGER) * 1000 \
                   + CAST(substr(strftime('%f', 'now'), 4, 3) AS INTEGER)) AS backend_now, metadata, NULL AS operation_kind, \
-                 NULL AS operation_sentinel, NULL AS operation_expires_at \
+                 NULL AS operation_sentinel, NULL AS operation_expires_at, NULL AS operation_claim_id \
                  FROM credentials \
                  WHERE owner_id = ?1 AND record_state = 'live' ORDER BY id",
             )

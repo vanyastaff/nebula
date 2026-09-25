@@ -53,6 +53,7 @@ impl ScheduledRefreshExecutor for CredentialService {
             },
             CredentialLifecycleState::ReconciliationRequired {
                 operation: Some(crate::CredentialLifecycleOperation::Refresh),
+                ..
             } => {
                 return ScheduledRefreshDisposition::OutcomeUnknown;
             },

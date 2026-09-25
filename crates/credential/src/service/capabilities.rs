@@ -468,16 +468,23 @@ impl CredentialService {
                     };
 
                     let now = chrono::Utc::now();
-                    let mut metadata = stored.metadata().clone();
-                    metadata.insert(
-                        LAST_VALIDATED_AT_METADATA_KEY.to_owned(),
-                        Value::String(now.to_rfc3339()),
-                    );
-                    let display = Self::display_from_metadata(&metadata);
-                    let replacement = CredentialReplacement::new(
-                        stored.version(),
-                        refreshed.clone().into(),
-                        stored.state_kind().to_owned(),
+                    let refreshed_bytes: nebula_storage_port::SecretBytes = refreshed.clone().into();
+                    // Display fields come from the row the write is based on,
+                    // which is re-read when a rename landed during the
+                    // provider call.
+                    let validated = |base: &nebula_storage_port::StoredLiveCredential| {
+                        let mut metadata = base.metadata().clone();
+                        metadata.insert(
+                            LAST_VALIDATED_AT_METADATA_KEY.to_owned(),
+                            Value::String(now.to_rfc3339()),
+                        );
+                        metadata
+                    };
+                    let build = |base: &nebula_storage_port::StoredLiveCredential| {
+                        CredentialReplacement::new(
+                        base.version(),
+                        refreshed_bytes.clone(),
+                        base.state_kind().to_owned(),
                         // The row axis advances to the writing build's state
                         // version (the erased refresh closure stamped it —
                         // see `RefreshExecutionResult::Rewrote`). The stored
@@ -485,14 +492,24 @@ impl CredentialService {
                         // left behind; re-stamping it would make the next
                         // read refuse the row as an axis disagreement.
                         refreshed_state_version,
-                        stored.name().map(str::to_owned),
+                        base.name().map(str::to_owned),
                         refreshed_expires_at,
                         false,
-                        metadata,
+                        validated(base),
                         CredentialMaterialTransition::advance(),
-                    );
-                    let commit = match store.replace(&selector_for_task, replacement).await {
-                        Ok(commit) => commit,
+                        )
+                    };
+                    let (commit, display) = match crate::runtime::refresh::write_refreshed(
+                        store.as_ref(),
+                        &selector_for_task,
+                        &stored,
+                        build,
+                    )
+                    .await
+                    {
+                        Ok((commit, base)) => {
+                            (commit, Self::display_from_metadata(&validated(&base)))
+                        },
                         Err(CredentialPersistenceError::OutcomeUnknown)
                             if commit_phase
                                 == super::ops::RefreshCommitPhase::ProviderConfirmed =>

@@ -86,9 +86,14 @@ Access Kernel guard remains responsible for the separate token-grant check.
 
 `CredentialCommand::Reconcile` resolves one *poisoned* provider-operation claim (an expired `sentinel=1` row
 that `try_claim` answers as outcome-unknown) with the provider outcome an operator has established
-off-platform. It carries the credential, a typed `CredentialOperationDecision`, and an operator note, and
-never an incident identity: the poisoned claim admits at most one incident, so the caller has no
-incident to name and the digest of the note is the anchor instead.
+off-platform. It carries the credential, the incident it resolves (`CredentialIncidentRef`, as
+published in the `ReconciliationRequired` lifecycle state), a typed `CredentialOperationDecision`,
+and an operator note. The incident is the anchor for retries: a credential poisons again after its
+first incident is resolved, and a decision resent after a lost acknowledgement must reach the
+incident it was made for. The adjudicator answers a resolved incident from its own record first,
+resolves the named incident only when it is the current poisoned claim, and refuses any other
+poisoned claim as `StaleIncident`. The incident identity is the expired claim's UUID; its fencing
+generation is never exposed.
 
 The controller holds the seam as a constructor dependency, `Arc<dyn RefreshClaimAdjudicator>`
 (`nebula-storage-port`), beside its optional `Arc<dyn AuditSink>`. Neither is a service method:
@@ -117,9 +122,9 @@ privileged operations: `CredentialReconcile` maps to `WorkspaceRole::WorkspaceAd
 reaches an org gate. An org admin passes the workspace gate by implication, since `OrgAdmin` and
 `OrgOwner` imply `WorkspaceAdmin` in every workspace.
 
-Repeating an identical `(evidence digest, decision)` pair is a success with `changed: false`, not a
-conflict: it is the idempotent recommit of a superseded replay. Different evidence or a different
-decision for an already-resolved incident is `EvidenceConflict` — reconciliation resolves an
+Repeating an identical `(evidence digest, decision)` pair for the same incident is a success with
+`changed: false`, not a conflict: it is the idempotent recommit of a lost acknowledgement. Different
+evidence or a different decision for an already-resolved incident is `EvidenceConflict` — reconciliation resolves an
 unknown outcome, it does not overrule a recorded one.
 
 ## Persistence boundary

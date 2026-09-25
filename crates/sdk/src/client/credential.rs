@@ -258,7 +258,35 @@ pub mod v1 {
             /// a legacy incident that predates durable operation typing; it
             /// cannot be adjudicated and must be replaced explicitly.
             operation: Option<CredentialReconcileOperationV1>,
+            /// The incident a reconciliation request must name. Absent only
+            /// while a legacy unclassified operation is still in flight.
+            #[serde(default)]
+            incident: Option<CredentialIncidentId>,
         },
+    }
+
+    /// Opaque server-issued identity of one ambiguous provider-operation
+    /// incident.
+    ///
+    /// Read it from [`CredentialLifecycleState::ReconciliationRequired`] and
+    /// pass it back unchanged in [`ReconcileCredentialRequest::new`]. It is the
+    /// anchor that keeps a retried decision on the incident it was made for.
+    #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+    #[serde(transparent)]
+    pub struct CredentialIncidentId(String);
+
+    impl CredentialIncidentId {
+        /// Wrap an incident identity read from the server.
+        #[must_use]
+        pub fn new(id: impl Into<String>) -> Self {
+            Self(id.into())
+        }
+
+        /// The identity as the server spells it.
+        #[must_use]
+        pub fn as_str(&self) -> &str {
+            &self.0
+        }
     }
 
     /// Provider operation whose ambiguous outcome can be reconciled.
@@ -308,9 +336,12 @@ pub mod v1 {
 
     /// Input for reconciling one ambiguous provider operation.
     #[derive(Clone, Serialize)]
+    #[non_exhaustive]
     pub struct ReconcileCredentialRequest {
         /// Operation whose outcome was established.
         pub operation: CredentialReconcileOperationV1,
+        /// The incident this decision was established for.
+        pub incident: CredentialIncidentId,
         /// Operation-specific provider outcome.
         pub decision: CredentialReconcileDecisionV1,
         /// Secret-free operator evidence. Debug always redacts this value.
@@ -318,11 +349,17 @@ pub mod v1 {
     }
 
     impl ReconcileCredentialRequest {
-        /// Build a request whose operation is derived from its typed decision.
+        /// Build a request for `incident` whose operation is derived from its
+        /// typed decision.
         #[must_use]
-        pub fn new(decision: CredentialReconcileDecisionV1, evidence: impl Into<String>) -> Self {
+        pub fn new(
+            incident: CredentialIncidentId,
+            decision: CredentialReconcileDecisionV1,
+            evidence: impl Into<String>,
+        ) -> Self {
             Self {
                 operation: decision.operation(),
+                incident,
                 decision,
                 evidence: evidence.into(),
             }
@@ -333,6 +370,7 @@ pub mod v1 {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             f.debug_struct("ReconcileCredentialRequest")
                 .field("operation", &self.operation)
+                .field("incident", &self.incident)
                 .field("decision", &self.decision)
                 .field("evidence", &REDACTED)
                 .finish()
@@ -344,6 +382,8 @@ pub mod v1 {
     pub struct ReconcileCredentialResponse {
         /// Operation whose outcome is on record.
         pub operation: CredentialReconcileOperationV1,
+        /// The incident whose outcome is on record.
+        pub incident: CredentialIncidentId,
         /// Provider outcome on record.
         pub decision: CredentialReconcileDecisionV1,
         /// Whether this request recorded the result rather than replaying it.
@@ -607,6 +647,10 @@ pub mod v1 {
         StateRefused,
         /// Another provider operation holds the durable credential gate.
         OperationBlocked,
+        /// A reconciliation named an incident other than the credential's
+        /// current one; the decision was not applied. Read the lifecycle state
+        /// for the current incident and establish its outcome separately.
+        ReconciliationStaleIncident,
     }
 
     impl CredentialProblemKind {
@@ -628,6 +672,9 @@ pub mod v1 {
                 },
                 "https://nebula.dev/problems/credential-revoke-reconciliation-required" => {
                     Self::RevokeReconciliationRequired
+                },
+                "https://nebula.dev/problems/credential-reconciliation-stale-incident" => {
+                    Self::ReconciliationStaleIncident
                 },
                 "https://nebula.dev/problems/outcome-unknown" => Self::OutcomeUnknown,
                 _ => Self::Other,
@@ -651,6 +698,9 @@ pub mod v1 {
                 Self::OperationBlocked => Some("API:CREDENTIAL_OPERATION_BLOCKED"),
                 Self::RevokeReconciliationRequired => {
                     Some("API:CREDENTIAL_REVOKE_RECONCILIATION_REQUIRED")
+                },
+                Self::ReconciliationStaleIncident => {
+                    Some("API:CREDENTIAL_RECONCILIATION_STALE_INCIDENT")
                 },
                 Self::OutcomeUnknown => Some("API:OUTCOME_UNKNOWN"),
                 Self::Other => None,
@@ -741,12 +791,14 @@ mod tests {
     #[test]
     fn reconciliation_vocabulary_is_typed_and_evidence_debug_is_redacted() {
         let request = ReconcileCredentialRequest::new(
+            CredentialIncidentId::new("5b2c6a51-7e0d-4a8e-9c1f-2d4b3a6e7f80"),
             CredentialReconcileDecisionV1::ProviderRevoked,
             "provider-secret-canary",
         );
         let wire = serde_json::to_value(&request).expect("request serializes");
 
         assert_eq!(wire["operation"], "revoke");
+        assert_eq!(wire["incident"], "5b2c6a51-7e0d-4a8e-9c1f-2d4b3a6e7f80");
         assert_eq!(wire["decision"], "provider_revoked");
         assert!(!format!("{request:?}").contains("secret-canary"));
     }

@@ -7,11 +7,12 @@
 //! `RefreshInFlight` row is durable poison, and reclaim accounting is a single
 //! atomic port operation so evidence cannot be overwritten or recorded twice.
 //! Errors are a closed, payload-free taxonomy so driver diagnostics and
-//! persisted identifiers cannot cross the adapter boundary. The one persisted
-//! identifier allowed to cross is the recorded evidence digest, a SHA-256 that
-//! is the durable half of the reconciliation retry identity: secret-free, so
-//! it is exposed through [`RefreshAdjudication::evidence_digest`] and the
-//! recorded pair on
+//! persisted identifiers cannot cross the adapter boundary. Two persisted
+//! identifiers are allowed to cross, and together they are the reconciliation
+//! retry identity. [`CredentialIncidentRef`] names the incident a decision
+//! resolves; it is the UUID of an already-expired claim and never its fencing
+//! generation. The recorded evidence digest is a secret-free SHA-256, exposed
+//! through [`RefreshAdjudication::evidence_digest`] and the recorded pair on
 //! [`RefreshClaimAdjudicationError::EvidenceConflict`] so a client that lost an
 //! acknowledgement can confirm what is on record.
 //!
@@ -150,7 +151,44 @@ pub enum CredentialOperationStatus {
     ReconciliationRequired {
         /// Immutable operation kind, or legacy-unclassified after upgrade.
         operation: CredentialOperationKind,
+        /// The incident an adjudication must name to resolve this state.
+        incident: CredentialIncidentRef,
     },
+}
+
+/// Opaque identity of one ambiguous provider-operation incident.
+///
+/// Reconciliation names the incident it resolves, so a retried decision after
+/// a lost acknowledgement can only reach the incident it was made for: once
+/// that incident is resolved, a later incident on the same credential is a
+/// different identity, and a stale retry is refused rather than applied to it.
+///
+/// The value is the expired claim's UUID. The claim is dead by the time it is
+/// visible here — expired claims cannot heartbeat, mark a sentinel, or write
+/// back — so exposing it grants no claim authority; the claim generation, the
+/// fencing half of [`ClaimToken`], is never exposed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+pub struct CredentialIncidentRef(Uuid);
+
+impl CredentialIncidentRef {
+    /// Wrap a persisted incident identity.
+    #[must_use]
+    pub const fn from_uuid(id: Uuid) -> Self {
+        Self(id)
+    }
+
+    /// The persisted incident identity.
+    #[must_use]
+    pub const fn as_uuid(self) -> Uuid {
+        self.0
+    }
+}
+
+impl std::fmt::Display for CredentialIncidentRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.hyphenated().fmt(f)
+    }
 }
 
 impl CredentialOperationStatus {
@@ -159,7 +197,7 @@ impl CredentialOperationStatus {
     pub const fn blocking_operation(self) -> Option<CredentialOperationKind> {
         match self {
             Self::Open { .. } => None,
-            Self::InFlight { operation } | Self::ReconciliationRequired { operation } => {
+            Self::InFlight { operation } | Self::ReconciliationRequired { operation, .. } => {
                 Some(operation)
             },
         }
@@ -510,8 +548,12 @@ pub trait RefreshClaimReclaimer: Send + Sync + 'static {
 /// unknown outcome is exactly the state being resolved.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RefreshOutcomeDecision {
-    /// The provider applied the refresh; the credential's refreshed material
-    /// is durable and the credential may be used again.
+    /// The provider applied the refresh.
+    ///
+    /// Recording this clears the poison and installs nothing: whatever
+    /// material is stored stays. When the refresh write-back did not commit,
+    /// that is the pre-refresh material, and for a provider that rotates its
+    /// refresh token the next refresh fails and escalates to reauthorization.
     ProviderApplied,
     /// The provider never applied the refresh; the previously stored material
     /// stands and the credential may be used again.
@@ -677,20 +719,28 @@ pub enum RefreshClaimAdjudicationError {
     /// [`MAX_ADJUDICATION_EVIDENCE_BYTES`].
     #[error("refresh claim adjudication evidence is invalid")]
     InvalidEvidence,
-    /// The credential holds no poisoned claim and no recorded resolution, so
-    /// there is nothing to adjudicate.
+    /// The credential holds no poisoned claim, and the named incident has no
+    /// recorded resolution, so there is nothing to adjudicate.
     #[error("refresh claim is not poisoned")]
     NotPoisoned,
-    /// A resolution is already on record for the incident this claim resolves,
-    /// and the recommitted evidence or decision differs from it.
+    /// The named incident is neither the credential's current poisoned claim
+    /// nor a resolved incident of this credential.
+    ///
+    /// The credential is poisoned by a different incident. The typical cause is
+    /// a retry, after a lost acknowledgement, of a decision whose own incident
+    /// was already resolved before a newer one arose: the decision described
+    /// the old incident and must not be applied to the new one. Read the
+    /// credential's current incident and establish its outcome separately.
+    #[error("refresh claim adjudication names a stale incident")]
+    StaleIncident,
+    /// A resolution is already on record for the named incident, and the
+    /// recommitted evidence or decision differs from it.
     ///
     /// The payload stays out of `Display` — the taxonomy's payload-free
     /// discipline is unchanged — but the pair the comparison refused against
     /// is the one persisted identifier this port exposes: a client that lost
-    /// the recorded identity cannot otherwise name what is on record. In the
-    /// claim-keyed comparison it is the incident's own recorded resolution; in
-    /// the resolved-set comparison it is the newest resolution on record for
-    /// the credential.
+    /// the recorded identity cannot otherwise name what is on record. It is
+    /// the named incident's own recorded resolution.
     #[error("refresh claim adjudication conflicts with the recorded resolution")]
     EvidenceConflict {
         /// SHA-256 of the recorded evidence this request conflicted with.
@@ -719,8 +769,16 @@ pub enum RefreshClaimAdjudicationError {
 /// sentinel incident it resolves.
 #[async_trait::async_trait]
 pub trait RefreshClaimAdjudicator: Send + Sync + 'static {
-    /// Record `decision` as the resolution of `selector`'s poisoned
-    /// claim, or of the resolution already on record for it.
+    /// Record `decision` as the resolution of `incident`, one of `selector`'s
+    /// ambiguous provider operations.
+    ///
+    /// `incident` is the identity published in
+    /// [`CredentialOperationStatus::ReconciliationRequired`]. The lookup is
+    /// ordered so a retry can never reach a different incident: a resolution
+    /// already on record for `incident` is compared first; otherwise `incident`
+    /// must be the credential's current poisoned claim; any other poisoned
+    /// claim answers [`RefreshClaimAdjudicationError::StaleIncident`] and is
+    /// left untouched.
     ///
     /// `evidence` is an operator-supplied, secret-free note recording *why*
     /// the outcome is now known — a provider support ticket, a reconciliation
@@ -742,7 +800,9 @@ pub trait RefreshClaimAdjudicator: Send + Sync + 'static {
     /// # Errors
     ///
     /// [`RefreshClaimAdjudicationError::NotPoisoned`] when the credential is
-    /// neither poisoned nor already resolved;
+    /// not poisoned and `incident` has no recorded resolution;
+    /// [`RefreshClaimAdjudicationError::StaleIncident`] when the credential is
+    /// poisoned by an incident other than `incident`;
     /// [`RefreshClaimAdjudicationError::InvalidEvidence`] when `evidence` is
     /// empty or over [`MAX_ADJUDICATION_EVIDENCE_BYTES`];
     /// [`RefreshClaimAdjudicationError::EvidenceConflict`] when the recommitted
@@ -753,6 +813,7 @@ pub trait RefreshClaimAdjudicator: Send + Sync + 'static {
     async fn adjudicate(
         &self,
         selector: &CredentialSelector,
+        incident: CredentialIncidentRef,
         decision: CredentialOperationDecision,
         evidence: &str,
     ) -> Result<RefreshAdjudication, RefreshClaimAdjudicationError>;
@@ -842,6 +903,10 @@ mod tests {
                 "refresh claim is not poisoned",
             ),
             (
+                RefreshClaimAdjudicationError::StaleIncident,
+                "refresh claim adjudication names a stale incident",
+            ),
+            (
                 RefreshClaimAdjudicationError::EvidenceConflict {
                     recorded_digest: [0u8; 32],
                     recorded_decision: CredentialOperationDecision::Refresh(
@@ -866,6 +931,7 @@ mod tests {
                 RefreshClaimAdjudicationError::AcknowledgementUnknown => {},
                 RefreshClaimAdjudicationError::InvalidEvidence => {},
                 RefreshClaimAdjudicationError::NotPoisoned => {},
+                RefreshClaimAdjudicationError::StaleIncident => {},
                 RefreshClaimAdjudicationError::EvidenceConflict { .. } => {},
                 RefreshClaimAdjudicationError::OperationMismatch { .. } => {},
                 RefreshClaimAdjudicationError::MaterialEpochConflict => {},

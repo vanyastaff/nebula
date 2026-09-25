@@ -236,6 +236,11 @@ pub enum CredentialLifecycleState {
         /// The affected operation. `None` identifies a legacy incident that
         /// predates durable operation typing and cannot be adjudicated.
         operation: Option<CredentialReconcileOperationV1>,
+        /// The incident a reconciliation request must name. Absent only while
+        /// a legacy unclassified operation is still in flight.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[schema(value_type = Option<String>, format = "uuid")]
+        incident: Option<uuid::Uuid>,
     },
 }
 
@@ -664,6 +669,14 @@ pub struct ReconcileCredentialRequest {
     /// clients should always send this field explicitly.
     #[serde(default)]
     pub operation: CredentialReconcileOperationV1,
+    /// The incident this decision was established for, as published in the
+    /// credential's `reconciliation_required` lifecycle state.
+    ///
+    /// A retry after a lost acknowledgement names the same incident and is
+    /// answered from its record; it can never resolve a newer incident on the
+    /// same credential, which answers 409 `stale_incident` instead.
+    #[schema(value_type = String, format = "uuid")]
+    pub incident: uuid::Uuid,
     /// The provider outcome the operator has established.
     pub decision: CredentialReconcileDecisionV1,
     /// Operator note justifying the decision. Audited durable text, never
@@ -676,6 +689,7 @@ impl fmt::Debug for ReconcileCredentialRequest {
         formatter
             .debug_struct("ReconcileCredentialRequest")
             .field("operation", &self.operation)
+            .field("incident", &self.incident)
             .field("decision", &self.decision)
             .field("evidence", &REDACTED)
             .finish()
@@ -691,6 +705,9 @@ impl fmt::Debug for ReconcileCredentialRequest {
 pub struct ReconcileCredentialResponse {
     /// Provider operation whose outcome is on record.
     pub operation: CredentialReconcileOperationV1,
+    /// The incident whose outcome is on record.
+    #[schema(value_type = String, format = "uuid")]
+    pub incident: uuid::Uuid,
     /// The provider outcome now on record for the credential.
     pub decision: CredentialReconcileDecisionV1,
     /// Whether this call recorded the decision. `false` is the idempotent
@@ -889,6 +906,7 @@ mod tests {
     fn reconcile_request_debug_redacts_evidence() {
         let request = ReconcileCredentialRequest {
             operation: CredentialReconcileOperationV1::Refresh,
+            incident: uuid::Uuid::nil(),
             decision: CredentialReconcileDecisionV1::ProviderApplied,
             evidence: SECRET_CANARY.to_owned(),
         };
@@ -982,6 +1000,7 @@ mod tests {
     #[test]
     fn reconcile_request_without_operation_keeps_legacy_refresh_meaning() {
         let request: ReconcileCredentialRequest = serde_json::from_value(serde_json::json!({
+            "incident": "7b0f3c1e-1f2a-4c55-9a51-0f1b6c0d2e41",
             "decision": "provider_applied",
             "evidence": "provider ticket"
         }))
@@ -995,5 +1014,17 @@ mod tests {
                 .expect("legacy decision matches refresh"),
             CredentialOperationDecision::Refresh(RefreshOutcomeDecision::ProviderApplied)
         );
+    }
+
+    /// A request that names no incident cannot be attributed to one, so it is
+    /// refused at the wire rather than resolving whatever is poisoned now.
+    #[test]
+    fn reconcile_request_without_an_incident_is_refused() {
+        let refused = serde_json::from_value::<ReconcileCredentialRequest>(serde_json::json!({
+            "operation": "refresh",
+            "decision": "provider_applied",
+            "evidence": "provider ticket"
+        }));
+        assert!(refused.is_err());
     }
 }

@@ -284,10 +284,12 @@ impl ServerCredentialGateway {
                 },
                 CredentialGatewayCommand::Reconcile {
                     credential_id,
+                    incident,
                     decision,
                     evidence,
                 } => CredentialCommand::Reconcile {
                     credential_id: Self::credential_id(&credential_id)?,
+                    incident,
                     decision,
                     evidence,
                 },
@@ -389,20 +391,22 @@ fn map_head(head: nebula_credential::CredentialHead) -> CredentialGatewayRecord 
                     },
                 }
             },
-            nebula_credential::CredentialLifecycleState::ReconciliationRequired { operation } => {
-                CredentialGatewayLifecycleState::ReconciliationRequired {
-                    operation: operation.map_or(
-                        nebula_storage_port::CredentialOperationKind::LegacyUnclassified,
-                        |operation| match operation {
-                            nebula_credential::CredentialLifecycleOperation::Refresh => {
-                                nebula_storage_port::CredentialOperationKind::Refresh
-                            },
-                            nebula_credential::CredentialLifecycleOperation::Revoke => {
-                                nebula_storage_port::CredentialOperationKind::Revoke
-                            },
+            nebula_credential::CredentialLifecycleState::ReconciliationRequired {
+                operation,
+                incident,
+            } => CredentialGatewayLifecycleState::ReconciliationRequired {
+                incident,
+                operation: operation.map_or(
+                    nebula_storage_port::CredentialOperationKind::LegacyUnclassified,
+                    |operation| match operation {
+                        nebula_credential::CredentialLifecycleOperation::Refresh => {
+                            nebula_storage_port::CredentialOperationKind::Refresh
                         },
-                    ),
-                }
+                        nebula_credential::CredentialLifecycleOperation::Revoke => {
+                            nebula_storage_port::CredentialOperationKind::Revoke
+                        },
+                    },
+                ),
             },
         },
         display_name: head.display.display_name,
@@ -955,6 +959,7 @@ mod tests {
         async fn adjudicate(
             &self,
             selector: &CredentialSelector,
+            _incident: nebula_storage_port::CredentialIncidentRef,
             decision: CredentialOperationDecision,
             evidence: &str,
         ) -> Result<RefreshAdjudication, RefreshClaimAdjudicationError> {
@@ -983,6 +988,7 @@ mod tests {
         async fn adjudicate(
             &self,
             _selector: &CredentialSelector,
+            _incident: nebula_storage_port::CredentialIncidentRef,
             _decision: CredentialOperationDecision,
             _evidence: &str,
         ) -> Result<RefreshAdjudication, RefreshClaimAdjudicationError> {
@@ -1014,6 +1020,7 @@ mod tests {
         async fn adjudicate(
             &self,
             _selector: &CredentialSelector,
+            _incident: nebula_storage_port::CredentialIncidentRef,
             _decision: CredentialOperationDecision,
             _evidence: &str,
         ) -> Result<RefreshAdjudication, RefreshClaimAdjudicationError> {
@@ -1074,6 +1081,9 @@ mod tests {
                 &scope,
                 CredentialGatewayCommand::Reconcile {
                     credential_id: credential_id.to_string(),
+                    incident: nebula_storage_port::CredentialIncidentRef::from_uuid(
+                        uuid::Uuid::nil(),
+                    ),
                     decision: CredentialOperationDecision::Refresh(
                         RefreshOutcomeDecision::ProviderApplied,
                     ),
@@ -1210,6 +1220,9 @@ mod tests {
                     &scope,
                     CredentialGatewayCommand::Reconcile {
                         credential_id: credential_id.to_string(),
+                        incident: nebula_storage_port::CredentialIncidentRef::from_uuid(
+                            uuid::Uuid::nil(),
+                        ),
                         decision: CredentialOperationDecision::Refresh(
                             RefreshOutcomeDecision::ProviderApplied,
                         ),
@@ -1453,6 +1466,7 @@ mod tests {
             },
             CredentialCommand::Reconcile {
                 credential_id,
+                incident: nebula_storage_port::CredentialIncidentRef::from_uuid(uuid::Uuid::nil()),
                 decision: CredentialOperationDecision::Refresh(
                     RefreshOutcomeDecision::ProviderApplied,
                 ),

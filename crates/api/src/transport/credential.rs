@@ -36,7 +36,7 @@
 //! [`Scope::credential_owner_id`] (ADR-0088 D7). Every command is owner-bound;
 //! cross-workspace ids collapse to a flat 404 with no existence disclosure.
 //!
-use nebula_storage_port::Scope;
+use nebula_storage_port::{CredentialIncidentRef, Scope};
 
 use crate::{
     domain::credential::dto::{
@@ -181,6 +181,9 @@ fn map_gateway_err(err: CredentialGatewayError, cred: &str) -> ApiError {
         CredentialGatewayError::ReconciliationNotRequired => {
             ApiError::CredentialReconciliationNotRequired
         },
+        CredentialGatewayError::ReconciliationStaleIncident => {
+            ApiError::CredentialReconciliationStaleIncident
+        },
         CredentialGatewayError::ReconciliationConflict {
             recorded_digest,
             recorded_decision,
@@ -293,14 +296,19 @@ fn lifecycle_response(
         CredentialGatewayLifecycleState::ReauthRequired => CredentialLifecycleState::ReauthRequired,
         CredentialGatewayLifecycleState::OperationInFlight { operation } => {
             let Some(operation) = CredentialReconcileOperationV1::from_port(operation) else {
-                return CredentialLifecycleState::ReconciliationRequired { operation: None };
+                return CredentialLifecycleState::ReconciliationRequired {
+                    operation: None,
+                    incident: None,
+                };
             };
             CredentialLifecycleState::OperationInFlight { operation }
         },
-        CredentialGatewayLifecycleState::ReconciliationRequired { operation } => {
-            CredentialLifecycleState::ReconciliationRequired {
-                operation: CredentialReconcileOperationV1::from_port(operation),
-            }
+        CredentialGatewayLifecycleState::ReconciliationRequired {
+            operation,
+            incident,
+        } => CredentialLifecycleState::ReconciliationRequired {
+            operation: CredentialReconcileOperationV1::from_port(operation),
+            incident: incident.map(CredentialIncidentRef::as_uuid),
         },
     }
 }
@@ -679,6 +687,7 @@ pub async fn reconcile_credential(
             scope,
             CredentialGatewayCommand::Reconcile {
                 credential_id: cred.to_owned(),
+                incident: CredentialIncidentRef::from_uuid(request.incident),
                 decision,
                 evidence: request.evidence.clone(),
             },
@@ -708,6 +717,7 @@ pub async fn reconcile_credential(
                 )
             },
         )?,
+        incident: request.incident,
         decision: CredentialReconcileDecisionV1::from_port(port_decision),
         changed,
         evidence_digest: digest_hex(&evidence_digest),

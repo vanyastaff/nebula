@@ -103,6 +103,7 @@ impl RefreshClaimAdjudicator for RefusingAdjudicator {
     async fn adjudicate(
         &self,
         _selector: &CredentialSelector,
+        _incident: nebula_storage_port::CredentialIncidentRef,
         _decision: CredentialOperationDecision,
         _evidence: &str,
     ) -> Result<RefreshAdjudication, RefreshClaimAdjudicationError> {
@@ -242,10 +243,12 @@ impl TestGateway {
             },
             CredentialGatewayCommand::Reconcile {
                 credential_id,
+                incident,
                 decision,
                 evidence,
             } => CredentialCommand::Reconcile {
                 credential_id: Self::credential_id(&credential_id)?,
+                incident,
                 decision,
                 evidence,
             },
@@ -346,20 +349,22 @@ fn map_head(head: nebula_credential::CredentialHead) -> CredentialGatewayRecord 
                     },
                 }
             },
-            nebula_credential::CredentialLifecycleState::ReconciliationRequired { operation } => {
-                CredentialGatewayLifecycleState::ReconciliationRequired {
-                    operation: operation.map_or(
-                        nebula_storage_port::CredentialOperationKind::LegacyUnclassified,
-                        |operation| match operation {
-                            nebula_credential::CredentialLifecycleOperation::Refresh => {
-                                nebula_storage_port::CredentialOperationKind::Refresh
-                            },
-                            nebula_credential::CredentialLifecycleOperation::Revoke => {
-                                nebula_storage_port::CredentialOperationKind::Revoke
-                            },
+            nebula_credential::CredentialLifecycleState::ReconciliationRequired {
+                operation,
+                incident,
+            } => CredentialGatewayLifecycleState::ReconciliationRequired {
+                incident,
+                operation: operation.map_or(
+                    nebula_storage_port::CredentialOperationKind::LegacyUnclassified,
+                    |operation| match operation {
+                        nebula_credential::CredentialLifecycleOperation::Refresh => {
+                            nebula_storage_port::CredentialOperationKind::Refresh
                         },
-                    ),
-                }
+                        nebula_credential::CredentialLifecycleOperation::Revoke => {
+                            nebula_storage_port::CredentialOperationKind::Revoke
+                        },
+                    },
+                ),
             },
         },
         display_name: head.display.display_name,

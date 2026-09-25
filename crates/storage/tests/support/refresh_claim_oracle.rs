@@ -13,9 +13,10 @@
 //! twice, as were `try_claim_after_expiry_bumps_generation_in_place` and
 //! `expired_normal_claim_can_be_taken_over_in_place`. No behaviour lost a case;
 //! three backends now run each surviving one, where two names had run on one
-//! backend each. Thirty cases reach every backend: the nineteen that survived
-//! deduplication, plus eleven for reconciliation — ten for the mechanism, and
-//! one that pins what a reconciled claim stops authorizing.
+//! backend each. Thirty-three cases reach every backend: the nineteen that
+//! survived deduplication, plus fourteen for reconciliation — thirteen for the
+//! mechanism, three of which pin that a decision reaches only the incident it
+//! names, and one that pins what a reconciled claim stops authorizing.
 //!
 //! A case states what it observes, never how a backend stores it. The four
 //! behaviours that differ by backend — whether a claim can be expired without
@@ -27,9 +28,9 @@
 use std::time::Duration;
 
 use nebula_storage::credential::refresh_claim::{
-    CredentialOperationDecision, CredentialOperationIntent, MAX_ADJUDICATION_EVIDENCE_BYTES,
-    RefreshAdjudication, RefreshClaimAdjudicationError, RefreshClaimAdjudicator,
-    RefreshOutcomeDecision,
+    CredentialIncidentRef, CredentialOperationDecision, CredentialOperationIntent,
+    MAX_ADJUDICATION_EVIDENCE_BYTES, RefreshAdjudication, RefreshClaimAdjudicationError,
+    RefreshClaimAdjudicator, RefreshOutcomeDecision,
 };
 use nebula_storage::credential::{
     ClaimAttempt, ClaimToken, ExpiredClaim, HeartbeatError, RefreshClaim, RefreshClaimReclaimer,
@@ -48,6 +49,14 @@ fn evidence_digest(evidence: &str) -> [u8; 32] {
     use sha2::{Digest as _, Sha256};
 
     Sha256::digest(evidence.as_bytes()).into()
+}
+
+/// The incident a poisoned `claim` becomes: its own claim id.
+///
+/// Reconciliation names this identity, so a case reads it from the claim that
+/// crossed the provider boundary rather than from any store column.
+fn incident_of(claim: &RefreshClaim) -> CredentialIncidentRef {
+    CredentialIncidentRef::from_uuid(claim.token.claim_id)
 }
 
 /// Everything a shared case needs from a backend, beyond the two port roles.
@@ -77,16 +86,18 @@ pub(crate) trait RefreshClaimFixture:
         .await
     }
 
-    /// Adjudicate one refresh incident through the typed decision port.
+    /// Adjudicate refresh incident `incident` through the typed decision port.
     async fn adjudicate_refresh(
         &self,
         selector: &CredentialSelector,
+        incident: CredentialIncidentRef,
         decision: RefreshOutcomeDecision,
         evidence: &str,
     ) -> Result<RefreshAdjudication, RefreshClaimAdjudicationError> {
         RefreshClaimAdjudicator::adjudicate(
             self,
             selector,
+            incident,
             CredentialOperationDecision::Refresh(decision),
             evidence,
         )
@@ -121,7 +132,14 @@ pub(crate) trait RefreshClaimFixture:
     /// claim id, so at most one incident can be unresolved at a time: `count`
     /// replays of the real lifecycle, all but the last reconciled, are what a
     /// caller observes as "an incident that has not been decided".
-    async fn seed_unresolved_incidents(&self, credential: &CredentialSelector, count: u32);
+    ///
+    /// Returns the last, still-unresolved incident, so a case can reconcile it;
+    /// `count` must be at least one.
+    async fn seed_unresolved_incidents(
+        &self,
+        credential: &CredentialSelector,
+        count: u32,
+    ) -> CredentialIncidentRef;
 
     /// Incidents on record for `credential`, over a window wide enough to hold
     /// everything this run recorded.
@@ -284,18 +302,20 @@ async fn sweep_accounts_poison(
     ours
 }
 
-/// Record `decision` for `credential` and require that this call recorded it.
+/// Record `decision` for `credential`'s `incident` and require that this call
+/// recorded it.
 ///
 /// Pins the success shape on every path that writes: the digest reported is the
 /// digest of the evidence this call just stored.
 async fn adjudicate_fresh(
     fixture: &impl RefreshClaimFixture,
     credential: &CredentialSelector,
+    incident: CredentialIncidentRef,
     decision: RefreshOutcomeDecision,
     evidence: &str,
 ) -> RefreshAdjudication {
     let recorded = fixture
-        .adjudicate_refresh(credential, decision, evidence)
+        .adjudicate_refresh(credential, incident, decision, evidence)
         .await
         .expect("a poisoned claim must be adjudicable");
     assert!(
@@ -323,14 +343,21 @@ async fn adjudicate_fresh(
 /// lifecycle began. The shared part of a fixture's
 /// [`RefreshClaimFixture::seed_unresolved_incidents`], which supplies only the
 /// clock and the poison predicate its backend needs.
+///
+/// Each earlier replay is reconciled by its own incident, the way an operator
+/// names the incident it decided; the last, undecided one is returned.
 pub(crate) async fn replay_poisoned_lifecycles(
     fixture: &impl RefreshClaimFixture,
     credential: &CredentialSelector,
     count: u32,
-) {
+) -> CredentialIncidentRef {
+    assert!(count > 0, "seeding needs at least one incident");
+    let mut last = None;
     for index in 0..count {
         let seed = u8::try_from(index).expect("an incident index fits a byte");
         let claim = acquire(fixture, credential, seed).await;
+        let incident = incident_of(&claim);
+        last = Some(incident);
         fixture
             .mark_sentinel(&claim.token)
             .await
@@ -351,6 +378,7 @@ pub(crate) async fn replay_poisoned_lifecycles(
             let recorded = fixture
                 .adjudicate_refresh(
                     credential,
+                    incident,
                     RefreshOutcomeDecision::ProviderNotApplied,
                     "earlier replay reconciled so the next lifecycle can begin",
                 )
@@ -359,6 +387,7 @@ pub(crate) async fn replay_poisoned_lifecycles(
             assert!(recorded.changed);
         }
     }
+    last.expect("count is non-zero, so one replay ran")
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -803,6 +832,7 @@ pub(crate) async fn old_generation_zero_evidence_does_not_mask_a_new_claim_lifec
     adjudicate_fresh(
         fixture,
         &credential,
+        incident_of(&first),
         RefreshOutcomeDecision::ProviderNotApplied,
         "operator confirmed the first provider call never landed",
     )
@@ -1005,7 +1035,7 @@ pub(crate) async fn sentinel_count_excludes_events_before_window_start(
     let credential = fixture.credential("sentinel_count_excludes_events_before_window_start");
     let window = Duration::from_mins(1);
 
-    fixture.seed_unresolved_incidents(&credential, 1).await;
+    let aged = fixture.seed_unresolved_incidents(&credential, 1).await;
     assert_eq!(
         fixture
             .count_sentinel_events_in_window(&credential, window)
@@ -1032,6 +1062,7 @@ pub(crate) async fn sentinel_count_excludes_events_before_window_start(
     adjudicate_fresh(
         fixture,
         &credential,
+        aged,
         RefreshOutcomeDecision::ProviderNotApplied,
         "aged incident reconciled so a fresh lifecycle can begin",
     )
@@ -1072,7 +1103,7 @@ pub(crate) async fn accounted_sentinel_events_are_windowed_and_credential_scoped
         );
     }
 
-    fixture.seed_unresolved_incidents(&first, 1).await;
+    let first_incident = fixture.seed_unresolved_incidents(&first, 1).await;
     fixture.seed_unresolved_incidents(&second, 2).await;
     assert_eq!(
         fixture
@@ -1095,6 +1126,7 @@ pub(crate) async fn accounted_sentinel_events_are_windowed_and_credential_scoped
     adjudicate_fresh(
         fixture,
         &first,
+        first_incident,
         RefreshOutcomeDecision::ProviderApplied,
         "provider support confirmed the refresh landed",
     )
@@ -1126,7 +1158,7 @@ pub(crate) async fn adjudication_clears_poison_and_the_claim_becomes_acquirable(
     // at different times: reconciliation must work in either order.
     let early = fixture
         .credential("adjudication_clears_poison_and_the_claim_becomes_acquirable/before-sweep");
-    poison(fixture, &early, seed).await;
+    let early_claim = poison(fixture, &early, seed).await;
     assert!(
         fixture.poisoned_claim_exists(&early).await,
         "the expired in-flight row is the poison"
@@ -1140,6 +1172,7 @@ pub(crate) async fn adjudication_clears_poison_and_the_claim_becomes_acquirable(
     adjudicate_fresh(
         fixture,
         &early,
+        incident_of(&early_claim),
         RefreshOutcomeDecision::ProviderNotApplied,
         "operator confirmed the call never left the replica",
     )
@@ -1162,13 +1195,14 @@ pub(crate) async fn adjudication_clears_poison_and_the_claim_becomes_acquirable(
 
     let swept = fixture
         .credential("adjudication_clears_poison_and_the_claim_becomes_acquirable/after-sweep");
-    poison(fixture, &swept, seed).await;
+    let swept_claim = poison(fixture, &swept, seed).await;
     sweep_accounts_poison(fixture, &swept).await;
     assert_eq!(fixture.incident_count(&swept).await, 1);
 
     adjudicate_fresh(
         fixture,
         &swept,
+        incident_of(&swept_claim),
         RefreshOutcomeDecision::ProviderApplied,
         "provider support ticket confirms the refresh landed",
     )
@@ -1195,11 +1229,14 @@ pub(crate) async fn adjudication_of_an_unpoisoned_credential_is_refused(
     fixture: &impl RefreshClaimFixture,
     seed: u8,
 ) {
+    // An incident nobody ever recorded, on a credential with nothing to decide:
+    // there is neither a resolution to answer from nor a poison to resolve.
     let never = fixture.credential("adjudication_of_an_unpoisoned_credential_is_refused/never");
     std::assert_matches!(
         fixture
             .adjudicate_refresh(
                 &never,
+                CredentialIncidentRef::from_uuid(uuid::Uuid::new_v4()),
                 RefreshOutcomeDecision::ProviderApplied,
                 "no claim was ever held"
             )
@@ -1210,12 +1247,15 @@ pub(crate) async fn adjudication_of_an_unpoisoned_credential_is_refused(
     assert_eq!(fixture.incident_count(&never).await, 0);
     assert_eq!(fixture.resolved_incident_count(&never).await, 0);
 
+    // Naming the live claim itself does not make it an incident: only a claim
+    // that crossed the provider boundary and expired is one.
     let live = fixture.credential("adjudication_of_an_unpoisoned_credential_is_refused/live");
-    acquire(fixture, &live, seed).await;
+    let live_claim = acquire(fixture, &live, seed).await;
     std::assert_matches!(
         fixture
             .adjudicate_refresh(
                 &live,
+                incident_of(&live_claim),
                 RefreshOutcomeDecision::ProviderApplied,
                 "a live holder owns this decision"
             )
@@ -1231,6 +1271,7 @@ pub(crate) async fn adjudication_of_an_unpoisoned_credential_is_refused(
         fixture
             .adjudicate_refresh(
                 &live,
+                incident_of(&live_claim),
                 RefreshOutcomeDecision::ProviderApplied,
                 "no provider egress ever began"
             )
@@ -1255,7 +1296,7 @@ pub(crate) async fn adjudication_of_an_unpoisoned_credential_is_refused(
 
 pub(crate) async fn adjudication_evidence_is_bounded(fixture: &impl RefreshClaimFixture, seed: u8) {
     let credential = fixture.credential("adjudication_evidence_is_bounded");
-    poison(fixture, &credential, seed).await;
+    let incident = incident_of(&poison(fixture, &credential, seed).await);
     let oversized = "x".repeat(MAX_ADJUDICATION_EVIDENCE_BYTES + 1);
 
     for evidence in ["", oversized.as_str()] {
@@ -1263,6 +1304,7 @@ pub(crate) async fn adjudication_evidence_is_bounded(fixture: &impl RefreshClaim
             fixture
                 .adjudicate_refresh(
                     &credential,
+                    incident,
                     RefreshOutcomeDecision::ProviderApplied,
                     evidence
                 )
@@ -1287,6 +1329,7 @@ pub(crate) async fn adjudication_evidence_is_bounded(fixture: &impl RefreshClaim
     let recorded = adjudicate_fresh(
         fixture,
         &credential,
+        incident,
         RefreshOutcomeDecision::ProviderApplied,
         &exact,
     )
@@ -1302,11 +1345,12 @@ pub(crate) async fn recommitting_the_same_adjudication_is_a_no_op_that_adds_no_i
     let credential =
         fixture.credential("recommitting_the_same_adjudication_is_a_no_op_that_adds_no_incident");
     let evidence = "provider support ticket INC-4711 confirms the refresh landed";
-    poison(fixture, &credential, seed).await;
+    let incident = incident_of(&poison(fixture, &credential, seed).await);
     sweep_accounts_poison(fixture, &credential).await;
     adjudicate_fresh(
         fixture,
         &credential,
+        incident,
         RefreshOutcomeDecision::ProviderApplied,
         evidence,
     )
@@ -1316,6 +1360,7 @@ pub(crate) async fn recommitting_the_same_adjudication_is_a_no_op_that_adds_no_i
     let recommit = fixture
         .adjudicate_refresh(
             &credential,
+            incident,
             RefreshOutcomeDecision::ProviderApplied,
             evidence,
         )
@@ -1348,43 +1393,68 @@ pub(crate) async fn recommit_of_an_older_resolution_is_a_no_op_not_a_conflict(
     fixture: &impl RefreshClaimFixture,
     seed: u8,
 ) {
-    // The **no-poison** replay path answers this case, and that is the branch
-    // under test: each lifecycle's reconcile clears its own claim row, so by the
-    // final recommit there is no poison left to read and the rule applied is the
-    // exact match over the credential's resolved set. The poisoned branch's
-    // claim-keyed comparison is not this case's subject and has no case here —
-    // no port-reachable path builds a live poisoned row whose incident already
-    // carries a resolution (see the note in the adapters), so no behavioural
-    // test can cover it.
-    //
-    // The re-committed pair is compared against the incident it describes, not
-    // against whichever resolved incident happens to be newest: a credential
-    // reconciled twice holds two resolutions, and the holder of the older
-    // outcome is still entitled to the `AcknowledgementUnknown` recovery that
-    // re-commits it. Comparing against the newer resolution denies that
-    // recovery outright when the newer incident decided the other way.
+    // The recommit names the older incident, so it is answered from that
+    // incident's own record — whatever has happened to the credential since.
+    // A credential reconciled twice holds two resolutions, and the holder of
+    // the older outcome is still entitled to the `AcknowledgementUnknown`
+    // recovery that re-commits it: while a newer incident is still poisoned,
+    // and after that newer incident is decided the other way.
     let credential =
         fixture.credential("recommit_of_an_older_resolution_is_a_no_op_not_a_conflict");
     let older_evidence = "provider support ticket INC-4711 confirms the first refresh landed";
+    let assert_older_answer = |recommit: RefreshAdjudication, when: &str| {
+        assert!(
+            !recommit.changed,
+            "{when}: the earlier resolution is already on record, so this call records nothing"
+        );
+        assert_eq!(
+            recommit.decision,
+            CredentialOperationDecision::Refresh(RefreshOutcomeDecision::ProviderApplied),
+            "{when}: the recommit answers with the named incident's resolution"
+        );
+        assert_eq!(
+            recommit.evidence_digest,
+            evidence_digest(older_evidence),
+            "{when}: the recommit must report the named incident's digest, not the newest one's"
+        );
+    };
 
-    poison(fixture, &credential, seed).await;
+    let older = incident_of(&poison(fixture, &credential, seed).await);
     sweep_accounts_poison(fixture, &credential).await;
     adjudicate_fresh(
         fixture,
         &credential,
+        older,
         RefreshOutcomeDecision::ProviderApplied,
         older_evidence,
     )
     .await;
 
-    // A second, later lifecycle decides the opposite way, so the newest
-    // resolution on record contradicts the older request on both the digest and
-    // the decision.
-    poison(fixture, &credential, seed.wrapping_add(1)).await;
+    // A second, later lifecycle is poisoned and not yet decided.
+    let newer = incident_of(&poison(fixture, &credential, seed.wrapping_add(1)).await);
     sweep_accounts_poison(fixture, &credential).await;
+    let recommit = fixture
+        .adjudicate_refresh(
+            &credential,
+            older,
+            RefreshOutcomeDecision::ProviderApplied,
+            older_evidence,
+        )
+        .await
+        .expect("re-committing a resolved incident must not reach the newer poisoned one");
+    assert_older_answer(recommit, "newer incident poisoned");
+    assert!(
+        fixture.poisoned_claim_exists(&credential).await,
+        "the older incident's recommit must leave the newer incident poisoned"
+    );
+    assert_eq!(fixture.resolved_incident_count(&credential).await, 1);
+
+    // The newer incident decides the opposite way, so it contradicts the older
+    // request on both the digest and the decision.
     adjudicate_fresh(
         fixture,
         &credential,
+        newer,
         RefreshOutcomeDecision::ProviderNotApplied,
         "provider support ticket INC-4712 confirms the second refresh never landed",
     )
@@ -1398,31 +1468,201 @@ pub(crate) async fn recommit_of_an_older_resolution_is_a_no_op_not_a_conflict(
     let recommit = fixture
         .adjudicate_refresh(
             &credential,
+            older,
             RefreshOutcomeDecision::ProviderApplied,
             older_evidence,
         )
         .await
         .expect("re-committing a genuine earlier resolution must not conflict with a newer one");
-    assert!(
-        !recommit.changed,
-        "the earlier resolution is already on record, so this call records nothing"
-    );
-    assert_eq!(
-        recommit.decision,
-        CredentialOperationDecision::Refresh(RefreshOutcomeDecision::ProviderApplied),
-        "the recommit answers with the resolution it matched"
-    );
-    assert_eq!(
-        recommit.evidence_digest,
-        evidence_digest(older_evidence),
-        "a superseded replay must report the digest of the pair it matched, \
-         not the newest resolution's"
-    );
+    assert_older_answer(recommit, "newer incident decided");
     assert_eq!(
         fixture.incident_count(&credential).await,
         2,
         "an idempotent recommit must not write a third incident"
     );
+}
+
+pub(crate) async fn a_retried_decision_never_resolves_a_newer_incident(
+    fixture: &impl RefreshClaimFixture,
+    seed: u8,
+) {
+    // The lost-acknowledgement retry: the operator's decision for R1 committed,
+    // its acknowledgement did not arrive, and by the time the retry lands a new
+    // incident R2 poisons the credential. The retry describes R1; applying it
+    // to R2 would clear a poison nobody has examined.
+    let credential = fixture.credential("a_retried_decision_never_resolves_a_newer_incident");
+    let evidence = "provider support ticket INC-4711 confirms the first refresh landed";
+
+    let first = incident_of(&poison(fixture, &credential, seed).await);
+    sweep_accounts_poison(fixture, &credential).await;
+    adjudicate_fresh(
+        fixture,
+        &credential,
+        first,
+        RefreshOutcomeDecision::ProviderApplied,
+        evidence,
+    )
+    .await;
+
+    let second = incident_of(&poison(fixture, &credential, seed.wrapping_add(1)).await);
+    sweep_accounts_poison(fixture, &credential).await;
+    assert_ne!(first, second, "each lifecycle is its own incident");
+
+    let retry = fixture
+        .adjudicate_refresh(
+            &credential,
+            first,
+            RefreshOutcomeDecision::ProviderApplied,
+            evidence,
+        )
+        .await
+        .expect("the retry is answered from its own incident's record");
+    assert!(!retry.changed, "the retry must record nothing");
+    assert_eq!(retry.evidence_digest, evidence_digest(evidence));
+
+    assert!(
+        fixture.poisoned_claim_exists(&credential).await,
+        "a retried decision must never resolve the newer incident"
+    );
+    assert_eq!(
+        fixture.resolved_incident_count(&credential).await,
+        1,
+        "only the first incident is decided"
+    );
+    assert_eq!(fixture.incident_count(&credential).await, 2);
+    let attempt = fixture
+        .try_refresh_claim(
+            &credential,
+            &fixture.replica(seed.wrapping_add(2)),
+            fixture.claim_ttl(),
+        )
+        .await
+        .expect("a poisoned acquisition must not fail");
+    std::assert_matches!(
+        attempt,
+        ClaimAttempt::OutcomeUnknown { .. },
+        "the newer incident still refuses egress"
+    );
+
+    // The newer incident is resolved only by naming it.
+    adjudicate_fresh(
+        fixture,
+        &credential,
+        second,
+        RefreshOutcomeDecision::ProviderNotApplied,
+        "provider support ticket INC-4712 confirms the second refresh never landed",
+    )
+    .await;
+    assert!(!fixture.poisoned_claim_exists(&credential).await);
+}
+
+pub(crate) async fn a_decision_for_a_stale_incident_is_refused(
+    fixture: &impl RefreshClaimFixture,
+    seed: u8,
+) {
+    // An incident id that is neither on record as resolved nor the current
+    // poison cannot describe the current poison, so it is refused rather than
+    // applied to whatever is poisoned now.
+    let credential = fixture.credential("a_decision_for_a_stale_incident_is_refused");
+    let current = incident_of(&poison(fixture, &credential, seed).await);
+    sweep_accounts_poison(fixture, &credential).await;
+    let stale = CredentialIncidentRef::from_uuid(uuid::Uuid::new_v4());
+    assert_ne!(stale, current);
+
+    std::assert_matches!(
+        fixture
+            .adjudicate_refresh(
+                &credential,
+                stale,
+                RefreshOutcomeDecision::ProviderApplied,
+                "a decision made for some other incident"
+            )
+            .await,
+        Err(AdjudicationError::StaleIncident),
+        "an incident that is neither resolved nor current must be refused"
+    );
+    assert!(
+        fixture.poisoned_claim_exists(&credential).await,
+        "a refused stale decision must leave the current incident poisoned"
+    );
+    assert_eq!(
+        fixture.resolved_incident_count(&credential).await,
+        0,
+        "a refused stale decision must record no resolution"
+    );
+    assert_eq!(fixture.incident_count(&credential).await, 1);
+
+    // The current incident is still adjudicable by its own identity.
+    adjudicate_fresh(
+        fixture,
+        &credential,
+        current,
+        RefreshOutcomeDecision::ProviderApplied,
+        "provider support ticket INC-4711 confirms the refresh landed",
+    )
+    .await;
+    assert!(!fixture.poisoned_claim_exists(&credential).await);
+}
+
+pub(crate) async fn an_incident_of_another_credential_is_not_usable(
+    fixture: &impl RefreshClaimFixture,
+    seed: u8,
+) {
+    // Incident identity is scoped to the credential it arose on. Credential A's
+    // resolved incident, named against credential B of the same owner, is not
+    // B's record to answer from and not B's poison to resolve.
+    let resolved = fixture.credential("an_incident_of_another_credential_is_not_usable/a");
+    let poisoned = fixture.credential("an_incident_of_another_credential_is_not_usable/b");
+    assert_eq!(
+        resolved.owner(),
+        poisoned.owner(),
+        "both credentials share one owner, so only the credential scopes the incident"
+    );
+    let evidence = "provider support ticket INC-4711 confirms the refresh landed";
+
+    let foreign = incident_of(&poison(fixture, &resolved, seed).await);
+    sweep_accounts_poison(fixture, &resolved).await;
+    adjudicate_fresh(
+        fixture,
+        &resolved,
+        foreign,
+        RefreshOutcomeDecision::ProviderApplied,
+        evidence,
+    )
+    .await;
+
+    poison(fixture, &poisoned, seed.wrapping_add(1)).await;
+    sweep_accounts_poison(fixture, &poisoned).await;
+    std::assert_matches!(
+        fixture
+            .adjudicate_refresh(
+                &poisoned,
+                foreign,
+                RefreshOutcomeDecision::ProviderApplied,
+                evidence
+            )
+            .await,
+        Err(AdjudicationError::StaleIncident),
+        "another credential's resolved incident must not answer for, or resolve, this one"
+    );
+    assert!(
+        fixture.poisoned_claim_exists(&poisoned).await,
+        "the refused decision must leave this credential poisoned"
+    );
+    assert_eq!(fixture.resolved_incident_count(&poisoned).await, 0);
+
+    // The foreign incident's own record is intact.
+    let recommit = fixture
+        .adjudicate_refresh(
+            &resolved,
+            foreign,
+            RefreshOutcomeDecision::ProviderApplied,
+            evidence,
+        )
+        .await
+        .expect("the incident is still answered on its own credential");
+    assert!(!recommit.changed);
+    assert_eq!(fixture.resolved_incident_count(&resolved).await, 1);
 }
 
 pub(crate) async fn a_conflicting_adjudication_is_refused(
@@ -1431,11 +1671,12 @@ pub(crate) async fn a_conflicting_adjudication_is_refused(
 ) {
     let credential = fixture.credential("a_conflicting_adjudication_is_refused");
     let evidence = "provider support ticket INC-4711 confirms the refresh landed";
-    poison(fixture, &credential, seed).await;
+    let incident = incident_of(&poison(fixture, &credential, seed).await);
     sweep_accounts_poison(fixture, &credential).await;
     adjudicate_fresh(
         fixture,
         &credential,
+        incident,
         RefreshOutcomeDecision::ProviderApplied,
         evidence,
     )
@@ -1445,6 +1686,7 @@ pub(crate) async fn a_conflicting_adjudication_is_refused(
         fixture
             .adjudicate_refresh(
                 &credential,
+                incident,
                 RefreshOutcomeDecision::ProviderNotApplied,
                 evidence
             )
@@ -1462,6 +1704,7 @@ pub(crate) async fn a_conflicting_adjudication_is_refused(
         fixture
             .adjudicate_refresh(
                 &credential,
+                incident,
                 RefreshOutcomeDecision::ProviderApplied,
                 "a different reconciliation query reached the same conclusion"
             )
@@ -1478,13 +1721,14 @@ pub(crate) async fn a_conflicting_adjudication_is_refused(
 
     // Reconciliation resolves an unknown outcome; it does not overrule a
     // recorded one, and a refused conflict changes nothing. Both refusals above
-    // came from the no-poison branch, which issues no DELETE at all, and the
-    // row was already cleared before them — so this asserts that a refused
-    // conflict leaves the store as it found it, not that it avoided
-    // resurrecting a poison that was still there.
+    // were answered from the named incident's record, and the row was already
+    // cleared before them — so this asserts that a refused conflict leaves the
+    // store as it found it, not that it avoided resurrecting a poison that was
+    // still there.
     let recorded = fixture
         .adjudicate_refresh(
             &credential,
+            incident,
             RefreshOutcomeDecision::ProviderApplied,
             evidence,
         )
@@ -1497,6 +1741,55 @@ pub(crate) async fn a_conflicting_adjudication_is_refused(
         !fixture.poisoned_claim_exists(&credential).await,
         "a refused conflict must leave the claim row cleared"
     );
+
+    // With a newer incident decided differently, a conflict on the older one
+    // still names the older incident's own pair, not the newest on record.
+    let newer_evidence = "provider support ticket INC-4712 confirms the second refresh failed";
+    let newer = incident_of(&poison(fixture, &credential, seed.wrapping_add(1)).await);
+    sweep_accounts_poison(fixture, &credential).await;
+    adjudicate_fresh(
+        fixture,
+        &credential,
+        newer,
+        RefreshOutcomeDecision::ProviderNotApplied,
+        newer_evidence,
+    )
+    .await;
+    std::assert_matches!(
+        fixture
+            .adjudicate_refresh(
+                &credential,
+                incident,
+                RefreshOutcomeDecision::ProviderNotApplied,
+                newer_evidence
+            )
+            .await,
+        Err(AdjudicationError::EvidenceConflict {
+            recorded_digest,
+            recorded_decision,
+        }) if recorded_digest == evidence_digest(evidence)
+            && recorded_decision
+                == CredentialOperationDecision::Refresh(RefreshOutcomeDecision::ProviderApplied),
+        "a conflict reports the named incident's recorded pair"
+    );
+    std::assert_matches!(
+        fixture
+            .adjudicate_refresh(
+                &credential,
+                newer,
+                RefreshOutcomeDecision::ProviderApplied,
+                evidence
+            )
+            .await,
+        Err(AdjudicationError::EvidenceConflict {
+            recorded_digest,
+            recorded_decision,
+        }) if recorded_digest == evidence_digest(newer_evidence)
+            && recorded_decision
+                == CredentialOperationDecision::Refresh(RefreshOutcomeDecision::ProviderNotApplied),
+        "the older incident's pair does not answer for the newer incident"
+    );
+    assert_eq!(fixture.resolved_incident_count(&credential).await, 2);
 }
 
 pub(crate) async fn concurrent_adjudication_yields_exactly_one_change(
@@ -1505,17 +1798,19 @@ pub(crate) async fn concurrent_adjudication_yields_exactly_one_change(
 ) {
     let credential = fixture.credential("concurrent_adjudication_yields_exactly_one_change");
     let evidence = "the only reconciliation note for this incident";
-    poison(fixture, &credential, seed).await;
+    let incident = incident_of(&poison(fixture, &credential, seed).await);
     sweep_accounts_poison(fixture, &credential).await;
 
     let (left, right) = tokio::join!(
         fixture.adjudicate_refresh(
             &credential,
+            incident,
             RefreshOutcomeDecision::ProviderApplied,
             evidence
         ),
         fixture.adjudicate_refresh(
             &credential,
+            incident,
             RefreshOutcomeDecision::ProviderApplied,
             evidence
         ),
@@ -1546,6 +1841,7 @@ pub(crate) async fn concurrent_adjudication_yields_exactly_one_change(
     let recorded = fixture
         .adjudicate_refresh(
             &credential,
+            incident,
             RefreshOutcomeDecision::ProviderApplied,
             evidence,
         )
@@ -1591,6 +1887,7 @@ pub(crate) async fn release_refuses_an_undecided_incident(
     adjudicate_fresh(
         fixture,
         &credential,
+        incident_of(&claim),
         RefreshOutcomeDecision::ProviderApplied,
         "provider support ticket INC-4711 confirms the refresh landed",
     )
@@ -1672,6 +1969,7 @@ pub(crate) async fn a_reconciled_claim_never_authorizes_its_former_holder(
     adjudicate_fresh(
         fixture,
         &credential,
+        incident_of(&claim),
         RefreshOutcomeDecision::ProviderNotApplied,
         "operator confirmed the call never left the replica",
     )
@@ -1706,7 +2004,7 @@ pub(crate) async fn a_failed_decision_write_leaves_the_claim_poisoned_and_unreco
     let credential =
         fixture.credential("a_failed_decision_write_leaves_the_claim_poisoned_and_unrecorded");
     let evidence = "provider support ticket INC-4711 confirms the refresh landed";
-    poison(fixture, &credential, seed).await;
+    let incident = incident_of(&poison(fixture, &credential, seed).await);
     sweep_accounts_poison(fixture, &credential).await;
     assert_eq!(fixture.resolved_incident_count(&credential).await, 0);
 
@@ -1714,6 +2012,7 @@ pub(crate) async fn a_failed_decision_write_leaves_the_claim_poisoned_and_unreco
     let error = fixture
         .adjudicate_refresh(
             &credential,
+            incident,
             RefreshOutcomeDecision::ProviderApplied,
             evidence,
         )
@@ -1754,6 +2053,7 @@ pub(crate) async fn a_failed_decision_write_leaves_the_claim_poisoned_and_unreco
     let recorded = adjudicate_fresh(
         fixture,
         &credential,
+        incident,
         RefreshOutcomeDecision::ProviderApplied,
         evidence,
     )
@@ -1874,6 +2174,17 @@ macro_rules! refresh_claim_conformance_suite {
         $crate::refresh_claim_case!(
             recommit_of_an_older_resolution_is_a_no_op_not_a_conflict,
             0x2E,
+            $fixture
+        );
+        $crate::refresh_claim_case!(
+            a_retried_decision_never_resolves_a_newer_incident,
+            0x2F,
+            $fixture
+        );
+        $crate::refresh_claim_case!(a_decision_for_a_stale_incident_is_refused, 0x30, $fixture);
+        $crate::refresh_claim_case!(
+            an_incident_of_another_credential_is_not_usable,
+            0x31,
             $fixture
         );
         $crate::refresh_claim_case!(a_conflicting_adjudication_is_refused, 0x28, $fixture);

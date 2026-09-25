@@ -50,10 +50,10 @@ pub use journal::ExecutionJournalReader;
 pub use node_result::NodeResultStore;
 pub use operation_ledger::{OperationLedger, OperationLedgerAdjudicator};
 pub use refresh_claim::{
-    ClaimAttempt, ClaimToken, CredentialOperationDecision, CredentialOperationIntent,
-    CredentialOperationKind, CredentialOperationStatus, ExpiredClaim, HeartbeatError,
-    MAX_ADJUDICATION_EVIDENCE_BYTES, ReauthEscalation, RefreshAdjudication, RefreshClaim,
-    RefreshClaimAdjudicationError, RefreshClaimAdjudicator, RefreshClaimError,
+    ClaimAttempt, ClaimToken, CredentialIncidentRef, CredentialOperationDecision,
+    CredentialOperationIntent, CredentialOperationKind, CredentialOperationStatus, ExpiredClaim,
+    HeartbeatError, MAX_ADJUDICATION_EVIDENCE_BYTES, ReauthEscalation, RefreshAdjudication,
+    RefreshClaim, RefreshClaimAdjudicationError, RefreshClaimAdjudicator, RefreshClaimError,
     RefreshClaimReclaimer, RefreshClaimStore, RefreshOutcomeDecision, ReplicaId,
     RevokeOutcomeDecision, SentinelEscalationPolicy, SentinelEscalationPolicyError, SentinelState,
 };
