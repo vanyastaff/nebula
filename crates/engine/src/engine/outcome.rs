@@ -63,7 +63,9 @@ pub(super) enum RetryDecision {
 ///    the time of this decision) has reached `policy.max_attempts`, the retry budget is exhausted.
 /// 4. **Backoff calc** — `policy.delay_for_attempt(attempt_count - 1)` where `attempt_count` is the
 ///    just-finished attempt number (1-indexed). This yields the same wait the
-///    `nebula-resilience::retry` crate would for the same `RetryConfig`.
+///    `nebula-resilience::retry` crate would for the same `RetryConfig`. When the attempt's
+///    error carries a retry hint (`retry_hint`), the delay is raised to it, capped at the
+///    policy's `max_delay_ms`.
 ///
 /// `recorded_error` is the typed error of the attempt just pushed to
 /// history (the runtime-failure path supplies it; the setup-failure path
@@ -96,11 +98,19 @@ pub(super) fn error_is_terminal(err: &EngineError) -> bool {
     }
 }
 
+/// The delay an attempt's own error asks for before the next one: an
+/// [`ActionError`]'s `backoff_hint` (a provider's `Retry-After`, a resource's
+/// rate-limit pause surfaced as `ResourceUnavailable::retry_after`).
+pub(super) fn error_retry_hint(err: &EngineError) -> Option<Duration> {
+    err.as_action_error().and_then(ActionError::backoff_hint)
+}
+
 pub(super) fn compute_retry_decision(
     node_key: &NodeKey,
     exec_state: &ExecutionState,
     retry_policy: Option<&nebula_workflow::RetryConfig>,
     recorded_error_is_terminal: bool,
+    retry_hint: Option<Duration>,
 ) -> RetryDecision {
     if recorded_error_is_terminal {
         tracing::debug!(
@@ -163,7 +173,15 @@ pub(super) fn compute_retry_decision(
     // `delay_for_attempt(0)` = initial delay (after attempt #1 fails);
     // `delay_for_attempt(1)` = after attempt #2 fails; etc.
     // The just-finished attempt index is `attempts_used - 1` (0-based).
-    let delay = policy.delay_for_attempt(attempts_used.saturating_sub(1));
+    let policy_delay = policy.delay_for_attempt(attempts_used.saturating_sub(1));
+    // The attempt's own error may ask for a longer wait (a provider's
+    // `Retry-After`): honouring it keeps retries from burning attempts
+    // against a quota that is still closed. The policy's `max_delay_ms` caps
+    // the hint, so a hostile or mistaken hint cannot park a node indefinitely.
+    let delay = match retry_hint {
+        Some(hint) => policy_delay.max(hint.min(Duration::from_millis(policy.max_delay_ms))),
+        None => policy_delay,
+    };
     RetryDecision::Retry { delay }
 }
 

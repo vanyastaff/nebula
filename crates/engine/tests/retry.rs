@@ -894,3 +894,111 @@ async fn no_retry_policy_means_one_shot_failure() {
         "without a retry policy the engine must finalize after the first failure"
     );
 }
+
+/// Fails once asking for `hint` before a retry, then succeeds, recording when
+/// each attempt started.
+struct HintedHandler {
+    hint: Duration,
+    starts: Arc<std::sync::Mutex<Vec<std::time::Instant>>>,
+}
+
+placeholder_action_impl!(
+    HintedHandler,
+    action_key!("placeholder.hinted"),
+    "HintedPlaceholder",
+    "placeholder"
+);
+
+impl StatelessAction for HintedHandler {
+    async fn execute(
+        &self,
+        input: <Self as Action>::Input,
+        _ctx: &(impl nebula_action::ActionContext + ?Sized),
+    ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
+        let attempt = {
+            let mut starts = self.starts.lock().unwrap();
+            starts.push(std::time::Instant::now());
+            starts.len()
+        };
+        if attempt == 1 {
+            Err(ActionError::retryable_with_backoff(
+                "provider said retry later",
+                self.hint,
+            ))
+        } else {
+            Ok(ActionResult::success(input))
+        }
+    }
+}
+
+async fn run_hinted(
+    hint: Duration,
+    policy: RetryConfig,
+) -> (ExecutionStatus, Vec<std::time::Instant>) {
+    let starts = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let registry = Arc::new(ActionRegistry::new());
+    registry
+        .register_stateless_instance(
+            nebula_action::ActionMetadataDraft::new(
+                action_key!("hinted"),
+                nebula_action::metadata_name!("Hinted"),
+                "asks for a delay once",
+            )
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects),
+            HintedHandler {
+                hint,
+                starts: Arc::clone(&starts),
+            },
+        )
+        .expect("valid test catalog definition");
+    let engine = make_engine(registry);
+    let n = node_key!("hinted");
+    let mut node = NodeDefinition::new(n, "hinted_node", "core", "hinted").unwrap();
+    node.retry_policy = Some(policy);
+    let wf = make_workflow(vec![node], vec![], WorkflowConfig::default());
+    let result = engine
+        .execute_workflow(
+            &nebula_engine::store_seam::single_tenant_scope(),
+            &wf,
+            serde_json::json!("payload"),
+            ExecutionBudget::default(),
+        )
+        .await
+        .unwrap();
+    let starts = starts.lock().unwrap().clone();
+    (result.status, starts)
+}
+
+/// An attempt that asks for a delay (a provider's `Retry-After`) is not
+/// retried sooner than that: a shorter policy backoff would only burn the
+/// attempt against a quota that is still closed.
+#[tokio::test]
+async fn retry_waits_for_the_attempts_own_hint() {
+    let hint = Duration::from_millis(300);
+    let (status, starts) = run_hinted(hint, RetryConfig::exponential(3, 1, 10_000)).await;
+    assert_eq!(status, ExecutionStatus::Completed);
+    assert_eq!(starts.len(), 2);
+    assert!(
+        starts[1] - starts[0] >= hint,
+        "retried after {:?}, before the {hint:?} the attempt asked for",
+        starts[1] - starts[0]
+    );
+}
+
+/// The policy's `max_delay_ms` caps a hint, so a mistaken or hostile hint
+/// cannot park a node indefinitely.
+#[tokio::test]
+async fn a_retry_hint_is_capped_by_the_policys_max_delay() {
+    let (status, starts) = run_hinted(
+        Duration::from_hours(1),
+        RetryConfig::exponential(3, 1, 50),
+    )
+    .await;
+    assert_eq!(status, ExecutionStatus::Completed);
+    assert_eq!(starts.len(), 2);
+    assert!(
+        starts[1] - starts[0] < Duration::from_secs(5),
+        "a capped hint must not delay the retry by {:?}",
+        starts[1] - starts[0]
+    );
+}
