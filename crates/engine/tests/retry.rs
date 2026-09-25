@@ -988,12 +988,9 @@ async fn retry_waits_for_the_attempts_own_hint() {
 /// The policy's `max_delay_ms` caps a hint, so a mistaken or hostile hint
 /// cannot park a node indefinitely.
 #[tokio::test]
-async fn a_retry_hint_is_capped_by_the_policys_max_delay() {
-    let (status, starts) = run_hinted(
-        Duration::from_hours(1),
-        RetryConfig::exponential(3, 1, 50),
-    )
-    .await;
+async fn a_retry_hint_is_capped_by_the_policy_max_delay() {
+    let (status, starts) =
+        run_hinted(Duration::from_hours(1), RetryConfig::exponential(3, 1, 50)).await;
     assert_eq!(status, ExecutionStatus::Completed);
     assert_eq!(starts.len(), 2);
     assert!(
