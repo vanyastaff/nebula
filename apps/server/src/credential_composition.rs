@@ -628,7 +628,6 @@ fn credential_pool_size() -> Result<std::num::NonZeroU32, CredentialCompositionE
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

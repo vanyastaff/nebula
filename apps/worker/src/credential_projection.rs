@@ -284,7 +284,6 @@ fn credential_pool_size() -> Result<std::num::NonZeroU32, CredentialProjectionCo
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use std::assert_matches;
