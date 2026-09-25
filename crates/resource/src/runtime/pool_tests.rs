@@ -747,3 +747,55 @@ fn operator_settings_build_a_pool_or_fail_without_panicking() {
         "absent = defaults"
     );
 }
+
+#[test]
+fn capacity_grows_at_once_and_shrinks_through_debt() {
+    let capacity = PoolCapacity::new(3);
+    let first = capacity.try_acquire().expect("first");
+    let second = capacity.try_acquire().expect("second");
+    assert_eq!(capacity.in_use(), 2);
+
+    // Shrink to 1 with two leases out: the idle permit goes now, one more is
+    // owed and retired when it comes back.
+    capacity.resize(1);
+    assert_eq!(capacity.target(), 1);
+    assert_eq!(capacity.available(), 0);
+    assert!(capacity.try_acquire().is_err());
+    drop(first);
+    assert!(
+        capacity.try_acquire().is_err(),
+        "the returned permit pays the debt"
+    );
+    drop(second);
+    let third = capacity.try_acquire().expect("the new cap admits one");
+    assert!(capacity.try_acquire().is_err());
+
+    // Growing adds permits at once.
+    capacity.resize(3);
+    let fourth = capacity.try_acquire().expect("grown");
+    let fifth = capacity.try_acquire().expect("grown");
+    assert!(capacity.try_acquire().is_err());
+    assert_eq!(capacity.in_use(), 3);
+    drop((third, fourth, fifth));
+    assert_eq!(capacity.available(), 3);
+}
+
+#[test]
+fn growing_cancels_debt_before_adding_permits() {
+    let capacity = PoolCapacity::new(2);
+    let first = capacity.try_acquire().expect("first");
+    let second = capacity.try_acquire().expect("second");
+    capacity.resize(1);
+    capacity.resize(2);
+    assert!(
+        capacity.try_acquire().is_err(),
+        "both leases are still out of a budget of two"
+    );
+    drop(first);
+    let third = capacity
+        .try_acquire()
+        .expect("a returned permit serves again");
+    assert!(capacity.try_acquire().is_err());
+    drop((second, third));
+    assert_eq!(capacity.available(), 2);
+}

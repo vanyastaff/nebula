@@ -386,6 +386,17 @@ impl Manager {
         let rotation_identity = (scope.clone(), slot_identity.clone());
         #[cfg(feature = "rotation")]
         let rotation_indexes = self.attached_rotation_indexes();
+        // A same-identity replacement inherits what the identity has already
+        // spent (a pool's checkout budget, a provider's "slow down") before
+        // the successor is published, so no caller sees it without them. The
+        // admission lock keeps the row found here the one being replaced.
+        if let crate::registry::PinnedHandleLookup::Found(previous) =
+            self.registry.get_handle_for(&key, &scope, &slot_identity)
+            && let Ok(previous) = previous.as_any_arc().downcast::<ManagedResource<R>>()
+        {
+            managed.topology.inherit_from(&previous.topology);
+            managed.rate_limiter.inherit_pauses(&previous.rate_limiter);
+        }
         let registration = self.registry.register_admitted(
             key.clone(),
             type_id,
@@ -399,15 +410,6 @@ impl Manager {
             admission: permit,
         } = registration
         {
-            // A re-registration in place (a credential refresh, a new stored
-            // version) must not reset a provider's "slow down": pauses the
-            // displaced row kept in this process carry over to its successor.
-            if let Ok(previous) = Arc::clone(&displaced)
-                .as_any_arc()
-                .downcast::<ManagedResource<R>>()
-            {
-                managed.rate_limiter.inherit_pauses(&previous.rate_limiter);
-            }
             #[cfg(feature = "rotation")]
             for index in &rotation_indexes {
                 index.unbind_replaced_resource_identity(

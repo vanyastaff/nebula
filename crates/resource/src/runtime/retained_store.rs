@@ -379,8 +379,10 @@ struct StoreState<E> {
 /// mutex; publishers notify waiters only after releasing that mutex.
 /// Accounting covers only entries published into this store. Trusted topology
 /// implementations must publish every retained strong owner and must not keep
-/// or forget untracked strong aliases outside it. The built-in Resident follows
-/// this contract; the public lease API cannot enforce it for arbitrary plugins.
+/// or forget untracked strong aliases outside it; the public lease API cannot
+/// enforce it for arbitrary plugins. The built-in Resident is the documented
+/// exception for guards: each holds an `Arc` alias of the master, so a displaced
+/// master drains outside this store, counted and bounded by Resident itself.
 pub struct RetainedStore<E> {
     state: Mutex<StoreState<E>>,
     tracker: AbandonmentTracker,

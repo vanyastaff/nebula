@@ -202,6 +202,18 @@ All of these counts are observability signals, not durable audit records.
   so `on_credential_refresh` / `on_credential_revoke` never observe an
   undeclared slot.
 
+### What the fence does not cover
+
+The fan-out reacts to material rotation and revoke only. A credential that
+turns `ReauthRequired`, or whose provider operation blocks new use
+(`OperationBlocked`, for example a revoke whose outcome is not yet known)
+without changing its material, emits no rotation event
+(`credential_fanout/driver.rs` ignores `ReauthRequired` on purpose). A
+resource built from that material keeps serving it, and a pool keeps creating
+new instances from the credential guard it already holds, until material
+changes or the row is re-activated; a fresh resolve would refuse it. Treat
+that window as part of the credential's revocation latency.
+
 ---
 
 ## See also

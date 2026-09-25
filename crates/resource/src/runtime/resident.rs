@@ -1,7 +1,14 @@
-//! Resident topology with one retained master and shared owning lease entries.
+//! Resident topology: one retained master at a time, shared by owning lease
+//! entries.
 //!
 //! Only the framework destroys instances. Retiring a master transfers its Arc
 //! to framework cleanup; the final lifecycle owner extracts the instance.
+//!
+//! A reload or a recreate builds a successor master while leases may still
+//! hold the displaced one: each guard owns an `Arc` alias, which the retained
+//! store does not track, so a displaced master lives until its last guard is
+//! released. Such live generations are counted and bounded by
+//! [`MAX_LIVE_GENERATIONS`].
 
 use std::{marker::PhantomData, sync::Arc};
 
@@ -23,8 +30,19 @@ use crate::{
 pub struct Resident<R: Provider> {
     state: Mutex<ResidentState>,
     config: Config,
+    /// Every master this topology built that may still be alive: the current
+    /// one and displaced ones guards still hold.
+    generations: std::sync::Mutex<Vec<std::sync::Weak<R::Instance>>>,
     _resource: PhantomData<fn() -> R>,
 }
+
+/// Most masters one resident row keeps alive at once: the current one plus
+/// displaced ones still held by leases.
+///
+/// A successor that would exceed it is not built. A master that is still alive
+/// keeps serving under its old config (a reload stays pending); a master that
+/// died answers `Backpressure` until leases release displaced generations.
+pub(crate) const MAX_LIVE_GENERATIONS: usize = 4;
 
 struct ResidentState {
     master: Option<crate::RetainedId>,
@@ -58,6 +76,7 @@ impl<R: Provider> Resident<R> {
                 closed: false,
             }),
             config,
+            generations: std::sync::Mutex::new(Vec::new()),
             _resource: PhantomData,
         }
     }
@@ -65,6 +84,21 @@ impl<R: Provider> Resident<R> {
     /// Returns the operational configuration.
     pub fn config(&self) -> &Config {
         &self.config
+    }
+
+    /// Masters built by this topology that are still alive: the current one
+    /// and displaced ones outstanding leases hold.
+    ///
+    /// At most four: a reload or recreate that would exceed it is deferred (a
+    /// live master keeps serving) or refused with `Backpressure` (a dead one)
+    /// until leases release displaced masters.
+    pub fn live_generations(&self) -> usize {
+        let mut generations = self
+            .generations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        generations.retain(|generation| generation.strong_count() > 0);
+        generations.len()
     }
 
     /// Reports whether a master is currently retained.
@@ -243,6 +277,23 @@ where
             if config_unchanged && !self.config.recreate_on_failure {
                 return Err(Error::transient("resident runtime is not alive"));
             }
+            // A successor adds one more live generation next to the ones
+            // leases still hold. Past the bound, a live master keeps serving
+            // its old config; a dead one cannot be replaced yet.
+            if self.live_generations() >= MAX_LIVE_GENERATIONS {
+                if resource.is_alive_sync(&existing) {
+                    tracing::warn!(
+                        resource.key = %R::key(),
+                        limit = MAX_LIVE_GENERATIONS,
+                        "resident: displaced masters are still leased; serving the current master until they are released"
+                    );
+                    return Ok(CreatedEntry::new(Arc::clone(&existing)));
+                }
+                return Err(Error::backpressure(format!(
+                    "resident: {MAX_LIVE_GENERATIONS} masters are still leased; release outstanding leases before a successor is built"
+                ))
+                .with_resource_key(R::key()));
+            }
         }
         let instance = match tokio::time::timeout(
             self.config.create_timeout,
@@ -256,6 +307,10 @@ where
         // No await after creation: the store absorbs all retained ownership,
         // including publication rejected by a concurrent terminal fence.
         let entry = Arc::new(instance);
+        self.generations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(Arc::downgrade(&entry));
         if let Some(id) = state.master {
             if retained.replace(id, Arc::clone(&entry)) != crate::ReplaceStatus::Replaced {
                 return Err(Error::cancelled().with_resource_key(R::key()));
@@ -292,7 +347,8 @@ where
 {
     type Entry = Arc<R::Instance>;
 
-    /// Always succeeds — resident is unbounded (one shared instance).
+    /// Always succeeds: every lease shares the current master. Successor
+    /// masters are bounded in `create_entry`.
     fn try_reserve(&self, _store: StoreView<'_, Self::Entry>) -> Result<Ticket, Unavailable> {
         Ok(Ticket::infallible())
     }
@@ -313,6 +369,10 @@ where
 
     fn into_owned_instance(&self, entry: Self::Entry) -> Option<R::Instance> {
         Arc::into_inner(entry)
+    }
+
+    fn live_instances(&self) -> Option<usize> {
+        Some(self.live_generations())
     }
 
     async fn quiesce(&self) -> Result<(), Error> {

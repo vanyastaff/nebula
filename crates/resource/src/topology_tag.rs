@@ -8,7 +8,7 @@ use std::fmt;
 pub enum TopologyTag {
     /// Pool — N interchangeable instances.
     Pool,
-    /// Resident — one shared instance, clone on acquire.
+    /// Resident — one shared master at a time, clone on acquire.
     Resident,
     /// Bounded — a runtime concurrency cap over a non-pooled resource
     /// (capped / exclusive / unbounded).
