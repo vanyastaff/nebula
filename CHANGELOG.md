@@ -497,6 +497,23 @@ let admitted = recorded.readmit_against(fresh)?;
 
 ### Fixed
 
+- **A pool's `max_size` now bounds its row identity, not one registration.**
+  A same-identity replacement (credential refresh, new stored version, reload)
+  takes over the displaced registration's checkout budget before it is
+  published, so leases the displaced registration still holds keep counting and
+  repeated replacements no longer stack a fresh `max_size` each; idle refill
+  and warmup count those leases too. A smaller `max_size` converges as they
+  return. `Topology` gains defaulted `inherit_from`, `leases_out` and
+  `live_instances` hooks.
+- **Resident live generations are counted and bounded.** Guards hold `Arc`
+  aliases of the master, so masters displaced by a reload or recreate lived
+  without bound while leased. `ResourceHealthSnapshot::live_instances` reports
+  them, and no successor is built past four live masters: a live master keeps
+  serving its old config, a dead one answers `Backpressure`. Docs that claimed
+  one shared instance, or that a reload waits for liveness to fail, are
+  corrected, and the credential-rotation guide names the window in which
+  built resources keep serving a credential that turned `ReauthRequired` or
+  blocked new use without a material change.
 - **Retained lease fencing is generation-local.** A live lease or poisoned
   counter now fences only its own retained generation. Ready siblings are
   transferred by incremental cleanup independently and exactly once; terminal

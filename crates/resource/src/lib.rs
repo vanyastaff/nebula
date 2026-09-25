@@ -7,8 +7,8 @@
 //! hot-reload via `ReloadOutcome`, and scope-bounded release. Action code
 //! receives a `ResourceGuard` that derefs to `R::Instance` and releases on
 //! drop. Three built-in topologies cover the integration space: `Pooled`
-//! (N interchangeable instances), `Resident` (one shared instance, cloned
-//! per acquire), and `Bounded` (a concurrency cap with no warm idle pool).
+//! (N interchangeable instances), `Resident` (one shared master at a time,
+//! cloned per acquire), and `Bounded` (a concurrency cap with no warm idle pool).
 //!
 //! ## Quick start
 //!
@@ -93,7 +93,7 @@
 //! | Topology | Instance model | Use when |
 //! |----------|-----------------|----------|
 //! | [`Pooled`] | N interchangeable instances, checkout/recycle | Stateful, interchangeable connections (DB, gRPC channel) |
-//! | [`Resident`] | One shared instance, `Arc::clone` on acquire | A cheap-to-clone client shared widely (`reqwest::Client`, in-memory cache) |
+//! | [`Resident`] | One shared master at a time, `Arc::clone` on acquire | A cheap-to-clone client shared widely (`reqwest::Client`, in-memory cache) |
 //! | [`Bounded`] | Concurrency-capped, no warm idle pool | Scarce non-warmable capacity (license seats, a serial-exclusive device) |
 //!
 //! See `crates/resource/docs/topology-reference.md` for a per-topology trait

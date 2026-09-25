@@ -425,6 +425,17 @@ impl<R: Provider> ManagedResource<R> {
     /// Current in-flight-acquire count for *this* resource row — a
     /// point-in-time read of the counter [`in_flight_tracker`](Self::in_flight_tracker)
     /// hands out, without exposing the tracker's tuple shape at call sites.
+    /// Work that counts against the store's capacity besides idle entries:
+    /// this registration's in-flight operations or, when larger, the leases
+    /// its topology's shared budget has out (a displaced registration's
+    /// included), less `own` of the caller's.
+    pub(crate) fn outstanding(&self, own: usize) -> usize {
+        let leases = self.topology.leases_out().unwrap_or(0);
+        self.in_flight_count()
+            .saturating_sub(own)
+            .max(leases.saturating_sub(own))
+    }
+
     pub(crate) fn in_flight_count(&self) -> usize {
         self.in_flight.0.load(Ordering::Acquire) as usize
     }

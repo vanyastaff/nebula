@@ -18,12 +18,12 @@ use std::{
     marker::PhantomData,
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
 
-use tokio::sync::Semaphore;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, TryAcquireError};
 
 use crate::{
     context::ResourceContext,
@@ -142,6 +142,101 @@ pub struct PoolStats {
     pub in_use: usize,
 }
 
+/// Checkout budget one row identity keeps across its registrations.
+///
+/// A same-identity replacement (a credential refresh, a new stored version,
+/// a reload) builds a new registration while the displaced one still has
+/// leases out. Were each registration to own its semaphore, every replacement
+/// would admit a fresh `max_size` next to the leases the old one still holds.
+/// The successor takes this budget over instead
+/// ([`Topology::inherit_from`]), so old and new leases draw from one
+/// `max_size`, and a permit returns to it only once its instance is destroyed.
+///
+/// A successor with a smaller `max_size` cannot take back permits that leases
+/// hold. The difference is recorded as debt and paid as those permits come
+/// back, so the effective cap converges to the new size without ever
+/// exceeding the larger of the two.
+#[derive(Debug)]
+pub(crate) struct PoolCapacity {
+    permits: Arc<Semaphore>,
+    target: AtomicUsize,
+    /// Permits still out that a shrink owes; each is forgotten as it returns.
+    debt: AtomicUsize,
+    resize: std::sync::Mutex<()>,
+}
+
+impl PoolCapacity {
+    fn new(size: usize) -> Self {
+        Self {
+            permits: Arc::new(Semaphore::new(size)),
+            target: AtomicUsize::new(size),
+            debt: AtomicUsize::new(0),
+            resize: std::sync::Mutex::new(()),
+        }
+    }
+
+    /// The configured checkout cap the budget converges to.
+    fn target(&self) -> usize {
+        self.target.load(Ordering::Acquire)
+    }
+
+    /// Permits a caller could take now.
+    fn available(&self) -> usize {
+        self.permits
+            .available_permits()
+            .saturating_sub(self.debt.load(Ordering::Acquire))
+    }
+
+    /// Leases currently holding a permit, across every registration.
+    fn in_use(&self) -> usize {
+        let total = self.target() + self.debt.load(Ordering::Acquire);
+        total.saturating_sub(self.permits.available_permits())
+    }
+
+    fn try_acquire(&self) -> Result<OwnedSemaphorePermit, TryAcquireError> {
+        loop {
+            let permit = Arc::clone(&self.permits).try_acquire_owned()?;
+            let owed = self
+                .debt
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |debt| {
+                    debt.checked_sub(1)
+                })
+                .is_ok();
+            if !owed {
+                return Ok(permit);
+            }
+            // A shrink is owed this permit: retire it and look again.
+            permit.forget();
+        }
+    }
+
+    /// Moves the cap to `size`, growing at once and shrinking as far as idle
+    /// permits allow, the rest as debt.
+    fn resize(&self, size: usize) {
+        let _serial = self
+            .resize
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let current = self.target.swap(size, Ordering::AcqRel);
+        if size > current {
+            let grow = size - current;
+            // Owed permits are still out and come back on their own: cancel
+            // that debt before adding new permits.
+            let owed = self
+                .debt
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |debt| {
+                    Some(debt.saturating_sub(grow))
+                })
+                .unwrap_or_else(|debt| debt);
+            self.permits.add_permits(grow - owed.min(grow));
+        } else if size < current {
+            let shrink = current - size;
+            let forgotten = self.permits.forget_permits(shrink);
+            self.debt.fetch_add(shrink - forgotten, Ordering::AcqRel);
+        }
+    }
+}
+
 /// Framework pool topology — N interchangeable instances with
 /// checkout/recycle/destroy over a framework-owned idle store.
 ///
@@ -156,7 +251,9 @@ pub struct PoolStats {
 ///
 /// [`Topology<R>`]: crate::topology::Topology
 pub struct Pooled<R: Provider> {
-    semaphore: Arc<Semaphore>,
+    /// Checkout budget, shared with every registration of this row identity
+    /// once [`Topology::inherit_from`] ran.
+    capacity: arc_swap::ArcSwap<PoolCapacity>,
     /// Bounds concurrent invocations of `create_entry` (#390).
     ///
     /// The checkout semaphore gates active leases; this one gates
@@ -181,7 +278,7 @@ impl<R: Provider> std::fmt::Debug for Pooled<R> {
                 "fingerprint",
                 &self.current_fingerprint.load(Ordering::Relaxed),
             )
-            .field("available_permits", &self.semaphore.available_permits())
+            .field("available_permits", &self.capacity.load().available())
             .finish_non_exhaustive()
     }
 }
@@ -285,7 +382,7 @@ impl<R: Provider> Pooled<R> {
 
     /// Shared constructor body for [`new`](Self::new) / [`try_new`](Self::try_new).
     fn build(config: Config, fingerprint: u64) -> Self {
-        let semaphore = Arc::new(Semaphore::new(config.max_size as usize));
+        let capacity = arc_swap::ArcSwap::from_pointee(PoolCapacity::new(config.max_size as usize));
         // #390: cap concurrent instance creation. `max(1)` protects us
         // from a pathological `max_concurrent_creates = 0` config that
         // would otherwise deadlock the pool on first acquire.
@@ -293,7 +390,7 @@ impl<R: Provider> Pooled<R> {
             (config.max_concurrent_creates as usize).max(1),
         ));
         Self {
-            semaphore,
+            capacity,
             create_semaphore,
             config,
             current_fingerprint: Arc::new(AtomicU64::new(fingerprint)),
@@ -313,11 +410,12 @@ impl<R: Provider> Pooled<R> {
     /// slightly inconsistent in high-concurrency scenarios.
     pub async fn stats(&self, store: &InstanceStore<PoolEntry<R>>) -> PoolStats {
         let idle = store.len().await;
-        let available_permits = self.semaphore.available_permits();
-        let in_use = (self.config.max_size as usize).saturating_sub(available_permits);
+        let capacity = self.capacity.load();
+        let available_permits = capacity.available();
+        let in_use = capacity.in_use();
         PoolStats {
             idle,
-            capacity: self.config.max_size,
+            capacity: u32::try_from(capacity.target()).unwrap_or(u32::MAX),
             available_permits,
             in_use,
         }
@@ -459,9 +557,9 @@ where
     type Entry = PoolEntry<R>;
 
     fn try_reserve(&self, _store: StoreView<'_, PoolEntry<R>>) -> Result<Ticket, Unavailable> {
-        self.semaphore
-            .clone()
-            .try_acquire_owned()
+        self.capacity
+            .load()
+            .try_acquire()
             .map(Ticket::permit)
             .map_err(|_| Unavailable::Saturated { retry_after: None })
     }
@@ -691,8 +789,18 @@ where
             .store(fingerprint, Ordering::Release);
     }
 
+    fn inherit_from(&self, previous: &Self) {
+        let shared = previous.capacity.load_full();
+        shared.resize(self.config.max_size as usize);
+        self.capacity.store(shared);
+    }
+
+    fn leases_out(&self) -> Option<usize> {
+        Some(self.capacity.load().in_use())
+    }
+
     fn phase(&self, _store: StoreView<'_, PoolEntry<R>>) -> AdmissionPhase {
-        if self.semaphore.available_permits() == 0 {
+        if self.capacity.load().available() == 0 {
             AdmissionPhase::Saturated
         } else {
             AdmissionPhase::Ready
@@ -700,10 +808,9 @@ where
     }
 
     fn load(&self, _store: StoreView<'_, PoolEntry<R>>) -> Option<Load> {
-        let available = self.semaphore.available_permits();
-        let capacity = self.config.max_size as usize;
-        let used = capacity.saturating_sub(available);
-        Some(Load::permits(used, capacity))
+        let capacity = self.capacity.load();
+        let target = capacity.target();
+        Some(Load::permits(capacity.in_use().min(target), target))
     }
 
     fn tag(&self) -> TopologyTag {

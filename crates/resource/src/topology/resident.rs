@@ -1,4 +1,4 @@
-//! Resident topology — one retained instance shared by owning lease entries.
+//! Resident topology — one retained master at a time, shared by owning lease entries.
 
 use std::time::Duration;
 

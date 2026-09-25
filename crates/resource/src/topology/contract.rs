@@ -433,7 +433,10 @@ pub struct MaintenanceSchedule {
 /// strong aliases out of retained leases or forgetting those aliases/leases
 /// violates this mandatory lifecycle contract; the type system cannot prevent
 /// such escapes by trusted in-process plugins. Built-in Resident keeps its
-/// retained root in the store and uses scoped leases for temporary sharing.
+/// current master in the store, but every guard owns an `Arc` alias of it, so a
+/// master displaced by a reload or recreate lives, untracked by the store,
+/// until its last guard is released; Resident counts and bounds those
+/// generations itself.
 ///
 /// # Not a trait object
 ///
@@ -737,6 +740,33 @@ pub trait Topology<R: Provider>: Send + Sync + 'static {
     /// Update the config fingerprint so stale idle entries evict on the next
     /// sweep / acquire. Default no-op (topologies that track no fingerprint).
     fn set_fingerprint(&self, _fingerprint: u64) {}
+
+    /// Takes over the identity-scoped state of `previous`, the registration of
+    /// the same row identity this one is about to replace.
+    ///
+    /// Called once, before this registration is published and while no
+    /// caller can reach it, so the successor never serves under state of its
+    /// own that the identity already spent. `Pooled` shares its checkout
+    /// budget this way: leases the displaced registration still holds keep
+    /// counting against `max_size`. Default no-op.
+    fn inherit_from(&self, _previous: &Self) {}
+
+    /// Leases holding this topology's checkout budget right now, across every
+    /// registration sharing it; `None` for a topology with no such budget.
+    ///
+    /// Idle refill and warmup count these next to their own in-flight work, so
+    /// a successor does not create instances the displaced registration's
+    /// leases already account for.
+    fn leases_out(&self) -> Option<usize> {
+        None
+    }
+
+    /// Instances this topology built that are still alive, when it tracks them
+    /// (`Resident`: the current master plus displaced ones leases hold).
+    /// Reported in [`ResourceHealthSnapshot::live_instances`](crate::ResourceHealthSnapshot::live_instances).
+    fn live_instances(&self) -> Option<usize> {
+        None
+    }
 
     // ── availability surface ────────────────────────────────────────────────
 

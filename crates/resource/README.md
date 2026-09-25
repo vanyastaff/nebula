@@ -562,6 +562,7 @@ See the `nebula-resource` row in the workspace [`docs/MATURITY.md`](../../docs/M
   `#![warn(missing_debug_implementations)]` active.
 - Integration tests: shared-resource cross-workflow path is verified in `crates/engine/tests/resource_integration.rs::shared_resource::cross_workflow_resource_sharing`.
 - Per-slot rotation fan-out: landed in this crate (`credential_fanout`, feature `rotation`) — see [`credential-rotation.md`](docs/credential-rotation.md).
+- Known gap: a credential that turns `ReauthRequired` or blocks new use without a material change emits no rotation event, so already-built resources keep serving it until material changes or the row is re-activated (see "What the fence does not cover" in [`credential-rotation.md`](docs/credential-rotation.md)).
 
 ## Related
 
@@ -612,7 +613,11 @@ that generation; ready retired siblings remain independently drainable.
 Only owners published into framework stores are accounted for. Cloning strong
 aliases out of `RetainedLease`, or forgetting aliases/leases, violates the
 contract; trusted in-process plugins are not isolated by the type system.
-Built-in Resident follows the contract structurally. The store itself cannot
+Built-in Resident keeps its current master in the store, but each guard owns an
+`Arc` alias of it: a master displaced by a reload or recreate lives outside the
+store until its last guard is released. Resident counts those generations
+(`ResourceHealthSnapshot::live_instances`) and builds no successor past four
+live masters. The store itself cannot
 be cloned or publicly drained, and the topology writes **zero** terminal
 destroy or revoke-fence code — those remain framework-owned for every topology,
 built-in and custom alike. The async hooks
@@ -687,7 +692,7 @@ exactly one `create` invocation, all 10 leases share the same `Arc`.
 
 #### Invalidation triggers
 
-- **Fingerprint change in `ResourceConfig`**. Calling `Manager::reload_config::<R>(new_config, &scope)` validates the new config, swaps it in, bumps the resource's `generation`, and emits `ResourceEvent::ConfigReloaded`. For `Pooled` topologies the pool's fingerprint atomic is updated so idle entries with the stale fingerprint are evicted on next acquire or release. `Resident` topologies keep the existing runtime alive until liveness fails (the rebuild then picks up the new config). No-op reloads (same fingerprint) short-circuit to `ReloadOutcome::NoChange` without bumping the generation.
+- **Fingerprint change in `ResourceConfig`**. Calling `Manager::reload_config::<R>(new_config, &scope)` validates the new config, swaps it in, bumps the resource's `generation`, and emits `ResourceEvent::ConfigReloaded`. For `Pooled` topologies the pool's fingerprint atomic is updated so idle entries with the stale fingerprint are evicted on next acquire or release. `Resident` topologies rebuild the master with the new config on the next acquire; leases on the old master keep it alive until they are released, and while four masters are still leased the current one keeps serving its old config until leases drain. No-op reloads (same fingerprint) short-circuit to `ReloadOutcome::NoChange` without bumping the generation.
 - **Different `R::key()`**. Two distinct `Resource` impls — even configured identically — register under separate registry rows. `acquire_resident::<TelegramBot>` and `acquire_resident::<AlternateBot>` produce independent runtimes and can be replaced or shut down independently.
 - **Different `ScopeLevel`**. The same `Resource` impl registered at `Organization(A)` and `Organization(B)` produces two independent instances; the registry's scope-aware `find_by_scope` does an exact match first and falls back to `Global` only when no exact match exists. Per-scope reloads / shutdowns affect only the matching scope.
 - **Manager shutdown**. `Manager::shutdown()` cancels the manager token; in-flight acquires drain via `graceful_shutdown` per canon §11.4. Cleanup stays open during handle drain. After shutdown, every acquire returns `ErrorKind::Cancelled`.

@@ -732,3 +732,76 @@ async fn reload_config_rejected_when_shutdown() {
     assert!(result.is_err());
     assert_eq!(*result.unwrap_err().kind(), ErrorKind::Cancelled);
 }
+
+/// Reloads under held leases cannot stack resident masters without bound:
+/// displaced masters the leases keep alive count, and past the limit the live
+/// master keeps serving its old config until they are released.
+#[tokio::test]
+async fn resident_reloads_under_held_leases_are_bounded() {
+    let manager = Manager::new();
+    manager
+        .register(RegistrationSpec {
+            resource: ResidentTestResource::new(),
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: Resident::<ResidentTestResource>::new(ResidentConfig::default()),
+            recovery_gate: None,
+            rate_limit: None,
+        })
+        .expect("register");
+    let ctx = test_ctx();
+    let live = || {
+        manager
+            .health_check::<ResidentTestResource>(&ScopeLevel::Global)
+            .expect("health")
+            .live_instances
+            .expect("resident tracks its live masters")
+    };
+
+    let mut held = Vec::new();
+    for reload in 0..20 {
+        manager
+            .reload_config::<ResidentTestResource>(
+                TestConfig {
+                    name: format!("test-v{reload}"),
+                },
+                &ScopeLevel::Global,
+            )
+            .expect("reload");
+        held.push(
+            manager
+                .acquire_resident::<ResidentTestResource>(&ctx, &AcquireOptions::default())
+                .await
+                .expect("a live master keeps serving"),
+        );
+        assert!(live() <= 4, "live masters {} exceed the bound", live());
+    }
+    assert_eq!(live(), 4);
+    let served: std::collections::HashSet<u64> = held
+        .iter()
+        .map(|guard| guard.load(Ordering::Relaxed))
+        .collect();
+    assert_eq!(served.len(), 4, "only four masters were ever built");
+
+    drop(held);
+    // Displaced masters are destroyed on the release queue; once they are
+    // gone the pending reload builds its successor.
+    let after = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let guard = manager
+                .acquire_resident::<ResidentTestResource>(&ctx, &AcquireOptions::default())
+                .await
+                .expect("the current master keeps serving");
+            let id = guard.load(Ordering::Relaxed);
+            drop(guard);
+            if !served.contains(&id) {
+                break id;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the pending reload takes effect once the leases are released");
+    assert!(!served.contains(&after));
+}

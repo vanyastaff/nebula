@@ -377,6 +377,12 @@ pub struct ResourceHealthSnapshot {
     pub metrics: Option<ResourceOpsSnapshot>,
     /// Config generation counter.
     pub generation: u64,
+    /// Instances the topology built that are still alive, when it tracks them.
+    ///
+    /// For `Resident` this is the current master plus displaced masters that
+    /// outstanding leases still hold after a reload or recreate; more than one
+    /// means a successor is serving while older generations drain.
+    pub live_instances: Option<usize>,
 }
 
 /// Central registry and lifecycle manager for all resources.
@@ -770,6 +776,7 @@ impl Manager {
             gate_state: managed.recovery_gate.as_ref().map(|g| g.state()),
             metrics: self.metrics.as_ref().map(ResourceOpsMetrics::snapshot),
             generation: managed.generation(),
+            live_instances: crate::topology::Topology::<R>::live_instances(&managed.topology),
         })
     }
 

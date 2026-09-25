@@ -706,7 +706,7 @@ where
             return usize::MAX;
         };
         let idle = self.store.len().await;
-        let in_flight = self.in_flight_count().saturating_sub(1);
+        let in_flight = self.outstanding(1);
         capacity.saturating_sub(idle + in_flight + running)
     }
 
@@ -787,7 +787,7 @@ where
             // above for why this is bounded to `deficit` attempts total
             // rather than looping until `target` is actually reached.
             let idle_now = self.store.len().await;
-            let in_flight = self.in_flight_count();
+            let in_flight = self.outstanding(0);
             let headroom = match self.store.capacity() {
                 Some(cap) => cap.saturating_sub(idle_now + in_flight),
                 // Unbounded topology: the outer `deficit`-attempt cap is the

@@ -34,6 +34,12 @@ runtime value. The author constructs the concrete topology and hands it to
 
 **N interchangeable instances managed by a checkout / recycle / destroy lifecycle.**
 
+`max_size` bounds the row identity, not one registration: a replacement of the
+same identity (credential refresh, new stored version, reload) takes over the
+budget, so leases the displaced registration still holds keep counting until
+their instances are destroyed. A smaller `max_size` on replacement converges as
+those leases return.
+
 ### Trait set
 
 ```rust,ignore
@@ -110,7 +116,9 @@ fence) / `Drop` (destroy).
 
 ## Resident
 
-**A single retained instance shared through owning lease entries.**
+**One retained master at a time, shared through owning lease entries.** A
+reload or recreate builds a successor; the displaced master lives until its
+last lease is released, and at most four masters are alive at once.
 
 ### Trait set
 
@@ -158,15 +166,20 @@ manager.register(RegistrationSpec {
 
 The Manager dedupes by `(R::key(), ScopeLevel, SlotIdentity)`. 10 concurrent
 acquires at the same scope and credential identity produce **one**
-`Provider::create`; every lease points at the one retained master through a
+`Provider::create`; every lease points at the current retained master through a
 topology-owned entry. See
 [`examples/examples/resource_telegram_multi_workflow.rs`](../../../examples/examples/resource_telegram_multi_workflow.rs).
 
 ### Friction points
 
-- **Retained ownership is framework-visible.** Resident publishes its master in
-  the non-cloneable retained store and keeps only an opaque retained identity;
-  terminal cleanup accounts for roots published into the store. Trusted custom
+- **Retained ownership is framework-visible, guards are not.** Resident publishes
+  its master in the non-cloneable retained store and keeps only an opaque
+  retained identity; terminal cleanup accounts for roots published into the
+  store. Each guard owns an `Arc` alias of the master, so a master displaced by
+  a reload or recreate lives outside the store until its last guard drops.
+  Resident counts those (`ResourceHealthSnapshot::live_instances`) and builds
+  no successor past four: a live master keeps serving its old config, a dead
+  one answers `Backpressure`. Trusted custom
   topologies must not clone or forget untracked strong aliases outside it;
   doing so violates the lifecycle contract and escapes this accounting.
 - **Shutdown retires roots while leases remain live.** Retained and idle parents
