@@ -17,7 +17,7 @@ use crate::{
     Error, ResourceContext, ResourceGuard, RetainStatus, RetainedStore, ScopeLevel, SlotIdentity,
     TeardownCx,
     resource::{Provider, ResourceConfig, ResourceMetadataDraft},
-    topology::{CreatedEntry, Ticket, Topology, Unavailable, store::InstanceStore},
+    topology::{CreatedEntry, Ticket, Topology, Unavailable, store::StoreView},
 };
 
 #[test]
@@ -110,7 +110,7 @@ struct QuiescingTopology {
 
 impl Topology<LeasedResource> for QuiescingTopology {
     type Entry = Arc<AtomicUsize>;
-    fn try_reserve(&self, _: &InstanceStore<Self::Entry>) -> Result<Ticket, Unavailable> {
+    fn try_reserve(&self, _: StoreView<'_, Self::Entry>) -> Result<Ticket, Unavailable> {
         Ok(Ticket::infallible())
     }
     async fn create_entry(
@@ -174,6 +174,7 @@ async fn fixture() -> Fixture {
             slot_identity: SlotIdentity::Unbound,
             topology,
             recovery_gate: None,
+            rate_limit: None,
         })
         .unwrap();
     let row = manager
@@ -245,6 +246,7 @@ async fn retirement_coordinators_cannot_starve_external_releases() {
                     ..QuiescingTopology::default()
                 },
                 recovery_gate: None,
+                rate_limit: None,
             })
             .unwrap();
     }
@@ -487,6 +489,7 @@ async fn scoped_shared_rows_remain_usable_until_each_final_consumer_releases() {
                 slot_identity: SlotIdentity::Unbound,
                 topology: QuiescingTopology::default(),
                 recovery_gate: None,
+                rate_limit: None,
             })
             .unwrap();
         let context = ResourceContext::minimal(
@@ -662,6 +665,7 @@ async fn external_parent_and_child_stay_live_after_both_roots_retire() {
             slot_identity: SlotIdentity::Unbound,
             topology: crate::Resident::new(Default::default()),
             recovery_gate: None,
+            rate_limit: None,
         })
         .unwrap();
     let parent = manager

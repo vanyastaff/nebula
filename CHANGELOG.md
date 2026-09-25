@@ -43,6 +43,19 @@ changes are expected between minor releases — call them out here.
   adjudication. Explicitly delete the affected credential and acquire a new
   credential id after verifying the provider state. This change does not yet
   provide durable acquisition reservations or command receipts.
+- **Resource rate limiting and stored-resource activation advance development
+  packages to 0.20.0 in lockstep.** `ResourceRow` gains `topology` and
+  `resilience_override` (migrations 0058–0060: operator settings, cross-process
+  resource status, PostgreSQL rate limits). `RegistrationSpec` gains
+  `rate_limit`; `RegisterRequest` gains `topology`, `resilience_override`,
+  `limit_key` and `row_id`; `ResourceFactory` gains `validate_topology`,
+  `resilience_policy`, `validate_resilience_override` and
+  `validate_credential_bindings`. The resource status
+  seam is async and reads worker-published status from storage. The pool
+  `WarmupStrategy` default is now `Sequential` and every strategy is honoured,
+  including by a background warmup when a stored row activates. Exact-version
+  SDK consumers and external implementations of `ResourceStore` or
+  `ResourceFactory` must update together.
 - **Durable credential reauthentication advances development packages to 0.18.0
   in lockstep.** Refresh claims and sentinel incidents are owner-qualified, and
   threshold escalation now records the incident and advances the credential to
@@ -566,6 +579,34 @@ let admitted = recorded.readmit_against(fresh)?;
 
 ### Added
 
+- **Per-resource rate limits, shared across workers.** `nebula-resilience`
+  gains a GCRA limiter over a `LimitStore` contract (`reserve` with
+  `ReserveRequest::not_before`, `penalize`, `cancel`, `penalty`), with the
+  in-process `MemoryLimitStore` and a `conformance` test kit;
+  `nebula-storage` implements it on PostgreSQL (`PgLimitStore`, migration
+  0060). In `nebula-resource`, providers declare a `ResiliencePolicy` (rate,
+  per-key limits with `keyed`, `account_credential` slots, the `LimitScope`,
+  what stored rows may `overrides`, `max_penalty`); rows override within it.
+  Every row gets a `ResourceLimiter` (`ResourceGuard::limits()`,
+  `ResourceContext::limits()`): `wrap` turns a client into a `Limited` one
+  whose calls book one permit each and pause on a provider's "slow down"
+  recognised by a `Throttle` (`Verdict`, `on_error`, `NoThrottle`,
+  `retry_after_from_header`). `ManagerConfig::with_shared_limit_store` makes
+  cluster-scoped limits shared by every worker. The SDK re-exports these.
+  Stored resources activate per execution with their operator settings,
+  follow credential changes, retire when deleted, and publish their runtime
+  status per worker. With the `rotation` feature and a live fan-out driver,
+  a credential-bound row registers rotation-bound and its activation returns
+  once the fan-out has reread the credentials and the row accepts acquires
+  (`Manager::until_accepting`); without a live driver the row opts out of
+  rotation and activation's own credential re-check keeps it current. A row
+  that does not accept acquires yet builds no instances: warmup waits for
+  the maintenance refill. The API refuses a resource row whose credential
+  bindings name an undeclared slot, leave a required slot unbound or are not
+  credential ids (`ResourceActivatorRegistry::validate_credential_bindings`),
+  and pool settings refuse a `maintenance_interval_ms` above
+  `MAX_MAINTENANCE_INTERVAL` (one day), the longest period the maintenance
+  timer can be armed with.
 - **Bounded shutdown drains, and rate limiters that actually share.**
   `nebula-api` gains `ShutdownGate`, which wraps a router in
   `nebula_resilience::Gate`: new requests get 503 once closing, `/health` and

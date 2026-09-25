@@ -212,6 +212,7 @@ async fn main() -> anyhow::Result<()> {
         slot_identity: SlotIdentity::Unbound,
         topology: resident_runtime,
         recovery_gate: None,
+        rate_limit: None,
     })?;
     println!("[1] TelegramBot registered at Organization scope (org={org:?})");
 

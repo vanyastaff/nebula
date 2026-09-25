@@ -67,6 +67,9 @@ rmp-serde = { version = "1", optional = true }
 # no scraper observes, so a default-feature build exports no catalog series and
 # should not link the metrics registry to say so.
 nebula-metrics = { path = "../metrics", optional = true }
+# The GCRA `LimitStore` contract and its step functions, implemented over
+# PostgreSQL for cluster-wide rate limits.
+nebula-resilience = { path = "../resilience", optional = true, default-features = false }
 
 [features]
 default = []
@@ -99,6 +102,7 @@ postgres = [
   "sqlx/tls-rustls-ring-native-roots",
   "dep:hex",
   "dep:nebula-metrics",
+  "dep:nebula-resilience",
 ]
 sqlite = ["dep:sqlx", "sqlx/sqlite", "dep:nebula-metrics"]
 msgpack-storage = ["dep:rmp-serde"]
@@ -129,6 +133,9 @@ static_assertions = { workspace = true }
 # tenancy decorators to prove cross-tenant denial uniformly across
 # {InMemory, SQLite, Postgres} behind the decorator (spec §6.1).
 nebula-tenancy = { path = "../tenancy" }
+# The `LimitStore` conformance kit the PostgreSQL limit store is checked
+# against, the same cases the in-process store passes.
+nebula-resilience = { path = "../resilience", default-features = false, features = ["conformance"] }
 # Loom CAS-atomicity probe lives in the sibling crate
 # `nebula-storage-loom-probe` to avoid `--cfg loom` polluting transitive
 # deps (concurrent-queue, etc.) — see that crate's lib doc.

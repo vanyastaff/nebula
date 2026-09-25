@@ -173,6 +173,7 @@ fn bench_acquire(c: &mut Criterion) {
                 slot_identity: SlotIdentity::Unbound,
                 topology: Pooled::<KeepPool>::new(PoolConfig::default(), 0),
                 recovery_gate: None,
+                rate_limit: None,
             })
             .expect("register keep pool");
         manager
@@ -183,6 +184,7 @@ fn bench_acquire(c: &mut Criterion) {
                 slot_identity: SlotIdentity::Unbound,
                 topology: Pooled::<DiscardPool>::new(PoolConfig::default(), 0),
                 recovery_gate: None,
+                rate_limit: None,
             })
             .expect("register discard pool");
         manager
@@ -193,6 +195,7 @@ fn bench_acquire(c: &mut Criterion) {
                 slot_identity: SlotIdentity::Unbound,
                 topology: Resident::<SharedResident>::new(ResidentConfig::default()),
                 recovery_gate: None,
+                rate_limit: None,
             })
             .expect("register resident");
         manager

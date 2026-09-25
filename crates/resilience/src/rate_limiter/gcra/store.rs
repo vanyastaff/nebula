@@ -1,0 +1,504 @@
+//! Keyed GCRA state behind a store contract.
+//!
+//! [`LimitStore`] is the seam a limit is enforced through: this crate ships
+//! the in-process [`MemoryLimitStore`]; shared stores (a database, Redis)
+//! live in storage crates and implement the same contract by running the
+//! [`step`] functions atomically on their own clock. The
+//! contract is here, not in a storage port, because this crate sits below
+//! every storage crate and consumers of limits must not depend on storage.
+
+use std::{collections::HashMap, fmt, future::Future, pin::Pin, sync::Arc, time::Duration};
+
+use parking_lot::Mutex;
+use tokio::time::Instant;
+
+use super::{Denied, GcraState, Grant, Rate, nanos, step};
+
+/// Longest accepted [`LimitKey`] in bytes.
+pub const MAX_LIMIT_KEY_BYTES: usize = 512;
+
+/// Opaque identity of one limit.
+///
+/// Callers namespace and, where it carries personal data, hash it before it
+/// reaches a store: the store never interprets the key.
+#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct LimitKey(Arc<str>);
+
+impl LimitKey {
+    /// Validates a key: 1..=512 bytes of printable ASCII.
+    ///
+    /// # Errors
+    ///
+    /// [`LimitStoreError::InvalidKey`] otherwise.
+    pub fn new(key: impl AsRef<str>) -> Result<Self, LimitStoreError> {
+        let key = key.as_ref();
+        let valid = !key.is_empty()
+            && key.len() <= MAX_LIMIT_KEY_BYTES
+            && key.bytes().all(|byte| byte.is_ascii_graphic());
+        if valid {
+            Ok(Self(Arc::from(key)))
+        } else {
+            Err(LimitStoreError::InvalidKey)
+        }
+    }
+
+    /// The key as given.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for LimitKey {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.debug_tuple("LimitKey").field(&self.0).finish()
+    }
+}
+
+/// Caller-chosen identity of one logical reservation.
+///
+/// Repeating a reservation with the same id (a retried request, a replayed
+/// workflow step) returns the original grant instead of booking a second
+/// slot, for as long as that grant's slot has not arrived.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ReservationId(pub u128);
+
+/// One reservation request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ReserveRequest {
+    /// Permits to book.
+    pub permits: u32,
+    /// Longest acceptable wait; [`Duration::MAX`] for none.
+    pub max_wait: Duration,
+    /// Makes a repeated request return the original grant.
+    pub id: Option<ReservationId>,
+    /// Earliest slot to book, on the store's clock (a [`Grant::allow_at`]
+    /// from the same store); `0` for none.
+    pub not_before: u64,
+}
+
+impl ReserveRequest {
+    /// Books `permits` with at most `max_wait` of waiting.
+    #[must_use]
+    pub const fn new(permits: u32, max_wait: Duration) -> Self {
+        Self {
+            permits,
+            max_wait,
+            id: None,
+            not_before: 0,
+        }
+    }
+
+    /// Books no earlier than `allow_at`, a [`Grant::allow_at`] this same
+    /// store returned: the slot lines up with one booked under another key,
+    /// so a call waiting for both runs when each allows it.
+    #[must_use]
+    pub const fn not_before(mut self, allow_at: u64) -> Self {
+        self.not_before = allow_at;
+        self
+    }
+
+    /// Makes the request idempotent under `id`.
+    #[must_use]
+    pub const fn with_id(mut self, id: ReservationId) -> Self {
+        self.id = Some(id);
+        self
+    }
+}
+
+/// Why a store could not answer. Distinct from a [`Denied`] decision: a
+/// denial is an answer, this is its absence, which callers handle by policy
+/// (fail closed, degrade).
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum LimitStoreError {
+    /// The key is empty, too long, or not printable ASCII.
+    #[error("limit key must be 1..=512 printable ASCII bytes")]
+    InvalidKey,
+    /// The backing store is unreachable or failed.
+    #[error("limit store unavailable")]
+    Unavailable(#[source] Box<dyn std::error::Error + Send + Sync>),
+}
+
+/// Store of keyed GCRA state.
+///
+/// Every method is one atomic transition of one key on the store's own
+/// clock. Implementations must never read a caller's clock, and must apply
+/// [`step::enforce`] so callers that disagree on a key's rate get the
+/// stricter one. `gcra::conformance` (feature `conformance`) holds the behaviour
+/// every implementation is checked against.
+pub trait LimitStore: Send + Sync {
+    /// Books permits under `key` (see [`step::reserve`]).
+    fn reserve(
+        &self,
+        key: &LimitKey,
+        rate: &Rate,
+        request: ReserveRequest,
+    ) -> impl Future<Output = Result<Result<Grant, Denied>, LimitStoreError>> + Send;
+
+    /// Blocks `key` for `retry_after`, capped at `max_penalty`
+    /// (see [`step::penalize`]).
+    fn penalize(
+        &self,
+        key: &LimitKey,
+        rate: &Rate,
+        retry_after: Duration,
+        max_penalty: Duration,
+    ) -> impl Future<Output = Result<(), LimitStoreError>> + Send;
+
+    /// Returns `grant`'s permits if it is still the tail of `key`
+    /// (see [`step::cancel`]); `false` when nothing was returned.
+    ///
+    /// The refund is `permits` intervals of the caller's `rate`, never of a
+    /// stricter rate the key enforced meanwhile: the key's effective interval
+    /// is at least the caller's, so refunding at the caller's never returns
+    /// more than was booked.
+    fn cancel(
+        &self,
+        key: &LimitKey,
+        rate: &Rate,
+        grant: &Grant,
+    ) -> impl Future<Output = Result<bool, LimitStoreError>> + Send;
+
+    /// Time left of the latest penalty on `key` ([`penalize`](Self::penalize)),
+    /// on the store's clock; zero when none is in force.
+    ///
+    /// A penalty moves the schedule for new bookings, but a caller that
+    /// booked a slot before it arrived would otherwise wake into it. Such a
+    /// caller asks here after sleeping, so a penalty recorded by any process
+    /// holds it back too. Reads only; changes nothing.
+    fn penalty(
+        &self,
+        key: &LimitKey,
+    ) -> impl Future<Output = Result<Duration, LimitStoreError>> + Send;
+}
+
+type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+/// Object-safe facade over [`LimitStore`], for `Arc<dyn ErasedLimitStore>`
+/// injection.
+pub trait ErasedLimitStore: Send + Sync {
+    /// See [`LimitStore::reserve`].
+    fn reserve_boxed<'a>(
+        &'a self,
+        key: &'a LimitKey,
+        rate: &'a Rate,
+        request: ReserveRequest,
+    ) -> BoxFut<'a, Result<Result<Grant, Denied>, LimitStoreError>>;
+
+    /// See [`LimitStore::penalize`].
+    fn penalize_boxed<'a>(
+        &'a self,
+        key: &'a LimitKey,
+        rate: &'a Rate,
+        retry_after: Duration,
+        max_penalty: Duration,
+    ) -> BoxFut<'a, Result<(), LimitStoreError>>;
+
+    /// See [`LimitStore::cancel`].
+    fn cancel_boxed<'a>(
+        &'a self,
+        key: &'a LimitKey,
+        rate: &'a Rate,
+        grant: &'a Grant,
+    ) -> BoxFut<'a, Result<bool, LimitStoreError>>;
+
+    /// [`LimitStore::penalty`], boxed.
+    fn penalty_boxed<'a>(
+        &'a self,
+        key: &'a LimitKey,
+    ) -> BoxFut<'a, Result<Duration, LimitStoreError>>;
+}
+
+impl<T: LimitStore> ErasedLimitStore for T {
+    fn reserve_boxed<'a>(
+        &'a self,
+        key: &'a LimitKey,
+        rate: &'a Rate,
+        request: ReserveRequest,
+    ) -> BoxFut<'a, Result<Result<Grant, Denied>, LimitStoreError>> {
+        Box::pin(self.reserve(key, rate, request))
+    }
+
+    fn penalize_boxed<'a>(
+        &'a self,
+        key: &'a LimitKey,
+        rate: &'a Rate,
+        retry_after: Duration,
+        max_penalty: Duration,
+    ) -> BoxFut<'a, Result<(), LimitStoreError>> {
+        Box::pin(self.penalize(key, rate, retry_after, max_penalty))
+    }
+
+    fn cancel_boxed<'a>(
+        &'a self,
+        key: &'a LimitKey,
+        rate: &'a Rate,
+        grant: &'a Grant,
+    ) -> BoxFut<'a, Result<bool, LimitStoreError>> {
+        Box::pin(self.cancel(key, rate, grant))
+    }
+
+    fn penalty_boxed<'a>(
+        &'a self,
+        key: &'a LimitKey,
+    ) -> BoxFut<'a, Result<Duration, LimitStoreError>> {
+        Box::pin(self.penalty(key))
+    }
+}
+
+#[derive(Debug, Default)]
+struct Entry {
+    state: GcraState,
+    /// Rate the key enforced last (see [`step::enforce`]).
+    rate: Option<Rate>,
+    /// Grants still waiting for their slot, by reservation id.
+    pending: HashMap<ReservationId, Grant>,
+    /// End of the latest penalty; the TAT a penalty sets is at least this,
+    /// so the entry outlives it.
+    penalized_until: u64,
+}
+
+impl Entry {
+    /// The rate to apply now, recorded as the key's rate, with the state
+    /// rebased onto it.
+    fn enforce(&mut self, now: u64, requested: &Rate) -> Rate {
+        let (rate, state) = step::enforce(self.state, now, self.rate.as_ref(), requested);
+        self.state = state;
+        self.rate = Some(rate);
+        rate
+    }
+
+    /// An entry with nothing pending and a past TAT carries no state: it
+    /// behaves exactly like an absent key.
+    fn is_idle(&self, now: u64) -> bool {
+        self.pending.is_empty() && self.state.tat <= now
+    }
+}
+
+/// Operations between sweeps of idle keys.
+const SWEEP_EVERY: u64 = 1024;
+
+#[derive(Debug, Default)]
+struct Keys {
+    entries: HashMap<LimitKey, Entry>,
+    /// Shared by every key that arrived while the store was full.
+    overflow: Entry,
+    overflowed: u64,
+    ops: u64,
+}
+
+/// Default bound on the keys a [`MemoryLimitStore`] holds.
+pub const DEFAULT_MAX_KEYS: usize = 100_000;
+
+/// In-process [`LimitStore`]: limits are per process.
+///
+/// Idle keys (TAT in the past, nothing pending) are swept every
+/// 1024 operations; their state is indistinguishable from an absent key, so
+/// sweeping never loosens a limit.
+///
+/// The number of keys is bounded, so callers that mint keys from request
+/// data (a limit per chat, per recipient) cannot grow it without end. When
+/// the store is full and sweeping frees nothing, a new key shares one
+/// overflow limit with every other key that arrived meanwhile: stricter than
+/// its own limit, never looser. [`overflowed`](Self::overflowed) counts
+/// those operations.
+#[derive(Debug)]
+pub struct MemoryLimitStore {
+    base: Instant,
+    max_keys: usize,
+    keys: Mutex<Keys>,
+}
+
+impl Default for MemoryLimitStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl MemoryLimitStore {
+    /// An empty store holding up to [`DEFAULT_MAX_KEYS`] keys, whose clock
+    /// starts now (`tokio::time`).
+    #[must_use]
+    pub fn new() -> Self {
+        Self::with_max_keys(DEFAULT_MAX_KEYS)
+    }
+
+    /// An empty store holding up to `max_keys` keys (at least one).
+    #[must_use]
+    pub fn with_max_keys(max_keys: usize) -> Self {
+        Self {
+            base: Instant::now(),
+            max_keys: max_keys.max(1),
+            keys: Mutex::new(Keys::default()),
+        }
+    }
+
+    /// Keys currently holding state.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.keys.lock().entries.len()
+    }
+
+    /// Operations that ran on the shared overflow limit because the store
+    /// was full.
+    #[must_use]
+    pub fn overflowed(&self) -> u64 {
+        self.keys.lock().overflowed
+    }
+
+    /// `true` when no key holds state.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    fn now(&self) -> u64 {
+        nanos(self.base.elapsed())
+    }
+
+    fn with_entry<T>(&self, key: &LimitKey, apply: impl FnOnce(&mut Entry, u64) -> T) -> T {
+        let mut guard = self.keys.lock();
+        // Read under the lock: a time read before waiting for it could be
+        // stale by the time the transition runs, and a schedule computed
+        // from it could already lie in the past when the lock is released.
+        let now = self.now();
+        let keys = &mut *guard;
+        keys.ops = keys.ops.wrapping_add(1);
+        let is_new = !keys.entries.contains_key(key);
+        // A new key into a full store sweeps first: idle keys make room.
+        if keys.ops.is_multiple_of(SWEEP_EVERY) || (is_new && keys.entries.len() >= self.max_keys) {
+            // Reservations whose slot has arrived no longer need their id,
+            // and must not keep an otherwise idle key alive.
+            keys.entries.retain(|_, entry| {
+                entry.pending.retain(|_, grant| grant.allow_at > now);
+                !entry.is_idle(now)
+            });
+        }
+        if is_new && keys.entries.len() >= self.max_keys {
+            keys.overflowed = keys.overflowed.saturating_add(1);
+            let entry = &mut keys.overflow;
+            // Reservation ids are scoped to one key, and the overflow limit
+            // serves many: a repeated id there books again instead of being
+            // mistaken for another key's reservation. Booking twice errs on
+            // sending less; sharing one slot would send more.
+            entry.pending.clear();
+            let result = apply(entry, now);
+            entry.pending.clear();
+            return result;
+        }
+        // A key may have been served by the overflow limit while the store
+        // was full; given its own entry while that limit is still busy, it
+        // starts from the overflow schedule rather than a fresh one, so the
+        // move never hands it a slot it already spent. A key that never
+        // overflowed inherits the same, which only errs on the strict side.
+        let inherited = (is_new && !keys.overflow.is_idle(now)).then(|| Entry {
+            state: keys.overflow.state,
+            rate: keys.overflow.rate,
+            pending: HashMap::new(),
+            penalized_until: keys.overflow.penalized_until,
+        });
+        let entry = keys
+            .entries
+            .entry(key.clone())
+            .or_insert_with(|| inherited.unwrap_or_default());
+        entry.pending.retain(|_, grant| grant.allow_at > now);
+        let result = apply(entry, now);
+        if entry.is_idle(now) {
+            keys.entries.remove(key);
+        }
+        drop(guard);
+        result
+    }
+}
+
+impl LimitStore for MemoryLimitStore {
+    async fn reserve(
+        &self,
+        key: &LimitKey,
+        rate: &Rate,
+        request: ReserveRequest,
+    ) -> Result<Result<Grant, Denied>, LimitStoreError> {
+        Ok(self.with_entry(key, |entry, now| {
+            // Enforced first, a repeat included: the repeat books nothing,
+            // but a stricter rate it declares still applies to the key.
+            let rate = entry.enforce(now, rate);
+            if let Some(original) = request.id.and_then(|id| entry.pending.get(&id)) {
+                return Ok(Grant {
+                    wait: Duration::from_nanos(original.allow_at.saturating_sub(now)),
+                    ..*original
+                });
+            }
+            let (decision, next) = step::reserve_from(
+                entry.state,
+                now,
+                &rate,
+                request.permits,
+                request.max_wait,
+                request.not_before,
+            );
+            if let Some(next) = next {
+                entry.state = next;
+            }
+            // A zero-permit grant books nothing, so there is nothing to
+            // return the original of.
+            if let (Ok(grant), Some(id)) = (&decision, request.id)
+                && grant.permits > 0
+                && grant.allow_at > now
+            {
+                entry.pending.insert(id, *grant);
+            }
+            decision
+        }))
+    }
+
+    async fn penalize(
+        &self,
+        key: &LimitKey,
+        rate: &Rate,
+        retry_after: Duration,
+        max_penalty: Duration,
+    ) -> Result<(), LimitStoreError> {
+        self.with_entry(key, |entry, now| {
+            let rate = entry.enforce(now, rate);
+            entry.state = step::penalize(entry.state, now, &rate, retry_after, max_penalty);
+            let until = now.saturating_add(nanos(retry_after.min(max_penalty)));
+            entry.penalized_until = entry.penalized_until.max(until);
+        });
+        Ok(())
+    }
+
+    async fn penalty(&self, key: &LimitKey) -> Result<Duration, LimitStoreError> {
+        let keys = self.keys.lock();
+        let now = self.now();
+        // A key without its own entry may have run on the shared overflow
+        // limit, even if the store has room again by now, so it answers to
+        // that limit's penalty; for a key that never overflowed this only
+        // errs strict, and only while the overflow limit is penalized.
+        let until = keys
+            .entries
+            .get(key)
+            .map_or(keys.overflow.penalized_until, |entry| entry.penalized_until);
+        drop(keys);
+        Ok(Duration::from_nanos(until.saturating_sub(now)))
+    }
+
+    async fn cancel(
+        &self,
+        key: &LimitKey,
+        rate: &Rate,
+        grant: &Grant,
+    ) -> Result<bool, LimitStoreError> {
+        Ok(self.with_entry(key, |entry, now| {
+            match step::cancel(entry.state, now, rate, grant) {
+                Some(next) => {
+                    entry.state = next;
+                    entry.pending.retain(|_, pending| pending.seq != grant.seq);
+                    true
+                },
+                None => false,
+            }
+        }))
+    }
+}

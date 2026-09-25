@@ -91,6 +91,7 @@ fn nested_cleanup_manager() -> (Manager, NestedCleanupResource) {
             slot_identity: SlotIdentity::Unbound,
             topology: nebula_resource::Bounded::unbounded(),
             recovery_gate: None,
+            rate_limit: None,
         })
         .unwrap();
     (manager, resource)
@@ -318,6 +319,7 @@ fn resident_lifecycle_manager() -> (Manager, ResidentLifecycleResource) {
                 ..Default::default()
             }),
             recovery_gate: None,
+            rate_limit: None,
         })
         .unwrap();
     (manager, resource)
@@ -343,6 +345,7 @@ async fn graceful_shutdown_reports_terminal_failure_and_finishes_sibling_rows() 
             slot_identity: identity.clone(),
             topology: Resident::new(ResidentConfig::default()),
             recovery_gate: None,
+            rate_limit: None,
         })
         .unwrap();
     let first_outcome = manager
@@ -684,6 +687,7 @@ async fn release_teardown_survives_caller_cancellation() {
             slot_identity: SlotIdentity::Unbound,
             topology: pool_rt,
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("registration should succeed");
 
@@ -971,6 +975,7 @@ async fn warmup_isolates_a_panicking_author_create() {
         max_size: 4,
         idle_timeout: None,
         max_lifetime: None,
+        warmup: nebula_resource::topology::pooled::config::WarmupStrategy::Sequential,
         ..Default::default()
     };
     let pool_rt = Pooled::<PanickingCreatePoolResource>::new(pool_config, 1);
@@ -985,6 +990,154 @@ async fn warmup_isolates_a_panicking_author_create() {
         err.to_string().contains("panicked"),
         "warmup_pool must surface the isolated-panic message, got: {err}"
     );
+}
+
+/// Warmup follows the pool's configured strategy: nothing for `None`,
+/// `min_size` creates for the others, and `Staggered` spaces them by its
+/// interval.
+#[tokio::test(start_paused = true)]
+async fn warmup_follows_the_configured_strategy() {
+    use nebula_resource::topology::pooled::config::{Config, WarmupStrategy};
+
+    let second = std::time::Duration::from_secs(1);
+    for (strategy, created, least_elapsed) in [
+        (WarmupStrategy::None, 0, std::time::Duration::ZERO),
+        (WarmupStrategy::Sequential, 3, std::time::Duration::ZERO),
+        (WarmupStrategy::Parallel, 3, std::time::Duration::ZERO),
+        (
+            WarmupStrategy::Staggered { interval: second },
+            3,
+            second * 2,
+        ),
+    ] {
+        let manager = Manager::new();
+        let resource = PoolTestResource::new();
+        let pool = Pooled::<PoolTestResource>::new(
+            Config {
+                min_size: 3,
+                max_size: 4,
+                idle_timeout: None,
+                max_lifetime: None,
+                warmup: strategy,
+                ..Default::default()
+            },
+            1,
+        );
+        register_pool(&manager, resource.clone(), test_config(), pool);
+        let started = tokio::time::Instant::now();
+        let warmed = manager
+            .warmup_pool::<PoolTestResource>(&test_ctx())
+            .await
+            .expect("warmup succeeds");
+        assert_eq!(warmed, created, "{strategy:?}");
+        assert_eq!(
+            resource.create_counter.load(Ordering::SeqCst),
+            created as u64,
+            "{strategy:?}"
+        );
+        assert!(
+            started.elapsed() >= least_elapsed,
+            "{strategy:?} took {:?}",
+            started.elapsed()
+        );
+    }
+}
+
+/// A pool with a minimum keeps it even with eviction disabled: the
+/// maintenance loop runs to refill the floor, so `min_size` holds without
+/// any eager warmup.
+#[tokio::test(start_paused = true)]
+async fn a_pool_without_eviction_still_refills_its_minimum() {
+    use nebula_resource::topology::pooled::config::{Config, WarmupStrategy};
+
+    let manager = Manager::new();
+    let resource = PoolTestResource::new();
+    let pool = Pooled::<PoolTestResource>::new(
+        Config {
+            min_size: 2,
+            max_size: 4,
+            idle_timeout: None,
+            max_lifetime: None,
+            warmup: WarmupStrategy::None,
+            maintenance_interval: std::time::Duration::from_secs(1),
+            ..Default::default()
+        },
+        1,
+    );
+    register_pool(&manager, resource.clone(), test_config(), pool);
+    for _ in 0..5 {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(
+        resource.create_counter.load(Ordering::SeqCst),
+        2,
+        "the refill brought the pool to its minimum"
+    );
+}
+
+/// The author-hook ceiling bounds each warmup create, not the stagger
+/// schedule: a staggered warmup longer than the ceiling still reaches
+/// `min_size`.
+#[tokio::test(start_paused = true)]
+async fn a_long_staggered_warmup_is_not_cut_short() {
+    use nebula_resource::topology::pooled::config::{Config, WarmupStrategy};
+
+    let manager = Manager::new();
+    let resource = PoolTestResource::new();
+    let pool = Pooled::<PoolTestResource>::new(
+        Config {
+            min_size: 3,
+            max_size: 3,
+            idle_timeout: None,
+            max_lifetime: None,
+            warmup: WarmupStrategy::Staggered {
+                interval: std::time::Duration::from_secs(20),
+            },
+            ..Default::default()
+        },
+        1,
+    );
+    register_pool(&manager, resource.clone(), test_config(), pool);
+    let warmed = manager
+        .warmup_pool::<PoolTestResource>(&test_ctx())
+        .await
+        .expect("warmup succeeds");
+    assert_eq!(warmed, 3);
+}
+
+/// Warmup leaves room for instances already leased: with `max_size` in
+/// use by a lease plus idle entries, it stops at the cap instead of
+/// filling `min_size` idle entries on top.
+#[tokio::test]
+async fn warmup_stops_at_the_pool_cap_counting_leases() {
+    use nebula_resource::topology::pooled::config::{Config, WarmupStrategy};
+
+    let manager = Manager::new();
+    let resource = PoolTestResource::new();
+    let pool = Pooled::<PoolTestResource>::new(
+        Config {
+            min_size: 3,
+            max_size: 3,
+            idle_timeout: None,
+            max_lifetime: None,
+            warmup: WarmupStrategy::Sequential,
+            ..Default::default()
+        },
+        1,
+    );
+    register_pool(&manager, resource.clone(), test_config(), pool);
+    let lease = manager
+        .acquire_pooled::<PoolTestResource>(&test_ctx(), &AcquireOptions::default())
+        .await
+        .expect("lease");
+    let warmed = manager
+        .warmup_pool::<PoolTestResource>(&test_ctx())
+        .await
+        .expect("warmup succeeds");
+    assert_eq!(warmed, 2, "one of three instances is leased");
+    assert_eq!(resource.create_counter.load(Ordering::SeqCst), 3);
+    drop(lease);
 }
 
 // ---------------------------------------------------------------------------
@@ -1707,6 +1860,7 @@ async fn release_owned_resident_guard_returns_ok() {
             slot_identity: SlotIdentity::Unbound,
             topology: resident_rt,
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("registration should succeed");
 
@@ -1747,6 +1901,7 @@ async fn release_then_drop_emits_exactly_one_released_event() {
             slot_identity: SlotIdentity::Unbound,
             topology: resident_rt,
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("registration should succeed");
 
@@ -1805,6 +1960,7 @@ async fn rejected_release_never_emits_released() {
             slot_identity: SlotIdentity::Unbound,
             topology: resident_rt,
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("registration should succeed");
 

@@ -123,7 +123,7 @@ impl ResidentProvider for TestRes {
 fn test_factory(create_counter: Arc<AtomicU64>) -> Arc<dyn ResourceFactory> {
     Arc::new(KindActivator::<TestRes, _, _>::new(
         move || TestRes::new(create_counter.clone()),
-        || Resident::<TestRes>::new(resident::config::Config::default()),
+        crate::topology::fixed(|| Resident::<TestRes>::new(resident::config::Config::default())),
     ))
 }
 
@@ -262,7 +262,7 @@ impl nebula_core::DeclaresDependencies for BoundTestRes {
         Dependencies::new().slot_field(nebula_core::SlotField {
             slot_key: "auth",
             default_id: "auth",
-            kind: nebula_core::dependencies::SlotKind::Credential {
+            kind: SlotKind::Credential {
                 type_id: TypeId::of::<()>(),
                 type_name: std::any::type_name::<()>(),
                 key: nebula_core::credential_key!("test.factory-credential"),
@@ -308,6 +308,20 @@ impl ResourceFactory for DivergentIdentityFactory {
         self.inner.validate(config_json)
     }
 
+    fn validate_topology(&self, settings: Option<&serde_json::Value>) -> Result<(), ResourceError> {
+        self.inner.validate_topology(settings)
+    }
+
+    fn resilience_policy(&self) -> crate::rate_limit::ResiliencePolicy {
+        self.inner.resilience_policy()
+    }
+
+    fn topology_schema(
+        &self,
+    ) -> Result<Option<nebula_schema::ValidSchema>, crate::MetadataBuildError> {
+        self.inner.topology_schema()
+    }
+
     fn register<'a>(
         &'a self,
         manager: &'a Manager,
@@ -351,6 +365,10 @@ fn request(expr_engine: &ExpressionEngine) -> RegisterRequest<'_> {
         slot_installs: Vec::new(),
         scope: ScopeLevel::Global,
         recovery_gate: None,
+        topology: None,
+        resilience_override: None,
+        row_id: None,
+        limit_key: None,
     }
 }
 
@@ -365,7 +383,7 @@ fn registration_debug_redacts_opaque_config_and_binding_payloads() {
         slot_name: "slot_name_sentinel".to_owned(),
         credential_key: nebula_core::CredentialKey::new("credential_key_sentinel")
             .expect("valid test key"),
-        credential_id: Some(nebula_credential::CredentialId::new()),
+        credential_id: Some(CredentialId::new()),
         credential_scope: Some(nebula_credential::TenantScope::new("org", "workspace")),
     });
     for debug in [format!("{request:?}"), format!("{request:#?}")] {
@@ -470,19 +488,63 @@ async fn known_kind_registers_against_manager() {
     );
 }
 
+/// Two stored rows of one kind in one scope must stay two registry rows.
+/// Keyed by bindings alone both would be `Unbound` and the second activation
+/// would silently replace the first row's runtime.
+#[tokio::test]
+async fn stored_rows_of_one_kind_in_one_scope_stay_distinct() {
+    let manager = Manager::new();
+    let expr_engine = ExpressionEngine::with_cache_size(16);
+    let mut registry = ResourceActivatorRegistry::new();
+    registry
+        .insert("test-kind", test_factory(Arc::new(AtomicU64::new(0))))
+        .expect("test resource metadata admits");
+
+    let mut identities = Vec::new();
+    for row_id in ["res_first", "res_second"] {
+        let outcome = registry
+            .register(
+                "test-kind",
+                &manager,
+                RegisterRequest {
+                    row_id: Some(row_id.to_owned()),
+                    ..request(&expr_engine)
+                },
+            )
+            .await
+            .expect("stored row registers");
+        identities.push(outcome.slot_identity);
+    }
+
+    assert_ne!(identities[0], identities[1]);
+    for identity in &identities {
+        assert!(
+            manager.has_registered_for_identity(&TestRes::key(), &ScopeLevel::Global, identity),
+            "each stored row keeps its own registry row"
+        );
+    }
+    assert_eq!(
+        identities[0],
+        SlotIdentity::from_row_bindings(Some("res_first"), std::iter::empty()),
+        "the recorded identity is the canonical row-bound derivation"
+    );
+}
+
 #[cfg(feature = "rotation")]
 #[tokio::test]
 async fn identity_mismatch_is_typed_and_rolls_back_manager_and_fanout_state() {
     let manager = Arc::new(Manager::new());
     let expression_engine = ExpressionEngine::with_cache_size(16);
-    let credential_id = nebula_credential::CredentialId::new();
+    let credential_id = CredentialId::new();
     let fanout_index = Arc::new(crate::ResourceFanoutIndex::new());
     let _reconciliation = fanout_index
         .acquire_authoritative_reconciliation_for(&manager)
         .expect("manager affinity");
     let inner: Arc<dyn ResourceFactory> = Arc::new(KindActivator::<BoundTestRes, _, _>::new(
         BoundTestRes::new,
-        || Resident::<BoundTestRes>::new(resident::config::Config::default()),
+        crate::topology::fixed(|| {
+            Resident::<BoundTestRes>::new(resident::config::Config::default())
+        }),
     ));
     let mut registry = ResourceActivatorRegistry::new();
     registry
@@ -508,6 +570,10 @@ async fn identity_mismatch_is_typed_and_rolls_back_manager_and_fanout_state() {
                 slot_installs: Vec::new(),
                 scope: ScopeLevel::Global,
                 recovery_gate: None,
+                topology: None,
+                resilience_override: None,
+                row_id: None,
+                limit_key: None,
             },
             Some(&fanout_index),
         )
@@ -536,8 +602,8 @@ async fn identity_mismatch_is_typed_and_rolls_back_manager_and_fanout_state() {
 async fn conflicting_duplicate_slot_bindings_fail_before_manager_publication() {
     let manager = Manager::new();
     let expression_engine = ExpressionEngine::with_cache_size(16);
-    let first_credential_id = nebula_credential::CredentialId::new();
-    let second_credential_id = nebula_credential::CredentialId::new();
+    let first_credential_id = CredentialId::new();
+    let second_credential_id = CredentialId::new();
     let fanout_index = Arc::new(crate::ResourceFanoutIndex::new());
     let mut registry = ResourceActivatorRegistry::new();
     registry
@@ -545,7 +611,9 @@ async fn conflicting_duplicate_slot_bindings_fail_before_manager_publication() {
             "test-conflicting-bindings",
             Arc::new(KindActivator::<BoundTestRes, _, _>::new(
                 BoundTestRes::new,
-                || Resident::<BoundTestRes>::new(resident::config::Config::default()),
+                crate::topology::fixed(|| {
+                    Resident::<BoundTestRes>::new(resident::config::Config::default())
+                }),
             )),
         )
         .expect("typed fixture metadata admits");
@@ -580,6 +648,10 @@ async fn conflicting_duplicate_slot_bindings_fail_before_manager_publication() {
                 slot_installs: Vec::new(),
                 scope: ScopeLevel::Global,
                 recovery_gate: None,
+                topology: None,
+                resilience_override: None,
+                row_id: None,
+                limit_key: None,
             },
             Some(&fanout_index),
         )
@@ -597,8 +669,8 @@ async fn conflicting_duplicate_slot_bindings_fail_before_manager_publication() {
 async fn rotation_binding_without_owner_scope_fails_before_publication() {
     let manager = Manager::new();
     let expression_engine = ExpressionEngine::with_cache_size(16);
-    let valid_credential_id = nebula_credential::CredentialId::new();
-    let invalid_credential_id = nebula_credential::CredentialId::new();
+    let valid_credential_id = CredentialId::new();
+    let invalid_credential_id = CredentialId::new();
     let fanout_index = Arc::new(crate::ResourceFanoutIndex::new());
     let mut registry = ResourceActivatorRegistry::new();
     registry
@@ -606,7 +678,9 @@ async fn rotation_binding_without_owner_scope_fails_before_publication() {
             "test-missing-owner-scope",
             Arc::new(KindActivator::<BoundTestRes, _, _>::new(
                 BoundTestRes::new,
-                || Resident::<BoundTestRes>::new(resident::config::Config::default()),
+                crate::topology::fixed(|| {
+                    Resident::<BoundTestRes>::new(resident::config::Config::default())
+                }),
             )),
         )
         .expect("typed fixture metadata admits");
@@ -638,6 +712,10 @@ async fn rotation_binding_without_owner_scope_fails_before_publication() {
                 slot_installs: Vec::new(),
                 scope: ScopeLevel::Global,
                 recovery_gate: None,
+                topology: None,
+                resilience_override: None,
+                row_id: None,
+                limit_key: None,
             },
             Some(&fanout_index),
         )
@@ -657,7 +735,7 @@ async fn rotation_binding_without_owner_scope_fails_before_publication() {
 async fn rotation_binding_without_projection_ports_fails_before_publication() {
     let manager = Manager::new();
     let expression_engine = ExpressionEngine::with_cache_size(16);
-    let credential_id = nebula_credential::CredentialId::new();
+    let credential_id = CredentialId::new();
     let fanout_index = Arc::new(crate::ResourceFanoutIndex::new());
     let mut registry = ResourceActivatorRegistry::new();
     registry
@@ -665,7 +743,9 @@ async fn rotation_binding_without_projection_ports_fails_before_publication() {
             "test-missing-projection-ports",
             Arc::new(KindActivator::<BoundTestRes, _, _>::new(
                 BoundTestRes::without_projection,
-                || Resident::<BoundTestRes>::new(resident::config::Config::default()),
+                crate::topology::fixed(|| {
+                    Resident::<BoundTestRes>::new(resident::config::Config::default())
+                }),
             )),
         )
         .expect("typed fixture metadata admits");
@@ -686,6 +766,10 @@ async fn rotation_binding_without_projection_ports_fails_before_publication() {
                 slot_installs: Vec::new(),
                 scope: ScopeLevel::Global,
                 recovery_gate: None,
+                topology: None,
+                resilience_override: None,
+                row_id: None,
+                limit_key: None,
             },
             Some(&fanout_index),
         )
@@ -702,7 +786,7 @@ async fn rotation_binding_without_projection_ports_fails_before_publication() {
 async fn rotation_binding_rejects_unqualified_prepopulated_slot() {
     let manager = Manager::new();
     let expression_engine = ExpressionEngine::with_cache_size(16);
-    let credential_id = nebula_credential::CredentialId::new();
+    let credential_id = CredentialId::new();
     let fanout_index = Arc::new(crate::ResourceFanoutIndex::new());
     let mut registry = ResourceActivatorRegistry::new();
     registry
@@ -716,7 +800,9 @@ async fn rotation_binding_rejects_unqualified_prepopulated_slot() {
                         .store(Arc::new(nebula_credential::CredentialGuard::new(7_u64)));
                     resource
                 },
-                || Resident::<BoundTestRes>::new(resident::config::Config::default()),
+                crate::topology::fixed(|| {
+                    Resident::<BoundTestRes>::new(resident::config::Config::default())
+                }),
             )),
         )
         .expect("typed fixture metadata admits");
@@ -737,6 +823,10 @@ async fn rotation_binding_rejects_unqualified_prepopulated_slot() {
                 slot_installs: Vec::new(),
                 scope: ScopeLevel::Global,
                 recovery_gate: None,
+                topology: None,
+                resilience_override: None,
+                row_id: None,
+                limit_key: None,
             },
             Some(&fanout_index),
         )
@@ -753,14 +843,16 @@ async fn rotation_binding_rejects_unqualified_prepopulated_slot() {
 async fn rotation_binding_requires_a_fanout_index() {
     let manager = Manager::new();
     let expression_engine = ExpressionEngine::with_cache_size(16);
-    let credential_id = nebula_credential::CredentialId::new();
+    let credential_id = CredentialId::new();
     let mut registry = ResourceActivatorRegistry::new();
     registry
         .insert(
             "test-missing-fanout-index",
             Arc::new(KindActivator::<BoundTestRes, _, _>::new(
                 BoundTestRes::new,
-                || Resident::<BoundTestRes>::new(resident::config::Config::default()),
+                crate::topology::fixed(|| {
+                    Resident::<BoundTestRes>::new(resident::config::Config::default())
+                }),
             )),
         )
         .expect("typed fixture metadata admits");
@@ -781,6 +873,10 @@ async fn rotation_binding_requires_a_fanout_index() {
                 slot_installs: Vec::new(),
                 scope: ScopeLevel::Global,
                 recovery_gate: None,
+                topology: None,
+                resilience_override: None,
+                row_id: None,
+                limit_key: None,
             },
             None,
         )
@@ -797,7 +893,7 @@ async fn rotation_authority_is_manager_scoped_and_driver_loss_demotes_ready_rows
     let authorized_manager = Arc::new(Manager::new());
     let other_manager = Arc::new(Manager::new());
     let expression_engine = ExpressionEngine::with_cache_size(16);
-    let credential_id = nebula_credential::CredentialId::new();
+    let credential_id = CredentialId::new();
     let owner = nebula_credential::TenantScope::new("org", "workspace");
     let credential_key = nebula_core::credential_key!("test.factory-credential");
     let fanout_index = Arc::new(crate::ResourceFanoutIndex::new());
@@ -810,7 +906,9 @@ async fn rotation_authority_is_manager_scoped_and_driver_loss_demotes_ready_rows
             "test-manager-affinity",
             Arc::new(KindActivator::<BoundTestRes, _, _>::new(
                 BoundTestRes::new,
-                || Resident::<BoundTestRes>::new(resident::config::Config::default()),
+                crate::topology::fixed(|| {
+                    Resident::<BoundTestRes>::new(resident::config::Config::default())
+                }),
             )),
         )
         .expect("typed fixture metadata admits");
@@ -826,6 +924,10 @@ async fn rotation_authority_is_manager_scoped_and_driver_loss_demotes_ready_rows
         slot_installs: Vec::new(),
         scope: ScopeLevel::Global,
         recovery_gate: None,
+        topology: None,
+        resilience_override: None,
+        row_id: None,
+        limit_key: None,
     };
 
     registry
@@ -881,7 +983,7 @@ async fn terminal_credential_revoke_clears_material_but_lease_revoke_does_not() 
     for terminal in [false, true] {
         let manager = Manager::new();
         let index = crate::ResourceFanoutIndex::new();
-        let credential_id = nebula_credential::CredentialId::new();
+        let credential_id = CredentialId::new();
         let identity = SlotIdentity::from_bindings([("auth", "credential")]);
         let resource = BoundTestRes::new();
         assert_eq!(
@@ -907,6 +1009,7 @@ async fn terminal_credential_revoke_clears_material_but_lease_revoke_does_not() 
                 slot_identity: identity.clone(),
                 topology: Resident::<BoundTestRes>::new(resident::config::Config::default()),
                 recovery_gate: None,
+                rate_limit: None,
             })
             .expect("resource registers");
         index.bind(
@@ -933,7 +1036,7 @@ async fn terminal_credential_revoke_clears_material_but_lease_revoke_does_not() 
 async fn contextual_binding_stays_unavailable_until_authoritative_reread() {
     let manager = Arc::new(Manager::new());
     let expression_engine = ExpressionEngine::with_cache_size(16);
-    let credential_id = nebula_credential::CredentialId::new();
+    let credential_id = CredentialId::new();
     let owner = nebula_credential::TenantScope::new("org", "workspace");
     let credential_key = nebula_core::credential_key!("test.factory-credential");
     let fanout_index = Arc::new(crate::ResourceFanoutIndex::new());
@@ -943,7 +1046,9 @@ async fn contextual_binding_stays_unavailable_until_authoritative_reread() {
             "test-authoritative-reread",
             Arc::new(KindActivator::<BoundTestRes, _, _>::new(
                 BoundTestRes::new,
-                || Resident::<BoundTestRes>::new(resident::config::Config::default()),
+                crate::topology::fixed(|| {
+                    Resident::<BoundTestRes>::new(resident::config::Config::default())
+                }),
             )),
         )
         .expect("typed fixture metadata admits");
@@ -964,6 +1069,10 @@ async fn contextual_binding_stays_unavailable_until_authoritative_reread() {
                 slot_installs: Vec::new(),
                 scope: ScopeLevel::Global,
                 recovery_gate: None,
+                topology: None,
+                resilience_override: None,
+                row_id: None,
+                limit_key: None,
             },
             Some(&fanout_index),
         )
@@ -992,6 +1101,10 @@ async fn contextual_binding_stays_unavailable_until_authoritative_reread() {
                 slot_installs: Vec::new(),
                 scope: ScopeLevel::Global,
                 recovery_gate: None,
+                topology: None,
+                resilience_override: None,
+                row_id: None,
+                limit_key: None,
             },
             Some(&fanout_index),
         )
@@ -1031,6 +1144,7 @@ async fn durable_tombstone_clears_the_live_slot_before_taint() {
             slot_identity: identity.clone(),
             topology: Resident::<BoundTestRes>::new(resident::config::Config::default()),
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("register row with a live unqualified guard");
     let managed = manager
@@ -1057,7 +1171,7 @@ async fn durable_tombstone_clears_the_live_slot_before_taint() {
 async fn revoke_observed_before_staging_taints_the_row_at_publication() {
     let manager = Arc::new(Manager::new());
     let expression_engine = ExpressionEngine::with_cache_size(16);
-    let credential_id = nebula_credential::CredentialId::new();
+    let credential_id = CredentialId::new();
     let fanout_index = Arc::new(crate::ResourceFanoutIndex::new());
     let _reconciliation = fanout_index
         .acquire_authoritative_reconciliation_for(&manager)
@@ -1068,7 +1182,9 @@ async fn revoke_observed_before_staging_taints_the_row_at_publication() {
             "test-staged-revoke",
             Arc::new(KindActivator::<BoundTestRes, _, _>::new(
                 BoundTestRes::new,
-                || Resident::<BoundTestRes>::new(resident::config::Config::default()),
+                crate::topology::fixed(|| {
+                    Resident::<BoundTestRes>::new(resident::config::Config::default())
+                }),
             )),
         )
         .expect("typed fixture metadata admits");
@@ -1092,6 +1208,10 @@ async fn revoke_observed_before_staging_taints_the_row_at_publication() {
                 slot_installs: Vec::new(),
                 scope: ScopeLevel::Global,
                 recovery_gate: None,
+                topology: None,
+                resilience_override: None,
+                row_id: None,
+                limit_key: None,
             },
             Some(&fanout_index),
         )
@@ -1120,8 +1240,8 @@ async fn revoke_observed_before_staging_taints_the_row_at_publication() {
 async fn exact_replacement_publishes_only_successor_staged_binding() {
     let manager = Arc::new(Manager::new());
     let expression_engine = ExpressionEngine::with_cache_size(16);
-    let old_credential_id = nebula_credential::CredentialId::new();
-    let new_credential_id = nebula_credential::CredentialId::new();
+    let old_credential_id = CredentialId::new();
+    let new_credential_id = CredentialId::new();
     let old_fanout_index = Arc::new(crate::ResourceFanoutIndex::new());
     let new_fanout_index = Arc::new(crate::ResourceFanoutIndex::new());
     let _old_reconciliation = old_fanout_index
@@ -1136,7 +1256,9 @@ async fn exact_replacement_publishes_only_successor_staged_binding() {
             "test-replacement-bindings",
             Arc::new(KindActivator::<BoundTestRes, _, _>::new(
                 BoundTestRes::new,
-                || Resident::<BoundTestRes>::new(resident::config::Config::default()),
+                crate::topology::fixed(|| {
+                    Resident::<BoundTestRes>::new(resident::config::Config::default())
+                }),
             )),
         )
         .expect("typed fixture metadata admits");
@@ -1166,6 +1288,10 @@ async fn exact_replacement_publishes_only_successor_staged_binding() {
                     slot_installs: Vec::new(),
                     scope: ScopeLevel::Global,
                     recovery_gate: None,
+                    topology: None,
+                    resilience_override: None,
+                    row_id: None,
+                    limit_key: None,
                 },
                 Some(fanout_index),
             )
@@ -1260,4 +1386,167 @@ async fn empty_registry_rejects_every_kind() {
         .await
         .expect_err("an empty allowlist is fail-closed");
     assert!(matches!(err, RegistrarError::UnknownKind(k) if k == "anything"));
+}
+
+// ── Operator topology settings ───────────────────────────────────────────
+
+fn configurable_factory(create_counter: Arc<AtomicU64>) -> Arc<dyn ResourceFactory> {
+    Arc::new(KindActivator::<TestRes, _, _>::configurable(move || {
+        TestRes::new(create_counter.clone())
+    }))
+}
+
+#[tokio::test]
+async fn invalid_topology_settings_fail_before_manager_publication() {
+    let manager = Manager::new();
+    let expr_engine = ExpressionEngine::with_cache_size(16);
+    let mut registry = ResourceActivatorRegistry::new();
+    registry
+        .insert(
+            "configurable",
+            configurable_factory(Arc::new(AtomicU64::new(0))),
+        )
+        .expect("test resource metadata admits");
+
+    let bad = serde_json::json!({ "create_timeout_ms": 0 });
+    assert!(
+        registry
+            .validate_topology("configurable", Some(&bad))
+            .is_err()
+    );
+
+    let mut bad_request = request(&expr_engine);
+    bad_request.topology = Some(bad);
+    assert!(
+        registry
+            .register("configurable", &manager, bad_request)
+            .await
+            .is_err(),
+        "unworkable topology settings must reject the registration"
+    );
+    assert!(
+        manager
+            .get_any(&TestRes::key(), &ScopeLevel::Global)
+            .is_none(),
+        "a rejected registration must not publish a row"
+    );
+
+    let good = serde_json::json!({ "recreate_on_failure": true, "create_timeout_ms": 5_000 });
+    registry
+        .validate_topology("configurable", Some(&good))
+        .expect("valid settings validate");
+    let mut good_request = request(&expr_engine);
+    good_request.topology = Some(good);
+    registry
+        .register("configurable", &manager, good_request)
+        .await
+        .expect("valid topology settings register");
+}
+
+#[test]
+fn fixed_topology_rejects_operator_settings_instead_of_ignoring_them() {
+    let mut registry = ResourceActivatorRegistry::new();
+    registry
+        .insert("fixed", test_factory(Arc::new(AtomicU64::new(0))))
+        .expect("test resource metadata admits");
+    registry
+        .validate_topology("fixed", None)
+        .expect("no settings is fine for a fixed topology");
+    assert!(
+        registry
+            .validate_topology("fixed", Some(&serde_json::json!({ "max_size": 4 })))
+            .is_err(),
+        "settings sent to a fixed kind must be rejected, not silently dropped"
+    );
+    assert!(matches!(
+        registry.validate_topology("missing", None),
+        Err(RegistrarError::UnknownKind(_))
+    ));
+}
+
+#[test]
+fn topology_schema_is_published_only_for_configurable_kinds() {
+    let mut registry = ResourceActivatorRegistry::new();
+    registry
+        .insert(
+            "configurable",
+            configurable_factory(Arc::new(AtomicU64::new(0))),
+        )
+        .expect("test resource metadata admits");
+    registry
+        .insert("fixed", test_factory(Arc::new(AtomicU64::new(0))))
+        .expect("test resource metadata admits");
+
+    let schema = registry
+        .topology_schema("configurable")
+        .expect("schema builds")
+        .expect("a configurable kind publishes its settings schema");
+    assert!(
+        schema
+            .properties()
+            .iter()
+            .any(|property| property.key().as_str() == "create_timeout_ms"),
+        "the published schema is the resident settings schema"
+    );
+    assert!(
+        registry
+            .topology_schema("fixed")
+            .expect("no schema is not an error")
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn invalid_resilience_overrides_fail_before_manager_publication() {
+    let manager = Manager::new();
+    let expr_engine = ExpressionEngine::with_cache_size(16);
+    let mut registry = ResourceActivatorRegistry::new();
+    registry
+        .insert("limited", test_factory(Arc::new(AtomicU64::new(0))))
+        .expect("test resource metadata admits");
+
+    for invalid in [
+        serde_json::json!({ "rate": { "requests": 0, "period_ms": 1000 } }),
+        serde_json::json!({ "rate": { "requests": 10 } }),
+        serde_json::json!({ "rate": { "requests": 10, "period_ms": 1000, "per_minute": 1 } }),
+        // The bare rate of the former `rate_limit` column is not a document.
+        serde_json::json!({ "requests": 10, "period_ms": 1000 }),
+    ] {
+        let error = registry
+            .validate_resilience_override("limited", Some(&invalid))
+            .expect_err("validation rejects it");
+        assert!(
+            !error.to_string().contains("per_minute"),
+            "messages never restate submitted input: {error}"
+        );
+        let mut bad_request = request(&expr_engine);
+        bad_request.resilience_override = Some(invalid.clone());
+        assert!(
+            registry
+                .register("limited", &manager, bad_request)
+                .await
+                .is_err(),
+            "{invalid} must reject the registration"
+        );
+    }
+    assert!(
+        manager
+            .get_any(&TestRes::key(), &ScopeLevel::Global)
+            .is_none()
+    );
+
+    let valid = serde_json::json!({ "rate": { "requests": 30, "period_ms": 1000 } });
+    registry
+        .validate_resilience_override("limited", Some(&valid))
+        .expect("a kind that declares no rate accepts any");
+    let mut good_request = request(&expr_engine);
+    good_request.resilience_override = Some(valid);
+    registry
+        .register("limited", &manager, good_request)
+        .await
+        .expect("valid override registers");
+    assert!(matches!(
+        registry.validate_resilience_override("unknown", None),
+        Err(RegistrarError::UnknownKind(_))
+    ));
 }

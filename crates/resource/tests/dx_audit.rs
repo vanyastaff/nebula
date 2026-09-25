@@ -198,6 +198,7 @@ async fn use_case_1_http_client_pool() {
             slot_identity: SlotIdentity::Unbound,
             topology: pool_rt,
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("registration should succeed");
 
@@ -334,6 +335,7 @@ async fn use_case_2_resident_config_store() {
             slot_identity: SlotIdentity::Unbound,
             topology: resident_rt,
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("resident registration should succeed");
 
@@ -476,6 +478,7 @@ async fn use_case_3_db_pool_with_resilience_and_shutdown() {
             slot_identity: SlotIdentity::Unbound,
             topology: pool_rt,
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("db registration should succeed");
 

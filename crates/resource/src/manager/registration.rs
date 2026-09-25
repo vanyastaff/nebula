@@ -22,6 +22,95 @@ use crate::{
 };
 
 impl Manager {
+    /// Builds the limit of one row from `R`'s declared policy and the row's
+    /// override. A row with no rate still gets a limiter, one that only
+    /// honours pauses.
+    ///
+    /// A row without an explicit quota key is limited on its own, in this
+    /// process: its fallback key identifies the registry row, which is only
+    /// meaningful locally. Cluster-wide sharing needs an explicit key.
+    /// Per-key limits live in the same store, under keys derived from the
+    /// quota key, so they are shared exactly as widely as the quota.
+    fn row_limiter<R: Provider>(
+        &self,
+        input: Option<crate::rate_limit::RowLimit>,
+        scope: &ScopeLevel,
+        slot_identity: &crate::dedup::SlotIdentity,
+    ) -> Result<Arc<crate::rate_limit::ResourceLimiter>, Error> {
+        use std::hash::{Hash as _, Hasher as _};
+
+        use crate::rate_limit::{
+            ErasedLimitStore, KeyedLimits, LimitKey, LimitScope, Quota, ResourceLimiter,
+        };
+
+        let policy = R::resilience();
+        let input = input.unwrap_or_default();
+        let rate = policy
+            .effective_rate(input.rate)
+            .map_err(|error| error.with_resource_key(R::key()))?;
+        let keyed = policy
+            .effective_keyed(&input.keyed)
+            .map_err(|error| error.with_resource_key(R::key()))?;
+        if rate.is_none() && keyed.is_empty() {
+            return Ok(Arc::new(ResourceLimiter::new(
+                None,
+                None,
+                policy.penalty_cap(),
+                R::key(),
+                Arc::clone(&self.event_bus),
+            )));
+        }
+        let local: Arc<dyn ErasedLimitStore> = self.local_limits.clone();
+        let (store, key) = match (input.key, policy.limit_scope(), &self.shared_limits) {
+            (Some(key), LimitScope::Cluster, Some(shared)) => (Arc::clone(&shared.0), key),
+            (Some(key), scope_kind, shared) => {
+                if scope_kind == LimitScope::Cluster && shared.is_none() {
+                    tracing::warn!(
+                        resource.key = %R::key(),
+                        "cluster-wide rate limit enforced per process: no shared limit store configured"
+                    );
+                }
+                (local, key)
+            },
+            (None, scope_kind, shared) => {
+                if scope_kind == LimitScope::Cluster && shared.is_some() {
+                    tracing::warn!(
+                        resource.key = %R::key(),
+                        "cluster-wide rate limit enforced per process: the row names no limit key"
+                    );
+                }
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                scope.hash(&mut hasher);
+                slot_identity.hash(&mut hasher);
+                let key = LimitKey::new(format!("row:{}:{:016x}", R::key(), hasher.finish()))
+                    .map_err(|_| {
+                        Error::permanent("resource key does not form a valid rate-limit key")
+                            .with_resource_key(R::key())
+                    })?;
+                (local, key)
+            },
+        };
+        // A dimension whose keys cannot be formed fails the registration,
+        // not the first call that names it.
+        for (dimension, _) in &keyed {
+            LimitKey::new(format!("{}:k:{dimension}:{:032x}", key.as_str(), 0)).map_err(|_| {
+                Error::permanent(format!(
+                    "per-key limit `{dimension}` does not form a valid rate-limit key"
+                ))
+                .with_resource_key(R::key())
+            })?;
+        }
+        let keyed =
+            (!keyed.is_empty()).then(|| KeyedLimits::new(Arc::clone(&store), key.clone(), keyed));
+        Ok(Arc::new(ResourceLimiter::new(
+            rate.map(|rate| Quota::new(store, key, rate)),
+            keyed,
+            policy.penalty_cap(),
+            R::key(),
+            Arc::clone(&self.event_bus),
+        )))
+    }
+
     /// Registers a resource from a fully-specified [`RegistrationSpec`].
     ///
     /// This is the **single registration funnel**: the former 3-deep
@@ -128,6 +217,7 @@ impl Manager {
     ///     slot_identity: SlotIdentity::Unbound,
     ///     topology: Pooled::<HttpClient>::new(PoolConfig::default(), 0),
     ///     recovery_gate: None,
+    ///     rate_limit: None,
     /// })?;
     ///
     /// let ctx = ResourceContext::minimal(
@@ -147,14 +237,16 @@ impl Manager {
         R: Provider,
         R::Topology: Topology<R>,
     {
-        self.register_with_staged_bindings(spec, RegistrationBindings::empty())
+        self.install(spec, RegistrationBindings::empty()).map(drop)
     }
 
-    fn register_with_staged_bindings<R>(
+    /// [`register`](Self::register) with the staged rotation bindings of a
+    /// resolved registration, returning the installed row.
+    fn install<R>(
         &self,
         spec: RegistrationSpec<R>,
         registration_bindings: RegistrationBindings<'_>,
-    ) -> Result<(), Error>
+    ) -> Result<Arc<ManagedResource<R>>, Error>
     where
         R: Provider,
         R::Topology: Topology<R>,
@@ -173,6 +265,7 @@ impl Manager {
             slot_identity,
             topology,
             recovery_gate,
+            rate_limit,
         } = spec;
 
         let credential_slot_names = R::credential_slot_names();
@@ -194,18 +287,16 @@ impl Manager {
         }
 
         config.validate()?;
+        let rate_limiter = self.row_limiter::<R>(rate_limit, &scope, &slot_identity)?;
 
-        // #390 (pool min/max sanity) is enforced at `Pooled`
-        // construction, which the caller has already invoked to build the
-        // `Pooled<R>` topology handed in here. No separate
-        // register-time pool-config check is needed: an invalid
-        // `(min_size, max_size)` from operator/JSON config is rejected by
-        // the fallible `Pooled::try_new` (typed `Error::permanent`)
-        // that the engine registrar uses to construct the topology, so the
-        // failure surfaces *before* this funnel as a registration error
-        // rather than an abort. (The deleted `register_pooled[_with]`
-        // shorthands re-validated the raw config only because they took
-        // it *before* building the runtime.)
+        // #390 (pool min/max sanity) is enforced at `Pooled` construction,
+        // which the caller has already invoked to build the topology handed
+        // in here, so this funnel does not re-check it. A caller building a
+        // pool from runtime input must use the fallible `Pooled::try_new`.
+        // The plugin path (`KindActivator`) does not take operator input
+        // for topology at all: its `Fn() -> R::Topology` factory (and the
+        // derive-emitted one, which uses `PoolConfig::default()`) runs with
+        // no arguments, so operator JSON configures `R::Config` only.
 
         let key = R::key();
 
@@ -258,7 +349,9 @@ impl Manager {
             retained: crate::RetainedStore::new(self.release_queue.abandonment_tracker()),
             generation: AtomicU64::new(0),
             status: arc_swap::ArcSwap::from_pointee(crate::state::ResourceStatus::new()),
+            phase_changed: Notify::new(),
             recovery_gate,
+            rate_limiter,
             tainted: std::sync::atomic::AtomicBool::new(false),
             in_flight: Arc::new((AtomicU64::new(0), Notify::new())),
             maintenance_sweeps: AtomicU64::new(0),
@@ -288,6 +381,7 @@ impl Manager {
         // replacement, the registry invokes this admission callback before
         // mutation so backpressure leaves the old owner installed and unfenced.
         let type_id = std::any::TypeId::of::<ManagedResource<R>>();
+        let maintenance_scope = crate::context::minimal_scope_for_level(&scope);
         #[cfg(feature = "rotation")]
         let rotation_identity = (scope.clone(), slot_identity.clone());
         #[cfg(feature = "rotation")]
@@ -305,6 +399,15 @@ impl Manager {
             admission: permit,
         } = registration
         {
+            // A re-registration in place (a credential refresh, a new stored
+            // version) must not reset a provider's "slow down": pauses the
+            // displaced row kept in this process carry over to its successor.
+            if let Ok(previous) = Arc::clone(&displaced)
+                .as_any_arc()
+                .downcast::<ManagedResource<R>>()
+            {
+                managed.rate_limiter.inherit_pauses(&previous.rate_limiter);
+            }
             #[cfg(feature = "rotation")]
             for index in &rotation_indexes {
                 index.unbind_replaced_resource_identity(
@@ -358,7 +461,7 @@ impl Manager {
         // Start the background idle/lifetime reaper for pools that expire
         // instances. No-op for non-pool topologies and for pools with no
         // TTL configured (zero background overhead in that case).
-        self.spawn_pool_maintenance(&managed, schedule);
+        self.spawn_pool_maintenance(&managed, schedule, maintenance_scope);
 
         if let Some(m) = &self.metrics {
             m.record_create();
@@ -366,7 +469,7 @@ impl Manager {
         self.emit(ResourceEvent::Registered { key: key.clone() });
 
         tracing::debug!(%key, "resource registered");
-        Ok(())
+        Ok(managed)
     }
 
     /// Spawns the background maintenance reaper for a freshly-registered
@@ -409,6 +512,7 @@ impl Manager {
         &self,
         managed: &Arc<ManagedResource<R>>,
         schedule: Option<crate::topology::MaintenanceSchedule>,
+        scope: nebula_core::scope::Scope,
     ) where
         R: Provider,
         R::Topology: Topology<R>,
@@ -419,29 +523,36 @@ impl Manager {
         let Some(schedule) = schedule else {
             return;
         };
-        if schedule.idle_timeout.is_none() && schedule.max_lifetime.is_none() {
+        // With no eviction there is nothing to sweep, but a pool with a
+        // minimum still needs its floor refilled after an instance is
+        // dropped (a failed check, a recycle that discards), so the loop
+        // runs for either reason.
+        let keeps_a_floor = managed.topology.warmup_target(&managed.config()) > 0;
+        if schedule.idle_timeout.is_none() && schedule.max_lifetime.is_none() && !keeps_a_floor {
             return;
         }
-        // `tokio::time::interval` panics on a zero period, and a sub-second
-        // maintenance cadence would burn CPU for no benefit (eviction is
-        // coarse-grained). Floor a zero/too-small operator-supplied
-        // `maintenance_interval` at 1s rather than panicking or spinning.
-        let period = schedule
-            .maintenance_interval
-            .max(std::time::Duration::from_secs(1));
+        // `tokio::time::interval` panics on a zero period and, on a missed
+        // tick, adds the period to an `Instant`, which panics past the
+        // representable horizon; a sub-second cadence would also burn CPU for
+        // no benefit (eviction is coarse-grained). The built-in topologies
+        // reject a period past the ceiling at validation; the clamp here keeps
+        // a custom topology's schedule off both panicking paths too.
+        let period = schedule.maintenance_interval.clamp(
+            std::time::Duration::from_secs(1),
+            crate::topology::MAX_MAINTENANCE_INTERVAL,
+        );
         let weak = Arc::downgrade(managed);
         let cancel = managed.maintenance.cancellation_token();
         let bus = Arc::clone(&self.event_bus);
         let key = R::key();
         // The reaper has no caller-supplied context (it runs on a timer, not
         // behind an acquire) — `minimal` is exactly the "daemon loop" case
-        // its doc comment names. Built once: scope + cancellation are the
-        // same across every tick, so there is no reason to rebuild it per
-        // sweep.
-        let refill_ctx = crate::context::ResourceContext::minimal(
-            nebula_core::scope::Scope::default(),
-            cancel.clone(),
-        );
+        // its doc comment names. It carries the row's registration scope, as
+        // the warmup does, so a refilled instance is created for the same
+        // tenant as one created on acquire. Built once: scope + cancellation
+        // are the same across every tick, so there is no reason to rebuild it
+        // per sweep.
+        let refill_ctx = crate::context::ResourceContext::minimal(scope, cancel.clone());
 
         let task = tokio::spawn(async move {
             let mut ticker = tokio::time::interval(period);
@@ -615,6 +726,8 @@ impl Manager {
         scope: ScopeLevel,
         topology: R::Topology,
         recovery_gate: Option<Arc<RecoveryGate>>,
+        rate_limit: Option<crate::rate_limit::RowLimit>,
+        row_id: Option<&str>,
         expected_slot_identity: &crate::dedup::SlotIdentity,
         registration_bindings: RegistrationBindings<'_>,
     ) -> Result<crate::dedup::SlotIdentity, Error>
@@ -739,7 +852,8 @@ impl Manager {
         //    the structural barrier against cross-tenant runtime bleed
         //    (credential isolation, slot model). It carries no secret bytes
         //    — only a stable identity over the resolved binding *names*.
-        let slot_identity = crate::dedup::SlotIdentity::from_bindings(
+        let slot_identity = crate::dedup::SlotIdentity::from_row_bindings(
+            row_id,
             slot_bindings
                 .iter()
                 .map(|(slot, cred)| (slot.as_str(), cred.as_str())),
@@ -767,7 +881,8 @@ impl Manager {
             ?slot_identity,
             "all pre-register checks passed; dispatching into typed register"
         );
-        self.register_with_staged_bindings(
+        let warmup_scope = crate::context::minimal_scope_for_level(&scope);
+        let managed = self.install(
             RegistrationSpec {
                 resource,
                 config,
@@ -775,10 +890,81 @@ impl Manager {
                 slot_identity: slot_identity.clone(),
                 topology,
                 recovery_gate,
+                rate_limit,
             },
             registration_bindings,
         )?;
+        // 6. A row activated from its stored definition warms as its
+        //    topology's warmup strategy says, in the background: the
+        //    activation that registered it does not wait on `create`s.
+        self.spawn_warmup(&managed, warmup_scope);
         Ok(slot_identity)
+    }
+
+    /// Runs the row's eager warmup (its topology's
+    /// [`warmup_strategy`](Topology::warmup_strategy) over its
+    /// [`warmup_target`](Topology::warmup_target)) in a background task.
+    ///
+    /// The task is counted in-flight like an acquire, so a revoke or a
+    /// graceful shutdown drains it, and it stops when the row's maintenance
+    /// token is cancelled (retirement, shutdown). Author `create` hooks are
+    /// bounded and isolated as in [`warmup_pool`](Self::warmup_pool), and
+    /// every create respects the pool's live-instance headroom.
+    ///
+    /// A row that does not accept acquires yet — a rotation-bound row still
+    /// `Initializing` until its credentials are reread — is not warmed with
+    /// material that may be stale; the maintenance refill fills its floor
+    /// once it is ready.
+    ///
+    /// The creates see the row's registration scope (`scope`, the bag for
+    /// its [`ScopeLevel`]) and the row's limits, as the maintenance refill
+    /// does; there is no execution behind a warmup, so execution-bound
+    /// context (its principal, resource and credential accessors) is absent.
+    /// A provider whose `create` needs that context declares
+    /// [`WarmupStrategy::None`] and creates on acquire.
+    ///
+    /// [`WarmupStrategy::None`]: crate::topology::pooled::config::WarmupStrategy::None
+    fn spawn_warmup<R>(&self, managed: &Arc<ManagedResource<R>>, scope: nebula_core::scope::Scope)
+    where
+        R: Provider,
+        R::Topology: Topology<R>,
+    {
+        use crate::topology::pooled::config::WarmupStrategy;
+
+        let config = managed.config();
+        // A row whose credentials are still being reread builds nothing yet:
+        // the maintenance refill fills its floor once it is ready.
+        if managed.topology.warmup_target(&config) == 0
+            || matches!(managed.topology.warmup_strategy(), WarmupStrategy::None)
+            || !managed.accepts_new_instances()
+        {
+            return;
+        }
+        let in_flight =
+            super::InFlightCounter::new(self.drain_tracker.clone(), managed.in_flight_tracker());
+        if self
+            .reject_if_tainted_or_shutting_down_post_count::<R>(managed)
+            .is_err()
+        {
+            return;
+        }
+        let cancel = managed.maintenance.cancellation_token();
+        let ctx = crate::context::ResourceContext::minimal(scope, cancel.clone());
+        let managed = Arc::clone(managed);
+        tokio::spawn(async move {
+            let _in_flight = in_flight;
+            // `warmup` bounds and isolates each author `create` hook itself.
+            let warmup = managed.warmup(&ctx);
+            tokio::select! {
+                biased;
+                () = cancel.cancelled() => {},
+                outcome = warmup => {
+                    if let Err(fault) = outcome {
+                        fault.observe(&R::key(), "warmup");
+                    }
+                },
+            }
+        });
     }
 
     /// Looks up a registered `ManagedResource<R>` by type and scope.

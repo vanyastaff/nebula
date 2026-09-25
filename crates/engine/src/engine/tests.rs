@@ -7617,3 +7617,631 @@ fn engine_retry_backoff_matches_resilience_backoff() {
         );
     }
 }
+
+#[test]
+fn slot_identity_snapshot_prefers_the_most_specific_scope_and_stays_in_tenant() {
+    let key = nebula_core::resource_key!("test.snapshot.probe");
+    let workspace = nebula_core::WorkspaceId::new();
+    let other_workspace = nebula_core::WorkspaceId::new();
+    let workspace_identity = nebula_resource::SlotIdentity::from_bindings([("auth", "cred.ws")]);
+    let other_identity = nebula_resource::SlotIdentity::from_bindings([("auth", "cred.other")]);
+
+    let mut ids = SlotIdentitiesByScope::new();
+    ids.entry(ScopeLevel::Global)
+        .or_default()
+        .insert(key.clone(), nebula_resource::SlotIdentity::Unbound);
+    ids.entry(ScopeLevel::Workspace(workspace))
+        .or_default()
+        .insert(key.clone(), workspace_identity.clone());
+    ids.entry(ScopeLevel::Workspace(other_workspace))
+        .or_default()
+        .insert(key.clone(), other_identity);
+
+    let in_workspace = nebula_core::scope::Scope {
+        workspace_id: Some(workspace),
+        ..Default::default()
+    };
+    assert_eq!(
+        slot_identities_visible_from(&ids, &in_workspace).get(&key),
+        Some(&workspace_identity)
+    );
+    assert_eq!(
+        slot_identities_visible_from(&ids, &nebula_core::scope::Scope::default()).get(&key),
+        Some(&nebula_resource::SlotIdentity::Unbound),
+        "a scope with no tenant sees only the global row"
+    );
+}
+
+#[test]
+fn unparseable_tenant_ids_leave_the_acquire_scope_unset() {
+    let scope = resource_acquire_scope_for(&Scope::new("not-a-workspace", "not-an-org"));
+    assert_eq!(scope.org_id, None);
+    assert_eq!(scope.workspace_id, None);
+
+    let org = nebula_core::OrgId::new();
+    let workspace = nebula_core::WorkspaceId::new();
+    let scope = resource_acquire_scope_for(&Scope::new(workspace.to_string(), org.to_string()));
+    assert_eq!(scope.org_id, Some(org));
+    assert_eq!(scope.workspace_id, Some(workspace));
+}
+
+async fn store_plain_row(
+    store: &nebula_storage::inmem::InMemoryResourceStore,
+    scope: &Scope,
+    kind: &str,
+) -> nebula_core::ResourceId {
+    use nebula_storage_port::store::ResourceStore as _;
+    let resource_id = nebula_core::ResourceId::new();
+    store
+        .create(
+            scope,
+            nebula_storage_port::dto::ResourceRow {
+                id: resource_id.to_string(),
+                workspace_id: scope.workspace_id.clone(),
+                slug: format!("row-{resource_id}"),
+                display_name: "row".to_owned(),
+                kind: kind.to_owned(),
+                config: serde_json::json!({ "label": "a" }),
+                credential_bindings: std::collections::BTreeMap::new(),
+                topology: None,
+                resilience_override: None,
+                created_at: "2026-09-23T00:00:00Z".to_owned(),
+                created_by: "test".to_owned(),
+                version: 0,
+                deleted_at: None,
+            },
+        )
+        .await
+        .expect("row stored");
+    resource_id
+}
+
+fn resource_binding(
+    node: &NodeKey,
+    slot: &str,
+    resource_id: nebula_core::ResourceId,
+    kind: &str,
+) -> nebula_execution::ExecutionBindingEntryV2 {
+    nebula_execution::ExecutionBindingEntryV2::new(
+        nebula_execution::ExecutionBindingSiteV2::Node(node.clone()),
+        slot,
+        nebula_execution::ExecutionBindingTargetV2::Resource {
+            resource_id,
+            contract: nebula_execution::ResourceBindingContractV2::new(
+                ResourceKey::new(kind).unwrap(),
+                nebula_execution::BindingContractVersion::parse("1.0.0").unwrap(),
+            ),
+        },
+    )
+    .unwrap()
+}
+
+/// The manifest names exact stored rows per node. Each bound row is
+/// activated and resolves, for its node only, to that row's registry
+/// identity; a row that fails to activate and a node that binds two rows of
+/// one kind are left unresolved instead of failing the turn or guessing.
+#[tokio::test]
+async fn bound_stored_resources_resolve_per_node_and_fail_closed() {
+    let store = Arc::new(nebula_storage::inmem::InMemoryResourceStore::new());
+    let (engine, _) = make_engine(Arc::new(ActionRegistry::new()));
+    let engine = engine
+        .with_resource_manager(Arc::new(nebula_resource::Manager::new()))
+        .with_resource_registrars(crate::resource::activation::tests::registrars())
+        .with_stored_resources(crate::resource::StoredResourceActivator::new(
+            Arc::clone(&store) as Arc<dyn nebula_storage_port::store::ResourceStore>,
+        ));
+    let scope = Scope::new(
+        nebula_core::WorkspaceId::new().to_string(),
+        nebula_core::OrgId::new().to_string(),
+    );
+    let first = store_plain_row(&store, &scope, "activation.plain").await;
+    let second = store_plain_row(&store, &scope, "activation.plain").await;
+    let broken = store_plain_row(&store, &scope, "activation.unknown").await;
+
+    let reader = node_key!("reader");
+    let copier = node_key!("copier");
+    let orphan = node_key!("orphan");
+    let manifest = nebula_execution::ExecutionBindingManifestV2::new([
+        resource_binding(&reader, "db", first, "activation.plain"),
+        resource_binding(&copier, "source", first, "activation.plain"),
+        resource_binding(&copier, "target", second, "activation.plain"),
+        resource_binding(&orphan, "db", broken, "activation.unknown"),
+    ])
+    .unwrap();
+    let execution_id = ExecutionId::new();
+    engine
+        .activate_bound_resources(execution_id, &scope, &manifest, &CancellationToken::new())
+        .await;
+
+    let rows = engine
+        .resource_rows_by_execution
+        .get(&execution_id)
+        .map(|rows| Arc::clone(rows.value()))
+        .expect("rows recorded for the execution");
+    let plain = ResourceKey::new("activation.plain").unwrap();
+    assert_eq!(
+        rows.get(&reader).and_then(|keys| keys.get(&plain)),
+        Some(&nebula_resource::SlotIdentity::from_row_bindings(
+            Some(&first.to_string()),
+            std::iter::empty(),
+        )),
+    );
+    // Refused keys are pinned to an identity no row carries, never left out:
+    // left out, the node would fall back to any unbound row of the kind.
+    let unavailable = unavailable_row_identity();
+    assert_eq!(
+        rows.get(&copier).and_then(|keys| keys.get(&plain)),
+        Some(&unavailable),
+        "two rows of one kind on one node must not resolve by key"
+    );
+    let unknown = ResourceKey::new("activation.unknown").unwrap();
+    assert_eq!(
+        rows.get(&orphan).and_then(|keys| keys.get(&unknown)),
+        Some(&unavailable),
+        "a row that failed to activate resolves no row of its kind"
+    );
+    assert!(
+        !engine
+            .resource_manager
+            .as_ref()
+            .expect("manager configured")
+            .has_registered_for_scope_identity(
+                &plain,
+                &nebula_core::scope::Scope::default(),
+                &unavailable
+            ),
+        "no registry row carries the unavailable identity"
+    );
+
+    engine.remove_execution_resource_context(execution_id);
+    assert!(
+        engine
+            .resource_rows_by_execution
+            .get(&execution_id)
+            .is_none()
+    );
+}
+
+/// Records every status-store call; `live_for` is unused by the publisher.
+#[derive(Debug, Default)]
+struct RecordingStatusStore {
+    calls: std::sync::Mutex<Vec<String>>,
+    /// How long each publish takes.
+    publish_delay: Duration,
+}
+
+impl RecordingStatusStore {
+    fn take(&self) -> Vec<String> {
+        std::mem::take(&mut *self.calls.lock().expect("calls lock"))
+    }
+}
+
+#[async_trait::async_trait]
+impl nebula_storage_port::store::ResourceStatusStore for RecordingStatusStore {
+    async fn heartbeat(
+        &self,
+        _worker: &nebula_storage_port::dto::StatusWorkerId,
+        _ttl: Duration,
+    ) -> Result<(), StorageError> {
+        self.calls
+            .lock()
+            .expect("calls lock")
+            .push("heartbeat".to_owned());
+        Ok(())
+    }
+
+    async fn publish(
+        &self,
+        _scope: &Scope,
+        _worker: &nebula_storage_port::dto::StatusWorkerId,
+        snapshot: &nebula_storage_port::dto::ResourceStatusSnapshot,
+    ) -> Result<(), StorageError> {
+        tokio::time::sleep(self.publish_delay).await;
+        self.calls.lock().expect("calls lock").push(format!(
+            "publish {} {} v{}",
+            snapshot.resource_id,
+            snapshot.phase.as_str(),
+            snapshot.row_version
+        ));
+        Ok(())
+    }
+
+    async fn withdraw(
+        &self,
+        _scope: &Scope,
+        _worker: &nebula_storage_port::dto::StatusWorkerId,
+        resource_id: &str,
+    ) -> Result<(), StorageError> {
+        self.calls
+            .lock()
+            .expect("calls lock")
+            .push(format!("withdraw {resource_id}"));
+        Ok(())
+    }
+
+    async fn withdraw_worker(
+        &self,
+        _worker: &nebula_storage_port::dto::StatusWorkerId,
+    ) -> Result<(), StorageError> {
+        self.calls
+            .lock()
+            .expect("calls lock")
+            .push("withdraw_worker".to_owned());
+        Ok(())
+    }
+
+    async fn live_for(
+        &self,
+        _scope: &Scope,
+        _resource_id: &str,
+    ) -> Result<Vec<nebula_storage_port::dto::LiveResourceStatus>, StorageError> {
+        Ok(Vec::new())
+    }
+}
+
+/// The publisher heartbeats every tick but writes a row only when its
+/// status changed, and withdraws a row this worker no longer serves.
+#[tokio::test]
+async fn status_publisher_writes_changes_only_and_withdraws_retired_rows() {
+    let store = Arc::new(nebula_storage::inmem::InMemoryResourceStore::new());
+    let (engine, _) = make_engine(Arc::new(ActionRegistry::new()));
+    let engine = engine
+        .with_resource_manager(Arc::new(nebula_resource::Manager::new()))
+        .with_resource_registrars(crate::resource::activation::tests::registrars())
+        .with_stored_resources(crate::resource::StoredResourceActivator::new(
+            Arc::clone(&store) as Arc<dyn nebula_storage_port::store::ResourceStore>,
+        ));
+    let scope = Scope::new(
+        nebula_core::WorkspaceId::new().to_string(),
+        nebula_core::OrgId::new().to_string(),
+    );
+    let row = store_plain_row(&store, &scope, "activation.plain").await;
+    let node = node_key!("reader");
+    let manifest = nebula_execution::ExecutionBindingManifestV2::new([resource_binding(
+        &node,
+        "db",
+        row,
+        "activation.plain",
+    )])
+    .unwrap();
+    engine
+        .activate_bound_resources(
+            ExecutionId::new(),
+            &scope,
+            &manifest,
+            &CancellationToken::new(),
+        )
+        .await;
+
+    let recorder = Arc::new(RecordingStatusStore::default());
+    let publisher = crate::ResourceStatusPublisher::new(
+        Arc::clone(&recorder) as Arc<dyn nebula_storage_port::store::ResourceStatusStore>,
+        nebula_storage_port::dto::StatusWorkerId::new("worker:test").unwrap(),
+    );
+    let mut published = HashMap::new();
+
+    publisher.tick(&engine, &mut published).await;
+    let first = recorder.take();
+    assert_eq!(first.len(), 2, "heartbeat + one publish: {first:?}");
+    assert_eq!(first[0], "heartbeat");
+    assert!(
+        first[1].starts_with(&format!("publish {row} ")),
+        "{first:?}"
+    );
+    assert!(
+        first[1].ends_with(" v0"),
+        "activated row version is published"
+    );
+
+    publisher.tick(&engine, &mut published).await;
+    assert_eq!(
+        recorder.take(),
+        vec!["heartbeat".to_owned()],
+        "an unchanged status is not rewritten"
+    );
+
+    // A row this worker no longer serves is withdrawn.
+    let stale = (scope.clone(), nebula_core::ResourceId::new().to_string());
+    published.insert(
+        stale.clone(),
+        nebula_storage_port::dto::ResourceStatusSnapshot {
+            resource_id: stale.1.clone(),
+            phase: nebula_storage_port::dto::ResourceStatusPhase::Ready,
+            healthy: true,
+            accepting: true,
+            row_version: 0,
+        },
+    );
+    publisher.tick(&engine, &mut published).await;
+    assert_eq!(
+        recorder.take(),
+        vec!["heartbeat".to_owned(), format!("withdraw {}", stale.1)]
+    );
+    assert!(!published.contains_key(&stale));
+
+    // Deleting the definition retires the row on the next tick, with no
+    // execution naming it again: its runtime goes and its status with it.
+    nebula_storage_port::store::ResourceStore::soft_delete(&*store, &scope, &row.to_string())
+        .await
+        .expect("soft delete");
+    publisher.tick(&engine, &mut published).await;
+    assert_eq!(
+        recorder.take(),
+        vec!["heartbeat".to_owned(), format!("withdraw {row}")]
+    );
+    assert!(
+        engine
+            .stored_resources
+            .as_ref()
+            .expect("activator configured")
+            .active_rows()
+            .is_empty(),
+        "the deleted row is no longer active"
+    );
+}
+
+/// A row whose stored version fails to activate is published as failed at
+/// that version, not left looking never activated.
+#[tokio::test]
+async fn status_publisher_reports_a_failed_activation() {
+    let store = Arc::new(nebula_storage::inmem::InMemoryResourceStore::new());
+    let (engine, _) = make_engine(Arc::new(ActionRegistry::new()));
+    let engine = engine
+        .with_resource_manager(Arc::new(nebula_resource::Manager::new()))
+        .with_resource_registrars(crate::resource::activation::tests::registrars())
+        .with_stored_resources(crate::resource::StoredResourceActivator::new(
+            Arc::clone(&store) as Arc<dyn nebula_storage_port::store::ResourceStore>,
+        ));
+    let scope = Scope::new(
+        nebula_core::WorkspaceId::new().to_string(),
+        nebula_core::OrgId::new().to_string(),
+    );
+    // A kind this process does not allow fails registration after its row
+    // was read.
+    let row = store_plain_row(&store, &scope, "activation.unknown").await;
+    let node = node_key!("reader");
+    let manifest = nebula_execution::ExecutionBindingManifestV2::new([resource_binding(
+        &node,
+        "db",
+        row,
+        "activation.unknown",
+    )])
+    .unwrap();
+    engine
+        .activate_bound_resources(
+            ExecutionId::new(),
+            &scope,
+            &manifest,
+            &CancellationToken::new(),
+        )
+        .await;
+
+    let recorder = Arc::new(RecordingStatusStore::default());
+    let publisher = crate::ResourceStatusPublisher::new(
+        Arc::clone(&recorder) as Arc<dyn nebula_storage_port::store::ResourceStatusStore>,
+        nebula_storage_port::dto::StatusWorkerId::new("worker:test").unwrap(),
+    );
+    let mut published = HashMap::new();
+    publisher.tick(&engine, &mut published).await;
+    assert_eq!(
+        recorder.take(),
+        vec!["heartbeat".to_owned(), format!("publish {row} failed v0")]
+    );
+}
+
+/// A publication longer than the heartbeat interval renews the heartbeat as
+/// it goes, so the worker's lease never lapses mid-publish.
+#[tokio::test(start_paused = true)]
+async fn status_publisher_renews_the_heartbeat_during_a_long_publish() {
+    let store = Arc::new(nebula_storage::inmem::InMemoryResourceStore::new());
+    let (engine, _) = make_engine(Arc::new(ActionRegistry::new()));
+    let engine = engine
+        .with_resource_manager(Arc::new(nebula_resource::Manager::new()))
+        .with_resource_registrars(crate::resource::activation::tests::registrars())
+        .with_stored_resources(crate::resource::StoredResourceActivator::new(
+            Arc::clone(&store) as Arc<dyn nebula_storage_port::store::ResourceStore>,
+        ));
+    let scope = Scope::new(
+        nebula_core::WorkspaceId::new().to_string(),
+        nebula_core::OrgId::new().to_string(),
+    );
+    let mut bindings = Vec::new();
+    for node in ["a", "b", "c"] {
+        let row = store_plain_row(&store, &scope, "activation.plain").await;
+        bindings.push(resource_binding(
+            &NodeKey::new(node).unwrap(),
+            "db",
+            row,
+            "activation.plain",
+        ));
+    }
+    let manifest = nebula_execution::ExecutionBindingManifestV2::new(bindings).unwrap();
+    engine
+        .activate_bound_resources(
+            ExecutionId::new(),
+            &scope,
+            &manifest,
+            &CancellationToken::new(),
+        )
+        .await;
+
+    let interval = Duration::from_secs(1);
+    let recorder = Arc::new(RecordingStatusStore {
+        publish_delay: interval,
+        ..RecordingStatusStore::default()
+    });
+    let publisher = crate::ResourceStatusPublisher::new(
+        Arc::clone(&recorder) as Arc<dyn nebula_storage_port::store::ResourceStatusStore>,
+        nebula_storage_port::dto::StatusWorkerId::new("worker:test").unwrap(),
+    )
+    .with_interval(interval);
+    let mut published = HashMap::new();
+    publisher.tick(&engine, &mut published).await;
+    let calls: Vec<_> = recorder
+        .take()
+        .into_iter()
+        .map(|call| {
+            if call == "heartbeat" {
+                "heartbeat"
+            } else {
+                "publish"
+            }
+        })
+        .collect();
+    assert_eq!(
+        calls,
+        [
+            "heartbeat",
+            "publish",
+            "heartbeat",
+            "publish",
+            "heartbeat",
+            "publish"
+        ]
+    );
+}
+
+/// With a manager but no stored-resource activator, a node naming a stored
+/// row is pinned unavailable, never left to resolve some other row of the
+/// same kind.
+#[tokio::test]
+async fn unwired_activation_pins_stored_bindings_unavailable() {
+    let (engine, _) = make_engine(Arc::new(ActionRegistry::new()));
+    let engine = engine.with_resource_manager(Arc::new(nebula_resource::Manager::new()));
+    let scope = Scope::new(
+        nebula_core::WorkspaceId::new().to_string(),
+        nebula_core::OrgId::new().to_string(),
+    );
+    let reader = node_key!("reader");
+    let manifest = nebula_execution::ExecutionBindingManifestV2::new([resource_binding(
+        &reader,
+        "db",
+        nebula_core::ResourceId::new(),
+        "activation.plain",
+    )])
+    .unwrap();
+    let execution_id = ExecutionId::new();
+    engine
+        .activate_bound_resources(execution_id, &scope, &manifest, &CancellationToken::new())
+        .await;
+
+    let rows = engine
+        .resource_rows_by_execution
+        .get(&execution_id)
+        .map(|rows| Arc::clone(rows.value()))
+        .expect("rows recorded even without an activator");
+    let plain = ResourceKey::new("activation.plain").unwrap();
+    assert_eq!(
+        rows.get(&reader).and_then(|keys| keys.get(&plain)),
+        Some(&unavailable_row_identity())
+    );
+}
+
+/// Shutdown does not wait on a hung status store: a tick stuck in store
+/// I/O is abandoned.
+#[tokio::test(start_paused = true)]
+async fn status_publisher_shuts_down_during_a_hung_tick() {
+    let store = Arc::new(nebula_storage::inmem::InMemoryResourceStore::new());
+    let (engine, _) = make_engine(Arc::new(ActionRegistry::new()));
+    let engine = engine
+        .with_resource_manager(Arc::new(nebula_resource::Manager::new()))
+        .with_resource_registrars(crate::resource::activation::tests::registrars())
+        .with_stored_resources(crate::resource::StoredResourceActivator::new(
+            Arc::clone(&store) as Arc<dyn nebula_storage_port::store::ResourceStore>,
+        ));
+    let scope = Scope::new(
+        nebula_core::WorkspaceId::new().to_string(),
+        nebula_core::OrgId::new().to_string(),
+    );
+    let row = store_plain_row(&store, &scope, "activation.plain").await;
+    let manifest = nebula_execution::ExecutionBindingManifestV2::new([resource_binding(
+        &node_key!("reader"),
+        "db",
+        row,
+        "activation.plain",
+    )])
+    .unwrap();
+    engine
+        .activate_bound_resources(
+            ExecutionId::new(),
+            &scope,
+            &manifest,
+            &CancellationToken::new(),
+        )
+        .await;
+
+    let recorder = Arc::new(RecordingStatusStore {
+        publish_delay: Duration::from_hours(1),
+        ..RecordingStatusStore::default()
+    });
+    let publisher = crate::ResourceStatusPublisher::new(
+        Arc::clone(&recorder) as Arc<dyn nebula_storage_port::store::ResourceStatusStore>,
+        nebula_storage_port::dto::StatusWorkerId::new("worker:test").unwrap(),
+    );
+    let shutdown = CancellationToken::new();
+    let running = tokio::spawn(publisher.run(Arc::new(engine), shutdown.clone()));
+    // Let the first tick reach the hung publish.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    shutdown.cancel();
+    tokio::time::timeout(Duration::from_secs(10), running)
+        .await
+        .expect("the publisher stops without waiting on the hung store")
+        .unwrap();
+}
+
+/// A heartbeat that renews only after the lease ran out (a stalled worker)
+/// republishes even unchanged rows: they may have expired meanwhile.
+#[tokio::test(start_paused = true)]
+async fn status_publisher_republishes_after_its_lease_lapsed() {
+    let store = Arc::new(nebula_storage::inmem::InMemoryResourceStore::new());
+    let (engine, _) = make_engine(Arc::new(ActionRegistry::new()));
+    let engine = engine
+        .with_resource_manager(Arc::new(nebula_resource::Manager::new()))
+        .with_resource_registrars(crate::resource::activation::tests::registrars())
+        .with_stored_resources(crate::resource::StoredResourceActivator::new(
+            Arc::clone(&store) as Arc<dyn nebula_storage_port::store::ResourceStore>,
+        ));
+    let scope = Scope::new(
+        nebula_core::WorkspaceId::new().to_string(),
+        nebula_core::OrgId::new().to_string(),
+    );
+    let row = store_plain_row(&store, &scope, "activation.plain").await;
+    let manifest = nebula_execution::ExecutionBindingManifestV2::new([resource_binding(
+        &node_key!("reader"),
+        "db",
+        row,
+        "activation.plain",
+    )])
+    .unwrap();
+    engine
+        .activate_bound_resources(
+            ExecutionId::new(),
+            &scope,
+            &manifest,
+            &CancellationToken::new(),
+        )
+        .await;
+
+    let recorder = Arc::new(RecordingStatusStore::default());
+    let interval = Duration::from_secs(1);
+    let publisher = crate::ResourceStatusPublisher::new(
+        Arc::clone(&recorder) as Arc<dyn nebula_storage_port::store::ResourceStatusStore>,
+        nebula_storage_port::dto::StatusWorkerId::new("worker:test").unwrap(),
+    )
+    .with_interval(interval);
+    let mut published = HashMap::new();
+    publisher.tick(&engine, &mut published).await;
+    assert_eq!(recorder.take().len(), 2, "heartbeat + publish");
+
+    publisher.tick(&engine, &mut published).await;
+    assert_eq!(recorder.take(), ["heartbeat"], "within the lease: cached");
+
+    tokio::time::advance(interval * 4).await;
+    publisher.tick(&engine, &mut published).await;
+    let calls = recorder.take();
+    assert_eq!(calls.len(), 2, "{calls:?}");
+    assert!(
+        calls[1].starts_with(&format!("publish {row} ")),
+        "{calls:?}"
+    );
+}

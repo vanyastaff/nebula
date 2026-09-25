@@ -17,9 +17,10 @@
 //! ## Out of scope (deliberate deferral)
 //!
 //! - **Resource wiring**: `Plugin::resources()` yields `Arc<dyn ResourceFactory>`
-//!   which carries introspection but not the typed `R + R::Topology` construction
-//!   surface the `ResourceActivatorRegistry` needs. Resource wiring requires a
-//!   per-kind `KindActivator` supplied by the composition root.
+//!   that both describes and constructs its resource (ADR-0095 D2). This module
+//!   does not insert them; the composition root builds the closed allowlist
+//!   with [`resource_registrars_from`](crate::resource_registrars_from) and
+//!   threads it through `WorkflowEngine::with_resource_registrars`.
 //! - **Credential wiring**: credential kinds need a separate registration path
 //!   not yet exposed on the engine builder.
 //! - **Unload / removal**: `ActionRegistry` has no removal primitive. Unload

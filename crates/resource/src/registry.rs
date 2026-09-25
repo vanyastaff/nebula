@@ -10,6 +10,7 @@ use std::{
 
 use async_trait::async_trait;
 use dashmap::DashMap;
+use indexmap::IndexMap;
 use nebula_core::{ResourceKey, Scope, ScopeLevel};
 
 use crate::{
@@ -114,6 +115,9 @@ pub(crate) trait ManagedHandle: Send + Sync + 'static {
 
     /// Whether credential revoke already fenced this row's refresh admission.
     fn is_tainted(&self) -> bool;
+
+    /// Woken on every phase or taint change of this row.
+    fn phase_changed(&self) -> &tokio::sync::Notify;
 
     /// Credential-revoke epoch bump.
     ///
@@ -339,6 +343,10 @@ where
 
     fn is_tainted(&self) -> bool {
         ManagedResource::is_tainted(self)
+    }
+
+    fn phase_changed(&self) -> &tokio::sync::Notify {
+        &self.phase_changed
     }
 
     fn accepts_credential_slot_name(&self, slot: &str) -> bool {
@@ -604,7 +612,8 @@ pub(crate) enum AcquireLookupOutcome {
 }
 
 /// A single entry in the registry, associating a `(scope, slot_identity)`
-/// row with a managed resource. This is a technical lookup identity, not a
+/// row with a managed resource. The scope half of the identity is the
+/// [`ScopeRows`] map key the entry is stored under. This is a technical lookup identity, not a
 /// tenant-authorization proof or permission to share a physical runtime.
 ///
 /// `slot_identity` is the resolved per-slot credential identity (see
@@ -614,9 +623,22 @@ pub(crate) enum AcquireLookupOutcome {
 /// exact and structural ([`SlotIdentity`] derives `Eq`), so two distinct
 /// resolved binding sets can never collapse onto one row.
 struct RegistryEntry {
-    scope: ScopeLevel,
     slot_identity: SlotIdentity,
     managed: Arc<dyn ManagedHandle>,
+}
+
+/// Rows under one [`ResourceKey`], grouped by exact [`ScopeLevel`].
+///
+/// Every lookup resolves one scope level at a time, so grouping makes each
+/// level an O(1) map probe plus a scan of that level's slot identities,
+/// instead of a scan across every tenant's rows under the key. `IndexMap`
+/// keeps first-registration order for whole-key snapshots (shutdown,
+/// removal) deterministic.
+type ScopeRows = IndexMap<ScopeLevel, Vec<RegistryEntry>>;
+
+/// Rows registered at exactly `scope` (empty when none).
+fn rows_at<'a>(rows: &'a ScopeRows, scope: &ScopeLevel) -> &'a [RegistryEntry] {
+    rows.get(scope).map_or(&[], Vec::as_slice)
 }
 
 enum ScopeFind {
@@ -645,8 +667,8 @@ enum PinnedFind {
 /// - **By type**: `get_typed()` uses a secondary [`TypeId`] index to select only rows of the
 ///   requested provider type.
 pub struct Registry {
-    /// Primary index: ResourceKey -> list of entries (one per scope).
-    entries: DashMap<ResourceKey, Vec<RegistryEntry>>,
+    /// Primary index: ResourceKey -> rows grouped by scope.
+    entries: DashMap<ResourceKey, ScopeRows>,
     /// Secondary index: TypeId -> ResourceKey (for typed lookup).
     type_index: DashMap<TypeId, ResourceKey>,
 }
@@ -740,23 +762,23 @@ impl Registry {
         // it.
         let mut replacement = None;
         let stale_type_id = {
-            let mut entries = self.entries.entry(key.clone()).or_default();
+            let mut rows = self.entries.entry(key.clone()).or_default();
 
             // Row identity is `(scope, slot_identity)` — NOT `scope` alone.
             // A registration that resolved a different credential
             // (different `slot_identity`) at the same `(key, scope)` must
             // NOT replace the existing tenant's row; it becomes a separate
             // row with its own runtime.
-            if let Some(pos) = entries
+            let at_scope = rows.entry(scope).or_default();
+            if let Some(pos) = at_scope
                 .iter()
-                .position(|e| e.scope == scope && e.slot_identity == slot_identity)
+                .position(|e| e.slot_identity == slot_identity)
             {
                 let admission = before_replace()?;
-                let prev_type_id = entries[pos].managed.managed_type_id();
+                let prev_type_id = at_scope[pos].managed.managed_type_id();
                 let previous = std::mem::replace(
-                    &mut entries[pos],
+                    &mut at_scope[pos],
                     RegistryEntry {
-                        scope,
                         slot_identity,
                         managed,
                     },
@@ -764,8 +786,9 @@ impl Registry {
                 replacement = Some((previous.managed, admission));
 
                 if prev_type_id != type_id
-                    && !entries
-                        .iter()
+                    && !rows
+                        .values()
+                        .flatten()
                         .any(|e| e.managed.managed_type_id() == prev_type_id)
                 {
                     Some(prev_type_id)
@@ -773,8 +796,7 @@ impl Registry {
                     None
                 }
             } else {
-                entries.push(RegistryEntry {
-                    scope,
+                at_scope.push(RegistryEntry {
                     slot_identity,
                     managed,
                 });
@@ -802,9 +824,9 @@ impl Registry {
         key: &ResourceKey,
         managed: &Arc<dyn ManagedHandle>,
     ) -> bool {
-        self.entries.get(key).is_some_and(|entries| {
-            entries
-                .iter()
+        self.entries.get(key).is_some_and(|rows| {
+            rows.values()
+                .flatten()
                 .any(|entry| Arc::ptr_eq(&entry.managed, managed))
         })
     }
@@ -821,10 +843,10 @@ impl Registry {
         scope: &ScopeLevel,
         slot_identity: &SlotIdentity,
     ) -> bool {
-        self.entries.get(key).is_some_and(|entries| {
-            entries
+        self.entries.get(key).is_some_and(|rows| {
+            rows_at(&rows, scope)
                 .iter()
-                .any(|entry| entry.scope == *scope && entry.slot_identity == *slot_identity)
+                .any(|entry| entry.slot_identity == *slot_identity)
         })
     }
 
@@ -1017,15 +1039,13 @@ impl Registry {
     /// competing row for *this* type). `None` keeps the
     /// identity-agnostic-key semantics for untyped callers.
     fn scope_has_cred_bound_rows_without_unbound(
-        entries: &[RegistryEntry],
+        entries: &ScopeRows,
         level: &ScopeLevel,
         concrete_type: Option<TypeId>,
     ) -> bool {
-        entries.iter().any(|e| {
-            e.scope == *level
-                && !e.slot_identity.is_unbound()
-                && Self::entry_type_matches(e, concrete_type)
-        })
+        rows_at(entries, level)
+            .iter()
+            .any(|e| !e.slot_identity.is_unbound() && Self::entry_type_matches(e, concrete_type))
     }
 
     /// Looks up a managed resource by key, scope, and a resolved slot
@@ -1113,11 +1133,14 @@ impl Registry {
     /// [`remove_for`](Self::remove_for) to remove a single resolved row
     /// without disturbing siblings.
     pub(crate) fn remove(&self, key: &ResourceKey) -> Vec<Arc<dyn ManagedHandle>> {
-        let Some((_, entries)) = self.entries.remove(key) else {
+        let Some((_, rows)) = self.entries.remove(key) else {
             return Vec::new();
         };
         self.type_index.retain(|_type_id, k| k != key);
-        entries.into_iter().map(|entry| entry.managed).collect()
+        rows.into_values()
+            .flatten()
+            .map(|entry| entry.managed)
+            .collect()
     }
 
     /// Removes exactly the row for `(key, scope, slot_identity)`, leaving
@@ -1144,18 +1167,23 @@ impl Registry {
         // scoped block so the shard guard drops before `type_index` (a
         // different DashMap) is touched — never both shards held at once.
         let (removed, stale_type_id) = {
-            let mut entries = self.entries.get_mut(key)?;
-            let pos = entries
+            let mut rows = self.entries.get_mut(key)?;
+            let at_scope = rows.get_mut(scope)?;
+            let pos = at_scope
                 .iter()
-                .position(|e| e.scope == *scope && e.slot_identity == *slot_identity)?;
-            let removed_type_id = entries[pos].managed.managed_type_id();
-            let removed = entries.remove(pos).managed;
+                .position(|e| e.slot_identity == *slot_identity)?;
+            let removed_type_id = at_scope[pos].managed.managed_type_id();
+            let removed = at_scope.remove(pos).managed;
+            if at_scope.is_empty() {
+                rows.shift_remove(scope);
+            }
             // #382 discipline: only this concrete type's `type_index` row
             // is stale if NO other row under `key` still uses it — a
             // sibling row of the same type at another scope/identity must
             // keep `get_typed::<R>` resolving.
-            let stale = !entries
-                .iter()
+            let stale = !rows
+                .values()
+                .flatten()
                 .any(|e| e.managed.managed_type_id() == removed_type_id);
             (Some(removed), stale.then_some(removed_type_id))
         };
@@ -1187,7 +1215,7 @@ impl Registry {
     pub(crate) fn all_managed(&self) -> Vec<Arc<dyn ManagedHandle>> {
         let mut out = Vec::new();
         for row in &self.entries {
-            for entry in row.value() {
+            for entry in row.value().values().flatten() {
                 out.push(Arc::clone(&entry.managed));
             }
         }
@@ -1228,14 +1256,14 @@ impl Registry {
     /// nor inflates the `Ambiguous` row count. `None` keeps the erased
     /// semantics.
     fn find_at_exact_scope(
-        entries: &[RegistryEntry],
+        entries: &ScopeRows,
         scope: &ScopeLevel,
         want_identity: Option<&SlotIdentity>,
         concrete_type: Option<TypeId>,
     ) -> ScopeFind {
-        let mut at_scope = entries
+        let mut at_scope = rows_at(entries, scope)
             .iter()
-            .filter(|e| e.scope == *scope && Self::entry_type_matches(e, concrete_type));
+            .filter(|e| Self::entry_type_matches(e, concrete_type));
 
         if let Some(id) = want_identity {
             return match at_scope.find(|e| &e.slot_identity == id) {
@@ -1275,26 +1303,24 @@ impl Registry {
     /// correctly-typed ancestor/Global row of the requested type (the
     /// cross-type masking failure mode). `None` keeps the erased semantics.
     fn find_in_entries(
-        entries: &[RegistryEntry],
+        entries: &ScopeRows,
         scope: &ScopeLevel,
         want_identity: Option<&SlotIdentity>,
         concrete_type: Option<TypeId>,
     ) -> ScopeFind {
+        let has_typed_row = |level: &ScopeLevel| {
+            rows_at(entries, level)
+                .iter()
+                .any(|e| Self::entry_type_matches(e, concrete_type))
+        };
         // Resolve the effective scope: exact match wins; otherwise fall
         // back to Global. Scope precedence is decided BEFORE slot identity,
         // but AFTER the concrete-type filter — a wrong-typed row at the
         // requested scope must not anchor the scope and mask a correctly
         // typed Global row.
-        let effective_scope = if entries
-            .iter()
-            .any(|e| e.scope == *scope && Self::entry_type_matches(e, concrete_type))
-        {
+        let effective_scope = if has_typed_row(scope) {
             scope.clone()
-        } else if *scope != ScopeLevel::Global
-            && entries.iter().any(|e| {
-                e.scope == ScopeLevel::Global && Self::entry_type_matches(e, concrete_type)
-            })
-        {
+        } else if *scope != ScopeLevel::Global && has_typed_row(&ScopeLevel::Global) {
             ScopeLevel::Global
         } else {
             return ScopeFind::NotFound;
@@ -1345,15 +1371,13 @@ impl Registry {
     /// caller could mishandle (the cross-tenant-bleed failure mode the
     /// agnostic path guards against cannot occur here).
     fn find_pinned_at_exact_scope(
-        entries: &[RegistryEntry],
+        entries: &ScopeRows,
         scope: &ScopeLevel,
         want_identity: &SlotIdentity,
         concrete_type: Option<TypeId>,
     ) -> PinnedFind {
-        match entries.iter().find(|e| {
-            e.scope == *scope
-                && &e.slot_identity == want_identity
-                && Self::entry_type_matches(e, concrete_type)
+        match rows_at(entries, scope).iter().find(|e| {
+            &e.slot_identity == want_identity && Self::entry_type_matches(e, concrete_type)
         }) {
             Some(entry) => PinnedFind::Hit {
                 managed: Arc::clone(&entry.managed),
@@ -1388,7 +1412,7 @@ impl Registry {
     /// different tenant's row is never aliased. Unambiguous by construction
     /// (see [`PinnedFind`] / [`find_pinned_at_exact_scope`](Self::find_pinned_at_exact_scope)).
     fn find_pinned_in_entries(
-        entries: &[RegistryEntry],
+        entries: &ScopeRows,
         scope: &ScopeLevel,
         want_identity: &SlotIdentity,
         concrete_type: Option<TypeId>,

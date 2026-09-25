@@ -96,6 +96,36 @@ fn backoff_caps_at_five_minutes() {
 }
 
 #[test]
+fn backoff_keeps_sub_millisecond_precision() {
+    // A millisecond-granular formula truncated this base to a zero delay.
+    let base = Duration::from_micros(500);
+    assert_eq!(compute_backoff(base, 1), Duration::from_micros(500));
+    assert_eq!(compute_backoff(base, 3), Duration::from_millis(2));
+}
+
+#[test]
+fn backoff_saturates_at_cap_instead_of_wrapping() {
+    // `as_millis() as u64` wrapped for bases beyond u64 milliseconds.
+    assert_eq!(compute_backoff(Duration::MAX, 1), MAX_BACKOFF);
+    assert_eq!(compute_backoff(Duration::MAX, u32::MAX), MAX_BACKOFF);
+    assert_eq!(
+        compute_backoff(Duration::from_nanos(1), u32::MAX),
+        MAX_BACKOFF
+    );
+    // 1ns * 2^32 ≈ 4.29s: a large attempt must not jump straight to the cap.
+    assert_eq!(
+        compute_backoff(Duration::from_nanos(1), 33),
+        Duration::from_nanos(1 << 32)
+    );
+}
+
+#[test]
+fn zero_base_backoff_stays_zero() {
+    assert_eq!(compute_backoff(Duration::ZERO, 1), Duration::ZERO);
+    assert_eq!(compute_backoff(Duration::ZERO, u32::MAX), Duration::ZERO);
+}
+
+#[test]
 fn equal_jitter_stays_within_half_to_nominal() {
     let nominal = Duration::from_secs(10);
     for _ in 0..1_000 {

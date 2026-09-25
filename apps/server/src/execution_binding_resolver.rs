@@ -339,6 +339,8 @@ mod tests {
             kind: "core.http".to_owned(),
             config: serde_json::json!({}),
             credential_bindings: BTreeMap::new(),
+            topology: None,
+            resilience_override: None,
             created_at: "2026-01-01T00:00:00Z".to_owned(),
             created_by: "system".to_owned(),
             version: 0,

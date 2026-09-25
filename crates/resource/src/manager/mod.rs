@@ -342,6 +342,8 @@ use crate::{
 };
 
 pub(crate) mod acquire;
+#[cfg(test)]
+mod event_bus_tests;
 mod gate;
 pub(crate) mod options;
 mod registration;
@@ -446,6 +448,11 @@ pub struct Manager {
     /// [`AcquireOptions::acquire_slow_threshold`](crate::options::AcquireOptions::acquire_slow_threshold)
     /// overrides this per call.
     pub(super) acquire_slow_threshold: Option<std::time::Duration>,
+    /// Rate-limit state for process-scoped limits (and for cluster-scoped
+    /// ones while no shared store is configured).
+    pub(super) local_limits: Arc<crate::rate_limit::MemoryLimitStore>,
+    /// Store shared by every worker for cluster-scoped limits.
+    pub(super) shared_limits: Option<crate::rate_limit::SharedLimitStore>,
 }
 
 impl std::fmt::Debug for Manager {
@@ -475,7 +482,9 @@ impl Manager {
     /// Creates a new empty manager with the given configuration.
     pub fn with_config(config: ManagerConfig) -> Self {
         Self::warn_once_if_panic_abort();
-        let event_bus = Arc::new(EventBus::new(256));
+        // `max(1)`: the public field bypasses the setter's clamp, and a
+        // zero-sized bus panics.
+        let event_bus = Arc::new(EventBus::new(config.event_bus_capacity.max(1)));
         let cancel = CancellationToken::new();
         let (release_queue, release_queue_handle) = ReleaseQueue::new(config.release_queue_workers);
         let release_queue = Arc::new(release_queue);
@@ -513,6 +522,8 @@ impl Manager {
             shutting_down: AtomicBool::new(false),
             lifecycle: None,
             acquire_slow_threshold,
+            local_limits: Arc::new(crate::rate_limit::MemoryLimitStore::new()),
+            shared_limits: config.shared_limit_store,
         }
     }
 
@@ -609,7 +620,8 @@ impl Manager {
     ///
     /// Returns a [`Subscriber`](crate::Subscriber) that receives
     /// [`ResourceEvent`]s emitted during registration, removal, and
-    /// acquisition. The buffer is fixed at 256 events: a slow consumer that
+    /// acquisition. The buffer holds
+    /// [`ManagerConfig::event_bus_capacity`] events: a slow consumer that
     /// falls behind has the *oldest* unread events skipped (the subscriber
     /// auto-recovers and re-positions to the latest event — it never returns
     /// a lag error). Use
@@ -617,6 +629,15 @@ impl Manager {
     /// observe how many events were skipped.
     pub fn subscribe_events(&self) -> crate::Subscriber<ResourceEvent> {
         self.event_bus.subscribe()
+    }
+
+    /// Snapshot of the lifecycle event bus counters.
+    ///
+    /// A growing `dropped_count` means lifecycle events are being lost —
+    /// raise [`ManagerConfig::event_bus_capacity`] or speed up consumers.
+    /// See [`EventBusStats`](crate::EventBusStats) for how drops are counted.
+    pub fn event_bus_stats(&self) -> crate::EventBusStats {
+        self.event_bus.stats()
     }
 
     /// Defense A against the `graceful_shutdown` race: reject any acquire
@@ -768,6 +789,102 @@ impl Manager {
             crate::registry::LookupOutcome::Found(any) => Some(any),
             crate::registry::LookupOutcome::NotFound
             | crate::registry::LookupOutcome::Ambiguous { .. } => None,
+        }
+    }
+
+    /// Read-only view of the single row `(key, scope, slot_identity)`.
+    ///
+    /// Unlike [`get_any`](Self::get_any) this is pinned to one resolved row,
+    /// so it never returns `None` for ambiguity — only when no such row is
+    /// registered. Use it to report the status of a row whose identity the
+    /// caller already knows, such as an activated stored resource.
+    #[must_use]
+    pub fn get_row(
+        &self,
+        key: &ResourceKey,
+        scope: &ScopeLevel,
+        slot_identity: &crate::dedup::SlotIdentity,
+    ) -> Option<crate::registry::ManagedResourceView> {
+        match self.registry.get_for(key, scope, slot_identity) {
+            crate::registry::PinnedLookup::Found(view) => Some(view),
+            crate::registry::PinnedLookup::NotFound => None,
+        }
+    }
+
+    /// Waits until the row `(key, scope, slot_identity)` accepts acquires,
+    /// never past `deadline`.
+    ///
+    /// A row registered with rotation-bound credential bindings stays
+    /// [`Initializing`](crate::ResourcePhase::Initializing) until the
+    /// rotation fan-out has reread its credentials, and an acquire before
+    /// then is refused with [`Backpressure`](crate::ErrorKind::Backpressure).
+    /// A host that hands a freshly registered row to work — the engine
+    /// activating a stored row for an execution — waits here instead of
+    /// letting that work's first acquire bounce. The wait is woken by every
+    /// phase or taint change of the row; it never polls.
+    ///
+    /// # Errors
+    ///
+    /// - [`NotFound`](crate::ErrorKind::NotFound) — no such row.
+    /// - [`Revoked`](crate::ErrorKind::Revoked) — a credential revoke tainted
+    ///   the row.
+    /// - [`Backpressure`](crate::ErrorKind::Backpressure) — the row left
+    ///   `Initializing` for a phase that refuses acquires (draining, shutting
+    ///   down, failed), or `deadline` passed first.
+    /// - [`Cancelled`](crate::ErrorKind::Cancelled) — the manager is shutting
+    ///   down.
+    ///
+    /// # Cancel safety
+    ///
+    /// Cancel safe: the wait holds nothing.
+    pub async fn until_accepting(
+        &self,
+        key: &ResourceKey,
+        scope: &ScopeLevel,
+        slot_identity: &crate::dedup::SlotIdentity,
+        deadline: Option<Instant>,
+    ) -> Result<(), Error> {
+        let managed = self.lookup_any_for_slot_identity_structural(key, scope, slot_identity)?;
+        loop {
+            // Armed before the state is read, so a change between the read
+            // and the wait still wakes it.
+            let changed = managed.phase_changed().notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            self.shutdown_guard()?;
+            if managed.is_tainted() {
+                return Err(Error::revoked(format!(
+                    "{key}: resource was revoked before it could serve"
+                ))
+                .with_resource_key(key.clone()));
+            }
+            let phase = managed.phase();
+            if phase.is_accepting() {
+                return Ok(());
+            }
+            if phase != crate::state::ResourcePhase::Initializing {
+                return Err(Error::backpressure(format!(
+                    "{key}: resource is {phase} and cannot accept acquires"
+                ))
+                .with_resource_key(key.clone()));
+            }
+            let woken = match deadline {
+                None => {
+                    changed.await;
+                    true
+                },
+                Some(deadline) => {
+                    tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), changed)
+                        .await
+                        .is_ok()
+                },
+            };
+            if !woken {
+                return Err(Error::backpressure(format!(
+                    "{key}: resource was still initializing at the deadline"
+                ))
+                .with_resource_key(key.clone()));
+            }
         }
     }
 

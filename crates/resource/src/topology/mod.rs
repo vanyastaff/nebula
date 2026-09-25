@@ -21,6 +21,7 @@ pub mod bounded;
 pub mod contract;
 pub mod pooled;
 pub mod resident;
+pub mod settings;
 pub mod store;
 
 pub use crate::{
@@ -29,12 +30,18 @@ pub use crate::{
 };
 pub use bounded::{BoundedMode, BoundedProvider};
 pub use contract::{
-    AdmissionPhase, AdmissionStatus, CreatedEntry, HookFault, Load, MaintenanceSchedule,
-    NoTopology, Ticket, Topology, Unavailable,
+    AdmissionPhase, AdmissionStatus, CreatedEntry, HookFault, Load, MAX_MAINTENANCE_INTERVAL,
+    MaintenanceSchedule, NoTopology, Ticket, Topology, Unavailable,
 };
 pub use pooled::{BrokenCheck, InstanceMetrics, PoolProvider, RecycleDecision};
 pub use resident::ResidentProvider;
-pub use store::{CheckedOut, Checkout, InstanceStore, PoolStrategy, ReturnOutcome};
+pub use settings::{
+    BoundedModeSetting, BoundedSettings, ConfigurableTopology, PoolSettings, PoolStrategySetting,
+    ResidentSettings, WarmupSetting, fixed,
+};
+pub use store::{
+    CheckedOut, Checkout, IdleRead, InstanceStore, PoolStrategy, ReturnOutcome, StoreView,
+};
 
 /// Framework topology structs that implement the open [`Topology`] contract.
 ///

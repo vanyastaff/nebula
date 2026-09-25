@@ -40,6 +40,10 @@ macro_rules! impl_fake_handle {
             fn is_tainted(&self) -> bool {
                 false
             }
+            fn phase_changed(&self) -> &tokio::sync::Notify {
+                static NEVER: tokio::sync::Notify = tokio::sync::Notify::const_new();
+                &NEVER
+            }
             fn bump_revoke_epoch(&self) {}
             fn accepts_credential_slot_name(&self, _slot: &str) -> bool {
                 true
@@ -287,6 +291,67 @@ fn remove_for_removes_one_tenant_row_and_keeps_sibling() {
         "the key's entries row must be empty (and behave as NotFound) \
          once every row under it is removed via remove_for"
     );
+}
+
+#[test]
+fn per_scope_rows_stay_isolated_and_snapshots_keep_registration_order() {
+    // Rows are grouped by scope under a key; many tenants sharing one key
+    // must each resolve their own row, an emptied scope bucket must not
+    // linger, and whole-key snapshots must keep registration order.
+    let reg = Registry::new();
+    let key = ResourceKey::new("fake").unwrap();
+    let tenants: Vec<ScopeLevel> = (0..8)
+        .map(|_| ScopeLevel::Workspace(WorkspaceId::new()))
+        .collect();
+    let handles: Vec<Arc<dyn ManagedHandle>> = tenants
+        .iter()
+        .map(|_| Arc::new(FakeA) as Arc<dyn ManagedHandle>)
+        .collect();
+    for (scope, handle) in tenants.iter().zip(&handles) {
+        reg.register(
+            key.clone(),
+            TypeId::of::<FakeA>(),
+            scope.clone(),
+            SlotIdentity::Unbound,
+            Arc::clone(handle),
+        );
+    }
+
+    let same = |a: &Arc<dyn ManagedHandle>, b: &Arc<dyn ManagedHandle>| {
+        std::ptr::addr_eq(Arc::as_ptr(a), Arc::as_ptr(b))
+    };
+    for (scope, handle) in tenants.iter().zip(&handles) {
+        let HandleLookupOutcome::Found(found) = reg.get_handle(&key, scope) else {
+            panic!("each tenant scope must resolve its own row");
+        };
+        assert!(
+            same(&found, handle),
+            "a tenant must never alias another's row"
+        );
+    }
+    let snapshot = reg.all_managed();
+    assert_eq!(snapshot.len(), handles.len());
+    assert!(
+        snapshot.iter().zip(&handles).all(|(a, b)| same(a, b)),
+        "whole-key snapshots must keep registration order"
+    );
+
+    assert!(
+        reg.remove_for(&key, &tenants[3], &SlotIdentity::Unbound)
+            .is_some()
+    );
+    assert!(
+        !reg.entries.get(&key).unwrap().contains_key(&tenants[3]),
+        "an emptied scope bucket must be dropped"
+    );
+    assert!(matches!(
+        reg.get(&key, &tenants[3]),
+        LookupOutcome::NotFound
+    ));
+    assert!(matches!(
+        reg.get(&key, &tenants[4]),
+        LookupOutcome::Found(_)
+    ));
 }
 
 #[test]

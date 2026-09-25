@@ -64,6 +64,7 @@
 //!     slot_identity: SlotIdentity::Unbound,
 //!     topology: Pooled::<HttpClient>::new(PoolConfig::default(), 0),
 //!     recovery_gate: None,
+//!     rate_limit: None,
 //! })?;
 //!
 //! let ctx = ResourceContext::minimal(
@@ -235,6 +236,7 @@
 pub mod context;
 #[cfg(feature = "rotation")]
 pub mod credential_fanout;
+pub(crate) mod deadline;
 pub mod dedup;
 pub mod error;
 pub mod events;
@@ -246,6 +248,7 @@ pub(crate) mod jitter;
 pub mod manager;
 pub mod metrics;
 pub mod options;
+pub mod rate_limit;
 pub mod recovery;
 pub mod registry;
 pub mod release_queue;
@@ -276,9 +279,10 @@ pub use metrics::{
     ResourceOpsMetrics, ResourceOpsSnapshot,
 };
 pub use nebula_core::{ExecutionId, ResourceKey, ScopeLevel, WorkflowId, resource_key};
-/// Re-export [`Subscriber`] so callers of [`Manager::subscribe_events`] do not
-/// need a direct `nebula-eventbus` dependency.
-pub use nebula_eventbus::Subscriber;
+/// Re-export [`Subscriber`] and [`EventBusStats`] so callers of
+/// [`Manager::subscribe_events`] / [`Manager::event_bus_stats`] do not need a
+/// direct `nebula-eventbus` dependency.
+pub use nebula_eventbus::{EventBusStats, Subscriber};
 pub use nebula_metadata::{
     DeprecationNotice, Icon, MaturityLevel, MetadataError, MetadataName, MetadataReadmissionError,
     metadata_name,
@@ -407,8 +411,9 @@ pub use runtime::{
 pub use state::{ResourceErrorSummary, ResourcePhase, ResourceStatus};
 // Topology configurations — used at registration time.
 pub use topology::{
-    AdmissionPhase, AdmissionStatus, CheckedOut, Checkout, HookFault, InstanceStore, Load,
-    MaintenanceSchedule, NoTopology, PoolStrategy, ReturnOutcome, Ticket, Topology, Unavailable,
+    AdmissionPhase, AdmissionStatus, CheckedOut, Checkout, HookFault, IdleRead, InstanceStore,
+    Load, MAX_MAINTENANCE_INTERVAL, MaintenanceSchedule, NoTopology, PoolStrategy, ReturnOutcome,
+    StoreView, Ticket, Topology, Unavailable,
     bounded::{BoundedMode, BoundedProvider},
     pooled::{
         BrokenCheck, InstanceMetrics, PoolProvider, RecycleDecision, config::Config as PoolConfig,

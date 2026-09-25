@@ -119,6 +119,7 @@ async fn acquire(resource: DummyResource) -> (Manager, ResourceGuard<DummyResour
                 0,
             ),
             recovery_gate: None,
+            rate_limit: None,
         })
         .unwrap();
     let guard = manager
@@ -220,6 +221,39 @@ async fn panicking_cleanup_returns_capacity_after_settlement() {
         .expect("the failed cleanup must release the sole permit");
     assert_eq!(next.value, 42);
     drop(next);
+}
+
+#[tokio::test]
+async fn hold_watchdog_task_ends_with_the_lease() {
+    // A released lease must not leave its watchdog parked for the full
+    // deadline: live watchdog tasks are bounded by live leases.
+    let bus = Arc::new(EventBus::<ResourceEvent>::new(256));
+    let ctx = watchdog_test_ctx();
+    let (_manager, guard) = acquire(DummyResource::new("")).await;
+    let held = guard.with_event_bus(Arc::clone(&bus)).with_hold_watchdog(
+        Some(Duration::from_hours(1)),
+        &ctx,
+        None,
+    );
+    let watchdog = held
+        .hold_watchdog
+        .as_ref()
+        .expect("an armed watchdog is owned by the guard")
+        .0
+        .clone();
+    assert!(!watchdog.is_finished());
+
+    drop(held);
+    for _ in 0..100 {
+        if watchdog.is_finished() {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        watchdog.is_finished(),
+        "dropping the lease must abort its watchdog task"
+    );
 }
 
 #[tokio::test(start_paused = true)]

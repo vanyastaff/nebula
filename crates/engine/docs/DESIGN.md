@@ -53,7 +53,7 @@ plugin-registry — и рискует разойтись с canon §12.2 control
 | `daemon::{Daemon, DaemonRegistry, DaemonRuntime, EventSource, EventSourceRuntime/Adapter, RestartPolicy, DaemonError}` | `daemon/mod.rs:37-52`, `registry.rs:38-273`, `runtime.rs:37`, `event_source.rs:32-164` |
 | `store_seam::{ExecutionStores, WorkflowStores, node_output_record…}` (мост к spec-16 storage-port; реальный per-message `Scope` протягивается в `resume_execution`, плейсхолдер удалён) | `store_seam.rs:44-126` |
 | `ExecutionResult` · `EngineError` · `ExecutionEvent` (eventbus broadcast) · `NodeOutput` | `result.rs:10` · `error.rs:10` · `event.rs:19` · `node_output.rs:9` |
-| `resource_status::{ResourceRuntimeStatus, EngineResourceStatus, EngineManagerResourceStatus}` | `resource_status.rs:45-91` |
+| `resource_status::{ResourceRuntimeStatus, EngineResourceStatus, StoredResourceStatus, ResourceStatusPublisher}` | `resource_status.rs` — статус строк публикуется воркером в `ResourceStatusStore`, API читает его оттуда |
 | Re-export plugin-типов: `Plugin, PluginKey, PluginManifest, PluginRegistry, ResolvedPlugin` | `lib.rs:102` |
 
 ## 3. Зависимости и зависимые
@@ -208,6 +208,15 @@ slot/tenant authority; semantic decoupling требует будущей version
 - **Удалить shim-слой (P1).** `credential/mod.rs` уже удалён. Остаётся: при возвращении
   `rotation.rs` — прямая миграция импортов на канонические пути и удаление shim'а. Память
   feedback_no_shims прямо требует «replace the wrong thing directly».
+- **Активация сохранённых ресурсов (2026-09-23).** `StoredResourceActivator`
+  (`src/resource/activation.rs`, подключается `with_stored_resources`) лениво, по одной строке,
+  регистрирует в `Manager` строки `ResourceStore`, которые называет манифест привязок durable-хода:
+  проверка вида и объявленных credential-слотов → `CredentialSlotResolver` → `register_resource`
+  с `row_id` в идентичности строки реестра. Одна активация на версию строки (single-flight),
+  удалённая строка снимается из `Manager`, ошибка строки логируется и не валит ход. Узел получает
+  идентичность своей строки поверх scope-снимка; два ряда одного вида на одном узле — отказ.
+  Не покрыто: topology/rate-limit строки (этап 3), реакция на изменения через outbox и ротация
+  установленных guard'ов (этап 4).
 - **Bind-population producer (M12.4) — остался resource-half.** Credential→slot резолвер в
   production есть: `CredentialSlotResolver` с impl `CredentialProjectionRuntime`
   (`nebula_credential::CredentialProjectionRuntime`), подключён `with_credential_resolver`, вызывается из

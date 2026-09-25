@@ -108,7 +108,20 @@ pub struct ResourceGuard<R: Provider> {
     acquired_at: Instant,
     drain_counters: Option<DrainTrackers>,
     event_bus: Option<Arc<EventBus<ResourceEvent>>>,
-    hold_token: Option<Arc<()>>,
+    hold_watchdog: Option<HoldWatchdog>,
+}
+
+/// Aborts the hold-deadline watchdog task when the lease ends.
+///
+/// Without the abort, a released guard's watchdog would stay parked on its
+/// timer for the full deadline, so live tasks would grow with
+/// `acquire rate × max_hold_duration` instead of with live leases.
+struct HoldWatchdog(tokio::task::AbortHandle);
+
+impl Drop for HoldWatchdog {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 pub(crate) struct GuardIdentity {
@@ -139,7 +152,7 @@ impl<R: Provider> ResourceGuard<R> {
             acquired_at: Instant::now(),
             drain_counters: None,
             event_bus: None,
-            hold_token: None,
+            hold_watchdog: None,
         }
     }
 
@@ -175,18 +188,15 @@ impl<R: Provider> ResourceGuard<R> {
     /// Arms the optional hold-deadline watchdog (HikariCP-style leak detection).
     ///
     /// When `deadline` is `Some(d)` and an event bus is attached, spawns a
-    /// background task that, after `d` elapses, checks whether this guard is
-    /// still alive (the strong [`Arc`] held in `hold_token` has not yet
-    /// dropped). If so, the lease has been held past its deadline — a likely
+    /// background task that fires after `d` elapses. The guard owns the task's
+    /// abort handle, so a lease that ends first cancels it; a task that fires
+    /// therefore means the lease has been held past its deadline — a likely
     /// leaked or hung guard pinning a bounded slot — and the watchdog emits a
     /// [`ResourceEvent::HoldDeadlineExceeded`] plus a `WARN` span, both
     /// carrying the acquiring context's execution id, workflow id, and
     /// tracing span id — enough to go find *who* leaked it — and bumps
     /// `metrics`' `hold_deadline_exceeded` counter if metrics are
-    /// configured. A guard
-    /// that drops before the deadline drops its `hold_token`, the
-    /// [`std::sync::Weak`] fails to upgrade, and the watchdog stays silent —
-    /// so no `Drop`-path work is needed.
+    /// configured. Live watchdog tasks are therefore bounded by live leases.
     ///
     /// `deadline = None` (the default [`Provider::max_hold_duration`]) is a
     /// no-op: no task is spawned and the guard pays nothing. `ctx`'s
@@ -205,41 +215,37 @@ impl<R: Provider> ResourceGuard<R> {
         let Some(event_bus) = self.event_bus.clone() else {
             return self;
         };
-        let token = Arc::new(());
-        let weak = Arc::downgrade(&token);
-        self.hold_token = Some(token);
         let key = self.resource_key.clone();
         let acquired_at = self.acquired_at;
         let execution_id = ctx.execution_id();
         let workflow_id = ctx.scope().workflow_id;
         let span_id = ctx.span_id();
-        tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             tokio::time::sleep(deadline).await;
-            // Guard still alive ⇒ the lease outlived its hold deadline.
-            if weak.upgrade().is_some() {
-                let held = acquired_at.elapsed();
-                tracing::warn!(
-                    resource = %key,
-                    held_secs = held.as_secs_f64(),
-                    deadline_secs = deadline.as_secs_f64(),
-                    ?execution_id,
-                    ?workflow_id,
-                    ?span_id,
-                    "resource lease exceeded its hold deadline — possible leaked or hung guard"
-                );
-                if let Some(m) = &metrics {
-                    m.record_hold_deadline_exceeded();
-                }
-                let _ = event_bus.emit(ResourceEvent::HoldDeadlineExceeded {
-                    key,
-                    held,
-                    deadline,
-                    execution_id,
-                    workflow_id,
-                    span_id,
-                });
+            // Not aborted ⇒ the lease outlived its hold deadline.
+            let held = acquired_at.elapsed();
+            tracing::warn!(
+                resource = %key,
+                held_secs = held.as_secs_f64(),
+                deadline_secs = deadline.as_secs_f64(),
+                ?execution_id,
+                ?workflow_id,
+                ?span_id,
+                "resource lease exceeded its hold deadline — possible leaked or hung guard"
+            );
+            if let Some(m) = &metrics {
+                m.record_hold_deadline_exceeded();
             }
+            let _ = event_bus.emit(ResourceEvent::HoldDeadlineExceeded {
+                key,
+                held,
+                deadline,
+                execution_id,
+                workflow_id,
+                span_id,
+            });
         });
+        self.hold_watchdog = Some(HoldWatchdog(task.abort_handle()));
         self
     }
 
@@ -251,6 +257,19 @@ impl<R: Provider> ResourceGuard<R> {
     /// Returns how long this guard has been held.
     pub fn hold_duration(&self) -> Duration {
         self.acquired_at.elapsed()
+    }
+
+    /// The row's limit.
+    ///
+    /// A resource that wraps its client in `create` with
+    /// [`wrap`](crate::rate_limit::ResourceLimiter::wrap) is paced per call:
+    /// each [`Limited`](crate::rate_limit::Limited) call books one permit,
+    /// and an acquire only honours pauses. Without a wrapped client, each
+    /// acquire books one permit. Use this handle only to
+    /// [`penalize`](crate::rate_limit::ResourceLimiter::penalize) on a signal
+    /// that does not come back from a call.
+    pub fn limits(&self) -> &Arc<crate::rate_limit::ResourceLimiter> {
+        &self.managed.rate_limiter
     }
 
     /// Returns the resource key for this guard.
@@ -316,7 +335,7 @@ impl<R: Provider> ResourceGuard<R> {
 
     fn enqueue_release(&mut self) -> Option<Result<ReleaseSubmission, crate::Error>> {
         let entry = self.entry.take()?;
-        self.hold_token.take();
+        self.hold_watchdog.take();
         let metrics = self.metrics.take();
         let settlement = ReleaseSettlement {
             permit: self.permit.take(),

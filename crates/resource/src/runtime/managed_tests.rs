@@ -43,6 +43,7 @@ struct Mock {
     check_cost: crate::CheckCost,
     check_fails: Arc<AtomicBool>,
     check_panics: Arc<AtomicBool>,
+    fail_create: Arc<AtomicBool>,
 }
 
 impl Mock {
@@ -58,6 +59,7 @@ impl Mock {
             check_cost: crate::CheckCost::Cheap,
             check_fails: Arc::new(AtomicBool::new(false)),
             check_panics: Arc::new(AtomicBool::new(false)),
+            fail_create: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -79,6 +81,9 @@ impl Provider for Mock {
 
     async fn create(&self, _config: &PoolCfg, _ctx: &ResourceContext) -> Result<u64, Error> {
         let id = self.created.fetch_add(1, Ordering::SeqCst);
+        if self.fail_create.load(Ordering::SeqCst) {
+            return Err(Error::transient("mock backend is down"));
+        }
         if self.park_create.swap(false, Ordering::SeqCst) {
             self.create_entered.notify_one();
             self.release_create.notified().await;
@@ -132,6 +137,7 @@ fn managed(resource: Mock, config: PoolConfig) -> Arc<ManagedResource<Mock>> {
     let topology = Pooled::<Mock>::new(config, 0);
     Arc::new(ManagedResource {
         pending_projection_hooks: Default::default(),
+        phase_changed: Default::default(),
         resource,
         config: ArcSwap::from_pointee(PoolCfg),
         topology,
@@ -139,12 +145,13 @@ fn managed(resource: Mock, config: PoolConfig) -> Arc<ManagedResource<Mock>> {
         retained: crate::RetainedStore::new(rq.abandonment_tracker()),
         release_queue: Arc::new(rq),
         generation: AtomicU64::new(0),
-        status: ArcSwap::from_pointee(ResourceStatus::new()),
+        status: ArcSwap::from_pointee(ResourceStatus::ready()),
         recovery_gate: None,
         tainted: AtomicBool::new(false),
         in_flight: Arc::new((AtomicU64::new(0), Notify::new())),
         maintenance_sweeps: AtomicU64::new(0),
         maintenance: Default::default(),
+        rate_limiter: crate::rate_limit::ResourceLimiter::detached(),
     })
 }
 
@@ -559,9 +566,72 @@ async fn warmup_fills_store() {
             ..Default::default()
         },
     );
-    let created = mr.warmup(&test_ctx()).await;
+    let created = mr.warmup(&test_ctx()).await.expect("no hook fault");
     assert_eq!(created, 3, "warmup creates `min_size` entries");
     assert_eq!(mr.store.len().await, 3, "warmed entries land in the store");
+}
+
+/// A parallel warmup stops asking once a create fails: a backend that is
+/// down is not asked for the whole target.
+#[tokio::test]
+async fn parallel_warmup_stops_after_a_failed_create() {
+    let resource = Mock::new();
+    resource.fail_create.store(true, Ordering::SeqCst);
+    let created = Arc::clone(&resource.created);
+    let mr = managed(
+        resource,
+        PoolConfig {
+            min_size: 200,
+            max_size: 200,
+            warmup: crate::topology::pooled::config::WarmupStrategy::Parallel,
+            ..Default::default()
+        },
+    );
+    let warmed = mr.warmup(&test_ctx()).await.expect("no hook fault");
+    assert_eq!(warmed, 0);
+    let attempts = created.load(Ordering::SeqCst);
+    assert!(
+        (1..=crate::runtime::acquire_loop::MAX_PARALLEL_WARMUP as u64).contains(&attempts),
+        "at most one parallel batch is attempted, got {attempts}"
+    );
+}
+
+/// A revoke stops a staggered warmup: it neither sleeps out its interval
+/// nor creates with the credential being revoked.
+#[tokio::test(start_paused = true)]
+async fn a_tainted_row_stops_its_warmup() {
+    let resource = Mock::new();
+    let created = Arc::clone(&resource.created);
+    let mr = managed(
+        resource,
+        PoolConfig {
+            min_size: 5,
+            max_size: 5,
+            warmup: crate::topology::pooled::config::WarmupStrategy::Staggered {
+                interval: std::time::Duration::from_secs(10),
+            },
+            ..Default::default()
+        },
+    );
+    let warming = tokio::spawn({
+        let mr = Arc::clone(&mr);
+        async move { mr.warmup(&test_ctx()).await }
+    });
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    mr.taint();
+    let started = tokio::time::Instant::now();
+    let warmed = warming.await.unwrap().expect("no hook fault");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(1),
+        "stopped within a poll step, took {:?}",
+        started.elapsed()
+    );
+    assert_eq!(warmed, 1);
+    assert_eq!(
+        created.load(Ordering::SeqCst),
+        1,
+        "nothing created after the revoke"
+    );
 }
 
 // ----- ADR-0093 per-resource teardown deadline -----

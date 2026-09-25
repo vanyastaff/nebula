@@ -20,14 +20,13 @@ use std::{
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use nebula_action::{ActionError, ActionResult};
+use nebula_core::scope::ScopeLevel;
 use nebula_core::{
     NodeKey, PortKey, ResourceKey,
     accessor::{Clock, CredentialAccessor, ResourceAccessor, SystemClock},
     id::{ExecutionId, InstanceId, WorkflowId},
     node_key,
 };
-// ScopeLevel removed from ActionContext
-// use nebula_core::scope::ScopeLevel;
 use nebula_execution::{
     ErrorEnvelope, ExecutionStatus,
     context::ExecutionBudget,
@@ -78,6 +77,74 @@ use crate::{
 /// the capacity below keeps roughly one in-flight workflow's worth of events
 /// buffered per subscriber before the bus starts dropping.
 type EventBus = nebula_eventbus::EventBus<ExecutionEvent>;
+
+/// Stored-resource registry rows a durable execution binds, per node.
+type NodeResourceRows = HashMap<NodeKey, HashMap<ResourceKey, nebula_resource::SlotIdentity>>;
+
+/// Stored resource rows one execution activates at once.
+const MAX_CONCURRENT_ACTIVATIONS: usize = 8;
+
+/// An identity no registry row carries: stored-row identities are derived
+/// from `res_<ULID>` ids, and this one is not. A node pinned to it fails its
+/// acquire as not-found instead of reaching another row of the same kind.
+fn unavailable_row_identity() -> nebula_resource::SlotIdentity {
+    nebula_resource::SlotIdentity::from_row_bindings(
+        Some("unavailable-stored-resource"),
+        std::iter::empty::<(&str, &str)>(),
+    )
+}
+
+/// Activation-time slot identities: registration scope → resource key → identity.
+type SlotIdentitiesByScope =
+    HashMap<ScopeLevel, HashMap<ResourceKey, nebula_resource::SlotIdentity>>;
+
+/// Projects a storage tenant scope onto the resource acquire scope.
+///
+/// Storage carries org / workspace ids as opaque strings; an id that does
+/// not parse leaves that field unset, so the acquire walk simply cannot
+/// reach rows registered at that level. Resource isolation fails closed.
+fn resource_acquire_scope_for(scope: &Scope) -> nebula_core::scope::Scope {
+    let org_id = nebula_core::OrgId::parse(&scope.org_id).ok();
+    let workspace_id = nebula_core::WorkspaceId::parse(&scope.workspace_id).ok();
+    if org_id.is_none() || workspace_id.is_none() {
+        tracing::warn!(
+            target: "nebula_engine",
+            org_id_valid = org_id.is_some(),
+            workspace_id_valid = workspace_id.is_some(),
+            "execution tenant scope is not a typed id; tenant-scoped resources are unreachable"
+        );
+    }
+    nebula_core::scope::Scope {
+        org_id,
+        workspace_id,
+        ..Default::default()
+    }
+}
+
+/// Resolves which recorded slot identity each resource key maps to for an
+/// acquire issued from `scope`.
+///
+/// Walks the same levels as the registry acquire lookup, most specific
+/// first, so a key registered at both a workspace and globally resolves to
+/// the workspace row's identity. Cost is proportional to the rows at the
+/// levels this scope reaches, not to every tenant's registrations.
+fn slot_identities_visible_from(
+    ids: &SlotIdentitiesByScope,
+    scope: &nebula_core::scope::Scope,
+) -> HashMap<ResourceKey, nebula_resource::SlotIdentity> {
+    let mut visible = HashMap::new();
+    for level in nebula_resource::scope_levels_for_acquire(scope) {
+        let Some(rows) = ids.get(&level) else {
+            continue;
+        };
+        for (key, identity) in rows {
+            visible
+                .entry(key.clone())
+                .or_insert_with(|| identity.clone());
+        }
+    }
+    visible
+}
 
 /// Default capacity for the engine's event bus. Tuned so a typical
 /// interactive workflow (hundreds of nodes) never blocks, while a runaway
@@ -280,12 +347,24 @@ pub struct WorkflowEngine {
     resource_acquire_scope: Option<nebula_core::scope::Scope>,
     /// Per-execution acquire scope (`org_id` / `workspace_id` for this run).
     execution_acquire_scopes: DashMap<ExecutionId, nebula_core::scope::Scope>,
-    /// Per-resource resolved **collision-free structural** slot identities
-    /// recorded at activation (pre-run).
-    resource_slot_identities: RwLock<HashMap<ResourceKey, nebula_resource::SlotIdentity>>,
+    /// Resolved **collision-free structural** slot identities recorded at
+    /// activation, keyed by the registration scope first. Two tenants may
+    /// register the same kind with differently shaped bindings; keying by
+    /// resource key alone let the later registration overwrite the earlier
+    /// one's identity, and the earlier tenant's acquires then missed its own
+    /// row.
+    resource_slot_identities: RwLock<SlotIdentitiesByScope>,
     /// Frozen slot-identity map per execution (snapshot at run start).
     resource_slot_identities_by_execution:
         DashMap<ExecutionId, Arc<HashMap<ResourceKey, nebula_resource::SlotIdentity>>>,
+    /// Lazily activates the stored resource rows a durable execution's
+    /// binding manifest names. `None` leaves stored rows inert.
+    stored_resources: Option<Arc<crate::resource::StoredResourceActivator>>,
+    /// Expression engine stored-row configs are resolved with.
+    resource_expr_engine: Arc<ExpressionEngine>,
+    /// Per-execution, per-node registry rows of the stored resources the
+    /// manifest binds, overlaid on the scope snapshot for that node.
+    resource_rows_by_execution: DashMap<ExecutionId, Arc<NodeResourceRows>>,
     /// Exact credential binding closure installed only while a durable execution is driven.
     credential_bindings_by_execution:
         DashMap<ExecutionId, Arc<nebula_execution::ExecutionBindingManifestV2>>,
@@ -578,7 +657,10 @@ impl WorkflowEngine {
             resource_fanout_index: Arc::new(nebula_resource::ResourceFanoutIndex::new()),
             #[cfg(feature = "rotation")]
             resource_fanout_generation: Arc::new(AtomicU64::new(0)),
-            resolver: ParamResolver::new(expression_engine),
+            resolver: ParamResolver::new(Arc::clone(&expression_engine)),
+            resource_expr_engine: expression_engine,
+            stored_resources: None,
+            resource_rows_by_execution: DashMap::new(),
             resource_manager: None,
             resource_acquire_scope: None,
             execution_acquire_scopes: DashMap::new(),
@@ -868,6 +950,20 @@ impl WorkflowEngine {
         &self.resource_fanout_index
     }
 
+    /// The fan-out index while a driver spawned by
+    /// [`spawn_resource_rotation_fanout`](Self::spawn_resource_rotation_fanout)
+    /// with a credential resolver reconciles its rows, `None` otherwise.
+    ///
+    /// Stored rows register rotation-bound only through this: a
+    /// rotation-bound row serves once the fan-out has reread its
+    /// credentials, which only a live, resolver-backed driver does.
+    #[cfg(feature = "rotation")]
+    fn live_resource_fanout(&self) -> Option<&Arc<nebula_resource::ResourceFanoutIndex>> {
+        let live = self.resource_fanout_generation.load(Ordering::Acquire) != 0
+            && self.credential_resolver.is_some();
+        live.then_some(&self.resource_fanout_index)
+    }
+
     /// Spawn the production rotation fan-out driver wiring the engine's
     /// [`resource_fanout_index`](Self::resource_fanout_index) +
     /// [`resource_manager`](Self::with_resource_manager) to the
@@ -976,6 +1072,37 @@ impl WorkflowEngine {
         Some(driver)
     }
 
+    /// Gracefully stop the attached resource manager within `budget`.
+    ///
+    /// Call once the host has stopped driving executions, so no guard is
+    /// still outstanding: half of the budget drains in-flight handles, the
+    /// other half lets release workers close instances. Best-effort, like
+    /// lease release on shutdown: a failure is logged and the process exits
+    /// anyway, which leaves connections to be dropped as after a crash.
+    /// Without a manager this is a no-op.
+    pub async fn shutdown_resources(&self, budget: Duration) {
+        let Some(manager) = &self.resource_manager else {
+            return;
+        };
+        let half = budget / 2;
+        let config = nebula_resource::ShutdownConfig::default()
+            .with_drain_timeout(half)
+            .with_release_queue_timeout(half);
+        match manager.graceful_shutdown(config).await {
+            Ok(report) => tracing::info!(
+                target: "nebula_engine",
+                outstanding_handles = report.outstanding_handles_after_drain,
+                release_queue_drained = report.release_queue_drained,
+                "resource manager stopped"
+            ),
+            Err(error) => tracing::warn!(
+                target: "nebula_engine",
+                %error,
+                "resource manager did not stop cleanly"
+            ),
+        }
+    }
+
     /// Attach a resource manager for providing resources to actions.
     #[must_use = "builder methods must be chained or built"]
     pub fn with_resource_manager(mut self, manager: Arc<nebula_resource::Manager>) -> Self {
@@ -1019,12 +1146,23 @@ impl WorkflowEngine {
     fn install_execution_resource_context(
         &self,
         execution_id: ExecutionId,
+        workflow_id: WorkflowId,
         run_acquire_scope: Option<nebula_core::scope::Scope>,
     ) {
+        let acquire_scope =
+            Self::merged_acquire_scope(&self.resource_acquire_scope, run_acquire_scope.as_ref());
+        // The snapshot is taken against the same scope bag the node acquire
+        // context carries, so each key maps to the identity of the row the
+        // registry walk reaches first.
+        let lookup_scope = nebula_core::scope::Scope {
+            execution_id: Some(execution_id),
+            workflow_id: Some(workflow_id),
+            ..acquire_scope.clone()
+        };
         let slot_snap = self
             .resource_slot_identities
             .read()
-            .map(|ids| Arc::new(ids.clone()))
+            .map(|ids| Arc::new(slot_identities_visible_from(&ids, &lookup_scope)))
             .unwrap_or_else(|err| {
                 tracing::error!(
                     target: "nebula_engine",
@@ -1035,11 +1173,260 @@ impl WorkflowEngine {
             });
         self.resource_slot_identities_by_execution
             .insert(execution_id, slot_snap);
-
-        let acquire_scope =
-            Self::merged_acquire_scope(&self.resource_acquire_scope, run_acquire_scope.as_ref());
         self.execution_acquire_scopes
             .insert(execution_id, acquire_scope);
+    }
+
+    /// Drops the per-execution resource context installed by
+    /// [`install_execution_resource_context`](Self::install_execution_resource_context).
+    fn remove_execution_resource_context(&self, execution_id: ExecutionId) {
+        self.resource_slot_identities_by_execution
+            .remove(&execution_id);
+        self.execution_acquire_scopes.remove(&execution_id);
+        self.resource_rows_by_execution.remove(&execution_id);
+    }
+
+    /// Activate every stored resource `manifest` binds and remember, per
+    /// node, which registry row each of its resource keys resolves to.
+    ///
+    /// A row that fails to activate is logged and left out: the node's
+    /// acquire of that key then fails as not-found, while other rows and
+    /// other nodes proceed. A node that binds two different rows of one kind
+    /// cannot be served by a key-addressed acquire, so that key is left out
+    /// for the node rather than silently picking one row.
+    async fn activate_bound_resources(
+        &self,
+        execution_id: ExecutionId,
+        scope: &Scope,
+        manifest: &nebula_execution::ExecutionBindingManifestV2,
+        cancel: &CancellationToken,
+    ) {
+        let bound: Vec<_> = manifest
+            .entries()
+            .iter()
+            .filter_map(|entry| match (entry.site(), entry.target()) {
+                (
+                    nebula_execution::ExecutionBindingSiteV2::Node(node),
+                    nebula_execution::ExecutionBindingTargetV2::Resource {
+                        resource_id,
+                        contract,
+                    },
+                ) => Some((node.clone(), *resource_id, contract.key().clone())),
+                _ => None,
+            })
+            .collect();
+        if bound.is_empty() {
+            return;
+        }
+        let (Some(activator), Some(manager)) = (&self.stored_resources, &self.resource_manager)
+        else {
+            tracing::warn!(
+                target: "nebula_engine::resource_activation",
+                %execution_id,
+                bound_resources = bound.len(),
+                "execution binds stored resources but no activator/manager is configured"
+            );
+            // Pinned unavailable rather than left out: left out, a node's
+            // acquire would fall through to the scope snapshot and could
+            // reach another row of the same kind than its manifest names.
+            let unavailable = unavailable_row_identity();
+            let mut rows = NodeResourceRows::new();
+            for (node, _, key) in bound {
+                rows.entry(node)
+                    .or_default()
+                    .insert(key, unavailable.clone());
+            }
+            self.resource_rows_by_execution
+                .insert(execution_id, Arc::new(rows));
+            return;
+        };
+        let context = crate::resource::ActivationContext {
+            registrars: &self.resource_registrars,
+            manager,
+            credentials: self.credential_resolver.as_deref(),
+            expr_engine: &self.resource_expr_engine,
+            #[cfg(feature = "rotation")]
+            fanout: self.live_resource_fanout(),
+        };
+        let mut distinct: Vec<(nebula_core::ResourceId, ResourceKey)> = bound
+            .iter()
+            .map(|(_, resource_id, key)| (*resource_id, key.clone()))
+            .collect();
+        distinct.sort_unstable_by_key(|(resource_id, _)| *resource_id);
+        distinct.dedup_by(|left, right| left.0 == right.0);
+        // A bounded number at once: a manifest may name many rows, and each
+        // activation reads storage, resolves credentials and registers.
+        let activations: Vec<_> = {
+            use futures::StreamExt as _;
+            // Built up front (futures do nothing until polled): a closure
+            // inside the stream would defeat `Send` inference for callers.
+            let pending: Vec<_> = distinct
+                .iter()
+                .map(|(resource_id, key)| async {
+                    let outcome = activator
+                        .activate(&context, scope, *resource_id, key, cancel)
+                        .await;
+                    (*resource_id, outcome)
+                })
+                .collect();
+            futures::stream::iter(pending)
+                .buffer_unordered(MAX_CONCURRENT_ACTIVATIONS)
+                .collect()
+                .await
+        };
+        let mut activated = HashMap::new();
+        for (resource_id, outcome) in activations {
+            match outcome {
+                Ok(row) => {
+                    activated.insert(resource_id, row);
+                },
+                Err(error) => tracing::warn!(
+                    target: "nebula_engine::resource_activation",
+                    error_code = "ENGINE:RESOURCE_ACTIVATION_FAILED",
+                    %execution_id,
+                    %resource_id,
+                    error = %error,
+                    "stored resource could not be activated; nodes binding it cannot acquire it"
+                ),
+            }
+        }
+
+        // A key the node cannot be served exactly is pinned to an identity no
+        // registry row carries, never left out: left out, the node's acquire
+        // would fall through to the scope snapshot and could reach a
+        // different row of the same kind than its manifest names.
+        let unavailable = unavailable_row_identity();
+        let mut rows = NodeResourceRows::new();
+        let mut refused = HashSet::new();
+        for (node, resource_id, key) in bound {
+            let node_rows = rows.entry(node.clone()).or_default();
+            let Some(row) = activated.get(&resource_id) else {
+                node_rows.insert(key.clone(), unavailable.clone());
+                refused.insert((node, key));
+                continue;
+            };
+            match node_rows.get(&key) {
+                Some(existing) if existing != &row.slot_identity => {
+                    tracing::warn!(
+                        target: "nebula_engine::resource_activation",
+                        %execution_id,
+                        node = %node,
+                        resource_key = %key,
+                        "node binds several stored resources of one kind; key-addressed acquire refused"
+                    );
+                    refused.insert((node, key));
+                },
+                _ if refused.contains(&(node.clone(), key.clone())) => {},
+                _ => {
+                    node_rows.insert(key, row.slot_identity.clone());
+                },
+            }
+        }
+        for (node, key) in refused {
+            if let Some(node_rows) = rows.get_mut(&node) {
+                node_rows.insert(key, unavailable.clone());
+            }
+        }
+        self.resource_rows_by_execution
+            .insert(execution_id, Arc::new(rows));
+    }
+
+    /// Current status of every stored resource row this engine has
+    /// activated, for [`ResourceStatusPublisher`](crate::ResourceStatusPublisher).
+    ///
+    /// Reads only in-memory state (activator rows and the exact manager row
+    /// each resolved to); a row whose registry row is gone is left out. A
+    /// row whose latest stored version failed to activate is reported as
+    /// failed at that version.
+    #[must_use]
+    pub fn resource_status_snapshot(&self) -> crate::resource_status::ResourceStatusView {
+        let mut view = crate::resource_status::ResourceStatusView::default();
+        let (Some(activator), Some(manager)) = (&self.stored_resources, &self.resource_manager)
+        else {
+            return view;
+        };
+        for state in activator.row_states() {
+            let row = match state {
+                crate::resource::RowState::Active(row) => row,
+                crate::resource::RowState::Busy { scope, resource_id } => {
+                    view.busy.push((scope, resource_id.to_string()));
+                    continue;
+                },
+                crate::resource::RowState::Failed {
+                    scope,
+                    resource_id,
+                    version,
+                } => {
+                    view.live.push((
+                        scope,
+                        nebula_storage_port::dto::ResourceStatusSnapshot {
+                            resource_id: resource_id.to_string(),
+                            phase: nebula_storage_port::dto::ResourceStatusPhase::Failed,
+                            healthy: false,
+                            accepting: false,
+                            row_version: version,
+                        },
+                    ));
+                    continue;
+                },
+            };
+            let Some(registry_row) = manager.get_row(
+                &row.activated.resource_key,
+                &row.activated.scope,
+                &row.activated.slot_identity,
+            ) else {
+                continue;
+            };
+            let (phase, healthy, accepting) = crate::resource_status::project(registry_row.phase());
+            view.live.push((
+                row.scope,
+                nebula_storage_port::dto::ResourceStatusSnapshot {
+                    resource_id: row.resource_id.to_string(),
+                    phase,
+                    healthy,
+                    accepting,
+                    row_version: row.version,
+                },
+            ));
+        }
+        view
+    }
+
+    /// Retires activated stored rows whose definition was deleted since.
+    ///
+    /// Activation retires a deleted row only when an execution names it
+    /// again, which after a deletion usually never happens; without this
+    /// sweep the row's runtime, connections and credential bindings would
+    /// live until the process ends. The worker runs it on its status tick.
+    /// A row an activation holds right now is left to that activation.
+    pub async fn retire_deleted_resources(&self) {
+        let (Some(activator), Some(manager)) = (&self.stored_resources, &self.resource_manager)
+        else {
+            return;
+        };
+        let context = crate::resource::ActivationContext {
+            registrars: &self.resource_registrars,
+            manager,
+            credentials: self.credential_resolver.as_deref(),
+            expr_engine: &self.resource_expr_engine,
+            #[cfg(feature = "rotation")]
+            fanout: self.live_resource_fanout(),
+        };
+        activator.retire_deleted(&context).await;
+    }
+
+    /// Activate stored resources from a store for durable executions.
+    ///
+    /// Requires a resource manager ([`with_resource_manager`](Self::with_resource_manager))
+    /// and, for rows that bind credentials, a credential resolver
+    /// ([`with_credential_resolver`](Self::with_credential_resolver)).
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_stored_resources(
+        mut self,
+        activator: crate::resource::StoredResourceActivator,
+    ) -> Self {
+        self.stored_resources = Some(Arc::new(activator));
+        self
     }
 
     /// Record a resolved **collision-free structural** slot identity for a
@@ -1049,20 +1436,24 @@ impl WorkflowEngine {
     /// exact structural key `Manager::register_resolved` derived for the same
     /// resolved `(slot, credential)` bindings, so the action-time acquire
     /// path addresses the *same* registry row (no digest aliasing across
-    /// tenants).
+    /// tenants). `scope` is the level the row was registered at; an execution
+    /// sees the identity recorded at the most specific level its acquire
+    /// scope reaches.
     pub fn record_resource_slot_identity(
         &self,
+        scope: ScopeLevel,
         key: ResourceKey,
         slot_identity: nebula_resource::SlotIdentity,
     ) {
         match self.resource_slot_identities.write() {
             Ok(mut ids) => {
-                ids.insert(key, slot_identity);
+                ids.entry(scope).or_default().insert(key, slot_identity);
             },
             Err(err) => {
                 tracing::error!(
                     target: "nebula_engine",
                     ?err,
+                    ?scope,
                     %key,
                     ?slot_identity,
                     "resource_slot_identities lock poisoned; slot identity not recorded"
@@ -1087,11 +1478,12 @@ impl WorkflowEngine {
         manager: &nebula_resource::Manager,
         request: crate::RegisterRequest<'_>,
     ) -> Result<(), crate::RegistrarError> {
+        let scope = request.scope.clone();
         let outcome = self
             .resource_registrars
             .register(kind, manager, request)
             .await?;
-        self.record_resource_slot_identity(outcome.resource_key, outcome.slot_identity);
+        self.record_resource_slot_identity(scope, outcome.resource_key, outcome.slot_identity);
         Ok(())
     }
 
@@ -1108,11 +1500,12 @@ impl WorkflowEngine {
         request: crate::RegisterRequest<'_>,
         fanout_index: Option<&Arc<nebula_resource::ResourceFanoutIndex>>,
     ) -> Result<(), crate::RegistrarError> {
+        let scope = request.scope.clone();
         let outcome = self
             .resource_registrars
             .register_and_bind(kind, manager, request, fanout_index)
             .await?;
-        self.record_resource_slot_identity(outcome.resource_key, outcome.slot_identity);
+        self.record_resource_slot_identity(scope, outcome.resource_key, outcome.slot_identity);
         Ok(())
     }
 
@@ -2230,12 +2623,9 @@ impl WorkflowEngine {
         let execution_id = ExecutionId::new();
         let started = Instant::now();
 
-        self.install_execution_resource_context(execution_id, run_acquire_scope);
-        let slot_by_exec = &self.resource_slot_identities_by_execution;
-        let acquire_by_exec = &self.execution_acquire_scopes;
-        let _execution_resource_guard = scopeguard::guard(execution_id, move |id| {
-            slot_by_exec.remove(&id);
-            acquire_by_exec.remove(&id);
+        self.install_execution_resource_context(execution_id, workflow.id, run_acquire_scope);
+        let _execution_resource_guard = scopeguard::guard(execution_id, |id| {
+            self.remove_execution_resource_context(id);
         });
 
         // 1. Validate workflow (reuse ExecutionPlan for validation)

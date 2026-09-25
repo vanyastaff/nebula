@@ -7,8 +7,25 @@ enum Backend {
     Postgres,
 }
 
+/// Wall clock plus a test-controlled offset, so an in-memory lease can be
+/// aged past its TTL without waiting while everything else keeps real time.
+struct OffsetClock(parking_lot::Mutex<chrono::Duration>);
+
+impl nebula_core::accessor::Clock for OffsetClock {
+    fn now(&self) -> chrono::DateTime<chrono::Utc> {
+        chrono::Utc::now() + *self.0.lock()
+    }
+
+    fn monotonic(&self) -> std::time::Instant {
+        std::time::Instant::now()
+    }
+}
+
 enum Database {
-    Memory(Arc<nebula_storage::InMemoryExecutionStore>),
+    Memory {
+        core: Arc<nebula_storage::InMemoryExecutionStore>,
+        clock: Arc<OffsetClock>,
+    },
     Sqlite {
         pool: sqlx::SqlitePool,
         options: sqlx::sqlite::SqliteConnectOptions,
@@ -24,7 +41,15 @@ impl Database {
     async fn open(backend: Backend) -> Option<Self> {
         Some(match backend {
             Backend::Memory => {
-                Self::Memory(Arc::new(nebula_storage::InMemoryExecutionStore::new()))
+                let clock = Arc::new(OffsetClock(parking_lot::Mutex::new(
+                    chrono::Duration::zero(),
+                )));
+                Self::Memory {
+                    core: Arc::new(nebula_storage::InMemoryExecutionStore::with_clock(
+                        Arc::clone(&clock) as Arc<dyn nebula_core::accessor::Clock>,
+                    )),
+                    clock,
+                }
             },
             Backend::Sqlite => {
                 let directory = tempfile::tempdir().unwrap();
@@ -70,14 +95,14 @@ impl Database {
     }
     fn ports(&self) -> Ports {
         match self {
-            Self::Memory(core) => Ports::memory_core(core.clone()),
+            Self::Memory { core, .. } => Ports::memory_core(core.clone()),
             Self::Sqlite { pool, .. } => Ports::sqlite(pool.clone()),
             Self::Postgres { pool, .. } => Ports::postgres(pool.clone()),
         }
     }
     async fn reconnect(&mut self) -> Ports {
         match self {
-            Self::Memory(_) => {},
+            Self::Memory { .. } => {},
             Self::Sqlite { pool, options, .. } => {
                 pool.close().await;
                 *pool = sqlx::sqlite::SqlitePoolOptions::new()
@@ -96,6 +121,41 @@ impl Database {
             },
         }
         self.ports()
+    }
+
+    /// Ages every lease an abandoned runner left behind past its TTL.
+    ///
+    /// Models "the crashed runner's lease has run out" without sleeping on
+    /// the wall clock: the backend's own lease clock decides liveness, so the
+    /// deadline itself is moved into the past (the in-memory store's clock is
+    /// moved forward instead). A released lease is untouched.
+    async fn expire_abandoned_leases(&self) {
+        match self {
+            Self::Memory { clock, .. } => {
+                let ttl =
+                    chrono::Duration::from_std(nebula_engine::engine::DEFAULT_EXECUTION_LEASE_TTL)
+                        .unwrap();
+                *clock.0.lock() += ttl + chrono::Duration::seconds(1);
+            },
+            Self::Sqlite { pool, .. } => {
+                sqlx::query(
+                    "UPDATE port_executions SET lease_expires_at_ms = 0 \
+                     WHERE lease_holder IS NOT NULL AND lease_expires_at_ms IS NOT NULL",
+                )
+                .execute(pool)
+                .await
+                .unwrap();
+            },
+            Self::Postgres { pool, .. } => {
+                sqlx::query(
+                    "UPDATE port_executions SET lease_expires_at_ms = 0 \
+                     WHERE lease_holder IS NOT NULL AND lease_expires_at_ms IS NOT NULL",
+                )
+                .execute(pool)
+                .await
+                .unwrap();
+            },
+        }
     }
 }
 
@@ -176,20 +236,14 @@ async fn restart_recovers_only_persisted_authority(#[case] backend: Backend) {
             let scope = fixture.scope.clone();
             let turn =
                 tokio::spawn(async move { engine.resume_execution(&scope, execution).await });
-            tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                fixture.provider.entered.notified(),
-            )
-            .await
-            .unwrap();
+            tokio::time::timeout(HANG_GUARD, fixture.provider.entered.notified())
+                .await
+                .unwrap();
             turn.abort();
             assert!(turn.await.unwrap_err().is_cancelled());
-            tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                fixture.provider.dropped.notified(),
-            )
-            .await
-            .unwrap();
+            tokio::time::timeout(HANG_GUARD, fixture.provider.dropped.notified())
+                .await
+                .unwrap();
         } else {
             fixture.ports.stores.operation_ledger = Arc::new(FaultLedger::new(
                 fixture.ports.ledger.clone(),
@@ -245,7 +299,7 @@ async fn restart_recovers_only_persisted_authority(#[case] backend: Backend) {
         );
         assert_eq!(persisted.version, admitted.version);
         fixture.ports = database.reconnect().await;
-        tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+        database.expire_abandoned_leases().await;
         match recovery {
             Recovery::ChangedRequest => {
                 *fixture.provider.request_override.lock() = Some(json!({"amount": 8}));

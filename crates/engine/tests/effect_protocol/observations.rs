@@ -108,12 +108,9 @@ async fn record_crash(ports: Ports) -> Value {
     let turn_engine = Arc::clone(&engine);
     let scope = fixture.scope.clone();
     let turn = tokio::spawn(async move { turn_engine.resume_execution(&scope, execution).await });
-    tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        fixture.provider.entered.notified(),
-    )
-    .await
-    .unwrap();
+    tokio::time::timeout(HANG_GUARD, fixture.provider.entered.notified())
+        .await
+        .unwrap();
     drop(engine);
     turn.abort();
     assert!(turn.await.unwrap_err().is_cancelled());
@@ -122,12 +119,9 @@ async fn record_crash(ports: Ports) -> Value {
         engine_recreated,
         "the interrupted engine must be fully dropped"
     );
-    tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        fixture.provider.dropped.notified(),
-    )
-    .await
-    .unwrap();
+    tokio::time::timeout(HANG_GUARD, fixture.provider.dropped.notified())
+        .await
+        .unwrap();
     let before = fixture.provider.calls.lock().len();
     let _recovery = fixture
         .engine()

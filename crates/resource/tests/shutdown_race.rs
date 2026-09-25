@@ -153,6 +153,7 @@ async fn graceful_shutdown_blocks_in_flight_acquire() {
             slot_identity: SlotIdentity::Unbound,
             topology: resident_rt,
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("register succeeds");
 
@@ -264,6 +265,7 @@ async fn lookup_rejects_acquire_after_shutdown_starts() {
             slot_identity: SlotIdentity::Unbound,
             topology: resident_rt,
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("register succeeds");
 
@@ -394,6 +396,7 @@ async fn reaper_skips_refill_when_shutdown_lands_mid_sweep() {
             slot_identity: SlotIdentity::Unbound,
             topology: pool_rt,
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("register succeeds");
 

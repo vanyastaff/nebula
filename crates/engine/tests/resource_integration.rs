@@ -20,7 +20,7 @@ use nebula_action::{
     stateless::StatelessAction,
 };
 use nebula_core::{ActionKey, Dependencies, action_key, id::WorkflowId, node_key};
-use nebula_core::{OrgId, ResourceKey, ScopeLevel, resource_key};
+use nebula_core::{OrgId, ResourceKey, ScopeLevel, WorkspaceId, resource_key};
 use nebula_engine::{
     ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner, WorkflowEngine,
 };
@@ -36,6 +36,8 @@ use nebula_resource::{
 use nebula_workflow::{
     CURRENT_SCHEMA_VERSION, NodeDefinition, Version, WorkflowConfig, WorkflowDefinition,
 };
+
+mod exact_fixture;
 
 // ---------------------------------------------------------------------------
 // Action handler that acquires a resource (Variant A)
@@ -412,6 +414,7 @@ async fn engine_acquires_org_scoped_resource_through_accessor() {
             slot_identity: SlotIdentity::Unbound,
             topology: Resident::<IntegrationProbeResource>::new(ResidentConfig::default()),
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("register org-scoped resource");
 
@@ -441,7 +444,11 @@ async fn engine_acquires_org_scoped_resource_through_accessor() {
             org_id: Some(org),
             ..Default::default()
         });
-    engine.record_resource_slot_identity(IntegrationProbeResource::key(), SlotIdentity::Unbound);
+    engine.record_resource_slot_identity(
+        ScopeLevel::Organization(org),
+        IntegrationProbeResource::key(),
+        SlotIdentity::Unbound,
+    );
 
     let node = node_key!("probe");
     let wf = make_workflow(vec![
@@ -462,6 +469,192 @@ async fn engine_acquires_org_scoped_resource_through_accessor() {
     let output = result.node_output(&node).expect("node output");
     assert_eq!(
         output.get("lease").and_then(serde_json::Value::as_u64),
+        Some(7)
+    );
+}
+
+/// Two workspaces register the same kind with differently shaped bindings.
+/// Each run must acquire its own workspace's row: the engine used to keep
+/// one slot identity per resource key, so the later registration silently
+/// redirected the other workspace's acquires to an identity its row does not
+/// carry.
+#[tokio::test]
+async fn workspaces_with_different_binding_shapes_each_reach_their_own_row() {
+    let manager = Arc::new(Manager::new());
+    let org = OrgId::new();
+    let bound_workspace = WorkspaceId::new();
+    let unbound_workspace = WorkspaceId::new();
+    let bound_identity = SlotIdentity::from_bindings([("auth", "test.credential")]);
+
+    for (workspace, slot_identity) in [
+        (bound_workspace, bound_identity.clone()),
+        (unbound_workspace, SlotIdentity::Unbound),
+    ] {
+        manager
+            .register(RegistrationSpec {
+                resource: IntegrationProbeResource,
+                config: IntegrationProbeConfig,
+                scope: ScopeLevel::Workspace(workspace),
+                slot_identity,
+                topology: Resident::<IntegrationProbeResource>::new(ResidentConfig::default()),
+                recovery_gate: None,
+                rate_limit: None,
+            })
+            .expect("register workspace-scoped resource");
+    }
+
+    let registry = Arc::new(ActionRegistry::new());
+    registry
+        .register_stateless_instance(
+            meta(action_key!("engine-integration-acquire")),
+            IntegrationAcquireHandler,
+        )
+        .expect("valid test catalog definition");
+    let runtime = Arc::new(
+        ActionRuntime::try_new(
+            registry,
+            Arc::new(InProcessRunner::new()),
+            DataPassingPolicy::default(),
+            MetricsRegistry::new(),
+        )
+        .unwrap(),
+    );
+    let engine = WorkflowEngine::new(runtime, MetricsRegistry::new())
+        .unwrap()
+        .with_resource_manager(Arc::clone(&manager));
+    engine.record_resource_slot_identity(
+        ScopeLevel::Workspace(bound_workspace),
+        IntegrationProbeResource::key(),
+        bound_identity,
+    );
+    engine.record_resource_slot_identity(
+        ScopeLevel::Workspace(unbound_workspace),
+        IntegrationProbeResource::key(),
+        SlotIdentity::Unbound,
+    );
+
+    let node = node_key!("probe");
+    let wf = make_workflow(vec![
+        NodeDefinition::new(node.clone(), "A", "core", "engine-integration-acquire").unwrap(),
+    ]);
+    for workspace in [bound_workspace, unbound_workspace] {
+        let result = engine
+            .execute_workflow_with_acquire_scope(
+                &nebula_engine::store_seam::single_tenant_scope(),
+                &wf,
+                serde_json::json!(null),
+                ExecutionBudget::default(),
+                Some(nebula_core::scope::Scope {
+                    org_id: Some(org),
+                    workspace_id: Some(workspace),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .expect("workflow execution");
+        assert!(
+            result.is_success(),
+            "workspace {workspace} must acquire its own row"
+        );
+    }
+}
+
+/// A durable turn (the only way a persistent engine runs work) acquires
+/// under the execution's own tenant. The resource context used to be
+/// installed only for direct in-process starts, so a worker-driven execution
+/// acquired with no workspace and never reached workspace-scoped rows.
+#[tokio::test]
+async fn durable_turn_acquires_the_executions_workspace_row() {
+    let manager = Arc::new(Manager::new());
+    let org = OrgId::new();
+    let workspace = WorkspaceId::new();
+    manager
+        .register(RegistrationSpec {
+            resource: IntegrationProbeResource,
+            config: IntegrationProbeConfig,
+            scope: ScopeLevel::Workspace(workspace),
+            slot_identity: SlotIdentity::Unbound,
+            topology: Resident::<IntegrationProbeResource>::new(ResidentConfig::default()),
+            recovery_gate: None,
+            rate_limit: None,
+        })
+        .expect("register workspace-scoped resource");
+
+    let registry = Arc::new(ActionRegistry::new());
+    registry
+        .register_stateless_instance(
+            meta(action_key!("core.resource_probe")),
+            IntegrationAcquireHandler,
+        )
+        .expect("valid test catalog definition");
+    let execution = Arc::new(nebula_storage::InMemoryExecutionStore::new());
+    let stores = nebula_engine::ExecutionStores {
+        execution: execution.clone(),
+        journal: Arc::new(nebula_storage::InMemoryJournalReader::new(&execution)),
+        node_results: Arc::new(nebula_storage::InMemoryNodeResultStore::new()),
+        checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new()),
+        idempotency: Arc::new(nebula_storage::InMemoryIdempotencyGuard::new()),
+        resume_tokens: Arc::new(execution.resume_token_store()),
+        operation_ledger: Arc::new(nebula_storage::inmem::InMemoryOperationLedger::new(
+            &execution,
+        )),
+    };
+    let frozen = exact_fixture::freeze_registry(&registry, &[("core", "core.resource_probe")]);
+    let runtime = Arc::new(
+        ActionRuntime::try_new(
+            registry,
+            Arc::new(InProcessRunner::new()),
+            DataPassingPolicy::default(),
+            MetricsRegistry::new(),
+        )
+        .unwrap(),
+    );
+    let engine = WorkflowEngine::new(runtime, MetricsRegistry::new())
+        .unwrap()
+        .with_resource_manager(Arc::clone(&manager))
+        .with_execution_stores(stores)
+        .with_plan_flavor_runtime(
+            Arc::new(nebula_engine::PlanFlavorRevisionLoader::new(Arc::new(
+                execution.plan_flavor_catalog(),
+            ))),
+            Arc::clone(&frozen),
+            Arc::new(nebula_storage::inmem::InMemoryStartAcceptanceStore::new(
+                &execution,
+            )),
+        );
+    engine.record_resource_slot_identity(
+        ScopeLevel::Workspace(workspace),
+        IntegrationProbeResource::key(),
+        SlotIdentity::Unbound,
+    );
+
+    let node = node_key!("probe");
+    let wf = make_workflow(vec![
+        NodeDefinition::new(node.clone(), "probe", "core", "core.resource_probe").unwrap(),
+    ]);
+    let scope = nebula_storage_port::Scope::new(workspace.to_string(), org.to_string());
+    let execution_id = nebula_core::ExecutionId::new();
+    let mut state = nebula_execution::state::ExecutionState::new(
+        execution_id,
+        wf.id,
+        std::slice::from_ref(&node),
+    );
+    exact_fixture::materialize_state(&execution, &scope, &frozen, &wf, &mut state).await;
+
+    let result = engine
+        .resume_execution(&scope, execution_id)
+        .await
+        .expect("durable turn");
+    assert!(
+        result.is_success(),
+        "durable turn must reach the workspace row: {:?}",
+        result.node_errors
+    );
+    assert_eq!(
+        result
+            .node_output(&node)
+            .and_then(|output| output.get("lease"))
+            .and_then(serde_json::Value::as_u64),
         Some(7)
     );
 }
@@ -795,6 +988,7 @@ mod shared_resource {
                 slot_identity: SlotIdentity::Unbound,
                 topology: resident_rt,
                 recovery_gate: None,
+                rate_limit: None,
             })
             .expect("register should succeed");
 
@@ -869,6 +1063,7 @@ mod shared_resource {
                 slot_identity: SlotIdentity::Unbound,
                 topology: Resident::<TelegramBot>::new(ResidentConfig::default()),
                 recovery_gate: None,
+                rate_limit: None,
             })
             .expect("register A should succeed");
         manager
@@ -879,6 +1074,7 @@ mod shared_resource {
                 slot_identity: SlotIdentity::Unbound,
                 topology: Resident::<AlternateBot>::new(ResidentConfig::default()),
                 recovery_gate: None,
+                rate_limit: None,
             })
             .expect("register B should succeed");
 
@@ -939,6 +1135,7 @@ mod shared_resource {
                 slot_identity: SlotIdentity::Unbound,
                 topology: Resident::<TelegramBot>::new(ResidentConfig::default()),
                 recovery_gate: None,
+                rate_limit: None,
             })
             .expect("register org_a should succeed");
         manager
@@ -949,6 +1146,7 @@ mod shared_resource {
                 slot_identity: SlotIdentity::Unbound,
                 topology: Resident::<TelegramBot>::new(ResidentConfig::default()),
                 recovery_gate: None,
+                rate_limit: None,
             })
             .expect("register org_b should succeed");
 
@@ -1009,6 +1207,7 @@ mod shared_resource {
                 slot_identity: SlotIdentity::Unbound,
                 topology: resident_rt,
                 recovery_gate: None,
+                rate_limit: None,
             })
             .expect("register should succeed");
 
@@ -1086,6 +1285,7 @@ mod shared_resource {
                 slot_identity: SlotIdentity::Unbound,
                 topology: resident_rt,
                 recovery_gate: None,
+                rate_limit: None,
             })
             .expect("register should succeed");
 

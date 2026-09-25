@@ -53,7 +53,7 @@ impl PgResourceRuntime {
     }
 }
 
-fn unavailable(error: sqlx::Error) -> StorageError {
+pub(super) fn unavailable(error: sqlx::Error) -> StorageError {
     match error {
         sqlx::Error::Configuration(_) => {
             StorageError::Configuration("resource runtime backend is misconfigured".to_owned())
@@ -99,7 +99,7 @@ fn foreign_key_or_unavailable(error: sqlx::Error, parent: &'static str) -> Stora
     }
 }
 
-fn commit_unknown(_error: sqlx::Error) -> StorageError {
+pub(super) fn commit_unknown(_error: sqlx::Error) -> StorageError {
     StorageError::AcknowledgementUnknown {
         operation: "resource runtime mutation",
     }

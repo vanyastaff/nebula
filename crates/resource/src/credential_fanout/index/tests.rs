@@ -1102,6 +1102,7 @@ mod fanout_dispatch {
                 slot_identity: id.clone(),
                 topology: Resident::<CtlResource>::new(ResidentConfig::default()),
                 recovery_gate: None,
+                rate_limit: None,
             })
             .expect("register tenant");
 
@@ -1316,6 +1317,7 @@ mod fanout_dispatch {
                 slot_identity: identity.clone(),
                 topology: Resident::<CtlResource>::new(ResidentConfig::default()),
                 recovery_gate: None,
+                rate_limit: None,
             })
             .expect("replace structural row with successor owner");
 
@@ -1371,6 +1373,7 @@ mod fanout_dispatch {
                 slot_identity: identity,
                 topology: Resident::<CtlResource>::new(ResidentConfig::default()),
                 recovery_gate: None,
+                rate_limit: None,
             })
             .expect("replace structural row with successor owner");
 

@@ -292,7 +292,7 @@ where
                     hook_timeout,
                     managed.topology.dispatch_credential_hook(
                         &managed.resource,
-                        &managed.store,
+                        crate::topology::store::StoreView::new(&managed.store),
                         &managed.retained,
                         &slot,
                         refresh,

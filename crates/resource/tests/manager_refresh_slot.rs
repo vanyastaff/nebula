@@ -226,6 +226,7 @@ mod counting {
             slot_identity,
             topology: Resident::<CountingResource>::new(ResidentConfig::default()),
             recovery_gate: opts.recovery_gate,
+            rate_limit: None,
         })
     }
 
@@ -1557,6 +1558,7 @@ mod u9_gate {
             slot_identity: SlotIdentity::Unbound,
             topology: Resident::<GateResource>::new(ResidentConfig::default()),
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("resident registration must succeed");
 
@@ -1752,6 +1754,7 @@ mod reload_deferral {
             slot_identity: SlotIdentity::Unbound,
             topology: Resident::<ResidentReload>::new(ResidentConfig::default()),
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("resident registration must succeed");
         assert_eq!(
@@ -1768,6 +1771,7 @@ mod reload_deferral {
             slot_identity: SlotIdentity::Unbound,
             topology: Pooled::<PoolReload>::new(PoolConfig::default(), v(1).fingerprint()),
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("pool registration must succeed");
         assert_eq!(
@@ -1792,6 +1796,7 @@ mod reload_deferral {
             slot_identity: SlotIdentity::Unbound,
             topology: Pooled::<PoolReload>::new(PoolConfig::default(), v(1).fingerprint()),
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("pool registration must succeed");
         let outcome = mgr
@@ -1822,6 +1827,7 @@ mod reload_deferral {
             slot_identity: SlotIdentity::Unbound,
             topology: Resident::<ResidentReload>::new(ResidentConfig::default()),
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("resident registration must succeed");
         let outcome = mgr

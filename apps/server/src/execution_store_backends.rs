@@ -50,6 +50,11 @@ fn build_memory_execution_stores(
     let workflow_store =
         InMemoryWorkflowStore::new_with_versions(&workflow_versions, &execution_store);
     let tenant_directory = InMemoryIdentityDirectory::new();
+    // One row store: rows the API writes are the rows the worker activates.
+    let resource_store = InMemoryResourceStore::new();
+    // One status store: what the worker projection publishes, the API reads.
+    let resource_status_store: Arc<dyn nebula_storage_port::store::ResourceStatusStore> =
+        Arc::new(nebula_storage::inmem::InMemoryResourceStatusStore::new());
     let shared_control_queue: Arc<dyn nebula_storage_port::store::ControlQueue> =
         Arc::new(control_queue);
     let turn_handoff: Arc<dyn nebula_storage_port::store::ExecutionTurnHandoff> = Arc::new(
@@ -92,6 +97,8 @@ fn build_memory_execution_stores(
                     versions: Arc::new(workflow_versions.clone()),
                 },
                 Arc::new(nebula_storage::inmem::InMemoryResourceRuntime::new()),
+                Arc::new(resource_store.clone()),
+                Arc::clone(&resource_status_store),
             ),
         }
     };
@@ -107,7 +114,8 @@ fn build_memory_execution_stores(
         revision_installer: revision_catalog,
         workflow_store: Arc::new(workflow_store),
         workflow_version_store: Arc::new(workflow_versions),
-        resource_store: Arc::new(InMemoryResourceStore::new()),
+        resource_store: Arc::new(resource_store),
+        resource_status_store,
         execution_store: Arc::new(execution_store),
         node_result_store: Arc::new(node_results),
         journal_reader: Arc::new(journal),
@@ -229,6 +237,10 @@ async fn build_sqlite_execution_stores(
                 Arc::new(nebula_storage::sqlite::SqliteResourceRuntime::new(
                     pool.clone(),
                 )),
+                Arc::new(SqliteResourceStore::new(pool.clone())),
+                Arc::new(nebula_storage::sqlite::SqliteResourceStatusStore::new(
+                    pool.clone(),
+                )),
             ),
         }
     };
@@ -247,6 +259,9 @@ async fn build_sqlite_execution_stores(
         workflow_store,
         workflow_version_store,
         resource_store: Arc::new(SqliteResourceStore::new(pool.clone())),
+        resource_status_store: Arc::new(nebula_storage::sqlite::SqliteResourceStatusStore::new(
+            pool.clone(),
+        )),
         execution_store,
         node_result_store: node_results,
         journal_reader,
@@ -361,7 +376,15 @@ async fn build_postgres_execution_stores(
                 Arc::new(nebula_storage::postgres::PgResourceRuntime::new(
                     pool.clone(),
                 )),
-            ),
+                Arc::new(PgResourceStore::new(pool.clone())),
+                Arc::new(nebula_storage::postgres::PgResourceStatusStore::new(
+                    pool.clone(),
+                )),
+            )
+            // Resource rate limits hold across every worker on this backend.
+            .with_shared_limits(Arc::new(nebula_storage::postgres::PgLimitStore::new(
+                pool.clone(),
+            ))),
         }
     };
     #[cfg(feature = "runtime-repair-red")]
@@ -379,6 +402,9 @@ async fn build_postgres_execution_stores(
         workflow_store,
         workflow_version_store,
         resource_store: Arc::new(PgResourceStore::new(pool.clone())),
+        resource_status_store: Arc::new(nebula_storage::postgres::PgResourceStatusStore::new(
+            pool.clone(),
+        )),
         execution_store,
         node_result_store,
         journal_reader,

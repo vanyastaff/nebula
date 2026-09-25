@@ -183,7 +183,9 @@ impl nebula_resource::ResidentProvider for ExplicitMismatchProbe {}
 fn factory() -> impl ResourceFactory {
     KindActivator::<MetadataProbe, _, _>::new(
         || MetadataProbe,
-        || Resident::new(nebula_resource::ResidentConfig::default()),
+        nebula_resource::topology::fixed(|| {
+            Resident::new(nebula_resource::ResidentConfig::default())
+        }),
     )
 }
 
@@ -240,7 +242,9 @@ fn draft_shared_authoring_surface_survives_factory_admission() {
     let factory = KindActivator::<MetadataProbe, _, _>::with_metadata(
         draft,
         || MetadataProbe,
-        || Resident::new(nebula_resource::ResidentConfig::default()),
+        nebula_resource::topology::fixed(|| {
+            Resident::new(nebula_resource::ResidentConfig::default())
+        }),
     );
     let metadata = factory.metadata().expect("valid static definition");
     let base = metadata.base();
@@ -285,7 +289,9 @@ fn recorded_metadata_only_readmits_against_an_exact_fresh_definition() {
     let changed_factory = KindActivator::<MetadataProbe, _, _>::with_metadata(
         changed,
         || MetadataProbe,
-        || Resident::new(nebula_resource::ResidentConfig::default()),
+        nebula_resource::topology::fixed(|| {
+            Resident::new(nebula_resource::ResidentConfig::default())
+        }),
     );
     let changed = changed_factory
         .metadata()
@@ -323,7 +329,9 @@ fn provider_default_draft_key_mismatch_is_cached_and_rejected() {
     DEFAULT_DRAFT_CALLS.store(0, Ordering::SeqCst);
     let factory = KindActivator::<DefaultMismatchProbe, _, _>::new(
         || DefaultMismatchProbe,
-        || Resident::new(nebula_resource::ResidentConfig::default()),
+        nebula_resource::topology::fixed(|| {
+            Resident::new(nebula_resource::ResidentConfig::default())
+        }),
     );
 
     for _ in 0..2 {
@@ -357,7 +365,9 @@ fn explicit_draft_key_mismatch_fails_before_registry_mutation() {
             "",
         ),
         || ExplicitMismatchProbe,
-        || Resident::new(nebula_resource::ResidentConfig::default()),
+        nebula_resource::topology::fixed(|| {
+            Resident::new(nebula_resource::ResidentConfig::default())
+        }),
     );
     let mut registry = ResourceActivatorRegistry::new();
 
@@ -386,7 +396,9 @@ fn catalog_factory(draft: ResourceMetadataDraft) -> impl ResourceFactory {
     KindActivator::<ExplicitMismatchProbe, _, _>::with_metadata(
         draft,
         || ExplicitMismatchProbe,
-        || Resident::new(nebula_resource::ResidentConfig::default()),
+        nebula_resource::topology::fixed(|| {
+            Resident::new(nebula_resource::ResidentConfig::default())
+        }),
     )
 }
 

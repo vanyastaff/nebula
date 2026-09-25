@@ -85,6 +85,11 @@ impl ManagedHandle for DeferredRetirementHandle {
         false
     }
 
+    fn phase_changed(&self) -> &Notify {
+        static NEVER: Notify = Notify::const_new();
+        &NEVER
+    }
+
     fn bump_revoke_epoch(&self) {}
 
     fn accepts_credential_slot_name(&self, _slot: &str) -> bool {

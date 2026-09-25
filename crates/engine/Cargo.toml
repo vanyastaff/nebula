@@ -52,6 +52,8 @@ chrono = { workspace = true }
 rand = { workspace = true }
 # Resume-token minting uses SHA-256 hashes, base64 bearers, and zeroized plaintext.
 sha2 = { workspace = true }
+# Rate-limit account keys are HMAC-SHA256 of tenant + credential identity.
+hmac = { workspace = true }
 base64 = { workspace = true }
 secrecy = { workspace = true }
 uuid = { workspace = true, features = ["v4", "serde"] }

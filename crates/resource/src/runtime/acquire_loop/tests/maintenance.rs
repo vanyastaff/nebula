@@ -113,6 +113,7 @@ async fn retiring_maintenance_check_can_await_same_queue_guard_release() {
             slot_identity: crate::SlotIdentity::Unbound,
             topology: Pooled::new(PoolConfig::default(), 0),
             recovery_gate: None,
+            rate_limit: None,
         })
         .unwrap();
     async fn acquire(manager: &Arc<crate::Manager>) -> ResourceGuard<Mock> {

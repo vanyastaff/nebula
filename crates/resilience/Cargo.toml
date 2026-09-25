@@ -24,6 +24,10 @@ serde = ["dep:serde", "smallvec/serde"]
 # of the documented surface: enabling it adds no behavior, only visibility.
 bench-internals = []
 
+# The `LimitStore` conformance kit, for the test suites of store
+# implementations. Test support only: it panics on a violation.
+conformance = []
+
 [dependencies]
 # Nebula integration
 nebula-error = { workspace = true }
@@ -50,7 +54,7 @@ serde = { workspace = true, optional = true }
 criterion = { workspace = true, features = ["async_tokio"] }
 proptest = { workspace = true }
 serde_json = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "test-util"] }
 
 [package.metadata.docs.rs]
 # Render feature-gated items on docs.rs (build with every feature).

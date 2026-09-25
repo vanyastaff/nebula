@@ -119,6 +119,7 @@ async fn graceful_shutdown_stops_new_acquires() {
             slot_identity: SlotIdentity::Unbound,
             topology: resident_rt,
             recovery_gate: None,
+            rate_limit: None,
         })
         .unwrap();
 
@@ -159,6 +160,7 @@ async fn graceful_shutdown_clears_registry() {
             slot_identity: SlotIdentity::Unbound,
             topology: resident_rt,
             recovery_gate: None,
+            rate_limit: None,
         })
         .unwrap();
 
@@ -405,6 +407,7 @@ async fn acquire_does_not_retry_transient_at_manager_layer() {
             slot_identity: SlotIdentity::Unbound,
             topology: resident_rt,
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("registration should succeed");
 
@@ -435,6 +438,7 @@ async fn acquire_does_not_retry_permanent_at_manager_layer() {
             slot_identity: SlotIdentity::Unbound,
             topology: resident_rt,
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("registration should succeed");
 
@@ -472,6 +476,7 @@ async fn acquire_succeeds_without_resilience() {
             slot_identity: SlotIdentity::Unbound,
             topology: resident_rt,
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("registration should succeed");
 
@@ -515,6 +520,7 @@ async fn acquire_has_no_manager_layer_timeout() {
             slot_identity: SlotIdentity::Unbound,
             topology: resident_rt,
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("registration should succeed");
 
@@ -557,6 +563,7 @@ async fn graceful_shutdown_second_call_errors_already_shutting_down() {
             slot_identity: SlotIdentity::Unbound,
             topology: resident_rt,
             recovery_gate: None,
+            rate_limit: None,
         })
         .unwrap();
 
@@ -605,6 +612,7 @@ async fn acquire_surfaces_underlying_transient_error_kind() {
             slot_identity: SlotIdentity::Unbound,
             topology: resident_rt,
             recovery_gate: None,
+            rate_limit: None,
         })
         .unwrap();
 
@@ -652,6 +660,7 @@ async fn acquire_failure_passively_triggers_recovery_gate() {
             slot_identity: SlotIdentity::Unbound,
             topology: resident_rt,
             recovery_gate: Some(gate.clone()),
+            rate_limit: None,
         })
         .unwrap();
 
@@ -693,6 +702,7 @@ async fn recovery_gate_blocks_acquire_when_permanently_failed() {
             slot_identity: SlotIdentity::Unbound,
             topology: resident_rt,
             recovery_gate: Some(Arc::new(gate)),
+            rate_limit: None,
         })
         .expect("registration should succeed");
 
@@ -727,6 +737,7 @@ async fn recovery_gate_blocks_acquire_when_in_progress() {
             slot_identity: SlotIdentity::Unbound,
             topology: resident_rt,
             recovery_gate: Some(Arc::new(gate)),
+            rate_limit: None,
         })
         .expect("registration should succeed");
 
@@ -769,6 +780,7 @@ async fn health_check_surfaces_recovery_gate_state() {
             slot_identity: SlotIdentity::Unbound,
             topology: resident_rt,
             recovery_gate: Some(Arc::new(gate)),
+            rate_limit: None,
         })
         .expect("registration should succeed");
 
@@ -799,6 +811,7 @@ async fn health_check_gate_state_is_none_without_a_gate() {
             slot_identity: SlotIdentity::Unbound,
             topology: resident_rt,
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("registration should succeed");
 
@@ -827,6 +840,7 @@ async fn recovery_gate_allows_acquire_when_idle() {
             slot_identity: SlotIdentity::Unbound,
             topology: resident_rt,
             recovery_gate: Some(Arc::new(gate)),
+            rate_limit: None,
         })
         .expect("registration should succeed");
 
@@ -860,6 +874,7 @@ async fn recovery_gate_allows_acquire_after_backoff_expires() {
             slot_identity: SlotIdentity::Unbound,
             topology: resident_rt,
             recovery_gate: Some(Arc::new(gate)),
+            rate_limit: None,
         })
         .expect("registration should succeed");
 
@@ -886,6 +901,7 @@ async fn recovery_gate_none_does_not_affect_acquire() {
             slot_identity: SlotIdentity::Unbound,
             topology: resident_rt,
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("registration should succeed");
 
@@ -920,6 +936,7 @@ async fn graceful_shutdown_abort_on_drain_timeout_preserves_registry() {
             slot_identity: SlotIdentity::Unbound,
             topology: resident_rt,
             recovery_gate: None,
+            rate_limit: None,
         })
         .unwrap();
 
@@ -979,6 +996,7 @@ async fn graceful_shutdown_abort_marks_resources_failed_not_ready() {
             slot_identity: SlotIdentity::Unbound,
             topology: resident_rt,
             recovery_gate: None,
+            rate_limit: None,
         })
         .unwrap();
 
@@ -1063,6 +1081,7 @@ async fn graceful_shutdown_force_clears_registry_on_timeout() {
             slot_identity: SlotIdentity::Unbound,
             topology: resident_rt,
             recovery_gate: None,
+            rate_limit: None,
         })
         .unwrap();
 
@@ -1108,6 +1127,7 @@ async fn graceful_shutdown_happy_path_returns_zero_outstanding() {
             slot_identity: SlotIdentity::Unbound,
             topology: resident_rt,
             recovery_gate: None,
+            rate_limit: None,
         })
         .unwrap();
 
@@ -1159,6 +1179,7 @@ async fn probe_boundary_serializes_callers_under_herd() {
             slot_identity: SlotIdentity::Unbound,
             topology: resident_rt,
             recovery_gate: Some(gate.clone()),
+            rate_limit: None,
         })
         .unwrap();
 

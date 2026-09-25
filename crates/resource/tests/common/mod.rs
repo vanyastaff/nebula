@@ -301,6 +301,7 @@ where
         slot_identity: SlotIdentity::Unbound,
         topology: pool,
         recovery_gate: None,
+        rate_limit: None,
     })
     .expect("pool registration must succeed");
 }
@@ -345,6 +346,7 @@ where
         slot_identity: SlotIdentity::Unbound,
         topology: rt,
         recovery_gate: None,
+        rate_limit: None,
     })
     .expect("resident registration must succeed");
 }

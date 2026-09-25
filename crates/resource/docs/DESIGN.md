@@ -64,7 +64,7 @@
 
 ## 5. Инварианты и контракты
 
-- **Framework владеет штатной acquire-петлёй, revoke-fence и terminal ownership, но custom topology — доверенная граница.** Открытый `Topology<R>` намеренно НЕ возвращает `ResourceGuard<R>`. Для idle entries он получает borrowed `InstanceStore`, чей public `drain_all` передаёт ownership вызывающему plugin-коду; для долгоживущих roots — borrowed, non-cloneable `RetainedStore` и сохраняет opaque `RetainedId`. Поэтому type system не запрещает trusted in-process plugin дренировать, дропнуть или скрыть alias entry вне framework submission. `TaskLoss`/abandonment accounting видит только work, принятый framework-owned cleanup path, и не может наблюдать такую потерю внутри plugin-кода. Built-in topology соблюдают контракт; custom topology обязана не обходить его.
+- **Framework владеет штатной acquire-петлёй, revoke-fence и terminal ownership, но custom topology — доверенная граница.** Открытый `Topology<R>` намеренно НЕ возвращает `ResourceGuard<R>`. Idle entries он видит только через read-only `StoreView` (размер, ёмкость, порядок, revoke epoch и `read_idle` для чтения на месте) — без checkout, return, eviction, drain и fence, поэтому забрать idle entry из учёта фреймворка он не может. Для долгоживущих roots — borrowed, non-cloneable `RetainedStore` и opaque `RetainedId`; здесь type system по-прежнему не запрещает trusted plugin скрыть alias retained lease. `TaskLoss`/abandonment accounting видит только work, принятый framework-owned cleanup path, и не может наблюдать такую потерю внутри plugin-кода. Built-in topology соблюдают контракт; custom topology обязана не обходить его.
 - **Release best-effort on crash (L2-§11.4).** Drop гварда никогда не паникует и не блокирует; недослитое уходит в `ReleaseQueue` (`src/release_queue/mod.rs`).
 - **Attributable lifecycle (L2-§13.3).** Каждая операция несёт `ResourceContext`/scope; `ResourceEvent` + `ResourceOpsMetrics` дают трассируемость по умолчанию.
 - **Resolved-binding isolation by construction.** `SlotIdentity::Structural` входит в dedup-ключ (`src/dedup.rs`, `src/registry.rs`), поэтому разные наборы resolved credential bindings не alias один runtime. Равные bindings и `Unbound` не доказывают равную tenant authority: решение о допустимом cross-tenant sharing принимает host/core admission policy, а не этот технический ключ.
@@ -129,6 +129,10 @@ Sized`, `destroy(…, cx: TeardownCx)`, дефолты у `check`/`destroy`);
 
 ## 8. Forward design / открытые вопросы
 
+- **Сохранённые строки ресурсов активируются (2026-09-23).** Движок регистрирует строки, которые
+  называет манифест выполнения, через `ResourceActivatorRegistry::register` с `RegisterRequest::row_id`;
+  `SlotIdentity::from_row_bindings` включает id строки в ключ реестра, так что две строки одного вида
+  в одном scope не заменяют друг друга. Путь без `rotation`: reverse index по-прежнему не наполняется.
 - **Production bind-population (§M12.4) — главный незакрытый хвост.** `register_and_bind` имеет quiesce-контракт, но живого вызывающего пути нет. Credential→slot резолвер существует и работает на execution-пути с 2026-09-13 (`CredentialSlotResolver`, impl `CredentialProjectionRuntime`), но `slot_bindings` он не наполняет: reverse index наполняет отдельный producer, которого нет, и единственный вызов `WorkflowEngine::register_resource_and_bind` сам никем не вызывается. Пока producer'а нет, статус крейта остаётся `frontier`. Это следующий resource-follow-up.
 - **Несинхронизированные breaking-коммиты.** На ветке `dreamy-kare-8698d4` лежат ещё 4 breaking-коммита redesign API, не влитые в этот worktree; их надо re-derive против пост-0093 состояния перед мержем (риск дрейфа `RegistrationSpec`/topology API).
 - ~~**Долг по докам — это риск онбординга, а не косметика.**~~ **Closed by Batch D (2026-07-02)** — see §6 above.

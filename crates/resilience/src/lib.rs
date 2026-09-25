@@ -204,7 +204,7 @@ pub use pipeline::{
 };
 pub use policy::{ConstantLoad, LoadSignal, LoadSnapshot, PolicySource};
 pub use rate_limiter::{
-    AdaptiveRateLimiter, ErasedRateLimiter, LeakyBucket, RateLimiter, RateLimiterStatus,
+    AdaptiveRateLimiter, ErasedRateLimiter, Gcra, LeakyBucket, RateLimiter, RateLimiterStatus,
     SlidingWindow, TokenBucket,
 };
 #[cfg(feature = "bench-internals")]

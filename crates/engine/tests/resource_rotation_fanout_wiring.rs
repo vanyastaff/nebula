@@ -113,6 +113,7 @@ async fn material_replacement_installs_projected_guard_before_refresh_hook() {
             slot_identity: identity.clone(),
             topology: Resident::<ReplacementResource>::new(ResidentConfig::default()),
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("replacement resource registers");
     let context = ResourceContext::minimal(Scope::default(), CancellationToken::new());
@@ -204,6 +205,7 @@ async fn lost_material_event_is_recovered_on_startup_and_periodic_scan() {
             slot_identity: identity.clone(),
             topology: Resident::<ReplacementResource>::new(ResidentConfig::default()),
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("register");
     let context = ResourceContext::minimal(Scope::default(), CancellationToken::new());
@@ -308,6 +310,7 @@ async fn material_replacement_hook_timeout_is_not_counted_as_success() {
             slot_identity: identity.clone(),
             topology: Resident::<ReplacementResource>::new(ResidentConfig::default()),
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("register");
     let context = ResourceContext::minimal(Scope::default(), CancellationToken::new());
@@ -826,6 +829,7 @@ async fn empty_bound_slot_reconciles_a_lost_durable_tombstone() {
             slot_identity: identity.clone(),
             topology: Resident::<ReplacementResource>::new(ResidentConfig::default()),
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("register empty bound slot");
     let context = ResourceContext::minimal(Scope::default(), CancellationToken::new());
@@ -1144,6 +1148,7 @@ fn register_replacement_with_hook_behavior(
             slot_identity: SlotIdentity::from_bindings([("db", identity)]),
             topology: Resident::<ReplacementResource>::new(ResidentConfig::default()),
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("register");
     resource
@@ -1956,6 +1961,7 @@ async fn wire(behaviour: Behaviour) -> Wired {
         slot_identity: slot_identity.clone(),
         topology: Resident::<Recording>::new(ResidentConfig::default()),
         recovery_gate: None,
+        rate_limit: None,
     })
     .expect("register resolved-credential row");
 
@@ -2403,6 +2409,7 @@ async fn engine_spawn_resource_rotation_fanout_is_idempotent() {
         slot_identity: slot_identity.clone(),
         topology: Resident::<Recording>::new(ResidentConfig::default()),
         recovery_gate: None,
+        rate_limit: None,
     })
     .expect("register resolved-credential row");
 

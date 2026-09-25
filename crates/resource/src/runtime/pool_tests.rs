@@ -145,6 +145,24 @@ async fn create_entry_builds_pool_entry_with_metrics() {
 }
 
 #[tokio::test]
+async fn create_entry_tolerates_unrepresentable_create_timeout() {
+    // `Instant::now() + Duration::MAX` panicked on the first cold acquire;
+    // an operator-supplied huge timeout must mean "no practical deadline".
+    let resource = MockPool::new();
+    let topo = mock_pool(
+        Config {
+            create_timeout: Duration::MAX,
+            ..Config::default()
+        },
+        0,
+    );
+    topo.create_pool_entry(&resource, &PoolTestConfig, &test_ctx())
+        .await
+        .expect("an unbounded create_timeout must not panic or time out");
+    assert_eq!(resource.created.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
 async fn entry_instance_and_into_owned_instance_round_trip() {
     let resource = MockPool::new();
     let topo = mock_pool(Config::default(), 0);
@@ -434,14 +452,22 @@ async fn try_reserve_grants_then_saturates() {
         0,
     );
     let store: InstanceStore<PoolEntry<MockPool>> = InstanceStore::new(None);
-    let ticket = topo.try_reserve(&store).expect("first ticket");
+    let ticket = topo
+        .try_reserve(StoreView::new(&store))
+        .expect("first ticket");
     assert!(
-        matches!(topo.try_reserve(&store), Err(Unavailable::Saturated { .. })),
+        matches!(
+            topo.try_reserve(StoreView::new(&store)),
+            Err(Unavailable::Saturated { .. })
+        ),
         "a pool of 1 is saturated after one ticket"
     );
-    assert_eq!(topo.phase(&store), AdmissionPhase::Saturated);
+    assert_eq!(
+        topo.phase(StoreView::new(&store)),
+        AdmissionPhase::Saturated
+    );
     drop(ticket);
-    assert_eq!(topo.phase(&store), AdmissionPhase::Ready);
+    assert_eq!(topo.phase(StoreView::new(&store)), AdmissionPhase::Ready);
 }
 
 #[tokio::test]
@@ -454,10 +480,12 @@ async fn load_reflects_usage() {
         0,
     );
     let store: InstanceStore<PoolEntry<MockPool>> = InstanceStore::new(None);
-    let load = topo.load(&store).expect("pool reports load");
+    let load = topo
+        .load(StoreView::new(&store))
+        .expect("pool reports load");
     assert!(load.saturation.abs() < f32::EPSILON, "idle pool is 0.0");
-    let _t = topo.try_reserve(&store).expect("ticket");
-    let load = topo.load(&store).expect("load");
+    let _t = topo.try_reserve(StoreView::new(&store)).expect("ticket");
+    let load = topo.load(StoreView::new(&store)).expect("load");
     assert!(
         (load.saturation - 0.5).abs() < f32::EPSILON,
         "one of two used"
@@ -523,7 +551,7 @@ async fn dispatch_credential_hook_walks_idle_store() {
 
     topo.dispatch_credential_hook(
         &resource,
-        &store,
+        StoreView::new(&store),
         &crate::RetainedStore::for_test(),
         "db",
         false,
@@ -566,7 +594,7 @@ async fn dispatch_credential_hook_isolates_a_panicking_entry_and_continues() {
     let outcome = topo
         .dispatch_credential_hook(
             &resource,
-            &store,
+            StoreView::new(&store),
             &crate::RetainedStore::for_test(),
             "db",
             false,
@@ -663,4 +691,59 @@ async fn store_return_is_revoke_fenced() {
         "an entry checked out after the revoke is unaffected"
     );
     assert_eq!(store.len().await, 1, "the post-revoke entry recycled");
+}
+
+#[test]
+fn try_new_rejects_a_zero_create_timeout() {
+    let result = Pooled::<MockPool>::try_new(
+        Config {
+            create_timeout: Duration::ZERO,
+            ..Config::default()
+        },
+        0,
+    );
+    assert!(result.is_err(), "a zero create budget can never create");
+}
+
+#[test]
+fn try_new_rejects_a_maintenance_interval_past_the_ceiling() {
+    let result = Pooled::<MockPool>::try_new(
+        Config {
+            maintenance_interval: MAX_MAINTENANCE_INTERVAL + Duration::from_millis(1),
+            ..Config::default()
+        },
+        0,
+    );
+    assert!(
+        result.is_err(),
+        "a period the maintenance timer cannot be armed with is refused up front"
+    );
+}
+
+#[test]
+fn operator_settings_build_a_pool_or_fail_without_panicking() {
+    use crate::topology::ConfigurableTopology;
+
+    let pool = Pooled::<MockPool>::from_settings_value(
+        Some(&serde_json::json!({ "max_size": 3, "min_size": 1 })),
+        7,
+    )
+    .expect("valid operator settings build a pool");
+    assert_eq!(pool.config.max_size, 3);
+
+    for invalid in [
+        serde_json::json!({ "max_size": 0 }),
+        serde_json::json!({ "min_size": 5, "max_size": 2 }),
+        serde_json::json!({ "create_timeout_ms": 0 }),
+        serde_json::json!({ "unknown": true }),
+    ] {
+        assert!(
+            Pooled::<MockPool>::from_settings_value(Some(&invalid), 0).is_err(),
+            "{invalid} must be rejected as a typed error"
+        );
+    }
+    assert!(
+        Pooled::<MockPool>::from_settings_value(None, 0).is_ok(),
+        "absent = defaults"
+    );
 }

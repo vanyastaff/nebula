@@ -184,6 +184,7 @@ async fn rejected_projection_hook_retries_once_but_accepted_failure_does_not() {
                 slot_identity: identity.clone(),
                 topology: Resident::new(ResidentConfig::default()),
                 recovery_gate: None,
+                rate_limit: None,
             })
             .expect("register");
         let context = ResourceContext::minimal(Scope::default(), CancellationToken::new());
@@ -346,6 +347,7 @@ async fn unqualified_slot_write_fences_refresh_hook_admission() {
             slot_identity: identity.clone(),
             topology: Resident::new(ResidentConfig::default()),
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("register");
     let context = ResourceContext::minimal(Scope::default(), CancellationToken::new());
@@ -440,6 +442,7 @@ async fn terminal_revoke_cannot_split_projection_install_and_hook_admission() {
             slot_identity: identity.clone(),
             topology: Resident::new(ResidentConfig::default()),
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("register");
     let context = ResourceContext::minimal(Scope::default(), CancellationToken::new());
@@ -540,4 +543,75 @@ async fn terminal_revoke_cannot_split_projection_install_and_hook_admission() {
             .is_err()
     );
     assert_eq!(resource.calls.load(Ordering::SeqCst), calls);
+}
+
+/// A row still waiting for its credentials to be reread is not handed to
+/// work early: `until_accepting` gives up at its deadline, wakes on the
+/// promotion to `Ready`, and fails fast when a revoke taints the row.
+#[tokio::test]
+async fn until_accepting_follows_a_row_out_of_initializing() {
+    use crate::{ErrorKind, state::ResourcePhase};
+
+    let manager = Arc::new(Manager::new());
+    let identity = SlotIdentity::from_bindings([("db", "oauth")]);
+    manager
+        .register(RegistrationSpec {
+            resource: ProjectionResource {
+                slot: Arc::new(SlotCell::empty()),
+                calls: Arc::new(AtomicUsize::new(0)),
+                fail: false,
+                snapshot_gate: None,
+            },
+            config: Config,
+            scope: ScopeLevel::Global,
+            slot_identity: identity.clone(),
+            topology: Resident::new(ResidentConfig::default()),
+            recovery_gate: None,
+            rate_limit: None,
+        })
+        .expect("register");
+    let key = ProjectionResource::key();
+    let row = manager
+        .lookup_any_for_slot_identity_structural(&key, &ScopeLevel::Global, &identity)
+        .expect("registered row");
+    let wait = |deadline| {
+        let manager = Arc::clone(&manager);
+        let identity = identity.clone();
+        tokio::spawn(async move {
+            manager
+                .until_accepting(
+                    &ProjectionResource::key(),
+                    &ScopeLevel::Global,
+                    &identity,
+                    deadline,
+                )
+                .await
+        })
+    };
+
+    row.set_phase(ResourcePhase::Initializing);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(20);
+    let error = wait(Some(deadline))
+        .await
+        .expect("waiter task")
+        .expect_err("still initializing at the deadline");
+    assert_eq!(error.kind(), &ErrorKind::Backpressure);
+
+    let promoted = wait(None);
+    tokio::task::yield_now().await;
+    row.set_phase(ResourcePhase::Ready);
+    promoted
+        .await
+        .expect("waiter task")
+        .expect("the promotion wakes the wait");
+
+    row.set_phase(ResourcePhase::Initializing);
+    let revoked = wait(None);
+    tokio::task::yield_now().await;
+    row.taint();
+    let error = revoked
+        .await
+        .expect("waiter task")
+        .expect_err("a revoked row never serves");
+    assert_eq!(error.kind(), &ErrorKind::Revoked);
 }

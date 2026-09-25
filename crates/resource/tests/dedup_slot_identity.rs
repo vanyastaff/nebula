@@ -142,6 +142,7 @@ fn register_counting(
         slot_identity,
         topology: Resident::<CountingResource>::new(ResidentConfig::default()),
         recovery_gate: opts.recovery_gate,
+        rate_limit: None,
     })
 }
 
@@ -510,6 +511,7 @@ async fn agnostic_typed_acquire_skips_sibling_type_and_falls_through_to_global()
             slot_identity: SlotIdentity::Unbound,
             topology: Resident::<SiblingResidentResource>::new(ResidentConfig::default()),
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("register sibling type at org scope must succeed");
 
@@ -584,6 +586,7 @@ async fn typed_lookup_skips_sibling_type_and_falls_through_to_global() {
             slot_identity: SlotIdentity::Unbound,
             topology: Resident::<SiblingResidentResource>::new(ResidentConfig::default()),
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("register sibling type at org scope must succeed");
 

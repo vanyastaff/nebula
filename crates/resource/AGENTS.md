@@ -30,6 +30,19 @@
 - For teardown changes, read `src/runtime/teardown.rs` and `src/manager/shutdown.rs` before relying on README hook descriptions. A declared provider hook is not proof of a runtime call site, and queued release is not completed physical destruction.
 - `#![forbid(unsafe_code)]` + `#![deny(missing_docs)]` + `#![warn(missing_debug_implementations)]` are active; lifecycle work emits a `ResourceEvent` variant (observability is DoD).
 
+## Industry failure modes — do not repeat
+
+Known defects of peer pools, breakers and workflow engines. A change that reintroduces one needs an explicit reason in review.
+
+- **Local state is not backend health** (Envoy `split_external_local_origin_errors`): only `Transient` / `Exhausted` may trip `RecoveryGate`; `Backpressure` and `Revoked` never do (`manager/gate.rs`).
+- **No lockstep expiry or retry** (HikariCP `maxLifetime` attenuation, AWS `buffer_time` jitter): any fleet-wide timer — lifetime, backoff, refresh-ahead — gets jitter.
+- **Single-probe recovery** (Resilience4j half-open defaults to 10 calls): keep exactly one prober per gate.
+- **No panics on operator input**: `Instant + Duration` goes through `crate::deadline::deadline_after`; config validation returns `Error::permanent`.
+- **Nothing unbounded per lease**: no per-acquire task, timer or allocation that outlives the lease; per-row background work stays bounded and observable.
+- **No silent staleness for secrets** (Airflow `cache_ttl_seconds`, n8n polling): rotation is pushed to live instances; never add a cache that can serve a rotated-out credential.
+- **Limits are per process** (Temporal, Airflow, Dagster, Prefect, Inngest enforce cluster-wide on a server): never document a `Bounded` / `Pooled` cap as a backend-wide budget.
+- **A leak detector that only logs does not free capacity** (HikariCP `leakDetectionThreshold`): don't rely on `max_hold_duration` to prevent exhaustion.
+
 ## Change checks
 
 | Change | Relevant evidence |

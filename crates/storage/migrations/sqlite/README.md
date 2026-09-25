@@ -133,6 +133,7 @@ no SQLite counterpart):
 | `0036_plane_a_oauth_state_cleanup_index` | partial index over `NOW()`; SQLite requires constant expressions (see *Dialect notes*) |
 | `0037_mfa_enrollment_candidates` | `mfa_enrollment_candidates` — `pg/mfa_enrollment.rs` only |
 | `0038_identity_secret_authority` | `pg/identity_secret.rs` only |
+| `0060_rate_limits` | cluster-wide rate limits, `postgres/rate_limit.rs` only; one SQLite process keeps its limits in memory |
 
 A fresh SQLite database therefore has two fewer tables than a fresh
 PostgreSQL one (`external_identities`, `mfa_enrollment_candidates`). Adding

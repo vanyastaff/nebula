@@ -11,7 +11,7 @@ use std::{
 };
 
 use crate::{
-    error::Error,
+    error::{Error, ErrorKind},
     recovery::gate::{GateState, RecoveryGate, RecoveryTicket, TryBeginError},
 };
 
@@ -114,22 +114,36 @@ pub(super) fn admit_through_gate(gate: &Option<Arc<RecoveryGate>>) -> Result<Gat
     }
 }
 
+/// `true` when an acquire failure says something about the backend's health.
+///
+/// Only [`ErrorKind::Transient`] and [`ErrorKind::Exhausted`] qualify.
+/// [`ErrorKind::Backpressure`] (local capacity exhausted) and
+/// [`ErrorKind::Revoked`] (credential taint) are retryable, but they are
+/// this process's own state: counting them would push a healthy backend into
+/// recovery backoff and fail every acquire whenever the pool saturates.
+fn is_backend_health_signal(error: &Error) -> bool {
+    matches!(
+        error.kind(),
+        ErrorKind::Transient | ErrorKind::Exhausted { .. }
+    )
+}
+
 /// Resolves the ticket granted by [`admit_through_gate`] based on the
 /// acquire result. No-op when the admission was [`GateAdmission::Open`]
 /// (no gate attached), so callers can always call this unconditionally.
 pub(super) fn settle_gate_admission<T>(admission: GateAdmission, result: &Result<T, Error>) {
     match (admission, result) {
         (GateAdmission::Probe { ticket, .. }, Ok(_)) => ticket.resolve(),
-        (GateAdmission::Probe { ticket, .. }, Err(e)) if e.is_retryable() => {
+        (GateAdmission::Probe { ticket, .. }, Err(e)) if is_backend_health_signal(e) => {
             ticket.fail_transient(e.to_string());
         },
         (GateAdmission::Probe { ticket, .. }, Err(_e)) => {
-            // Non-retryable errors are not backend-health signals; keep the
-            // gate open to avoid permanently bricking acquires.
+            // Local-state and non-retryable errors are not backend-health
+            // signals; keep the gate open to avoid bricking acquires.
             ticket.resolve();
         },
-        (GateAdmission::OpenGated(gate), Err(e)) if e.is_retryable() => {
-            // First retryable failure on healthy path opens the backoff gate.
+        (GateAdmission::OpenGated(gate), Err(e)) if is_backend_health_signal(e) => {
+            // First backend-health failure on healthy path opens the backoff gate.
             if let Ok(ticket) = gate.try_begin() {
                 ticket.fail_transient(e.to_string());
             }
@@ -144,6 +158,56 @@ mod gate_admission_tests {
 
     use super::*;
     use crate::recovery::gate::RecoveryGateConfig;
+
+    fn idle_gate() -> Arc<RecoveryGate> {
+        Arc::new(RecoveryGate::new(RecoveryGateConfig {
+            max_attempts: 5,
+            base_backoff: Duration::from_secs(1),
+        }))
+    }
+
+    #[test]
+    fn local_capacity_and_revoke_errors_do_not_open_the_gate() {
+        for error in [
+            Error::backpressure("pool full"),
+            Error::revoked("tainted by revoke"),
+        ] {
+            let gate = idle_gate();
+            let admission = admit_through_gate(&Some(Arc::clone(&gate))).expect("idle admits");
+            settle_gate_admission::<()>(admission, &Err(error));
+            assert!(
+                matches!(gate.state(), GateState::Idle),
+                "a local-state error must leave a healthy backend's gate idle, got {:?}",
+                gate.state()
+            );
+        }
+    }
+
+    #[test]
+    fn backend_failures_open_the_gate() {
+        for error in [
+            Error::transient("connection refused"),
+            Error::exhausted("quota", None),
+        ] {
+            let gate = idle_gate();
+            let admission = admit_through_gate(&Some(Arc::clone(&gate))).expect("idle admits");
+            settle_gate_admission::<()>(admission, &Err(error));
+            assert!(matches!(gate.state(), GateState::Failed { .. }));
+        }
+    }
+
+    #[test]
+    fn probe_hitting_backpressure_resolves_instead_of_extending_backoff() {
+        let gate = Arc::new(RecoveryGate::new(RecoveryGateConfig {
+            max_attempts: 5,
+            base_backoff: Duration::ZERO,
+        }));
+        gate.try_begin().expect("idle").fail_transient("seed");
+        let admission = admit_through_gate(&Some(Arc::clone(&gate))).expect("retry is due");
+        assert!(matches!(admission, GateAdmission::Probe { .. }));
+        settle_gate_admission::<()>(admission, &Err(Error::backpressure("pool full")));
+        assert!(matches!(gate.state(), GateState::Idle));
+    }
 
     /// #322: after `Failed { retry_at = past }`, concurrent callers must
     /// see **exactly one** `Probe` ticket, not a stampede. The CAS-based

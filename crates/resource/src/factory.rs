@@ -58,16 +58,16 @@
 
 use std::{
     any::TypeId,
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     future::Future,
     pin::Pin,
     sync::{Arc, OnceLock},
 };
 
 use crate::resource::{ResourceMetadata, ResourceMetadataDraft};
-use crate::topology::Topology;
+use crate::topology::{ConfigurableTopology, Topology};
 use crate::{Manager, ScopeLevel, SlotIdentity, recovery::RecoveryGate, resource::Provider};
-use nebula_core::Dependencies;
+use nebula_core::{CredentialId, Dependencies, SlotKind};
 
 mod private {
     pub trait Sealed {}
@@ -83,7 +83,7 @@ pub type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 ///
 /// The slot name, its resolved [`CredentialKey`](nebula_core::CredentialKey),
 /// and (when the credential participates in rotation) its resolved
-/// [`CredentialId`](nebula_credential::CredentialId) travel together as one
+/// [`CredentialId`] travel together as one
 /// unit, rather than as two parallel `HashMap<String, _>` keyed by slot name.
 ///
 /// Co-locating them makes a key↔id divergence for the same slot structurally
@@ -104,7 +104,7 @@ pub struct SlotBinding {
     /// The resolved `CredentialId` for the rotation fan-out reverse index, or
     /// `None` when this credential does not participate in rotation (no
     /// reverse-index row is staged for it).
-    pub credential_id: Option<nebula_credential::CredentialId>,
+    pub credential_id: Option<CredentialId>,
     /// Owner-qualified durable lookup scope. Required when
     /// `credential_id` participates in rotation and absent for opt-out
     /// bindings.
@@ -214,6 +214,26 @@ pub struct RegisterRequest<'a> {
     pub scope: ScopeLevel,
     /// Optional recovery gate shared across a recovery group.
     pub recovery_gate: Option<Arc<RecoveryGate>>,
+    /// Operator topology settings (pool size, timeouts, concurrency mode),
+    /// kept separate from the resource [`config`](Self::config). `None` uses
+    /// the kind's defaults; see [`crate::topology::settings`] for the format.
+    pub topology: Option<serde_json::Value>,
+    /// Operator [`ResilienceOverride`](crate::rate_limit::ResilienceOverride)
+    /// document (the resource row's `resilience_override`), checked against
+    /// the resource's [`ResiliencePolicy`](crate::rate_limit::ResiliencePolicy);
+    /// `None` enforces the declared policy as is.
+    pub resilience_override: Option<serde_json::Value>,
+    /// Quota the row draws on: rows with the same key share one limit (the
+    /// engine keys stored rows by provider account). `None` limits this row
+    /// alone.
+    pub limit_key: Option<crate::rate_limit::LimitKey>,
+    /// Id of the stored resource row this registration materializes.
+    ///
+    /// Folded into the registry row identity
+    /// ([`SlotIdentity::from_row_bindings`]) so two stored rows of one kind
+    /// in one scope stay distinct rows instead of replacing each other.
+    /// `None` for programmatic registrations that do not come from storage.
+    pub row_id: Option<String>,
 }
 
 impl std::fmt::Debug for RegisterRequest<'_> {
@@ -228,6 +248,10 @@ impl std::fmt::Debug for RegisterRequest<'_> {
             .field("slot_install_count", &self.slot_installs.len())
             .field("scope", &self.scope)
             .field("recovery_gate", &self.recovery_gate.is_some())
+            .field("topology", &self.topology.is_some())
+            .field("resilience_override", &self.resilience_override.is_some())
+            .field("limit_key", &self.limit_key.is_some())
+            .field("row_id", &self.row_id)
             .finish()
     }
 }
@@ -370,7 +394,7 @@ pub struct RegistrationBindings<'a> {
     #[cfg(feature = "rotation")]
     index: Option<&'a crate::ResourceFanoutIndex>,
     #[cfg(feature = "rotation")]
-    staged: &'a [(nebula_credential::CredentialId, crate::Bind)],
+    staged: &'a [(CredentialId, crate::Bind)],
     #[cfg(feature = "rotation")]
     authoritative_proof:
         Option<&'a crate::credential_fanout::index::AuthoritativeRegistrationProof>,
@@ -393,7 +417,7 @@ impl RegistrationBindings<'_> {
     #[cfg(feature = "rotation")]
     pub(crate) fn staged<'a>(
         index: Option<&'a crate::ResourceFanoutIndex>,
-        staged: &'a [(nebula_credential::CredentialId, crate::Bind)],
+        staged: &'a [(CredentialId, crate::Bind)],
         authoritative_proof: Option<
             &'a crate::credential_fanout::index::AuthoritativeRegistrationProof,
         >,
@@ -413,7 +437,7 @@ impl<'a> RegistrationBindings<'a> {
         self.index
     }
 
-    pub(crate) fn staged_entries(self) -> &'a [(nebula_credential::CredentialId, crate::Bind)] {
+    pub(crate) fn staged_entries(self) -> &'a [(CredentialId, crate::Bind)] {
         self.staged
     }
 
@@ -478,6 +502,107 @@ pub trait ResourceFactory: private::Sealed + Send + Sync + 'static {
     /// schema, carries an undeclared field, or fails to deserialize.
     fn validate(&self, config_json: serde_json::Value) -> Result<(), crate::Error>;
 
+    /// Validate operator topology settings for this kind **without
+    /// registering anything**, by building and dropping the topology.
+    ///
+    /// # Errors
+    ///
+    /// Returns a permanent [`crate::Error`] for malformed, unknown or
+    /// unworkable settings, or for settings sent to a kind that takes none.
+    fn validate_topology(&self, settings: Option<&serde_json::Value>) -> Result<(), crate::Error>;
+
+    /// The resilience policy the resource author declared for this kind
+    /// ([`Provider::resilience`]).
+    fn resilience_policy(&self) -> crate::rate_limit::ResiliencePolicy;
+
+    /// Validate an operator
+    /// [`ResilienceOverride`](crate::rate_limit::ResilienceOverride) document
+    /// for this kind **without registering anything**: its shape, and its
+    /// bounds under the kind's [`resilience_policy`](Self::resilience_policy).
+    ///
+    /// # Errors
+    ///
+    /// Returns a permanent [`crate::Error`] naming the offending field; the
+    /// message never restates submitted values.
+    fn validate_resilience_override(
+        &self,
+        value: Option<&serde_json::Value>,
+    ) -> Result<(), crate::Error> {
+        let document = crate::rate_limit::ResilienceOverride::from_value(value)?;
+        let policy = self.resilience_policy();
+        document
+            .apply(&policy)
+            .and_then(|_| document.apply_keyed(&policy))
+            .map(drop)
+            .map_err(|error| error.with_resource_key(self.key()))
+    }
+
+    /// Validate a stored row's credential bindings for this kind **without
+    /// registering anything**: every bound slot is one this kind declares,
+    /// every required slot is bound, and every selector parses as a
+    /// [`CredentialId`]. Whether the credential exists and the row's tenant
+    /// may use it is decided at activation, where it is resolved.
+    ///
+    /// # Errors
+    ///
+    /// Returns a permanent [`crate::Error`] naming the slot and the rule; the
+    /// message never restates a selector.
+    fn validate_credential_bindings(
+        &self,
+        bindings: &BTreeMap<String, String>,
+    ) -> Result<(), crate::Error> {
+        let declared: Vec<(&str, bool)> = self
+            .dependencies()
+            .slot_fields()
+            .iter()
+            .filter_map(|field| match field.kind {
+                SlotKind::Credential { .. } => Some((field.slot_key, field.required)),
+                SlotKind::Resource { .. } => None,
+            })
+            .collect();
+        let refuse = |message: String| -> Result<(), crate::Error> {
+            Err(crate::Error::permanent(message).with_resource_key(self.key()))
+        };
+        if let Some(slot) = bindings
+            .keys()
+            .find(|slot| !declared.iter().any(|(name, _)| name == slot))
+        {
+            return refuse(format!(
+                "credential_bindings: slot `{slot}` is not declared by this kind"
+            ));
+        }
+        for (slot, required) in declared {
+            match bindings.get(slot) {
+                Some(selector) => {
+                    if CredentialId::parse(selector).is_err() {
+                        return refuse(format!(
+                            "credential_bindings: slot `{slot}` must name a credential id"
+                        ));
+                    }
+                },
+                None if required => {
+                    return refuse(format!(
+                        "credential_bindings: required slot `{slot}` is not bound"
+                    ));
+                },
+                None => {},
+            }
+        }
+        Ok(())
+    }
+
+    /// Schema of the operator topology settings this kind accepts, for
+    /// catalog and form rendering. `Ok(None)` means the kind publishes no
+    /// settings schema (a [`fixed`](crate::topology::fixed) topology, or a
+    /// custom factory built with [`KindActivator::new`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::MetadataBuildError`] if the settings schema is invalid.
+    fn topology_schema(
+        &self,
+    ) -> Result<Option<nebula_schema::ValidSchema>, crate::MetadataBuildError>;
+
     /// Construct and register this resource type against `manager` using the
     /// caller-threaded [`RegisterRequest`] plus the per-`R` resource and
     /// topology this factory owns. `expected_slot_identity` is the canonical
@@ -524,9 +649,11 @@ pub trait ResourceFactory: private::Sealed + Send + Sync + 'static {
 ///
 /// Both are factories rather than stored values so one `KindActivator` can be
 /// invoked multiple times (re-activation, multiple scopes). The topology
-/// factory builds an `R::Topology` via `Resident::new(...)` or
-/// `Pooled::new(...)` — acquire dispatch is baked into the topology at
-/// construction.
+/// factory receives the operator's topology settings from
+/// [`RegisterRequest::topology`] and builds `R::Topology` from them — use
+/// [`ConfigurableTopology::from_registration`]
+/// for the built-in topologies, or [`fixed`](crate::topology::settings::fixed)
+/// for a topology that takes no operator settings.
 ///
 /// Used directly by the engine's `ResourceActivatorRegistry` and emitted
 /// internally by the `#[derive(Resource)]`-generated `<Name>Factory`.
@@ -535,10 +662,11 @@ where
     R: Provider + nebula_core::DeclaresDependencies,
     R::Config: serde::de::DeserializeOwned,
     FRes: Fn() -> R + Send + Sync,
-    FTopo: Fn() -> R::Topology + Send + Sync,
+    FTopo: Fn(Option<&serde_json::Value>) -> Result<R::Topology, crate::Error> + Send + Sync,
 {
     resource_factory: FRes,
     topology_factory: FTopo,
+    topology_schema: Option<TopologySchemaFn>,
     dependencies: Dependencies,
     metadata_draft: Option<ResourceMetadataDraft>,
     metadata: OnceLock<Result<ResourceMetadata, crate::MetadataBuildError>>,
@@ -551,7 +679,7 @@ where
     R: Provider + nebula_core::DeclaresDependencies,
     R::Config: serde::de::DeserializeOwned,
     FRes: Fn() -> R + Send + Sync,
-    FTopo: Fn() -> R::Topology + Send + Sync,
+    FTopo: Fn(Option<&serde_json::Value>) -> Result<R::Topology, crate::Error> + Send + Sync,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // `resource_factory` / `topology_factory` are closures — neither is
@@ -568,20 +696,22 @@ where
     R: Provider + nebula_core::DeclaresDependencies,
     R::Config: serde::de::DeserializeOwned,
     FRes: Fn() -> R + Send + Sync,
-    FTopo: Fn() -> R::Topology + Send + Sync,
+    FTopo: Fn(Option<&serde_json::Value>) -> Result<R::Topology, crate::Error> + Send + Sync,
 {
     /// Builds a `KindActivator` for resource type `R`.
     ///
     /// - `resource_factory` — yields the `R` value with credential slots
     ///   already resolved by the engine per registration scope.
-    /// - `topology_factory` — yields the `R::Topology` for this kind. Use
-    ///   `Resident::new(...)` for resident topologies or `Pooled::new(...)`
-    ///   for pooled ones; acquire dispatch is baked into the topology at
-    ///   construction.
+    /// - `topology_factory` — builds the `R::Topology` from the operator's
+    ///   topology settings (`None` when the request carries none) and returns
+    ///   a permanent error for invalid settings. It must be side-effect free:
+    ///   [`ResourceFactory::validate_topology`] calls it to dry-run settings.
+    ///   Acquire dispatch is baked into the topology at construction.
     pub fn new(resource_factory: FRes, topology_factory: FTopo) -> Self {
         Self {
             resource_factory,
             topology_factory,
+            topology_schema: None,
             dependencies: R::dependencies(),
             metadata_draft: None,
             metadata: OnceLock::new(),
@@ -601,6 +731,7 @@ where
         Self {
             resource_factory,
             topology_factory,
+            topology_schema: None,
             dependencies: R::dependencies(),
             metadata_draft: Some(metadata_draft),
             metadata: OnceLock::new(),
@@ -627,13 +758,64 @@ where
     }
 }
 
+/// Builds a topology settings schema; stored so the erased factory can
+/// publish the schema of the settings type it was built with.
+type TopologySchemaFn = fn() -> Result<nebula_schema::ValidSchema, nebula_schema::ValidationReport>;
+
+/// Topology factory type of a [`KindActivator::configurable`] activator.
+pub type SettingsTopologyFactory<T> =
+    for<'a> fn(Option<&'a serde_json::Value>) -> Result<T, crate::Error>;
+
+impl<R, FRes> KindActivator<R, FRes, SettingsTopologyFactory<R::Topology>>
+where
+    R: Provider + nebula_core::DeclaresDependencies,
+    R::Config: serde::de::DeserializeOwned,
+    R::Topology: ConfigurableTopology<R>,
+    FRes: Fn() -> R + Send + Sync,
+{
+    /// Builds an activator whose topology comes from operator settings.
+    ///
+    /// The topology factory is
+    /// [`ConfigurableTopology::from_registration`] and the published
+    /// [`topology_schema`](ResourceFactory::topology_schema) is the schema of
+    /// the same settings type, so the two cannot disagree.
+    pub fn configurable(resource_factory: FRes) -> Self {
+        Self::new(
+            resource_factory,
+            <R::Topology as ConfigurableTopology<R>>::from_registration,
+        )
+        .with_settings_schema()
+    }
+
+    /// [`configurable`](Self::configurable) with explicit schema-free resource
+    /// author intent (see [`with_metadata`](Self::with_metadata)).
+    pub fn configurable_with_metadata(
+        metadata_draft: ResourceMetadataDraft,
+        resource_factory: FRes,
+    ) -> Self {
+        Self::with_metadata(
+            metadata_draft,
+            resource_factory,
+            <R::Topology as ConfigurableTopology<R>>::from_registration,
+        )
+        .with_settings_schema()
+    }
+
+    fn with_settings_schema(mut self) -> Self {
+        self.topology_schema =
+            Some(nebula_schema::schema_of::<<R::Topology as ConfigurableTopology<R>>::Settings>);
+        self
+    }
+}
+
 impl<R, FRes, FTopo> private::Sealed for KindActivator<R, FRes, FTopo>
 where
     R: Provider + nebula_core::DeclaresDependencies,
     R::Config: serde::de::DeserializeOwned,
     R::Topology: Topology<R>,
     FRes: Fn() -> R + Send + Sync + 'static,
-    FTopo: Fn() -> R::Topology + Send + Sync + 'static,
+    FTopo:
+        Fn(Option<&serde_json::Value>) -> Result<R::Topology, crate::Error> + Send + Sync + 'static,
 {
 }
 
@@ -643,7 +825,8 @@ where
     R::Config: serde::de::DeserializeOwned,
     R::Topology: Topology<R>,
     FRes: Fn() -> R + Send + Sync + 'static,
-    FTopo: Fn() -> R::Topology + Send + Sync + 'static,
+    FTopo:
+        Fn(Option<&serde_json::Value>) -> Result<R::Topology, crate::Error> + Send + Sync + 'static,
 {
     fn key(&self) -> nebula_core::ResourceKey {
         <R as Provider>::key()
@@ -684,6 +867,24 @@ where
             .map(|_| ())
     }
 
+    fn validate_topology(&self, settings: Option<&serde_json::Value>) -> Result<(), crate::Error> {
+        (self.topology_factory)(settings)
+            .map(drop)
+            .map_err(|error| error.with_resource_key(R::key()))
+    }
+
+    fn resilience_policy(&self) -> crate::rate_limit::ResiliencePolicy {
+        R::resilience()
+    }
+
+    fn topology_schema(
+        &self,
+    ) -> Result<Option<nebula_schema::ValidSchema>, crate::MetadataBuildError> {
+        self.topology_schema
+            .map(|schema| schema().map_err(crate::MetadataBuildError::from))
+            .transpose()
+    }
+
     fn register<'a>(
         &'a self,
         manager: &'a Manager,
@@ -710,8 +911,23 @@ where
                 crate::Error::permanent("resource factory metadata admission failed")
                     .with_source(source)
             })?;
+            let topology = (self.topology_factory)(request.topology.as_ref())
+                .map_err(|error| error.with_resource_key(R::key()))?;
+            // The manager bounds the requested rate by `R`'s policy on
+            // registration, so a document stored before the policy tightened
+            // still fails closed.
+            let (rate, keyed) = crate::rate_limit::ResilienceOverride::from_value(
+                request.resilience_override.as_ref(),
+            )
+            .and_then(|document| Ok((document.requested_rate()?, document.requested_keyed()?)))
+            .map_err(|error| error.with_resource_key(R::key()))?;
+            let rate_limit = (rate.is_some() || !keyed.is_empty() || request.limit_key.is_some())
+                .then(|| crate::rate_limit::RowLimit {
+                    rate,
+                    keyed,
+                    key: request.limit_key.clone(),
+                });
             let resource = (self.resource_factory)();
-            let topology = (self.topology_factory)();
             // The typed register validates declared slots and derives the
             // structural identity from the (slot → credential-key) view; the
             // rotation `CredentialId` lives on the same bindings and is
@@ -794,6 +1010,8 @@ where
                     request.scope,
                     topology,
                     request.recovery_gate,
+                    rate_limit,
+                    request.row_id.as_deref(),
                     expected_slot_identity,
                     registration_bindings,
                 )
@@ -860,6 +1078,13 @@ impl ResourceActivatorRegistry {
     #[must_use]
     pub fn contains(&self, kind: &str) -> bool {
         self.factories.contains_key(kind)
+    }
+
+    /// The factory admitted for `kind`, for introspection such as reading its
+    /// declared credential slots before building a [`RegisterRequest`].
+    #[must_use]
+    pub fn factory(&self, kind: &str) -> Option<&Arc<dyn ResourceFactory>> {
+        self.factories.get(kind)
     }
 
     /// Number of registered kinds.
@@ -978,7 +1203,7 @@ impl ResourceActivatorRegistry {
         // different credentials (confused-deputy close), and a slot without a
         // rotation `CredentialId` is simply skipped — no silent drop of a
         // mismatched parallel-map entry.
-        let mut staged: Vec<(nebula_credential::CredentialId, _)> = Vec::new();
+        let mut staged: Vec<(CredentialId, _)> = Vec::new();
         let mut authoritative_proof = None;
         if let Some(idx) = fanout_index {
             let mut planned = Vec::new();
@@ -1134,10 +1359,112 @@ impl ResourceActivatorRegistry {
                 source,
             })
     }
+
+    /// Schema of the operator topology settings `kind` accepts (`None` when
+    /// the kind publishes none).
+    ///
+    /// # Errors
+    ///
+    /// - [`RegistrarError::UnknownKind`] — not in allowlist.
+    /// - [`RegistrarError::Register`] — the settings schema is invalid.
+    pub fn topology_schema(
+        &self,
+        kind: &str,
+    ) -> Result<Option<nebula_schema::ValidSchema>, RegistrarError> {
+        let factory = self
+            .factories
+            .get(kind)
+            .ok_or_else(|| RegistrarError::UnknownKind(kind.to_owned()))?;
+        factory
+            .topology_schema()
+            .map_err(|source| RegistrarError::Register {
+                kind: kind.to_owned(),
+                source: crate::Error::permanent("resource topology settings schema is invalid")
+                    .with_source(source),
+            })
+    }
+
+    /// Validates an operator resilience override for `kind` without
+    /// registering: its shape and its bounds under the kind's policy.
+    ///
+    /// # Errors
+    ///
+    /// - [`RegistrarError::UnknownKind`] — not in allowlist.
+    /// - [`RegistrarError::Register`] — the document is malformed or the
+    ///   policy does not allow it. The message names the field and the rule,
+    ///   never the submitted values, so it is safe to return to the caller.
+    pub fn validate_resilience_override(
+        &self,
+        kind: &str,
+        value: Option<&serde_json::Value>,
+    ) -> Result<(), RegistrarError> {
+        let factory = self
+            .factories
+            .get(kind)
+            .ok_or_else(|| RegistrarError::UnknownKind(kind.to_owned()))?;
+        factory
+            .validate_resilience_override(value)
+            .map_err(|source| RegistrarError::Register {
+                kind: kind.to_owned(),
+                source,
+            })
+    }
+
+    /// Validates operator topology settings for `kind` without registering.
+    ///
+    /// # Errors
+    ///
+    /// - [`RegistrarError::UnknownKind`] — not in allowlist.
+    /// - [`RegistrarError::Register`] — settings are malformed, unworkable, or
+    ///   sent to a kind that takes none.
+    pub fn validate_topology(
+        &self,
+        kind: &str,
+        settings: Option<&serde_json::Value>,
+    ) -> Result<(), RegistrarError> {
+        let factory = self
+            .factories
+            .get(kind)
+            .ok_or_else(|| RegistrarError::UnknownKind(kind.to_owned()))?;
+        factory
+            .validate_topology(settings)
+            .map_err(|source| RegistrarError::Register {
+                kind: kind.to_owned(),
+                source,
+            })
+    }
+
+    /// Validates a stored row's credential bindings for `kind` without
+    /// registering: bound slots are declared, required slots are bound, and
+    /// selectors are credential ids. A row that fails here would fail every
+    /// activation, so a writer refuses it before it is persisted.
+    ///
+    /// # Errors
+    ///
+    /// - [`RegistrarError::UnknownKind`] — not in allowlist.
+    /// - [`RegistrarError::Register`] — a binding breaks one of the rules; the
+    ///   message names the slot and the rule, never a selector.
+    pub fn validate_credential_bindings(
+        &self,
+        kind: &str,
+        bindings: &BTreeMap<String, String>,
+    ) -> Result<(), RegistrarError> {
+        let factory = self
+            .factories
+            .get(kind)
+            .ok_or_else(|| RegistrarError::UnknownKind(kind.to_owned()))?;
+        factory
+            .validate_credential_bindings(bindings)
+            .map_err(|source| RegistrarError::Register {
+                kind: kind.to_owned(),
+                source,
+            })
+    }
 }
 
 fn slot_identity_from_request(request: &RegisterRequest<'_>) -> SlotIdentity {
-    SlotIdentity::from_bindings(
+    SlotIdentity::from_row_bindings(
+        request.row_id.as_deref(),
         request
             .slot_bindings
             .iter()

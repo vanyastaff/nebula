@@ -43,6 +43,9 @@ pub(crate) type EntryOf<R> = <<R as Provider>::Topology as Topology<R>>::Entry;
 pub(crate) struct Maintenance {
     cancellation: CancellationToken,
     task: std::sync::Mutex<Option<MaintenanceTask>>,
+    /// Held for a whole warmup, so two warmups of one row (the background
+    /// one and an explicit `warmup_pool`) never count headroom apart.
+    pub(crate) warmup: tokio::sync::Mutex<()>,
 }
 
 struct MaintenanceTask(tokio::task::JoinHandle<()>);
@@ -75,6 +78,7 @@ impl Maintenance {
         Self {
             cancellation,
             task: std::sync::Mutex::new(None),
+            warmup: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -178,11 +182,19 @@ pub struct ManagedResource<R: Provider> {
     pub(crate) generation: AtomicU64,
     /// Current lifecycle status (phase + last error).
     pub(crate) status: ArcSwap<ResourceStatus>,
+    /// Woken whenever the phase or the taint flag changes, so a caller
+    /// waiting for the row to accept acquires
+    /// ([`Manager::until_accepting`](crate::Manager::until_accepting)) is
+    /// told rather than polling.
+    pub(crate) phase_changed: Notify,
     /// Optional recovery gate for thundering-herd prevention.
     ///
     /// When set, acquire calls check the gate before proceeding and
     /// trigger passive recovery on transient failures.
     pub(crate) recovery_gate: Option<Arc<RecoveryGate>>,
+    /// The row's limit: consumed on every acquire, handed to
+    /// `Provider::create` through the context, exposed on the guard.
+    pub(crate) rate_limiter: Arc<crate::rate_limit::ResourceLimiter>,
     /// Resource-level taint flag set by [`taint`](Self::taint).
     ///
     /// When `true`, the manager's acquire paths reject new acquires for
@@ -353,6 +365,7 @@ impl<R: Provider> ManagedResource<R> {
             last_error: prev.last_error.clone(),
         };
         self.status.store(Arc::new(next));
+        self.phase_changed.notify_waiters();
     }
 
     /// Replace the lifecycle status with `Failed` and record a reason.
@@ -373,6 +386,7 @@ impl<R: Provider> ManagedResource<R> {
             }),
         };
         self.status.store(Arc::new(next));
+        self.phase_changed.notify_waiters();
     }
 
     /// Marks the resource tainted so the manager rejects new acquires.
@@ -384,11 +398,19 @@ impl<R: Provider> ManagedResource<R> {
     /// module docs for the canonical invariant.
     pub(crate) fn taint(&self) {
         self.tainted.store(true, Ordering::Release);
+        self.phase_changed.notify_waiters();
     }
 
     /// Returns `true` if [`taint`](Self::taint) has been called.
     pub(crate) fn is_tainted(&self) -> bool {
         self.tainted.load(Ordering::Acquire)
+    }
+
+    /// Whether the row may build instances now: it is not tainted and its
+    /// phase accepts acquires. A row still waiting for its credentials to be
+    /// reread, or draining, builds nothing that no acquire could take.
+    pub(crate) fn accepts_new_instances(&self) -> bool {
+        !self.is_tainted() && self.status().phase.is_accepting()
     }
 
     /// Returns a clone of this resource's per-resource in-flight tracker so
@@ -448,12 +470,14 @@ where
 
     /// Admission phase snapshot from the topology.
     pub(crate) fn admission_phase(&self) -> AdmissionPhase {
-        self.topology.phase(&self.store)
+        self.topology
+            .phase(crate::topology::store::StoreView::new(&self.store))
     }
 
     /// Admission load snapshot from the topology.
     pub(crate) fn admission_load(&self) -> Option<Load> {
-        self.topology.load(&self.store)
+        self.topology
+            .load(crate::topology::store::StoreView::new(&self.store))
     }
 
     /// Sync capacity gate from the topology — an **advisory** yes/no pre-check
@@ -469,7 +493,9 @@ where
     /// `Ticket` IS held for the lease. A gate `Err(Saturated)` likewise releases
     /// its permit; it reports the rejection, it does not hold it.
     pub(crate) fn try_reserve_gate(&self) -> Result<(), Unavailable> {
-        self.topology.try_reserve(&self.store).map(|_ticket| ())
+        self.topology
+            .try_reserve(crate::topology::store::StoreView::new(&self.store))
+            .map(|_ticket| ())
     }
 }
 

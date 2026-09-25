@@ -289,6 +289,17 @@ pub struct ResourceRow {
     /// under the authenticated [`Scope`](crate::Scope).
     #[serde(default)]
     pub credential_bindings: std::collections::BTreeMap<String, String>,
+    /// Operator topology settings (pool size, timeouts, concurrency mode),
+    /// kept apart from `config` because they tune the runtime, not the
+    /// resource. `None` uses the kind's defaults.
+    #[serde(default)]
+    pub topology: Option<serde_json::Value>,
+    /// Operator override of the resilience the resource's kind declares
+    /// (`{"rate": {"requests", "period_ms", "burst"}}`), validated against the
+    /// kind's policy before it is stored. `None` enforces the declared policy
+    /// as is.
+    #[serde(default)]
+    pub resilience_override: Option<serde_json::Value>,
     /// Creation timestamp.
     pub created_at: String,
     /// Creator id (opaque string form).
@@ -310,6 +321,8 @@ impl std::fmt::Debug for ResourceRow {
             .field("kind", &self.kind)
             .field("config", &"<redacted>")
             .field("credential_binding_count", &self.credential_bindings.len())
+            .field("topology", &self.topology.is_some())
+            .field("resilience_override", &self.resilience_override.is_some())
             .field("created_at", &self.created_at)
             .field("created_by", &self.created_by)
             .field("version", &self.version)

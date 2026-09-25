@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use nebula_core::{ExecutionId, ResourceKey, resource_key};
 
 use super::*;
+use crate::topology::store::{InstanceStore, StoreView};
 use crate::{
     resource::{ResourceConfig, ResourceMetadataDraft},
     topology::bounded::BoundedProvider,
@@ -102,18 +103,29 @@ async fn capped_gate_admits_up_to_n() {
     let topo = Bounded::<MockBounded>::capped(2).expect("cap >= 1");
     let st = store();
 
-    let t1 = topo.try_reserve(&st).expect("first lease admitted");
-    let t2 = topo.try_reserve(&st).expect("second lease admitted");
+    let t1 = topo
+        .try_reserve(StoreView::new(&st))
+        .expect("first lease admitted");
+    let t2 = topo
+        .try_reserve(StoreView::new(&st))
+        .expect("second lease admitted");
     assert!(
-        topo.try_reserve(&st).is_err(),
+        topo.try_reserve(StoreView::new(&st)).is_err(),
         "third lease exceeds the cap of 2 — must be rejected"
     );
-    assert_eq!(topo.phase(&st), AdmissionPhase::Saturated);
-    assert_eq!(topo.load(&st).expect("capped reports load").saturation, 1.0);
+    assert_eq!(topo.phase(StoreView::new(&st)), AdmissionPhase::Saturated);
+    assert_eq!(
+        topo.load(StoreView::new(&st))
+            .expect("capped reports load")
+            .saturation,
+        1.0
+    );
 
     // Releasing a ticket returns its permit; capacity frees up.
     drop(t1);
-    let t3 = topo.try_reserve(&st).expect("a freed permit re-admits");
+    let t3 = topo
+        .try_reserve(StoreView::new(&st))
+        .expect("a freed permit re-admits");
     drop((t2, t3));
 }
 
@@ -122,14 +134,16 @@ async fn exclusive_serialises_to_one() {
     let topo = Bounded::<MockBounded>::exclusive();
     let st = store();
 
-    let held = topo.try_reserve(&st).expect("first exclusive lease");
+    let held = topo
+        .try_reserve(StoreView::new(&st))
+        .expect("first exclusive lease");
     assert!(
-        topo.try_reserve(&st).is_err(),
+        topo.try_reserve(StoreView::new(&st)).is_err(),
         "exclusive admits exactly one at a time"
     );
     drop(held);
     let _next = topo
-        .try_reserve(&st)
+        .try_reserve(StoreView::new(&st))
         .expect("the next lease admits once the first releases");
 }
 
@@ -198,13 +212,18 @@ async fn unbounded_always_admits() {
     let topo = Bounded::<MockBounded>::unbounded();
     let st = store();
 
-    let held: Vec<_> = (0..64).map(|_| topo.try_reserve(&st).ok()).collect();
+    let held: Vec<_> = (0..64)
+        .map(|_| topo.try_reserve(StoreView::new(&st)).ok())
+        .collect();
     assert!(
         held.iter().all(Option::is_some),
         "unbounded never rejects a lease"
     );
-    assert_eq!(topo.phase(&st), AdmissionPhase::Ready);
-    assert!(topo.load(&st).is_none(), "unbounded reports no load");
+    assert_eq!(topo.phase(StoreView::new(&st)), AdmissionPhase::Ready);
+    assert!(
+        topo.load(StoreView::new(&st)).is_none(),
+        "unbounded reports no load"
+    );
 }
 
 #[tokio::test]
@@ -215,19 +234,24 @@ async fn set_cap_grows_and_shrinks() {
     // Grow 2 → 4: two more leases now fit.
     topo.set_cap(4).expect("grow");
     let leases: Vec<_> = (0..4)
-        .map(|_| topo.try_reserve(&st).expect("4 leases fit after grow"))
+        .map(|_| {
+            topo.try_reserve(StoreView::new(&st))
+                .expect("4 leases fit after grow")
+        })
         .collect();
     assert!(
-        topo.try_reserve(&st).is_err(),
+        topo.try_reserve(StoreView::new(&st)).is_err(),
         "the 5th exceeds the grown cap"
     );
     drop(leases);
 
     // Shrink 4 → 1 while idle: only one lease fits.
     topo.set_cap(1).expect("shrink while idle");
-    let _one = topo.try_reserve(&st).expect("one lease fits");
+    let _one = topo
+        .try_reserve(StoreView::new(&st))
+        .expect("one lease fits");
     assert!(
-        topo.try_reserve(&st).is_err(),
+        topo.try_reserve(StoreView::new(&st)).is_err(),
         "the cap shrank to 1 — a second lease is rejected"
     );
 }

@@ -160,7 +160,9 @@ impl Plugin for DemoPlugin {
     fn resources(&self) -> Vec<Arc<dyn nebula_resource::ResourceFactory>> {
         vec![Arc::new(KindActivator::<DemoResource, _, _>::new(
             DemoResource::new,
-            || Resident::<DemoResource>::new(resident::config::Config::default()),
+            nebula_resource::topology::fixed(|| {
+                Resident::<DemoResource>::new(resident::config::Config::default())
+            }),
         ))]
     }
 }
@@ -186,25 +188,33 @@ fn demo_plugin_registry() -> PluginRegistry {
 /// (resident); both are supplied by the typed constructors the plugin
 /// author holds, NOT synthesized from the erased `AnyResource`.
 fn demo_registrars(plugins: &PluginRegistry) -> ResourceActivatorRegistry {
-    let mut registrars = ResourceActivatorRegistry::new();
+    // The production composition path: every factory the plugins contribute,
+    // keyed by its own resource key.
+    let registrars = nebula_engine::resource_registrars_from(
+        plugins.all_resources().map(|(_plugin, factory)| factory),
+    )
+    .expect("plugin resources form a closed allowlist");
+    assert!(
+        registrars.contains("demo.widget"),
+        "the plugin-declared resource is registrable by its key"
+    );
+    registrars
+}
 
-    // The kind comes from the plugin-declared resource's catalog key.
-    let kind = plugins
+#[test]
+fn a_kind_contributed_twice_fails_composition() {
+    let plugins = demo_plugin_registry();
+    let factory = plugins
         .all_resources()
-        .map(|(_pk, r)| r.key())
-        .find(|k| k.as_str() == "demo.widget")
-        .expect("plugin declares the demo.widget resource");
-
-    registrars
-        .insert(
-            kind.as_str().to_owned(),
-            Arc::new(KindActivator::<DemoResource, _, _>::new(
-                DemoResource::new,
-                || Resident::<DemoResource>::new(resident::config::Config::default()),
-            )),
-        )
-        .expect("test resource metadata admits");
-    registrars
+        .map(|(_plugin, factory)| Arc::clone(factory))
+        .next()
+        .expect("the demo plugin contributes one resource");
+    let error = nebula_engine::resource_registrars_from([&factory, &factory])
+        .expect_err("a second factory for the same kind must not shadow the first");
+    assert!(matches!(
+        error,
+        nebula_engine::ResourceWiringError::DuplicateKind { ref kind } if kind == "demo.widget"
+    ));
 }
 
 // ── Minimal engine harness (mirrors resource_integration.rs) ────────────────
@@ -326,6 +336,10 @@ async fn wired_registrar_performs_typed_registration() {
                 slot_installs: Vec::new(),
                 scope: ScopeLevel::Global,
                 recovery_gate: None,
+                topology: None,
+                resilience_override: None,
+                row_id: None,
+                limit_key: None,
             },
         )
         .await

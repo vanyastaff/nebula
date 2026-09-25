@@ -150,6 +150,20 @@ pub struct ManagerConfig {
     /// on a still-successful-but-sluggish acquire before the deadline would
     /// have failed it.
     pub acquire_slow_threshold: Option<Duration>,
+    /// Buffer size of the lifecycle [`ResourceEvent`](crate::ResourceEvent)
+    /// bus.
+    ///
+    /// The bus drops the oldest unread event for a subscriber that falls this
+    /// far behind, so a burst larger than the buffer loses lifecycle events.
+    /// Size it for the peak event rate times the slowest consumer's latency,
+    /// and watch [`Manager::event_bus_stats`](super::Manager::event_bus_stats)
+    /// for drops. Values below 1 are treated as 1. Defaults to 256.
+    pub event_bus_capacity: usize,
+    /// Store shared by every worker process for
+    /// [`LimitScope::Cluster`](crate::rate_limit::LimitScope::Cluster) rate
+    /// limits. `None` (the default) keeps every limit in this process, with a
+    /// warning for each row whose policy asks for a cluster-wide limit.
+    pub shared_limit_store: Option<crate::rate_limit::SharedLimitStore>,
 }
 
 impl Default for ManagerConfig {
@@ -159,11 +173,23 @@ impl Default for ManagerConfig {
             retirement_queue_capacity: 256,
             metrics_registry: None,
             acquire_slow_threshold: None,
+            event_bus_capacity: 256,
+            shared_limit_store: None,
         }
     }
 }
 
 impl ManagerConfig {
+    /// Enforces cluster-wide rate limits through `store`.
+    #[must_use]
+    pub fn with_shared_limit_store(
+        mut self,
+        store: Arc<dyn crate::rate_limit::ErasedLimitStore>,
+    ) -> Self {
+        self.shared_limit_store = Some(crate::rate_limit::SharedLimitStore(store));
+        self
+    }
+
     /// Override the number of background release-queue workers.
     #[must_use]
     pub fn with_release_queue_workers(mut self, workers: usize) -> Self {
@@ -191,6 +217,14 @@ impl ManagerConfig {
     #[must_use]
     pub fn with_acquire_slow_threshold(mut self, threshold: Duration) -> Self {
         self.acquire_slow_threshold = Some(threshold);
+        self
+    }
+
+    /// Sets the lifecycle event bus buffer size (minimum 1). See
+    /// [`Self::event_bus_capacity`].
+    #[must_use]
+    pub fn with_event_bus_capacity(mut self, capacity: usize) -> Self {
+        self.event_bus_capacity = capacity.max(1);
         self
     }
 }
@@ -330,6 +364,13 @@ pub struct RegistrationSpec<R: Provider> {
     pub topology: R::Topology,
     /// Optional recovery gate for thundering-herd prevention.
     pub recovery_gate: Option<Arc<RecoveryGate>>,
+    /// Operator input for this row's rate limit: an override of the rate
+    /// [`Provider::resilience`] declares (checked
+    /// against its [`Override`](crate::rate_limit::Override) rule) and the key
+    /// of the quota it draws on. `None` enforces the declared policy on a
+    /// quota of this row alone. The limit is consumed on every acquire and
+    /// per call through [`ResourceGuard::limits`](crate::ResourceGuard::limits).
+    pub rate_limit: Option<crate::rate_limit::RowLimit>,
 }
 
 impl<R: Provider> std::fmt::Debug for RegistrationSpec<R> {
@@ -343,6 +384,7 @@ impl<R: Provider> std::fmt::Debug for RegistrationSpec<R> {
             .field("scope", &self.scope)
             .field("slot_identity", &self.slot_identity)
             .field("recovery_gate", &self.recovery_gate.is_some())
+            .field("rate_limit", &self.rate_limit.is_some())
             .finish_non_exhaustive()
     }
 }

@@ -1,7 +1,7 @@
 use nebula_sdk::integration::resource::{
-    AdmissionPhase, CreatedEntry, Error, HookFault, InstanceStore, Load, MaintenanceSchedule,
+    AdmissionPhase, CreatedEntry, Error, HookFault, Load, MaintenanceSchedule,
     Provider, ResourceContext, ResourceKey, RetainedId, RetainedLease, RetainedStore, TeardownCx,
-    Ticket, Topology, Unavailable, no_credential_slots, resource_key,
+    StoreView, Ticket, Topology, Unavailable, no_credential_slots, resource_key,
 };
 
 struct OwnedConnection(String);
@@ -40,7 +40,7 @@ impl Provider for CustomProvider {
 impl Topology<CustomProvider> for CustomTopology {
     type Entry = OwnedConnection;
 
-    fn try_reserve(&self, _: &InstanceStore<Self::Entry>) -> Result<Ticket, Unavailable> {
+    fn try_reserve(&self, _: StoreView<'_, Self::Entry>) -> Result<Ticket, Unavailable> {
         Ok(Ticket::infallible())
     }
 
@@ -64,7 +64,7 @@ impl Topology<CustomProvider> for CustomTopology {
     async fn dispatch_credential_hook(
         &self,
         _: &CustomProvider,
-        _: &InstanceStore<Self::Entry>,
+        _: StoreView<'_, Self::Entry>,
         _: &RetainedStore<Self::Entry>,
         _: &str,
         _: bool,
@@ -72,10 +72,10 @@ impl Topology<CustomProvider> for CustomTopology {
         Ok(())
     }
 
-    fn phase(&self, _: &InstanceStore<Self::Entry>) -> AdmissionPhase {
+    fn phase(&self, _: StoreView<'_, Self::Entry>) -> AdmissionPhase {
         AdmissionPhase::Ready
     }
-    fn load(&self, _: &InstanceStore<Self::Entry>) -> Option<Load> {
+    fn load(&self, _: StoreView<'_, Self::Entry>) -> Option<Load> {
         None
     }
     fn maintenance_schedule(&self) -> Option<MaintenanceSchedule> {

@@ -89,6 +89,7 @@ fn register_failing<const ID: u8>(manager: &Manager) {
             slot_identity: SlotIdentity::Unbound,
             topology: Resident::new(ResidentConfig::default()),
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("test resource registers");
 }
@@ -113,6 +114,7 @@ async fn register_emits_registered_event() {
             slot_identity: SlotIdentity::Unbound,
             topology: resident_rt,
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("registration should succeed");
 
@@ -137,6 +139,7 @@ async fn remove_emits_removed_event() {
             slot_identity: SlotIdentity::Unbound,
             topology: resident_rt,
             recovery_gate: None,
+            rate_limit: None,
         })
         .unwrap();
 
@@ -296,6 +299,7 @@ async fn acquire_emits_success_event() {
             slot_identity: SlotIdentity::Unbound,
             topology: resident_rt,
             recovery_gate: None,
+            rate_limit: None,
         })
         .unwrap();
 
@@ -336,6 +340,7 @@ async fn drop_guard_emits_released_event() {
             slot_identity: SlotIdentity::Unbound,
             topology: resident_rt,
             recovery_gate: None,
+            rate_limit: None,
         })
         .unwrap();
 
@@ -394,6 +399,7 @@ async fn recovery_gate_transition_emits_event_via_manager_bus() {
             slot_identity: SlotIdentity::Unbound,
             topology: resident_rt,
             recovery_gate: Some(Arc::clone(&gate)),
+            rate_limit: None,
         })
         .unwrap();
 
@@ -448,6 +454,7 @@ async fn metrics_track_acquire_release_create_destroy() {
             slot_identity: SlotIdentity::Unbound,
             topology: resident_rt,
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("registration should succeed");
 
@@ -505,6 +512,7 @@ async fn registry_backed_metrics_record_operations() {
             slot_identity: SlotIdentity::Unbound,
             topology: pool_rt,
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("pool registration should succeed");
 
@@ -519,6 +527,7 @@ async fn registry_backed_metrics_record_operations() {
             slot_identity: SlotIdentity::Unbound,
             topology: resident_rt,
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("resident registration should succeed");
 

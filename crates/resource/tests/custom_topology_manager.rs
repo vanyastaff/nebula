@@ -33,7 +33,7 @@ use nebula_resource::{
     SlotIdentity,
     error::{Error, ErrorKind},
     resource::{Provider, ResourceConfig, ResourceMetadataDraft},
-    topology::{InstanceStore, Ticket, Topology, Unavailable},
+    topology::{StoreView, Ticket, Topology, Unavailable},
 };
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
@@ -177,7 +177,7 @@ impl Topology<Ffmpeg> for FfmpegPool {
     // and hands it back on checkout — the author never touches the store.
     type Entry = Transcoder;
 
-    fn try_reserve(&self, _store: &InstanceStore<Transcoder>) -> Result<Ticket, Unavailable> {
+    fn try_reserve(&self, _store: StoreView<'_, Transcoder>) -> Result<Ticket, Unavailable> {
         self.sem
             .clone()
             .try_acquire_owned()
@@ -245,6 +245,7 @@ fn register_topo(manager: &Manager, ffmpeg: Ffmpeg, topology: FfmpegPool) {
         slot_identity: SlotIdentity::Unbound,
         topology,
         recovery_gate: None,
+        rate_limit: None,
     };
     manager
         .register(spec)
@@ -472,4 +473,27 @@ async fn custom_topology_hang_in_create_is_bounded_by_deadline() {
         matches!(*err.kind(), ErrorKind::Backpressure),
         "a deadline-bounded hang fails closed as Backpressure (got {err:?})"
     );
+}
+
+/// A custom topology gets the same typed acquire as the built-in ones: no
+/// erased `acquire_any` plus `downcast`, and no topology named at the call.
+#[tokio::test]
+async fn custom_topology_acquires_through_the_typed_generic_path() {
+    let manager = Arc::new(Manager::new());
+    let ffmpeg = Ffmpeg::new();
+    let create_count = Arc::clone(&ffmpeg.create_count);
+    register(&manager, ffmpeg);
+
+    let guard = manager
+        .acquire::<Ffmpeg>(&ctx(), &AcquireOptions::default())
+        .await
+        .expect("typed acquire works for a custom topology");
+    assert_eq!(guard.topology_tag(), nebula_resource::TopologyTag::Custom);
+    assert_eq!(create_count.load(Ordering::SeqCst), 1);
+
+    let pinned = manager
+        .acquire_for_identity::<Ffmpeg>(&ctx(), &AcquireOptions::default(), &SlotIdentity::Unbound)
+        .await
+        .expect("identity-pinned typed acquire works for a custom topology");
+    assert_eq!(pinned.topology_tag(), nebula_resource::TopologyTag::Custom);
 }

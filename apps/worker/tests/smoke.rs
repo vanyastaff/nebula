@@ -168,6 +168,8 @@ impl TestStores {
         nebula_worker_bin::compose::ResourceFanoutInputs::from_runtime(
             self.workflow_stores(),
             Arc::clone(&self.resource_runtime),
+            Arc::new(nebula_storage::inmem::InMemoryResourceStore::new()),
+            Arc::new(nebula_storage::inmem::InMemoryResourceStatusStore::new()),
         )
     }
 
@@ -447,8 +449,8 @@ async fn core_flavor_runtime_advertises_core_plugin_key() {
 /// The evidence-only builder must retain the exact supplied clock and event
 /// bus inside the sealed engine while delegating ordinary composition.
 #[cfg(feature = "runtime-repair-red")]
-#[test]
-fn runtime_repair_builder_seals_exact_clock_and_event_bus() {
+#[tokio::test]
+async fn runtime_repair_builder_seals_exact_clock_and_event_bus() {
     let stores = TestStores::new();
     let clock = Arc::new(FixedEvidenceClock {
         wall_time: Utc::now(),
@@ -493,8 +495,8 @@ fn runtime_repair_builder_seals_exact_clock_and_event_bus() {
     );
 }
 
-#[test]
-fn core_flavor_builder_owns_resource_runtime_and_credential_resolver() {
+#[tokio::test]
+async fn core_flavor_builder_owns_resource_runtime_and_credential_resolver() {
     let stores = TestStores::new();
     let resource_runtime = Arc::downgrade(&stores.resource_runtime);
     let credential_resolver = Arc::downgrade(&stores.credential_resolver);

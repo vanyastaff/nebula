@@ -30,6 +30,7 @@ nebula-eventbus = { path = "../eventbus" }
 nebula-expression = { path = "../expression", default-features = false, features = ["cache"] }
 nebula-metrics = { path = "../metrics" }
 nebula-metadata = { path = "../metadata" }
+nebula-resilience = { path = "../resilience" }
 nebula-resource-macros = { path = "macros" }
 nebula-schema = { path = "../schema" }
 serde_json = { workspace = true }
@@ -46,10 +47,18 @@ arc-swap = { workspace = true }
 serde = { workspace = true }
 semver = { workspace = true }
 dashmap = { workspace = true }
+indexmap = { workspace = true }
 smallvec = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 scopeguard = { workspace = true, optional = true }
+# `Retry-After` given as an HTTP date.
+httpdate = { workspace = true }
+# Jitter for the implicit provider backoff.
+fastrand = "2.4"
+# Per-key rate limits hash the key's value (a chat id, an e-mail address)
+# before it reaches a limit store.
+sha2 = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }

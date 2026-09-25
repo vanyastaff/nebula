@@ -44,6 +44,8 @@
 - Retry/transient-vs-permanent is decided by `nebula-error::Classify::retry_hint()`, never by per-call folklore in action bodies.
 - **Never apply hedge to an effecting call.** The effect driver accounts each provider invocation against a minted `OperationCallId` and policy budget; speculative duplication bypasses that accounting. Hedge is for read-only/idempotent lookups only.
 - NOT a durable control plane (in-process only — durable cancel/dispatch lives in `execution_control_queue`) and NOT a metrics exporter (events feed `nebula-metrics` via sinks, not the reverse).
+- **One exception to "in-process only": the GCRA limit-store *contract*.** `rate_limiter::gcra::LimitStore` (and its `ErasedLimitStore` facade) lives here so limit consumers never depend on storage, and so shared stores implement the exact same `gcra::step` math. This crate ships only `MemoryLimitStore`; database/Redis stores implement the trait in storage crates, which may depend on this crate — never the reverse. Stores run each `step` transition atomically on **their own clock**; no store may read a caller's clock. Keys reaching a store are opaque: namespacing, tenant isolation and hashing of personal data are the caller's job. Every store applies `step::enforce` (a busy key enforces the stricter of the rates its callers declare; an idle key forgets) and must pass `gcra::conformance::run_all` — the `conformance` feature exposes that kit to storage crates' tests; it is test support and panics on a violation.
+- GCRA invariants are pinned by `rate_limiter/gcra/tests.rs` (window bound, `per_window` quota, FIFO, refusal consumes nothing, tail-only cancel without ABA). `RateLimiter::acquire` on `Gcra` stays fail-fast like every other limiter; waiting is `Gcra::until_ready` / `LimitStore::reserve`, never a changed `acquire`.
 - `CallError<E>` keeps the caller's `E` — no forced mapping, no `Box<dyn Error>` erasure; keep variants additive (`#[non_exhaustive]`).
 - Never report a panicked or aborted attempt as `Cancelled`; `CallError::TaskPanicked` exists for that distinction.
 - No `unsafe` in this crate (`#![deny(unsafe_code)]`).
@@ -57,7 +59,7 @@
 | Change | Relevant evidence |
 |--------|-------------------|
 | Cancellation/deadline composition | [cancel_safety](tests/cancel_safety.rs), [call_context_contracts](tests/call_context_contracts.rs), [pipeline](tests/pipeline.rs). |
-| Limiter/backoff behavior | [rate_limiter](tests/rate_limiter.rs), [proptest_backoff](tests/proptest_backoff.rs); retry-budget bounds live in `src/retry_tests.rs`. |
+| Limiter/backoff behavior | [rate_limiter](tests/rate_limiter.rs), [proptest_backoff](tests/proptest_backoff.rs); retry-budget bounds live in `src/retry_tests.rs`. GCRA math and stores: `src/rate_limiter/gcra/tests.rs` (property tests + paused clock). |
 | Circuit-breaker accounting | `src/circuit_breaker_tests.rs` plus [circuit_breaker](tests/circuit_breaker.rs); Layer-1/Layer-2 backoff parity is pinned in `crates/engine/src/engine/tests.rs`. |
 | Hot-path timing or float math | `src/retry_tests.rs` (`exponential_general_path_matches_powi_oracle`), `src/circuit_breaker_tests.rs` (`call_skips_instant_reads_without_slow_threshold`), `tests/proptest_backoff.rs`; plus before/after `cargo bench` and `cargo asm` for the symbol touched. |
 

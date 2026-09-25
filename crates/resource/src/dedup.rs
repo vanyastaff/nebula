@@ -40,6 +40,10 @@ use std::{hash::Hash, sync::Arc};
 
 use nebula_core::{ResourceKey, ScopeLevel};
 
+/// Reserved identity entry carrying a stored resource row id. `@` cannot
+/// start a Rust identifier, so no declared credential slot can collide.
+const STORED_ROW_ENTRY: &str = "@row";
+
 /// Resolved per-slot credential identity of a registry row.
 ///
 /// This is the slot component of [`DedupKey`] and the registry's row-key.
@@ -83,10 +87,31 @@ impl SlotIdentity {
     where
         I: IntoIterator<Item = (&'a str, &'a str)>,
     {
+        Self::from_row_bindings(None, bindings)
+    }
+
+    /// Builds the identity of a registration that materializes one stored
+    /// resource row.
+    ///
+    /// Two stored rows of the same kind in the same scope may resolve the
+    /// same credential *type* per slot; keyed by bindings alone they would be
+    /// one registry row and the later activation would silently replace the
+    /// earlier one's runtime. Folding the stored row id in keeps every stored
+    /// row a distinct registry row. The row id is carried under a reserved
+    /// entry name that no declared slot can take (slot names are Rust
+    /// identifiers), so it can never alias a real binding. `None` is exactly
+    /// [`from_bindings`](Self::from_bindings).
+    pub fn from_row_bindings<'a, I>(row_id: Option<&str>, bindings: I) -> Self
+    where
+        I: IntoIterator<Item = (&'a str, &'a str)>,
+    {
         let mut pairs: Vec<(String, String)> = bindings
             .into_iter()
             .map(|(slot, cred)| (slot.to_owned(), cred.to_owned()))
             .collect();
+        if let Some(row_id) = row_id {
+            pairs.push((STORED_ROW_ENTRY.to_owned(), row_id.to_owned()));
+        }
         if pairs.is_empty() {
             return Self::Unbound;
         }
@@ -170,5 +195,25 @@ mod tests {
     fn structural_never_equals_unbound() {
         let structural = SlotIdentity::from_bindings([("db", "cred-x")]);
         assert_ne!(structural, SlotIdentity::Unbound);
+    }
+
+    #[test]
+    fn row_id_distinguishes_otherwise_equal_bindings_and_cannot_alias_a_slot() {
+        let bindings = [("db", "cred.key")];
+        let first = SlotIdentity::from_row_bindings(Some("res_1"), bindings);
+        let second = SlotIdentity::from_row_bindings(Some("res_2"), bindings);
+        assert_ne!(first, second);
+        assert_ne!(first, SlotIdentity::from_bindings(bindings));
+        assert_eq!(
+            SlotIdentity::from_row_bindings(None, bindings),
+            SlotIdentity::from_bindings(bindings)
+        );
+        assert!(!SlotIdentity::from_row_bindings(Some("res_1"), std::iter::empty()).is_unbound());
+        // A slot literally named like the row entry would need a non-identifier
+        // slot name; the reserved entry sorts apart from every identifier.
+        assert_ne!(
+            SlotIdentity::from_row_bindings(Some("res_1"), std::iter::empty()),
+            SlotIdentity::from_bindings([("row", "res_1")])
+        );
     }
 }

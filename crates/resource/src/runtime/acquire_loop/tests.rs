@@ -229,6 +229,7 @@ async fn hook_receipt_settles_before_blocked_retained_cleanup() {
     let queue = Arc::new(queue);
     let managed = Arc::new(ManagedResource {
         pending_projection_hooks: Default::default(),
+        phase_changed: Default::default(),
         resource,
         config: ArcSwap::from_pointee(PoolCfg),
         topology: Resident::<RetainedHookMock>::new(ResidentConfig::default()),
@@ -236,12 +237,13 @@ async fn hook_receipt_settles_before_blocked_retained_cleanup() {
         retained: crate::RetainedStore::new(queue.abandonment_tracker()),
         release_queue: Arc::clone(&queue),
         generation: AtomicU64::new(0),
-        status: ArcSwap::from_pointee(ResourceStatus::new()),
+        status: ArcSwap::from_pointee(ResourceStatus::ready()),
         recovery_gate: None,
         tainted: AtomicBool::new(false),
         in_flight: Arc::new((AtomicU64::new(0), Notify::new())),
         maintenance_sweeps: AtomicU64::new(0),
         maintenance: Default::default(),
+        rate_limiter: crate::rate_limit::ResourceLimiter::detached(),
     });
 
     let displaced = Arc::new(0);
@@ -506,6 +508,7 @@ fn managed(resource: Mock, config: PoolConfig) -> Arc<ManagedResource<Mock>> {
     let topology = Pooled::<Mock>::new(config, 0);
     Arc::new(ManagedResource {
         pending_projection_hooks: Default::default(),
+        phase_changed: Default::default(),
         resource,
         config: ArcSwap::from_pointee(PoolCfg),
         topology,
@@ -513,12 +516,13 @@ fn managed(resource: Mock, config: PoolConfig) -> Arc<ManagedResource<Mock>> {
         retained: crate::RetainedStore::new(rq.abandonment_tracker()),
         release_queue: Arc::new(rq),
         generation: AtomicU64::new(0),
-        status: ArcSwap::from_pointee(ResourceStatus::new()),
+        status: ArcSwap::from_pointee(ResourceStatus::ready()),
         recovery_gate: None,
         tainted: AtomicBool::new(false),
         in_flight: Arc::new((AtomicU64::new(0), Notify::new())),
         maintenance_sweeps: AtomicU64::new(0),
         maintenance: Default::default(),
+        rate_limiter: crate::rate_limit::ResourceLimiter::detached(),
     })
 }
 
@@ -555,6 +559,7 @@ async fn cancelled_acquire_during_accept_destroys_the_popped_entry() {
         );
         Arc::new(ManagedResource {
             pending_projection_hooks: Default::default(),
+            phase_changed: Default::default(),
             resource,
             config: ArcSwap::from_pointee(PoolCfg),
             topology,
@@ -562,12 +567,13 @@ async fn cancelled_acquire_during_accept_destroys_the_popped_entry() {
             retained: crate::RetainedStore::new(rq.abandonment_tracker()),
             release_queue: Arc::clone(&rq),
             generation: AtomicU64::new(0),
-            status: ArcSwap::from_pointee(ResourceStatus::new()),
+            status: ArcSwap::from_pointee(ResourceStatus::ready()),
             recovery_gate: None,
             tainted: AtomicBool::new(false),
             in_flight: Arc::new((AtomicU64::new(0), Notify::new())),
             maintenance_sweeps: AtomicU64::new(0),
             maintenance: Default::default(),
+            rate_limiter: crate::rate_limit::ResourceLimiter::detached(),
         })
     };
 
@@ -641,6 +647,7 @@ async fn cancelled_warmup_between_create_and_deposit_destroys_the_entry() {
         );
         Arc::new(ManagedResource {
             pending_projection_hooks: Default::default(),
+            phase_changed: Default::default(),
             resource,
             config: ArcSwap::from_pointee(PoolCfg),
             topology,
@@ -648,12 +655,13 @@ async fn cancelled_warmup_between_create_and_deposit_destroys_the_entry() {
             retained: crate::RetainedStore::new(rq.abandonment_tracker()),
             release_queue: Arc::clone(&rq),
             generation: AtomicU64::new(0),
-            status: ArcSwap::from_pointee(ResourceStatus::new()),
+            status: ArcSwap::from_pointee(ResourceStatus::ready()),
             recovery_gate: None,
             tainted: AtomicBool::new(false),
             in_flight: Arc::new((AtomicU64::new(0), Notify::new())),
             maintenance_sweeps: AtomicU64::new(0),
             maintenance: Default::default(),
+            rate_limiter: crate::rate_limit::ResourceLimiter::detached(),
         })
     };
 
@@ -706,6 +714,7 @@ async fn entry_create_guard_drop_destroys_via_release_queue() {
         let topology = Pooled::<Mock>::new(PoolConfig::default(), 0);
         Arc::new(ManagedResource {
             pending_projection_hooks: Default::default(),
+            phase_changed: Default::default(),
             resource,
             config: ArcSwap::from_pointee(PoolCfg),
             topology,
@@ -713,12 +722,13 @@ async fn entry_create_guard_drop_destroys_via_release_queue() {
             retained: crate::RetainedStore::new(rq.abandonment_tracker()),
             release_queue: Arc::clone(&rq),
             generation: AtomicU64::new(0),
-            status: ArcSwap::from_pointee(ResourceStatus::new()),
+            status: ArcSwap::from_pointee(ResourceStatus::ready()),
             recovery_gate: None,
             tainted: AtomicBool::new(false),
             in_flight: Arc::new((AtomicU64::new(0), Notify::new())),
             maintenance_sweeps: AtomicU64::new(0),
             maintenance: Default::default(),
+            rate_limiter: crate::rate_limit::ResourceLimiter::detached(),
         })
     };
 
@@ -1086,6 +1096,7 @@ async fn refill_min_idle_does_not_overshoot_when_pool_is_fully_leased() {
         let topology = Pooled::<Mock>::new(config.clone(), 0);
         Arc::new(ManagedResource {
             pending_projection_hooks: Default::default(),
+            phase_changed: Default::default(),
             resource,
             config: ArcSwap::from_pointee(PoolCfg),
             topology,
@@ -1096,12 +1107,13 @@ async fn refill_min_idle_does_not_overshoot_when_pool_is_fully_leased() {
             retained: crate::RetainedStore::new(rq.abandonment_tracker()),
             release_queue: Arc::new(rq),
             generation: AtomicU64::new(0),
-            status: ArcSwap::from_pointee(ResourceStatus::new()),
+            status: ArcSwap::from_pointee(ResourceStatus::ready()),
             recovery_gate: None,
             tainted: AtomicBool::new(false),
             in_flight: Arc::new((AtomicU64::new(0), Notify::new())),
             maintenance_sweeps: AtomicU64::new(0),
             maintenance: Default::default(),
+            rate_limiter: crate::rate_limit::ResourceLimiter::detached(),
         })
     };
 
@@ -1156,6 +1168,7 @@ async fn refill_min_idle_skips_when_gate_not_idle() {
         );
         Arc::new(ManagedResource {
             pending_projection_hooks: Default::default(),
+            phase_changed: Default::default(),
             resource,
             config: ArcSwap::from_pointee(PoolCfg),
             topology,
@@ -1163,12 +1176,13 @@ async fn refill_min_idle_skips_when_gate_not_idle() {
             retained: crate::RetainedStore::new(rq.abandonment_tracker()),
             release_queue: Arc::new(rq),
             generation: AtomicU64::new(0),
-            status: ArcSwap::from_pointee(ResourceStatus::new()),
+            status: ArcSwap::from_pointee(ResourceStatus::ready()),
             recovery_gate: Some(Arc::new(gate)),
             tainted: AtomicBool::new(false),
             in_flight: Arc::new((AtomicU64::new(0), Notify::new())),
             maintenance_sweeps: AtomicU64::new(0),
             maintenance: Default::default(),
+            rate_limiter: crate::rate_limit::ResourceLimiter::detached(),
         })
     };
 
@@ -1191,7 +1205,7 @@ async fn refill_min_idle_skips_when_gate_not_idle() {
 /// instance via the release queue, never leak it and never panic —
 /// mirrors `cancelled_warmup_between_create_and_deposit_destroys_the_entry`,
 /// proving `refill_min_idle` inherited the same cancel-safety contract
-/// through the shared `create_and_deposit_entries` helper.
+/// through the shared `create_and_deposit_one` step.
 #[tokio::test]
 async fn refill_min_idle_shutdown_race_destroys_in_flight_entry() {
     let resource = Mock::new();
@@ -1212,6 +1226,7 @@ async fn refill_min_idle_shutdown_race_destroys_in_flight_entry() {
         );
         Arc::new(ManagedResource {
             pending_projection_hooks: Default::default(),
+            phase_changed: Default::default(),
             resource,
             config: ArcSwap::from_pointee(PoolCfg),
             topology,
@@ -1219,12 +1234,13 @@ async fn refill_min_idle_shutdown_race_destroys_in_flight_entry() {
             retained: crate::RetainedStore::new(rq.abandonment_tracker()),
             release_queue: Arc::clone(&rq),
             generation: AtomicU64::new(0),
-            status: ArcSwap::from_pointee(ResourceStatus::new()),
+            status: ArcSwap::from_pointee(ResourceStatus::ready()),
             recovery_gate: None,
             tainted: AtomicBool::new(false),
             in_flight: Arc::new((AtomicU64::new(0), Notify::new())),
             maintenance_sweeps: AtomicU64::new(0),
             maintenance: Default::default(),
+            rate_limiter: crate::rate_limit::ResourceLimiter::detached(),
         })
     };
 
@@ -1302,7 +1318,7 @@ async fn refill_min_idle_revoke_mid_create_destroys_not_deposits() {
     let refill_task = tokio::spawn(async move { mr_refill.refill_min_idle(&ctx).await });
 
     // Deterministic: the entry's pre-revoke epoch is already snapshotted
-    // (`create_and_deposit_entries` stamps it before calling
+    // (`create_and_deposit_one` stamps it before calling
     // `create_entry`) and `create` is now parked mid-flight.
     create_entered.notified().await;
 

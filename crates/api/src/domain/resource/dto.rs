@@ -28,6 +28,16 @@ pub struct ResourceSummary {
     /// caller echoes it back as `expected_version` on a PUT). Non-secret
     /// concurrency metadata, not a resource-type semver.
     pub version: i64,
+    /// Operator topology settings (see [`CreateResourceRequest::topology`]);
+    /// `null` uses the kind's defaults. Non-secret: validated numbers and
+    /// modes only.
+    #[schema(value_type = Option<Object>)]
+    pub topology: Option<serde_json::Value>,
+    /// Operator resilience override (see
+    /// [`CreateResourceRequest::resilience_override`]); `null` enforces the
+    /// kind's declared policy.
+    #[schema(value_type = Option<Object>)]
+    pub resilience_override: Option<serde_json::Value>,
     /// IDs of workflows that currently reference this resource.
     ///
     /// Always empty for now: the resource store does not yet track
@@ -72,6 +82,19 @@ pub struct CreateResourceRequest {
     /// included in resource read responses or debug output.
     #[serde(default)]
     pub credential_bindings: BTreeMap<String, String>,
+    /// Operator topology settings — pool size, timeouts, concurrency mode —
+    /// in the shape the kind's topology accepts. Validated before the row is
+    /// stored; omitted or `null` uses the kind's defaults.
+    #[serde(default)]
+    #[schema(value_type = Option<Object>)]
+    pub topology: Option<serde_json::Value>,
+    /// Override of the resilience the kind declares:
+    /// `{"rate": {"requests": 30, "period_ms": 1000, "burst": 5}}`. Only
+    /// what the kind's policy allows is accepted (by default a slower rate
+    /// than declared). Omitted or `null` enforces the declared policy.
+    #[serde(default)]
+    #[schema(value_type = Option<Object>)]
+    pub resilience_override: Option<serde_json::Value>,
 }
 
 impl fmt::Debug for CreateResourceRequest {
@@ -126,6 +149,18 @@ pub struct UpdateResourceRequest {
     /// semantics. Values never appear in resource responses or debug output.
     #[serde(default)]
     pub credential_bindings: BTreeMap<String, String>,
+    /// Replacement topology settings, validated as on create. Omission
+    /// resets to the kind's defaults, matching full-replacement `PUT`
+    /// semantics.
+    #[serde(default)]
+    #[schema(value_type = Option<Object>)]
+    pub topology: Option<serde_json::Value>,
+    /// Replacement resilience override, validated as on create. Omission
+    /// restores the kind's declared policy, matching full-replacement `PUT`
+    /// semantics.
+    #[serde(default)]
+    #[schema(value_type = Option<Object>)]
+    pub resilience_override: Option<serde_json::Value>,
     /// Version the caller expects the stored row to be at (read from a
     /// prior GET). The update is applied with a CAS on this counter; a
     /// mismatch is **409 Conflict**.
@@ -210,6 +245,11 @@ pub struct ResourceStatusDto {
     /// `true` iff the resource can currently accept new acquire requests
     /// (`ready` / `reloading`). Surfaced read-only — it does not acquire.
     pub accepting: bool,
+    /// Number of live worker processes currently serving the resource.
+    /// With several, `phase` is the least healthy one reported, `healthy`
+    /// requires all of them healthy and `accepting` any of them accepting.
+    /// `0` for an inactive resource.
+    pub instances: u32,
 }
 
 #[cfg(test)]

@@ -25,12 +25,14 @@
 //! solely from the authenticated tenant context. Missing, cross-tenant,
 //! soft-deleted, and malformed by-id reads remain indistinguishable 404s.
 
+use std::collections::BTreeMap;
+
 use axum::{
     Extension, Json,
     extract::{Path, Query, State},
     http::StatusCode,
 };
-use nebula_core::{Principal, ResourceId, ResourceKey, TenantContext};
+use nebula_core::{Principal, ResourceId, TenantContext};
 use nebula_engine::RegistrarError;
 use nebula_storage_port::{Scope, dto::ResourceRow, store::ResourceStore};
 
@@ -69,6 +71,8 @@ fn row_to_summary(row: ResourceRow) -> Result<ResourceSummary, ApiError> {
         name: row.display_name,
         kind: row.kind,
         version,
+        topology: row.topology,
+        resilience_override: row.resilience_override,
         // Workflow attachment is not tracked by the resource store yet;
         // advertised honestly as empty rather than fabricated.
         attached_to_workflows: Vec::new(),
@@ -296,6 +300,63 @@ fn validate_resource_config(
     })
 }
 
+/// Validate the operator settings — `topology`, `resilience_override` and
+/// `credential_bindings` — against `kind` before persistence, with the same
+/// fail-closed rules as [`validate_resource_config`].
+///
+/// A binding that names a slot the kind does not declare, leaves a required
+/// slot unbound or is not a credential id would fail every activation of
+/// the row, so it is refused here rather than stored; whether the credential
+/// exists and the workspace may use it is still decided at activation.
+///
+/// Unlike a config report, these messages are authored by the resource
+/// runtime to name the field and the rule without restating submitted
+/// values (the parsers' own reports stay server-side as the error source),
+/// so the 422 carries them: an operator learns *which* setting the kind
+/// refused and why.
+fn validate_operator_settings(
+    state: &AppState,
+    kind: &str,
+    topology: Option<&serde_json::Value>,
+    resilience_override: Option<&serde_json::Value>,
+    credential_bindings: &BTreeMap<String, String>,
+) -> Result<(), ApiError> {
+    let registrars = state.resource_registrars.as_ref().ok_or_else(|| {
+        ApiError::Unprocessable(
+            "resource settings validation is unavailable on this instance".to_string(),
+        )
+    })?;
+    registrars
+        .validate_topology(kind, topology)
+        .and_then(|()| registrars.validate_resilience_override(kind, resilience_override))
+        .and_then(|()| registrars.validate_credential_bindings(kind, credential_bindings))
+        .map_err(|err| match err {
+            RegistrarError::UnknownKind(kind) => {
+                ApiError::Conflict(format!("unknown resource kind `{kind}`"))
+            },
+            RegistrarError::Register { kind, source } => {
+                tracing::debug!(
+                    target: "nebula_api::resource",
+                    kind = %kind,
+                    // The fixed message and classification only: the source
+                    // chain (a parser's report) can restate submitted values.
+                    error = %source,
+                    error.kind = %source.kind(),
+                    "resource operator settings rejected"
+                );
+                ApiError::Unprocessable(source.to_string())
+            },
+            other => {
+                tracing::warn!(
+                    target: "nebula_api::resource",
+                    error = %other,
+                    "resource settings validation failed with an unmapped registrar error"
+                );
+                ApiError::Unprocessable("resource settings are invalid".to_string())
+            },
+        })
+}
+
 /// Map a [`nebula_storage_port::StorageError`] from a resource CAS `update`
 /// onto the HTTP contract.
 ///
@@ -392,11 +453,19 @@ fn new_resource_row(
         kind: body.kind,
         config: body.config,
         credential_bindings: body.credential_bindings,
+        topology: non_null(body.topology),
+        resilience_override: non_null(body.resilience_override),
         created_at: chrono::Utc::now().to_rfc3339(),
         created_by: created_by(principal),
         version: 0,
         deleted_at: None,
     }
+}
+
+/// An explicit JSON `null` setting is stored as absent, so a row has one
+/// representation of "the kind's defaults".
+fn non_null(value: Option<serde_json::Value>) -> Option<serde_json::Value> {
+    value.filter(|value| !value.is_null())
 }
 
 fn replacement_resource_row(
@@ -412,6 +481,8 @@ fn replacement_resource_row(
         kind: body.kind,
         config: body.config,
         credential_bindings: body.credential_bindings,
+        topology: non_null(body.topology),
+        resilience_override: non_null(body.resilience_override),
         created_at: existing.created_at,
         created_by: existing.created_by,
         version: next_version,
@@ -458,7 +529,7 @@ fn replacement_resource_row(
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
         (status = 409, description = "Unknown resource `kind` (not in the closed registrar allowlist), or the workspace `slug` collides with an existing resource.", body = ProblemDetails),
-        (status = 422, description = "Resource config failed schema/closed-set validation, or the validation backend is not configured.", body = ProblemDetails),
+        (status = 422, description = "Resource config failed schema/closed-set validation, an operator setting or credential binding was refused for the kind, or the validation backend is not configured.", body = ProblemDetails),
         (status = 500, description = "Resource store error.", body = ProblemDetails),
         (status = 503, description = "Resource catalog backend is not configured on this instance.", body = ProblemDetails),
     ),
@@ -479,6 +550,13 @@ pub async fn create_resource(
     // unvalidated config (which could carry an inlined secret) would
     // violate no secret echo / product credential boundary.
     validate_resource_config(&state, &body.kind, body.config.clone())?;
+    validate_operator_settings(
+        &state,
+        &body.kind,
+        body.topology.as_ref(),
+        body.resilience_override.as_ref(),
+        &body.credential_bindings,
+    )?;
 
     let resource_id = ResourceId::new();
     let row = new_resource_row(resource_id, &scope, &tenant.principal, body);
@@ -545,7 +623,7 @@ pub async fn create_resource(
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
         (status = 404, description = "Resource does not exist (also returned for a resource in another workspace, a soft-deleted resource, or an unparsable id — no cross-tenant leak).", body = ProblemDetails),
         (status = 409, description = "Unknown resource `kind`, or the supplied `expected_version` is stale (optimistic-concurrency conflict).", body = ProblemDetails),
-        (status = 422, description = "Resource config failed schema/closed-set validation, or the validation backend is not configured.", body = ProblemDetails),
+        (status = 422, description = "Resource config failed schema/closed-set validation, an operator setting or credential binding was refused for the kind, or the validation backend is not configured.", body = ProblemDetails),
         (status = 500, description = "Resource repository error.", body = ProblemDetails),
         (status = 503, description = "Resource catalog backend is not configured on this instance.", body = ProblemDetails),
     ),
@@ -572,6 +650,13 @@ pub async fn update_resource(
     // Re-validate kind + config BEFORE persistence (same fail-closed
     // rules as create). A PUT must not bypass create-time validation.
     validate_resource_config(&state, &body.kind, body.config.clone())?;
+    validate_operator_settings(
+        &state,
+        &body.kind,
+        body.topology.as_ref(),
+        body.resilience_override.as_ref(),
+        &body.credential_bindings,
+    )?;
 
     // The CAS contract increments the stored counter on a successful
     // compare-and-swap against `expected_version`. A *saturating* add
@@ -679,10 +764,13 @@ pub async fn delete_resource(
 /// integration seam.1). The response body carries phase/health only, never `config`
 /// or credential material (no secret echo).
 ///
-/// Tenant isolation composes with the read path. The runtime
-/// `nebula_resource::Manager` is keyed by `(ResourceKey, ScopeLevel)`,
-/// **not** by workspace — workspace ownership lives in the config row. So
-/// the handler first establishes ownership through the *same* audited
+/// The runtime lives in the worker processes that activated the resource;
+/// they publish per-row status snapshots, and this handler reads them back
+/// keyed by the confirmed row's own `(workspace, org)` and id, aggregated
+/// over every live worker (`instances`).
+///
+/// Tenant isolation composes with the read path: the handler first
+/// establishes ownership through the *same* audited
 /// `fetch_owned_resource` boundary as the read/update/delete paths
 /// (an unknown / unparsable id, a resource owned by a *different*
 /// workspace, and a soft-deleted row ALL collapse to an indistinguishable
@@ -700,12 +788,8 @@ pub async fn delete_resource(
 /// - no status backend is configured on this instance ⇒ **503** (the
 ///   catalog None-convention — an honest "unavailable", never a
 ///   fabricated status), checked *after* ownership so a 503 cannot leak
-///   the existence of a foreign resource.
-///
-/// A stored `kind` that is not a valid resource key is a storage
-/// invariant violation (the resource genuinely exists and is owned), so
-/// it is an opaque **500** — never a 404 (which would falsely deny an
-/// owned resource) and never a fabricated status.
+///   the existence of a foreign resource; an unreadable status backend is
+///   likewise a **503**.
 #[utoipa::path(
     get,
     path = "/orgs/{org}/workspaces/{ws}/resources/{res}/status",
@@ -721,8 +805,8 @@ pub async fn delete_resource(
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
         (status = 404, description = "Resource does not exist (also returned for a resource in another workspace, a soft-deleted resource, or an unparsable id — no cross-tenant leak).", body = ProblemDetails),
-        (status = 500, description = "Resource store error, or a stored resource `kind` that is not a valid resource key.", body = ProblemDetails),
-        (status = 503, description = "Resource catalog backend or the runtime-status backend is not configured on this instance.", body = ProblemDetails),
+        (status = 500, description = "Resource store error.", body = ProblemDetails),
+        (status = 503, description = "Resource catalog backend or the runtime-status backend is not configured or unavailable.", body = ProblemDetails),
     ),
 )]
 pub async fn get_resource_status(
@@ -750,40 +834,43 @@ pub async fn get_resource_status(
         ApiError::ServiceUnavailable("Resource runtime-status backend not configured".into())
     })?;
 
-    // The confirmed row's own `kind` keys the engine status seam — never
-    // an attacker-influenced value. A stored kind that is not a valid
-    // resource key is a storage-invariant violation on an
-    // already-confirmed-owned resource: an opaque 500, never a 404 (the
-    // resource exists and is owned) and never a fabricated status.
-    let key = ResourceKey::new(&row.kind).map_err(|_| {
-        tracing::error!(
-            target: "nebula_api::resource",
-            "stored resource kind is not a valid resource key"
-        );
-        ApiError::Internal("resource has an invalid stored kind".to_string())
-    })?;
-
     // Canonical `res_<ULID>` echo of the (already isolation-verified)
     // path id — single shared definition; see `canonical_res_id`.
     let id = canonical_res_id(&res)?;
 
-    // Project the read-only engine seam. `None` = the resource exists as
-    // a definition but has no live runtime (never activated, or a
-    // fail-closed ambiguous `(key, scope)`): a well-defined `inactive`
-    // status in a 200 body — NOT a 404 (the config row exists; absence
-    // of a *live runtime* is a status, not a missing resource).
-    let dto = match status_port.runtime_status(&key) {
+    // The confirmed row's own id and scope key the status read — never an
+    // attacker-influenced value. `None` = the resource exists as a
+    // definition but no live worker serves it (never activated, retired,
+    // or its workers are gone): a well-defined `inactive` status in a 200
+    // body — NOT a 404 (the config row exists; absence of a *live runtime*
+    // is a status, not a missing resource). An unreadable status backend
+    // is a 503, never a fabricated status. Only workers running the row's
+    // current version count.
+    let status = status_port
+        .runtime_status(&scope, &row.id, row.version)
+        .await
+        .map_err(|error| {
+            tracing::warn!(
+                target: "nebula_api::resource",
+                %error,
+                "resource runtime status could not be read"
+            );
+            ApiError::ServiceUnavailable("Resource runtime status is unavailable".into())
+        })?;
+    let dto = match status {
         Some(s) => ResourceStatusDto {
             id,
             phase: phase_from_seam(s.phase),
             healthy: s.healthy,
             accepting: s.accepting,
+            instances: s.instances,
         },
         None => ResourceStatusDto {
             id,
             phase: ResourcePhase::Inactive,
             healthy: false,
             accepting: false,
+            instances: 0,
         },
     };
 
@@ -833,9 +920,10 @@ mod tests {
     }
 
     #[test]
-    fn resource_rows_preserve_create_and_replacement_bindings() {
+    fn resource_rows_preserve_create_and_replacement_bindings_and_settings() {
         let scope = Scope::new("ws_test", "org_test");
         let create_bindings = BTreeMap::from([("token".to_owned(), "cred_create".to_owned())]);
+        let override_doc = serde_json::json!({ "rate": { "requests": 5, "period_ms": 1000 } });
         let row = new_resource_row(
             nebula_core::ResourceId::new(),
             &scope,
@@ -846,9 +934,12 @@ mod tests {
                 kind: "http_pool".to_owned(),
                 config: serde_json::json!({}),
                 credential_bindings: create_bindings.clone(),
+                topology: Some(serde_json::json!({ "max_size": 4 })),
+                resilience_override: Some(override_doc.clone()),
             },
         );
         assert_eq!(row.credential_bindings, create_bindings);
+        assert_eq!(row.resilience_override, Some(override_doc));
 
         let update_bindings = BTreeMap::from([("token".to_owned(), "cred_update".to_owned())]);
         let updated = replacement_resource_row(
@@ -858,10 +949,16 @@ mod tests {
                 kind: "http_pool".to_owned(),
                 config: serde_json::json!({}),
                 credential_bindings: update_bindings.clone(),
+                topology: Some(serde_json::Value::Null),
+                resilience_override: None,
                 expected_version: 0,
             },
             1,
         );
         assert_eq!(updated.credential_bindings, update_bindings);
+        // Full replacement: omitted or `null` settings reset to the kind's
+        // defaults, stored as absent either way.
+        assert_eq!(updated.topology, None);
+        assert_eq!(updated.resilience_override, None);
     }
 }

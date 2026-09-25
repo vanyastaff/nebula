@@ -25,7 +25,9 @@ where
 {
     KindActivator::<ConfigProbe<C>, _, _>::new(
         || ConfigProbe(PhantomData),
-        || Resident::new(nebula_resource::ResidentConfig::default()),
+        nebula_resource::topology::fixed(|| {
+            Resident::new(nebula_resource::ResidentConfig::default())
+        }),
     )
 }
 
@@ -339,6 +341,10 @@ async fn register_config<C: ResourceConfig + serde::de::DeserializeOwned>(
                 slot_installs: Vec::new(),
                 scope: nebula_core::ScopeLevel::Global,
                 recovery_gate: None,
+                topology: None,
+                resilience_override: None,
+                row_id: None,
+                limit_key: None,
             },
             &expected_slot_identity,
         )
@@ -545,6 +551,10 @@ async fn equal_schema_factory_rechecks_its_typed_config_contract() {
                 slot_installs: Vec::new(),
                 scope: nebula_core::ScopeLevel::Global,
                 recovery_gate: None,
+                topology: None,
+                resilience_override: None,
+                row_id: None,
+                limit_key: None,
             },
             &expected_slot_identity,
         )
@@ -602,6 +612,10 @@ async fn different_schema_factory_rechecks_its_own_schema() {
                 slot_installs: Vec::new(),
                 scope: nebula_core::ScopeLevel::Global,
                 recovery_gate: None,
+                topology: None,
+                resilience_override: None,
+                row_id: None,
+                limit_key: None,
             },
             &expected_slot_identity,
         )

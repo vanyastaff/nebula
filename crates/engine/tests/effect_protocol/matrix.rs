@@ -52,7 +52,7 @@ async fn run_cases(make_ports: impl Fn() -> Ports) {
         let fixture = Fixture::new(behavior, make_ports()).await;
         let execution = fixture.start().await;
         let result = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
+            HANG_GUARD,
             fixture.engine().resume_execution(&fixture.scope, execution),
         )
         .await
@@ -94,23 +94,17 @@ async fn run_cases(make_ports: impl Fn() -> Ports) {
         let active = engine.clone();
         let scope = fixture.scope.clone();
         let turn = tokio::spawn(async move { active.resume_execution(&scope, execution).await });
-        tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            fixture.provider.entered.notified(),
-        )
-        .await
-        .unwrap();
+        tokio::time::timeout(HANG_GUARD, fixture.provider.entered.notified())
+            .await
+            .unwrap();
         assert!(engine.cancel_execution(execution));
-        let _result = tokio::time::timeout(std::time::Duration::from_secs(5), turn)
+        let _result = tokio::time::timeout(HANG_GUARD, turn)
             .await
             .unwrap()
             .unwrap();
-        tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            fixture.provider.dropped.notified(),
-        )
-        .await
-        .unwrap();
+        tokio::time::timeout(HANG_GUARD, fixture.provider.dropped.notified())
+            .await
+            .unwrap();
         let record = fixture
             .ports
             .ledger

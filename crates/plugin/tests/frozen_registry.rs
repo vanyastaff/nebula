@@ -86,7 +86,7 @@ fn resource_factory_at<const INDEX: usize>() -> Arc<dyn ResourceFactory> {
             "",
         ),
         || MetadataFixture,
-        || Resident::new(ResidentConfig::default()),
+        nebula_resource::topology::fixed(|| Resident::new(ResidentConfig::default())),
     );
     Arc::new(factory)
 }

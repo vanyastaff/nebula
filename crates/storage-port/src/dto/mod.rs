@@ -21,6 +21,7 @@ mod resource_event;
 mod resource_handoff;
 mod resource_lease;
 mod resource_recovery;
+mod resource_status;
 mod resource_subscription;
 pub mod resume_token;
 mod revision_catalog;
@@ -91,6 +92,10 @@ pub use resource_lease::{
 };
 pub use resource_recovery::{
     ClaimResourceRuntimeWorkRequest, ScopedClaimedResourceDelivery, ScopedClaimedResourceHandoff,
+};
+pub use resource_status::{
+    LiveResourceStatus, MAX_STATUS_WORKER_ID_BYTES, ResourceStatusPhase, ResourceStatusSnapshot,
+    ResourceStatusValueError, StatusWorkerId,
 };
 pub use resource_subscription::{
     PutResourceSubscriptionOutcome, PutResourceSubscriptionRequest, ResourceConsumerIdentity,

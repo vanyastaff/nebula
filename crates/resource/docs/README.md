@@ -48,12 +48,12 @@ a runtime value. See [`topology-reference.md`](topology-reference.md) for a
 per-topology trait skeleton, decision matrix, and friction-point checklist.
 
 Custom topologies are trusted in-process plugins. The framework drives the
-normal acquire/release path, but hooks receive an `InstanceStore` whose public
-capabilities include ownership transfer through `drain_all`. The type system
-cannot stop plugin code from draining, dropping, or hiding an alias outside a
-framework cleanup submission. `TaskLoss` and abandonment metrics therefore
-cover only work accepted by framework-owned cleanup paths, not ownership lost
-inside a custom plugin. Built-in topologies keep all lifecycle ownership on the
+normal acquire/release path, and hooks see idle entries only through a
+read-only `StoreView`, so a plugin cannot drain, take or re-fence them. For
+long-lived roots a plugin still holds the borrowed `RetainedStore`, and the
+type system cannot stop it from hiding an alias of a retained lease; `TaskLoss`
+and abandonment metrics cover only work accepted by framework-owned cleanup
+paths. Built-in topologies keep all lifecycle ownership on the
 framework path; custom authors must preserve the same contract.
 
 > **Background workers and event sources** live in

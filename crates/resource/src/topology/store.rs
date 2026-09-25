@@ -735,6 +735,111 @@ impl<S> ReturnOutcome<S> {
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
+// ─── StoreView ────────────────────────────────────────────────────────────────
+
+/// Read-only view of the framework's idle store, handed to [`Topology`] hooks.
+///
+/// A hook can observe the store — size, capacity, order, revoke epoch — and
+/// read idle entries in place, but it cannot take, insert, evict or re-fence
+/// them: checkout, return, eviction and the revoke fence stay framework-owned,
+/// so a custom topology cannot move an entry out of framework accounting.
+///
+/// [`Topology`]: crate::topology::Topology
+pub struct StoreView<'a, S> {
+    store: &'a InstanceStore<S>,
+}
+
+impl<S> Clone for StoreView<'_, S> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<S> Copy for StoreView<'_, S> {}
+
+impl<S> std::fmt::Debug for StoreView<'_, S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StoreView")
+            .field("store", self.store)
+            .finish()
+    }
+}
+
+impl<'a, S: Send + 'static> StoreView<'a, S> {
+    /// Wraps a store for a hook call. The framework wraps its own store;
+    /// a topology can only wrap stores it already owns, so this grants no
+    /// access to framework state.
+    pub const fn new(store: &'a InstanceStore<S>) -> Self {
+        Self { store }
+    }
+
+    /// Number of idle entries.
+    pub async fn len(&self) -> usize {
+        self.store.len().await
+    }
+
+    /// `true` when no entry is idle.
+    pub async fn is_empty(&self) -> bool {
+        self.store.is_empty().await
+    }
+
+    /// The configured idle capacity, or `None` if unbounded.
+    pub fn capacity(&self) -> Option<usize> {
+        self.store.capacity()
+    }
+
+    /// The idle-queue ordering strategy.
+    pub fn strategy(&self) -> PoolStrategy {
+        self.store.strategy()
+    }
+
+    /// The current revoke epoch.
+    pub fn current_revoke_epoch(&self) -> u64 {
+        self.store.current_revoke_epoch()
+    }
+
+    /// Locks the idle queue for reading in place.
+    ///
+    /// Checkout and return wait while the returned guard lives, so no entry
+    /// can leave or join the queue mid-read — use it to reach every idle
+    /// instance exactly once (credential rotation). Keep it short.
+    pub async fn read_idle(&self) -> IdleRead<'a, S> {
+        IdleRead {
+            idle: self.store.lock_idle().await,
+        }
+    }
+}
+
+/// Read-only lock on the idle queue; see [`StoreView::read_idle`].
+pub struct IdleRead<'a, S> {
+    idle: MutexGuard<'a, VecDeque<StoreEntry<S>>>,
+}
+
+impl<S> IdleRead<'_, S> {
+    /// Idle entries in checkout order.
+    pub fn iter(&self) -> impl Iterator<Item = &S> {
+        self.idle.iter().map(|stored| &stored.entry)
+    }
+
+    /// Number of idle entries.
+    pub fn len(&self) -> usize {
+        self.idle.len()
+    }
+
+    /// `true` when no entry is idle.
+    pub fn is_empty(&self) -> bool {
+        self.idle.is_empty()
+    }
+}
+
+impl<S> std::fmt::Debug for IdleRead<'_, S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IdleRead")
+            .field("len", &self.idle.len())
+            .finish()
+    }
+}
+
 #[cfg(test)]
 #[path = "store_tests.rs"]
 mod tests;

@@ -182,6 +182,7 @@ async fn engine_fanout_reports_terminal_timeout_for_wedged_resource() {
             slot_identity: id.clone(),
             topology: Resident::<Ctl>::new(ResidentConfig::default()),
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("register resolved-credential row");
 

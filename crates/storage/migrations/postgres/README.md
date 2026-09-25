@@ -68,6 +68,11 @@ operation kind and a revoke-only observed material epoch on claims and durable
 incidents. Historical rows become `legacy_unclassified`; the required kind has
 no default so mixed old writers fail closed.
 
+Migration `0060_rate_limits.sql` adds `port_rate_limits` and
+`port_rate_limit_reservations`, the state of cluster-wide GCRA rate limits
+(`PgLimitStore`). It is PostgreSQL-only: a SQLite deployment is one process
+and keeps its limits in memory.
+
 ## Storage-port adapter schema (0027)
 
 `0027_port_adapter_schema.sql` is the historical migration that introduced

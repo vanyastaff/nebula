@@ -416,6 +416,7 @@ async fn resident_reconcile_fires_when_non_max_slot_rotates() {
         slot_identity: SlotIdentity::Unbound,
         topology: Resident::<TwoSlotResident>::new(ResidentConfig::default()),
         recovery_gate: None,
+        rate_limit: None,
     })
     .expect("resident registration must succeed");
 
@@ -482,6 +483,7 @@ async fn refresh_slot_rejects_a_name_not_in_the_declared_slot_list() {
         slot_identity: SlotIdentity::Unbound,
         topology: Resident::<TwoSlotResident>::new(ResidentConfig::default()),
         recovery_gate: None,
+        rate_limit: None,
     })
     .expect("resident registration must succeed");
 
@@ -650,6 +652,7 @@ async fn credentialed_pooled_resource_registers() {
         slot_identity: SlotIdentity::Unbound,
         topology: nebula_resource::Pooled::<PooledCredResource>::new(pool_config, 0),
         recovery_gate: None,
+        rate_limit: None,
     })
     .expect("credentialed pooled registration must succeed (nudge only warns)");
 }

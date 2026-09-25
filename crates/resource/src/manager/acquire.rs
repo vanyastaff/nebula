@@ -101,7 +101,7 @@ impl Manager {
     /// invariant. Taint maps to `Revoked` → `ErrorCategory::Unavailable`
     /// (unchanged from the gate); shutdown maps to `Cancelled` (unchanged
     /// from `lookup`'s Defense A), so neither caller-facing category moves.
-    fn reject_if_tainted_or_shutting_down_post_count<R: Provider>(
+    pub(super) fn reject_if_tainted_or_shutting_down_post_count<R: Provider>(
         &self,
         managed: &Arc<ManagedResource<R>>,
     ) -> Result<(), Error> {
@@ -212,6 +212,71 @@ impl Manager {
                 .with_resource_key(key.clone()))
             },
         }
+    }
+
+    /// Acquires a lease on resource `R`, whatever its topology.
+    ///
+    /// `R::Topology` fixes the topology at compile time, so the caller does
+    /// not name it: this works the same for [`Pooled`](crate::Pooled),
+    /// [`Resident`](crate::Resident), [`Bounded`](crate::Bounded) and custom
+    /// [`Topology`] implementations, and switching a resource's topology does
+    /// not break its callers. The `acquire_{pooled,resident,bounded}` methods
+    /// are equivalent spellings that additionally assert the topology.
+    ///
+    /// # Errors
+    ///
+    /// - [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if no resource of type `R` is
+    ///   registered for the context scope.
+    /// - [`ErrorKind::Cancelled`](crate::error::ErrorKind::Cancelled) if the manager is shutting
+    ///   down.
+    /// - [`ErrorKind::Ambiguous`](crate::error::ErrorKind::Ambiguous) if more than one
+    ///   resolved-credential registration exists for `(R, scope)`; use
+    ///   [`acquire_for_identity`](Self::acquire_for_identity) then.
+    /// - Propagates topology-specific acquire errors.
+    ///
+    /// # Cancel safety
+    ///
+    /// Cancel safe: dropping the future releases the topology permit, settles
+    /// the drain accounting and auto-fails a held recovery-gate probe; an
+    /// instance in flight is destroyed asynchronously via the release queue.
+    pub async fn acquire<R>(
+        &self,
+        ctx: &ResourceContext,
+        options: &AcquireOptions,
+    ) -> Result<crate::guard::ResourceGuard<R>, Error>
+    where
+        R: Provider,
+        R::Topology: Topology<R>,
+    {
+        let managed = self.lookup_for_acquire_scope::<R>(ctx)?;
+        self.run_acquire_dispatch(managed, ctx, options).await
+    }
+
+    /// [`acquire`](Self::acquire) pinned to the **collision-free structural**
+    /// resolved per-slot credential identity, so a caller that resolved
+    /// tenant A's credential reaches tenant A's row and never tenant B's.
+    ///
+    /// # Errors
+    ///
+    /// - [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if no row of type `R` matches
+    ///   `(scope, slot_identity)`.
+    /// - Otherwise as [`acquire`](Self::acquire).
+    ///
+    /// # Cancel safety
+    ///
+    /// Same contract as [`acquire`](Self::acquire).
+    pub async fn acquire_for_identity<R>(
+        &self,
+        ctx: &ResourceContext,
+        options: &AcquireOptions,
+        slot_identity: &crate::dedup::SlotIdentity,
+    ) -> Result<crate::guard::ResourceGuard<R>, Error>
+    where
+        R: Provider,
+        R::Topology: Topology<R>,
+    {
+        let managed = self.lookup_for_acquire_with_identity::<R>(ctx, slot_identity)?;
+        self.run_acquire_dispatch(managed, ctx, options).await
     }
 
     /// Acquires a handle to a pooled resource.
@@ -400,6 +465,15 @@ impl Manager {
         Fut: Future<Output = Result<crate::guard::ResourceGuard<R>, Error>> + Send,
     {
         let started = Instant::now();
+        // Rate limit first, before this acquire is counted as in flight: a
+        // caller queued for a slot must not hold up a revoke drain or
+        // graceful shutdown. The post-count checks below still reject it if
+        // either began while it waited. Local state, so it runs before the
+        // recovery gate and a denial never reads as backend ill health.
+        tokio::select! {
+            ready = managed.rate_limiter.ready_to_acquire(options.deadline) => ready?,
+            () = self.cancel.cancelled() => return Err(Error::cancelled()),
+        }
         // Pre-count this acquire on both the manager-wide and per-resource
         // in-flight trackers, from the moment `lookup()` succeeds. RAII
         // decrements + notifies on every failure / cancel / panic path; on
@@ -733,12 +807,10 @@ impl Manager {
         // acquire pipeline uses: a careless `Provider::create` that hangs or
         // panics during warmup must fail closed, not wedge or crash the caller.
         let _ = config;
-        // SAFETY (unwind): an entry being built inside `warmup` is held by its
-        // `EntryCreateGuard` (destroyed on unwind) and an entry already warmed is
-        // deposited into the fenced store before the next is built — so a caught
-        // panic tears down only the in-flight entry and leaves no torn state.
-        let count = match guard_author_hook(DEFAULT_AUTHOR_HOOK_CEILING, managed.warmup(ctx)).await
-        {
+        // `warmup` bounds and isolates each `create_entry` hook under the
+        // author-hook ceiling itself (the stagger interval between creates is
+        // not part of that budget) and reports the first fault.
+        let count = match managed.warmup(ctx).await {
             Ok(n) => n,
             Err(fault) => {
                 fault.observe(&R::key(), "warmup");
@@ -752,7 +824,7 @@ impl Manager {
                     },
                     HookFault::TimedOut => {
                         return Err(Error::backpressure(format!(
-                            "{}: warmup exceeded {DEFAULT_AUTHOR_HOOK_CEILING:?} — the topology's \
+                            "{}: a warmup create exceeded {DEFAULT_AUTHOR_HOOK_CEILING:?} — the topology's \
                              `create_entry` hook did not complete in time",
                             R::key()
                         )));

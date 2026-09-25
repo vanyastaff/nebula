@@ -395,6 +395,7 @@ async fn main() -> anyhow::Result<()> {
         slot_identity: SlotIdentity::Unbound,
         topology: resident_runtime,
         recovery_gate: None,
+        rate_limit: None,
     })?;
     println!("[1] GoogleSheets resource registered (Resident topology, Global scope)");
     println!("    Initial token issuance from Resource::create (count = 1)");

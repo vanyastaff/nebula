@@ -63,6 +63,10 @@ pub enum ComposeError {
     #[error("engine / runtime construction failed: {0}")]
     Engine(#[from] EngineError),
 
+    /// The linked plugins' resource factories cannot form a closed allowlist.
+    #[error("resource wiring failed: {0}")]
+    ResourceWiring(#[from] nebula_engine::ResourceWiringError),
+
     /// The workflow-start owner rejected the deployment execution budget.
     #[error("workflow-start service construction failed: {0}")]
     WorkflowStart(#[from] WorkflowStartBuildError),
@@ -91,14 +95,20 @@ const RESOURCE_FANOUT_BATCH_SIZE: u16 = 1;
 const RESOURCE_FANOUT_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const RESOURCE_FANOUT_MAX_CONSECUTIVE_FAILURES: u32 = 5;
 
-/// Same-backend inputs for durable resource fanout and workflow starts.
+/// Same-backend inputs for durable resource fanout, stored resource rows,
+/// their published runtime status and workflow starts.
 #[derive(Clone)]
 pub struct ResourceFanoutInputs {
     workflows: WorkflowStores,
+    rows: Arc<dyn nebula_storage_port::store::ResourceStore>,
+    status: Arc<dyn nebula_storage_port::store::ResourceStatusStore>,
     recovery: Arc<dyn ResourceRuntimeRecovery>,
     subscriptions: Arc<dyn ResourceSubscriptionStore>,
     fanout: Arc<dyn ResourceEventFanoutStore>,
     handoffs: Arc<dyn ResourceExecutionHandoffStore>,
+    /// Store of rate limits every worker shares; `None` keeps each limit in
+    /// this process.
+    shared_limits: Option<Arc<dyn nebula_engine::resource::rate_limit::ErasedLimitStore>>,
 }
 
 impl std::fmt::Debug for ResourceFanoutInputs {
@@ -110,9 +120,17 @@ impl std::fmt::Debug for ResourceFanoutInputs {
 }
 
 impl ResourceFanoutInputs {
-    /// Project one concrete resource runtime into every durable coordinator role.
+    /// Project one concrete resource runtime into every durable coordinator
+    /// role. `rows` holds the stored resource rows executions bind and
+    /// `status` receives this worker's runtime status of them; both must
+    /// live on the same backend the API reads and writes.
     #[must_use]
-    pub fn from_runtime<T>(workflows: WorkflowStores, runtime: Arc<T>) -> Self
+    pub fn from_runtime<T>(
+        workflows: WorkflowStores,
+        runtime: Arc<T>,
+        rows: Arc<dyn nebula_storage_port::store::ResourceStore>,
+        status: Arc<dyn nebula_storage_port::store::ResourceStatusStore>,
+    ) -> Self
     where
         T: ResourceRuntimeRecovery
             + ResourceSubscriptionStore
@@ -121,11 +139,27 @@ impl ResourceFanoutInputs {
     {
         Self {
             workflows,
+            rows,
+            status,
             recovery: runtime.clone(),
             subscriptions: runtime.clone(),
             fanout: runtime.clone(),
             handoffs: runtime,
+            shared_limits: None,
         }
+    }
+
+    /// Enforces cluster-scoped resource rate limits through `store`, shared
+    /// by every worker on the same backend, so a provider's quota and its
+    /// "slow down" hold across processes. Without it each worker enforces
+    /// its limits alone (a single-process deployment needs nothing more).
+    #[must_use]
+    pub fn with_shared_limits(
+        mut self,
+        store: Arc<dyn nebula_engine::resource::rate_limit::ErasedLimitStore>,
+    ) -> Self {
+        self.shared_limits = Some(store);
+        self
     }
 }
 
@@ -162,6 +196,11 @@ impl ResourceFanoutInputs {
 ///
 /// Returns [`ComposeError`] if any boot step fails. All failures are
 /// fail-closed: the process must not start with a mis-wired engine.
+///
+/// # Panics
+///
+/// Must be called inside a Tokio runtime: the resource manager it creates
+/// starts its release workers immediately.
 pub fn build_core_flavor_runtime(
     execution_stores: ExecutionStores,
     turn_handoff: Arc<dyn ExecutionTurnHandoff>,
@@ -282,9 +321,24 @@ fn build_core_flavor_runtime_impl(
         #[cfg(feature = "runtime-repair-red")]
         EngineEvidenceInputs::RuntimeRepair(evidence) => Arc::clone(&evidence.clock),
     };
+    // Stored resource rows are activated lazily, per row, when an execution
+    // that binds them is driven; nothing is read or connected at boot.
+    // The manager reports acquire, release, wait and hold metrics into the
+    // same registry as the engine.
+    let mut manager_config = nebula_engine::resource::ManagerConfig::default()
+        .with_metrics_registry(Arc::new(metrics.clone()));
+    if let Some(store) = resource_fanout.shared_limits.clone() {
+        manager_config = manager_config.with_shared_limit_store(store);
+    }
     let engine = WorkflowEngine::new(action_runtime, metrics.clone())?
         .with_execution_stores(execution_stores.clone())
-        .with_credential_resolver(revisions.credential_resolver);
+        .with_credential_resolver(revisions.credential_resolver)
+        .with_resource_manager(Arc::new(nebula_engine::resource::Manager::with_config(
+            manager_config,
+        )))
+        .with_stored_resources(nebula_engine::StoredResourceActivator::new(Arc::clone(
+            &resource_fanout.rows,
+        )));
     let engine = match evidence_inputs {
         EngineEvidenceInputs::Ordinary => engine,
         #[cfg(feature = "runtime-repair-red")]
@@ -317,6 +371,7 @@ fn build_core_flavor_runtime_impl(
         ResourceLeaseTtl::new(RESOURCE_FANOUT_CLAIM_TTL)?,
         ResourcePageSize::new(RESOURCE_FANOUT_BATCH_SIZE)?,
     );
+    let resource_status = resource_fanout.status;
     let resource_fanout = Arc::new(ResourceFanoutCoordinator::new(
         resource_fanout.recovery,
         resource_fanout.subscriptions,
@@ -327,13 +382,23 @@ fn build_core_flavor_runtime_impl(
         RESOURCE_FANOUT_POLL_INTERVAL,
         RESOURCE_FANOUT_MAX_CONSECUTIVE_FAILURES,
     )?);
-    let engine = Arc::new(engine.with_plan_flavor_runtime(
-        Arc::new(nebula_engine::PlanFlavorRevisionLoader::new(
-            revisions.catalog,
-        )),
-        frozen,
-        revisions.bundles,
-    ));
+    // The closed kind allowlist stored resource rows are activated through;
+    // the API validates configs through an allowlist built from the same
+    // plugin set, so a kind it accepts is one this engine can register.
+    let resource_registrars = nebula_engine::resource_registrars_from(
+        frozen.all_resources().map(|(_plugin, factory)| factory),
+    )?;
+    let engine = Arc::new(
+        engine
+            .with_resource_registrars(resource_registrars)
+            .with_plan_flavor_runtime(
+                Arc::new(nebula_engine::PlanFlavorRevisionLoader::new(
+                    revisions.catalog,
+                )),
+                frozen,
+                revisions.bundles,
+            ),
+    );
 
     // Construct the worker runtime builder.
     //
@@ -346,7 +411,8 @@ fn build_core_flavor_runtime_impl(
     )
     .with_turn_handoff(turn_handoff)
     .with_turn_recovery(turn_recovery)
-    .with_resource_fanout(resource_fanout);
+    .with_resource_fanout(resource_fanout)
+    .with_resource_status_store(resource_status);
 
     tracing::info!(
         plugin = %plugin_key,

@@ -18,6 +18,7 @@ mod journal;
 mod node_result;
 mod operation_ledger;
 mod refresh_claim;
+mod resource_status;
 mod resource_subscription;
 mod resume_producer;
 mod resume_token;
@@ -57,6 +58,7 @@ pub use refresh_claim::{
     RefreshClaimReclaimer, RefreshClaimStore, RefreshOutcomeDecision, ReplicaId,
     RevokeOutcomeDecision, SentinelEscalationPolicy, SentinelEscalationPolicyError, SentinelState,
 };
+pub use resource_status::ResourceStatusStore;
 pub use resource_subscription::{
     ResourceEventFanoutStore, ResourceExecutionHandoffStore, ResourceRuntimeRecovery,
     ResourceSourceLeaseStore, ResourceSubscriptionStore, SharedResourceStore,

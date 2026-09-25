@@ -30,9 +30,10 @@ use crate::{
     error::Error,
     resource::Provider,
     topology::{
-        AdmissionPhase, Load, MaintenanceSchedule, Ticket, Topology, Unavailable,
+        AdmissionPhase, Load, MAX_MAINTENANCE_INTERVAL, MaintenanceSchedule, Ticket, Topology,
+        Unavailable,
         pooled::{InstanceMetrics, PoolProvider, RecycleDecision, config::Config},
-        store::InstanceStore,
+        store::{InstanceStore, StoreView},
     },
     topology_tag::TopologyTag,
 };
@@ -42,6 +43,15 @@ use crate::{
 /// Pool cannot operate with zero max size.
 const ERR_MAX_SIZE_ZERO: &str = "Pooled: config.max_size must be > 0 (got 0 — would \
      deadlock the checkout semaphore on first acquire)";
+
+/// Pool cannot operate with a zero create budget.
+const ERR_CREATE_TIMEOUT_ZERO: &str = "Pooled: config.create_timeout must be positive (got 0 — \
+     every create would time out immediately)";
+
+/// The reaper's timer cannot be armed with a longer period.
+const ERR_MAINTENANCE_INTERVAL_TOO_LONG: &str = "Pooled: config.maintenance_interval must be at \
+     most MAX_MAINTENANCE_INTERVAL (one day — a longer period cannot be armed on the \
+     maintenance timer)";
 
 /// The create-semaphore was closed (pool is shutting down).
 const ERR_CREATE_SEMAPHORE_CLOSED: &str = "pool: create semaphore closed";
@@ -200,6 +210,9 @@ impl<R: Provider> Pooled<R> {
     /// - [`Error::permanent`] when `max_size == 0` (would otherwise
     ///   deadlock the checkout semaphore on first acquire).
     /// - [`Error::permanent`] when `min_size > max_size`.
+    /// - [`Error::permanent`] when `create_timeout` is zero.
+    /// - [`Error::permanent`] when `maintenance_interval` exceeds
+    ///   [`MAX_MAINTENANCE_INTERVAL`].
     pub fn try_new(config: Config, fingerprint: u64) -> Result<Self, Error> {
         // #390: reject an unworkable pool topology at construction rather
         // than deadlock on first acquire. On the registration path the
@@ -215,6 +228,15 @@ impl<R: Provider> Pooled<R> {
                 "Pooled: config.min_size ({}) must be <= max_size ({})",
                 config.min_size, config.max_size,
             )));
+        }
+        if config.create_timeout.is_zero() {
+            // A zero budget times out every create before it can start.
+            return Err(Error::permanent(ERR_CREATE_TIMEOUT_ZERO));
+        }
+        if config.maintenance_interval > MAX_MAINTENANCE_INTERVAL {
+            // The reaper's timer adds the period to an `Instant` on a missed
+            // tick, which panics past the representable horizon.
+            return Err(Error::permanent(ERR_MAINTENANCE_INTERVAL_TOO_LONG));
         }
 
         Ok(Self::build(config, fingerprint))
@@ -378,7 +400,13 @@ where
         config: &R::Config,
         ctx: &ResourceContext,
     ) -> Result<PoolEntry<R>, Error> {
-        let deadline = Instant::now() + self.config.create_timeout;
+        // `create_timeout` is operator-supplied; a huge value means "no
+        // practical deadline", not a panic on `Instant` overflow.
+        let deadline = crate::deadline::deadline_after(
+            Instant::now(),
+            self.config.create_timeout,
+            crate::deadline::UNBOUNDED_HORIZON,
+        );
 
         let _create_permit = match tokio::time::timeout_at(
             deadline.into(),
@@ -430,7 +458,7 @@ where
 {
     type Entry = PoolEntry<R>;
 
-    fn try_reserve(&self, _store: &InstanceStore<PoolEntry<R>>) -> Result<Ticket, Unavailable> {
+    fn try_reserve(&self, _store: StoreView<'_, PoolEntry<R>>) -> Result<Ticket, Unavailable> {
         self.semaphore
             .clone()
             .try_acquire_owned()
@@ -532,6 +560,10 @@ where
         self.config.min_size as usize
     }
 
+    fn warmup_strategy(&self) -> crate::topology::pooled::config::WarmupStrategy {
+        self.config.warmup
+    }
+
     fn idle_evictable(&self, entry: &PoolEntry<R>) -> bool {
         self.should_evict_nonrevoke(entry)
     }
@@ -547,7 +579,7 @@ where
     async fn dispatch_credential_hook(
         &self,
         resource: &R,
-        store: &InstanceStore<PoolEntry<R>>,
+        store: StoreView<'_, PoolEntry<R>>,
         _retained: &crate::RetainedStore<Self::Entry>,
         slot: &str,
         refresh: bool,
@@ -576,14 +608,14 @@ where
         // not every idle instance is guaranteed a hook attempt — accepted
         // (rotation is rare, and a hung per-entry hook is itself the
         // pathological case this bounds).
-        let idle = store.lock_idle().await;
+        let idle = store.read_idle().await;
         let mut first_fault: Option<crate::topology::HookFault> = None;
         let hook_op = if refresh {
             "on_credential_refresh"
         } else {
             "on_credential_revoke"
         };
-        for item in &*idle {
+        for entry in idle.iter() {
             // Bound + isolate this one entry's hook.
             //
             // SAFETY (unwind): `idle` (the idle-lock `MutexGuard`) is a local
@@ -597,13 +629,9 @@ where
                 crate::hook_guard::DEFAULT_AUTHOR_HOOK_CEILING,
                 async {
                     if refresh {
-                        resource
-                            .on_credential_refresh(slot, &item.entry.instance)
-                            .await
+                        resource.on_credential_refresh(slot, &entry.instance).await
                     } else {
-                        resource
-                            .on_credential_revoke(slot, &item.entry.instance)
-                            .await
+                        resource.on_credential_revoke(slot, &entry.instance).await
                     }
                 },
             )
@@ -663,7 +691,7 @@ where
             .store(fingerprint, Ordering::Release);
     }
 
-    fn phase(&self, _store: &InstanceStore<PoolEntry<R>>) -> AdmissionPhase {
+    fn phase(&self, _store: StoreView<'_, PoolEntry<R>>) -> AdmissionPhase {
         if self.semaphore.available_permits() == 0 {
             AdmissionPhase::Saturated
         } else {
@@ -671,7 +699,7 @@ where
         }
     }
 
-    fn load(&self, _store: &InstanceStore<PoolEntry<R>>) -> Option<Load> {
+    fn load(&self, _store: StoreView<'_, PoolEntry<R>>) -> Option<Load> {
         let available = self.semaphore.available_permits();
         let capacity = self.config.max_size as usize;
         let used = capacity.saturating_sub(available);

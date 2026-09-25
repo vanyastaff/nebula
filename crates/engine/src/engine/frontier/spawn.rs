@@ -355,11 +355,20 @@ impl WorkflowEngine {
                 workspace_id: extra.workspace_id,
                 ..Default::default()
             };
-            let slot_identities = self
+            let mut slot_identities = self
                 .resource_slot_identities_by_execution
                 .get(&execution_id)
                 .map(|entry| Arc::clone(entry.value()))
                 .unwrap_or_else(|| Arc::new(HashMap::new()));
+            // Stored rows this node binds take precedence over the scope
+            // snapshot: the manifest names the exact row.
+            if let Some(rows) = self.resource_rows_by_execution.get(&execution_id)
+                && let Some(node_rows) = rows.get(&node_key)
+            {
+                let mut merged = (*slot_identities).clone();
+                merged.extend(node_rows.iter().map(|(key, id)| (key.clone(), id.clone())));
+                slot_identities = Arc::new(merged);
+            }
             let global: Arc<dyn ResourceAccessor> = Arc::new(
                 EngineResourceAccessor::new(Arc::clone(manager), scope, cancel_token.clone())
                     .with_slot_identities_arc(slot_identities),

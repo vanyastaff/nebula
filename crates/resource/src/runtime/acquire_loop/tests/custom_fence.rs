@@ -1,6 +1,7 @@
 //! A custom topology has no fence logic; the framework rejects stale checkout.
 
 use super::*;
+use crate::topology::store::StoreView;
 
 #[derive(Clone, Default)]
 struct CustomResource {
@@ -47,7 +48,7 @@ impl Topology<CustomResource> for CustomTopology {
 
     fn try_reserve(
         &self,
-        _: &InstanceStore<u64>,
+        _: StoreView<'_, u64>,
     ) -> Result<crate::topology::Ticket, crate::topology::Unavailable> {
         Ok(crate::topology::Ticket::infallible())
     }
@@ -121,6 +122,7 @@ async fn custom_topology_checkout_destroys_recycled_entry_after_epoch_only_revok
             slot_identity: crate::SlotIdentity::Unbound,
             topology: CustomTopology::default(),
             recovery_gate: None,
+            rate_limit: None,
         })
         .unwrap();
     let first = acquire(&manager).await;
@@ -172,6 +174,7 @@ async fn panicking_idle_predicate_preserves_all_owned_entries_for_teardown() {
                 ..Default::default()
             },
             recovery_gate: None,
+            rate_limit: None,
         })
         .unwrap();
     let first = acquire(&manager).await;
@@ -229,6 +232,7 @@ async fn panicking_guard_metadata_keeps_created_entry_armed() {
                 ..Default::default()
             },
             recovery_gate: None,
+            rate_limit: None,
         })
         .unwrap();
     let row = manager

@@ -276,7 +276,7 @@ fn resource_factory() -> Arc<dyn ResourceFactory> {
     Arc::new(KindActivator::<FixtureResource, _, _>::with_metadata(
         FixtureResource::metadata(),
         || FixtureResource,
-        || Resident::new(ResidentConfig::default()),
+        nebula_resource::topology::fixed(|| Resident::new(ResidentConfig::default())),
     ))
 }
 

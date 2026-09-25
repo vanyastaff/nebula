@@ -58,11 +58,20 @@ use std::time::Duration;
 
 use nebula_engine::{
     ControlConsumer, DEFAULT_TIMER_SCAN_INTERVAL, EngineControlDispatch, ExecutionStores,
-    ResourceFanoutCoordinator, WorkflowEngine,
+    ResourceFanoutCoordinator, ResourceStatusPublisher, WorkflowEngine,
 };
-use nebula_storage_port::store::{ControlQueue, ExecutionTurnHandoff, TurnRecovery};
+use nebula_storage_port::dto::StatusWorkerId;
+use nebula_storage_port::store::{
+    ControlQueue, ExecutionTurnHandoff, ResourceStatusStore, TurnRecovery,
+};
 use tokio::task::{JoinHandle, JoinSet};
 use tokio_util::sync::CancellationToken;
+
+/// Upper bound on closing resource instances once every component stopped.
+///
+/// Kept well inside a host's shutdown drain budget: by then no turn holds a
+/// guard, so draining is immediate and the budget only bounds a slow close.
+const RESOURCE_SHUTDOWN_BUDGET: Duration = Duration::from_secs(10);
 
 /// Errors that can be produced when building a [`WorkerRuntime`].
 #[derive(Debug, thiserror::Error)]
@@ -104,6 +113,10 @@ pub enum WorkerBuildError {
     /// configuration from turning into a panic inside a supervised task.
     #[error("timer scan interval must be greater than zero")]
     ZeroTimerScanInterval,
+
+    /// The processor id did not form a valid resource-status worker identity.
+    #[error("resource status worker identity is invalid")]
+    InvalidStatusWorker(#[source] nebula_storage_port::dto::ResourceStatusValueError),
 }
 
 /// Why a supervised worker component stopped.
@@ -158,6 +171,7 @@ enum Component {
     TimerScanner,
     AcceptedTurnRecovery,
     ResourceFanout,
+    ResourceStatus,
     EngineShutdownRelay,
 }
 
@@ -168,6 +182,7 @@ impl Component {
             Self::TimerScanner => "timer-scanner",
             Self::AcceptedTurnRecovery => "accepted-turn-recovery",
             Self::ResourceFanout => "resource-fanout",
+            Self::ResourceStatus => "resource-status",
             Self::EngineShutdownRelay => "engine-shutdown-relay",
         }
     }
@@ -192,6 +207,7 @@ pub struct WorkerRuntime {
     /// the other worker components under one cancellation tree.
     control_consumer: ControlConsumer,
     resource_fanout: Arc<ResourceFanoutCoordinator>,
+    resource_status: Option<ResourceStatusPublisher>,
     processor_id: [u8; 16],
     available_plugins_count: usize,
 }
@@ -342,6 +358,16 @@ impl WorkerRuntime {
         });
         labels.insert(handle.id(), Component::ResourceFanout);
 
+        if let Some(publisher) = self.resource_status {
+            let status_engine = Arc::clone(&self.engine);
+            let status_shutdown = shutdown.clone();
+            let handle = components.spawn(async move {
+                publisher.run(status_engine, status_shutdown).await;
+                Ok(Component::ResourceStatus)
+            });
+            labels.insert(handle.id(), Component::ResourceStatus);
+        }
+
         let mut first_failure = None;
         while let Some(joined) = components.join_next().await {
             let failure = match joined {
@@ -379,6 +405,12 @@ impl WorkerRuntime {
                 shutdown.cancel();
             }
         }
+        // Every component has stopped, so no turn still holds a resource
+        // guard: close resource instances before the process goes away
+        // instead of dropping their connections mid-protocol.
+        self.engine
+            .shutdown_resources(RESOURCE_SHUTDOWN_BUDGET)
+            .await;
         first_failure.map_or(Ok(()), Err)
     }
 
@@ -414,6 +446,7 @@ pub struct WorkerRuntimeBuilder {
     turn_handoff: Option<Arc<dyn ExecutionTurnHandoff>>,
     turn_recovery: Option<Arc<dyn TurnRecovery>>,
     resource_fanout: Option<Arc<ResourceFanoutCoordinator>>,
+    resource_status: Option<Arc<dyn ResourceStatusStore>>,
     processor_id: [u8; 16],
     handoff_lease_ttl: Option<Duration>,
     // Optional timer scanner override — None means DEFAULT_TIMER_SCAN_INTERVAL.
@@ -459,6 +492,7 @@ impl WorkerRuntimeBuilder {
             turn_handoff: None,
             turn_recovery: None,
             resource_fanout: None,
+            resource_status: None,
             processor_id,
             handoff_lease_ttl: None,
             timer_scan_interval: None,
@@ -499,6 +533,16 @@ impl WorkerRuntimeBuilder {
     /// deployment backend and frozen registry as this worker's engine.
     pub fn with_resource_fanout(mut self, resource_fanout: Arc<ResourceFanoutCoordinator>) -> Self {
         self.resource_fanout = Some(resource_fanout);
+        self
+    }
+
+    /// Publish this worker's stored-resource status into `store`, so the API
+    /// process can report it. Without it the status endpoint cannot see
+    /// resources activated here.
+    ///
+    /// Use the same backend the API reads status from.
+    pub fn with_resource_status_store(mut self, store: Arc<dyn ResourceStatusStore>) -> Self {
+        self.resource_status = Some(store);
         self
     }
 
@@ -568,6 +612,23 @@ impl WorkerRuntimeBuilder {
             worker_flavor_revision,
         );
 
+        // The status identity carries a per-process incarnation: a restarted
+        // process that reuses a configured processor id must not renew its
+        // predecessor's heartbeat and bring that process's stale snapshots
+        // back to life; they expire with the old heartbeat instead.
+        let resource_status = self
+            .resource_status
+            .map(|store| {
+                StatusWorkerId::new(format!(
+                    "worker:{}:{}",
+                    hex_id(&self.processor_id),
+                    process_incarnation()
+                ))
+                .map(|worker| ResourceStatusPublisher::new(store, worker))
+            })
+            .transpose()
+            .map_err(WorkerBuildError::InvalidStatusWorker)?;
+
         Ok(WorkerRuntime {
             engine: Arc::clone(&self.engine),
             turn_recovery,
@@ -576,10 +637,20 @@ impl WorkerRuntimeBuilder {
             timer_scan_interval,
             control_consumer,
             resource_fanout,
+            resource_status,
             processor_id: self.processor_id,
             available_plugins_count,
         })
     }
+}
+
+/// Identifies this process among processes sharing one processor id: the OS
+/// process id and the start time, which a restart never repeats together.
+fn process_incarnation() -> String {
+    let started = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_nanos());
+    format!("{:x}-{started:x}", std::process::id())
 }
 
 /// Hex-encode `processor_id` bytes for structured log fields.

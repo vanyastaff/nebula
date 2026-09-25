@@ -17,7 +17,10 @@ use crate::{
         acquire_loop::{SlotHookSettlement, SlotHookWaitOutcome},
         managed::ManagedResource,
     },
-    topology::{CreatedEntry, Ticket, Topology, Unavailable, store::InstanceStore},
+    topology::{
+        CreatedEntry, Ticket, Topology, Unavailable,
+        store::{InstanceStore, StoreView},
+    },
 };
 
 #[derive(Clone, nebula_schema::Schema)]
@@ -122,7 +125,7 @@ crate::no_credential_slots!(RetainedResource);
 impl Topology<RetainedResource> for RetainedTopology {
     type Entry = Arc<Root>;
 
-    fn try_reserve(&self, _store: &InstanceStore<Self::Entry>) -> Result<Ticket, Unavailable> {
+    fn try_reserve(&self, _store: StoreView<'_, Self::Entry>) -> Result<Ticket, Unavailable> {
         Ok(Ticket::infallible())
     }
 
@@ -163,7 +166,7 @@ impl Topology<RetainedResource> for RetainedTopology {
     async fn dispatch_credential_hook(
         &self,
         _resource: &RetainedResource,
-        _store: &InstanceStore<Self::Entry>,
+        _store: StoreView<'_, Self::Entry>,
         retained: &RetainedStore<Self::Entry>,
         _slot: &str,
         _refresh: bool,
@@ -205,6 +208,7 @@ fn managed_with_workers(
     let (release_queue, workers) = ReleaseQueue::new(worker_count);
     let managed = Arc::new(ManagedResource {
         pending_projection_hooks: Default::default(),
+        phase_changed: Default::default(),
         resource,
         config: ArcSwap::from_pointee(RetainedConfig),
         topology,
@@ -212,12 +216,13 @@ fn managed_with_workers(
         retained: RetainedStore::new(release_queue.abandonment_tracker()),
         release_queue: Arc::new(release_queue),
         generation: AtomicU64::new(0),
-        status: ArcSwap::from_pointee(ResourceStatus::new()),
+        status: ArcSwap::from_pointee(ResourceStatus::ready()),
         recovery_gate: None,
         tainted: AtomicBool::new(false),
         in_flight: Arc::new((AtomicU64::new(0), Notify::new())),
         maintenance_sweeps: AtomicU64::new(0),
         maintenance: Default::default(),
+        rate_limiter: crate::rate_limit::ResourceLimiter::detached(),
     });
     (managed, workers)
 }

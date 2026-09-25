@@ -199,6 +199,12 @@ async fn build_stores(
             versions: Arc::new(SqliteWorkflowVersionStore::new(pool.clone())),
         },
         resource_runtime,
+        Arc::new(nebula_storage::sqlite::SqliteResourceStore::new(
+            pool.clone(),
+        )),
+        Arc::new(nebula_storage::sqlite::SqliteResourceStatusStore::new(
+            pool.clone(),
+        )),
     );
     let execution_stores = ExecutionStores {
         execution: execution_store,
@@ -298,7 +304,16 @@ async fn build_pg_stores(
             versions: Arc::new(PgWorkflowVersionStore::new(pool.clone())),
         },
         resource_runtime,
-    );
+        Arc::new(nebula_storage::postgres::PgResourceStore::new(pool.clone())),
+        Arc::new(nebula_storage::postgres::PgResourceStatusStore::new(
+            pool.clone(),
+        )),
+    )
+    // Several workers share one PostgreSQL: a provider account's quota and
+    // its "slow down" must hold across all of them, not per process.
+    .with_shared_limits(Arc::new(nebula_storage::postgres::PgLimitStore::new(
+        pool.clone(),
+    )));
 
     let execution_stores = ExecutionStores {
         execution: execution_store,

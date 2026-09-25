@@ -29,6 +29,20 @@ impl ResourceFactory for ForgedFactory {
         Ok(())
     }
 
+    fn validate_topology(&self, _settings: Option<&serde_json::Value>) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn resilience_policy(&self) -> nebula_resource::rate_limit::ResiliencePolicy {
+        nebula_resource::rate_limit::ResiliencePolicy::new()
+    }
+
+    fn topology_schema(
+        &self,
+    ) -> Result<Option<nebula_schema::ValidSchema>, MetadataBuildError> {
+        Ok(None)
+    }
+
     fn register<'a>(
         &'a self,
         _manager: &'a Manager,

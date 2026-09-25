@@ -21,7 +21,7 @@ use nebula_core::{ResourceKey, ScopeLevel, resource_key};
 use nebula_resource::error::Error;
 use nebula_resource::resource::{Provider, ResourceConfig, ResourceMetadataDraft};
 use nebula_resource::topology::{
-    AdmissionPhase, InstanceStore, ReturnOutcome, Ticket, Topology, Unavailable,
+    AdmissionPhase, InstanceStore, ReturnOutcome, StoreView, Ticket, Topology, Unavailable,
 };
 use nebula_resource::{
     AcquireOptions, Manager, RegistrationSpec, ResourceContext, SlotIdentity, TopologyTag,
@@ -92,7 +92,7 @@ impl EntryPool {
 impl Topology<PermitRes> for EntryPool {
     type Entry = u32;
 
-    fn try_reserve(&self, _store: &InstanceStore<u32>) -> Result<Ticket, Unavailable> {
+    fn try_reserve(&self, _store: StoreView<'_, u32>) -> Result<Ticket, Unavailable> {
         self.sem
             .clone()
             .try_acquire_owned()
@@ -129,7 +129,7 @@ impl Topology<PermitRes> for EntryPool {
         Some(self.cap)
     }
 
-    fn phase(&self, _store: &InstanceStore<u32>) -> AdmissionPhase {
+    fn phase(&self, _store: StoreView<'_, u32>) -> AdmissionPhase {
         if self.sem.available_permits() == 0 {
             AdmissionPhase::Saturated
         } else {
@@ -158,27 +158,29 @@ async fn try_reserve_admission_and_phase() {
     let topo = EntryPool::new(2);
 
     assert_eq!(
-        Topology::<PermitRes>::phase(&topo, &store),
+        Topology::<PermitRes>::phase(&topo, StoreView::new(&store)),
         AdmissionPhase::Ready
     );
-    let t1 = Topology::<PermitRes>::try_reserve(&topo, &store).expect("first ticket");
-    let t2 = Topology::<PermitRes>::try_reserve(&topo, &store).expect("second ticket");
+    let t1 =
+        Topology::<PermitRes>::try_reserve(&topo, StoreView::new(&store)).expect("first ticket");
+    let t2 =
+        Topology::<PermitRes>::try_reserve(&topo, StoreView::new(&store)).expect("second ticket");
     assert!(
         matches!(
-            Topology::<PermitRes>::try_reserve(&topo, &store),
+            Topology::<PermitRes>::try_reserve(&topo, StoreView::new(&store)),
             Err(Unavailable::Saturated { .. })
         ),
         "a pool of 2 is saturated after 2 tickets"
     );
     assert_eq!(
-        Topology::<PermitRes>::phase(&topo, &store),
+        Topology::<PermitRes>::phase(&topo, StoreView::new(&store)),
         AdmissionPhase::Saturated
     );
 
     drop(t1);
     drop(t2);
     assert_eq!(
-        Topology::<PermitRes>::phase(&topo, &store),
+        Topology::<PermitRes>::phase(&topo, StoreView::new(&store)),
         AdmissionPhase::Ready,
         "phase returns to Ready after the permits are released"
     );
@@ -197,6 +199,7 @@ async fn created_entry_is_acquired_and_released_through_manager() {
             slot_identity: SlotIdentity::Unbound,
             topology: EntryPool::new(2),
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("custom topology registration must succeed");
 

@@ -384,6 +384,7 @@ async fn pipeline_with_resource_manager_resolves_and_executes() {
             slot_identity: SlotIdentity::Unbound,
             topology: Resident::<WitnessResource>::new(ResidentConfig::default()),
             recovery_gate: None,
+            rate_limit: None,
         })
         .expect("register witness resource");
 
