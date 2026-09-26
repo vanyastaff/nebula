@@ -195,14 +195,17 @@ row reports it as a `RateLimitProfile` (`as_str()` in parentheses):
 | `PausesOnly` (`pauses_only`) | no rate declared or set, no wrapped client | nothing | not paced; a provider pause holds acquires | supported |
 | `PerAcquire` (`per_acquire`) | a rate, no wrapped client | acquire | bounded interval: one permit per lease, however many calls it makes | supported |
 | `InterimPerClosure` (`interim_per_closure`) | `Provider::create` wrapped a client | `Limited::run*` closure | strict: each closure is one permit; acquires only honour pauses | **interim** — replaced by the managed call facade |
+| `PerAttempt` (`per_attempt`) | a lease became a managed call facade (`ResourceGuard::into_managed`) | granted attempt, at its declared cost (`FREE` books nothing) | strict: each provider attempt books its cost; acquires only honour pauses | supported |
 
 Only `InterimPerClosure` is interim (`RateLimitProfile::is_interim`): the
 closure family (`Limited::run`, `run_until`, `run_for`, `run_for_until`) and
 `Limited::unlimited` are the surface the managed call facade replaces. The
 profile is observed, not declared: it latches to `InterimPerClosure` at the
-first `ResourceLimiter::wrap` and keeps it for the row's life, so a row whose
-instance is created lazily reports its pre-wrap profile (`PausesOnly` or
-`PerAcquire`) until the first acquire creates it. In-process status carries it
+first `ResourceLimiter::wrap`, and to `PerAttempt` at the first
+`into_managed` on one of the row's leases, and keeps it for the row's life
+(`InterimPerClosure` wins when both latched). A row whose instance is created
+lazily reports its pre-wrap profile (`PausesOnly` or `PerAcquire`) until the
+first acquire creates it. In-process status carries it
 — `ResourceHealthSnapshot::rate_limit_profile` and
 `ManagedResourceView::rate_limit_profile()`; the cross-process resource status
 does not yet. `RateLimitProfile` is a status fact, not authoring surface, so

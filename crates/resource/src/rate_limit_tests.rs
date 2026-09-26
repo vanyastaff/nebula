@@ -346,6 +346,184 @@ fn profile_names_are_stable() {
         RateLimitProfile::InterimPerClosure.as_str(),
         "interim_per_closure"
     );
+    assert_eq!(RateLimitProfile::PerAttempt.as_str(), "per_attempt");
+}
+
+#[test]
+fn a_managed_facade_latches_per_attempt_and_a_wrap_still_wins() {
+    let detached = ResourceLimiter::detached();
+    assert_eq!(detached.profile(), RateLimitProfile::PausesOnly);
+    detached.latch_per_attempt();
+    assert_eq!(detached.profile(), RateLimitProfile::PerAttempt);
+    assert!(!detached.profile().is_interim());
+
+    let limits = Arc::new(limiter(per_second(1, 1)));
+    assert_eq!(limits.profile(), RateLimitProfile::PerAcquire);
+    limits.latch_per_attempt();
+    assert_eq!(limits.profile(), RateLimitProfile::PerAttempt);
+    let _client = limits.wrap((), NoThrottle);
+    assert_eq!(
+        limits.profile(),
+        RateLimitProfile::InterimPerClosure,
+        "the closure family still books its own permits, so it is reported"
+    );
+    limits.latch_per_attempt();
+    assert_eq!(limits.profile(), RateLimitProfile::InterimPerClosure);
+}
+
+/// Once managed attempts book the quota, an acquire books nothing: the
+/// permit stays for the first attempt.
+#[tokio::test(start_paused = true)]
+async fn an_acquire_after_the_per_attempt_latch_books_nothing() {
+    let limits = limiter(per_second(1, 1));
+    limits.latch_per_attempt();
+    let started = Instant::now();
+    for _ in 0..3 {
+        limits
+            .ready_to_acquire(None)
+            .await
+            .expect("acquire honours pauses only");
+    }
+    limits
+        .ready_weighted(1, None)
+        .await
+        .expect("the attempt books the one permit");
+    assert_eq!(started.elapsed(), Duration::ZERO);
+}
+
+/// A weighted booking takes all its permits in one slot.
+#[tokio::test(start_paused = true)]
+async fn a_weighted_booking_takes_all_its_permits() {
+    let limits = limiter(per_second(1, 3));
+    let started = Instant::now();
+    limits
+        .ready_weighted(3, None)
+        .await
+        .expect("fits the burst");
+    assert_eq!(started.elapsed(), Duration::ZERO);
+    assert_eq!(
+        wait_for_slot(&limits).await,
+        Duration::from_secs(1),
+        "three permits drained the burst"
+    );
+
+    let light = limiter(per_second(1, 3));
+    light.ready_weighted(1, None).await.expect("one permit");
+    assert_eq!(
+        wait_for_slot(&light).await,
+        Duration::ZERO,
+        "one permit left the burst"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_cost_above_the_burst_is_a_permanent_error() {
+    let limits = limiter(per_second(1, 3));
+    let error = limits
+        .ready_weighted(4, None)
+        .await
+        .expect_err("4 permits can never be granted at once");
+    assert_eq!(*error.kind(), ErrorKind::Permanent);
+    assert!(
+        error
+            .to_string()
+            .contains("4 permits exceed the burst of 3"),
+        "{error}"
+    );
+    assert_eq!(
+        wait_for_slot(&limits).await,
+        Duration::ZERO,
+        "nothing was booked"
+    );
+}
+
+/// A weighted keyed booking takes its permits from both the key and the
+/// account, and the key's burst bounds it.
+#[tokio::test(start_paused = true)]
+async fn a_weighted_keyed_booking_books_the_key_and_the_account() {
+    let (limits, _store) = chat_limiter(per_second(1, 3));
+    limits
+        .ready_for_weighted("chat_id", "7", 1, None)
+        .await
+        .expect("one permit of the chat and of the account");
+    limits
+        .ready_weighted(2, None)
+        .await
+        .expect("two account permits left");
+    assert_eq!(
+        wait_for_slot(&limits).await,
+        Duration::from_secs(1),
+        "the keyed call took one account permit"
+    );
+
+    let error = limits
+        .ready_for_weighted("chat_id", "8", 2, None)
+        .await
+        .expect_err("the chat's burst is one");
+    assert_eq!(*error.kind(), ErrorKind::Permanent);
+    assert!(
+        error
+            .to_string()
+            .contains("2 permits exceed the burst of 1"),
+        "{error}"
+    );
+}
+
+/// A quota wait raced under a generation ends when the generation closes
+/// or the unit is cancelled, closing first; otherwise the slot comes.
+#[tokio::test(start_paused = true)]
+async fn a_wait_under_a_generation_ends_when_it_closes_or_is_cancelled() {
+    use tokio_util::sync::CancellationToken;
+
+    use crate::runtime::admission::{AdmissionCell, SuspensionFloor};
+
+    let limits = limiter(per_second(1, 1));
+    limits.ready(None).await.expect("drains the burst");
+
+    let cell = AdmissionCell::default();
+    let generation = cell.current().expect("open");
+    let cancel = CancellationToken::new();
+    let started = Instant::now();
+    limits
+        .wait_under(&generation, Some(&cancel), limits.ready_weighted(1, None))
+        .await
+        .expect("the slot comes while the generation is open");
+    assert_eq!(started.elapsed(), Duration::from_secs(1));
+
+    cancel.cancel();
+    let error = limits
+        .wait_under(&generation, Some(&cancel), limits.ready_weighted(1, None))
+        .await
+        .expect_err("cancelled");
+    assert_eq!(*error.kind(), ErrorKind::Cancelled);
+
+    let _ = cell.suspend(
+        "api",
+        crate::CredentialUnavailableReason::ReauthRequired,
+        SuspensionFloor::default(),
+    );
+    let error = limits
+        .wait_under(&generation, Some(&cancel), std::future::ready(Ok(())))
+        .await
+        .expect_err("closing wins over a ready slot and a fired cancel");
+    assert!(
+        matches!(
+            error.kind(),
+            ErrorKind::CredentialUnavailable {
+                reason: crate::CredentialUnavailableReason::ReauthRequired
+            }
+        ),
+        "{error}"
+    );
+
+    let retired = AdmissionCell::default();
+    let held = retired.current().expect("open");
+    retired.retire();
+    let error = limits
+        .wait_under(&held, None, std::future::ready(Ok(())))
+        .await
+        .expect_err("a retired row admits nothing");
+    assert_eq!(*error.kind(), ErrorKind::Cancelled);
 }
 
 #[tokio::test(start_paused = true)]
