@@ -616,7 +616,9 @@ impl ScriptedStore {
         let version = current.version().next_live()?;
         let updated_at = Utc::now();
         let (material_epoch, refresh_retry_gate) = match replacement.material_transition() {
-            CredentialMaterialTransition::Advance => (current.material_epoch().next()?, None),
+            CredentialMaterialTransition::Advance { .. } => {
+                (current.material_epoch().next()?, None)
+            },
             CredentialMaterialTransition::Preserve { refresh_retry } => {
                 let gate = match refresh_retry {
                     RefreshRetryTransition::Preserve => current.refresh_retry_gate().cloned(),
@@ -638,18 +640,33 @@ impl ScriptedStore {
                 (current.material_epoch(), gate)
             },
         };
+        let (data, state_kind, state_version, expires_at) =
+            match replacement.material_transition().material() {
+                Some(material) => (
+                    material.data().clone(),
+                    material.state_kind().to_owned(),
+                    material.state_version(),
+                    material.expires_at(),
+                ),
+                None => (
+                    current.data().clone(),
+                    current.state_kind().to_owned(),
+                    current.state_version(),
+                    current.expires_at(),
+                ),
+            };
         let committed = StoredLiveCredential::new(
             current.credential_id(),
             replacement.name().map(str::to_owned),
             current.credential_key().to_owned(),
-            replacement.data().clone(),
-            replacement.state_kind().to_owned(),
-            replacement.state_version(),
+            data,
+            state_kind,
+            state_version,
             version,
             material_epoch,
             current.created_at(),
             updated_at,
-            replacement.expires_at(),
+            expires_at,
             replacement.reauth_required(),
             replacement.metadata().clone(),
             refresh_retry_gate,
@@ -4068,14 +4085,17 @@ async fn refresh_write_back_bounds_display_churn_and_stops_at_a_tombstone() {
     let rebuild = |base: &StoredLiveCredential| {
         CredentialReplacement::new(
             base.version(),
-            b"refreshed".to_vec().into(),
-            base.state_kind().to_owned(),
-            base.state_version(),
             base.name().map(str::to_owned),
-            base.expires_at(),
             false,
             base.metadata().clone(),
-            CredentialMaterialTransition::advance(),
+            CredentialMaterialTransition::advance(MaterialUpdate::Replace(
+                CredentialMaterial::new(
+                    b"refreshed".to_vec().into(),
+                    base.state_kind().to_owned(),
+                    base.state_version(),
+                    base.expires_at(),
+                ),
+            )),
         )
     };
 

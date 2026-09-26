@@ -28,13 +28,13 @@ use chrono::{DateTime, Utc};
 use nebula_core::CredentialId;
 use nebula_storage_port::{
     CredentialAlreadyExistsKey, CredentialCommit, CredentialCreate, CredentialIncidentRef,
-    CredentialMaterialEpoch, CredentialOperationKind, CredentialOperationStatus, CredentialOwner,
-    CredentialPersistence, CredentialPersistenceError, CredentialRefreshCursor,
-    CredentialRefreshHorizon, CredentialRefreshPageSize, CredentialRefreshSchedule,
-    CredentialRefreshScheduleError, CredentialReplacement, CredentialSelector, CredentialTombstone,
-    CredentialVersion, DueCredentialRefresh, RefreshRetrySnapshot, SecretBytes, StoredCredential,
-    StoredCredentialHead, StoredCredentialOperationalHead, StoredLiveCredential,
-    StoredTombstonedCredential,
+    CredentialMaterial, CredentialMaterialEpoch, CredentialOperationKind,
+    CredentialOperationStatus, CredentialOwner, CredentialPersistence, CredentialPersistenceError,
+    CredentialRefreshCursor, CredentialRefreshHorizon, CredentialRefreshPageSize,
+    CredentialRefreshSchedule, CredentialRefreshScheduleError, CredentialReplacement,
+    CredentialSelector, CredentialTombstone, CredentialVersion, DueCredentialRefresh,
+    RefreshRetrySnapshot, SecretBytes, StoredCredential, StoredCredentialHead,
+    StoredCredentialOperationalHead, StoredLiveCredential, StoredTombstonedCredential,
 };
 use serde_json::{Map, Value};
 use sqlx::{PgPool, Postgres, Transaction};
@@ -1446,16 +1446,19 @@ impl CredentialPersistence for PgCredentialPersistence {
                 Err(error) => return rollback_as(transaction, error).await,
             };
 
+        // Material columns are written only for `Advance { Replace }`; every
+        // other transition leaves them byte-identical (`$18 = false`).
+        let material = replacement.material_transition().material();
         let updated: Result<Option<CredentialCommitRow>, sqlx::Error> = sqlx::query_as(
             "UPDATE credentials
              SET name = $3,
-                 data = $4,
-                 state_kind = $5,
-                 state_version = $6,
+                 data = CASE WHEN $18::BOOLEAN THEN $4::BYTEA ELSE data END,
+                 state_kind = CASE WHEN $18::BOOLEAN THEN $5::TEXT ELSE state_kind END,
+                 state_version = CASE WHEN $18::BOOLEAN THEN $6::BIGINT ELSE state_version END,
                  version = $7,
                  material_epoch = $8,
                  updated_at = clock_timestamp(),
-                 expires_at = $9,
+                 expires_at = CASE WHEN $18::BOOLEAN THEN $9::TIMESTAMPTZ ELSE expires_at END,
                  reauth_required = $10,
                  metadata = $11,
                  refresh_retry_mode = CASE $12::SMALLINT
@@ -1495,12 +1498,12 @@ impl CredentialPersistence for PgCredentialPersistence {
         .bind(&credential_id)
         .bind(selector.owner().as_str())
         .bind(name.as_deref())
-        .bind(replacement.data().as_ref())
-        .bind(replacement.state_kind())
-        .bind(i64::from(replacement.state_version()))
+        .bind(material.map(|material| material.data().as_ref()))
+        .bind(material.map(CredentialMaterial::state_kind))
+        .bind(material.map(|material| i64::from(material.state_version())))
         .bind(next_version.get())
         .bind(next_material_epoch.get())
-        .bind(replacement.expires_at())
+        .bind(material.and_then(CredentialMaterial::expires_at))
         .bind(replacement.reauth_required())
         .bind(&metadata)
         .bind(retry_transition.code)
@@ -2013,14 +2016,17 @@ mod tests {
                 &selector,
                 CredentialReplacement::new(
                     created.version(),
-                    SecretBytes::new(b"after".to_vec()),
-                    "active".to_owned(),
-                    2,
-                    None,
                     None,
                     false,
                     Map::new(),
-                    nebula_storage_port::CredentialMaterialTransition::advance(),
+                    nebula_storage_port::CredentialMaterialTransition::advance(
+                        nebula_storage_port::MaterialUpdate::Replace(CredentialMaterial::new(
+                            SecretBytes::new(b"after".to_vec()),
+                            "active".to_owned(),
+                            2,
+                            None,
+                        )),
+                    ),
                 ),
             )
             .await;
@@ -2103,14 +2109,17 @@ mod tests {
                     &replacing_selector,
                     CredentialReplacement::new(
                         created.version(),
-                        SecretBytes::new(vec![2]),
-                        "oauth".to_owned(),
-                        1,
-                        None,
                         None,
                         false,
                         Map::new(),
-                        nebula_storage_port::CredentialMaterialTransition::advance(),
+                        nebula_storage_port::CredentialMaterialTransition::advance(
+                            nebula_storage_port::MaterialUpdate::Replace(CredentialMaterial::new(
+                                SecretBytes::new(vec![2]),
+                                "oauth".to_owned(),
+                                1,
+                                None,
+                            )),
+                        ),
                     ),
                 )
                 .await
@@ -2209,10 +2218,6 @@ mod tests {
                 &selector,
                 CredentialReplacement::new(
                     CredentialVersion::try_from(1_i64)?,
-                    SecretBytes::new(vec![1]),
-                    "oauth".to_owned(),
-                    1,
-                    None,
                     None,
                     false,
                     Map::from_iter([("display_revision".to_owned(), Value::from(2))]),

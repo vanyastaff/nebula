@@ -546,20 +546,38 @@ impl CredentialPersistence for ReferenceCredentialPersistence {
                     now,
                 )?,
             ),
-            CredentialMaterialTransition::Advance => (current.material_epoch().next()?, None),
+            CredentialMaterialTransition::Advance { .. } => {
+                (current.material_epoch().next()?, None)
+            },
         };
+        // Material columns change only for `Advance { Replace }`.
+        let (data, state_kind, state_version, expires_at) =
+            match replacement.material_transition().material() {
+                Some(material) => (
+                    material.data().clone(),
+                    material.state_kind().to_owned(),
+                    material.state_version(),
+                    material.expires_at(),
+                ),
+                None => (
+                    current.data().clone(),
+                    current.state_kind().to_owned(),
+                    current.state_version(),
+                    current.expires_at(),
+                ),
+            };
         let live = StoredLiveCredential::new(
             selector.credential_id(),
             replacement.name().map(str::to_owned),
             credential_key,
-            replacement.data().clone(),
-            replacement.state_kind().to_owned(),
-            replacement.state_version(),
+            data,
+            state_kind,
+            state_version,
             next_version,
             material_epoch,
             created_at,
             now,
-            replacement.expires_at(),
+            expires_at,
             replacement.reauth_required(),
             replacement.metadata().clone(),
             refresh_retry_gate,

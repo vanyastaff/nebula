@@ -24,11 +24,11 @@ use crate::runtime::resolve_error::{
 use crate::state_envelope::{decode_state_payload, encode_state_payload};
 use crate::{
     Credential, CredentialContext, CredentialEvent, CredentialHandle, CredentialId,
-    CredentialLifecycle, CredentialMaterialTransition, CredentialPersistence,
+    CredentialLifecycle, CredentialMaterial, CredentialMaterialTransition, CredentialPersistence,
     CredentialPersistenceError, CredentialReplacement, CredentialSelector, CredentialState,
-    Decision, LAST_VALIDATED_AT_METADATA_KEY, RefreshAttempt, RefreshNotAppliedContext,
-    RefreshRetryAdmission, Refreshable, SchemeFactory, SchemeGuard, StateWireFingerprint,
-    StoredCredential, StoredLiveCredential,
+    Decision, LAST_VALIDATED_AT_METADATA_KEY, MaterialUpdate, RefreshAttempt,
+    RefreshNotAppliedContext, RefreshRetryAdmission, Refreshable, SchemeFactory, SchemeGuard,
+    StateWireFingerprint, StoredCredential, StoredLiveCredential,
     contract::{RefreshReauthPhase, RefreshReportKind},
     resolve::ReauthReason,
 };
@@ -1135,21 +1135,24 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
             );
             CredentialReplacement::new(
                 base.version(),
-                data.clone(),
-                base.state_kind().to_owned(),
-                // The row's `state_version` axis must advance to the version the
-                // writing build stamped in the envelope (`interface_version` =
-                // `C::State::VERSION`). Stamping the stored axis instead would
-                // leave a legacy row (axis < VERSION) with an envelope whose
-                // interface_version disagrees with the row — the next read
-                // refuses it as VersionAxesDisagree, poisoning exactly the
-                // migration path the envelope exists to serve.
-                <C::State as CredentialState>::VERSION,
                 base.name().map(str::to_owned),
-                expires_at,
                 false,
                 validated_metadata,
-                CredentialMaterialTransition::advance(),
+                CredentialMaterialTransition::advance(MaterialUpdate::Replace(
+                    CredentialMaterial::new(
+                        data.clone(),
+                        base.state_kind().to_owned(),
+                        // The row's `state_version` axis must advance to the version the
+                        // writing build stamped in the envelope (`interface_version` =
+                        // `C::State::VERSION`). Stamping the stored axis instead would
+                        // leave a legacy row (axis < VERSION) with an envelope whose
+                        // interface_version disagrees with the row — the next read
+                        // refuses it as VersionAxesDisagree, poisoning exactly the
+                        // migration path the envelope exists to serve.
+                        <C::State as CredentialState>::VERSION,
+                        expires_at,
+                    ),
+                )),
             )
         };
 

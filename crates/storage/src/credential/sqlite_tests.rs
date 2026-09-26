@@ -64,10 +64,7 @@ async fn revoke_claim_blocks_authority_replacement_and_is_visible_to_operational
     );
     assert!(matches!(
         store
-            .replace(
-                &selector,
-                make_replacement(version(1), b"new-material", RefreshRetryTransition::Clear),
-            )
+            .replace(&selector, make_replacement(version(1), b"new-material"),)
             .await,
         Err(CredentialPersistenceError::OperationBlocked {
             operation: CredentialOperationKind::Revoke,
@@ -117,11 +114,7 @@ async fn revoke_finalizer_accepts_display_version_churn_and_refuses_wrong_epoch(
             &selector,
             CredentialReplacement::new(
                 current.version(),
-                current.data().clone(),
-                current.state_kind().to_owned(),
-                current.state_version(),
                 current.name().map(str::to_owned),
-                current.expires_at(),
                 current.reauth_required(),
                 metadata,
                 CredentialMaterialTransition::preserve(RefreshRetryTransition::Preserve),
@@ -300,10 +293,7 @@ async fn post_commit_fault_is_outcome_unknown_without_automatic_retry()
 
     store.arm_post_commit_outcome_unknown();
     let result = store
-        .replace(
-            &selector,
-            make_replacement(version(1), b"version-two", RefreshRetryTransition::Clear),
-        )
+        .replace(&selector, make_replacement(version(1), b"version-two"))
         .await;
     assert_eq!(result, Err(CredentialPersistenceError::OutcomeUnknown));
     assert_eq!(
@@ -345,10 +335,7 @@ async fn confirmed_precommit_rollback_is_unavailable_and_preserves_prior_row()
     store.arm_precommit_failure();
     assert_eq!(
         store
-            .replace(
-                &selector,
-                make_replacement(version(1), b"rolled-back", RefreshRetryTransition::Clear,),
-            )
+            .replace(&selector, make_replacement(version(1), b"rolled-back"),)
             .await,
         Err(CredentialPersistenceError::Unavailable)
     );

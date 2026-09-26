@@ -35,13 +35,13 @@ use nebula_core::CredentialId;
 use nebula_credential::CredentialDisplay;
 use nebula_storage_port::{
     CredentialAlreadyExistsKey, CredentialCommit, CredentialCreate, CredentialIncidentRef,
-    CredentialMaterialEpoch, CredentialOperationKind, CredentialOperationStatus, CredentialOwner,
-    CredentialPersistence, CredentialPersistenceError, CredentialRefreshCursor,
-    CredentialRefreshHorizon, CredentialRefreshPageSize, CredentialRefreshSchedule,
-    CredentialRefreshScheduleError, CredentialReplacement, CredentialSelector, CredentialTombstone,
-    CredentialVersion, DueCredentialRefresh, RefreshRetrySnapshot, SecretBytes, StoredCredential,
-    StoredCredentialHead, StoredCredentialOperationalHead, StoredLiveCredential,
-    StoredTombstonedCredential,
+    CredentialMaterial, CredentialMaterialEpoch, CredentialOperationKind,
+    CredentialOperationStatus, CredentialOwner, CredentialPersistence, CredentialPersistenceError,
+    CredentialRefreshCursor, CredentialRefreshHorizon, CredentialRefreshPageSize,
+    CredentialRefreshSchedule, CredentialRefreshScheduleError, CredentialReplacement,
+    CredentialSelector, CredentialTombstone, CredentialVersion, DueCredentialRefresh,
+    RefreshRetrySnapshot, SecretBytes, StoredCredential, StoredCredentialHead,
+    StoredCredentialOperationalHead, StoredLiveCredential, StoredTombstonedCredential,
 };
 use serde_json::Value;
 use sqlx::{Connection, Sqlite, SqlitePool, Transaction};
@@ -1689,16 +1689,19 @@ impl SqliteCredentialPersistence {
         let now_ms = Utc::now().timestamp_millis();
         let retry_transition =
             retry_gate::encode_material_transition(replacement.material_transition())?;
+        // Material columns are written only for `Advance { Replace }`; every
+        // other transition leaves them byte-identical (`?19 = 0`).
+        let material = replacement.material_transition().material();
         let row: Option<CredentialCommitRow> = sqlx::query_as(
             "UPDATE credentials SET \
                name            = ?3, \
-               data            = ?4, \
-               state_kind      = ?5, \
-               state_version   = ?6, \
+               data            = CASE ?19 WHEN 1 THEN ?4 ELSE data END, \
+               state_kind      = CASE ?19 WHEN 1 THEN ?5 ELSE state_kind END, \
+               state_version   = CASE ?19 WHEN 1 THEN ?6 ELSE state_version END, \
                version         = ?7, \
                material_epoch  = ?8, \
                updated_at      = ?9, \
-               expires_at      = ?10, \
+               expires_at      = CASE ?19 WHEN 1 THEN ?10 ELSE expires_at END, \
                reauth_required = ?11, \
                metadata        = ?12, \
                refresh_retry_mode = CASE ?13 \
@@ -1736,15 +1739,15 @@ impl SqliteCredentialPersistence {
         .bind(&credential_id)
         .bind(selector.owner().as_str())
         .bind(replacement.name())
-        .bind(replacement.data().as_ref())
-        .bind(replacement.state_kind())
-        .bind(i64::from(replacement.state_version()))
+        .bind(material.map(|material| material.data().as_ref()))
+        .bind(material.map(CredentialMaterial::state_kind))
+        .bind(material.map(|material| i64::from(material.state_version())))
         .bind(next_version.get())
         .bind(next_material_epoch.get())
         .bind(now_ms)
         .bind(
-            replacement
-                .expires_at()
+            material
+                .and_then(CredentialMaterial::expires_at)
                 .map(|value| value.timestamp_millis()),
         )
         .bind(i64::from(replacement.reauth_required()))
@@ -1755,6 +1758,7 @@ impl SqliteCredentialPersistence {
         .bind(retry_transition.kind)
         .bind(retry_transition.diagnostic_code)
         .bind(replacement.expected_version().get())
+        .bind(i64::from(material.is_some()))
         .fetch_optional(&mut **transaction)
         .await
         .map_err(read_error)?;

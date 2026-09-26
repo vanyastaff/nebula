@@ -4,12 +4,13 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use nebula_core::CredentialId;
 use nebula_storage_port::{
-    CredentialAlreadyExistsKey, CredentialCommit, CredentialCreate, CredentialMaterialEpoch,
-    CredentialMaterialTransition, CredentialOperationKind, CredentialOperationStatus,
-    CredentialOwner, CredentialPersistence, CredentialPersistenceError, CredentialRecordState,
-    CredentialReplacement, CredentialSelector, CredentialTombstone, CredentialVersion,
-    RefreshRetryAdmission, RefreshRetrySnapshot, SecretBytes, StoredCredential,
-    StoredCredentialHead, StoredCredentialOperationalHead,
+    CredentialAlreadyExistsKey, CredentialCommit, CredentialCreate, CredentialMaterial,
+    CredentialMaterialEpoch, CredentialMaterialTransition, CredentialOperationKind,
+    CredentialOperationStatus, CredentialOwner, CredentialPersistence, CredentialPersistenceError,
+    CredentialRecordState, CredentialReplacement, CredentialSelector, CredentialTombstone,
+    CredentialVersion, MaterialUpdate, RefreshRetryAdmission, RefreshRetrySnapshot,
+    RefreshRetryTransition, SecretBytes, StoredCredential, StoredCredentialHead,
+    StoredCredentialOperationalHead,
 };
 use serde_json::{Map, Value};
 
@@ -37,17 +38,22 @@ fn create_with(secret: Vec<u8>) -> CredentialCreate {
     )
 }
 
-fn replacement_with(secret: Vec<u8>) -> CredentialReplacement {
-    CredentialReplacement::new(
-        CredentialVersion::try_from(7_i64).expect("valid expected version"),
+fn material_with(secret: Vec<u8>) -> CredentialMaterial {
+    CredentialMaterial::new(
         SecretBytes::new(secret),
         "oauth2_state".to_owned(),
         4,
-        Some("Production".to_owned()),
         Some(instant(1_900_000_000)),
+    )
+}
+
+fn replacement_with(secret: Vec<u8>) -> CredentialReplacement {
+    CredentialReplacement::new(
+        CredentialVersion::try_from(7_i64).expect("valid expected version"),
+        Some("Production".to_owned()),
         false,
         metadata(),
-        CredentialMaterialTransition::advance(),
+        CredentialMaterialTransition::advance(MaterialUpdate::Replace(material_with(secret))),
     )
 }
 
@@ -76,16 +82,32 @@ fn command_accessors_expose_only_the_frozen_field_split() {
     let expected = CredentialVersion::try_from(7_i64).expect("valid expected version");
     let replacement = replacement_with(vec![4, 5, 6]);
     assert_eq!(replacement.expected_version(), expected);
-    assert_eq!(replacement.data().as_ref(), [4, 5, 6]);
-    assert_eq!(replacement.state_kind(), "oauth2_state");
-    assert_eq!(replacement.state_version(), 4);
     assert_eq!(replacement.name(), Some("Production"));
-    assert_eq!(replacement.expires_at(), Some(instant(1_900_000_000)));
     assert!(!replacement.reauth_required());
     assert_eq!(replacement.metadata(), &metadata());
+    assert!(replacement.material_transition().advances_epoch());
+    let material = replacement
+        .material_transition()
+        .material()
+        .expect("an advancing replacement carries its material");
+    assert_eq!(material.data().as_ref(), [4, 5, 6]);
+    assert_eq!(material.state_kind(), "oauth2_state");
+    assert_eq!(material.state_version(), 4);
+    assert_eq!(material.expires_at(), Some(instant(1_900_000_000)));
+
+    let unchanged = CredentialMaterialTransition::advance(MaterialUpdate::Unchanged);
+    assert!(unchanged.advances_epoch());
+    assert!(unchanged.material().is_none());
+    assert!(unchanged.refresh_retry_transition().is_none());
+    let preserve = CredentialMaterialTransition::preserve(RefreshRetryTransition::Preserve);
+    assert!(!preserve.advances_epoch());
+    assert!(
+        preserve.material().is_none(),
+        "Preserve carries no bytes: the stored material stays byte-identical"
+    );
     assert_eq!(
-        replacement.material_transition(),
-        &CredentialMaterialTransition::Advance
+        preserve.refresh_retry_transition(),
+        Some(&RefreshRetryTransition::Preserve)
     );
 
     let tombstone = CredentialTombstone::new(expected);
@@ -150,6 +172,19 @@ fn secret_bearing_command_debug_is_constant_shape() {
     let long_replace = format!("{:?}", replacement_with(vec![0x5a; 4_096]));
     assert_eq!(empty_replace, short_replace);
     assert_eq!(short_replace, long_replace);
+
+    let empty_material = format!("{:?}", material_with(Vec::new()));
+    let long_material = format!("{:?}", material_with(vec![0x5a; 4_096]));
+    assert_eq!(empty_material, long_material);
+    assert_eq!(empty_material, "CredentialMaterial([redacted])");
+    let transition = format!(
+        "{:?}",
+        CredentialMaterialTransition::advance(MaterialUpdate::Replace(material_with(
+            b"credential-secret-canary".to_vec()
+        )))
+    );
+    assert!(!transition.contains("canary"));
+    assert!(!transition.contains("oauth2_state"));
 }
 
 #[test]

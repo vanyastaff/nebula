@@ -463,14 +463,19 @@ mod tests {
                 &selector,
                 CredentialReplacement::new(
                     before.version(),
-                    api_key_data("rolling-secret"),
-                    "secret_token".to_owned(),
-                    1,
-                    None,
                     None,
                     false,
                     serde_json::Map::new(),
-                    CredentialMaterialTransition::advance(),
+                    CredentialMaterialTransition::advance(
+                        nebula_storage_port::MaterialUpdate::Replace(
+                            nebula_storage_port::CredentialMaterial::new(
+                                api_key_data("rolling-secret"),
+                                "secret_token".to_owned(),
+                                1,
+                                None,
+                            ),
+                        ),
+                    ),
                 ),
             )
             .await

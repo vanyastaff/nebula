@@ -304,3 +304,137 @@ fn test_encryption_key_zeroized() {
     // 2. Keys can be created and used normally
     // 3. No memory corruption occurs after zeroization
 }
+
+/// The port invariant "`Preserve` ⇒ identical bytes", observed below the
+/// encryption decorator: a material-free replacement leaves the raw
+/// ciphertext — nonce and key id included — byte-identical, and only an
+/// `Advance { Replace }` re-seals.
+#[cfg(feature = "sqlite")]
+mod material_free_writes {
+    use std::sync::Arc;
+
+    use nebula_core::CredentialId;
+    use nebula_crypto::EncryptionKey;
+    use nebula_storage::credential::{
+        EncryptionLayer, KeyProvider, KeySnapshot, ProviderError, SqliteCredentialPersistence,
+    };
+    use nebula_storage_port::{
+        CredentialCreate, CredentialMaterial, CredentialMaterialTransition, CredentialOwner,
+        CredentialPersistence, CredentialReplacement, CredentialSelector, MaterialUpdate,
+        RefreshRetryTransition, SecretBytes, StoredCredential, StoredLiveCredential,
+    };
+
+    struct FixedKey;
+
+    impl KeyProvider for FixedKey {
+        fn current(&self) -> Result<KeySnapshot, ProviderError> {
+            KeySnapshot::new("fixed", Arc::new(EncryptionKey::from_bytes([0x42; 32])))
+        }
+    }
+
+    fn live(record: StoredCredential) -> StoredLiveCredential {
+        let StoredCredential::Live(record) = record else {
+            panic!("fixture must remain live");
+        };
+        record
+    }
+
+    #[tokio::test]
+    async fn preserve_and_advance_unchanged_never_rewrite_the_ciphertext() {
+        let inner = SqliteCredentialPersistence::connect_memory()
+            .await
+            .expect("in-memory store");
+        let store = EncryptionLayer::new(inner.clone(), Arc::new(FixedKey));
+        let selector = CredentialSelector::new(
+            CredentialOwner::from_canonical("encryption-invariant-owner"),
+            CredentialId::new(),
+        );
+        let created = store
+            .create(
+                &selector,
+                CredentialCreate::new(
+                    "provider.token".to_owned(),
+                    SecretBytes::new(b"original".to_vec()),
+                    "token".to_owned(),
+                    1,
+                    None,
+                    None,
+                    false,
+                    Default::default(),
+                ),
+            )
+            .await
+            .expect("create");
+        let sealed = live(inner.get(&selector).await.expect("raw read"));
+
+        let preserved = store
+            .replace(
+                &selector,
+                CredentialReplacement::new(
+                    created.version(),
+                    None,
+                    false,
+                    Default::default(),
+                    CredentialMaterialTransition::preserve(RefreshRetryTransition::Preserve),
+                ),
+            )
+            .await
+            .expect("preserve");
+        let after_preserve = live(inner.get(&selector).await.expect("raw read"));
+        assert_eq!(after_preserve.data(), sealed.data());
+        assert_eq!(after_preserve.material_epoch(), sealed.material_epoch());
+
+        let advanced = store
+            .replace(
+                &selector,
+                CredentialReplacement::new(
+                    preserved.version(),
+                    None,
+                    true,
+                    Default::default(),
+                    CredentialMaterialTransition::advance(MaterialUpdate::Unchanged),
+                ),
+            )
+            .await
+            .expect("advance unchanged");
+        let after_advance = live(inner.get(&selector).await.expect("raw read"));
+        assert_eq!(after_advance.data(), sealed.data());
+        assert_eq!(
+            after_advance.material_epoch(),
+            sealed.material_epoch().next().expect("epoch two")
+        );
+
+        store
+            .replace(
+                &selector,
+                CredentialReplacement::new(
+                    advanced.version(),
+                    None,
+                    false,
+                    Default::default(),
+                    CredentialMaterialTransition::advance(MaterialUpdate::Replace(
+                        CredentialMaterial::new(
+                            SecretBytes::new(b"original".to_vec()),
+                            "token".to_owned(),
+                            1,
+                            None,
+                        ),
+                    )),
+                ),
+            )
+            .await
+            .expect("advance replace");
+        let resealed = live(inner.get(&selector).await.expect("raw read"));
+        assert_ne!(
+            resealed.data(),
+            sealed.data(),
+            "installed material is sealed afresh, even when its plaintext repeats"
+        );
+        assert_eq!(
+            live(store.get(&selector).await.expect("decrypted read"))
+                .data()
+                .as_ref(),
+            b"original"
+        );
+    }
+}

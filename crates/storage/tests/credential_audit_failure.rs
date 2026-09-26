@@ -50,14 +50,19 @@ fn create(data: &[u8]) -> CredentialCreate {
 fn replacement(expected_version: CredentialVersion, data: &[u8]) -> CredentialReplacement {
     CredentialReplacement::new(
         expected_version,
-        SecretBytes::new(data.to_vec()),
-        "test".to_owned(),
-        1,
-        None,
         None,
         false,
         Default::default(),
-        nebula_storage_port::CredentialMaterialTransition::advance(),
+        nebula_storage_port::CredentialMaterialTransition::advance(
+            nebula_storage_port::MaterialUpdate::Replace(
+                nebula_storage_port::CredentialMaterial::new(
+                    SecretBytes::new(data.to_vec()),
+                    "test".to_owned(),
+                    1,
+                    None,
+                ),
+            ),
+        ),
     )
 }
 

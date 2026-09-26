@@ -482,21 +482,26 @@ impl CredentialService {
                     };
                     let build = |base: &nebula_storage_port::StoredLiveCredential| {
                         CredentialReplacement::new(
-                        base.version(),
-                        refreshed_bytes.clone(),
-                        base.state_kind().to_owned(),
-                        // The row axis advances to the writing build's state
-                        // version (the erased refresh closure stamped it —
-                        // see `RefreshExecutionResult::Rewrote`). The stored
-                        // axis may be a legacy version the envelope already
-                        // left behind; re-stamping it would make the next
-                        // read refuse the row as an axis disagreement.
-                        refreshed_state_version,
-                        base.name().map(str::to_owned),
-                        refreshed_expires_at,
-                        false,
-                        validated(base),
-                        CredentialMaterialTransition::advance(),
+                            base.version(),
+                            base.name().map(str::to_owned),
+                            false,
+                            validated(base),
+                            CredentialMaterialTransition::advance(
+                                crate::MaterialUpdate::Replace(crate::CredentialMaterial::new(
+                                    refreshed_bytes.clone(),
+                                    base.state_kind().to_owned(),
+                                    // The row axis advances to the writing build's
+                                    // state version (the erased refresh closure
+                                    // stamped it — see
+                                    // `RefreshExecutionResult::Rewrote`). The stored
+                                    // axis may be a legacy version the envelope
+                                    // already left behind; re-stamping it would
+                                    // make the next read refuse the row as an axis
+                                    // disagreement.
+                                    refreshed_state_version,
+                                    refreshed_expires_at,
+                                )),
+                            ),
                         )
                     };
                     let (commit, display) = match crate::runtime::refresh::write_refreshed(

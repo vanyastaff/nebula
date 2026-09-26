@@ -29,11 +29,11 @@ pub use batch::{
     ExecutionReferenceTransition, TransitionBatch, TransitionBatchBuilder, TransitionOutcome,
 };
 pub use dto::credential::{
-    CredentialCommit, CredentialCreate, CredentialMaterialEpoch, CredentialMaterialEpochError,
-    CredentialMaterialTransition, CredentialOwner, CredentialRecordState, CredentialReplacement,
-    CredentialReplacementFence, CredentialSelector, CredentialTombstone, CredentialVersion,
-    CredentialVersionError, SecretBytes, StoredCredential, StoredCredentialHead,
-    StoredLiveCredential, StoredTombstonedCredential,
+    CredentialCommit, CredentialCreate, CredentialMaterial, CredentialMaterialEpoch,
+    CredentialMaterialEpochError, CredentialMaterialTransition, CredentialOwner,
+    CredentialRecordState, CredentialReplacement, CredentialReplacementFence, CredentialSelector,
+    CredentialTombstone, CredentialVersion, CredentialVersionError, MaterialUpdate, SecretBytes,
+    StoredCredential, StoredCredentialHead, StoredLiveCredential, StoredTombstonedCredential,
 };
 pub use dto::resume_token::{ResumeTokenRow, ResumeTokenWaitKind, TokenHash, TokenHashLengthError};
 pub use dto::{

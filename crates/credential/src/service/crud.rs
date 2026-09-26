@@ -298,39 +298,45 @@ impl CredentialService {
         Self::set_display(&mut metadata, &display);
 
         let now = chrono::Utc::now();
-        let (data, state_kind, state_version, expires_at, reauth_required, last_validated_at) =
-            match resolved {
-                // Props supplied ⇒ re-resolved against the provider ⇒ stamp the
-                // validation time. A display-only edit (the `None` arm) preserves the
-                // existing stamp and bumps only `updated_at`, so it cannot postpone
-                // the re-validation floor.
-                Some(resolved) => {
-                    metadata.insert(
-                        LAST_VALIDATED_AT_METADATA_KEY.to_owned(),
-                        Value::String(now.to_rfc3339()),
-                    );
-                    (
-                        resolved.data.clone().into(),
-                        resolved.state_kind,
-                        resolved.state_version,
-                        resolved.expires_at,
-                        false,
-                        Some(now),
-                    )
-                },
-                None => (
-                    existing.data().clone(),
-                    existing.state_kind().to_owned(),
-                    existing.state_version(),
-                    existing.expires_at(),
-                    existing.reauth_required(),
-                    metadata
-                        .get(LAST_VALIDATED_AT_METADATA_KEY)
-                        .and_then(Value::as_str)
-                        .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
-                        .map(|instant| instant.with_timezone(&chrono::Utc)),
+        let (material_transition, expires_at, reauth_required, last_validated_at) = match resolved {
+            // Props supplied ⇒ re-resolved against the provider ⇒ stamp the
+            // validation time. A display-only edit (the `None` arm) preserves the
+            // existing stamp and bumps only `updated_at`, so it cannot postpone
+            // the re-validation floor.
+            Some(resolved) => {
+                metadata.insert(
+                    LAST_VALIDATED_AT_METADATA_KEY.to_owned(),
+                    Value::String(now.to_rfc3339()),
+                );
+                (
+                    crate::CredentialMaterialTransition::advance(crate::MaterialUpdate::Replace(
+                        crate::CredentialMaterial::new(
+                            resolved.data.clone().into(),
+                            resolved.state_kind,
+                            resolved.state_version,
+                            resolved.expires_at,
+                        ),
+                    )),
+                    resolved.expires_at,
+                    false,
+                    Some(now),
+                )
+            },
+            // A display-only edit carries no material: the stored bytes
+            // stay byte-identical, whatever a concurrent refresh wrote.
+            None => (
+                crate::CredentialMaterialTransition::preserve(
+                    crate::RefreshRetryTransition::Preserve,
                 ),
-            };
+                existing.expires_at(),
+                existing.reauth_required(),
+                metadata
+                    .get(LAST_VALIDATED_AT_METADATA_KEY)
+                    .and_then(Value::as_str)
+                    .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+                    .map(|instant| instant.with_timezone(&chrono::Utc)),
+            ),
+        };
 
         // No blind-overwrite path: when the caller supplied no version,
         // CAS on the version loaded above. A display-only rename racing a
@@ -338,20 +344,10 @@ impl CredentialService {
         // secret bytes captured at load time.
         let replacement = CredentialReplacement::new(
             expected,
-            data,
-            state_kind,
-            state_version,
             display.display_name.clone(),
-            expires_at,
             reauth_required,
             metadata,
-            if material_replaced {
-                crate::CredentialMaterialTransition::advance()
-            } else {
-                crate::CredentialMaterialTransition::preserve(
-                    crate::RefreshRetryTransition::Preserve,
-                )
-            },
+            material_transition,
         );
 
         let commit = self

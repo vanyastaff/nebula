@@ -16,9 +16,10 @@ use std::{
 use nebula_core::CredentialId;
 use nebula_storage::credential::PgCredentialPersistence;
 use nebula_storage_port::{
-    CredentialAlreadyExistsKey, CredentialCreate, CredentialOwner, CredentialPersistence,
-    CredentialPersistenceError, CredentialRecordState, CredentialReplacement, CredentialSelector,
-    CredentialTombstone, CredentialVersion, SecretBytes, StoredCredential,
+    CredentialAlreadyExistsKey, CredentialCreate, CredentialMaterial, CredentialMaterialTransition,
+    CredentialOwner, CredentialPersistence, CredentialPersistenceError, CredentialRecordState,
+    CredentialReplacement, CredentialSelector, CredentialTombstone, CredentialVersion,
+    MaterialUpdate, SecretBytes, StoredCredential,
 };
 use serde_json::{Map, Value};
 use sqlx::{
@@ -139,15 +140,20 @@ fn replacement(
 ) -> CredentialReplacement {
     CredentialReplacement::new(
         expected_version,
+        name.map(str::to_owned),
+        true,
+        metadata(name),
+        material(secret),
+    )
+}
+
+fn material(secret: &[u8]) -> CredentialMaterialTransition {
+    CredentialMaterialTransition::advance(MaterialUpdate::Replace(CredentialMaterial::new(
         SecretBytes::new(secret.to_vec()),
         "active".to_owned(),
         8,
-        name.map(str::to_owned),
         None,
-        true,
-        metadata(name),
-        nebula_storage_port::CredentialMaterialTransition::advance(),
-    )
+    )))
 }
 
 fn version(value: i64) -> CredentialVersion {
@@ -199,14 +205,10 @@ async fn postgres_lifecycle_enforces_precedence_cas_and_terminal_visibility() ->
 
     let malformed_replacement = CredentialReplacement::new(
         version(1),
-        SecretBytes::new(b"must-not-write".to_vec()),
-        "active".to_owned(),
-        8,
         Some("Production".to_owned()),
-        None,
         true,
         Map::from_iter([("display".to_owned(), Value::Bool(true))]),
-        nebula_storage_port::CredentialMaterialTransition::advance(),
+        material(b"must-not-write"),
     );
     assert_eq!(
         store

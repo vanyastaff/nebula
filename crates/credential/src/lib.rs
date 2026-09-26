@@ -303,10 +303,10 @@ pub mod prelude {
 // re-exported from the credential product surface; adapters and composition
 // roots depend on `nebula-storage-port` directly.
 pub(crate) use nebula_storage_port::{
-    CredentialAlreadyExistsKey, CredentialCreate, CredentialMaterialTransition,
+    CredentialAlreadyExistsKey, CredentialCreate, CredentialMaterial, CredentialMaterialTransition,
     CredentialPersistence, CredentialPersistenceError, CredentialReplacement, CredentialSelector,
-    CredentialTombstone, CredentialVersion, RefreshRetryAdmission, RefreshRetryTransition,
-    StoredCredential, StoredCredentialHead, StoredLiveCredential,
+    CredentialTombstone, CredentialVersion, MaterialUpdate, RefreshRetryAdmission,
+    RefreshRetryTransition, StoredCredential, StoredCredentialHead, StoredLiveCredential,
 };
 
 // Credential-owned metadata conventions. Persistence authority comes only

@@ -347,7 +347,7 @@ mod tests {
     };
 
     use super::{super::super::sqlite::SqliteCredentialPersistence, *};
-    use crate::credential::test_support::{make_credential, make_replacement};
+    use crate::credential::test_support::{make_credential, make_preserve_replacement};
 
     fn owner() -> CredentialOwner {
         CredentialOwner::from_canonical("test-owner")
@@ -463,9 +463,8 @@ mod tests {
         store
             .replace(
                 &selector,
-                make_replacement(
+                make_preserve_replacement(
                     created.version(),
-                    b"v2",
                     RefreshRetryTransition::SetNever {
                         evidence: evidence.clone(),
                     },

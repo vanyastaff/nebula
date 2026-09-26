@@ -250,6 +250,81 @@ impl TryFrom<u64> for CredentialMaterialEpoch {
     }
 }
 
+/// Opaque credential material installed by an advancing replacement.
+///
+/// The four values are the material columns of a live record: the
+/// (possibly encrypted) state bytes, their type identifier and schema
+/// version, and the material expiry. They travel together because they are
+/// only ever replaced together.
+#[derive(Clone, PartialEq, Eq)]
+pub struct CredentialMaterial {
+    data: SecretBytes,
+    state_kind: String,
+    state_version: u32,
+    expires_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+impl CredentialMaterial {
+    /// Construct replacement material.
+    #[must_use]
+    pub fn new(
+        data: SecretBytes,
+        state_kind: String,
+        state_version: u32,
+        expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Self {
+        Self {
+            data,
+            state_kind,
+            state_version,
+            expires_at,
+        }
+    }
+
+    /// Borrow the replacement state bytes.
+    #[must_use]
+    pub fn data(&self) -> &SecretBytes {
+        &self.data
+    }
+
+    /// Borrow the replacement state type identifier.
+    #[must_use]
+    pub fn state_kind(&self) -> &str {
+        &self.state_kind
+    }
+
+    /// Return the replacement state schema version.
+    #[must_use]
+    pub const fn state_version(&self) -> u32 {
+        self.state_version
+    }
+
+    /// Return the replacement material expiry.
+    #[must_use]
+    pub const fn expires_at(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+        self.expires_at
+    }
+}
+
+impl fmt::Debug for CredentialMaterial {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("CredentialMaterial([redacted])")
+    }
+}
+
+/// Material columns written by an advancing replacement.
+///
+/// [`Self::Unchanged`] advances refresh authority over the stored bytes —
+/// the adapter never rewrites them, so an encryption decorator cannot re-seal
+/// them either. [`Self::Replace`] installs new material.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MaterialUpdate {
+    /// Keep the stored material columns byte-for-byte.
+    Unchanged,
+    /// Install new material.
+    Replace(CredentialMaterial),
+}
+
 /// Explicit refresh-authority intent carried by a replacement.
 ///
 /// The shape makes an advanced material epoch with a retained or newly
@@ -259,15 +334,24 @@ impl TryFrom<u64> for CredentialMaterialEpoch {
 /// own the actual epoch value, initialize it at [`CredentialMaterialEpoch::MIN`],
 /// and fail closed with
 /// [`CredentialPersistenceError::MaterialEpochExhausted`] rather than wrapping.
+///
+/// It also decides which material columns a replacement writes, and there
+/// is one invariant every adapter and decorator honours: **`Preserve`
+/// carries no bytes and leaves the stored material byte-identical**. Only
+/// `Advance { material: MaterialUpdate::Replace(..) }` writes material.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CredentialMaterialTransition {
-    /// Preserve refresh authority while applying a current-epoch retry-gate transition.
+    /// Preserve refresh authority and the stored material while applying a
+    /// current-epoch retry-gate transition.
     Preserve {
         /// Structural retry-gate transition for the unchanged material epoch.
         refresh_retry: RefreshRetryTransition,
     },
     /// Advance refresh authority and unconditionally clear the prior epoch's gate.
-    Advance,
+    Advance {
+        /// Whether new material is installed with the advance.
+        material: MaterialUpdate,
+    },
 }
 
 /// Additional aggregate fence for authority-changing credential replacement.
@@ -329,16 +413,16 @@ impl CredentialMaterialTransition {
         Self::Preserve { refresh_retry }
     }
 
-    /// Advance the material epoch and clear any prior gate.
+    /// Advance the material epoch, clear any prior gate, and apply `material`.
     #[must_use]
-    pub const fn advance() -> Self {
-        Self::Advance
+    pub const fn advance(material: MaterialUpdate) -> Self {
+        Self::Advance { material }
     }
 
     /// Whether the replacement establishes new refresh authority.
     #[must_use]
     pub const fn advances_epoch(&self) -> bool {
-        matches!(self, Self::Advance)
+        matches!(self, Self::Advance { .. })
     }
 
     /// Borrow the current-epoch gate transition, if authority is preserved.
@@ -346,7 +430,23 @@ impl CredentialMaterialTransition {
     pub const fn refresh_retry_transition(&self) -> Option<&RefreshRetryTransition> {
         match self {
             Self::Preserve { refresh_retry } => Some(refresh_retry),
-            Self::Advance => None,
+            Self::Advance { .. } => None,
+        }
+    }
+
+    /// Borrow the material this replacement installs, when it installs any.
+    ///
+    /// `None` means the stored material columns are left byte-identical.
+    #[must_use]
+    pub const fn material(&self) -> Option<&CredentialMaterial> {
+        match self {
+            Self::Advance {
+                material: MaterialUpdate::Replace(material),
+            } => Some(material),
+            Self::Preserve { .. }
+            | Self::Advance {
+                material: MaterialUpdate::Unchanged,
+            } => None,
         }
     }
 }
@@ -521,15 +621,14 @@ impl fmt::Debug for CredentialCreate {
 /// Version-fenced replacement of mutable live credential state.
 ///
 /// Identity, owner, registered credential key, and creation time are absent
-/// and therefore cannot be changed through replacement.
+/// and therefore cannot be changed through replacement. Material columns are
+/// written only when the material transition carries
+/// [`MaterialUpdate::Replace`]; every other replacement leaves them
+/// byte-identical.
 #[derive(Clone, PartialEq, Eq)]
 pub struct CredentialReplacement {
     expected_version: CredentialVersion,
-    data: SecretBytes,
-    state_kind: String,
-    state_version: u32,
     name: Option<String>,
-    expires_at: Option<chrono::DateTime<chrono::Utc>>,
     reauth_required: bool,
     metadata: Map<String, Value>,
     material_transition: CredentialMaterialTransition,
@@ -539,28 +638,16 @@ pub struct CredentialReplacement {
 impl CredentialReplacement {
     /// Construct a complete version-fenced replacement value.
     #[must_use]
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the constructor mirrors the closed mutable record and keeps every field explicit"
-    )]
     pub fn new(
         expected_version: CredentialVersion,
-        data: SecretBytes,
-        state_kind: String,
-        state_version: u32,
         name: Option<String>,
-        expires_at: Option<chrono::DateTime<chrono::Utc>>,
         reauth_required: bool,
         metadata: Map<String, Value>,
         material_transition: CredentialMaterialTransition,
     ) -> Self {
         Self {
             expected_version,
-            data,
-            state_kind,
-            state_version,
             name,
-            expires_at,
             reauth_required,
             metadata,
             material_transition,
@@ -582,34 +669,10 @@ impl CredentialReplacement {
         self.expected_version
     }
 
-    /// Borrow the replacement state bytes.
-    #[must_use]
-    pub fn data(&self) -> &SecretBytes {
-        &self.data
-    }
-
-    /// Borrow the replacement state type identifier.
-    #[must_use]
-    pub fn state_kind(&self) -> &str {
-        &self.state_kind
-    }
-
-    /// Return the replacement state schema version.
-    #[must_use]
-    pub fn state_version(&self) -> u32 {
-        self.state_version
-    }
-
     /// Borrow the replacement display-name projection.
     #[must_use]
     pub fn name(&self) -> Option<&str> {
         self.name.as_deref()
-    }
-
-    /// Return the replacement material expiry.
-    #[must_use]
-    pub fn expires_at(&self) -> Option<chrono::DateTime<chrono::Utc>> {
-        self.expires_at
     }
 
     /// Whether the replacement requires interactive re-authentication.
