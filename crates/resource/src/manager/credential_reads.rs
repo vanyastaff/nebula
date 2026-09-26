@@ -384,7 +384,9 @@ impl CredentialReads {
             &lane.scope,
             credential_id,
             lane.key.clone(),
-            self.cancel.child_token(),
+            // The observer only listens; a clone avoids registering a child
+            // token on the manager's token for every read.
+            self.cancel.clone(),
         );
         let answered = tokio::select! {
             biased;

@@ -248,19 +248,30 @@ impl<R: Provider> ManagedResource<R> {
             resource.key = %R::key(),
             slots = targets.len(),
         );
-        let slots = tracing::Instrument::instrument(
-            futures::future::join_all(targets.into_iter().map(|target| async move {
-                match target {
-                    Ok(target) => (
-                        target.slot,
-                        read_slot(reads, &target, started, deadline).await,
-                    ),
-                    Err(slot) => (slot, SlotOutcome::Unobservable),
-                }
-            })),
-            span,
-        )
-        .await;
+        let read_one = |target: Result<CredentialTarget, &'static str>| async move {
+            match target {
+                Ok(target) => (
+                    target.slot,
+                    read_slot(reads, &target, started, deadline).await,
+                ),
+                Err(slot) => (slot, SlotOutcome::Unobservable),
+            }
+        };
+        let slots = if targets.len() == 1 {
+            // The common single-slot row: no join set to allocate.
+            let mut targets = targets;
+            let mut slots = Vec::with_capacity(1);
+            if let Some(target) = targets.pop() {
+                slots.push(tracing::Instrument::instrument(read_one(target), span).await);
+            }
+            slots
+        } else {
+            tracing::Instrument::instrument(
+                futures::future::join_all(targets.into_iter().map(read_one)),
+                span,
+            )
+            .await
+        };
         Some(StrictReading { ticket, slots })
     }
 

@@ -248,5 +248,176 @@ fn bench_acquire(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_acquire);
+/// A resident resource with one credential slot implementing the projection
+/// port, bound to material 1 at use revision 1.
+#[derive(Clone)]
+struct BoundResident {
+    db: std::sync::Arc<nebula_resource::SlotCell<nebula_credential::CredentialGuard<u64>>>,
+}
+
+impl BoundResident {
+    fn bound() -> Self {
+        let db = std::sync::Arc::new(nebula_resource::SlotCell::empty());
+        let metadata = nebula_credential::CredentialGuardMetadata::new(
+            nebula_core::CredentialId::new(),
+            "oauth".parse().expect("credential key"),
+            1,
+            1,
+        )
+        .with_admission_epoch(1)
+        .with_scope(nebula_credential::TenantScope::new("org", "workspace"));
+        let _installed = db
+            .install_projected(
+                metadata,
+                std::sync::Arc::new(nebula_credential::CredentialGuard::new(1_u64)),
+            )
+            .expect("bind");
+        Self { db }
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for BoundResident {
+    type Config = BenchCfg;
+    type Instance = u64;
+    type Topology = Resident<Self>;
+
+    fn key() -> ResourceKey {
+        resource_key!("bench-bound-resident")
+    }
+
+    async fn create(&self, _config: &BenchCfg, _ctx: &ResourceContext) -> Result<u64, Error> {
+        Ok(0xCAFE)
+    }
+
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("bench-bound-resident"),
+            "",
+        )
+    }
+}
+
+impl nebula_resource::HasCredentialSlots for BoundResident {
+    fn credential_slot_epoch(&self) -> u64 {
+        self.db.generation()
+    }
+
+    fn declares_credential_slots() -> bool {
+        true
+    }
+
+    fn credential_slot_names() -> &'static [&'static str] {
+        &["db"]
+    }
+
+    fn supports_credential_slot_projection(&self, slot: &str) -> bool {
+        slot == "db"
+    }
+
+    fn credential_slot_projection(
+        &self,
+        slot: &str,
+    ) -> Option<(u64, Option<nebula_credential::CredentialGuardMetadata>)> {
+        (slot == "db").then(|| self.db.projection_snapshot())
+    }
+}
+
+#[async_trait::async_trait]
+impl ResidentProvider for BoundResident {
+    fn is_alive_sync(&self, _instance: &u64) -> bool {
+        true
+    }
+}
+
+/// An in-memory observer answering "available at the installed material"
+/// at once: what remains is the framework's cost around the read.
+struct AvailableObserver;
+
+impl nebula_credential::CredentialAvailabilityObserver for AvailableObserver {
+    fn observe_availability<'a>(
+        &'a self,
+        _scope: &'a nebula_credential::TenantScope,
+        _credential_id: nebula_core::CredentialId,
+        _expected_key: nebula_credential::CredentialKey,
+        _cancel: tokio_util::sync::CancellationToken,
+    ) -> std::pin::Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        nebula_credential::CredentialAvailabilityObservation,
+                        nebula_credential::CredentialObserveError,
+                    >,
+                > + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async {
+            Ok(nebula_credential::CredentialAvailabilityObservation::new(
+                1,
+                1,
+                nebula_credential::CredentialAvailability::Available,
+            )
+            .with_admission_epoch(1))
+        })
+    }
+}
+
+/// `resident_bound_interim` vs `resident_bound_strict`: the same bound
+/// resident acquire on an interim manager (no read) and on a strict one (a
+/// read through an in-memory observer that answers at once). The difference
+/// is the strict framework overhead beyond the read itself.
+fn bench_strict_credential_admission(c: &mut Criterion) {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .expect("bench runtime");
+    let mut group = c.benchmark_group("resource/acquire");
+    let register = |manager: &Manager| {
+        manager
+            .register(RegistrationSpec {
+                resource: BoundResident::bound(),
+                config: BenchCfg,
+                scope: ScopeLevel::Global,
+                slot_identity: SlotIdentity::Unbound,
+                topology: Resident::<BoundResident>::new(ResidentConfig::default()),
+                recovery_gate: None,
+                rate_limit: None,
+            })
+            .expect("register bound resident");
+    };
+    let (interim, strict) = rt.block_on(async {
+        let interim = Manager::new();
+        register(&interim);
+        let strict = Manager::with_config(
+            nebula_resource::ManagerConfig::default()
+                .with_credential_observer(std::sync::Arc::new(AvailableObserver)),
+        );
+        register(&strict);
+        (interim, strict)
+    });
+    let ctx = bench_ctx();
+    let options = AcquireOptions::default();
+
+    for (name, manager) in [
+        ("resident_bound_interim", &interim),
+        ("resident_bound_strict", &strict),
+    ] {
+        group.bench_function(name, |b| {
+            b.to_async(&rt).iter(|| async {
+                let guard = manager
+                    .acquire_resident::<BoundResident>(&ctx, &options)
+                    .await
+                    .expect("bound resident acquire");
+                black_box(*guard);
+                drop(guard);
+            });
+        });
+    }
+
+    group.finish();
+}
+
+criterion_group!(benches, bench_acquire, bench_strict_credential_admission);
 criterion_main!(benches);
