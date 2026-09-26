@@ -45,14 +45,9 @@ const DEFAULT_REVALIDATION_FLOOR: std::time::Duration = std::time::Duration::fro
 /// unbounded async recursion chain or retain stale snapshots indefinitely.
 const MAX_COORDINATED_REEVALUATIONS: usize = 3;
 
-/// How long a use that found its material usable waits for a refresh already
-/// crossing the provider boundary before answering `OperationBlocked`.
-const REFRESH_JOIN_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
-/// First re-check of a joined refresh; later re-checks back off to
-/// [`REFRESH_JOIN_MAX_PAUSE`].
-const REFRESH_JOIN_FIRST_PAUSE: std::time::Duration = std::time::Duration::from_millis(25);
-/// Longest pause between re-checks of a joined refresh.
-const REFRESH_JOIN_MAX_PAUSE: std::time::Duration = std::time::Duration::from_millis(400);
+use crate::runtime::availability::{
+    REFRESH_JOIN_FIRST_PAUSE, REFRESH_JOIN_MAX_PAUSE, REFRESH_JOIN_WAIT,
+};
 
 /// Whether new use of a loaded credential may proceed.
 enum MaterialAdmission {

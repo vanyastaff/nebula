@@ -1120,13 +1120,15 @@ async fn credentials_current(
 }
 
 /// Whether a credential resolution failed only for now (its store or
-/// source unavailable, or the call cancelled), as opposed to a credential
-/// that can no longer be resolved at all.
+/// source unavailable, a refresh still in flight, or the call cancelled), as
+/// opposed to a credential that can no longer be resolved at all. A refresh
+/// in flight must not retire the registration that serves the credential.
 const fn is_transient(error: &CredentialSlotResolveError) -> bool {
     matches!(
         error,
         CredentialSlotResolveError::Unavailable
             | CredentialSlotResolveError::SourceUnavailable
+            | CredentialSlotResolveError::RefreshInFlight { .. }
             | CredentialSlotResolveError::Cancelled
     )
 }

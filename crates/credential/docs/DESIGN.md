@@ -127,6 +127,25 @@ Repeating an identical `(evidence digest, decision)` pair for the same incident 
 evidence or a different decision for an already-resolved incident is `EvidenceConflict` — reconciliation resolves an
 unknown outcome, it does not overrule a recorded one.
 
+### Use admission
+
+Every path that hands material to a consumer (the resolver and slot projection
+for resources and actions) decides a new use through one credential-owned
+classification (`runtime::availability::classify_use`), so the paths cannot
+disagree on what a durable operation means:
+
+| Operation status | New use |
+|---|---|
+| open | admitted |
+| open, reauthorization required | denied (`ReauthRequired`) |
+| refresh crossing the provider boundary | joined for up to five seconds, then busy (`RefreshInFlight { retry_after }` on the slot surface) |
+| revoke, or a legacy unclassified operation, in flight | denied (`OperationBlocked`) |
+| an operation awaiting reconciliation | denied (`OperationBlocked`) until adjudicated |
+
+Uses already admitted keep the material they were handed. A refresh in flight
+is transient: resource activation keeps the registration that serves the
+credential instead of retiring it.
+
 ## Persistence boundary
 
 `CredentialSelector` is `(CredentialOwner, CredentialId)` with private fields and accessors.

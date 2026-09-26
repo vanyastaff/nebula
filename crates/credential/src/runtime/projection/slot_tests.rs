@@ -23,6 +23,11 @@ struct SlotStore {
     row: StoredCredential,
     row_after_head: Option<StoredCredential>,
     material_loads: AtomicUsize,
+    /// An operation the head reports in flight, for this many head reads.
+    in_flight: Option<(
+        nebula_storage_port::store::CredentialOperationKind,
+        AtomicUsize,
+    )>,
 }
 
 #[async_trait]
@@ -33,6 +38,20 @@ impl crate::CredentialPersistence for SlotStore {
     ) -> Result<nebula_storage_port::StoredCredentialOperationalHead, CredentialPersistenceError>
     {
         let head = self.get_head(selector).await?;
+        if let Some((operation, reads)) = &self.in_flight
+            && reads
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |left| {
+                    left.checked_sub(1)
+                })
+                .is_ok()
+        {
+            return Ok(nebula_storage_port::StoredCredentialOperationalHead::new(
+                head,
+                nebula_storage_port::store::CredentialOperationStatus::InFlight {
+                    operation: *operation,
+                },
+            ));
+        }
         let status = nebula_storage_port::store::CredentialOperationStatus::Open {
             version: head.version(),
             material_epoch: head.material_epoch(),
@@ -218,6 +237,7 @@ fn fixture_with_payload(
         row: row.into(),
         row_after_head: None,
         material_loads: AtomicUsize::new(0),
+        in_flight: None,
     };
     let mut registry = crate::CredentialRegistry::new();
     registry
@@ -782,4 +802,126 @@ async fn projection_metadata_uses_durable_owner_without_interactive_binding() {
     assert_eq!(guard.metadata().scope(), Some(&scope));
     let adapter = CredentialGuardMetadata::new(id, key, 1, 1).with_scope(bound);
     assert_eq!(adapter.scope(), Some(&scope));
+}
+
+/// A projection that meets a refresh crossing the provider boundary joins it
+/// and is served once the refresh settles, instead of failing for its whole
+/// provider call.
+#[tokio::test(start_paused = true)]
+async fn a_projection_joins_a_refresh_in_flight() {
+    let (mut store, registry, ops, scope, id, key) = fixture();
+    store.in_flight = Some((
+        nebula_storage_port::store::CredentialOperationKind::Refresh,
+        AtomicUsize::new(3),
+    ));
+    let started = tokio::time::Instant::now();
+    let _guard = resolve_fixture(
+        &store,
+        &registry,
+        &ops,
+        &scope,
+        id,
+        key,
+        Capabilities::empty(),
+        CancellationToken::new(),
+    )
+    .await
+    .expect("the projection is served once the refresh settles");
+    assert!(started.elapsed() < REFRESH_JOIN_WAIT);
+    assert_eq!(
+        store.material_loads.load(Ordering::Relaxed),
+        1,
+        "material is read only once the head admits it"
+    );
+}
+
+/// A refresh still outstanding at the bound is reported as busy, with a retry
+/// hint, never as a blocked credential.
+#[tokio::test(start_paused = true)]
+async fn a_refresh_outstanding_at_the_bound_is_busy_not_blocked() {
+    let (mut store, registry, ops, scope, id, key) = fixture();
+    store.in_flight = Some((
+        nebula_storage_port::store::CredentialOperationKind::Refresh,
+        AtomicUsize::new(usize::MAX),
+    ));
+    let started = tokio::time::Instant::now();
+    let error = resolve_fixture(
+        &store,
+        &registry,
+        &ops,
+        &scope,
+        id,
+        key,
+        Capabilities::empty(),
+        CancellationToken::new(),
+    )
+    .await
+    .expect_err("a refresh that never settles");
+    assert!(matches!(
+        error,
+        CredentialSlotResolveError::RefreshInFlight { .. }
+    ));
+    assert!(started.elapsed() <= REFRESH_JOIN_WAIT);
+    assert_eq!(store.material_loads.load(Ordering::Relaxed), 0);
+}
+
+/// A revoke in flight is never joined: the projection is refused at once.
+#[tokio::test(start_paused = true)]
+async fn a_revoke_in_flight_is_refused_without_waiting() {
+    let (mut store, registry, ops, scope, id, key) = fixture();
+    store.in_flight = Some((
+        nebula_storage_port::store::CredentialOperationKind::Revoke,
+        AtomicUsize::new(usize::MAX),
+    ));
+    let started = tokio::time::Instant::now();
+    let error = resolve_fixture(
+        &store,
+        &registry,
+        &ops,
+        &scope,
+        id,
+        key,
+        Capabilities::empty(),
+        CancellationToken::new(),
+    )
+    .await
+    .expect_err("a revoke in flight blocks new material");
+    assert_eq!(
+        error,
+        CredentialSlotResolveError::OperationBlocked {
+            operation: nebula_storage_port::store::CredentialOperationKind::Revoke,
+        }
+    );
+    assert_eq!(started.elapsed(), std::time::Duration::ZERO);
+}
+
+/// Cancelling a projection while it waits for a refresh ends the wait.
+#[tokio::test(start_paused = true)]
+async fn cancelling_a_joined_projection_ends_the_wait() {
+    let (mut store, registry, ops, scope, id, key) = fixture();
+    store.in_flight = Some((
+        nebula_storage_port::store::CredentialOperationKind::Refresh,
+        AtomicUsize::new(usize::MAX),
+    ));
+    let cancel = CancellationToken::new();
+    let trigger = cancel.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        trigger.cancel();
+    });
+    let started = tokio::time::Instant::now();
+    let error = resolve_fixture(
+        &store,
+        &registry,
+        &ops,
+        &scope,
+        id,
+        key,
+        Capabilities::empty(),
+        cancel,
+    )
+    .await
+    .expect_err("cancelled while waiting");
+    assert_eq!(error, CredentialSlotResolveError::Cancelled);
+    assert!(started.elapsed() < std::time::Duration::from_secs(1));
 }
