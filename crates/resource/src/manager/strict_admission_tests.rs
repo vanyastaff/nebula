@@ -325,6 +325,31 @@ async fn two_bound_slots_are_read_concurrently() {
 }
 
 #[tokio::test]
+async fn two_slots_bound_to_one_credential_share_one_read() {
+    let observer = ScriptedObserver::gated(available(1, 1));
+    let manager = Arc::new(strict_manager(erased(&observer), &Arc::default()));
+    let resource = register(
+        &manager,
+        StrictTwoSlot::new(),
+        Resident::new(ResidentConfig::default()),
+    )
+    .expect("register");
+    // Both slots name the same credential, owner and contract: one lane.
+    bind(&resource.db, credential_id(), 1, 1);
+    bind(&resource.cache, credential_id(), 1, 1);
+
+    for acquire in 1..=2 {
+        let pending = spawn_acquire::<StrictTwoSlot>(&manager);
+        observer.until_calls(acquire).await;
+        observer.release(1);
+        pending.await.expect("joined").expect("admitted");
+        assert_eq!(observer.calls(), acquire, "one observer call per acquire");
+    }
+    assert_eq!(metrics(&manager).reads()[0], 2);
+    assert_eq!(metrics(&manager).joined(), 0);
+}
+
+#[tokio::test]
 async fn a_denying_slot_beside_an_absent_one_is_suspended_and_absent_is_reported() {
     let observer = ScriptedObserver::answering(available(1, 1));
     let manager = strict_manager(erased(&observer), &Arc::default());

@@ -12,7 +12,8 @@
 //!    capture the row's credential gate ticket, snapshot the bound slots'
 //!    installed projections ([`ManagedResource::credential_targets`]), then
 //!    read every slot concurrently through the manager's join-next
-//!    [`CredentialReads`], each bounded by the
+//!    [`CredentialReads`] — slots bound to the same credential lane share
+//!    one read — each bounded by the
 //!    caller's deadline and [`CREDENTIAL_READ_TIMEOUT`]. A refresh in flight
 //!    is joined for a bounded wait (the credential crate's
 //!    `REFRESH_JOIN_*` bounds), each pause jittered over the upper half of
@@ -251,29 +252,41 @@ impl<R: Provider> ManagedResource<R> {
             resource.key = %R::key(),
             slots = targets.len(),
         );
-        let read_one = |target: Result<CredentialTarget, &'static str>| async move {
-            match target {
-                Ok(target) => (
-                    target.slot,
-                    read_slot(reads, &target, started, deadline).await,
-                ),
-                Err(slot) => (slot, SlotOutcome::Unobservable),
-            }
-        };
         let slots = if targets.len() == 1 {
             // The common single-slot row: no join set to allocate.
             let mut targets = targets;
             let mut slots = Vec::with_capacity(1);
-            if let Some(target) = targets.pop() {
-                slots.push(tracing::Instrument::instrument(read_one(target), span).await);
+            match targets.pop() {
+                Some(Ok(target)) => {
+                    let outcome = tracing::Instrument::instrument(
+                        read_slot(reads, &target, started, deadline),
+                        span,
+                    )
+                    .await;
+                    slots.push((target.slot, outcome));
+                },
+                Some(Err(slot)) => slots.push((slot, SlotOutcome::Unobservable)),
+                None => {},
             }
             slots
         } else {
-            tracing::Instrument::instrument(
-                futures::future::join_all(targets.into_iter().map(read_one)),
+            // Slots bound to the same credential lane share one read: two
+            // reads of one lane from one unit would run one after the other
+            // (join-next) under the same deadline and could refuse falsely.
+            let (lanes, mut slots) = group_by_lane(targets);
+            let outcomes = tracing::Instrument::instrument(
+                futures::future::join_all(
+                    lanes
+                        .iter()
+                        .map(|(target, _)| read_slot(reads, target, started, deadline)),
+                ),
                 span,
             )
-            .await
+            .await;
+            for ((_, lane_slots), outcome) in lanes.iter().zip(outcomes) {
+                slots.extend(lane_slots.iter().map(|&slot| (slot, outcome)));
+            }
+            slots
         };
         Some(StrictReading { ticket, slots })
     }
@@ -311,6 +324,38 @@ impl<R: Provider> ManagedResource<R> {
         }
         false
     }
+}
+
+/// One credential lane to read and the slots it answers for.
+type LaneRead = (CredentialTarget, Vec<&'static str>);
+
+/// Groups `targets` by credential lane — `(credential id, owner scope,
+/// contract key)` — so each lane is read once per unit. Unobservable slots
+/// are returned as outcomes already.
+fn group_by_lane(
+    targets: Vec<Result<CredentialTarget, &'static str>>,
+) -> (Vec<LaneRead>, Vec<(&'static str, SlotOutcome)>) {
+    let mut lanes: Vec<LaneRead> = Vec::with_capacity(targets.len());
+    let mut slots = Vec::with_capacity(targets.len());
+    for target in targets {
+        match target {
+            Ok(target) => {
+                let same_lane = lanes.iter_mut().find(|(lane, _)| {
+                    lane.credential_id == target.credential_id
+                        && lane.scope == target.scope
+                        && lane.key == target.key
+                });
+                if let Some((_, lane_slots)) = same_lane {
+                    lane_slots.push(target.slot);
+                } else {
+                    let slot = target.slot;
+                    lanes.push((target, vec![slot]));
+                }
+            },
+            Err(slot) => slots.push((slot, SlotOutcome::Unobservable)),
+        }
+    }
+    (lanes, slots)
 }
 
 /// A refresh-join pause drawn uniformly from `[pause / 2, pause]` by `unit`

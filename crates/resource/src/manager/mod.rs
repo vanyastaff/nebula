@@ -235,7 +235,8 @@
 //!   an explicit `warmup_pool`, each background create — reads every bound slot's
 //!   availability before it runs (`strict_admission`). The read runs after
 //!   the rate-limit wait and **outside every lock**: the row's gate ticket is
-//!   captured first, then all slots are read concurrently through the
+//!   captured first, then all slots are read concurrently (one read per
+//!   credential lane, shared by the slots bound to it) through the
 //!   manager's join-next `CredentialReads` (a caller only takes a read issued
 //!   after it arrived), each bounded by the caller's deadline and 2 s.
 //!   Under `Manager.admission`, after the post-count re-check (so a taint

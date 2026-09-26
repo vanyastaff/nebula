@@ -318,7 +318,8 @@ The strict read of one acquire:
 1. After the rate-limit wait, outside every lock: capture the row's
    `CredentialGateTicket`, snapshot each bound slot's installed projection
    (an unbound slot is skipped; material without owner-qualified metadata is
-   unobservable and refuses), and read every slot concurrently.
+   unobservable and refuses), and read every slot concurrently — slots bound
+   to the same credential lane share one read.
 2. Reads are **join-next** coalesced per credential lane (credential id,
    owner, contract key): a caller only takes a read issued at or after it
    arrived, at most one read per lane is in flight, and a dropped or
