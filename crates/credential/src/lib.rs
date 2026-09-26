@@ -271,9 +271,10 @@ pub use service::{
 
 // Execution consumers receive projected guards through a read-only boundary.
 pub use runtime::projection::{
-    CredentialGuardMetadata, CredentialProjectionRuntime, CredentialProjectionRuntimeBuildError,
-    CredentialSlotResolveError, CredentialSlotResolver, ErasedCredentialGuard,
-    ErasedCredentialGuardTypeError,
+    CredentialAvailability, CredentialAvailabilityObservation, CredentialAvailabilityObserver,
+    CredentialBlock, CredentialGuardMetadata, CredentialObserveError, CredentialProjectionRuntime,
+    CredentialProjectionRuntimeBuildError, CredentialSlotResolveError, CredentialSlotResolver,
+    ErasedCredentialGuard, ErasedCredentialGuardTypeError,
 };
 pub use runtime::state_source::StateSource;
 pub use scope::{
