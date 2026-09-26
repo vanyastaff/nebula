@@ -185,8 +185,9 @@ impl RefreshClaimRepo for PgRefreshClaimFixture {
     ) -> Result<ClaimAttempt, RepoError> {
         sqlx::query(
             "INSERT INTO credentials (id, owner_id, credential_key, state_kind, state_version, \
-             data, version, material_epoch, created_at, updated_at, reauth_required, metadata, record_state) \
-             VALUES ($1, $2, 'test.key', 'test.state', 1, '\\x00', 1, 1, \
+             data, version, material_epoch, admission_epoch, created_at, updated_at, reauth_required, \
+             metadata, record_state) \
+             VALUES ($1, $2, 'test.key', 'test.state', 1, '\\x00', 1, 1, 1, \
                      clock_timestamp(), clock_timestamp(), FALSE, '{}', 'live') \
              ON CONFLICT (id) DO NOTHING",
         )

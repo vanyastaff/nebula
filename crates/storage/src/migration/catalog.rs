@@ -225,7 +225,7 @@ fn policy_from_migrator(backend: BackendKind, migrator: &sqlx::migrate::Migrator
         .collect();
     let reserved_other_backend_versions = match backend {
         #[cfg(any(test, feature = "sqlite"))]
-        BackendKind::Sqlite => BTreeSet::from([29, 36, 37, 38]),
+        BackendKind::Sqlite => BTreeSet::from([29, 36, 37, 38, 60]),
         #[cfg(any(test, feature = "postgres"))]
         BackendKind::Postgres => BTreeSet::new(),
     };

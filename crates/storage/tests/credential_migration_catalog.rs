@@ -209,17 +209,17 @@ fn repository_catalog_matches_k2_contract() {
     let postgres = Catalog::load("postgres").expect("Postgres catalog must be valid");
     let sqlite = Catalog::load("sqlite").expect("SQLite catalog must be valid");
 
-    let expected_postgres = (1_u16..=60).collect::<Vec<_>>();
+    let expected_postgres = (1_u16..=61).collect::<Vec<_>>();
     let expected_sqlite = (1_u16..=28)
         .chain(30..=35)
         .chain([
-            39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59,
+            39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 61,
         ])
         .collect::<Vec<_>>();
     assert_eq!(
         postgres.versions(),
         expected_postgres,
-        "Postgres must reserve every logical migration through version 0060"
+        "Postgres must reserve every logical migration through version 0061"
     );
     assert_eq!(
         sqlite.versions(),
@@ -306,6 +306,15 @@ fn repository_catalog_matches_k2_contract() {
         assert_eq!(
             resource_bindings.file_name, "0052_resource_credential_bindings.sql",
             "resource credential-bindings migration filename is part of the catalog contract"
+        );
+        let admission_epoch = catalog
+            .by_version()
+            .get(&61)
+            .copied()
+            .expect("credential admission-epoch migration 0061 must exist in both backends");
+        assert_eq!(
+            admission_epoch.file_name, "0061_credential_admission_epoch.sql",
+            "credential admission-epoch migration filename is part of the catalog contract"
         );
     }
 }

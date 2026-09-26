@@ -32,7 +32,7 @@ struct ColumnShape {
     primary_key_position: i64,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 struct ExpectedColumnShape {
     name: &'static str,
     declared_type: &'static str,
@@ -113,6 +113,34 @@ const CURRENT_SHAPE: [ExpectedColumnShape; 21] = [
     column("refresh_retry_phase", "TEXT", false, None, 0),
     column("refresh_retry_kind", "TEXT", false, None, 0),
     column("refresh_retry_diagnostic_code", "TEXT", false, None, 0),
+];
+
+/// 0061 appends the admission epoch. SQLite cannot drop a column default
+/// without rebuilding the relation, so the backfill default `1` remains part
+/// of the canonical shape.
+const ADMISSION_SHAPE: [ExpectedColumnShape; 22] = [
+    CURRENT_SHAPE[0],
+    CURRENT_SHAPE[1],
+    CURRENT_SHAPE[2],
+    CURRENT_SHAPE[3],
+    CURRENT_SHAPE[4],
+    CURRENT_SHAPE[5],
+    CURRENT_SHAPE[6],
+    CURRENT_SHAPE[7],
+    CURRENT_SHAPE[8],
+    CURRENT_SHAPE[9],
+    CURRENT_SHAPE[10],
+    CURRENT_SHAPE[11],
+    CURRENT_SHAPE[12],
+    CURRENT_SHAPE[13],
+    CURRENT_SHAPE[14],
+    CURRENT_SHAPE[15],
+    CURRENT_SHAPE[16],
+    CURRENT_SHAPE[17],
+    CURRENT_SHAPE[18],
+    CURRENT_SHAPE[19],
+    CURRENT_SHAPE[20],
+    column("admission_epoch", "INTEGER", true, Some("1"), 0),
 ];
 
 const LEGACY_SENTINEL_EVENT_SHAPE: [ExpectedColumnShape; 5] = [
@@ -430,7 +458,9 @@ async fn validate_credentials_relation(
     latest: i64,
 ) -> Result<(), CredentialStoreStartupError> {
     let columns = table_shape(connection, "credentials").await?;
-    let expected = if latest >= 40 {
+    let expected = if latest >= 61 {
+        ADMISSION_SHAPE.as_slice()
+    } else if latest >= 40 {
         CURRENT_SHAPE.as_slice()
     } else if latest >= 39 {
         LIFECYCLE_SHAPE.as_slice()
@@ -453,7 +483,9 @@ async fn validate_credentials_relation(
     let Some(table_sql) = table_sql else {
         return unsupported(AdmissionReason::InvalidCredentialsRelation);
     };
-    if latest >= 40 {
+    if latest >= 61 {
+        validate_checks(&table_sql, &ADMISSION_CHECKS)?;
+    } else if latest >= 40 {
         validate_current_checks(&table_sql)?;
     } else if latest >= 39 {
         validate_lifecycle_checks(&table_sql)?;
@@ -797,6 +829,27 @@ const CURRENT_CHECKS: [(&str, &str); 9] = [
     ),
 ];
 
+/// 0061 adds one named column constraint to the 0040 contract.
+const ADMISSION_CHECKS: [(&str, &str); 10] = [
+    CURRENT_CHECKS[0],
+    CURRENT_CHECKS[1],
+    CURRENT_CHECKS[2],
+    CURRENT_CHECKS[3],
+    CURRENT_CHECKS[4],
+    CURRENT_CHECKS[5],
+    CURRENT_CHECKS[6],
+    CURRENT_CHECKS[7],
+    CURRENT_CHECKS[8],
+    (
+        "credentials_admission_epoch_range",
+        "CONSTRAINT credentials_admission_epoch_range
+         CHECK (
+             typeof(admission_epoch) = 'integer'
+             AND admission_epoch BETWEEN 1 AND 9223372036854775807
+         )",
+    ),
+];
+
 fn validate_lifecycle_checks(table_sql: &str) -> Result<(), CredentialStoreStartupError> {
     validate_checks(table_sql, &LIFECYCLE_CHECKS)
 }
@@ -1024,10 +1077,10 @@ async fn credential_rows(
     connection: &mut SqliteConnection,
     latest: i64,
 ) -> Result<Vec<LegacyCredentialRecord>, CredentialStoreStartupError> {
-    let rows = if latest >= 40 {
+    let rows = if latest >= 61 {
         sqlx::query(
             "SELECT id, owner_id, name, state_version, length(data) AS data_len,
-                    version, material_epoch, metadata, record_state,
+                    version, material_epoch, admission_epoch, metadata, record_state,
                     tombstoned_at IS NOT NULL AS tombstoned_at_present,
                     expires_at IS NOT NULL AS expires_at_present,
                     reauth_required,
@@ -1046,6 +1099,47 @@ async fn credential_rows(
                     typeof(data) AS data_type,
                     typeof(version) AS version_type,
                     typeof(material_epoch) AS material_epoch_type,
+                    typeof(admission_epoch) AS admission_epoch_type,
+                    typeof(created_at) AS created_at_type,
+                    typeof(updated_at) AS updated_at_type,
+                    typeof(expires_at) AS expires_at_type,
+                    typeof(reauth_required) AS reauth_required_type,
+                    typeof(metadata) AS metadata_type,
+                    typeof(record_state) AS record_state_type,
+                    typeof(tombstoned_at) AS tombstoned_at_type,
+                    typeof(refresh_retry_mode) AS refresh_retry_mode_type,
+                    typeof(refresh_retry_not_before) AS refresh_retry_not_before_type,
+                    typeof(refresh_retry_phase) AS refresh_retry_phase_type,
+                    typeof(refresh_retry_kind) AS refresh_retry_kind_type,
+                    typeof(refresh_retry_diagnostic_code)
+                        AS refresh_retry_diagnostic_code_type
+             FROM credentials",
+        )
+        .fetch_all(connection)
+        .await
+    } else if latest >= 40 {
+        sqlx::query(
+            "SELECT id, owner_id, name, state_version, length(data) AS data_len,
+                    version, material_epoch, NULL AS admission_epoch, metadata, record_state,
+                    tombstoned_at IS NOT NULL AS tombstoned_at_present,
+                    expires_at IS NOT NULL AS expires_at_present,
+                    reauth_required,
+                    refresh_retry_mode,
+                    refresh_retry_not_before IS NOT NULL
+                        AS refresh_retry_not_before_present,
+                    refresh_retry_phase,
+                    refresh_retry_kind,
+                    refresh_retry_diagnostic_code,
+                    typeof(id) AS id_type,
+                    typeof(owner_id) AS owner_id_type,
+                    typeof(name) AS name_type,
+                    typeof(credential_key) AS credential_key_type,
+                    typeof(state_kind) AS state_kind_type,
+                    typeof(state_version) AS state_version_type,
+                    typeof(data) AS data_type,
+                    typeof(version) AS version_type,
+                    typeof(material_epoch) AS material_epoch_type,
+                    'null' AS admission_epoch_type,
                     typeof(created_at) AS created_at_type,
                     typeof(updated_at) AS updated_at_type,
                     typeof(expires_at) AS expires_at_type,
@@ -1066,7 +1160,8 @@ async fn credential_rows(
     } else if latest >= 39 {
         sqlx::query(
             "SELECT id, owner_id, name, state_version, length(data) AS data_len,
-                    version, NULL AS material_epoch, metadata, record_state,
+                    version, NULL AS material_epoch, NULL AS admission_epoch, metadata,
+                    record_state,
                     tombstoned_at IS NOT NULL AS tombstoned_at_present,
                     expires_at IS NOT NULL AS expires_at_present,
                     reauth_required,
@@ -1084,6 +1179,7 @@ async fn credential_rows(
                     typeof(data) AS data_type,
                     typeof(version) AS version_type,
                     'null' AS material_epoch_type,
+                    'null' AS admission_epoch_type,
                     typeof(created_at) AS created_at_type,
                     typeof(updated_at) AS updated_at_type,
                     typeof(expires_at) AS expires_at_type,
@@ -1103,7 +1199,8 @@ async fn credential_rows(
     } else {
         sqlx::query(
             "SELECT id, owner_id, name, state_version, length(data) AS data_len,
-                    version, NULL AS material_epoch, metadata, NULL AS record_state,
+                    version, NULL AS material_epoch, NULL AS admission_epoch, metadata,
+                    NULL AS record_state,
                     0 AS tombstoned_at_present,
                     expires_at IS NOT NULL AS expires_at_present,
                     reauth_required,
@@ -1121,6 +1218,7 @@ async fn credential_rows(
                     typeof(data) AS data_type,
                     typeof(version) AS version_type,
                     'null' AS material_epoch_type,
+                    'null' AS admission_epoch_type,
                     typeof(created_at) AS created_at_type,
                     typeof(updated_at) AS updated_at_type,
                     typeof(expires_at) AS expires_at_type,
@@ -1155,6 +1253,7 @@ async fn credential_rows(
             let data_type = storage_type("data_type")?;
             let version_type = storage_type("version_type")?;
             let material_epoch_type = storage_type("material_epoch_type")?;
+            let admission_epoch_type = storage_type("admission_epoch_type")?;
             let created_at_type = storage_type("created_at_type")?;
             let updated_at_type = storage_type("updated_at_type")?;
             let expires_at_type = storage_type("expires_at_type")?;
@@ -1172,6 +1271,7 @@ async fn credential_rows(
             let nullable_integer = |value: &str| matches!(value, "integer" | "null");
             let has_lifecycle = latest >= 39;
             let has_retry_gate = latest >= 40;
+            let has_admission_epoch = latest >= 61;
             if id_type != "text"
                 || !nullable_text(&owner_id_type)
                 || !nullable_text(&name_type)
@@ -1182,6 +1282,8 @@ async fn credential_rows(
                 || version_type != "integer"
                 || (has_retry_gate && material_epoch_type != "integer")
                 || (!has_retry_gate && material_epoch_type != "null")
+                || (has_admission_epoch && admission_epoch_type != "integer")
+                || (!has_admission_epoch && admission_epoch_type != "null")
                 || created_at_type != "integer"
                 || updated_at_type != "integer"
                 || !nullable_integer(&expires_at_type)
@@ -1238,6 +1340,9 @@ async fn credential_rows(
                     .map_err(|_| unsupported_error(AdmissionReason::InvalidCredentialsRelation))?,
                 material_epoch: row
                     .try_get("material_epoch")
+                    .map_err(|_| unsupported_error(AdmissionReason::InvalidCredentialsRelation))?,
+                admission_epoch: row
+                    .try_get("admission_epoch")
                     .map_err(|_| unsupported_error(AdmissionReason::InvalidCredentialsRelation))?,
                 metadata: row
                     .try_get("metadata")

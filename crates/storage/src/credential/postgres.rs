@@ -1289,12 +1289,12 @@ impl CredentialPersistence for PgCredentialPersistence {
         let inserted: Result<CredentialCommitRow, sqlx::Error> = sqlx::query_as(
             "INSERT INTO credentials (
                  id, name, owner_id, credential_key, state_kind, state_version,
-                 data, version, material_epoch, created_at, updated_at, expires_at,
-                 reauth_required, metadata, record_state, tombstoned_at
+                 data, version, material_epoch, admission_epoch, created_at, updated_at,
+                 expires_at, reauth_required, metadata, record_state, tombstoned_at
              ) VALUES (
                  $1, $2, $3, $4, $5, $6,
-                 $7, 1, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, $8,
-                 $9, $10, 'live', NULL
+                 $7, 1, 1, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
+                 $8, $9, $10, 'live', NULL
              )
              RETURNING id, version, record_state, created_at, updated_at, tombstoned_at",
         )

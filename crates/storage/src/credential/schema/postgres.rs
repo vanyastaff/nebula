@@ -103,6 +103,33 @@ const CURRENT_COLUMNS: [ExpectedColumn; 21] = [
     column("refresh_retry_diagnostic_code", "text", true, None),
 ];
 
+/// 0061 appends the admission epoch; its backfill default is dropped in the
+/// same migration.
+const ADMISSION_COLUMNS: [ExpectedColumn; 22] = [
+    CURRENT_COLUMNS[0],
+    CURRENT_COLUMNS[1],
+    CURRENT_COLUMNS[2],
+    CURRENT_COLUMNS[3],
+    CURRENT_COLUMNS[4],
+    CURRENT_COLUMNS[5],
+    CURRENT_COLUMNS[6],
+    CURRENT_COLUMNS[7],
+    CURRENT_COLUMNS[8],
+    CURRENT_COLUMNS[9],
+    CURRENT_COLUMNS[10],
+    CURRENT_COLUMNS[11],
+    CURRENT_COLUMNS[12],
+    CURRENT_COLUMNS[13],
+    CURRENT_COLUMNS[14],
+    CURRENT_COLUMNS[15],
+    CURRENT_COLUMNS[16],
+    CURRENT_COLUMNS[17],
+    CURRENT_COLUMNS[18],
+    CURRENT_COLUMNS[19],
+    CURRENT_COLUMNS[20],
+    column("admission_epoch", "int8", false, None),
+];
+
 const LEGACY_SENTINEL_EVENT_COLUMNS: [ExpectedColumn; 5] = [
     column(
         "id",
@@ -465,11 +492,70 @@ async fn validate_pending_states_relation(
     Ok(())
 }
 
+/// The 0040 constraint contract, ordered by constraint name.
+const CURRENT_CONSTRAINTS: [(&str, &str, &str); 8] = [
+    (
+        "credentials_live_name_projection",
+        "c",
+        "CHECK (record_state = 'tombstoned'::text OR record_state = 'live'::text AND (name IS NULL AND ((metadata::jsonb #> '{display,display_name}'::text[]) IS NULL OR jsonb_typeof(metadata::jsonb #> '{display,display_name}'::text[]) = 'null'::text) OR name IS NOT NULL AND jsonb_typeof(metadata::jsonb #> '{display,display_name}'::text[]) = 'string'::text AND name = (metadata::jsonb #>> '{display,display_name}'::text[])))",
+    ),
+    (
+        "credentials_material_epoch_range",
+        "c",
+        "CHECK (material_epoch >= 1 AND material_epoch <= '9223372036854775807'::bigint)",
+    ),
+    (
+        "credentials_metadata_object",
+        "c",
+        "CHECK (metadata IS JSON OBJECT WITH UNIQUE KEYS)",
+    ),
+    ("credentials_pkey", "p", "PRIMARY KEY (id)"),
+    (
+        "credentials_record_shape",
+        "c",
+        "CHECK (record_state = 'live'::text AND tombstoned_at IS NULL AND version <= '9223372036854775806'::bigint OR record_state = 'tombstoned'::text AND tombstoned_at IS NOT NULL AND octet_length(data) = 0 AND name IS NULL AND expires_at IS NULL AND reauth_required = false AND metadata = '{}'::text AND refresh_retry_mode IS NULL AND refresh_retry_not_before IS NULL AND refresh_retry_phase IS NULL AND refresh_retry_kind IS NULL AND refresh_retry_diagnostic_code IS NULL)",
+    ),
+    (
+        "credentials_refresh_retry_gate_shape",
+        "c",
+        "CHECK (refresh_retry_mode IS NULL AND refresh_retry_not_before IS NULL AND refresh_retry_phase IS NULL AND refresh_retry_kind IS NULL AND refresh_retry_diagnostic_code IS NULL OR record_state = 'live'::text AND refresh_retry_mode IS NOT NULL AND refresh_retry_phase IS NOT NULL AND (refresh_retry_phase = ANY (ARRAY['before_dispatch'::text, 'provider_confirmed_not_applied'::text])) AND refresh_retry_kind IS NOT NULL AND (refresh_retry_kind = ANY (ARRAY['transient_network'::text, 'provider_unavailable'::text, 'protocol_error'::text])) AND (refresh_retry_diagnostic_code IS NULL OR (refresh_retry_diagnostic_code COLLATE \"C\") ~ '^[A-Za-z0-9_.:-]{1,64}$'::text) AND (refresh_retry_mode = 'never'::text AND refresh_retry_not_before IS NULL OR refresh_retry_mode = 'not_before'::text AND refresh_retry_not_before IS NOT NULL))",
+    ),
+    (
+        "credentials_state_version_range",
+        "c",
+        "CHECK (state_version >= 0 AND state_version <= '4294967295'::bigint)",
+    ),
+    (
+        "credentials_version_range",
+        "c",
+        "CHECK (version >= 1 AND version <= '9223372036854775807'::bigint)",
+    ),
+];
+
+/// 0061 adds the admission-epoch range, which sorts first by name.
+const ADMISSION_CONSTRAINTS: [(&str, &str, &str); 9] = [
+    (
+        "credentials_admission_epoch_range",
+        "c",
+        "CHECK (admission_epoch >= 1 AND admission_epoch <= '9223372036854775807'::bigint)",
+    ),
+    CURRENT_CONSTRAINTS[0],
+    CURRENT_CONSTRAINTS[1],
+    CURRENT_CONSTRAINTS[2],
+    CURRENT_CONSTRAINTS[3],
+    CURRENT_CONSTRAINTS[4],
+    CURRENT_CONSTRAINTS[5],
+    CURRENT_CONSTRAINTS[6],
+    CURRENT_CONSTRAINTS[7],
+];
+
 async fn validate_credentials_relation(
     connection: &mut PgConnection,
     latest: i64,
 ) -> Result<(), CredentialStoreStartupError> {
-    let expected = if latest >= 40 {
+    let expected = if latest >= 61 {
+        &ADMISSION_COLUMNS[..]
+    } else if latest >= 40 {
         &CURRENT_COLUMNS[..]
     } else if latest >= 39 {
         &LIFECYCLE_COLUMNS[..]
@@ -481,45 +567,10 @@ async fn validate_credentials_relation(
     }
 
     let constraints = constraint_shapes(connection, "credentials").await?;
-    let constraint_contract: &[(&str, &str, &str)] = if latest >= 40 {
-        &[
-            (
-                "credentials_live_name_projection",
-                "c",
-                "CHECK (record_state = 'tombstoned'::text OR record_state = 'live'::text AND (name IS NULL AND ((metadata::jsonb #> '{display,display_name}'::text[]) IS NULL OR jsonb_typeof(metadata::jsonb #> '{display,display_name}'::text[]) = 'null'::text) OR name IS NOT NULL AND jsonb_typeof(metadata::jsonb #> '{display,display_name}'::text[]) = 'string'::text AND name = (metadata::jsonb #>> '{display,display_name}'::text[])))",
-            ),
-            (
-                "credentials_material_epoch_range",
-                "c",
-                "CHECK (material_epoch >= 1 AND material_epoch <= '9223372036854775807'::bigint)",
-            ),
-            (
-                "credentials_metadata_object",
-                "c",
-                "CHECK (metadata IS JSON OBJECT WITH UNIQUE KEYS)",
-            ),
-            ("credentials_pkey", "p", "PRIMARY KEY (id)"),
-            (
-                "credentials_record_shape",
-                "c",
-                "CHECK (record_state = 'live'::text AND tombstoned_at IS NULL AND version <= '9223372036854775806'::bigint OR record_state = 'tombstoned'::text AND tombstoned_at IS NOT NULL AND octet_length(data) = 0 AND name IS NULL AND expires_at IS NULL AND reauth_required = false AND metadata = '{}'::text AND refresh_retry_mode IS NULL AND refresh_retry_not_before IS NULL AND refresh_retry_phase IS NULL AND refresh_retry_kind IS NULL AND refresh_retry_diagnostic_code IS NULL)",
-            ),
-            (
-                "credentials_refresh_retry_gate_shape",
-                "c",
-                "CHECK (refresh_retry_mode IS NULL AND refresh_retry_not_before IS NULL AND refresh_retry_phase IS NULL AND refresh_retry_kind IS NULL AND refresh_retry_diagnostic_code IS NULL OR record_state = 'live'::text AND refresh_retry_mode IS NOT NULL AND refresh_retry_phase IS NOT NULL AND (refresh_retry_phase = ANY (ARRAY['before_dispatch'::text, 'provider_confirmed_not_applied'::text])) AND refresh_retry_kind IS NOT NULL AND (refresh_retry_kind = ANY (ARRAY['transient_network'::text, 'provider_unavailable'::text, 'protocol_error'::text])) AND (refresh_retry_diagnostic_code IS NULL OR (refresh_retry_diagnostic_code COLLATE \"C\") ~ '^[A-Za-z0-9_.:-]{1,64}$'::text) AND (refresh_retry_mode = 'never'::text AND refresh_retry_not_before IS NULL OR refresh_retry_mode = 'not_before'::text AND refresh_retry_not_before IS NOT NULL))",
-            ),
-            (
-                "credentials_state_version_range",
-                "c",
-                "CHECK (state_version >= 0 AND state_version <= '4294967295'::bigint)",
-            ),
-            (
-                "credentials_version_range",
-                "c",
-                "CHECK (version >= 1 AND version <= '9223372036854775807'::bigint)",
-            ),
-        ]
+    let constraint_contract: &[(&str, &str, &str)] = if latest >= 61 {
+        &ADMISSION_CONSTRAINTS
+    } else if latest >= 40 {
+        &CURRENT_CONSTRAINTS
     } else if latest >= 39 {
         &[
             (
@@ -801,10 +852,26 @@ async fn credential_rows(
     connection: &mut PgConnection,
     latest: i64,
 ) -> Result<Vec<LegacyCredentialRecord>, CredentialStoreStartupError> {
-    let rows = if latest >= 40 {
+    let rows = if latest >= 61 {
         sqlx::query(
             "SELECT id, owner_id, name, state_version, octet_length(data)::bigint AS data_len,
-                    version, material_epoch, metadata, record_state,
+                    version, material_epoch, admission_epoch, metadata, record_state,
+                    tombstoned_at IS NOT NULL AS tombstoned_at_present,
+                    expires_at IS NOT NULL AS expires_at_present,
+                    reauth_required, refresh_retry_mode,
+                    refresh_retry_not_before IS NOT NULL
+                        AS refresh_retry_not_before_present,
+                    refresh_retry_phase, refresh_retry_kind,
+                    refresh_retry_diagnostic_code
+             FROM credentials",
+        )
+        .fetch_all(connection)
+        .await
+    } else if latest >= 40 {
+        sqlx::query(
+            "SELECT id, owner_id, name, state_version, octet_length(data)::bigint AS data_len,
+                    version, material_epoch, NULL::bigint AS admission_epoch, metadata,
+                    record_state,
                     tombstoned_at IS NOT NULL AS tombstoned_at_present,
                     expires_at IS NOT NULL AS expires_at_present,
                     reauth_required, refresh_retry_mode,
@@ -819,7 +886,8 @@ async fn credential_rows(
     } else if latest >= 39 {
         sqlx::query(
             "SELECT id, owner_id, name, state_version, octet_length(data)::bigint AS data_len,
-                    version, NULL::bigint AS material_epoch, metadata, record_state,
+                    version, NULL::bigint AS material_epoch, NULL::bigint AS admission_epoch,
+                    metadata, record_state,
                     tombstoned_at IS NOT NULL AS tombstoned_at_present,
                     expires_at IS NOT NULL AS expires_at_present,
                     reauth_required, NULL::text AS refresh_retry_mode,
@@ -834,7 +902,8 @@ async fn credential_rows(
     } else {
         sqlx::query(
             "SELECT id, owner_id, name, state_version, octet_length(data)::bigint AS data_len,
-                    version, NULL::bigint AS material_epoch, metadata, NULL::text AS record_state,
+                    version, NULL::bigint AS material_epoch, NULL::bigint AS admission_epoch,
+                    metadata, NULL::text AS record_state,
                     FALSE AS tombstoned_at_present,
                     expires_at IS NOT NULL AS expires_at_present,
                     reauth_required, NULL::text AS refresh_retry_mode,
@@ -875,6 +944,9 @@ async fn credential_rows(
                     .map_err(|_| unsupported_error(AdmissionReason::InvalidCredentialsRelation))?,
                 material_epoch: row
                     .try_get("material_epoch")
+                    .map_err(|_| unsupported_error(AdmissionReason::InvalidCredentialsRelation))?,
+                admission_epoch: row
+                    .try_get("admission_epoch")
                     .map_err(|_| unsupported_error(AdmissionReason::InvalidCredentialsRelation))?,
                 metadata: row
                     .try_get("metadata")

@@ -12,8 +12,8 @@ use super::{
 
 fn backend_versions(backend: BackendKind) -> Vec<i64> {
     match backend {
-        BackendKind::Sqlite => (1..=28).chain(30..=35).chain([39, 40, 41]).collect(),
-        BackendKind::Postgres => (1..=41).collect(),
+        BackendKind::Sqlite => (1..=28).chain(30..=35).chain(39..=59).chain([61]).collect(),
+        BackendKind::Postgres => (1..=61).collect(),
     }
 }
 
@@ -33,7 +33,7 @@ fn policy(backend: BackendKind) -> BackendMigrationPolicy {
         .expect("the canonical test catalog must not be empty");
     let canonical = versions.into_iter().map(migration_spec).collect();
     let reserved_other_backend_versions = match backend {
-        BackendKind::Sqlite => BTreeSet::from([29, 36, 37, 38]),
+        BackendKind::Sqlite => BTreeSet::from([29, 36, 37, 38, 60]),
         BackendKind::Postgres => BTreeSet::new(),
     };
 
@@ -67,6 +67,7 @@ fn credential(metadata: &str) -> LegacyCredentialRecord {
         data_len: 0,
         version: 1,
         material_epoch: None,
+        admission_epoch: None,
         metadata: metadata.to_owned(),
         record_state: None,
         tombstoned_at_present: false,
@@ -145,6 +146,11 @@ fn migrated_observation(
             credential.material_epoch.get_or_insert(1);
         }
     }
+    if latest >= 61 {
+        for credential in &mut credentials {
+            credential.admission_epoch.get_or_insert(1);
+        }
+    }
     SchemaObservation {
         migration_ledger: MigrationLedger::Present(canonical_ledger(policy, latest)),
         has_user_relations: true,
@@ -218,8 +224,8 @@ fn rejects_a_supported_ledger_without_the_credentials_relation() {
 #[test]
 fn accepts_exact_successful_backend_prefixes_at_or_above_the_floor() {
     for (backend, accepted_heads) in [
-        (BackendKind::Sqlite, &[30, 35, 39, 40, 41][..]),
-        (BackendKind::Postgres, &[30, 38, 39, 40, 41][..]),
+        (BackendKind::Sqlite, &[30, 35, 39, 40, 41, 59, 61][..]),
+        (BackendKind::Postgres, &[30, 38, 39, 40, 41, 60, 61][..]),
     ] {
         let policy = policy(backend);
         for latest in accepted_heads {
@@ -248,6 +254,7 @@ fn sqlite_prefix_is_logical_and_does_not_require_postgres_only_versions() {
     assert!(!present_versions.contains(&36));
     assert!(!present_versions.contains(&37));
     assert!(!present_versions.contains(&38));
+    assert!(!present_versions.contains(&60));
     assert_eq!(
         classify_schema(&policy, &observation),
         Ok(SchemaAdmission::CanonicalPrefix {
@@ -347,7 +354,7 @@ fn rejects_failed_duplicate_gapped_and_out_of_order_ledgers() {
 fn rejects_other_backend_reserved_unknown_and_future_versions() {
     let sqlite_policy = policy(BackendKind::Sqlite);
 
-    for migration in [29, 36, 37, 38] {
+    for migration in [29, 36, 37, 38, 60] {
         let mut rows = canonical_ledger(&sqlite_policy, 35);
         rows.push(MigrationLedgerRow {
             version: migration,
@@ -368,7 +375,7 @@ fn rejects_other_backend_reserved_unknown_and_future_versions() {
         );
     }
 
-    for migration in [42, 777] {
+    for migration in [62, 777] {
         let mut rows = canonical_ledger(&sqlite_policy, sqlite_policy.current_version);
         rows.push(MigrationLedgerRow {
             version: migration,
@@ -510,6 +517,59 @@ fn material_epoch_presence_and_range_match_the_0040_schema_boundary() {
             ),
             AdmissionReason::InvalidMaterialEpoch,
             "{backend:?} pre-0040 shapes must not smuggle future epoch state"
+        );
+    }
+}
+
+#[test]
+fn admission_epoch_presence_and_range_match_the_0061_schema_boundary() {
+    for backend in [BackendKind::Sqlite, BackendKind::Postgres] {
+        let policy = policy(backend);
+        assert_eq!(policy.current_version, 61);
+
+        let admitted =
+            migrated_observation(&policy, policy.current_version, vec![credential("{}")]);
+        assert_eq!(
+            admitted.credentials[0].admission_epoch,
+            Some(1),
+            "{backend:?} fixture must carry the backfilled epoch"
+        );
+
+        let mut missing_current =
+            migrated_observation(&policy, policy.current_version, vec![credential("{}")]);
+        missing_current.credentials[0].admission_epoch = None;
+        assert_eq!(
+            rejected_reason(&policy, &missing_current),
+            AdmissionReason::InvalidAdmissionEpoch,
+            "{backend:?} a 0061 schema must carry an explicit admission epoch"
+        );
+
+        for out_of_range in [0, -1, i64::MIN] {
+            let mut zero_current =
+                migrated_observation(&policy, policy.current_version, vec![credential("{}")]);
+            zero_current.credentials[0].admission_epoch = Some(out_of_range);
+            assert_eq!(
+                rejected_reason(&policy, &zero_current),
+                AdmissionReason::InvalidAdmissionEpoch,
+                "{backend:?} a 0061 schema must reject admission epoch {out_of_range}"
+            );
+        }
+
+        let pre_0061 = if backend == BackendKind::Sqlite {
+            59
+        } else {
+            60
+        };
+        let mut unexpected_pre_0061 = credential("{}");
+        unexpected_pre_0061.record_state = Some("live".to_owned());
+        unexpected_pre_0061.admission_epoch = Some(1);
+        assert_eq!(
+            rejected_reason(
+                &policy,
+                &migrated_observation(&policy, pre_0061, vec![unexpected_pre_0061])
+            ),
+            AdmissionReason::InvalidAdmissionEpoch,
+            "{backend:?} pre-0061 shapes must not smuggle future epoch state"
         );
     }
 }
@@ -866,6 +926,7 @@ fn startup_schema_errors_are_closed_and_secret_free() {
             | AdmissionReason::InvalidCredentialVersion
             | AdmissionReason::LiveVersionExhausted
             | AdmissionReason::InvalidMaterialEpoch
+            | AdmissionReason::InvalidAdmissionEpoch
             | AdmissionReason::InvalidRecordState
             | AdmissionReason::InvalidTombstoneShape
             | AdmissionReason::InvalidRefreshRetryGate

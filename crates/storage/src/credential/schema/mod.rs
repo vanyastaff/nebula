@@ -37,6 +37,7 @@ pub(crate) struct LegacyCredentialRecord {
     pub(crate) data_len: usize,
     pub(crate) version: i64,
     pub(crate) material_epoch: Option<i64>,
+    pub(crate) admission_epoch: Option<i64>,
     pub(crate) metadata: String,
     pub(crate) record_state: Option<String>,
     pub(crate) tombstoned_at_present: bool,
@@ -128,6 +129,9 @@ pub enum AdmissionReason {
     LiveVersionExhausted,
     /// A current credential row has an absent or non-positive material epoch.
     InvalidMaterialEpoch,
+    /// A credential row has an absent or non-positive admission epoch at or
+    /// above migration 0061, or carries one below it.
+    InvalidAdmissionEpoch,
     /// A current row has an unknown or contradictory structural state.
     InvalidRecordState,
     /// A current tombstone still carries live-only fields or noncanonical metadata.
@@ -209,6 +213,9 @@ impl fmt::Display for AdmissionReason {
             },
             Self::InvalidMaterialEpoch => {
                 formatter.write_str("credential material epoch is invalid")
+            },
+            Self::InvalidAdmissionEpoch => {
+                formatter.write_str("credential admission epoch is invalid")
             },
             Self::InvalidRecordState => formatter.write_str("credential record state is invalid"),
             Self::InvalidTombstoneShape => {
@@ -454,6 +461,13 @@ fn validate_credentials(
             }
         } else if record.material_epoch.is_some() {
             return rejected(AdmissionReason::InvalidMaterialEpoch);
+        }
+        if latest >= 61 {
+            if record.admission_epoch.is_none_or(|epoch| epoch < 1) {
+                return rejected(AdmissionReason::InvalidAdmissionEpoch);
+            }
+        } else if record.admission_epoch.is_some() {
+            return rejected(AdmissionReason::InvalidAdmissionEpoch);
         }
 
         let metadata = parse_unique_json(&record.metadata)?;
