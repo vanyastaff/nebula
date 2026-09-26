@@ -186,8 +186,10 @@
 //! - **I4 publish under the lock.** A benign change — `reload_config`, or a
 //!   credential install that returns `SlotUpdate::Installed` — publishes a
 //!   successor generation under `Manager.admission` and leaves the
-//!   predecessor open. A retired cell publishes nothing. (Credential
-//!   suspension will store the successor before cancelling the old one.)
+//!   predecessor open. A retired or credential-suspended cell publishes
+//!   nothing; a suspended row admits again only when the suspension is
+//!   reopened, which publishes a fresh generation after the suspension
+//!   already closed every generation of the previous span.
 //!
 //! The closing token is a cooperative notice: it stops no work, revokes no
 //! borrow, and rolls nothing back. A lease is still released normally, and

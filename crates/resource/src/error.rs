@@ -24,6 +24,31 @@ use std::{fmt, time::Duration};
 
 use nebula_core::{CredentialKey, ResourceKey};
 
+/// Why a bound credential denies use at its current material, suspending the
+/// credential-bound rows that depend on it.
+///
+/// Secret-free and deliberately coarse: it names the operator action, not the
+/// credential's internal state or incident.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CredentialUnavailableReason {
+    /// The credential needs interactive reauthentication; use resumes only
+    /// after an operator (or the account owner) reauthenticates it.
+    ReauthRequired,
+    /// A credential operation (a revoke in flight, or one awaiting
+    /// reconciliation) blocks use for now.
+    OperationBlocked,
+}
+
+impl fmt::Display for CredentialUnavailableReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::ReauthRequired => "reauthentication required",
+            Self::OperationBlocked => "credential operation blocks use",
+        })
+    }
+}
+
 /// How the framework should handle this error.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
