@@ -497,6 +497,16 @@ let admitted = recorded.readmit_against(fresh)?;
 
 ### Fixed
 
+- **A resource lease is no longer handed out after a revoke that straddled
+  its create.** A resident or bounded acquire whose create was in flight when
+  `taint_slot`/`revoke_slot` returned now fails with `Revoked` (or `Cancelled`
+  after a removal or shutdown) instead of serving the revoked credential; the
+  built entry is released normally and the recovery gate is not tripped. A
+  `Limited::run*` wait on a revoked, removed or shutting-down row now ends with
+  a `Cancelled` limit error instead of holding the revoke or shutdown drain for
+  the length of a provider pause; `reload_config` now serializes with acquire
+  admission.
+
 - **Resource and action slots join a refresh in flight.** Slot projection
   refused every new use while a refresh crossed the provider boundary, so each
   refresh was an outage for the resources and actions using the credential,
@@ -624,6 +634,15 @@ let admitted = recorded.readmit_against(fresh)?;
   fix lands before any operator wires real env vars).
 
 ### Added
+
+- **Resource leases observe a closing notice.** Every acquire is admitted under
+  its row's admission generation; `ResourceGuard::closing()` returns a
+  `LeaseClosing` (`is_closing`, `closed`, `into_closed`; re-exported from
+  `nebula_sdk::integration::resource`) that fires on credential taint/revoke,
+  row removal, and manager shutdown (a graceful one when its drain starts), and
+  never on a config reload, a credential refresh, or a same-identity
+  replacement. The notice is cooperative: it stops no work and revokes no
+  borrow, and the guard is released normally.
 
 - **Per-resource rate limits, shared across workers.** `nebula-resilience`
   gains a GCRA limiter over a `LimitStore` contract (`reserve` with

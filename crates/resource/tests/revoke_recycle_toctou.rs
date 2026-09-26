@@ -389,9 +389,12 @@ async fn in_flight_create_completing_after_revoke_is_destroyed() {
          admitted — the fresh-create revoke-epoch fence must destroy it and \
          fail the acquire (HikariCP #1836)",
     );
-    assert!(
-        matches!(*err.kind(), ErrorKind::Permanent | ErrorKind::Revoked),
-        "the fenced acquire must fail closed (got {err:?})"
+    // The pooled fresh-create fence fails the create itself with `Revoked`,
+    // before the admission-generation hand-out check could refuse it.
+    assert_eq!(
+        *err.kind(),
+        ErrorKind::Revoked,
+        "the fenced acquire must fail closed as revoked (got {err:?})"
     );
     assert!(
         resource.destroy_calls.load(Ordering::SeqCst) >= 1,

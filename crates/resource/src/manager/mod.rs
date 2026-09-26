@@ -154,6 +154,45 @@
 //! already-authenticated in-flight session — that is impossible and a
 //! deliberately weaker, different goal.
 //!
+//! ## Admission generations
+//!
+//! Every row owns an admission cell (`runtime::admission`): a current
+//! **admission generation** (a sequence number plus a closing token), all of
+//! whose tokens descend from one per-row terminal token, itself a child of
+//! the manager's cancellation token. The invariants:
+//!
+//! - **I1 capture.** `run_acquire` reads the current generation under
+//!   `Manager.admission`, after the post-count re-check and the phase check.
+//!   A row with none refuses the acquire (`Revoked` if tainted, otherwise
+//!   `Cancelled`). The guard keeps the captured generation for its whole
+//!   lease; [`ResourceGuard::closing`](crate::ResourceGuard::closing) always
+//!   answers with that generation's token.
+//! - **I2 close before return.** `ManagedResource::taint` stores the taint
+//!   flag, then retires the cell (cancelling every generation, including
+//!   older ones still held by leases), then notifies — all before
+//!   `taint_under_admission` returns, so the drain that follows already
+//!   finds every lease closing. Retirement of a removed, shut-down or
+//!   dropped-manager row retires the cell the same way; a same-identity
+//!   replacement does not (its leases stay valid, canon §13.2).
+//! - **I3 hand-out check.** After `dispatch()` returns a guard, a captured
+//!   generation that closed while the acquire was in flight refuses the
+//!   hand-out: the guard is released through the ordinary path with the
+//!   in-flight slot attached, so the drain waits for its entry to settle,
+//!   and the caller gets `Revoked` (tainted) or `Cancelled`. Neither trips
+//!   the recovery gate. This closes the window in which a resident or
+//!   bounded create straddling a taint used to hand out a lease after the
+//!   taint returned; the pooled revoke-epoch fence above still fails such a
+//!   create earlier.
+//! - **I4 publish under the lock.** A benign change — `reload_config`, or a
+//!   credential install that returns `SlotUpdate::Installed` — publishes a
+//!   successor generation under `Manager.admission` and leaves the
+//!   predecessor open. A retired cell publishes nothing. (Credential
+//!   suspension will store the successor before cancelling the old one.)
+//!
+//! The closing token is a cooperative notice: it stops no work, revokes no
+//! borrow, and rolls nothing back. A lease is still released normally, and
+//! the per-resource and shutdown drains still wait for it.
+//!
 //! # Architectural rationale (durable record)
 //!
 //! These decisions have no separate ADR; this section is their durable
@@ -727,6 +766,7 @@ impl Manager {
         self.cancel.cancel();
         for managed in self.registry.all_managed() {
             managed.begin_close();
+            managed.retire_admission();
         }
     }
 
@@ -1098,6 +1138,9 @@ impl Drop for InFlightCounter {
         }
     }
 }
+
+#[cfg(test)]
+mod admission_generation_tests;
 
 #[cfg(test)]
 mod shutdown_post_count_race_tests;

@@ -30,7 +30,8 @@ pub use nebula_resource::topology::{
 };
 pub use nebula_resource::{
     Bounded, BoundedMode, BoundedProvider, CheckCost, ClassifyError, Error, ErrorKind,
-    HasCredentialSlots, PoolConfig, PoolProvider, Pooled, Provider, ReleaseOutcome, Resident,
-    ResidentConfig, ResidentProvider, Resource, ResourceConfig, ResourceContext, ResourceGuard,
-    ResourceMetadataDraft, SlotCell, TeardownCx, TeardownReason, TopologyTag, no_credential_slots,
+    HasCredentialSlots, LeaseClosing, PoolConfig, PoolProvider, Pooled, Provider, ReleaseOutcome,
+    Resident, ResidentConfig, ResidentProvider, Resource, ResourceConfig, ResourceContext,
+    ResourceGuard, ResourceMetadataDraft, SlotCell, TeardownCx, TeardownReason, TopologyTag,
+    no_credential_slots,
 };

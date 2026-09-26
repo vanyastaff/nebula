@@ -268,7 +268,7 @@ pub use dedup::{DedupKey, SlotIdentity};
 pub use error::{Error, ErrorKind};
 pub use events::{ResourceEvent, RetirementFailureStage, RetirementOrigin};
 pub use ext::HasResourcesExt;
-pub use guard::{ReleaseOutcome, ResourceGuard};
+pub use guard::{LeaseClosing, ReleaseOutcome, ResourceGuard};
 pub use manager::{
     DrainTimeoutPolicy, Manager, ManagerConfig, RegisterOptions, RegistrationSpec,
     ResourceHealthSnapshot, RevokeTail, ShutdownConfig, ShutdownError, ShutdownReport,

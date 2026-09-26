@@ -85,6 +85,12 @@ impl ManagedHandle for DeferredRetirementHandle {
         false
     }
 
+    fn retire_admission(&self) {}
+
+    fn publish_admission(&self) -> Option<u64> {
+        None
+    }
+
     fn phase_changed(&self) -> &Notify {
         static NEVER: Notify = Notify::const_new();
         &NEVER

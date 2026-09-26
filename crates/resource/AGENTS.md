@@ -49,6 +49,7 @@ Known defects of peer pools, breakers and workflow engines. A change that reintr
 |--------|-------------------|
 | Acquire/guard/teardown | [acquire_lifecycle](tests/acquire_lifecycle.rs), [guard_release](tests/guard_release.rs), [recovery_and_shutdown](tests/recovery_and_shutdown.rs), [shutdown_race](tests/shutdown_race.rs). |
 | Custom topologies or revoke fencing | [custom_topology_manager](tests/custom_topology_manager.rs), [revoke_recycle_toctou](tests/revoke_recycle_toctou.rs). |
+| Admission generations / lease closing | `src/runtime/admission_tests.rs`, `src/manager/admission_generation_tests.rs`, [rate_limit](tests/rate_limit.rs) (`Limited` waits), [resident_rotation_race](tests/resident_rotation_race.rs) (hand-out refusal), [public_surface_compile_fail](tests/public_surface_compile_fail.rs). Invariants I1–I4: `manager` module docs, "Admission generations". |
 | Credential rotation | [resident_rotation_race](tests/resident_rotation_race.rs), [credential_slot_epoch_fold](tests/credential_slot_epoch_fold.rs), both with `--features rotation`. |
 | Derives | [derive_resource_compile_fail](tests/derive_resource_compile_fail.rs), [resource_config_derive](tests/resource_config_derive.rs), and SDK [derive_external_contract](../sdk/tests/derive_external_contract.rs). |
 

@@ -230,12 +230,12 @@ async fn graceful_shutdown_blocks_in_flight_acquire() {
             );
         },
         Err(e) if matches!(e.kind(), ErrorKind::Cancelled) => {
-            // Defense A: shutdown beat us into `lookup()`. The acquire
-            // fast-failed via the `shutting_down` check. Either path is
-            // race-safe.
-            //
-            // Note: this branch is unlikely with our 30ms head start but
-            // tolerated for scheduler-jitter resilience on slow CI.
+            // Either Defense A (shutdown beat us into `lookup()` and the
+            // acquire fast-failed via the `shutting_down` check), or the
+            // in-flight acquire was counted, waited for by the drain, and
+            // refused at hand-out: shutdown closed the store and the
+            // admission generation it was admitted under. Every path is
+            // race-safe; none hands out a guard for a drained row.
             assert!(
                 shutdown_result.is_ok(),
                 "shutdown should still succeed when acquire fast-fails, got {shutdown_result:?}"

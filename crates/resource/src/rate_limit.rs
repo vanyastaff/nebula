@@ -669,6 +669,12 @@ pub struct ResourceLimiter {
     /// quota, so an acquire only honours pauses (see
     /// [`ready_to_acquire`](Self::ready_to_acquire)).
     per_call: AtomicBool,
+    /// The admission cell of the registry row this limiter belongs to, set
+    /// once at registration. A [`Limited`] wait ends when the row's
+    /// admission generation closes. Unset for a detached limiter, and never
+    /// carried over by [`inherit_pauses`](Self::inherit_pauses): a
+    /// replacement row has its own cell.
+    admission: std::sync::OnceLock<Arc<crate::runtime::admission::AdmissionCell>>,
 }
 
 /// What a caller does once its wait is over.
@@ -859,6 +865,54 @@ impl ResourceLimiter {
             key_refusals: Mutex::new(std::collections::HashMap::new()),
             key_waits: Mutex::new(std::collections::HashMap::new()),
             refunds: Arc::new(AtomicUsize::new(0)),
+            admission: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// Binds this limiter to its registry row's admission cell. Called once,
+    /// at registration; a second call is ignored.
+    pub(crate) fn attach_admission(&self, cell: Arc<crate::runtime::admission::AdmissionCell>) {
+        if self.admission.set(cell).is_err() {
+            tracing::debug!(
+                target: "nebula_resource::rate_limit",
+                "rate limiter already bound to an admission cell"
+            );
+        }
+    }
+
+    /// The row's admission generation a [`Limited`] call is admitted under,
+    /// read once at the call's entry. `Ok(None)` for a detached limiter;
+    /// `Cancelled` when the row admits nothing (retired, or its current
+    /// generation is closed).
+    fn admission_at_entry(
+        &self,
+    ) -> Result<Option<Arc<crate::runtime::admission::AdmissionGeneration>>, Error> {
+        let Some(cell) = self.admission.get() else {
+            return Ok(None);
+        };
+        cell.current()
+            .map(Some)
+            .ok_or_else(|| self.admission_closed())
+    }
+
+    /// The refusal of a [`Limited`] call whose row stopped admitting work.
+    fn admission_closed(&self) -> Error {
+        self.tagged(Error::cancelled())
+    }
+
+    /// Waits for `wait` unless the row's admission generation, read now,
+    /// closes first. See [`Limited::run`] for why.
+    async fn wait_admitted(
+        &self,
+        wait: impl Future<Output = Result<(), Error>>,
+    ) -> Result<(), Error> {
+        let Some(generation) = self.admission_at_entry()? else {
+            return wait.await;
+        };
+        tokio::select! {
+            biased;
+            () = generation.token().cancelled() => Err(self.admission_closed()),
+            ready = wait => ready,
         }
     }
 
@@ -1775,10 +1829,25 @@ impl<C, T> fmt::Debug for Limited<C, T> {
 impl<C, T> Limited<C, T> {
     /// Runs one call under the limit, waiting for a permit as long as needed.
     ///
+    /// **Interim surface.** Each `run` closure books one permit and is one
+    /// unit of work; the managed call facade will replace this family.
+    ///
+    /// On a registry row the wait also ends when the row stops admitting
+    /// work: a credential taint or revoke, the row's removal, or a manager
+    /// shutdown (graceful ones included, from the start of the drain). The
+    /// row's admission generation is read once, when the call starts; a call
+    /// started after the row closed is refused without waiting. A config
+    /// reload or a credential refresh does not interrupt a wait. Only the
+    /// wait is raced: once the permit is granted the provider call runs to
+    /// completion. A limiter not bound to a row (built outside a manager)
+    /// never ends a wait this way.
+    ///
     /// # Errors
     ///
     /// [`LimitedError::Limit`] when the limit refused the call (see
-    /// [`ResourceLimiter::ready`]), [`LimitedError::Call`] with the client's
+    /// [`ResourceLimiter::ready`]) — with
+    /// [`ErrorKind::Cancelled`](crate::ErrorKind::Cancelled) when the row
+    /// stopped admitting work — and [`LimitedError::Call`] with the client's
     /// own error otherwise.
     pub async fn run<R, E>(
         &self,
@@ -1806,7 +1875,7 @@ impl<C, T> Limited<C, T> {
         T: Throttle<R, E>,
     {
         self.limits
-            .ready(deadline)
+            .wait_admitted(self.limits.ready(deadline))
             .await
             .map_err(LimitedError::Limit)?;
         let outcome = call(&self.client).await;
@@ -1855,7 +1924,7 @@ impl<C, T> Limited<C, T> {
     {
         let value = value.to_string();
         self.limits
-            .ready_for(dimension, &value, deadline)
+            .wait_admitted(self.limits.ready_for(dimension, &value, deadline))
             .await
             .map_err(LimitedError::Limit)?;
         let outcome = call(&self.client).await;
@@ -1867,6 +1936,10 @@ impl<C, T> Limited<C, T> {
 
     /// The client, bypassing the limit. Use only for calls the provider does
     /// not count (a local builder, a cached lookup).
+    ///
+    /// **Interim surface**, replaced with [`run`](Self::run) by the managed
+    /// call facade. It also bypasses the row's admission: a call made
+    /// through it is not refused once the row stops admitting work.
     #[must_use]
     pub const fn unlimited(&self) -> &C {
         &self.client

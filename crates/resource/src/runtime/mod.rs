@@ -17,6 +17,7 @@
 //! `self.topology.{try_reserve, acquire, phase, load, tag}` directly.
 
 pub(crate) mod acquire_loop;
+pub(crate) mod admission;
 pub(crate) mod bounded;
 mod destroy_batch;
 pub(crate) mod managed;

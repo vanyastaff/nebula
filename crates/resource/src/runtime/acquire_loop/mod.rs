@@ -298,10 +298,12 @@ where
                 // the create was in flight must NOT be admitted to the idle pool
                 // or handed onward: destroy it and fail the acquire closed.
                 // Non-pooling topologies (Resident / permit-only) never enter
-                // the idle store — the instance is one-shot per acquire and a
-                // concurrent revoke is handled by the credential cell + rotation
-                // hook (it serves, then the hook clears the shared binding), so
-                // they must NOT fail-closed here.
+                // the idle store, so they must NOT fail-closed here: the built
+                // instance stays with the topology (the rotation hook clears a
+                // resident master's binding), while the lease itself is refused
+                // by `Manager::run_acquire`'s hand-out check, because the taint
+                // closed the admission generation this acquire captured. See
+                // the `manager` module docs, "Admission generations".
                 if self.topology.pools() && self.store.current_revoke_epoch() != create_epoch {
                     Self::observe_cleanup_submission(
                         self.queue_destroy(cancel_guard.defuse(), TeardownReason::Revoked),

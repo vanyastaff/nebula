@@ -618,6 +618,11 @@ impl Manager {
             })?;
             match update {
                 crate::SlotUpdate::Installed => {
+                    // New material is live: acquires from here on are admitted
+                    // under a successor generation. A refresh is benign, so
+                    // leases admitted under the predecessor stay open.
+                    let admission = managed.publish_admission();
+                    tracing::debug!(?admission, "admission generation after credential install");
                     let Some((generation, Some(metadata))) =
                         managed.credential_slot_projection(slot)
                     else {
