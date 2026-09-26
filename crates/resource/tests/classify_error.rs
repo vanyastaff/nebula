@@ -195,7 +195,7 @@ fn runtime_retry_after_named_field() {
 fn credential_unavailable_is_retryable_with_reason_hints() {
     use nebula_resource::CredentialUnavailableReason;
 
-    let reauth = Error::credential_unavailable(CredentialUnavailableReason::ReauthRequired, None);
+    let reauth = Error::credential_unavailable(CredentialUnavailableReason::ReauthRequired);
     assert!(matches!(
         reauth.kind(),
         ErrorKind::CredentialUnavailable {
@@ -210,8 +210,7 @@ fn credential_unavailable_is_retryable_with_reason_hints() {
         "RESOURCE:CREDENTIAL_UNAVAILABLE"
     );
 
-    let blocked =
-        Error::credential_unavailable(CredentialUnavailableReason::OperationBlocked, None);
+    let blocked = Error::credential_unavailable(CredentialUnavailableReason::OperationBlocked);
     assert!(blocked.is_retryable());
     assert_eq!(blocked.retry_after(), Some(Duration::from_secs(1)));
 }

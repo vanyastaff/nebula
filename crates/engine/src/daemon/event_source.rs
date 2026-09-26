@@ -737,16 +737,14 @@ mod tests {
         ] {
             assert!(
                 matches!(
-                    classify_resource_error(ResourceError::credential_unavailable(reason, None)),
+                    classify_resource_error(ResourceError::credential_unavailable(reason)),
                     ActionError::Retryable { .. }
                 ),
                 "a suspended row is retryable on subscribe",
             );
             assert!(
                 matches!(
-                    classify_resource_error_outcome(ResourceError::credential_unavailable(
-                        reason, None
-                    )),
+                    classify_resource_error_outcome(ResourceError::credential_unavailable(reason)),
                     RecvOutcome::Continue
                 ),
                 "a suspended row continues the recv loop",

@@ -882,8 +882,9 @@ impl ResourceLimiter {
 
     /// The row's admission generation a [`Limited`] call is admitted under,
     /// read once at the call's entry. `Ok(None)` for a detached limiter;
-    /// `Cancelled` when the row admits nothing (retired, or its current
-    /// generation is closed).
+    /// `CredentialUnavailable` when a bound credential suspends the row;
+    /// `Cancelled` when the row otherwise admits nothing (retired, or its
+    /// current generation is closed).
     fn admission_at_entry(
         &self,
     ) -> Result<Option<Arc<crate::runtime::admission::AdmissionGeneration>>, Error> {
@@ -892,12 +893,25 @@ impl ResourceLimiter {
         };
         cell.current()
             .map(Some)
-            .ok_or_else(|| self.admission_closed())
+            .ok_or_else(|| match cell.suspension() {
+                Some(suspension) => self.tagged(Error::credential_unavailable(suspension.reason())),
+                None => self.tagged(Error::cancelled()),
+            })
     }
 
-    /// The refusal of a [`Limited`] call whose row stopped admitting work.
-    fn admission_closed(&self) -> Error {
-        self.tagged(Error::cancelled())
+    /// The refusal of a [`Limited`] call whose admission generation closed
+    /// while it waited: `CredentialUnavailable` when a credential suspension
+    /// closed it, otherwise `Cancelled`.
+    fn admission_closed(
+        &self,
+        generation: &crate::runtime::admission::AdmissionGeneration,
+    ) -> Error {
+        match generation.close_cause() {
+            Some(crate::runtime::admission::CloseCause::Credential(reason)) => {
+                self.tagged(Error::credential_unavailable(reason))
+            },
+            None => self.tagged(Error::cancelled()),
+        }
     }
 
     /// Waits for `wait` unless the row's admission generation, read now,
@@ -911,7 +925,7 @@ impl ResourceLimiter {
         };
         tokio::select! {
             biased;
-            () = generation.token().cancelled() => Err(self.admission_closed()),
+            () = generation.token().cancelled() => Err(self.admission_closed(&generation)),
             ready = wait => ready,
         }
     }
@@ -1833,22 +1847,24 @@ impl<C, T> Limited<C, T> {
     /// unit of work; the managed call facade will replace this family.
     ///
     /// On a registry row the wait also ends when the row stops admitting
-    /// work: a credential taint or revoke, the row's removal, or a manager
-    /// shutdown (graceful ones included, from the start of the drain). The
-    /// row's admission generation is read once, when the call starts; a call
-    /// started after the row closed is refused without waiting. A config
-    /// reload or a credential refresh does not interrupt a wait. Only the
-    /// wait is raced: once the permit is granted the provider call runs to
-    /// completion. A limiter not bound to a row (built outside a manager)
-    /// never ends a wait this way.
+    /// work: a credential taint or revoke, a credential suspension, the
+    /// row's removal, or a manager shutdown (graceful ones included, from the
+    /// start of the drain). The row's admission generation is read once, when
+    /// the call starts; a call started after the row closed is refused
+    /// without waiting. A config reload or a credential refresh does not
+    /// interrupt a wait. Only the wait is raced: once the permit is granted
+    /// the provider call runs to completion. A limiter not bound to a row
+    /// (built outside a manager) never ends a wait this way.
     ///
     /// # Errors
     ///
     /// [`LimitedError::Limit`] when the limit refused the call (see
     /// [`ResourceLimiter::ready`]) — with
-    /// [`ErrorKind::Cancelled`](crate::ErrorKind::Cancelled) when the row
-    /// stopped admitting work — and [`LimitedError::Call`] with the client's
-    /// own error otherwise.
+    /// [`ErrorKind::CredentialUnavailable`](crate::ErrorKind::CredentialUnavailable)
+    /// when a credential suspension stopped the row admitting work and
+    /// [`ErrorKind::Cancelled`](crate::ErrorKind::Cancelled) when anything
+    /// else did — and [`LimitedError::Call`] with the client's own error
+    /// otherwise.
     pub async fn run<R, E>(
         &self,
         call: impl AsyncFnOnce(&C) -> Result<R, E>,

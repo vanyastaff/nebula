@@ -173,11 +173,8 @@ mod gate_admission_tests {
         for error in [
             Error::backpressure("pool full"),
             Error::revoked("tainted by revoke"),
-            Error::credential_unavailable(crate::CredentialUnavailableReason::ReauthRequired, None),
-            Error::credential_unavailable(
-                crate::CredentialUnavailableReason::OperationBlocked,
-                None,
-            ),
+            Error::credential_unavailable(crate::CredentialUnavailableReason::ReauthRequired),
+            Error::credential_unavailable(crate::CredentialUnavailableReason::OperationBlocked),
         ] {
             let gate = idle_gate();
             let admission = admit_through_gate(&Some(Arc::clone(&gate))).expect("idle admits");

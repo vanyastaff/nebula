@@ -131,10 +131,6 @@ impl AdmissionGeneration {
 
     /// Why this generation's span was closed by a suspension, if it was.
     /// `None` for an open generation and for one closed only by retirement.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "read by the suspension hand-out refusal (A3.3)")
-    )]
     pub(crate) fn close_cause(&self) -> Option<CloseCause> {
         self.span.cause.get().copied()
     }
@@ -269,10 +265,6 @@ impl AdmissionCell {
     /// including older benign ones still held by leases — and leaves the row
     /// with no current generation. Every call advances the gate epoch, so a
     /// reopen ticket captured before it is refused.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "wired by the row suspension API (A3.3)")
-    )]
     pub(crate) fn suspend(
         &self,
         slot: &str,
@@ -305,10 +297,6 @@ impl AdmissionCell {
     /// Clears `slot`'s suspension if `ticket` still equals the gate epoch.
     /// Clearing the last suspended slot publishes a fresh generation in the
     /// span opened by the suspension; the generations it closed stay closed.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "wired by the row suspension API (A3.3)")
-    )]
     pub(crate) fn reopen(&self, slot: &str, ticket: u64) -> ReopenTransition {
         if self.terminal.is_cancelled() {
             return ReopenTransition::Retired;
@@ -336,28 +324,16 @@ impl AdmissionCell {
     /// The ticket a later [`reopen`](Self::reopen) must present: capture it
     /// before observing the credential, so a suspension landing after the
     /// observation supersedes the reopen.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "wired by the row suspension API (A3.3)")
-    )]
     pub(crate) fn gate_epoch(&self) -> u64 {
         self.gate().epoch
     }
 
     /// Whether a bound credential currently suspends the row.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "wired by the row suspension API (A3.3)")
-    )]
     pub(crate) fn is_suspended(&self) -> bool {
         self.suspended.load(Ordering::Acquire)
     }
 
     /// The suspended slots and their reasons, or `None` when admitting.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "wired by the row status snapshot (A3.3)")
-    )]
     pub(crate) fn suspension(&self) -> Option<CredentialSuspension> {
         let gate = self.gate();
         (!gate.by_slot.is_empty()).then(|| {

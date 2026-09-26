@@ -42,8 +42,10 @@ pub enum CredentialUnavailableReason {
 }
 
 impl CredentialUnavailableReason {
-    /// The default wait before retrying a call refused for this reason.
-    fn default_retry_after(self) -> Duration {
+    /// The wait before retrying a call refused for this reason: 30 s for
+    /// reauthentication (operator-paced), 1 s for an operation block.
+    #[must_use]
+    pub fn retry_after(self) -> Duration {
         match self {
             Self::ReauthRequired => Duration::from_secs(30),
             Self::OperationBlocked => Duration::from_secs(1),
@@ -108,12 +110,13 @@ pub enum ErrorKind {
     /// admitted before the suspension observe closing.
     ///
     /// Non-terminal and not a backend fault: it never trips the recovery
-    /// gate. Retry after `retry_after`.
+    /// gate. Retry after [`Error::retry_after`], which the reason fixes.
+    ///
+    /// The hint is derived from `reason` rather than carried: an extra
+    /// `Option<Duration>` would grow every [`Error`] by a word.
     CredentialUnavailable {
         /// Why the credential denies use.
         reason: CredentialUnavailableReason,
-        /// Suggested wait before retrying.
-        retry_after: Option<Duration>,
     },
 }
 
@@ -234,18 +237,15 @@ impl Error {
     /// - `Backpressure` errors return a default 50ms hint (pool slots free up quickly).
     /// - `Revoked` errors return a 100ms hint (re-registration is operator-paced;
     ///   a short floor avoids a hot retry loop without stalling recovery).
-    /// - `CredentialUnavailable` errors return their explicit hint, or by
-    ///   default 1 s for an operation block (operations settle quickly) and
-    ///   30 s for reauthentication (operator-paced).
+    /// - `CredentialUnavailable` errors return 1 s for an operation block
+    ///   (operations settle quickly) and 30 s for reauthentication
+    ///   (operator-paced).
     pub fn retry_after(&self) -> Option<Duration> {
         match &self.kind {
             ErrorKind::Exhausted { retry_after } => *retry_after,
             ErrorKind::Backpressure => Some(Duration::from_millis(50)),
             ErrorKind::Revoked => Some(Duration::from_millis(100)),
-            ErrorKind::CredentialUnavailable {
-                reason,
-                retry_after,
-            } => Some(retry_after.unwrap_or_else(|| reason.default_retry_after())),
+            ErrorKind::CredentialUnavailable { reason } => Some(reason.retry_after()),
             _ => None,
         }
     }
@@ -310,18 +310,11 @@ impl Error {
     }
 
     /// Creates a credential-unavailable error: a bound credential denies use
-    /// at its current material and the row is suspended. With no explicit
-    /// `retry_after`, [`retry_after`](Self::retry_after) reports the
-    /// reason's default.
-    pub fn credential_unavailable(
-        reason: CredentialUnavailableReason,
-        retry_after: Option<Duration>,
-    ) -> Self {
+    /// at its current material and the row is suspended.
+    /// [`retry_after`](Self::retry_after) reports the reason's hint.
+    pub fn credential_unavailable(reason: CredentialUnavailableReason) -> Self {
         Self::new(
-            ErrorKind::CredentialUnavailable {
-                reason,
-                retry_after,
-            },
+            ErrorKind::CredentialUnavailable { reason },
             format!("bound credential unavailable: {reason}"),
         )
     }
@@ -609,13 +602,11 @@ mod tests {
     fn credential_unavailable_is_retryable_unavailable_with_reason_hints() {
         use nebula_error::{Classify, ErrorCategory};
 
-        let reauth =
-            Error::credential_unavailable(CredentialUnavailableReason::ReauthRequired, None);
+        let reauth = Error::credential_unavailable(CredentialUnavailableReason::ReauthRequired);
         assert_eq!(
             *reauth.kind(),
             ErrorKind::CredentialUnavailable {
                 reason: CredentialUnavailableReason::ReauthRequired,
-                retry_after: None,
             }
         );
         assert!(reauth.is_retryable());
@@ -630,15 +621,12 @@ mod tests {
             Some(Duration::from_secs(30))
         );
 
-        let blocked =
-            Error::credential_unavailable(CredentialUnavailableReason::OperationBlocked, None);
+        let blocked = Error::credential_unavailable(CredentialUnavailableReason::OperationBlocked);
         assert_eq!(blocked.retry_after(), Some(Duration::from_secs(1)));
-
-        let explicit = Error::credential_unavailable(
-            CredentialUnavailableReason::OperationBlocked,
-            Some(Duration::from_millis(250)),
+        assert!(
+            size_of::<ErrorKind>() <= 16,
+            "the reason-derived hint keeps ErrorKind two words"
         );
-        assert_eq!(explicit.retry_after(), Some(Duration::from_millis(250)));
 
         let core = reauth.to_core_error();
         assert!(matches!(

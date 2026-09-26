@@ -383,6 +383,9 @@ use crate::{
 };
 
 pub(crate) mod acquire;
+mod credential_gate;
+#[cfg(test)]
+mod credential_suspension_tests;
 #[cfg(test)]
 mod event_bus_tests;
 mod gate;
@@ -395,6 +398,9 @@ mod shutdown_session;
 #[cfg(test)]
 mod shutdown_session_tests;
 
+pub use credential_gate::{
+    CredentialGateTicket, CredentialReopenOutcome, CredentialSuspendOutcome,
+};
 pub use options::{
     DrainTimeoutPolicy, ManagerConfig, RegisterOptions, RegistrationSpec, ShutdownConfig,
 };
@@ -424,6 +430,9 @@ pub struct ResourceHealthSnapshot {
     /// outstanding leases still hold after a reload or recreate; more than one
     /// means a successor is serving while older generations drain.
     pub live_instances: Option<usize>,
+    /// The bound credential slots suspending this row, if any. A suspended
+    /// row refuses acquires whatever its `phase`.
+    pub credential_suspension: Option<crate::state::CredentialSuspension>,
 }
 
 /// Central registry and lifecycle manager for all resources.
@@ -819,6 +828,7 @@ impl Manager {
             metrics: self.metrics.as_ref().map(ResourceOpsMetrics::snapshot),
             generation: managed.generation(),
             live_instances: crate::topology::Topology::<R>::live_instances(&managed.topology),
+            credential_suspension: managed.admission.suspension(),
         })
     }
 
@@ -877,6 +887,9 @@ impl Manager {
     /// - [`NotFound`](crate::ErrorKind::NotFound) — no such row.
     /// - [`Revoked`](crate::ErrorKind::Revoked) — a credential revoke tainted
     ///   the row.
+    /// - [`CredentialUnavailable`](crate::ErrorKind::CredentialUnavailable) —
+    ///   a bound credential suspends the row; returned at once rather than
+    ///   waited out, because reauthentication is operator-paced.
     /// - [`Backpressure`](crate::ErrorKind::Backpressure) — the row left
     ///   `Initializing` for a phase that refuses acquires (draining, shutting
     ///   down, failed), or `deadline` passed first.
@@ -906,6 +919,11 @@ impl Manager {
                     "{key}: resource was revoked before it could serve"
                 ))
                 .with_resource_key(key.clone()));
+            }
+            // Reauthentication is operator-paced, so waiting out a
+            // suspension here would only stall the caller: fail fast.
+            if let Some(suspension) = managed.credential_suspension() {
+                return Err(Self::credential_unavailable_error(key, suspension.reason()));
             }
             let phase = managed.phase();
             if phase.is_accepting() {
