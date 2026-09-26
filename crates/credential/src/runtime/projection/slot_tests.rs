@@ -3,10 +3,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use async_trait::async_trait;
 use chrono::Utc;
 use nebula_storage_port::{
-    CredentialCommit, CredentialCreate, CredentialMaterialEpoch, CredentialOwner,
-    CredentialReplacement, CredentialSelector, CredentialTombstone, CredentialVersion,
-    RefreshRetrySnapshot, SecretBytes, StoredCredentialHead, StoredLiveCredential,
-    StoredTombstonedCredential,
+    CredentialAdmissionEpoch, CredentialCommit, CredentialCreate, CredentialMaterialEpoch,
+    CredentialOwner, CredentialReplacement, CredentialSelector, CredentialTombstone,
+    CredentialVersion, RefreshRetrySnapshot, SecretBytes, StoredCredentialHead,
+    StoredLiveCredential, StoredTombstonedCredential,
 };
 
 use super::*;
@@ -28,6 +28,10 @@ struct SlotStore {
         nebula_storage_port::store::CredentialOperationKind,
         AtomicUsize,
     )>,
+    /// Use revision the secret-free head reports.
+    head_admission_epoch: CredentialAdmissionEpoch,
+    /// Use revision the status read with the material reports.
+    admission_epoch: CredentialAdmissionEpoch,
 }
 
 #[async_trait]
@@ -55,6 +59,7 @@ impl crate::CredentialPersistence for SlotStore {
         let status = nebula_storage_port::store::CredentialOperationStatus::Open {
             version: head.version(),
             material_epoch: head.material_epoch(),
+            admission_epoch: self.head_admission_epoch,
             reauth_required: head.reauth_required(),
         };
         Ok(nebula_storage_port::StoredCredentialOperationalHead::new(
@@ -87,6 +92,7 @@ impl crate::CredentialPersistence for SlotStore {
             nebula_storage_port::store::CredentialOperationStatus::Open {
                 version: live.version(),
                 material_epoch: live.material_epoch(),
+                admission_epoch: self.admission_epoch,
                 reauth_required: live.reauth_required(),
             },
         )
@@ -238,6 +244,8 @@ fn fixture_with_payload(
         row_after_head: None,
         material_loads: AtomicUsize::new(0),
         in_flight: None,
+        head_admission_epoch: CredentialAdmissionEpoch::MIN,
+        admission_epoch: CredentialAdmissionEpoch::MIN,
     };
     let mut registry = crate::CredentialRegistry::new();
     registry
@@ -322,11 +330,48 @@ async fn resolves_opaque_guard_with_authoritative_ordering_metadata() {
     assert_eq!(erased.metadata().credential_id(), id);
     assert_eq!(erased.metadata().credential_key(), &key);
     assert_eq!(erased.metadata().material_epoch(), 1);
+    assert_eq!(erased.metadata().admission_epoch(), 1);
     assert_eq!(erased.metadata().revision(), 1);
     let typed = erased
         .into_typed::<SecretToken>()
         .expect("registered scheme type extracts");
     assert_eq!(typed.token().expose_secret(), SECRET_CANARY);
+}
+
+/// The admission epoch on the guard is the one read in the same snapshot as
+/// the material, not the earlier head's: a use closed between the two reads
+/// must not be carried under the stale revision.
+#[tokio::test]
+async fn metadata_carries_the_admission_epoch_of_the_final_status_read() {
+    let (mut store, registry, ops, scope, id, key) = fixture();
+    let head = CredentialAdmissionEpoch::try_from(3_i64).expect("valid epoch");
+    let final_read = CredentialAdmissionEpoch::try_from(5_i64).expect("valid epoch");
+    store.head_admission_epoch = head;
+    store.admission_epoch = final_read;
+
+    let erased = resolve_fixture(
+        &store,
+        &registry,
+        &ops,
+        &scope,
+        id,
+        key,
+        Capabilities::empty(),
+        CancellationToken::new(),
+    )
+    .await
+    .expect("an open credential projects");
+
+    assert_eq!(erased.metadata().admission_epoch(), 5);
+    assert_eq!(erased.metadata().material_epoch(), 1);
+}
+
+#[test]
+fn adapter_metadata_defaults_to_the_first_admission_epoch() {
+    let key = CredentialKey::new(BearerTokenCredential::KEY).expect("fixture key is valid");
+    let metadata = CredentialGuardMetadata::new(CredentialId::new(), key, 4, 9);
+    assert_eq!(metadata.admission_epoch(), 1);
+    assert_eq!(metadata.with_admission_epoch(7).admission_epoch(), 7);
 }
 
 #[tokio::test]

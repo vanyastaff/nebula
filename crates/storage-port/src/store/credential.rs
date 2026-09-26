@@ -57,6 +57,11 @@ pub enum CredentialPersistenceError {
     #[error("credential material epoch exhausted")]
     MaterialEpochExhausted,
 
+    /// A transition that closes credential use cannot advance the admission
+    /// epoch. Nothing was committed.
+    #[error("credential admission epoch exhausted")]
+    AdmissionEpochExhausted,
+
     /// A persisted row violates the closed credential record contract.
     #[error("credential record is corrupt")]
     CorruptRecord,
@@ -375,6 +380,7 @@ mod tests {
             },
             CredentialPersistenceError::VersionExhausted,
             CredentialPersistenceError::MaterialEpochExhausted,
+            CredentialPersistenceError::AdmissionEpochExhausted,
             CredentialPersistenceError::CorruptRecord,
             CredentialPersistenceError::Unavailable,
             CredentialPersistenceError::OutcomeUnknown,

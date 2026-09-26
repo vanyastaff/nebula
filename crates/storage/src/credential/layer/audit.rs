@@ -322,6 +322,9 @@ fn audit_result<T>(result: &Result<T, CredentialPersistenceError>) -> AuditResul
         Err(CredentialPersistenceError::MaterialEpochExhausted) => {
             AuditResult::Error("material_epoch_exhausted".to_owned())
         },
+        Err(CredentialPersistenceError::AdmissionEpochExhausted) => {
+            AuditResult::Error("admission_epoch_exhausted".to_owned())
+        },
         Err(CredentialPersistenceError::CorruptRecord) => {
             AuditResult::Error("corrupt_record".to_owned())
         },

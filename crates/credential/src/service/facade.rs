@@ -405,7 +405,8 @@ impl CredentialService {
                 key: CredentialAlreadyExistsKey::Name,
             } => CredentialServiceError::NameAlreadyExists,
             CredentialPersistenceError::VersionExhausted
-            | CredentialPersistenceError::MaterialEpochExhausted => {
+            | CredentialPersistenceError::MaterialEpochExhausted
+            | CredentialPersistenceError::AdmissionEpochExhausted => {
                 CredentialServiceError::VersionExhausted
             },
             CredentialPersistenceError::OutcomeUnknown => CredentialServiceError::OutcomeUnknown,

@@ -721,6 +721,28 @@ impl ScriptedStore {
     }
 }
 
+/// An open status for this double. The resolver under test never reads the
+/// use revision, so the double advances it in lockstep with the material
+/// epoch — every material advance closes use — rather than modelling the
+/// claim-side close edges it has no claims for.
+fn scripted_open_status(
+    version: CredentialVersion,
+    material_epoch: CredentialMaterialEpoch,
+    reauth_required: bool,
+) -> Result<nebula_storage_port::store::CredentialOperationStatus, CredentialPersistenceError> {
+    Ok(
+        nebula_storage_port::store::CredentialOperationStatus::Open {
+            version,
+            material_epoch,
+            admission_epoch: nebula_storage_port::CredentialAdmissionEpoch::try_from(
+                material_epoch.get(),
+            )
+            .map_err(|_| CredentialPersistenceError::CorruptRecord)?,
+            reauth_required,
+        },
+    )
+}
+
 #[async_trait::async_trait]
 impl CredentialPersistence for ScriptedStore {
     async fn get_operational_head(
@@ -729,11 +751,11 @@ impl CredentialPersistence for ScriptedStore {
     ) -> Result<nebula_storage_port::StoredCredentialOperationalHead, CredentialPersistenceError>
     {
         let head = self.get_head(selector).await?;
-        let status = nebula_storage_port::store::CredentialOperationStatus::Open {
-            version: head.version(),
-            material_epoch: head.material_epoch(),
-            reauth_required: head.reauth_required(),
-        };
+        let status = scripted_open_status(
+            head.version(),
+            head.material_epoch(),
+            head.reauth_required(),
+        )?;
         Ok(nebula_storage_port::StoredCredentialOperationalHead::new(
             head, status,
         ))
@@ -745,19 +767,20 @@ impl CredentialPersistence for ScriptedStore {
         state_kind: Option<&str>,
     ) -> Result<Vec<nebula_storage_port::StoredCredentialOperationalHead>, CredentialPersistenceError>
     {
-        Ok(self
-            .list_heads(owner, state_kind)
+        self.list_heads(owner, state_kind)
             .await?
             .into_iter()
             .map(|head| {
-                let status = nebula_storage_port::store::CredentialOperationStatus::Open {
-                    version: head.version(),
-                    material_epoch: head.material_epoch(),
-                    reauth_required: head.reauth_required(),
-                };
-                nebula_storage_port::StoredCredentialOperationalHead::new(head, status)
+                let status = scripted_open_status(
+                    head.version(),
+                    head.material_epoch(),
+                    head.reauth_required(),
+                )?;
+                Ok(nebula_storage_port::StoredCredentialOperationalHead::new(
+                    head, status,
+                ))
             })
-            .collect())
+            .collect()
     }
 
     async fn operation_status(
@@ -806,12 +829,10 @@ impl CredentialPersistence for ScriptedStore {
         let StoredCredential::Live(live) = &*row else {
             return Err(CredentialPersistenceError::NotFound);
         };
-        Ok(
-            nebula_storage_port::store::CredentialOperationStatus::Open {
-                version: live.version(),
-                material_epoch: live.material_epoch(),
-                reauth_required: live.reauth_required(),
-            },
+        scripted_open_status(
+            live.version(),
+            live.material_epoch(),
+            live.reauth_required(),
         )
     }
 

@@ -57,7 +57,9 @@
 
 use std::time::Duration;
 
-use crate::{CredentialMaterialEpoch, CredentialSelector, CredentialVersion};
+use crate::{
+    CredentialAdmissionEpoch, CredentialMaterialEpoch, CredentialSelector, CredentialVersion,
+};
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
@@ -139,6 +141,10 @@ pub enum CredentialOperationStatus {
         version: CredentialVersion,
         /// Current material authority.
         material_epoch: CredentialMaterialEpoch,
+        /// Current use revision. A use admitted at one value must not
+        /// continue at another; see [`CredentialAdmissionEpoch`] for the
+        /// invariant it carries.
+        admission_epoch: CredentialAdmissionEpoch,
         /// Whether interactive reauthorization is required.
         reauth_required: bool,
     },

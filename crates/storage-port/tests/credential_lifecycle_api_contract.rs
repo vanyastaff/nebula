@@ -4,13 +4,13 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use nebula_core::CredentialId;
 use nebula_storage_port::{
-    CredentialAlreadyExistsKey, CredentialCommit, CredentialCreate, CredentialMaterial,
-    CredentialMaterialEpoch, CredentialMaterialTransition, CredentialOperationKind,
-    CredentialOperationStatus, CredentialOwner, CredentialPersistence, CredentialPersistenceError,
-    CredentialRecordState, CredentialReplacement, CredentialSelector, CredentialTombstone,
-    CredentialVersion, MaterialUpdate, RefreshRetryAdmission, RefreshRetrySnapshot,
-    RefreshRetryTransition, SecretBytes, StoredCredential, StoredCredentialHead,
-    StoredCredentialOperationalHead,
+    CredentialAdmissionEpoch, CredentialAlreadyExistsKey, CredentialCommit, CredentialCreate,
+    CredentialMaterial, CredentialMaterialEpoch, CredentialMaterialTransition,
+    CredentialOperationKind, CredentialOperationStatus, CredentialOwner, CredentialPersistence,
+    CredentialPersistenceError, CredentialRecordState, CredentialReplacement, CredentialSelector,
+    CredentialTombstone, CredentialVersion, MaterialUpdate, RefreshRetryAdmission,
+    RefreshRetrySnapshot, RefreshRetryTransition, SecretBytes, StoredCredential,
+    StoredCredentialHead, StoredCredentialOperationalHead,
 };
 use serde_json::{Map, Value};
 
@@ -120,6 +120,68 @@ fn command_accessors_expose_only_the_frozen_field_split() {
     assert!(snapshot.reauth_required());
     assert_eq!(snapshot.admission(), &RefreshRetryAdmission::Open);
     assert_eq!(snapshot.into_admission(), RefreshRetryAdmission::Open);
+}
+
+#[test]
+fn admission_epoch_is_positive_and_fails_closed_at_the_terminal_value() {
+    assert!(CredentialAdmissionEpoch::try_from(0_i64).is_err());
+    assert!(CredentialAdmissionEpoch::try_from(-1_i64).is_err());
+    assert!(CredentialAdmissionEpoch::try_from(i64::MAX as u64 + 1).is_err());
+    assert_eq!(
+        CredentialAdmissionEpoch::try_from(1_u64),
+        Ok(CredentialAdmissionEpoch::MIN)
+    );
+    assert_eq!(CredentialAdmissionEpoch::MIN.get(), 1);
+    assert_eq!(CredentialAdmissionEpoch::MIN.to_string(), "1");
+    assert_eq!(
+        CredentialAdmissionEpoch::MIN
+            .next()
+            .map(CredentialAdmissionEpoch::get),
+        Ok(2)
+    );
+    assert_eq!(
+        CredentialAdmissionEpoch::MAX.next(),
+        Err(CredentialPersistenceError::AdmissionEpochExhausted)
+    );
+    assert_eq!(
+        CredentialAdmissionEpoch::try_from(i64::MAX),
+        Ok(CredentialAdmissionEpoch::MAX)
+    );
+}
+
+#[test]
+fn replacement_advances_admission_on_every_advance_and_every_reauth_change() {
+    let expected = CredentialVersion::MIN;
+    let replacement = |reauth_required, transition| {
+        CredentialReplacement::new(expected, None, reauth_required, Map::new(), transition)
+    };
+    let preserve = || CredentialMaterialTransition::preserve(RefreshRetryTransition::Preserve);
+
+    // A display or retry-gate write closes no use.
+    assert!(!replacement(false, preserve()).advances_admission_epoch(false));
+    assert!(!replacement(true, preserve()).advances_admission_epoch(true));
+    // Any change of reauthentication does, even when authority is preserved.
+    assert!(replacement(true, preserve()).advances_admission_epoch(false));
+    assert!(replacement(false, preserve()).advances_admission_epoch(true));
+    // Every advance does, with or without new material.
+    for stored in [false, true] {
+        assert!(
+            replacement(
+                stored,
+                CredentialMaterialTransition::advance(MaterialUpdate::Unchanged)
+            )
+            .advances_admission_epoch(stored)
+        );
+        assert!(
+            replacement(
+                stored,
+                CredentialMaterialTransition::advance(MaterialUpdate::Replace(material_with(
+                    vec![1]
+                )))
+            )
+            .advances_admission_epoch(stored)
+        );
+    }
 }
 
 #[test]
@@ -234,6 +296,7 @@ fn closed_error_code(error: &CredentialPersistenceError) -> &'static str {
         } => "already_exists_name",
         CredentialPersistenceError::VersionExhausted => "version_exhausted",
         CredentialPersistenceError::MaterialEpochExhausted => "material_epoch_exhausted",
+        CredentialPersistenceError::AdmissionEpochExhausted => "admission_epoch_exhausted",
         CredentialPersistenceError::CorruptRecord => "corrupt_record",
         CredentialPersistenceError::Unavailable => "unavailable",
         CredentialPersistenceError::OutcomeUnknown => "outcome_unknown",

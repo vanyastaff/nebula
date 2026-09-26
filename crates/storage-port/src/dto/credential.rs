@@ -250,6 +250,97 @@ impl TryFrom<u64> for CredentialMaterialEpoch {
     }
 }
 
+/// Monotonic use revision of a live credential.
+///
+/// The backend advances it in the same transaction as every write that
+/// closes credential use — an advancing material replacement, a change of
+/// `reauth_required`, a won revoke claim, a provider-egress sentinel, and
+/// threshold escalation — and in no other write. It never moves the row
+/// [`CredentialVersion`] or `updated_at`; an admission bump is not an
+/// aggregate mutation.
+///
+/// A consumer that admitted a use at one epoch must not keep using the
+/// credential at another. The value is observed only through
+/// [`CredentialOperationStatus::Open`](crate::CredentialOperationStatus::Open).
+///
+/// # Invariant I-A
+///
+/// Two `Open` observations of a live credential with equal admission epochs
+/// have equal material epochs and equal `reauth_required`, and no `InFlight`,
+/// `ReconciliationRequired`, or `Open { reauth_required: true }` observation
+/// lies between them. Every interval that denies use starts with a write
+/// that advances the epoch; the two edges that reopen use without a write (a
+/// sentinel-free revoke claim reaching expiry, and a pre-sweep release) are
+/// therefore always observed at a newer epoch than the one before the denial.
+///
+/// # Limitation: in-memory claim store
+///
+/// The in-memory refresh-claim repository is a separate object from any
+/// credential store and cannot advance this epoch on claim transitions. The
+/// invariant holds only where claims and credentials share one transactional
+/// backend (SQLite, PostgreSQL); the in-memory pair is a test and
+/// single-process fixture, not a deployment backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CredentialAdmissionEpoch(i64);
+
+impl CredentialAdmissionEpoch {
+    /// First backend-authored admission epoch.
+    pub const MIN: Self = Self(1);
+
+    /// Last representable admission epoch.
+    pub const MAX: Self = Self(i64::MAX);
+
+    /// Return the database representation.
+    #[must_use]
+    pub const fn get(self) -> i64 {
+        self.0
+    }
+
+    /// Advance after a transition that closes credential use.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CredentialPersistenceError::AdmissionEpochExhausted`] at the
+    /// terminal representable epoch.
+    pub const fn next(self) -> Result<Self, CredentialPersistenceError> {
+        if self.0 == Self::MAX.0 {
+            return Err(CredentialPersistenceError::AdmissionEpochExhausted);
+        }
+        Ok(Self(self.0 + 1))
+    }
+}
+
+impl fmt::Display for CredentialAdmissionEpoch {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+/// Persisted credential admission epoch lies outside `1..=i64::MAX`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("credential admission epoch is outside the supported range")]
+pub struct CredentialAdmissionEpochError;
+
+impl TryFrom<i64> for CredentialAdmissionEpoch {
+    type Error = CredentialAdmissionEpochError;
+
+    fn try_from(value: i64) -> Result<Self, Self::Error> {
+        if value < Self::MIN.0 {
+            return Err(CredentialAdmissionEpochError);
+        }
+        Ok(Self(value))
+    }
+}
+
+impl TryFrom<u64> for CredentialAdmissionEpoch {
+    type Error = CredentialAdmissionEpochError;
+
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        let value = i64::try_from(value).map_err(|_| CredentialAdmissionEpochError)?;
+        Self::try_from(value)
+    }
+}
+
 /// Opaque credential material installed by an advancing replacement.
 ///
 /// The four values are the material columns of a live record: the
@@ -691,6 +782,18 @@ impl CredentialReplacement {
     #[must_use]
     pub const fn material_transition(&self) -> &CredentialMaterialTransition {
         &self.material_transition
+    }
+
+    /// Whether committing this replacement over a row whose stored
+    /// `reauth_required` is `stored_reauth_required` advances the
+    /// [`CredentialAdmissionEpoch`].
+    ///
+    /// Every `Advance` does, and so does any change of `reauth_required`
+    /// (defensively, even under `Preserve`). A display edit or a retry-gate
+    /// write does not: it leaves every admitted use valid.
+    #[must_use]
+    pub const fn advances_admission_epoch(&self, stored_reauth_required: bool) -> bool {
+        self.material_transition.advances_epoch() || self.reauth_required != stored_reauth_required
     }
 
     /// Borrow the strict aggregate fence, when this is an authority-changing

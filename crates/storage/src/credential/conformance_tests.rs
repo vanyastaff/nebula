@@ -8,13 +8,14 @@ use std::{error::Error, time::Duration};
 
 use nebula_core::CredentialId;
 use nebula_storage_port::{
-    CredentialAlreadyExistsKey, CredentialCreate, CredentialMaterial, CredentialMaterialEpoch,
-    CredentialMaterialTransition, CredentialOwner, CredentialPersistenceError,
-    CredentialRecordState, CredentialRefreshHorizon, CredentialRefreshPageSize,
-    CredentialReplacement, CredentialReplacementFence, CredentialSelector, CredentialTombstone,
-    CredentialVersion, MaterialUpdate, RefreshRetryAdmission, RefreshRetryBlock, RefreshRetryDelay,
-    RefreshRetryDiagnosticCode, RefreshRetryEvidence, RefreshRetryKind, RefreshRetryPhase,
-    RefreshRetryProjection, RefreshRetryTransition, SecretBytes, StoredCredential,
+    CredentialAdmissionEpoch, CredentialAlreadyExistsKey, CredentialCreate, CredentialMaterial,
+    CredentialMaterialEpoch, CredentialMaterialTransition, CredentialOperationStatus,
+    CredentialOwner, CredentialPersistenceError, CredentialRecordState, CredentialRefreshHorizon,
+    CredentialRefreshPageSize, CredentialReplacement, CredentialReplacementFence,
+    CredentialSelector, CredentialTombstone, CredentialVersion, MaterialUpdate,
+    RefreshRetryAdmission, RefreshRetryBlock, RefreshRetryDelay, RefreshRetryDiagnosticCode,
+    RefreshRetryEvidence, RefreshRetryKind, RefreshRetryPhase, RefreshRetryProjection,
+    RefreshRetryTransition, SecretBytes, StoredCredential,
 };
 use serde_json::{Map, Value};
 
@@ -971,6 +972,204 @@ where
             .await
             .expect_err("persisted malformed projection must fail closed"),
         CredentialPersistenceError::CorruptRecord
+    );
+
+    run_admission_epoch_oracle(store, &owner_b).await
+}
+
+/// The use revision observed through the authoritative operation status.
+async fn admission_epoch_of<B>(
+    store: &B,
+    key: &CredentialSelector,
+) -> TestResult<(
+    CredentialAdmissionEpoch,
+    CredentialVersion,
+    CredentialMaterialEpoch,
+)>
+where
+    B: CredentialPersistenceConformance + ?Sized,
+{
+    match store.operation_status(key).await? {
+        CredentialOperationStatus::Open {
+            version,
+            material_epoch,
+            admission_epoch,
+            ..
+        } => Ok((admission_epoch, version, material_epoch)),
+        other => Err(format!("an unclaimed credential must be open, got {other:?}").into()),
+    }
+}
+
+/// Replacement-side admission-epoch bumps: every `Advance` and every change of
+/// `reauth_required` advances the use revision in the same write; display and
+/// retry-gate writes leave it. Claim-side close edges live in the SQL
+/// refresh-claim runners, because only those backends share one transaction
+/// between claims and credentials.
+async fn run_admission_epoch_oracle<B>(store: &B, owner: &CredentialOwner) -> TestResult<()>
+where
+    B: CredentialPersistenceConformance + ?Sized,
+{
+    let key = selector(owner, CredentialId::new());
+    let created = store
+        .create(&key, create(None, b"admission-v1", "admission"))
+        .await?;
+    let (epoch, version, material) = admission_epoch_of(store, &key).await?;
+    assert_eq!(epoch, CredentialAdmissionEpoch::MIN, "create starts at MIN");
+    assert_eq!(version, created.version());
+    assert_eq!(
+        store.get_operational_head(&key).await?.status(),
+        store.operation_status(&key).await?,
+        "every status read reports the same epoch"
+    );
+    assert_eq!(
+        store.get_with_operation_status(&key).await?.1,
+        Some(store.operation_status(&key).await?)
+    );
+
+    let replace = |expected, reauth_required, transition| {
+        CredentialReplacement::new(
+            expected,
+            None,
+            reauth_required,
+            metadata(None, "admission"),
+            transition,
+        )
+    };
+
+    // A display edit preserves every admitted use.
+    let display = store
+        .replace(
+            &key,
+            replace(
+                version,
+                false,
+                CredentialMaterialTransition::preserve(RefreshRetryTransition::Preserve),
+            ),
+        )
+        .await?;
+    assert_eq!(display.version(), version.next_live()?);
+    assert_eq!(admission_epoch_of(store, &key).await?.0, epoch);
+
+    // So does a retry-gate write.
+    let gated = store
+        .replace(
+            &key,
+            replace(
+                display.version(),
+                false,
+                CredentialMaterialTransition::preserve(RefreshRetryTransition::SetNever {
+                    evidence: RefreshRetryEvidence::new(
+                        RefreshRetryPhase::BeforeDispatch,
+                        RefreshRetryKind::TransientNetwork,
+                        None,
+                    ),
+                }),
+            ),
+        )
+        .await?;
+    let (after_gate, gate_version, gate_material) = admission_epoch_of(store, &key).await?;
+    assert_eq!(after_gate, epoch, "a retry-gate write closes no use");
+    assert_eq!(gate_version, gated.version());
+    assert_eq!(gate_material, material);
+
+    // The durable reauthentication decision advances authority over the
+    // stored bytes and closes every use.
+    let reauth = store
+        .replace(
+            &key,
+            replace(
+                gated.version(),
+                true,
+                CredentialMaterialTransition::advance(MaterialUpdate::Unchanged),
+            ),
+        )
+        .await?;
+    let (after_reauth, reauth_version, reauth_material) = admission_epoch_of(store, &key).await?;
+    assert_eq!(after_reauth, epoch.next()?);
+    assert_eq!(reauth_version, reauth.version());
+    assert_eq!(
+        reauth_version,
+        gated.version().next_live()?,
+        "the admission bump rides the one replacement version"
+    );
+    assert_eq!(reauth_material, material.next()?);
+
+    // New material advances it again.
+    let replaced = store
+        .replace(
+            &key,
+            replace(reauth.version(), false, replace_material(b"admission-v2")),
+        )
+        .await?;
+    let (after_material, _, _) = admission_epoch_of(store, &key).await?;
+    assert_eq!(after_material, after_reauth.next()?);
+
+    // A preserve that flips `reauth_required` closes use too.
+    let flipped = store
+        .replace(
+            &key,
+            replace(
+                replaced.version(),
+                true,
+                CredentialMaterialTransition::preserve(RefreshRetryTransition::Preserve),
+            ),
+        )
+        .await?;
+    let (after_flip, flip_version, flip_material) = admission_epoch_of(store, &key).await?;
+    assert_eq!(after_flip, after_material.next()?);
+    assert_eq!(flip_version, flipped.version());
+    assert_eq!(
+        flip_material,
+        material.next()?.next()?,
+        "a preserve never moves the material epoch"
+    );
+
+    // Overflow fails closed and commits nothing.
+    store
+        .force_live_admission_epoch_for_conformance(&key, CredentialAdmissionEpoch::MAX)
+        .await?;
+    let before = store.get(&key).await?;
+    let before = before.as_live().expect("fixture remains live").clone();
+    assert_eq!(
+        store
+            .replace(
+                &key,
+                replace(
+                    flipped.version(),
+                    false,
+                    replace_material(b"must-not-commit"),
+                ),
+            )
+            .await
+            .expect_err("the admission epoch cannot advance past i64::MAX"),
+        CredentialPersistenceError::AdmissionEpochExhausted
+    );
+    let after = store.get(&key).await?;
+    let after = after.as_live().expect("fixture remains live");
+    assert_eq!(after.version(), before.version());
+    assert_eq!(after.material_epoch(), before.material_epoch());
+    assert_eq!(after.data(), before.data());
+    assert_eq!(after.reauth_required(), before.reauth_required());
+    assert_eq!(
+        admission_epoch_of(store, &key).await?.0,
+        CredentialAdmissionEpoch::MAX
+    );
+
+    // A write that closes no use still succeeds at the terminal epoch.
+    let display_at_max = store
+        .replace(
+            &key,
+            replace(
+                flipped.version(),
+                true,
+                CredentialMaterialTransition::preserve(RefreshRetryTransition::Preserve),
+            ),
+        )
+        .await?;
+    assert_eq!(display_at_max.version(), flipped.version().next_live()?);
+    assert_eq!(
+        admission_epoch_of(store, &key).await?.0,
+        CredentialAdmissionEpoch::MAX
     );
 
     Ok(())
