@@ -363,9 +363,55 @@ Aliases intentionally exposed by a provider's instance remain the author's respo
   its source chain. Consequently, `ShutdownError` no longer implements `UnwindSafe`
   or `RefUnwindSafe`; callers crossing unwind boundaries must account for that source.
 
+### Lease closing notice
+
+Every acquire is admitted under the row's current **admission generation**, and
+the guard keeps that generation for its whole lease. `guard.closing()` returns a
+`LeaseClosing` — `is_closing()`, `closed().await`, `into_closed()` — that fires
+when the row stops admitting work in that generation. Long-running work (a
+stream consumer, a polling loop, a batch) selects on it to stop taking new
+units of work at a safe point:
+
+```rust,ignore
+let closing = guard.closing();
+loop {
+    tokio::select! {
+        () = closing.closed() => break,
+        item = next_unit(&*guard) => handle(item).await,
+    }
+}
+drop(guard); // still released normally
+```
+
+| Event | Fires the notice? |
+|---|---|
+| Credential taint / `revoke_slot` of the row | yes — before the revoke drain starts |
+| `Manager::remove` / `remove_for` | yes |
+| `graceful_shutdown` | yes — when the drain starts |
+| `Manager::shutdown`, dropping the manager | yes |
+| `reload_config` | no |
+| Credential refresh (`install_and_refresh_slot_for_identity`, `refresh_slot`) | no |
+| Same-identity replacement of the row | no |
+
+The notice is cooperative: it stops no work, revokes no borrowed instance, and
+rolls nothing back remotely; revoke and shutdown drains still wait for the guard.
+A lease can only observe it — `LeaseClosing` has no `cancel`. Two consequences
+follow from the same generation:
+
+- An acquire whose generation closes while it is in flight (a taint, removal or
+  shutdown straddling the create) is refused at hand-out with `Revoked` (tainted)
+  or `Cancelled`; the built entry goes back through ordinary release. Neither
+  error trips the recovery gate.
+- A wrapped client's wait (`Limited::run*`) ends with `LimitedError::Limit` of kind
+  `Cancelled` when the row's generation closes, and a call started after it closed
+  is refused without waiting, so a lease parked on a long provider pause no longer
+  holds a revoke drain. The provider call itself is never interrupted. `run*` and
+  `unlimited` are interim until the managed call facade replaces them.
+
 ### Other public API
 
-- `ResourceGuard` — manager-owned topology entry; borrows `R::Instance` through `Deref`, queues release on Drop, or awaits that same queued job through `release()`. No fabricated guards or detachable entries.
+- `ResourceGuard` — manager-owned topology entry; borrows `R::Instance` through `Deref`, queues release on Drop, or awaits that same queued job through `release()`. `closing()` / `is_closing()` expose its lease closing notice (above). No fabricated guards or detachable entries.
+- `LeaseClosing` — observe-only closing notice of a lease's admission generation.
 - `ResourceRef<R>` — lazy reference type holding a `ResourceId` string + `PhantomData<R>`. Resolves to a `ResourceGuard<R>` via `.resolve(ctx).await`.
 - `RegistrationSpec` — the single registration param aggregate (see above).
 - `AcquireOptions` — per-call acquire knobs (`deadline`, `acquire_slow_threshold`); every `acquire_*` takes one.
