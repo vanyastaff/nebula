@@ -1058,7 +1058,7 @@ impl ResourceLimiter {
     /// [`RateLimitProfile::InterimPerClosure`] for the row's life: from then
     /// on each [`Limited::run`] closure books one permit and acquires only
     /// honour pauses. The closure family is interim surface; the managed call
-    /// facade replaces it.
+    /// facade ([`crate::call`]) replaces it.
     #[must_use]
     pub fn wrap<C, T>(self: &Arc<Self>, client: C, throttle: T) -> Limited<C, T> {
         // Calls through the client now book their own slots; an acquire must
@@ -2000,10 +2000,12 @@ where
 ///
 /// **Interim surface.** Each `run*` closure books one permit and counts as
 /// one provider call, whatever it does inside; the row reports
-/// [`RateLimitProfile::InterimPerClosure`]. The managed call facade replaces
-/// the closure family and [`unlimited`](Self::unlimited); until then they
-/// are supported, and the crate README's rate-limit profile table says what
-/// each profile budgets.
+/// [`RateLimitProfile::InterimPerClosure`]. The managed call facade
+/// ([`crate::call`]: [`ResourceGuard::into_managed`](crate::ResourceGuard::into_managed),
+/// one [`Cost`](crate::call::Cost) booked per granted attempt) replaces the
+/// closure family and [`unlimited`](Self::unlimited). They are not deprecated
+/// yet and stay supported; new integrations use the facade. The crate
+/// README's rate-limit profile table says what each profile budgets.
 pub struct Limited<C, T = NoThrottle> {
     client: C,
     throttle: T,
@@ -2033,7 +2035,8 @@ impl<C, T> Limited<C, T> {
     /// Runs one call under the limit, waiting for a permit as long as needed.
     ///
     /// **Interim surface.** Each `run` closure books one permit and is one
-    /// unit of work; the managed call facade will replace this family.
+    /// unit of work; the managed call facade ([`crate::call`]) replaces this
+    /// family.
     ///
     /// On a registry row the wait also ends when the row stops admitting
     /// work: a credential taint or revoke, a credential suspension, the
