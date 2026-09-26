@@ -335,10 +335,12 @@ fn classify_resource_error(res_err: nebula_resource::Error) -> ActionError {
         // is **not** auto-retryable — surface it as fatal *explicitly* so
         // the supervisor does not hot-loop a mis-wired source; same
         // clean-exit handling as the other permanent kinds, but never via
-        // a catch-all.
+        // a catch-all. `OutcomeUnknown` (a retry-unsafe call may have been
+        // applied) is never retried either.
         ResourceErrorKind::Permanent
         | ResourceErrorKind::NotFound
-        | ResourceErrorKind::Ambiguous => {
+        | ResourceErrorKind::Ambiguous
+        | ResourceErrorKind::OutcomeUnknown => {
             tracing::error!(
                 error = %res_err,
                 kind = ?res_err.kind(),
@@ -419,9 +421,11 @@ fn classify_resource_error_outcome(res_err: nebula_resource::Error) -> RecvOutco
         // Permanent caller/wiring faults. `Ambiguous` is a non-retryable
         // client conflict; surface it as fatal *explicitly* (clean
         // supervisor exit, no hot-loop) rather than through a catch-all.
+        // `OutcomeUnknown` must not be retried either.
         ResourceErrorKind::Permanent
         | ResourceErrorKind::NotFound
-        | ResourceErrorKind::Ambiguous => {
+        | ResourceErrorKind::Ambiguous
+        | ResourceErrorKind::OutcomeUnknown => {
             tracing::error!(
                 error = %res_err,
                 kind = ?res_err.kind(),
@@ -765,6 +769,18 @@ mod tests {
             ActionError::Fatal { .. } => {},
             other => panic!("Ambiguous must classify fatal on subscribe, got: {other:?}"),
         }
+    }
+
+    #[test]
+    fn outcome_unknown_is_explicit_fatal_on_both_paths() {
+        assert!(matches!(
+            classify_resource_error(ResourceError::outcome_unknown("write may be applied")),
+            ActionError::Fatal { .. }
+        ));
+        assert!(matches!(
+            classify_resource_error_outcome(ResourceError::outcome_unknown("write may be applied")),
+            RecvOutcome::Fatal(_)
+        ));
     }
 
     #[test]
