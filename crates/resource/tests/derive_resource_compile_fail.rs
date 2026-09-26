@@ -9,11 +9,19 @@
 //! - `#[credential(key = "...")]` invalid key literal rejected at the literal span
 //! - `Option<SlotCell<CredentialGuard<C>>>` rejected (must be the bare shape)
 //! - nonempty or tuple configs cannot publish an automatic empty-record schema
+//! - the derive-emitted `<Name>PinnedSlots` keeps its guard `Arc`s private
 //!
 //! The positive probes exercise a clean two-derive expansion:
 //!
-//! - slot-less unit struct with hand-written `impl Provider`
-//! - named slot field with derive-emitted `<field>_slot()` accessor
+//! - slot-less unit struct with hand-written `impl Provider`, pinning `()`
+//! - named slot field with derive-emitted `<field>_slot()` accessor and
+//!   pinned `<field>()` accessor
+
+#[test]
+fn resource_pinned_slots_keep_their_guards_private() {
+    let t = trybuild::TestCases::new();
+    t.compile_fail("tests/probes/derive_pinned_slots_are_private.rs");
+}
 
 #[test]
 fn resource_slots_rejects_enum() {

@@ -362,7 +362,8 @@ fn macro_private_surface_matches_the_explicit_allowlist() {
             }
             pub mod resource {
                 pub use nebula_resource::{
-                    Error, HasCredentialSlots, ResourceConfig, SlotInstallError, SlotUpdate,
+                    Error, HasCredentialSlots, PinSlots, ResourceConfig, SlotInstallError,
+                    SlotUpdate,
                 };
                 pub mod contribution {
                     pub use crate::resource_contribution::{

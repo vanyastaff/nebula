@@ -51,4 +51,7 @@ impl ResidentProvider for UnitResource {}
 
 fn main() {
     let _ = <UnitResource as Provider>::key();
+    // A slot-less resource pins nothing for the managed call facade.
+    let (): <UnitResource as nebula_resource::PinSlots>::Pinned =
+        nebula_resource::PinSlots::pin_slots(&UnitResource);
 }
