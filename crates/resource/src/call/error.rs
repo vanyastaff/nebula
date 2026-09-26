@@ -153,7 +153,8 @@ impl From<Error> for OpError {
 impl From<OpError> for Error {
     /// A retry-unsafe unit becomes [`ErrorKind::OutcomeUnknown`], so no
     /// caller retries an effect that may have been applied; any other keeps
-    /// its kind.
+    /// its kind, with an `Exhausted` hint capped as
+    /// [`OpError::retry_after`] caps it.
     fn from(error: OpError) -> Self {
         let converted = if error.is_outcome_unknown() {
             Error::outcome_unknown(format!(
@@ -164,10 +165,14 @@ impl From<OpError> for Error {
                 error.sent
             ))
         } else {
-            Error::new(
-                error.kind.clone(),
-                format!("{} ({}; {})", error.detail, error.kind, error.sent),
-            )
+            let kind = match error.kind {
+                ErrorKind::Exhausted { retry_after } => ErrorKind::Exhausted {
+                    retry_after: retry_after.map(|after| after.min(DEFAULT_MAX_PENALTY)),
+                },
+                kind => kind,
+            };
+            let message = format!("{} ({kind}; {})", error.detail, error.sent);
+            Error::new(kind, message)
         };
         match error.resource_key {
             Some(key) => converted.with_resource_key(key),

@@ -400,6 +400,18 @@ impl From<nebula_core::CoreError> for ActionError {
     }
 }
 
+impl From<nebula_resource::call::OpError> for ActionError {
+    /// Classifies a managed call unit's error through the resource error
+    /// surface: a retryable unit becomes [`ActionError::Retryable`] with its
+    /// backoff hint, and a unit whose provider effect may have been applied
+    /// without being replay safe
+    /// ([`OutcomeUnknown`](nebula_resource::ErrorKind::OutcomeUnknown)) is
+    /// fatal, so the engine never retries it blindly.
+    fn from(err: nebula_resource::call::OpError) -> Self {
+        nebula_resource::Error::from(err).to_core_error().into()
+    }
+}
+
 impl ActionError {
     /// Create a retryable error with no backoff hint.
     ///
