@@ -27,13 +27,14 @@ use nebula_credential::runtime::{
 };
 use nebula_credential::{
     AuthorizationDecision, CredentialActor, CredentialAuthorizationError, CredentialAvailability,
-    CredentialBlock, CredentialCommand, CredentialCommandResult, CredentialContext,
-    CredentialController, CredentialControllerError, CredentialDisplay, CredentialDisplayPatch,
-    CredentialMetadataDraft, CredentialOperation, CredentialProjectionRuntime, CredentialRegistry,
-    CredentialService, CredentialServiceError, CredentialSlotResolveError, CredentialSlotResolver,
-    CredentialTenantAuthority, DispatchOps, ErasedPendingStore, NoopObserver, RefreshAttempt,
-    RefreshReport, StateSource, StateWireFingerprint, TenantScope, identity_state,
-    register_refreshable_ops, register_revocable_ops, register_runtime_ops, register_testable_ops,
+    CredentialAvailabilityObservation, CredentialBlock, CredentialCommand, CredentialCommandResult,
+    CredentialContext, CredentialController, CredentialControllerError, CredentialDisplay,
+    CredentialDisplayPatch, CredentialMetadataDraft, CredentialOperation,
+    CredentialProjectionRuntime, CredentialRegistry, CredentialService, CredentialServiceError,
+    CredentialSlotResolveError, CredentialSlotResolver, CredentialTenantAuthority, DispatchOps,
+    ErasedPendingStore, NoopObserver, RefreshAttempt, RefreshReport, StateSource,
+    StateWireFingerprint, TenantScope, identity_state, register_refreshable_ops,
+    register_revocable_ops, register_runtime_ops, register_testable_ops,
 };
 use nebula_storage::credential::{
     CacheConfig, CacheLayer, EncryptionLayer, EnvKeyProvider, InMemoryPendingStore,
@@ -610,6 +611,12 @@ impl Fixture {
     /// Observes `id` through the projection runtime and the management
     /// service, asserting both observers agree on one head read's answer.
     async fn observe_both(&self, id: CredentialId) -> CredentialAvailability {
+        self.observation_of_both(id).await.availability()
+    }
+
+    /// As [`observe_both`](Self::observe_both), returning the whole
+    /// observation (material epoch and use revision included).
+    async fn observation_of_both(&self, id: CredentialId) -> CredentialAvailabilityObservation {
         let scope = TenantScope::from_scope(&self.scope);
         let key = nebula_core::credential_key!("operation_incident_probe");
         let base =
@@ -635,7 +642,7 @@ impl Fixture {
             );
         }
         assert_eq!(observed[0], observed[1], "service parity");
-        observed[0].availability()
+        observed[0]
     }
 
     fn selector(&self, id: CredentialId) -> CredentialSelector {
@@ -1144,6 +1151,12 @@ async fn abandoned_revoke_claim_reprojects_at_the_next_admission_epoch() {
     let first_material = first.metadata().material_epoch();
     let first_admission = first.metadata().admission_epoch();
     drop(first);
+    let observed = fixture.observation_of_both(id).await;
+    assert_eq!(
+        (observed.material_epoch(), observed.admission_epoch()),
+        (first_material, Some(first_admission)),
+        "the observer reads the use revision a projection binds"
+    );
 
     let material_epoch = CredentialMaterialEpoch::try_from(first_material)
         .expect("the projected material epoch is valid");
@@ -1158,6 +1171,18 @@ async fn abandoned_revoke_claim_reprojects_at_the_next_admission_epoch() {
         .await
         .expect("the revoke claim reaches the backend");
     assert!(matches!(claimed, ClaimAttempt::Acquired(_)));
+    let blocked = fixture.observation_of_both(id).await;
+    assert_eq!(
+        blocked.availability(),
+        CredentialAvailability::Blocked(CredentialBlock::OperationInFlight {
+            operation: CredentialOperationKind::Revoke
+        })
+    );
+    assert_eq!(
+        blocked.admission_epoch(),
+        None,
+        "an operation in flight carries no use revision"
+    );
     assert!(matches!(
         fixture
             .projection
@@ -1185,6 +1210,13 @@ async fn abandoned_revoke_claim_reprojects_at_the_next_admission_epoch() {
             .expect("backdate the abandoned claim")
             .rows_affected();
     assert_eq!(affected, 1);
+
+    // A consumer that saw neither the claim nor its lapse still learns that
+    // use was closed in between: same material, next use revision.
+    let reopened = fixture.observation_of_both(id).await;
+    assert_eq!(reopened.availability(), CredentialAvailability::Available);
+    assert_eq!(reopened.material_epoch(), first_material);
+    assert_eq!(reopened.admission_epoch(), Some(first_admission + 1));
 
     let second = project().await;
     assert_eq!(

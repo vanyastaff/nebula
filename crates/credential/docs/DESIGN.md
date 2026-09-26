@@ -299,9 +299,14 @@ load time, and the encryption layer re-seals only newly installed material.
 owner-qualified checks up to and including the operation-status classification (`classify_use`)
 and the head's reauthentication bit, from exactly one `get_operational_head` read and nothing
 after it — no material load, no decryption, no projection. A missing, cross-tenant or tombstoned
-credential is `Absent` (a consumer that must distinguish a tombstone projects the slot). Resource
-consumers compare the observed `(material_epoch, revision)` with the material they installed and
-project only when it advanced; a store outage is reported as `Unavailable` and decides nothing.
+credential is `Absent` (a consumer that must distinguish a tombstone projects the slot). An `Open`
+status also yields its admission epoch (`CredentialAvailabilityObservation::admission_epoch`,
+`Some` whether the credential is available or awaits reauthentication; `None` while an operation
+is in flight or awaits reconciliation). Resource consumers compare the observed material epoch
+with the material they installed and project only when it advanced; at the same material they
+compare the use revision, so a denial interval they never observed (an abandoned revoke claim
+that lapsed between two reads) still shows as a higher epoch. A store outage is reported as
+`Unavailable` and decides nothing.
 Resolvers expose it through the defaulted `CredentialSlotResolver::as_availability_observer`.
 
 `CredentialProjectionRuntime::from_secure_parts` is the worker composition surface for that
