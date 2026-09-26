@@ -32,7 +32,7 @@ use crate::{
     error::{CredentialUnavailableReason, Error},
     events::ResourceEvent,
     registry::ManagedHandle,
-    runtime::admission::{ReopenTransition, SuspendTransition},
+    runtime::admission::{ReopenTransition, SuspendTransition, SuspensionFloor, UseMark},
 };
 
 /// The credential gate's state when a caller began observing a credential.
@@ -184,10 +184,14 @@ impl Manager {
     /// Suspends row `(key, scope, slot_identity)` because its credential slot
     /// `slot` denies use for `reason`.
     ///
-    /// `observed_material_epoch` is the credential material epoch the denial
-    /// was observed at, when known: an observation older than the material
-    /// the row already installed for `slot` is ignored
+    /// `observed` is where the denial was observed, when known. An
+    /// observation older than the material the row installed for `slot`, or
+    /// (with a use revision) older than the revision the slot already
+    /// admitted at, is ignored
     /// ([`StaleObservation`](CredentialSuspendOutcome::StaleObservation)).
+    /// A denial read with its use revision must be beaten by a strictly
+    /// newer revision to reopen; one read without (an operation in flight,
+    /// a resolver error) by the revision the slot had admitted or newer.
     ///
     /// # Errors
     ///
@@ -202,18 +206,33 @@ impl Manager {
         slot_identity: &SlotIdentity,
         slot: &str,
         reason: CredentialUnavailableReason,
-        observed_material_epoch: Option<u64>,
+        observed: Option<CredentialObservedAt>,
     ) -> Result<CredentialSuspendOutcome, Error> {
         let _admission = self.lock_admission();
         let managed = self.lookup_any_for_slot_identity_structural(key, scope, slot_identity)?;
-        self.suspend_under_admission(key, slot, reason, observed_material_epoch, &*managed)
+        self.suspend_under_admission(key, slot, reason, observed, &*managed)
     }
 
-    /// Clears row `(key, scope, slot_identity)`'s suspension for credential
-    /// slot `slot`, provided `ticket` is still current. Clearing the last
-    /// suspended slot reopens the row without rebuilding anything: idle and
-    /// retained instances are reused under a fresh admission generation,
-    /// while leases admitted before the suspension stay closed.
+    /// Records that row `(key, scope, slot_identity)`'s credential slot
+    /// `slot` is usable at `observed`.
+    ///
+    /// On a suspended row this clears the slot's suspension, provided
+    /// `ticket` is still current and `observed` is newer than the denial
+    /// (see [`suspend_credential_row`](Self::suspend_credential_row)).
+    /// Clearing the last suspended slot reopens the row without rebuilding
+    /// anything: idle and retained instances are reused under a fresh
+    /// admission generation, while leases admitted before the suspension stay
+    /// closed.
+    ///
+    /// On an admitting row an observation at a newer use revision than the
+    /// row admitted at (same material) means use was denied and allowed again
+    /// without this row observing it: the row
+    /// [`Readmitted`](CredentialReopenOutcome::Readmitted) new work under a
+    /// fresh admission generation, leaving earlier leases open.
+    ///
+    /// An observation at another material than the one installed changes
+    /// nothing ([`StaleObservation`](CredentialReopenOutcome::StaleObservation)):
+    /// new material reaches the row through its install.
     ///
     /// # Errors
     ///
@@ -225,10 +244,11 @@ impl Manager {
         slot_identity: &SlotIdentity,
         slot: &str,
         ticket: CredentialGateTicket,
+        observed: CredentialObservedAt,
     ) -> Result<CredentialReopenOutcome, Error> {
         let _admission = self.lock_admission();
         let managed = self.lookup_any_for_slot_identity_structural(key, scope, slot_identity)?;
-        self.reopen_under_admission(key, slot, ticket, &*managed)
+        self.reopen_under_admission(key, slot, ticket, observed, &*managed)
     }
 
     /// Suspends the exact row `pinned` that the fan-out resolved for
@@ -243,7 +263,7 @@ impl Manager {
         binding: &crate::Bind,
         pinned: &std::sync::Arc<dyn ManagedHandle>,
         reason: CredentialUnavailableReason,
-        observed_material_epoch: Option<u64>,
+        observed: Option<CredentialObservedAt>,
     ) -> Result<CredentialSuspendOutcome, Error> {
         let _admission = self.lock_admission();
         let managed = self.revalidate_published_binding(index, credential_id, binding, pinned)?;
@@ -251,7 +271,7 @@ impl Manager {
             &binding.resource_key,
             &binding.slot_name,
             reason,
-            observed_material_epoch,
+            observed,
             &*managed,
         )
     }
@@ -266,10 +286,17 @@ impl Manager {
         binding: &crate::Bind,
         pinned: &std::sync::Arc<dyn ManagedHandle>,
         ticket: CredentialGateTicket,
+        observed: CredentialObservedAt,
     ) -> Result<CredentialReopenOutcome, Error> {
         let _admission = self.lock_admission();
         let managed = self.revalidate_published_binding(index, credential_id, binding, pinned)?;
-        self.reopen_under_admission(&binding.resource_key, &binding.slot_name, ticket, &*managed)
+        self.reopen_under_admission(
+            &binding.resource_key,
+            &binding.slot_name,
+            ticket,
+            observed,
+            &*managed,
+        )
     }
 
     /// Caller holds `Manager.admission`.
@@ -308,7 +335,7 @@ impl Manager {
         key: &ResourceKey,
         slot: &str,
         reason: CredentialUnavailableReason,
-        observed_material_epoch: Option<u64>,
+        observed: Option<CredentialObservedAt>,
         managed: &dyn ManagedHandle,
     ) -> Result<CredentialSuspendOutcome, Error> {
         if !managed.accepts_credential_slot_name(slot) {
@@ -317,26 +344,40 @@ impl Manager {
         if managed.is_tainted() {
             return Ok(CredentialSuspendOutcome::Tainted);
         }
-        let installed = managed
-            .credential_slot_projection(slot)
-            .and_then(|(_, metadata)| metadata)
-            .map(|metadata| metadata.material_epoch());
-        if let (Some(observed), Some(installed)) = (observed_material_epoch, installed)
-            && observed < installed
+        let installed = installed_mark(managed, slot);
+        if let (Some(observed), Some(installed)) = (observed, installed)
+            && observed.material_epoch() < installed.material_epoch()
         {
             tracing::debug!(
                 resource.key = %key,
                 slot,
-                observed,
-                installed,
+                observed = observed.material_epoch(),
+                installed = installed.material_epoch(),
                 "credential suspension ignored: observation predates installed material"
             );
             return Ok(CredentialSuspendOutcome::StaleObservation);
         }
+        let admitted = managed.credential_admitted(slot, installed);
+        let floor = match observed.and_then(UseMark::observed) {
+            // Read with its use revision: a late read older than what the
+            // slot admitted since says nothing about the current state.
+            Some(mark) if admitted.is_some_and(|admitted| mark < admitted) => {
+                tracing::debug!(
+                    resource.key = %key,
+                    slot,
+                    "credential suspension ignored: observation predates the admitted use revision"
+                );
+                return Ok(CredentialSuspendOutcome::StaleObservation);
+            },
+            Some(mark) => {
+                SuspensionFloor::witnessed(admitted.map_or(mark, |admitted| admitted.max(mark)))
+            },
+            None => SuspensionFloor::unwitnessed(admitted),
+        };
         let recorded = managed
             .credential_suspension()
             .and_then(|suspension| suspension.reason_for(slot));
-        match managed.suspend_credential(slot, reason) {
+        match managed.suspend_credential(slot, reason, floor) {
             SuspendTransition::Suspended { closed_through } => {
                 tracing::warn!(
                     resource.key = %key,
@@ -372,21 +413,22 @@ impl Manager {
         }
     }
 
-    /// Reopens `slot` after a credential install proved it usable, when the
-    /// installer captured a ticket. Best effort: the install already
-    /// succeeded, so a refused or failed reopen is only logged. Caller holds
-    /// `Manager.admission`.
+    /// Reopens (or readmits) `slot` after a credential install proved it
+    /// usable at `observed`, when the installer captured a ticket. Best
+    /// effort: the install already succeeded, so a refused or failed reopen
+    /// is only logged. Caller holds `Manager.admission`.
     pub(crate) fn reopen_after_install(
         &self,
         key: &ResourceKey,
         slot: &str,
         ticket: Option<CredentialGateTicket>,
+        observed: CredentialObservedAt,
         managed: &dyn ManagedHandle,
     ) {
         let Some(ticket) = ticket else {
             return;
         };
-        match self.reopen_under_admission(key, slot, ticket, managed) {
+        match self.reopen_under_admission(key, slot, ticket, observed, managed) {
             Ok(outcome) => {
                 tracing::debug!(resource.key = %key, slot, ?outcome, "reopen after credential install");
             },
@@ -407,6 +449,7 @@ impl Manager {
         key: &ResourceKey,
         slot: &str,
         ticket: CredentialGateTicket,
+        observed: CredentialObservedAt,
         managed: &dyn ManagedHandle,
     ) -> Result<CredentialReopenOutcome, Error> {
         if !managed.accepts_credential_slot_name(slot) {
@@ -415,48 +458,60 @@ impl Manager {
         if managed.is_tainted() {
             return Ok(CredentialReopenOutcome::Tainted);
         }
-        Ok(match managed.reopen_credential(slot, ticket.epoch()) {
-            ReopenTransition::Reopened { seq } => {
-                tracing::info!(
-                    resource.key = %key,
-                    slot,
-                    admission = seq,
-                    "credential usable again: row reopened under a fresh admission generation"
-                );
-                self.emit(ResourceEvent::CredentialReopened { key: key.clone() });
-                CredentialReopenOutcome::Reopened
+        // Read before the gate: the slot is never touched under its mutex.
+        let installed = installed_mark(managed, slot);
+        Ok(
+            match managed.reopen_credential(slot, ticket.epoch(), observed, installed) {
+                ReopenTransition::Reopened { seq } => {
+                    tracing::info!(
+                        resource.key = %key,
+                        slot,
+                        admission = seq,
+                        "credential usable again: row reopened under a fresh admission generation"
+                    );
+                    self.emit(ResourceEvent::CredentialReopened { key: key.clone() });
+                    CredentialReopenOutcome::Reopened
+                },
+                ReopenTransition::Readmitted { seq } => {
+                    tracing::info!(
+                        resource.key = %key,
+                        slot,
+                        admission = seq,
+                        "credential use revision advanced unobserved: new work admitted under a \
+                         fresh admission generation"
+                    );
+                    CredentialReopenOutcome::Readmitted
+                },
+                ReopenTransition::StillSuspended => CredentialReopenOutcome::StillSuspended,
+                ReopenTransition::NotSuspended => CredentialReopenOutcome::NotSuspended,
+                ReopenTransition::StaleObservation => {
+                    tracing::debug!(
+                        resource.key = %key,
+                        slot,
+                        "credential reopen ignored: observation predates the row's use revision"
+                    );
+                    CredentialReopenOutcome::StaleObservation
+                },
+                ReopenTransition::Superseded => {
+                    tracing::debug!(
+                        resource.key = %key,
+                        slot,
+                        "credential reopen superseded by a later suspension"
+                    );
+                    CredentialReopenOutcome::Superseded
+                },
+                ReopenTransition::Retired => {
+                    return Err(Error::cancelled().with_resource_key(key.clone()));
+                },
             },
-            ReopenTransition::Readmitted { seq } => {
-                tracing::info!(
-                    resource.key = %key,
-                    slot,
-                    admission = seq,
-                    "credential use revision advanced unobserved: new work admitted under a \
-                     fresh admission generation"
-                );
-                CredentialReopenOutcome::Readmitted
-            },
-            ReopenTransition::StillSuspended => CredentialReopenOutcome::StillSuspended,
-            ReopenTransition::NotSuspended => CredentialReopenOutcome::NotSuspended,
-            ReopenTransition::StaleObservation => {
-                tracing::debug!(
-                    resource.key = %key,
-                    slot,
-                    "credential reopen ignored: observation predates the row's use revision"
-                );
-                CredentialReopenOutcome::StaleObservation
-            },
-            ReopenTransition::Superseded => {
-                tracing::debug!(
-                    resource.key = %key,
-                    slot,
-                    "credential reopen superseded by a later suspension"
-                );
-                CredentialReopenOutcome::Superseded
-            },
-            ReopenTransition::Retired => {
-                return Err(Error::cancelled().with_resource_key(key.clone()));
-            },
-        })
+        )
     }
+}
+
+/// The use revision of the projection installed in `slot`, if any.
+fn installed_mark(managed: &dyn ManagedHandle, slot: &str) -> Option<UseMark> {
+    managed
+        .credential_slot_projection(slot)
+        .and_then(|(_, metadata)| metadata)
+        .map(|metadata| UseMark::installed(&metadata))
 }

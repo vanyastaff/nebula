@@ -1043,7 +1043,9 @@ async fn observe_then_reconcile(
                 binding,
                 &managed,
                 block_reason(block),
-                Some(observation.material_epoch()),
+                Some(crate::CredentialObservedAt::new(
+                    observation.material_epoch(),
+                )),
             );
         },
         CredentialAvailability::Available if observation.material_epoch() > installed_epoch => {
@@ -1054,7 +1056,14 @@ async fn observe_then_reconcile(
             if observation.material_epoch() == installed_epoch
                 && managed.credential_suspension().is_some() =>
         {
-            match mgr.reopen_published_credential_binding(index, &cid, binding, &managed, ticket) {
+            match mgr.reopen_published_credential_binding(
+                index,
+                &cid,
+                binding,
+                &managed,
+                ticket,
+                crate::CredentialObservedAt::new(observation.material_epoch()),
+            ) {
                 Ok(outcome) => tracing::debug!(
                     credential_id = %cid,
                     resource_key = %binding.resource_key,
@@ -1087,16 +1096,10 @@ fn suspend_row(
     binding: &crate::Bind,
     managed: &std::sync::Arc<dyn crate::registry::ManagedHandle>,
     reason: crate::CredentialUnavailableReason,
-    observed_material_epoch: Option<u64>,
+    observed: Option<crate::CredentialObservedAt>,
 ) {
-    match mgr.suspend_published_credential_binding(
-        index,
-        &cid,
-        binding,
-        managed,
-        reason,
-        observed_material_epoch,
-    ) {
+    match mgr.suspend_published_credential_binding(index, &cid, binding, managed, reason, observed)
+    {
         Ok(outcome) => tracing::debug!(
             credential_id = %cid,
             resource_key = %binding.resource_key,

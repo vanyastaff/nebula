@@ -15,8 +15,8 @@ use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    CredentialGateTicket, CredentialReopenOutcome, CredentialSuspendOutcome, Manager,
-    RegistrationSpec,
+    CredentialGateTicket, CredentialObservedAt, CredentialReopenOutcome, CredentialSuspendOutcome,
+    Manager, RegistrationSpec,
 };
 use crate::{
     AcquireOptions, Bounded, CredentialUnavailableReason, Error, ErrorKind, PoolConfig, Pooled,
@@ -321,10 +321,48 @@ fn ticket<R: Provider>(manager: &Manager) -> CredentialGateTicket {
         .expect("ticket")
 }
 
+/// Reopens without a use revision (the ticket-only rule).
 fn reopen<R: Provider>(manager: &Manager, ticket: CredentialGateTicket) -> CredentialReopenOutcome {
+    reopen_at::<R>(manager, ticket, CredentialObservedAt::new(1))
+}
+
+fn reopen_at<R: Provider>(
+    manager: &Manager,
+    ticket: CredentialGateTicket,
+    observed: CredentialObservedAt,
+) -> CredentialReopenOutcome {
     manager
-        .reopen_credential_row(&R::key(), &ScopeLevel::Global, &tenant(), "db", ticket)
+        .reopen_credential_row(
+            &R::key(),
+            &ScopeLevel::Global,
+            &tenant(),
+            "db",
+            ticket,
+            observed,
+        )
         .expect("reopen")
+}
+
+fn suspend_at<R: Provider>(
+    manager: &Manager,
+    reason: CredentialUnavailableReason,
+    observed: CredentialObservedAt,
+) -> CredentialSuspendOutcome {
+    manager
+        .suspend_credential_row(
+            &R::key(),
+            &ScopeLevel::Global,
+            &tenant(),
+            "db",
+            reason,
+            Some(observed),
+        )
+        .expect("suspend")
+}
+
+/// Material `material_epoch` read at use revision `admission_epoch`.
+const fn at(material_epoch: u64, admission_epoch: u64) -> CredentialObservedAt {
+    CredentialObservedAt::new(material_epoch).with_admission_epoch(admission_epoch)
 }
 
 fn assert_credential_unavailable(error: &Error, reason: CredentialUnavailableReason) {
@@ -355,6 +393,45 @@ fn material(epoch: u64) -> ErasedCredentialGuard {
     )
 }
 
+/// Material `epoch` projected at use revision `admission_epoch`.
+fn material_at(epoch: u64, admission_epoch: u64) -> ErasedCredentialGuard {
+    ErasedCredentialGuard::from_typed(
+        CredentialGuard::new(epoch),
+        CredentialGuardMetadata::new(
+            credential_id(),
+            "oauth".parse().expect("credential key"),
+            epoch,
+            epoch,
+        )
+        .with_admission_epoch(admission_epoch),
+    )
+}
+
+/// Installs the first projection into an empty slot (public path).
+async fn seed<R: Provider>(manager: &Manager, guard: ErasedCredentialGuard) {
+    assert!(matches!(
+        install_public::<R>(manager, guard).await,
+        super::EpochRefreshOutcome::Applied(_)
+    ));
+}
+
+/// Installs `guard` through the public path, which never reopens.
+async fn install_public<R: Provider>(
+    manager: &Manager,
+    guard: ErasedCredentialGuard,
+) -> super::EpochRefreshOutcome {
+    manager
+        .install_and_refresh_slot_for_identity(
+            &R::key(),
+            ScopeLevel::Global,
+            "db",
+            &tenant(),
+            guard,
+        )
+        .await
+        .expect("install")
+}
+
 /// Installs through the public path, which never reopens a suspension.
 async fn install_material(manager: &Manager, epoch: u64) -> super::EpochRefreshOutcome {
     manager
@@ -376,6 +453,14 @@ async fn install_resolved<R: Provider>(
     epoch: u64,
     reopen: Option<CredentialGateTicket>,
 ) -> super::EpochRefreshOutcome {
+    install_guard_resolved::<R>(manager, material(epoch), reopen).await
+}
+
+async fn install_guard_resolved<R: Provider>(
+    manager: &Manager,
+    guard: ErasedCredentialGuard,
+    reopen: Option<CredentialGateTicket>,
+) -> super::EpochRefreshOutcome {
     let managed = manager
         .lookup_any_for_slot_identity_structural(&R::key(), &ScopeLevel::Global, &tenant())
         .expect("row");
@@ -384,7 +469,7 @@ async fn install_resolved<R: Provider>(
             &R::key(),
             "db",
             managed,
-            material(epoch),
+            guard,
             super::rotation::ResolvedAt {
                 slot_generation: None,
                 gate_ticket: reopen,
@@ -801,7 +886,7 @@ async fn an_observation_older_than_the_installed_material_is_ignored() {
             &tenant(),
             "db",
             REAUTH,
-            Some(4),
+            Some(CredentialObservedAt::new(4)),
         )
         .expect("suspend");
     assert_eq!(stale, CredentialSuspendOutcome::StaleObservation);
@@ -817,7 +902,7 @@ async fn an_observation_older_than_the_installed_material_is_ignored() {
             &tenant(),
             "db",
             REAUTH,
-            Some(5),
+            Some(CredentialObservedAt::new(5)),
         )
         .expect("suspend");
     assert_eq!(current, CredentialSuspendOutcome::Suspended);
@@ -941,4 +1026,254 @@ async fn the_public_install_never_reopens() {
         super::EpochRefreshOutcome::Applied(_)
     ));
     assert!(is_suspended::<ResidentRow>(&manager));
+}
+
+// ---------------------------------------------------------------------------
+// Use revisions: missed intervals, witnessed floors, stale reads.
+// ---------------------------------------------------------------------------
+
+fn current_seq<R: Provider>(manager: &Manager) -> u64 {
+    row::<R>(manager)
+        .admission
+        .current()
+        .expect("the row admits")
+        .seq()
+}
+
+fn assert_no_credential_event(events: &mut crate::Subscriber<ResourceEvent>) {
+    while let Some(event) = events.try_recv() {
+        assert!(
+            !matches!(
+                event,
+                ResourceEvent::CredentialSuspended { .. }
+                    | ResourceEvent::CredentialReopened { .. }
+            ),
+            "a readmission publishes no credential event: {event:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_missed_denial_interval_readmits_a_resident_row_without_closing_or_rebuilding() {
+    let manager = Manager::new();
+    let resource = resident(&manager);
+    seed::<ResidentRow>(&manager, material_at(1, 5)).await;
+    let held = acquire::<ResidentRow>(&manager).await.expect("acquire");
+    let before = current_seq::<ResidentRow>(&manager);
+    let mut events = manager.subscribe_events();
+
+    // Use was closed and reopened (revision 5 to 7) while nothing observed it.
+    let ticket = ticket::<ResidentRow>(&manager);
+    assert_eq!(
+        reopen_at::<ResidentRow>(&manager, ticket, at(1, 7)),
+        CredentialReopenOutcome::Readmitted
+    );
+    assert_eq!(current_seq::<ResidentRow>(&manager), before + 1);
+    assert!(!held.is_closing(), "only an observed block closes a lease");
+    assert_eq!(
+        manager
+            .credential_gate_ticket(&ResidentRow::key(), &ScopeLevel::Global, &tenant())
+            .expect("ticket"),
+        ticket,
+        "readmission is not a suspension"
+    );
+    let fresh = acquire::<ResidentRow>(&manager).await.expect("acquire");
+    assert_eq!(fresh.admission().seq(), before + 1);
+    assert_eq!(resource.probe.creates(), 1, "the master is reused");
+    assert_no_credential_event(&mut events);
+
+    // Seen once, the revision readmits nothing more; an older one is stale.
+    assert_eq!(
+        reopen_at::<ResidentRow>(&manager, ticket, at(1, 7)),
+        CredentialReopenOutcome::NotSuspended
+    );
+    assert_eq!(
+        reopen_at::<ResidentRow>(&manager, ticket, at(1, 6)),
+        CredentialReopenOutcome::StaleObservation
+    );
+    assert_eq!(current_seq::<ResidentRow>(&manager), before + 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_missed_denial_interval_readmits_a_pool_and_reuses_its_idle_entry() {
+    let manager = Manager::new();
+    let resource = pooled(&manager);
+    seed::<PooledRow>(&manager, material_at(1, 5)).await;
+    let held = acquire::<PooledRow>(&manager).await.expect("acquire");
+    let returned = acquire::<PooledRow>(&manager).await.expect("acquire");
+    assert_eq!(
+        returned.release().await.expect("release"),
+        crate::ReleaseOutcome::Completed
+    );
+    assert_eq!(resource.probe.creates(), 2);
+
+    assert_eq!(
+        reopen_at::<PooledRow>(&manager, ticket::<PooledRow>(&manager), at(1, 6)),
+        CredentialReopenOutcome::Readmitted
+    );
+    let reused = acquire::<PooledRow>(&manager).await.expect("acquire");
+    assert_eq!(resource.probe.creates(), 2, "the idle entry is reused");
+    assert!(reused.admission().seq() > held.admission().seq());
+    assert!(!held.is_closing());
+    assert!(!reused.is_closing());
+}
+
+#[tokio::test]
+async fn a_reauth_read_at_a_revision_ignores_available_at_that_revision() {
+    let manager = Manager::new();
+    resident(&manager);
+    seed::<ResidentRow>(&manager, material_at(1, 5)).await;
+    let held = acquire::<ResidentRow>(&manager).await.expect("acquire");
+    // The reauthentication flag was written at revision 6.
+    assert_eq!(
+        suspend_at::<ResidentRow>(&manager, REAUTH, at(1, 6)),
+        CredentialSuspendOutcome::Suspended
+    );
+    assert!(held.is_closing());
+    let ticket = ticket::<ResidentRow>(&manager);
+    // An `Available` read at revision 6 predates the flag's clearing.
+    assert_eq!(
+        reopen_at::<ResidentRow>(&manager, ticket, at(1, 6)),
+        CredentialReopenOutcome::StaleObservation
+    );
+    assert!(is_suspended::<ResidentRow>(&manager));
+    assert_eq!(
+        manager
+            .credential_gate_ticket(&ResidentRow::key(), &ScopeLevel::Global, &tenant())
+            .expect("ticket"),
+        ticket,
+        "a refusal mutates nothing"
+    );
+    assert_eq!(
+        reopen_at::<ResidentRow>(&manager, ticket, at(1, 7)),
+        CredentialReopenOutcome::Reopened
+    );
+    drop(acquire::<ResidentRow>(&manager).await.expect("reopened"));
+}
+
+#[tokio::test]
+async fn an_operation_block_without_a_revision_reopens_at_the_admitted_revision() {
+    let manager = Manager::new();
+    resident(&manager);
+    seed::<ResidentRow>(&manager, material_at(1, 5)).await;
+    // A revoke in flight carries no revision.
+    assert_eq!(
+        suspend_at::<ResidentRow>(&manager, BLOCKED, CredentialObservedAt::new(1)),
+        CredentialSuspendOutcome::Suspended
+    );
+    let ticket = ticket::<ResidentRow>(&manager);
+    assert_eq!(
+        reopen_at::<ResidentRow>(&manager, ticket, at(1, 4)),
+        CredentialReopenOutcome::StaleObservation
+    );
+    assert_eq!(
+        reopen_at::<ResidentRow>(&manager, ticket, at(1, 5)),
+        CredentialReopenOutcome::Reopened
+    );
+}
+
+#[tokio::test]
+async fn a_late_reauth_read_older_than_the_admitted_revision_is_ignored() {
+    let manager = Manager::new();
+    resident(&manager);
+    seed::<ResidentRow>(&manager, material_at(1, 5)).await;
+    assert_eq!(
+        reopen_at::<ResidentRow>(&manager, ticket::<ResidentRow>(&manager), at(1, 7)),
+        CredentialReopenOutcome::Readmitted
+    );
+    let held = acquire::<ResidentRow>(&manager).await.expect("acquire");
+    assert_eq!(
+        suspend_at::<ResidentRow>(&manager, REAUTH, at(1, 6)),
+        CredentialSuspendOutcome::StaleObservation
+    );
+    assert!(!is_suspended::<ResidentRow>(&manager));
+    assert!(!held.is_closing());
+}
+
+#[tokio::test]
+async fn a_stale_install_at_the_installed_material_does_not_clear_a_witnessed_floor() {
+    let manager = Manager::new();
+    resident(&manager);
+    seed::<ResidentRow>(&manager, material_at(1, 5)).await;
+    suspend_at::<ResidentRow>(&manager, REAUTH, at(1, 6));
+    let ticket = ticket::<ResidentRow>(&manager);
+    for revision in [5, 6] {
+        let outcome =
+            install_guard_resolved::<ResidentRow>(&manager, material_at(1, revision), Some(ticket))
+                .await;
+        assert!(
+            !matches!(outcome, super::EpochRefreshOutcome::Applied(_)),
+            "the installed material is kept: {outcome:?}"
+        );
+        assert!(
+            is_suspended::<ResidentRow>(&manager),
+            "a projection at revision {revision} proves nothing past the denial"
+        );
+    }
+    let _ = install_guard_resolved::<ResidentRow>(&manager, material_at(1, 7), Some(ticket)).await;
+    assert!(!is_suspended::<ResidentRow>(&manager));
+}
+
+#[tokio::test]
+async fn a_newer_material_install_clears_a_witnessed_floor() {
+    let manager = Manager::new();
+    resident(&manager);
+    seed::<ResidentRow>(&manager, material_at(1, 5)).await;
+    suspend_at::<ResidentRow>(&manager, REAUTH, at(1, 9));
+    let ticket = ticket::<ResidentRow>(&manager);
+    assert!(matches!(
+        install_guard_resolved::<ResidentRow>(&manager, material_at(2, 1), Some(ticket)).await,
+        super::EpochRefreshOutcome::Applied(_)
+    ));
+    assert!(!is_suspended::<ResidentRow>(&manager));
+    drop(acquire::<ResidentRow>(&manager).await.expect("reopened"));
+}
+
+#[tokio::test]
+async fn an_install_with_a_ticket_publishes_exactly_once() {
+    let manager = Manager::new();
+    resident(&manager);
+    seed::<ResidentRow>(&manager, material_at(1, 5)).await;
+    let before = current_seq::<ResidentRow>(&manager);
+    let ticket = ticket::<ResidentRow>(&manager);
+    assert!(matches!(
+        install_guard_resolved::<ResidentRow>(&manager, material_at(2, 6), Some(ticket)).await,
+        super::EpochRefreshOutcome::Applied(_)
+    ));
+    assert_eq!(
+        current_seq::<ResidentRow>(&manager),
+        before + 1,
+        "the install publishes; its own revision readmits nothing more"
+    );
+}
+
+#[tokio::test]
+async fn a_stale_install_at_a_newer_revision_readmits_without_closing() {
+    let manager = Manager::new();
+    resident(&manager);
+    seed::<ResidentRow>(&manager, material_at(1, 5)).await;
+    let held = acquire::<ResidentRow>(&manager).await.expect("acquire");
+    let before = current_seq::<ResidentRow>(&manager);
+    let ticket = ticket::<ResidentRow>(&manager);
+    let _ = install_guard_resolved::<ResidentRow>(&manager, material_at(1, 6), Some(ticket)).await;
+    assert_eq!(current_seq::<ResidentRow>(&manager), before + 1);
+    assert!(!held.is_closing());
+    // Without a ticket (the public install) the gate is left alone.
+    let _ = install_public::<ResidentRow>(&manager, material_at(1, 8)).await;
+    assert_eq!(current_seq::<ResidentRow>(&manager), before + 1);
+}
+
+#[tokio::test]
+async fn a_readmit_on_a_tainted_row_is_tainted() {
+    let manager = Manager::new();
+    resident(&manager);
+    seed::<ResidentRow>(&manager, material_at(1, 5)).await;
+    let ticket = ticket::<ResidentRow>(&manager);
+    let _tainted = manager
+        .taint_slot_for_identity(&ResidentRow::key(), ScopeLevel::Global, "db", &tenant())
+        .expect("taint");
+    assert_eq!(
+        reopen_at::<ResidentRow>(&manager, ticket, at(1, 6)),
+        CredentialReopenOutcome::Tainted
+    );
 }

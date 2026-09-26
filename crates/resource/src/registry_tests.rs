@@ -51,6 +51,7 @@ macro_rules! impl_fake_handle {
                 &self,
                 _slot: &str,
                 _reason: crate::error::CredentialUnavailableReason,
+                _floor: crate::runtime::admission::SuspensionFloor,
             ) -> crate::runtime::admission::SuspendTransition {
                 unreachable!("registry lookup fake never suspends credentials")
             }
@@ -58,6 +59,8 @@ macro_rules! impl_fake_handle {
                 &self,
                 _slot: &str,
                 _ticket: u64,
+                _observed: crate::CredentialObservedAt,
+                _installed: Option<crate::runtime::admission::UseMark>,
             ) -> crate::runtime::admission::ReopenTransition {
                 unreachable!("registry lookup fake never reopens credentials")
             }

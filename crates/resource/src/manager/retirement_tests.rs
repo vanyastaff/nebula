@@ -106,6 +106,7 @@ impl ManagedHandle for DeferredRetirementHandle {
         &self,
         _slot: &str,
         _reason: crate::CredentialUnavailableReason,
+        _floor: crate::runtime::admission::SuspensionFloor,
     ) -> crate::runtime::admission::SuspendTransition {
         unreachable!("retirement fake never suspends credentials")
     }
@@ -114,6 +115,8 @@ impl ManagedHandle for DeferredRetirementHandle {
         &self,
         _slot: &str,
         _ticket: u64,
+        _observed: crate::CredentialObservedAt,
+        _installed: Option<crate::runtime::admission::UseMark>,
     ) -> crate::runtime::admission::ReopenTransition {
         unreachable!("retirement fake never reopens credentials")
     }

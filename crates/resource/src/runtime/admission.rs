@@ -216,10 +216,6 @@ impl UseMark {
     }
 
     /// The mark of an installed projection.
-    #[expect(
-        dead_code,
-        reason = "guard-justified: the manager reads installed marks in the next change"
-    )]
     pub(crate) fn installed(metadata: &nebula_credential::CredentialGuardMetadata) -> Self {
         Self::new(metadata.material_epoch(), metadata.admission_epoch())
     }
@@ -248,13 +244,6 @@ pub(crate) struct SuspensionFloor {
     witnessed: bool,
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "guard-justified: the manager computes floors in the next change"
-    )
-)]
 impl SuspensionFloor {
     /// A denial observed at `mark` together with its use revision.
     pub(crate) const fn witnessed(mark: UseMark) -> Self {
@@ -539,13 +528,6 @@ impl AdmissionCell {
 
     /// The use revision `slot` currently admits at: the higher of
     /// `installed` and the last revision a reopen or readmit recorded.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "guard-justified: the manager reads admitted marks in the next change"
-        )
-    )]
     pub(crate) fn admitted(&self, slot: &str, installed: Option<UseMark>) -> Option<UseMark> {
         self.gate().admitted(slot, installed)
     }

@@ -1368,7 +1368,7 @@ fn suspend_slot(
         &activated.slot_identity,
         slot,
         reason,
-        observed_material_epoch,
+        observed_material_epoch.map(nebula_resource::CredentialObservedAt::new),
     );
     match outcome {
         Ok(outcome) => tracing::warn!(
@@ -1421,6 +1421,7 @@ fn reopen_suspended(
             &activated.slot_identity,
             &bound.slot,
             ticket,
+            nebula_resource::CredentialObservedAt::new(bound.material.0),
         );
         tracing::debug!(
             target: "nebula_engine::resource_activation",

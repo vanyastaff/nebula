@@ -592,11 +592,13 @@ impl Manager {
     /// `guard`. With an expected slot generation the install is conditional
     /// on it. With a credential gate ticket the install also reopens `slot`'s
     /// credential suspension — resolving the guard proved the credential
-    /// usable at its material — after an `Installed` update, or after a
-    /// `Stale` one at exactly the resolved material. A suspension recorded
-    /// after the ticket was captured wins (the reopen is superseded), and a
-    /// tainted row never reopens. Without a ticket a suspension is left as
-    /// it is.
+    /// usable at its material and use revision — after an `Installed`
+    /// update, or after a `Stale` one at exactly the resolved material; the
+    /// latter also readmits an admitting row whose use revision advanced
+    /// unobserved. A suspension recorded after the ticket was captured wins
+    /// (the reopen is superseded), a denial read at the same use revision is
+    /// not cleared, and a tainted row never reopens. Without a ticket the
+    /// gate is left as it is.
     pub(crate) async fn install_and_refresh_resolved<C, F, H>(
         &self,
         key: &ResourceKey,
@@ -631,6 +633,9 @@ impl Manager {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let epoch = guard.metadata().material_epoch();
+            // Where resolving proved the credential usable, captured before
+            // the guard moves into the slot.
+            let observed = super::CredentialObservedAt::from(guard.metadata());
             let update = match expected_generation {
                 Some(generation) => {
                     managed.install_credential_slot_at_generation(slot, guard, generation)
@@ -651,7 +656,10 @@ impl Manager {
                     // below publishes once no slot denies use any more.
                     let admission = managed.publish_admission();
                     tracing::debug!(?admission, "admission generation after credential install");
-                    self.reopen_after_install(key, slot, reopen, &*managed);
+                    // The installed projection now carries `observed`, so an
+                    // admitting row sees nothing newer (no second publish);
+                    // a suspended one clears on the new material.
+                    self.reopen_after_install(key, slot, reopen, observed, &*managed);
                     let Some((generation, Some(metadata))) =
                         managed.credential_slot_projection(slot)
                     else {
@@ -677,10 +685,11 @@ impl Manager {
                     current_material_epoch,
                 } => {
                     // The row already holds exactly the material just proven
-                    // usable: that clears a same-material suspension. A newer
-                    // installed material says nothing about this observation.
+                    // usable: that clears a same-material suspension, or
+                    // readmits at a newer use revision. A newer installed
+                    // material says nothing about this observation.
                     if current_material_epoch == epoch {
-                        self.reopen_after_install(key, slot, reopen, &*managed);
+                        self.reopen_after_install(key, slot, reopen, observed, &*managed);
                     }
                     let live = managed.credential_slot_projection(slot).and_then(
                         |(generation, metadata)| {
