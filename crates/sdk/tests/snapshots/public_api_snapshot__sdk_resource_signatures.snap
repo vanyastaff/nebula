@@ -476,6 +476,7 @@ pub struct ResourceLimiter {
 }
 impl ResourceLimiter {
     pub fn rate(&self) -> Option<Rate>;
+    pub fn profile(&self) -> RateLimitProfile;
     pub fn wrap<C, T>(self: &Arc<Self>, client: C, throttle: T) -> Limited<C, T>;
     pub async fn ready(&self, deadline: Option<std::time::Instant>) -> Result<(), Error>;
     pub async fn ready_for(&self, dimension: &str, value: impl fmt::Display, deadline: Option<std::time::Instant>) -> Result<(), Error>;

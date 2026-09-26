@@ -625,6 +625,48 @@ impl KeyedLimits {
     }
 }
 
+/// How a row's rate limit is enforced, as observed on its
+/// [`ResourceLimiter`].
+///
+/// The profile is observed, not declared: a row reports
+/// [`InterimPerClosure`](Self::InterimPerClosure) from the moment
+/// `Provider::create` wraps a client with [`ResourceLimiter::wrap`], and keeps
+/// it for the row's life. A row whose instance has not been created yet
+/// reports the profile it has before any wrap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum RateLimitProfile {
+    /// No rate: an acquire only waits out a provider's pause, kept in this
+    /// process. Nothing is paced.
+    PausesOnly,
+    /// Each acquire books one permit of the row's rate, so a lease is
+    /// budgeted as one provider call however many calls it makes.
+    PerAcquire,
+    /// A client was [`wrap`](ResourceLimiter::wrap)ped: every
+    /// [`Limited::run`] closure books one permit and acquires only honour
+    /// pauses. Interim: the managed call facade replaces the closure family.
+    InterimPerClosure,
+}
+
+impl RateLimitProfile {
+    /// Whether this profile is interim surface that a later release replaces.
+    #[must_use]
+    pub const fn is_interim(self) -> bool {
+        matches!(self, Self::InterimPerClosure)
+    }
+
+    /// Stable lowercase name for logs and status views: `pauses_only`,
+    /// `per_acquire` or `interim_per_closure`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::PausesOnly => "pauses_only",
+            Self::PerAcquire => "per_acquire",
+            Self::InterimPerClosure => "interim_per_closure",
+        }
+    }
+}
+
 /// Where a limiter reports: the row's resource key and the manager's bus.
 struct Reporter {
     resource_key: ResourceKey,
@@ -934,6 +976,21 @@ impl ResourceLimiter {
     #[must_use]
     pub fn rate(&self) -> Option<Rate> {
         self.quota.as_ref().map(|quota| quota.rate)
+    }
+
+    /// How this limit is enforced right now; see [`RateLimitProfile`].
+    ///
+    /// Latches to [`RateLimitProfile::InterimPerClosure`] at the first
+    /// [`wrap`](Self::wrap) and never changes back.
+    #[must_use]
+    pub fn profile(&self) -> RateLimitProfile {
+        if self.per_call.load(Ordering::Acquire) {
+            RateLimitProfile::InterimPerClosure
+        } else if self.quota.is_some() {
+            RateLimitProfile::PerAcquire
+        } else {
+            RateLimitProfile::PausesOnly
+        }
     }
 
     /// Wraps a client so every call through it runs under this limit, with
