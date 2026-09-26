@@ -295,7 +295,11 @@ where
 /// | body over its budget / body read failed | `Sent` | `Permanent` / `Transient` |
 ///
 /// Every answer other than a throttle is reported [`Verdict::Pass`]. The
-/// unit's deadline drops an exchange still waiting (`MaybeSent`).
+/// unit's deadline drops an exchange still waiting (`MaybeSent`). A request
+/// timeout that fires while the connection is still being established
+/// cannot be told apart from a lost request, so it counts as `MaybeSent`
+/// too; keep `connect_timeout_ms` below `request_timeout_ms` so a dead
+/// host is reported by the connector as `NotSent`.
 ///
 /// # Errors
 ///

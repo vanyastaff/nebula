@@ -1,85 +1,18 @@
 #![cfg(feature = "http")]
 
+#[expect(
+    dead_code,
+    reason = "shared harness; this suite uses the buffered replies and the request log only"
+)]
+#[path = "support/raw_http.rs"]
+mod raw_http;
+
 use nebula_sdk::client::{credential::v1::*, http::*};
+use raw_http::{Reply, Server};
 use serde_json::json;
-use std::{
-    collections::VecDeque,
-    sync::{Arc, Mutex},
-    time::Duration,
-};
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpListener,
-    task::JoinHandle,
-};
-
-enum Reply {
-    Bytes(String),
-    Disconnect,
-    Delay,
-}
-
-struct Server {
-    base: String,
-    requests: Arc<Mutex<Vec<String>>>,
-    task: JoinHandle<()>,
-}
-
-impl Drop for Server {
-    fn drop(&mut self) {
-        self.task.abort();
-    }
-}
+use std::time::Duration;
 
 impl Server {
-    async fn start(replies: Vec<Reply>) -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let base = format!("http://{}", listener.local_addr().unwrap());
-        let requests = Arc::new(Mutex::new(Vec::new()));
-        let seen = requests.clone();
-        let task = tokio::spawn(async move {
-            let mut replies = VecDeque::from(replies);
-            loop {
-                let (mut stream, _) = listener.accept().await.unwrap();
-                let mut request = Vec::new();
-                let mut buffer = [0; 4096];
-                loop {
-                    let size = stream.read(&mut buffer).await.unwrap();
-                    if size == 0 {
-                        break;
-                    }
-                    request.extend_from_slice(&buffer[..size]);
-                    if let Some(end) = request.windows(4).position(|window| window == b"\r\n\r\n") {
-                        let headers = String::from_utf8_lossy(&request[..end]).to_lowercase();
-                        let length = headers
-                            .lines()
-                            .find_map(|line| line.strip_prefix("content-length: "))
-                            .map(|length| length.parse::<usize>().unwrap())
-                            .unwrap_or(0);
-                        if request.len() >= end + 4 + length {
-                            break;
-                        }
-                    }
-                }
-                seen.lock()
-                    .unwrap()
-                    .push(String::from_utf8(request).unwrap());
-                match replies.pop_front().unwrap_or(Reply::Disconnect) {
-                    Reply::Bytes(bytes) => {
-                        let _ = stream.write_all(bytes.as_bytes()).await;
-                    },
-                    Reply::Disconnect => {},
-                    Reply::Delay => tokio::time::sleep(Duration::from_secs(5)).await,
-                }
-            }
-        });
-        Self {
-            base,
-            requests,
-            task,
-        }
-    }
-
     fn client(&self) -> CredentialClient {
         HttpClient::new(
             &self.base,
@@ -89,10 +22,6 @@ impl Server {
         .unwrap()
         .credentials("org", "ws")
         .unwrap()
-    }
-
-    fn seen(&self) -> Vec<String> {
-        self.requests.lock().unwrap().clone()
     }
 }
 
@@ -467,7 +396,7 @@ async fn response_limit_covers_chunked_bodies_and_total_request_timeout() {
     let error = client.create(&create_request()).await.unwrap_err();
     assert_eq!(error.kind(), HttpErrorKind::OutcomeUnknown);
     assert_eq!(error.status(), Some(200));
-    let server = Server::start(vec![Reply::Delay]).await;
+    let server = Server::start(vec![Reply::Hang]).await;
     let client = HttpClient::new(
         &server.base,
         BearerToken::new("token").unwrap(),
