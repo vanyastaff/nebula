@@ -687,7 +687,7 @@ pub const NEBULA_RESOURCE_CREDENTIAL_ADMISSION_DENIED_TOTAL: &str =
 
 /// Outcome labels for [`NEBULA_RESOURCE_CREDENTIAL_ADMISSION_READS_TOTAL`].
 ///
-/// Closed set of six values; every issued read records exactly one.
+/// Closed set of seven values; every issued read records exactly one.
 pub mod credential_admission_read_outcome {
     /// New uses are admitted at the observed material.
     pub const AVAILABLE: &str = "available";
@@ -701,6 +701,9 @@ pub mod credential_admission_read_outcome {
     pub const UNAVAILABLE: &str = "unavailable";
     /// The read did not answer within its bound.
     pub const TIMED_OUT: &str = "timed_out";
+    /// The manager shut down while the read was in flight. Not a store
+    /// outage: kept apart from [`UNAVAILABLE`].
+    pub const CANCELLED: &str = "cancelled";
 }
 
 /// Reason labels for [`NEBULA_RESOURCE_CREDENTIAL_ADMISSION_DENIED_TOTAL`],

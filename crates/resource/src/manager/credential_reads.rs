@@ -122,6 +122,7 @@ pub(crate) struct CredentialAdmissionMetrics {
     absent: Counter,
     unavailable: Counter,
     timed_out: Counter,
+    cancelled: Counter,
     joined: Counter,
     read_seconds: Histogram,
     denied: [Counter; 6],
@@ -150,6 +151,7 @@ impl CredentialAdmissionMetrics {
             absent: read(credential_admission_read_outcome::ABSENT)?,
             unavailable: read(credential_admission_read_outcome::UNAVAILABLE)?,
             timed_out: read(credential_admission_read_outcome::TIMED_OUT)?,
+            cancelled: read(credential_admission_read_outcome::CANCELLED)?,
             joined: registry.counter(NEBULA_RESOURCE_CREDENTIAL_ADMISSION_JOINED_TOTAL)?,
             read_seconds: registry.histogram_with_buckets_labeled(
                 NEBULA_RESOURCE_CREDENTIAL_ADMISSION_READ_DURATION_SECONDS,
@@ -181,6 +183,8 @@ impl CredentialAdmissionMetrics {
             Some(Err(
                 CredentialObserveError::Absent | CredentialObserveError::WrongCredentialKey,
             )) => &self.absent,
+            // Shutdown ended the read: not a store outage.
+            Some(Err(CredentialObserveError::Cancelled)) => &self.cancelled,
             Some(Err(_)) => &self.unavailable,
         };
         counter.inc();
@@ -200,7 +204,7 @@ impl CredentialAdmissionMetrics {
     }
 
     #[cfg(test)]
-    pub(crate) fn reads(&self) -> [u64; 6] {
+    pub(crate) fn reads(&self) -> [u64; 7] {
         [
             self.available.get(),
             self.refresh_in_flight.get(),
@@ -208,6 +212,7 @@ impl CredentialAdmissionMetrics {
             self.absent.get(),
             self.unavailable.get(),
             self.timed_out.get(),
+            self.cancelled.get(),
         ]
     }
 

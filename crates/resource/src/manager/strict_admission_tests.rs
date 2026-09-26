@@ -300,7 +300,7 @@ async fn an_available_credential_admits_after_one_read_per_slot() {
         "no gate change"
     );
     assert_eq!(current_seq::<StrictResident>(&manager), seq);
-    assert_eq!(metrics(&manager).reads(), [1, 0, 0, 0, 0, 0]);
+    assert_eq!(metrics(&manager).reads(), [1, 0, 0, 0, 0, 0, 0]);
 }
 
 #[tokio::test]
