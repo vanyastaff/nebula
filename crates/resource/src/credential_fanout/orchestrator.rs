@@ -980,6 +980,10 @@ impl ScanHint {
 /// Head-first reconciliation of one row whose installed projection is current
 /// (see `ResourceFanoutIndex::reconcile_material`). Decrypts only when the
 /// observed material advanced past `installed_epoch` or the head is absent.
+/// At the installed material the observed use revision decides: a denial
+/// suspends with the revision it was read at, and an `Available` read reopens
+/// a suspension it is newer than, or readmits a row whose use revision
+/// advanced unobserved.
 async fn observe_then_reconcile(
     index: &ResourceFanoutIndex,
     mgr: &crate::Manager,
@@ -1043,32 +1047,36 @@ async fn observe_then_reconcile(
                 binding,
                 &managed,
                 block_reason(block),
-                Some(crate::CredentialObservedAt::new(
-                    observation.material_epoch(),
-                )),
+                Some(crate::CredentialObservedAt::from(&observation)),
             );
         },
         CredentialAvailability::Available if observation.material_epoch() > installed_epoch => {
             return project_and_refresh(index, mgr, managed, target, resolver, projection_permit)
                 .await;
         },
-        CredentialAvailability::Available
-            if observation.material_epoch() == installed_epoch
-                && managed.credential_suspension().is_some() =>
-        {
+        // Usable at the installed material: reopen a suspension, or readmit
+        // when the use revision advanced past what the row admitted (a denial
+        // interval this scan never saw). Both are decided under the row's
+        // gate, so a steady row costs no publication.
+        CredentialAvailability::Available if observation.material_epoch() == installed_epoch => {
             match mgr.reopen_published_credential_binding(
                 index,
                 &cid,
                 binding,
                 &managed,
                 ticket,
-                crate::CredentialObservedAt::new(observation.material_epoch()),
+                crate::CredentialObservedAt::from(&observation),
             ) {
+                Ok(crate::CredentialReopenOutcome::Readmitted) => tracing::info!(
+                    credential_id = %cid,
+                    resource_key = %binding.resource_key,
+                    "credential use revision advanced at the installed material; row readmitted"
+                ),
                 Ok(outcome) => tracing::debug!(
                     credential_id = %cid,
                     resource_key = %binding.resource_key,
                     ?outcome,
-                    "credential usable again at the installed material"
+                    "credential usable at the installed material"
                 ),
                 Err(error) => tracing::warn!(
                     credential_id = %cid,
@@ -1078,8 +1086,8 @@ async fn observe_then_reconcile(
                 ),
             }
         },
-        // Available and current, an older observation, a refresh still in
-        // flight, or a future availability: nothing to change.
+        // An observation older than the installed material, a refresh still
+        // in flight, or a future availability: nothing to change.
         _ => {},
     }
     RowOutcome::Success {

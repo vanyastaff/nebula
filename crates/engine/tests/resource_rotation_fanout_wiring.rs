@@ -23,7 +23,7 @@
 use std::future::Future;
 use std::sync::{
     Arc,
-    atomic::{AtomicUsize, Ordering},
+    atomic::{AtomicU64, AtomicUsize, Ordering},
 };
 use std::time::Duration;
 
@@ -2580,16 +2580,33 @@ async fn engine_can_replace_resource_rotation_fanout_after_credential_bus_closes
 struct ReauthScriptedResolver {
     /// `(material epoch, reauth required)`.
     state: std::sync::Mutex<(u64, bool)>,
+    /// Use revision every `Open` answer carries; the backend advances it on
+    /// each write that closes use.
+    admission: AtomicU64,
     projections: Arc<AtomicUsize>,
+    observations: AtomicUsize,
 }
 
 impl ReauthScriptedResolver {
+    fn new(epoch: u64) -> Self {
+        Self {
+            state: std::sync::Mutex::new((epoch, false)),
+            admission: AtomicU64::new(1),
+            projections: Arc::new(AtomicUsize::new(0)),
+            observations: AtomicUsize::new(0),
+        }
+    }
+
     fn state(&self) -> (u64, bool) {
         *self.state.lock().expect("state lock")
     }
 
     fn set(&self, epoch: u64, reauth_required: bool) {
         *self.state.lock().expect("state lock") = (epoch, reauth_required);
+    }
+
+    fn admission(&self) -> u64 {
+        self.admission.load(Ordering::SeqCst)
     }
 }
 
@@ -2625,6 +2642,7 @@ impl nebula_credential::CredentialSlotResolver for ReauthScriptedResolver {
                     epoch,
                     epoch,
                 )
+                .with_admission_epoch(self.admission())
                 .with_scope(scope.clone()),
             ))
         };
@@ -2656,6 +2674,7 @@ impl nebula_credential::CredentialAvailabilityObserver for ReauthScriptedResolve
                 + 'a,
         >,
     > {
+        self.observations.fetch_add(1, Ordering::SeqCst);
         let (epoch, reauth_required) = self.state();
         let availability = if reauth_required {
             nebula_credential::CredentialAvailability::Blocked(
@@ -2664,12 +2683,15 @@ impl nebula_credential::CredentialAvailabilityObserver for ReauthScriptedResolve
         } else {
             nebula_credential::CredentialAvailability::Available
         };
+        // Both answers are `Open` statuses: they carry the use revision.
+        let admission = self.admission();
         Box::pin(async move {
             Ok(nebula_credential::CredentialAvailabilityObservation::new(
                 epoch,
                 epoch,
                 availability,
-            ))
+            )
+            .with_admission_epoch(admission))
         })
     }
 }
@@ -2707,10 +2729,7 @@ async fn reauth_required_denies_until_reauthentication_then_serves() {
         "db",
         identity.clone(),
     );
-    let resolver = Arc::new(ReauthScriptedResolver {
-        state: std::sync::Mutex::new((1, false)),
-        projections: Arc::new(AtomicUsize::new(0)),
-    });
+    let resolver = Arc::new(ReauthScriptedResolver::new(1));
     let bus = Arc::new(EventBus::new(8));
     let mut events = manager.subscribe_events();
     let driver = ResourceFanoutDriver::spawn_with_resolver(
@@ -2772,5 +2791,87 @@ async fn reauth_required_denies_until_reauthentication_then_serves() {
         2,
         "the reauthenticated material is installed"
     );
+    driver.abort();
+}
+
+/// An abandoned revoke claim closes and reopens use between two periodic
+/// scans: the next scan sees only the higher use revision at the same
+/// material. The row is readmitted under a fresh admission generation
+/// without closing the lease it already admitted and without decrypting.
+#[tokio::test(start_paused = true)]
+async fn an_abandoned_revoke_between_scans_readmits_without_closing() {
+    let manager = Arc::new(Manager::new());
+    let credential_id = CredentialId::new();
+    register_replacement(&manager, credential_id);
+    let identity = SlotIdentity::from_bindings([("db", "oauth")]);
+    let index = Arc::new(ResourceFanoutIndex::new());
+    index.bind_test(
+        credential_id,
+        ReplacementResource::key(),
+        ScopeLevel::Global,
+        "db",
+        identity.clone(),
+    );
+    let resolver = Arc::new(ReauthScriptedResolver::new(1));
+    let bus = Arc::new(EventBus::new(8));
+    let driver = ResourceFanoutDriver::spawn_with_resolver(
+        Arc::clone(&index),
+        Arc::clone(&manager),
+        Some(Arc::clone(&resolver) as Arc<dyn nebula_credential::CredentialSlotResolver>),
+        Arc::clone(&bus),
+        None,
+    );
+    let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
+    let options = AcquireOptions::default();
+    let lease = manager
+        .acquire_resident_for_identity::<ReplacementResource>(&ctx, &options, &identity)
+        .await
+        .expect("the row serves");
+    // The driver's first scan runs at once.
+    eventually("initial scan", || {
+        resolver.observations.load(Ordering::SeqCst) >= 1
+    })
+    .await;
+    let projections = resolver.projections.load(Ordering::SeqCst);
+    let observed = resolver.observations.load(Ordering::SeqCst);
+
+    // A revoke claim was acquired and lapsed unmarked: use revision 1 → 2.
+    resolver.admission.store(2, Ordering::SeqCst);
+    tokio::time::advance(Duration::from_secs(31)).await;
+    // The scan task reopens synchronously after its observation resolves, so
+    // once the observation is counted the gate decision has been made.
+    eventually("periodic scan", || {
+        resolver.observations.load(Ordering::SeqCst) > observed
+    })
+    .await;
+
+    let ticket = manager
+        .credential_gate_ticket(&ReplacementResource::key(), &ScopeLevel::Global, &identity)
+        .expect("ticket");
+    assert_eq!(
+        manager
+            .reopen_credential_row(
+                &ReplacementResource::key(),
+                &ScopeLevel::Global,
+                &identity,
+                "db",
+                ticket,
+                nebula_resource::CredentialObservedAt::new(1).with_admission_epoch(2),
+            )
+            .expect("reopen"),
+        nebula_resource::CredentialReopenOutcome::NotSuspended,
+        "the scan already admitted use revision 2"
+    );
+    assert!(!lease.is_closing(), "a readmission closes no lease");
+    assert_eq!(
+        resolver.projections.load(Ordering::SeqCst),
+        projections,
+        "a readmission decrypts nothing"
+    );
+    let fresh = manager
+        .acquire_resident_for_identity::<ReplacementResource>(&ctx, &options, &identity)
+        .await
+        .expect("the readmitted row serves");
+    assert!(!fresh.is_closing());
     driver.abort();
 }
