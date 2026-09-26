@@ -37,6 +37,7 @@ use crate::naming::{
     NEBULA_EVENTBUS_SENT, NEBULA_EVENTBUS_SUBSCRIBERS, NEBULA_RESOURCE_ACQUIRE_ERROR_TOTAL,
     NEBULA_RESOURCE_ACQUIRE_TIMED_OUT_TOTAL, NEBULA_RESOURCE_ACQUIRE_TOTAL,
     NEBULA_RESOURCE_ACQUIRE_WAIT_DURATION_SECONDS, NEBULA_RESOURCE_ACQUIRE_WAITED_TOTAL,
+    NEBULA_RESOURCE_CALL_ATTEMPTS_TOTAL, NEBULA_RESOURCE_CALL_UNITS_SETTLED_TOTAL,
     NEBULA_RESOURCE_CIRCUIT_BREAKER_CLOSED_TOTAL, NEBULA_RESOURCE_CIRCUIT_BREAKER_OPENED_TOTAL,
     NEBULA_RESOURCE_CLEANUP_TOTAL, NEBULA_RESOURCE_CONFIG_RELOADED_TOTAL,
     NEBULA_RESOURCE_CREATE_TOTAL, NEBULA_RESOURCE_CREDENTIAL_REVOKE_ATTEMPTS_TOTAL,
@@ -104,6 +105,12 @@ fn counter_help(name: &str) -> &'static str {
         },
         NEBULA_RESOURCE_HOLD_DEADLINE_EXCEEDED_TOTAL => {
             "Total hold-deadline watchdog firings (HikariCP leakDetectionThreshold equivalent)."
+        },
+        NEBULA_RESOURCE_CALL_ATTEMPTS_TOTAL => {
+            "Total managed-call provider attempts decided by the facade (labeled by outcome)."
+        },
+        NEBULA_RESOURCE_CALL_UNITS_SETTLED_TOTAL => {
+            "Total managed-call units settled (labeled by sent state)."
         },
         NEBULA_RESOURCE_CIRCUIT_BREAKER_OPENED_TOTAL => {
             "Total circuit-breaker open transitions per resource pool."

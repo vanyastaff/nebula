@@ -138,6 +138,29 @@ fn sdk_resource_signatures() {
     insta::assert_snapshot!("sdk_resource_signatures", resource_signatures(&workspace));
 }
 
+/// The managed call facade reaches the instance only through a granted
+/// attempt: neither the facade nor a unit derefs.
+#[test]
+fn managed_and_unit_have_no_deref() {
+    let text = resource_signatures(&workspace());
+    for (item, method) in [
+        ("nebula_resource::call::managed::Managed", "pub fn submit<"),
+        ("nebula_resource::call::managed::Unit", "pub fn cancel("),
+    ] {
+        let lines = section(&text, item);
+        assert!(
+            lines.iter().any(|line| line.contains(method)),
+            "{item}'s inherent methods must be rendered: {lines:#?}"
+        );
+        for line in &lines {
+            assert!(
+                !(line.starts_with("impl") && line.contains("Deref")),
+                "{item} must not deref: {line}"
+            );
+        }
+    }
+}
+
 /// Pins the walker to the facts the snapshot exists to show.
 #[test]
 fn limited_has_no_deref_and_marks_interim_calls() {

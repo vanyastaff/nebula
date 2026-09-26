@@ -17,6 +17,7 @@ use nebula_eventbus::EventBus;
 use tokio::sync::{Notify, OwnedSemaphorePermit};
 
 use crate::{
+    call::{Managed, PinSlots},
     context::ResourceContext,
     events::ResourceEvent,
     metrics::ResourceOpsMetrics,
@@ -259,9 +260,41 @@ impl<R: Provider> ResourceGuard<R> {
     }
 
     /// The admission generation this lease was admitted under.
-    #[cfg(test)]
     pub(crate) fn admission(&self) -> &Arc<AdmissionGeneration> {
         &self.admission
+    }
+
+    /// The row this lease came from.
+    pub(crate) fn managed(&self) -> &Arc<ManagedResource<R>> {
+        &self.managed
+    }
+
+    /// The manager's operation counters, when configured.
+    pub(crate) fn metrics(&self) -> Option<&ResourceOpsMetrics> {
+        self.metrics.as_ref()
+    }
+
+    /// The manager's event bus, when attached.
+    pub(crate) fn event_bus(&self) -> Option<&Arc<EventBus<ResourceEvent>>> {
+        self.event_bus.as_ref()
+    }
+
+    /// Turns this lease into a managed call facade: provider calls go
+    /// through [`Managed::submit`] as admitted,
+    /// budgeted units of work, and the lease is released when the facade and
+    /// every unit it started are gone.
+    ///
+    /// Latches the row's rate-limit profile to
+    /// [`RateLimitProfile::PerAttempt`](crate::RateLimitProfile::PerAttempt):
+    /// from now on each granted attempt books its cost, and acquires of the
+    /// row only honour pauses.
+    ///
+    /// See the [`call`](crate::call) module for the contract.
+    pub fn into_managed(self) -> Managed<R>
+    where
+        R: PinSlots,
+    {
+        Managed::from_guard(self)
     }
 
     /// Attaches the manager's event bus so this guard emits

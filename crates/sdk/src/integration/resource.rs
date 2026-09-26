@@ -21,9 +21,22 @@
 //! status; the managed call facade replaces the closure family. Without a
 //! wrap, a declared rate books one permit per acquire.
 //!
+//! The managed call facade turns a lease into [`Managed`] with
+//! [`ResourceGuard::into_managed`]. Each provider call is an [`Operation`]
+//! submitted as a [`Unit`]; inside it, [`OpCx::attempt`] admits one provider
+//! [`Attempt`] against the lease, books its [`Cost`] and hands out the
+//! instance and the unit's pinned credential slots ([`PinSlots`]). Each
+//! attempt is settled with a [`SentState`], and a failed unit's [`OpError`]
+//! says from that and the operation's [`Effect`] whether a retry is safe. A
+//! row used this way reports the `PerAttempt` (`per_attempt`) profile. The
+//! facade is not frozen yet, so it is not in the prelude.
+//!
 //! Runtime registration, dispatch, and cleanup queues remain engine-owned.
 
 pub use nebula_core::{ResourceKey, resource_key};
+pub use nebula_resource::call::{
+    Attempt, Cost, Effect, Managed, OpCx, OpError, Operation, PinSlots, SentState, Unit,
+};
 pub use nebula_resource::rate_limit::{
     DEFAULT_MAX_PENALTY, LimitScope, Limited, LimitedError, NoThrottle, OnError, Override, Rate,
     RateLimitSettings, ResiliencePolicy, ResourceLimiter, Throttle, Verdict, on_error,

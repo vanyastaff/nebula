@@ -9,7 +9,7 @@ use nebula_credential::{
     Credential, CredentialContext, CredentialError, CredentialGuard, CredentialMetadataDraft,
     SecretString, SecretToken, StaticResolveResult,
 };
-use nebula_resource::{CredentialSlot, HasCredentialSlots, Resource, SlotCell};
+use nebula_resource::{CredentialSlot, HasCredentialSlots, PinSlots, Resource, SlotCell};
 use zeroize::Zeroize;
 
 #[derive(Resource)]
@@ -73,6 +73,13 @@ fn main() {
     };
     let _projected: Option<Arc<CredentialGuard<SecretToken>>> = alias.api_slot();
     assert!(_projected.is_none());
+
+    // The derive-emitted `PinSlots` snapshot borrows each pinned guard.
+    let pinned: DemoPinnedSlots = PinSlots::pin_slots(&d);
+    let _pinned_db: Option<&CredentialGuard<FakeCred>> = pinned.db();
+    let alias_pinned: AliasDemoPinnedSlots = alias.pin_slots();
+    let _pinned_api: Option<&CredentialGuard<SecretToken>> = alias_pinned.api();
+    assert!(_pinned_api.is_none());
 
     fn install_from_resolver(
         resource: &AliasDemo,

@@ -692,6 +692,29 @@ let admitted = recorded.readmit_against(fresh)?;
   rows stay on the interim row gate with a one-time warning; the default
   becomes strict before the API freeze.
 
+- **Managed call facade.** `ResourceGuard::into_managed` turns a lease into
+  `nebula_resource::call::Managed<R>` (no `Deref`): each provider call is an
+  `Operation` submitted as a lazy, runtime-owned `Unit`, and
+  `OpCx::attempt(Cost)` admits, books and grants one provider `Attempt`
+  against the lease (budget, lease admission, quota at the attempt's cost
+  raced against the lease closing and `Unit::cancel`, final admission). Each
+  attempt settles a `SentState`; a failed unit's `OpError` decides retry
+  safety from the unit's sent state and the operation's `Effect`
+  (`Read` / `Idempotent` / `Write`). New `ErrorKind::OutcomeUnknown`
+  (`RESOURCE:OUTCOME_UNKNOWN`, never retried) is what a retry-unsafe unit
+  becomes as a resource `Error`, with `ResourceEvent::UnitOutcomeUnknown`.
+  `PinSlots` pins credential slots once per unit; `#[derive(Resource)]` emits
+  it (with a generated `<Name>PinnedSlots` for credentialed structs), as does
+  `no_credential_slots!`. A row used this way reports
+  `RateLimitProfile::PerAttempt`, and its acquires only honour pauses.
+  Metrics: `nebula_resource_call_attempts_total{outcome}` and
+  `nebula_resource_call_units_settled_total{sent}`; a `nebula.resource.unit`
+  span per unit. `nebula-action` converts `OpError` into `ActionError`
+  (backoff hint kept, unknown outcome fatal). The SDK re-exports the facade
+  from `integration::resource`, not the prelude: it is not frozen. Interim
+  defaults (5-minute unit deadline cap, one unit per exclusive lease and 64
+  per shared one, no refund on cancel) are listed in the resource README.
+
 - **Resource rows report how their rate limit is enforced.**
   `nebula_resource::RateLimitProfile` names it: `PausesOnly` (no rate),
   `PerAcquire` (one permit per lease) or `InterimPerClosure` (a client wrapped

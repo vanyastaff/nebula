@@ -6,6 +6,34 @@ expression: resource_signatures(&workspace)
 exported as nebula_sdk::integration::resource::DEFAULT_MAX_PENALTY
 pub const DEFAULT_MAX_PENALTY: Duration = Duration::from_mins(5);
 
+## enum nebula_resource::call::cost::Effect
+exported as nebula_sdk::integration::resource::Effect
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[non_exhaustive]
+pub enum Effect {
+    Read,
+    Idempotent,
+    #[default] Write,
+}
+impl Effect {
+    pub const fn is_replay_safe(self) -> bool;
+    pub const fn as_str(self) -> &'static str;
+}
+
+## enum nebula_resource::call::cost::SentState
+exported as nebula_sdk::integration::resource::SentState
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum SentState {
+    NotSent,
+    Sent,
+    MaybeSent,
+}
+impl SentState {
+    pub const fn as_str(self) -> &'static str;
+}
+impl fmt::Display for SentState
+
 ## enum nebula_resource::error::CredentialUnavailableReason
 exported as nebula_sdk::integration::resource::CredentialUnavailableReason
 #[non_exhaustive]
@@ -38,6 +66,7 @@ pub enum ErrorKind {
     Revoked,
     Ambiguous,
     CredentialUnavailable { reason: CredentialUnavailableReason },
+    OutcomeUnknown,
 }
 impl fmt::Display for ErrorKind
 
@@ -321,6 +350,98 @@ impl Rate {
 impl TryFrom<RateConfig> for Rate
 impl fmt::Debug for Rate
 
+## struct nebula_resource::call::cost::Cost
+exported as nebula_sdk::integration::resource::Cost
+#[derive(Clone, PartialEq, Eq)]
+pub struct Cost {
+    /* private fields */
+}
+impl Cost {
+    pub const ONE: Self = Self { permits: 1, key: None };
+    pub const FREE: Self = Self { permits: 0, key: None };
+    pub const fn units(units: NonZeroU32) -> Self;
+    pub fn keyed(dimension: &'static str, value: impl fmt::Display) -> Self;
+    pub const fn permits(&self) -> u32;
+}
+impl fmt::Debug for Cost
+
+## struct nebula_resource::call::error::OpError
+exported as nebula_sdk::integration::resource::OpError
+#[derive(Debug, Clone)]
+pub struct OpError {
+    /* private fields */
+}
+impl OpError {
+    pub fn new(kind: ErrorKind, detail: &'static str) -> Self;
+    pub fn kind(&self) -> &ErrorKind;
+    pub fn sent(&self) -> SentState;
+    pub fn effect(&self) -> Effect;
+    pub fn resource_key(&self) -> Option<&ResourceKey>;
+    pub fn detail(&self) -> &'static str;
+    pub fn is_retryable(&self) -> bool;
+    pub fn retry_after(&self) -> Option<Duration>;
+}
+impl From<Error> for OpError
+impl fmt::Display for OpError
+impl std::error::Error for OpError
+
+## struct nebula_resource::call::managed::Attempt
+exported as nebula_sdk::integration::resource::Attempt
+pub struct Attempt<'a, R: Provider + PinSlots> {
+    /* private fields */
+}
+impl<R: Provider + PinSlots> Attempt<'_, R> {
+    pub fn instance(&self) -> &R::Instance;
+    pub fn slots(&self) -> &R::Pinned;
+    pub async fn report(&self, verdict: Verdict);
+    pub fn taint(&self);
+    pub fn settle(self, sent: SentState);
+}
+impl<R: Provider + PinSlots> Drop for Attempt<'_, R>
+impl<R: Provider + PinSlots> fmt::Debug for Attempt<'_, R>
+
+## struct nebula_resource::call::managed::Managed
+exported as nebula_sdk::integration::resource::Managed
+pub struct Managed<R: Provider> {
+    /* private fields */
+}
+impl<R: Provider> Managed<R> {
+    pub fn resource_key(&self) -> &ResourceKey;
+    pub fn closing(&self) -> LeaseClosing;
+    pub fn is_closing(&self) -> bool;
+}
+impl<R: Provider + PinSlots> Managed<R> {
+    pub fn submit<O: Operation<R>>(&self, operation: O) -> Unit<O::Output>;
+}
+impl<R: Provider + PinSlots> From<ResourceGuard<R>> for Managed<R>
+impl<R: Provider> Clone for Managed<R>
+impl<R: Provider> fmt::Debug for Managed<R>
+
+## struct nebula_resource::call::managed::OpCx
+exported as nebula_sdk::integration::resource::OpCx
+pub struct OpCx<'u, R: Provider + PinSlots> {
+    /* private fields */
+}
+impl<R: Provider + PinSlots> OpCx<'_, R> {
+    pub async fn attempt(&mut self, cost: Cost) -> Result<Attempt<'_, R>, OpError>;
+    pub fn deadline(&self) -> Instant;
+    pub fn closing(&self) -> LeaseClosing;
+    pub fn attempts(&self) -> u32;
+}
+impl<R: Provider + PinSlots> fmt::Debug for OpCx<'_, R>
+
+## struct nebula_resource::call::managed::Unit
+exported as nebula_sdk::integration::resource::Unit
+pub struct Unit<T> {
+    /* private fields */
+}
+impl<T> Unit<T> {
+    pub fn with_deadline(self, deadline: Instant) -> Self;
+    pub fn cancel(&self);
+}
+impl<T> Future for Unit<T>
+impl<T> fmt::Debug for Unit<T>
+
 ## struct nebula_resource::context::ResourceContext
 exported as nebula_sdk::integration::resource::ResourceContext
 exported as nebula_sdk::prelude::ResourceContext
@@ -364,10 +485,12 @@ impl Error {
     pub fn revoked(message: impl Into<String>) -> Self;
     pub fn ambiguous(message: impl Into<String>) -> Self;
     pub fn credential_unavailable(reason: CredentialUnavailableReason) -> Self;
+    pub fn outcome_unknown(message: impl Into<String>) -> Self;
     pub fn backpressure(message: impl Into<String>) -> Self;
     pub fn unknown_credential_slot(key: ResourceKey, slot_name: &str) -> Self;
     pub fn to_core_error(&self) -> nebula_core::CoreError;
 }
+impl From<OpError> for Error
 impl From<nebula_core::CoreError> for Error
 impl fmt::Display for Error
 impl nebula_error::Classify for Error
@@ -390,6 +513,7 @@ pub struct ResourceGuard<R: Provider> {
     /* private fields */
 }
 impl<R: Provider> ResourceGuard<R> {
+    pub fn into_managed(self) -> Managed<R> where R: PinSlots;
     pub fn taint(&mut self);
     pub fn hold_duration(&self) -> Duration;
     pub fn limits(&self) -> &Arc<crate::rate_limit::ResourceLimiter>;
@@ -750,6 +874,22 @@ impl<'a, S: Send + 'static> StoreView<'a, S> {
 impl<S> Clone for StoreView<'_, S>
 impl<S> Copy for StoreView<'_, S>
 impl<S> std::fmt::Debug for StoreView<'_, S>
+
+## trait nebula_resource::call::Operation
+exported as nebula_sdk::integration::resource::Operation
+pub trait Operation<R: Provider + PinSlots>: Send + 'static {
+    type Output: Send + 'static;
+    const EFFECT: Effect = Effect::Write;
+    fn max_attempts(&self) -> NonZeroU32 { .. }
+    fn run(self, cx: &mut OpCx<'_, R>) -> impl Future<Output = Result<Self::Output, OpError>> + Send;
+}
+
+## trait nebula_resource::call::pin::PinSlots
+exported as nebula_sdk::integration::resource::PinSlots
+pub trait PinSlots: HasCredentialSlots {
+    type Pinned: Send + Sync + 'static;
+    fn pin_slots(&self) -> Self::Pinned;
+}
 
 ## trait nebula_resource::rate_limit::Throttle
 exported as nebula_sdk::integration::resource::Throttle

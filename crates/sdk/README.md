@@ -234,6 +234,17 @@ Resource authoring types, traits, and derives are in the prelude and the explici
 | **Prelude** | `nebula_sdk::prelude::*` re-exports the author surface: derives `Resource` / `ResourceConfig` / `ClassifyError`; traits `Provider`, `ResourceConfig`, `HasCredentialSlots`, `PoolProvider`, `ResidentProvider`, `BoundedProvider`; topologies `Pooled`, `Resident`, `Bounded` with `PoolConfig` / `ResidentConfig` / `BoundedMode`; and `ResourceMetadataDraft`, `ResourceContext`, `ResourceGuard`, `ReleaseOutcome`, `ResourceKey`, `resource_key!`, `ScopeLevel`, `SlotCell`, `TopologyTag`, `ReloadOutcome`, `Error`, `ErrorKind`, `no_credential_slots!`. See `prelude.rs` for a runnable pooled-resource example. |
 | **Derives** | `Resource` and `ResourceConfig` are covered by the SDK-only derive compile contract. Manual `Provider` authoring, including a consuming `destroy` over a non-Clone instance using `TeardownCx` and `TeardownReason`, is separately compile-checked through the prelude plus the general-purpose `async-trait` crate. |
 
+**Managed call facade:** `nebula_sdk::integration::resource` (not the prelude —
+the facade is not frozen) re-exports `Managed`, `Operation`, `OpCx`, `Attempt`,
+`Unit`, `Cost`, `Effect`, `SentState`, `OpError` and `PinSlots`.
+`ResourceGuard::into_managed()` turns a lease into a `Managed` facade without
+`Deref`; provider calls are `Operation`s whose attempts are admitted and
+booked per `Cost`, and a failed unit's `OpError` says whether a retry is safe.
+The SDK-only fixture compiles a logger authored against it
+(`resource_managed_logger`) and proves `Managed` does not deref
+(`managed_no_deref`); runtime behaviour is tested in the resource crate. See
+the resource README, "Managed call facade".
+
 **Release migration:** `ResourceGuard::release()` now returns
 `Result<ReleaseOutcome, Error>` instead of `Result<(), Error>`. Match
 `ReleaseOutcome::Completed`, `ReleaseOutcome::Deferred`, and `_` because the

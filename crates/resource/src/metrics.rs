@@ -38,14 +38,15 @@ use nebula_metrics::{
     naming::{
         NEBULA_RESOURCE_ACQUIRE_ERROR_TOTAL, NEBULA_RESOURCE_ACQUIRE_TIMED_OUT_TOTAL,
         NEBULA_RESOURCE_ACQUIRE_TOTAL, NEBULA_RESOURCE_ACQUIRE_WAIT_DURATION_SECONDS,
-        NEBULA_RESOURCE_ACQUIRE_WAITED_TOTAL, NEBULA_RESOURCE_CREATE_TOTAL,
+        NEBULA_RESOURCE_ACQUIRE_WAITED_TOTAL, NEBULA_RESOURCE_CALL_ATTEMPTS_TOTAL,
+        NEBULA_RESOURCE_CALL_UNITS_SETTLED_TOTAL, NEBULA_RESOURCE_CREATE_TOTAL,
         NEBULA_RESOURCE_CREDENTIAL_REVOKE_ATTEMPTS_TOTAL,
         NEBULA_RESOURCE_CREDENTIAL_REVOKE_OBSERVATIONS_TOTAL,
         NEBULA_RESOURCE_CREDENTIAL_ROTATION_ATTEMPTS_TOTAL,
         NEBULA_RESOURCE_CREDENTIAL_ROTATION_OBSERVATIONS_TOTAL, NEBULA_RESOURCE_DESTROY_TOTAL,
         NEBULA_RESOURCE_HOLD_DEADLINE_EXCEEDED_TOTAL, NEBULA_RESOURCE_RECYCLE_OUTCOME_TOTAL,
-        NEBULA_RESOURCE_RELEASE_ERROR_TOTAL, NEBULA_RESOURCE_RELEASE_TOTAL, recycle_outcome,
-        rotation_outcome,
+        NEBULA_RESOURCE_RELEASE_ERROR_TOTAL, NEBULA_RESOURCE_RELEASE_TOTAL, call_attempt_outcome,
+        call_unit_sent, recycle_outcome, rotation_outcome,
     },
 };
 
@@ -94,6 +95,11 @@ const ACQUIRE_IMMEDIATE_THRESHOLD: Duration = Duration::from_micros(50);
 /// [`NEBULA_RESOURCE_CREDENTIAL_ROTATION_ATTEMPTS_TOTAL`].
 fn outcome_label(registry: &MetricsRegistry, outcome: &str) -> LabelSet {
     registry.interner().single("outcome", outcome)
+}
+
+/// Builds the `sent=<value>` label set for the settled-unit counter.
+fn sent_label(registry: &MetricsRegistry, sent: &str) -> LabelSet {
+    registry.interner().single("sent", sent)
 }
 
 /// Registry-backed counters for resource operations.
@@ -152,6 +158,13 @@ pub struct ResourceOpsMetrics {
     /// Hold-deadline watchdog firings (HikariCP `leakDetectionThreshold`
     /// equivalent) — see [`Self::record_hold_deadline_exceeded`].
     hold_deadline_exceeded: Counter,
+    /// Managed-call attempts, `outcome={granted,refused}`.
+    call_attempts_granted: Counter,
+    call_attempts_refused: Counter,
+    /// Settled managed-call units, `sent={not_sent,sent,maybe_sent}`.
+    call_units_not_sent: Counter,
+    call_units_sent: Counter,
+    call_units_maybe_sent: Counter,
 }
 
 /// How a single per-slot dispatch resolved.
@@ -334,7 +347,47 @@ impl ResourceOpsMetrics {
             acquire_timed_out: registry.counter(NEBULA_RESOURCE_ACQUIRE_TIMED_OUT_TOTAL)?,
             hold_deadline_exceeded: registry
                 .counter(NEBULA_RESOURCE_HOLD_DEADLINE_EXCEEDED_TOTAL)?,
+            call_attempts_granted: registry.counter_labeled(
+                NEBULA_RESOURCE_CALL_ATTEMPTS_TOTAL,
+                &outcome_label(registry, call_attempt_outcome::GRANTED),
+            )?,
+            call_attempts_refused: registry.counter_labeled(
+                NEBULA_RESOURCE_CALL_ATTEMPTS_TOTAL,
+                &outcome_label(registry, call_attempt_outcome::REFUSED),
+            )?,
+            call_units_not_sent: registry.counter_labeled(
+                NEBULA_RESOURCE_CALL_UNITS_SETTLED_TOTAL,
+                &sent_label(registry, call_unit_sent::NOT_SENT),
+            )?,
+            call_units_sent: registry.counter_labeled(
+                NEBULA_RESOURCE_CALL_UNITS_SETTLED_TOTAL,
+                &sent_label(registry, call_unit_sent::SENT),
+            )?,
+            call_units_maybe_sent: registry.counter_labeled(
+                NEBULA_RESOURCE_CALL_UNITS_SETTLED_TOTAL,
+                &sent_label(registry, call_unit_sent::MAYBE_SENT),
+            )?,
         })
+    }
+
+    /// Records one attempt decided by the managed call facade: granted, or
+    /// refused before anything reached the provider. Counts facade grants,
+    /// not a provider driver's own retries inside an attempt.
+    pub(crate) fn record_call_attempt(&self, granted: bool) {
+        if granted {
+            self.call_attempts_granted.inc();
+        } else {
+            self.call_attempts_refused.inc();
+        }
+    }
+
+    /// Records one settled managed-call unit by its folded sent state.
+    pub(crate) fn record_call_unit(&self, sent: crate::call::SentState) {
+        match sent {
+            crate::call::SentState::NotSent => self.call_units_not_sent.inc(),
+            crate::call::SentState::Sent => self.call_units_sent.inc(),
+            crate::call::SentState::MaybeSent => self.call_units_maybe_sent.inc(),
+        }
     }
 
     /// Records a successful acquire.
@@ -483,6 +536,15 @@ impl ResourceOpsMetrics {
             recycle_outcomes: self.recycle_outcomes.snapshot(),
             acquire_wait: self.acquire_wait_snapshot(),
             hold_deadline_exceeded: self.hold_deadline_exceeded.get(),
+            call_attempts: CallAttemptsSnapshot {
+                granted: self.call_attempts_granted.get(),
+                refused: self.call_attempts_refused.get(),
+            },
+            call_units: CallUnitsSnapshot {
+                not_sent: self.call_units_not_sent.get(),
+                sent: self.call_units_sent.get(),
+                maybe_sent: self.call_units_maybe_sent.get(),
+            },
         }
     }
 
@@ -651,6 +713,35 @@ pub struct ResourceOpsSnapshot {
     /// released. A non-zero, climbing count is a leaked-guard or
     /// stuck-caller signal.
     pub hold_deadline_exceeded: u64,
+    /// Provider attempts the managed call facade granted or refused. See
+    /// [`CallAttemptsSnapshot`].
+    pub call_attempts: CallAttemptsSnapshot,
+    /// Managed call units settled, by sent state. See [`CallUnitsSnapshot`].
+    pub call_units: CallUnitsSnapshot,
+}
+
+/// Snapshot of the `outcome`-labeled series of the managed-call attempt
+/// counter. Counts the facade's grants only; a provider driver's own
+/// retries inside one granted attempt are not seen here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub struct CallAttemptsSnapshot {
+    /// Attempts admitted with their cost booked.
+    pub granted: u64,
+    /// Attempts refused before anything reached the provider.
+    pub refused: u64,
+}
+
+/// Snapshot of the `sent`-labeled series of the settled-unit counter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub struct CallUnitsSnapshot {
+    /// Units none of whose attempts reached the provider.
+    pub not_sent: u64,
+    /// Units whose attempts reached the provider and were answered.
+    pub sent: u64,
+    /// Units with an attempt that may have reached the provider unanswered.
+    pub maybe_sent: u64,
 }
 
 #[cfg(test)]

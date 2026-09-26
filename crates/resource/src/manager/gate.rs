@@ -180,6 +180,7 @@ mod gate_admission_tests {
             // A credential store outage is not the backend's ill health.
             Error::credential_unavailable(crate::CredentialUnavailableReason::CheckUnavailable),
             Error::credential_unavailable(crate::CredentialUnavailableReason::Absent),
+            Error::outcome_unknown("unit outcome unknown"),
         ] {
             let gate = idle_gate();
             let admission = admit_through_gate(&Some(Arc::clone(&gate))).expect("idle admits");

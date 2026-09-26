@@ -233,6 +233,7 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
+pub mod call;
 pub mod context;
 #[cfg(feature = "rotation")]
 pub mod credential_fanout;
@@ -261,6 +262,9 @@ pub mod state;
 pub mod topology;
 pub mod topology_tag;
 
+pub use call::{
+    Attempt, Cost, Effect, Managed, OpCx, OpError, Operation, PinSlots, SentState, Unit,
+};
 pub use context::{
     ResourceContext, minimal_scope_for_level, scope_levels_for_acquire, scope_to_level,
 };
@@ -277,8 +281,8 @@ pub use manager::{
     SlotDeferralReason, SlotDispatchOutcome, SlotDrainOutcome, TaintedSlot,
 };
 pub use metrics::{
-    ACQUIRE_WAIT_BUCKET_UPPER_BOUNDS_MICROS, AcquireWaitSnapshot, OutcomeCountersSnapshot,
-    ResourceOpsMetrics, ResourceOpsSnapshot,
+    ACQUIRE_WAIT_BUCKET_UPPER_BOUNDS_MICROS, AcquireWaitSnapshot, CallAttemptsSnapshot,
+    CallUnitsSnapshot, OutcomeCountersSnapshot, ResourceOpsMetrics, ResourceOpsSnapshot,
 };
 pub use nebula_core::{ExecutionId, ResourceKey, ScopeLevel, WorkflowId, resource_key};
 /// Re-export [`Subscriber`] and [`EventBusStats`] so callers of
