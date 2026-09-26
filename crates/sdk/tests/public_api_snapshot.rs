@@ -182,6 +182,10 @@ fn limited_has_no_deref_and_marks_interim_calls() {
         text.contains("\n## struct nebula_resource::rate_limit::Limited [interim]\n"),
         "Limited itself is documented as interim surface"
     );
+    assert!(
+        limited.iter().any(|line| line.starts_with("#[deprecated")),
+        "Limited is deprecated in favour of the managed call facade: {limited:#?}"
+    );
     for method in [
         "fn run<",
         "fn run_until<",

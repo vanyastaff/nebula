@@ -1052,14 +1052,23 @@ impl ResourceLimiter {
     /// Build the wrapper once, in [`Provider::create`](crate::Provider::create),
     /// from [`ResourceContext::limits`](crate::ResourceContext::limits).
     ///
-    /// # Interim
+    /// # Deprecated
     ///
     /// Wrapping latches this row's [`profile`](Self::profile) to
     /// [`RateLimitProfile::InterimPerClosure`] for the row's life: from then
     /// on each [`Limited::run`] closure books one permit and acquires only
-    /// honour pauses. The closure family is interim surface; the managed call
-    /// facade ([`crate::call`]) replaces it.
+    /// honour pauses. The closure family is deprecated since 0.21.0 and is
+    /// removed before the API freeze; the managed call facade
+    /// ([`crate::call`]) replaces it — see [`Limited`] for the migration.
     #[must_use]
+    #[deprecated(
+        since = "0.21.0",
+        note = "use the managed call facade: `ResourceGuard::into_managed` + `Operation`, one `OpCx::attempt(Cost)` per provider call (`Cost::keyed` replaces `run_for`, `Unit::with_deadline` replaces `run_until`, `Attempt::report(Verdict)` replaces `Throttle`)"
+    )]
+    #[expect(
+        deprecated,
+        reason = "the deprecated closure family is implemented here until its removal (MIGRATION P10)"
+    )]
     pub fn wrap<C, T>(self: &Arc<Self>, client: C, throttle: T) -> Limited<C, T> {
         // Calls through the client now book their own slots; an acquire must
         // not book a second one for the same provider call.
@@ -2002,22 +2011,42 @@ where
 /// call cannot skip the limit by accident. [`unlimited`](Self::unlimited) is
 /// the explicit, reviewable way to do so.
 ///
-/// # Interim
+/// # Deprecated
 ///
-/// **Interim surface.** Each `run*` closure books one permit and counts as
-/// one provider call, whatever it does inside; the row reports
+/// **Interim surface**, deprecated since 0.21.0 and removed before the API
+/// freeze (MIGRATION P10). Each `run*` closure books one permit and counts as one provider
+/// call, whatever it does inside; the row reports
 /// [`RateLimitProfile::InterimPerClosure`]. The managed call facade
-/// ([`crate::call`]: [`ResourceGuard::into_managed`](crate::ResourceGuard::into_managed),
-/// one [`Cost`](crate::call::Cost) booked per granted attempt) replaces the
-/// closure family and [`unlimited`](Self::unlimited). They are not deprecated
-/// yet and stay supported; new integrations use the facade. The crate
-/// README's rate-limit profile table says what each profile budgets.
+/// ([`crate::call`]) replaces the closure family: keep the client as the
+/// provider's instance, turn the lease into a facade with
+/// [`ResourceGuard::into_managed`](crate::ResourceGuard::into_managed), and
+/// describe each call as an [`Operation`](crate::call::Operation) that asks
+/// for one [`OpCx::attempt`](crate::call::OpCx::attempt) per provider call:
+///
+/// | Closure family | Managed call facade |
+/// |---|---|
+/// | `run(call)` | `cx.attempt(Cost::ONE)` |
+/// | `run_for(dimension, value, call)` | `cx.attempt(Cost::keyed(dimension, value))` |
+/// | `run_until(deadline, call)` | `Unit::with_deadline(deadline)` on the submitted unit |
+/// | `Throttle::check` | `Attempt::report(verdict)` |
+/// | `unlimited()` | none: every provider call is an attempt, by design |
+///
+/// The crate README's rate-limit profile table says what each profile
+/// budgets.
+#[deprecated(
+    since = "0.21.0",
+    note = "use the managed call facade: `ResourceGuard::into_managed` + `Operation`, one `OpCx::attempt(Cost)` per provider call (`Cost::keyed` replaces `run_for`, `Unit::with_deadline` replaces `run_until`, `Attempt::report(Verdict)` replaces `Throttle`)"
+)]
 pub struct Limited<C, T = NoThrottle> {
     client: C,
     throttle: T,
     limits: Arc<ResourceLimiter>,
 }
 
+#[expect(
+    deprecated,
+    reason = "the deprecated closure family is implemented here until its removal (MIGRATION P10)"
+)]
 impl<C: Clone, T: Clone> Clone for Limited<C, T> {
     fn clone(&self) -> Self {
         Self {
@@ -2028,6 +2057,10 @@ impl<C: Clone, T: Clone> Clone for Limited<C, T> {
     }
 }
 
+#[expect(
+    deprecated,
+    reason = "the deprecated closure family is implemented here until its removal (MIGRATION P10)"
+)]
 impl<C, T> fmt::Debug for Limited<C, T> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -2037,6 +2070,10 @@ impl<C, T> fmt::Debug for Limited<C, T> {
     }
 }
 
+#[expect(
+    deprecated,
+    reason = "the deprecated closure family is implemented here until its removal (MIGRATION P10)"
+)]
 impl<C, T> Limited<C, T> {
     /// Runs one call under the limit, waiting for a permit as long as needed.
     ///
@@ -2173,7 +2210,15 @@ impl<C, T> Limited<C, T> {
 }
 
 /// Error of a call through [`Limited`].
+///
+/// Deprecated with [`Limited`]: a managed attempt fails with an
+/// [`OpError`](crate::call::OpError), whose sent state and effect say whether
+/// a retry is safe.
 #[derive(Debug)]
+#[deprecated(
+    since = "0.21.0",
+    note = "use the managed call facade: `ResourceGuard::into_managed` + `Operation`, one `OpCx::attempt(Cost)` per provider call (`Cost::keyed` replaces `run_for`, `Unit::with_deadline` replaces `run_until`, `Attempt::report(Verdict)` replaces `Throttle`)"
+)]
 pub enum LimitedError<E> {
     /// The limit refused the call; it never reached the provider.
     Limit(Error),
@@ -2181,6 +2226,10 @@ pub enum LimitedError<E> {
     Call(E),
 }
 
+#[expect(
+    deprecated,
+    reason = "the deprecated closure family is implemented here until its removal (MIGRATION P10)"
+)]
 impl<E: fmt::Display> fmt::Display for LimitedError<E> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -2190,6 +2239,10 @@ impl<E: fmt::Display> fmt::Display for LimitedError<E> {
     }
 }
 
+#[expect(
+    deprecated,
+    reason = "the deprecated closure family is implemented here until its removal (MIGRATION P10)"
+)]
 impl<E: std::error::Error + 'static> std::error::Error for LimitedError<E> {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {

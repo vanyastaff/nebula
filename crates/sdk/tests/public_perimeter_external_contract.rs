@@ -6,9 +6,11 @@
 //! with a consuming terminal hook over a non-Clone instance, using the
 //! general-purpose `async-trait` dependency. This is a compile check, not runtime
 //! teardown coverage. A second positive binary checks custom resource topology
-//! authoring, a third the rate-limit declaration, and a fourth a logger
-//! authored against the managed call facade, whose `Managed` must not deref
-//! (`managed_no_deref`). Each negative binary targets one distinct authority or persistence
+//! authoring, a third the rate-limit declaration paced through the managed
+//! call facade, and a fourth a logger authored against the facade, whose
+//! `Managed` must not deref (`managed_no_deref`); the deprecated closure
+//! family fails under `deny(deprecated)` (`resource_limited_deprecated`).
+//! Each negative binary targets one distinct authority or persistence
 //! escape hatch that must stay unavailable, including paths below `__private`:
 //! Rust documentation hiding is not access control. Procedural derives have a
 //! separate SDK-only compile-pass
@@ -26,6 +28,7 @@ const FIXTURE_FILES: &[&str] = &[
     "src/bin/positive.rs",
     "src/bin/resource_topology.rs",
     "src/bin/resource_rate_limit.rs",
+    "src/bin/resource_limited_deprecated.rs",
     "src/bin/resource_managed_logger.rs",
     "src/bin/managed_no_deref.rs",
     "src/bin/removed_resource_from_key.rs",
@@ -302,6 +305,22 @@ fn sdk_only_consumer_cannot_name_authority_or_raw_persistence() {
         [error] if error.code.as_deref() == Some("E0614") && error.message.contains("Managed"),
         "the managed facade must fail only for its missing `Deref`: {}",
         render_output(&no_deref)
+    );
+
+    let deprecated = cargo_probe(temp.path(), "check", "resource_limited_deprecated");
+    assert!(
+        !deprecated.status.success(),
+        "the deprecated closure family compiled under `deny(deprecated)`"
+    );
+    let diagnostics = compiler_errors(&deprecated);
+    std::assert_matches!(
+        diagnostics.as_slice(),
+        [error] if error.highlighted == "wrap"
+            && error.message.contains("deprecated")
+            && error.message.contains("wrap")
+            && error.message.contains("into_managed"),
+        "`ResourceLimiter::wrap` must fail only as deprecated, pointing at the facade: {}",
+        render_output(&deprecated)
     );
 
     // One strict clippy pass over every positive probe: separate passes

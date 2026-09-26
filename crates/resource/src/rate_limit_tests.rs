@@ -1,3 +1,8 @@
+#![expect(
+    deprecated,
+    reason = "regression coverage of the deprecated closure family"
+)]
+
 use std::{num::NonZeroU32, time::Duration};
 
 use tokio::time::Instant;
