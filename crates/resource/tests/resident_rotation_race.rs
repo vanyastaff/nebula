@@ -109,6 +109,9 @@ struct RaceResource {
     gate: RaceGate,
     refresh_calls: Arc<AtomicUsize>,
     revoke_calls: Arc<AtomicUsize>,
+    /// The binding of the most recently built runtime — a resource-side
+    /// handle to the master, for tests where no lease is ever handed out.
+    last_built: Arc<std::sync::Mutex<Option<Arc<AtomicU32>>>>,
 }
 
 #[async_trait::async_trait]
@@ -138,6 +141,7 @@ impl Provider for RaceResource {
             refresh_calls: self.refresh_calls.clone(),
             revoke_calls: self.revoke_calls.clone(),
         };
+        *self.last_built.lock().expect("last_built lock") = Some(Arc::clone(&runtime.bound_cred));
 
         // Signal "I have read the slot", then park (if armed) so the test
         // can rotate + dispatch refresh while this build is in flight and
@@ -238,6 +242,7 @@ fn build(park: bool) -> (Arc<Manager>, ResourceKey, RaceResource) {
         },
         refresh_calls: Arc::new(AtomicUsize::new(0)),
         revoke_calls: Arc::new(AtomicUsize::new(0)),
+        last_built: Arc::default(),
     };
     let mgr = Manager::new();
     mgr.register(RegistrationSpec {
@@ -447,10 +452,11 @@ async fn refresh_slot_lock_wait_does_not_consume_the_hook_ceiling() {
 
 /// Revoke inverse: a revoke racing the first resident acquire must not
 /// leave the runtime serving the revoked credential. Same interleaving as
-/// the refresh test but `revoke_slot` (taint + drain + revoke hook) — the
-/// runtime built mid-revoke must still receive `on_credential_revoke`
-/// (here: binding cleared to `0`) rather than continuing to serve
-/// `CRED_OLD`.
+/// the refresh test but `revoke_slot` (taint + drain + revoke hook). The
+/// acquire straddling the taint is refused (its admission generation closed
+/// while it was in flight), and the runtime built mid-revoke must still
+/// receive `on_credential_revoke` (here: binding cleared to `0`) rather than
+/// continuing to serve `CRED_OLD`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn resident_revoke_during_first_acquire_does_not_serve_revoked_credential() {
     let (mgr, key, resource) = build(true);
@@ -499,18 +505,24 @@ async fn resident_revoke_during_first_acquire_does_not_serve_revoked_credential(
 
     resource.gate.release_create.notify_one();
 
-    let guard = acquire_task
+    let refused = acquire_task
         .await
         .expect("acquire task must not panic")
-        .expect("first acquire must succeed");
-    // `bound_cred` is shared (Arc) between the caller's lease and the
-    // cell-stored runtime the revoke hook acts on. Capture it, then drop
-    // the guard so the per-resource drain completes promptly (otherwise the
-    // held in-flight guard wedges the 30 s drain) — the revoke hook then
-    // runs on the still-cell-resident runtime and clears the shared
-    // binding.
-    let bound_cred = Arc::clone(&guard.bound_cred);
-    drop(guard);
+        .expect_err("an acquire straddling the taint must not be handed out");
+    assert_eq!(
+        *refused.kind(),
+        nebula_resource::ErrorKind::Revoked,
+        "the straddling acquire is refused as revoked, got: {refused:?}"
+    );
+    // No lease reached the caller; reach the master the revoke hook acts on
+    // through the resource-side handle `create()` recorded. The refused
+    // lease released its in-flight slot, so the drain completes promptly.
+    let bound_cred = resource
+        .last_built
+        .lock()
+        .expect("last_built lock")
+        .clone()
+        .expect("the parked create built a runtime");
 
     let tail = revoke_task.await.expect("revoke task must not panic");
     assert!(

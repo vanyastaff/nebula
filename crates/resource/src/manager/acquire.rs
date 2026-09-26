@@ -554,27 +554,47 @@ impl Manager {
             });
         }
 
-        let result = dispatch().await;
+        let result = match dispatch().await {
+            // Hand-out check: the generation this acquire was admitted under
+            // closed while it was in flight (a taint, removal or shutdown
+            // straddled the create). The caller never receives the lease.
+            // The built guard carries the in-flight slot into ordinary
+            // release, so the entry returns (or, fenced, is destroyed)
+            // before the revoke / shutdown drain observes the slot free.
+            // See the `manager` module docs, "Admission generations".
+            Ok(guard) if admission.is_closed() => {
+                drop(guard.with_drain_tracker(in_flight.release_to_guard()));
+                let refused = Self::closed_admission_error::<R>(&managed);
+                tracing::debug!(
+                    resource.key = %R::key(),
+                    admission = admission.seq(),
+                    error.kind = ?refused.kind(),
+                    "acquire refused at hand-out: admission generation closed in flight"
+                );
+                Err(refused)
+            },
+            Ok(guard) => Ok(guard
+                .with_admission(admission)
+                .with_drain_tracker(in_flight.release_to_guard())),
+            Err(error) => Err(error),
+        };
 
         // Settle the gate ticket based on the acquire result. #322: this
         // makes the ticket ownership end-to-end — on success we `resolve`,
         // on retryable error we `fail_transient`, on permanent error we
         // `fail_permanent`. The `Drop` impl of `RecoveryTicket` covers
-        // cancellation/panic paths.
+        // cancellation/panic paths. A hand-out refusal is `Revoked` or
+        // `Cancelled`, neither of which is a backend-health signal.
         settle_gate_admission(gate_admission, &result);
         self.record_acquire_result(&result, started, ctx, options);
-        match result {
-            // Attach the manager's event bus so the guard's `Drop` emits
-            // `ResourceEvent::Released`. Done here, on the success path only,
-            // because failed acquires never minted a guard to begin with —
-            // there is nothing to release.
-            Ok(h) => Ok(h
-                .with_admission(admission)
-                .with_drain_tracker(in_flight.release_to_guard())
-                .with_event_bus(Arc::clone(&self.event_bus))
-                .with_hold_watchdog(R::max_hold_duration(), ctx, self.metrics.clone())),
-            Err(e) => Err(e),
-        }
+        // Attach the manager's event bus so the guard's `Drop` emits
+        // `ResourceEvent::Released`. Done here, on the success path only,
+        // because failed acquires never minted a guard to begin with —
+        // there is nothing to release.
+        result.map(|h| {
+            h.with_event_bus(Arc::clone(&self.event_bus))
+                .with_hold_watchdog(R::max_hold_duration(), ctx, self.metrics.clone())
+        })
     } // visible cross-module after impl split
 
     /// Acquires a handle to a resident resource.

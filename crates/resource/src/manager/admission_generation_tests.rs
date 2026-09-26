@@ -1,9 +1,16 @@
 //! Admission generations: which lifecycle changes close a row's generations
 //! and which publish a benign successor.
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
 
 use nebula_core::{CredentialId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
 use nebula_credential::{CredentialGuard, CredentialGuardMetadata, ErasedCredentialGuard};
+use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
 use super::{
@@ -29,15 +36,28 @@ impl ResourceConfig for Config {
     }
 }
 
+/// Parks `create` after it has started, so a test can land a lifecycle
+/// change while an acquire is in flight.
+#[derive(Default)]
+struct CreateGate {
+    armed: AtomicBool,
+    entered: Notify,
+    release: Notify,
+}
+
 #[derive(Clone)]
 struct Tenant {
     slot: Arc<SlotCell<CredentialGuard<u64>>>,
+    gate: Arc<CreateGate>,
+    revokes: Arc<AtomicUsize>,
 }
 
 impl Tenant {
     fn new() -> Self {
         Self {
             slot: Arc::new(SlotCell::empty()),
+            gate: Arc::default(),
+            revokes: Arc::default(),
         }
     }
 }
@@ -61,6 +81,15 @@ impl Provider for Tenant {
     }
 
     async fn create(&self, _: &Config, _: &ResourceContext) -> Result<(), Error> {
+        if self.gate.armed.swap(false, Ordering::SeqCst) {
+            self.gate.entered.notify_one();
+            self.gate.release.notified().await;
+        }
+        Ok(())
+    }
+
+    async fn on_credential_revoke(&self, _: &str, (): &()) -> Result<(), Error> {
+        self.revokes.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
 }
@@ -132,10 +161,11 @@ fn identity(tenant: &str) -> SlotIdentity {
     SlotIdentity::from_bindings([("db", tenant)])
 }
 
-fn register(manager: &Manager, identity: &SlotIdentity, version: u64) {
+fn register(manager: &Manager, identity: &SlotIdentity, version: u64) -> Tenant {
+    let resource = Tenant::new();
     manager
         .register(RegistrationSpec {
-            resource: Tenant::new(),
+            resource: resource.clone(),
             config: Config { version },
             scope: ScopeLevel::Global,
             slot_identity: identity.clone(),
@@ -144,6 +174,7 @@ fn register(manager: &Manager, identity: &SlotIdentity, version: u64) {
             rate_limit: None,
         })
         .expect("register");
+    resource
 }
 
 fn row(manager: &Manager, identity: &SlotIdentity) -> Arc<ManagedResource<Tenant>> {
@@ -460,4 +491,128 @@ async fn graceful_shutdown_fires_closing_at_drain_start() {
     assert_eq!(report.outstanding_handles_after_drain, 1);
     assert!(guard.is_closing());
     drop(guard);
+}
+
+// ---------------------------------------------------------------------------
+// Hand-out check: an acquire whose generation closed in flight is refused.
+// ---------------------------------------------------------------------------
+
+/// Starts an acquire whose resident `create` parks, and returns once it is
+/// parked (past admission capture, before hand-out).
+async fn parked_acquire(
+    manager: &Arc<Manager>,
+    resource: &Tenant,
+    identity: &SlotIdentity,
+) -> tokio::task::JoinHandle<Result<ResourceGuard<Tenant>, Error>> {
+    resource.gate.armed.store(true, Ordering::SeqCst);
+    let entered = resource.gate.entered.notified();
+    let task = tokio::spawn({
+        let manager = Arc::clone(manager);
+        let identity = identity.clone();
+        async move { acquire_result(&manager, &identity).await }
+    });
+    tokio::time::timeout(WAKE, entered)
+        .await
+        .expect("create parks");
+    task
+}
+
+async fn acquire_result(
+    manager: &Manager,
+    identity: &SlotIdentity,
+) -> Result<ResourceGuard<Tenant>, Error> {
+    let context = ResourceContext::minimal(Scope::default(), CancellationToken::new());
+    manager
+        .acquire_resident_for_identity::<Tenant>(&context, &AcquireOptions::default(), identity)
+        .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resident_create_straddling_a_taint_is_refused_as_revoked() {
+    let manager = Arc::new(Manager::new());
+    let tenant = identity("a");
+    let resource = register(&manager, &tenant, 1);
+    let acquire = parked_acquire(&manager, &resource, &tenant).await;
+
+    let tainted = manager
+        .taint_slot_for_identity(&Tenant::key(), ScopeLevel::Global, "db", &tenant)
+        .expect("taint");
+    let tail = tokio::spawn({
+        let manager = Arc::clone(&manager);
+        async move {
+            manager
+                .drain_and_revoke(tainted, Duration::from_secs(30))
+                .await
+        }
+    });
+    resource.gate.release.notify_one();
+
+    let refused = tokio::time::timeout(WAKE, acquire)
+        .await
+        .expect("acquire completes")
+        .expect("acquire task")
+        .expect_err("a lease admitted before the taint is not handed out after it");
+    assert_eq!(*refused.kind(), crate::ErrorKind::Revoked);
+
+    let tail = tokio::time::timeout(WAKE, tail)
+        .await
+        .expect("the refused lease frees the drain")
+        .expect("revoke tail task");
+    assert!(
+        matches!(
+            tail,
+            super::RevokeTail::Done {
+                drain: SlotDrainOutcome::Drained
+            }
+        ),
+        "got {tail:?}"
+    );
+    assert_eq!(
+        resource.revokes.load(Ordering::SeqCst),
+        1,
+        "the revoke hook reaches the master built by the refused acquire once"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resident_create_straddling_a_reload_is_served_on_its_generation() {
+    let manager = Arc::new(Manager::new());
+    let tenant = identity("a");
+    let resource = register(&manager, &tenant, 1);
+    let admitted_under = current_seq(&row(&manager, &tenant));
+    let acquire = parked_acquire(&manager, &resource, &tenant).await;
+
+    manager
+        .reload_config::<Tenant>(Config { version: 2 }, &ScopeLevel::Global)
+        .expect("reload");
+    resource.gate.release.notify_one();
+
+    let guard = tokio::time::timeout(WAKE, acquire)
+        .await
+        .expect("acquire completes")
+        .expect("acquire task")
+        .expect("a reload never refuses a lease in flight");
+    assert!(!guard.is_closing());
+    assert_eq!(guard.admission().seq(), admitted_under);
+    assert!(current_seq(&row(&manager, &tenant)) > admitted_under);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resident_create_straddling_a_removal_is_refused_as_cancelled() {
+    let manager = Arc::new(Manager::new());
+    let tenant = identity("a");
+    let resource = register(&manager, &tenant, 1);
+    let acquire = parked_acquire(&manager, &resource, &tenant).await;
+
+    manager
+        .remove_for(&Tenant::key(), &ScopeLevel::Global, &tenant)
+        .expect("remove_for");
+    resource.gate.release.notify_one();
+
+    let refused = tokio::time::timeout(WAKE, acquire)
+        .await
+        .expect("acquire completes")
+        .expect("acquire task")
+        .expect_err("a removed row hands out no lease");
+    assert_eq!(*refused.kind(), crate::ErrorKind::Cancelled);
 }
