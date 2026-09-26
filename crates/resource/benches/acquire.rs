@@ -324,6 +324,14 @@ impl nebula_resource::HasCredentialSlots for BoundResident {
     }
 }
 
+impl nebula_resource::PinSlots for BoundResident {
+    type Pinned = Option<std::sync::Arc<nebula_credential::CredentialGuard<u64>>>;
+
+    fn pin_slots(&self) -> Self::Pinned {
+        self.db.load()
+    }
+}
+
 #[async_trait::async_trait]
 impl ResidentProvider for BoundResident {
     fn is_alive_sync(&self, _instance: &u64) -> bool {
@@ -419,5 +427,84 @@ fn bench_strict_credential_admission(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_acquire, bench_strict_credential_admission);
+/// One free attempt on the bound resident, settled `Sent`.
+struct OneAttempt;
+
+impl nebula_resource::call::Operation<BoundResident> for OneAttempt {
+    type Output = u64;
+
+    async fn run(
+        self,
+        cx: &mut nebula_resource::call::OpCx<'_, BoundResident>,
+    ) -> Result<u64, nebula_resource::call::OpError> {
+        let attempt = cx.attempt(nebula_resource::call::Cost::FREE).await?;
+        let instance = *attempt.instance();
+        attempt.settle(nebula_resource::call::SentState::Sent);
+        Ok(instance)
+    }
+}
+
+/// `attempt_bound_interim` vs `attempt_bound_strict`: one managed unit of
+/// one free attempt on a lease already turned into a facade, on an interim
+/// manager (lock-free registration, no read) and on a strict one (a read
+/// through an in-memory observer that answers at once, then registration
+/// under `Manager.admission`). The difference is the per-attempt strict
+/// overhead beyond the read itself; the unit's own task spawn is common to
+/// both.
+fn bench_strict_attempt_admission(c: &mut Criterion) {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .expect("bench runtime");
+    let mut group = c.benchmark_group("resource/attempt");
+    let facade = |manager: Manager| async move {
+        manager
+            .register(RegistrationSpec {
+                resource: BoundResident::bound(),
+                config: BenchCfg,
+                scope: ScopeLevel::Global,
+                slot_identity: SlotIdentity::Unbound,
+                topology: Resident::<BoundResident>::new(ResidentConfig::default()),
+                recovery_gate: None,
+                rate_limit: None,
+            })
+            .expect("register bound resident");
+        let managed = manager
+            .acquire_resident::<BoundResident>(&bench_ctx(), &AcquireOptions::default())
+            .await
+            .expect("bound resident acquire")
+            .into_managed();
+        (manager, managed)
+    };
+    let (interim, strict) = rt.block_on(async {
+        let interim = facade(Manager::new()).await;
+        let strict = facade(Manager::with_config(
+            nebula_resource::ManagerConfig::default()
+                .with_credential_observer(std::sync::Arc::new(AvailableObserver)),
+        ))
+        .await;
+        (interim, strict)
+    });
+
+    for (name, (_manager, managed)) in [
+        ("attempt_bound_interim", &interim),
+        ("attempt_bound_strict", &strict),
+    ] {
+        group.bench_function(name, |b| {
+            b.to_async(&rt).iter(|| async {
+                let output = managed.submit(OneAttempt).await.expect("granted");
+                black_box(output);
+            });
+        });
+    }
+
+    group.finish();
+}
+
+criterion_group!(
+    benches,
+    bench_acquire,
+    bench_strict_credential_admission,
+    bench_strict_attempt_admission
+);
 criterion_main!(benches);
