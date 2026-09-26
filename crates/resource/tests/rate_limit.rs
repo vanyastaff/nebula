@@ -2,7 +2,9 @@
 //! waits within the caller's deadline, fails fast past it, never trips the
 //! recovery gate, is reachable per call through the guard, shares a quota
 //! across rows with one key, reaches `Provider::create` so a wrapped client
-//! and the acquire path share one pause, and publishes transitions only.
+//! and the acquire path share one pause, and publishes transitions only. A
+//! wrapped client's wait ends when its row stops admitting work (revoke,
+//! shutdown) but not on a reload, and a detached limiter never ends one.
 
 mod common;
 
@@ -494,4 +496,229 @@ async fn a_pause_holds_callers_already_waiting_for_their_slot() {
         "woke {:?} after start, inside the pause",
         started.elapsed()
     );
+}
+
+// ---------------------------------------------------------------------------
+// A `Limited` wait ends when the row stops admitting work.
+// ---------------------------------------------------------------------------
+
+/// [`ChatResource`] with a declared `db` credential slot, so the row can be
+/// revoked.
+#[derive(Clone)]
+struct CredentialedChat;
+
+#[async_trait::async_trait]
+impl Provider for CredentialedChat {
+    type Config = common::TestConfig;
+    type Instance = Limited<ChatClient, ChatThrottle>;
+    type Topology = Resident<Self>;
+
+    fn key() -> nebula_core::ResourceKey {
+        nebula_core::resource_key!("test-credentialed-chat")
+    }
+
+    fn resilience() -> nebula_resource::rate_limit::ResiliencePolicy {
+        nebula_resource::rate_limit::ResiliencePolicy::new()
+            .keyed("chat_id", Rate::per_second(NonZeroU32::MIN))
+    }
+
+    async fn create(
+        &self,
+        _config: &common::TestConfig,
+        ctx: &ResourceContext,
+    ) -> Result<Self::Instance, nebula_resource::Error> {
+        Ok(ctx.limits().wrap(ChatClient, ChatThrottle))
+    }
+
+    async fn destroy(
+        &self,
+        _instance: Self::Instance,
+        _cx: nebula_resource::TeardownCx,
+    ) -> Result<(), nebula_resource::Error> {
+        Ok(())
+    }
+
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("test-credentialed-chat"),
+            "",
+        )
+    }
+}
+
+impl nebula_resource::HasCredentialSlots for CredentialedChat {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
+    }
+
+    fn declares_credential_slots() -> bool {
+        true
+    }
+
+    fn credential_slot_names() -> &'static [&'static str] {
+        &["db"]
+    }
+}
+
+impl ResidentProvider for CredentialedChat {}
+
+const PAUSE: Duration = Duration::from_mins(1);
+
+type ChatCall = Result<(), LimitedError<ChatError>>;
+
+/// Which `Limited` call the parked lease waits in.
+#[derive(Clone, Copy)]
+enum ParkedCall {
+    Run,
+    RunForChat,
+}
+
+/// Registers the row, records a 60 s provider pause through its client,
+/// and parks a task holding a lease inside `call`'s wait.
+async fn parked_behind_a_pause(
+    manager: &Arc<Manager>,
+    call: ParkedCall,
+) -> tokio::task::JoinHandle<ChatCall> {
+    manager
+        .register(RegistrationSpec {
+            resource: CredentialedChat,
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: Resident::new(ResidentConfig::default()),
+            recovery_gate: None,
+            rate_limit: None,
+        })
+        .expect("registration succeeds");
+    let guard = manager
+        .acquire::<CredentialedChat>(&test_ctx(), &AcquireOptions::default())
+        .await
+        .expect("acquire");
+    let refused = guard
+        .run(async |chat| chat.send(Some(ChatError::RetryAfter(PAUSE))).await)
+        .await;
+    assert!(matches!(refused, Err(LimitedError::Call(_))));
+    let task = tokio::spawn(async move {
+        let send = async |chat: &ChatClient| chat.send(None).await;
+        let outcome = match call {
+            ParkedCall::Run => guard.run(send).await,
+            ParkedCall::RunForChat => guard.run_for("chat_id", 1, send).await,
+        };
+        drop(guard);
+        outcome
+    });
+    // Let the task book and park on the pause; the clock stays well inside it.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(
+        !task.is_finished(),
+        "the call waits out the provider's pause"
+    );
+    task
+}
+
+fn assert_ended_as_cancelled(outcome: ChatCall) {
+    match outcome {
+        Err(LimitedError::Limit(error)) => assert_eq!(error.kind(), &ErrorKind::Cancelled),
+        other => panic!("expected a cancelled limit wait, got {other:?}"),
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn revoke_ends_a_limited_wait_and_drains_promptly() {
+    let manager = Arc::new(Manager::new());
+    let waiter = parked_behind_a_pause(&manager, ParkedCall::Run).await;
+
+    let started = Instant::now();
+    let outcome = manager
+        .revoke_slot(&CredentialedChat::key(), ScopeLevel::Global, "db")
+        .await
+        .expect("revoke");
+    assert!(matches!(
+        outcome,
+        nebula_resource::SlotDispatchOutcome::Completed {
+            drain: nebula_resource::SlotDrainOutcome::Drained,
+            ..
+        }
+    ));
+    assert!(
+        started.elapsed() < Duration::from_secs(30),
+        "the drain waited {:?}: the lease stayed parked on the pause",
+        started.elapsed()
+    );
+    assert_ended_as_cancelled(waiter.await.expect("waiter task"));
+}
+
+#[tokio::test(start_paused = true)]
+async fn graceful_shutdown_ends_a_limited_wait() {
+    let manager = Arc::new(Manager::new());
+    let waiter = parked_behind_a_pause(&manager, ParkedCall::Run).await;
+
+    let started = Instant::now();
+    manager
+        .graceful_shutdown(nebula_resource::ShutdownConfig::default())
+        .await
+        .expect("the parked lease releases once its wait ends");
+    assert!(started.elapsed() < Duration::from_secs(30));
+    assert_ended_as_cancelled(waiter.await.expect("waiter task"));
+}
+
+#[tokio::test(start_paused = true)]
+async fn revoke_ends_a_per_key_limited_wait() {
+    let manager = Arc::new(Manager::new());
+    let waiter = parked_behind_a_pause(&manager, ParkedCall::RunForChat).await;
+
+    let started = Instant::now();
+    let outcome = manager
+        .revoke_slot(&CredentialedChat::key(), ScopeLevel::Global, "db")
+        .await
+        .expect("revoke");
+    assert!(matches!(
+        outcome,
+        nebula_resource::SlotDispatchOutcome::Completed {
+            drain: nebula_resource::SlotDrainOutcome::Drained,
+            ..
+        }
+    ));
+    assert!(started.elapsed() < Duration::from_secs(30));
+    assert_ended_as_cancelled(waiter.await.expect("waiter task"));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_reload_does_not_interrupt_a_limited_wait() {
+    let manager = Arc::new(Manager::new());
+    let started = Instant::now();
+    let waiter = parked_behind_a_pause(&manager, ParkedCall::Run).await;
+
+    manager
+        .reload_config::<CredentialedChat>(
+            common::TestConfig {
+                name: "reloaded".to_owned(),
+            },
+            &ScopeLevel::Global,
+        )
+        .expect("reload");
+    waiter
+        .await
+        .expect("waiter task")
+        .expect("a reload is benign: the call runs once the pause ends");
+    assert!(started.elapsed() >= PAUSE);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_detached_limiter_ignores_manager_shutdown() {
+    let manager = Manager::new();
+    register_chat(&manager, None);
+    // Built outside any registry row: the limiter belongs to no row.
+    let chat = test_ctx().limits().wrap(ChatClient, ChatThrottle);
+    chat.limits().penalize(PAUSE).await.expect("pause");
+    let started = Instant::now();
+    let waiter = tokio::spawn(async move { chat.run(async |chat| chat.send(None).await).await });
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    manager.shutdown();
+    waiter
+        .await
+        .expect("waiter task")
+        .expect("a detached limiter waits its pause out");
+    assert!(started.elapsed() >= PAUSE);
 }

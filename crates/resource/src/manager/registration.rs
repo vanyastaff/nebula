@@ -360,6 +360,10 @@ impl Manager {
             maintenance_sweeps: AtomicU64::new(0),
             maintenance: crate::runtime::managed::Maintenance::new(self.cancel.child_token()),
         });
+        // `Limited` waits on this row end when its admission generation closes.
+        managed
+            .rate_limiter
+            .attach_admission(Arc::clone(&managed.admission));
 
         // Author policy is evaluated outside the commit lock.
         let schedule = managed.maintenance_schedule();
