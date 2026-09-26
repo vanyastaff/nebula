@@ -37,6 +37,13 @@
 //! kept registration: new work gets a fresh admission generation, leases
 //! already admitted stay open. Only a credential that can no longer be
 //! resolved at all retires the registration.
+//!
+//! On a strict manager (one built with a credential availability observer,
+//! as the worker's is) the safety of new work no longer rests on this
+//! re-check: every acquire reads the bound credentials' availability itself
+//! and refuses, suspends or reopens accordingly. Activation keeps its own
+//! roles — installing a material advance, retiring a credential that is
+//! gone, and failing a turn on a blocked credential before it runs.
 
 use std::{sync::Arc, time::Duration};
 

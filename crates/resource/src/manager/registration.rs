@@ -286,6 +286,7 @@ impl Manager {
             .with_resource_key(R::key()));
         }
 
+        let credential_reads = self.credential_reads_for::<R>(&resource)?;
         config.validate()?;
         let rate_limiter = self.row_limiter::<R>(rate_limit, &scope, &slot_identity)?;
 
@@ -358,6 +359,7 @@ impl Manager {
             )),
             in_flight: Arc::new((AtomicU64::new(0), Notify::new())),
             maintenance_sweeps: AtomicU64::new(0),
+            credential_reads,
             maintenance: crate::runtime::managed::Maintenance::new(self.cancel.child_token()),
         });
         // `Limited` waits on this row end when its admission generation closes.
@@ -933,8 +935,61 @@ impl Manager {
     /// [`WarmupStrategy::None`] and creates on acquire.
     ///
     /// [`WarmupStrategy::None`]: crate::topology::pooled::config::WarmupStrategy::None
-    fn spawn_warmup<R>(&self, managed: &Arc<ManagedResource<R>>, scope: nebula_core::scope::Scope)
-    where
+    /// The credential reads a new row of `R` admits through: the manager's
+    /// when `R` declares credential slots and the manager is strict, `None`
+    /// otherwise (a slot-less row, or an interim manager — warned once).
+    ///
+    /// # Errors
+    ///
+    /// [`Permanent`](crate::ErrorKind::Permanent) when a strict manager
+    /// cannot observe one of `R`'s declared slots: without the projection
+    /// port the installed material is unknown, so no read could admit.
+    fn credential_reads_for<R: Provider>(
+        &self,
+        resource: &R,
+    ) -> Result<Option<Arc<super::CredentialReads>>, Error> {
+        if !R::declares_credential_slots() {
+            return Ok(None);
+        }
+        let Some(reads) = &self.credential_reads else {
+            if !self
+                .interim_credential_warned
+                .swap(true, std::sync::atomic::Ordering::AcqRel)
+            {
+                tracing::warn!(
+                    resource.key = %R::key(),
+                    profile = crate::CredentialAdmissionProfile::InterimRowGate.as_str(),
+                    "credential-bound row registered on a manager without a credential \
+                     availability observer: new work is not checked against the credential \
+                     before it runs (interim row gate). Configure \
+                     `ManagerConfig::with_credential_observer` for strict per-acquire admission."
+                );
+            }
+            return Ok(None);
+        };
+        if let Some(slot) = R::credential_slot_names()
+            .iter()
+            .find(|slot| !resource.supports_credential_slot_projection(slot))
+        {
+            tracing::warn!(
+                resource.key = %R::key(),
+                slot,
+                "registration rejected: strict credential admission cannot observe a declared slot"
+            );
+            return Err(Error::permanent(format!(
+                "strict credential admission cannot observe slot `{slot}`: the resource does \
+                 not implement the credential slot projection port"
+            ))
+            .with_resource_key(R::key()));
+        }
+        Ok(Some(Arc::clone(reads)))
+    }
+
+    pub(super) fn spawn_warmup<R>(
+        &self,
+        managed: &Arc<ManagedResource<R>>,
+        scope: nebula_core::scope::Scope,
+    ) where
         R: Provider,
         R::Topology: Topology<R>,
     {
@@ -962,6 +1017,7 @@ impl Manager {
         let managed = Arc::clone(managed);
         tokio::spawn(async move {
             let _in_flight = in_flight;
+            // A strict row reads its bound credentials before each create;
             // `warmup` bounds and isolates each author `create` hook itself.
             let warmup = managed.warmup(&ctx);
             tokio::select! {

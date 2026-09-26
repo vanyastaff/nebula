@@ -656,6 +656,73 @@ pub const NEBULA_RESOURCE_CREDENTIAL_ROTATION_SKIPPED_TOTAL: &str =
 /// would explode cardinality on the hot release path.
 pub const NEBULA_RESOURCE_RECYCLE_OUTCOME_TOTAL: &str = "nebula_resource_recycle_outcome_total";
 
+/// Counter: credential availability reads a strict resource manager issued
+/// before admitting new work (one observer call each; joined callers are not
+/// counted here).
+///
+/// Labeled by `outcome` (see [`credential_admission_read_outcome`]). No
+/// resource, credential or tenant label: the read is per credential lane and
+/// those dimensions are unbounded.
+pub const NEBULA_RESOURCE_CREDENTIAL_ADMISSION_READS_TOTAL: &str =
+    "nebula_resource_credential_admission_reads_total";
+
+/// Counter: callers that took the result of a read another caller issued
+/// after they arrived (join-next coalescing), instead of issuing their own.
+/// `reads + joined` is the number of slot checks answered.
+pub const NEBULA_RESOURCE_CREDENTIAL_ADMISSION_JOINED_TOTAL: &str =
+    "nebula_resource_credential_admission_joined_total";
+
+/// Histogram: wall-clock time of one credential availability read, from the
+/// observer call to its answer or timeout. Unlabeled.
+pub const NEBULA_RESOURCE_CREDENTIAL_ADMISSION_READ_DURATION_SECONDS: &str =
+    "nebula_resource_credential_admission_read_duration_seconds";
+
+/// Counter: new units of work a strict credential read refused.
+///
+/// Labeled by `reason` (see [`credential_admission_denied_reason`]); one
+/// increment per refused acquire or create, whatever the number of
+/// slots that denied.
+pub const NEBULA_RESOURCE_CREDENTIAL_ADMISSION_DENIED_TOTAL: &str =
+    "nebula_resource_credential_admission_denied_total";
+
+/// Outcome labels for [`NEBULA_RESOURCE_CREDENTIAL_ADMISSION_READS_TOTAL`].
+///
+/// Closed set of seven values; every issued read records exactly one.
+pub mod credential_admission_read_outcome {
+    /// New uses are admitted at the observed material.
+    pub const AVAILABLE: &str = "available";
+    /// A refresh is crossing the provider boundary.
+    pub const REFRESH_IN_FLIGHT: &str = "refresh_in_flight";
+    /// Reauthentication or a credential operation blocks use.
+    pub const BLOCKED: &str = "blocked";
+    /// No live credential for the owner, or another contract.
+    pub const ABSENT: &str = "absent";
+    /// The store or source could not answer, or the state is inconsistent.
+    pub const UNAVAILABLE: &str = "unavailable";
+    /// The read did not answer within its bound.
+    pub const TIMED_OUT: &str = "timed_out";
+    /// The manager shut down while the read was in flight. Not a store
+    /// outage: kept apart from [`UNAVAILABLE`].
+    pub const CANCELLED: &str = "cancelled";
+}
+
+/// Reason labels for [`NEBULA_RESOURCE_CREDENTIAL_ADMISSION_DENIED_TOTAL`],
+/// one per `CredentialUnavailableReason`. Closed set of six values.
+pub mod credential_admission_denied_reason {
+    /// Interactive reauthentication is required.
+    pub const REAUTH_REQUIRED: &str = "reauth_required";
+    /// A credential operation blocks use.
+    pub const OPERATION_BLOCKED: &str = "operation_blocked";
+    /// A refresh was still in flight after the bounded join.
+    pub const REFRESH_IN_FLIGHT: &str = "refresh_in_flight";
+    /// Newer material is not installed yet.
+    pub const REBINDING: &str = "rebinding";
+    /// Availability could not be read.
+    pub const CHECK_UNAVAILABLE: &str = "check_unavailable";
+    /// The credential is gone.
+    pub const ABSENT: &str = "absent";
+}
+
 /// Counter: provider attempts decided by the resource managed call facade.
 ///
 /// Labeled by `outcome` (see [`call_attempt_outcome`]): `granted` when the

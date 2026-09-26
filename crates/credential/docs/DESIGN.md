@@ -310,8 +310,12 @@ is in flight or awaits reconciliation). Resource consumers compare the observed 
 with the material they installed and project only when it advanced; at the same material they
 compare the use revision, so a denial interval they never observed (an abandoned revoke claim
 that lapsed between two reads) still shows as a higher epoch. A store outage is reported as
-`Unavailable` and decides nothing.
-Resolvers expose it through the defaulted `CredentialSlotResolver::as_availability_observer`.
+`Unavailable` and decides nothing here; a strict resource manager, which reads before every new
+unit of work, refuses that unit (credentialed egress is no more available than this store).
+Resolvers expose it through the defaulted `CredentialSlotResolver::as_availability_observer`
+and, as an owned handle a long-lived consumer keeps, `into_availability_observer`. The bounded
+refresh join (`REFRESH_JOIN_*`, `REFRESH_BUSY_RETRY_AFTER`) is public so the resource manager's
+per-acquire read joins a refresh in flight for the same time as slot projection and the resolver.
 
 `CredentialProjectionRuntime::from_secure_parts` is the worker composition surface for that
 boundary. It accepts only an already-secured `CredentialPersistence`, `CredentialRegistry`,

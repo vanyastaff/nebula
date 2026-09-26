@@ -15,7 +15,7 @@
 //! | [`Cancelled`](ErrorKind::Cancelled) | No | Propagate cancellation — the caller's own `CancellationToken` fired or the manager is shutting down. |
 //! | [`Revoked`](ErrorKind::Revoked) | Yes, after re-bind | Retry after the credential is re-registered; the resource is tainted until then, not permanently broken. |
 //! | [`Ambiguous`](ErrorKind::Ambiguous) | No | Fail the operation and fix the caller: acquire through a slot-identity-pinned path (`acquire_<topology>_for_identity`) instead of the identity-agnostic one. |
-//! | [`CredentialUnavailable`](ErrorKind::CredentialUnavailable) | Yes, after `retry_after` | A bound credential denies use at its current material (reauthentication required, or an operation blocks use); the row is suspended, not broken. Retry after the hint; reauthentication is operator-paced. |
+//! | [`CredentialUnavailable`](ErrorKind::CredentialUnavailable) | Yes, after `retry_after` | A bound credential refuses new work: it denies use at its current material (reauthentication required, or an operation blocks use — the row is suspended, not broken), or a strict availability read found it rebinding, refreshing, unreadable or absent. Retry after the hint; reauthentication is operator-paced. |
 //! | [`OutcomeUnknown`](ErrorKind::OutcomeUnknown) | No | A call that may have reached the provider failed without a known outcome, and its effect is not replay-safe. Reconcile against the provider before acting again; never blind-retry. |
 //!
 //! Use [`Error::is_retryable`] to branch without matching every variant, and
@@ -26,11 +26,21 @@ use std::{fmt, time::Duration};
 
 use nebula_core::{CredentialKey, ResourceKey};
 
-/// Why a bound credential denies use at its current material, suspending the
-/// credential-bound rows that depend on it.
+/// Why a bound credential refuses a new unit of work.
 ///
 /// Secret-free and deliberately coarse: it names the operator action, not the
 /// credential's internal state or incident.
+///
+/// Only [`ReauthRequired`](Self::ReauthRequired) and
+/// [`OperationBlocked`](Self::OperationBlocked) — a denial at the current
+/// material — suspend a row and appear in a
+/// [`CredentialSuspension`](crate::state::CredentialSuspension). The other
+/// reasons come from a strict manager's per-acquire availability read and
+/// refuse the one acquire without changing the row: the credential is
+/// between two materials ([`Rebinding`](Self::Rebinding),
+/// [`RefreshInFlight`](Self::RefreshInFlight)), its availability could not be
+/// read ([`CheckUnavailable`](Self::CheckUnavailable)), or it is gone
+/// ([`Absent`](Self::Absent)).
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CredentialUnavailableReason {
@@ -40,16 +50,33 @@ pub enum CredentialUnavailableReason {
     /// A credential operation (a revoke in flight, or one awaiting
     /// reconciliation) blocks use for now.
     OperationBlocked,
+    /// A refresh is still crossing the provider boundary after the bounded
+    /// join; it commits new material or leaves the current one usable.
+    RefreshInFlight,
+    /// The credential moved to newer material the row has not installed
+    /// yet; new work waits for the install instead of running on the old.
+    Rebinding,
+    /// The credential's availability could not be read (store or source
+    /// unavailable, inconsistent state, or the read timed out). Credentialed
+    /// egress is no more available than the credential store.
+    CheckUnavailable,
+    /// The credential no longer exists for this owner (deleted, or bound to
+    /// another contract); only a new binding helps.
+    Absent,
 }
 
 impl CredentialUnavailableReason {
     /// The wait before retrying a call refused for this reason: 30 s for
-    /// reauthentication (operator-paced), 1 s for an operation block.
+    /// reauthentication and an absent credential (operator-paced), 1 s
+    /// otherwise.
     #[must_use]
     pub fn retry_after(self) -> Duration {
         match self {
-            Self::ReauthRequired => Duration::from_secs(30),
-            Self::OperationBlocked => Duration::from_secs(1),
+            Self::ReauthRequired | Self::Absent => Duration::from_secs(30),
+            Self::OperationBlocked
+            | Self::RefreshInFlight
+            | Self::Rebinding
+            | Self::CheckUnavailable => Duration::from_secs(1),
         }
     }
 }
@@ -59,6 +86,10 @@ impl fmt::Display for CredentialUnavailableReason {
         f.write_str(match self {
             Self::ReauthRequired => "reauthentication required",
             Self::OperationBlocked => "credential operation blocks use",
+            Self::RefreshInFlight => "credential refresh in flight",
+            Self::Rebinding => "credential rebinding to newer material",
+            Self::CheckUnavailable => "credential availability could not be checked",
+            Self::Absent => "credential absent",
         })
     }
 }
@@ -256,9 +287,10 @@ impl Error {
     /// - `Backpressure` errors return a default 50ms hint (pool slots free up quickly).
     /// - `Revoked` errors return a 100ms hint (re-registration is operator-paced;
     ///   a short floor avoids a hot retry loop without stalling recovery).
-    /// - `CredentialUnavailable` errors return 1 s for an operation block
-    ///   (operations settle quickly) and 30 s for reauthentication
-    ///   (operator-paced).
+    /// - `CredentialUnavailable` errors return the reason's hint
+    ///   ([`CredentialUnavailableReason::retry_after`]): 30 s for
+    ///   reauthentication and an absent credential (operator-paced), 1 s
+    ///   otherwise (operations, refreshes and store outages settle quickly).
     pub fn retry_after(&self) -> Option<Duration> {
         match &self.kind {
             ErrorKind::Exhausted { retry_after } => *retry_after,
@@ -653,6 +685,46 @@ mod tests {
 
         let blocked = Error::credential_unavailable(CredentialUnavailableReason::OperationBlocked);
         assert_eq!(blocked.retry_after(), Some(Duration::from_secs(1)));
+        // The strict availability read's refusals classify the same way and
+        // carry their own hint: an absent credential is operator-paced, the
+        // rest settle within a second.
+        for (reason, hint, shown) in [
+            (
+                CredentialUnavailableReason::RefreshInFlight,
+                Duration::from_secs(1),
+                "credential refresh in flight",
+            ),
+            (
+                CredentialUnavailableReason::Rebinding,
+                Duration::from_secs(1),
+                "credential rebinding to newer material",
+            ),
+            (
+                CredentialUnavailableReason::CheckUnavailable,
+                Duration::from_secs(1),
+                "credential availability could not be checked",
+            ),
+            (
+                CredentialUnavailableReason::Absent,
+                Duration::from_secs(30),
+                "credential absent",
+            ),
+        ] {
+            let error = Error::credential_unavailable(reason);
+            assert!(error.is_retryable(), "{reason} is retryable");
+            assert_eq!(Classify::category(&error), ErrorCategory::Unavailable);
+            assert_eq!(
+                Classify::code(&error).as_str(),
+                "RESOURCE:CREDENTIAL_UNAVAILABLE"
+            );
+            assert_eq!(reason.retry_after(), hint);
+            assert_eq!(error.retry_after(), Some(hint));
+            assert_eq!(
+                Classify::retry_hint(&error).and_then(|hint| hint.after),
+                Some(hint)
+            );
+            assert_eq!(reason.to_string(), shown);
+        }
         assert!(
             size_of::<ErrorKind>() <= 16,
             "the reason-derived hint keeps ErrorKind two words"

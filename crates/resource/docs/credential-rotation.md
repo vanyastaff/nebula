@@ -262,8 +262,10 @@ acquired and lapsed between two scans or activations. Nothing observed the
 denial, so nothing was closed; new work is admitted under a fresh generation,
 and the leases admitted before stay open and are not rebuilt. That is a
 conscious relaxation of "do not revive cancelled units" for a true block that
-was missed — refusing those units needs the strict per-acquire availability
-read (A5). Readmission is logged (`info`), not published as a `ResourceEvent`.
+was missed. A strict manager (below) reads before every acquire, so a block
+lasting across any acquire is observed and closes admitted work; only an
+interval with no acquire, create, activation or fan-out scan at all is
+missed. Readmission is logged (`info`), not published as a `ResourceEvent`.
 
 Witnessed floors come only from reads that carry the revision, and every
 backend (the reference store included) advances it when a reauthentication
@@ -294,6 +296,81 @@ Who suspends and reopens:
   the gate (reopen or readmit); without an observer a projection at the
   installed material does the same through the install path.
 
+### Strict per-acquire admission
+
+A manager configured with a credential availability observer
+(`ManagerConfig::with_credential_observer`; the worker takes it from its
+credential resolver) is **strict**: every new unit of work on a
+credential-bound row reads the bound credentials' availability first (Design
+CONTRACT: every new credentialed unit reads availability first; no cached
+admission; an outage denies). Each row reports its profile
+(`CredentialAdmissionProfile`, in the health snapshot and on
+`ManagedResourceView`):
+
+| Profile | When | New work on a bound row |
+|---|---|---|
+| `Unbound` | the resource declares no credential slots | nothing is read |
+| `StrictPerAcquire` | the manager has an observer | each acquire and each create (of `warmup_pool`, the registration warmup or the maintenance refill) reads availability first |
+| `InterimRowGate` (interim) | no observer | admitted until activation, the fan-out or a caller suspends the row; one warning per manager |
+
+The strict read of one acquire:
+
+1. After the rate-limit wait, outside every lock: capture the row's
+   `CredentialGateTicket`, snapshot each bound slot's installed projection
+   (an unbound slot is skipped; material without owner-qualified metadata is
+   unobservable and refuses), and read every slot concurrently — slots bound
+   to the same credential lane share one read.
+2. Reads are **join-next** coalesced per credential lane (credential id,
+   owner, contract key): a caller only takes a read issued at or after it
+   arrived, at most one read per lane is in flight, and a dropped or
+   timed-out leader hands the lane to a waiter. A burst of acquires during
+   one read costs one more read. There is no freshness window.
+3. Each read is bounded by the caller's deadline and 2 s. A refresh crossing
+   the provider boundary is joined — re-read after a pause bounded by 25 ms,
+   doubling to 400 ms, until the credential crate's 5 s join wait or the
+   deadline. Each pause is jittered over the upper half of its bound, so
+   acquires across the fleet that met the same refresh do not re-read in
+   lockstep.
+4. Under `Manager.admission`, after the post-count taint/shutdown re-check,
+   the installed material is re-read and each slot decided:
+
+| Slot read | Gate | Acquire |
+|---|---|---|
+| usable at the installed material, row admitting, revision not newer | — | admitted |
+| usable at the installed material, newer revision | readmit (fresh generation, predecessor open) | admitted |
+| usable at the installed material, row suspended | reopen under the floors above | admitted if the row admits afterwards |
+| usable or refreshing at newer material | — | `Rebinding` (install first) |
+| usable at older material | — | `CheckUnavailable` |
+| refresh still in flight after the join | — | `RefreshInFlight` |
+| reauthentication required | suspend (witnessed) | `ReauthRequired` |
+| operation in flight / reconciliation | suspend | `OperationBlocked` |
+| absent, another contract | — | `Absent` |
+| store or source unavailable, invalid state, timeout | — | `CheckUnavailable` |
+
+Every blocked slot is suspended; the reported reason is the highest of
+`Absent` > `ReauthRequired` > `OperationBlocked` > `Rebinding` >
+`RefreshInFlight` > `CheckUnavailable`. No refusal takes a recovery-gate
+ticket. Every create is a unit of its own: `warmup_pool`, the registration
+warmup and the maintenance refill read immediately before each create and
+stop at the first refusal, so a block committed between two creates stops
+the second. `warmup_pool` applies what each read sees like an acquire;
+background creates (the maintenance refill, the registration warmup) change
+no gate state. A strict manager refuses to register a row whose declared
+slot lacks the projection port.
+
+**Availability coupling.** Credentialed egress is no more available than the
+credential store: while the store or source cannot answer, new credentialed
+work is refused (`CheckUnavailable`, retry after 1 s) and nothing is
+suspended; work already admitted continues.
+
+**Latency.** Each new credentialed unit costs one secret-free operational-head
+read (no decryption), shared by concurrent acquires of the same credential.
+The engine's activation re-check and the fan-out keep their roles — installing
+new material, retiring terminal credentials, failing a blocked turn early,
+cache and cleanup — but the safety of a new call is decided by the acquire's
+own read; the 30 s scan interval is not a safety parameter on a strict
+manager.
+
 ### What suspension does not cover
 
 - **It is cooperative.** Closing a lease stops no work, revokes no borrow and
@@ -301,16 +378,19 @@ Who suspends and reopens:
   terminated.
 - **A missed interval closes nothing.** A denial that came and went between
   two observations is detected by its higher use revision, but only new work
-  is affected (readmission); units admitted before it keep running.
-- **Latency.** A row is suspended at the next activation of the stored row or
-  at the next fan-out scan (30 s, sooner on a `ReauthRequired` event). A worker
-  that neither activates the row nor runs the fan-out keeps serving admitted
-  work until then; the strict per-acquire availability read that closes this
-  window is follow-up work (A5).
-- **Outages decide nothing.** A credential store or source outage during a
-  check or scan changes no gate: an admitting row keeps admitting and a
-  suspended row stays suspended (the periodic reconcile only updates caches;
-  a delayed scan does not decide the safety of a new call).
+  is affected (readmission); units admitted before it keep running. On a
+  strict manager only an interval with no acquire, create, activation or
+  scan at all is missed.
+- **Latency on an interim manager.** A row is suspended at the next
+  activation of the stored row or at the next fan-out scan (30 s, sooner on a
+  `ReauthRequired` event); until then it keeps admitting. A strict manager
+  observes the block at the next acquire.
+- **A long wait after the read.** An acquire that waits for capacity after its
+  read is not read again; a per-call facade re-reads per attempt.
+- **Outages decide no suspension.** A credential store or source outage
+  changes no gate: an admitting row stays admitting and a suspended row stays
+  suspended. On a strict manager new credentialed work is refused while it
+  lasts; on an interim one it is admitted.
 
 ---
 

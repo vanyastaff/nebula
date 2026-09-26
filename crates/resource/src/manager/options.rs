@@ -164,6 +164,41 @@ pub struct ManagerConfig {
     /// limits. `None` (the default) keeps every limit in this process, with a
     /// warning for each row whose policy asks for a cluster-wide limit.
     pub shared_limit_store: Option<crate::rate_limit::SharedLimitStore>,
+    /// Secret-free availability observer of bound credentials. `Some` makes
+    /// every credential-bound row
+    /// [`StrictPerAcquire`](crate::CredentialAdmissionProfile::StrictPerAcquire):
+    /// each acquire and create reads its credentials' availability first,
+    /// and a credential store outage refuses new credentialed work.
+    /// `None` (the default) leaves such rows
+    /// [`InterimRowGate`](crate::CredentialAdmissionProfile::InterimRowGate)
+    /// with a one-time warning; the default becomes strict before the API
+    /// freeze.
+    pub credential_observer: Option<CredentialObserverHandle>,
+}
+
+/// The credential availability observer a strict [`Manager`](super::Manager)
+/// reads through; see [`ManagerConfig::with_credential_observer`].
+#[derive(Clone)]
+pub struct CredentialObserverHandle(Arc<dyn nebula_credential::CredentialAvailabilityObserver>);
+
+impl CredentialObserverHandle {
+    /// Wraps `observer`.
+    #[must_use]
+    pub fn new(observer: Arc<dyn nebula_credential::CredentialAvailabilityObserver>) -> Self {
+        Self(observer)
+    }
+
+    pub(crate) fn into_observer(
+        self,
+    ) -> Arc<dyn nebula_credential::CredentialAvailabilityObserver> {
+        self.0
+    }
+}
+
+impl std::fmt::Debug for CredentialObserverHandle {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("CredentialObserverHandle")
+    }
 }
 
 impl Default for ManagerConfig {
@@ -175,11 +210,26 @@ impl Default for ManagerConfig {
             acquire_slow_threshold: None,
             event_bus_capacity: 256,
             shared_limit_store: None,
+            credential_observer: None,
         }
     }
 }
 
 impl ManagerConfig {
+    /// Makes every credential-bound row strict: each acquire and create
+    /// reads its bound credentials' availability through `observer` first
+    /// (see [`credential_observer`](Self::credential_observer)). Take the
+    /// observer from the credential resolver the manager's rows are bound
+    /// through (`CredentialSlotResolver::into_availability_observer`).
+    #[must_use]
+    pub fn with_credential_observer(
+        mut self,
+        observer: Arc<dyn nebula_credential::CredentialAvailabilityObserver>,
+    ) -> Self {
+        self.credential_observer = Some(CredentialObserverHandle::new(observer));
+        self
+    }
+
     /// Enforces cluster-wide rate limits through `store`.
     #[must_use]
     pub fn with_shared_limit_store(

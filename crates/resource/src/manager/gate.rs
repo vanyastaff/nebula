@@ -175,6 +175,11 @@ mod gate_admission_tests {
             Error::revoked("tainted by revoke"),
             Error::credential_unavailable(crate::CredentialUnavailableReason::ReauthRequired),
             Error::credential_unavailable(crate::CredentialUnavailableReason::OperationBlocked),
+            Error::credential_unavailable(crate::CredentialUnavailableReason::RefreshInFlight),
+            Error::credential_unavailable(crate::CredentialUnavailableReason::Rebinding),
+            // A credential store outage is not the backend's ill health.
+            Error::credential_unavailable(crate::CredentialUnavailableReason::CheckUnavailable),
+            Error::credential_unavailable(crate::CredentialUnavailableReason::Absent),
             Error::outcome_unknown("unit outcome unknown"),
         ] {
             let gate = idle_gate();

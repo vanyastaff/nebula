@@ -126,6 +126,12 @@ impl CredentialSlotResolver for CredentialProjectionRuntime {
     fn as_availability_observer(&self) -> Option<&dyn CredentialAvailabilityObserver> {
         Some(self)
     }
+
+    fn into_availability_observer(
+        self: Arc<Self>,
+    ) -> Option<Arc<dyn CredentialAvailabilityObserver>> {
+        Some(self)
+    }
 }
 
 impl CredentialAvailabilityObserver for CredentialProjectionRuntime {

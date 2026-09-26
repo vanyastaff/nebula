@@ -70,6 +70,9 @@ macro_rules! impl_fake_handle {
             fn rate_limit_profile(&self) -> crate::rate_limit::RateLimitProfile {
                 crate::rate_limit::RateLimitProfile::PausesOnly
             }
+            fn credential_admission_profile(&self) -> crate::CredentialAdmissionProfile {
+                crate::CredentialAdmissionProfile::Unbound
+            }
             fn phase_changed(&self) -> &tokio::sync::Notify {
                 static NEVER: tokio::sync::Notify = tokio::sync::Notify::const_new();
                 &NEVER

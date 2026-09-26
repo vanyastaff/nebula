@@ -233,6 +233,11 @@ pub struct ManagedResource<R: Provider> {
     /// [`run_maintenance`](Self::run_maintenance).
     pub(crate) maintenance_sweeps: AtomicU64,
     pub(crate) maintenance: Maintenance,
+    /// The manager's credential availability reads, for a row that declares
+    /// credential slots under a manager with an observer: every new unit of
+    /// work (acquire, create) reads its bound credentials through it first.
+    /// `None` for a slot-less row and for an interim (row-gate) manager.
+    pub(crate) credential_reads: Option<Arc<crate::manager::CredentialReads>>,
 }
 
 impl<R: Provider> std::fmt::Debug for ManagedResource<R> {
@@ -423,6 +428,17 @@ impl<R: Provider> ManagedResource<R> {
     /// builds nothing that no acquire could take.
     pub(crate) fn accepts_new_instances(&self) -> bool {
         !self.is_tainted() && !self.admission.is_suspended() && self.status().phase.is_accepting()
+    }
+
+    /// How new work on this row is admitted against its bound credentials.
+    pub(crate) fn credential_admission_profile(&self) -> crate::CredentialAdmissionProfile {
+        if !R::declares_credential_slots() {
+            crate::CredentialAdmissionProfile::Unbound
+        } else if self.credential_reads.is_some() {
+            crate::CredentialAdmissionProfile::StrictPerAcquire
+        } else {
+            crate::CredentialAdmissionProfile::InterimRowGate
+        }
     }
 
     /// Returns a clone of this resource's per-resource in-flight tracker so

@@ -213,4 +213,20 @@ fn credential_unavailable_is_retryable_with_reason_hints() {
     let blocked = Error::credential_unavailable(CredentialUnavailableReason::OperationBlocked);
     assert!(blocked.is_retryable());
     assert_eq!(blocked.retry_after(), Some(Duration::from_secs(1)));
+
+    // The strict per-acquire read's refusals: retryable, same code, own hint.
+    for (reason, hint) in [
+        (CredentialUnavailableReason::RefreshInFlight, 1),
+        (CredentialUnavailableReason::Rebinding, 1),
+        (CredentialUnavailableReason::CheckUnavailable, 1),
+        (CredentialUnavailableReason::Absent, 30),
+    ] {
+        let error = Error::credential_unavailable(reason);
+        assert!(error.is_retryable(), "{reason}");
+        assert_eq!(error.retry_after(), Some(Duration::from_secs(hint)));
+        assert_eq!(
+            nebula_error::Classify::code(&error).as_str(),
+            "RESOURCE:CREDENTIAL_UNAVAILABLE"
+        );
+    }
 }

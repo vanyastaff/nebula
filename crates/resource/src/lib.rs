@@ -274,7 +274,8 @@ pub use events::{ResourceEvent, RetirementFailureStage, RetirementOrigin};
 pub use ext::HasResourcesExt;
 pub use guard::{LeaseClosing, ReleaseOutcome, ResourceGuard};
 pub use manager::{
-    CredentialGateTicket, CredentialObservedAt, CredentialReopenOutcome, CredentialSuspendOutcome,
+    CredentialAdmissionProfile, CredentialGateTicket, CredentialObservedAt,
+    CredentialObserverHandle, CredentialReopenOutcome, CredentialSuspendOutcome,
     DrainTimeoutPolicy, Manager, ManagerConfig, RegisterOptions, RegistrationSpec,
     ResourceHealthSnapshot, RevokeTail, ShutdownConfig, ShutdownError, ShutdownReport,
     SlotDeferralReason, SlotDispatchOutcome, SlotDrainOutcome, TaintedSlot,

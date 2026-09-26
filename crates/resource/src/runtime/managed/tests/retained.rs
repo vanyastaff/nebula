@@ -222,6 +222,7 @@ fn managed_with_workers(
         admission: Default::default(),
         in_flight: Arc::new((AtomicU64::new(0), Notify::new())),
         maintenance_sweeps: AtomicU64::new(0),
+        credential_reads: None,
         maintenance: Default::default(),
         rate_limiter: crate::rate_limit::ResourceLimiter::detached(),
     });

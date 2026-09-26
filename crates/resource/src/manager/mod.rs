@@ -207,8 +207,10 @@
 //!   equal to it, so a deny observed late always lands and an admit
 //!   observed before a later deny is `Superseded`. Clearing the last slot
 //!   publishes a fresh generation in a fresh span. Taint wins: a tainted
-//!   row never reopens. See `docs/credential-rotation.md`, "Same-material
-//!   blocks".
+//!   row never reopens. On an interim manager the suspension lands when
+//!   activation, the fan-out or a caller observes the denial; on a strict
+//!   one the acquire's own read observes it (I7). See
+//!   `docs/credential-rotation.md`, "Same-material blocks".
 //! - **I6 use revision.** The gate orders credential observations by use
 //!   revision `(material_epoch, admission_epoch)` (`CredentialObservedAt`),
 //!   per slot, against the higher of the installed projection's and the
@@ -223,10 +225,35 @@
 //!   observing it — is `Readmitted`: a fresh generation is published like a
 //!   benign change (I4), the predecessor is **not** closed and nothing is
 //!   rebuilt. Closing admitted work is reserved for an observed block (I5);
-//!   refusing units admitted during an unobserved denial is the strict
-//!   per-acquire availability read, a separate contract. An install
-//!   reopens with the revision of the guard it resolved, so it publishes
-//!   once.
+//!   a strict manager (I7) observes a block at the next acquire, so only an
+//!   interval with no acquire, create, activation or fan-out scan at all
+//!   goes unobserved. An install reopens with the revision of the guard it
+//!   resolved, so it publishes once.
+//! - **I7 strict per-acquire read.** On a manager with a credential
+//!   observer, every new unit of work on a credential-bound row — each
+//!   acquire through `run_acquire` (including `acquire_any`), each create of
+//!   an explicit `warmup_pool`, each background create — reads every bound slot's
+//!   availability before it runs (`strict_admission`). The read runs after
+//!   the rate-limit wait and **outside every lock**: the row's gate ticket is
+//!   captured first, then all slots are read concurrently (one read per
+//!   credential lane, shared by the slots bound to it) through the
+//!   manager's join-next `CredentialReads` (a caller only takes a read issued
+//!   after it arrived), each bounded by the caller's deadline and 2 s.
+//!   Under `Manager.admission`, after the post-count re-check (so a taint
+//!   during the read refuses `Revoked`), the installed material is
+//!   re-snapshotted and the pure decision applied: a slot read usable at the
+//!   installed material reopens or readmits (I5/I6, with the ticket — a
+//!   suspension recorded after it supersedes the reopen), a slot read
+//!   blocked suspends the row (I5), and any refusal denies the acquire
+//!   before the suspension check, the phase check and the recovery gate. A
+//!   refusal that is not a denial at the current material (`Rebinding`,
+//!   `RefreshInFlight`, `CheckUnavailable`, `Absent`) changes no gate state.
+//!   Background creates only read and skip; every create reads just before
+//!   it runs, never once for a batch. The lock is never held across
+//!   the read; no task is spawned per read, so dropping an acquire drops its
+//!   read. Slot-less rows and interim managers read nothing. A unit that
+//!   waits for capacity after its read is not read again here (a per-call
+//!   facade re-reads per attempt with the same two functions).
 //!
 //! The closing token is a cooperative notice: it stops no work, revokes no
 //! borrow, and rolls nothing back. A lease is still released normally, and
@@ -421,6 +448,7 @@ use crate::{
 
 pub(crate) mod acquire;
 mod credential_gate;
+mod credential_reads;
 #[cfg(test)]
 mod credential_suspension_tests;
 #[cfg(test)]
@@ -434,12 +462,20 @@ pub(crate) mod shutdown;
 mod shutdown_session;
 #[cfg(test)]
 mod shutdown_session_tests;
+mod strict_admission;
+#[cfg(test)]
+mod strict_fixtures;
+#[cfg(test)]
+mod strict_profile_tests;
 
 pub use credential_gate::{
-    CredentialGateTicket, CredentialObservedAt, CredentialReopenOutcome, CredentialSuspendOutcome,
+    CredentialAdmissionProfile, CredentialGateTicket, CredentialObservedAt,
+    CredentialReopenOutcome, CredentialSuspendOutcome,
 };
+pub(crate) use credential_reads::CredentialReads;
 pub use options::{
-    DrainTimeoutPolicy, ManagerConfig, RegisterOptions, RegistrationSpec, ShutdownConfig,
+    CredentialObserverHandle, DrainTimeoutPolicy, ManagerConfig, RegisterOptions, RegistrationSpec,
+    ShutdownConfig,
 };
 #[cfg(feature = "rotation")]
 pub(crate) use rotation::ResolvedAt;
@@ -476,6 +512,10 @@ pub struct ResourceHealthSnapshot {
     /// whose instance has not been created yet reports the profile it has
     /// before `Provider::create` wraps a client.
     pub rate_limit_profile: crate::rate_limit::RateLimitProfile,
+    /// How new work is admitted against the row's bound credentials: read
+    /// per acquire (strict), gated on the row only (interim), or nothing to
+    /// read.
+    pub credential_admission: CredentialAdmissionProfile,
 }
 
 /// Central registry and lifecycle manager for all resources.
@@ -552,6 +592,12 @@ pub struct Manager {
     pub(super) local_limits: Arc<crate::rate_limit::MemoryLimitStore>,
     /// Store shared by every worker for cluster-scoped limits.
     pub(super) shared_limits: Option<crate::rate_limit::SharedLimitStore>,
+    /// Join-next availability reads of bound credentials, when the manager
+    /// was configured with an observer (strict per-acquire admission).
+    pub(super) credential_reads: Option<Arc<CredentialReads>>,
+    /// Set once the first credential-bound row registered without an
+    /// observer has been warned about.
+    pub(super) interim_credential_warned: AtomicBool,
 }
 
 impl std::fmt::Debug for Manager {
@@ -599,6 +645,20 @@ impl Manager {
                     },
                 });
         let acquire_slow_threshold = config.acquire_slow_threshold;
+        let credential_reads = config.credential_observer.map(|observer| {
+            let metrics = config.metrics_registry.as_ref().and_then(|registry| {
+                credential_reads::CredentialAdmissionMetrics::new(registry)
+                    .inspect_err(|err| {
+                        tracing::warn!(?err, "failed to initialize credential admission metrics");
+                    })
+                    .ok()
+            });
+            Arc::new(CredentialReads::new(
+                observer.into_observer(),
+                cancel.clone(),
+                metrics,
+            ))
+        });
         let retirement_supervisor = Arc::new(retirement::RetirementSupervisor::new(
             Arc::clone(&release_queue),
             config.release_queue_workers,
@@ -623,6 +683,8 @@ impl Manager {
             acquire_slow_threshold,
             local_limits: Arc::new(crate::rate_limit::MemoryLimitStore::new()),
             shared_limits: config.shared_limit_store,
+            credential_reads,
+            interim_credential_warned: AtomicBool::new(false),
         }
     }
 
@@ -873,6 +935,7 @@ impl Manager {
             live_instances: crate::topology::Topology::<R>::live_instances(&managed.topology),
             credential_suspension: managed.admission.suspension(),
             rate_limit_profile: managed.rate_limiter.profile(),
+            credential_admission: managed.credential_admission_profile(),
         })
     }
 

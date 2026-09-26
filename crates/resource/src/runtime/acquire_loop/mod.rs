@@ -552,6 +552,12 @@ where
     /// its [`HookFault`](crate::hook_guard::HookFault); entries already
     /// deposited stay.
     ///
+    /// Every create is a unit of work of its own: a strict row reads its
+    /// bound credentials immediately before each create
+    /// ([`credentials_admit_creation`](Self::credentials_admit_creation)),
+    /// after the stagger pause and the capacity reservation, and the first
+    /// refusal stops the warmup.
+    ///
     /// [`Manager::warmup_pool`]: crate::Manager::warmup_pool
     ///
     /// # Cancel safety
@@ -562,6 +568,26 @@ where
         self: &Arc<Self>,
         ctx: &ResourceContext,
     ) -> Result<usize, crate::hook_guard::HookFault> {
+        self.warmup_admitted(ctx, move || self.credentials_admit_creation())
+            .await
+    }
+
+    /// [`warmup`](Self::warmup) with the per-create credential admission
+    /// supplied by the caller: `admit` runs immediately before each create
+    /// and `false` stops the warmup without creating. An explicit
+    /// [`Manager::warmup_pool`] applies what each read sees to the row's
+    /// credential gate; the background warmup does not.
+    ///
+    /// [`Manager::warmup_pool`]: crate::Manager::warmup_pool
+    pub(crate) async fn warmup_admitted<A, AFut>(
+        self: &Arc<Self>,
+        ctx: &ResourceContext,
+        admit: A,
+    ) -> Result<usize, crate::hook_guard::HookFault>
+    where
+        A: Fn() -> AFut,
+        AFut: Future<Output = bool>,
+    {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
         use crate::topology::pooled::config::WarmupStrategy;
@@ -586,7 +612,8 @@ where
         // up, so a backend that is down is not asked `target` times.
         let failed = std::sync::atomic::AtomicBool::new(false);
         let attempt = |pause: Option<std::time::Duration>| {
-            let (running, deciding, failed, config) = (&running, &deciding, &failed, &config);
+            let (running, deciding, failed, config, admit) =
+                (&running, &deciding, &failed, &config, &admit);
             async move {
                 if let Some(pause) = pause {
                     self.pause_warmup(pause).await;
@@ -596,9 +623,12 @@ where
                 // not wait on this warmup. A row that does not accept
                 // acquires yet (its credentials are still being reread) or
                 // any more (it is draining) builds nothing either; the
-                // maintenance refill fills its floor once it is ready.
+                // maintenance refill fills its floor once it is ready. A
+                // credential-suspended row is left to `admit` below: an
+                // explicit warmup's read may reopen it.
                 if failed.load(Ordering::Acquire)
-                    || !self.accepts_new_instances()
+                    || self.is_tainted()
+                    || !self.status().phase.is_accepting()
                     || self.store.is_closed()
                 {
                     return Ok(None);
@@ -620,6 +650,14 @@ where
                     running.fetch_add(1, Ordering::AcqRel);
                     ticket.into_permit()
                 };
+                // Creating is a unit of work of its own: the credential
+                // read comes last before the create, so a block committed
+                // after an earlier create's read still stops this one.
+                if !admit().await || !self.accepts_new_instances() {
+                    running.fetch_sub(1, Ordering::AcqRel);
+                    failed.store(true, Ordering::Release);
+                    return Ok(None);
+                }
                 // SAFETY (unwind): an entry being built is held by its
                 // `EntryCreateGuard` (destroyed on unwind) and is deposited
                 // into the fenced store before this step returns, so a
@@ -782,7 +820,6 @@ where
         if deficit == 0 {
             return 0;
         }
-
         let mut created = 0usize;
         for _ in 0..deficit {
             // Recompute headroom fresh before every attempt — see the doc
@@ -797,6 +834,12 @@ where
                 None => usize::MAX,
             };
             if headroom == 0 || !self.accepts_new_instances() {
+                break;
+            }
+            // Creating is a unit of work of its own: a strict row reads its
+            // bound credentials before every create and stops at the first
+            // refusal, so a block committed mid-pass stops the next create.
+            if !self.credentials_admit_creation().await {
                 break;
             }
             match self.create_and_deposit_one(ctx, &config).await {

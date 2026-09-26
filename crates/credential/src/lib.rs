@@ -279,6 +279,10 @@ pub use runtime::projection::{
     CredentialProjectionRuntimeBuildError, CredentialSlotResolveError, CredentialSlotResolver,
     ErasedCredentialGuard, ErasedCredentialGuardTypeError,
 };
+// The bounded refresh join every consumer of availability shares.
+pub use runtime::availability::{
+    REFRESH_BUSY_RETRY_AFTER, REFRESH_JOIN_FIRST_PAUSE, REFRESH_JOIN_MAX_PAUSE, REFRESH_JOIN_WAIT,
+};
 pub use runtime::state_source::StateSource;
 pub use scope::{
     CredentialAuthenticationBinding, CredentialAuthenticationBindingError, TenantScope,

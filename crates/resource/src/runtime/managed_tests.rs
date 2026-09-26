@@ -152,6 +152,7 @@ fn managed(resource: Mock, config: PoolConfig) -> Arc<ManagedResource<Mock>> {
         in_flight: Arc::new((AtomicU64::new(0), Notify::new())),
         maintenance_sweeps: AtomicU64::new(0),
         maintenance: Default::default(),
+        credential_reads: None,
         rate_limiter: crate::rate_limit::ResourceLimiter::detached(),
     })
 }

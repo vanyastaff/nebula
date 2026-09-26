@@ -173,6 +173,9 @@ pub(crate) trait ManagedHandle: Send + Sync + 'static {
     /// limiter; latches once `Provider::create` wraps a client).
     fn rate_limit_profile(&self) -> crate::rate_limit::RateLimitProfile;
 
+    /// How new work on the row is admitted against its bound credentials.
+    fn credential_admission_profile(&self) -> crate::CredentialAdmissionProfile;
+
     /// Woken on every phase or taint change of this row.
     fn phase_changed(&self) -> &tokio::sync::Notify;
 
@@ -464,6 +467,10 @@ where
         self.rate_limiter.profile()
     }
 
+    fn credential_admission_profile(&self) -> crate::CredentialAdmissionProfile {
+        ManagedResource::credential_admission_profile(self)
+    }
+
     fn phase_changed(&self) -> &tokio::sync::Notify {
         &self.phase_changed
     }
@@ -630,6 +637,13 @@ impl ManagedResourceView {
     pub fn rate_limit_profile(&self) -> crate::rate_limit::RateLimitProfile {
         self.managed.rate_limit_profile()
     }
+
+    /// Returns how new work on the row is admitted against its bound
+    /// credentials; see
+    /// [`CredentialAdmissionProfile`](crate::CredentialAdmissionProfile).
+    pub fn credential_admission_profile(&self) -> crate::CredentialAdmissionProfile {
+        self.managed.credential_admission_profile()
+    }
 }
 
 impl std::fmt::Debug for ManagedResourceView {
@@ -642,6 +656,10 @@ impl std::fmt::Debug for ManagedResourceView {
             .field("admission_phase", &self.admission_phase())
             .field("credential_suspension", &self.credential_suspension())
             .field("rate_limit_profile", &self.rate_limit_profile())
+            .field(
+                "credential_admission_profile",
+                &self.credential_admission_profile(),
+            )
             .field("admission_load", &self.admission_load())
             .finish()
     }

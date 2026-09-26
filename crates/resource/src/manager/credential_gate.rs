@@ -52,12 +52,24 @@
 //!   admitted under a fresh generation, while leases admitted before stay
 //!   open and nothing is rebuilt. This is a conscious relaxation of "do not
 //!   revive cancelled units" for a missed true block — they were never
-//!   cancelled; refusing them needs the strict per-acquire availability
-//!   read, a separate contract. Readmission is traced, not published as a
-//!   [`ResourceEvent`].
+//!   cancelled. A strict manager narrows the gap to an interval with no
+//!   acquire, create, activation or fan-out scan at all, because each
+//!   acquire reads the credential first. Readmission is traced, not
+//!   published as a [`ResourceEvent`].
 //!
 //! An observation without a revision (an adapter that reports none) falls
 //! back to the ticket-only rule.
+//!
+//! # Who observes
+//!
+//! On an interim manager ([`CredentialAdmissionProfile::InterimRowGate`])
+//! the gate is driven from outside: engine activation, the rotation fan-out
+//! and callers of [`Manager::suspend_credential_row`] /
+//! [`Manager::reopen_credential_row`]. On a strict manager
+//! ([`CredentialAdmissionProfile::StrictPerAcquire`]) every acquire also reads
+//! its bound credentials first and applies what it saw through the same
+//! `suspend_under_admission` / `reopen_under_admission` rules, with a ticket
+//! captured before its read (invariant I7 in the [`manager`](super) docs).
 
 use nebula_core::{ResourceKey, ScopeLevel};
 
@@ -148,6 +160,49 @@ impl From<&nebula_credential::CredentialAvailabilityObservation> for CredentialO
         match observation.admission_epoch() {
             Some(admission_epoch) => observed.with_admission_epoch(admission_epoch),
             None => observed,
+        }
+    }
+}
+
+/// How a row admits new work against its bound credentials.
+///
+/// Reported per row in [`ResourceHealthSnapshot`](crate::ResourceHealthSnapshot)
+/// and on [`ManagedResourceView`](crate::ManagedResourceView). Chosen at
+/// registration from the resource's declared slots and whether the manager
+/// was configured with a credential availability observer
+/// ([`ManagerConfig::with_credential_observer`](crate::ManagerConfig::with_credential_observer)).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum CredentialAdmissionProfile {
+    /// The resource declares no credential slots; nothing is read.
+    Unbound,
+    /// Every new unit of work — an acquire, a create — reads the bound
+    /// credentials' availability first and is refused unless each is usable
+    /// at the installed material. A credential store outage refuses new
+    /// credentialed work.
+    StrictPerAcquire,
+    /// No availability read before new work: the row admits until a
+    /// credential denial reaches it (engine activation, the rotation fan-out
+    /// or a caller suspends it). Interim — the production worker is strict;
+    /// the default becomes strict before the API freeze.
+    InterimRowGate,
+}
+
+impl CredentialAdmissionProfile {
+    /// Whether this profile is interim surface that a later release replaces.
+    #[must_use]
+    pub const fn is_interim(self) -> bool {
+        matches!(self, Self::InterimRowGate)
+    }
+
+    /// Stable lowercase name for logs and status views: `unbound`,
+    /// `strict_per_acquire` or `interim_row_gate`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unbound => "unbound",
+            Self::StrictPerAcquire => "strict_per_acquire",
+            Self::InterimRowGate => "interim_row_gate",
         }
     }
 }
@@ -544,7 +599,7 @@ impl Manager {
 }
 
 /// The use revision of the projection installed in `slot`, if any.
-fn installed_mark(managed: &dyn ManagedHandle, slot: &str) -> Option<UseMark> {
+pub(super) fn installed_mark(managed: &dyn ManagedHandle, slot: &str) -> Option<UseMark> {
     managed
         .credential_slot_projection(slot)
         .and_then(|(_, metadata)| metadata)

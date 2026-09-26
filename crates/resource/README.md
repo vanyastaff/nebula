@@ -211,6 +211,28 @@ first acquire creates it. In-process status carries it
 does not yet. `RateLimitProfile` is a status fact, not authoring surface, so
 the SDK does not re-export it.
 
+#### Credential admission profiles
+
+How a row admits new work against its bound credentials is chosen at
+registration and reported as a `CredentialAdmissionProfile` (`as_str()` in
+parentheses), in `ResourceHealthSnapshot::credential_admission` and
+`ManagedResourceView::credential_admission_profile()`:
+
+| Profile | When | New work (acquire, create) | Support |
+|---|---|---|---|
+| `Unbound` (`unbound`) | the resource declares no credential slots | nothing is read | supported |
+| `StrictPerAcquire` (`strict_per_acquire`) | the manager was built with `ManagerConfig::with_credential_observer` | reads every bound credential's availability first (join-next coalesced, ≤ 2 s); refused unless each is usable at the installed material | supported — the worker's profile |
+| `InterimRowGate` (`interim_row_gate`) | no observer | admitted until activation, the fan-out or a caller suspends the row | **interim** — the default becomes strict before the API freeze |
+
+**Availability coupling:** on a strict manager, credentialed egress is no more
+available than the credential store. While the store or source cannot answer,
+new credentialed work is refused as `CredentialUnavailable { reason:
+CheckUnavailable }` (retry after 1 s) and nothing is suspended; work already
+admitted continues. A strict manager refuses to register a resource whose
+declared slot lacks the projection port. See "Strict per-acquire admission" in
+[`credential-rotation.md`](docs/credential-rotation.md). Like
+`RateLimitProfile`, the profile is not re-exported through the SDK.
+
 A caller waits for its slot but never past its deadline: a slot after the
 deadline fails fast with `Exhausted` + `retry_after` and consumes nothing; an
 unreachable shared store fails closed as `Backpressure`. Denials never trip the
@@ -710,7 +732,8 @@ See the `nebula-resource` row in the workspace [`docs/MATURITY.md`](../../docs/M
 - Integration tests: shared-resource cross-workflow path is verified in `crates/engine/tests/resource_integration.rs::shared_resource::cross_workflow_resource_sharing`.
 - Per-slot rotation fan-out: landed in this crate (`credential_fanout`, feature `rotation`) — see [`credential-rotation.md`](docs/credential-rotation.md).
 - Credential suspension: a credential that turns `ReauthRequired` or blocks new use without a material change suspends every bound row (acquires fail with `CredentialUnavailable`, admitted leases observe closing, owners are kept) and reopens it when the same material is usable again at a newer use revision; a use revision that advanced unobserved readmits the row under a fresh generation — see "Same-material blocks" and "Use revision" in [`credential-rotation.md`](docs/credential-rotation.md).
-- Known gap: suspension is cooperative and lands at the next stored-row activation or fan-out scan (30 s, sooner on a `ReauthRequired` event), and a denial missed between two observations only affects new work; a strict per-acquire availability read is follow-up work (see "What suspension does not cover" in [`credential-rotation.md`](docs/credential-rotation.md)).
+- Strict per-acquire credential admission: a manager with a credential observer (the worker's) reads every bound credential's availability before each acquire and create — see "Strict per-acquire admission" in [`credential-rotation.md`](docs/credential-rotation.md).
+- Known gaps: on an interim manager (no observer) suspension is cooperative and lands at the next stored-row activation or fan-out scan (30 s, sooner on a `ReauthRequired` event); on a strict one only an interval with no acquire, create, activation or scan at all goes unobserved, and a denial missed that way only affects new work. An acquire that waits for capacity after its read is not read again (a per-call facade re-reads per attempt). Configurable read timeout/jitter, batched multi-slot reads, an interval profile (needs an ADR revising the per-acquire rule) and letting activation skip its own head read on a strict manager are follow-ups (see "What suspension does not cover" in [`credential-rotation.md`](docs/credential-rotation.md)).
 
 ## Related
 
