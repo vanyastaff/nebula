@@ -44,8 +44,19 @@ use super::{
     refresh_scheduler_cycle_outcome, revision_catalog_operation, rotation_outcome,
     webhook_rate_limit_tier, webhook_signature_failure_reason,
 };
+use super::{
+    NEBULA_RESOURCE_CREDENTIAL_ADMISSION_DENIED_TOTAL,
+    NEBULA_RESOURCE_CREDENTIAL_ADMISSION_JOINED_TOTAL,
+    NEBULA_RESOURCE_CREDENTIAL_ADMISSION_READ_DURATION_SECONDS,
+    NEBULA_RESOURCE_CREDENTIAL_ADMISSION_READS_TOTAL, credential_admission_denied_reason,
+    credential_admission_read_outcome,
+};
 
-const RESOURCE_METRIC_NAMES: [&str; 24] = [
+const RESOURCE_METRIC_NAMES: [&str; 28] = [
+    NEBULA_RESOURCE_CREDENTIAL_ADMISSION_READS_TOTAL,
+    NEBULA_RESOURCE_CREDENTIAL_ADMISSION_JOINED_TOTAL,
+    NEBULA_RESOURCE_CREDENTIAL_ADMISSION_READ_DURATION_SECONDS,
+    NEBULA_RESOURCE_CREDENTIAL_ADMISSION_DENIED_TOTAL,
     NEBULA_RESOURCE_CREATE_TOTAL,
     NEBULA_RESOURCE_ACQUIRE_TOTAL,
     NEBULA_RESOURCE_ACQUIRE_WAIT_DURATION_SECONDS,
@@ -75,7 +86,8 @@ const RESOURCE_METRIC_NAMES: [&str; 24] = [
 const RESOURCE_GAUGE_NAMES: [&str; 2] =
     [NEBULA_RESOURCE_HEALTH_STATE, NEBULA_RESOURCE_POOL_WAITERS];
 
-const RESOURCE_HISTOGRAM_NAMES: [&str; 3] = [
+const RESOURCE_HISTOGRAM_NAMES: [&str; 4] = [
+    NEBULA_RESOURCE_CREDENTIAL_ADMISSION_READ_DURATION_SECONDS,
     NEBULA_RESOURCE_ACQUIRE_WAIT_DURATION_SECONDS,
     NEBULA_RESOURCE_USAGE_DURATION_SECONDS,
     NEBULA_RESOURCE_CREDENTIAL_ROTATION_DISPATCH_LATENCY_SECONDS,
@@ -112,7 +124,44 @@ fn resource_constants_are_accessible_unique_and_registry_safe() {
         }
     }
 
-    assert_eq!(unique.len(), 24);
+    assert_eq!(unique.len(), 28);
+}
+
+#[test]
+fn credential_admission_labels_are_closed_sets() {
+    // Closed label sets: one read outcome per issued read, one reason per
+    // refused unit. Adding a value inflates cardinality; this is the gate.
+    for (labels, expected) in [
+        (
+            &[
+                credential_admission_read_outcome::AVAILABLE,
+                credential_admission_read_outcome::REFRESH_IN_FLIGHT,
+                credential_admission_read_outcome::BLOCKED,
+                credential_admission_read_outcome::ABSENT,
+                credential_admission_read_outcome::UNAVAILABLE,
+                credential_admission_read_outcome::TIMED_OUT,
+            ][..],
+            6,
+        ),
+        (
+            &[
+                credential_admission_denied_reason::REAUTH_REQUIRED,
+                credential_admission_denied_reason::OPERATION_BLOCKED,
+                credential_admission_denied_reason::REFRESH_IN_FLIGHT,
+                credential_admission_denied_reason::REBINDING,
+                credential_admission_denied_reason::CHECK_UNAVAILABLE,
+                credential_admission_denied_reason::ABSENT,
+            ][..],
+            6,
+        ),
+    ] {
+        let mut unique = HashSet::new();
+        for label in labels {
+            assert!(label.chars().all(|ch| ch.is_ascii_lowercase() || ch == '_'));
+            assert!(unique.insert(*label));
+        }
+        assert_eq!(unique.len(), expected);
+    }
 }
 
 #[test]

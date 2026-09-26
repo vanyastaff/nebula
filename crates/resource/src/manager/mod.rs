@@ -421,6 +421,11 @@ use crate::{
 
 pub(crate) mod acquire;
 mod credential_gate;
+#[expect(
+    dead_code,
+    reason = "the strict per-acquire admission that reads through it lands in the next changes"
+)]
+mod credential_reads;
 #[cfg(test)]
 mod credential_suspension_tests;
 #[cfg(test)]
