@@ -435,8 +435,17 @@ impl Manager {
         // framework ceiling caps the worst case so a blocking hook can never
         // hang forever. The dropped loop future releases the permit and
         // destroys any in-flight entry via `EntryCreateGuard`.
-        let hook_timeout = options.remaining().unwrap_or(DEFAULT_AUTHOR_HOOK_CEILING);
+        //
+        // The hook timeout is what is left of the caller's budget when the
+        // hooks run, not the budget at entry: the rate-limit wait and the
+        // strict credential read spend the same budget first, and the
+        // acquire must not end past its deadline.
+        let budget = options.remaining();
+        let entered = tokio::time::Instant::now();
         self.run_acquire(Arc::clone(&managed), ctx, options, || {
+            let hook_timeout = budget.map_or(DEFAULT_AUTHOR_HOOK_CEILING, |budget| {
+                budget.saturating_sub(entered.elapsed())
+            });
             let managed = Arc::clone(&managed);
             let metrics = self.metrics.clone();
             async move {

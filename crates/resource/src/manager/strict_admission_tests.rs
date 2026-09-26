@@ -581,6 +581,48 @@ async fn a_read_that_does_not_answer_refuses_at_the_earlier_of_its_bound_and_the
 }
 
 #[tokio::test(start_paused = true)]
+async fn the_topology_hooks_get_only_the_budget_the_read_left() {
+    let observer = ScriptedObserver::gated(available(1, 1));
+    let manager = Arc::new(strict_manager(erased(&observer), &Arc::default()));
+    let resource = resident(&manager);
+    bind(&resource.db, credential_id(), 1, 1);
+    // The create hook never finishes on its own.
+    resource.probe.park_next_create();
+
+    let started = tokio::time::Instant::now();
+    let pending = {
+        let manager = Arc::clone(&manager);
+        tokio::spawn(async move {
+            manager
+                .acquire_for_identity::<StrictResident>(
+                    &context(),
+                    &AcquireOptions::default()
+                        .with_deadline(std::time::Instant::now() + Duration::from_millis(500)),
+                    &tenant(),
+                )
+                .await
+                .map(drop)
+        })
+    };
+    // The read takes 400 ms of the 500 ms budget.
+    observer.until_calls(1).await;
+    tokio::time::advance(Duration::from_millis(400)).await;
+    observer.release(1);
+
+    let error = pending.await.expect("joined").refused();
+    assert!(
+        matches!(error.kind(), ErrorKind::Backpressure),
+        "the hook timed out: {error:?}"
+    );
+    assert!(
+        started.elapsed() <= Duration::from_millis(500),
+        "the acquire ended past its deadline: {:?}",
+        started.elapsed()
+    );
+    resource.probe.release_create.notify_one();
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_refresh_in_flight_is_joined_for_a_bounded_wait() {
     let (observer, manager, _resource) = setup(refreshing(1));
     let started = tokio::time::Instant::now();
