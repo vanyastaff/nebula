@@ -308,7 +308,7 @@ impl CredentialReads {
     }
 
     /// Whether the pauses of a refresh join are jittered: always, except in
-    /// a test that fixed them with [`fix_join_pauses`](Self::fix_join_pauses).
+    /// a test that fixed them with `fix_join_pauses` (test-only).
     pub(crate) fn jitters_join_pauses(&self) -> bool {
         #[cfg(test)]
         {
