@@ -463,7 +463,7 @@ mod shutdown_session;
 mod shutdown_session_tests;
 mod strict_admission;
 #[cfg(test)]
-mod strict_fixtures;
+pub(crate) mod strict_fixtures;
 #[cfg(test)]
 mod strict_profile_tests;
 
