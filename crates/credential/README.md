@@ -126,6 +126,14 @@ runtime proof and must not be used as a properties declaration.
   then decrypts and projects into an opaque `ErasedCredentialGuard`. The guard carries the
   authoritative material epoch and aggregate revision for stale-refresh rejection; its private
   erased storage is recoverable only through checked typed extraction.
+- `CredentialAvailabilityObserver` for a secret-free availability check: exactly one
+  owner-qualified operational-head read answers whether the credential may be used now
+  (`Available`, `RefreshInFlight`, or `Blocked` by reauthentication, a revoke in flight, or an
+  operation awaiting reconciliation) and at which `(material_epoch, revision)`; it never loads,
+  decrypts or projects material. `CredentialProjectionRuntime` and `CredentialService` implement
+  it and expose it through the defaulted `CredentialSlotResolver::as_availability_observer`
+  upcast. Resource rows use it to suspend while a credential denies use at the material they
+  hold, and to project only when material advanced.
 - `CredentialProjectionRuntime` for worker-side read/project composition from an already-secured
   persistence stack, registry, dispatch ops, and state source. Construction rejects missing base
   projectors or advertised capabilities without matching ops; it owns no refresh coordinator,

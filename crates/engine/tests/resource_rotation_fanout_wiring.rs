@@ -2572,3 +2572,205 @@ async fn engine_can_replace_resource_rotation_fanout_after_credential_bus_closes
     );
     drop(replacement);
 }
+
+// ── Credential suspension: reauth required → deny → reauth → serve ──
+
+/// Scripted credential store: availability answered head-only through the
+/// observer, material projected only when it advances.
+struct ReauthScriptedResolver {
+    /// `(material epoch, reauth required)`.
+    state: std::sync::Mutex<(u64, bool)>,
+    projections: Arc<AtomicUsize>,
+}
+
+impl ReauthScriptedResolver {
+    fn state(&self) -> (u64, bool) {
+        *self.state.lock().expect("state lock")
+    }
+
+    fn set(&self, epoch: u64, reauth_required: bool) {
+        *self.state.lock().expect("state lock") = (epoch, reauth_required);
+    }
+}
+
+impl nebula_credential::CredentialSlotResolver for ReauthScriptedResolver {
+    fn resolve_slot<'a>(
+        &'a self,
+        scope: &'a nebula_credential::TenantScope,
+        credential_id: CredentialId,
+        expected_key: nebula_core::CredentialKey,
+        _required_capabilities: nebula_credential::Capabilities,
+        _cancel: CancellationToken,
+    ) -> std::pin::Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        nebula_credential::ErasedCredentialGuard,
+                        nebula_credential::CredentialSlotResolveError,
+                    >,
+                > + Send
+                + 'a,
+        >,
+    > {
+        self.projections.fetch_add(1, Ordering::SeqCst);
+        let (epoch, reauth_required) = self.state();
+        let result = if reauth_required {
+            Err(nebula_credential::CredentialSlotResolveError::ReauthRequired)
+        } else {
+            Ok(nebula_credential::ErasedCredentialGuard::from_typed(
+                nebula_credential::CredentialGuard::new(ReplacementMaterial(epoch)),
+                nebula_credential::CredentialGuardMetadata::new(
+                    credential_id,
+                    expected_key,
+                    epoch,
+                    epoch,
+                )
+                .with_scope(scope.clone()),
+            ))
+        };
+        Box::pin(async move { result })
+    }
+
+    fn as_availability_observer(
+        &self,
+    ) -> Option<&dyn nebula_credential::CredentialAvailabilityObserver> {
+        Some(self)
+    }
+}
+
+impl nebula_credential::CredentialAvailabilityObserver for ReauthScriptedResolver {
+    fn observe_availability<'a>(
+        &'a self,
+        _scope: &'a nebula_credential::TenantScope,
+        _credential_id: CredentialId,
+        _expected_key: nebula_core::CredentialKey,
+        _cancel: CancellationToken,
+    ) -> std::pin::Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        nebula_credential::CredentialAvailabilityObservation,
+                        nebula_credential::CredentialObserveError,
+                    >,
+                > + Send
+                + 'a,
+        >,
+    > {
+        let (epoch, reauth_required) = self.state();
+        let availability = if reauth_required {
+            nebula_credential::CredentialAvailability::Blocked(
+                nebula_credential::CredentialBlock::ReauthRequired,
+            )
+        } else {
+            nebula_credential::CredentialAvailability::Available
+        };
+        Box::pin(async move {
+            Ok(nebula_credential::CredentialAvailabilityObservation::new(
+                epoch,
+                epoch,
+                availability,
+            ))
+        })
+    }
+}
+
+async fn next_matching(
+    events: &mut nebula_resource::Subscriber<nebula_resource::ResourceEvent>,
+    label: &str,
+    matches: impl Fn(&nebula_resource::ResourceEvent) -> bool,
+) {
+    // Paused clock: the driver's periodic scan is 30 s away, so only the
+    // event under test can produce this within the bound.
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let event = events.recv().await.expect("resource event bus open");
+            if matches(&event) {
+                return;
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("`{label}` not observed before the periodic scan"));
+}
+
+#[tokio::test(start_paused = true)]
+async fn reauth_required_denies_until_reauthentication_then_serves() {
+    let manager = Arc::new(Manager::new());
+    let credential_id = CredentialId::new();
+    let resource = register_replacement(&manager, credential_id);
+    let identity = SlotIdentity::from_bindings([("db", "oauth")]);
+    let index = Arc::new(ResourceFanoutIndex::new());
+    index.bind_test(
+        credential_id,
+        ReplacementResource::key(),
+        ScopeLevel::Global,
+        "db",
+        identity.clone(),
+    );
+    let resolver = Arc::new(ReauthScriptedResolver {
+        state: std::sync::Mutex::new((1, false)),
+        projections: Arc::new(AtomicUsize::new(0)),
+    });
+    let bus = Arc::new(EventBus::new(8));
+    let mut events = manager.subscribe_events();
+    let driver = ResourceFanoutDriver::spawn_with_resolver(
+        Arc::clone(&index),
+        Arc::clone(&manager),
+        Some(Arc::clone(&resolver) as Arc<dyn nebula_credential::CredentialSlotResolver>),
+        Arc::clone(&bus),
+        None,
+    );
+    let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
+    let options = AcquireOptions::default();
+    let acquire =
+        || manager.acquire_resident_for_identity::<ReplacementResource>(&ctx, &options, &identity);
+    let lease = acquire().await.expect("the row serves material 1");
+
+    // The provider rejects the refresh: the credential needs reauthentication.
+    resolver.set(1, true);
+    let _ = bus.emit(CredentialEvent::ReauthRequired {
+        credential_id,
+        reason: nebula_credential::ReauthReason::ProviderRejected,
+    });
+    next_matching(&mut events, "CredentialSuspended", |event| {
+        matches!(
+            event,
+            nebula_resource::ResourceEvent::CredentialSuspended { .. }
+        )
+    })
+    .await;
+    let denied = acquire()
+        .await
+        .expect_err("a reauth-blocked row denies work");
+    assert!(
+        matches!(
+            denied.kind(),
+            nebula_resource::ErrorKind::CredentialUnavailable {
+                reason: nebula_resource::CredentialUnavailableReason::ReauthRequired
+            }
+        ),
+        "got {denied:?}"
+    );
+    assert!(lease.is_closing(), "the admitted lease is told to stop");
+    drop(lease);
+
+    // The account owner reauthenticates: material 2 is committed and the
+    // credential runtime announces it.
+    resolver.set(2, false);
+    let _ = bus.emit(CredentialEvent::Refreshed { credential_id });
+    next_matching(&mut events, "CredentialReopened", |event| {
+        matches!(
+            event,
+            nebula_resource::ResourceEvent::CredentialReopened { .. }
+        )
+    })
+    .await;
+    let served = acquire().await.expect("the reauthenticated row serves");
+    assert!(!served.is_closing());
+    assert_eq!(
+        resource.slot.load().expect("material installed").0,
+        2,
+        "the reauthenticated material is installed"
+    );
+    driver.abort();
+}

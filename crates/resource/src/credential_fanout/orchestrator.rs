@@ -196,17 +196,36 @@ impl ResourceFanoutIndex {
     /// Reconcile live projections against credential-owned durable state.
     /// Events only accelerate this scan; loss, lag and driver restart cannot
     /// permanently strand a guard at an older material epoch.
+    ///
+    /// With a resolver that exposes a [`CredentialAvailabilityObserver`]
+    /// (`nebula_credential`), a row whose installed projection is current is
+    /// checked head-first, without decrypting: a blocked credential suspends
+    /// the row, a refresh in flight changes nothing, an available credential
+    /// at the installed material reopens a suspended row, a newer material is
+    /// projected and installed (which also reopens), and an absent head falls
+    /// back to projection (the tombstone path). An unavailable store or a
+    /// timed-out observation changes no gate. Without an observer every row
+    /// is re-projected, and a same-material block reported by the projection
+    /// suspends the row.
+    ///
+    /// `hint` says why a targeted scan runs: only a
+    /// [`ScanHint::Refreshed`] scan dispatches the legacy refresh hook to
+    /// context-less bindings.
+    ///
+    /// [`CredentialAvailabilityObserver`]: nebula_credential::CredentialAvailabilityObserver
     pub(crate) async fn reconcile_material(
         &self,
         mgr: &crate::Manager,
         resolver: &dyn CredentialSlotResolver,
         credential_id: Option<CredentialId>,
+        hint: ScanHint,
     ) -> RotationOutcome {
         use futures::FutureExt;
 
         let mut summary = RotationOutcome::default();
         let mut projections = Vec::new();
-        let targeted_refresh = credential_id.is_some();
+        let targeted_refresh = credential_id.is_some() && hint == ScanHint::Refreshed;
+        let observer = resolver.as_availability_observer();
         for (bound_credential_id, binding, context) in self.published_bindings(credential_id) {
             let Some((credential_scope, credential_key)) = context else {
                 if targeted_refresh {
@@ -252,14 +271,48 @@ impl ResourceFanoutIndex {
                 );
                 continue;
             };
-            let install_live = match metadata {
-                Some(metadata)
-                    if metadata.credential_id() == bound_credential_id
+            let installed_epoch = metadata
+                .as_ref()
+                .filter(|metadata| {
+                    metadata.credential_id() == bound_credential_id
                         && metadata.credential_key() == &credential_key
-                        && metadata.scope() == Some(&credential_scope) =>
-                {
-                    true
-                },
+                        && metadata.scope() == Some(&credential_scope)
+                })
+                .map(nebula_credential::CredentialGuardMetadata::material_epoch);
+            if let (Some(observer), Some(installed_epoch)) = (observer, installed_epoch) {
+                projections.push(
+                    async move {
+                        let Ok(projection_permit) = self.projection_admission.acquire().await
+                        else {
+                            return RowOutcome::Failed {
+                                drain_timed_out: false,
+                            };
+                        };
+                        observe_then_reconcile(
+                            self,
+                            mgr,
+                            managed,
+                            ProjectionTarget {
+                                binding: &binding,
+                                slot: &binding.slot_name,
+                                generation,
+                                scope: &credential_scope,
+                                credential_id: bound_credential_id,
+                                credential_key,
+                                install_live: true,
+                            },
+                            installed_epoch,
+                            (resolver, observer),
+                            projection_permit,
+                        )
+                        .await
+                    }
+                    .boxed(),
+                );
+                continue;
+            }
+            let install_live = match metadata {
+                Some(_) if installed_epoch.is_some() => true,
                 Some(_) => {
                     projections.push(
                         async {
@@ -736,6 +789,9 @@ async fn project_and_refresh(
         credential_key,
         install_live,
     } = target;
+    // Captured before the credential is read: a successful resolve proves it
+    // usable and may reopen a suspension, unless one landed after this point.
+    let reopen = crate::manager::CredentialGateTicket::new(managed.credential_gate_epoch());
     let cancel = CancellationToken::new();
     let _cancel_on_drop = cancel.clone().drop_guard();
     let guard = match tokio::time::timeout(
@@ -790,6 +846,21 @@ async fn project_and_refresh(
             return revoke_tail_outcome(tail);
         },
         Ok(Err(error)) => {
+            // A same-material block suspends the row: the credential denies
+            // use at the material the row already holds. A refresh still in
+            // flight is not a block and changes nothing.
+            let reason = match error {
+                nebula_credential::CredentialSlotResolveError::ReauthRequired => {
+                    Some(crate::CredentialUnavailableReason::ReauthRequired)
+                },
+                nebula_credential::CredentialSlotResolveError::OperationBlocked { .. } => {
+                    Some(crate::CredentialUnavailableReason::OperationBlocked)
+                },
+                _ => None,
+            };
+            if let Some(reason) = reason {
+                suspend_row(index, mgr, cid, binding, &managed, reason, None);
+            }
             tracing::warn!(credential_id = %cid, error = %error,
                 "material replacement projection failed");
             return RowOutcome::Failed {
@@ -821,7 +892,10 @@ async fn project_and_refresh(
             slot,
             managed,
             guard,
-            Some(generation),
+            crate::manager::ResolvedAt {
+                slot_generation: Some(generation),
+                gate_ticket: Some(reopen),
+            },
             (
                 || {
                     if !index.contains_published_binding(&cid, &publication_binding)
@@ -879,6 +953,176 @@ async fn project_and_refresh(
         hook_completion_wake.arm_deferred();
     }
     outcome
+}
+
+/// Why a targeted reconciliation scan runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ScanHint {
+    /// The credential's material was refreshed: context-less bindings also
+    /// receive the legacy refresh hook.
+    Refreshed,
+    /// The credential's availability may have changed (for example it now
+    /// needs reauthentication): rows are re-observed only.
+    Availability,
+}
+
+impl ScanHint {
+    /// The hint that covers both `self` and `other`: a refresh dominates.
+    pub(crate) fn merge(self, other: Self) -> Self {
+        if self == Self::Refreshed || other == Self::Refreshed {
+            Self::Refreshed
+        } else {
+            Self::Availability
+        }
+    }
+}
+
+/// Head-first reconciliation of one row whose installed projection is current
+/// (see `ResourceFanoutIndex::reconcile_material`). Decrypts only when the
+/// observed material advanced past `installed_epoch` or the head is absent.
+async fn observe_then_reconcile(
+    index: &ResourceFanoutIndex,
+    mgr: &crate::Manager,
+    managed: std::sync::Arc<dyn crate::registry::ManagedHandle>,
+    target: ProjectionTarget<'_>,
+    installed_epoch: u64,
+    (resolver, observer): (
+        &dyn CredentialSlotResolver,
+        &dyn nebula_credential::CredentialAvailabilityObserver,
+    ),
+    projection_permit: tokio::sync::SemaphorePermit<'_>,
+) -> RowOutcome {
+    use nebula_credential::{CredentialAvailability, CredentialObserveError};
+
+    // Captured before the observation: a suspension landing after it wins.
+    let ticket = crate::manager::CredentialGateTicket::new(managed.credential_gate_epoch());
+    let cancel = CancellationToken::new();
+    let _cancel_on_drop = cancel.clone().drop_guard();
+    let observed = tokio::time::timeout(
+        Duration::from_secs(30),
+        observer.observe_availability(
+            target.scope,
+            target.credential_id,
+            target.credential_key.clone(),
+            cancel,
+        ),
+    )
+    .await;
+    let cid = target.credential_id;
+    let binding = target.binding;
+    let observation = match observed {
+        Ok(Ok(observation)) => observation,
+        // No live head: project, so a durable tombstone takes the revoke path.
+        Ok(Err(CredentialObserveError::Absent)) => {
+            return project_and_refresh(index, mgr, managed, target, resolver, projection_permit)
+                .await;
+        },
+        // An outage or a slow store decides nothing about safety: no gate
+        // change (the strict per-acquire read is a separate contract).
+        Ok(Err(error)) => {
+            tracing::warn!(credential_id = %cid, error = %error,
+                "credential availability observation failed; row gate unchanged");
+            return RowOutcome::Failed {
+                drain_timed_out: false,
+            };
+        },
+        Err(_) => {
+            tracing::warn!(credential_id = %cid,
+                "credential availability observation timed out; row gate unchanged");
+            return RowOutcome::TimedOut {
+                drain_timed_out: false,
+            };
+        },
+    };
+    match observation.availability() {
+        CredentialAvailability::Blocked(block) => {
+            suspend_row(
+                index,
+                mgr,
+                cid,
+                binding,
+                &managed,
+                block_reason(block),
+                Some(observation.material_epoch()),
+            );
+        },
+        CredentialAvailability::Available if observation.material_epoch() > installed_epoch => {
+            return project_and_refresh(index, mgr, managed, target, resolver, projection_permit)
+                .await;
+        },
+        CredentialAvailability::Available
+            if observation.material_epoch() == installed_epoch
+                && managed.credential_suspension().is_some() =>
+        {
+            match mgr.reopen_published_credential_binding(index, &cid, binding, &managed, ticket) {
+                Ok(outcome) => tracing::debug!(
+                    credential_id = %cid,
+                    resource_key = %binding.resource_key,
+                    ?outcome,
+                    "credential usable again at the installed material"
+                ),
+                Err(error) => tracing::warn!(
+                    credential_id = %cid,
+                    resource_key = %binding.resource_key,
+                    error.kind = ?error.kind(),
+                    "credential usable again but the row could not be reopened"
+                ),
+            }
+        },
+        // Available and current, an older observation, a refresh still in
+        // flight, or a future availability: nothing to change.
+        _ => {},
+    }
+    RowOutcome::Success {
+        drain_timed_out: false,
+    }
+}
+
+/// Suspends the pinned row because its credential denies use; failures are
+/// logged (the next scan observes again).
+fn suspend_row(
+    index: &ResourceFanoutIndex,
+    mgr: &crate::Manager,
+    cid: CredentialId,
+    binding: &crate::Bind,
+    managed: &std::sync::Arc<dyn crate::registry::ManagedHandle>,
+    reason: crate::CredentialUnavailableReason,
+    observed_material_epoch: Option<u64>,
+) {
+    match mgr.suspend_published_credential_binding(
+        index,
+        &cid,
+        binding,
+        managed,
+        reason,
+        observed_material_epoch,
+    ) {
+        Ok(outcome) => tracing::debug!(
+            credential_id = %cid,
+            resource_key = %binding.resource_key,
+            slot = %binding.slot_name,
+            ?outcome,
+            "credential denies use: row suspension recorded"
+        ),
+        Err(error) => tracing::warn!(
+            credential_id = %cid,
+            resource_key = %binding.resource_key,
+            slot = %binding.slot_name,
+            error.kind = ?error.kind(),
+            "credential denies use but the row could not be suspended"
+        ),
+    }
+}
+
+/// The reason a row reports while its credential is blocked.
+fn block_reason(block: nebula_credential::CredentialBlock) -> crate::CredentialUnavailableReason {
+    match block {
+        nebula_credential::CredentialBlock::ReauthRequired => {
+            crate::CredentialUnavailableReason::ReauthRequired
+        },
+        // Revoke in flight, reconciliation required, and any future block.
+        _ => crate::CredentialUnavailableReason::OperationBlocked,
+    }
 }
 
 fn settle_revoke_claim(claim: Option<RevokeAdmissionClaim<'_>>, admission: Option<bool>) {

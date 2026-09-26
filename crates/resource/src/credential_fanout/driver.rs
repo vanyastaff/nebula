@@ -61,7 +61,7 @@
 //! fan-out internals already guarantee no credential/secret material reaches
 //! any span; this driver adds only key-free counts.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -73,6 +73,7 @@ use nebula_eventbus::EventBus;
 
 use crate::Manager;
 use crate::credential_fanout::index::{ResourceFanoutIndex, RotationOutcome};
+use crate::credential_fanout::orchestrator::ScanHint;
 
 /// Time window in which a second revoke for the same `CredentialId` is
 /// treated as a duplicate of the first and skipped.
@@ -437,7 +438,7 @@ impl ResourceFanoutDriver {
             let mut revoke_dispatches = tokio::task::JoinSet::new();
             let mut pending_material =
                 HashMap::<CredentialId, (TenantScope, CredentialKey, u64)>::new();
-            let mut pending_refresh_scans = HashSet::<CredentialId>::new();
+            let mut pending_refresh_scans = HashMap::<CredentialId, ScanHint>::new();
             let mut full_scan_requested = false;
             let mut revoke_retry_requested = false;
             loop {
@@ -453,14 +454,25 @@ impl ResourceFanoutDriver {
                 tokio::select! {
                     ev = credential_sub.recv() => match ev {
                         Some(CredentialEvent::Refreshed { credential_id }) if resolver.is_some() => {
-                            if pending_refresh_scans.contains(&credential_id)
-                                || pending_refresh_scans.len() < MAX_PENDING_REFRESH_SCANS
-                            {
-                                pending_refresh_scans.insert(credential_id);
-                            } else {
-                                pending_refresh_scans.clear();
-                                full_scan_requested = true;
-                            }
+                            Self::request_targeted_scan(
+                                &mut pending_refresh_scans,
+                                &mut full_scan_requested,
+                                credential_id,
+                                ScanHint::Refreshed,
+                            );
+                        },
+                        // A credential that now needs reauthentication denies
+                        // use at its current material: re-observe its rows
+                        // promptly so they suspend before the periodic scan.
+                        Some(CredentialEvent::ReauthRequired { credential_id, .. })
+                            if resolver.is_some() =>
+                        {
+                            Self::request_targeted_scan(
+                                &mut pending_refresh_scans,
+                                &mut full_scan_requested,
+                                credential_id,
+                                ScanHint::Availability,
+                            );
                         },
                         Some(CredentialEvent::MaterialReplaced {
                             credential_id,
@@ -555,16 +567,19 @@ impl ResourceFanoutDriver {
                     () = std::future::ready(()), if (full_scan_requested || !pending_refresh_scans.is_empty())
                         && scans.is_empty()
                         && material_dispatches.is_empty() => {
-                        let credential_id = if full_scan_requested {
+                        let (credential_id, hint) = if full_scan_requested {
                             full_scan_requested = false;
                             pending_refresh_scans.clear();
-                            None
+                            (None, ScanHint::Availability)
                         } else {
-                            let credential_id = pending_refresh_scans.iter().next().copied();
-                            if let Some(credential_id) = credential_id {
+                            let next = pending_refresh_scans
+                                .iter()
+                                .next()
+                                .map(|(credential_id, hint)| (*credential_id, *hint));
+                            if let Some((credential_id, _)) = next {
                                 pending_refresh_scans.remove(&credential_id);
                             }
-                            credential_id
+                            (next.map(|(credential_id, _)| credential_id), next.map_or(ScanHint::Availability, |(_, hint)| hint))
                         };
                         if let Some(resolver) = resolver.as_ref() {
                             let index = Arc::clone(&index);
@@ -586,7 +601,12 @@ impl ResourceFanoutDriver {
                                 let _child_activity = child_activity;
                                 let _reconciliation_lease = reconciliation_lease;
                                 index
-                                    .reconcile_material(&manager, resolver.as_ref(), credential_id)
+                                    .reconcile_material(
+                                        &manager,
+                                        resolver.as_ref(),
+                                        credential_id,
+                                        hint,
+                                    )
                                     .await
                             });
                         }
@@ -730,14 +750,33 @@ impl ResourceFanoutDriver {
             // taint synchronously and move the potentially long drain/hook tail
             // into a tracked background task.
             CredentialEvent::Revoked { .. } => {},
-            // Not a rotation of stored material. This driver is only a
-            // resource-material fan-out observer; it has no credential
-            // aggregate write authority.
+            // A resolver-backed driver turns this into a targeted
+            // availability scan in the receive loop; a legacy driver has no
+            // way to observe availability and leaves it to the host. This
+            // driver has no credential aggregate write authority.
             // `CredentialEvent` is `#[non_exhaustive]`; any future
             // additive variant defaults to "not a rotation/revoke of
             // resolved material" until a unit deliberately wires it.
             CredentialEvent::ReauthRequired { .. } => {},
             _ => {},
+        }
+    }
+
+    /// Queues a targeted scan of `credential_id`, keeping the strongest hint
+    /// already queued for it; a full queue collapses into one full scan.
+    fn request_targeted_scan(
+        pending: &mut HashMap<CredentialId, ScanHint>,
+        full_scan_requested: &mut bool,
+        credential_id: CredentialId,
+        hint: ScanHint,
+    ) {
+        if let Some(queued) = pending.get_mut(&credential_id) {
+            *queued = queued.merge(hint);
+        } else if pending.len() < MAX_PENDING_REFRESH_SCANS {
+            pending.insert(credential_id, hint);
+        } else {
+            pending.clear();
+            *full_scan_requested = true;
         }
     }
 

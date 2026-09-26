@@ -389,6 +389,8 @@ drop(guard); // still released normally
 | `Manager::remove` / `remove_for` | yes |
 | `graceful_shutdown` | yes — when the drain starts |
 | `Manager::shutdown`, dropping the manager | yes |
+| Credential suspension (`suspend_credential_row`, the fan-out, activation) | yes — every lease admitted since the previous suspension |
+| Reopening a suspended row | no (it publishes a fresh generation; closed leases stay closed) |
 | `reload_config` | no |
 | Credential refresh (`install_and_refresh_slot_for_identity`, `refresh_slot`) | no |
 | Same-identity replacement of the row | no |
@@ -398,12 +400,14 @@ rolls nothing back remotely; revoke and shutdown drains still wait for the guard
 A lease can only observe it — `LeaseClosing` has no `cancel`. Two consequences
 follow from the same generation:
 
-- An acquire whose generation closes while it is in flight (a taint, removal or
-  shutdown straddling the create) is refused at hand-out with `Revoked` (tainted)
-  or `Cancelled`; the built entry goes back through ordinary release. Neither
-  error trips the recovery gate.
+- An acquire whose generation closes while it is in flight (a taint, removal,
+  shutdown or credential suspension straddling the create) is refused at
+  hand-out with `Revoked` (tainted), `CredentialUnavailable` (suspended) or
+  `Cancelled`; the built entry goes back through ordinary release. None of these
+  errors trips the recovery gate.
 - A wrapped client's wait (`Limited::run*`) ends with `LimitedError::Limit` of kind
-  `Cancelled` when the row's generation closes, and a call started after it closed
+  `Cancelled` (`CredentialUnavailable` for a suspension) when the row's
+  generation closes, and a call started after it closed
   is refused without waiting, so a lease parked on a long provider pause no longer
   holds a revoke drain. The provider call itself is never interrupted. `run*` and
   `unlimited` are interim until the managed call facade replaces them.
@@ -608,7 +612,8 @@ See the `nebula-resource` row in the workspace [`docs/MATURITY.md`](../../docs/M
   `#![warn(missing_debug_implementations)]` active.
 - Integration tests: shared-resource cross-workflow path is verified in `crates/engine/tests/resource_integration.rs::shared_resource::cross_workflow_resource_sharing`.
 - Per-slot rotation fan-out: landed in this crate (`credential_fanout`, feature `rotation`) — see [`credential-rotation.md`](docs/credential-rotation.md).
-- Known gap: a credential that turns `ReauthRequired` or blocks new use without a material change emits no rotation event, so already-built resources keep serving it until material changes or the row is re-activated (see "What the fence does not cover" in [`credential-rotation.md`](docs/credential-rotation.md)).
+- Credential suspension: a credential that turns `ReauthRequired` or blocks new use without a material change suspends every bound row (acquires fail with `CredentialUnavailable`, admitted leases observe closing, owners are kept) and reopens it when the same material is usable again — see "Same-material blocks" in [`credential-rotation.md`](docs/credential-rotation.md).
+- Known gap: suspension is cooperative and lands at the next stored-row activation or fan-out scan (30 s, sooner on a `ReauthRequired` event); a strict per-acquire availability read is follow-up work (see "What suspension does not cover" in [`credential-rotation.md`](docs/credential-rotation.md)).
 
 ## Related
 

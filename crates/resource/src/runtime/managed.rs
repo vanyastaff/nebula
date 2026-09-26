@@ -417,11 +417,12 @@ impl<R: Provider> ManagedResource<R> {
         self.tainted.load(Ordering::Acquire)
     }
 
-    /// Whether the row may build instances now: it is not tainted and its
-    /// phase accepts acquires. A row still waiting for its credentials to be
-    /// reread, or draining, builds nothing that no acquire could take.
+    /// Whether the row may build instances now: it is not tainted, no bound
+    /// credential suspends it, and its phase accepts acquires. A row still
+    /// waiting for its credentials to be reread, suspended, or draining
+    /// builds nothing that no acquire could take.
     pub(crate) fn accepts_new_instances(&self) -> bool {
-        !self.is_tainted() && self.status().phase.is_accepting()
+        !self.is_tainted() && !self.admission.is_suspended() && self.status().phase.is_accepting()
     }
 
     /// Returns a clone of this resource's per-resource in-flight tracker so

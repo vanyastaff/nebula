@@ -13,6 +13,10 @@ use crate::runtime::projection::slot::{
     CredentialSlotResolveError, CredentialSlotResolver, ErasedCredentialGuard,
     SlotResolutionRequest, resolve_slot_with,
 };
+use crate::runtime::projection::{
+    CredentialAvailabilityObservation, CredentialAvailabilityObserver, CredentialObserveError,
+    observe_availability_with,
+};
 use crate::{
     Capabilities, Credential, CredentialGuard, CredentialId, CredentialKey,
     CredentialPersistenceError, StoredCredential, TenantScope,
@@ -289,6 +293,35 @@ impl CredentialSlotResolver for CredentialService {
             credential_id,
             expected_key,
             required_capabilities,
+            cancel,
+        ))
+    }
+
+    fn as_availability_observer(&self) -> Option<&dyn CredentialAvailabilityObserver> {
+        Some(self)
+    }
+}
+
+impl CredentialAvailabilityObserver for CredentialService {
+    fn observe_availability<'a>(
+        &'a self,
+        scope: &'a TenantScope,
+        credential_id: CredentialId,
+        expected_key: CredentialKey,
+        cancel: CancellationToken,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<CredentialAvailabilityObservation, CredentialObserveError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(observe_availability_with(
+            self.store.as_ref(),
+            &self.source,
+            scope,
+            credential_id,
+            expected_key,
             cancel,
         ))
     }

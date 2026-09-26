@@ -10,8 +10,14 @@ use crate::{
 };
 
 use crate::TenantScope;
+pub(crate) mod availability;
 pub(crate) mod slot;
 
+pub(crate) use availability::observe_availability_with;
+pub use availability::{
+    CredentialAvailability, CredentialAvailabilityObservation, CredentialAvailabilityObserver,
+    CredentialBlock, CredentialObserveError,
+};
 pub use slot::{
     CredentialGuardMetadata, CredentialSlotResolveError, CredentialSlotResolver,
     ErasedCredentialGuard, ErasedCredentialGuardTypeError,
@@ -114,6 +120,35 @@ impl CredentialSlotResolver for CredentialProjectionRuntime {
                 required_capabilities,
                 cancel,
             },
+        ))
+    }
+
+    fn as_availability_observer(&self) -> Option<&dyn CredentialAvailabilityObserver> {
+        Some(self)
+    }
+}
+
+impl CredentialAvailabilityObserver for CredentialProjectionRuntime {
+    fn observe_availability<'a>(
+        &'a self,
+        scope: &'a TenantScope,
+        credential_id: CredentialId,
+        expected_key: CredentialKey,
+        cancel: CancellationToken,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<CredentialAvailabilityObservation, CredentialObserveError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(observe_availability_with(
+            self.store.as_ref(),
+            &self.source,
+            scope,
+            credential_id,
+            expected_key,
+            cancel,
         ))
     }
 }

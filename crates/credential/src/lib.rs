@@ -270,10 +270,14 @@ pub use service::{
 };
 
 // Execution consumers receive projected guards through a read-only boundary.
+/// The durable operation named by [`CredentialSlotResolveError::OperationBlocked`]
+/// and [`CredentialBlock`]; re-exported so consumers need no storage-port edge.
+pub use nebula_storage_port::store::CredentialOperationKind;
 pub use runtime::projection::{
-    CredentialGuardMetadata, CredentialProjectionRuntime, CredentialProjectionRuntimeBuildError,
-    CredentialSlotResolveError, CredentialSlotResolver, ErasedCredentialGuard,
-    ErasedCredentialGuardTypeError,
+    CredentialAvailability, CredentialAvailabilityObservation, CredentialAvailabilityObserver,
+    CredentialBlock, CredentialGuardMetadata, CredentialObserveError, CredentialProjectionRuntime,
+    CredentialProjectionRuntimeBuildError, CredentialSlotResolveError, CredentialSlotResolver,
+    ErasedCredentialGuard, ErasedCredentialGuardTypeError,
 };
 pub use runtime::state_source::StateSource;
 pub use scope::{

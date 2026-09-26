@@ -722,3 +722,42 @@ async fn a_detached_limiter_ignores_manager_shutdown() {
         .expect("a detached limiter waits its pause out");
     assert!(started.elapsed() >= PAUSE);
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_credential_suspension_ends_a_limited_wait_as_credential_unavailable() {
+    let manager = Arc::new(Manager::new());
+    let waiter = parked_behind_a_pause(&manager, ParkedCall::Run).await;
+
+    let started = Instant::now();
+    let outcome = manager
+        .suspend_credential_row(
+            &CredentialedChat::key(),
+            &ScopeLevel::Global,
+            &SlotIdentity::Unbound,
+            "db",
+            nebula_resource::CredentialUnavailableReason::ReauthRequired,
+            None,
+        )
+        .expect("suspend");
+    assert_eq!(
+        outcome,
+        nebula_resource::CredentialSuspendOutcome::Suspended
+    );
+    match waiter.await.expect("waiter task") {
+        Err(LimitedError::Limit(error)) => assert!(
+            matches!(
+                error.kind(),
+                ErrorKind::CredentialUnavailable {
+                    reason: nebula_resource::CredentialUnavailableReason::ReauthRequired,
+                    ..
+                }
+            ),
+            "expected CredentialUnavailable, got {error:?}"
+        ),
+        other => panic!("expected a refused limit wait, got {other:?}"),
+    }
+    assert!(
+        started.elapsed() < PAUSE,
+        "the wait ended at the suspension, not at the end of the pause"
+    );
+}

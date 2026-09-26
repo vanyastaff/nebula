@@ -502,6 +502,17 @@ pub trait CredentialSlotResolver: Send + Sync {
                 + 'a,
         >,
     >;
+
+    /// The secret-free availability observer behind this resolver, when it
+    /// has one. Consumers that re-check a bound credential often observe
+    /// through it instead of re-projecting (decrypting) the material; a
+    /// resolver without one is re-checked through
+    /// [`resolve_slot`](Self::resolve_slot).
+    fn as_availability_observer(
+        &self,
+    ) -> Option<&dyn super::availability::CredentialAvailabilityObserver> {
+        None
+    }
 }
 
 #[cfg(test)]

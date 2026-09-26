@@ -424,8 +424,18 @@ async fn closing_g1_then_publishing_g2_closes_only_old_guards() {
             .admission
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        assert_eq!(row.admission.close_current(), Some(old.admission().seq()));
-        row.admission.publish().expect("publish G2");
+        assert_eq!(
+            row.admission
+                .suspend("db", crate::CredentialUnavailableReason::ReauthRequired),
+            crate::runtime::admission::SuspendTransition::Suspended {
+                closed_through: old.admission().seq()
+            }
+        );
+        let ticket = row.admission.gate_epoch();
+        assert!(matches!(
+            row.admission.reopen("db", ticket),
+            crate::runtime::admission::ReopenTransition::Reopened { .. }
+        ));
     }
     let new = acquire(&manager, &tenant).await;
     assert!(old.is_closing());
@@ -440,8 +450,10 @@ async fn an_old_guard_keeps_its_own_closed_token_after_a_successor() {
     register(&manager, &tenant, 1);
     let row = row(&manager, &tenant);
     let old = acquire(&manager, &tenant).await;
-    row.admission.close_current();
-    let successor = row.admission.publish().expect("publish G2");
+    row.admission
+        .suspend("db", crate::CredentialUnavailableReason::OperationBlocked);
+    row.admission.reopen("db", row.admission.gate_epoch());
+    let successor = row.admission.current().expect("reopen published G2");
     // Asking again after G2 exists must not hand the old lease G2's open
     // token: the capture is immutable.
     let closing = old.closing();

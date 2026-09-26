@@ -44,6 +44,26 @@ macro_rules! impl_fake_handle {
             fn publish_admission(&self) -> Option<u64> {
                 None
             }
+            fn credential_gate_epoch(&self) -> u64 {
+                0
+            }
+            fn suspend_credential(
+                &self,
+                _slot: &str,
+                _reason: crate::error::CredentialUnavailableReason,
+            ) -> crate::runtime::admission::SuspendTransition {
+                unreachable!("registry lookup fake never suspends credentials")
+            }
+            fn reopen_credential(
+                &self,
+                _slot: &str,
+                _ticket: u64,
+            ) -> crate::runtime::admission::ReopenTransition {
+                unreachable!("registry lookup fake never reopens credentials")
+            }
+            fn credential_suspension(&self) -> Option<crate::state::CredentialSuspension> {
+                None
+            }
             fn phase_changed(&self) -> &tokio::sync::Notify {
                 static NEVER: tokio::sync::Notify = tokio::sync::Notify::const_new();
                 &NEVER

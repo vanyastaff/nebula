@@ -295,6 +295,15 @@ display edit or retry-gate write sends `Preserve` and the reauthentication decis
 `Advance { Unchanged }`; neither carries bytes, so neither can restore stale material captured at
 load time, and the encryption layer re-seals only newly installed material.
 
+`CredentialAvailabilityObserver` is the availability-only half of that boundary: the same
+owner-qualified checks up to and including the operation-status classification (`classify_use`)
+and the head's reauthentication bit, from exactly one `get_operational_head` read and nothing
+after it — no material load, no decryption, no projection. A missing, cross-tenant or tombstoned
+credential is `Absent` (a consumer that must distinguish a tombstone projects the slot). Resource
+consumers compare the observed `(material_epoch, revision)` with the material they installed and
+project only when it advanced; a store outage is reported as `Unavailable` and decides nothing.
+Resolvers expose it through the defaulted `CredentialSlotResolver::as_availability_observer`.
+
 `CredentialProjectionRuntime::from_secure_parts` is the worker composition surface for that
 boundary. It accepts only an already-secured `CredentialPersistence`, `CredentialRegistry`,
 `DispatchOps`, and `StateSource`. Construction proves every registered key has a base projector and

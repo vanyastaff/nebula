@@ -878,7 +878,11 @@ where
         let sweep = self.maintenance_sweeps.fetch_add(1, Ordering::Relaxed) + 1;
         let cadence = self.resource.check_cost().probe_every_n_sweeps();
         let mut probe_evicted = 0;
-        if cadence != 0 && sweep.is_multiple_of(cadence) {
+        // A credential-suspended row keeps its idle entries for reuse on
+        // reopen but never probes them: a health check authenticates, and
+        // nothing may run on the row outside a current admission generation.
+        // Stale and lifetime eviction above still apply.
+        if cadence != 0 && sweep.is_multiple_of(cadence) && !self.admission.is_suspended() {
             let failed = self.probe_idle_entries().await;
             probe_evicted = failed.len();
             to_destroy.append(failed);

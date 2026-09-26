@@ -129,14 +129,34 @@ impl Manager {
 
     /// The error for an acquire whose row admits nothing in its current
     /// admission generation: `Revoked` when a credential revoke closed it,
-    /// otherwise `Cancelled` (the row was removed or the manager is closing).
-    /// Neither trips the recovery gate.
-    fn closed_admission_error<R: Provider>(managed: &ManagedResource<R>) -> Error {
+    /// `CredentialUnavailable` when a credential suspension closed the
+    /// `captured` generation, otherwise `Cancelled` (the row was removed or
+    /// the manager is closing). None trips the recovery gate.
+    fn closed_admission_error<R: Provider>(
+        managed: &ManagedResource<R>,
+        captured: Option<&crate::runtime::admission::AdmissionGeneration>,
+    ) -> Error {
         if managed.is_tainted() {
-            Self::tainted_error::<R>()
-        } else {
-            Error::cancelled().with_resource_key(R::key())
+            return Self::tainted_error::<R>();
         }
+        match captured.and_then(crate::runtime::admission::AdmissionGeneration::close_cause) {
+            Some(crate::runtime::admission::CloseCause::Credential(reason)) => {
+                Self::credential_unavailable_error(&R::key(), reason)
+            },
+            None => Error::cancelled().with_resource_key(R::key()),
+        }
+    }
+
+    /// The refusal of work on row `key` while a bound credential suspends it.
+    pub(crate) fn credential_unavailable_error(
+        key: &ResourceKey,
+        reason: crate::error::CredentialUnavailableReason,
+    ) -> Error {
+        Error::new(
+            crate::error::ErrorKind::CredentialUnavailable { reason },
+            format!("{key}: bound credential unavailable ({reason}) — new work refused"),
+        )
+        .with_resource_key(key.clone())
     }
 
     /// Acquires through the registry row's `ManagedHandle::acquire` method,
@@ -510,6 +530,15 @@ impl Manager {
             // taint (closes the revoke-vs-acquire TOCTOU) and `shutting_down`
             // (closes the symmetric shutdown-vs-acquire use-after-drain).
             self.reject_if_tainted_or_shutting_down_post_count::<R>(&managed)?;
+            // A bound credential denying use suspends the row: refuse before
+            // the phase check (a suspended row keeps its phase) and before
+            // the recovery gate (suspension is not backend ill health).
+            if let Some(suspension) = managed.admission.suspension() {
+                return Err(Self::credential_unavailable_error(
+                    &R::key(),
+                    suspension.reason(),
+                ));
+            }
             if !managed.phase().is_accepting() {
                 return Err(Error::backpressure(format!(
                     "{}: resource is {} and cannot accept acquires",
@@ -526,7 +555,7 @@ impl Manager {
             let admission = managed
                 .admission
                 .current()
-                .ok_or_else(|| Self::closed_admission_error::<R>(&managed))?;
+                .ok_or_else(|| Self::closed_admission_error::<R>(&managed, None))?;
             (in_flight, admission)
         };
         let gate_admission = admit_through_gate(&managed.recovery_gate)?;
@@ -564,7 +593,7 @@ impl Manager {
             // See the `manager` module docs, "Admission generations".
             Ok(guard) if admission.is_closed() => {
                 drop(guard.with_drain_tracker(in_flight.release_to_guard()));
-                let refused = Self::closed_admission_error::<R>(&managed);
+                let refused = Self::closed_admission_error::<R>(&managed, Some(&admission));
                 tracing::debug!(
                     resource.key = %R::key(),
                     admission = admission.seq(),
