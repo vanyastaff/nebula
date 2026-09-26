@@ -49,6 +49,11 @@ async-trait = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 insta = { workspace = true }
 pretty_assertions = { workspace = true }
+# `tests/public_api_snapshot.rs`: offline source walker behind the public-API
+# snapshots (parse, re-render signatures, walk token trees).
+proc-macro2 = { workspace = true }
+quote = { workspace = true }
+syn = { workspace = true, features = ["full", "printing"] }
 rstest = { workspace = true }
 tempfile = { workspace = true }
 

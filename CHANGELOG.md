@@ -665,6 +665,24 @@ let admitted = recorded.readmit_against(fresh)?;
 
 ### Added
 
+- **Resource rows report how their rate limit is enforced.**
+  `nebula_resource::RateLimitProfile` names it: `PausesOnly` (no rate),
+  `PerAcquire` (one permit per lease) or `InterimPerClosure` (a client wrapped
+  with `ResourceLimiter::wrap`: one permit per `Limited::run*` closure).
+  `ResourceLimiter::profile`, `ResourceHealthSnapshot::rate_limit_profile` and
+  `ManagedResourceView::rate_limit_profile()` report it in process; the profile
+  is observed, so a lazily created row reports its pre-wrap profile until the
+  first create. Only `InterimPerClosure` is interim: the `Limited` closure
+  family and `unlimited` are replaced by the managed call facade, and are
+  documented as interim surface. The resource README carries the profile
+  support matrix. `RateLimitProfile` is not re-exported through the SDK.
+
+- **SDK public-API snapshots.** `crates/sdk/tests/public_api_snapshot.rs`
+  records every public `nebula_sdk` path and the signatures of every resource
+  item the SDK re-exports, tagging interim surface, so surface changes show up
+  as a reviewed `.snap` diff (`task sdk:api:check`, `task sdk:api:bless`). It
+  is review visibility, not a SemVer freeze.
+
 - **Resource leases observe a closing notice.** Every acquire is admitted under
   its row's admission generation; `ResourceGuard::closing()` returns a
   `LeaseClosing` (`is_closing`, `closed`, `into_closed`; re-exported from

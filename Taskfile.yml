@@ -183,6 +183,18 @@ tasks:
       - cargo nextest run -p {{.CRATE}} --all-features
       - cargo test -p {{.CRATE}} --doc --all-features
 
+  sdk:api:check:
+    desc: Check the SDK public-API snapshots (review visibility, not a SemVer freeze)
+    cmds:
+      - cargo nextest run -p nebula-sdk --test public_api_snapshot
+
+  sdk:api:bless:
+    desc: Re-bless the SDK public-API snapshots after an intended surface change
+    env:
+      INSTA_UPDATE: always
+    cmds:
+      - cargo nextest run -p nebula-sdk --test public_api_snapshot
+
   hooks:test:
     desc: Run guard-hook test harness (bash)
     cmds:

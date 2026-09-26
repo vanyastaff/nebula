@@ -625,6 +625,48 @@ impl KeyedLimits {
     }
 }
 
+/// How a row's rate limit is enforced, as observed on its
+/// [`ResourceLimiter`].
+///
+/// The profile is observed, not declared: a row reports
+/// [`InterimPerClosure`](Self::InterimPerClosure) from the moment
+/// `Provider::create` wraps a client with [`ResourceLimiter::wrap`], and keeps
+/// it for the row's life. A row whose instance has not been created yet
+/// reports the profile it has before any wrap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum RateLimitProfile {
+    /// No rate: an acquire only waits out a provider's pause, kept in this
+    /// process. Nothing is paced.
+    PausesOnly,
+    /// Each acquire books one permit of the row's rate, so a lease is
+    /// budgeted as one provider call however many calls it makes.
+    PerAcquire,
+    /// A client was [`wrap`](ResourceLimiter::wrap)ped: every
+    /// [`Limited::run`] closure books one permit and acquires only honour
+    /// pauses. Interim: the managed call facade replaces the closure family.
+    InterimPerClosure,
+}
+
+impl RateLimitProfile {
+    /// Whether this profile is interim surface that a later release replaces.
+    #[must_use]
+    pub const fn is_interim(self) -> bool {
+        matches!(self, Self::InterimPerClosure)
+    }
+
+    /// Stable lowercase name for logs and status views: `pauses_only`,
+    /// `per_acquire` or `interim_per_closure`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::PausesOnly => "pauses_only",
+            Self::PerAcquire => "per_acquire",
+            Self::InterimPerClosure => "interim_per_closure",
+        }
+    }
+}
+
 /// Where a limiter reports: the row's resource key and the manager's bus.
 struct Reporter {
     resource_key: ResourceKey,
@@ -936,11 +978,34 @@ impl ResourceLimiter {
         self.quota.as_ref().map(|quota| quota.rate)
     }
 
+    /// How this limit is enforced right now; see [`RateLimitProfile`].
+    ///
+    /// Latches to [`RateLimitProfile::InterimPerClosure`] at the first
+    /// [`wrap`](Self::wrap) and never changes back.
+    #[must_use]
+    pub fn profile(&self) -> RateLimitProfile {
+        if self.per_call.load(Ordering::Acquire) {
+            RateLimitProfile::InterimPerClosure
+        } else if self.quota.is_some() {
+            RateLimitProfile::PerAcquire
+        } else {
+            RateLimitProfile::PausesOnly
+        }
+    }
+
     /// Wraps a client so every call through it runs under this limit, with
     /// `throttle` telling a provider's "slow down" apart from other outcomes.
     ///
     /// Build the wrapper once, in [`Provider::create`](crate::Provider::create),
     /// from [`ResourceContext::limits`](crate::ResourceContext::limits).
+    ///
+    /// # Interim
+    ///
+    /// Wrapping latches this row's [`profile`](Self::profile) to
+    /// [`RateLimitProfile::InterimPerClosure`] for the row's life: from then
+    /// on each [`Limited::run`] closure books one permit and acquires only
+    /// honour pauses. The closure family is interim surface; the managed call
+    /// facade replaces it.
     #[must_use]
     pub fn wrap<C, T>(self: &Arc<Self>, client: C, throttle: T) -> Limited<C, T> {
         // Calls through the client now book their own slots; an acquire must
@@ -1815,6 +1880,15 @@ where
 /// [`run`](Self::run); there is deliberately no `Deref` to the client, so a
 /// call cannot skip the limit by accident. [`unlimited`](Self::unlimited) is
 /// the explicit, reviewable way to do so.
+///
+/// # Interim
+///
+/// **Interim surface.** Each `run*` closure books one permit and counts as
+/// one provider call, whatever it does inside; the row reports
+/// [`RateLimitProfile::InterimPerClosure`]. The managed call facade replaces
+/// the closure family and [`unlimited`](Self::unlimited); until then they
+/// are supported, and the crate README's rate-limit profile table says what
+/// each profile budgets.
 pub struct Limited<C, T = NoThrottle> {
     client: C,
     throttle: T,
@@ -1878,6 +1952,8 @@ impl<C, T> Limited<C, T> {
     /// Runs one call under the limit, waiting for a permit never past
     /// `deadline`.
     ///
+    /// **Interim surface**, as [`run`](Self::run).
+    ///
     /// # Errors
     ///
     /// As [`run`](Self::run); a permit past `deadline` is
@@ -1906,6 +1982,8 @@ impl<C, T> Limited<C, T> {
     /// limit, waiting for both as long as needed. A
     /// [`Verdict::KeyThrottled`] pauses only this key.
     ///
+    /// **Interim surface**, as [`run`](Self::run).
+    ///
     /// # Errors
     ///
     /// As [`run`](Self::run); a permanent [`LimitedError::Limit`] when the
@@ -1923,6 +2001,8 @@ impl<C, T> Limited<C, T> {
     }
 
     /// As [`run_for`](Self::run_for), never waiting past `deadline`.
+    ///
+    /// **Interim surface**, as [`run`](Self::run).
     ///
     /// # Errors
     ///

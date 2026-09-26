@@ -36,6 +36,7 @@
 | Change | Relevant evidence |
 |--------|-------------------|
 | Curated exports and hidden namespaces | [public_perimeter_external_contract](tests/public_perimeter_external_contract.rs), [test_result_external_contract](tests/test_result_external_contract.rs); retain negative probes for forbidden imports. |
+| Any public path or re-exported resource signature | [public_api_snapshot](tests/public_api_snapshot.rs): review the `.snap` diff, then `task sdk:api:bless`. It is review visibility, not a SemVer freeze; the walker's limits (macro-generated items, blanket/foreign impls) are in `tests/public_api/mod.rs`. |
 | Generated paths | [derive_external_contract](tests/derive_external_contract.rs) compiles and runs both SDK-only and renamed-leaf fixtures, including named resource field schemas and unit/null contracts; [simple_action_macro](tests/simple_action_macro.rs) covers the declarative helper. |
 
 ## See also
