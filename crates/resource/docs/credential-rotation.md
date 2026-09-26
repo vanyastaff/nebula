@@ -325,8 +325,11 @@ The strict read of one acquire:
    timed-out leader hands the lane to a waiter. A burst of acquires during
    one read costs one more read. There is no freshness window.
 3. Each read is bounded by the caller's deadline and 2 s. A refresh crossing
-   the provider boundary is joined — re-read after 25 ms, doubling to 400 ms,
-   until the credential crate's 5 s join wait or the deadline.
+   the provider boundary is joined — re-read after a pause bounded by 25 ms,
+   doubling to 400 ms, until the credential crate's 5 s join wait or the
+   deadline. Each pause is jittered over the upper half of its bound, so
+   acquires across the fleet that met the same refresh do not re-read in
+   lockstep.
 4. Under `Manager.admission`, after the post-count taint/shutdown re-check,
    the installed material is re-read and each slot decided:
 

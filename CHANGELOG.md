@@ -672,7 +672,8 @@ let admitted = recorded.readmit_against(fresh)?;
   first, outside every lock, through join-next coalescing (a caller only
   takes a read issued after it arrived; one read per credential lane in
   flight), bounded by the caller's deadline and 2 s; a refresh in flight is
-  joined for the credential crate's bounded wait. Under `Manager.admission`
+  joined for the credential crate's bounded wait, with re-read pauses
+  jittered below their bounds. Under `Manager.admission`
   the acquire then reopens or readmits a slot read usable, suspends a slot
   read blocked, and refuses on any denial. `CredentialUnavailableReason`
   gains `RefreshInFlight`, `Rebinding`, `CheckUnavailable` and `Absent`

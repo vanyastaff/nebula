@@ -266,6 +266,9 @@ pub(crate) struct CredentialReads {
     /// The manager's cancellation: shutdown ends every read.
     cancel: CancellationToken,
     metrics: Option<CredentialAdmissionMetrics>,
+    /// Tests: refresh-join pauses at their upper bound, for exact timing.
+    #[cfg(test)]
+    fixed_join_pauses: std::sync::atomic::AtomicBool,
 }
 
 impl std::fmt::Debug for CredentialReads {
@@ -295,11 +298,36 @@ impl CredentialReads {
             lanes: Mutex::new(HashMap::new()),
             cancel,
             metrics,
+            #[cfg(test)]
+            fixed_join_pauses: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
     pub(crate) fn metrics(&self) -> Option<&CredentialAdmissionMetrics> {
         self.metrics.as_ref()
+    }
+
+    /// Whether the pauses of a refresh join are jittered: always, except in
+    /// a test that fixed them with [`fix_join_pauses`](Self::fix_join_pauses).
+    pub(crate) fn jitters_join_pauses(&self) -> bool {
+        #[cfg(test)]
+        {
+            !self
+                .fixed_join_pauses
+                .load(std::sync::atomic::Ordering::Relaxed)
+        }
+        #[cfg(not(test))]
+        {
+            true
+        }
+    }
+
+    /// Tests: pause each refresh-join step for its full upper bound, so
+    /// re-read counts and elapsed times are exact.
+    #[cfg(test)]
+    pub(crate) fn fix_join_pauses(&self) {
+        self.fixed_join_pauses
+            .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     fn lanes(&self) -> MutexGuard<'_, HashMap<CredentialId, Vec<Arc<Lane>>>> {

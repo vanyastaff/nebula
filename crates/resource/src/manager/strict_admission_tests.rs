@@ -622,9 +622,31 @@ async fn the_topology_hooks_get_only_the_budget_the_read_left() {
     resource.probe.release_create.notify_one();
 }
 
+/// Pauses every refresh-join step for its full bound, so counts and elapsed
+/// times are exact.
+fn fix_join_pauses(manager: &Manager) {
+    manager
+        .credential_reads
+        .as_deref()
+        .expect("strict manager")
+        .fix_join_pauses();
+}
+
+#[test]
+fn a_join_pause_is_jittered_over_the_upper_half_of_its_step() {
+    let pause = Duration::from_millis(400);
+    assert_eq!(super::jittered(pause, 0.0), Duration::from_millis(200));
+    assert_eq!(super::jittered(pause, 1.0), pause);
+    assert_eq!(super::jittered(pause, 0.5), Duration::from_millis(300));
+    // Out-of-range draws stay within the step.
+    assert_eq!(super::jittered(pause, 7.0), pause);
+    assert_eq!(super::jittered(pause, -1.0), Duration::from_millis(200));
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_refresh_in_flight_is_joined_for_a_bounded_wait() {
     let (observer, manager, _resource) = setup(refreshing(1));
+    fix_join_pauses(&manager);
     let started = tokio::time::Instant::now();
     assert_eq!(
         refused::<StrictResident>(&manager).await,
@@ -639,9 +661,34 @@ async fn a_refresh_in_flight_is_joined_for_a_bounded_wait() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn jittered_join_pauses_keep_the_schedule_bounds_and_the_join_deadline() {
+    for _ in 0..16 {
+        let (observer, manager, _resource) = setup(refreshing(1));
+        let started = tokio::time::Instant::now();
+        assert_eq!(
+            refused::<StrictResident>(&manager).await,
+            Some(CredentialUnavailableReason::RefreshInFlight)
+        );
+        // Every pause is at most its fixed bound and at least half of it:
+        // at least the fixed schedule's 16 reads, at most those of a
+        // schedule of half pauses (12.5, 25, 50, 100, then 200 ms: 1 + 4 + 24).
+        let calls = observer.calls();
+        assert!((16..=29).contains(&calls), "{calls} reads");
+        assert!(started.elapsed() <= REFRESH_JOIN_WAIT);
+        // The last re-read was issued with less than one full pause left.
+        assert!(
+            started.elapsed() + Duration::from_millis(400) > REFRESH_JOIN_WAIT,
+            "the join gave up early: {:?}",
+            started.elapsed()
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_stalled_re_read_never_outlives_the_refresh_join() {
     let observer = ScriptedObserver::gated(refreshing(1));
     let manager = strict_manager(erased(&observer), &Arc::default());
+    fix_join_pauses(&manager);
     let resource = resident(&manager);
     bind(&resource.db, credential_id(), 1, 1);
     // Fifteen reads answer "refresh in flight"; the last re-read, issued at

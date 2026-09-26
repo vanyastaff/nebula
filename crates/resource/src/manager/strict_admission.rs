@@ -15,7 +15,9 @@
 //!    [`CredentialReads`], each bounded by the
 //!    caller's deadline and [`CREDENTIAL_READ_TIMEOUT`]. A refresh in flight
 //!    is joined for a bounded wait (the credential crate's
-//!    `REFRESH_JOIN_*` bounds).
+//!    `REFRESH_JOIN_*` bounds), each pause jittered over the upper half of
+//!    its step so a fleet that met the same refresh does not re-read in
+//!    lockstep.
 //! 2. **Decide and apply, under `Manager.admission`**
 //!    ([`Manager::apply_strict_reading_under_admission`]): re-snapshot the
 //!    installed material, decide per slot ([`decide`], pure), then apply the
@@ -311,7 +313,16 @@ impl<R: Provider> ManagedResource<R> {
     }
 }
 
-/// Reads one slot, joining a refresh in flight for a bounded wait.
+/// A refresh-join pause drawn uniformly from `[pause / 2, pause]` by `unit`
+/// in `[0, 1]` ("equal jitter"): never longer than the schedule's bound.
+pub(crate) fn jittered(pause: Duration, unit: f64) -> Duration {
+    let half = pause / 2;
+    half + pause.saturating_sub(half).mul_f64(unit.clamp(0.0, 1.0))
+}
+
+/// Reads one slot, joining a refresh in flight for a bounded wait. The
+/// pauses between re-reads double from `REFRESH_JOIN_FIRST_PAUSE` to
+/// `REFRESH_JOIN_MAX_PAUSE`, each jittered below its bound.
 async fn read_slot(
     reads: &CredentialReads,
     target: &CredentialTarget,
@@ -340,13 +351,20 @@ async fn read_slot(
         let result: ReadResult = reads
             .read_after_arrival(&target.scope, target.credential_id, &target.key, bound)
             .await;
+        // Jittered below its bound: acquires that met the same refresh do not
+        // re-read it in lockstep across the fleet.
+        let wait = if reads.jitters_join_pauses() {
+            jittered(pause, fastrand::f64())
+        } else {
+            pause
+        };
         match result {
             Ok(observation)
                 if observation.availability() == CredentialAvailability::RefreshInFlight
-                    && tokio::time::Instant::now() + pause <= join_deadline =>
+                    && tokio::time::Instant::now() + wait <= join_deadline =>
             {
                 joined = Some(observation);
-                tokio::time::sleep(pause).await;
+                tokio::time::sleep(wait).await;
                 pause = (pause * 2).min(REFRESH_JOIN_MAX_PAUSE);
             },
             Ok(observation) => return SlotOutcome::Observed(observation),
