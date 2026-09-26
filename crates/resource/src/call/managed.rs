@@ -29,6 +29,7 @@ use super::{
     cost::{Cost, SentState},
     error::OpError,
     pin::PinSlots,
+    strict::{UnitPin, capture_pin},
 };
 use crate::{
     error::{Error, ErrorKind},
@@ -509,8 +510,9 @@ where
     }
 }
 
-/// The runtime's side of a unit: pins the slots, runs the operation under
-/// the deadline, and settles the outcome whether or not anyone waits.
+/// The runtime's side of a unit: runs the operation under the deadline and
+/// settles the outcome whether or not anyone waits. The slots are pinned at
+/// the unit's first grant, not here.
 async fn run_unit<R, O>(
     lease: Arc<ManagedLease<R>>,
     shared: Arc<UnitShared>,
@@ -523,12 +525,11 @@ where
     R: Provider + PinSlots,
     O: Operation<R>,
 {
-    let pinned = lease.managed.resource.pin_slots();
     let max_attempts = operation.max_attempts();
     let outcome = {
         let mut cx = OpCx {
             lease: &lease,
-            pinned: &pinned,
+            pin: None,
             shared: &shared,
             deadline,
             max_attempts,
@@ -562,7 +563,8 @@ where
 /// provider — [`attempt`](Self::attempt).
 pub struct OpCx<'u, R: Provider + PinSlots> {
     lease: &'u ManagedLease<R>,
-    pinned: &'u R::Pinned,
+    /// The unit's slots, pinned at its first grant.
+    pin: Option<UnitPin<R::Pinned>>,
     shared: &'u UnitShared,
     deadline: tokio::time::Instant,
     max_attempts: NonZeroU32,
@@ -614,19 +616,49 @@ impl<R: Provider + PinSlots> OpCx<'_, R> {
     /// Dropping the future before it resolves forfeits any booked slot and
     /// grants nothing.
     pub async fn attempt(&mut self, cost: Cost) -> Result<Attempt<'_, R>, OpError> {
+        let (lease, shared) = (self.lease, self.shared);
         let admitted = self.admit(&cost).await;
-        self.lease.record_attempt(admitted.is_ok());
-        admitted?;
+        lease.record_attempt(admitted.is_ok());
+        let pin = admitted?;
         Ok(Attempt {
-            lease: self.lease,
-            pinned: self.pinned,
-            shared: self.shared,
+            lease,
+            pinned: pin.pinned(),
+            shared,
             cost,
             settled: false,
         })
     }
 
-    async fn admit(&self, cost: &Cost) -> Result<(), OpError> {
+    /// Steps 1–5 of [`attempt`](Self::attempt); on a grant, the unit's pin
+    /// (captured now for its first grant).
+    async fn admit(&mut self, cost: &Cost) -> Result<&UnitPin<R::Pinned>, OpError> {
+        self.admit_local(cost).await?;
+        // The first grant pins the slots; a refused first attempt keeps no
+        // pin, so the next attempt pins afresh.
+        let (pin, fresh) = match self.pin.take() {
+            Some(pin) => (pin, false),
+            None => (capture_pin(&self.lease.managed), true),
+        };
+        // The seam for the strict per-attempt credential read: today the
+        // lease's local admission only.
+        let granted = self
+            .lease
+            .admission_refusal()
+            .and_then(|()| self.shared.grant());
+        match granted {
+            Ok(()) => Ok(&*self.pin.insert(pin)),
+            Err(refusal) => {
+                if !fresh {
+                    self.pin = Some(pin);
+                }
+                Err(refusal)
+            },
+        }
+    }
+
+    /// Budget, lease admission and the quota booking: every step before the
+    /// unit's slots are pinned.
+    async fn admit_local(&self, cost: &Cost) -> Result<(), OpError> {
         if self.shared.attempts() >= self.max_attempts.get() {
             return Err(OpError::new(
                 ErrorKind::Permanent,
@@ -656,10 +688,7 @@ impl<R: Provider + PinSlots> OpCx<'_, R> {
                 return Err(quota_refusal(&error));
             }
         }
-        // The seam for the strict per-attempt credential read: today the
-        // lease's local admission only.
-        self.lease.admission_refusal()?;
-        self.shared.grant()
+        Ok(())
     }
 
     /// The unit's deadline: the operation is stopped at it, and no quota wait
@@ -727,7 +756,7 @@ impl<R: Provider + PinSlots> Attempt<'_, R> {
         &self.lease.guard
     }
 
-    /// The credential slots pinned when the unit started; the same for
+    /// The credential slots pinned at the unit's first grant; the same for
     /// every attempt of the unit.
     #[must_use]
     pub fn slots(&self) -> &R::Pinned {

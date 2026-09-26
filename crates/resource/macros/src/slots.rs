@@ -295,9 +295,9 @@ fn emit_pin_slots(
     let fields: Vec<&syn::Ident> = slots.iter().map(|slot| &slot.field_ident).collect();
     let struct_doc = format!(
         "The credential slots of [`{struct_name}`] pinned for one managed call unit.\n\n\
-         Loaded once when the unit starts; every attempt of the unit reads the same \
-         guards, and a rotation reaches the next unit. `None` for a slot that was \
-         unbound when the unit started. Emitted by `#[derive(Resource)]`."
+         Loaded once, at the unit's first grant; every attempt of the unit reads the \
+         same guards, and a rotation reaches the next unit. `None` for a slot that was \
+         unbound at that grant. Emitted by `#[derive(Resource)]`."
     );
     let accessor_docs: Vec<String> = slots
         .iter()

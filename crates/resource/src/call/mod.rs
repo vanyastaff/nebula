@@ -122,6 +122,7 @@ mod cost;
 mod error;
 mod managed;
 mod pin;
+mod strict;
 
 use std::{future::Future, num::NonZeroU32};
 

@@ -513,12 +513,14 @@ let id = managed.submit(Send { chat, text }).await?;
   `Revoked` (taint), all `NotSent`; a quota wait ends early too. A granted
   attempt is not aborted: select on `OpCx::closing()` to stop at a safe point.
   Refresh and reload leave the generation open.
-- **Credentials.** `PinSlots::pin_slots` runs once per unit; every attempt
-  reads that snapshot through `Attempt::slots()`, the only way the facade
-  discloses material. A rotation reaches the next unit; slots are pinned one
-  by one, without cross-slot atomicity. Until the strict per-attempt
-  credential read lands, an attempt's final admission re-checks local
-  admission only, not a fresh credential read.
+- **Credentials.** `PinSlots::pin_slots` runs once per unit, at its first
+  grant (so the first attempt runs on the binding its final admission
+  validated); every attempt reads that snapshot through `Attempt::slots()`,
+  the only way the facade discloses material. A rotation reaches the next
+  unit. Slots are pinned one by one; the pin is bracketed by the slots'
+  generations and retaken when a rotation raced it. Until the strict
+  per-attempt credential read lands, an attempt's final admission re-checks
+  local admission only, not a fresh credential read.
 - **Observability.** A `nebula.resource.unit` span per unit (key, operation,
   attempts, sent, outcome); `ResourceOpsSnapshot::call_attempts`
   (granted / refused by the facade, not a driver's own retries) and
