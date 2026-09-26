@@ -1,9 +1,10 @@
 //! Strict per-acquire credential admission.
 //!
 //! On a manager configured with a credential availability observer, every
-//! new unit of work on a credential-bound row — an acquire, an explicit pool
-//! warmup, a background create — first reads the availability of each bound
-//! credential (Design CONTRACT: every new credentialed unit reads
+//! new unit of work on a credential-bound row — an acquire, each create of an
+//! explicit pool warmup, each background create — first reads the
+//! availability of each bound credential (Design CONTRACT: every new
+//! credentialed unit reads
 //! availability first; no cached admission; an outage denies). The protocol
 //! is two-phase so no lock is held across the read:
 //!
@@ -276,12 +277,17 @@ impl<R: Provider> ManagedResource<R> {
     }
 
     /// Whether a background create (the registration warmup, the
-    /// maintenance refill) may build instances now: one strict read per
-    /// pass, admitting only when every bound slot is usable at the installed
-    /// material. It changes no gate state — a blocked or unreadable
-    /// credential just builds nothing; the next acquire's read applies what
-    /// it sees. Always `true` for a row that is not strict.
+    /// maintenance refill) may build one instance now: one strict read per
+    /// create, issued immediately before it, admitting only when every bound
+    /// slot is usable at the installed material. It changes no gate state —
+    /// a blocked or unreadable credential just builds nothing; the next
+    /// acquire's read applies what it sees. A row that accepts no new
+    /// instances (tainted, suspended, not ready) reads nothing and refuses.
+    /// Always `true` for an accepting row that is not strict.
     pub(crate) async fn credentials_admit_creation(&self) -> bool {
+        if !self.accepts_new_instances() {
+            return false;
+        }
         let Some(reading) = self.read_credentials_strict(None).await else {
             return true;
         };

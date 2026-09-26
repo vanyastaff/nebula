@@ -680,7 +680,7 @@ pub const NEBULA_RESOURCE_CREDENTIAL_ADMISSION_READ_DURATION_SECONDS: &str =
 /// Counter: new units of work a strict credential read refused.
 ///
 /// Labeled by `reason` (see [`credential_admission_denied_reason`]); one
-/// increment per refused acquire or create pass, whatever the number of
+/// increment per refused acquire or create, whatever the number of
 /// slots that denied.
 pub const NEBULA_RESOURCE_CREDENTIAL_ADMISSION_DENIED_TOTAL: &str =
     "nebula_resource_credential_admission_denied_total";

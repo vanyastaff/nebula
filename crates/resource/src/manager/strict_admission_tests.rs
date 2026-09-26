@@ -790,13 +790,7 @@ async fn a_pooled_row_reads_before_checkout_and_keeps_its_idle_entry_when_refuse
 async fn an_explicit_warmup_reads_first_and_creates_nothing_when_refused() {
     let observer = ScriptedObserver::answering(reauth(1, 2));
     let manager = strict_manager(erased(&observer), &Arc::default());
-    let resource = register(
-        &manager,
-        StrictPooled::new(),
-        Pooled::new(pool_config(), config(1).fingerprint()),
-    )
-    .expect("register");
-    bind(&resource.db, credential_id(), 1, 1);
+    let resource = sequential_pool(&manager);
 
     let error = manager
         .warmup_pool::<StrictPooled>(&context())
@@ -804,15 +798,48 @@ async fn an_explicit_warmup_reads_first_and_creates_nothing_when_refused() {
         .refused();
     assert_eq!(reason(&error), Some(REAUTH));
     assert_eq!(resource.probe.creates(), 0);
+    assert_eq!(observer.calls(), 1);
+    assert_eq!(suspended_for::<StrictPooled>(&manager), Some(REAUTH));
 
-    // Usable again (reauthenticated): the warmup's read reopens the row and
-    // the warmup proceeds under the pool's strategy (none here).
+    // Usable again (reauthenticated): the first create's read reopens the
+    // row, and each create reads before it builds.
     observer.answer(available(1, 3));
-    manager
-        .warmup_pool::<StrictPooled>(&context())
-        .await
-        .expect("admitted");
+    assert_eq!(
+        manager
+            .warmup_pool::<StrictPooled>(&context())
+            .await
+            .expect("admitted"),
+        2
+    );
     assert_eq!(suspended_for::<StrictPooled>(&manager), None);
+    assert_eq!(resource.probe.creates(), 2);
+    assert_eq!(observer.calls(), 3, "one read per create");
+}
+
+#[tokio::test]
+async fn an_explicit_warmup_reads_before_each_create_and_stops_at_a_block() {
+    let observer = ScriptedObserver::gated(available(1, 1));
+    let manager = strict_manager(erased(&observer), &Arc::default());
+    let resource = sequential_pool(&manager);
+    // The first create's read sees the credential usable; a reauthentication
+    // requirement commits before the second create's read.
+    observer.then([available(1, 1), reauth(1, 2)]);
+    observer.release(2);
+
+    assert_eq!(
+        manager
+            .warmup_pool::<StrictPooled>(&context())
+            .await
+            .expect("the first create was admitted"),
+        1
+    );
+    assert_eq!(resource.probe.creates(), 1, "exactly one create");
+    assert_eq!(observer.calls(), 2, "one read per create attempted");
+    assert_eq!(
+        suspended_for::<StrictPooled>(&manager),
+        Some(REAUTH),
+        "the explicit warmup applies what its read saw"
+    );
 }
 
 #[tokio::test]
@@ -903,7 +930,7 @@ async fn a_burst_of_acquires_shares_reads() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn the_refill_reads_once_and_builds_nothing_while_a_credential_refuses() {
+async fn the_refill_reads_before_each_create_and_builds_nothing_while_a_credential_refuses() {
     for refusal in [
         reauth(1, 2),
         revoking(1),
@@ -923,34 +950,63 @@ async fn the_refill_reads_once_and_builds_nothing_while_a_credential_refuses() {
 
         assert_eq!(row.refill_min_idle(&context()).await, 0);
         assert_eq!(resource.probe.creates(), 0);
-        assert_eq!(observer.calls(), 1, "one read for the pass");
+        assert_eq!(observer.calls(), 1, "the first create's read refused");
         assert_eq!(
             suspended_for::<StrictPooled>(&manager),
             None,
-            "a background pass changes no gate state"
+            "a background create changes no gate state"
         );
         assert_eq!(gate_epoch::<StrictPooled>(&manager), epoch);
 
         observer.answer(available(1, 1));
         assert_eq!(row.refill_min_idle(&context()).await, 2);
         assert_eq!(resource.probe.creates(), 2);
-        assert_eq!(observer.calls(), 2);
+        assert_eq!(observer.calls(), 3, "one read per create");
     }
 }
 
-/// A pool warmed at registration, bound before it registers (the slot cell
-/// is shared with the registered value).
-fn warmed_pool(manager: &Manager) -> StrictPooled {
+#[tokio::test]
+async fn the_refill_stops_at_a_block_committed_between_its_creates() {
+    let observer = ScriptedObserver::gated(available(1, 1));
+    let manager = strict_manager(erased(&observer), &Arc::default());
+    let resource = register(
+        &manager,
+        StrictPooled::new(),
+        Pooled::new(pool_config(), config(1).fingerprint()),
+    )
+    .expect("register");
+    bind(&resource.db, credential_id(), 1, 1);
+    let row = row::<StrictPooled>(&manager);
+    let epoch = gate_epoch::<StrictPooled>(&manager);
+    // The block commits after the first create's read.
+    observer.then([available(1, 1), revoking(1)]);
+    observer.release(2);
+
+    assert_eq!(row.refill_min_idle(&context()).await, 1);
+    assert_eq!(resource.probe.creates(), 1, "exactly one create");
+    assert_eq!(observer.calls(), 2, "one read per create attempted");
+    assert_eq!(suspended_for::<StrictPooled>(&manager), None);
+    assert_eq!(gate_epoch::<StrictPooled>(&manager), epoch);
+}
+
+/// A pool with a sequential warmup of two, bound before it registers (the
+/// slot cell is shared with the registered value).
+fn sequential_pool(manager: &Manager) -> StrictPooled {
     let resource = StrictPooled::new();
     bind(&resource.db, credential_id(), 1, 1);
     let mut warmed = pool_config();
     warmed.warmup = crate::topology::pooled::config::WarmupStrategy::Sequential;
-    let resource = register(
+    register(
         manager,
         resource,
         Pooled::new(warmed, config(1).fingerprint()),
     )
-    .expect("register");
+    .expect("register")
+}
+
+/// A pool warmed at registration.
+fn warmed_pool(manager: &Manager) -> StrictPooled {
+    let resource = sequential_pool(manager);
     // As activation does after registering a stored row.
     manager.spawn_warmup(
         &row::<StrictPooled>(manager),
@@ -984,10 +1040,31 @@ async fn the_registration_warmup_builds_once_the_credential_is_usable() {
     let observer = ScriptedObserver::gated(available(1, 1));
     let manager = strict_manager(erased(&observer), &Arc::default());
     let resource = warmed_pool(&manager);
-    observer.until_calls(1).await;
-    observer.release(1);
+    for read in 1..=2 {
+        observer.until_calls(read).await;
+        observer.release(1);
+    }
     until_warmup_settled(&manager).await;
 
     assert_eq!(resource.probe.creates(), 2);
-    assert_eq!(observer.calls(), 1);
+    assert_eq!(observer.calls(), 2, "one read per create");
+}
+
+#[tokio::test]
+async fn the_registration_warmup_reads_before_each_create_and_stops_at_a_block() {
+    let observer = ScriptedObserver::gated(available(1, 1));
+    observer.then([available(1, 1), reauth(1, 2)]);
+    observer.release(2);
+    let manager = strict_manager(erased(&observer), &Arc::default());
+    let resource = warmed_pool(&manager);
+    observer.until_calls(2).await;
+    until_warmup_settled(&manager).await;
+
+    assert_eq!(resource.probe.creates(), 1, "exactly one create");
+    assert_eq!(observer.calls(), 2, "one read per create attempted");
+    assert_eq!(
+        suspended_for::<StrictPooled>(&manager),
+        None,
+        "a background create changes no gate state"
+    );
 }

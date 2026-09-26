@@ -310,7 +310,7 @@ admission; an outage denies). Each row reports its profile
 | Profile | When | New work on a bound row |
 |---|---|---|
 | `Unbound` | the resource declares no credential slots | nothing is read |
-| `StrictPerAcquire` | the manager has an observer | each acquire, `warmup_pool` and background create pass reads availability first |
+| `StrictPerAcquire` | the manager has an observer | each acquire and each create (of `warmup_pool`, the registration warmup or the maintenance refill) reads availability first |
 | `InterimRowGate` (interim) | no observer | admitted until activation, the fan-out or a caller suspends the row; one warning per manager |
 
 The strict read of one acquire:
@@ -346,10 +346,13 @@ The strict read of one acquire:
 Every blocked slot is suspended; the reported reason is the highest of
 `Absent` > `ReauthRequired` > `OperationBlocked` > `Rebinding` >
 `RefreshInFlight` > `CheckUnavailable`. No refusal takes a recovery-gate
-ticket. Background creates (the maintenance refill, the registration
-warmup) read once per pass and build nothing unless every slot is usable;
-they change no gate state. A strict manager refuses to register a row whose
-declared slot lacks the projection port.
+ticket. Every create is a unit of its own: `warmup_pool`, the registration
+warmup and the maintenance refill read immediately before each create and
+stop at the first refusal, so a block committed between two creates stops
+the second. `warmup_pool` applies what each read sees like an acquire;
+background creates (the maintenance refill, the registration warmup) change
+no gate state. A strict manager refuses to register a row whose declared
+slot lacks the projection port.
 
 **Availability coupling.** Credentialed egress is no more available than the
 credential store: while the store or source cannot answer, new credentialed
