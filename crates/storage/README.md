@@ -138,6 +138,21 @@ gate, and backend clock in one statement/snapshot so rechecks cannot combine
 observations from different aggregate versions. The gate and epoch never enter
 user metadata.
 
+Since the material reshape, `Advance` carries a `MaterialUpdate`: only
+`Replace(CredentialMaterial)` writes the material columns (`data`,
+`state_kind`, `state_version`, `expires_at`); `Advance { Unchanged }` and
+`Preserve` leave them byte-identical, and `EncryptionLayer` seals only new
+material, so lazy key rotation happens on material writes alone.
+
+Paired migration `0061_credential_admission_epoch.sql` adds the credential
+admission epoch (the use revision), backfilled to 1 without guessing history.
+Creates write 1. It advances in the same transaction as every write that
+closes use — replacement under `Advance` or with a `reauth_required` change,
+a won revoke claim, `mark_sentinel`, and threshold escalation — and never
+moves `version` or `updated_at`. Every status projection reports it in
+`CredentialOperationStatus::Open`; overflow fails closed. PostgreSQL drops the
+backfill default so an old writer's insert fails; SQLite keeps it.
+
 Paired migration `0041_port_plan_flavor_revision_catalog.sql` adds dormant
 SQLite/PostgreSQL tables for immutable worker-flavor and executable-plan
 records plus exact per-execution revision references. The database enforces
@@ -172,7 +187,9 @@ Credential coordination — durable refresh claim (П2 / ADR-0041):
 - `RefreshClaimReclaimer` is the separate aggregate-writing role. Its `reclaim_stuck` operation
   deletes expired Normal rows. For an expired in-flight row, one transaction records the incident,
   evaluates the configured N-in-window threshold, and, on escalation, advances the live
-  credential revision and material epoch, clears its retry gate, and sets `reauth_required`.
+  credential revision, material epoch, and admission epoch, clears its retry gate, and sets
+  `reauth_required`. A won revoke claim and `mark_sentinel` also advance the admission epoch
+  in their own transaction.
   The poisoned claim remains until owner-qualified adjudication. Repeated requests and sweeps
   against one claim count once; N is an escalation threshold, never a provider retry budget.
   Incident time and the rolling-window decision use the
@@ -438,6 +455,7 @@ model — they keep live consumers (the API idempotency middleware, the
 | stateful checkpoints | **Best-effort** | Write failure logs, does not abort; may replay |
 | lease holder / expiry + `fencing_generation` | **Durable + enforced** (ADR-0072) | `acquire_lease` → `FencingToken`; a superseded holder is rejected even on a matching CAS version. Verified by `crates/engine/tests/lease_takeover.rs`, the loom probe at `crates/storage-loom-probe/src/lease_handoff.rs`, and the conformance lease cases |
 | local idempotency dedup | **Durable** | First-writer-wins via the port `IdempotencyGuard` / `IdempotencyStore`; sweep drives `evict_expired`. This is not a remote-effect ledger or atomicity guarantee. Verified by the conformance matrix + `crates/storage/tests/pg_idempotency.rs` (`DATABASE_URL`-gated) |
+| credential admission epoch (use revision) | **Durable + transactional** on SQLite/PostgreSQL; **replacement-only** in the in-memory pairing | Advanced with every closing write in one transaction (replace, won revoke claim, sentinel, escalation). The in-memory claim repository is a separate object and cannot advance it on claim transitions, so invariant I-A holds only on the SQL backends. Verified by the credential semantic oracle and the claim-side cases in `refresh_claim_conformance_{sqlite,postgres}` |
 | In-process `mpsc` / channels | **Ephemeral** | Never authoritative |
 
 ### Supported backends

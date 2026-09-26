@@ -11,6 +11,36 @@ changes are expected between minor releases — call them out here.
 
 ### Breaking
 
+- **The credential admission epoch advances development packages to 0.21.0 in
+  lockstep.** `CredentialOperationStatus::Open` carries `admission_epoch`, the
+  contract's use revision: a use admitted at one epoch must not continue at
+  another. The backend advances it in the same transaction as every write that
+  closes use — every advancing replacement, any change of `reauth_required`, a
+  won revoke claim, a provider-egress sentinel (now transactional), and
+  threshold escalation — and never moves the row version or `updated_at` for
+  it. Display and retry-gate writes leave it. Exhaustion fails closed as
+  `CredentialPersistenceError::AdmissionEpochExhausted` or
+  `RefreshClaimError::AdmissionEpochExhausted`. Slot guard metadata reports the
+  epoch read with the material (`CredentialGuardMetadata::admission_epoch`).
+
+  `CredentialReplacement` no longer carries material bytes, state kind, state
+  version, or expiry: `CredentialReplacement::new(expected_version, name,
+  reauth_required, metadata, material_transition)`, and new material travels
+  only in `CredentialMaterialTransition::Advance { material:
+  MaterialUpdate::Replace(CredentialMaterial) }`. `Preserve` and
+  `Advance { Unchanged }` leave the stored material byte-identical, so the
+  encryption layer re-seals (and lazily rotates keys) only on real material
+  writes. Update external `CredentialPersistence` implementations and
+  exact-version pins together.
+
+  Migration 0061 adds `credentials.admission_epoch` with 1 on every existing
+  row; history is not guessed, so no binding made before the cutover matches
+  a later observation. Stop old credential writers before applying migration
+  0061 and restart with the new runtime: old writers do not advance the
+  epoch, and on PostgreSQL their inserts fail because the backfill default is
+  dropped. SQLite skips the PostgreSQL-only 0060. The in-memory claim
+  repository cannot advance the epoch on claim transitions; only the SQL
+  backends provide the full invariant.
 - **Typed credential operation recovery advances development packages to 0.19.0
   in lockstep.** Claims persist refresh or revoke intent before provider dispatch;
   revoke pins the material epoch and has its own reconciliation decisions.
