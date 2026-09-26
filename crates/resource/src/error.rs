@@ -16,6 +16,7 @@
 //! | [`Revoked`](ErrorKind::Revoked) | Yes, after re-bind | Retry after the credential is re-registered; the resource is tainted until then, not permanently broken. |
 //! | [`Ambiguous`](ErrorKind::Ambiguous) | No | Fail the operation and fix the caller: acquire through a slot-identity-pinned path (`acquire_<topology>_for_identity`) instead of the identity-agnostic one. |
 //! | [`CredentialUnavailable`](ErrorKind::CredentialUnavailable) | Yes, after `retry_after` | A bound credential denies use at its current material (reauthentication required, or an operation blocks use); the row is suspended, not broken. Retry after the hint; reauthentication is operator-paced. |
+//! | [`OutcomeUnknown`](ErrorKind::OutcomeUnknown) | No | A call that may have reached the provider failed without a known outcome, and its effect is not replay-safe. Reconcile against the provider before acting again; never blind-retry. |
 //!
 //! Use [`Error::is_retryable`] to branch without matching every variant, and
 //! [`Error::retry_after`] to respect a rate-limit hint. `ErrorKind` is
@@ -118,6 +119,19 @@ pub enum ErrorKind {
         /// Why the credential denies use.
         reason: CredentialUnavailableReason,
     },
+    /// A provider call was, or may have been, sent and ended without a known
+    /// outcome, and its effect is not replay-safe: repeating it could apply
+    /// the effect twice.
+    ///
+    /// Terminal for automatic retry. The caller reconciles against the
+    /// provider (read back, idempotency key, operator review) before acting
+    /// again. The managed call facade (the `call` module) produces it when a
+    /// retry-unsafe unit fails after a provider attempt was granted.
+    ///
+    /// Classified as an external fault (the provider side is where the
+    /// outcome lives), never as retryable. The vocabulary is interim until
+    /// the facade's error surface is frozen (CONTRACT.md:112 leaves it open).
+    OutcomeUnknown,
 }
 
 impl ErrorKind {
@@ -146,6 +160,10 @@ impl ErrorKind {
             Self::CredentialUnavailable { .. } => (
                 nebula_error::ErrorCategory::Unavailable,
                 "RESOURCE:CREDENTIAL_UNAVAILABLE",
+            ),
+            Self::OutcomeUnknown => (
+                nebula_error::ErrorCategory::External,
+                "RESOURCE:OUTCOME_UNKNOWN",
             ),
         }
     }
@@ -187,6 +205,7 @@ impl fmt::Display for ErrorKind {
             Self::CredentialUnavailable { reason, .. } => {
                 write!(f, "credential unavailable ({reason})")
             },
+            Self::OutcomeUnknown => f.write_str("outcome unknown"),
         }
     }
 }
@@ -319,6 +338,12 @@ impl Error {
         )
     }
 
+    /// Creates an outcome-unknown error: a retry-unsafe provider call may
+    /// have been applied, so it must not be retried blindly.
+    pub fn outcome_unknown(message: impl Into<String>) -> Self {
+        Self::new(ErrorKind::OutcomeUnknown, message)
+    }
+
     /// Creates a backpressure error.
     pub fn backpressure(message: impl Into<String>) -> Self {
         Self::new(ErrorKind::Backpressure, message)
@@ -358,6 +383,11 @@ impl Error {
                 nebula_core::CoreError::resource_unavailable(key_label, detail, false, None)
             },
             ErrorKind::Permanent => {
+                nebula_core::CoreError::resource_unavailable(key_label, detail, false, None)
+            },
+            // Retrying could apply the effect twice: the only safe projection
+            // is non-retryable.
+            ErrorKind::OutcomeUnknown => {
                 nebula_core::CoreError::resource_unavailable(key_label, detail, false, None)
             },
             ErrorKind::Transient
@@ -640,6 +670,34 @@ mod tests {
             !reauth.to_string().contains("secret"),
             "the message names the reason only"
         );
+    }
+
+    #[test]
+    fn outcome_unknown_is_terminal_external_and_never_retried() {
+        use nebula_error::{Classify, ErrorCategory};
+
+        let key = nebula_core::resource_key!("ledger");
+        let err = Error::outcome_unknown("write may have been applied").with_resource_key(key);
+        assert_eq!(*err.kind(), ErrorKind::OutcomeUnknown);
+        assert!(!err.is_retryable(), "an unknown outcome is never retried");
+        assert!(!Classify::is_retryable(&err));
+        assert_eq!(Classify::category(&err), ErrorCategory::External);
+        assert_eq!(Classify::code(&err).as_str(), "RESOURCE:OUTCOME_UNKNOWN");
+        assert_eq!(err.retry_after(), None);
+        assert!(Classify::retry_hint(&err).is_none());
+        assert_eq!(ErrorKind::OutcomeUnknown.to_string(), "outcome unknown");
+        assert!(err.to_string().contains("ledger"));
+
+        let core = err.to_core_error();
+        assert!(matches!(
+            core,
+            nebula_core::CoreError::ResourceUnavailable {
+                retryable: false,
+                retry_after: None,
+                ..
+            }
+        ));
+        assert!(!core.is_retryable());
     }
 
     #[test]

@@ -1,0 +1,189 @@
+//! Managed call facade: provider calls made through a lease as admitted,
+//! budgeted, settled units of work.
+//!
+//! A lease ([`ResourceGuard`](crate::ResourceGuard)) becomes a [`Managed`]
+//! facade with [`into_managed`](crate::ResourceGuard::into_managed). Action
+//! code then describes each provider call as an [`Operation`] and
+//! [`submit`](Managed::submit)s it; the facade has no `Deref` to the
+//! instance, so a call cannot bypass it by accident.
+//!
+//! # Unit and attempt
+//!
+//! - A **unit** ([`Unit`]) is one submitted operation: owned intent, a
+//!   runtime-owned task, a deadline, an attempt budget, the credential slots
+//!   pinned when it started, and exactly one settled outcome (Design
+//!   CONTRACT.md:36-46, DX-API.md:106-114).
+//! - An **attempt** ([`Attempt`]) is one admitted provider call.
+//!   [`OpCx::attempt`] is the unit's single linearization point: budget,
+//!   admission against the lease, quota booking at the attempt's [`Cost`],
+//!   final admission, grant (CONTRACT.md:64, :88-92). There is no retry loop
+//!   here: an operation that retries asks for another attempt, within
+//!   [`Operation::max_attempts`] (DX-API.md:36, CONTRACT.md:96).
+//!
+//! A unit is lazy. Its first poll waits for one of the lease's unit slots on
+//! the caller's task, then the runtime runs it on its own task until it
+//! settles. Dropped before its first poll it never ran; dropped later, the
+//! caller only stops waiting — the runtime still settles the unit, and the
+//! lease is released only after the last unit ends (DX-API.md:114).
+//!
+//! # Settled outcome
+//!
+//! Each attempt is settled by the author with a [`SentState`]; an attempt
+//! dropped unsettled counts as `MaybeSent`. The unit folds them:
+//!
+//! - no attempt granted → `NotSent`, whatever the author reported (the
+//!   runtime proves nothing was sent);
+//! - otherwise the worst attempt, `MaybeSent > Sent > NotSent`;
+//! - the deadline or a panic after a grant → `MaybeSent`.
+//!
+//! A failed unit's [`OpError`] carries that state and the operation's
+//! [`Effect`], and [`OpError::is_retryable`] decides from them: a unit that
+//! may have been applied is retried only when its effect is replay safe.
+//! Converted into a resource [`Error`](crate::Error), a retry-unsafe unit
+//! becomes [`ErrorKind::OutcomeUnknown`](crate::ErrorKind::OutcomeUnknown)
+//! (CONTRACT.md:100, :110-112).
+//!
+//! | Situation | Kind | Sent |
+//! |---|---|---|
+//! | lease closing (removal, shutdown) | `Cancelled` | `NotSent` |
+//! | credential suspension closed the lease | `CredentialUnavailable` | `NotSent` |
+//! | credential revoke tainted the row | `Revoked` | `NotSent` |
+//! | local quota slot past the deadline | `Exhausted` | `NotSent` |
+//! | limit store down, unit slots full until the deadline | `Backpressure` | `NotSent` |
+//! | provider throttled (`Attempt::report(Verdict::Throttled)`) | `Exhausted` | `Sent` |
+//! | retry-unsafe effect with an unknown outcome | `OutcomeUnknown` (as `Error`) | `Sent` / `MaybeSent` |
+//!
+//! Author errors bridge in through the usual route: a
+//! `#[derive(ClassifyError)]` enum converts into [`Error`](crate::Error),
+//! and `?` converts that into [`OpError`], keeping only its kind.
+//!
+//! # Closing
+//!
+//! [`OpCx::closing`] and [`Managed::closing`] are the lease generation's
+//! [`LeaseClosing`](crate::LeaseClosing). Once it fires, new attempts are
+//! refused; an attempt already granted is not aborted — an operation that
+//! wants to stop early selects on [`closed`](crate::LeaseClosing::closed)
+//! (CONTRACT.md:74). A credential refresh or a config reload leaves the
+//! lease's generation open, so neither interrupts a unit (canon §13.2).
+//!
+//! # Credential slots
+//!
+//! [`PinSlots::pin_slots`] runs once when a unit starts; every attempt of the
+//! unit sees that snapshot through [`Attempt::slots`], the only way the
+//! facade discloses credential material (CONTRACT.md:73, DX-API.md:136). A
+//! rotation mid-unit reaches the next unit. Slots are pinned one by one;
+//! there is no cross-slot atomicity (CONTRACT.md:68).
+//!
+//! # Rate limit
+//!
+//! [`into_managed`](crate::ResourceGuard::into_managed) latches the row's
+//! profile to [`RateLimitProfile::PerAttempt`](crate::RateLimitProfile::PerAttempt):
+//! each granted attempt books its [`Cost`], and acquires only honour pauses
+//! (QUOTA-DX.md:32, :34). A quota wait is raced against the lease's
+//! generation and against [`Unit::cancel`], so a closed lease never sends
+//! (CONTRACT.md:88-92).
+//!
+//! # Interim defaults
+//!
+//! Where the design package leaves a value open, this module picks one and
+//! revisits it before the surface is frozen (QUOTA-DX.md:57: not frozen,
+//! hence not in any prelude):
+//!
+//! - A unit's deadline is at most [`UNIT_DEADLINE_CAP`] (5 minutes, the
+//!   rate limit's `DEFAULT_MAX_PENALTY`); [`Unit::with_deadline`] can only
+//!   shorten it.
+//! - At most one unit runs at a time on a lease whose topology checks out
+//!   exclusively (`Pooled`, `Bounded`), and 64 on a shared instance
+//!   (`Resident`, custom). Further units wait for a slot until their
+//!   deadline, then fail with `Backpressure`.
+//! - A cost booked for an attempt that is cancelled before it reaches the
+//!   provider is not refunded (QUOTA-DX.md:32 baseline).
+//! - A pooled lease stays checked out while its units wait for quota; that
+//!   occupancy is the price of lease-wide units until per-unit checkout
+//!   (QUOTA-DX.md:41).
+//! - `Sent` with `Exhausted` means the provider refused and applied
+//!   nothing, so it stays retryable for any effect.
+//! - The effect vocabulary is [`Effect::Read`], [`Effect::Idempotent`] and
+//!   [`Effect::Write`] (the default; DX-API.md:110).
+//! - The final admission re-checks local admission only; the strict
+//!   per-attempt credential read plugs in at that step later.
+//!
+//! # Observability
+//!
+//! Each unit runs in a `nebula.resource.unit` span recording its key,
+//! operation type, attempts granted, sent state and outcome.
+//! [`ResourceOpsMetrics`](crate::ResourceOpsMetrics) counts attempts granted
+//! and refused by the facade — separate from a driver's own retries inside
+//! an attempt (CONTRACT.md:134) — and units settled by sent state. A unit
+//! that ends with an unknown outcome publishes
+//! [`ResourceEvent::UnitOutcomeUnknown`](crate::ResourceEvent::UnitOutcomeUnknown).
+
+mod cost;
+mod error;
+mod managed;
+mod pin;
+
+use std::{future::Future, num::NonZeroU32};
+
+pub use cost::{Cost, Effect, SentState};
+pub use error::OpError;
+pub use managed::{Attempt, Managed, OpCx, UNIT_DEADLINE_CAP, Unit};
+pub use pin::PinSlots;
+
+use crate::resource::Provider;
+
+/// One kind of provider call, described as data and run by the facade.
+///
+/// The value is the call's owned intent (a message, a query); [`run`](Self::run)
+/// asks the [`OpCx`] for attempts and settles each. Declare the effect of
+/// repeating the call with [`EFFECT`](Self::EFFECT) and how many attempts
+/// one unit may take with [`max_attempts`](Self::max_attempts).
+///
+/// ```
+/// use nebula_resource::{
+///     PinSlots, Provider,
+///     call::{Cost, Effect, OpCx, OpError, Operation, SentState},
+/// };
+///
+/// /// Reads a counter the instance exposes.
+/// struct ReadCounter;
+///
+/// impl<R> Operation<R> for ReadCounter
+/// where
+///     R: Provider<Instance = u64> + PinSlots,
+/// {
+///     type Output = u64;
+///     const EFFECT: Effect = Effect::Read;
+///
+///     async fn run(self, cx: &mut OpCx<'_, R>) -> Result<u64, OpError> {
+///         let attempt = cx.attempt(Cost::ONE).await?;
+///         let value = *attempt.instance();
+///         attempt.settle(SentState::Sent);
+///         Ok(value)
+///     }
+/// }
+/// ```
+pub trait Operation<R: Provider + PinSlots>: Send + 'static {
+    /// What a successful unit yields.
+    type Output: Send + 'static;
+
+    /// What repeating the call does to the provider. `Write` unless the
+    /// operation declares otherwise.
+    const EFFECT: Effect = Effect::Write;
+
+    /// How many attempts one unit may be granted; one by default.
+    fn max_attempts(&self) -> NonZeroU32 {
+        NonZeroU32::MIN
+    }
+
+    /// Runs the call: every provider request goes through
+    /// [`OpCx::attempt`].
+    fn run(
+        self,
+        cx: &mut OpCx<'_, R>,
+    ) -> impl Future<Output = Result<Self::Output, OpError>> + Send;
+}
+
+#[cfg(test)]
+#[path = "../call_tests.rs"]
+mod tests;

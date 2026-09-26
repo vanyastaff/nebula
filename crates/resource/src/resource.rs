@@ -995,8 +995,9 @@ pub trait HasCredentialSlots {
     }
 }
 
-/// Emits the honest zero [`HasCredentialSlots`] impl for a resource with no
-/// `#[credential]` slot fields.
+/// Emits the honest zero [`HasCredentialSlots`] impl — and the matching empty
+/// [`PinSlots`](crate::PinSlots) impl the managed call facade needs — for a
+/// resource with no `#[credential]` slot fields.
 ///
 /// `Provider` requires `HasCredentialSlots`, and
 /// [`declares_credential_slots`](HasCredentialSlots::declares_credential_slots)
@@ -1031,6 +1032,10 @@ pub trait HasCredentialSlots {
 ///         false
 ///     }
 /// }
+/// impl nebula_resource::PinSlots for MyResource {
+///     type Pinned = ();
+///     fn pin_slots(&self) -> Self::Pinned {}
+/// }
 /// ```
 #[macro_export]
 macro_rules! no_credential_slots {
@@ -1042,6 +1047,10 @@ macro_rules! no_credential_slots {
             fn declares_credential_slots() -> bool {
                 false
             }
+        }
+        impl $crate::call::PinSlots for $ty {
+            type Pinned = ();
+            fn pin_slots(&self) -> Self::Pinned {}
         }
     };
 }

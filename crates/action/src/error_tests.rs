@@ -290,6 +290,132 @@ fn ext_chaining_preserves_error_chain() {
     );
 }
 
+// ── Managed call units ─────────────────────────────────────────────────
+
+mod managed_unit {
+    use nebula_core::{ResourceKey, ScopeLevel, resource_key, scope::Scope};
+    use nebula_resource::{
+        AcquireOptions, CredentialUnavailableReason, ErrorKind, Manager, RegistrationSpec,
+        Resident, ResidentConfig, ResourceConfig, ResourceContext, SlotIdentity,
+        call::{Cost, OpCx, OpError, Operation},
+        resource::{Provider, ResourceMetadataDraft},
+        topology::ResidentProvider,
+    };
+
+    use super::*;
+
+    #[derive(Clone, nebula_schema::Schema)]
+    struct Config {
+        version: u64,
+    }
+
+    impl ResourceConfig for Config {
+        fn fingerprint(&self) -> u64 {
+            self.version
+        }
+    }
+
+    #[derive(Clone)]
+    struct Ledger;
+
+    #[async_trait::async_trait]
+    impl Provider for Ledger {
+        type Config = Config;
+        type Instance = ();
+        type Topology = Resident<Self>;
+
+        fn key() -> ResourceKey {
+            resource_key!("action.ledger")
+        }
+
+        fn metadata() -> ResourceMetadataDraft {
+            ResourceMetadataDraft::new(Self::key(), nebula_resource::metadata_name!("ledger"), "")
+        }
+
+        async fn create(
+            &self,
+            _: &Config,
+            _: &ResourceContext,
+        ) -> Result<(), nebula_resource::Error> {
+            Ok(())
+        }
+    }
+
+    nebula_resource::no_credential_slots!(Ledger);
+
+    impl ResidentProvider for Ledger {}
+
+    /// A write whose attempt never answers: it ends at the unit deadline
+    /// with an unknown outcome.
+    struct PostEntry;
+
+    impl Operation<Ledger> for PostEntry {
+        type Output = ();
+
+        async fn run(self, cx: &mut OpCx<'_, Ledger>) -> Result<(), OpError> {
+            let _attempt = cx.attempt(Cost::ONE).await?;
+            std::future::pending::<()>().await;
+            Ok(())
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_unknown_outcome_is_fatal_and_a_backoff_hint_survives() {
+        let manager = Manager::new();
+        manager
+            .register(RegistrationSpec {
+                resource: Ledger,
+                config: Config { version: 1 },
+                scope: ScopeLevel::Global,
+                slot_identity: SlotIdentity::Unbound,
+                topology: Resident::new(ResidentConfig::default()),
+                recovery_gate: None,
+                rate_limit: None,
+            })
+            .expect("register");
+        let ctx =
+            ResourceContext::minimal(Scope::default(), tokio_util::sync::CancellationToken::new());
+        let managed = manager
+            .acquire::<Ledger>(&ctx, &AcquireOptions::default())
+            .await
+            .expect("acquire")
+            .into_managed();
+
+        let deadline = tokio::time::Instant::now().into_std() + Duration::from_secs(1);
+        let unknown = managed
+            .submit(PostEntry)
+            .with_deadline(deadline)
+            .await
+            .expect_err("the write outlives its deadline");
+        let unknown: ActionError = unknown.into();
+        assert!(unknown.is_fatal(), "{unknown:?}");
+
+        let suspended: ActionError = OpError::new(
+            ErrorKind::CredentialUnavailable {
+                reason: CredentialUnavailableReason::ReauthRequired,
+            },
+            "bound credential unavailable",
+        )
+        .into();
+        assert!(suspended.is_retryable());
+        assert_eq!(suspended.backoff_hint(), Some(Duration::from_secs(30)));
+
+        let throttled: ActionError = OpError::new(
+            ErrorKind::Exhausted {
+                retry_after: Some(Duration::from_hours(1)),
+            },
+            "provider throttled",
+        )
+        .into();
+        assert!(throttled.is_retryable());
+        assert_eq!(
+            throttled.backoff_hint(),
+            Some(nebula_resource::rate_limit::DEFAULT_MAX_PENALTY),
+            "the hint is capped"
+        );
+    }
+}
+
 // ── ValidationReason + structured Validation (L7) ──────────────────────
 
 #[test]

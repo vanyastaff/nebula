@@ -12,6 +12,10 @@
 //!      least one `#[credential]` field, and a `credential_slot_names()`
 //!      listing every declared slot key (used by
 //!      `Manager::refresh_slot`/`taint_slot`'s unknown-slot validation).
+//!    - `impl PinSlots` for the managed call facade: `Pinned = ()` for a
+//!      slot-less struct, otherwise a generated `<Name>PinnedSlots` holding
+//!      each slot's guard `Arc` loaded once per unit, read through a
+//!      `<field>()` accessor (generic structs with slots get none).
 //!
 //! 2. Hand-written `impl Provider` — the implementor supplies `key()`, `metadata()`, the three
 //!    associated types (`Config`, `Instance`, `Topology`), and lifecycle methods
@@ -36,7 +40,8 @@
 //! Deriving on a struct with no `#[credential]` fields is legal. The macro
 //! emits empty `DeclaresDependencies` and `HasCredentialSlots { fn
 //! credential_slot_epoch → 0, fn declares_credential_slots → false, fn
-//! credential_slot_names → &[] }` implementations. No accessors are emitted.
+//! credential_slot_names → &[] }` implementations and `PinSlots { type
+//! Pinned = () }`. No accessors are emitted.
 //!
 //! ## Rejected forms
 //!
@@ -232,12 +237,117 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
         None => quote! {},
     };
 
+    let pin_slots_item = emit_pin_slots(&input, &slots);
+
     Ok(quote! {
         #has_credential_slots_impl
         #deps_impl
         #slot_accessor_impl
+        #pin_slots_item
         #factory_item
     })
+}
+
+/// Emit `impl PinSlots` — the per-unit slot snapshot of the managed call
+/// facade.
+///
+/// A slot-less struct pins `()`. A struct with `#[credential]` slots pins a
+/// generated `<Name>PinnedSlots`: one private `Option<Arc<CredentialGuard<_>>>`
+/// per slot, loaded once per unit, read through a `<field>()` accessor. A
+/// generic struct with slots gets no impl (the pinned type would have to be
+/// generic too); it implements `PinSlots` by hand if it uses the facade.
+fn emit_pin_slots(
+    input: &DeriveInput,
+    slots: &[field_slots::ParsedCredentialSlot],
+) -> proc_macro2::TokenStream {
+    let struct_name = &input.ident;
+    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+    if slots.is_empty() {
+        return quote! {
+            impl #impl_generics ::nebula_resource::PinSlots for #struct_name #ty_generics #where_clause {
+                type Pinned = ();
+
+                fn pin_slots(&self) -> Self::Pinned {}
+            }
+        };
+    }
+    if !input.generics.params.is_empty() {
+        return quote! {};
+    }
+
+    let vis = &input.vis;
+    let pinned_name = format_ident!("{}PinnedSlots", struct_name, span = Span::call_site());
+    let guard_types: Vec<proc_macro2::TokenStream> = slots
+        .iter()
+        .map(|slot| {
+            let inner = &slot.inner_type;
+            if slot.credential_alias {
+                quote! {
+                    ::nebula_credential::CredentialGuard<
+                        <#inner as ::nebula_credential::Credential>::Scheme
+                    >
+                }
+            } else {
+                quote! { ::nebula_credential::CredentialGuard<#inner> }
+            }
+        })
+        .collect();
+    let fields: Vec<&syn::Ident> = slots.iter().map(|slot| &slot.field_ident).collect();
+    let struct_doc = format!(
+        "The credential slots of [`{struct_name}`] pinned for one managed call unit.\n\n\
+         Loaded once when the unit starts; every attempt of the unit reads the same \
+         guards, and a rotation reaches the next unit. `None` for a slot that was \
+         unbound when the unit started. Emitted by `#[derive(Resource)]`."
+    );
+    let accessor_docs: Vec<String> = slots
+        .iter()
+        .map(|slot| {
+            format!(
+                "The `{}` credential pinned for this unit, or `None` if the slot was unbound.",
+                slot.slot_key()
+            )
+        })
+        .collect();
+    let slot_keys: Vec<String> = slots
+        .iter()
+        .map(field_slots::ParsedCredentialSlot::slot_key)
+        .collect();
+
+    quote! {
+        #[doc = #struct_doc]
+        #vis struct #pinned_name {
+            #( #fields: ::std::option::Option<::std::sync::Arc<#guard_types>>, )*
+        }
+
+        impl #pinned_name {
+            #(
+                #[doc = #accessor_docs]
+                #[must_use]
+                pub fn #fields(&self) -> ::std::option::Option<&#guard_types> {
+                    self.#fields.as_deref()
+                }
+            )*
+        }
+
+        impl ::std::fmt::Debug for #pinned_name {
+            fn fmt(&self, formatter: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+                formatter
+                    .debug_struct(::std::stringify!(#pinned_name))
+                    #( .field(#slot_keys, &self.#fields.is_some()) )*
+                    .finish()
+            }
+        }
+
+        impl ::nebula_resource::PinSlots for #struct_name {
+            type Pinned = #pinned_name;
+
+            fn pin_slots(&self) -> Self::Pinned {
+                #pinned_name {
+                    #( #fields: self.#fields.load(), )*
+                }
+            }
+        }
+    }
 }
 
 /// Emit the `<Name>Factory` newtype for the given topology kind.

@@ -195,14 +195,17 @@ row reports it as a `RateLimitProfile` (`as_str()` in parentheses):
 | `PausesOnly` (`pauses_only`) | no rate declared or set, no wrapped client | nothing | not paced; a provider pause holds acquires | supported |
 | `PerAcquire` (`per_acquire`) | a rate, no wrapped client | acquire | bounded interval: one permit per lease, however many calls it makes | supported |
 | `InterimPerClosure` (`interim_per_closure`) | `Provider::create` wrapped a client | `Limited::run*` closure | strict: each closure is one permit; acquires only honour pauses | **interim** — replaced by the managed call facade |
+| `PerAttempt` (`per_attempt`) | a lease became a managed call facade (`ResourceGuard::into_managed`) | granted attempt, at its declared cost (`FREE` books nothing) | strict: each provider attempt books its cost; acquires only honour pauses | supported |
 
 Only `InterimPerClosure` is interim (`RateLimitProfile::is_interim`): the
 closure family (`Limited::run`, `run_until`, `run_for`, `run_for_until`) and
 `Limited::unlimited` are the surface the managed call facade replaces. The
 profile is observed, not declared: it latches to `InterimPerClosure` at the
-first `ResourceLimiter::wrap` and keeps it for the row's life, so a row whose
-instance is created lazily reports its pre-wrap profile (`PausesOnly` or
-`PerAcquire`) until the first acquire creates it. In-process status carries it
+first `ResourceLimiter::wrap`, and to `PerAttempt` at the first
+`into_managed` on one of the row's leases, and keeps it for the row's life
+(`InterimPerClosure` wins when both latched). A row whose instance is created
+lazily reports its pre-wrap profile (`PausesOnly` or `PerAcquire`) until the
+first acquire creates it. In-process status carries it
 — `ResourceHealthSnapshot::rate_limit_profile` and
 `ManagedResourceView::rate_limit_profile()`; the cross-process resource status
 does not yet. `RateLimitProfile` is a status fact, not authoring surface, so
@@ -435,6 +438,76 @@ follow from the same generation:
   is refused without waiting, so a lease parked on a long provider pause no longer
   holds a revoke drain. The provider call itself is never interrupted. `run*` and
   `unlimited` are interim until the managed call facade replaces them.
+
+### Managed call facade
+
+`guard.into_managed()` turns a lease into `call::Managed<R>` (requires
+`R: PinSlots`, emitted by `#[derive(Resource)]` and `no_credential_slots!`).
+It has no `Deref`: every provider call is an `Operation` submitted as a
+`Unit`, and the instance is reached only inside a granted `Attempt`.
+
+```rust,ignore
+struct Send { chat: i64, text: String }
+
+impl Operation<Bot> for Send {
+    type Output = MessageId;
+    const EFFECT: Effect = Effect::Write; // the default; declare Read / Idempotent
+
+    async fn run(self, cx: &mut OpCx<'_, Bot>) -> Result<MessageId, OpError> {
+        let attempt = cx.attempt(Cost::keyed("chat_id", self.chat)).await?;
+        let sent = attempt.instance().send(self.chat, &self.text).await;
+        attempt.settle(SentState::Sent);
+        Ok(sent?) // `ClassifyError` → `Error` → `OpError` (kind only)
+    }
+}
+
+let managed = guard.into_managed();
+let id = managed.submit(Send { chat, text }).await?;
+```
+
+- **Unit vs attempt.** A unit owns the intent, a deadline (at most 5
+  minutes; `Unit::with_deadline` only shortens it), an attempt budget
+  (`Operation::max_attempts`, one by default) and one settled outcome.
+  `OpCx::attempt(cost)` is the single linearization point: budget, lease
+  admission, quota booking at the attempt's `Cost` (`ONE`, `FREE`,
+  `units(n)`, `keyed(dimension, value)`), final admission, grant. There is no
+  retry loop in the facade.
+- **Lazy and runtime-owned.** The first poll waits for a unit slot on the
+  lease (1 for `Pooled` / `Bounded`, 64 for `Resident` / custom), then the
+  runtime runs the unit on its own task. Dropped before the first poll it
+  never ran; dropped later, the runtime still settles it and the lease is
+  released only after it ends. `Unit::cancel` stops a unit until its first
+  grant (it then settles `Cancelled`, `NotSent`); after a grant it is ignored.
+- **Settled outcome.** Each attempt is settled `NotSent` / `Sent` /
+  `MaybeSent`; one dropped unsettled is `MaybeSent`. A unit with no grant is
+  `NotSent` whatever the author reported; the deadline or a panic after a
+  grant is `MaybeSent`. `OpError::is_retryable` combines that with the
+  operation's `Effect`: a unit that may have been applied is retried only for
+  `Read` / `Idempotent`, and as a resource `Error` a retry-unsafe unit becomes
+  `ErrorKind::OutcomeUnknown` (never retried) and publishes
+  `ResourceEvent::UnitOutcomeUnknown`.
+- **Closing.** New attempts are refused once the lease's generation closes —
+  `Cancelled` (removal, shutdown), `CredentialUnavailable` (suspension),
+  `Revoked` (taint), all `NotSent`; a quota wait ends early too. A granted
+  attempt is not aborted: select on `OpCx::closing()` to stop at a safe point.
+  Refresh and reload leave the generation open.
+- **Credentials.** `PinSlots::pin_slots` runs once per unit; every attempt
+  reads that snapshot through `Attempt::slots()`, the only way the facade
+  discloses material. A rotation reaches the next unit; slots are pinned one
+  by one, without cross-slot atomicity. Until the strict per-attempt
+  credential read lands, an attempt's final admission re-checks local
+  admission only, not a fresh credential read.
+- **Observability.** A `nebula.resource.unit` span per unit (key, operation,
+  attempts, sent, outcome); `ResourceOpsSnapshot::call_attempts`
+  (granted / refused by the facade, not a driver's own retries) and
+  `call_units` (by sent state).
+
+Interim defaults, revisited before the surface is frozen (it is not in any
+prelude): the 5-minute unit deadline cap; the per-lease unit caps above; no
+refund of a cost booked for an attempt cancelled before it reached the
+provider; a pooled lease stays checked out while its units wait for quota;
+`Sent` with `Exhausted` means the provider refused and applied nothing, so it
+stays retryable; the `Read` / `Idempotent` / `Write` effect vocabulary.
 
 ### Other public API
 

@@ -630,9 +630,13 @@ impl KeyedLimits {
 ///
 /// The profile is observed, not declared: a row reports
 /// [`InterimPerClosure`](Self::InterimPerClosure) from the moment
-/// `Provider::create` wraps a client with [`ResourceLimiter::wrap`], and keeps
-/// it for the row's life. A row whose instance has not been created yet
-/// reports the profile it has before any wrap.
+/// `Provider::create` wraps a client with [`ResourceLimiter::wrap`], and
+/// [`PerAttempt`](Self::PerAttempt) from the moment a lease of the row is
+/// turned into a managed call facade
+/// ([`ResourceGuard::into_managed`](crate::ResourceGuard::into_managed)); it keeps a latched
+/// profile for the row's life. A row whose instance has not been created yet
+/// reports the profile it has before any latch. When both latches fired,
+/// `InterimPerClosure` wins: closure calls still book their own permits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum RateLimitProfile {
@@ -646,6 +650,9 @@ pub enum RateLimitProfile {
     /// [`Limited::run`] closure books one permit and acquires only honour
     /// pauses. Interim: the managed call facade replaces the closure family.
     InterimPerClosure,
+    /// A lease was turned into a managed call facade: every granted provider
+    /// attempt books its declared cost, and acquires only honour pauses.
+    PerAttempt,
 }
 
 impl RateLimitProfile {
@@ -656,13 +663,14 @@ impl RateLimitProfile {
     }
 
     /// Stable lowercase name for logs and status views: `pauses_only`,
-    /// `per_acquire` or `interim_per_closure`.
+    /// `per_acquire`, `interim_per_closure` or `per_attempt`.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::PausesOnly => "pauses_only",
             Self::PerAcquire => "per_acquire",
             Self::InterimPerClosure => "interim_per_closure",
+            Self::PerAttempt => "per_attempt",
         }
     }
 }
@@ -711,6 +719,10 @@ pub struct ResourceLimiter {
     /// quota, so an acquire only honours pauses (see
     /// [`ready_to_acquire`](Self::ready_to_acquire)).
     per_call: AtomicBool,
+    /// Set once a lease of the row is turned into a managed call facade: its
+    /// granted attempts book the quota at their declared cost, so an acquire
+    /// only honours pauses, as for [`per_call`](Self::wrap).
+    per_attempt: AtomicBool,
     /// The admission cell of the registry row this limiter belongs to, set
     /// once at registration. A [`Limited`] wait ends when the row's
     /// admission generation closes. Unset for a detached limiter, and never
@@ -901,6 +913,7 @@ impl ResourceLimiter {
             paused_until: Mutex::new(None),
             engaged: AtomicBool::new(false),
             per_call: AtomicBool::new(false),
+            per_attempt: AtomicBool::new(false),
             waiters: AtomicUsize::new(0),
             store_down: AtomicBool::new(false),
             refusals: AtomicU32::new(0),
@@ -965,9 +978,44 @@ impl ResourceLimiter {
         let Some(generation) = self.admission_at_entry()? else {
             return wait.await;
         };
+        self.wait_under(&generation, None, wait).await
+    }
+
+    /// Waits for `wait` unless `generation` closes or `cancel` fires first.
+    ///
+    /// The quota wait of work admitted under a known generation — a
+    /// [`Limited`] call (the row's current generation at the call's entry)
+    /// or a managed attempt (its lease's generation) — must end when that
+    /// generation stops admitting work, not when the slot comes: a suspended
+    /// or retired row must not send a call it already refused to admit.
+    /// Closing wins over a slot ready at the same instant (`biased`).
+    ///
+    /// # Errors
+    ///
+    /// `CredentialUnavailable` or `Cancelled` when `generation` closed (see
+    /// [`admission_closed`](Self::admission_closed)), `Cancelled` when
+    /// `cancel` fired, otherwise `wait`'s own outcome.
+    ///
+    /// # Cancel safety
+    ///
+    /// Dropping the future drops `wait`, which forfeits any booked slot: the
+    /// limiter errs on sending less.
+    pub(crate) async fn wait_under<T>(
+        &self,
+        generation: &crate::runtime::admission::AdmissionGeneration,
+        cancel: Option<&tokio_util::sync::CancellationToken>,
+        wait: impl Future<Output = Result<T, Error>>,
+    ) -> Result<T, Error> {
+        let cancelled = async {
+            match cancel {
+                Some(cancel) => cancel.cancelled().await,
+                None => std::future::pending().await,
+            }
+        };
         tokio::select! {
             biased;
-            () = generation.token().cancelled() => Err(self.admission_closed(&generation)),
+            () = generation.token().cancelled() => Err(self.admission_closed(generation)),
+            () = cancelled => Err(self.tagged(Error::cancelled())),
             ready = wait => ready,
         }
     }
@@ -981,11 +1029,16 @@ impl ResourceLimiter {
     /// How this limit is enforced right now; see [`RateLimitProfile`].
     ///
     /// Latches to [`RateLimitProfile::InterimPerClosure`] at the first
-    /// [`wrap`](Self::wrap) and never changes back.
+    /// [`wrap`](Self::wrap), and to [`RateLimitProfile::PerAttempt`] when a
+    /// lease of the row first becomes a managed call facade; neither changes
+    /// back. With both latched, `InterimPerClosure` wins: the closure family
+    /// still books its own permits, so it is the profile that needs review.
     #[must_use]
     pub fn profile(&self) -> RateLimitProfile {
         if self.per_call.load(Ordering::Acquire) {
             RateLimitProfile::InterimPerClosure
+        } else if self.per_attempt.load(Ordering::Acquire) {
+            RateLimitProfile::PerAttempt
         } else if self.quota.is_some() {
             RateLimitProfile::PerAcquire
         } else {
@@ -1005,7 +1058,7 @@ impl ResourceLimiter {
     /// [`RateLimitProfile::InterimPerClosure`] for the row's life: from then
     /// on each [`Limited::run`] closure books one permit and acquires only
     /// honour pauses. The closure family is interim surface; the managed call
-    /// facade replaces it.
+    /// facade ([`crate::call`]) replaces it.
     #[must_use]
     pub fn wrap<C, T>(self: &Arc<Self>, client: C, throttle: T) -> Limited<C, T> {
         // Calls through the client now book their own slots; an acquire must
@@ -1018,10 +1071,19 @@ impl ResourceLimiter {
         }
     }
 
+    /// Latches the row to [`RateLimitProfile::PerAttempt`]: from now on the
+    /// managed call facade books each granted attempt at its declared cost,
+    /// so an acquire only honours pauses (see
+    /// [`ready_to_acquire`](Self::ready_to_acquire)). Never unlatches.
+    pub(crate) fn latch_per_attempt(&self) {
+        self.per_attempt.store(true, Ordering::Release);
+    }
+
     /// What an acquire of the row waits for: a permit, as [`ready`](Self::ready),
-    /// or, once a client has been [`wrap`](Self::wrap)ped, only the end of a
-    /// pause. The wrapped client's calls book the quota one per provider
-    /// call; booking at acquire as well would count every call twice.
+    /// or, once a client has been [`wrap`](Self::wrap)ped or a lease has
+    /// become a managed call facade, only the end of a pause. Wrapped calls
+    /// and managed attempts book the quota themselves; booking at acquire as
+    /// well would count every provider call twice.
     ///
     /// The acquire that creates the client (it wraps while this acquire is
     /// still in `Provider::create`) has already booked a permit; the first
@@ -1037,7 +1099,7 @@ impl ResourceLimiter {
         &self,
         deadline: Option<std::time::Instant>,
     ) -> Result<(), Error> {
-        if self.per_call.load(Ordering::Acquire) {
+        if self.per_call.load(Ordering::Acquire) || self.per_attempt.load(Ordering::Acquire) {
             return self.wait_pause_only(deadline).await;
         }
         self.ready(deadline).await
@@ -1090,8 +1152,28 @@ impl ResourceLimiter {
     /// Cancelling during the wait forfeits the booked slot: the limiter errs
     /// on sending less, never more.
     pub async fn ready(&self, deadline: Option<std::time::Instant>) -> Result<(), Error> {
+        self.ready_weighted(1, deadline).await
+    }
+
+    /// Waits for `permits` permits of the account limit booked as one slot,
+    /// never past `deadline`: one provider call that the provider counts as
+    /// `permits` requests.
+    ///
+    /// # Errors
+    ///
+    /// As [`ready`](Self::ready); a permanent error when `permits` exceed the
+    /// quota's burst (they could never be granted at once).
+    ///
+    /// # Cancel safety
+    ///
+    /// As [`ready`](Self::ready).
+    pub(crate) async fn ready_weighted(
+        &self,
+        permits: u32,
+        deadline: Option<std::time::Instant>,
+    ) -> Result<(), Error> {
         loop {
-            let wait = self.account_slot(deadline).await?;
+            let wait = self.account_slot(permits, deadline).await?;
             if self.wait_out(wait, None, deadline).await? == Admission::Proceed {
                 return Ok(());
             }
@@ -1116,9 +1198,31 @@ impl ResourceLimiter {
         value: impl fmt::Display,
         deadline: Option<std::time::Instant>,
     ) -> Result<(), Error> {
+        self.ready_for_weighted(dimension, &value.to_string(), 1, deadline)
+            .await
+    }
+
+    /// As [`ready_for`](Self::ready_for), booking `permits` permits of both
+    /// the key's limit and the account limit as one slot each.
+    ///
+    /// # Errors
+    ///
+    /// As [`ready_for`](Self::ready_for); a permanent error when `permits`
+    /// exceed either burst.
+    ///
+    /// # Cancel safety
+    ///
+    /// As [`ready`](Self::ready).
+    pub(crate) async fn ready_for_weighted(
+        &self,
+        dimension: &str,
+        value: &str,
+        permits: u32,
+        deadline: Option<std::time::Instant>,
+    ) -> Result<(), Error> {
         let keyed = self.keyed_limits()?;
         let (key, rate) = keyed
-            .limit_for(dimension, &value.to_string())
+            .limit_for(dimension, value)
             .map_err(|error| self.tagged(error))?;
         // Registered before booking, so a pause recorded after this caller's
         // slot was booked still reaches it when it wakes.
@@ -1127,24 +1231,26 @@ impl ResourceLimiter {
             let wait = if let Some(quota) = self.quota.as_ref().filter(|quota| {
                 std::ptr::addr_eq(Arc::as_ptr(&quota.store), Arc::as_ptr(&keyed.store))
             }) {
-                self.aligned_slots(quota, keyed, &key, &rate, deadline)
+                self.aligned_slots(quota, keyed, &key, &rate, permits, deadline)
                     .await?
             } else if self.quota.is_none() {
                 // No account rate, only its pauses: a pause is waited out
                 // before the key's slot is booked, so the key's calls keep
                 // their spacing instead of all running as the pause ends.
-                let pause = self.account_slot(deadline).await?;
+                let pause = self.account_slot(permits, deadline).await?;
                 if !pause.is_zero() {
                     let _waiting = Waiting::start(self);
                     tokio::time::sleep(pause).await;
                     continue;
                 }
-                self.book(&keyed.store, &key, &rate, deadline, 0)
+                self.book(&keyed.store, &key, &rate, permits, deadline, 0)
                     .await?
                     .wait
             } else {
-                let key_slot = self.book(&keyed.store, &key, &rate, deadline, 0).await?;
-                match self.account_slot(deadline).await {
+                let key_slot = self
+                    .book(&keyed.store, &key, &rate, permits, deadline, 0)
+                    .await?;
+                match self.account_slot(permits, deadline).await {
                     Ok(wait) => wait.max(key_slot.wait),
                     Err(error) => {
                         // The key's slot goes back while it is still the last
@@ -1177,15 +1283,19 @@ impl ResourceLimiter {
         keyed: &KeyedLimits,
         key: &LimitKey,
         rate: &Rate,
+        permits: u32,
         deadline: Option<std::time::Instant>,
     ) -> Result<Duration, Error> {
-        let mut key_slot = self.book(&keyed.store, key, rate, deadline, 0).await?;
+        let mut key_slot = self
+            .book(&keyed.store, key, rate, permits, deadline, 0)
+            .await?;
         for _ in 0..MAX_ALIGN_ROUNDS {
             let account = match self
                 .book(
                     &quota.store,
                     &quota.key,
                     &quota.rate,
+                    permits,
                     deadline,
                     key_slot.allow_at,
                 )
@@ -1209,7 +1319,7 @@ impl ResourceLimiter {
             );
             let replaced = key_slot;
             key_slot = match self
-                .book(&keyed.store, key, rate, deadline, account.allow_at)
+                .book(&keyed.store, key, rate, permits, deadline, account.allow_at)
                 .await
             {
                 Ok(key_slot) => key_slot,
@@ -1262,12 +1372,16 @@ impl ResourceLimiter {
         })
     }
 
-    /// The wait for one account permit: a slot of the quota, or the end of
-    /// a local pause.
-    async fn account_slot(&self, deadline: Option<std::time::Instant>) -> Result<Duration, Error> {
+    /// The wait for `permits` account permits: a slot of the quota, or the
+    /// end of a local pause (a limiter without a quota counts nothing).
+    async fn account_slot(
+        &self,
+        permits: u32,
+        deadline: Option<std::time::Instant>,
+    ) -> Result<Duration, Error> {
         if let Some(quota) = &self.quota {
             return self
-                .book(&quota.store, &quota.key, &quota.rate, deadline, 0)
+                .book(&quota.store, &quota.key, &quota.rate, permits, deadline, 0)
                 .await
                 .map(|grant| grant.wait);
         }
@@ -1361,18 +1475,19 @@ impl ResourceLimiter {
         ))
     }
 
-    /// Books one slot of `key`, no earlier than `not_before` (a slot this
-    /// store returned; `0` for none), that `deadline` still covers once the
-    /// store has answered.
+    /// Books one slot of `permits` permits of `key`, no earlier than
+    /// `not_before` (a slot this store returned; `0` for none), that
+    /// `deadline` still covers once the store has answered.
     async fn book(
         &self,
         store: &Arc<dyn ErasedLimitStore>,
         key: &LimitKey,
         rate: &Rate,
+        permits: u32,
         deadline: Option<std::time::Instant>,
         not_before: u64,
     ) -> Result<Grant, Error> {
-        let request = ReserveRequest::new(1, max_wait_until(deadline)).not_before(not_before);
+        let request = ReserveRequest::new(permits, max_wait_until(deadline)).not_before(not_before);
         // Bounded by the deadline: a store slow to answer (a pool wait, a
         // row lock) does not keep the caller past it. A grant that lands
         // after the caller gave up lapses unused, which errs on sending less.
@@ -1408,7 +1523,7 @@ impl ResourceLimiter {
                 )))
             },
             Ok(Err(Denied::Never { burst })) => Err(self.tagged(Error::permanent(format!(
-                "rate limit: one permit exceeds the burst of {burst}"
+                "rate limit: {permits} permits exceed the burst of {burst}"
             )))),
             Ok(Err(_)) => {
                 Err(self.tagged(Error::exhausted("rate limit refused the request", None)))
@@ -1532,7 +1647,7 @@ impl ResourceLimiter {
     /// pause is logged, and recording it in the shared store is bounded by
     /// [`REPORT_BUDGET`]; neither masks or delays the call's own outcome past
     /// that bound.
-    async fn report(&self, verdict: Verdict, key: Option<(&str, &str)>) {
+    pub(crate) async fn report(&self, verdict: Verdict, key: Option<(&str, &str)>) {
         // Consecutive refusals are counted per quota: the account's, and each
         // key's apart, so one chat's refusals never lengthen another's pause.
         let limit_key = key.and_then(|(dimension, value)| {
@@ -1885,10 +2000,12 @@ where
 ///
 /// **Interim surface.** Each `run*` closure books one permit and counts as
 /// one provider call, whatever it does inside; the row reports
-/// [`RateLimitProfile::InterimPerClosure`]. The managed call facade replaces
-/// the closure family and [`unlimited`](Self::unlimited); until then they
-/// are supported, and the crate README's rate-limit profile table says what
-/// each profile budgets.
+/// [`RateLimitProfile::InterimPerClosure`]. The managed call facade
+/// ([`crate::call`]: [`ResourceGuard::into_managed`](crate::ResourceGuard::into_managed),
+/// one [`Cost`](crate::call::Cost) booked per granted attempt) replaces the
+/// closure family and [`unlimited`](Self::unlimited). They are not deprecated
+/// yet and stay supported; new integrations use the facade. The crate
+/// README's rate-limit profile table says what each profile budgets.
 pub struct Limited<C, T = NoThrottle> {
     client: C,
     throttle: T,
@@ -1918,7 +2035,8 @@ impl<C, T> Limited<C, T> {
     /// Runs one call under the limit, waiting for a permit as long as needed.
     ///
     /// **Interim surface.** Each `run` closure books one permit and is one
-    /// unit of work; the managed call facade will replace this family.
+    /// unit of work; the managed call facade ([`crate::call`]) replaces this
+    /// family.
     ///
     /// On a registry row the wait also ends when the row stops admitting
     /// work: a credential taint or revoke, a credential suspension, the

@@ -175,6 +175,7 @@ mod gate_admission_tests {
             Error::revoked("tainted by revoke"),
             Error::credential_unavailable(crate::CredentialUnavailableReason::ReauthRequired),
             Error::credential_unavailable(crate::CredentialUnavailableReason::OperationBlocked),
+            Error::outcome_unknown("unit outcome unknown"),
         ] {
             let gate = idle_gate();
             let admission = admit_through_gate(&Some(Arc::clone(&gate))).expect("idle admits");
