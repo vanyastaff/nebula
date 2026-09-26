@@ -24,12 +24,19 @@
 //! and the row serves.
 //!
 //! Every activation of an already registered row re-checks its credentials.
-//! A credential that denies use at its current material (reauthentication
+//! Only a material advance registers the row again; a change of the
+//! credential's aggregate revision alone (a display rename) does not. A
+//! credential that denies use at its current material (reauthentication
 //! required, an operation blocking use) **suspends** the kept registration
-//! (`Manager::suspend_credential_row`) and fails the turn; the next
-//! activation that finds the same material usable reopens it without
-//! registering again. Only a credential that can no longer be resolved at
-//! all retires the registration.
+//! (`Manager::suspend_credential_row`, with the use revision the denial was
+//! read at) and fails the turn; a later activation that finds the same
+//! material usable at a newer use revision reopens it without registering
+//! again, and one that finds it usable at the denial's own revision keeps it
+//! suspended and fails the turn too. A use revision that advanced while no
+//! activation observed the denial (an abandoned revoke claim) readmits the
+//! kept registration: new work gets a fresh admission generation, leases
+//! already admitted stay open. Only a credential that can no longer be
+//! resolved at all retires the registration.
 
 use std::{sync::Arc, time::Duration};
 
@@ -41,8 +48,9 @@ use nebula_credential::{
 };
 use nebula_expression::ExpressionEngine;
 use nebula_resource::{
-    CredentialSlotInstall, CredentialUnavailableReason, Manager, RegisterRequest, RegistrarError,
-    ResourceActivatorRegistry, ResourceConfigInput, SlotBinding, SlotIdentity,
+    CredentialObservedAt, CredentialSlotInstall, CredentialUnavailableReason, Manager,
+    RegisterRequest, RegistrarError, ResourceActivatorRegistry, ResourceConfigInput, SlotBinding,
+    SlotIdentity,
 };
 use nebula_storage_port::{Scope, StorageError, dto::ResourceRow, store::ResourceStore};
 use tokio_util::sync::CancellationToken;
@@ -233,8 +241,11 @@ struct BoundCredential {
     credential_id: CredentialId,
     slot: String,
     credential_key: nebula_core::CredentialKey,
-    /// `(material_epoch, revision)` of the guard installed.
-    material: (u64, u64),
+    /// `(material_epoch, admission_epoch)`: the material of the guard
+    /// installed, and the highest use revision this activator has seen the
+    /// row admit it at. The aggregate revision is deliberately absent: a
+    /// display rename moves it without changing what the row may use.
+    at: (u64, u64),
 }
 
 /// What an activator tracks for one stored row.
@@ -724,8 +735,19 @@ impl StoredResourceActivator {
                 )
                 .ok();
             let serving = match credentials_current(context, scope, &bindings, cancel).await {
-                CredentialCheck::Current => {
-                    reopen_suspended(context, &activated, &bindings, ticket);
+                CredentialCheck::Current { observed } => {
+                    let mut bindings = bindings;
+                    let readmitted =
+                        readmit_bound(context, &activated, &mut bindings, &observed, ticket);
+                    // The use revisions seen are kept even when the row is
+                    // still suspended: they are what it admitted.
+                    if let Some(active) = tracked.active.as_mut() {
+                        active.bindings = bindings;
+                    }
+                    if let Err(error) = readmitted {
+                        tracked.failed_version = Some(row.version);
+                        return Err(error);
+                    }
                     serves(context, &activated).await
                 },
                 // Refreshed or rotated since: registered again below, with
@@ -911,7 +933,7 @@ async fn register_row(
             credential_id,
             slot: slot.to_owned(),
             credential_key: credential_key.clone(),
-            material: (metadata.material_epoch(), metadata.revision()),
+            at: (metadata.material_epoch(), metadata.admission_epoch()),
         });
         slot_bindings.push(SlotBinding {
             slot_name: slot.to_owned(),
@@ -1093,8 +1115,10 @@ async fn serves(context: &ActivationContext<'_>, activated: &ActivatedResource) 
 /// current ones.
 ///
 /// Each is resolved again, as a node's action resolves its credentials on
-/// every turn; the credential store's own `(material_epoch, revision)`
-/// says whether it was refreshed or rotated since. This holds without the
+/// every turn; the credential store's own material epoch says whether it was
+/// refreshed or rotated since. The aggregate revision is not compared: a
+/// display rename moves it without changing what the row may use, so it
+/// does not re-register the row. This holds without the
 /// rotation fan-out and across processes: a refresh, rotation or revoke
 /// made anywhere reaches this row on its next activation, not only when
 /// its definition changes.
@@ -1119,6 +1143,11 @@ async fn serves(context: &ActivationContext<'_>, activated: &ActivatedResource) 
 /// An absent head is re-checked through projection, which tells a tombstone
 /// apart.
 ///
+/// A current check also returns the use revision (admission epoch) each
+/// credential was found usable at; the caller hands it to the row's gate
+/// (see [`readmit_bound`]), which reopens a suspension or readmits a row
+/// whose use revision advanced without this activator observing the denial.
+///
 /// The check runs the same with a rotation fan-out attached: fan-out events
 /// can be lost and nothing else installs a replacement then, so a changed
 /// credential re-registers the row here too. When the fan-out did deliver,
@@ -1131,12 +1160,15 @@ async fn credentials_current(
     cancel: &CancellationToken,
 ) -> CredentialCheck {
     let Some(resolver) = context.credentials.filter(|_| !bindings.is_empty()) else {
-        return CredentialCheck::Current;
+        return CredentialCheck::Current {
+            observed: Vec::new(),
+        };
     };
     let tenant = TenantScope::from_scope(scope);
     let mut changed = false;
     let mut blocked = Vec::new();
-    for bound in bindings {
+    let mut usable = Vec::new();
+    for (position, bound) in bindings.iter().enumerate() {
         let observed = match resolver.as_availability_observer() {
             Some(observer) => observe_binding(observer, &tenant, bound, cancel.clone()).await,
             None => None,
@@ -1154,24 +1186,19 @@ async fn credentials_current(
                 )
                 .await;
             match resolved {
-                Ok(guard) => {
-                    let metadata = guard.metadata();
-                    BindingStatus::Usable {
-                        material: (metadata.material_epoch(), metadata.revision()),
-                    }
+                Ok(guard) => BindingStatus::Usable {
+                    at: CredentialObservedAt::from(guard.metadata()),
                 },
                 Err(source) => BindingStatus::Failed {
                     source,
-                    observed_material_epoch: None,
+                    observed: None,
                 },
             }
         };
         match status {
-            BindingStatus::Usable { material } => changed |= material != bound.material,
-            BindingStatus::Failed {
-                source,
-                observed_material_epoch,
-            } => match classify(&source) {
+            BindingStatus::Usable { at } if at.material_epoch() != bound.at.0 => changed = true,
+            BindingStatus::Usable { at } => usable.push((position, at)),
+            BindingStatus::Failed { source, observed } => match classify(&source) {
                 CredentialClass::Transient => {
                     tracing::debug!(
                         target: "nebula_engine::resource_activation",
@@ -1182,7 +1209,7 @@ async fn credentials_current(
                 CredentialClass::Blocked(reason) => blocked.push(BlockedSlot {
                     slot: bound.slot.clone(),
                     reason,
-                    observed_material_epoch,
+                    observed,
                     source,
                 }),
                 CredentialClass::Terminal => {
@@ -1199,14 +1226,18 @@ async fn credentials_current(
     } else if changed {
         CredentialCheck::Changed
     } else {
-        CredentialCheck::Current
+        CredentialCheck::Current { observed: usable }
     }
 }
 
 /// The outcome of re-checking a registration's credentials.
 enum CredentialCheck {
-    /// Every credential is usable at the material the row holds.
-    Current,
+    /// Every credential is usable at the material the row holds; `observed`
+    /// pairs a binding's position with where it was found usable. A binding
+    /// that could not be re-checked now (a transient failure) is absent.
+    Current {
+        observed: Vec<(usize, CredentialObservedAt)>,
+    },
     /// A credential was refreshed or rotated: register the row again.
     Changed,
     /// These credentials deny use at their current material.
@@ -1219,18 +1250,18 @@ enum CredentialCheck {
 struct BlockedSlot {
     slot: String,
     reason: CredentialUnavailableReason,
-    observed_material_epoch: Option<u64>,
+    /// Where the denial was observed, when a head read saw it.
+    observed: Option<CredentialObservedAt>,
     source: CredentialSlotResolveError,
 }
 
 /// One binding's state, from an observation or a projection.
 enum BindingStatus {
-    Usable {
-        material: (u64, u64),
-    },
+    /// Usable at material and (when known) use revision `at`.
+    Usable { at: CredentialObservedAt },
     Failed {
         source: CredentialSlotResolveError,
-        observed_material_epoch: Option<u64>,
+        observed: Option<CredentialObservedAt>,
     },
 }
 
@@ -1267,15 +1298,14 @@ async fn observe_binding(
             };
             return Some(BindingStatus::Failed {
                 source,
-                observed_material_epoch: None,
+                observed: None,
             });
         },
     };
+    let at = CredentialObservedAt::from(&observation);
     let source = match observation.availability() {
         CredentialAvailability::Available => {
-            return Some(BindingStatus::Usable {
-                material: (observation.material_epoch(), observation.revision()),
-            });
+            return Some(BindingStatus::Usable { at });
         },
         CredentialAvailability::RefreshInFlight => CredentialSlotResolveError::RefreshInFlight {
             retry_after: Duration::from_secs(1),
@@ -1296,7 +1326,7 @@ async fn observe_binding(
     };
     Some(BindingStatus::Failed {
         source,
-        observed_material_epoch: Some(observation.material_epoch()),
+        observed: Some(at),
     })
 }
 
@@ -1344,7 +1374,7 @@ fn suspend_blocked(
             activated,
             &entry.slot,
             entry.reason,
-            entry.observed_material_epoch,
+            entry.observed,
         );
         first.get_or_insert(StoredResourceActivationError::Credential {
             slot: entry.slot,
@@ -1360,7 +1390,7 @@ fn suspend_slot(
     activated: &ActivatedResource,
     slot: &str,
     reason: CredentialUnavailableReason,
-    observed_material_epoch: Option<u64>,
+    observed: Option<CredentialObservedAt>,
 ) {
     let outcome = context.manager.suspend_credential_row(
         &activated.resource_key,
@@ -1368,7 +1398,7 @@ fn suspend_slot(
         &activated.slot_identity,
         slot,
         reason,
-        observed_material_epoch.map(nebula_resource::CredentialObservedAt::new),
+        observed,
     );
     match outcome {
         Ok(outcome) => tracing::warn!(
@@ -1389,48 +1419,115 @@ fn suspend_slot(
     }
 }
 
-/// Reopens the kept registration `activated` when a check found every
-/// credential usable at the material it holds. A suspension recorded after
-/// `ticket` was captured wins; the row then refuses acquires until a later
-/// check reopens it.
-fn reopen_suspended(
+/// Hands the kept registration `activated` the use revisions a current check
+/// found its credentials usable at (`observed`, by binding position).
+///
+/// The row's gate is asked only when it can change something: the row is
+/// suspended (reopen, if the observation is newer than the denial), or a
+/// credential's use revision is above the one this activator last saw the
+/// row admit (readmit: use was denied and allowed again unobserved, so new
+/// work gets a fresh admission generation; admitted leases stay open). A
+/// steady row costs no gate call. The revisions seen are written back into
+/// `bindings`, raised only.
+///
+/// A suspension recorded after `ticket` was captured, or a denial the
+/// observation is not newer than, keeps the row suspended: the turn then
+/// fails with the suspended slot's credential error, as a new unit must not
+/// be admitted (Design CONTRACT, same-material block).
+fn readmit_bound(
     context: &ActivationContext<'_>,
     activated: &ActivatedResource,
-    bindings: &[BoundCredential],
+    bindings: &mut [BoundCredential],
+    observed: &[(usize, CredentialObservedAt)],
     ticket: Option<nebula_resource::CredentialGateTicket>,
-) {
-    let Some(ticket) = ticket else {
-        return;
+) -> Result<(), StoredResourceActivationError> {
+    let suspension = || {
+        context
+            .manager
+            .get_row(
+                &activated.resource_key,
+                &activated.scope,
+                &activated.slot_identity,
+            )
+            .and_then(|row| row.credential_suspension())
     };
-    let suspended = context
-        .manager
-        .get_row(
-            &activated.resource_key,
-            &activated.scope,
-            &activated.slot_identity,
-        )
-        .and_then(|row| row.credential_suspension())
-        .is_some();
-    if !suspended {
-        return;
-    }
-    for bound in bindings {
+    let suspended = suspension().is_some();
+    for (position, at) in observed {
+        let Some(bound) = bindings.get_mut(*position) else {
+            continue;
+        };
+        let newer = at
+            .admission_epoch()
+            .is_some_and(|admission_epoch| admission_epoch > bound.at.1);
+        if !(suspended || newer) {
+            continue;
+        }
+        let Some(ticket) = ticket else {
+            continue;
+        };
         let outcome = context.manager.reopen_credential_row(
             &activated.resource_key,
             &activated.scope,
             &activated.slot_identity,
             &bound.slot,
             ticket,
-            nebula_resource::CredentialObservedAt::new(bound.material.0),
+            *at,
         );
-        tracing::debug!(
-            target: "nebula_engine::resource_activation",
-            resource_key = %activated.resource_key,
-            slot = %bound.slot,
-            ?outcome,
-            "bound credential usable again; reopening the kept registration"
-        );
+        match outcome {
+            Ok(nebula_resource::CredentialReopenOutcome::Readmitted) => tracing::info!(
+                target: "nebula_engine::resource_activation",
+                resource_key = %activated.resource_key,
+                slot = %bound.slot,
+                "bound credential's use revision advanced unobserved; new work readmitted"
+            ),
+            Ok(outcome) => tracing::debug!(
+                target: "nebula_engine::resource_activation",
+                resource_key = %activated.resource_key,
+                slot = %bound.slot,
+                ?outcome,
+                "bound credential usable; kept registration's gate updated"
+            ),
+            Err(ref error) => tracing::debug!(
+                target: "nebula_engine::resource_activation",
+                resource_key = %activated.resource_key,
+                slot = %bound.slot,
+                error = %error,
+                "bound credential usable; no registration to reopen"
+            ),
+        }
+        // A superseded reopen saw nothing the gate accepted: re-checked next
+        // time. Every other answer means the gate knows this revision.
+        if matches!(
+            outcome,
+            Ok(outcome) if outcome != nebula_resource::CredentialReopenOutcome::Superseded
+        ) && let Some(admission_epoch) = at.admission_epoch()
+        {
+            bound.at.1 = bound.at.1.max(admission_epoch);
+        }
     }
+    if !suspended {
+        return Ok(());
+    }
+    let Some(suspension) = suspension() else {
+        return Ok(());
+    };
+    let (slot, reason) = suspension
+        .slots()
+        .next()
+        .map(|(slot, reason)| (slot.to_owned(), reason))
+        .unwrap_or_else(|| (String::new(), suspension.reason()));
+    Err(StoredResourceActivationError::Credential {
+        slot,
+        source: match reason {
+            CredentialUnavailableReason::ReauthRequired => {
+                CredentialSlotResolveError::ReauthRequired
+            },
+            // The operation kind is not recorded with a suspension.
+            _ => CredentialSlotResolveError::OperationBlocked {
+                operation: nebula_credential::CredentialOperationKind::LegacyUnclassified,
+            },
+        },
+    })
 }
 
 /// Removes `activated` from the manager, which drops its rotation bindings
