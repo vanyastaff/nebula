@@ -292,20 +292,13 @@ fn is_loopback(url: &Url) -> bool {
 
 /// The bounds a transport applies to every exchange.
 #[derive(Clone, Copy)]
-#[expect(
-    dead_code,
-    reason = "the request runner that reads the limits lands next"
-)]
-struct Limits {
-    request_timeout: Duration,
-    max_response_bytes: u64,
-    max_stream_bytes: u64,
+pub(super) struct Limits {
+    /// Budget of one buffered exchange, body included.
+    pub(super) request_timeout: Duration,
+    /// Largest buffered response body.
+    pub(super) max_response_bytes: u64,
 }
 
-#[expect(
-    dead_code,
-    reason = "the request runner that reads the pool, base and limits lands next"
-)]
 struct TransportInner {
     client: reqwest::Client,
     base: Url,
@@ -327,10 +320,6 @@ struct TransportInner {
 /// Cloning shares the pool. `Debug` shows no URL.
 #[derive(Clone)]
 pub struct HttpTransport {
-    #[expect(
-        dead_code,
-        reason = "the request runner that reads the transport lands next"
-    )]
     inner: Arc<TransportInner>,
 }
 
@@ -366,10 +355,21 @@ impl HttpTransport {
                 limits: Limits {
                     request_timeout: Duration::from_millis(config.request_timeout_ms),
                     max_response_bytes: config.max_response_bytes,
-                    max_stream_bytes: config.max_stream_bytes,
                 },
             }),
         })
+    }
+
+    pub(super) fn client(&self) -> &reqwest::Client {
+        &self.inner.client
+    }
+
+    pub(super) fn base(&self) -> &Url {
+        &self.inner.base
+    }
+
+    pub(super) fn limits(&self) -> Limits {
+        self.inner.limits
     }
 }
 
