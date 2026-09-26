@@ -16,7 +16,10 @@ use nebula_credential::{
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
-pub(crate) use super::credential_reads::tests::{ScriptedObserver, seen};
+pub(crate) use super::credential_reads::{
+    CREDENTIAL_READ_TIMEOUT,
+    tests::{ScriptedObserver, seen},
+};
 use super::{Manager, ManagerConfig, RegistrationSpec};
 use crate::{
     Bounded, Error, PinSlots, PoolConfig, Pooled, Provider, Resident, ResidentConfig,

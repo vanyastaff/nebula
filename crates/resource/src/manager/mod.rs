@@ -484,6 +484,7 @@ pub use rotation::{
     SlotDrainOutcome, TaintedSlot,
 };
 pub use shutdown::{ShutdownError, ShutdownReport};
+pub(crate) use strict_admission::StrictReading;
 
 /// Snapshot of a resource's health and operational state.
 #[derive(Debug, Clone)]

@@ -22,21 +22,26 @@ use std::{
 };
 
 use nebula_core::{
-    CoreError, CredentialKey, ResourceKey,
+    CoreError, CredentialId, CredentialKey, ResourceKey,
     accessor::{CredentialAccessor, ResourceAccessor},
     context::BaseContext,
     resource_key,
     scope::{Principal, Scope},
 };
+use nebula_credential::{
+    CredentialAvailabilityObservation, CredentialAvailabilityObserver, CredentialObserveError,
+    TenantScope,
+};
 use nebula_resource::{
-    AcquireOptions, Error, ErrorKind, Manager, ManagerConfig, RateLimitProfile, RegistrationSpec,
-    Resident, ResidentConfig, ResourceConfig, ResourceContext, ResourceEvent, ScopeLevel,
-    ShutdownConfig, SlotIdentity, TeardownCx,
+    AcquireOptions, CredentialAdmissionProfile, Error, ErrorKind, Manager, ManagerConfig,
+    RateLimitProfile, RegistrationSpec, Resident, ResidentConfig, ResourceConfig, ResourceContext,
+    ResourceEvent, ScopeLevel, ShutdownConfig, SlotIdentity, TeardownCx,
     call::{Cost, Effect, Managed, OpCx, OpError, Operation, SentState},
     resource::{Provider, ResourceMetadataDraft},
     topology::ResidentProvider,
 };
 use tokio::sync::{Semaphore, mpsc, watch};
+use tokio_util::sync::CancellationToken;
 
 // ── the resource ─────────────────────────────────────────────────────────
 
@@ -331,6 +336,32 @@ impl ResourceAccessor for NoResources {
     }
 }
 
+/// Counts availability reads of a strict manager; the logger must cause
+/// none. Answers "store unavailable", so any read would refuse the unit.
+#[derive(Default)]
+struct CountingObserver {
+    reads: AtomicUsize,
+}
+
+impl CredentialAvailabilityObserver for CountingObserver {
+    fn observe_availability<'a>(
+        &'a self,
+        _scope: &'a TenantScope,
+        _credential_id: CredentialId,
+        _expected_key: CredentialKey,
+        _cancel: CancellationToken,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<CredentialAvailabilityObservation, CredentialObserveError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async { Err(CredentialObserveError::Unavailable) })
+    }
+}
+
 struct Fixture {
     manager: Manager,
     logger: Logger,
@@ -339,9 +370,21 @@ struct Fixture {
 
 impl Fixture {
     fn new(buffer: u64) -> Self {
+        Self::with_config(buffer, ManagerConfig::default())
+    }
+
+    /// The logger on a strict manager, reading through `observer`.
+    fn strict(buffer: u64, observer: &Arc<CountingObserver>) -> Self {
+        let observer = Arc::clone(observer) as Arc<dyn CredentialAvailabilityObserver>;
+        Self::with_config(
+            buffer,
+            ManagerConfig::default().with_credential_observer(observer),
+        )
+    }
+
+    fn with_config(buffer: u64, config: ManagerConfig) -> Self {
         let manager = Manager::with_config(
-            ManagerConfig::default()
-                .with_metrics_registry(Arc::new(nebula_metrics::MetricsRegistry::new())),
+            config.with_metrics_registry(Arc::new(nebula_metrics::MetricsRegistry::new())),
         );
         let logger = Logger::new();
         manager
@@ -437,6 +480,36 @@ async fn enqueued_and_flushed_are_distinct_and_no_credential_is_read() {
         .health_check::<Logger>(&ScopeLevel::Global)
         .expect("row");
     assert_eq!(health.rate_limit_profile, RateLimitProfile::PerAttempt);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_strict_manager_reads_no_credential_for_the_logger() {
+    let observer = Arc::new(CountingObserver::default());
+    let fixture = Fixture::strict(8, &observer);
+    let logger = fixture.managed().await;
+    fixture.logger.open_gate();
+
+    assert_eq!(
+        logger.submit(write("one")).await.expect("enqueued"),
+        Enqueued { seq: 1 }
+    );
+    assert_eq!(
+        logger.submit(Flush).await.expect("flushed"),
+        Flushed { through: 1 }
+    );
+    assert_eq!(
+        observer.reads.load(Ordering::SeqCst),
+        0,
+        "a slot-less row reads nothing, per acquire or per attempt"
+    );
+    let health = fixture
+        .manager
+        .health_check::<Logger>(&ScopeLevel::Global)
+        .expect("row");
+    assert_eq!(
+        health.credential_admission,
+        CredentialAdmissionProfile::Unbound
+    );
 }
 
 #[tokio::test(start_paused = true)]

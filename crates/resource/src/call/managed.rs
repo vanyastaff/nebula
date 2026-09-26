@@ -68,11 +68,11 @@ const CANCELLED: u8 = 2;
 /// Dropping the last reference drops the guard, which releases the lease;
 /// an attempt that [`taint`](Attempt::taint)ed it is re-applied first, so
 /// the release bypasses recycling.
-struct ManagedLease<R: Provider> {
+pub(super) struct ManagedLease<R: Provider> {
     guard: ResourceGuard<R>,
-    managed: Arc<ManagedResource<R>>,
-    generation: Arc<AdmissionGeneration>,
-    key: ResourceKey,
+    pub(super) managed: Arc<ManagedResource<R>>,
+    pub(super) generation: Arc<AdmissionGeneration>,
+    pub(super) key: ResourceKey,
     metrics: Option<ResourceOpsMetrics>,
     events: Option<Arc<EventBus<ResourceEvent>>>,
     units: Arc<Semaphore>,
@@ -86,7 +86,7 @@ impl<R: Provider> ManagedLease<R> {
     ///
     /// The same mapping as the acquire path's hand-out refusal, applied to
     /// the lease's own generation rather than the row's current one.
-    fn admission_refusal(&self) -> Result<(), OpError> {
+    pub(super) fn admission_refusal(&self) -> Result<(), OpError> {
         if self.managed.is_tainted() {
             return Err(OpError::new(
                 ErrorKind::Revoked,
@@ -293,7 +293,7 @@ impl<R: Provider + PinSlots> Managed<R> {
 
 /// State one unit shares between its handle, its runtime task and its
 /// attempts.
-struct UnitShared {
+pub(super) struct UnitShared {
     /// `PENDING` until the first grant or a cancel, whichever comes first.
     state: AtomicU8,
     /// Fired by [`Unit::cancel`] while no attempt was granted.
@@ -331,7 +331,7 @@ impl UnitShared {
     }
 
     /// Grants one attempt, unless the unit was cancelled before its first.
-    fn grant(&self) -> Result<(), OpError> {
+    pub(super) fn grant(&self) -> Result<(), OpError> {
         match self
             .state
             .compare_exchange(PENDING, GRANTED, Ordering::AcqRel, Ordering::Acquire)
@@ -385,7 +385,7 @@ impl UnitShared {
     }
 }
 
-fn cancelled_before_grant() -> OpError {
+pub(super) fn cancelled_before_grant() -> OpError {
     OpError::new(
         ErrorKind::Cancelled,
         "unit cancelled before its first attempt",
@@ -599,13 +599,30 @@ impl<R: Provider + PinSlots> OpCx<'_, R> {
     ///    forfeited. A cost above the burst fails permanently, a slot past
     ///    the deadline is `Exhausted` with a `retry_after`, an unreachable
     ///    limit store is `Backpressure`.
-    /// 4. **Final admission** — the lease is checked again, after the wait.
-    ///    Until the strict per-acquire credential read lands, this re-checks
-    ///    local admission only, not a fresh credential read.
-    /// 5. **Grant** — the attempt is granted unless [`Unit::cancel`] won the
-    ///    race for the unit's first grant.
+    /// 4. **Credential read** — on a strict manager (one with a credential
+    ///    observer) and a row with bound slots, every bound credential's
+    ///    availability is read after every wait of the attempt, outside every
+    ///    lock, bounded by the unit's deadline and the read timeout, and
+    ///    raced against the lease's generation and [`Unit::cancel`]. Every
+    ///    attempt reads, [`Cost::FREE`] included; concurrent attempts of a
+    ///    credential share reads join-next (only a read issued after the
+    ///    attempt arrived answers it). An interim manager or a slot-less row
+    ///    reads nothing.
+    /// 5. **Pin** — the unit's first grant pins its credential slots
+    ///    ([`Attempt::slots`]).
+    /// 6. **Registration and grant** — on a strict read, under the manager's
+    ///    admission lock: a revoke taint is `Revoked`, shutdown `Cancelled`;
+    ///    the read is applied to the row (a blocked credential suspends it
+    ///    and closes its leases, a usable one reopens or readmits it) and a
+    ///    denying credential refuses `CredentialUnavailable` with the read's
+    ///    reason; a suspended row or a closed lease refuses; a pin a rotation
+    ///    superseded since the unit pinned it refuses `Rebinding`. Without a
+    ///    strict read the lease's admission is re-checked, lock-free. The
+    ///    attempt is then granted unless [`Unit::cancel`] won the race for
+    ///    the unit's first grant.
     ///
-    /// Every refusal means nothing reached the provider.
+    /// Every refusal means nothing reached the provider; a quota slot booked
+    /// for a refused attempt is forfeited.
     ///
     /// # Errors
     ///
@@ -629,22 +646,19 @@ impl<R: Provider + PinSlots> OpCx<'_, R> {
         })
     }
 
-    /// Steps 1–5 of [`attempt`](Self::attempt); on a grant, the unit's pin
-    /// (captured now for its first grant).
+    /// Steps 1–6 of [`attempt`](Self::attempt); on a grant, the unit's pin.
     async fn admit(&mut self, cost: &Cost) -> Result<&UnitPin<R::Pinned>, OpError> {
         self.admit_local(cost).await?;
+        let cancel = (!self.shared.is_granted()).then_some(&self.shared.cancel);
+        let reading = self.lease.read_credentials(self.deadline, cancel).await?;
+        // No await from here on: the pin is never lost to a dropped future.
         // The first grant pins the slots; a refused first attempt keeps no
         // pin, so the next attempt pins afresh.
         let (pin, fresh) = match self.pin.take() {
             Some(pin) => (pin, false),
             None => (capture_pin(&self.lease.managed), true),
         };
-        // The seam for the strict per-attempt credential read: today the
-        // lease's local admission only.
-        let granted = self
-            .lease
-            .admission_refusal()
-            .and_then(|()| self.shared.grant());
+        let granted = self.lease.register(reading.as_ref(), &pin, self.shared);
         match granted {
             Ok(()) => Ok(&*self.pin.insert(pin)),
             Err(refusal) => {

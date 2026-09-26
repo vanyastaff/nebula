@@ -294,6 +294,12 @@ impl CredentialReads {
         }
     }
 
+    /// The manager's admission state these reads belong to: a managed
+    /// attempt applies its reading under its lock.
+    pub(crate) fn link(&self) -> &AdmissionLink {
+        &self.link
+    }
+
     pub(crate) fn metrics(&self) -> Option<&CredentialAdmissionMetrics> {
         self.metrics.as_ref()
     }
