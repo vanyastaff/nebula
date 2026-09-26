@@ -736,6 +736,9 @@ async fn project_and_refresh(
         credential_key,
         install_live,
     } = target;
+    // Captured before the credential is read: a successful resolve proves it
+    // usable and may reopen a suspension, unless one landed after this point.
+    let reopen = crate::manager::CredentialGateTicket::new(managed.credential_gate_epoch());
     let cancel = CancellationToken::new();
     let _cancel_on_drop = cancel.clone().drop_guard();
     let guard = match tokio::time::timeout(
@@ -821,7 +824,10 @@ async fn project_and_refresh(
             slot,
             managed,
             guard,
-            Some(generation),
+            crate::manager::ResolvedAt {
+                slot_generation: Some(generation),
+                gate_ticket: Some(reopen),
+            },
             (
                 || {
                     if !index.contains_published_binding(&cid, &publication_binding)

@@ -404,6 +404,8 @@ pub use credential_gate::{
 pub use options::{
     DrainTimeoutPolicy, ManagerConfig, RegisterOptions, RegistrationSpec, ShutdownConfig,
 };
+#[cfg(feature = "rotation")]
+pub(crate) use rotation::ResolvedAt;
 pub use rotation::{
     EpochRefreshOutcome, EpochRevokeOutcome, RevokeTail, SlotDeferralReason, SlotDispatchOutcome,
     SlotDrainOutcome, TaintedSlot,

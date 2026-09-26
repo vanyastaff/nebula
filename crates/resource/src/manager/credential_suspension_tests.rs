@@ -77,6 +77,9 @@ impl Probe {
 /// One provider per topology, each with a declared `db` credential slot.
 macro_rules! credential_bound_provider {
     ($ty:ident, $key:literal, $topology:ty) => {
+        credential_bound_provider!($ty, $key, $topology, ["db"]);
+    };
+    ($ty:ident, $key:literal, $topology:ty, [$($slot:literal),+]) => {
         #[derive(Clone)]
         struct $ty {
             probe: Arc<Probe>,
@@ -122,7 +125,7 @@ macro_rules! credential_bound_provider {
             }
 
             fn credential_slot_names() -> &'static [&'static str] {
-                &["db"]
+                &[$($slot),+]
             }
 
             fn credential_slot_epoch(&self) -> u64 {
@@ -177,8 +180,16 @@ macro_rules! credential_bound_provider {
 credential_bound_provider!(ResidentRow, "suspension-resident", Resident<Self>);
 credential_bound_provider!(PooledRow, "suspension-pooled", Pooled<Self>);
 credential_bound_provider!(BoundedRow, "suspension-bounded", Bounded<Self>);
+// Only `db` carries material; `cache` exists to be suspended beside it.
+credential_bound_provider!(
+    TwoSlotRow,
+    "suspension-two-slot",
+    Resident<Self>,
+    ["db", "cache"]
+);
 
 impl ResidentProvider for ResidentRow {}
+impl ResidentProvider for TwoSlotRow {}
 
 impl PoolProvider for PooledRow {
     async fn recycle(&self, _: &u64, _: &crate::InstanceMetrics) -> Result<RecycleDecision, Error> {
@@ -326,28 +337,70 @@ fn assert_credential_unavailable(error: &Error, reason: CredentialUnavailableRea
     );
 }
 
-fn install_material(manager: &Manager, epoch: u64) -> impl Future<Output = ()> + '_ {
-    let guard = ErasedCredentialGuard::from_typed(
+/// Every install in this file projects the same credential.
+fn credential_id() -> CredentialId {
+    static ID: std::sync::OnceLock<CredentialId> = std::sync::OnceLock::new();
+    *ID.get_or_init(CredentialId::new)
+}
+
+fn material(epoch: u64) -> ErasedCredentialGuard {
+    ErasedCredentialGuard::from_typed(
         CredentialGuard::new(epoch),
         CredentialGuardMetadata::new(
-            CredentialId::new(),
+            credential_id(),
             "oauth".parse().expect("credential key"),
             epoch,
             epoch,
         ),
-    );
-    async move {
-        let _outcome = manager
-            .install_and_refresh_slot_for_identity(
-                &ResidentRow::key(),
-                ScopeLevel::Global,
-                "db",
-                &tenant(),
-                guard,
-            )
-            .await
-            .expect("install");
-    }
+    )
+}
+
+/// Installs through the public path, which never reopens a suspension.
+async fn install_material(manager: &Manager, epoch: u64) -> super::EpochRefreshOutcome {
+    manager
+        .install_and_refresh_slot_for_identity(
+            &ResidentRow::key(),
+            ScopeLevel::Global,
+            "db",
+            &tenant(),
+            material(epoch),
+        )
+        .await
+        .expect("install")
+}
+
+/// Installs as the rotation fan-out does, with the ticket it captured
+/// before resolving the material.
+async fn install_resolved<R: Provider>(
+    manager: &Manager,
+    epoch: u64,
+    reopen: Option<CredentialGateTicket>,
+) -> super::EpochRefreshOutcome {
+    let managed = manager
+        .lookup_any_for_slot_identity_structural(&R::key(), &ScopeLevel::Global, &tenant())
+        .expect("row");
+    manager
+        .install_and_refresh_resolved(
+            &R::key(),
+            "db",
+            managed,
+            material(epoch),
+            super::rotation::ResolvedAt {
+                slot_generation: None,
+                gate_ticket: reopen,
+            },
+            (|| Ok(()), || {}, || {}),
+        )
+        .await
+        .expect("install")
+}
+
+fn is_suspended<R: Provider>(manager: &Manager) -> bool {
+    manager
+        .get_row(&R::key(), &ScopeLevel::Global, &tenant())
+        .expect("row")
+        .credential_suspension()
+        .is_some()
 }
 
 // ---------------------------------------------------------------------------
@@ -737,7 +790,10 @@ async fn an_observation_older_than_the_installed_material_is_ignored() {
     let manager = Manager::new();
     resident(&manager);
     drop(acquire::<ResidentRow>(&manager).await.expect("warm"));
-    install_material(&manager, 5).await;
+    assert!(matches!(
+        install_material(&manager, 5).await,
+        super::EpochRefreshOutcome::Applied(_)
+    ));
     let stale = manager
         .suspend_credential_row(
             &ResidentRow::key(),
@@ -765,4 +821,124 @@ async fn an_observation_older_than_the_installed_material_is_ignored() {
         )
         .expect("suspend");
     assert_eq!(current, CredentialSuspendOutcome::Suspended);
+}
+
+// ---------------------------------------------------------------------------
+// Credential installs and suspension.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn an_install_with_a_current_ticket_reopens_the_row() {
+    let manager = Manager::new();
+    resident(&manager);
+    let old = acquire::<ResidentRow>(&manager).await.expect("warm");
+    suspend::<ResidentRow>(&manager, REAUTH);
+    let ticket = ticket::<ResidentRow>(&manager);
+    assert!(matches!(
+        install_resolved::<ResidentRow>(&manager, 2, Some(ticket)).await,
+        super::EpochRefreshOutcome::Applied(_)
+    ));
+    assert!(!is_suspended::<ResidentRow>(&manager));
+    let new = acquire::<ResidentRow>(&manager)
+        .await
+        .expect("the install proved the credential usable");
+    assert!(!new.is_closing());
+    assert!(old.is_closing(), "the pre-suspension lease stays closed");
+}
+
+#[tokio::test]
+async fn an_install_with_a_superseded_ticket_installs_but_stays_suspended() {
+    let manager = Manager::new();
+    resident(&manager);
+    drop(acquire::<ResidentRow>(&manager).await.expect("warm"));
+    let ticket = ticket::<ResidentRow>(&manager);
+    suspend::<ResidentRow>(&manager, REAUTH);
+    assert!(matches!(
+        install_resolved::<ResidentRow>(&manager, 2, Some(ticket)).await,
+        super::EpochRefreshOutcome::Applied(_)
+    ));
+    assert!(
+        is_suspended::<ResidentRow>(&manager),
+        "a denial recorded after the ticket wins"
+    );
+    assert_credential_unavailable(
+        &acquire::<ResidentRow>(&manager).await.expect_err("refused"),
+        REAUTH,
+    );
+}
+
+#[tokio::test]
+async fn an_install_into_one_slot_leaves_another_slots_suspension() {
+    let manager = Manager::new();
+    register(
+        &manager,
+        TwoSlotRow::new(),
+        Resident::new(ResidentConfig::default()),
+    );
+    drop(acquire::<TwoSlotRow>(&manager).await.expect("warm"));
+    manager
+        .suspend_credential_row(
+            &TwoSlotRow::key(),
+            &ScopeLevel::Global,
+            &tenant(),
+            "cache",
+            BLOCKED,
+            None,
+        )
+        .expect("suspend cache");
+    let ticket = ticket::<TwoSlotRow>(&manager);
+    assert!(matches!(
+        install_resolved::<TwoSlotRow>(&manager, 2, Some(ticket)).await,
+        super::EpochRefreshOutcome::Applied(_)
+    ));
+    let suspension = manager
+        .get_row(&TwoSlotRow::key(), &ScopeLevel::Global, &tenant())
+        .expect("row")
+        .credential_suspension()
+        .expect("cache still denies use");
+    assert_eq!(suspension.reason_for("cache"), Some(BLOCKED));
+    assert_eq!(suspension.reason_for("db"), None);
+}
+
+#[tokio::test]
+async fn a_stale_install_at_the_installed_material_reopens_the_row() {
+    let manager = Manager::new();
+    resident(&manager);
+    drop(acquire::<ResidentRow>(&manager).await.expect("warm"));
+    assert!(matches!(
+        install_resolved::<ResidentRow>(&manager, 3, None).await,
+        super::EpochRefreshOutcome::Applied(_)
+    ));
+    suspend::<ResidentRow>(&manager, BLOCKED);
+
+    let older = ticket::<ResidentRow>(&manager);
+    assert!(matches!(
+        install_resolved::<ResidentRow>(&manager, 2, Some(older)).await,
+        super::EpochRefreshOutcome::Stale { .. }
+    ));
+    assert!(
+        is_suspended::<ResidentRow>(&manager),
+        "an older material proves nothing about the installed one"
+    );
+
+    let same = ticket::<ResidentRow>(&manager);
+    assert!(matches!(
+        install_resolved::<ResidentRow>(&manager, 3, Some(same)).await,
+        super::EpochRefreshOutcome::Stale { .. }
+    ));
+    assert!(!is_suspended::<ResidentRow>(&manager));
+    drop(acquire::<ResidentRow>(&manager).await.expect("reopened"));
+}
+
+#[tokio::test]
+async fn the_public_install_never_reopens() {
+    let manager = Manager::new();
+    resident(&manager);
+    drop(acquire::<ResidentRow>(&manager).await.expect("warm"));
+    suspend::<ResidentRow>(&manager, REAUTH);
+    assert!(matches!(
+        install_material(&manager, 2).await,
+        super::EpochRefreshOutcome::Applied(_)
+    ));
+    assert!(is_suspended::<ResidentRow>(&manager));
 }

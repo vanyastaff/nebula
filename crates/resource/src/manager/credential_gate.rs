@@ -234,6 +234,35 @@ impl Manager {
         }
     }
 
+    /// Reopens `slot` after a credential install proved it usable, when the
+    /// installer captured a ticket. Best effort: the install already
+    /// succeeded, so a refused or failed reopen is only logged. Caller holds
+    /// `Manager.admission`.
+    pub(crate) fn reopen_after_install(
+        &self,
+        key: &ResourceKey,
+        slot: &str,
+        ticket: Option<CredentialGateTicket>,
+        managed: &dyn ManagedHandle,
+    ) {
+        let Some(ticket) = ticket else {
+            return;
+        };
+        match self.reopen_under_admission(key, slot, ticket, managed) {
+            Ok(outcome) => {
+                tracing::debug!(resource.key = %key, slot, ?outcome, "reopen after credential install");
+            },
+            Err(error) => {
+                tracing::debug!(
+                    resource.key = %key,
+                    slot,
+                    error.kind = ?error.kind(),
+                    "reopen after credential install skipped"
+                );
+            },
+        }
+    }
+
     /// Caller holds `Manager.admission` and resolved `managed` under it.
     pub(crate) fn reopen_under_admission(
         &self,
