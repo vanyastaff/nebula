@@ -40,6 +40,10 @@ macro_rules! impl_fake_handle {
             fn is_tainted(&self) -> bool {
                 false
             }
+            fn retire_admission(&self) {}
+            fn publish_admission(&self) -> Option<u64> {
+                None
+            }
             fn phase_changed(&self) -> &tokio::sync::Notify {
                 static NEVER: tokio::sync::Notify = tokio::sync::Notify::const_new();
                 &NEVER

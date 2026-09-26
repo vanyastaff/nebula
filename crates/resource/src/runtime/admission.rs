@@ -52,6 +52,7 @@ pub(crate) struct AdmissionGeneration {
 impl AdmissionGeneration {
     /// A generation that is closed from birth, for a lease built while the
     /// row admits nothing.
+    #[cfg_attr(not(test), expect(dead_code, reason = "guards adopt generations next"))]
     fn closed_sentinel() -> Self {
         let closing = CancellationToken::new();
         closing.cancel();
@@ -70,6 +71,7 @@ impl AdmissionGeneration {
     }
 
     /// The generation's closing token.
+    #[cfg_attr(not(test), expect(dead_code, reason = "guards adopt generations next"))]
     pub(crate) fn token(&self) -> &CancellationToken {
         &self.closing
     }
@@ -104,6 +106,7 @@ impl AdmissionCell {
 
     /// The generation new work is admitted under, or `None` when the row is
     /// retired, suspended, or its current generation is closed.
+    #[cfg_attr(not(test), expect(dead_code, reason = "guards adopt generations next"))]
     pub(crate) fn current(&self) -> Option<Arc<AdmissionGeneration>> {
         if self.terminal.is_cancelled() {
             return None;
@@ -151,12 +154,14 @@ impl AdmissionCell {
     }
 
     /// Whether [`retire`](Self::retire) ran or the manager was cancelled.
+    #[cfg(test)]
     pub(crate) fn is_retired(&self) -> bool {
         self.terminal.is_cancelled()
     }
 
     /// The current generation, or a generation closed from birth when the
     /// row admits nothing.
+    #[cfg_attr(not(test), expect(dead_code, reason = "guards adopt generations next"))]
     pub(crate) fn snapshot(&self) -> Arc<AdmissionGeneration> {
         self.current()
             .unwrap_or_else(|| Arc::new(AdmissionGeneration::closed_sentinel()))

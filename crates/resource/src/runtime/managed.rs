@@ -205,6 +205,12 @@ pub struct ManagedResource<R: Provider> {
     /// and the manager-wide `shutting_down` flag — one shared mechanism,
     /// not a parallel one.
     pub(crate) tainted: AtomicBool,
+    /// Admission generations: each acquire captures the current one under
+    /// `Manager.admission` and its guard observes that generation's closing
+    /// token. Retired by taint, removal, shutdown and manager drop; a benign
+    /// reload or credential install publishes a successor. See the
+    /// [`manager`](crate::manager) module docs, "Admission generations".
+    pub(crate) admission: Arc<super::admission::AdmissionCell>,
     /// Per-resource in-flight acquire counter `(active, notify)`.
     ///
     /// Every `acquire_*` against *this* row pre-counts here (alongside the
@@ -396,8 +402,13 @@ impl<R: Provider> ManagedResource<R> {
     /// mechanism as the per-handle `ResourceGuard::taint` and the
     /// manager-wide `shutting_down` flag. See the [`manager`](crate::manager)
     /// module docs for the canonical invariant.
+    ///
+    /// Retires the row's admission generations before returning, so every
+    /// lease already handed out observes closing by the time the caller
+    /// proceeds to drain.
     pub(crate) fn taint(&self) {
         self.tainted.store(true, Ordering::Release);
+        self.admission.retire();
         self.phase_changed.notify_waiters();
     }
 

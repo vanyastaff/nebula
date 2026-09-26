@@ -116,6 +116,17 @@ pub(crate) trait ManagedHandle: Send + Sync + 'static {
     /// Whether credential revoke already fenced this row's refresh admission.
     fn is_tainted(&self) -> bool;
 
+    /// Closes every admission generation of this row, including those held
+    /// by outstanding leases. Idempotent. Caller holds `Manager.admission`
+    /// (or `&mut Manager`).
+    fn retire_admission(&self);
+
+    /// Publishes a successor admission generation for a benign change
+    /// (credential install); predecessors stay open. Returns the new
+    /// sequence, or `None` once the row is retired. Caller holds
+    /// `Manager.admission`.
+    fn publish_admission(&self) -> Option<u64>;
+
     /// Woken on every phase or taint change of this row.
     fn phase_changed(&self) -> &tokio::sync::Notify;
 
@@ -343,6 +354,14 @@ where
 
     fn is_tainted(&self) -> bool {
         ManagedResource::is_tainted(self)
+    }
+
+    fn retire_admission(&self) {
+        self.admission.retire();
+    }
+
+    fn publish_admission(&self) -> Option<u64> {
+        self.admission.publish().map(|generation| generation.seq())
     }
 
     fn phase_changed(&self) -> &tokio::sync::Notify {

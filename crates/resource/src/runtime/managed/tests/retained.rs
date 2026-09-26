@@ -219,6 +219,7 @@ fn managed_with_workers(
         status: ArcSwap::from_pointee(ResourceStatus::ready()),
         recovery_gate: None,
         tainted: AtomicBool::new(false),
+        admission: Default::default(),
         in_flight: Arc::new((AtomicU64::new(0), Notify::new())),
         maintenance_sweeps: AtomicU64::new(0),
         maintenance: Default::default(),

@@ -727,6 +727,7 @@ impl Manager {
         self.cancel.cancel();
         for managed in self.registry.all_managed() {
             managed.begin_close();
+            managed.retire_admission();
         }
     }
 
@@ -1098,6 +1099,9 @@ impl Drop for InFlightCounter {
         }
     }
 }
+
+#[cfg(test)]
+mod admission_generation_tests;
 
 #[cfg(test)]
 mod shutdown_post_count_race_tests;

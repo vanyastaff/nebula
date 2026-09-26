@@ -17,13 +17,6 @@
 //! `self.topology.{try_reserve, acquire, phase, load, tag}` directly.
 
 pub(crate) mod acquire_loop;
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "rows adopt admission generations in the next change"
-    )
-)]
 pub(crate) mod admission;
 pub(crate) mod bounded;
 mod destroy_batch;

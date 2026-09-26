@@ -353,6 +353,9 @@ impl Manager {
             recovery_gate,
             rate_limiter,
             tainted: std::sync::atomic::AtomicBool::new(false),
+            admission: Arc::new(crate::runtime::admission::AdmissionCell::new(
+                self.cancel.child_token(),
+            )),
             in_flight: Arc::new((AtomicU64::new(0), Notify::new())),
             maintenance_sweeps: AtomicU64::new(0),
             maintenance: crate::runtime::managed::Maintenance::new(self.cancel.child_token()),
@@ -1038,18 +1041,37 @@ impl Manager {
         // mid-swap.
         managed.set_phase(crate::state::ResourcePhase::Reloading);
 
-        // Atomically swap the config.
-        managed.config.store(Arc::new(new_config));
+        {
+            // Serialized with acquire admission, credential admission and
+            // retirement: an acquire captures either the old config with the
+            // old admission generation or the new config with the new one.
+            let _admission = self
+                .admission
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
 
-        // Update the topology fingerprint so stale idle instances are evicted
-        // on the next acquire / sweep (a no-op for topologies that track no
-        // config fingerprint).
-        managed.set_fingerprint(new_fp);
+            // Atomically swap the config.
+            managed.config.store(Arc::new(new_config));
 
-        // Bump generation — readers snapshot this to detect changes.
-        managed
-            .generation
-            .fetch_add(1, std::sync::atomic::Ordering::Release);
+            // Update the topology fingerprint so stale idle instances are
+            // evicted on the next acquire / sweep (a no-op for topologies that
+            // track no config fingerprint).
+            managed.set_fingerprint(new_fp);
+
+            // Bump generation — readers snapshot this to detect changes.
+            managed
+                .generation
+                .fetch_add(1, std::sync::atomic::Ordering::Release);
+
+            // A reload is benign: publish a successor admission generation
+            // and leave the predecessor open for leases admitted under it. A
+            // retired row publishes nothing.
+            let admission = managed
+                .admission
+                .publish()
+                .map(|generation| generation.seq());
+            tracing::debug!(key = %R::key(), ?admission, "admission generation after reload");
+        }
 
         // #387: return to `Ready` after publishing the new atomic
         // generation so pollers see the phase transition alongside the
@@ -1198,6 +1220,12 @@ impl Manager {
         origin: RetirementOrigin,
     ) -> super::retirement::PendingRetirement {
         managed.begin_close();
+        // Removal, shutdown and manager drop close every lease's admission
+        // generation before returning. A same-identity replacement does not:
+        // the displaced row's leases stay valid until released (canon §13.2).
+        if origin != RetirementOrigin::Replacement {
+            managed.retire_admission();
+        }
         let key = managed.resource_key();
         tracing::debug!(resource.key = %key, "resource row retired; cleanup scheduled");
         let settlement =
