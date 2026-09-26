@@ -782,6 +782,11 @@ where
         if deficit == 0 {
             return 0;
         }
+        // Creating is a unit of work of its own: a strict row reads its bound
+        // credentials once per pass and builds nothing unless each is usable.
+        if !self.credentials_admit_creation().await {
+            return 0;
+        }
 
         let mut created = 0usize;
         for _ in 0..deficit {

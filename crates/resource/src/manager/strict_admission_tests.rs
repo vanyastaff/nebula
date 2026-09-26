@@ -877,3 +877,97 @@ async fn a_burst_of_acquires_shares_reads() {
     assert_eq!(metrics(&manager).reads()[0], 2);
     assert_eq!(metrics(&manager).joined(), 6);
 }
+
+// ---------------------------------------------------------------------------
+// Background creates: the maintenance refill and the registration warmup.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn the_refill_reads_once_and_builds_nothing_while_a_credential_refuses() {
+    for refusal in [
+        reauth(1, 2),
+        revoking(1),
+        Err(CredentialObserveError::Unavailable),
+    ] {
+        let observer = ScriptedObserver::answering(refusal);
+        let manager = strict_manager(erased(&observer), &Arc::default());
+        let resource = register(
+            &manager,
+            StrictPooled::new(),
+            Pooled::new(pool_config(), config(1).fingerprint()),
+        )
+        .expect("register");
+        bind(&resource.db, credential_id(), 1, 1);
+        let row = row::<StrictPooled>(&manager);
+        let epoch = gate_epoch::<StrictPooled>(&manager);
+
+        assert_eq!(row.refill_min_idle(&context()).await, 0);
+        assert_eq!(resource.probe.creates(), 0);
+        assert_eq!(observer.calls(), 1, "one read for the pass");
+        assert_eq!(
+            suspended_for::<StrictPooled>(&manager),
+            None,
+            "a background pass changes no gate state"
+        );
+        assert_eq!(gate_epoch::<StrictPooled>(&manager), epoch);
+
+        observer.answer(available(1, 1));
+        assert_eq!(row.refill_min_idle(&context()).await, 2);
+        assert_eq!(resource.probe.creates(), 2);
+        assert_eq!(observer.calls(), 2);
+    }
+}
+
+/// A pool warmed at registration, bound before it registers (the slot cell
+/// is shared with the registered value).
+fn warmed_pool(manager: &Manager) -> StrictPooled {
+    let resource = StrictPooled::new();
+    bind(&resource.db, credential_id(), 1, 1);
+    let mut warmed = pool_config();
+    warmed.warmup = crate::topology::pooled::config::WarmupStrategy::Sequential;
+    let resource = register(
+        manager,
+        resource,
+        Pooled::new(warmed, config(1).fingerprint()),
+    )
+    .expect("register");
+    // As activation does after registering a stored row.
+    manager.spawn_warmup(
+        &row::<StrictPooled>(manager),
+        nebula_core::scope::Scope::default(),
+    );
+    resource
+}
+
+async fn until_warmup_settled(manager: &Manager) {
+    // The warmup task holds the row's in-flight count until it ends.
+    while row::<StrictPooled>(manager).in_flight_count() != 0 {
+        tokio::task::yield_now().await;
+    }
+}
+
+#[tokio::test]
+async fn the_registration_warmup_builds_nothing_while_a_credential_refuses() {
+    let observer = ScriptedObserver::gated(reauth(1, 2));
+    let manager = strict_manager(erased(&observer), &Arc::default());
+    let resource = warmed_pool(&manager);
+    observer.until_calls(1).await;
+    observer.release(1);
+    until_warmup_settled(&manager).await;
+
+    assert_eq!(resource.probe.creates(), 0);
+    assert_eq!(suspended_for::<StrictPooled>(&manager), None);
+}
+
+#[tokio::test]
+async fn the_registration_warmup_builds_once_the_credential_is_usable() {
+    let observer = ScriptedObserver::gated(available(1, 1));
+    let manager = strict_manager(erased(&observer), &Arc::default());
+    let resource = warmed_pool(&manager);
+    observer.until_calls(1).await;
+    observer.release(1);
+    until_warmup_settled(&manager).await;
+
+    assert_eq!(resource.probe.creates(), 2);
+    assert_eq!(observer.calls(), 1);
+}

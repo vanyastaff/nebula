@@ -263,6 +263,35 @@ impl<R: Provider> ManagedResource<R> {
         .await;
         Some(StrictReading { ticket, slots })
     }
+
+    /// Whether a background create (the registration warmup, the
+    /// maintenance refill) may build instances now: one strict read per
+    /// pass, admitting only when every bound slot is usable at the installed
+    /// material. It changes no gate state — a blocked or unreadable
+    /// credential just builds nothing; the next acquire's read applies what
+    /// it sees. Always `true` for a row that is not strict.
+    pub(crate) async fn credentials_admit_creation(&self) -> bool {
+        let Some(reading) = self.read_credentials_strict(None).await else {
+            return true;
+        };
+        let verdict = decide(&reading.slots, |slot| installed_mark(self, slot));
+        let Some(reason) = verdict.deny else {
+            return !verdict.cancelled;
+        };
+        tracing::debug!(
+            resource.key = %R::key(),
+            %reason,
+            "strict credential read: background create skipped"
+        );
+        if let Some(metrics) = self
+            .credential_reads
+            .as_deref()
+            .and_then(CredentialReads::metrics)
+        {
+            metrics.record_denied(reason);
+        }
+        false
+    }
 }
 
 /// Reads one slot, joining a refresh in flight for a bounded wait.

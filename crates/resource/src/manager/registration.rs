@@ -985,8 +985,11 @@ impl Manager {
         Ok(Some(Arc::clone(reads)))
     }
 
-    fn spawn_warmup<R>(&self, managed: &Arc<ManagedResource<R>>, scope: nebula_core::scope::Scope)
-    where
+    pub(super) fn spawn_warmup<R>(
+        &self,
+        managed: &Arc<ManagedResource<R>>,
+        scope: nebula_core::scope::Scope,
+    ) where
         R: Provider,
         R::Topology: Topology<R>,
     {
@@ -1014,8 +1017,15 @@ impl Manager {
         let managed = Arc::clone(managed);
         tokio::spawn(async move {
             let _in_flight = in_flight;
+            // A strict row reads its bound credentials before it builds;
             // `warmup` bounds and isolates each author `create` hook itself.
-            let warmup = managed.warmup(&ctx);
+            let warmup = async {
+                if managed.credentials_admit_creation().await {
+                    managed.warmup(&ctx).await
+                } else {
+                    Ok(0)
+                }
+            };
             tokio::select! {
                 biased;
                 () = cancel.cancelled() => {},
