@@ -207,8 +207,10 @@
 //!   equal to it, so a deny observed late always lands and an admit
 //!   observed before a later deny is `Superseded`. Clearing the last slot
 //!   publishes a fresh generation in a fresh span. Taint wins: a tainted
-//!   row never reopens. See `docs/credential-rotation.md`, "Same-material
-//!   blocks".
+//!   row never reopens. On an interim manager the suspension lands when
+//!   activation, the fan-out or a caller observes the denial; on a strict
+//!   one the acquire's own read observes it (I7). See
+//!   `docs/credential-rotation.md`, "Same-material blocks".
 //! - **I6 use revision.** The gate orders credential observations by use
 //!   revision `(material_epoch, admission_epoch)` (`CredentialObservedAt`),
 //!   per slot, against the higher of the installed projection's and the
@@ -223,10 +225,33 @@
 //!   observing it — is `Readmitted`: a fresh generation is published like a
 //!   benign change (I4), the predecessor is **not** closed and nothing is
 //!   rebuilt. Closing admitted work is reserved for an observed block (I5);
-//!   refusing units admitted during an unobserved denial is the strict
-//!   per-acquire availability read, a separate contract. An install
-//!   reopens with the revision of the guard it resolved, so it publishes
-//!   once.
+//!   a strict manager (I7) observes a block at the next acquire, so only an
+//!   interval with no acquire, create, activation or fan-out scan at all
+//!   goes unobserved. An install reopens with the revision of the guard it
+//!   resolved, so it publishes once.
+//! - **I7 strict per-acquire read.** On a manager with a credential
+//!   observer, every new unit of work on a credential-bound row — each
+//!   acquire through `run_acquire` (including `acquire_any`), an explicit
+//!   `warmup_pool`, each background create pass — reads every bound slot's
+//!   availability before it runs (`strict_admission`). The read runs after
+//!   the rate-limit wait and **outside every lock**: the row's gate ticket is
+//!   captured first, then all slots are read concurrently through the
+//!   manager's join-next `CredentialReads` (a caller only takes a read issued
+//!   after it arrived), each bounded by the caller's deadline and 2 s.
+//!   Under `Manager.admission`, after the post-count re-check (so a taint
+//!   during the read refuses `Revoked`), the installed material is
+//!   re-snapshotted and the pure decision applied: a slot read usable at the
+//!   installed material reopens or readmits (I5/I6, with the ticket — a
+//!   suspension recorded after it supersedes the reopen), a slot read
+//!   blocked suspends the row (I5), and any refusal denies the acquire
+//!   before the suspension check, the phase check and the recovery gate. A
+//!   refusal that is not a denial at the current material (`Rebinding`,
+//!   `RefreshInFlight`, `CheckUnavailable`, `Absent`) changes no gate state.
+//!   Background creates only read and skip. The lock is never held across
+//!   the read; no task is spawned per read, so dropping an acquire drops its
+//!   read. Slot-less rows and interim managers read nothing. A unit that
+//!   waits for capacity after its read is not read again here (a per-call
+//!   facade re-reads per attempt with the same two functions).
 //!
 //! The closing token is a cooperative notice: it stops no work, revokes no
 //! borrow, and rolls nothing back. A lease is still released normally, and

@@ -29,8 +29,9 @@
 //!   published so new work is admitted under the new revision (Design
 //!   CONTRACT "old use revision does not admit"); like a benign publication
 //!   it leaves the predecessor open, because only an observed block closes
-//!   admitted work. Refusing work admitted during an unobserved interval is
-//!   the strict per-acquire availability read, a separate contract.
+//!   admitted work. A strict manager reads availability before every
+//!   acquire, so a block is observed by the next acquire rather than left
+//!   unobserved until the next activation or fan-out scan.
 //! - **Retirement** ([`AdmissionCell::retire`]) — credential taint/revoke,
 //!   row removal, shutdown, manager drop. It cancels the row's terminal token
 //!   and so every generation ever published, in every span.

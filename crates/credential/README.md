@@ -133,8 +133,12 @@ runtime proof and must not be used as a properties declaration.
   revision (`admission_epoch`) when the status is `Open`; it never loads,
   decrypts or projects material. `CredentialProjectionRuntime` and `CredentialService` implement
   it and expose it through the defaulted `CredentialSlotResolver::as_availability_observer`
-  upcast. Resource rows use it to suspend while a credential denies use at the material they
-  hold, and to project only when material advanced.
+  upcast, and as an owned `Arc` through `into_availability_observer`. Resource rows use it to
+  suspend while a credential denies use at the material they hold, and to project only when
+  material advanced; a strict resource manager holds the owned observer and reads it before
+  every new unit of work. The bounded refresh join every consumer shares
+  (`REFRESH_JOIN_WAIT`, `REFRESH_JOIN_FIRST_PAUSE`, `REFRESH_JOIN_MAX_PAUSE`,
+  `REFRESH_BUSY_RETRY_AFTER`) is public.
 - `CredentialProjectionRuntime` for worker-side read/project composition from an already-secured
   persistence stack, registry, dispatch ops, and state source. Construction rejects missing base
   projectors or advertised capabilities without matching ops; it owns no refresh coordinator,

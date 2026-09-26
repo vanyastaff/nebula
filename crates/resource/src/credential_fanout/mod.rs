@@ -13,6 +13,13 @@
 //!
 //! Gated behind the `rotation` cargo feature so it does not widen the
 //! default dependency footprint of `nebula-resource`.
+//!
+//! On a strict manager (a credential availability observer configured) the
+//! fan-out is a cache and cleanup role: it installs advanced material, taints
+//! and revokes, and suspends or reopens rows it observes, but the safety of a
+//! new call is decided by that call's own per-acquire availability read. Its
+//! 30 s reconciliation interval is therefore not a safety parameter there;
+//! on an interim manager it still bounds how late a denial is observed.
 
 pub mod driver;
 pub mod index;

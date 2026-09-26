@@ -52,12 +52,24 @@
 //!   admitted under a fresh generation, while leases admitted before stay
 //!   open and nothing is rebuilt. This is a conscious relaxation of "do not
 //!   revive cancelled units" for a missed true block — they were never
-//!   cancelled; refusing them needs the strict per-acquire availability
-//!   read, a separate contract. Readmission is traced, not published as a
-//!   [`ResourceEvent`].
+//!   cancelled. A strict manager narrows the gap to an interval with no
+//!   acquire, create, activation or fan-out scan at all, because each
+//!   acquire reads the credential first. Readmission is traced, not
+//!   published as a [`ResourceEvent`].
 //!
 //! An observation without a revision (an adapter that reports none) falls
 //! back to the ticket-only rule.
+//!
+//! # Who observes
+//!
+//! On an interim manager ([`CredentialAdmissionProfile::InterimRowGate`])
+//! the gate is driven from outside: engine activation, the rotation fan-out
+//! and callers of [`Manager::suspend_credential_row`] /
+//! [`Manager::reopen_credential_row`]. On a strict manager
+//! ([`CredentialAdmissionProfile::StrictPerAcquire`]) every acquire also reads
+//! its bound credentials first and applies what it saw through the same
+//! `suspend_under_admission` / `reopen_under_admission` rules, with a ticket
+//! captured before its read (invariant I7 in the [`manager`](super) docs).
 
 use nebula_core::{ResourceKey, ScopeLevel};
 

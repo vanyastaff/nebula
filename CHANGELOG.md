@@ -665,6 +665,33 @@ let admitted = recorded.readmit_against(fresh)?;
 
 ### Added
 
+- **Strict per-acquire credential admission.** A `Manager` configured with
+  `ManagerConfig::with_credential_observer` makes every credential-bound row
+  `CredentialAdmissionProfile::StrictPerAcquire`: each acquire (and each
+  explicit or background create) reads its bound credentials' availability
+  first, outside every lock, through join-next coalescing (a caller only
+  takes a read issued after it arrived; one read per credential lane in
+  flight), bounded by the caller's deadline and 2 s; a refresh in flight is
+  joined for the credential crate's bounded wait. Under `Manager.admission`
+  the acquire then reopens or readmits a slot read usable, suspends a slot
+  read blocked, and refuses on any denial. `CredentialUnavailableReason`
+  gains `RefreshInFlight`, `Rebinding`, `CheckUnavailable` and `Absent`
+  (refusals that do not suspend the row); a credential store outage refuses
+  new credentialed work (`CheckUnavailable`) and never trips the recovery
+  gate. The profile (`Unbound`, `StrictPerAcquire`, `InterimRowGate`) is
+  reported by `ResourceHealthSnapshot::credential_admission` and
+  `ManagedResourceView::credential_admission_profile()`, and is not
+  re-exported through the SDK. A strict manager refuses to register a row
+  whose declared slot lacks the projection port. New metrics:
+  `nebula_resource_credential_admission_reads_total{outcome}`,
+  `…_joined_total`, `…_read_duration_seconds`, `…_denied_total{reason}`.
+  `nebula-credential` adds `CredentialSlotResolver::into_availability_observer`
+  (an owned observer) and makes the refresh join bounds (`REFRESH_JOIN_WAIT`,
+  `REFRESH_JOIN_FIRST_PAUSE`, `REFRESH_JOIN_MAX_PAUSE`,
+  `REFRESH_BUSY_RETRY_AFTER`) public. Without an observer, credential-bound
+  rows stay on the interim row gate with a one-time warning; the default
+  becomes strict before the API freeze.
+
 - **Resource rows report how their rate limit is enforced.**
   `nebula_resource::RateLimitProfile` names it: `PausesOnly` (no rate),
   `PerAcquire` (one permit per lease) or `InterimPerClosure` (a client wrapped
@@ -719,9 +746,10 @@ let admitted = recorded.readmit_against(fresh)?;
   the defaulted `CredentialSlotResolver::as_availability_observer`; its
   `CredentialAvailabilityObservation` carries the use revision
   (`admission_epoch()`) of an `Open` status. It also re-exports
-  `CredentialOperationKind`. Suspension is cooperative and lands at the next
-  activation or fan-out scan (30 s); a strict per-acquire availability read is
-  follow-up work.
+  `CredentialOperationKind`. On an interim manager suspension is cooperative
+  and lands at the next activation or fan-out scan (30 s); a strict manager
+  reads availability before every acquire (see "Strict per-acquire credential
+  admission" below).
 
   Every consumer honours the credential **use revision** (admission epoch):
   observations are ordered by `(material_epoch, admission_epoch)`. A
@@ -1048,6 +1076,17 @@ let admitted = recorded.readmit_against(fresh)?;
   classifications map to wire code `other`.
 
 ### Changed
+
+- **The worker's resource manager is strict per acquire.** `apps/worker`
+  composes its resource manager with the credential resolver's availability
+  observer, so every credential-bound resource it activates reads the bound
+  credential's availability before each acquire and create. Credentialed
+  egress is therefore no more available than the credential store: while the
+  store is unreachable, new credentialed work is refused
+  (`CredentialUnavailable { reason: CheckUnavailable }`, retry after 1 s)
+  instead of running on unverified credentials; work already admitted
+  continues. Each new credentialed unit costs one secret-free head read
+  (coalesced across concurrent acquires of the same credential).
 
 - **Breaking: the storage seam and the runtime crates that ride it.** This milestone is a
   `feat!` across six crates. `nebula-storage-port` replaces
