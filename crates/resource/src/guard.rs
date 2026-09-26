@@ -24,6 +24,7 @@ use crate::{
     resource::Provider,
     runtime::{
         acquire_loop::release_entry,
+        admission::AdmissionGeneration,
         managed::{EntryOf, ManagedResource},
     },
     topology::Topology,
@@ -109,6 +110,76 @@ pub struct ResourceGuard<R: Provider> {
     drain_counters: Option<DrainTrackers>,
     event_bus: Option<Arc<EventBus<ResourceEvent>>>,
     hold_watchdog: Option<HoldWatchdog>,
+    /// The admission generation this lease was admitted under; immutable for
+    /// the lease's lifetime.
+    admission: Arc<AdmissionGeneration>,
+}
+
+/// A cooperative notice that the row a lease came from stopped admitting
+/// work in the lease's admission generation.
+///
+/// Obtained from [`ResourceGuard::closing`]. Long-running work holding a
+/// lease — a stream consumer, a polling loop, a batch — can select on
+/// [`closed`](Self::closed) to wind down at a safe point instead of starting
+/// new units of work on a row that is going away.
+///
+/// # What fires it
+///
+/// | Event | Fires? |
+/// |---|---|
+/// | Credential taint / revoke of the row | yes, before the revoke drain starts |
+/// | [`Manager::remove`](crate::Manager::remove) / [`remove_for`](crate::Manager::remove_for) | yes |
+/// | [`graceful_shutdown`](crate::Manager::graceful_shutdown) | yes, when the drain starts |
+/// | [`shutdown`](crate::Manager::shutdown) or dropping the manager | yes |
+/// | [`reload_config`](crate::Manager::reload_config) | no |
+/// | Credential refresh | no |
+/// | Same-identity replacement of the row | no |
+///
+/// Config reloads, credential refreshes and same-identity replacements never
+/// interrupt in-flight work: a lease admitted before them stays valid until
+/// released.
+///
+/// # What it does not do
+///
+/// Closing is a notice only. It does not stop the lease's work, revoke the
+/// borrowed instance, or roll anything back remotely; the guard is still
+/// released normally, and a revoke or shutdown drain still waits for it.
+/// There is no way to fire a notice from a lease:
+///
+/// ```compile_fail
+/// fn fire(closing: nebula_resource::LeaseClosing) {
+///     closing.cancel();
+/// }
+/// ```
+#[derive(Clone, Debug)]
+pub struct LeaseClosing(tokio_util::sync::CancellationToken);
+
+impl LeaseClosing {
+    /// Whether the lease's admission generation is closed.
+    #[must_use]
+    pub fn is_closing(&self) -> bool {
+        self.0.is_cancelled()
+    }
+
+    /// Completes once the lease's admission generation is closed;
+    /// immediately if it already is.
+    ///
+    /// # Cancel safety
+    ///
+    /// Cancel safe: dropping the future only stops waiting.
+    pub fn closed(&self) -> impl Future<Output = ()> + Send + '_ {
+        self.0.cancelled()
+    }
+
+    /// Owned form of [`closed`](Self::closed), for a future that outlives the
+    /// borrow (a spawned task, a `select!` arm stored in a struct).
+    ///
+    /// # Cancel safety
+    ///
+    /// Cancel safe: dropping the future only stops waiting.
+    pub fn into_closed(self) -> impl Future<Output = ()> + Send + 'static {
+        self.0.cancelled_owned()
+    }
 }
 
 /// Aborts the hold-deadline watchdog task when the lease ends.
@@ -139,7 +210,11 @@ impl<R: Provider> ResourceGuard<R> {
         metrics: Option<ResourceOpsMetrics>,
         identity: GuardIdentity,
     ) -> Self {
+        // Provisional: the acquire pipeline replaces it with the generation it
+        // captured under `Manager.admission` (`with_admission`).
+        let admission = managed.admission.snapshot();
         Self {
+            admission,
             entry: Some(entry),
             managed,
             permit,
@@ -172,6 +247,20 @@ impl<R: Provider> ResourceGuard<R> {
     pub(crate) fn with_drain_tracker(mut self, trackers: DrainTrackers) -> Self {
         self.drain_counters = Some(trackers);
         self
+    }
+
+    /// Stamps the admission generation the acquire captured under
+    /// `Manager.admission`. See the [`manager`](crate::manager) module docs,
+    /// "Admission generations".
+    pub(crate) fn with_admission(mut self, admission: Arc<AdmissionGeneration>) -> Self {
+        self.admission = admission;
+        self
+    }
+
+    /// The admission generation this lease was admitted under.
+    #[cfg(test)]
+    pub(crate) fn admission(&self) -> &Arc<AdmissionGeneration> {
+        &self.admission
     }
 
     /// Attaches the manager's event bus so this guard emits
@@ -285,6 +374,44 @@ impl<R: Provider> ResourceGuard<R> {
     /// Returns the registration generation at acquisition.
     pub fn generation(&self) -> u64 {
         self.generation
+    }
+
+    /// The closing notice of this lease's admission generation.
+    ///
+    /// Always the generation the lease was admitted under: a later reload or
+    /// credential refresh does not move it. See [`LeaseClosing`] for which
+    /// lifecycle events fire it and what it does not do.
+    ///
+    /// # Examples
+    ///
+    /// Stop taking new units of work once the row closes, then release the
+    /// lease normally:
+    ///
+    /// ```
+    /// use nebula_resource::{Provider, ResourceGuard};
+    ///
+    /// async fn consume<R: Provider>(guard: ResourceGuard<R>) {
+    ///     let closing = guard.closing();
+    ///     loop {
+    ///         tokio::select! {
+    ///             () = closing.closed() => break,
+    ///             // One unit of work against `*guard`.
+    ///             () = tokio::task::yield_now() => {},
+    ///         }
+    ///     }
+    ///     drop(guard);
+    /// }
+    /// ```
+    #[must_use]
+    pub fn closing(&self) -> LeaseClosing {
+        LeaseClosing(self.admission.token().clone())
+    }
+
+    /// Whether the row stopped admitting work in this lease's admission
+    /// generation. Shorthand for `self.closing().is_closing()`.
+    #[must_use]
+    pub fn is_closing(&self) -> bool {
+        self.admission.is_closed()
     }
 
     /// Releases this lease and observes whether cleanup completed or was deferred.

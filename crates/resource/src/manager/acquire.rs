@@ -127,6 +127,18 @@ impl Manager {
         .with_resource_key(R::key())
     }
 
+    /// The error for an acquire whose row admits nothing in its current
+    /// admission generation: `Revoked` when a credential revoke closed it,
+    /// otherwise `Cancelled` (the row was removed or the manager is closing).
+    /// Neither trips the recovery gate.
+    fn closed_admission_error<R: Provider>(managed: &ManagedResource<R>) -> Error {
+        if managed.is_tainted() {
+            Self::tainted_error::<R>()
+        } else {
+            Error::cancelled().with_resource_key(R::key())
+        }
+    }
+
     /// Acquires through the registry row's `ManagedHandle::acquire` method,
     /// keyed by the **collision-free structural** resolved-credential identity
     /// (key + scope + slot identity).
@@ -481,7 +493,7 @@ impl Manager {
         // held continuously until the guard drops. The `AcqRel` increment here
         // is strictly before the post-taint re-check below. Two-phase-revoke
         // invariant: see the `manager` module documentation.
-        let in_flight = {
+        let (in_flight, admission) = {
             // Serialize readiness admission with credential demotion and
             // promotion. Once this counter is installed under the same gate,
             // a later replacement may demote the row but cannot retroactively
@@ -506,7 +518,16 @@ impl Manager {
                 ))
                 .with_resource_key(R::key()));
             }
-            in_flight
+            // Capture the admission generation under the same gate that
+            // publishes and retires it: this lease is admitted under exactly
+            // this generation and observes its closing notice. A row with no
+            // current generation was retired after the checks above could
+            // observe why (a removed or dropped-manager row).
+            let admission = managed
+                .admission
+                .current()
+                .ok_or_else(|| Self::closed_admission_error::<R>(&managed))?;
+            (in_flight, admission)
         };
         let gate_admission = admit_through_gate(&managed.recovery_gate)?;
 
@@ -548,6 +569,7 @@ impl Manager {
             // because failed acquires never minted a guard to begin with —
             // there is nothing to release.
             Ok(h) => Ok(h
+                .with_admission(admission)
                 .with_drain_tracker(in_flight.release_to_guard())
                 .with_event_bus(Arc::clone(&self.event_bus))
                 .with_hold_watchdog(R::max_hold_duration(), ctx, self.metrics.clone())),

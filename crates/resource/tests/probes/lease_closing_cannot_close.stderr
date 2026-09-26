@@ -1,0 +1,5 @@
+error[E0599]: no method named `cancel` found for reference `&LeaseClosing` in the current scope
+ --> tests/probes/lease_closing_cannot_close.rs:5:13
+  |
+5 |     closing.cancel();
+  |             ^^^^^^ method not found in `&LeaseClosing`
